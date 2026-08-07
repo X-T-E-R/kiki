@@ -1,0 +1,9 @@
+system:
+  project: EasyAgent
+  name: kiki
+  version: 0.1.0
+  status: active
+  vcs: independent-git
+  vcs_ref: ""
+  supersedes: []
+contract_managed_by: assay
