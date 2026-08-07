@@ -1,0 +1,300 @@
+@import 'tailwindcss';
+
+/* Let Tailwind see the utility classes used inside Streamdown's dist (the
+ * code plugin's dist has none, but the directive is cheap insurance). */
+@source '../node_modules/streamdown/dist/*.js';
+@source '../node_modules/@streamdown/code/dist/*.js';
+
+@theme {
+  --color-paper: #f7f3ec;
+  --color-panel: #fffdf8;
+  --color-hairline: #e7dfd0;
+  --color-hairline-strong: #d9cfba;
+  --color-ink: #1c1917;
+  --color-ink-soft: #6b6257;
+  --color-ink-faint: #a39a8b;
+  --color-accent: #e8590c;
+  --color-accent-deep: #d9480f;
+  --color-accent-soft: #fdeee2;
+  --color-amber-ink: #b45309;
+  --color-amber-card: #fdf3e3;
+  --color-amber-rule: #e8b04b;
+  --color-success: #2f9e44;
+  --color-danger: #c92a2a;
+
+  /* Streamdown's components are built on shadcn custom properties; map them
+   * onto the kiki palette so its internals (code blocks, tables) stay warm. */
+  --color-background: #fffdf8;
+  --color-foreground: #1c1917;
+  --color-muted: #f7f3ec;
+  --color-muted-foreground: #6b6257;
+  --color-border: #e7dfd0;
+  --color-input: #e7dfd0;
+  --color-primary: #e8590c;
+  --color-primary-foreground: #fffdf8;
+  --color-sidebar: #f7f3ec;
+
+  --font-display: 'Fraunces Variable', 'Fraunces', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Space Grotesk', ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-display {
+  font-optical-sizing: auto;
+}
+
+/* ---- scrollbars: thin warm neutral ---- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #d9cfba transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #d9cfba;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #c9bda3;
+}
+
+/* ---- motion ---- */
+@keyframes kiki-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes kiki-pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.8);
+  }
+}
+
+@keyframes kiki-caret {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes kiki-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.anim-enter {
+  animation: kiki-enter 200ms ease-out both;
+}
+
+.status-dot-busy {
+  animation: kiki-pulse-dot 1.6s ease-in-out infinite;
+}
+
+.stream-caret {
+  color: var(--color-accent);
+  animation: kiki-caret 1s step-end infinite;
+}
+
+.spinner {
+  animation: kiki-spin 0.9s linear infinite;
+}
+
+.expand-collapse {
+  transition: grid-template-rows 180ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .anim-enter,
+  .status-dot-busy,
+  .stream-caret,
+  .spinner {
+    animation: none;
+  }
+  .expand-collapse {
+    transition: none;
+  }
+}
+
+/* ---- assistant markdown typography ---- */
+.kiki-md {
+  font-size: 14px;
+  line-height: 1.65;
+  overflow-wrap: break-word;
+}
+.kiki-md > *:first-child {
+  margin-top: 0;
+}
+.kiki-md > *:last-child {
+  margin-bottom: 0;
+}
+.kiki-md p {
+  margin: 0.55em 0;
+}
+.kiki-md h1,
+.kiki-md h2,
+.kiki-md h3,
+.kiki-md h4 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0.9em 0 0.35em;
+  line-height: 1.3;
+}
+.kiki-md h1 {
+  font-size: 1.3em;
+}
+.kiki-md h2 {
+  font-size: 1.18em;
+}
+.kiki-md h3 {
+  font-size: 1.06em;
+}
+.kiki-md h4 {
+  font-size: 1em;
+}
+.kiki-md ul,
+.kiki-md ol {
+  margin: 0.5em 0;
+  padding-left: 1.4em;
+}
+.kiki-md li {
+  margin: 0.18em 0;
+}
+.kiki-md li::marker {
+  color: var(--color-ink-faint);
+}
+.kiki-md code {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  background: var(--color-paper);
+  border: 1px solid var(--color-hairline);
+  border-radius: 5px;
+  padding: 0.08em 0.34em;
+}
+.kiki-md pre {
+  background: var(--color-paper);
+  border: 1px solid var(--color-hairline);
+  border-radius: 10px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 0.6em 0;
+}
+.kiki-md pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.kiki-md a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+}
+.kiki-md a:hover {
+  text-decoration-color: var(--color-accent);
+}
+.kiki-md blockquote {
+  border-left: 2px solid var(--color-hairline-strong);
+  margin: 0.6em 0;
+  padding: 0.1em 0 0.1em 0.9em;
+  color: var(--color-ink-soft);
+}
+.kiki-md hr {
+  border: none;
+  border-top: 1px solid var(--color-hairline);
+  margin: 1em 0;
+}
+.kiki-md table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  font-size: 0.92em;
+}
+.kiki-md th,
+.kiki-md td {
+  border: 1px solid var(--color-hairline);
+  padding: 4px 10px;
+  text-align: left;
+}
+.kiki-md th {
+  background: var(--color-paper);
+  font-weight: 600;
+}
+.kiki-md strong {
+  font-weight: 650;
+}
+
+/* ---- code fence chrome (KikiCodeBlock wraps Streamdown's CodeBlock) ---- */
+.kiki-cb [data-streamdown='code-block'] {
+  border: none;
+  background: transparent;
+  border-radius: 0;
+}
+/* kiki draws the header/actions itself — suppress Streamdown's. */
+.kiki-cb [data-streamdown='code-block-header'],
+.kiki-cb [data-streamdown='code-block-actions'] {
+  display: none;
+}
+.kiki-cb-body pre,
+.kiki-cb [data-streamdown='code-block-body'] pre {
+  background: transparent !important;
+  border: none;
+  border-radius: 0;
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+/* Streamdown's highlighted body draws its own frame — kiki's chrome owns it. */
+.kiki-cb [data-streamdown='code-block-body'] {
+  border: none;
+  background: transparent;
+  border-radius: 0;
+  padding: 8px 12px;
+}
+/* github-light token colors arrive as --shiki-light CSS vars; the dark slot
+ * exists only because the plugin requires two themes — never shown. */
+.kiki-cb .shiki,
+.kiki-cb .shiki span {
+  background-color: transparent !important;
+}

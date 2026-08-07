@@ -1,0 +1,1067 @@
+/**
+ * Session view state: an immutable-ish transcript model rebuilt from the REST
+ * snapshot and advanced by WS `session_event` frames.
+ *
+ * Rebuild rules (matches rest/snapshot.ts docs):
+ *   1. `GET /sessions/{sid}/snapshot` → messages + in_flight_turn + watermark
+ *   2. subscribe with cursor `{seq: as_of_seq, epoch}`
+ *   3. apply durable events with `seq > cursor.seq`; volatile text deltas use
+ *      the cumulative envelope `offset` for alignment:
+ *        offset === local length → append
+ *        offset <  local length → tail rewrite (idempotent for re-sends)
+ *        offset >  local length → gap → caller resyncs from a fresh snapshot
+ */
+
+import type {
+  ApprovalDecision,
+  ApprovalRequest,
+  Message,
+  PermissionMode,
+  QuestionRequest,
+  Session,
+  SessionPendingInteraction,
+  SessionSnapshotResponse,
+  Task,
+  TaskInfo,
+  ToolInputDisplay,
+  UsageStatus,
+} from '@moonshot-ai/protocol';
+
+import type { SessionEventFrame } from '../lib/types';
+
+// ---------------------------------------------------------------------------
+
+export interface UserBlock {
+  readonly kind: 'user';
+  readonly id: string;
+  readonly text: string;
+  readonly createdAt: string;
+}
+
+export interface AssistantBlock {
+  readonly kind: 'assistant';
+  readonly id: string;
+  readonly text: string;
+  readonly streaming: boolean;
+}
+
+export interface ThinkingBlock {
+  readonly kind: 'thinking';
+  readonly id: string;
+  readonly text: string;
+  readonly streaming: boolean;
+}
+
+export type ToolStatus = 'running' | 'done' | 'error';
+
+export interface ToolBlock {
+  readonly kind: 'tool';
+  readonly id: string;
+  readonly toolCallId: string;
+  readonly name: string;
+  /** Raw streamed argument text (tool.call.delta), before args are known. */
+  readonly argsText: string;
+  readonly args: unknown;
+  readonly display: ToolInputDisplay | undefined;
+  readonly description: string | undefined;
+  readonly status: ToolStatus;
+  readonly output: unknown;
+  readonly isError: boolean | undefined;
+  readonly startedAt: number;
+  readonly durationMs: number | undefined;
+  readonly progressText: string | undefined;
+}
+
+export interface ShellBlock {
+  readonly kind: 'shell';
+  readonly id: string;
+  readonly commandId: string;
+  readonly output: string;
+  readonly done: boolean;
+  readonly isError: boolean | undefined;
+}
+
+export interface SubagentBlock {
+  readonly kind: 'subagent';
+  readonly id: string;
+  readonly subagentId: string;
+  readonly parentToolCallId: string | undefined;
+  readonly name: string;
+  readonly description: string | undefined;
+  readonly status: 'running' | 'suspended' | 'completed' | 'failed';
+  readonly summary: string | undefined;
+  readonly error: string | undefined;
+}
+
+/** Subtle in-flow notice: compaction, abort, errors, turn failures. */
+export interface NoticeBlock {
+  readonly kind: 'notice';
+  readonly id: string;
+  readonly text: string;
+  readonly tone: 'neutral' | 'danger';
+}
+
+export interface ApprovalResolution {
+  readonly decision: ApprovalDecision | 'expired' | 'resolved_elsewhere';
+  readonly resolvedAt: string;
+}
+
+export interface ApprovalBlock {
+  readonly kind: 'approval';
+  readonly id: string;
+  readonly request: ApprovalRequest;
+  readonly resolution: ApprovalResolution | undefined;
+}
+
+export type QuestionOutcome =
+  | { readonly kind: 'answered'; readonly at: string }
+  | { readonly kind: 'dismissed'; readonly at: string }
+  | { readonly kind: 'expired' };
+
+export interface QuestionBlock {
+  readonly kind: 'question';
+  readonly id: string;
+  readonly request: QuestionRequest;
+  readonly outcome: QuestionOutcome | undefined;
+}
+
+export type Block =
+  | UserBlock
+  | AssistantBlock
+  | ThinkingBlock
+  | ToolBlock
+  | ShellBlock
+  | SubagentBlock
+  | NoticeBlock
+  | ApprovalBlock
+  | QuestionBlock;
+
+export interface TodoItem {
+  readonly title: string;
+  readonly status: string;
+}
+
+export interface SessionCursorState {
+  readonly seq: number;
+  readonly epoch: string | undefined;
+}
+
+export interface SessionViewState {
+  readonly version: number;
+  readonly sessionId: string;
+  /** Latest session record (from snapshot, list poll, or work_changed). */
+  readonly session: Session | undefined;
+  readonly blocks: readonly Block[];
+  readonly cursor: SessionCursorState;
+  readonly busy: boolean;
+  readonly pendingInteraction: SessionPendingInteraction;
+  readonly activePromptId: string | undefined;
+  readonly queuedPromptIds: readonly string[];
+  readonly model: string | undefined;
+  readonly permissionMode: PermissionMode | undefined;
+  readonly planMode: boolean;
+  readonly contextTokens: number | undefined;
+  readonly maxContextTokens: number | undefined;
+  readonly usage: UsageStatus | undefined;
+  readonly todos: readonly TodoItem[];
+  readonly tasks: readonly Task[];
+  /** Set when a delta gap was detected and a resync has been requested. */
+  readonly resyncing: boolean;
+  readonly loaded: boolean;
+}
+
+export function createViewState(sessionId: string): SessionViewState {
+  return {
+    version: 0,
+    sessionId,
+    session: undefined,
+    blocks: [],
+    cursor: { seq: 0, epoch: undefined },
+    busy: false,
+    pendingInteraction: 'none',
+    activePromptId: undefined,
+    queuedPromptIds: [],
+    model: undefined,
+    permissionMode: undefined,
+    planMode: false,
+    contextTokens: undefined,
+    maxContextTokens: undefined,
+    usage: undefined,
+    todos: [],
+    tasks: [],
+    resyncing: false,
+    loaded: false,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot → blocks
+// ---------------------------------------------------------------------------
+
+function textOfContent(content: Message['content']): string {
+  const parts: string[] = [];
+  for (const part of content) {
+    if (part.type === 'text') parts.push(part.text);
+    else if (part.type === 'image') parts.push('[image]');
+    else if (part.type === 'video') parts.push('[video]');
+    else if (part.type === 'file') parts.push(`[file: ${part.name}]`);
+  }
+  return parts.join('\n');
+}
+
+function messagesToBlocks(messages: readonly Message[]): Block[] {
+  const blocks: Block[] = [];
+  const toolByCallId = new Map<string, ToolBlock>();
+
+  const upsertToolResult = (toolCallId: string, output: unknown, isError: boolean | undefined) => {
+    const existing = toolByCallId.get(toolCallId);
+    if (existing !== undefined) {
+      const index = blocks.indexOf(existing);
+      const updated: ToolBlock = {
+        ...existing,
+        status: isError === true ? 'error' : 'done',
+        output,
+        isError,
+      };
+      if (index >= 0) blocks[index] = updated;
+      toolByCallId.set(toolCallId, updated);
+    } else {
+      const block: ToolBlock = {
+        kind: 'tool',
+        id: `tool-${toolCallId}`,
+        toolCallId,
+        name: 'tool',
+        argsText: '',
+        args: undefined,
+        display: undefined,
+        description: undefined,
+        status: isError === true ? 'error' : 'done',
+        output,
+        isError,
+        startedAt: 0,
+        durationMs: undefined,
+        progressText: undefined,
+      };
+      toolByCallId.set(toolCallId, block);
+      blocks.push(block);
+    }
+  };
+
+  for (const message of messages) {
+    switch (message.role) {
+      case 'user': {
+        const text = textOfContent(message.content);
+        if (text.trim() !== '') {
+          blocks.push({
+            kind: 'user',
+            id: `user-${message.id}`,
+            text,
+            createdAt: message.created_at,
+          });
+        }
+        break;
+      }
+      case 'assistant': {
+        let textIndex = 0;
+        for (const part of message.content) {
+          if (part.type === 'text') {
+            blocks.push({
+              kind: 'assistant',
+              id: `assistant-${message.id}-${textIndex}`,
+              text: part.text,
+              streaming: false,
+            });
+            textIndex += 1;
+          } else if (part.type === 'thinking') {
+            blocks.push({
+              kind: 'thinking',
+              id: `thinking-${message.id}-${textIndex}`,
+              text: part.thinking,
+              streaming: false,
+            });
+            textIndex += 1;
+          } else if (part.type === 'tool_use') {
+            const block: ToolBlock = {
+              kind: 'tool',
+              id: `tool-${part.tool_call_id}`,
+              toolCallId: part.tool_call_id,
+              name: part.tool_name,
+              argsText: '',
+              args: part.input,
+              display: undefined,
+              description: undefined,
+              status: 'done',
+              output: undefined,
+              isError: undefined,
+              startedAt: 0,
+              durationMs: undefined,
+              progressText: undefined,
+            };
+            toolByCallId.set(part.tool_call_id, block);
+            blocks.push(block);
+          }
+        }
+        break;
+      }
+      case 'tool': {
+        for (const part of message.content) {
+          if (part.type === 'tool_result') {
+            upsertToolResult(part.tool_call_id, part.output, part.is_error);
+          }
+        }
+        break;
+      }
+      case 'system': {
+        const text = textOfContent(message.content);
+        if (text.trim() !== '') {
+          const preview = text.length > 160 ? `${text.slice(0, 160)}…` : text;
+          blocks.push({
+            kind: 'notice',
+            id: `system-${message.id}`,
+            text: preview,
+            tone: 'neutral',
+          });
+        }
+        break;
+      }
+    }
+  }
+  return blocks;
+}
+
+export function applySnapshot(
+  sessionId: string,
+  snapshot: SessionSnapshotResponse,
+): SessionViewState {
+  const blocks = messagesToBlocks(snapshot.messages.items);
+
+  const inFlight = snapshot.in_flight_turn;
+  if (inFlight !== null) {
+    if (inFlight.thinking_text !== '') {
+      blocks.push({
+        kind: 'thinking',
+        id: `thinking-live-${inFlight.turn_id}`,
+        text: inFlight.thinking_text,
+        streaming: true,
+      });
+    }
+    if (inFlight.assistant_text !== '') {
+      blocks.push({
+        kind: 'assistant',
+        id: `assistant-live-${inFlight.turn_id}`,
+        text: inFlight.assistant_text,
+        streaming: true,
+      });
+    }
+    for (const tool of inFlight.running_tools) {
+      blocks.push({
+        kind: 'tool',
+        id: `tool-${tool.tool_call_id}`,
+        toolCallId: tool.tool_call_id,
+        name: tool.name,
+        argsText: '',
+        args: tool.args,
+        display: tool.display as ToolInputDisplay | undefined,
+        description: tool.description,
+        status: 'running',
+        output: undefined,
+        isError: undefined,
+        startedAt: Date.now(),
+        durationMs: undefined,
+        progressText: tool.last_progress?.text,
+      });
+    }
+  }
+
+  for (const approval of snapshot.pending_approvals) {
+    blocks.push(approvalBlock(approval));
+  }
+  for (const question of snapshot.pending_questions) {
+    blocks.push(questionBlock(question));
+  }
+
+  const base = createViewState(sessionId);
+  return {
+    ...base,
+    version: 1,
+    session: snapshot.session,
+    blocks,
+    cursor: { seq: snapshot.as_of_seq, epoch: snapshot.epoch },
+    busy: snapshot.session.busy,
+    pendingInteraction: snapshot.session.pending_interaction ?? 'none',
+    activePromptId: inFlight?.current_prompt_id,
+    model:
+      snapshot.session.agent_config.model !== ''
+        ? snapshot.session.agent_config.model
+        : undefined,
+    permissionMode: snapshot.session.agent_config.permission_mode,
+    planMode: snapshot.session.agent_config.plan_mode ?? false,
+    loaded: true,
+  };
+}
+
+function approvalBlock(request: ApprovalRequest): ApprovalBlock {
+  return {
+    kind: 'approval',
+    id: `approval-${request.approval_id}`,
+    request,
+    resolution: undefined,
+  };
+}
+
+function questionBlock(request: QuestionRequest): QuestionBlock {
+  return {
+    kind: 'question',
+    id: `question-${request.question_id}`,
+    request,
+    outcome: undefined,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Live events
+// ---------------------------------------------------------------------------
+
+let noticeCounter = 0;
+function nextNoticeId(prefix: string): string {
+  noticeCounter += 1;
+  return `${prefix}-${Date.now().toString(36)}-${noticeCounter}`;
+}
+
+interface DeltaResult {
+  readonly text: string;
+  readonly gap: boolean;
+}
+
+/** Cumulative-offset delta application (see file header). */
+export function applyDelta(local: string, delta: string, offset: number | undefined): DeltaResult {
+  if (offset === undefined) return { text: local + delta, gap: false };
+  if (offset > local.length) return { text: local, gap: true };
+  return { text: local.slice(0, offset) + delta, gap: false };
+}
+
+export interface ApplyResult {
+  readonly state: SessionViewState;
+  /** True when a volatile-delta gap was detected — caller should resync. */
+  readonly gapDetected: boolean;
+}
+
+function replaceBlock(blocks: readonly Block[], updated: Block): Block[] {
+  const index = blocks.findIndex((b) => b.id === updated.id);
+  if (index < 0) return [...blocks, updated];
+  const next = blocks.slice();
+  next[index] = updated;
+  return next;
+}
+
+/** Mark any still-streaming text blocks as final (step/turn boundary). */
+function finalizeStreaming(blocks: readonly Block[]): Block[] {
+  let changed = false;
+  const next = blocks.map((block) => {
+    if ((block.kind === 'assistant' || block.kind === 'thinking') && block.streaming) {
+      changed = true;
+      return { ...block, streaming: false };
+    }
+    return block;
+  });
+  return changed ? next : [...blocks];
+}
+
+function extractTodosFromDisplay(display: ToolInputDisplay): readonly TodoItem[] | undefined {
+  if (display.kind === 'todo_list') return display.items;
+  return undefined;
+}
+
+function extractTodosFromOutput(output: unknown): readonly TodoItem[] | undefined {
+  if (typeof output !== 'object' || output === null) return undefined;
+  const candidate = output as { kind?: unknown; items?: unknown };
+  if (candidate.kind !== 'todo_list' || !Array.isArray(candidate.items)) return undefined;
+  const items: TodoItem[] = [];
+  for (const raw of candidate.items as unknown[]) {
+    if (typeof raw === 'object' && raw !== null) {
+      const item = raw as { title?: unknown; status?: unknown };
+      if (typeof item.title === 'string' && typeof item.status === 'string') {
+        items.push({ title: item.title, status: item.status });
+      }
+    }
+  }
+  return items;
+}
+
+function taskInfoToTask(info: TaskInfo, sessionId: string): Task {
+  return {
+    id: info.taskId,
+    session_id: sessionId,
+    kind: info.kind === 'agent' ? 'subagent' : info.kind === 'process' ? 'bash' : 'tool',
+    description: info.description,
+    status:
+      info.status === 'running'
+        ? 'running'
+        : info.status === 'completed'
+          ? 'completed'
+          : info.status === 'killed'
+            ? 'cancelled'
+            : 'failed',
+    created_at: new Date(info.startedAt).toISOString(),
+    started_at: new Date(info.startedAt).toISOString(),
+    completed_at: info.endedAt !== null ? new Date(info.endedAt).toISOString() : undefined,
+  };
+}
+
+export function applyFrame(state: SessionViewState, frame: SessionEventFrame): ApplyResult {
+  const payload = frame.payload;
+  let next = state;
+  let gap = false;
+
+  const evolve = (partial: Partial<SessionViewState>) => {
+    next = { ...next, ...partial, version: next.version + 1 };
+  };
+
+  // Durable frames advance the cursor; duplicates (replay overlap) are dropped.
+  const durable = frame.volatile !== true;
+  if (durable) {
+    if (frame.seq <= state.cursor.seq) return { state, gapDetected: false };
+    const epoch = frame.epoch ?? state.cursor.epoch;
+    next = {
+      ...next,
+      cursor: { seq: frame.seq, epoch },
+      version: next.version + 1,
+    };
+  }
+
+  switch (payload.type) {
+    case 'assistant.delta': {
+      const key = `assistant-live-${payload.turnId}`;
+      const existing = next.blocks.find((b) => b.id === key) as AssistantBlock | undefined;
+      const result = applyDelta(existing?.text ?? '', payload.delta, frame.offset);
+      if (result.gap) {
+        gap = true;
+        break;
+      }
+      const block: AssistantBlock = {
+        kind: 'assistant',
+        id: key,
+        text: result.text,
+        streaming: true,
+      };
+      evolve({ blocks: replaceBlock(next.blocks, block) });
+      break;
+    }
+    case 'thinking.delta': {
+      const key = `thinking-live-${payload.turnId}`;
+      const existing = next.blocks.find((b) => b.id === key) as ThinkingBlock | undefined;
+      const result = applyDelta(existing?.text ?? '', payload.delta, frame.offset);
+      if (result.gap) {
+        gap = true;
+        break;
+      }
+      const block: ThinkingBlock = {
+        kind: 'thinking',
+        id: key,
+        text: result.text,
+        streaming: true,
+      };
+      evolve({ blocks: replaceBlock(next.blocks, block) });
+      break;
+    }
+    case 'turn.step.started':
+    case 'turn.ended': {
+      let blocks = finalizeStreaming(next.blocks);
+      if (payload.type === 'turn.ended') {
+        if (payload.reason === 'failed') {
+          blocks = [
+            ...blocks,
+            {
+              kind: 'notice',
+              id: nextNoticeId('turn-failed'),
+              text: payload.error?.message ?? 'Turn failed',
+              tone: 'danger' as const,
+            },
+          ];
+        }
+        evolve({
+          blocks,
+          busy: payload.reason === 'completed' ? false : next.busy,
+          activePromptId: undefined,
+        });
+      } else {
+        evolve({ blocks });
+      }
+      break;
+    }
+    case 'tool.call.delta': {
+      const key = `tool-${payload.toolCallId}`;
+      const existing = next.blocks.find((b) => b.id === key) as ToolBlock | undefined;
+      const block: ToolBlock = {
+        kind: 'tool',
+        id: key,
+        toolCallId: payload.toolCallId,
+        name: payload.name ?? existing?.name ?? 'tool',
+        argsText: (existing?.argsText ?? '') + (payload.argumentsPart ?? ''),
+        args: existing?.args,
+        display: existing?.display,
+        description: existing?.description,
+        status: 'running',
+        output: undefined,
+        isError: undefined,
+        startedAt: existing?.startedAt ?? Date.now(),
+        durationMs: undefined,
+        progressText: existing?.progressText,
+      };
+      evolve({ blocks: replaceBlock(next.blocks, block) });
+      break;
+    }
+    case 'tool.call.started': {
+      const key = `tool-${payload.toolCallId}`;
+      const existing = next.blocks.find((b) => b.id === key) as ToolBlock | undefined;
+      const block: ToolBlock = {
+        kind: 'tool',
+        id: key,
+        toolCallId: payload.toolCallId,
+        name: payload.name,
+        argsText: existing?.argsText ?? '',
+        args: payload.args,
+        display: payload.display,
+        description: payload.description,
+        status: 'running',
+        output: undefined,
+        isError: undefined,
+        startedAt: Date.now(),
+        durationMs: undefined,
+        progressText: existing?.progressText,
+      };
+      const todos =
+        payload.display !== undefined ? extractTodosFromDisplay(payload.display) : undefined;
+      evolve({
+        blocks: replaceBlock(next.blocks, block),
+        ...(todos !== undefined ? { todos } : {}),
+      });
+      break;
+    }
+    case 'tool.progress': {
+      const key = `tool-${payload.toolCallId}`;
+      const existing = next.blocks.find((b) => b.id === key) as ToolBlock | undefined;
+      if (existing === undefined) break;
+      const text = payload.update.text;
+      evolve({
+        blocks: replaceBlock(next.blocks, {
+          ...existing,
+          progressText: text !== undefined ? text : existing.progressText,
+        }),
+      });
+      break;
+    }
+    case 'tool.result': {
+      const key = `tool-${payload.toolCallId}`;
+      const existing = next.blocks.find((b) => b.id === key) as ToolBlock | undefined;
+      if (existing === undefined) break;
+      const todos = extractTodosFromOutput(payload.output);
+      evolve({
+        blocks: replaceBlock(next.blocks, {
+          ...existing,
+          status: payload.isError === true ? 'error' : 'done',
+          output: payload.output,
+          isError: payload.isError,
+          durationMs: existing.startedAt > 0 ? Date.now() - existing.startedAt : undefined,
+        }),
+        ...(todos !== undefined ? { todos } : {}),
+      });
+      break;
+    }
+    case 'shell.started': {
+      const block: ShellBlock = {
+        kind: 'shell',
+        id: `shell-${payload.commandId}`,
+        commandId: payload.commandId,
+        output: '',
+        done: false,
+        isError: undefined,
+      };
+      evolve({ blocks: replaceBlock(next.blocks, block) });
+      break;
+    }
+    case 'shell.output': {
+      const key = `shell-${payload.commandId}`;
+      const existing = next.blocks.find((b) => b.id === key) as ShellBlock | undefined;
+      const text = payload.update.text ?? '';
+      const block: ShellBlock = {
+        kind: 'shell',
+        id: key,
+        commandId: payload.commandId,
+        output: (existing?.output ?? '') + text,
+        done: false,
+        isError: undefined,
+      };
+      evolve({ blocks: replaceBlock(next.blocks, block) });
+      break;
+    }
+    case 'shell.completed': {
+      const key = `shell-${payload.commandId}`;
+      const existing = next.blocks.find((b) => b.id === key) as ShellBlock | undefined;
+      if (existing === undefined) break;
+      evolve({
+        blocks: replaceBlock(next.blocks, { ...existing, done: true, isError: payload.isError }),
+      });
+      break;
+    }
+    case 'subagent.spawned': {
+      const block: SubagentBlock = {
+        kind: 'subagent',
+        id: `subagent-${payload.subagentId}`,
+        subagentId: payload.subagentId,
+        parentToolCallId: payload.parentToolCallId,
+        name: payload.subagentName,
+        description: payload.description,
+        status: 'running',
+        summary: undefined,
+        error: undefined,
+      };
+      evolve({ blocks: replaceBlock(next.blocks, block) });
+      break;
+    }
+    case 'subagent.suspended': {
+      const key = `subagent-${payload.subagentId}`;
+      const existing = next.blocks.find((b) => b.id === key) as SubagentBlock | undefined;
+      if (existing === undefined) break;
+      evolve({
+        blocks: replaceBlock(next.blocks, { ...existing, status: 'suspended', error: payload.reason }),
+      });
+      break;
+    }
+    case 'subagent.completed': {
+      const key = `subagent-${payload.subagentId}`;
+      const existing = next.blocks.find((b) => b.id === key) as SubagentBlock | undefined;
+      if (existing === undefined) break;
+      evolve({
+        blocks: replaceBlock(next.blocks, {
+          ...existing,
+          status: 'completed',
+          summary: payload.resultSummary,
+        }),
+      });
+      break;
+    }
+    case 'subagent.failed': {
+      const key = `subagent-${payload.subagentId}`;
+      const existing = next.blocks.find((b) => b.id === key) as SubagentBlock | undefined;
+      if (existing === undefined) break;
+      evolve({
+        blocks: replaceBlock(next.blocks, { ...existing, status: 'failed', error: payload.error }),
+      });
+      break;
+    }
+    case 'compaction.started': {
+      const notice: NoticeBlock = {
+        kind: 'notice',
+        id: nextNoticeId('compaction'),
+        text: 'Compacting context…',
+        tone: 'neutral',
+      };
+      evolve({ blocks: [...next.blocks, notice] });
+      break;
+    }
+    case 'compaction.completed': {
+      const notice: NoticeBlock = {
+        kind: 'notice',
+        id: nextNoticeId('compaction'),
+        text: `Context compacted — ${payload.result.tokensBefore.toLocaleString()} → ${payload.result.tokensAfter.toLocaleString()} tokens`,
+        tone: 'neutral',
+      };
+      evolve({ blocks: [...next.blocks, notice] });
+      break;
+    }
+    case 'prompt.submitted': {
+      const key = `user-${payload.userMessageId}`;
+      const exists = next.blocks.some((b) => b.id === key);
+      const text = textOfContent(payload.content as Message['content']);
+      const blocks =
+        exists || text.trim() === ''
+          ? exists
+            ? next.blocks
+            : [
+                ...next.blocks,
+                {
+                  kind: 'user',
+                  id: key,
+                  text,
+                  createdAt: payload.createdAt,
+                } satisfies UserBlock,
+              ]
+          : next.blocks;
+      const queued =
+        payload.status === 'queued'
+          ? [...next.queuedPromptIds, payload.promptId]
+          : next.queuedPromptIds.filter((id) => id !== payload.promptId);
+      evolve({
+        blocks,
+        queuedPromptIds: queued,
+        busy: true,
+        activePromptId:
+          payload.status === 'running' ? payload.promptId : next.activePromptId,
+      });
+      break;
+    }
+    case 'prompt.completed': {
+      const blocks = finalizeStreaming(next.blocks);
+      const failed = payload.reason === 'failed' || payload.reason === 'blocked';
+      evolve({
+        blocks:
+          payload.reason === undefined || payload.reason === 'completed'
+            ? blocks
+            : [
+                ...blocks,
+                {
+                  kind: 'notice',
+                  id: nextNoticeId('prompt'),
+                  text: failed ? `Prompt ${payload.reason}` : 'Prompt finished',
+                  tone: failed ? ('danger' as const) : ('neutral' as const),
+                },
+              ],
+        busy: false,
+        activePromptId:
+          next.activePromptId === payload.promptId ? undefined : next.activePromptId,
+        queuedPromptIds: next.queuedPromptIds.filter((id) => id !== payload.promptId),
+      });
+      break;
+    }
+    case 'prompt.aborted': {
+      const blocks = finalizeStreaming(next.blocks);
+      evolve({
+        blocks: [
+          ...blocks,
+          {
+            kind: 'notice',
+            id: nextNoticeId('prompt'),
+            text: 'Prompt aborted',
+            tone: 'neutral' as const,
+          },
+        ],
+        busy: false,
+        activePromptId:
+          next.activePromptId === payload.promptId ? undefined : next.activePromptId,
+        queuedPromptIds: next.queuedPromptIds.filter((id) => id !== payload.promptId),
+      });
+      break;
+    }
+    case 'agent.status.updated': {
+      evolve({
+        model: payload.model ?? next.model,
+        permissionMode: payload.permission ?? next.permissionMode,
+        planMode: payload.planMode ?? next.planMode,
+        contextTokens: payload.contextTokens ?? next.contextTokens,
+        maxContextTokens: payload.maxContextTokens ?? next.maxContextTokens,
+        usage: payload.usage ?? next.usage,
+      });
+      break;
+    }
+    case 'event.session.work_changed': {
+      const session =
+        next.session !== undefined
+          ? {
+              ...next.session,
+              busy: payload.busy,
+              pending_interaction: payload.pending_interaction ?? next.session.pending_interaction,
+            }
+          : next.session;
+      evolve({
+        session,
+        busy: payload.busy,
+        pendingInteraction: payload.pending_interaction ?? 'none',
+      });
+      break;
+    }
+    case 'session.meta.updated': {
+      if (next.session !== undefined && payload.title !== undefined) {
+        evolve({ session: { ...next.session, title: payload.title } });
+      }
+      break;
+    }
+    case 'event.approval.requested': {
+      const request: ApprovalRequest = {
+        approval_id: payload.approval_id,
+        session_id: payload.session_id,
+        turn_id: payload.turn_id,
+        tool_call_id: payload.tool_call_id,
+        tool_name: payload.tool_name,
+        action: payload.action,
+        tool_input_display: payload.tool_input_display,
+        created_at: payload.created_at,
+        expires_at: payload.expires_at,
+      };
+      const exists = next.blocks.some((b) => b.id === `approval-${request.approval_id}`);
+      evolve({
+        blocks: exists ? next.blocks : [...next.blocks, approvalBlock(request)],
+        pendingInteraction: 'approval',
+      });
+      break;
+    }
+    case 'event.approval.resolved': {
+      const key = `approval-${payload.approval_id}`;
+      const existing = next.blocks.find((b) => b.id === key) as ApprovalBlock | undefined;
+      if (existing === undefined) break;
+      evolve({
+        blocks: replaceBlock(next.blocks, {
+          ...existing,
+          resolution: {
+            decision: payload.decision ?? 'resolved_elsewhere',
+            resolvedAt: payload.resolved_at,
+          },
+        }),
+        pendingInteraction: 'none',
+      });
+      break;
+    }
+    case 'event.question.requested': {
+      const request: QuestionRequest = {
+        question_id: payload.question_id,
+        session_id: payload.session_id,
+        turn_id: payload.turn_id,
+        tool_call_id: payload.tool_call_id,
+        questions: payload.questions,
+        created_at: payload.created_at,
+      };
+      const exists = next.blocks.some((b) => b.id === `question-${request.question_id}`);
+      evolve({
+        blocks: exists ? next.blocks : [...next.blocks, questionBlock(request)],
+        pendingInteraction: 'question',
+      });
+      break;
+    }
+    case 'event.question.answered': {
+      const key = `question-${payload.question_id}`;
+      const existing = next.blocks.find((b) => b.id === key) as QuestionBlock | undefined;
+      if (existing === undefined) break;
+      evolve({
+        blocks: replaceBlock(next.blocks, {
+          ...existing,
+          outcome: { kind: 'answered', at: payload.resolved_at },
+        }),
+        pendingInteraction: 'none',
+      });
+      break;
+    }
+    case 'event.question.dismissed': {
+      const key = `question-${payload.question_id}`;
+      const existing = next.blocks.find((b) => b.id === key) as QuestionBlock | undefined;
+      if (existing === undefined) break;
+      evolve({
+        blocks: replaceBlock(next.blocks, {
+          ...existing,
+          outcome: { kind: 'dismissed', at: payload.dismissed_at },
+        }),
+        pendingInteraction: 'none',
+      });
+      break;
+    }
+    case 'task.started':
+    case 'background.task.started': {
+      const task = taskInfoToTask(payload.info, next.sessionId);
+      const without = next.tasks.filter((t) => t.id !== task.id);
+      evolve({ tasks: [...without, task] });
+      break;
+    }
+    case 'task.terminated':
+    case 'background.task.terminated': {
+      const task = taskInfoToTask(payload.info, next.sessionId);
+      const without = next.tasks.filter((t) => t.id !== task.id);
+      evolve({ tasks: [...without, task] });
+      break;
+    }
+    case 'error': {
+      const notice: NoticeBlock = {
+        kind: 'notice',
+        id: nextNoticeId('error'),
+        text: payload.message,
+        tone: 'danger',
+      };
+      evolve({ blocks: [...next.blocks, notice] });
+      break;
+    }
+    default:
+      break;
+  }
+
+  return { state: next, gapDetected: gap };
+}
+
+/** Local echo of the user's own prompt (from the REST submit result). */
+export function appendLocalUserMessage(
+  state: SessionViewState,
+  input: { userMessageId: string; promptId: string; text: string; createdAt: string; queued: boolean },
+): SessionViewState {
+  const key = `user-${input.userMessageId}`;
+  if (state.blocks.some((b) => b.id === key)) return state;
+  return {
+    ...state,
+    version: state.version + 1,
+    busy: true,
+    activePromptId: input.queued ? state.activePromptId : input.promptId,
+    queuedPromptIds: input.queued
+      ? [...state.queuedPromptIds, input.promptId]
+      : state.queuedPromptIds,
+    blocks: [
+      ...state.blocks,
+      { kind: 'user', id: key, text: input.text, createdAt: input.createdAt },
+    ],
+  };
+}
+
+/** Mark an approval block resolved from the local REST answer path. */
+export function markApprovalResolved(
+  state: SessionViewState,
+  approvalId: string,
+  resolution: ApprovalResolution,
+): SessionViewState {
+  const key = `approval-${approvalId}`;
+  const existing = state.blocks.find((b) => b.id === key) as ApprovalBlock | undefined;
+  if (existing === undefined) return state;
+  return {
+    ...state,
+    version: state.version + 1,
+    pendingInteraction: 'none',
+    blocks: replaceBlock(state.blocks, { ...existing, resolution }),
+  };
+}
+
+export function markQuestionOutcome(
+  state: SessionViewState,
+  questionId: string,
+  outcome: QuestionOutcome,
+): SessionViewState {
+  const key = `question-${questionId}`;
+  const existing = state.blocks.find((b) => b.id === key) as QuestionBlock | undefined;
+  if (existing === undefined) return state;
+  return {
+    ...state,
+    version: state.version + 1,
+    pendingInteraction: 'none',
+    blocks: replaceBlock(state.blocks, { ...existing, outcome }),
+  };
+}
+
+export function setTasks(state: SessionViewState, tasks: readonly Task[]): SessionViewState {
+  return { ...state, version: state.version + 1, tasks };
+}
+
+export function setSessionRecord(state: SessionViewState, session: Session): SessionViewState {
+  return {
+    ...state,
+    version: state.version + 1,
+    session,
+    busy: session.busy,
+    pendingInteraction: session.pending_interaction ?? 'none',
+  };
+}
+
+export function setResyncing(state: SessionViewState, resyncing: boolean): SessionViewState {
+  if (state.resyncing === resyncing) return state;
+  return { ...state, version: state.version + 1, resyncing };
+}
+
+export function pendingApprovalCount(state: SessionViewState): number {
+  return state.blocks.filter((b) => b.kind === 'approval' && b.resolution === undefined).length;
+}
+
+export function pendingQuestionCount(state: SessionViewState): number {
+  return state.blocks.filter((b) => b.kind === 'question' && b.outcome === undefined).length;
+}
