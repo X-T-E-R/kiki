@@ -4,7 +4,7 @@
  * the server catalog, accent send button; busy state swaps in Abort.
  */
 
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useRef, type KeyboardEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import type { PermissionMode } from '@moonshot-ai/protocol';
@@ -19,8 +19,9 @@ const MODES: readonly { id: PermissionMode; hint: string }[] = [
 
 export function Composer({
   busy,
-  queued,
   disabled,
+  value,
+  onChange,
   model,
   defaultModel,
   serverDefaultModel,
@@ -36,8 +37,10 @@ export function Composer({
   onAbort,
 }: {
   busy: boolean;
-  queued: boolean;
   disabled: boolean;
+  /** Controlled text (App owns per-session drafts). */
+  value: string;
+  onChange: (text: string) => void;
   model: string | undefined;
   /** The session's bound model, when set. */
   defaultModel: string | undefined;
@@ -57,7 +60,7 @@ export function Composer({
   onAbort: () => void;
 }) {
   const { client } = useConnection();
-  const [text, setText] = useState('');
+  const text = value;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const modelsQuery = useQuery({
@@ -80,7 +83,7 @@ export function Composer({
   const send = () => {
     if (!canSend) return;
     onSend(text.trim());
-    setText('');
+    onChange('');
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -160,11 +163,7 @@ export function Composer({
                 ))}
               </select>
             ) : null}
-            {queued ? (
-              <span className="ml-auto rounded-full bg-amber-card px-2 py-0.5 text-[10.5px] font-medium text-amber-ink">
-                queued
-              </span>
-            ) : null}
+
           </div>
 
           <div className="flex items-end gap-2 px-3.5 pt-1.5 pb-3">
@@ -172,8 +171,9 @@ export function Composer({
               ref={textareaRef}
               rows={1}
               value={text}
+              data-composer
               disabled={disabled}
-              onChange={(event) => setText(event.target.value)}
+              onChange={(event) => onChange(event.target.value)}
               onKeyDown={onKeyDown}
               placeholder={busy ? 'Steer kiki — this queues while it works…' : 'Ask kiki anything…'}
               className="max-h-[190px] min-h-[24px] flex-1 resize-none bg-transparent text-[14px] leading-relaxed text-ink outline-none placeholder:text-ink-faint disabled:opacity-60"

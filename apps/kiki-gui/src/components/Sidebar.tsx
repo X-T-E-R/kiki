@@ -11,6 +11,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Session, Workspace } from '@moonshot-ai/protocol';
 
 import { relativeTime } from '../lib/time';
+import { registerOverlay } from '../lib/uiBusy';
 import { useConnection } from '../state/connection';
 import { Wordmark } from './Wordmark';
 
@@ -283,6 +284,7 @@ function SessionMenu({
 }) {
   const archived = session.archived === true;
   useEffect(() => {
+    const unregister = registerOverlay('session-menu');
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose();
     };
@@ -294,6 +296,7 @@ function SessionMenu({
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('pointerdown', onPointerDown, true);
     return () => {
+      unregister();
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('pointerdown', onPointerDown, true);
     };
@@ -345,6 +348,8 @@ function RenameDialog({
   const [title, setTitle] = useState(session.title);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => registerOverlay('rename-dialog'), []);
 
   const submit = () => {
     const trimmed = title.trim();

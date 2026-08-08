@@ -43,6 +43,7 @@ export interface AssistantBlock {
   readonly id: string;
   readonly text: string;
   readonly streaming: boolean;
+  readonly createdAt: string | undefined;
 }
 
 export interface ThinkingBlock {
@@ -50,6 +51,7 @@ export interface ThinkingBlock {
   readonly id: string;
   readonly text: string;
   readonly streaming: boolean;
+  readonly createdAt: string | undefined;
 }
 
 export type ToolStatus = 'running' | 'done' | 'error';
@@ -168,6 +170,14 @@ export interface SessionViewState {
   /** Set when a delta gap was detected and a resync has been requested. */
   readonly resyncing: boolean;
   readonly loaded: boolean;
+  /** Snapshot said older messages exist beyond the current first block. */
+  readonly hasMoreHistory: boolean;
+  /** Wire id of the oldest loaded message — the `before_id` pagination cursor. */
+  readonly oldestMessageId: string | undefined;
+  /** An older-page fetch is in flight (drives the top affordance). */
+  readonly loadingOlder: boolean;
+  /** At least one older page has been fetched (drives the history-start cap). */
+  readonly fetchedOlder: boolean;
 }
 
 export function createViewState(sessionId: string): SessionViewState {
@@ -191,6 +201,10 @@ export function createViewState(sessionId: string): SessionViewState {
     tasks: [],
     resyncing: false,
     loaded: false,
+    hasMoreHistory: false,
+    oldestMessageId: undefined,
+    loadingOlder: false,
+    fetchedOlder: false,
   };
 }
 
@@ -270,6 +284,7 @@ function messagesToBlocks(messages: readonly Message[]): Block[] {
               id: `assistant-${message.id}-${textIndex}`,
               text: part.text,
               streaming: false,
+              createdAt: message.created_at,
             });
             textIndex += 1;
           } else if (part.type === 'thinking') {
@@ -278,6 +293,7 @@ function messagesToBlocks(messages: readonly Message[]): Block[] {
               id: `thinking-${message.id}-${textIndex}`,
               text: part.thinking,
               streaming: false,
+              createdAt: message.created_at,
             });
             textIndex += 1;
           } else if (part.type === 'tool_use') {
@@ -343,6 +359,7 @@ export function applySnapshot(
         id: `thinking-live-${inFlight.turn_id}`,
         text: inFlight.thinking_text,
         streaming: true,
+        createdAt: undefined,
       });
     }
     if (inFlight.assistant_text !== '') {
@@ -351,6 +368,7 @@ export function applySnapshot(
         id: `assistant-live-${inFlight.turn_id}`,
         text: inFlight.assistant_text,
         streaming: true,
+        createdAt: undefined,
       });
     }
     for (const tool of inFlight.running_tools) {
@@ -380,6 +398,21 @@ export function applySnapshot(
     blocks.push(questionBlock(question));
   }
 
+  // Todos ride todo_list tool payloads; recover the latest list from history
+  // (live events refine it from here on).
+  let todos: readonly TodoItem[] = [];
+  for (const message of snapshot.messages.items) {
+    for (const part of message.content) {
+      if (part.type === 'tool_result') {
+        const found = extractTodosFromOutput(part.output);
+        if (found !== undefined) todos = found;
+      } else if (part.type === 'tool_use') {
+        const found = extractTodosFromInput(part.input);
+        if (found !== undefined) todos = found;
+      }
+    }
+  }
+
   const base = createViewState(sessionId);
   return {
     ...base,
@@ -397,7 +430,63 @@ export function applySnapshot(
     permissionMode: snapshot.session.agent_config.permission_mode,
     planMode: snapshot.session.agent_config.plan_mode ?? false,
     loaded: true,
+    todos,
+    hasMoreHistory: snapshot.messages.has_more,
+    oldestMessageId: snapshot.messages.items[0]?.id,
   };
+}
+
+/**
+ * Prepend an older messages page (from `GET /sessions/{id}/messages
+ * ?before_id=oldest`). The existing blocks are untouched; the new blocks go
+ * in front, so the component layer can re-anchor the scroll position.
+ */
+export function prependOlderMessages(
+  state: SessionViewState,
+  messages: readonly Message[],
+  hasMore: boolean,
+): SessionViewState {
+  if (messages.length === 0) {
+    return {
+      ...state,
+      version: state.version + 1,
+      loadingOlder: false,
+      fetchedOlder: true,
+      hasMoreHistory: false,
+    };
+  }
+  const olderBlocks = messagesToBlocks(messages);
+  return {
+    ...state,
+    version: state.version + 1,
+    blocks: [...olderBlocks, ...state.blocks],
+    oldestMessageId: messages[0]?.id ?? state.oldestMessageId,
+    hasMoreHistory: hasMore,
+    loadingOlder: false,
+    fetchedOlder: true,
+  };
+}
+
+export function setLoadingOlder(state: SessionViewState, loading: boolean): SessionViewState {
+  if (state.loadingOlder === loading) return state;
+  return { ...state, version: state.version + 1, loadingOlder: loading };
+}
+
+/** Todo extraction from a TodoWrite-style tool input ({todos:[...]}). */
+function extractTodosFromInput(input: unknown): readonly TodoItem[] | undefined {
+  if (typeof input !== 'object' || input === null) return undefined;
+  const list = (input as { todos?: unknown }).todos;
+  if (!Array.isArray(list)) return undefined;
+  const items: TodoItem[] = [];
+  for (const raw of list as unknown[]) {
+    if (typeof raw !== 'object' || raw === null) continue;
+    const entry = raw as { title?: unknown; content?: unknown; status?: unknown };
+    const title = typeof entry.title === 'string' ? entry.title : entry.content;
+    if (typeof title === 'string' && typeof entry.status === 'string') {
+      items.push({ title, status: entry.status });
+    }
+  }
+  return items.length > 0 ? items : undefined;
 }
 
 function approvalBlock(request: ApprovalRequest): ApprovalBlock {
@@ -454,13 +543,19 @@ function replaceBlock(blocks: readonly Block[], updated: Block): Block[] {
   return next;
 }
 
-/** Mark any still-streaming text blocks as final (step/turn boundary). */
-function finalizeStreaming(blocks: readonly Block[]): Block[] {
+/**
+ * Mark still-streaming text blocks as final at a step/turn boundary AND
+ * rename their live ids (`assistant-live-<turn>` → `…-final-<tag>`). The
+ * rename matters: volatile offsets reset at every step boundary, so deltas
+ * for the next step must start a FRESH block — with the old id kept, the
+ * first post-boundary delta (offset 0) would rewrite the finalized text.
+ */
+function finalizeStreaming(blocks: readonly Block[], tag: string): Block[] {
   let changed = false;
   const next = blocks.map((block) => {
     if ((block.kind === 'assistant' || block.kind === 'thinking') && block.streaming) {
       changed = true;
-      return { ...block, streaming: false };
+      return { ...block, streaming: false, id: `${block.id}-final-${tag}` };
     }
     return block;
   });
@@ -543,6 +638,7 @@ export function applyFrame(state: SessionViewState, frame: SessionEventFrame): A
         id: key,
         text: result.text,
         streaming: true,
+        createdAt: existing?.createdAt ?? frame.timestamp,
       };
       evolve({ blocks: replaceBlock(next.blocks, block) });
       break;
@@ -560,13 +656,17 @@ export function applyFrame(state: SessionViewState, frame: SessionEventFrame): A
         id: key,
         text: result.text,
         streaming: true,
+        createdAt: existing?.createdAt ?? frame.timestamp,
       };
       evolve({ blocks: replaceBlock(next.blocks, block) });
       break;
     }
     case 'turn.step.started':
     case 'turn.ended': {
-      let blocks = finalizeStreaming(next.blocks);
+      let blocks = finalizeStreaming(
+        next.blocks,
+        payload.type === 'turn.step.started' ? `s${payload.step}` : 'end',
+      );
       if (payload.type === 'turn.ended') {
         if (payload.reason === 'failed') {
           blocks = [
@@ -802,7 +902,7 @@ export function applyFrame(state: SessionViewState, frame: SessionEventFrame): A
       break;
     }
     case 'prompt.completed': {
-      const blocks = finalizeStreaming(next.blocks);
+      const blocks = finalizeStreaming(next.blocks, 'end');
       const failed = payload.reason === 'failed' || payload.reason === 'blocked';
       evolve({
         blocks:
@@ -825,7 +925,7 @@ export function applyFrame(state: SessionViewState, frame: SessionEventFrame): A
       break;
     }
     case 'prompt.aborted': {
-      const blocks = finalizeStreaming(next.blocks);
+      const blocks = finalizeStreaming(next.blocks, 'end');
       evolve({
         blocks: [
           ...blocks,

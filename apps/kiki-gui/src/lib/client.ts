@@ -18,6 +18,7 @@ import type {
   ListSessionsQuery,
   ListTasksResponse,
   ListWorkspacesResponse,
+  Message,
   MetaResponse,
   PageResponse,
   PromptAbortResponse,
@@ -202,6 +203,18 @@ export class KikiClient {
     return this.request<SessionSnapshotResponse>(
       'GET',
       `/sessions/${encodeURIComponent(sessionId)}/snapshot`,
+    );
+  }
+
+  /** Older-history pages: `?before_id=<oldest loaded message id>&page_size=N`. */
+  listMessages(
+    sessionId: string,
+    query: { before_id?: string; page_size?: number } = {},
+  ): Promise<PageResponse<Message>> {
+    return this.request<PageResponse<Message>>(
+      'GET',
+      `/sessions/${encodeURIComponent(sessionId)}/messages`,
+      { query: { before_id: query.before_id, page_size: query.page_size ?? 50 } },
     );
   }
 

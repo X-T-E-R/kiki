@@ -55,6 +55,25 @@ function approvalDetail(block: ApprovalBlock): { label: string; text: string } |
     const path = (display as { path?: string }).path;
     return path !== undefined ? { label: 'File', text: path } : undefined;
   }
+  if (kind === 'url_fetch') {
+    const url = (display as { url?: string }).url;
+    return url !== undefined ? { label: 'URL', text: url } : undefined;
+  }
+  if (kind === 'search') {
+    const d = display as { query?: string; scope?: string };
+    const text = d.scope !== undefined ? `${d.query ?? ''} — ${d.scope}` : d.query;
+    return text !== undefined && text !== '' ? { label: 'Search', text } : undefined;
+  }
+  if (kind === 'agent_call') {
+    const d = display as { agent_name?: string; prompt?: string };
+    const text = `${d.agent_name ?? ''}${d.prompt !== undefined ? ` — ${d.prompt}` : ''}`.trim();
+    return text !== '' ? { label: 'Subagent', text } : undefined;
+  }
+  if (kind === 'skill_call') {
+    const d = display as { skill_name?: string; args?: string };
+    const text = `${d.skill_name ?? ''}${d.args !== undefined ? ` ${d.args}` : ''}`.trim();
+    return text !== '' ? { label: 'Skill', text } : undefined;
+  }
   if (kind === 'generic') {
     const summary = (display as { summary?: string }).summary;
     return summary !== undefined && summary !== '' ? { label: 'Details', text: summary } : undefined;

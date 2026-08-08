@@ -22,6 +22,8 @@ import {
   appendLocalUserMessage,
   markApprovalResolved,
   markQuestionOutcome,
+  prependOlderMessages,
+  setLoadingOlder,
   setResyncing,
   setSessionRecord,
   setTasks,
@@ -130,6 +132,36 @@ export class SessionController {
       if (!this.closed) this.setState(setTasks(this.state, data.items));
     } catch {
       // tasks rail is best-effort
+    }
+  }
+
+  /**
+   * Fetch one older history page and prepend it. Returns true when a page was
+   * applied — the scroll layer uses that to re-anchor the viewport.
+   */
+  async loadOlderMessages(): Promise<boolean> {
+    const current = this.state;
+    if (
+      this.closed ||
+      !current.loaded ||
+      !current.hasMoreHistory ||
+      current.loadingOlder ||
+      current.oldestMessageId === undefined
+    ) {
+      return false;
+    }
+    this.setState(setLoadingOlder(current, true));
+    try {
+      const page = await this.client.listMessages(this.sessionId, {
+        before_id: current.oldestMessageId,
+        page_size: 50,
+      });
+      if (this.closed) return false;
+      this.setState(prependOlderMessages(this.state, page.items, page.has_more));
+      return page.items.length > 0;
+    } catch {
+      if (!this.closed) this.setState(setLoadingOlder(this.state, false));
+      return false;
     }
   }
 

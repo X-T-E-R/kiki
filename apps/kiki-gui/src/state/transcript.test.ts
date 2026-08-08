@@ -358,6 +358,25 @@ describe('applyFrame', () => {
     expect(tool.durationMs).toBeTypeOf('number');
   });
 
+  it('starts a fresh block at a step boundary instead of clobbering step text', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = applyFrame(
+      state,
+      frame({ type: 'assistant.delta', turnId: 1, delta: 'step one text' }, { volatile: true, offset: 0 }),
+    ).state;
+    state = applyFrame(
+      state,
+      frame({ type: 'turn.step.started', turnId: 1, step: 2 }, { seq: 11 }),
+    ).state;
+    // Next step's stream restarts its cumulative offsets at 0 (per wire spec).
+    state = applyFrame(
+      state,
+      frame({ type: 'assistant.delta', turnId: 1, delta: 'step two' }, { volatile: true, offset: 0 }),
+    ).state;
+    const texts = state.blocks.filter((b) => b.kind === 'assistant').map((b) => (b as AssistantBlock).text);
+    expect(texts).toEqual(['step one text', 'step two']);
+  });
+
   it('starts from an empty view state', () => {
     const state = createViewState('session_test');
     expect(state.loaded).toBe(false);

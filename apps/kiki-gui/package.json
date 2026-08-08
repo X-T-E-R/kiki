@@ -19,7 +19,9 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "fixtures": "node scripts/fixture-server.mjs",
+    "proof": "node scripts/visual-proof.mjs"
   },
   "dependencies": {
     "@fontsource-variable/fraunces": "^5.2.5",
@@ -43,6 +45,9 @@
     "tailwindcss": "^4.1.4",
     "typescript": "6.0.2",
     "vite": "^6.3.3",
-    "vitest": "4.1.4"
+    "vitest": "4.1.4",
+    "playwright": "1.60.0",
+    "ws": "^8.18.0",
+    "@types/ws": "^8.18.0"
   }
 }

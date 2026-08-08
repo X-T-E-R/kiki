@@ -16,12 +16,16 @@ import { RightRail } from './components/RightRail';
 import { Sidebar } from './components/Sidebar';
 import { Transcript } from './components/Transcript';
 import { KikiMark, Wordmark } from './components/Wordmark';
+import { readDraft, writeDraft } from './lib/drafts';
+import { anyOverlayOpen, registerOverlay } from './lib/uiBusy';
 import { useConnection, useControllerRegistry } from './state/connection';
 import { SessionController } from './state/sessionController';
 import {
   createViewState,
   pendingApprovalCount,
   pendingQuestionCount,
+  type SessionViewState,
+  type UserBlock,
 } from './state/transcript';
 
 function useActiveController(sessionId: string | undefined): SessionController | null {
@@ -55,10 +59,12 @@ function Header({
   controller,
   railOpen,
   onToggleRail,
+  onJumpTurn,
 }: {
   controller: SessionController | null;
   railOpen: boolean;
   onToggleRail: () => void;
+  onJumpTurn: (blockId: string) => void;
 }) {
   const state = useSyncExternalStore(
     controller?.subscribe ?? noopSubscribe,
@@ -93,6 +99,7 @@ function Header({
               {state.model}
             </span>
           ) : null}
+          <TurnsMenu state={state} onJump={onJumpTurn} />
         </>
       ) : (
         <span className="flex-1" />
@@ -113,6 +120,90 @@ function Header({
   );
 }
 
+/**
+ * Turn-jump dropdown (grok-build's `/jump` concept, minimal): lists the
+ * session's user turns; clicking one scrolls that block into view.
+ */
+function TurnsMenu({
+  state,
+  onJump,
+}: {
+  state: SessionViewState;
+  onJump: (blockId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const turns = useMemo(
+    () =>
+      state.blocks
+        .filter((block): block is UserBlock => block.kind === 'user')
+        .map((block, index) => ({
+          id: block.id,
+          index: index + 1,
+          label: block.text.replaceAll(/\s+/g, ' ').trim().slice(0, 60),
+        })),
+    [state.blocks],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    const unregister = registerOverlay('turns-menu');
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (
+        !(event.target instanceof HTMLElement) ||
+        event.target.closest('[data-turns-menu]') === null
+      ) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('pointerdown', onPointerDown, true);
+    return () => {
+      unregister();
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('pointerdown', onPointerDown, true);
+    };
+  }, [open]);
+
+  if (turns.length < 2) return null;
+  return (
+    <div className="relative shrink-0" data-turns-menu>
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        title="Jump to a turn"
+        className={`rounded-full border px-2 py-0.5 text-[10.5px] font-medium transition-colors ${
+          open
+            ? 'border-accent bg-accent-soft text-accent'
+            : 'border-hairline text-ink-soft hover:border-hairline-strong'
+        }`}
+      >
+        ↕ {turns.length} turns
+      </button>
+      {open ? (
+        <div className="anim-enter absolute right-0 top-7 z-40 max-h-80 w-72 overflow-y-auto rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)]">
+          {turns.map((turn) => (
+            <button
+              key={turn.id}
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                onJump(turn.id);
+              }}
+              className="flex w-full items-baseline gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors hover:bg-paper"
+            >
+              <span className="shrink-0 font-mono text-[10px] text-ink-faint">{turn.index}</span>
+              <span className="min-w-0 truncate text-[12px] text-ink">{turn.label}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 const noopSubscribe = () => () => {};
 const emptyView = createViewState('');
 const emptyState = () => emptyView;
@@ -126,8 +217,18 @@ export function App() {
   const [modelOverride, setModelOverride] = useState<string | undefined>(undefined);
   const [effortOverride, setEffortOverride] = useState<string | undefined>(undefined);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
 
   const controller = useActiveController(activeSessionId);
+
+  // Per-session composer drafts: restore on switch, persist on edit, clear on send.
+  useEffect(() => {
+    setDraft(activeSessionId !== undefined ? readDraft(activeSessionId) : '');
+  }, [activeSessionId]);
+  const updateDraft = (text: string) => {
+    setDraft(text);
+    if (activeSessionId !== undefined) writeDraft(activeSessionId, text);
+  };
   const state = useSyncExternalStore(
     controller?.subscribe ?? noopSubscribe,
     controller?.getState ?? emptyState,
@@ -166,6 +267,25 @@ export function App() {
           target.tagName === 'SELECT' ||
           target.isContentEditable)
       ) {
+        return;
+      }
+      // Escape aborts the running turn — but never while a menu/dialog is
+      // open, and never while typing in a real form field (the composer
+      // textarea, marked data-composer, is fair game).
+      if (event.key === 'Escape') {
+        if (anyOverlayOpen()) return;
+        const inFormField =
+          target !== null &&
+          (target.tagName === 'INPUT' ||
+            target.tagName === 'SELECT' ||
+            target.isContentEditable ||
+            (target.tagName === 'TEXTAREA' && !Object.hasOwn(target.dataset, 'composer')));
+        if (inFormField) return;
+        const current = controller.getState();
+        if (current.busy && current.activePromptId !== undefined) {
+          event.preventDefault();
+          void controller.abortActive();
+        }
         return;
       }
       if (event.key !== 'y' && event.key !== 'n') return;
@@ -212,6 +332,8 @@ export function App() {
     return {
       send: (text: string) => {
         setSendError(null);
+        if (activeSessionId !== undefined) writeDraft(activeSessionId, '');
+        setDraft('');
         void controller
           .sendPrompt({
             text,
@@ -233,7 +355,7 @@ export function App() {
         void controller.dismissQuestion(questionId).catch(() => undefined),
       cancelTask: (taskId: string) => void controller.cancelTask(taskId).catch(() => undefined),
     };
-  }, [controller, effectiveModel, effectiveEffort, permissionMode, planMode]);
+  }, [controller, effectiveModel, effectiveEffort, permissionMode, planMode, activeSessionId]);
 
   return (
     <div className="flex h-full bg-paper">
@@ -248,6 +370,11 @@ export function App() {
           controller={controller}
           railOpen={railOpen}
           onToggleRail={() => setRailOpen((value) => !value)}
+          onJumpTurn={(blockId) => {
+            document
+              .querySelector(`[data-block-id="${blockId}"]`)
+              ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }}
         />
 
         {wsStatus !== 'open' ? (
@@ -270,8 +397,8 @@ export function App() {
         ) : (
           <>
             <Transcript
-              blocks={state.blocks}
-              loaded={state.loaded}
+              state={state}
+              onLoadOlder={() => controller.loadOlderMessages()}
               onResolveApproval={(id, decision, scope) =>
                 actions?.resolveApproval(id, decision, scope) ?? Promise.resolve()
               }
@@ -292,10 +419,20 @@ export function App() {
                 </span>
               ) : null}
             </div>
+            {state.queuedPromptIds.length > 0 ? (
+              <div className="px-6 pb-1.5">
+                <div className="mx-auto flex max-w-[760px]">
+                  <span className="rounded-full border border-amber-rule/40 bg-amber-card px-2.5 py-0.5 text-[11px] font-medium text-amber-ink">
+                    ◔ {state.queuedPromptIds.length} prompt{state.queuedPromptIds.length === 1 ? '' : 's'} queued — starts when the current turn finishes
+                  </span>
+                </div>
+              </div>
+            ) : null}
             <Composer
               busy={state.busy && state.activePromptId !== undefined}
-              queued={state.queuedPromptIds.length > 0}
               disabled={false}
+              value={draft}
+              onChange={updateDraft}
               model={modelOverride}
               defaultModel={sessionModel}
               serverDefaultModel={serverDefaultModel}

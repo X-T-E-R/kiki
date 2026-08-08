@@ -1,0 +1,132 @@
+/**
+ * tool-pipeline — snapshot carries a completed Read → Edit (diff card) →
+ * Write-create chain as journaled messages; on prompt, three consecutive
+ * live tool calls (Read + Edit + Bash) run back-to-back so the transcript
+ * folds them into a "Steps · 3" group. The Edit uses real old/new strings
+ * with >6 unchanged lines between two changes so the DiffCard shows two
+ * hunks and a "… unchanged lines" separator.
+ */
+
+import {
+  approvalFrame,
+  assistantMsg,
+  commitAssistant,
+  fid,
+  sessionRecord,
+  streamSteps,
+  toolResultMsg,
+  turnEnd,
+  turnStart,
+  userMsg,
+  workChanged,
+} from './helpers.mjs';
+
+const SID = 'session_fixture_pipeline';
+const READ1 = fid('call');
+const EDIT1 = fid('call');
+const WRITE1 = fid('call');
+const LIVE_READ = fid('call');
+const LIVE_EDIT = fid('call');
+const LIVE_BASH = fid('call');
+
+const FILE = 'C:/fixture/workshop/plan.ts';
+
+const EDIT_BEFORE = [
+  'export const plan = {',
+  "  name: 'kiki',",
+  '  version: 1,',
+  '  steps: [',
+  "    'scaffold',",
+  "    'wire',",
+  "    'test',",
+  "    'ship',",
+  '  ],',
+  '  owner: process.env.USER,',
+  '  retries: 0,',
+  '};',
+  '',
+].join('\n');
+
+const EDIT_AFTER = EDIT_BEFORE.replace('version: 1', 'version: 2').replace('retries: 0', 'retries: 2');
+
+const WRITE_CONTENT = ['# notes', '', '- alpha', '- beta', ''].join('\n');
+
+const messages = [
+  userMsg(SID, 'Read plan.ts, bump the version, and start a notes file.', 30),
+  assistantMsg(SID, [
+    'On it — reading the file first.',
+    { toolUse: { id: READ1, name: 'Read', input: { file_path: FILE } } },
+  ], 29),
+  toolResultMsg(SID, READ1, { kind: 'file_content', path: FILE, content: EDIT_BEFORE }, 29),
+  assistantMsg(SID, [
+    { toolUse: { id: EDIT1, name: 'Edit', input: { file_path: FILE, old_string: 'version: 1', new_string: 'version: 2' } } },
+  ], 28),
+  toolResultMsg(SID, EDIT1, 'Replaced 1 occurrence in ' + FILE, 28),
+  assistantMsg(SID, [
+    { toolUse: { id: WRITE1, name: 'Write', input: { file_path: 'C:/fixture/workshop/notes.md', content: WRITE_CONTENT } } },
+    'Done — plan bumped and notes created.',
+  ], 27),
+  toolResultMsg(SID, WRITE1, 'File created: C:/fixture/workshop/notes.md', 27),
+];
+
+export default {
+  sessions: [sessionRecord(SID, { title: 'Fixture: tool pipeline' })],
+  snapshots: { [SID]: { messages } },
+  onPrompt: [
+    turnStart(1),
+    workChanged(true),
+    { frame: { type: 'turn.step.started', payload: { turnId: 1, step: 1 } } },
+    // Three consecutive tool calls with no assistant text between them → one group.
+    {
+      frame: {
+        type: 'tool.call.started',
+        payload: {
+          turnId: 1, toolCallId: LIVE_READ, name: 'Read',
+          args: { file_path: FILE },
+          display: { kind: 'file_io', operation: 'read', path: FILE },
+        },
+      },
+    },
+    { delay: 350 },
+    { frame: { type: 'tool.result', payload: { turnId: 1, toolCallId: LIVE_READ, output: { kind: 'file_content', path: FILE, content: EDIT_AFTER } } } },
+    { delay: 250 },
+    {
+      frame: {
+        type: 'tool.call.started',
+        payload: {
+          turnId: 1, toolCallId: LIVE_EDIT, name: 'Edit',
+          args: { file_path: FILE, old_string: 'version: 1', new_string: 'version: 2' },
+          description: 'Bump version to 2',
+          display: { kind: 'file_io', operation: 'edit', path: FILE, before: EDIT_BEFORE, after: EDIT_AFTER },
+        },
+      },
+    },
+    { delay: 200 },
+    { frame: approvalFrame({ toolName: 'Edit', action: `Editing ${FILE}`, display: { kind: 'file_io', operation: 'edit', path: FILE, before: EDIT_BEFORE, after: EDIT_AFTER }, toolCallId: LIVE_EDIT }) },
+    { waitFor: 'approval' },
+    { delay: 300 },
+    { frame: { type: 'tool.result', payload: { turnId: 1, toolCallId: LIVE_EDIT, output: `Replaced 1 occurrence in ${FILE}` } } },
+    { delay: 250 },
+    {
+      frame: {
+        type: 'tool.call.started',
+        payload: {
+          turnId: 1, toolCallId: LIVE_BASH, name: 'Bash',
+          args: { command: 'node -e "console.log(JSON.stringify(require(\'./plan.ts\').plan.version))"' },
+          display: { kind: 'command', command: 'node plan.ts --print-version' },
+        },
+      },
+    },
+    { delay: 600 },
+    { frame: { type: 'tool.result', payload: { turnId: 1, toolCallId: LIVE_BASH, output: { kind: 'command_output', exit_code: 0, stdout: '2\n' } } } },
+    { delay: 200 },
+    { frame: { type: 'turn.step.completed', payload: { turnId: 1, step: 1 } } },
+    { frame: { type: 'turn.step.started', payload: { turnId: 1, step: 2 } } },
+    ...streamSteps('assistant.delta', 1, 'All three steps completed — `plan.ts` now reports version 2.', { per: 24 }),
+    { frame: { type: 'turn.step.completed', payload: { turnId: 1, step: 2 } } },
+    turnEnd(1),
+    commitAssistant('$SID', 'All three steps completed — `plan.ts` now reports version 2.'),
+    { frame: { type: 'prompt.completed', payload: { promptId: '$PROMPT', finishedAt: new Date().toISOString(), reason: 'completed' } } },
+    workChanged(false),
+  ],
+};
