@@ -62,14 +62,15 @@ function withoutKey(value: unknown, key: string): unknown {
 }
 
 export const secondaryModelOverlay: ConfigEffectiveOverlay = {
-  apply(effective, _getEnv, validate) {
+  apply(effective) {
     const secondary = effective[SECONDARY_MODEL_SECTION] as SecondaryModelConfig | undefined;
+    const configuredModels = asRecord(effective[MODELS_SECTION]);
     const patch = secondaryModelPatch(secondary);
     const baseId = secondary?.model;
     if (patch === undefined || baseId === undefined || baseId === SECONDARY_DERIVED_MODEL_ID) {
       return [];
     }
-    const models = asRecord(effective[MODELS_SECTION]);
+    const models = configuredModels;
     const base = models[baseId];
     if (!isPlainObject(base)) return [];
     const { overrides: baseOverrides, aliases: _aliases, ...baseFields } = base;
@@ -77,10 +78,10 @@ export const secondaryModelOverlay: ConfigEffectiveOverlay = {
       ...baseFields,
       overrides: { ...asRecord(baseOverrides), ...patch },
     };
-    effective[MODELS_SECTION] = validate(MODELS_SECTION, {
+    effective[MODELS_SECTION] = {
       ...models,
       [SECONDARY_DERIVED_MODEL_ID]: derived,
-    });
+    };
     return [MODELS_SECTION];
   },
 

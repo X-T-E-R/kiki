@@ -1785,6 +1785,80 @@ describe('subagent config section', () => {
     withFactPatch.disposables.dispose();
   });
 
+  it('resolves exact aliases and efforts independently across every fill-only layer', async () => {
+    const { config, disposables } = await createConfig(
+      {},
+      [
+        '[subagent]',
+        'default_model = "default"',
+        'default_effort = "default-effort"',
+        '',
+        '[secondary_model]',
+        'model = "secondary"',
+        'default_effort = "secondary-effort"',
+      ].join('\n'),
+    );
+    const own = { modelAlias: 'caller', thinkingLevel: 'caller-effort' };
+
+    expect(
+      resolveSubagentBinding(
+        config,
+        secondaryModelFlags(),
+        own,
+        { modelAlias: 'call', thinkingEffort: 'call-effort' },
+        { modelAlias: 'profile', thinkingEffort: 'profile-effort' },
+      ),
+    ).toEqual({ model: 'call', thinking: 'call-effort', displayModel: 'call' });
+    expect(
+      resolveSubagentBinding(config, secondaryModelFlags(), own, {}, {
+        modelAlias: 'profile',
+        thinkingEffort: 'profile-effort',
+      }),
+    ).toEqual({ model: 'profile', thinking: 'profile-effort', displayModel: 'profile' });
+    expect(resolveSubagentBinding(config, secondaryModelFlags(), own)).toEqual({
+      model: 'default',
+      thinking: 'default-effort',
+      displayModel: 'default',
+    });
+
+    disposables.dispose();
+  });
+
+  it('uses target thinking defaults for a concrete alias and treats literal aliases exactly', async () => {
+    const { config, disposables } = await createConfig({});
+    const own = { modelAlias: 'caller', thinkingLevel: 'caller-effort' };
+
+    expect(
+      resolveSubagentBinding(config, secondaryModelFlags(), own, { modelAlias: 'target' }),
+    ).toEqual({ model: 'target', thinking: undefined, displayModel: 'target' });
+    expect(
+      resolveSubagentBinding(config, secondaryModelFlags(), own, { modelAlias: 'primary' }),
+    ).toMatchObject({ model: 'primary' });
+    expect(
+      resolveSubagentBinding(config, secondaryModelFlags(), own, { modelAlias: 'secondary' }),
+    ).toMatchObject({ model: 'secondary' });
+    expect(() =>
+      resolveSubagentBinding(config, secondaryModelFlags(), own, {
+        modelAlias: SECONDARY_DERIVED_MODEL_ID,
+      }),
+    ).toThrow(/reserved internal model alias/);
+
+    disposables.dispose();
+  });
+
+  it('reads subagent defaults without adding environment bindings', async () => {
+    const { config, disposables } = await createConfig(
+      {},
+      '[subagent]\ndefault_model = "fast"\ndefault_effort = "low"\ntimeout_ms = 5000\n',
+    );
+    expect(config.get<SubagentConfig>(SUBAGENT_SECTION)).toEqual({
+      defaultModel: 'fast',
+      defaultEffort: 'low',
+      timeoutMs: 5000,
+    });
+    disposables.dispose();
+  });
+
   it('inherits the caller binding when the secondary-model experiment is disabled', async () => {
     const own = { modelAlias: 'provider/main', thinkingLevel: 'medium' };
     const { config, disposables } = await createConfig(
@@ -1874,6 +1948,20 @@ describe('subagent config section', () => {
 });
 
 describe('secondaryModel config section', () => {
+  it('rejects a user-configured internal secondary alias', async () => {
+    const { config, disposables } = await createConfig(
+      {},
+      '[models.__secondary__]\nprovider = "test-provider"\nmodel = "reserved"\nmax_context_size = 1024\n',
+    );
+    expect(config.get<Record<string, unknown>>(MODELS_SECTION)).not.toHaveProperty(
+      SECONDARY_DERIVED_MODEL_ID,
+    );
+    expect(config.diagnostics()).toContainEqual(
+      expect.objectContaining({ message: expect.stringContaining('reserved for the internal') }),
+    );
+    disposables.dispose();
+  });
+
   async function createConfig(env: Record<string, string>, toml?: string) {
     const disposables = new DisposableStore();
     const ix = disposables.add(new TestInstantiationService());

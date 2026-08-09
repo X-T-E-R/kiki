@@ -31,6 +31,10 @@ export const RawAgentProfileSchema = z.object({
   whenToUse: z.string().optional(),
   subagents: z.record(z.string(), RawSubagentProfileSchema).optional(),
   modelPreference: AgentModelPreferenceSchema.optional(),
+  modelAlias: z.string().trim().min(1).optional(),
+  thinkingEffort: z.string().trim().min(1).optional(),
+}).refine((profile) => profile.modelPreference === undefined || profile.modelAlias === undefined, {
+  message: 'modelPreference and modelAlias are mutually exclusive',
 });
 
 export type RawAgentProfile = z.infer<typeof RawAgentProfileSchema>;
@@ -71,4 +75,6 @@ export interface ResolvedAgentProfile {
   whenToUse?: string;
   subagents?: Record<string, ResolvedAgentProfile>;
   modelPreference?: AgentModelPreference;
+  modelAlias?: string;
+  thinkingEffort?: string;
 }

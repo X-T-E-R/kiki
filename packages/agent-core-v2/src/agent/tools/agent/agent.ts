@@ -47,7 +47,7 @@ export const SubagentToolInputSchema = z.preprocess(
       .string()
       .optional()
       .describe(
-        'Optional agent ID to resume instead of creating a new instance. When set, do not also pass subagent_type — the resumed agent keeps its own type, and supplying both is rejected.',
+        'Optional agent ID to resume instead of creating a new instance. When set, do not also pass subagent_type, model, model_alias, or thinking_effort; the resumed agent keeps its persisted binding.',
       ),
     run_in_background: z
       .boolean()
@@ -59,8 +59,38 @@ export const SubagentToolInputSchema = z.preprocess(
       .enum(['secondary', 'primary'])
       .optional()
       .describe(
-        'Which model to run the subagent on: "secondary" = the configured secondary model; "primary" = the main model you are running on (for hard, quality-sensitive tasks). This explicit choice overrides the selected agent type\'s model_preference; without either, secondary is the default when configured. Only effective when a secondary model is configured; otherwise the subagent inherits your model. Ignored when resuming — resumed subagents keep their own model.',
+        'Legacy symbolic model selector for a new subagent: "secondary" uses the configured secondary model, while "primary" inherits your current model binding. Rejected with resume.',
       ),
+    model_alias: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe(
+        'Exact configured [models] alias for the new subagent. Literal "primary" and "secondary" values stay exact.',
+      ),
+    thinking_effort: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('Thinking effort for the new subagent.'),
+  }).superRefine((args, ctx) => {
+    if (args.model !== undefined && args.model_alias !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'model and model_alias are mutually exclusive',
+      });
+    }
+    if (
+      args.resume?.trim() &&
+      (args.model !== undefined || args.model_alias !== undefined || args.thinking_effort !== undefined)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Cannot set model, model_alias, or thinking_effort when resuming an existing agent',
+      });
+    }
   }),
 );
 

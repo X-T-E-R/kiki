@@ -34,9 +34,9 @@ export const FLAG_DEFINITIONS = [
   },
   {
     id: 'secondary-model',
-    title: 'Secondary model for subagents',
+    title: 'Subagent model and thinking bindings',
     description:
-      'Let newly spawned subagents use a separately configured secondary model by default, with an explicit primary-model override for quality-sensitive tasks.',
+      'Let newly spawned subagents select configured model aliases and thinking effort, including defaults and the secondary-model recipe.',
     env: 'KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL',
     default: false,
     surface: 'core',

@@ -221,6 +221,8 @@ describe('BackgroundManager', () => {
       agentTask(new Promise(() => {}), 'investigate bug', {
         agentId: 'agent-child',
         subagentType: 'coder',
+        model: 'fast-model',
+        thinkingEffort: 'low',
       }),
     );
 
@@ -231,6 +233,8 @@ describe('BackgroundManager', () => {
       description: 'investigate bug',
       agentId: 'agent-child',
       subagentType: 'coder',
+      model: 'fast-model',
+      thinkingEffort: 'low',
       status: 'running',
     });
   });

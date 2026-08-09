@@ -127,5 +127,7 @@ export function agentProfileFromFile(
       definition.disallowedTools === undefined ? undefined : [...definition.disallowedTools],
     whenToUse: definition.whenToUse,
     modelPreference: definition.modelPreference,
+    modelAlias: definition.modelAlias,
+    thinkingEffort: definition.thinkingEffort,
   };
 }

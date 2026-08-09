@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ToolAccesses } from '../../src/loop';
 import type { Logger, LogPayload } from '../../src/logging';
 import type { ResolvedAgentProfile } from '../../src/profile';
+import { compileToolArgsValidator, validateToolArgs } from '../../src/tools/args-validator';
 import {
   DEFAULT_SUBAGENT_TIMEOUT_MS,
   formatSubagentTimeoutDescription,
@@ -149,6 +150,8 @@ describe('AgentTool', () => {
 
     expect(properties['model']?.enum).toEqual(['primary', 'secondary']);
     expect(properties['model']?.description).toContain('secondary');
+    expect(properties).toHaveProperty('model_alias');
+    expect(properties).toHaveProperty('thinking_effort');
   });
 
   it('strips the model parameter from the JSON schema by default', () => {
@@ -157,7 +160,72 @@ describe('AgentTool', () => {
     const properties = (tool.parameters as { properties: Record<string, unknown> }).properties;
 
     expect(properties).not.toHaveProperty('model');
+    expect(properties).not.toHaveProperty('model_alias');
+    expect(properties).not.toHaveProperty('thinking_effort');
     expect(properties).toHaveProperty('prompt');
+  });
+
+  it('rejects conflicting selectors and binding fields on resume', () => {
+    const base = { prompt: 'Investigate', description: 'Find cause' };
+    expect(
+      AgentToolInputSchema.safeParse({ ...base, model: 'primary', model_alias: 'primary' }).success,
+    ).toBe(false);
+    expect(
+      AgentToolInputSchema.safeParse({ ...base, resume: 'agent-existing', thinking_effort: 'low' })
+        .success,
+    ).toBe(false);
+  });
+
+  it('enforces binding constraints through the production AJV schema', () => {
+    const host = mockSubagentHost({ spawn: vi.fn() });
+    const enabled = agentTool(host, createBackgroundManager().manager, undefined, {
+      modelChoiceEnabled: true,
+    });
+    const validator = compileToolArgsValidator(enabled.parameters);
+    const base = { prompt: 'Investigate', description: 'Find cause' };
+
+    expect(validateToolArgs(validator, { ...base, model: 'primary', model_alias: 'fast' })).not.toBeNull();
+    expect(validateToolArgs(validator, { ...base, resume: 'agent-old', thinking_effort: 'low' })).not.toBeNull();
+    expect(validateToolArgs(validator, { ...base, model_alias: '   ' })).not.toBeNull();
+    expect(validateToolArgs(validator, { ...base, thinking_effort: '\t' })).not.toBeNull();
+    expect(
+      validateToolArgs(validator, {
+        ...base,
+        model_alias: ' fast-model ',
+        thinking_effort: ' low ',
+      }),
+    ).toBeNull();
+
+    const disabled = compileToolArgsValidator(agentTool(host).parameters);
+    expect(validateToolArgs(disabled, { ...base, model_alias: 'fast' })).not.toBeNull();
+  });
+
+  it('trims binding fields before they reach the subagent host', async () => {
+    const host = mockSubagentHost({
+      spawn: vi.fn().mockResolvedValue({
+        agentId: 'agent-child',
+        profileName: 'coder',
+        resumed: false,
+        completion: Promise.resolve({ result: 'done' }),
+      }),
+    });
+    const tool = agentTool(host, createBackgroundManager().manager, undefined, {
+      modelChoiceEnabled: true,
+    });
+
+    await executeTool(
+      tool,
+      context({
+        prompt: 'Investigate',
+        description: 'Find cause',
+        model_alias: ' fast-model ',
+        thinking_effort: ' low ',
+      }),
+    );
+
+    expect(host.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({ modelAlias: 'fast-model', thinkingEffort: 'low' }),
+    );
   });
 
   it('appends the subagent model description only when provided', () => {
@@ -307,7 +375,7 @@ describe('AgentTool', () => {
     );
   });
 
-  it('passes the model choice through to spawn, but not to resume', async () => {
+  it('passes the model choice through to spawn and rejects it on resume', async () => {
     const host = mockSubagentHost({
       spawn: vi.fn().mockResolvedValue({
         agentId: 'agent-child',
@@ -335,7 +403,7 @@ describe('AgentTool', () => {
       expect.objectContaining({ modelChoice: 'primary' }),
     );
 
-    await executeTool(tool,
+    const resumed = await executeTool(tool,
       context({
         prompt: 'Continue',
         description: 'Continue work',
@@ -343,10 +411,9 @@ describe('AgentTool', () => {
         model: 'secondary',
       }),
     );
-    expect(host.resume).toHaveBeenCalledWith(
-      'agent-existing',
-      expect.not.objectContaining({ modelChoice: expect.anything() }),
-    );
+    expect(resumed).toMatchObject({ isError: true });
+    expect(resumed.output).toContain('Cannot set model');
+    expect(host.resume).not.toHaveBeenCalled();
   });
 
   it('resumes a foreground subagent when resume is provided', async () => {

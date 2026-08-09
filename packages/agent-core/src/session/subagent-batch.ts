@@ -52,12 +52,14 @@ type BaseQueuedSubagentTask<T> = {
   readonly runInBackground: boolean;
   readonly timeout?: number;
   readonly signal?: AbortSignal;
-  readonly modelChoice?: SubagentModelChoice;
 };
 
 export type SpawnQueuedSubagentTask<T = unknown> = BaseQueuedSubagentTask<T> & {
   readonly kind: 'spawn';
   readonly resumeAgentId?: undefined;
+  readonly modelChoice?: SubagentModelChoice;
+  readonly modelAlias?: string;
+  readonly thinkingEffort?: string;
 };
 
 export type ResumeQueuedSubagentTask<T = unknown> = BaseQueuedSubagentTask<T> & {
@@ -327,6 +329,8 @@ export class SubagentBatch<T> {
           profileName: task.profileName,
           swarmItem: task.swarmItem,
           modelChoice: task.modelChoice,
+          modelAlias: task.modelAlias,
+          thinkingEffort: task.thinkingEffort,
           ...runOptions,
         };
         handle = await this.launcher.spawn(spawnOptions);

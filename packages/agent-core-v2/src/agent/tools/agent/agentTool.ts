@@ -86,9 +86,12 @@ import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceCo
 import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import {
+  addSubagentBindingSchemaConstraints,
   buildSubagentModelDescriptions,
   formatSubagentTimeoutDescription,
+  normalizeSubagentBindingValue,
   resolveSubagentBinding,
+  subagentModelSource,
   resolveSubagentTimeoutMs,
   stripSubagentModelParameter,
   subagentDisplayModel,
@@ -112,7 +115,9 @@ import AGENT_BACKGROUND_DISABLED_DESCRIPTION from './agent-background-disabled.m
 import AGENT_BACKGROUND_DESCRIPTION from './agent-background-enabled.md?raw';
 import AGENT_DESCRIPTION_BASE from './agent.md?raw';
 
-const SUBAGENT_TOOL_PARAMETERS = toInputJsonSchema(SubagentToolInputSchema);
+const SUBAGENT_TOOL_PARAMETERS = toInputJsonSchema(SubagentToolInputSchema, (schema) => {
+  addSubagentBindingSchemaConstraints(schema, 'agent');
+});
 const SUBAGENT_TOOL_PARAMETERS_NO_MODEL = stripSubagentModelParameter(SUBAGENT_TOOL_PARAMETERS);
 
 export class SubagentTool implements ISubagentTool {
@@ -225,6 +230,16 @@ export class SubagentTool implements ISubagentTool {
     ) {
       return { output: RESUME_WITH_TYPE_UNAVAILABLE, isError: true };
     }
+    if (
+      resumeAgentId !== undefined &&
+      resumeAgentId.length > 0 &&
+      (args.model !== undefined || args.model_alias !== undefined || args.thinking_effort !== undefined)
+    ) {
+      return {
+        output: 'Cannot set model, model_alias, or thinking_effort when resuming an existing agent.',
+        isError: true,
+      };
+    }
 
     const profileNameForDisplay =
       resumeAgentId !== undefined && resumeAgentId.length > 0
@@ -257,6 +272,11 @@ export class SubagentTool implements ISubagentTool {
     toolCallId: string,
     controller: AbortController,
   ): Promise<SubagentHandle> {
+    const modelAlias = normalizeSubagentBindingValue(args.model_alias, 'model_alias');
+    const thinkingEffort = normalizeSubagentBindingValue(
+      args.thinking_effort,
+      'thinking_effort',
+    );
     const requester = this.lifecycle.get(this.callerAgentId);
     if (requester === undefined) {
       throw new Error2(
@@ -317,7 +337,16 @@ export class SubagentTool implements ISubagentTool {
         this.config,
         this.flags,
         { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
-        args.model ?? profile.modelPreference,
+        {
+          modelPreference: args.model,
+          modelAlias,
+          thinkingEffort,
+        },
+        {
+          modelPreference: profile.modelPreference,
+          modelAlias: profile.modelAlias,
+          thinkingEffort: profile.thinkingEffort,
+        },
       );
       let created: IAgentScopeHandle;
       try {
@@ -331,7 +360,12 @@ export class SubagentTool implements ISubagentTool {
           labels: subagentLabels(this.callerAgentId),
         });
       } catch (error) {
-        throw wrapSubagentModelError(error, binding.model, own.modelAlias);
+        throw wrapSubagentModelError(
+          error,
+          binding.model,
+          own.modelAlias,
+          subagentModelSource(binding),
+        );
       }
       created.accessor.get(IAgentPermissionModeService).setMode(this.permissionMode.mode);
       created.accessor
@@ -543,10 +577,18 @@ function buildProfileDescriptions(
         (part): part is string => part !== undefined && part.length > 0,
       );
       const header = details.length === 0 ? `- ${profile.name}` : `- ${profile.name}: ${details.join(' ')}`;
+      const bindingLines: string[] = [];
+      if (showModelPreferences && profile.modelPreference !== undefined) {
+        bindingLines.push(`  Model preference: ${profile.modelPreference}`);
+      }
+      if (showModelPreferences && profile.modelAlias !== undefined) {
+        bindingLines.push(`  Model alias: ${profile.modelAlias}`);
+      }
+      if (showModelPreferences && profile.thinkingEffort !== undefined) {
+        bindingLines.push(`  Thinking effort: ${profile.thinkingEffort}`);
+      }
       const headerLines =
-        !showModelPreferences || profile.modelPreference === undefined
-          ? header
-          : `${header}\n  Model preference: ${profile.modelPreference}`;
+        bindingLines.length === 0 ? header : `${header}\n${bindingLines.join('\n')}`;
       const activeTools = resolveActiveToolNames(profile);
       const externallyRestricted = tools.some(
         (tool) =>

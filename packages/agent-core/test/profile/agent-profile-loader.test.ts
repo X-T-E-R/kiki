@@ -121,6 +121,22 @@ tools:
     expect(coderPrompt).not.toContain('{{ ROLE_ADDITIONAL }}');
   });
 
+  it('replaces the inherited logical model selector slot', () => {
+    const profiles = resolveAgentProfiles([
+      { name: 'parent', modelPreference: 'secondary' },
+      { name: 'exact-child', extends: 'parent', modelAlias: 'fast-model' },
+      { name: 'legacy-child', extends: 'exact-child', modelPreference: 'primary' },
+    ]);
+    expect(profiles['exact-child']).toMatchObject({
+      modelAlias: 'fast-model',
+      modelPreference: undefined,
+    });
+    expect(profiles['legacy-child']).toMatchObject({
+      modelAlias: undefined,
+      modelPreference: 'primary',
+    });
+  });
+
   it('reports invalid profile graphs without relying on loader internals', () => {
     expect(() =>
       resolveAgentProfiles([

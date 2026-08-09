@@ -9,6 +9,7 @@ import { ILogService } from '#/_base/log/log';
 import { IFlagService } from '#/app/flag/flag';
 import { MASTER_ENV } from '#/app/flag/flagService';
 import { toInputJsonSchema } from '#/tool/input-schema';
+import { compileToolArgsValidator, validateToolArgs } from '#/tool/args-validator';
 import { userCancellationReason } from '#/_base/utils/abort';
 import { createHooks } from '#/hooks';
 import type { ToolCall } from '#/kosong/contract/message';
@@ -495,6 +496,26 @@ describe('SubagentToolInputSchema', () => {
 
     expect(properties['model']?.enum).toEqual(['secondary', 'primary']);
     expect(properties['model']?.description).toContain('secondary model');
+    expect(properties).toHaveProperty('model_alias');
+    expect(properties).toHaveProperty('thinking_effort');
+  });
+
+  it('enforces exact/legacy exclusivity and immutable resume bindings', () => {
+    const base = { prompt: 'Investigate', description: 'Find cause' };
+    expect(
+      SubagentToolInputSchema.safeParse({ ...base, model: 'primary', model_alias: 'primary' }).success,
+    ).toBe(false);
+    expect(
+      SubagentToolInputSchema.safeParse({ ...base, resume: 'agent-existing', thinking_effort: 'low' })
+        .success,
+    ).toBe(false);
+    expect(
+      SubagentToolInputSchema.safeParse({
+        ...base,
+        model_alias: ' primary ',
+        thinking_effort: ' low ',
+      }).data,
+    ).toMatchObject({ model_alias: 'primary', thinking_effort: 'low' });
   });
 
   it('normalizes the default subagent type into tool args', () => {
@@ -824,6 +845,12 @@ describe('Agent tool description', () => {
     expect(agentDescription()).not.toContain('Available models');
   });
 
+  it('advertises exact aliases and effort without a secondary recipe', () => {
+    ctx = createTestAgent(secondaryModelFlags());
+    expect(agentDescription()).toContain('Configured model aliases (pass an exact value via model_alias)');
+    expect(agentDescription()).toContain('thinking_effort');
+  });
+
   it('lists both selectable models when the secondary-model env flag is enabled', () => {
     vi.stubEnv(MASTER_ENV, '0');
     vi.stubEnv(SECONDARY_MODEL_FLAG_ENV, '1');
@@ -885,7 +912,34 @@ describe('Agent tool description', () => {
     const properties = agentParameters()['properties'] as Record<string, unknown>;
 
     expect(properties).not.toHaveProperty('model');
+    expect(properties).not.toHaveProperty('model_alias');
+    expect(properties).not.toHaveProperty('thinking_effort');
     expect(properties).toHaveProperty('prompt');
+    expect(
+      validateToolArgs(compileToolArgsValidator(agentParameters()), {
+        prompt: 'Investigate',
+        description: 'Find cause',
+        model_alias: 'fast',
+      }),
+    ).not.toBeNull();
+  });
+
+  it('enforces Agent binding constraints through the production AJV schema', () => {
+    ctx = createTestAgent(secondaryModelFlags());
+    const validator = compileToolArgsValidator(agentParameters());
+    const base = { prompt: 'Investigate', description: 'Find cause' };
+
+    expect(validateToolArgs(validator, { ...base, model: 'primary', model_alias: 'fast' })).not.toBeNull();
+    expect(validateToolArgs(validator, { ...base, resume: 'agent-old', thinking_effort: 'low' })).not.toBeNull();
+    expect(validateToolArgs(validator, { ...base, model_alias: '   ' })).not.toBeNull();
+    expect(validateToolArgs(validator, { ...base, thinking_effort: '\t' })).not.toBeNull();
+    expect(
+      validateToolArgs(validator, {
+        ...base,
+        model_alias: ' mock-model ',
+        thinking_effort: ' off ',
+      }),
+    ).toBeNull();
   });
 
   it('advertises the model parameter when the experiment is enabled', () => {
@@ -896,6 +950,8 @@ describe('Agent tool description', () => {
     const properties = agentParameters()['properties'] as Record<string, { enum?: string[] }>;
 
     expect(properties['model']?.enum).toEqual(['secondary', 'primary']);
+    expect(properties).toHaveProperty('model_alias');
+    expect(properties).toHaveProperty('thinking_effort');
   });
 });
 
@@ -917,7 +973,13 @@ describe('Agent tool execution contract', () => {
       sessionService(ISessionSubagentService, lifecycle),
       sessionService(ISessionCronService, cronStub),
       modelProviderServices(
-        modelCatalogResolving('mock-model', 'provider/secondary', SECONDARY_DERIVED_MODEL_ID),
+        modelCatalogResolving(
+          'mock-model',
+          'provider/secondary',
+          SECONDARY_DERIVED_MODEL_ID,
+          'primary',
+          'secondary',
+        ),
       ),
       ...extra,
     );
@@ -1128,6 +1190,42 @@ describe('Agent tool execution contract', () => {
     );
   });
 
+  it('binds an exact alias and effort independently', async () => {
+    const lifecycle = createAgentLifecycleStub({ createAgentIds: ['agent-child'] });
+    const context = createAgentToolContext(lifecycle, secondaryModelFlags());
+
+    await executeAgentTool(context, {
+      prompt: 'Investigate',
+      description: 'Find cause',
+      model_alias: ' mock-model ',
+      thinking_effort: ' off ',
+    });
+
+    expect(lifecycle.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        binding: expect.objectContaining({ model: 'mock-model', thinking: 'off' }),
+      }),
+    );
+  });
+
+  it.each(['primary', 'secondary'])(
+    'treats model_alias="%s" as a configured literal alias',
+    async (modelAlias) => {
+      const lifecycle = createAgentLifecycleStub({ createAgentIds: ['agent-child'] });
+      const context = createAgentToolContext(lifecycle, secondaryModelFlags());
+
+      await executeAgentTool(context, {
+        prompt: 'Investigate',
+        description: 'Find cause',
+        model_alias: modelAlias,
+      });
+
+      expect(lifecycle.create).toHaveBeenCalledWith(
+        expect.objectContaining({ binding: expect.objectContaining({ model: modelAlias }) }),
+      );
+    },
+  );
+
   it('reports the display-normalized model on the spawned signal', async () => {
     const lifecycle = createAgentLifecycleStub({ createAgentIds: ['agent-child'] });
     const context = createAgentToolContext(
@@ -1297,6 +1395,42 @@ describe('Agent tool execution contract', () => {
     expect(result.output).toContain('Model "provider/bad" is not configured in config.toml.');
     expect(result.output).toContain('comes from [secondary_model].model / KIMI_SECONDARY_MODEL');
     expect(lifecycle.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unconfigured exact alias before publishing a spawned event', async () => {
+    const lifecycle = createAgentLifecycleStub();
+    const context = createAgentToolContext(lifecycle, secondaryModelFlags());
+
+    const result = await executeAgentTool(context, {
+      prompt: 'Investigate',
+      description: 'Find cause',
+      model_alias: 'unconfigured-wire-name',
+    });
+
+    expect(result).toMatchObject({ isError: true });
+    expect(result.output).toContain('unconfigured-wire-name');
+    expect(lifecycle.create).not.toHaveBeenCalled();
+    expect(lifecycle.publishedEvents).not.toContainEqual(
+      expect.objectContaining({ type: 'subagent.spawned' }),
+    );
+  });
+
+  it('rejects the internal secondary alias before publishing a spawned event', async () => {
+    const lifecycle = createAgentLifecycleStub();
+    const context = createAgentToolContext(lifecycle, secondaryModelFlags());
+
+    const result = await executeAgentTool(context, {
+      prompt: 'Investigate',
+      description: 'Find cause',
+      model_alias: SECONDARY_DERIVED_MODEL_ID,
+    });
+
+    expect(result).toMatchObject({ isError: true });
+    expect(result.output).toContain('reserved internal model alias');
+    expect(lifecycle.create).not.toHaveBeenCalled();
+    expect(lifecycle.publishedEvents).not.toContainEqual(
+      expect.objectContaining({ type: 'subagent.spawned' }),
+    );
   });
 
   it('does not rewrite spawn failures unrelated to the model config', async () => {
@@ -2165,8 +2299,28 @@ describe('AgentSwarmToolInputSchema', () => {
     expect(properties['subagent_type']?.description).toContain('defaults to coder');
     expect(properties['resume_agent_ids']?.description).toContain('Map of existing subagent');
     expect(properties['model']?.description).toContain('secondary model');
+    expect(properties).toHaveProperty('model_alias');
+    expect(properties).toHaveProperty('thinking_effort');
     expect(properties).not.toHaveProperty('run_in_background');
     expect(properties).not.toHaveProperty('timeout');
+  });
+
+  it('applies binding fields only when a swarm includes new items', () => {
+    expect(
+      AgentSwarmToolInputSchema.safeParse({
+        description: 'Resume',
+        resume_agent_ids: { 'agent-old': 'continue' },
+        model_alias: 'fast-model',
+      }).success,
+    ).toBe(false);
+    expect(
+      AgentSwarmToolInputSchema.safeParse({
+        ...spawnInput,
+        resume_agent_ids: { 'agent-old': 'continue' },
+        model_alias: 'fast-model',
+        thinking_effort: 'low',
+      }).success,
+    ).toBe(true);
   });
 });
 
@@ -2208,6 +2362,14 @@ describe('AgentSwarm tool description', () => {
     expect(agentSwarmDescription()).not.toContain('Available models');
   });
 
+  it('advertises exact aliases and effort without a secondary recipe', () => {
+    ctx = createTestAgent(secondaryModelFlags());
+    expect(agentSwarmDescription()).toContain(
+      'Configured model aliases (pass an exact value via model_alias)',
+    );
+    expect(agentSwarmDescription()).toContain('thinking_effort');
+  });
+
   it('lists both selectable models when a secondary model is configured', () => {
     ctx = createTestAgent(secondaryModelFlags(), {
       initialConfig: { secondaryModel: { model: 'provider/secondary' } },
@@ -2234,7 +2396,41 @@ describe('AgentSwarm tool description', () => {
     const properties = agentSwarmParameters()['properties'] as Record<string, unknown>;
 
     expect(properties).not.toHaveProperty('model');
+    expect(properties).not.toHaveProperty('model_alias');
+    expect(properties).not.toHaveProperty('thinking_effort');
     expect(properties).toHaveProperty('prompt_template');
+    expect(
+      validateToolArgs(compileToolArgsValidator(agentSwarmParameters()), {
+        description: 'Review',
+        prompt_template: 'Review {{item}}',
+        items: ['a', 'b'],
+        model_alias: 'fast',
+      }),
+    ).not.toBeNull();
+  });
+
+  it('enforces AgentSwarm binding constraints through the production AJV schema', () => {
+    ctx = createTestAgent(secondaryModelFlags());
+    const validator = compileToolArgsValidator(agentSwarmParameters());
+    const spawn = {
+      description: 'Review',
+      prompt_template: 'Review {{item}}',
+      items: ['a', 'b'],
+    };
+    const resume = { description: 'Resume', resume_agent_ids: { 'agent-old': 'continue' } };
+
+    expect(validateToolArgs(validator, { ...spawn, model: 'primary', model_alias: 'fast' })).not.toBeNull();
+    expect(validateToolArgs(validator, { ...resume, model_alias: 'fast' })).not.toBeNull();
+    expect(validateToolArgs(validator, { ...spawn, model_alias: '   ' })).not.toBeNull();
+    expect(validateToolArgs(validator, { ...spawn, thinking_effort: '\t' })).not.toBeNull();
+    expect(
+      validateToolArgs(validator, {
+        ...spawn,
+        resume_agent_ids: { 'agent-old': 'continue' },
+        model_alias: ' mock-model ',
+        thinking_effort: ' off ',
+      }),
+    ).toBeNull();
   });
 
   it('advertises the model parameter when the experiment is enabled', () => {
@@ -2245,6 +2441,8 @@ describe('AgentSwarm tool description', () => {
     const properties = agentSwarmParameters()['properties'] as Record<string, { enum?: string[] }>;
 
     expect(properties['model']?.enum).toEqual(['secondary', 'primary']);
+    expect(properties).toHaveProperty('model_alias');
+    expect(properties).toHaveProperty('thinking_effort');
   });
 });
 
@@ -2274,7 +2472,7 @@ describe('AgentSwarm tool execution contract', () => {
       run: runSwarm as ISessionSwarmService['run'],
       cancel: () => {},
     };
-    ctx = createTestAgent(swarmServices(swarmService));
+    ctx = createTestAgent(swarmServices(swarmService), secondaryModelFlags());
 
     const result = await executeTool(agentSwarmTool(ctx), {
       turnId: 0,
@@ -2284,6 +2482,8 @@ describe('AgentSwarm tool execution contract', () => {
         prompt_template: 'Review {{item}}',
         items: ['src/a.ts', 'src/b.ts'],
         subagent_type: 'explore',
+        model_alias: ' mock-model ',
+        thinking_effort: ' off ',
       },
       signal,
     });

@@ -7,7 +7,11 @@ import {
   type QueuedSubagentTask,
   type SessionSubagentHost,
 } from '../../../session/subagent-host';
-import { stripSubagentModelParameter } from '../../../session/subagent-binding';
+import {
+  addSubagentBindingSchemaConstraints,
+  normalizeSubagentBindingValue,
+  stripSubagentModelParameter,
+} from '../../../session/subagent-binding';
 import { ToolAccesses } from '../../../loop/tool-access';
 import type { ExecutableToolContext, ExecutableToolResult, ToolExecution } from '../../../loop/types';
 import { toInputJsonSchema } from '../../support/input-schema';
@@ -38,6 +42,20 @@ export const AgentSwarmToolInputSchema = z
       .describe(
         'Model for every new subagent spawned from items: "secondary" uses the configured secondary model (the default when one is set), "primary" uses the model you are running on. Resumed subagents keep their bound model.',
       ),
+    model_alias: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe(
+        'Exact configured [models] alias for every new item-spawned subagent. Literal "primary" and "secondary" aliases stay exact.',
+      ),
+    thinking_effort: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('Thinking effort for every new item-spawned subagent.'),
     prompt_template: z
       .string()
       .trim()
@@ -60,7 +78,25 @@ export const AgentSwarmToolInputSchema = z
         'Map of existing subagent agent_id to the prompt used to resume that subagent. These resumed subagents are launched before new item-based subagents.',
       ),
   })
-  .strict();
+  .strict()
+  .superRefine((args, ctx) => {
+    if (args.model !== undefined && args.model_alias !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'model and model_alias are mutually exclusive',
+      });
+    }
+    if (
+      (args.items?.length ?? 0) === 0 &&
+      Object.keys(args.resume_agent_ids ?? {}).length > 0 &&
+      (args.model !== undefined || args.model_alias !== undefined || args.thinking_effort !== undefined)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Cannot set model, model_alias, or thinking_effort for a resume-only swarm',
+      });
+    }
+  });
 
 export type AgentSwarmToolInput = z.infer<typeof AgentSwarmToolInputSchema>;
 
@@ -90,7 +126,9 @@ interface SwarmRunResult {
   readonly error?: string;
 }
 
-const AGENT_SWARM_PARAMETERS = toInputJsonSchema(AgentSwarmToolInputSchema);
+const AGENT_SWARM_PARAMETERS = toInputJsonSchema(AgentSwarmToolInputSchema, (schema) => {
+  addSubagentBindingSchemaConstraints(schema, 'swarm');
+});
 const AGENT_SWARM_PARAMETERS_NO_MODEL = stripSubagentModelParameter(AGENT_SWARM_PARAMETERS);
 
 export class AgentSwarmTool implements BuiltinTool<AgentSwarmToolInput> {
@@ -106,8 +144,8 @@ export class AgentSwarmTool implements BuiltinTool<AgentSwarmToolInput> {
     private readonly subagentTimeoutMs?: number,
     subagentModelDescription?: string,
     // Mirrors the `secondary-model` experiment: off (the default), the no-op
-    // `model` parameter is stripped from the advertised schema so the
-    // secondary-model concept never enters the prompt.
+    // model and effort binding fields are stripped from the advertised schema
+    // so the experimental concept never enters the prompt.
     modelChoiceEnabled = false,
   ) {
     this.description =
@@ -157,6 +195,21 @@ export class AgentSwarmTool implements BuiltinTool<AgentSwarmToolInput> {
     signal: AbortSignal,
     toolCallId: string,
   ): Promise<string> {
+    const modelAlias = normalizeSubagentBindingValue(args.model_alias, 'model_alias');
+    const thinkingEffort = normalizeSubagentBindingValue(
+      args.thinking_effort,
+      'thinking_effort',
+    );
+    if (args.model !== undefined && modelAlias !== undefined) {
+      throw new Error('model and model_alias are mutually exclusive.');
+    }
+    if (
+      (args.items?.length ?? 0) === 0 &&
+      Object.keys(args.resume_agent_ids ?? {}).length > 0 &&
+      (args.model !== undefined || modelAlias !== undefined || thinkingEffort !== undefined)
+    ) {
+      throw new Error('Cannot set model, model_alias, or thinking_effort for a resume-only swarm.');
+    }
     const profileName = normalizeOptionalString(args.subagent_type) ?? DEFAULT_SUBAGENT_TYPE;
     const specs = createAgentSwarmSpecs(args, (agentId) => this.subagentHost.getSwarmItem(agentId));
     const tasks = specs.map((spec): QueuedSubagentTask<AgentSwarmSpec> => {
@@ -172,7 +225,6 @@ export class AgentSwarmTool implements BuiltinTool<AgentSwarmToolInput> {
         swarmItem: spec.item,
         signal,
         timeout: this.subagentTimeoutMs ?? DEFAULT_SUBAGENT_TIMEOUT_MS,
-        modelChoice: args.model,
       };
       if (spec.kind === 'resume') {
         return {
@@ -184,6 +236,9 @@ export class AgentSwarmTool implements BuiltinTool<AgentSwarmToolInput> {
       return {
         ...common,
         kind: 'spawn',
+        modelChoice: args.model,
+        modelAlias,
+        thinkingEffort,
       };
     });
     const results = await this.subagentHost.runQueued(tasks);

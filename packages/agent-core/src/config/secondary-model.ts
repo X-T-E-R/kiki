@@ -4,6 +4,7 @@ import type {
   ModelAliasOverrides,
   SecondaryModelConfig,
 } from './schema';
+import { ErrorCodes, KimiError } from '../errors';
 
 /**
  * Secondary-model runtime overlay.
@@ -60,6 +61,13 @@ export function secondaryModelPatch(
  * pointer; spawn fails with the wrapped error).
  */
 export function applySecondaryModelConfig(config: KimiConfig, env: Env = process.env): KimiConfig {
+  if (config.models?.[SECONDARY_DERIVED_MODEL_ALIAS] !== undefined) {
+    throw new KimiError(
+      ErrorCodes.CONFIG_INVALID,
+      `[models.${SECONDARY_DERIVED_MODEL_ALIAS}] is reserved for the internal secondary-model overlay`,
+      { details: { model: SECONDARY_DERIVED_MODEL_ALIAS } },
+    );
+  }
   let secondary = config.secondaryModel;
   const envModel = trimmed(env[SECONDARY_MODEL_ENV]);
   const envEffort = trimmed(env[SECONDARY_MODEL_EFFORT_ENV]);

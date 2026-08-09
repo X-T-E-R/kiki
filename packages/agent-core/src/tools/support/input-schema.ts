@@ -17,18 +17,28 @@
 
 import { z } from 'zod';
 
+export type InputJsonSchemaFinalizer = (schema: Record<string, unknown>) => void;
+
 /**
  * Convert a zod schema into the input JSON Schema exposed to the model.
  *
  * @param schema - The zod schema describing the tool's parameters.
  * @returns A draft-07 JSON Schema rendered with the input view.
  */
-export function toInputJsonSchema(schema: z.ZodType): Record<string, unknown> {
+export function toInputJsonSchema(
+  schema: z.ZodType,
+  finalize?: InputJsonSchemaFinalizer,
+): Record<string, unknown> {
   const jsonSchema = z.toJSONSchema(schema, {
     target: 'draft-7',
     io: 'input',
   });
   closeObjectNodes(jsonSchema);
+  // Refinements and transforms are not representable by zod's JSON Schema
+  // projection. Tool-specific constraints must be attached after projection
+  // so the AJV runtime sees them; doing this after closeObjectNodes also keeps
+  // conditional object probes from being mistaken for closed data objects.
+  finalize?.(jsonSchema);
   return jsonSchema;
 }
 

@@ -52,6 +52,24 @@ describe('BackgroundTaskPersistence', () => {
     expect(loaded).toEqual(sample());
   });
 
+  it('round-trips effective subagent model and effort fields', async () => {
+    const task: Extract<BackgroundTaskInfo, { kind: 'agent' }> = {
+      taskId: 'agent-11111111',
+      kind: 'agent',
+      description: 'review code',
+      agentId: 'agent-child',
+      subagentType: 'reviewer',
+      model: 'fast-model',
+      thinkingEffort: 'low',
+      startedAt: 1_700_000_000,
+      endedAt: null,
+      status: 'running',
+      detached: true,
+    };
+    await persistence.writeTask(task);
+    expect(await persistence.readTask(task.taskId)).toEqual(task);
+  });
+
   it('returns undefined when task file is missing', async () => {
     expect(await persistence.readTask('bash-missing0')).toBeUndefined();
   });

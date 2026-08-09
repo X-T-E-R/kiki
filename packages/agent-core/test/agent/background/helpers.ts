@@ -73,6 +73,8 @@ export function agentTask(
   options: {
     readonly agentId?: string;
     readonly subagentType?: string;
+    readonly model?: string;
+    readonly thinkingEffort?: string;
     readonly subagentHost?: Pick<SessionSubagentHost, 'markActiveChildDetached'>;
     readonly abortController?: AbortController;
   } = {},
@@ -81,6 +83,8 @@ export function agentTask(
     agentId: options.agentId ?? 'agent-child',
     profileName: options.subagentType ?? 'coder',
     resumed: false,
+    model: options.model,
+    thinkingEffort: options.thinkingEffort,
     completion,
   };
   return new AgentBackgroundTask(

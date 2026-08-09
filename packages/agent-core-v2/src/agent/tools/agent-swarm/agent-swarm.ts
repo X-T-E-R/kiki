@@ -59,8 +59,40 @@ export const AgentSwarmToolInputSchema = z
       .describe(
         'Which model to run the item-spawned subagents on: "secondary" = the configured secondary model; "primary" = the main model you are running on (for hard, quality-sensitive tasks). This explicit choice overrides the selected agent type\'s model_preference; without either, secondary is the default when configured. Only effective when a secondary model is configured; otherwise subagents inherit your model. Resumed subagents always keep their own model.',
       ),
+    model_alias: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe(
+        'Exact configured [models] alias for every new item-spawned subagent. Literal "primary" and "secondary" values stay exact.',
+      ),
+    thinking_effort: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('Thinking effort for every new item-spawned subagent.'),
   })
-  .strict();
+  .strict()
+  .superRefine((args, ctx) => {
+    if (args.model !== undefined && args.model_alias !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'model and model_alias are mutually exclusive',
+      });
+    }
+    if (
+      (args.items?.length ?? 0) === 0 &&
+      Object.keys(args.resume_agent_ids ?? {}).length > 0 &&
+      (args.model !== undefined || args.model_alias !== undefined || args.thinking_effort !== undefined)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Cannot set model, model_alias, or thinking_effort for a resume-only swarm',
+      });
+    }
+  });
 
 export type AgentSwarmToolInput = z.infer<typeof AgentSwarmToolInputSchema>;
 

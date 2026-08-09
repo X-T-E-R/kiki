@@ -28,6 +28,8 @@ export interface AgentFileDefinition {
   readonly disallowedTools?: readonly string[];
   readonly subagents?: readonly string[];
   readonly modelPreference?: AgentModelPreference;
+  readonly modelAlias?: string;
+  readonly thinkingEffort?: string;
   readonly prompt: string;
   readonly path: string;
   readonly source: AgentFileSource;

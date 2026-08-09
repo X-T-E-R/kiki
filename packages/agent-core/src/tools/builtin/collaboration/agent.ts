@@ -29,7 +29,11 @@ import {
   type SessionSubagentHost,
   type SubagentHandle,
 } from '../../../session/subagent-host';
-import { stripSubagentModelParameter } from '../../../session/subagent-binding';
+import {
+  addSubagentBindingSchemaConstraints,
+  normalizeSubagentBindingValue,
+  stripSubagentModelParameter,
+} from '../../../session/subagent-binding';
 import { isUserCancellation } from '../../../utils/abort';
 import { AgentBackgroundTask, type BackgroundManager } from '../../../agent/background';
 import { toInputJsonSchema } from '../../support/input-schema';
@@ -71,13 +75,27 @@ export const AgentToolInputSchema = z.preprocess(
       .enum(['primary', 'secondary'])
       .optional()
       .describe(
-        'Model for the new subagent: "secondary" uses the configured secondary model (the default when one is set), "primary" uses the model you are running on. Only applies when spawning a new agent — a resumed agent keeps its bound model.',
+        'Legacy symbolic model selector for a new subagent: "secondary" uses the configured secondary model, while "primary" inherits your current model binding. Rejected with resume.',
       ),
+    model_alias: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe(
+        'Exact configured [models] alias for the new subagent. Unlike model, values such as "primary" and "secondary" are treated literally.',
+      ),
+    thinking_effort: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe('Thinking effort for the new subagent.'),
     resume: z
       .string()
       .optional()
       .describe(
-        'Optional agent ID to resume instead of creating a new instance. When set, do not also pass subagent_type — the resumed agent keeps its own type, and supplying both is rejected.',
+        'Optional agent ID to resume instead of creating a new instance. When set, do not also pass subagent_type, model, model_alias, or thinking_effort; the resumed agent keeps its persisted binding.',
       ),
     run_in_background: z
       .boolean()
@@ -85,6 +103,22 @@ export const AgentToolInputSchema = z.preprocess(
       .describe(
         'If true, return immediately without waiting for completion. Prefer false unless the task can run independently and there is a clear benefit to not waiting.',
       ),
+  }).superRefine((args, ctx) => {
+    if (args.model !== undefined && args.model_alias !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'model and model_alias are mutually exclusive',
+      });
+    }
+    if (
+      args.resume?.trim() &&
+      (args.model !== undefined || args.model_alias !== undefined || args.thinking_effort !== undefined)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Cannot set model, model_alias, or thinking_effort when resuming an existing agent',
+      });
+    }
   }),
 );
 
@@ -111,7 +145,9 @@ const BACKGROUND_AGENT_UNAVAILABLE =
 
 // ── AgentTool class ──────────────────────────────────────────────────
 
-const AGENT_TOOL_PARAMETERS = toInputJsonSchema(AgentToolInputSchema);
+const AGENT_TOOL_PARAMETERS = toInputJsonSchema(AgentToolInputSchema, (schema) => {
+  addSubagentBindingSchemaConstraints(schema, 'agent');
+});
 const AGENT_TOOL_PARAMETERS_NO_MODEL = stripSubagentModelParameter(AGENT_TOOL_PARAMETERS);
 
 export class AgentTool implements BuiltinTool<AgentToolInput> {
@@ -129,8 +165,8 @@ export class AgentTool implements BuiltinTool<AgentToolInput> {
       subagentModelDescription?: string;
       showModelPreferences?: boolean;
       // Mirrors the `secondary-model` experiment: off (the default), the
-      // no-op `model` parameter is stripped from the advertised schema so the
-      // secondary-model concept never enters the prompt.
+      // no-op model and effort binding fields are stripped from the advertised
+      // schema so the experimental concept never enters the prompt.
       modelChoiceEnabled?: boolean;
     },
   ) {
@@ -196,6 +232,11 @@ export class AgentTool implements BuiltinTool<AgentToolInput> {
   ): Promise<ExecutableToolResult> {
     try {
       signal.throwIfAborted();
+      const modelAlias = normalizeSubagentBindingValue(args.model_alias, 'model_alias');
+      const thinkingEffort = normalizeSubagentBindingValue(
+        args.thinking_effort,
+        'thinking_effort',
+      );
       const runInBackground = args.run_in_background === true;
       const requestedProfileName = args.subagent_type?.length ? args.subagent_type : undefined;
       const resumeAgentId = args.resume?.trim();
@@ -206,6 +247,16 @@ export class AgentTool implements BuiltinTool<AgentToolInput> {
       ) {
         return {
           output: 'Cannot set subagent_type when resuming an existing agent. Resume by agent id only.',
+          isError: true,
+        };
+      }
+      if (
+        resumeAgentId !== undefined &&
+        resumeAgentId.length > 0 &&
+        (args.model !== undefined || modelAlias !== undefined || thinkingEffort !== undefined)
+      ) {
+        return {
+          output: 'Cannot set model, model_alias, or thinking_effort when resuming an existing agent.',
           isError: true,
         };
       }
@@ -241,6 +292,8 @@ export class AgentTool implements BuiltinTool<AgentToolInput> {
             : await this.subagentHost.spawn({
                 profileName: requestedProfileName ?? 'coder',
                 modelChoice: args.model,
+                modelAlias,
+                thinkingEffort,
                 ...runOptions,
               });
       } catch (error) {
@@ -420,6 +473,12 @@ function buildSubagentDescriptions(
       const lines = [header];
       if (showModelPreferences && subagent.modelPreference !== undefined) {
         lines.push(`  Model preference: ${subagent.modelPreference}`);
+      }
+      if (showModelPreferences && subagent.modelAlias !== undefined) {
+        lines.push(`  Model alias: ${subagent.modelAlias}`);
+      }
+      if (showModelPreferences && subagent.thinkingEffort !== undefined) {
+        lines.push(`  Thinking effort: ${subagent.thinkingEffort}`);
       }
       if (shownTools.length > 0) lines.push(`  Tools: ${shownTools.join(', ')}`);
       if (subagent.disallowedTools !== undefined && subagent.disallowedTools.length > 0) {

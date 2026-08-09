@@ -22,9 +22,12 @@ import { collectGitContext } from './git-context';
 import type { Session } from './index';
 import {
   resolveSubagentBinding,
+  subagentDisplayModel,
+  subagentModelSource,
   wrapSubagentModelError,
   type SubagentModelBinding,
   type SubagentModelChoice,
+  type SubagentBindingRequest,
 } from './subagent-binding';
 import {
   SubagentBatch,
@@ -132,6 +135,8 @@ export interface SpawnSubagentOptions extends RunSubagentOptions {
    * with the `secondary-model` experiment enabled.
    */
   readonly modelChoice?: SubagentModelChoice;
+  readonly modelAlias?: string;
+  readonly thinkingEffort?: string;
 }
 
 type SubagentCompletion = {
@@ -145,6 +150,8 @@ export type SubagentHandle = {
   readonly agentId: string;
   readonly profileName: string;
   readonly resumed: boolean;
+  readonly model?: string;
+  readonly thinkingEffort?: string;
   readonly completion: Promise<SubagentCompletion>;
 };
 
@@ -168,14 +175,23 @@ export class SessionSubagentHost {
 
     const parent = await this.session.ensureAgentResumed(this.ownerAgentId);
     const profile = this.resolveProfile(parent, options.profileName);
+    const binding = this.resolveSpawnBinding(parent, profile, {
+      modelPreference: options.modelChoice,
+      modelAlias: options.modelAlias,
+      thinkingEffort: options.thinkingEffort,
+    });
     const { id, agent } = await this.session.createAgent(
       { type: 'sub', generate: parent.rawGenerate },
       { parentAgentId: this.ownerAgentId, swarmItem: options.swarmItem },
     );
+    await this.configureChild(parent, agent, profile, binding);
+    const effective = this.effectiveChildBinding(
+      agent,
+      subagentDisplayModel(this.session.kimiConfig, binding.modelAlias),
+    );
     const completion = this.runWithActiveChild(id, options, async (runOptions) => {
-      this.emitSubagentSpawned(parent, id, profile.name, runOptions);
+      this.emitSubagentSpawned(parent, id, profile.name, runOptions, effective);
       try {
-        await this.configureChild(parent, agent, profile, options.modelChoice);
         return await this.runPromptTurn(parent, id, agent, profile.name, runOptions);
       } catch (error) {
         this.emitSubagentFailed(parent, id, runOptions, error);
@@ -186,6 +202,8 @@ export class SessionSubagentHost {
       agentId: id,
       profileName: profile.name,
       resumed: false,
+      model: effective.model,
+      thinkingEffort: effective.thinkingEffort,
       completion,
     };
   }
@@ -193,26 +211,33 @@ export class SessionSubagentHost {
   async resume(agentId: string, options: RunSubagentOptions): Promise<SubagentHandle> {
     options.signal.throwIfAborted();
     const { parent, child, profileName } = await this.ensureIdleSubagent(agentId);
+    const effective = this.effectiveChildBinding(child);
     const completion = this.runWithActiveChild(agentId, options, async (runOptions) => {
-      this.emitSubagentSpawned(parent, agentId, profileName, runOptions);
+      this.emitSubagentSpawned(parent, agentId, profileName, runOptions, effective);
       try {
-        this.reInheritParentModel(parent, child);
         return await this.runPromptTurn(parent, agentId, child, profileName, runOptions);
       } catch (error) {
         this.emitSubagentFailed(parent, agentId, runOptions, error);
         throw error;
       }
     });
-    return { agentId, profileName, resumed: true, completion };
+    return {
+      agentId,
+      profileName,
+      resumed: true,
+      model: effective.model,
+      thinkingEffort: effective.thinkingEffort,
+      completion,
+    };
   }
 
   async retry(agentId: string, options: RunSubagentOptions): Promise<SubagentHandle> {
     options.signal.throwIfAborted();
     const { parent, child, profileName } = await this.ensureIdleSubagent(agentId);
+    const effective = this.effectiveChildBinding(child);
     const completion = this.runWithActiveChild(agentId, options, async (runOptions) => {
       try {
         runOptions.signal.throwIfAborted();
-        this.reInheritParentModel(parent, child);
         this.emitSubagentStarted(parent, agentId);
         const turnId = child.turn.retry('agent-host');
         if (turnId === null) {
@@ -225,7 +250,14 @@ export class SessionSubagentHost {
         throw error;
       }
     });
-    return { agentId, profileName, resumed: true, completion };
+    return {
+      agentId,
+      profileName,
+      resumed: true,
+      model: effective.model,
+      thinkingEffort: effective.thinkingEffort,
+      completion,
+    };
   }
 
   private async ensureIdleSubagent(
@@ -440,9 +472,8 @@ export class SessionSubagentHost {
     parent: Agent,
     child: Agent,
     profile: ResolvedAgentProfile,
-    modelChoice?: SubagentModelChoice,
+    binding: SubagentModelBinding,
   ): Promise<void> {
-    const binding = this.resolveSpawnBinding(parent, profile, modelChoice);
     child.config.update({
       cwd: parent.config.cwd,
       modelAlias: binding.modelAlias,
@@ -471,35 +502,43 @@ export class SessionSubagentHost {
   private resolveSpawnBinding(
     parent: Agent,
     profile: ResolvedAgentProfile,
-    modelChoice?: SubagentModelChoice,
+    request: SubagentBindingRequest,
   ): SubagentModelBinding {
     const binding = resolveSubagentBinding(
       this.session.kimiConfig,
       this.session.experimentalFlags,
       { modelAlias: parent.config.modelAlias, thinkingEffort: parent.config.thinkingEffort },
-      modelChoice ?? profile.modelPreference,
+      request,
+      {
+        modelPreference: profile.modelPreference,
+        modelAlias: profile.modelAlias,
+        thinkingEffort: profile.thinkingEffort,
+      },
     );
     if (binding.modelAlias !== undefined) {
       const providerManager = this.session.options.providerManager;
       try {
         providerManager?.resolveProviderConfig(binding.modelAlias);
       } catch (error) {
-        throw wrapSubagentModelError(error, binding.modelAlias, parent.config.modelAlias);
+        throw wrapSubagentModelError(
+          error,
+          binding.modelAlias,
+          parent.config.modelAlias,
+          subagentModelSource(binding),
+        );
       }
     }
     return binding;
   }
 
-  /**
-   * Resume/retry historically re-synced the child to the parent's current
-   * model so subagents follow mid-session `/model` switches. With the
-   * `secondary-model` experiment on, a resumed subagent instead keeps the
-   * model it was bound to at spawn (v2 semantics: no child-follows-parent
-   * invariant).
-   */
-  private reInheritParentModel(parent: Agent, child: Agent): void {
-    if (this.session.experimentalFlags.enabled('secondary-model')) return;
-    child.config.update({ modelAlias: parent.config.modelAlias });
+  private effectiveChildBinding(
+    child: Agent,
+    displayModel?: string,
+  ): { readonly model?: string; readonly thinkingEffort: string } {
+    return {
+      model: displayModel ?? subagentDisplayModel(this.session.kimiConfig, child.config.modelAlias),
+      thinkingEffort: child.config.thinkingEffort,
+    };
   }
 
   /**
@@ -589,6 +628,7 @@ export class SessionSubagentHost {
     childId: string,
     profileName: string,
     options: RunSubagentOptions,
+    binding: { readonly model?: string; readonly thinkingEffort: string },
   ): void {
     parent.emitEvent({
       type: 'subagent.spawned',
@@ -600,6 +640,8 @@ export class SessionSubagentHost {
       description: options.description,
       swarmIndex: options.swarmIndex,
       runInBackground: options.runInBackground,
+      model: binding.model,
+      thinkingEffort: binding.thinkingEffort,
     });
     parent.telemetry.track('subagent_created', {
       agent_id: childId,

@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Agent } from '../../src/agent';
 import type { SwarmMode } from '../../src/agent/swarm';
 import { FLAG_DEFINITIONS, FlagResolver } from '../../src/flags';
+import { compileToolArgsValidator, validateToolArgs } from '../../src/tools/args-validator';
 import {
   DEFAULT_SUBAGENT_TIMEOUT_MS,
   type QueuedSubagentRunResult,
@@ -463,6 +464,8 @@ describe('current builtin collaboration tools', () => {
     const properties = (tool.parameters as { properties: Record<string, unknown> }).properties;
 
     expect(properties).not.toHaveProperty('model');
+    expect(properties).not.toHaveProperty('model_alias');
+    expect(properties).not.toHaveProperty('thinking_effort');
     expect(properties).toHaveProperty('prompt_template');
   });
 
@@ -479,6 +482,69 @@ describe('current builtin collaboration tools', () => {
     ).properties;
 
     expect(properties['model']?.enum).toEqual(['primary', 'secondary']);
+    expect(properties).toHaveProperty('model_alias');
+    expect(properties).toHaveProperty('thinking_effort');
+  });
+
+  it('AgentSwarm enforces binding constraints through the production AJV schema', () => {
+    const enabled = new AgentSwarmTool(
+      mockSubagentHost({}),
+      mockSwarmMode(),
+      undefined,
+      undefined,
+      true,
+    );
+    const validator = compileToolArgsValidator(enabled.parameters);
+    const spawn = {
+      description: 'Review',
+      prompt_template: 'Review {{item}}',
+      items: ['a', 'b'],
+    };
+    const resume = { description: 'Resume', resume_agent_ids: { 'agent-old': 'continue' } };
+
+    expect(validateToolArgs(validator, { ...spawn, model: 'primary', model_alias: 'fast' })).not.toBeNull();
+    expect(validateToolArgs(validator, { ...resume, model_alias: 'fast' })).not.toBeNull();
+    expect(validateToolArgs(validator, { ...spawn, model_alias: '   ' })).not.toBeNull();
+    expect(validateToolArgs(validator, { ...spawn, thinking_effort: '\t' })).not.toBeNull();
+    expect(
+      validateToolArgs(validator, {
+        ...spawn,
+        resume_agent_ids: { 'agent-old': 'continue' },
+        model_alias: ' fast ',
+        thinking_effort: ' low ',
+      }),
+    ).toBeNull();
+
+    const disabled = compileToolArgsValidator(
+      new AgentSwarmTool(mockSubagentHost({}), mockSwarmMode()).parameters,
+    );
+    expect(validateToolArgs(disabled, { ...spawn, model_alias: 'fast' })).not.toBeNull();
+  });
+
+  it('AgentSwarm trims binding fields before they reach new-item tasks', async () => {
+    const host = mockSubagentHost({
+      runQueued: vi.fn().mockImplementation(async (tasks: readonly QueuedSubagentTask[]) =>
+        tasks.map((task) => ({ task, status: 'completed', result: 'done' })),
+      ),
+    });
+    const tool = new AgentSwarmTool(host, mockSwarmMode(), undefined, undefined, true);
+
+    await executeTool(
+      tool,
+      context({
+        description: 'Review',
+        prompt_template: 'Review {{item}}',
+        items: ['a', 'b'],
+        model_alias: ' fast-model ',
+        thinking_effort: ' low ',
+      }),
+    );
+
+    expect(host.runQueued).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ modelAlias: 'fast-model', thinkingEffort: 'low' }),
+      ]),
+    );
   });
 
   it('AgentSwarm rejects more than 128 subagents at execution time', async () => {

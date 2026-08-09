@@ -22,6 +22,8 @@ interface MergedAgentProfile {
   readonly whenToUse?: string | undefined;
   readonly subagents?: Record<string, RawSubagentProfile> | undefined;
   readonly modelPreference?: AgentModelPreference;
+  readonly modelAlias?: string;
+  readonly thinkingEffort?: string;
 }
 
 /**
@@ -96,6 +98,8 @@ function resolveMergedProfile(
     parent = resolveMergedProfile(profile.extends, profileMap, cache, [...stack, name]);
   }
 
+  const inheritsModelSelector =
+    profile.modelPreference === undefined && profile.modelAlias === undefined;
   const merged: MergedAgentProfile = {
     name: profile.name,
     description: profile.description,
@@ -107,7 +111,10 @@ function resolveMergedProfile(
     tools: profile.tools !== undefined ? [...profile.tools] : [...(parent?.tools ?? [])],
     whenToUse: profile.whenToUse ?? parent?.whenToUse,
     subagents: cloneSubagents(profile.subagents),
-    modelPreference: profile.modelPreference ?? parent?.modelPreference,
+    modelPreference:
+      profile.modelPreference ?? (inheritsModelSelector ? parent?.modelPreference : undefined),
+    modelAlias: profile.modelAlias ?? (inheritsModelSelector ? parent?.modelAlias : undefined),
+    thinkingEffort: profile.thinkingEffort ?? parent?.thinkingEffort,
   };
 
   cache.set(profile.name, merged);
@@ -122,6 +129,8 @@ function toResolvedProfile(merged: MergedAgentProfile): ResolvedAgentProfile {
     tools: [...merged.tools],
     whenToUse: merged.whenToUse,
     modelPreference: merged.modelPreference,
+    modelAlias: merged.modelAlias,
+    thinkingEffort: merged.thinkingEffort,
   };
 }
 

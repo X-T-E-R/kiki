@@ -192,13 +192,13 @@ You can also switch models temporarily without touching the config file — by s
 
 ## `secondary_model`
 
-The secondary model is a second model configuration alongside the main model — typically a cheaper one, for features that do not need the main model's capability. Its consumer today is subagent spawning: when set, newly spawned subagents (`Agent` / `AgentSwarm`) bind to it by default instead of inheriting the main agent's model; when unset, subagents inherit the main agent's model.
+The secondary model is a second model configuration alongside the main model — typically a cheaper one, for features that do not need the main model's capability. It remains the legacy fallback recipe for subagent spawning.
 
-This is a default binding, not a forced one. With the experiment enabled, the `Agent` / `AgentSwarm` tools gain a `model` parameter (accepting only the symbolic values `"secondary"` / `"primary"`), and the tool description lists the available models with the default marked. A spawn resolves the subagent's model in this order: an explicit tool-call `model` → the profile's [`model_preference`](../customization/agents.md#agent-file-format) → the configured secondary model (the default). Here `"primary"` means the model the main agent is currently running, not necessarily `default_model` — for example after a mid-session `/model` switch.
+With the experiment enabled, `Agent` and `AgentSwarm` accept two mutually exclusive model selectors: legacy `model` uses the symbolic values `"secondary"` / `"primary"`, while `model_alias` selects an exact configured `[models]` alias. An exact alias named `primary` or `secondary` remains literal. Model precedence for a new subagent is tool selector → profile [`model_alias` or `model_preference`](../customization/agents.md#agent-file-format) → `[subagent] default_model` → this secondary recipe → the immediate caller's model. The internal alias `__secondary__` is reserved and cannot be configured or selected directly.
 
-Because overriding the default is the main agent's own decision (the tool description merely suggests `"secondary"` for routine tasks and `"primary"` for hard, quality-sensitive ones), there is no per-spawn switch on the user side. To steer a specific subagent to the main model, ask the main agent in your prompt to pass `model: "primary"`, or set `model_preference: "primary"` in the corresponding profile.
+Thinking effort resolves independently: tool `thinking_effort` → profile `thinking_effort` → `[subagent] default_effort` → this section's `default_effort` only when the secondary recipe supplied the model → caller effort only when the complete caller binding is inherited. A concrete model alias without an effort uses the existing global `[thinking]` and selected-model defaults instead of carrying a stale caller effort.
 
-This feature is experimental and disabled by default. Enable it with `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`, or the master `KIMI_CODE_EXPERIMENTAL_FLAG=1`. It takes effect in every launch mode, including the interactive TUI.
+These model and effort controls are experimental and disabled by default. Enable them with `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`, or the master `KIMI_CODE_EXPERIMENTAL_FLAG=1`. The same gate covers exact aliases, defaults, profile fields, and the secondary recipe. Resumed and retried subagents never re-resolve the current profile or defaults; their persisted binding is immutable.
 
 In the interactive TUI, the [`/secondary_model`](../reference/slash-commands.md) command opens a model picker that writes this section and live-applies it to the current session, so newly spawned subagents bind the new secondary model right away.
 
@@ -287,8 +287,11 @@ In print mode (`kimi -p "<prompt>"`), Kimi Code stays alive after the main agent
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
+| `default_model` | `string` | — | Fill-only exact `[models]` alias for new subagents. Active only while the secondary-model experiment is enabled |
+| `default_effort` | `string` | — | Fill-only thinking effort for new subagents. Active only while the secondary-model experiment is enabled |
 | `timeout_ms` | `integer` | `7200000` (2 hours) | Maximum wall-clock time (milliseconds) a single subagent (`Agent` / `AgentSwarm`) is allowed to run before it is settled as `timed_out`. `0` means no timeout — the subagent runs until it finishes or the model stops it. This is the background-task manager's per-task timeout for each subagent task, so it applies to both foreground and background subagents. In print mode (`kimi -p`) the default is `0` unless explicitly set. Note: any value above `2147483647` (about 24.8 days) is clamped to roughly 24.8 days by the runtime |
-`timeout_ms` can be overridden by the `KIMI_SUBAGENT_TIMEOUT_MS` environment variable, which takes higher priority than `config.toml`.
+
+Only `timeout_ms` has an environment override: `KIMI_SUBAGENT_TIMEOUT_MS` takes higher priority than `config.toml`. There are no environment variables for `default_model` or `default_effort`.
 
 ## `mcp`
 

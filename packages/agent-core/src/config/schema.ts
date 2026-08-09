@@ -176,6 +176,10 @@ export const BackgroundConfigSchema = z.object({
 export type BackgroundConfig = z.infer<typeof BackgroundConfigSchema>;
 
 export const SubagentConfigSchema = z.object({
+  /** Exact configured model alias used as the fill-only default for new subagents. */
+  defaultModel: z.string().trim().min(1).optional(),
+  /** Fill-only thinking effort default for new subagents. */
+  defaultEffort: z.string().trim().min(1).optional(),
   /**
    * Per-subagent (`Agent` / `AgentSwarm`, foreground and background) timeout
    * in milliseconds. `0` means no timeout. Defaults to 2 hours when unset.

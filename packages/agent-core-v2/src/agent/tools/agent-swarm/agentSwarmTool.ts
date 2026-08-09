@@ -45,10 +45,14 @@ import {
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentSwarmService } from '#/agent/swarm/swarm';
 import {
+  addSubagentBindingSchemaConstraints,
   buildSubagentModelDescriptions,
+  normalizeSubagentBindingValue,
   resolveSubagentBinding,
   resolveSubagentTimeoutMs,
   stripSubagentModelParameter,
+  subagentModelSource,
+  wrapSubagentModelError,
 } from '#/session/subagent/configSection';
 import { SECONDARY_MODEL_FLAG_ID } from '#/session/subagent/flag';
 import {
@@ -62,7 +66,9 @@ import AGENT_SWARM_DESCRIPTION from './agent-swarm.md?raw';
 
 const DEFAULT_SUBAGENT_TYPE = 'coder';
 
-const AGENT_SWARM_PARAMETERS = toInputJsonSchema(AgentSwarmToolInputSchema);
+const AGENT_SWARM_PARAMETERS = toInputJsonSchema(AgentSwarmToolInputSchema, (schema) => {
+  addSubagentBindingSchemaConstraints(schema, 'swarm');
+});
 const AGENT_SWARM_PARAMETERS_NO_MODEL = stripSubagentModelParameter(AGENT_SWARM_PARAMETERS);
 
 interface AgentSwarmSpawnSpec {
@@ -166,6 +172,21 @@ export class AgentSwarmTool implements IAgentSwarmTool {
     signal: AbortSignal,
     toolCallId: string,
   ): Promise<string> {
+    const modelAlias = normalizeSubagentBindingValue(args.model_alias, 'model_alias');
+    const thinkingEffort = normalizeSubagentBindingValue(
+      args.thinking_effort,
+      'thinking_effort',
+    );
+    if (
+      (args.items?.length ?? 0) === 0 &&
+      Object.keys(args.resume_agent_ids ?? {}).length > 0 &&
+      (args.model !== undefined || modelAlias !== undefined || thinkingEffort !== undefined)
+    ) {
+      throw new Error2(
+        ErrorCodes.VALIDATION_FAILED,
+        'Cannot set model, model_alias, or thinking_effort for a resume-only swarm.',
+      );
+    }
     const profileName = normalizeOptionalString(args.subagent_type) ?? DEFAULT_SUBAGENT_TYPE;
     let binding: { model: string; thinking?: string } | undefined;
     if ((args.items?.length ?? 0) > 0) {
@@ -190,9 +211,35 @@ export class AgentSwarmTool implements IAgentSwarmTool {
           this.config,
           this.flags,
           { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
-          args.model ?? targetProfile.modelPreference,
+          {
+            modelPreference: args.model,
+            modelAlias,
+            thinkingEffort,
+          },
+          {
+            modelPreference: targetProfile.modelPreference,
+            modelAlias: targetProfile.modelAlias,
+            thinkingEffort: targetProfile.thinkingEffort,
+          },
         );
+        const modelSource = subagentModelSource(resolved);
+        if (modelSource !== 'secondary') {
+          try {
+            this.modelCatalog.get(resolved.model);
+          } catch (error) {
+            throw wrapSubagentModelError(
+              error,
+              resolved.model,
+              own.modelAlias,
+              modelSource,
+            );
+          }
+        }
         binding = { model: resolved.model, thinking: resolved.thinking };
+        Object.defineProperty(binding, 'modelSource', {
+          value: modelSource,
+          enumerable: false,
+        });
       }
     }
     const timeoutMs = resolveSubagentTimeoutMs(this.config);

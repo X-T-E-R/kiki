@@ -95,6 +95,21 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
   const subagents =
     rawSubagents?.length === 1 && rawSubagents[0] === '*' ? undefined : rawSubagents;
   const modelPreference = parseModelPreference(frontmatter['model_preference'], options.path);
+  const modelAlias = optionalNonEmptyStringField(
+    frontmatter['model_alias'],
+    'model_alias',
+    options.path,
+  );
+  const thinkingEffort = optionalNonEmptyStringField(
+    frontmatter['thinking_effort'],
+    'thinking_effort',
+    options.path,
+  );
+  if (modelPreference !== undefined && modelAlias !== undefined) {
+    throw new AgentFileParseError(
+      `Frontmatter fields "model_preference" and "model_alias" in ${options.path} are mutually exclusive`,
+    );
+  }
 
   const prompt = parsed.body.trim();
   if (prompt.length === 0) {
@@ -110,6 +125,8 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     disallowedTools,
     subagents,
     modelPreference,
+    modelAlias,
+    thinkingEffort,
     prompt,
     path: options.path,
     source: options.source,
@@ -175,6 +192,20 @@ function requiredNonEmptyString(value: unknown, field: string, filePath: string)
     throw new AgentFileParseError(`Missing required frontmatter field "${field}" in ${filePath}`);
   }
   return parsed;
+}
+
+function optionalNonEmptyStringField(
+  value: unknown,
+  field: string,
+  filePath: string,
+): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new AgentFileParseError(
+      `Frontmatter field "${field}" in ${filePath} must be a non-empty string`,
+    );
+  }
+  return value.trim();
 }
 
 function deriveNameFromPath(filePath: string): string | undefined {

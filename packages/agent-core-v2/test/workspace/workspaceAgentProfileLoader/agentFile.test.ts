@@ -74,6 +74,19 @@ describe('parseAgentFileText', () => {
     expect(def.modelPreference).toBe('primary');
   });
 
+  it('parses exact model and effort fields without consuming generic model', () => {
+    const def = parse(
+      '---\nname: solo\ndescription: d\nmodel: foreign\nmodel_alias: fast-model\nthinking_effort: low\n---\n\nbody\n',
+    );
+    expect(def).toMatchObject({ modelAlias: 'fast-model', thinkingEffort: 'low' });
+    expect(def).not.toHaveProperty('model');
+    expect(() =>
+      parse(
+        '---\nname: solo\ndescription: d\nmodel_preference: primary\nmodel_alias: fast-model\n---\n\nbody\n',
+      ),
+    ).toThrow(/mutually exclusive/);
+  });
+
   it('rejects an unsupported model preference', () => {
     expect(() =>
       parse(
@@ -331,6 +344,14 @@ describe('agentProfileFromFile', () => {
     const profile = agentProfileFromFile({ ...base, modelPreference: 'secondary' }, basePrompt);
 
     expect(profile.modelPreference).toBe('secondary');
+  });
+
+  it('passes exact model and effort fields through', () => {
+    const profile = agentProfileFromFile(
+      { ...base, modelAlias: 'fast-model', thinkingEffort: 'low' },
+      basePrompt,
+    );
+    expect(profile).toMatchObject({ modelAlias: 'fast-model', thinkingEffort: 'low' });
   });
 
   it('treats an explicit file as an override intent', () => {

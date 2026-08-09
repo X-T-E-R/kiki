@@ -84,13 +84,45 @@ interface FileProfileEntry {
   readonly override: boolean;
 }
 
+/**
+ * Session-local copies of the builtin profiles. `DEFAULT_AGENT_PROFILES` is a
+ * process-wide constant; seeding `merged` with its values directly would let
+ * any session-scoped rewrite of a profile (e.g. a host runtime projecting
+ * profile tool lists onto the session's tool surface) mutate shared process
+ * state and leak into every later session. Clone each entry and re-link the
+ * delegation graph against the clones so the whole graph is session-local.
+ */
+function sessionLocalBuiltinProfiles(): Map<string, ResolvedAgentProfile> {
+  const cloned = new Map<string, ResolvedAgentProfile>(
+    Object.entries(DEFAULT_AGENT_PROFILES).map(([name, profile]) => [
+      name,
+      {
+        ...profile,
+        tools: [...profile.tools],
+        disallowedTools:
+          profile.disallowedTools === undefined ? undefined : [...profile.disallowedTools],
+      },
+    ]),
+  );
+  for (const profile of cloned.values()) {
+    if (profile.subagents === undefined) continue;
+    profile.subagents = Object.fromEntries(
+      Object.entries(profile.subagents).map(([name, target]) => [
+        name,
+        cloned.get(name) ?? target,
+      ]),
+    );
+  }
+  return cloned;
+}
+
 export class SessionAgentProfileCatalog {
   private merged: Map<string, ResolvedAgentProfile>;
   private readonly readyPromise: Promise<void>;
   private snapshotValue: AgentProfileCatalogSnapshot | undefined;
 
   constructor(private readonly options: SessionAgentCatalogOptions) {
-    this.merged = new Map(Object.entries(DEFAULT_AGENT_PROFILES));
+    this.merged = sessionLocalBuiltinProfiles();
     this.readyPromise = this.load();
     // Keep an un-awaited rejection from crashing the process; createMain /
     // spawn awaiters see the error through `ready`.
@@ -166,7 +198,7 @@ export class SessionAgentProfileCatalog {
     readonly entries: FileProfileEntry[];
     readonly systemMd: AgentFileDefinition | undefined;
   } {
-    this.merged = new Map(Object.entries(DEFAULT_AGENT_PROFILES));
+    this.merged = sessionLocalBuiltinProfiles();
 
     const builtinDefault = this.getDefault();
     const systemMd =
@@ -190,6 +222,8 @@ export class SessionAgentProfileCatalog {
         disallowedTools: profile.disallowedTools,
         subagents: profile.subagents,
         modelPreference: profile.modelPreference,
+        modelAlias: profile.modelAlias,
+        thinkingEffort: profile.thinkingEffort,
         prompt: profile.prompt,
         path: `<session-agent-profile:${profile.name}>`,
         source: profile.source ?? 'explicit',
@@ -406,6 +440,8 @@ export class SessionAgentProfileCatalog {
           profile.disallowedTools === undefined ? undefined : [...profile.disallowedTools],
         subagents: Object.keys(profile.subagents ?? {}),
         modelPreference: profile.modelPreference,
+        modelAlias: profile.modelAlias,
+        thinkingEffort: profile.thinkingEffort,
         prompt: definition.prompt,
         source: definition.source,
       }));

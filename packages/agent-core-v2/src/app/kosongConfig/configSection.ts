@@ -210,7 +210,11 @@ export const ModelRecordSchema = ModelBaseSchema.extend({
   overrides: ModelOverrideSchema.optional(),
 }).passthrough();
 
-export const ModelsSectionSchema = z.record(z.string(), ModelRecordSchema);
+export const ModelsSectionSchema = z
+  .record(z.string(), ModelRecordSchema)
+  .refine((models) => models['__secondary__'] === undefined, {
+    message: '[models.__secondary__] is reserved for the internal secondary-model overlay',
+  });
 
 type _AssertModelOverride = AssertExact<
   Equal<z.infer<typeof ModelOverrideSchema>, ModelOverride>

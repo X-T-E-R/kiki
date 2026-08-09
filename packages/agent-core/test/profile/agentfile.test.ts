@@ -144,6 +144,28 @@ describe('parseAgentFileText', () => {
     });
   });
 
+  it('parses exact model and effort fields without consuming generic model', () => {
+    const definition = parse(
+      agentFileText({
+        description: 'd',
+        model: 'foreign-format-value',
+        model_alias: 'fast-model',
+        thinking_effort: 'low',
+      }),
+    );
+    expect(definition).toMatchObject({ modelAlias: 'fast-model', thinkingEffort: 'low' });
+    expect(definition).not.toHaveProperty('model');
+    expect(() =>
+      parse(
+        agentFileText({
+          description: 'd',
+          model_preference: 'primary',
+          model_alias: 'fast-model',
+        }),
+      ),
+    ).toThrow(/mutually exclusive/);
+  });
+
   it('rejects an invalid model_preference', () => {
     expect(() => parse(agentFileText({ description: 'd', model_preference: 'cheapest' }))).toThrow(
       /model_preference/,
@@ -372,6 +394,33 @@ describe('SessionAgentProfileCatalog', () => {
     expect(c.delegatableSubagents('agent')).not.toHaveProperty('agent');
   });
 
+  it('keeps builtin profiles session-local when a caller rewrites them in place', async () => {
+    const { workDir, brandHome, osHome } = await makeLayout();
+
+    const first = catalog({ workDir, brandHomeDir: brandHome, osHomeDir: osHome });
+    await first.ready;
+    const firstCoder = first.get('coder');
+    expect(firstCoder).toBeDefined();
+    // Host runtimes may project a session's catalog entries onto the session
+    // tool surface by rewriting them in place (host subagent projection).
+    firstCoder!.tools = ['Read'];
+
+    // The process-wide defaults stay pristine, and a later session's catalog
+    // seeds from them rather than from the rewritten objects.
+    expect(DEFAULT_AGENT_PROFILES['coder']!.tools).toContain('Bash');
+    const second = catalog({ workDir, brandHomeDir: brandHome, osHomeDir: osHome });
+    await second.ready;
+    expect(second.get('coder')?.tools).toEqual(DEFAULT_AGENT_PROFILES['coder']!.tools);
+
+    // The delegation graph is re-linked to the session-local copies, so an
+    // in-place projection reaches what useProfile and the Agent tool
+    // description actually read.
+    expect(first.delegatableSubagents('agent')['coder']).toBe(firstCoder);
+    expect(second.delegatableSubagents('agent')['coder']?.tools).toEqual(
+      DEFAULT_AGENT_PROFILES['coder']!.tools,
+    );
+  });
+
   it('extends SYSTEM.md delegation with custom agents without allowing self-delegation', async () => {
     const { workDir, brandHome, osHome } = await makeLayout();
     await writeFile(join(brandHome, 'SYSTEM.md'), 'Custom system.', 'utf-8');
@@ -402,6 +451,43 @@ describe('SessionAgentProfileCatalog', () => {
     restored.restoreSnapshot(snapshot!);
     expect(Object.keys(restored.delegatableSubagents('agent'))).toEqual(expectedNames);
     expect(restored.delegatableSubagents('agent')).not.toHaveProperty('agent');
+  });
+
+  it('round-trips additive model binding fields and reads legacy snapshots', async () => {
+    const { workDir, brandHome, osHome } = await makeLayout();
+    await writeAgent(
+      join(workDir, '.kimi-code', 'agents'),
+      'reviewer.md',
+      agentFileText({
+        description: 'Reviews code.',
+        model_alias: 'fast-model',
+        thinking_effort: 'low',
+      }),
+    );
+    const c = catalog({ workDir, brandHomeDir: brandHome, osHomeDir: osHome });
+    await c.ready;
+    expect(c.get('reviewer')).toMatchObject({ modelAlias: 'fast-model', thinkingEffort: 'low' });
+    const snapshot = c.snapshot()!;
+    expect(snapshot.profiles[0]).toMatchObject({
+      modelAlias: 'fast-model',
+      thinkingEffort: 'low',
+    });
+
+    const restored = catalog({ workDir, brandHomeDir: brandHome, osHomeDir: osHome });
+    await restored.ready;
+    restored.restoreSnapshot(snapshot);
+    expect(restored.get('reviewer')).toMatchObject({
+      modelAlias: 'fast-model',
+      thinkingEffort: 'low',
+    });
+
+    const legacy = {
+      ...snapshot,
+      profiles: snapshot.profiles.map(({ modelAlias: _model, thinkingEffort: _effort, ...p }) => p),
+    };
+    expect(() => {
+      restored.restoreSnapshot(legacy);
+    }).not.toThrow();
   });
 
   it('lets a project agent.md win over SYSTEM.md', async () => {

@@ -12,6 +12,8 @@ import {
 } from '../../src/config/secondary-model';
 import { parseConfigString } from '../../src/config/toml';
 import type { KimiConfig, ModelAlias } from '../../src/config/schema';
+import { FLAG_DEFINITIONS, FlagResolver } from '../../src/flags';
+import { resolveSubagentBinding } from '../../src/session/subagent-binding';
 
 const baseAlias: ModelAlias = {
   provider: 'p1',
@@ -123,6 +125,99 @@ describe('applySecondaryModelConfig', () => {
     // Untouched recipe fields survive the env overlay.
     expect(config.secondaryModel?.defaultEffort).toBe('high');
   });
+
+  it('rejects a user-configured internal secondary alias', () => {
+    const config = configWithSecondary();
+    config.models![SECONDARY_DERIVED_MODEL_ALIAS] = baseAlias;
+    expect(() => applySecondaryModelConfig(config, {})).toThrow(/reserved for the internal/);
+  });
+});
+
+describe('subagent binding resolution', () => {
+  const flags = new FlagResolver({}, FLAG_DEFINITIONS, { 'secondary-model': true });
+  const own = { modelAlias: 'caller', thinkingEffort: 'caller-effort' };
+  const config: KimiConfig = {
+    providers: {},
+    models: {
+      caller: baseAlias,
+      profile: baseAlias,
+      default: baseAlias,
+      call: baseAlias,
+      primary: baseAlias,
+      secondary: baseAlias,
+    },
+    subagent: { defaultModel: 'default', defaultEffort: 'default-effort' },
+    secondaryModel: { model: 'secondary', defaultEffort: 'secondary-effort' },
+  };
+
+  it('resolves model and effort independently across tool, profile, and defaults', () => {
+    expect(
+      resolveSubagentBinding(
+        config,
+        flags,
+        own,
+        { modelAlias: 'call', thinkingEffort: 'call-effort' },
+        { modelAlias: 'profile', thinkingEffort: 'profile-effort' },
+      ),
+    ).toEqual({ modelAlias: 'call', thinkingEffort: 'call-effort' });
+
+    expect(
+      resolveSubagentBinding(config, flags, own, {}, {
+        modelAlias: 'profile',
+        thinkingEffort: 'profile-effort',
+      }),
+    ).toEqual({ modelAlias: 'profile', thinkingEffort: 'profile-effort' });
+
+    expect(resolveSubagentBinding(config, flags, own)).toEqual({
+      modelAlias: 'default',
+      thinkingEffort: 'default-effort',
+    });
+  });
+
+  it('does not carry caller effort onto a concrete alias without an effort', () => {
+    expect(
+      resolveSubagentBinding(
+        { ...config, subagent: undefined, secondaryModel: undefined },
+        flags,
+        own,
+        { modelAlias: 'call' },
+      ),
+    ).toEqual({ modelAlias: 'call', thinkingEffort: undefined });
+    expect(resolveSubagentBinding(config, flags, own, { modelPreference: 'primary' })).toEqual({
+      modelAlias: 'caller',
+      thinkingEffort: 'default-effort',
+    });
+    expect(
+      resolveSubagentBinding(
+        { ...config, subagent: undefined },
+        flags,
+        own,
+        { modelPreference: 'primary' },
+      ),
+    ).toEqual({ modelAlias: 'caller', thinkingEffort: 'caller-effort' });
+  });
+
+  it('treats exact primary/secondary aliases literally and rejects the internal alias', () => {
+    expect(resolveSubagentBinding(config, flags, own, { modelAlias: 'primary' })).toMatchObject({
+      modelAlias: 'primary',
+    });
+    expect(resolveSubagentBinding(config, flags, own, { modelAlias: 'secondary' })).toMatchObject({
+      modelAlias: 'secondary',
+    });
+    expect(() =>
+      resolveSubagentBinding(config, flags, own, { modelAlias: SECONDARY_DERIVED_MODEL_ALIAS }),
+    ).toThrow(/reserved internal model alias/);
+  });
+
+  it('ignores all new binding inputs while the experiment is disabled', () => {
+    const disabled = new FlagResolver({}, FLAG_DEFINITIONS);
+    expect(
+      resolveSubagentBinding(config, disabled, own, {
+        modelAlias: 'call',
+        thinkingEffort: 'call-effort',
+      }),
+    ).toEqual({ modelAlias: 'caller', thinkingEffort: 'caller-effort' });
+  });
 });
 
 describe('stripSecondaryModelConfig', () => {
@@ -196,6 +291,24 @@ describe('stripSecondaryModelConfig', () => {
 });
 
 describe('[secondary_model] TOML wiring', () => {
+  it('parses and round-trips subagent model and effort defaults', async () => {
+    const config = parseConfigString(
+      '[subagent]\ndefault_model = "cheap"\ndefault_effort = "low"\ntimeout_ms = 5000\n',
+    );
+    expect(config.subagent).toEqual({
+      defaultModel: 'cheap',
+      defaultEffort: 'low',
+      timeoutMs: 5000,
+    });
+    const dir = mkdtempSync(join(tmpdir(), 'kimi-subagent-defaults-'));
+    try {
+      const filePath = join(dir, 'config.toml');
+      await writeConfigFile(filePath, config);
+      expect(readFileSync(filePath, 'utf-8')).toContain('default_model = "cheap"');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
   it('parses the snake_case section into camelCase config', () => {
     const config = parseConfigString(
       [

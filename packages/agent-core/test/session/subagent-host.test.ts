@@ -322,6 +322,8 @@ describe('SessionSubagentHost', () => {
     });
     expect(handle.agentId).toBe('agent-0');
     expect(handle.profileName).toBe('explore');
+    expect(handle.model).toBe(child.agent.config.modelAlias);
+    expect(handle.thinkingEffort).toBe(child.agent.config.thinkingEffort);
 
     expect(parent.allEvents).toContainEqual(
       expect.objectContaining({
@@ -332,6 +334,8 @@ describe('SessionSubagentHost', () => {
           subagentName: 'explore',
           parentAgentId: 'main',
           parentToolCallId: 'call_agent',
+          model: child.agent.config.modelAlias,
+          thinkingEffort: child.agent.config.thinkingEffort,
         }),
       }),
     );
@@ -1134,16 +1138,18 @@ describe('SessionSubagentHost', () => {
     expect(userTextMessages(histories[1] ?? [])).toEqual(['Implement the retry-safe change']);
   });
 
-  it('realigns a resumed subagent to the parent agent current model', async () => {
+  it('keeps a resumed subagent binding immutable when the experiment is off', async () => {
     const parent = testAgent();
     parent.configure();
     parent.agent.permission.setMode('yolo');
 
     const child = testAgent();
     child.configure({ tools: ['Read'] });
-    // The child was originally spawned with a model that no longer matches the
-    // parent agent's current model (as if the parent ran setModel afterwards).
-    child.agent.config.update({ modelAlias: 'stale-model-from-initial-spawn' });
+    const originalChildModel = child.agent.config.modelAlias;
+    // The parent switches after the child was originally bound. The parent
+    // does not run another turn in this test, so its synthetic alias need not
+    // resolve through the provider manager.
+    parent.agent.config.update({ modelAlias: 'parent-model-after-switch' });
     child.agent.useProfile(
       profile({ name: 'explore', tools: ['Read'], systemPrompt: 'explore prompt' }),
     );
@@ -1171,10 +1177,8 @@ describe('SessionSubagentHost', () => {
     });
 
     await handle.completion;
-    // resume must realign the child to the parent agent's current model rather
-    // than leave it on the stale model from its initial spawn.
-    expect(child.agent.config.modelAlias).toBe(parent.agent.config.modelAlias);
-    expect(child.agent.config.modelAlias).not.toBe('stale-model-from-initial-spawn');
+    expect(child.agent.config.modelAlias).toBe(originalChildModel);
+    expect(child.agent.config.modelAlias).not.toBe(parent.agent.config.modelAlias);
   });
 
   describe('secondary model binding', () => {
@@ -1196,6 +1200,24 @@ describe('SessionSubagentHost', () => {
           model: 'cheap-model',
           maxContextSize: 1_000_000,
         },
+        'fast-model': {
+          provider: 'test-provider',
+          model: 'fast-model',
+          maxContextSize: 1_000_000,
+          capabilities: ['thinking'],
+          supportEfforts: ['low'],
+          defaultEffort: 'off',
+        },
+        primary: {
+          provider: 'test-provider',
+          model: 'literal-primary',
+          maxContextSize: 1_000_000,
+        },
+        secondary: {
+          provider: 'test-provider',
+          model: 'literal-secondary',
+          maxContextSize: 1_000_000,
+        },
         '__secondary__': {
           provider: 'test-provider',
           model: 'cheap-model',
@@ -1210,6 +1232,10 @@ describe('SessionSubagentHost', () => {
       providerManager?: Session['options']['providerManager'];
       modelChoice?: 'primary' | 'secondary';
       profilePreference?: 'primary' | 'secondary';
+      modelAlias?: string;
+      thinkingEffort?: string;
+      profileAlias?: string;
+      profileEffort?: string;
     }) {
       const parent = testAgent();
       parent.configure();
@@ -1223,7 +1249,11 @@ describe('SessionSubagentHost', () => {
         providerManager: options.providerManager,
       });
       const host = new SessionSubagentHost(session, 'main');
-      if (options.profilePreference !== undefined) {
+      if (
+        options.profilePreference !== undefined ||
+        options.profileAlias !== undefined ||
+        options.profileEffort !== undefined
+      ) {
         vi.spyOn(
           host as unknown as {
             resolveProfile: (parent: Agent, name: string) => ResolvedAgentProfile;
@@ -1235,12 +1265,16 @@ describe('SessionSubagentHost', () => {
             tools: ['Read'],
             systemPrompt: 'coder prompt',
             modelPreference: options.profilePreference,
+            modelAlias: options.profileAlias,
+            thinkingEffort: options.profileEffort,
           }),
         );
       }
       const handle = await host.spawn({
         profileName: 'coder',
         modelChoice: options.modelChoice,
+        modelAlias: options.modelAlias,
+        thinkingEffort: options.thinkingEffort,
         parentToolCallId: 'call_agent',
         prompt: 'Do work',
         description: 'Do work',
@@ -1275,6 +1309,40 @@ describe('SessionSubagentHost', () => {
       // the synthesized derived entry rather than the pointed alias.
       expect(child.agent.config.modelAlias).toBe('__secondary__');
     });
+
+    it('binds an exact alias and effort and reports the effective binding', async () => {
+      const config = withSecondaryModels();
+      const { parent, child, handle } = await spawnChild({
+        experimentalFlags: secondaryFlags(),
+        config,
+        providerManager: new ProviderManager({ config }),
+        modelAlias: 'fast-model',
+        thinkingEffort: 'low',
+      });
+      expect(child.agent.config.modelAlias).toBe('fast-model');
+      expect(child.agent.config.thinkingEffort).toBe('low');
+      expect(handle).toMatchObject({ model: 'fast-model', thinkingEffort: 'low' });
+      expect(parent.allEvents).toContainEqual(
+        expect.objectContaining({
+          event: 'subagent.spawned',
+          args: expect.objectContaining({ model: 'fast-model', thinkingEffort: 'low' }),
+        }),
+      );
+    });
+
+    it.each(['primary', 'secondary'])(
+      'treats model_alias="%s" as a configured literal alias',
+      async (modelAlias) => {
+        const config = withSecondaryModels();
+        const { child } = await spawnChild({
+          experimentalFlags: secondaryFlags(),
+          config,
+          providerManager: new ProviderManager({ config }),
+          modelAlias,
+        });
+        expect(child.agent.config.modelAlias).toBe(modelAlias);
+      },
+    );
 
     it('inherits the parent model when the experiment is off', async () => {
       const { parent, child } = await spawnChild({
@@ -1327,7 +1395,44 @@ describe('SessionSubagentHost', () => {
           signal,
         }).then((handle) => handle.completion),
       ).rejects.toThrow(/\[secondary_model\]\.model/);
+      expect(parent.allEvents).not.toContainEqual(
+        expect.objectContaining({ event: 'subagent.spawned' }),
+      );
     });
+
+    it.each(['unconfigured-wire-name', '__secondary__'])(
+      'rejects exact alias "%s" before emitting spawned',
+      async (modelAlias) => {
+        const parent = testAgent();
+        parent.configure();
+        const child = testAgent();
+        child.configure({ tools: ['Read'] });
+        const config: KimiConfig = { providers: {} };
+        const session = fakeSession(parent.agent, child.agent, {}, {
+          experimentalFlags: secondaryFlags(),
+          config,
+          providerManager: new ProviderManager({ config }),
+        });
+        const host = new SessionSubagentHost(session, 'main');
+
+        await expect(
+          host.spawn({
+            profileName: 'coder',
+            modelAlias,
+            parentToolCallId: 'call_agent',
+            prompt: 'Do work',
+            description: 'Do work',
+            runInBackground: false,
+            signal,
+          }),
+        ).rejects.toThrow(
+          modelAlias === '__secondary__' ? /reserved internal/ : /unconfigured-wire-name/,
+        );
+        expect(parent.allEvents).not.toContainEqual(
+          expect.objectContaining({ event: 'subagent.spawned' }),
+        );
+      },
+    );
 
     it('preserves a provider configuration error when the secondary alias exists', async () => {
       const parent = testAgent();
@@ -1925,6 +2030,8 @@ function profile(input: {
   readonly description?: string | undefined;
   readonly subagents?: Record<string, ResolvedAgentProfile> | undefined;
   readonly modelPreference?: 'primary' | 'secondary';
+  readonly modelAlias?: string;
+  readonly thinkingEffort?: string;
 }): ResolvedAgentProfile {
   return {
     name: input.name,
@@ -1933,6 +2040,8 @@ function profile(input: {
     tools: [...input.tools],
     subagents: input.subagents,
     modelPreference: input.modelPreference,
+    modelAlias: input.modelAlias,
+    thinkingEffort: input.thinkingEffort,
   };
 }
 
