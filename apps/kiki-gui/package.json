@@ -21,7 +21,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "fixtures": "node scripts/fixture-server.mjs",
-    "proof": "node scripts/visual-proof.mjs"
+    "proof": "node scripts/visual-proof.mjs",
+    "proof:update-goldens": "node scripts/visual-proof.mjs --update-goldens",
+    "proof:test": "node --test scripts/visual-proof-options.test.mjs"
   },
   "dependencies": {
     "@fontsource-variable/fraunces": "^5.2.5",

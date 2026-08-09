@@ -1,12 +1,14 @@
 /**
  * kiki-gui visual proof — boots the fixture server + the vite dev server,
  * drives the real GUI with playwright chromium through every fixture
- * scenario, and screenshots into screenshots/batch3/. The app contains zero
- * fixture-specific code paths: it connects to the fixture server exactly
- * like a real kap-server (deep link with server URL + fixture token).
+ * scenario, and writes screenshots to an ignored disposable directory by
+ * default. The app contains zero fixture-specific code paths: it connects to
+ * the fixture server exactly like a real kap-server (deep link with server URL
+ * + fixture token).
  *
- *   node scripts/visual-proof.mjs            # full walk
- *   node scripts/visual-proof.mjs --only reconnect,long-transcript
+ *   node scripts/visual-proof.mjs                         # disposable full walk
+ *   node scripts/visual-proof.mjs --only=reconnect        # disposable subset
+ *   node scripts/visual-proof.mjs --update-goldens        # replace tracked goldens
  */
 
 import { spawn, execSync } from 'node:child_process';
@@ -17,21 +19,14 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
+import { selectProofOutput } from './visual-proof-options.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const SHOTS = join(ROOT, 'screenshots', 'batch3');
-// Start from a clean directory so stale shots from prior runs can't mislead.
-rmSync(SHOTS, { recursive: true, force: true });
-mkdirSync(SHOTS, { recursive: true });
 
 const FIXTURE_PORT = 58901;
 const WEB_PORT = 5179;
 const FIXTURE_URL = `http://127.0.0.1:${FIXTURE_PORT}`;
 const WEB_URL = `http://localhost:${WEB_PORT}`;
-
-const onlyArg = process.argv.find((a) => a.startsWith('--only='));
-const only = onlyArg !== undefined ? onlyArg.slice('--only='.length).split(',') : null;
-const wanted = (name) => only === null || only.includes(name);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -292,6 +287,20 @@ const SCENARIOS = [
   ['empty-states', scenarioEmptyStates],
 ];
 
+const proofOutput = selectProofOutput(
+  ROOT,
+  process.argv.slice(2),
+  SCENARIOS.map(([name]) => name),
+);
+const SHOTS = proofOutput.outputDir;
+const wanted = (name) => proofOutput.only === null || proofOutput.only.includes(name);
+console.log(`[proof] mode: ${proofOutput.mode}`);
+console.log(`[proof] output: ${SHOTS}`);
+// Validate all arguments before cleaning the selected output directory so a
+// typo or an unsafe golden subset cannot remove existing screenshots.
+rmSync(SHOTS, { recursive: true, force: true });
+mkdirSync(SHOTS, { recursive: true });
+
 async function main() {
   killPort(FIXTURE_PORT);
   killPort(WEB_PORT);
@@ -301,7 +310,7 @@ async function main() {
   // shadow the run. Single-string command + shell: Windows refuses to spawn
   // .cmd shims without one (spawn EINVAL), and a single string sidesteps arg
   // escaping.
-  const vite = spawn(`npx pnpm@10.33.0 --filter @kiki/gui dev`, {
+  const vite = spawn(`pnpm --filter @kiki/gui dev`, {
     cwd: join(ROOT, '..', '..'),
     env: { ...process.env, KIKI_GUI_PORT: String(WEB_PORT) },
     stdio: ['ignore', 'pipe', 'pipe'],

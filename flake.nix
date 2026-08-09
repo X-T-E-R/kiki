@@ -80,6 +80,7 @@
         ./packages/transcript
         ./packages/tree-sitter-bash
         ./apps/kimi-code
+        ./apps/kiki-gui
         ./apps/vscode
         ./apps/kimi-inspect
         ./apps/vis
@@ -107,6 +108,7 @@
         "@moonshot-ai/transcript"
         "@moonshot-ai/tree-sitter-bash"
         "@moonshot-ai/kimi-code"
+        "@kiki/gui"
         "kimi-code"
         "@moonshot-ai/kimi-inspect"
         "@moonshot-ai/vis"
@@ -162,7 +164,7 @@
               inherit (finalAttrs) pname version src pnpmWorkspaces;
               inherit pnpm;
               fetcherVersion = 3;
-              hash = "sha256-P450+LKDYkRyk7OZ2mSOX0/RwtbivwR5ZksN8FM6+TU=";
+              hash = "sha256-LYBAUaYOhKBYwBzXrIgXlyAw84fNsCSJE03CUlIezpQ=";
             };
 
             nativeBuildInputs = [

@@ -1,154 +1,150 @@
 #!/usr/bin/env node
+/* eslint-disable no-console -- This file is a command-line checker. */
 /**
- * Recursively resolve workspace dependencies starting from apps/kimi-code
- * and verify they are all present in flake.nix workspaceNames/workspacePaths.
- *
- * Exit code 0 if everything is in sync, 1 otherwise.
+ * Verify that every package selected by pnpm-workspace.yaml is present in both
+ * flake.nix workspace lists. Exit code 0 means the lists are exactly in sync;
+ * exit code 1 means at least one package is missing or stale.
  */
 
-import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 
-const ROOT = resolve(import.meta.dirname, "..");
-const FLAKE_NIX = join(ROOT, "flake.nix");
-const START_PKG = "@moonshot-ai/kimi-code";
+const DEFAULT_ROOT = resolve(import.meta.dirname, "..");
 
 /**
- * Parse pnpm-workspace.yaml to get workspace directory globs.
+ * Convert a workspace directory to the slash-separated form used by Nix.
+ *
+ * @param {string} dir
  */
-function getWorkspaceGlobs() {
-  const yamlPath = join(ROOT, "pnpm-workspace.yaml");
-  const content = readFileSync(yamlPath, "utf8");
-  const lines = content.split("\n");
+export function normalizeWorkspaceDir(dir) {
+  return dir
+    .replaceAll("\\", "/")
+    .replace(/^\.\/+/, "")
+    .replace(/\/+$/, "");
+}
+
+/**
+ * Parse the package patterns from pnpm-workspace.yaml.
+ *
+ * @param {string} root
+ */
+export function getWorkspaceGlobs(root) {
+  const yamlPath = join(root, "pnpm-workspace.yaml");
+  const lines = readFileSync(yamlPath, "utf8").split(/\r?\n/);
   const globs = [];
   let inPackages = false;
+
   for (const line of lines) {
     if (line.startsWith("packages:")) {
       inPackages = true;
       continue;
     }
-    if (inPackages) {
-      const match = line.match(/^\s+-\s+(.+)$/);
-      if (match) {
-        globs.push(match[1]);
-      } else if (line.trim() !== "" && !line.startsWith(" ")) {
-        break;
-      }
+    if (!inPackages) continue;
+
+    const match = line.match(/^\s+-\s+(.+?)\s*$/);
+    if (match) {
+      const value = match[1];
+      globs.push(
+        (value.startsWith('"') && value.endsWith('"')) ||
+          (value.startsWith("'") && value.endsWith("'"))
+          ? value.slice(1, -1)
+          : value,
+      );
+    } else if (line.trim() !== "" && !line.startsWith(" ")) {
+      break;
     }
   }
+
   return globs;
 }
 
 /**
- * Expand globs like "packages/*" into actual directories.
+ * Expand the simple directory patterns used by this repository. Unsupported
+ * patterns fail closed instead of silently weakening the sync check.
+ *
+ * @param {string} root
+ * @param {string[]} globs
  */
-function expandGlobsSafe(globs) {
-  const dirs = [];
-  for (const g of globs) {
-    if (g.endsWith("/*")) {
-      const base = g.slice(0, -2);
-      const basePath = join(ROOT, base);
-      if (!existsSync(basePath)) continue;
-      for (const entry of readdirSync(basePath, { withFileTypes: true })) {
-        if (entry.isDirectory()) {
-          dirs.push(join(base, entry.name));
-        }
-      }
+export function expandWorkspaceGlobs(root, globs) {
+  const dirs = new Set();
+
+  for (const rawGlob of globs) {
+    const excluded = rawGlob.startsWith("!");
+    const glob = normalizeWorkspaceDir(excluded ? rawGlob.slice(1) : rawGlob);
+    /** @type {string[]} */
+    let matches;
+
+    if (glob.endsWith("/*") && !glob.slice(0, -2).includes("*")) {
+      const base = glob.slice(0, -2);
+      const basePath = join(root, ...base.split("/"));
+      matches = existsSync(basePath)
+        ? readdirSync(basePath, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => `${base}/${entry.name}`)
+        : [];
+    } else if (!glob.includes("*")) {
+      const candidate = join(root, ...glob.split("/"));
+      matches = existsSync(candidate) ? [glob] : [];
     } else {
-      const p = join(ROOT, g);
-      if (existsSync(p)) {
-        dirs.push(g);
-      }
+      throw new Error(`Unsupported pnpm workspace pattern: ${rawGlob}`);
+    }
+
+    for (const match of matches) {
+      if (excluded) dirs.delete(match);
+      else dirs.add(match);
     }
   }
-  return dirs;
+
+  return [...dirs].toSorted((a, b) => a.localeCompare(b));
 }
 
 /**
- * Build a map of package name -> relative directory for all workspace packages.
+ * Read package names and normalized relative paths for all workspace packages.
+ *
+ * @param {string} root
+ * @param {string[]} dirs
  */
-function buildWorkspaceMap(dirs) {
-  const map = new Map();
-  for (const dir of dirs) {
-    const pkgPath = join(ROOT, dir, "package.json");
+export function buildWorkspacePackages(root, dirs) {
+  /** @type {Array<{name: string, dir: string, path: string}>} */
+  const packages = [];
+  const names = new Set();
+
+  for (const rawDir of dirs) {
+    const dir = normalizeWorkspaceDir(rawDir);
+    const pkgPath = join(root, ...dir.split("/"), "package.json");
     if (!existsSync(pkgPath)) continue;
+
     const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-    if (pkg.name) {
-      map.set(pkg.name, dir);
+    if (!pkg.name) continue;
+    if (names.has(pkg.name)) {
+      throw new Error(`Duplicate workspace package name: ${pkg.name}`);
     }
-  }
-  return map;
-}
 
-/**
- * Recursively collect all workspace dependencies (transitive closure).
- */
-function resolveWorkspaceDeps(workspaceMap, startName) {
-  const visited = new Set();
-  const closure = new Set();
-
-  function visit(name) {
-    if (visited.has(name)) return;
-    visited.add(name);
-
-    const dir = workspaceMap.get(name);
-    if (!dir) return;
-
-    const pkgPath = join(ROOT, dir, "package.json");
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-    const depSections = [
-      pkg.dependencies,
-      pkg.devDependencies,
-      pkg.peerDependencies,
-    ];
-
-    for (const section of depSections) {
-      if (!section) continue;
-      for (const [depName, specifier] of Object.entries(section)) {
-        if (
-          typeof specifier === "string" &&
-          (specifier.includes("workspace") || specifier.startsWith("link:"))
-        ) {
-          closure.add(depName);
-          visit(depName);
-        }
-      }
-    }
+    names.add(pkg.name);
+    packages.push({ name: pkg.name, dir, path: `./${dir}` });
   }
 
-  visit(startName);
-  return closure;
+  return packages.toSorted((a, b) => a.name.localeCompare(b.name));
 }
 
 /**
  * Parse workspaceNames and workspacePaths from flake.nix.
+ *
+ * @param {string} root
  */
-function parseFlakeNix() {
-  const content = readFileSync(FLAKE_NIX, "utf8");
+export function parseFlakeNix(root) {
+  const content = readFileSync(join(root, "flake.nix"), "utf8");
 
   function extractArray(label) {
-    const regex = new RegExp(
-      `${label}\\s*=\\s*\\[(.*?)\\]`,
-      "s"
-    );
-    const match = content.match(regex);
-    if (!match) {
-      throw new Error(`Could not find ${label} in flake.nix`);
-    }
-    const items = [];
-    // workspaceNames uses quoted strings, workspacePaths uses bare Nix paths
-    const itemRegex = label === "workspacePaths" ? /\.\/[^\s\]]+/g : /"([^"]+)"/g;
-    let m;
+    const match = content.match(new RegExp(`${label}\\s*=\\s*\\[(.*?)\\]`, "s"));
+    if (!match) throw new Error(`Could not find ${label} in flake.nix`);
+
     if (label === "workspacePaths") {
-      while ((m = itemRegex.exec(match[1])) !== null) {
-        items.push(m[0]);
-      }
-    } else {
-      while ((m = itemRegex.exec(match[1])) !== null) {
-        items.push(m[1]);
-      }
+      return [...match[1].matchAll(/\.\/[^\s\]]+/g)].map((item) =>
+        `./${normalizeWorkspaceDir(item[0])}`,
+      );
     }
-    return items;
+    return [...match[1].matchAll(/"([^"]+)"/g)].map((item) => item[1]);
   }
 
   return {
@@ -157,85 +153,80 @@ function parseFlakeNix() {
   };
 }
 
-function main() {
-  const globs = getWorkspaceGlobs();
-  const dirs = expandGlobsSafe(globs);
-  const workspaceMap = buildWorkspaceMap(dirs);
+/**
+ * Compare the pnpm workspace package set with both Nix lists.
+ *
+ * @param {string} [root]
+ */
+export function checkNixWorkspace(root = DEFAULT_ROOT) {
+  const dirs = expandWorkspaceGlobs(root, getWorkspaceGlobs(root));
+  const packages = buildWorkspacePackages(root, dirs);
+  const flake = parseFlakeNix(root);
+  const expectedNames = new Set(packages.map((pkg) => pkg.name));
+  const expectedPaths = new Set(packages.map((pkg) => pkg.path));
+  const flakeNames = new Set(flake.names);
+  const flakePaths = new Set(flake.paths);
 
-  if (!workspaceMap.has(START_PKG)) {
-    console.error(`Start package ${START_PKG} not found in workspace.`);
-    process.exit(1);
-  }
+  const missingNames = packages
+    .filter((pkg) => !flakeNames.has(pkg.name))
+    .map((pkg) => pkg.name);
+  const missingPaths = packages
+    .filter((pkg) => !flakePaths.has(pkg.path))
+    .map((pkg) => ({ name: pkg.name, path: pkg.path }));
+  const extraNames = flake.names
+    .filter((name) => !expectedNames.has(name))
+    .toSorted();
+  const extraPaths = flake.paths
+    .filter((path) => !expectedPaths.has(path))
+    .toSorted();
 
-  const closure = resolveWorkspaceDeps(workspaceMap, START_PKG);
-  /** @type {string[]} */
-  const closureNames = [...closure].sort((a, b) => a.localeCompare(b));
-
-  const flake = parseFlakeNix();
-  const flakeNameSet = new Set(flake.names);
-  const flakePathSet = new Set(flake.paths);
-
-  const missingNames = closureNames.filter((n) => !flakeNameSet.has(n));
-  /** @type {Array<{name: string, path: string}>} */
-  const missingPaths = [];
-  for (const name of closureNames) {
-    const dir = workspaceMap.get(name);
-    if (dir && !flakePathSet.has(`./${dir}`)) {
-      missingPaths.push({ name, path: `./${dir}` });
-    }
-  }
-
-  // Also check that the start package itself is in flake.nix
-  if (!flakeNameSet.has(START_PKG)) {
-    missingNames.unshift(START_PKG);
-  }
-  const startDir = workspaceMap.get(START_PKG);
-  if (startDir && !flakePathSet.has(`./${startDir}`)) {
-    missingPaths.unshift({ name: START_PKG, path: `./${startDir}` });
-  }
-
-  const ok = missingNames.length === 0 && missingPaths.length === 0;
-
-  if (!ok) {
-    console.error("❌ flake.nix workspace lists are out of sync.\n");
-
-    if (missingNames.length > 0) {
-      console.error(
-        "The following workspace packages are missing from flake.nix workspaceNames:"
-      );
-      for (const n of missingNames) {
-        console.error(`  - ${n}`);
-      }
-      console.error("");
-    }
-
-    if (missingPaths.length > 0) {
-      console.error(
-        "The following workspace paths are missing from flake.nix workspacePaths:"
-      );
-      for (const { name, path } of missingPaths) {
-        console.error(`  - ${path}  (${name})`);
-      }
-      console.error("");
-    }
-
-    console.error(
-      "Please add the missing entries to both workspaceNames and workspacePaths in flake.nix."
-    );
-    console.error(
-      `\nExpected workspaceNames (${flake.names.length + missingNames.length} total):`
-    );
-    const expectedNames = new Set([...flake.names, ...missingNames.map((m) => m)]);
-    for (const n of [...expectedNames].sort((a, b) => a.localeCompare(b))) {
-      console.error(`  ${n}`);
-    }
-
-    process.exit(1);
-  }
-
-  console.log(
-    `✅ All ${closureNames.length} recursive workspace dependencies are present in flake.nix.`
-  );
+  return {
+    ok:
+      missingNames.length === 0 &&
+      missingPaths.length === 0 &&
+      extraNames.length === 0 &&
+      extraPaths.length === 0,
+    packages,
+    missingNames,
+    missingPaths,
+    extraNames,
+    extraPaths,
+  };
 }
 
-main();
+function printList(title, values) {
+  if (values.length === 0) return;
+  console.error(title);
+  for (const value of values) console.error(`  - ${value}`);
+  console.error("");
+}
+
+export function main() {
+  const result = checkNixWorkspace();
+  if (result.ok) {
+    console.log(
+      `✅ All ${result.packages.length} pnpm workspace packages are in sync with flake.nix.`,
+    );
+    return;
+  }
+
+  console.error("❌ flake.nix workspace lists are out of sync.\n");
+  printList(
+    "Workspace packages missing from flake.nix workspaceNames:",
+    result.missingNames,
+  );
+  printList(
+    "Workspace packages missing from flake.nix workspacePaths:",
+    result.missingPaths.map(({ name, path }) => `${path}  (${name})`),
+  );
+  printList("Stale entries in flake.nix workspaceNames:", result.extraNames);
+  printList("Stale entries in flake.nix workspacePaths:", result.extraPaths);
+  console.error(
+    "Update workspaceNames and workspacePaths so they exactly match pnpm-workspace.yaml.",
+  );
+  process.exitCode = 1;
+}
+
+if (process.argv[1] && import.meta.filename === resolve(process.argv[1])) {
+  main();
+}
