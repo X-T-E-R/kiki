@@ -1,5 +1,6 @@
 /**
- * Kiki desktop shell: one user-facing window and one owned Kiki SEA backend.
+ * Kiki desktop shell: one user-facing window, an owned Kiki SEA backend,
+ * a system tray icon, close-to-tray, and approval notifications.
  *
  * The bounded shutdown and process-tree fallback follow LiveAgent's managed
  * process lifecycle at 00a2c6fc43754f40022b0703459824559bee73ea (MIT).
@@ -17,7 +18,11 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, RunEvent, State};
+use tauri::{
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Emitter, Manager, RunEvent, State, WindowEvent,
+};
 use tauri_plugin_shell::{process::CommandChild, ShellExt};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -165,6 +170,57 @@ impl BackendManager {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+struct DesktopPrefs {
+    notifications: bool,
+    close_to_tray: bool,
+}
+
+impl Default for DesktopPrefs {
+    fn default() -> Self {
+        Self {
+            notifications: true,
+            close_to_tray: true,
+        }
+    }
+}
+
+fn should_hide_on_close(prefs: &DesktopPrefs) -> bool {
+    prefs.close_to_tray
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopPrefsPatch {
+    notifications: Option<bool>,
+    close_to_tray: Option<bool>,
+}
+
+fn desktop_prefs_path() -> Result<PathBuf, String> {
+    Ok(kimi_home_dir()?.join("kiki").join("desktop.json"))
+}
+
+fn read_desktop_prefs_file() -> DesktopPrefs {
+    let path = match desktop_prefs_path() {
+        Ok(path) => path,
+        Err(_) => return DesktopPrefs::default(),
+    };
+    match fs::read_to_string(&path) {
+        Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+        Err(_) => DesktopPrefs::default(),
+    }
+}
+
+fn write_desktop_prefs_file(prefs: &DesktopPrefs) -> Result<(), String> {
+    let path = desktop_prefs_path()?;
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let raw = serde_json::to_string_pretty(prefs).map_err(|e| e.to_string())?;
+    fs::write(&path, raw).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn desktop_connection(
     app: AppHandle,
@@ -174,6 +230,31 @@ async fn desktop_connection(
     tauri::async_runtime::spawn_blocking(move || manager.connection(&app))
         .await
         .map_err(|error| format!("Kiki backend startup task failed: {error}"))?
+}
+
+#[tauri::command]
+fn show_main_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn read_desktop_prefs() -> DesktopPrefs {
+    read_desktop_prefs_file()
+}
+
+#[tauri::command]
+fn write_desktop_prefs(prefs: DesktopPrefsPatch) -> Result<(), String> {
+    let current = read_desktop_prefs_file();
+    let next = DesktopPrefs {
+        notifications: prefs.notifications.unwrap_or(current.notifications),
+        close_to_tray: prefs.close_to_tray.unwrap_or(current.close_to_tray),
+    };
+    write_desktop_prefs_file(&next)
 }
 
 fn kimi_home_dir() -> Result<PathBuf, String> {
@@ -378,6 +459,66 @@ fn force_stop(backend: OwnedBackend) {
     let _ = backend.child.kill();
 }
 
+fn build_tray(app: &AppHandle) -> Result<(), String> {
+    let show_i =
+        MenuItem::with_id(app, "show", "Show", true, None::<&str>).map_err(|e| e.to_string())?;
+    let hide_i =
+        MenuItem::with_id(app, "hide", "Hide", true, None::<&str>).map_err(|e| e.to_string())?;
+    let new_i = MenuItem::with_id(app, "new", "New Session", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let quit_i =
+        MenuItem::with_id(app, "quit", "Quit", true, None::<&str>).map_err(|e| e.to_string())?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &show_i,
+            &hide_i,
+            &new_i,
+            &PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?,
+            &quit_i,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or_else(|| "No default window icon".to_string())?;
+
+    TrayIconBuilder::new()
+        .icon(icon)
+        .tooltip("Kiki")
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(move |app, event| match event.id.as_ref() {
+            "show" => {
+                let _ = app.get_webview_window("main").and_then(|w| {
+                    let _ = w.show();
+                    w.set_focus().ok()
+                });
+            }
+            "hide" => {
+                let _ = app.get_webview_window("main").and_then(|w| w.hide().ok());
+            }
+            "new" => {
+                let _ = app.get_webview_window("main").and_then(|w| {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                    w.unminimize().ok()
+                });
+                let _ = app.emit("kiki://new-session", ());
+            }
+            "quit" => {
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .build(app)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 pub fn run() {
     let manager = BackendManager::default();
     let shutdown_manager = manager.clone();
@@ -393,14 +534,48 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(manager)
-        .invoke_handler(tauri::generate_handler![desktop_connection])
+        .invoke_handler(tauri::generate_handler![
+            desktop_connection,
+            show_main_window,
+            read_desktop_prefs,
+            write_desktop_prefs
+        ])
+        .on_window_event(move |window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let prefs = read_desktop_prefs_file();
+                if should_hide_on_close(&prefs) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                // If close_to_tray is false, default exit proceeds and the
+                // RunEvent::ExitRequested handler below shuts down the backend.
+            }
+        })
+        .setup(|app| {
+            // The tray is part of the desktop lifecycle contract, not a
+            // best-effort decoration: close-to-tray would strand a hidden
+            // window if the icon could not be created.
+            build_tray(app.handle()).map_err(std::io::Error::other)?;
+            Ok(())
+        })
         .build(tauri::generate_context!())
         .unwrap_or_else(|error| panic!("failed to build Kiki desktop: {error}"));
 
-    app.run(move |_, event| {
+    app.run(move |app_handle, event| {
         if matches!(event, RunEvent::ExitRequested { .. }) {
             shutdown_manager.shutdown();
+        }
+        if let RunEvent::TrayIconEvent(TrayIconEvent::Click { button, .. }) = &event {
+            // Left-click on the tray icon shows the window if it is currently hidden.
+            if *button == MouseButton::Left {
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                    let _ = window.unminimize();
+                }
+            }
         }
     });
 }
@@ -408,6 +583,28 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_prefs_default_and_partial_json_close_to_tray() {
+        assert!(DesktopPrefs::default().close_to_tray);
+
+        let absent: DesktopPrefs = serde_json::from_str("{}").unwrap();
+        assert!(absent.close_to_tray);
+
+        let partial: DesktopPrefs = serde_json::from_str(r#"{"notifications":false}"#).unwrap();
+        assert!(!partial.notifications);
+        assert!(partial.close_to_tray);
+
+        let corrupt = serde_json::from_str::<DesktopPrefs>("{not-json").unwrap_or_default();
+        assert!(corrupt.close_to_tray);
+    }
+
+    #[test]
+    fn explicit_quit_preference_does_not_hide_on_close() {
+        let prefs: DesktopPrefs =
+            serde_json::from_str(r#"{"notifications":true,"closeToTray":false}"#).unwrap();
+        assert!(!should_hide_on_close(&prefs));
+    }
 
     #[test]
     fn instance_record_requires_exact_pid_loopback_and_bound_port() {

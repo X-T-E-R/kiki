@@ -1,14 +1,13 @@
 /**
- * Session sidebar — wordmark header with connection pill, new-session form,
- * and the session list (polled every 5s; live-refined by the open session's
- * event stream). Status dots: accent pulse = busy, amber = awaiting a human,
- * neutral = idle.
+ * Session sidebar — wordmark header with connection pill, new-session shortcut,
+ * settings entry, and the session list (polled every 5s).
  */
 
 import { useEffect, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 
-import type { Session, Workspace } from '@moonshot-ai/protocol';
+import type { Session } from '@moonshot-ai/protocol';
 
 import { relativeTime } from '../lib/time';
 import { registerOverlay } from '../lib/uiBusy';
@@ -51,8 +50,6 @@ function sessionLabel(session: Session): string {
 
 export function Sidebar({
   activeSessionId,
-  onSelectSession,
-  onCreatedSession,
   sessions,
   sessionsQuery,
   showArchived,
@@ -60,8 +57,6 @@ export function Sidebar({
   className,
 }: {
   activeSessionId: string | undefined;
-  onSelectSession: (sessionId: string) => void;
-  onCreatedSession: (session: Session) => void;
   sessions: readonly Session[];
   sessionsQuery: {
     isLoading: boolean;
@@ -75,15 +70,13 @@ export function Sidebar({
   onToggleArchived: () => void;
   className?: string;
 }) {
+  const navigate = useNavigate();
   const { client, meta, wsStatus, disconnect } = useConnection();
   const queryClient = useQueryClient();
-  const [creating, setCreating] = useState(false);
   const [menu, setMenu] = useState<{ session: Session; x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState<Session | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  // The active session's header title updates via session.meta.updated;
-  // invalidating keeps the list honest immediately.
   const refreshSessions = () => queryClient.invalidateQueries({ queryKey: ['sessions'] });
 
   const archive = (session: Session) => {
@@ -138,20 +131,11 @@ export function Sidebar({
       <div className="px-3 pb-2">
         <button
           type="button"
-          onClick={() => setCreating((value) => !value)}
+          onClick={() => navigate('/new')}
           className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-hairline-strong bg-paper px-3 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:border-accent hover:text-accent"
         >
           <span aria-hidden className="text-[14px] leading-none">＋</span> New session
         </button>
-        {creating ? (
-          <NewSessionForm
-            onCancel={() => setCreating(false)}
-            onCreated={(session) => {
-              setCreating(false);
-              onCreatedSession(session);
-            }}
-          />
-        ) : null}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
@@ -193,7 +177,7 @@ export function Sidebar({
             <div key={session.id} className="group relative mb-0.5">
               <button
                 type="button"
-                onClick={() => onSelectSession(session.id)}
+                onClick={() => navigate(`/s/${session.id}`)}
                 className={`flex w-full items-start gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors ${
                   active
                     ? 'border-hairline bg-accent-soft'
@@ -260,7 +244,14 @@ export function Sidebar({
         </button>
       </div>
 
-      <div className="border-t border-hairline px-3 py-2.5">
+      <div className="border-t border-hairline px-3 py-2.5 space-y-1">
+        <button
+          type="button"
+          onClick={() => navigate('/settings')}
+          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11.5px] text-ink-soft transition-colors hover:bg-paper hover:text-ink"
+        >
+          <span aria-hidden className="text-[13px]">⚙</span> Settings
+        </button>
         <button
           type="button"
           onClick={disconnect}
@@ -450,112 +441,4 @@ function shortCwd(cwd: string): string {
   const parts = normalized.split('/').filter((part) => part !== '');
   if (parts.length <= 2) return normalized;
   return `…/${parts.slice(-2).join('/')}`;
-}
-
-// ---------------------------------------------------------------------------
-
-function NewSessionForm({
-  onCancel,
-  onCreated,
-}: {
-  onCancel: () => void;
-  onCreated: (session: Session) => void;
-}) {
-  const { client } = useConnection();
-  const workspacesQuery = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => client.listWorkspaces(),
-    staleTime: 30_000,
-  });
-  const workspaces = workspacesQuery.data?.items ?? [];
-  const [workspaceId, setWorkspaceId] = useState<string>('');
-  const [cwd, setCwd] = useState('');
-  const [title, setTitle] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const effectiveWorkspace: Workspace | undefined =
-    workspaces.find((w) => w.id === workspaceId) ??
-    // Default to the most recently opened workspace.
-    workspaces.toSorted((a, b) => b.last_opened_at.localeCompare(a.last_opened_at))[0];
-
-  const create = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const trimmedCwd = cwd.trim();
-      const trimmedTitle = title.trim();
-      const session = await client.createSession(
-        trimmedCwd !== ''
-          ? {
-              title: trimmedTitle !== '' ? trimmedTitle : undefined,
-              metadata: { cwd: trimmedCwd },
-            }
-          : {
-              title: trimmedTitle !== '' ? trimmedTitle : undefined,
-              workspace_id: effectiveWorkspace?.id,
-            },
-      );
-      onCreated(session);
-    } catch (error) {
-      setError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="anim-enter mt-2 rounded-lg border border-hairline bg-paper p-2.5">
-      <label className="mb-1 block text-[11px] font-medium text-ink-soft">Workspace</label>
-      <select
-        className="mb-2 w-full rounded-md border border-hairline bg-panel px-2 py-1.5 text-[12px] text-ink outline-none focus:border-accent"
-        value={workspaceId !== '' ? workspaceId : (effectiveWorkspace?.id ?? '')}
-        onChange={(event) => setWorkspaceId(event.target.value)}
-        disabled={cwd.trim() !== ''}
-      >
-        {workspaces.length === 0 ? <option value="">(no workspaces)</option> : null}
-        {workspaces.map((workspace) => (
-          <option key={workspace.id} value={workspace.id}>
-            {workspace.name}
-          </option>
-        ))}
-      </select>
-      <label className="mb-1 block text-[11px] font-medium text-ink-soft">
-        …or a working directory
-      </label>
-      <input
-        className="mb-2 w-full rounded-md border border-hairline bg-panel px-2 py-1.5 font-mono text-[11.5px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
-        placeholder="C:/path/to/project"
-        value={cwd}
-        onChange={(event) => setCwd(event.target.value)}
-        spellCheck={false}
-      />
-      <input
-        className="mb-2 w-full rounded-md border border-hairline bg-panel px-2 py-1.5 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
-        placeholder="Title (optional)"
-        value={title}
-        onChange={(event) => setTitle(event.target.value)}
-      />
-      {error !== undefined && error !== null ? (
-        <p className="mb-2 font-mono text-[10.5px] leading-snug text-danger">{error}</p>
-      ) : null}
-      <div className="flex gap-1.5">
-        <button
-          type="button"
-          onClick={() => void create()}
-          disabled={busy || (cwd.trim() === '' && effectiveWorkspace === undefined)}
-          className="flex-1 rounded-md bg-accent px-2 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-accent-deep disabled:opacity-50"
-        >
-          {busy ? 'Creating…' : 'Create'}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="rounded-md border border-hairline px-2 py-1.5 text-[12px] text-ink-soft transition-colors hover:text-ink"
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
 }

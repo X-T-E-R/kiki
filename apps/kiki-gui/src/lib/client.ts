@@ -12,15 +12,27 @@ import type {
   ApprovalResolveRequest,
   ApprovalResolveResult,
   ArchiveSessionResponse,
+  AuthSummary,
   ConfigResponse,
   Envelope,
+  ListMcpServersResponse,
   ListModelsResponse,
+  ListProvidersResponse,
   ListSessionsQuery,
+  ListSkillsResponse,
   ListTasksResponse,
+  ListToolsResponse,
   ListWorkspacesResponse,
   Message,
   MetaResponse,
+  OAuthFlowSnapshot,
+  OAuthFlowStart,
+  OAuthLoginQuery,
+  OAuthLoginStartRequest,
+  OAuthLogoutRequest,
+  OAuthLogoutResponse,
   PageResponse,
+  PatchConfigRequest,
   PromptAbortResponse,
   PromptSubmission,
   PromptSubmitResult,
@@ -28,10 +40,12 @@ import type {
   QuestionRequest,
   QuestionResolveRequest,
   QuestionResolveResult,
+  RestartMcpServerResult,
   RestoreSessionResponse,
   Session,
   SessionCreate,
   SessionSnapshotResponse,
+  SetDefaultModelResponse,
   UpdateSessionProfileRequest,
 } from '@moonshot-ai/protocol';
 
@@ -308,5 +322,67 @@ export class KikiClient {
 
   listWorkspaces(): Promise<ListWorkspacesResponse> {
     return this.request<ListWorkspacesResponse>('GET', '/workspaces');
+  }
+
+  getAuth(): Promise<AuthSummary> {
+    return this.request<AuthSummary>('GET', '/auth');
+  }
+
+  listProviders(): Promise<ListProvidersResponse> {
+    return this.request<ListProvidersResponse>('GET', '/providers');
+  }
+
+  setDefaultModel(modelId: string): Promise<SetDefaultModelResponse> {
+    return this.request<SetDefaultModelResponse>(
+      'POST',
+      `/models/${encodeURIComponent(modelId)}:set_default`,
+    );
+  }
+
+  getOAuthStatus(query: OAuthLoginQuery = {}): Promise<OAuthFlowSnapshot | null> {
+    return this.request<OAuthFlowSnapshot | null>('GET', '/oauth/login', { query });
+  }
+
+  startOAuthLogin(body: OAuthLoginStartRequest = {}): Promise<OAuthFlowStart> {
+    return this.request<OAuthFlowStart>('POST', '/oauth/login', { body });
+  }
+
+  cancelOAuthLogin(query: OAuthLoginQuery = {}): Promise<{ cancelled: boolean; status: string }> {
+    return this.request<{ cancelled: boolean; status: string }>('DELETE', '/oauth/login', {
+      query,
+    });
+  }
+
+  logoutOAuth(body: OAuthLogoutRequest = {}): Promise<OAuthLogoutResponse> {
+    return this.request<OAuthLogoutResponse>('POST', '/oauth/logout', { body });
+  }
+
+  listTools(sessionId?: string): Promise<ListToolsResponse> {
+    return this.request<ListToolsResponse>('GET', '/tools', {
+      query: sessionId !== undefined ? { session_id: sessionId } : {},
+    });
+  }
+
+  listMcpServers(): Promise<ListMcpServersResponse> {
+    return this.request<ListMcpServersResponse>('GET', '/mcp/servers');
+  }
+
+  restartMcpServer(serverId: string): Promise<RestartMcpServerResult> {
+    return this.request<RestartMcpServerResult>(
+      'POST',
+      `/mcp/servers/${encodeURIComponent(serverId)}:restart`,
+      { body: {} },
+    );
+  }
+
+  listWorkspaceSkills(workspaceId: string): Promise<ListSkillsResponse> {
+    return this.request<ListSkillsResponse>(
+      'GET',
+      `/workspaces/${encodeURIComponent(workspaceId)}/skills`,
+    );
+  }
+
+  patchConfig(body: PatchConfigRequest): Promise<ConfigResponse> {
+    return this.request<ConfigResponse>('POST', '/config', { body });
   }
 }

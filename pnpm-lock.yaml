@@ -95,6 +95,9 @@ importers:
       '@tauri-apps/api':
         specifier: ^2.8.0
         version: 2.11.1
+      '@tauri-apps/plugin-notification':
+        specifier: ^2.3.3
+        version: 2.3.3
       diff:
         specifier: ^8.0.2
         version: 8.0.4
@@ -104,6 +107,9 @@ importers:
       react-dom:
         specifier: ^19.1.0
         version: 19.2.5(react@19.2.5)
+      react-router-dom:
+        specifier: ^7.14.1
+        version: 7.14.1(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       streamdown:
         specifier: ^2.2.0
         version: 2.5.0(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -4401,6 +4407,9 @@ packages:
     resolution: {integrity: sha512-R8xGtMpwyetawSqm9kYOuMmEqkhUbvcUy8n0aNXIxollKBLESUu5f4Fx+64hgASYm1H+jSWq6jCW6zqTnH6hqQ==}
     engines: {node: '>= 10'}
     hasBin: true
+
+  '@tauri-apps/plugin-notification@2.3.3':
+    resolution: {integrity: sha512-Zw+ZH18RJb41G4NrfHgIuofJiymusqN+q8fGUIIV7vyCH+5sSn5coqRv/MWB9qETsUs97vmU045q7OyseCV3Qg==}
 
   '@textlint/ast-node-types@15.7.1':
     resolution: {integrity: sha512-Wii5UgUKFEh9Uv6wbq1zr4/Kf+dtjiUuzPrrXzKp8H+ifkvKNzi23V4Nz+6wVyHQn5T28AFuc8VH8OtzvGYecA==}
@@ -13227,6 +13236,10 @@ snapshots:
       '@tauri-apps/cli-win32-arm64-msvc': 2.11.4
       '@tauri-apps/cli-win32-ia32-msvc': 2.11.4
       '@tauri-apps/cli-win32-x64-msvc': 2.11.4
+
+  '@tauri-apps/plugin-notification@2.3.3':
+    dependencies:
+      '@tauri-apps/api': 2.11.1
 
   '@textlint/ast-node-types@15.7.1': {}
 

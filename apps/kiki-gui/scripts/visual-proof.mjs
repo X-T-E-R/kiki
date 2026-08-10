@@ -98,6 +98,11 @@ async function selectSession(titleFragment) {
   await page.waitForTimeout(800);
 }
 
+async function resizeViewport(width) {
+  await page.setViewportSize({ width, height: 900 });
+  await page.waitForTimeout(300);
+}
+
 async function sendPrompt(text) {
   await page.fill('textarea', text);
   await page.press('textarea', 'Enter');
@@ -297,13 +302,90 @@ async function scenarioEmptyStates() {
   await page.reload({ waitUntil: 'networkidle' });
   await page.waitForSelector('text=No sessions yet', { timeout: 10_000 });
   await shot('empty-states');
-  // Create a session through the UI → blank-page state.
+  // Create a session through the /new draft page.
   await page.click('text=New session');
-  await page.waitForSelector('text=Create', { timeout: 5000 });
-  await page.fill("input[placeholder='Title (optional)']", 'Fixture blank session');
-  await page.click('text=Create');
-  await page.waitForSelector('text=A blank page', { timeout: 10_000 });
-  await shot('empty-states-blank');
+  await page.waitForSelector('text=New session', { timeout: 5000 });
+  await page.fill('textarea', 'Fixture blank session');
+  await page.press('textarea', 'Enter');
+  await page.waitForURL(/\/s\//, { timeout: 10_000 });
+  await page.waitForSelector('text=Fixture blank session', { timeout: 10_000 });
+  await shot('empty-states-created');
+}
+
+async function scenarioDraftFlow() {
+  await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'networkidle',
+  });
+  await page.waitForSelector('text=New session', { timeout: 10_000 });
+  await page.fill('textarea', 'Run the fixture draft flow.');
+  await page.press('textarea', 'Enter');
+  await page.waitForURL(/\/s\//, { timeout: 10_000 });
+  await page.waitForSelector('text=working', { timeout: 10_000 });
+  await page.waitForSelector('text=Here is the fixture answer', { timeout: 20_000 });
+  await page.waitForTimeout(600);
+  await shot('draft-flow');
+}
+
+async function scenarioSettings() {
+  await page.goto(`${WEB_URL}/settings?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'networkidle',
+  });
+  await page.waitForSelector('text=Settings', { timeout: 10_000 });
+  await page.waitForTimeout(500);
+  await shot('settings-general');
+
+  await page.click('text=Models');
+  await page.waitForSelector('text=Kiki Pro', { timeout: 10_000 });
+  await page.waitForTimeout(400);
+  await shot('settings-models');
+
+  await page.click('text=Capabilities');
+  await page.waitForSelector('text=Tools', { timeout: 10_000 });
+  await page.waitForTimeout(400);
+  await shot('settings-capabilities');
+}
+
+async function scenarioResponsive() {
+  await selectSession('Fixture: settings demo');
+
+  const widths = [1440, 1024, 768, 320];
+  for (const width of widths) {
+    await resizeViewport(width);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForSelector('text=Fixture: settings demo', { timeout: 10_000 });
+    await page.waitForTimeout(600);
+    await shot(`responsive-session-${width}`);
+
+    const railToggle = page.locator('button[aria-label="Toggle panel"]');
+    await railToggle.waitFor({ timeout: 10_000 });
+    if ((await railToggle.getAttribute('aria-expanded')) !== 'true') {
+      await railToggle.click();
+    }
+    await page.waitForTimeout(400);
+    await shot(`responsive-rail-${width}`);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
+
+    if (width < 768) {
+      await page.click('button[aria-label="Open session menu"]');
+      await page.waitForTimeout(400);
+      await shot(`responsive-sidebar-${width}`);
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(200);
+    }
+
+    await page.goto(`${WEB_URL}/settings?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+      waitUntil: 'networkidle',
+    });
+    await page.waitForSelector('text=Settings', { timeout: 10_000 });
+    await page.waitForTimeout(400);
+    await shot(`responsive-settings-${width}`);
+
+    // Return to the session for the next width iteration.
+    await page.goto(`${WEB_URL}/?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+      waitUntil: 'networkidle',
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -318,6 +400,9 @@ const SCENARIOS = [
   ['approvals-gallery', scenarioApprovalsGallery],
   ['reconnect', scenarioReconnect],
   ['empty-states', scenarioEmptyStates],
+  ['draft-flow', scenarioDraftFlow],
+  ['settings', scenarioSettings],
+  ['responsive', scenarioResponsive],
 ];
 
 const proofOutput = selectProofOutput(

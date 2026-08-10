@@ -302,16 +302,18 @@ class FixtureServer {
     }
 
     const path = url.pathname.replace(/^\/api\/v1/, '');
-    const body = req.method === 'POST' ? await this.readBody(req) : undefined;
+    const body = (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE')
+      ? await this.readBody(req)
+      : undefined;
     try {
-      this.route(res, path, url.searchParams, body);
+      this.route(res, path, url.searchParams, body, req.method);
     } catch (error) {
       console.error('[fixture] route error', path, error);
       this.envelope(res, null, 50001, String(error));
     }
   }
 
-  route(res, path, query, body) {
+  route(res, path, query, body, method) {
     const sessions = [...this.sessions.values()];
     const sessionMatch = /^\/sessions\/([^/]+)(\/.*)?$/.exec(path);
     const sessionId = sessionMatch?.[1];
@@ -342,6 +344,82 @@ class FixtureServer {
           { provider: 'fixture', model: 'fixture/kiki-pro', display_name: 'Kiki Pro', max_context_size: 262144, support_efforts: ['low', 'high'], default_effort: 'high' },
           { provider: 'fixture', model: 'fixture/kiki-lite', display_name: 'Kiki Lite', max_context_size: 131072 },
         ],
+      });
+    }
+    const setDefaultModelMatch = /^\/models\/([^/]+):set_default$/.exec(path);
+    if (setDefaultModelMatch !== null && body !== undefined) {
+      return this.envelope(res, {
+        default_model: setDefaultModelMatch[1],
+        model: {
+          provider: 'fixture',
+          model: setDefaultModelMatch[1],
+          display_name: setDefaultModelMatch[1],
+          max_context_size: 262144,
+        },
+      });
+    }
+    if (path === '/config' && method === 'POST') {
+      return this.envelope(res, {
+        ...(this.scenario?.data.config ?? {
+          default_model: 'fixture/kiki-pro',
+          default_permission_mode: 'manual',
+          providers: {},
+        }),
+        ...body,
+      });
+    }
+    if (path === '/auth') {
+      return this.envelope(res, this.scenario?.data.auth ?? {
+        ready: true,
+        providers_count: 0,
+        default_model: null,
+        managed_provider: null,
+      });
+    }
+    if (path === '/providers') {
+      return this.envelope(res, {
+        items: this.scenario?.data.providers ?? [],
+      });
+    }
+    if (path === '/oauth/login') {
+      if (method === 'GET') {
+        return this.envelope(res, this.scenario?.data.oauth ?? null);
+      }
+      if (method === 'POST') {
+        return this.envelope(res, this.scenario?.data.oauthStart ?? {
+          flow_id: nextId('oauth'),
+          provider: 'fixture',
+          status: 'authenticated',
+        });
+      }
+      if (method === 'DELETE') {
+        return this.envelope(res, { cancelled: true, status: 'cancelled' });
+      }
+    }
+    if (path === '/oauth/logout' && body !== undefined) {
+      return this.envelope(res, {
+        logged_out: true,
+        provider: body.provider ?? 'fixture',
+      });
+    }
+    if (path === '/tools') {
+      return this.envelope(res, {
+        tools: this.scenario?.data.tools ?? [],
+      });
+    }
+    if (path === '/mcp/servers') {
+      return this.envelope(res, {
+        servers: this.scenario?.data.mcpServers ?? [],
+      });
+    }
+    const mcpRestartMatch = /^\/mcp\/servers\/([^/]+):restart$/.exec(path);
+    if (mcpRestartMatch !== null && body !== undefined) {
+      return this.envelope(res, { restarting: true });
+    }
+    const workspaceSkillsMatch = /^\/workspaces\/([^/]+)\/skills$/.exec(path);
+    if (workspaceSkillsMatch !== null) {
+      return this.envelope(res, {
+        skills: this.scenario?.data.workspaceSkills?.[workspaceSkillsMatch[1]] ?? [],
       });
     }
     if (path === '/workspaces') {

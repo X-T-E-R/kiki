@@ -1,7 +1,17 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Minimal capability for Kiki's sole desktop window.",
+  "description": "Main Kiki desktop window: window management, tray, notifications, and shell sidecar.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:app:allow-app-show",
+    "core:app:allow-app-hide",
+    "notification:default"
+  ]
 }
