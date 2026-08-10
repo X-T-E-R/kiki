@@ -5,7 +5,7 @@
  * neutral = idle.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { Session, Workspace } from '@moonshot-ai/protocol';
@@ -53,30 +53,34 @@ export function Sidebar({
   activeSessionId,
   onSelectSession,
   onCreatedSession,
+  sessions,
+  sessionsQuery,
+  showArchived,
+  onToggleArchived,
+  className,
 }: {
   activeSessionId: string | undefined;
   onSelectSession: (sessionId: string) => void;
   onCreatedSession: (session: Session) => void;
+  sessions: readonly Session[];
+  sessionsQuery: {
+    isLoading: boolean;
+    isError: boolean;
+    error: Error | null;
+    hasNextPage?: boolean;
+    isFetchingNextPage?: boolean;
+    fetchNextPage?: () => Promise<unknown>;
+  };
+  showArchived: boolean;
+  onToggleArchived: () => void;
+  className?: string;
 }) {
   const { client, meta, wsStatus, disconnect } = useConnection();
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
-  const [showArchived, setShowArchived] = useState(false);
   const [menu, setMenu] = useState<{ session: Session; x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState<Session | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-
-  const sessionsQuery = useQuery({
-    queryKey: ['sessions', showArchived],
-    queryFn: () =>
-      client.listSessions({ page_size: 100, include_archive: showArchived || undefined }),
-    refetchInterval: 5000,
-  });
-
-  const sessions = useMemo(() => {
-    const items = sessionsQuery.data?.items ?? [];
-    return showArchived ? items : items.filter((s) => s.archived !== true);
-  }, [sessionsQuery.data, showArchived]);
 
   // The active session's header title updates via session.meta.updated;
   // invalidating keeps the list honest immediately.
@@ -105,7 +109,7 @@ export function Sidebar({
   };
 
   return (
-    <aside className="flex h-full w-[264px] shrink-0 flex-col border-r border-hairline bg-panel">
+    <aside className={className ?? 'flex h-full w-[264px] shrink-0 flex-col border-r border-hairline bg-panel'}>
       <div className="flex items-center justify-between px-4 pt-4 pb-3">
         <Wordmark />
         <span
@@ -151,7 +155,28 @@ export function Sidebar({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-        {sessions.length === 0 && sessionsQuery.isSuccess ? (
+        {sessionsQuery.isLoading && sessions.length === 0 ? (
+          <div className="flex items-center justify-center gap-2 px-2 pt-6 text-[12px] text-ink-faint">
+            <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+            Loading sessions…
+          </div>
+        ) : null}
+        {sessionsQuery.isError ? (
+          <div className="mx-1 mt-2 rounded-md border border-danger/30 bg-danger/5 p-2">
+            <p className="text-[11.5px] font-medium text-danger">Could not load sessions</p>
+            <p className="font-mono text-[10px] text-danger/80">
+              {sessionsQuery.error?.message ?? 'Unknown error'}
+            </p>
+            <button
+              type="button"
+              onClick={() => queryClient.invalidateQueries({ queryKey: ['sessions'] })}
+              className="mt-1.5 text-[11px] font-medium text-danger underline"
+            >
+              Retry
+            </button>
+          </div>
+        ) : null}
+        {sessions.length === 0 && !sessionsQuery.isLoading && !sessionsQuery.isError ? (
           <p className="px-2 pt-6 text-center text-[12px] text-ink-faint">
             No sessions yet — start one above.
           </p>
@@ -216,10 +241,20 @@ export function Sidebar({
             </div>
           );
         })}
+        {sessionsQuery.hasNextPage ? (
+          <button
+            type="button"
+            disabled={sessionsQuery.isFetchingNextPage}
+            onClick={() => sessionsQuery.fetchNextPage?.()}
+            className="mt-2 w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-center text-[11px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-60"
+          >
+            {sessionsQuery.isFetchingNextPage ? 'Loading…' : 'Load more sessions'}
+          </button>
+        ) : null}
         <button
           type="button"
-          onClick={() => setShowArchived((value) => !value)}
-          className="mt-1 w-full rounded-md px-2 py-1 text-center text-[10.5px] text-ink-faint transition-colors hover:text-ink-soft"
+          onClick={onToggleArchived}
+          className="mt-1 w-full rounded-md px-2 py-1 text-center text-[10.5px] text-ink-faint transition-colors hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-accent/30 focus-visible:outline-none"
         >
           {showArchived ? 'Hide archived' : 'Show archived'}
         </button>

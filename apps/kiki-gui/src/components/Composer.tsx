@@ -25,6 +25,7 @@ export function Composer({
   model,
   defaultModel,
   serverDefaultModel,
+  modelSource,
   permissionMode,
   planMode,
   efforts,
@@ -46,6 +47,8 @@ export function Composer({
   defaultModel: string | undefined;
   /** The server's configured default model (fresh sessions bind nothing). */
   serverDefaultModel: string | undefined;
+  /** Where the effective model value comes from. */
+  modelSource: 'server-default' | 'session' | 'override';
   permissionMode: PermissionMode;
   /** PromptSubmission.plan_mode — the wire field name (verified). */
   planMode: boolean;
@@ -83,7 +86,6 @@ export function Composer({
   const send = () => {
     if (!canSend) return;
     onSend(text.trim());
-    onChange('');
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -129,21 +131,27 @@ export function Composer({
               plan
             </button>
             <select
-              className="max-w-56 truncate rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft outline-none transition-colors hover:border-hairline-strong focus:border-accent"
-              value={effectiveModel ?? ''}
+              className="max-w-56 truncate rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft outline-none transition-colors hover:border-hairline-strong focus:border-accent focus:ring-2 focus:ring-accent/30"
+              value={model ?? ''}
               onChange={(event) =>
                 onChangeModel(event.target.value === '' ? undefined : event.target.value)
               }
-              title="Model"
+              title={`Model — ${modelSource} source`}
+              aria-label="Model"
             >
               {models.length === 0 ? (
-                <option value="">{effectiveModel ?? 'server default'}</option>
+                <option value="">{effectiveModel ?? 'inherit default'}</option>
               ) : (
                 <>
-                  <option value="">server default</option>
+                  <option value="">
+                    {defaultModel !== undefined
+                      ? `inherit session · ${defaultModel}`
+                      : `inherit server default · ${serverDefaultModel ?? 'unknown'}`}
+                  </option>
                   {models.map((item) => (
                     <option key={`${item.provider}/${item.model}`} value={item.model}>
                       {item.display_name ?? item.model}
+                      {item.model === defaultModel ? ' · session default' : ''}
                     </option>
                   ))}
                 </>
@@ -183,7 +191,8 @@ export function Composer({
                 type="button"
                 onClick={onAbort}
                 title="Abort the running prompt"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-danger/40 text-danger transition-colors hover:bg-danger/10"
+                aria-label="Abort the running prompt"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-danger/40 text-danger transition-colors hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none"
               >
                 <span aria-hidden className="text-[11px] font-bold">■</span>
               </button>
@@ -193,7 +202,8 @@ export function Composer({
                 onClick={send}
                 disabled={!canSend}
                 title="Send (Enter)"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-accent text-white transition-colors hover:bg-accent-deep disabled:opacity-40"
+                aria-label="Send message"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-accent text-white transition-colors hover:bg-accent-deep disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
               >
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
                   <path

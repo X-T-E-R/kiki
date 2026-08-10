@@ -1,10 +1,11 @@
 /**
  * tool-pipeline — snapshot carries a completed Read → Edit (diff card) →
- * Write-create chain as journaled messages; on prompt, three consecutive
- * live tool calls (Read + Edit + Bash) run back-to-back so the transcript
- * folds them into a "Steps · 3" group. The Edit uses real old/new strings
- * with >6 unchanged lines between two changes so the DiffCard shows two
- * hunks and a "… unchanged lines" separator.
+ * Write-create chain as journaled messages; on prompt, two live sequences:
+ *   1) three consecutive tool calls (Read + Edit + Bash) → one "Steps · 3" group;
+ *   2) a tool/approval/tool boundary (Glob → approval → Bash) where the
+ *      approval flushes the group so the tools do NOT fold together.
+ * The Edit uses real old/new strings with >6 unchanged lines between two
+ * changes so the DiffCard shows two hunks and a "… unchanged lines" separator.
  */
 
 import {
@@ -28,6 +29,8 @@ const WRITE1 = fid('call');
 const LIVE_READ = fid('call');
 const LIVE_EDIT = fid('call');
 const LIVE_BASH = fid('call');
+const BOUND_GLOB = fid('call');
+const BOUND_BASH = fid('call');
 
 const FILE = 'C:/fixture/workshop/plan.ts';
 
@@ -76,7 +79,7 @@ export default {
     turnStart(1),
     workChanged(true),
     { frame: { type: 'turn.step.started', payload: { turnId: 1, step: 1 } } },
-    // Three consecutive tool calls with no assistant text between them → one group.
+    // Sequence 1: three consecutive tools with no non-tool block between them.
     {
       frame: {
         type: 'tool.call.started',
@@ -101,9 +104,6 @@ export default {
         },
       },
     },
-    { delay: 200 },
-    { frame: approvalFrame({ toolName: 'Edit', action: `Editing ${FILE}`, display: { kind: 'file_io', operation: 'edit', path: FILE, before: EDIT_BEFORE, after: EDIT_AFTER }, toolCallId: LIVE_EDIT }) },
-    { waitFor: 'approval' },
     { delay: 300 },
     { frame: { type: 'tool.result', payload: { turnId: 1, toolCallId: LIVE_EDIT, output: `Replaced 1 occurrence in ${FILE}` } } },
     { delay: 250 },
@@ -120,12 +120,42 @@ export default {
     { delay: 600 },
     { frame: { type: 'tool.result', payload: { turnId: 1, toolCallId: LIVE_BASH, output: { kind: 'command_output', exit_code: 0, stdout: '2\n' } } } },
     { delay: 200 },
+    // Sequence 2: tool / approval / tool boundary — approval must flush the group.
+    {
+      frame: {
+        type: 'tool.call.started',
+        payload: {
+          turnId: 1, toolCallId: BOUND_GLOB, name: 'Glob',
+          args: { pattern: '**/*.ts' },
+          display: { kind: 'file_io', operation: 'list', path: 'C:/fixture/workshop' },
+        },
+      },
+    },
+    { delay: 200 },
+    { frame: { type: 'tool.result', payload: { turnId: 1, toolCallId: BOUND_GLOB, output: ['plan.ts', 'notes.md'] } } },
+    { delay: 200 },
+    { frame: approvalFrame({ toolName: 'Edit', action: `Editing ${FILE}`, display: { kind: 'file_io', operation: 'edit', path: FILE, before: EDIT_BEFORE, after: EDIT_AFTER }, toolCallId: BOUND_GLOB }) },
+    { waitFor: 'approval' },
+    { delay: 300 },
+    {
+      frame: {
+        type: 'tool.call.started',
+        payload: {
+          turnId: 1, toolCallId: BOUND_BASH, name: 'Bash',
+          args: { command: 'echo "boundary ok"' },
+          display: { kind: 'command', command: 'echo "boundary ok"' },
+        },
+      },
+    },
+    { delay: 300 },
+    { frame: { type: 'tool.result', payload: { turnId: 1, toolCallId: BOUND_BASH, output: { kind: 'command_output', exit_code: 0, stdout: 'boundary ok\n' } } } },
+    { delay: 200 },
     { frame: { type: 'turn.step.completed', payload: { turnId: 1, step: 1 } } },
     { frame: { type: 'turn.step.started', payload: { turnId: 1, step: 2 } } },
-    ...streamSteps('assistant.delta', 1, 'All three steps completed — `plan.ts` now reports version 2.', { per: 24 }),
+    ...streamSteps('assistant.delta', 1, 'Both sequences completed: three tools folded and the approval boundary split the second pair.', { per: 24 }),
     { frame: { type: 'turn.step.completed', payload: { turnId: 1, step: 2 } } },
     turnEnd(1),
-    commitAssistant('$SID', 'All three steps completed — `plan.ts` now reports version 2.'),
+    commitAssistant('$SID', 'Both sequences completed: three tools folded and the approval boundary split the second pair.'),
     { frame: { type: 'prompt.completed', payload: { promptId: '$PROMPT', finishedAt: new Date().toISOString(), reason: 'completed' } } },
     workChanged(false),
   ],

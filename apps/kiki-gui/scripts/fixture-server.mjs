@@ -412,13 +412,15 @@ class FixtureServer {
       const beforeId = query.get('before_id');
       const pageSize = Math.min(Number(query.get('page_size') ?? 50), 100);
       const all = [...session.older, ...session.messages];
-      let end = all.length;
+      const desc = [...all].reverse();
+      let pivotIndex = -1;
       if (beforeId !== null) {
-        const index = all.findIndex((m) => m.id === beforeId);
-        if (index >= 0) end = index;
+        pivotIndex = desc.findIndex((m) => m.id === beforeId);
       }
-      const items = all.slice(Math.max(0, end - pageSize), end);
-      return this.envelope(res, { items, has_more: end - pageSize > 0 });
+      const slice = pivotIndex >= 0 ? desc.slice(pivotIndex + 1) : desc;
+      const items = slice.slice(0, pageSize);
+      const hasMore = slice.length > pageSize;
+      return this.envelope(res, { items, has_more: hasMore });
     }
     if (tail === '/prompts' && body !== undefined) {
       const promptId = nextId('msg');

@@ -137,9 +137,11 @@ function MetaRow({ label, value, mono = false }: { label: string; value: string;
 export function RightRail({
   state,
   onCancelTask,
+  className,
 }: {
   state: SessionViewState;
   onCancelTask: (taskId: string) => void;
+  className?: string;
 }) {
   const session = state.session;
   const usage = session?.usage;
@@ -148,7 +150,11 @@ export function RightRail({
     state.maxContextTokens ?? (usage !== undefined && usage.context_limit > 0 ? usage.context_limit : undefined);
 
   return (
-    <aside className="flex h-full w-[300px] shrink-0 flex-col gap-5 overflow-y-auto border-l border-hairline bg-panel px-4 py-4">
+    <aside
+      className={
+        className ?? 'flex h-full w-[300px] shrink-0 flex-col gap-5 overflow-y-auto border-l border-hairline bg-panel px-4 py-4'
+      }
+    >
       <section>
         <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
           Todos

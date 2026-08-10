@@ -7,7 +7,7 @@
  */
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 
 import type { PermissionMode, Session } from '@moonshot-ai/protocol';
 
@@ -59,11 +59,13 @@ function Header({
   controller,
   railOpen,
   onToggleRail,
+  onToggleSidebar,
   onJumpTurn,
 }: {
   controller: SessionController | null;
   railOpen: boolean;
   onToggleRail: () => void;
+  onToggleSidebar: () => void;
   onJumpTurn: (blockId: string) => void;
 }) {
   const state = useSyncExternalStore(
@@ -76,6 +78,14 @@ function Header({
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
+      <button
+        type="button"
+        onClick={onToggleSidebar}
+        aria-label="Open session menu"
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden"
+      >
+        <span aria-hidden>☰</span>
+      </button>
       {session !== undefined ? (
         <>
           <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
@@ -208,22 +218,69 @@ const noopSubscribe = () => () => {};
 const emptyView = createViewState('');
 const emptyState = () => emptyView;
 
+type ModelSource = 'server-default' | 'session' | 'override';
+
+/**
+ * Decide which approval the global y/n shortcut should target. Preference:
+ *   1. Focus is inside an approval card (unambiguous context).
+ *   2. Exactly one approval card is visible in the viewport.
+ * If more than one is visible and none is focused, the shortcut is ambiguous
+ * and must not act.
+ */
+function resolveApprovalShortcutTarget(): string | undefined {
+  const active = document.activeElement;
+  if (active instanceof HTMLElement) {
+    const focusedCard = active.closest('[data-approval-id]') as HTMLElement | null;
+    if (focusedCard !== null) {
+      const id = focusedCard.dataset['approvalId'];
+      if (id !== undefined) return id;
+    }
+  }
+  const cards = Array.from(document.querySelectorAll<HTMLElement>('[data-approval-id]'));
+  const visible = cards.filter((card) => {
+    const rect = card.getBoundingClientRect();
+    return rect.top < window.innerHeight && rect.bottom > 0;
+  });
+  if (visible.length === 1) {
+    const id = visible[0]!.dataset['approvalId'];
+    if (id !== undefined) return id;
+  }
+  return undefined;
+}
+
 export function App() {
   const { client, wsStatus } = useConnection();
   const [activeSessionId, setActiveSessionId] = useState<string | undefined>(undefined);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(true);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('manual');
   const [planMode, setPlanMode] = useState(false);
   const [modelOverride, setModelOverride] = useState<string | undefined>(undefined);
   const [effortOverride, setEffortOverride] = useState<string | undefined>(undefined);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [abortError, setAbortError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  const [showArchived, setShowArchived] = useState(false);
 
   const controller = useActiveController(activeSessionId);
+
+  // Close mobile panels on Escape and when the active session changes.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setSidebarOpen(false);
+        setRailOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   // Per-session composer drafts: restore on switch, persist on edit, clear on send.
   useEffect(() => {
     setDraft(activeSessionId !== undefined ? readDraft(activeSessionId) : '');
+    setSendError(null);
+    setAbortError(null);
   }, [activeSessionId]);
   const updateDraft = (text: string) => {
     setDraft(text);
@@ -234,11 +291,23 @@ export function App() {
     controller?.getState ?? emptyState,
   );
 
-  const sessionsQuery = useQuery({
-    queryKey: ['sessions', false],
-    queryFn: () => client.listSessions({ page_size: 100 }),
+  const sessionsQuery = useInfiniteQuery({
+    queryKey: ['sessions', showArchived],
+    queryFn: ({ pageParam }) =>
+      client.listSessions({
+        page_size: 100,
+        include_archive: showArchived || undefined,
+        before_id: pageParam,
+      }),
+    getNextPageParam: (lastPage) =>
+      lastPage.has_more ? lastPage.items.at(-1)?.id : undefined,
+    initialPageParam: undefined as string | undefined,
     refetchInterval: 5000,
   });
+  const sessions = useMemo(
+    () => sessionsQuery.data?.pages.flatMap((page) => page.items) ?? [],
+    [sessionsQuery.data],
+  );
 
   // The server's configured default model backs sessions that bind none.
   const configQuery = useQuery({
@@ -251,11 +320,11 @@ export function App() {
   // Merge polled session records into the live controller.
   useEffect(() => {
     if (controller === null || sessionsQuery.data === undefined) return;
-    const record = sessionsQuery.data.items.find((item) => item.id === controller.sessionId);
+    const record = sessions.find((item) => item.id === controller.sessionId);
     if (record !== undefined) controller.handleSessionRecord(record);
-  }, [controller, sessionsQuery.data]);
+  }, [controller, sessions, sessionsQuery.data]);
 
-  // Global y / n shortcut for the oldest pending approval.
+  // Global y / n shortcut for the focused-or-unambiguous visible approval.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (controller === null) return;
@@ -284,20 +353,26 @@ export function App() {
         const current = controller.getState();
         if (current.busy && current.activePromptId !== undefined) {
           event.preventDefault();
-          void controller.abortActive();
+          setAbortError(null);
+          void controller
+            .abortActive()
+            .then(() => setAbortError(null))
+            .catch((error: unknown) => {
+              setAbortError(
+                error instanceof Error
+                  ? error.message
+                  : 'Could not abort — the turn may still be running',
+              );
+            });
         }
         return;
       }
       if (event.key !== 'y' && event.key !== 'n') return;
-      const pending = controller
-        .getState()
-        .blocks.find(
-          (block) => block.kind === 'approval' && block.resolution === undefined,
-        );
-      if (pending === undefined || pending.kind !== 'approval') return;
+      const approvalId = resolveApprovalShortcutTarget();
+      if (approvalId === undefined) return;
       event.preventDefault();
       void controller.resolveApproval(
-        pending.request.approval_id,
+        approvalId,
         event.key === 'y' ? 'approved' : 'rejected',
       );
     };
@@ -332,8 +407,6 @@ export function App() {
     return {
       send: (text: string) => {
         setSendError(null);
-        if (activeSessionId !== undefined) writeDraft(activeSessionId, '');
-        setDraft('');
         void controller
           .sendPrompt({
             text,
@@ -342,27 +415,61 @@ export function App() {
             permissionMode,
             planMode,
           })
+          .then(() => {
+            if (activeSessionId !== undefined) writeDraft(activeSessionId, '');
+            setDraft('');
+          })
           .catch((error: unknown) => {
             setSendError(error instanceof Error ? error.message : String(error));
           });
       },
-      abort: () => void controller.abortActive(),
+      abort: () => {
+        setAbortError(null);
+        return controller
+          .abortActive()
+          .then(() => setAbortError(null))
+          .catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : 'Abort failed';
+            setAbortError(`${message} — this turn may still be running`);
+            throw error;
+          });
+      },
       resolveApproval: (approvalId: string, decision: 'approved' | 'rejected' | 'cancelled', scope?: 'session') =>
         controller.resolveApproval(approvalId, decision, scope),
       answerQuestion: (questionId: string, answers: Parameters<SessionController['answerQuestion']>[1]) =>
-        void controller.answerQuestion(questionId, answers).catch(() => undefined),
-      dismissQuestion: (questionId: string) =>
-        void controller.dismissQuestion(questionId).catch(() => undefined),
+        controller.answerQuestion(questionId, answers),
+      dismissQuestion: (questionId: string) => controller.dismissQuestion(questionId),
       cancelTask: (taskId: string) => void controller.cancelTask(taskId).catch(() => undefined),
     };
   }, [controller, effectiveModel, effectiveEffort, permissionMode, planMode, activeSessionId]);
 
+  const composerDisabled = controller === null || !state.loaded || state.loadError !== undefined;
+  const modelSource: ModelSource =
+    modelOverride !== undefined
+      ? 'override'
+      : sessionModel !== undefined
+        ? 'session'
+        : 'server-default';
+
+  const showBackdrop = sidebarOpen || (railOpen && controller !== null);
+
   return (
-    <div className="flex h-full bg-paper">
+    <div className="flex h-full overflow-hidden bg-paper">
       <Sidebar
+        className={`app-sidebar ${sidebarOpen ? 'open' : ''}`}
         activeSessionId={activeSessionId}
-        onSelectSession={setActiveSessionId}
-        onCreatedSession={(session: Session) => setActiveSessionId(session.id)}
+        onSelectSession={(sessionId) => {
+          setSidebarOpen(false);
+          setActiveSessionId(sessionId);
+        }}
+        onCreatedSession={(session: Session) => {
+          setSidebarOpen(false);
+          setActiveSessionId(session.id);
+        }}
+        sessions={sessions}
+        sessionsQuery={sessionsQuery}
+        showArchived={showArchived}
+        onToggleArchived={() => setShowArchived((value) => !value)}
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
@@ -370,6 +477,7 @@ export function App() {
           controller={controller}
           railOpen={railOpen}
           onToggleRail={() => setRailOpen((value) => !value)}
+          onToggleSidebar={() => setSidebarOpen((value) => !value)}
           onJumpTurn={(blockId) => {
             document
               .querySelector(`[data-block-id="${blockId}"]`)
@@ -402,8 +510,11 @@ export function App() {
               onResolveApproval={(id, decision, scope) =>
                 actions?.resolveApproval(id, decision, scope) ?? Promise.resolve()
               }
-              onAnswerQuestion={(id, answers) => actions?.answerQuestion(id, answers)}
-              onDismissQuestion={(id) => actions?.dismissQuestion(id)}
+              onAnswerQuestion={(id, answers) =>
+                actions?.answerQuestion(id, answers) ?? Promise.resolve()
+              }
+              onDismissQuestion={(id) => actions?.dismissQuestion(id) ?? Promise.resolve()}
+              onRetryLoad={() => controller.retryOpen()}
             />
             {sendError !== null ? (
               <div className="px-6 pb-1">
@@ -412,10 +523,25 @@ export function App() {
                 </div>
               </div>
             ) : null}
+            {abortError !== null ? (
+              <div className="px-6 pb-1">
+                <div className="mx-auto max-w-[760px] rounded-lg border border-danger/30 bg-danger/5 px-3 py-1.5 font-mono text-[11.5px] text-danger">
+                  {abortError}
+                  <button
+                    type="button"
+                    onClick={() => actions?.abort()}
+                    className="ml-2 underline"
+                  >
+                    Retry
+                  </button>
+                </div>
+              </div>
+            ) : null}
             <div className="flex items-center gap-2 px-6 pt-1">
-              {state.resyncing ? (
+              {state.resyncing || state.resyncFailed ? (
                 <span className="mx-auto flex items-center gap-1.5 text-[11px] text-ink-faint">
-                  <KikiMark className="status-dot-busy" /> Resyncing…
+                  <KikiMark className="status-dot-busy" />
+                  {state.resyncFailed ? 'Resync failed — retrying…' : 'Resyncing…'}
                 </span>
               ) : null}
             </div>
@@ -430,12 +556,13 @@ export function App() {
             ) : null}
             <Composer
               busy={state.busy && state.activePromptId !== undefined}
-              disabled={false}
+              disabled={composerDisabled}
               value={draft}
               onChange={updateDraft}
               model={modelOverride}
               defaultModel={sessionModel}
               serverDefaultModel={serverDefaultModel}
+              modelSource={modelSource}
               permissionMode={permissionMode}
               planMode={planMode}
               efforts={supportedEfforts}
@@ -452,8 +579,41 @@ export function App() {
       </main>
 
       {railOpen && controller !== null ? (
-        <RightRail state={state} onCancelTask={(taskId) => actions?.cancelTask(taskId)} />
+        <RightRail
+          className={`app-rail ${railOpen ? 'open' : ''}`}
+          state={state}
+          onCancelTask={(taskId) => actions?.cancelTask(taskId)}
+        />
       ) : null}
+
+      {showBackdrop ? (
+        <div
+          role="button"
+          tabIndex={-1}
+          aria-label="Close panels"
+          className="app-overlay-backdrop lg:hidden"
+          onClick={() => {
+            setSidebarOpen(false);
+            setRailOpen(false);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              setSidebarOpen(false);
+              setRailOpen(false);
+            }
+          }}
+        />
+      ) : null}
+
+      <div aria-live="polite" aria-atomic="true" className="sr-only">
+        {state.pendingInteraction === 'approval'
+          ? 'Awaiting approval'
+          : state.pendingInteraction === 'question'
+            ? 'Awaiting answer'
+            : state.busy
+              ? 'Kiki is working'
+              : ''}
+      </div>
     </div>
   );
 }

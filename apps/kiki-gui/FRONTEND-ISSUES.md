@@ -35,7 +35,7 @@
 
 ### KG-001 · WebSocket 订阅未限定主 agent
 
-- **状态 / 严重度**：未修复 · P2
+- **状态 / 严重度**：已修复 · P2 · 主视图 subscribe 现在带 agent_filter: { [sid]: ['main'] }
 - **可见故障**：同一 session 存在子 agent 活动时，主会话视图没有明确保证只接收主 agent 的 session/agent 事件。
 - **事实**：`KikiSocket.sendSubscribe()` 只发送 `session_ids` 和 `cursors`。协议允许 `subscribe.payload.agent_filter`，并明确说明省略该字段会回退到接收 session 内所有 agent 的旧行为。
 - **影响判断**：子 agent 的工具、状态或生命周期事件可能与主 agent 的 transcript 状态混合，造成错误的卡片、busy 状态或任务归属。是否已在每类事件上实际发生，需要用多 agent 会话复现确认。
@@ -45,7 +45,7 @@
 
 ### KG-002 · 历史分页顺序与前端假设相反
 
-- **状态 / 严重度**：未修复 · P1
+- **状态 / 严重度**：已修复 · P1 · prependOlderMessages 反转服务端 newest-first 分页并正确维护 oldestMessageId
 - **可见故障**：向上加载旧消息时，新增历史可能倒序或插在错误位置；随后继续分页时可能使用错误的 `before_id`。
 - **事实**：服务端 `/messages` 先把完整历史反转为 newest-first，再返回分页结果；服务端测试也把这个顺序作为契约。前端 `prependOlderMessages()` 按传入顺序生成 block、整体前插，并把 `messages[0]` 当作最旧消息。fixture server 却返回 oldest-first 的尾部切片，因此现有 fixture 会掩盖生产契约差异。
 - **影响判断**：真实服务端返回两条以上旧消息时，前端的阅读顺序和下一页游标都可能错误；fixture 的长 transcript 证明不能排除该问题。
@@ -55,7 +55,7 @@
 
 ### KG-003 · `turn.started.prompt` 被忽略
 
-- **状态 / 严重度**：未修复 · P2
+- **状态 / 严重度**：已修复 · P2 · applyFrame 处理 turn.started.prompt 并与 durable/local-echo 去重
 - **可见故障**：由其他客户端、定时任务或恢复流程发起的 turn，可能直接出现 assistant 输出，却没有对应的用户输入。
 - **事实**：协议的 `turn.started` payload 包含可选 `prompt`。`applyFrame()` 没有 `turn.started` 分支；当前 fixture 的 `turnStart()` 虽支持 prompt 参数，但所有场景均未传入该参数。
 - **影响判断**：当没有本地 `prompt.submitted` 或 REST local echo 补齐用户消息时，turn 的触发文本会从 transcript 中消失。
@@ -65,7 +65,7 @@
 
 ### KG-004 · 首次快照失败后仍可发送
 
-- **状态 / 严重度**：未修复 · P1
+- **状态 / 严重度**：已修复 · P1 · open() 捕获快照失败、设置 loadError，Composer 在 loaded/error 前禁用
 - **可见故障**：session 长时间显示 `Opening session…`，但 composer 仍可输入并发送；此时页面没有该 session 的事件订阅。
 - **事实**：`open()` 在快照成功后才调用 `socket.subscribe()`。`useActiveController()` 吞掉 `open()` 的 rejection，并保留 controller。`App` 无条件向 composer 传入 `disabled={false}`。
 - **影响判断**：用户可能在看不到现有 transcript、也收不到后续事件的情况下提交 prompt；提交成功与页面状态会分离。
@@ -75,7 +75,7 @@
 
 ### KG-005 · resync 失败后无自动重试或隔离
 
-- **状态 / 严重度**：未修复 · P1
+- **状态 / 严重度**：已修复 · P1 · resync 失败递增 attempt 并指数退避重试，缺口后 frame 进入隔离队列
 - **可见故障**：出现 delta gap 或 `resync_required` 后，如果第一次 snapshot 重取失败，`Resyncing…` 会消失，但页面不会自动再次收敛。
 - **事实**：`resync()` 的 catch 只清除 `resyncing`，没有重试调度或失败状态。`handleFrame()` 在 resync 期间仍继续把后续 frame 应用到当前 state，没有 quarantine 或 buffer 分支。
 - **影响判断**：一次瞬时失败即可让 transcript 长期保持有缺口的状态；继续应用后续 frame 还可能让用户误以为页面已恢复。
@@ -85,7 +85,7 @@
 
 ### KG-006 · 问题回答失败后卡片永久忙碌
 
-- **状态 / 严重度**：未修复 · P1
+- **状态 / 严重度**：已修复 · P1 · QuestionCard 回调改为 Promise，失败恢复按钮并显示可重试错误
 - **可见故障**：Question card 提交或 dismiss 后会禁用两个按钮；REST 请求失败时卡片保持禁用，页面也不显示错误，用户无法重试。
 - **事实**：`QuestionCard` 在操作时把本地 `busy` 设为 `true`，回调签名为 `void`，没有 success/failure/finally 回路。`App` 对 answer/dismiss 的 rejection 使用 `.catch(() => undefined)` 吞掉错误。只有 block outcome 更新后卡片才会被替换。
 - **影响判断**：任何网络或服务端错误都会把当前问题卡永久卡在处理中，直到外部事件或整页重载改变状态。
@@ -95,7 +95,7 @@
 
 ### KG-007 · 发送失败会丢失草稿
 
-- **状态 / 严重度**：未修复 · P1
+- **状态 / 严重度**：已修复 · P1 · 仅服务端接受提交后才清除草稿与 React state
 - **可见故障**：发送请求失败后只显示错误消息，刚才输入的 prompt 已从编辑框和 session 草稿存储中删除。
 - **事实**：`App.actions.send()` 在等待 `sendPrompt()` 前就清空持久草稿和 React state；catch 只设置 `sendError`。Composer 的 `send()` 还会在调用 `onSend()` 后再次 `onChange('')`。
 - **影响判断**：网络失败或服务器拒绝会造成不可恢复的用户输入丢失，长 prompt 的损失尤其严重。
@@ -105,7 +105,7 @@
 
 ### KG-008 · 待交互聚合状态过早清零
 
-- **状态 / 严重度**：未修复 · P2
+- **状态 / 严重度**：已修复 · P2 · 解决单个交互后通过 derivePendingInteraction 按未解决 block 重算聚合状态
 - **可见故障**：同一 session 同时存在多个待审批/待回答请求时，解决任意一个请求后，`SessionViewState.pendingInteraction` 会变成 `none`，但 state 中仍有未解决的交互 block。
 - **事实**：审批 resolved、问题 answered/dismissed 的 frame 分支都无条件写入 `pendingInteraction: 'none'`。本地 REST 成功路径 `markApprovalResolved()` 和 `markQuestionOutcome()` 也同样清零；代码已另有按 block 计算的 pending count，但没有用它重算聚合状态。
 - **影响判断**：当前 header 的数量来自 block 计数，因此不一定立即显示错误；但 controller 的聚合状态已不可信，任何依赖该字段的 UI、恢复或后续逻辑都可能漏报剩余人工请求。
@@ -115,7 +115,7 @@
 
 ### KG-009 · abort 的 REST 失败被吞掉
 
-- **状态 / 严重度**：未修复 · P1
+- **状态 / 严重度**：已修复 · P1 · abort REST 失败不再吞掉，UI 显示 abortError 并提供重试
 - **可见故障**：用户点击停止或按 Escape 后，如果可靠的 REST abort 失败，界面没有失败提示，也没有重试动作。
 - **事实**：controller 先发送 fire-and-forget WebSocket abort，再调用注释标为“reliable path”的 REST abort；REST rejection 被 catch 后直接忽略。`App` 的 abort action 也丢弃 promise。
 - **影响判断**：WebSocket frame 未送达且 REST 又失败时，后台 prompt 可能继续运行，而用户得不到任何确认或警告。
@@ -125,7 +125,7 @@
 
 ### KG-010 · 会话列表固定为 100 条且无分页
 
-- **状态 / 严重度**：未修复 · P2
+- **状态 / 严重度**：已修复 · P2 · 会话列表改用 useInfiniteQuery 分页，支持 Load more 与错误重试
 - **可见故障**：账号有超过 100 个活跃或含归档 session 时，侧栏只显示首批结果，没有“加载更多”或其他入口访问余下会话。
 - **事实**：Sidebar 和 App 都固定调用 `listSessions({ page_size: 100 })`，不读取 `has_more`，也不传 `before_id`/`after_id`。REST client 已支持这些 cursor 参数。
 - **影响判断**：排序较后的 session 在 GUI 中不可达；App 合并 active session record 的轮询也只覆盖首批 100 条。
@@ -135,7 +135,7 @@
 
 ### KG-011 · 布局只适配桌面宽屏
 
-- **状态 / 严重度**：未修复 · P2
+- **状态 / 严重度**：已修复 · P2 · 添加 320/768/1024 响应式 drawer/overlay 断点与 CSS
 - **可见故障**：窄视口下固定侧栏和右栏继续占用 564px，再叠加 transcript 内边距与 composer 控件，主内容区被严重压缩。
 - **事实**：App 始终使用横向三栏 flex；Sidebar 固定 `w-[264px] shrink-0`，RightRail 固定 `w-[300px] shrink-0`。样式中唯一 media query 是 `prefers-reduced-motion`，没有 viewport breakpoint。
 - **影响判断**：平板、手机、窄窗口和分屏模式下会出现难读、难点或溢出的主要操作区域。
@@ -145,7 +145,7 @@
 
 ### KG-012 · 键盘焦点、可访问名称和低对比文本不足
 
-- **状态 / 严重度**：未修复 · P2
+- **状态 / 严重度**：已修复 · P2 · 全局 :focus-visible、icon button aria-label、ink-faint 改为 #6b6257
 - **可见故障**：键盘用户难以判断当前焦点；图标按钮对辅助技术的名称不稳定；大量 `text-ink-faint` 小字在浅背景上对比不足。
 - **事实**：源码中没有 `focus-visible` 样式。Composer 的 send/abort 图标按钮只有 `title`，没有 `aria-label` 或可见文本。调色板中 `ink-faint` 为 `#a39a8b`，在 `paper #f7f3ec` 和 `panel #fffdf8` 上按 WCAG 相对亮度公式计算的对比度分别约为 2.51:1 和 2.74:1；该颜色被用于 10–12px 的说明和状态文本。
 - **影响判断**：键盘导航、屏幕阅读器识别和低视力阅读都会受到影响；具体合规范围还需对完整页面做语义树和交互审计。
@@ -155,7 +155,7 @@
 
 ### KG-013 · 会话列表和快照错误缺少可见反馈
 
-- **状态 / 严重度**：未修复 · P2
+- **状态 / 严重度**：已修复 · P2 · Sidebar 区分 loading/error/empty，Transcript 显示 loadError + Retry
 - **可见故障**：会话列表请求失败时侧栏可能只剩空白；快照失败时主区域持续显示 `Opening session…`，两处都没有错误原因或重试入口。
 - **事实**：Sidebar 只在 `sessions.length === 0 && sessionsQuery.isSuccess` 时显示空状态，也只渲染 mutation 的 `actionError`，未渲染 `sessionsQuery.error`。`useActiveController()` 的 snapshot catch 为空，Transcript 只根据 `loaded` 显示固定加载文本。
 - **影响判断**：用户无法区分“没有 session”“仍在加载”“鉴权/网络错误”和“服务端失败”，也不知道应该等待还是采取动作。
@@ -165,7 +165,7 @@
 
 ### KG-014 · 模型选择器混合“继承值”和“显式值”
 
-- **状态 / 严重度**：未修复 · P3
+- **状态 / 严重度**：已修复 · P3 · model select 显示继承来源（session/server default）并提交 model override
 - **可见故障**：用户选择 `server default` 后，select 仍会显示解析后的具体模型；界面无法说明该模型来自本次 override、session 绑定还是 server 默认值。
 - **事实**：select 的 `value` 是 `model ?? defaultModel ?? serverDefaultModel`，但空 option 的标签是 `server default`；选择空 option 只把 `modelOverride` 清为 `undefined`，随后 `value` 又回到 session/server 的具体模型 ID。
 - **影响判断**：用户可能把继承值误认为显式固定值，或误以为已经恢复 server default，而 session 实际仍绑定另一个模型。
@@ -175,7 +175,7 @@
 
 ### KG-015 · 全局审批快捷键可能操作屏外请求
 
-- **状态 / 严重度**：未修复 · P1
+- **状态 / 严重度**：已修复 · P1 · y/n 快捷键仅处理聚焦的审批卡片或唯一可见审批
 - **可见故障**：当 transcript 有多个待审批卡片时，用户在查看后面的卡片按 `y` 或 `n`，实际被处理的是 block 列表中的第一个待审批请求，可能已经滚出视口。
 - **事实**：全局 keydown handler 用 `.find()` 选择第一个 unresolved approval，不检查焦点、viewport、选中卡片或最近交互对象。每张 ApprovalCard 都显示相同的 `y`/`n` 提示。
 - **影响判断**：快捷键可能批准或拒绝用户没有正在查看的操作；对写文件、运行命令等审批，这是高风险误操作。
@@ -185,10 +185,14 @@
 
 ### KG-016 · 工具分组 fixture 与实际事件序列不符
 
-- **状态 / 严重度**：未修复 · P2
+- **状态 / 严重度**：已修复 · P2 · tool-pipeline fixture 拆分为连续三工具 + tool/approval/tool，proof 断言 live display nodes
 - **可见故障**：fixture 注释和视觉脚本声称实时 Read + Edit + Bash 会折叠为 `Steps · 3`，但 approval block 插在 Edit 与 Bash 之间，按生产分组规则会打断连续工具序列。
 - **事实**：`groupBlocks()` 遇到任何非 tool block 都 flush 当前分组。tool-pipeline fixture 在 live Edit 后发出 `event.approval.requested`，再等待处理，之后才发 Bash。视觉脚本在发送 prompt 前等待的 `Steps · 3` 来自 snapshot 中的历史工具链；发送后只截图，没有再次断言 live 三工具分组。
 - **影响判断**：现有截图能证明历史 snapshot 的分组，却不能证明 fixture 注释所声称的实时三工具分组；approval 邻接行为也没有被准确覆盖。
 - **证据**：`apps/kiki-gui/src/state/grouping.ts:21-44`；`apps/kiki-gui/fixtures/tool-pipeline.scenario.mjs:75-125`；`apps/kiki-gui/scripts/visual-proof.mjs:138-158`。
 - **期望行为**：fixture 描述、事件序列和断言必须一致；若要证明三工具连续分组，测试序列中不能插入会打断分组的 block。若 approval 本就应打断，则证明应明确验证该边界。
 - **定向证明**：从空 transcript 运行 live 场景，在每个关键 frame 后断言 display node 序列；分别覆盖连续三 tool 和 tool/approval/tool 两种路径，不复用 snapshot 中已有的 `Steps · 3` 作为 live 证明。
+
+## 修复记录
+
+- 2026-08-10：完成上述 16 项前端修复。验证：typecheck 通过、test 40 passed、oxlint 0 errors/0 warnings、build 通过、visual proof 9 scenarios 通过、smoke 通过（本地 kap-server 0.34.0）。

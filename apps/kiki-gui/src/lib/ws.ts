@@ -261,14 +261,18 @@ export class KikiSocket {
 
   private sendSubscribe(sessionIds: readonly string[]): void {
     const cursors: Record<string, SessionCursor> = {};
+    const agentFilter: Record<string, string[]> = {};
     for (const sessionId of sessionIds) {
       const cursor = this.desired.get(sessionId);
       if (cursor !== undefined) cursors[sessionId] = cursor;
+      // Restrict the subscription to the session's main agent. Sub-agent events
+      // are intentionally filtered out of the primary session view.
+      agentFilter[sessionId] = ['main'];
     }
     this.send({
       type: 'subscribe',
       id: this.nextId(),
-      payload: { session_ids: sessionIds, cursors },
+      payload: { session_ids: sessionIds, cursors, agent_filter: agentFilter },
     });
   }
 

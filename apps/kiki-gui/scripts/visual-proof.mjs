@@ -113,6 +113,21 @@ async function waitForText(text, timeout = 20_000) {
   await page.waitForSelector(`text=${text}`, { timeout });
 }
 
+async function displayNodeKinds() {
+  return page.evaluate(() => {
+    return Array.from(document.querySelectorAll('[role="log"] [data-block-id]')).map((child) => {
+      const id = child.getAttribute('data-block-id') ?? '';
+      if (id.startsWith('group-')) return 'group';
+      if (id.startsWith('tool-')) return 'tool';
+      if (id.startsWith('approval-')) return 'approval';
+      if (id.startsWith('question-')) return 'question';
+      if (id.startsWith('user-')) return 'user';
+      if (id.startsWith('assistant-')) return 'assistant';
+      return 'other';
+    });
+  });
+}
+
 // ------------------------------------------------------------- scenarios
 
 async function scenarioBasicStream() {
@@ -144,12 +159,30 @@ async function scenarioToolPipeline() {
   await page.locator('button', { hasText: 'C:/fixture/workshop/plan.ts' }).nth(1).click();
   await page.waitForTimeout(400);
   await shot('tool-pipeline-expanded');
-  // Live pipeline: three consecutive tools fold into a group as they run.
-  await sendPrompt('Run the three-step pipeline.');
+  // Live sequence 1: three consecutive tools fold into a group as they run.
+  await sendPrompt('Run the tool sequences.');
+  await page.waitForFunction(
+    async () => {
+      const groups = document.querySelectorAll('[role="log"] [data-block-id^="group-"]');
+      return groups.length >= 2;
+    },
+    { timeout: 20_000 },
+  );
+  // Live sequence 2: tool / approval / tool boundary — approval flushes the group.
   await waitForText('Approval needed');
   await approveViaKeyboard();
   await page.waitForSelector('text=working', { state: 'detached', timeout: 30_000 });
   await page.waitForTimeout(600);
+  const kinds = await displayNodeKinds();
+  const groups = kinds.filter((k) => k === 'group').length;
+  const singleTools = kinds.filter((k) => k === 'tool').length;
+  const approvals = kinds.filter((k) => k === 'approval').length;
+  console.log(`[check] display nodes: ${kinds.join(', ') || '(none)'}`);
+  console.log(`[check] counts groups=${groups} singleTools=${singleTools} approvals=${approvals}`);
+  if (groups !== 2 || singleTools < 1 || approvals < 1) {
+    console.error('[FAIL] tool grouping sequence did not match expected live nodes');
+    process.exitCode = 1;
+  }
   await shot('tool-pipeline-live');
 }
 

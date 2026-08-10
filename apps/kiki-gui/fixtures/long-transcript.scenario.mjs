@@ -51,7 +51,7 @@ for (let i = 0; i < 64; i += 1) {
     ],
     minutesAgo - 1,
   );
-  (i < 14 ? older : recent).push(user, assistant);
+  (i < 39 ? older : recent).push(user, assistant);
 }
 
 export default {

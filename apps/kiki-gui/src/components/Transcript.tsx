@@ -266,8 +266,8 @@ function BlockView({
     decision: ApprovalDecision,
     scope?: 'session',
   ) => Promise<void>;
-  onAnswerQuestion: (questionId: string, answers: Record<string, QuestionAnswer>) => void;
-  onDismissQuestion: (questionId: string) => void;
+  onAnswerQuestion: (questionId: string, answers: Record<string, QuestionAnswer>) => Promise<void>;
+  onDismissQuestion: (questionId: string) => Promise<void>;
 }) {
   switch (block.kind) {
     case 'user':
@@ -390,6 +390,7 @@ export function Transcript({
   onResolveApproval,
   onAnswerQuestion,
   onDismissQuestion,
+  onRetryLoad,
 }: {
   state: SessionViewState;
   onLoadOlder: () => Promise<boolean>;
@@ -398,15 +399,37 @@ export function Transcript({
     decision: ApprovalDecision,
     scope?: 'session',
   ) => Promise<void>;
-  onAnswerQuestion: (questionId: string, answers: Record<string, QuestionAnswer>) => void;
-  onDismissQuestion: (questionId: string) => void;
+  onAnswerQuestion: (questionId: string, answers: Record<string, QuestionAnswer>) => Promise<void>;
+  onDismissQuestion: (questionId: string) => Promise<void>;
+  onRetryLoad?: () => void;
 }) {
-  const { blocks, loaded } = state;
+  const { blocks, loaded, loadError } = state;
   const nodes = useMemo(() => groupBlocks(blocks), [blocks]);
+
+  if (loadError !== undefined) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6">
+        <div className="max-w-[360px] rounded-xl border border-danger/30 bg-danger/5 p-4 text-center">
+          <p className="text-[13px] font-medium text-danger">Could not open session</p>
+          <p className="mt-1 font-mono text-[11px] text-danger/80">{loadError}</p>
+          {onRetryLoad !== undefined ? (
+            <button
+              type="button"
+              onClick={onRetryLoad}
+              className="mt-3 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-accent-deep"
+            >
+              Retry
+            </button>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
 
   if (!loaded) {
     return (
-      <div className="flex flex-1 items-center justify-center text-[13px] text-ink-faint">
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 text-[13px] text-ink-faint">
+        <span className="status-dot-busy h-2 w-2 rounded-full bg-accent" />
         Opening session…
       </div>
     );

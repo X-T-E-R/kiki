@@ -176,7 +176,10 @@ export function ApprovalCard({
   };
 
   return (
-    <div className="anim-enter overflow-hidden rounded-xl border border-amber-rule/50 bg-amber-card shadow-[0_2px_12px_-6px_rgba(180,83,9,0.25)]">
+    <div
+      data-approval-id={approvalId}
+      className="anim-enter overflow-hidden rounded-xl border border-amber-rule/50 bg-amber-card shadow-[0_2px_12px_-6px_rgba(180,83,9,0.25)]"
+    >
       <div className="flex">
         <div className="w-1 shrink-0 bg-amber-rule" />
         <div className="min-w-0 flex-1 px-4 py-3">
@@ -372,13 +375,15 @@ export function QuestionCard({
   onDismiss,
 }: {
   block: QuestionBlock;
-  onAnswer: (answers: Record<string, QuestionAnswer>) => void;
-  onDismiss: () => void;
+  onAnswer: (answers: Record<string, QuestionAnswer>) => Promise<void>;
+  onDismiss: () => Promise<void>;
 }) {
   const [selections, setSelections] = useState<
     Record<string, { optionIds: string[]; otherText: string; useOther: boolean }>
   >({});
   const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [sent, setSent] = useState<null | 'answered' | 'dismissed'>(null);
 
   if (block.outcome !== undefined) {
     const label =
@@ -422,7 +427,24 @@ export function QuestionCard({
     }
     if (Object.keys(answers).length === 0) return;
     setBusy(true);
-    onAnswer(answers);
+    setFailed(false);
+    onAnswer(answers)
+      .then(() => setSent('answered'))
+      .catch(() => {
+        setBusy(false);
+        setFailed(true);
+      });
+  };
+
+  const dismiss = () => {
+    setBusy(true);
+    setFailed(false);
+    onDismiss()
+      .then(() => setSent('dismissed'))
+      .catch(() => {
+        setBusy(false);
+        setFailed(true);
+      });
   };
 
   return (
@@ -439,27 +461,36 @@ export function QuestionCard({
               onChange={(next) => setSelections((prev) => ({ ...prev, [item.id]: next }))}
             />
           ))}
-          <div className="flex items-center gap-2 pt-1">
-            <button
-              type="button"
-              disabled={busy}
-              onClick={submit}
-              className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep disabled:opacity-60"
-            >
-              Submit
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => {
-                setBusy(true);
-                onDismiss();
-              }}
-              className="rounded-lg border border-hairline-strong bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:text-danger disabled:opacity-60"
-            >
-              Dismiss
-            </button>
-          </div>
+          {sent === null ? (
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={submit}
+                className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep disabled:opacity-60"
+              >
+                {busy ? 'Sending…' : 'Submit'}
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={dismiss}
+                className="rounded-lg border border-hairline-strong bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:text-danger disabled:opacity-60"
+              >
+                Dismiss
+              </button>
+              {failed ? (
+                <span role="alert" className="text-[11.5px] text-danger">
+                  Could not send — try again.
+                </span>
+              ) : null}
+            </div>
+          ) : (
+            <p role="status" className="pt-1 text-[12px] font-medium text-success">
+              <span aria-hidden>✓</span>{' '}
+              {sent === 'answered' ? 'Sent to kiki' : 'Dismissed'}
+            </p>
+          )}
         </div>
       </div>
     </div>

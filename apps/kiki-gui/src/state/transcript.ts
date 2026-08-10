@@ -169,7 +169,13 @@ export interface SessionViewState {
   readonly tasks: readonly Task[];
   /** Set when a delta gap was detected and a resync has been requested. */
   readonly resyncing: boolean;
+  /** Set when the last resync failed and a retry is scheduled/pending. */
+  readonly resyncFailed: boolean;
+  /** How many resync attempts have been made since the last success. */
+  readonly resyncAttempt: number;
   readonly loaded: boolean;
+  /** Human-readable snapshot/resync error; empty when healthy. */
+  readonly loadError: string | undefined;
   /** Snapshot said older messages exist beyond the current first block. */
   readonly hasMoreHistory: boolean;
   /** Wire id of the oldest loaded message — the `before_id` pagination cursor. */
@@ -200,7 +206,10 @@ export function createViewState(sessionId: string): SessionViewState {
     todos: [],
     tasks: [],
     resyncing: false,
+    resyncFailed: false,
+    resyncAttempt: 0,
     loaded: false,
+    loadError: undefined,
     hasMoreHistory: false,
     oldestMessageId: undefined,
     loadingOlder: false,
@@ -430,6 +439,9 @@ export function applySnapshot(
     permissionMode: snapshot.session.agent_config.permission_mode,
     planMode: snapshot.session.agent_config.plan_mode ?? false,
     loaded: true,
+    loadError: undefined,
+    resyncFailed: false,
+    resyncAttempt: 0,
     todos,
     hasMoreHistory: snapshot.messages.has_more,
     oldestMessageId: snapshot.messages.items[0]?.id,
@@ -438,8 +450,10 @@ export function applySnapshot(
 
 /**
  * Prepend an older messages page (from `GET /sessions/{id}/messages
- * ?before_id=oldest`). The existing blocks are untouched; the new blocks go
- * in front, so the component layer can re-anchor the scroll position.
+ * ?before_id=oldest`). The server returns pages newest-first; we reverse them
+ * to restore oldest-first reading order before prepending. The new
+ * `oldestMessageId` is the oldest message now loaded (the last item of the
+ * reversed page), which becomes the next `before_id` cursor.
  */
 export function prependOlderMessages(
   state: SessionViewState,
@@ -455,12 +469,13 @@ export function prependOlderMessages(
       hasMoreHistory: false,
     };
   }
-  const olderBlocks = messagesToBlocks(messages);
+  const oldestFirst = messages.toReversed();
+  const olderBlocks = messagesToBlocks(oldestFirst);
   return {
     ...state,
     version: state.version + 1,
     blocks: [...olderBlocks, ...state.blocks],
-    oldestMessageId: messages[0]?.id ?? state.oldestMessageId,
+    oldestMessageId: oldestFirst[0]?.id ?? state.oldestMessageId,
     hasMoreHistory: hasMore,
     loadingOlder: false,
     fetchedOlder: true,
@@ -659,6 +674,33 @@ export function applyFrame(state: SessionViewState, frame: SessionEventFrame): A
         createdAt: existing?.createdAt ?? frame.timestamp,
       };
       evolve({ blocks: replaceBlock(next.blocks, block) });
+      break;
+    }
+    case 'turn.started': {
+      // Some turns start without a local prompt.submitted echo (other clients,
+      // scheduled jobs, recovery). Surface the prompt once, and dedupe against
+      // a later durable/local-echo user message by text equality.
+      if (typeof payload.prompt === 'string' && payload.prompt.trim() !== '') {
+        const key = `user-turn-${payload.turnId}-prompt`;
+        const exists = next.blocks.some((b) => b.id === key);
+        const duplicateByText = next.blocks.some(
+          (b): b is UserBlock => b.kind === 'user' && b.text === payload.prompt,
+        );
+        if (!exists && !duplicateByText) {
+          evolve({
+            blocks: [
+              ...next.blocks,
+              {
+                kind: 'user',
+                id: key,
+                text: payload.prompt,
+                createdAt: frame.timestamp,
+              } satisfies UserBlock,
+            ],
+          });
+        }
+      }
+      evolve({ busy: true });
       break;
     }
     case 'turn.step.started':
@@ -872,22 +914,27 @@ export function applyFrame(state: SessionViewState, frame: SessionEventFrame): A
     }
     case 'prompt.submitted': {
       const key = `user-${payload.userMessageId}`;
-      const exists = next.blocks.some((b) => b.id === key);
       const text = textOfContent(payload.content as Message['content']);
-      const blocks =
-        exists || text.trim() === ''
-          ? exists
-            ? next.blocks
-            : [
-                ...next.blocks,
-                {
-                  kind: 'user',
-                  id: key,
-                  text,
-                  createdAt: payload.createdAt,
-                } satisfies UserBlock,
-              ]
-          : next.blocks;
+      if (text.trim() === '') break;
+      let blocks = next.blocks;
+      if (!blocks.some((b) => b.id === key)) {
+        const placeholderIndex = blocks.findIndex(
+          (b): b is UserBlock => b.kind === 'user' && b.text === text,
+        );
+        const userBlock: UserBlock = {
+          kind: 'user',
+          id: key,
+          text,
+          createdAt: payload.createdAt,
+        };
+        if (placeholderIndex >= 0) {
+          const nextBlocks = blocks.slice();
+          nextBlocks[placeholderIndex] = userBlock;
+          blocks = nextBlocks;
+        } else {
+          blocks = [...blocks, userBlock];
+        }
+      }
       const queued =
         payload.status === 'queued'
           ? [...next.queuedPromptIds, payload.promptId]
@@ -999,15 +1046,16 @@ export function applyFrame(state: SessionViewState, frame: SessionEventFrame): A
       const key = `approval-${payload.approval_id}`;
       const existing = next.blocks.find((b) => b.id === key) as ApprovalBlock | undefined;
       if (existing === undefined) break;
+      const blocks = replaceBlock(next.blocks, {
+        ...existing,
+        resolution: {
+          decision: payload.decision ?? 'resolved_elsewhere',
+          resolvedAt: payload.resolved_at,
+        },
+      });
       evolve({
-        blocks: replaceBlock(next.blocks, {
-          ...existing,
-          resolution: {
-            decision: payload.decision ?? 'resolved_elsewhere',
-            resolvedAt: payload.resolved_at,
-          },
-        }),
-        pendingInteraction: 'none',
+        blocks,
+        pendingInteraction: derivePendingInteraction({ ...next, blocks }),
       });
       break;
     }
@@ -1031,12 +1079,13 @@ export function applyFrame(state: SessionViewState, frame: SessionEventFrame): A
       const key = `question-${payload.question_id}`;
       const existing = next.blocks.find((b) => b.id === key) as QuestionBlock | undefined;
       if (existing === undefined) break;
+      const blocks = replaceBlock(next.blocks, {
+        ...existing,
+        outcome: { kind: 'answered', at: payload.resolved_at },
+      });
       evolve({
-        blocks: replaceBlock(next.blocks, {
-          ...existing,
-          outcome: { kind: 'answered', at: payload.resolved_at },
-        }),
-        pendingInteraction: 'none',
+        blocks,
+        pendingInteraction: derivePendingInteraction({ ...next, blocks }),
       });
       break;
     }
@@ -1044,12 +1093,13 @@ export function applyFrame(state: SessionViewState, frame: SessionEventFrame): A
       const key = `question-${payload.question_id}`;
       const existing = next.blocks.find((b) => b.id === key) as QuestionBlock | undefined;
       if (existing === undefined) break;
+      const blocks = replaceBlock(next.blocks, {
+        ...existing,
+        outcome: { kind: 'dismissed', at: payload.dismissed_at },
+      });
       evolve({
-        blocks: replaceBlock(next.blocks, {
-          ...existing,
-          outcome: { kind: 'dismissed', at: payload.dismissed_at },
-        }),
-        pendingInteraction: 'none',
+        blocks,
+        pendingInteraction: derivePendingInteraction({ ...next, blocks }),
       });
       break;
     }
@@ -1115,11 +1165,12 @@ export function markApprovalResolved(
   const key = `approval-${approvalId}`;
   const existing = state.blocks.find((b) => b.id === key) as ApprovalBlock | undefined;
   if (existing === undefined) return state;
+  const blocks = replaceBlock(state.blocks, { ...existing, resolution });
   return {
     ...state,
     version: state.version + 1,
-    pendingInteraction: 'none',
-    blocks: replaceBlock(state.blocks, { ...existing, resolution }),
+    pendingInteraction: derivePendingInteraction({ ...state, blocks }),
+    blocks,
   };
 }
 
@@ -1131,11 +1182,12 @@ export function markQuestionOutcome(
   const key = `question-${questionId}`;
   const existing = state.blocks.find((b) => b.id === key) as QuestionBlock | undefined;
   if (existing === undefined) return state;
+  const blocks = replaceBlock(state.blocks, { ...existing, outcome });
   return {
     ...state,
     version: state.version + 1,
-    pendingInteraction: 'none',
-    blocks: replaceBlock(state.blocks, { ...existing, outcome }),
+    pendingInteraction: derivePendingInteraction({ ...state, blocks }),
+    blocks,
   };
 }
 
@@ -1158,10 +1210,44 @@ export function setResyncing(state: SessionViewState, resyncing: boolean): Sessi
   return { ...state, version: state.version + 1, resyncing };
 }
 
+export function setResyncFailed(
+  state: SessionViewState,
+  failed: boolean,
+  attempt: number,
+): SessionViewState {
+  if (state.resyncFailed === failed && state.resyncAttempt === attempt) return state;
+  return {
+    ...state,
+    version: state.version + 1,
+    resyncFailed: failed,
+    resyncAttempt: attempt,
+  };
+}
+
+export function setLoadError(
+  state: SessionViewState,
+  error: string | undefined,
+): SessionViewState {
+  if (state.loadError === error) return state;
+  return {
+    ...state,
+    version: state.version + 1,
+    loadError: error,
+    loaded: error === undefined ? state.loaded : false,
+  };
+}
+
 export function pendingApprovalCount(state: SessionViewState): number {
   return state.blocks.filter((b) => b.kind === 'approval' && b.resolution === undefined).length;
 }
 
 export function pendingQuestionCount(state: SessionViewState): number {
   return state.blocks.filter((b) => b.kind === 'question' && b.outcome === undefined).length;
+}
+
+/** Recompute the aggregate pending-interaction fact from unresolved blocks. */
+export function derivePendingInteraction(state: SessionViewState): SessionPendingInteraction {
+  if (pendingApprovalCount(state) > 0) return 'approval';
+  if (pendingQuestionCount(state) > 0) return 'question';
+  return 'none';
 }

@@ -9,11 +9,15 @@ import {
   applySnapshot,
   appendLocalUserMessage,
   createViewState,
+  derivePendingInteraction,
   markApprovalResolved,
+  markQuestionOutcome,
   pendingApprovalCount,
+  prependOlderMessages,
   type AssistantBlock,
   type ApprovalBlock,
   type ToolBlock,
+  type UserBlock,
 } from './transcript';
 
 const session: Session = {
@@ -381,5 +385,111 @@ describe('applyFrame', () => {
     const state = createViewState('session_test');
     expect(state.loaded).toBe(false);
     expect(state.blocks).toHaveLength(0);
+  });
+
+  it('renders turn.started.prompt as a user block and dedupes prompt.submitted', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = applyFrame(
+      state,
+      frame({ type: 'turn.started', turnId: 1, origin: { kind: 'user' }, prompt: 'hello from turn' }, { seq: 11 }),
+    ).state;
+    const userBlocks = state.blocks.filter((b): b is UserBlock => b.kind === 'user');
+    expect(userBlocks).toHaveLength(1);
+    expect(userBlocks[0]!.text).toBe('hello from turn');
+
+    state = applyFrame(
+      state,
+      frame(
+        {
+          type: 'prompt.submitted',
+          promptId: 'p1',
+          userMessageId: 'm1',
+          status: 'running',
+          content: [{ type: 'text', text: 'hello from turn' }],
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+        { seq: 12 },
+      ),
+    ).state;
+    expect(state.blocks.filter((b): b is UserBlock => b.kind === 'user')).toHaveLength(1);
+  });
+});
+
+describe('prependOlderMessages', () => {
+  it('reverses newest-first server pages to oldest-first display order', () => {
+    let state = applySnapshot(
+      'session_test',
+      snapshot({
+        messages: {
+          items: [
+            { id: 'm3', session_id: 'session_test', role: 'user', content: [{ type: 'text', text: 'three' }], created_at: '2026-01-01T00:00:02.000Z' },
+          ],
+          has_more: true,
+        },
+      }),
+    );
+    // Server returns newest-first older page: m2 then m1.
+    state = prependOlderMessages(
+      state,
+      [
+        { id: 'm2', session_id: 'session_test', role: 'user', content: [{ type: 'text', text: 'two' }], created_at: '2026-01-01T00:00:01.500Z' },
+        { id: 'm1', session_id: 'session_test', role: 'user', content: [{ type: 'text', text: 'one' }], created_at: '2026-01-01T00:00:01.000Z' },
+      ],
+      false,
+    );
+    const texts = state.blocks
+      .filter((b): b is UserBlock => b.kind === 'user')
+      .map((b) => b.text);
+    expect(texts).toEqual(['one', 'two', 'three']);
+    expect(state.oldestMessageId).toBe('m1');
+  });
+});
+
+describe('derivePendingInteraction', () => {
+  it('stays on approval/question while unresolved blocks remain', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = applyFrame(
+      state,
+      frame(
+        {
+          type: 'event.approval.requested',
+          agentId: 'main',
+          sessionId: 'session_test',
+          approval_id: 'a1',
+          session_id: 'session_test',
+          tool_call_id: 'tc1',
+          tool_name: 'Bash',
+          action: 'Run echo',
+          tool_input_display: { kind: 'command', command: 'echo hi' },
+          created_at: '2026-01-01T00:00:00.000Z',
+          expires_at: '2026-01-01T00:05:00.000Z',
+        },
+        { seq: 11 },
+      ),
+    ).state;
+    state = applyFrame(
+      state,
+      frame(
+        {
+          type: 'event.question.requested',
+          agentId: 'main',
+          sessionId: 'session_test',
+          question_id: 'q1',
+          session_id: 'session_test',
+          turn_id: 1,
+          tool_call_id: 'tc1',
+          questions: [{ id: 'q1-1', question: 'OK?', options: [{ id: 'yes', label: 'Yes' }] }],
+          created_at: '2026-01-01T00:00:00.000Z',
+        },
+        { seq: 12 },
+      ),
+    ).state;
+    expect(derivePendingInteraction(state)).toBe('approval');
+
+    state = markApprovalResolved(state, 'a1', { decision: 'approved', resolvedAt: '2026-01-01T00:00:10.000Z' });
+    expect(derivePendingInteraction(state)).toBe('question');
+
+    state = markQuestionOutcome(state, 'q1', { kind: 'answered', at: '2026-01-01T00:00:15.000Z' });
+    expect(derivePendingInteraction(state)).toBe('none');
   });
 });
