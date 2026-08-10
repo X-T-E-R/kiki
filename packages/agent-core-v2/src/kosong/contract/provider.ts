@@ -6,8 +6,8 @@
  * call needs. Two invariants hold here:
  *
  *  - A ChatProvider is immutable after construction. The interface has no
- *    `with*` methods; every per-turn intent (prompt-cache key, sampling
- *    overrides, thinking effort/keep, completion-token budget) flows through
+ *    `with*` methods; every per-turn intent (prompt-cache key, service tier,
+ *    sampling overrides, thinking effort/keep, completion-token budget) flows through
  *    `GenerateOptions` on each `generate` call instead of through morphs.
  *  - `GenerateOptions` is the per-turn intent carrier. Each wire dialect
  *    decides how — or whether — to encode an intent (e.g. a cache key may
@@ -21,6 +21,8 @@ import type { Tool } from './tool';
 import type { TokenUsage } from './usage';
 
 export type ThinkingEffort = 'off' | 'on' | (string & {});
+
+export type ServiceTier = 'auto' | 'default' | 'flex' | 'priority';
 
 export type JsonSchemaObject = Record<string, unknown>;
 
@@ -93,6 +95,7 @@ export interface GenerateOptions {
   auth?: ProviderRequestAuth;
   responseFormat?: ResponseFormat;
   cacheKey?: string;
+  serviceTier?: ServiceTier;
   sampling?: SamplingOptions;
   thinking?: ThinkingRequestOptions;
   maxCompletionTokens?: number;

@@ -25,7 +25,10 @@ import type { ServiceIdentifier } from '#/_base/di/instantiation';
 import { InstantiationService } from '#/_base/di/instantiationService';
 import { ServiceCollection } from '#/_base/di/serviceCollection';
 import { ILogService } from '#/_base/log/log';
-import { EXTRA_AGENT_DIRS_SECTION } from '#/workspace/workspaceAgentProfileLoader/configSection';
+import {
+  DISABLED_BUILTIN_PROFILES_SECTION,
+  EXTRA_AGENT_DIRS_SECTION,
+} from '#/workspace/workspaceAgentProfileLoader/configSection';
 import { UserAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoaderService';
 import type { PluginAgentRoot, ReloadSummary } from '#/app/plugin/types';
 import {
@@ -71,9 +74,11 @@ import { stubBootstrap } from '../../app/bootstrap/stubs';
 
 function configStub(): IConfigService & {
   setExtraAgentDirs(dirs: readonly string[]): void;
+  setDisabledBuiltinProfiles(names: readonly string[]): void;
   fireSectionChange(domain: string): void;
 } {
   let extraAgentDirs: readonly string[] = [];
+  let disabledBuiltinProfiles: readonly string[] = [];
   const sectionChangeListeners: Array<(event: unknown) => void> = [];
   return {
     _serviceBrand: undefined,
@@ -83,8 +88,11 @@ function configStub(): IConfigService & {
       sectionChangeListeners.push(listener);
       return { dispose: () => {} };
     },
-    get: (domain: string) =>
-      domain === EXTRA_AGENT_DIRS_SECTION ? [...extraAgentDirs] : undefined,
+    get: (domain: string) => {
+      if (domain === EXTRA_AGENT_DIRS_SECTION) return [...extraAgentDirs];
+      if (domain === DISABLED_BUILTIN_PROFILES_SECTION) return [...disabledBuiltinProfiles];
+      return undefined;
+    },
     inspect: () => ({
       value: undefined,
       defaultValue: undefined,
@@ -99,6 +107,9 @@ function configStub(): IConfigService & {
     setExtraAgentDirs: (dirs: readonly string[]) => {
       extraAgentDirs = [...dirs];
     },
+    setDisabledBuiltinProfiles: (names: readonly string[]) => {
+      disabledBuiltinProfiles = [...names];
+    },
     fireSectionChange: (domain: string) => {
       for (const listener of sectionChangeListeners) {
         listener({ domain, source: 'set', value: undefined, previousValue: undefined });
@@ -106,6 +117,7 @@ function configStub(): IConfigService & {
     },
   } as unknown as IConfigService & {
     setExtraAgentDirs(dirs: readonly string[]): void;
+    setDisabledBuiltinProfiles(names: readonly string[]): void;
     fireSectionChange(domain: string): void;
   };
 }
@@ -131,6 +143,30 @@ function fsWatchStub(): IHostFsWatchService {
       onDidChange: Event.None as Event<HostFsChange>,
       dispose: () => {},
     }),
+  };
+}
+
+function recordingFsWatchStub(): {
+  readonly service: IHostFsWatchService;
+  readonly handles: Array<{ disposed: boolean }>;
+} {
+  const handles: Array<{ disposed: boolean }> = [];
+  return {
+    service: {
+      _serviceBrand: undefined,
+      watch: (): IHostFsWatchHandle => {
+        const state = { disposed: false };
+        handles.push(state);
+        return {
+          ready: Promise.resolve(),
+          onDidChange: Event.None as Event<HostFsChange>,
+          dispose: () => {
+            state.disposed = true;
+          },
+        };
+      },
+    },
+    handles,
   };
 }
 
@@ -244,6 +280,7 @@ function failingReaddirFs(
 
 interface StackOptions {
   readonly extraAgentDirs?: readonly string[];
+  readonly disabledBuiltinProfiles?: readonly string[];
   readonly explicitFiles?: readonly string[];
   readonly pluginAgentRoots?: readonly PluginAgentRoot[];
   readonly pluginReloadEmitter?: Emitter<ReloadSummary>;
@@ -256,6 +293,9 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
   const log = logStub(warnings);
   const config = configStub();
   if (opts?.extraAgentDirs !== undefined) config.setExtraAgentDirs(opts.extraAgentDirs);
+  if (opts?.disabledBuiltinProfiles !== undefined) {
+    config.setDisabledBuiltinProfiles(opts.disabledBuiltinProfiles);
+  }
   const bootstrap: IBootstrapService = {
     ...stubBootstrap(fixture.homeDir, {}, { agentFiles: opts?.explicitFiles }),
     osHomeDir: fixture.osHomeDir,
@@ -295,7 +335,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
     _serviceBrand: undefined,
     workspaceKey: workspaceContext.workspaceId,
   };
-  const catalog = new SessionAgentProfileCatalogService(registry, seed, log);
+  const catalog = new SessionAgentProfileCatalogService(registry, seed, config, log);
 
   return {
     registry,
@@ -361,6 +401,50 @@ describe('agent profile loaders + session catalog', () => {
         expect(stack.catalog.list().length).toBeGreaterThan(0);
         expect(stack.catalog.inspect(DEFAULT_AGENT_PROFILE_NAME)?.sourceId).toBe('builtin');
       });
+    });
+  });
+
+  it('omits disabled builtin profiles and reprojects when the config changes', async () => {
+    registerAgentProfile(
+      normalizeAgentProfile({
+        name: 'coder',
+        description: 'builtin coder',
+        systemPrompt: () => 'CODER',
+      }),
+    );
+    await withFixture(async (fixture) => {
+      await withStack(fixture, { disabledBuiltinProfiles: ['coder'] }, async (stack) => {
+        await stack.ready();
+        expect(stack.catalog.get('coder')).toBeUndefined();
+        expect(stack.catalog.list().map((profile) => profile.name)).not.toContain('coder');
+
+        stack.config.setDisabledBuiltinProfiles([]);
+        const changed = waitForEvent(stack.catalog.onDidChange);
+        stack.config.fireSectionChange(DISABLED_BUILTIN_PROFILES_SECTION);
+        await changed;
+
+        expect(stack.catalog.get('coder')?.description).toBe('builtin coder');
+      });
+    });
+  });
+
+  it('warns and keeps the required default builtin profile when its disable is configured', async () => {
+    await withFixture(async (fixture) => {
+      await withStack(
+        fixture,
+        { disabledBuiltinProfiles: [DEFAULT_AGENT_PROFILE_NAME] },
+        async (stack) => {
+          await stack.ready();
+
+          expect(stack.catalog.getDefault().description).toBe('builtin default');
+          expect(
+            stack.warnings.some(
+              (warning) =>
+                warning.includes(DEFAULT_AGENT_PROFILE_NAME) && warning.includes('cannot be disabled'),
+            ),
+          ).toBe(true);
+        },
+      );
     });
   });
 
@@ -760,6 +844,69 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
+  it('rescans the user source when a user agent file changes on disk', async () => {
+    await withFixture(async (fixture) => {
+      await mkdir(join(fixture.homeDir, 'agents'), { recursive: true });
+      await withStack(fixture, { fsWatch: new HostFsWatchService() }, async (stack) => {
+        await stack.ready();
+        expect(stack.catalog.get('watched-user-agent')).toBeUndefined();
+
+        const refreshed = new Promise<string>((resolvePromise) => {
+          const d = stack.catalog.onDidChange((sourceId) => {
+            if (sourceId !== 'user') return;
+            d.dispose();
+            resolvePromise(sourceId);
+          });
+        });
+        const timedOut = new Promise<never>((_resolve, reject) => {
+          setTimeout(() => reject(new Error('watch-driven refresh timed out')), 10000);
+        });
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await writeAgent(
+          join(fixture.homeDir, 'agents'),
+          'watched-user-agent.md',
+          agentMd('watched-user-agent', 'from user watch'),
+        );
+
+        await expect(Promise.race([refreshed, timedOut])).resolves.toBe('user');
+        expect(stack.catalog.get('watched-user-agent')?.description).toBe('from user watch');
+      });
+    });
+  }, 15000);
+
+  it('rescans the extra source when a configured agent file changes on disk', async () => {
+    await withFixture(async (fixture) => {
+      await withStack(
+        fixture,
+        { extraAgentDirs: [fixture.extraDir], fsWatch: new HostFsWatchService() },
+        async (stack) => {
+          await stack.ready();
+          expect(stack.catalog.get('watched-extra-agent')).toBeUndefined();
+
+          const refreshed = new Promise<string>((resolvePromise) => {
+            const d = stack.catalog.onDidChange((sourceId) => {
+              if (sourceId !== 'extra') return;
+              d.dispose();
+              resolvePromise(sourceId);
+            });
+          });
+          const timedOut = new Promise<never>((_resolve, reject) => {
+            setTimeout(() => reject(new Error('watch-driven refresh timed out')), 10000);
+          });
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          await writeAgent(
+            fixture.extraDir,
+            'watched-extra-agent.md',
+            agentMd('watched-extra-agent', 'from extra watch'),
+          );
+
+          await expect(Promise.race([refreshed, timedOut])).resolves.toBe('extra');
+          expect(stack.catalog.get('watched-extra-agent')?.description).toBe('from extra watch');
+        },
+      );
+    });
+  }, 15000);
+
   it('rescans the workspace source when a project agent file changes on disk', async () => {
     await withFixture(async (fixture) => {
       await mkdir(join(fixture.workDir, '.kimi-code', 'agents'), { recursive: true });
@@ -811,6 +958,25 @@ describe('agent profile loaders + session catalog', () => {
           expect(bySourceId.get(sourceId)?.priority).toBe(AGENT_PROFILE_SOURCE_PRIORITY[sourceId]);
         }
       });
+    });
+  });
+
+  it('disposes user, extra, and workspace watch handles with the loader scope', async () => {
+    await withFixture(async (fixture) => {
+      const watch = recordingFsWatchStub();
+      const stack = makeStack(fixture, {
+        extraAgentDirs: [fixture.extraDir],
+        fsWatch: watch.service,
+      });
+      try {
+        await stack.ready();
+        expect(watch.handles.length).toBeGreaterThanOrEqual(4);
+        expect(watch.handles.some((handle) => handle.disposed)).toBe(false);
+      } finally {
+        stack.dispose();
+      }
+
+      expect(watch.handles.every((handle) => handle.disposed)).toBe(true);
     });
   });
 

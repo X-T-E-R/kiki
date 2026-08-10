@@ -103,6 +103,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `merge_all_available_skills` | `boolean` | `true` | Whether to merge Agent Skills from all available directories |
 | `extra_skill_dirs` | `array<string>` | — | Extra skill search directories, layered on top of the default directories |
 | `extra_agent_dirs` | `array<string>` | — | Extra custom agent search directories, layered on top of the default directories |
+| `disabled_builtin_profiles` | `array<string>` | `[]` | Built-in profile names to remove from agent discovery and dispatch: `agent`, `coder`, `explore`, or `plan`. Dispatching a disabled profile fails as an unknown role. Disabling the default `agent` profile is ignored with a warning; a same-name file profile no longer needs `override: true` when its built-in is disabled |
 | `builtin_product_skills` | `boolean` | `true` | Whether the built-in skills that document Kimi Code itself are offered to the model: `update-config`, `custom-theme`, `mcp-config`, `check-kimi-code-docs`, and `import-from-cc-codex`. Turning them off trims their names and descriptions from the system prompt, at the cost of the guided flows for those tasks. Read by the default `agent-core-v2` engine; ignored when `KIMI_CODE_LEGACY_FLAG=1` selects the legacy engine |
 | `telemetry` | `boolean` | `true` | Whether anonymous telemetry is enabled; disabled only when explicitly set to `false` |
 | `providers` | `table` | `{}` | API provider table → [`providers`](#providers) |
@@ -195,11 +196,11 @@ You can also switch models temporarily without touching the config file — by s
 
 The secondary model is a second model configuration alongside the main model — typically a cheaper one, for features that do not need the main model's capability. It remains the legacy fallback recipe for subagent spawning.
 
-With the experiment enabled, `Agent` and `AgentSwarm` accept two mutually exclusive model selectors: legacy `model` uses the symbolic values `"secondary"` / `"primary"`, while `model_alias` selects an exact configured `[models]` alias. An exact alias named `primary` or `secondary` remains literal. Model precedence for a new subagent is tool selector → profile [`model_alias` or `model_preference`](../customization/agents.md#agent-file-format) → `[subagent] default_model` → this secondary recipe → the immediate caller's model. The internal alias `__secondary__` is reserved and cannot be configured or selected directly.
+Exact `model_alias` and `thinking_effort` bindings on agent profiles, `Agent`, and `AgentSwarm` are stable and do not require an experiment. Model precedence for a new subagent is tool `model_alias` → profile [`model_alias`](../customization/agents.md#agent-file-format) → `[subagent] default_model` → the immediate caller's model. An exact alias named `primary` or `secondary` remains literal.
 
-Thinking effort resolves independently: tool `thinking_effort` → profile `thinking_effort` → `[subagent] default_effort` → this section's `default_effort` only when the secondary recipe supplied the model → caller effort only when the complete caller binding is inherited. A concrete model alias without an effort uses the existing global `[thinking]` and selected-model defaults instead of carrying a stale caller effort.
+Thinking effort resolves independently: tool `thinking_effort` → profile `thinking_effort` → `[subagent] default_effort` → caller effort when the complete caller binding is inherited. A concrete model alias without an effort uses the existing global `[thinking]` and selected-model defaults instead of carrying a stale caller effort.
 
-These model and effort controls are experimental and disabled by default. Enable them with `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`, or the master `KIMI_CODE_EXPERIMENTAL_FLAG=1`. The same gate covers exact aliases, defaults, profile fields, and the secondary recipe. Resumed and retried subagents never re-resolve the current profile or defaults; their persisted binding is immutable.
+Only the legacy `model` tool selector (`"secondary"` / `"primary"`), the profile `model_preference` field, and this secondary recipe require `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` or the master `KIMI_CODE_EXPERIMENTAL_FLAG=1`. With the experiment enabled, this recipe is inserted between the `[subagent]` defaults and the caller binding; its `default_effort` is used only when the recipe supplied the model. The legacy `model` parameter and `model_alias` are mutually exclusive. With the experiment disabled, profile `model_preference` is ignored with a warning and an explicit `model` tool parameter is rejected with a clear error. The internal alias `__secondary__` is reserved and cannot be configured or selected directly. Resumed and retried subagents never re-resolve the current profile or defaults; their persisted binding is immutable.
 
 In the interactive TUI, the [`/secondary_model`](../reference/slash-commands.md) command opens a model picker that writes this section and live-applies it to the current session, so newly spawned subagents bind the new secondary model right away.
 
@@ -288,8 +289,8 @@ In print mode (`kimi -p "<prompt>"`), Kimi Code stays alive after the main agent
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `default_model` | `string` | — | Fill-only exact `[models]` alias for new subagents. Active only while the secondary-model experiment is enabled |
-| `default_effort` | `string` | — | Fill-only thinking effort for new subagents. Active only while the secondary-model experiment is enabled |
+| `default_model` | `string` | — | Fill-only exact `[models]` alias for new subagents, after tool and profile bindings and before caller inheritance |
+| `default_effort` | `string` | — | Fill-only thinking effort for new subagents, after tool and profile effort and before caller inheritance |
 | `timeout_ms` | `integer` | `7200000` (2 hours) | Maximum wall-clock time (milliseconds) a single subagent (`Agent` / `AgentSwarm`) is allowed to run before it is settled as `timed_out`. `0` means no timeout — the subagent runs until it finishes or the model stops it. This is the background-task manager's per-task timeout for each subagent task, so it applies to both foreground and background subagents. In print mode (`kimi -p`) the default is `0` unless explicitly set. Note: any value above `2147483647` (about 24.8 days) is clamped to roughly 24.8 days by the runtime |
 
 ## `agents`

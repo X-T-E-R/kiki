@@ -59,6 +59,7 @@ describe('parseAgentFileText', () => {
 
     expect(def.override).toBe(false);
     expect(def.modelPreference).toBeUndefined();
+    expect(def.serviceTier).toBeUndefined();
     expect(def.tools).toBeUndefined();
     expect(def.disallowedTools).toBeUndefined();
     expect(def.subagents).toBeUndefined();
@@ -74,17 +75,40 @@ describe('parseAgentFileText', () => {
     expect(def.modelPreference).toBe('primary');
   });
 
-  it('parses exact model and effort fields without consuming generic model', () => {
+  it('parses exact model, effort, and service tier fields without consuming generic model', () => {
     const def = parse(
-      '---\nname: solo\ndescription: d\nmodel: foreign\nmodel_alias: fast-model\nthinking_effort: low\n---\n\nbody\n',
+      '---\nname: solo\ndescription: d\nmodel: foreign\nmodel_alias: fast-model\nthinking_effort: low\nservice_tier: priority\n---\n\nbody\n',
     );
-    expect(def).toMatchObject({ modelAlias: 'fast-model', thinkingEffort: 'low' });
+    expect(def).toMatchObject({
+      modelAlias: 'fast-model',
+      thinkingEffort: 'low',
+      serviceTier: 'priority',
+    });
     expect(def).not.toHaveProperty('model');
     expect(() =>
       parse(
         '---\nname: solo\ndescription: d\nmodel_preference: primary\nmodel_alias: fast-model\n---\n\nbody\n',
       ),
     ).toThrow(/mutually exclusive/);
+  });
+
+  it.each(['auto', 'default', 'flex', 'priority'] as const)(
+    'accepts the %s service tier',
+    (serviceTier) => {
+      const def = parse(
+        `---\nname: solo\ndescription: d\nservice_tier: ${serviceTier}\n---\n\nbody\n`,
+      );
+      expect(def.serviceTier).toBe(serviceTier);
+    },
+  );
+
+  it('rejects unsupported or non-string service tiers', () => {
+    expect(() =>
+      parse('---\nname: solo\ndescription: d\nservice_tier: premium\n---\n\nbody\n'),
+    ).toThrow(/"service_tier"/);
+    expect(() =>
+      parse('---\nname: solo\ndescription: d\nservice_tier: 42\n---\n\nbody\n'),
+    ).toThrow(/"service_tier"/);
   });
 
   it('rejects an unsupported model preference', () => {
@@ -346,12 +370,21 @@ describe('agentProfileFromFile', () => {
     expect(profile.modelPreference).toBe('secondary');
   });
 
-  it('passes exact model and effort fields through', () => {
+  it('passes exact model, effort, and service tier fields through', () => {
     const profile = agentProfileFromFile(
-      { ...base, modelAlias: 'fast-model', thinkingEffort: 'low' },
+      {
+        ...base,
+        modelAlias: 'fast-model',
+        thinkingEffort: 'low',
+        serviceTier: 'priority',
+      },
       basePrompt,
     );
-    expect(profile).toMatchObject({ modelAlias: 'fast-model', thinkingEffort: 'low' });
+    expect(profile).toMatchObject({
+      modelAlias: 'fast-model',
+      thinkingEffort: 'low',
+      serviceTier: 'priority',
+    });
   });
 
   it('treats an explicit file as an override intent', () => {

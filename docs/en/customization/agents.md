@@ -14,6 +14,8 @@ Kimi Code CLI includes three built-in sub-agents, ready to use out of the box, e
 
 A `coder` sub-agent shares most of the main Agent's tool set: it can run shell commands in the background, maintain todo lists, enter Plan mode, invoke Agent Skills, and dispatch its own nested sub-agents when a task decomposes naturally. If it finishes its turn while background tasks are still running, its run only reports completion after those tasks settle, so the parent receives the result after the underlying work has actually finished.
 
+The top-level [`disabled_builtin_profiles`](../configuration/config-files.md#top-level-fields) setting removes named built-in profiles (`agent`, `coder`, `explore`, or `plan`) from discovery and dispatch. Disabling the default `agent` profile is ignored with a warning; a file profile that shares a name with another disabled built-in no longer needs `override: true`.
+
 ## How to Invoke
 
 Sub-agents are scheduled automatically by the main Agent — based on task complexity, context consumption, and sub-task independence, they are dispatched at the right moment without the user having to specify one.
@@ -78,6 +80,8 @@ The Kimi-specific user agent directory moves with `KIMI_CODE_HOME`, while the ge
 extra_agent_dirs = ["~/team-agents", ".agents/team-agents"]
 ```
 
+Agent Markdown files under the user, project, and `extra_agent_dirs` roots are watched for filesystem changes. After an approximately 200 ms debounce, additions, edits, and deletions reload automatically, so a running session can dispatch a newly available role without `/reload` or a CLI restart. `$KIMI_CODE_HOME/SYSTEM.md` is watched the same way. An already-created `Agent` tool instance keeps a frozen snapshot of its displayed role descriptions, so that list can look stale, but dispatch resolution uses the reloaded profiles immediately.
+
 **Plugin level**: directories declared in an enabled plugin's manifest `agents` field (when omitted, the `agents/` directory under the plugin root is picked up automatically); see [Plugin Agents](./plugins.md#plugin-agents). Plugin agents outrank only the built-in agents.
 
 **Built-in agents** are distributed with the CLI and have the lowest priority. A directory-discovered file does not override a same-name built-in Agent unless its frontmatter declares `override: true`. A file loaded through `--agent-file` is treated as explicit launch intent, may override a same-name built-in Agent, outranks every directory scope, and applies to the current launch only. Separately, `$KIMI_CODE_HOME/SYSTEM.md` permanently overrides the default main agent's system prompt (it is not part of agent-file discovery); its precedence interactions are covered in the SYSTEM.md section below.
@@ -116,12 +120,13 @@ You are a strict code reviewer. Read the diff, then report findings grouped by s
 | `description` | yes | What the agent does. Shown to the main Agent when it picks a sub-agent, so write it to guide delegation decisions |
 | `whenToUse` | no | Extra hint describing when the agent should be used |
 | `override` | no | Whether this file may replace a same-name built-in Agent. Defaults to `false`; `--agent-file` is already explicit and does not require this field |
-| `model_preference` | no | Legacy symbolic selector for new subagents: `primary` inherits the caller's model binding, while `secondary` selects [`[secondary_model] model`](../configuration/config-files.md#secondary-model). Mutually exclusive with `model_alias` |
+| `model_preference` | no | Legacy symbolic selector available only with the secondary-model experiment: `primary` inherits the caller's model binding, while `secondary` selects [`[secondary_model] model`](../configuration/config-files.md#secondary-model). Mutually exclusive with `model_alias` |
 | `model_alias` | no | Exact, case-sensitive alias from `[models]`. Literal aliases named `primary` or `secondary` stay literal; this differs from the symbolic `model_preference` field |
 | `thinking_effort` | no | Thinking effort requested when this profile starts as a new subagent. It resolves independently from the model selector |
+| `service_tier` | no | Service tier requested on every LLM request this agent makes as a subagent: `auto`, `default`, `flex`, or `priority`. Only the `openai_responses` provider protocol encodes it into the request body; other protocols silently ignore it |
 | `tools` | no | Allowlist of tool names such as `Read` or `Bash`; MCP tools are matched with globs such as `mcp__github__*`. Accepts a YAML list or a comma-separated string (`tools: Read, Grep`). Omit to allow all tools; a lone `*` also allows all tools; an empty list (`tools: []`) disables all tools |
 | `disallowedTools` | no | Denylist with the same syntax and matching rules, applied after `tools` |
-| `subagents` | no | Allowlist of sub-agent names this agent may delegate to, with the same syntax as `tools` (YAML list or comma-separated string). Omit to allow every type; a lone `*` also allows all types |
+| `subagents` | no | Allowlist of sub-agent names this agent may delegate to, with the same syntax as `tools` (YAML list or comma-separated string). Omit the field or use a lone `*` to allow every type; use an empty list (`subagents: []`) to prohibit all subagent dispatch; otherwise the explicit names form the allowlist |
 
 Built-in and user tools match by exact, case-sensitive name; entries starting with `mcp__` match MCP tools as globs. Three entry shapes never match anything and are reported with a warning when the profile takes effect: a wildcard outside an `mcp__` pattern (a bare `*` in `disallowedTools` disables nothing), an `mcp__` literal that is not a full `mcp__<server>__<tool>` name (`mcp__github` matches nothing — use `mcp__github__*` for the whole server), and a name no registered or built-in tool has (usually a typo, such as `read` instead of `Read`).
 
@@ -129,7 +134,9 @@ The body is the agent's system prompt, and it is rendered as a template each tim
 
 Unknown fields are ignored, so newer files stay readable by older versions. Fields from other agent tools (such as Claude Code's `model` or OpenCode's `mode`) are ignored the same way, the comma-separated `tools` form keeps Claude Code-style agent files loadable, and a missing `name` falls back to the file name so OpenCode-style files load too — a minimal file with `description` and a body works across tools.
 
-The three binding fields apply only to newly spawned subagents while `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` (or the master `KIMI_CODE_EXPERIMENTAL_FLAG=1`) is enabled. Tool-call `model_alias` or legacy `model` wins over the corresponding profile selector, and tool-call `thinking_effort` wins over the profile effort. Resumed and retried subagents keep their persisted model and effort; passing binding fields on an `Agent` resume is rejected. A mixed `AgentSwarm` call applies them only to item-based new spawns.
+`model_alias` and `thinking_effort` are stable profile fields and `Agent` / `AgentSwarm` tool parameters; they do not require `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL`. For a newly spawned subagent, model and effort resolve independently in this order: tool parameter → profile field → `[subagent]` `default_model` / `default_effort` → caller binding. If a profile pins a `model_alias` that is absent from `[models]`, the CLI warns and falls back to the caller's model and effort; an unknown alias passed explicitly as a tool parameter is an error.
+
+Only the legacy tool parameter `model` (`primary` / `secondary`), the profile field `model_preference`, and the secondary recipe remain behind the secondary-model experiment. When enabled, the secondary recipe is inserted between the `[subagent]` defaults and the caller binding. When disabled, a profile's `model_preference` is ignored with a warning, while explicitly passing the `model` tool parameter returns a clear error. Resumed and retried subagents keep their persisted model and effort; passing binding fields on an `Agent` resume is rejected. A mixed `AgentSwarm` call applies them only to item-based new spawns.
 
 A file with invalid content discovered in a directory is skipped with a warning and does not affect other files. A file passed explicitly via `--agent-file` must be valid — otherwise the CLI reports the error and exits.
 

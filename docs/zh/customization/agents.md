@@ -14,6 +14,8 @@ Kimi Code CLI 内置三种子 Agent，开箱即用，分别面向不同任务形
 
 `coder` 子 Agent 与主 Agent 共享大部分工具集：可以在后台执行 Shell 命令、维护待办列表、进入 Plan 模式、调用 Agent Skills，也可以在任务自然拆解时继续派发自己的嵌套子 Agent。如果它结束自己的轮次时仍有后台任务在运行，那么只有在这些后台任务全部落定后，这次运行才会回报完成——主 Agent 拿到结果时，背后的工作也已经真正完成。
 
+顶层配置 [`disabled_builtin_profiles`](../configuration/config-files.md#顶层字段) 会从发现与派发列表中移除指定的内置 profile（`agent`、`coder`、`explore` 或 `plan`）。禁用默认 `agent` profile 的设置会被忽略并告警；文件 profile 与其他已禁用内置 profile 同名时，不再需要 `override: true`。
+
 ## 调用方式
 
 子 Agent 由主 Agent 自动调度——根据任务复杂度、上下文消耗和子任务的独立性，在适当时机派发，无需用户手动指定。
@@ -78,6 +80,8 @@ Kimi 专属的用户 Agent 目录随 `KIMI_CODE_HOME` 移动，通用的 `~/.age
 extra_agent_dirs = ["~/team-agents", ".agents/team-agents"]
 ```
 
+用户、项目和 `extra_agent_dirs` 根目录下的 Agent Markdown 文件都会被文件系统监听。新增、修改或删除后，经过约 200 ms 去抖会自动重载，因此运行中的会话无需执行 `/reload` 或重启 CLI，就能派发新出现的角色。`$KIMI_CODE_HOME/SYSTEM.md` 也以相同方式监听。已经创建的 `Agent` 工具实例会保留角色描述列表的冻结快照，因此展示可能暂时滞后，但实际派发会立即使用重载后的 profile。
+
 **Plugin 级**：已启用 plugin 在其 manifest 的 `agents` 字段中声明的目录（省略时自动采用 plugin 根下的 `agents/` 目录），见[插件 Agent](./plugins.md#插件-agent)。Plugin Agent 优先级仅高于内置 Agent。
 
 **内置 Agent** 随 CLI 分发，优先级最低。目录中发现的文件不会仅凭同名覆盖内置 Agent；如确需替换，必须在 Frontmatter 中声明 `override: true`。通过 `--agent-file` 加载的文件视为显式启动意图，可以覆盖同名内置 Agent，优先级高于所有目录作用域，且仅对本次启动生效。另外，`$KIMI_CODE_HOME/SYSTEM.md` 可永久覆盖默认主 Agent 的系统提示词（它不参与 Agent 文件发现），其优先级交互见下文 SYSTEM.md 小节。
@@ -116,12 +120,13 @@ disallowedTools:
 | `description` | 是 | Agent 的用途。主 Agent 挑选子 Agent 时会看到，请围绕委派决策来写 |
 | `whenToUse` | 否 | 补充说明何时应使用该 Agent |
 | `override` | 否 | 是否允许覆盖同名内置 Agent，默认 `false`。`--agent-file` 属于显式启动意图，无需设置此字段 |
-| `model_preference` | 否 | 新子 Agent 的旧版符号选择器：`primary` 继承调用方的模型绑定，`secondary` 选择 [`[secondary_model] model`](../configuration/config-files.md#secondary-model)。与 `model_alias` 互斥 |
+| `model_preference` | 否 | 仅在次主力模型实验功能启用时可用的旧版符号选择器：`primary` 继承调用方的模型绑定，`secondary` 选择 [`[secondary_model] model`](../configuration/config-files.md#secondary-model)。与 `model_alias` 互斥 |
 | `model_alias` | 否 | `[models]` 中区分大小写的精确 alias。名为 `primary` 或 `secondary` 的 alias 仍按字面值处理，与符号字段 `model_preference` 不同 |
 | `thinking_effort` | 否 | 该 profile 作为新子 Agent 启动时请求的 thinking effort，与模型选择器独立解析 |
+| `service_tier` | 否 | 该 profile 作为子 Agent 运行时每个 LLM 请求携带的服务档位：`auto`、`default`、`flex` 或 `priority`。目前只有 `openai_responses` 协议会把它编码进请求体，其他协议静默忽略 |
 | `tools` | 否 | 工具名允许列表，如 `Read`、`Bash`；MCP 工具用 glob 匹配，如 `mcp__github__*`。支持 YAML 列表或逗号分隔字符串（`tools: Read, Grep`）两种写法。缺省表示允许全部工具；单独的 `*` 同样表示允许全部工具；空列表（`tools: []`）表示禁用全部工具 |
 | `disallowedTools` | 否 | 禁止列表，写法与匹配规则相同，在 `tools` 之后应用 |
-| `subagents` | 否 | 允许委派的子 Agent 名称列表，写法与 `tools` 相同（YAML 列表或逗号分隔字符串）。缺省表示可委派所有类型；单独的 `*` 同样表示全部 |
+| `subagents` | 否 | 允许委派的子 Agent 名称列表，写法与 `tools` 相同（YAML 列表或逗号分隔字符串）。省略字段或单独写 `*` 表示不限制；空列表（`subagents: []`）表示禁止派发任何子 Agent；其他显式名称构成白名单 |
 
 内置工具与用户工具按名称精确匹配（区分大小写）；以 `mcp__` 开头的条目按 glob 匹配 MCP 工具。有三种写法永远匹配不到任何工具，在 profile 生效时会给出警告：`mcp__` 模式之外使用通配符（`disallowedTools` 里单独的 `*` 什么也禁不掉）；不是完整 `mcp__<服务器>__<工具>` 形式的 `mcp__` 字面量（`mcp__github` 匹配不到任何工具 —— 匹配整个服务器要用 `mcp__github__*`）；以及任何已注册或内置工具都没有的名字（通常是笔误，如把 `Read` 写成 `read`）。
 
@@ -129,7 +134,9 @@ disallowedTools:
 
 未知字段会被忽略，新版本写的文件在旧版本上仍可读取。其他 Agent 工具的字段（如 Claude Code 的 `model`、OpenCode 的 `mode`）同样会被忽略；加上 `tools` 的逗号分隔写法和 `name` 缺省回退到文件名，Claude Code 与 OpenCode 风格的 Agent 文件一般可直接加载 —— 只含 `description` 和正文的最小文件可跨工具通用。
 
-这三个绑定字段仅在启用 `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`（或 master `KIMI_CODE_EXPERIMENTAL_FLAG=1`）后对新启动的子 Agent 生效。工具调用的 `model_alias` 或旧版 `model` 优先于对应的 profile 选择器，工具调用的 `thinking_effort` 优先于 profile effort。恢复或重试的子 Agent 保持已持久化的模型与 effort；`Agent` resume 传入绑定字段会被拒绝。`AgentSwarm` 混合调用只把这些字段应用到基于 item 的新派生项。
+`model_alias` 与 `thinking_effort` 已是稳定的 profile 字段和 `Agent` / `AgentSwarm` 工具参数，不需要启用 `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL`。新派生子 Agent 的模型与 effort 分别按以下顺序解析：工具参数 → profile 字段 → `[subagent]` 的 `default_model` / `default_effort` → 调用方绑定。profile 固定的 `model_alias` 不存在于 `[models]` 时，CLI 会告警并回退到调用方的模型与 effort；通过工具参数显式传入未知 alias 时则会报错。
+
+只有旧版工具参数 `model`（`primary` / `secondary`）、profile 字段 `model_preference` 和次主力 recipe 仍受次主力模型实验功能控制。启用后，次主力 recipe 会插在 `[subagent]` 默认值与调用方绑定之间。关闭时，profile 中的 `model_preference` 会被忽略并告警；显式传入 `model` 工具参数则会返回清晰错误。恢复或重试的子 Agent 保持已持久化的模型与 effort；`Agent` resume 传入绑定字段会被拒绝。`AgentSwarm` 混合调用只把这些字段应用到基于 item 的新派生项。
 
 目录中发现的非法文件会被跳过并告警，不影响其他文件。通过 `--agent-file` 显式传入的文件必须合法 —— 否则 CLI 会报错并退出。
 

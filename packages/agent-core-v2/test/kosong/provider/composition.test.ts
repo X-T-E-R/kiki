@@ -24,8 +24,8 @@
  * exact request params on the wire (the morph era asserted baked provider
  * state instead):
  *
- *  - the behavior probes for per-turn intent encoding (cacheKey / thinking /
- *     budget) on the Kimi, OpenAI, and Anthropic wires;
+ *  - the behavior probes for per-turn intent encoding (cacheKey / serviceTier /
+ *     thinking / budget) on the Kimi, OpenAI, and Anthropic wires;
  *  - the per-base `responseFormat` encodings (re-added from the deleted
  *     llmProtocol structured-output suite; morph-seeded kwargs cases that no
  *     longer have a channel are noted where they dropped);
@@ -682,6 +682,40 @@ describe('per-turn intent wire encoding (behavior probes)', () => {
     const body = await captureOpenAIBody(provider, { cacheKey: 'session-probe' });
 
     expect(body['prompt_cache_key']).toBe('session-probe');
+  });
+
+  it('encodes serviceTier only on the OpenAI Responses wire', async () => {
+    const options: GenerateOptions = { serviceTier: 'priority' };
+    const responses = new OpenAIResponsesChatProvider({
+      model: 'gpt-4.1',
+      apiKey: 'sk-probe',
+    });
+    const openai = new OpenAILegacyChatProvider({
+      model: 'gpt-4o',
+      apiKey: 'sk-probe',
+      stream: false,
+    });
+    const kimi = registry.createChatProvider({
+      protocol: 'openai',
+      providerType: 'kimi',
+      modelName: 'kimi-k2',
+      apiKey: 'sk-probe',
+    });
+    const anthropic = new AnthropicChatProvider({
+      model: 'claude-opus-4-6',
+      apiKey: 'sk-probe',
+      stream: false,
+    });
+
+    const responsesBody = await captureResponsesBody(responses, options);
+    const openaiBody = await captureOpenAIBody(openai, options);
+    const kimiBody = await captureOpenAIBody(kimi, options);
+    const { params: anthropicBody } = await captureAnthropicBody(anthropic, options);
+
+    expect(responsesBody['service_tier']).toBe('priority');
+    expect(openaiBody).not.toHaveProperty('service_tier');
+    expect(kimiBody).not.toHaveProperty('service_tier');
+    expect(anthropicBody).not.toHaveProperty('service_tier');
   });
 
   it('encodes cacheKey on Anthropic as metadata.user_id', async () => {

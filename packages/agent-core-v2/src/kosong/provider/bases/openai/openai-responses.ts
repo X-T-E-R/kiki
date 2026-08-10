@@ -1097,6 +1097,9 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
     if (options?.cacheKey !== undefined) {
       kwargs = { ...kwargs, prompt_cache_key: options.cacheKey };
     }
+    if (options?.serviceTier !== undefined) {
+      kwargs = { ...kwargs, service_tier: options.serviceTier };
+    }
     if (options?.sampling?.temperature !== undefined) {
       kwargs = { ...kwargs, temperature: options.sampling.temperature };
     }

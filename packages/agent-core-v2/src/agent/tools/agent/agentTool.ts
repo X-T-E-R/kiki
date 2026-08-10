@@ -10,13 +10,12 @@
  * under TaskList/TaskOutput/TaskStop when `run_in_background=true` or after
  * detach), and terminal text formatting.
  *
- * Spawn bindings use an explicit tool choice first, then the target profile's
- * symbolic model preference, before `resolveSubagentBinding` falls back to the
- * configured secondary model or the caller's model. The selected alias is
- * resolved through the model catalog before lifecycle allocation. A resumed
- * agent keeps the model recorded in its own wire journal — with per-subagent
- * models there is no "child follows the parent's current model" invariant to
- * enforce.
+ * Spawn bindings resolve exact alias and effort pins independently across tool,
+ * profile, `[subagent]` defaults, and caller fallback; the experimental legacy
+ * selector may additionally choose the secondary recipe. Dead tool aliases
+ * fail loudly, while dead profile aliases publish a warning and fall back to
+ * the caller model and effort before lifecycle allocation. A resumed agent
+ * keeps the binding recorded in its own wire journal.
  *
  * Registered via the module-level `registerAgentToolService(ISubagentTool,
  * SubagentTool)` at the bottom of this file — the same "import = register"
@@ -75,6 +74,7 @@ import {
 } from '#/app/agentProfileCatalog/profile-shared';
 import { ILogService } from '#/_base/log/log';
 import { IConfigService } from '#/app/config/config';
+import { IEventBus } from '#/app/event/eventBus';
 import { IFlagService } from '#/app/flag/flag';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
@@ -89,6 +89,7 @@ import {
   addSubagentBindingSchemaConstraints,
   buildSubagentModelDescriptions,
   formatSubagentTimeoutDescription,
+  isMissingSubagentModelAlias,
   normalizeSubagentBindingValue,
   resolveSubagentBinding,
   subagentModelSource,
@@ -98,6 +99,10 @@ import {
   wrapSubagentModelError,
 } from '#/session/subagent/configSection';
 import { SECONDARY_MODEL_FLAG_ID } from '#/session/subagent/flag';
+import {
+  publishIgnoredProfileModelPreferenceWarning,
+  publishInvalidProfileModelAliasWarning,
+} from '#/session/subagent/secondaryModelWarning';
 import {
   BACKGROUND_AGENT_UNAVAILABLE,
   DEFAULT_PROFILE_NAME,
@@ -340,7 +345,8 @@ export class SubagentTool implements ISubagentTool {
           details: { agentId: this.callerAgentId },
         });
       }
-      const binding = resolveSubagentBinding(
+      const eventBus = requester.accessor.get(IEventBus);
+      let binding = resolveSubagentBinding(
         this.config,
         this.flags,
         { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
@@ -355,9 +361,34 @@ export class SubagentTool implements ISubagentTool {
           thinkingEffort: profile.thinkingEffort,
         },
       );
-      let created: IAgentScopeHandle;
+      if (
+        !this.flags.enabled(SECONDARY_MODEL_FLAG_ID) &&
+        profile.modelPreference !== undefined
+      ) {
+        publishIgnoredProfileModelPreferenceWarning(
+          eventBus,
+          profile.name,
+          profile.modelPreference,
+        );
+      }
+      let bindingSource = subagentModelSource(binding);
       try {
         this.modelCatalog.get(binding.model);
+      } catch (error) {
+        if (bindingSource !== 'profile' || !isMissingSubagentModelAlias(error, binding.model)) {
+          throw wrapSubagentModelError(error, binding.model, own.modelAlias, bindingSource);
+        }
+        publishInvalidProfileModelAliasWarning(eventBus, profile.name, binding.model, error);
+        binding = {
+          model: own.modelAlias,
+          thinking: own.thinkingLevel,
+          displayModel: subagentDisplayModel(this.config, own.modelAlias),
+        };
+        bindingSource = 'caller';
+        this.modelCatalog.get(binding.model);
+      }
+      let created: IAgentScopeHandle;
+      try {
         created = await this.lifecycle.create({
           binding: {
             profile: profile.name,
@@ -367,12 +398,7 @@ export class SubagentTool implements ISubagentTool {
           labels: subagentLabels(this.callerAgentId),
         });
       } catch (error) {
-        throw wrapSubagentModelError(
-          error,
-          binding.model,
-          own.modelAlias,
-          subagentModelSource(binding),
-        );
+        throw wrapSubagentModelError(error, binding.model, own.modelAlias, bindingSource);
       }
       created.accessor.get(IAgentPermissionModeService).setMode(this.permissionMode.mode);
       created.accessor
@@ -576,7 +602,7 @@ function buildProfileDescriptions(
     name: string,
     source: ToolReference['source'],
   ) => boolean,
-  showModelPreferences: boolean,
+  showModelPreference: boolean,
 ): string {
   return profiles
     .map((profile) => {
@@ -585,13 +611,13 @@ function buildProfileDescriptions(
       );
       const header = details.length === 0 ? `- ${profile.name}` : `- ${profile.name}: ${details.join(' ')}`;
       const bindingLines: string[] = [];
-      if (showModelPreferences && profile.modelPreference !== undefined) {
+      if (showModelPreference && profile.modelPreference !== undefined) {
         bindingLines.push(`  Model preference: ${profile.modelPreference}`);
       }
-      if (showModelPreferences && profile.modelAlias !== undefined) {
+      if (profile.modelAlias !== undefined) {
         bindingLines.push(`  Model alias: ${profile.modelAlias}`);
       }
-      if (showModelPreferences && profile.thinkingEffort !== undefined) {
+      if (profile.thinkingEffort !== undefined) {
         bindingLines.push(`  Thinking effort: ${profile.thinkingEffort}`);
       }
       const headerLines =

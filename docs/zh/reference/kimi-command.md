@@ -197,7 +197,7 @@ kimi web --port 58628    # 指定绑定端口
 
 ### `kimi doctor`
 
-校验 `config.toml` 和 `tui.toml`，不会启动 TUI，也不会修改任一文件。默认检查 `KIMI_CODE_HOME` 下的文件；未设置该环境变量时检查 `~/.kimi-code`。默认路径缺失时会显示为跳过，因为内置默认值仍可生效。
+校验 `config.toml`、`tui.toml` 和发现的 Agent profile，不会启动 TUI，也不会修改文件。默认检查 `KIMI_CODE_HOME` 下的配置文件；未设置该环境变量时检查 `~/.kimi-code`，随后扫描用户、项目和 `extra_agent_dirs` 根目录下的 Agent Markdown 文件。项目根目录从工作目录向上查找，以最近的 `.git` 所在目录为准。默认配置文件缺失时会显示为跳过，因为内置默认值仍可生效。
 
 ```sh
 kimi doctor
@@ -205,11 +205,17 @@ kimi doctor
 
 | 命令 | 说明 |
 | --- | --- |
-| `kimi doctor` | 校验默认 `config.toml` 和 `tui.toml` |
+| `kimi doctor` | 校验默认 `config.toml`、`tui.toml` 和发现的 Agent profile |
 | `kimi doctor config [path]` | 只校验 `config.toml`；传入 `path` 时使用该文件而不是默认文件 |
 | `kimi doctor tui [path]` | 只校验 `tui.toml`；传入 `path` 时使用该文件而不是默认文件 |
 
-显式传入路径时，文件必须存在。所有被检查的文件都有效或被跳过时，退出码为 `0`；任何指定文件缺失或配置无效时，退出码为 `1`。
+Agent profile 诊断分为三个级别：
+
+- **ERROR**：文件解析失败、解析后的 `name` 非法、`model_alias` 不存在于 `[models]`，或 `subagents` 白名单引用了不存在的角色。
+- **WARN**：Frontmatter 包含未知键、文件与内置 profile 同名但没有 `override: true`，或次主力模型实验功能关闭时仍存在 `model_preference`。
+- **SKIP**：没有发现任何 Agent 文件，不视为失败。
+
+显式传入配置路径时，文件必须存在。所有检查结果均为有效、警告或跳过时，退出码为 `0`；指定配置文件缺失或无效，或任何 Agent profile 产生 ERROR 时，退出码为 `1`。
 
 ```sh
 # 检查默认配置文件

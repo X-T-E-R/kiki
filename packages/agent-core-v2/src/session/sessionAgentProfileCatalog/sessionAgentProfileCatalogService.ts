@@ -11,10 +11,11 @@
  * relevant entry (deduped within an entry, highest priority first); the first
  * candidate wins, except that replacing a same-name `builtin` profile
  * requires `override: true` in the frontmatter — a non-override collision is
- * warned about and skipped to the next candidate. `ready` resolves
- * immediately: the registry is already populated when this service is
- * constructed, and every later change arrives through `onDidChange`. Bound at
- * Session scope.
+ * warned about and skipped to the next candidate. Builtins named by the
+ * `disabledBuiltinProfiles` config section are omitted, except the required
+ * default profile, whose disable request is warned and ignored. `ready` waits
+ * for config loading so downstream tool descriptions see the effective
+ * projection. Bound at Session scope.
  */
 
 import { Disposable } from '#/_base/di/lifecycle';
@@ -30,6 +31,11 @@ import {
   type AgentProfileRegistration,
 } from '#/app/agentProfileCatalog/agentProfileRegistry';
 import { BUILTIN_AGENT_PROFILE_SOURCE_ID } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
+import { IConfigService } from '#/app/config/config';
+import {
+  DISABLED_BUILTIN_PROFILES_SECTION,
+  type DisabledBuiltinProfilesConfig,
+} from '#/workspace/workspaceAgentProfileLoader/configSection';
 
 import { ISessionAgentProfileCatalogSeed } from './agentProfileCatalogSeed';
 import {
@@ -53,16 +59,20 @@ export class SessionAgentProfileCatalogService
 
   private merged = new Map<string, AgentProfile>();
   private inspections = new Map<string, AgentProfileInspection>();
+  private warnedDefaultDisable = false;
+  private readonly readyPromise: Promise<void>;
   private readonly onDidChangeEmitter = this._register(new Emitter<string>());
   readonly onDidChange: Event<string> = this.onDidChangeEmitter.event;
 
   constructor(
     @IAgentProfileRegistry private readonly registry: IAgentProfileRegistry,
     @ISessionAgentProfileCatalogSeed private readonly seed: ISessionAgentProfileCatalogSeed,
+    @IConfigService private readonly config: IConfigService,
     @ILogService private readonly log: ILogService,
   ) {
     super();
     this.reproject();
+    this.readyPromise = this.config.ready.then(() => this.reproject());
     this._register(
       this.registry.onDidChange((change) => {
         if (change.workspaceKey !== undefined && change.workspaceKey !== this.seed.workspaceKey) {
@@ -72,10 +82,17 @@ export class SessionAgentProfileCatalogService
         this.onDidChangeEmitter.fire(change.sourceId);
       }),
     );
+    this._register(
+      this.config.onDidSectionChange((change) => {
+        if (change.domain !== DISABLED_BUILTIN_PROFILES_SECTION) return;
+        this.reproject();
+        this.onDidChangeEmitter.fire('catalog');
+      }),
+    );
   }
 
   get ready(): Promise<void> {
-    return Promise.resolve();
+    return this.readyPromise;
   }
 
   get(name: string): AgentProfile | undefined {
@@ -117,14 +134,33 @@ export class SessionAgentProfileCatalogService
       .filter((e) => e.workspaceKey === undefined || e.workspaceKey === key);
   }
 
+  private disabledBuiltinProfileNames(): ReadonlySet<string> {
+    const configured =
+      this.config.get<DisabledBuiltinProfilesConfig>(DISABLED_BUILTIN_PROFILES_SECTION) ?? [];
+    const disabled = new Set(configured);
+    if (disabled.delete(DEFAULT_AGENT_PROFILE_NAME)) {
+      if (!this.warnedDefaultDisable) {
+        this.log.warn(
+          `builtin agent profile "${DEFAULT_AGENT_PROFILE_NAME}" cannot be disabled because it is the default profile; ignoring this entry`,
+        );
+        this.warnedDefaultDisable = true;
+      }
+    } else {
+      this.warnedDefaultDisable = false;
+    }
+    return disabled;
+  }
+
   private reproject(): void {
     const merged = new Map<string, AgentProfile>();
     const inspections = new Map<string, AgentProfileInspection>();
     const entries = this.relevantEntries();
+    const disabledBuiltinProfiles = this.disabledBuiltinProfileNames();
 
     const builtinEntry = entries.find((e) => e.sourceId === BUILTIN_AGENT_PROFILE_SOURCE_ID);
     if (builtinEntry !== undefined) {
       for (const profile of builtinEntry.contribution.profiles) {
+        if (disabledBuiltinProfiles.has(profile.name)) continue;
         merged.set(profile.name, profile);
         inspections.set(profile.name, {
           name: profile.name,

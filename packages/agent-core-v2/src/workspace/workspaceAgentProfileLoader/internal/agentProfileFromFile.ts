@@ -9,7 +9,8 @@
  * `tools` passes through as the allowlist (`undefined` = every tool active);
  * `disallowedTools` passes through as the tool denylist; `subagents` passes
  * through as the delegation allowlist; `model_preference` becomes the
- * symbolic default model used when the profile is delegated to.
+ * symbolic default model used when the profile is delegated to; `service_tier`
+ * becomes the profile's per-turn service-tier intent.
  * `profilesFromDiscovery` packs a whole discovery pass into an
  * `AgentProfileContribution`, binding each profile's `${base_prompt}`
  * placeholder lazily at render time so it always reflects the effective
@@ -48,6 +49,7 @@ export function agentProfileFromFile(
     modelPreference: definition.modelPreference,
     modelAlias: definition.modelAlias,
     thinkingEffort: definition.thinkingEffort,
+    serviceTier: definition.serviceTier,
     renderSystemPrompt: (context) =>
       renderPromptTemplateResult(definition.prompt, context, { skillActive }, basePrompt),
   });

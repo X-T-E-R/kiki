@@ -85,6 +85,7 @@ describe('AgentProfileService.bind', () => {
     registerAgentProfile({
       name: 'delegates-explore',
       subagents: ['explore'],
+      serviceTier: 'priority',
       systemPrompt: () => 'delegate test',
     });
   });
@@ -207,20 +208,23 @@ describe('AgentProfileService.bind', () => {
     });
   });
 
-  it('restores the subagent allowlist from the binding record without catalog resolution', async () => {
+  it('restores profile request settings from the binding record without catalog resolution', async () => {
     const persistence = new InMemoryWireRecordPersistence();
     ctx = createTestAgent({ persistence }, hostEnvironmentServices(homeDir));
+    const profile = ctx.get(IAgentProfileService);
 
-    await ctx.get(IAgentProfileService).bind({
+    await profile.bind({
       profile: 'delegates-explore',
       model: MOCK_MODEL,
     });
+    expect(profile.resolveRequestParams().serviceTier).toBe('priority');
     await ctx.get(IWireService).flush();
 
     const bindingRecord = persistence.records.find((record) => record.type === 'profile.bind');
     expect(bindingRecord).toMatchObject({
       profileName: 'delegates-explore',
       subagents: ['explore'],
+      serviceTier: 'priority',
     });
 
     await ctx.dispose();
@@ -245,13 +249,14 @@ describe('AgentProfileService.bind', () => {
 
     await ctx.restorePersisted();
 
-    expect(ctx.get(IAgentProfileService).data()).toMatchObject({
+    const restored = ctx.get(IAgentProfileService);
+    expect(restored.data()).toMatchObject({
       profileName: 'delegates-explore',
       subagents: ['explore'],
+      serviceTier: 'priority',
     });
-    expect(ctx.get(IAgentProfileService).data().agentsMdPaths).toEqual(
-      bindingRecord?.['agentsMdPaths'],
-    );
+    expect(restored.resolveRequestParams().serviceTier).toBe('priority');
+    expect(restored.data().agentsMdPaths).toEqual(bindingRecord?.['agentsMdPaths']);
   });
 
   it('refreshes the system prompt from the session cwd after a default bind', async () => {

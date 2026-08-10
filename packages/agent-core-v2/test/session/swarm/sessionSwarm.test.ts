@@ -1182,6 +1182,72 @@ describe('SessionSwarmService metadata compatibility', () => {
     );
   });
 
+  it('falls back to the caller binding and warns when a profile alias is dead', async () => {
+    const service = ix.get(ISessionSwarmService);
+    const spawnTask: SessionSwarmSpawnTask = {
+      ...spawnSessionTask('src/a.ts'),
+      kind: 'spawn',
+      binding: {
+        model: 'provider/bad',
+        thinking: 'high',
+        modelSource: 'profile',
+      },
+    };
+
+    await expect(
+      service.run({
+        callerAgentId: 'main',
+        tasks: [spawnTask],
+      }),
+    ).resolves.toMatchObject([{ status: 'completed', agentId: 'agent-new' }]);
+
+    expect(createAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        binding: {
+          profile: 'coder',
+          model: 'kimi-test',
+          thinking: 'medium',
+        },
+      }),
+    );
+    expect(eventBus.publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'warning',
+        code: 'subagent-profile-model-alias-invalid',
+        message: expect.stringMatching(/coder.*provider\/bad/),
+      }),
+    );
+  });
+
+  it('keeps a dead tool alias as a loud swarm failure', async () => {
+    const service = ix.get(ISessionSwarmService);
+    const spawnTask: SessionSwarmSpawnTask = {
+      ...spawnSessionTask('src/a.ts'),
+      kind: 'spawn',
+      binding: {
+        model: 'provider/bad',
+        thinking: 'low',
+        modelSource: 'tool',
+      },
+    };
+
+    await expect(
+      service.run({
+        callerAgentId: 'main',
+        tasks: [spawnTask],
+      }),
+    ).resolves.toMatchObject([
+      {
+        status: 'failed',
+        error: 'Model "provider/bad" is not configured in config.toml.',
+      },
+    ]);
+    expect(createAgent).not.toHaveBeenCalled();
+    expect(eventBus.publish).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'warning' }),
+    );
+  });
+
   it('emits the recipe base alias (never the derived entry id) as the spawned display model', async () => {
     ix.stub(
       IConfigService,

@@ -1074,6 +1074,7 @@ export interface AgentStateSnapshot {
     };
     readonly params: /* ModelRequestParams — packages/agent-core-v2/src/kosong/model/modelRequester.ts */ {
       readonly cacheKey?: string;
+      readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
       readonly sampling?: /* SamplingOptions — packages/agent-core-v2/src/kosong/contract/provider.ts */ {
         readonly temperature?: number;
         readonly topP?: number;
@@ -1124,7 +1125,7 @@ export interface AgentStateSnapshot {
     };
   }>;
   // src/agent/permissionMode/injection/permissionModeInjection.ts
-  'permissionMode.lastMode': 'manual' | 'yolo' | 'auto' | undefined;
+  'permissionMode.lastMode': 'auto' | 'manual' | 'yolo' | undefined;
   // src/agent/profile/profileService.ts
   'profile.activeToolNamesOverlay': readonly string[] | undefined;
   'profile.agentsMdWarning': string | undefined;
@@ -1160,6 +1161,8 @@ export interface AgentStateSnapshot {
     readonly subagentType?: string;
     readonly model?: string;
     readonly thinkingEffort?: string;
+    readonly collaborationTaskName?: string;
+    readonly collaborationAgentType?: string;
     readonly taskId: string;
     readonly description: string;
     readonly status: /* AgentTaskStatus — packages/agent-core-v2/src/agent/task/types.ts */ 'completed' | 'failed' | 'running' | 'timed_out' | 'killed' | 'lost';

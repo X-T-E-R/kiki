@@ -131,7 +131,7 @@ Switches that control the behavior of subsystems such as telemetry, background t
 | `KIMI_CODE_IDENTITY_NAME` | Display name the agent calls itself in the system prompt; takes higher priority than `[identity] name` in `config.toml` and is never written back to it | Any non-empty string; blank values read as unset |
 | `KIMI_CODE_IDENTITY_SLUG` | Protocol identifier for the `User-Agent` product token sent to third-party providers and the MCP client name; takes higher priority than `[identity] slug`. Derived from the name when unset | Any non-empty string; normalized to lowercase with non-alphanumeric runs folded to `-` |
 | `KIMI_CODE_BUILTIN_PRODUCT_SKILLS` | Whether the built-in skills documenting Kimi Code itself are offered to the model; takes higher priority than `builtin_product_skills` in `config.toml` (default enabled) | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
-| `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL` | Enable experimental subagent model aliases, thinking-effort controls, `[subagent]` defaults, and the legacy secondary-model recipe; the master `KIMI_CODE_EXPERIMENTAL_FLAG=1` also enables them | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
+| `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL` | Enable only the legacy `model` / `model_preference` selectors and the secondary-model recipe; stable `model_alias`, `thinking_effort`, and `[subagent]` defaults are unaffected. The master `KIMI_CODE_EXPERIMENTAL_FLAG=1` also enables the legacy behavior | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
 | `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION` | Enable the Codex-style named-agent adapter; `[agents] enabled = false` still disables its five tools | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
 | `KIMI_SECONDARY_MODEL` | Secondary model; takes higher priority than [`[secondary_model] model`](./config-files.md#secondary-model) in `config.toml`. When the secondary-model experiment is enabled, newly spawned subagents (`Agent` / `AgentSwarm`) bind to it by default instead of inheriting the main agent's model | The alias of a configured `[models]` entry, e.g. `kimi-code/kimi-k2.5`; blank values are ignored |
 | `KIMI_SECONDARY_EFFORT` | Thinking effort for the secondary model; takes higher priority than `[secondary_model] default_effort` in `config.toml` and applies only when both the model and its experiment are enabled | An effort value, e.g. `low`; blank values are ignored |
@@ -155,7 +155,7 @@ Switches that control the behavior of subsystems such as telemetry, background t
 | `KIMI_CODE_NO_AUTO_UPDATE` | Fully disable the update preflight — no check, background install, or prompt. Legacy alias `KIMI_CLI_NO_AUTO_UPDATE` is also honored | Truthy: `1`/`true`/`yes`/`on` |
 | `KIMI_DISABLE_CRON` | Disable the scheduled-task tool (`CronCreate` rejects new schedules; existing tasks do not fire) | `1` to disable |
 
-`[subagent] default_model` and `default_effort` intentionally have no environment-variable equivalents. Configure them in `config.toml`; the experiment flag only enables or disables their behavior.
+`[subagent] default_model` and `default_effort` intentionally have no environment-variable equivalents. Configure them in `config.toml`; they remain active whether or not the secondary-model experiment is enabled.
 
 The three `KIMI_CODE_IDENTITY_*` / `KIMI_CODE_BUILTIN_PRODUCT_SKILLS` variables are read by the default `agent-core-v2` engine. The legacy `kimi` / `kimi -p` path selected with `KIMI_CODE_LEGACY_FLAG=1` ignores them.
 

@@ -458,6 +458,7 @@ interface ProfileBindPayload {
   profileName?: string;
   /** ThinkingEffort */
   thinkingEffort: 'off' | 'on' | (string & {});
+  serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
   systemPrompt: string;
   /** EnvironmentDisclosureSnapshot */
   environmentDisclosure?: {

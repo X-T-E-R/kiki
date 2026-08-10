@@ -42,7 +42,7 @@ Kiki 独有的 Agent 功能目前属于实验功能，默认关闭。只需要�
 
 | 功能 | 启用方式 | 额外边界 |
 | --- | --- | --- |
-| 显式绑定子 Agent 模型和 effort | `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` | 只应用于新派生的子 Agent。恢复或重试的子 Agent 保持已持久化的绑定。 |
+| 旧版子 Agent 模型选择器与次主力配方 | `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` | 只门控符号化的 `model` / `model_preference` 选择器和 `[secondary_model]` 配方；显式 `model_alias` / `thinking_effort` 绑定是稳定能力，始终可用。只应用于新派生的子 Agent。恢复或重试的子 Agent 保持已持久化的绑定。 |
 | 由 5 个工具组成的具名 Agent 适配器 | `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION=1` | `[agents] enabled = false` 仍会移除这 5 个工具。适配器没有 `send_message` 工具，派生时也不会复制父 Agent 的对话历史。 |
 | 所有已注册的实验功能 | `KIMI_CODE_EXPERIMENTAL_FLAG=1` | 这是宽范围的总开关，不是运行时或产品选择器。 |
 

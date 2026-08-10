@@ -197,7 +197,7 @@ Generate a new persistent bearer token (written to `~/.kimi-code/server.token`);
 
 ### `kimi doctor`
 
-Validate `config.toml` and `tui.toml` without starting the TUI or modifying either file. By default, the command checks the files under `KIMI_CODE_HOME` (or `~/.kimi-code` when the environment variable is unset). Missing default files are reported as skipped because built-in defaults can apply.
+Validate `config.toml`, `tui.toml`, and discovered agent profiles without starting the TUI or modifying files. By default, the command checks the config files under `KIMI_CODE_HOME` (or `~/.kimi-code` when the environment variable is unset), then scans agent Markdown files under the user, project, and `extra_agent_dirs` roots. The project root is the nearest directory containing `.git`, found by searching upward from the working directory. Missing default config files are reported as skipped because built-in defaults can apply.
 
 ```sh
 kimi doctor
@@ -205,11 +205,17 @@ kimi doctor
 
 | Command | Description |
 | --- | --- |
-| `kimi doctor` | Validate the default `config.toml` and `tui.toml` |
+| `kimi doctor` | Validate the default `config.toml`, `tui.toml`, and discovered agent profiles |
 | `kimi doctor config [path]` | Validate only `config.toml`, using `path` instead of the default file when provided |
 | `kimi doctor tui [path]` | Validate only `tui.toml`, using `path` instead of the default file when provided |
 
-When an explicit path is passed, the file must exist. The command exits with `0` when all checked files are valid or skipped, and `1` when any requested file is missing or invalid.
+Agent-profile diagnostics use three levels:
+
+- **ERROR**: The file cannot be parsed, its resolved `name` is invalid, its `model_alias` is absent from `[models]`, or its `subagents` allowlist references a role that does not exist.
+- **WARN**: The frontmatter contains an unknown key, the file shares a name with a built-in profile without `override: true`, or `model_preference` is present while the secondary-model experiment is disabled.
+- **SKIP**: No agent files were found. This is not a failure.
+
+When an explicit config path is passed, the file must exist. The command exits with `0` when all checks are valid, warnings, or skips, and `1` when a requested config file is missing or invalid or any agent profile produces an ERROR.
 
 ```sh
 # Check the default config files

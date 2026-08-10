@@ -15,6 +15,8 @@ let dir: string;
 
 beforeEach(async () => {
   vi.stubEnv('KIMI_CODE_LEGACY_FLAG', '');
+  vi.stubEnv('KIMI_CODE_EXPERIMENTAL_FLAG', '');
+  vi.stubEnv('KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL', '');
   dir = join(tmpdir(), `kimi-doctor-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   await mkdir(dir, { recursive: true });
 });
@@ -38,6 +40,8 @@ function makeDeps(): {
       cwd: () => dir,
       defaultConfigPath: () => join(dir, 'config.toml'),
       defaultTuiConfigPath: () => join(dir, 'tui.toml'),
+      kimiHomeDir: () => join(dir, 'kimi-home'),
+      osHomeDir: () => join(dir, 'os-home'),
       stdout: { write: (chunk) => stdout.push(chunk) > 0 },
       stderr: { write: (chunk) => stderr.push(chunk) > 0 },
       exit: (code) => {
@@ -89,6 +93,14 @@ auto_install = true
   );
 }
 
+async function writeAgentFile(fileName: string, frontmatter: string): Promise<string> {
+  const agentsDir = join(dir, '.kimi-code', 'agents');
+  await mkdir(agentsDir, { recursive: true });
+  const path = join(agentsDir, fileName);
+  await writeFile(path, `---\n${frontmatter.trim()}\n---\n\nAgent prompt.\n`, 'utf-8');
+  return path.replaceAll('\\', '/');
+}
+
 describe('kimi doctor', () => {
   it('skips missing default config files without failing', async () => {
     const { deps, stdout, stderr } = makeDeps();
@@ -100,6 +112,8 @@ describe('kimi doctor', () => {
     const out = stdout.join('');
     expect(out).toContain('SKIP config.toml');
     expect(out).toContain('SKIP tui.toml');
+    expect(out).toContain('SKIP agents');
+    expect(out).toContain('No agent profile files found.');
     expect(out).toContain('built-in defaults will apply');
   });
 
@@ -289,6 +303,165 @@ max_context_size = "large"
     const err = stderr.join('');
     expect(err).toContain('Validation issues:');
     expect(err).toContain('models.kimi.max_context_size:');
+  });
+});
+
+describe('kimi doctor agent profiles', () => {
+  it('accepts valid agent profiles and builtin subagent references', async () => {
+    await writeValidConfig();
+    const agentPath = await writeAgentFile(
+      'reviewer.md',
+      `
+name: reviewer
+description: Reviews changes
+model_alias: kimi
+service_tier: priority
+subagents:
+  - coder
+  - explore
+`,
+    );
+    const { deps, stdout, stderr } = makeDeps();
+
+    const code = await handleDoctor(deps, {});
+
+    expect(code).toBe(0);
+    expect(stderr.join('')).toBe('');
+    expect(stdout.join('')).toContain(`OK agents       ${agentPath}`);
+    expect(stdout.join('')).not.toContain('Unknown frontmatter');
+  });
+
+  it('accepts a mixed wildcard subagent list as unrestricted', async () => {
+    await writeValidConfig();
+    const agentPath = await writeAgentFile(
+      'reviewer.md',
+      `
+name: reviewer
+description: Reviews changes
+subagents:
+  - '*'
+  - coder
+`,
+    );
+    const { deps, stdout, stderr } = makeDeps();
+
+    const code = await handleDoctor(deps, {});
+
+    expect(code).toBe(0);
+    expect(stderr.join('')).toBe('');
+    expect(stdout.join('')).toContain(`OK agents       ${agentPath}`);
+    expect(stdout.join('')).not.toContain('unknown agent profiles');
+  });
+
+  it('reports a missing model_alias as an error', async () => {
+    await writeValidConfig();
+    const agentPath = await writeAgentFile(
+      'reviewer.md',
+      `
+name: reviewer
+description: Reviews changes
+model_alias: missing-model
+`,
+    );
+    const { deps, stdout, stderr } = makeDeps();
+
+    const code = await handleDoctor(deps, {});
+
+    expect(code).toBe(1);
+    expect(stdout.join('')).toBe('');
+    const err = stderr.join('');
+    expect(err).toContain(`ERROR agents       ${agentPath}`);
+    expect(err).toContain(
+      'model_alias "missing-model" does not name an entry in config.toml [models].',
+    );
+  });
+
+  it('warns about unknown frontmatter keys without failing', async () => {
+    await writeValidConfig();
+    const agentPath = await writeAgentFile(
+      'reviewer.md',
+      `
+name: reviewer
+description: Reviews changes
+future_field: true
+`,
+    );
+    const { deps, stdout, stderr } = makeDeps();
+
+    const code = await handleDoctor(deps, {});
+
+    expect(code).toBe(0);
+    expect(stderr.join('')).toBe('');
+    const out = stdout.join('');
+    expect(out).toContain(`WARN agents       ${agentPath}`);
+    expect(out).toContain('Unknown frontmatter key ignored by the engine: future_field.');
+  });
+
+  it('warns when a builtin profile name is missing override true', async () => {
+    await writeValidConfig();
+    const agentPath = await writeAgentFile(
+      'coder.md',
+      `
+name: coder
+description: Custom coder
+`,
+    );
+    const { deps, stdout, stderr } = makeDeps();
+
+    const code = await handleDoctor(deps, {});
+
+    expect(code).toBe(0);
+    expect(stderr.join('')).toBe('');
+    const out = stdout.join('');
+    expect(out).toContain(`WARN agents       ${agentPath}`);
+    expect(out).toContain(
+      'Agent profile "coder" conflicts with a builtin profile; set override: true to replace it.',
+    );
+  });
+
+  it('reports dangling subagent allowlist entries as an error', async () => {
+    await writeValidConfig();
+    const agentPath = await writeAgentFile(
+      'reviewer.md',
+      `
+name: reviewer
+description: Reviews changes
+subagents:
+  - missing-agent
+`,
+    );
+    const { deps, stdout, stderr } = makeDeps();
+
+    const code = await handleDoctor(deps, {});
+
+    expect(code).toBe(1);
+    expect(stdout.join('')).toBe('');
+    const err = stderr.join('');
+    expect(err).toContain(`ERROR agents       ${agentPath}`);
+    expect(err).toContain('subagents references unknown agent profiles: missing-agent.');
+  });
+
+  it('warns when model_preference is disabled by the experimental flag', async () => {
+    await writeValidConfig();
+    const agentPath = await writeAgentFile(
+      'reviewer.md',
+      `
+name: reviewer
+description: Reviews changes
+model_preference: secondary
+`,
+    );
+    const { deps, stdout, stderr } = makeDeps();
+
+    const code = await handleDoctor(deps, {});
+
+    expect(code).toBe(0);
+    expect(stderr.join('')).toBe('');
+    const out = stdout.join('');
+    expect(out).toContain(`WARN agents       ${agentPath}`);
+    expect(out).toContain(
+      'model_preference is ignored while the secondary-model experimental feature is disabled.',
+    );
   });
 });
 

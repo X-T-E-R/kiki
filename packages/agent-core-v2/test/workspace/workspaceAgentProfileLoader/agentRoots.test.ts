@@ -37,6 +37,10 @@ describe('agentRoots', () => {
     await mkdir(join(dir, '.git'), { recursive: true });
   }
 
+  async function normalizedRealpath(path: string): Promise<string> {
+    return (await realpath(path)).replaceAll('\\', '/');
+  }
+
   describe('projectRoots', () => {
     it('resolves the brand .kimi-code/agents directory at the .git root', async () => {
       await markGitRoot();
@@ -129,10 +133,10 @@ describe('agentRoots', () => {
       const paths = roots.map((r) => r.path);
 
       expect(roots.every((r) => r.source === 'extra')).toBe(true);
-      expect(paths).toContain(await realpath(homeDir));
-      expect(paths).toContain(await realpath(join(homeDir, 'team')));
-      expect(paths).toContain(await realpath(absDir));
-      expect(paths).toContain(await realpath(join(root, 'relative')));
+      expect(paths).toContain(await normalizedRealpath(homeDir));
+      expect(paths).toContain(await normalizedRealpath(join(homeDir, 'team')));
+      expect(paths).toContain(await normalizedRealpath(absDir));
+      expect(paths).toContain(await normalizedRealpath(join(root, 'relative')));
     });
 
     it('propagates filesystem-unavailable failures while probing a root', async () => {
@@ -186,7 +190,9 @@ describe('agentRoots', () => {
         (message) => warnings.push(message),
       );
 
-      expect(roots.map((candidate) => candidate.path)).toEqual([await realpath(availableDir)]);
+      expect(roots.map((candidate) => candidate.path)).toEqual([
+        await normalizedRealpath(availableDir),
+      ]);
       expect(warnings.some((warning) => warning.includes(blockedDir))).toBe(true);
     });
   });

@@ -15,6 +15,7 @@
 
 import { describe, expect, it } from 'vitest';
 
+import { Emitter } from '#/_base/event';
 import { createDecorator } from '#/_base/di/instantiation';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { InstantiationService } from '#/_base/di/instantiationService';
@@ -28,7 +29,9 @@ import {
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { BUILTIN_AGENT_PROFILE_SOURCE_ID } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
 import { AgentProfileRegistryService } from '#/app/agentProfileCatalog/agentProfileRegistryService';
+import { IConfigService } from '#/app/config/config';
 import { SessionAgentProfileCatalogService } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalogService';
+import { DISABLED_BUILTIN_PROFILES_SECTION } from '#/workspace/workspaceAgentProfileLoader/configSection';
 import {
   AGENT_PROFILE_SOURCE_PRIORITY,
   AgentProfileContribution,
@@ -61,13 +64,51 @@ function profile(name: string, options?: { readonly override?: boolean }): Agent
   });
 }
 
-function makeCatalog(workspaceKey: string = WORKSPACE_KEY) {
+function configStub(initialDisabled: readonly string[] = []): {
+  readonly service: IConfigService;
+  setDisabled(names: readonly string[]): void;
+} {
+  let disabled = [...initialDisabled];
+  const sectionChanges = new Emitter<{ readonly domain: string }>();
+  return {
+    service: {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChangeConfiguration: () => ({ dispose: () => {} }),
+      onDidSectionChange: sectionChanges.event,
+      get: (domain: string) =>
+        domain === DISABLED_BUILTIN_PROFILES_SECTION ? [...disabled] : undefined,
+      inspect: () => ({
+        value: undefined,
+        defaultValue: undefined,
+        userValue: undefined,
+        memoryValue: undefined,
+      }),
+      getAll: () => ({}),
+      set: async () => {},
+      replace: async () => {},
+      reload: async () => {},
+      diagnostics: () => [],
+    } as unknown as IConfigService,
+    setDisabled: (names) => {
+      disabled = [...names];
+      sectionChanges.fire({ domain: DISABLED_BUILTIN_PROFILES_SECTION });
+    },
+  };
+}
+
+function makeCatalog(workspaceKey: string = WORKSPACE_KEY, disabled: readonly string[] = []) {
   const container = new InstantiationService(new ServiceCollection(), true);
   const registry = container.createInstance(AgentProfileRegistryService);
+  const config = configStub(disabled);
+  const warnings: string[] = [];
+  const log = stubLog();
+  log.warn = (message: string) => warnings.push(message);
   const catalog = new SessionAgentProfileCatalogService(
     registry,
     { _serviceBrand: undefined, workspaceKey },
-    stubLog(),
+    config.service,
+    log,
   );
   const contribute = (
     sourceId: string,
@@ -85,7 +126,7 @@ function makeCatalog(workspaceKey: string = WORKSPACE_KEY) {
     child.invokeFunction((accessor) => accessor.get(IContributor));
     return child;
   };
-  return { container, registry, catalog, contribute };
+  return { container, registry, catalog, config, warnings, contribute };
 }
 
 describe('SessionAgentProfileCatalogService (registry projection)', () => {
@@ -212,6 +253,62 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     container.dispose();
   });
 
+  it('filters configured builtin profiles and reprojects when the config changes', () => {
+    const { container, catalog, config, contribute } = makeCatalog(WORKSPACE_KEY, ['coder']);
+    const defaultProfile = profile(DEFAULT_AGENT_PROFILE_NAME);
+    const coderProfile = profile('coder');
+    const exploreProfile = profile('explore');
+    contribute(BUILTIN_AGENT_PROFILE_SOURCE_ID, [defaultProfile, coderProfile, exploreProfile]);
+
+    expect(catalog.getDefault()).toBe(defaultProfile);
+    expect(catalog.get('coder')).toBeUndefined();
+    expect(catalog.get('explore')).toBe(exploreProfile);
+    expect(catalog.list()).toEqual([defaultProfile, exploreProfile]);
+
+    const seen: string[] = [];
+    const subscription = catalog.onDidChange((sourceId) => seen.push(sourceId));
+    config.setDisabled(['explore']);
+
+    expect(catalog.get('coder')).toBe(coderProfile);
+    expect(catalog.get('explore')).toBeUndefined();
+    expect(seen).toEqual(['catalog']);
+    subscription.dispose();
+    catalog.dispose();
+    container.dispose();
+  });
+
+  it('warns once and ignores attempts to disable the required default builtin profile', async () => {
+    const { container, catalog, warnings, contribute } = makeCatalog(WORKSPACE_KEY, [
+      DEFAULT_AGENT_PROFILE_NAME,
+    ]);
+    const defaultProfile = profile(DEFAULT_AGENT_PROFILE_NAME);
+    contribute(BUILTIN_AGENT_PROFILE_SOURCE_ID, [defaultProfile]);
+    contribute('user', [profile('other')]);
+    await catalog.ready;
+
+    expect(catalog.getDefault()).toBe(defaultProfile);
+    expect(warnings).toEqual([
+      `builtin agent profile "${DEFAULT_AGENT_PROFILE_NAME}" cannot be disabled because it is the default profile; ignoring this entry`,
+    ]);
+    catalog.dispose();
+    container.dispose();
+  });
+
+  it('lets a file profile take a disabled builtin name without override: true', () => {
+    const { container, catalog, contribute } = makeCatalog(WORKSPACE_KEY, ['coder']);
+    const fileProfile = profile('coder');
+    contribute(BUILTIN_AGENT_PROFILE_SOURCE_ID, [profile(DEFAULT_AGENT_PROFILE_NAME), profile('coder')]);
+    contribute('workspace', [fileProfile], {
+      priority: AGENT_PROFILE_SOURCE_PRIORITY.workspace,
+      workspaceKey: WORKSPACE_KEY,
+    });
+
+    expect(catalog.get('coder')).toBe(fileProfile);
+    expect(catalog.inspect('coder')?.sourceId).toBe('workspace');
+    catalog.dispose();
+    container.dispose();
+  });
+
   it('re-projects and fires the source id on relevant registry changes, ignoring other keys', () => {
     const { container, catalog, contribute } = makeCatalog();
     const seen: string[] = [];
@@ -251,7 +348,7 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     container.dispose();
   });
 
-  it('resolves ready immediately (loader readiness is the workspace handler’s job)', async () => {
+  it('resolves ready after the config snapshot is available', async () => {
     const { container, catalog } = makeCatalog();
 
     await expect(catalog.ready).resolves.toBeUndefined();

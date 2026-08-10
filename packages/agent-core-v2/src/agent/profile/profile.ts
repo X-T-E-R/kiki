@@ -21,7 +21,7 @@ import type {
   EnvironmentDisclosureSnapshot,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { ModelCapability } from '#/kosong/contract/capability';
-import type { ThinkingEffort } from '#/kosong/contract/provider';
+import type { ServiceTier, ThinkingEffort } from '#/kosong/contract/provider';
 import type { ModelRequestParams } from '#/kosong/model/modelRequester';
 
 import { createDecorator } from "#/_base/di/instantiation";
@@ -68,6 +68,7 @@ export interface ProfileData extends AgentConfigData {
   readonly activeToolNames?: readonly string[];
   readonly disallowedTools?: readonly string[];
   readonly subagents?: readonly string[];
+  readonly serviceTier?: ServiceTier;
   readonly environmentDisclosure?: EnvironmentDisclosureSnapshot;
   readonly renderGeneration?: number;
 }
@@ -87,6 +88,7 @@ export interface ProfileBindingSnapshot {
   readonly modelAlias?: string;
   readonly profileName?: string;
   readonly thinkingLevel: string;
+  readonly serviceTier?: ServiceTier;
   readonly systemPrompt: string;
   readonly environmentDisclosure?: EnvironmentDisclosureSnapshot;
   readonly renderGeneration?: number;

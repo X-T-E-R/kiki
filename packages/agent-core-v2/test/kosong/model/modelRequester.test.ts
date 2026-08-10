@@ -3,8 +3,9 @@
  * ChatProvider (the adapter registry is stubbed to return it, so no wire I/O
  * happens):
  *
- *  - `ModelRequestParams` map 1:1 onto `GenerateOptions` (cacheKey / sampling /
- *    thinking effort+keep / budget + window-clamp companions), with auth
+ *  - `ModelRequestParams` map 1:1 onto `GenerateOptions` (cacheKey /
+ *    serviceTier / sampling / thinking effort+keep / budget + window-clamp
+ *    companions), with auth
  *    threaded per attempt;
  *  - the event stream carries parts, usage, finish, and timing;
  *  - a 401 against a refreshable auth provider forces one token refresh and
@@ -155,6 +156,7 @@ describe('ModelRequesterImpl request execution', () => {
         signal,
         {
           cacheKey: 'session-1',
+          serviceTier: 'priority',
           sampling: { temperature: 0.5, topP: 0.9 },
           thinkingEffort: 'high',
           thinkingKeep: 'all',
@@ -170,6 +172,7 @@ describe('ModelRequesterImpl request execution', () => {
     expect(options?.signal).toBe(signal);
     expect(options?.auth).toEqual({ apiKey: 'sk-1' });
     expect(options?.cacheKey).toBe('session-1');
+    expect(options?.serviceTier).toBe('priority');
     expect(options?.sampling).toEqual({ temperature: 0.5, topP: 0.9 });
     expect(options?.thinking).toEqual({ effort: 'high', keep: 'all' });
     expect(options?.maxCompletionTokens).toBe(1024);

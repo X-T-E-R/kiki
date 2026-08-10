@@ -39,6 +39,7 @@
  */
 
 import type { ILogger } from '#/_base/log/log';
+import type { ServiceTier } from '#/kosong/contract/provider';
 import type { ISessionProcessRunner } from '#/session/process/processRunner';
 
 export const DEFAULT_AGENT_PROFILE_NAME = 'agent';
@@ -98,6 +99,7 @@ export interface AgentProfile {
   readonly modelPreference?: AgentModelPreference;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
+  readonly serviceTier?: ServiceTier;
   readonly systemPrompt: (context: AgentProfileContext) => string;
   readonly renderSystemPrompt: (context: AgentProfileContext) => SystemPromptRenderResult;
   readonly promptPrefix?: (ctx: AgentProfilePromptPrefixContext) => Promise<string>;

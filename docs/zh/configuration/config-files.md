@@ -103,6 +103,7 @@ timeout = 5
 | `merge_all_available_skills` | `boolean` | `true` | 是否合并所有目录中的 Agent Skills |
 | `extra_skill_dirs` | `array<string>` | — | 额外 Skill 搜索目录，叠加到默认目录之上 |
 | `extra_agent_dirs` | `array<string>` | — | 额外自定义 Agent 搜索目录，叠加到默认目录之上 |
+| `disabled_builtin_profiles` | `array<string>` | `[]` | 从 Agent 发现与派发列表中移除的内置 profile 名称：`agent`、`coder`、`explore` 或 `plan`。派发已禁用 profile 时按未知角色报错。禁用默认 `agent` profile 的设置会被忽略并告警；文件 profile 与已禁用内置 profile 同名时不再需要 `override: true` |
 | `builtin_product_skills` | `boolean` | `true` | 是否向模型提供介绍 Kimi Code 自身的内置 Skills：`update-config`、`custom-theme`、`mcp-config`、`check-kimi-code-docs`、`import-from-cc-codex`。关闭后它们的名称和描述不再进入系统提示词，代价是失去这些任务的引导流程。默认的 `agent-core-v2` 引擎会读取本字段；设置 `KIMI_CODE_LEGACY_FLAG=1` 选择旧版引擎时会忽略 |
 | `telemetry` | `boolean` | `true` | 是否启用匿名遥测；显式设为 `false` 时关闭 |
 | `providers` | `table` | `{}` | API 供应商表 → [`providers`](#providers) |
@@ -195,11 +196,11 @@ display_name = "Kimi for Coding (custom)"
 
 次主力模型是主模型之外的第二个模型配置——通常是一个更便宜的模型，供不需要主模型能力的功能绑定使用。它仍是子 Agent 派生的旧版后备 recipe。
 
-实验功能启用后，`Agent` 与 `AgentSwarm` 接受两个互斥的模型选择器：旧版 `model` 使用符号值 `"secondary"` / `"primary"`，`model_alias` 则选择 `[models]` 中精确配置的 alias。名为 `primary` 或 `secondary` 的精确 alias 仍按字面值处理。新子 Agent 的模型优先级为：工具选择器 → profile 的 [`model_alias` 或 `model_preference`](../customization/agents.md#agent-文件格式) → `[subagent] default_model` → 本节次主力 recipe → 直接调用方模型。内部 alias `__secondary__` 为保留值，不能直接配置或选择。
+Agent profile、`Agent` 与 `AgentSwarm` 上的精确 `model_alias` 和 `thinking_effort` 绑定已是稳定能力，不需要实验功能。新子 Agent 的模型优先级为：工具 `model_alias` → profile 的 [`model_alias`](../customization/agents.md#agent-文件格式) → `[subagent] default_model` → 直接调用方模型。名为 `primary` 或 `secondary` 的精确 alias 仍按字面值处理。
 
-Thinking effort 独立解析，优先级为：工具 `thinking_effort` → profile `thinking_effort` → `[subagent] default_effort` → 仅当模型来自本节次主力 recipe 时使用本节 `default_effort` → 仅当完整继承调用方绑定时使用调用方 effort。具体模型 alias 未指定 effort 时，会继续使用现有全局 `[thinking]` 与所选模型默认值，不会沿用过期的调用方 effort。
+Thinking effort 独立解析，优先级为：工具 `thinking_effort` → profile `thinking_effort` → `[subagent] default_effort` → 仅当完整继承调用方绑定时使用调用方 effort。具体模型 alias 未指定 effort 时，会继续使用现有全局 `[thinking]` 与所选模型默认值，不会沿用过期的调用方 effort。
 
-这些模型与 effort 控制目前是实验功能，默认关闭。通过 `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` 启用，或使用 master `KIMI_CODE_EXPERIMENTAL_FLAG=1`。同一 flag 同时控制精确 alias、默认值、profile 字段与次主力 recipe。恢复或重试的子 Agent 不会重新解析当前 profile 或默认值，其已持久化绑定保持不变。
+只有旧版 `model` 工具选择器（`"secondary"` / `"primary"`）、profile 的 `model_preference` 字段和本节次主力 recipe 需要启用 `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`，或使用 master `KIMI_CODE_EXPERIMENTAL_FLAG=1`。实验功能启用时，本节 recipe 插在 `[subagent]` 默认值与调用方绑定之间；只有模型由该 recipe 提供时，才使用本节的 `default_effort`。旧版 `model` 参数与 `model_alias` 互斥。实验功能关闭时，profile 中的 `model_preference` 会被忽略并告警，显式传入 `model` 工具参数则会被拒绝并返回清晰错误。内部 alias `__secondary__` 为保留值，不能直接配置或选择。恢复或重试的子 Agent 不会重新解析当前 profile 或默认值，其已持久化绑定保持不变。
 
 在交互式 TUI 中，可以使用 [`/secondary_model`](../reference/slash-commands.md) 命令打开模型选择器来设置该配置：选择后会写入本小节配置，并在当前会话立即生效——之后派生的子 Agent 会直接绑定新的次主力模型。
 
@@ -288,8 +289,8 @@ max_output_size = 8192
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `default_model` | `string` | — | 新子 Agent 的 fill-only 精确 `[models]` alias，仅在次主力模型实验功能启用时生效 |
-| `default_effort` | `string` | — | 新子 Agent 的 fill-only thinking effort，仅在次主力模型实验功能启用时生效 |
+| `default_model` | `string` | — | 新子 Agent 的 fill-only 精确 `[models]` alias，优先级低于工具与 profile 绑定，高于调用方继承 |
+| `default_effort` | `string` | — | 新子 Agent 的 fill-only thinking effort，优先级低于工具与 profile effort，高于调用方继承 |
 | `timeout_ms` | `integer` | `7200000`（2 小时） | 单个子代理（`Agent` / `AgentSwarm`）允许运行的最长时间（毫秒）。超时后子代理以 `timed_out` 收尾。`0` 表示无超时——子代理一直运行到自行结束或被模型手动停止。该值是后台任务管理器对每个子代理任务的 per-task timeout，因此对前台与后台子代理同时生效。在 print 模式（`kimi -p`）下未显式设置时默认为 `0`。注意：超过 `2147483647`（约 24.8 天）的值会被运行时钳到约 24.8 天 |
 
 ## `agents`

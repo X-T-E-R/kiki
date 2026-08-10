@@ -18,14 +18,57 @@ import {
 } from '#/session/agentLifecycle/agentLifecycle';
 import {
   ISessionSecondaryModelWarningService,
+  PROFILE_MODEL_ALIAS_INVALID_WARNING_CODE,
+  PROFILE_MODEL_PREFERENCE_IGNORED_WARNING_CODE,
   SECONDARY_MODEL_EFFORT_WARNING_CODE,
   SECONDARY_MODEL_INVALID_WARNING_CODE,
+  publishIgnoredProfileModelPreferenceWarning,
+  publishInvalidProfileModelAliasWarning,
 } from '#/session/subagent/secondaryModelWarning';
 import { SessionSecondaryModelWarningService } from '#/session/subagent/secondaryModelWarningService';
 import { SECONDARY_MODEL_FLAG_ID } from '#/session/subagent/flag';
 
 import { stubFlag } from '../../app/flag/stubs';
 import { StubConfigService } from '../../kosong/stubs';
+
+describe('subagent profile binding warnings', () => {
+  it('publishes a warning when model_preference is ignored with the experiment off', () => {
+    const published: DomainEvent[] = [];
+    const eventBus = agentHandle(MAIN_AGENT_ID, published).accessor.get(IEventBus);
+
+    publishIgnoredProfileModelPreferenceWarning(eventBus, 'explore', 'secondary');
+
+    expect(published).toEqual([
+      expect.objectContaining({
+        type: 'warning',
+        code: PROFILE_MODEL_PREFERENCE_IGNORED_WARNING_CODE,
+        message: expect.stringContaining('model_preference="secondary"'),
+      }),
+    ]);
+  });
+
+  it('publishes the profile name and dead alias before caller fallback', () => {
+    const published: DomainEvent[] = [];
+    const eventBus = agentHandle(MAIN_AGENT_ID, published).accessor.get(IEventBus);
+    const error = new Error2(
+      ErrorCodes.CONFIG_INVALID,
+      'Model "provider/missing" is not configured in config.toml.',
+      { details: { model: 'provider/missing' } },
+    );
+
+    publishInvalidProfileModelAliasWarning(eventBus, 'coder', 'provider/missing', error);
+
+    expect(published).toEqual([
+      expect.objectContaining({
+        type: 'warning',
+        code: PROFILE_MODEL_ALIAS_INVALID_WARNING_CODE,
+        message: expect.stringMatching(
+          /Agent profile "coder".*model_alias="provider\/missing".*caller model and thinking effort/,
+        ),
+      }),
+    ]);
+  });
+});
 
 describe('SessionSecondaryModelWarningService', () => {
   let disposables: DisposableStore;

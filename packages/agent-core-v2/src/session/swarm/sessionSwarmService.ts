@@ -12,10 +12,10 @@
  * lifecycle registry itself stays flat. Spawn tasks may carry a concrete
  * `binding` resolved by the caller; without
  * one, spawns inherit the caller agent's model and thinking level. Spawn
- * bindings are resolved through the model catalog before lifecycle allocation.
- * Resumed agents keep the model recorded in their own wire journal — with
- * per-subagent models there is no "child follows the parent's current model"
- * invariant to enforce. Bound at Session scope.
+ * bindings are resolved through the model catalog before lifecycle allocation;
+ * a dead profile-sourced alias publishes a caller warning and falls back to the
+ * caller model and effort, while other invalid aliases remain failures.
+ * Resumed agents keep their persisted binding. Bound at Session scope.
  */
 
 import type { TokenUsage } from '#/kosong/contract/usage';
@@ -43,9 +43,11 @@ import {
 import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import {
+  isMissingSubagentModelAlias,
   subagentDisplayModel,
   wrapSubagentModelError,
 } from '#/session/subagent/configSection';
+import { publishInvalidProfileModelAliasWarning } from '#/session/subagent/secondaryModelWarning';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionProcessRunner } from '#/session/process/processRunner';
@@ -161,13 +163,34 @@ export class SessionSwarmService implements ISessionSwarmService {
         details: { agentId: callerAgentId },
       });
     }
-    const binding = options.binding ?? {
+    let binding = options.binding ?? {
       model: callerData.modelAlias,
       thinking: callerData.thinkingLevel,
+      modelSource: 'caller' as const,
     };
-    let child: IAgentScopeHandle;
+    let modelSource = binding.modelSource ?? 'secondary';
     try {
       this.modelCatalog.get(binding.model);
+    } catch (error) {
+      if (modelSource !== 'profile' || !isMissingSubagentModelAlias(error, binding.model)) {
+        throw wrapSubagentModelError(error, binding.model, callerData.modelAlias, modelSource);
+      }
+      publishInvalidProfileModelAliasWarning(
+        caller.accessor.get(IEventBus),
+        profile.name,
+        binding.model,
+        error,
+      );
+      binding = {
+        model: callerData.modelAlias,
+        thinking: callerData.thinkingLevel,
+        modelSource: 'caller',
+      };
+      modelSource = 'caller';
+      this.modelCatalog.get(binding.model);
+    }
+    let child: IAgentScopeHandle;
+    try {
       child = await this.lifecycle.create({
         binding: {
           profile: profile.name,
@@ -177,12 +200,7 @@ export class SessionSwarmService implements ISessionSwarmService {
         labels: subagentLabels(callerAgentId, { swarmItem: options.swarmItem }),
       });
     } catch (error) {
-      throw wrapSubagentModelError(
-        error,
-        binding.model,
-        callerData.modelAlias,
-        binding.modelSource ?? 'secondary',
-      );
+      throw wrapSubagentModelError(error, binding.model, callerData.modelAlias, modelSource);
     }
     child.accessor
       .get(IAgentPermissionModeService)

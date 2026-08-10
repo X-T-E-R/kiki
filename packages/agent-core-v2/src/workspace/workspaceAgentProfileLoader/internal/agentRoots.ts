@@ -46,6 +46,22 @@ export async function projectAgentRoots(
   return roots;
 }
 
+export interface AgentRootWatchPlan {
+  readonly root: string;
+  readonly candidates: readonly string[];
+}
+
+export function userAgentRootWatchPlans(
+  homeDir: string,
+  osHomeDir: string,
+): readonly AgentRootWatchPlan[] {
+  return groupWatchCandidates([
+    { root: homeDir, candidate: join(homeDir, USER_BRAND_DIRS[0]) },
+    { root: homeDir, candidate: join(homeDir, 'SYSTEM.md') },
+    { root: osHomeDir, candidate: join(osHomeDir, USER_GENERIC_DIRS[0]) },
+  ]);
+}
+
 export interface ProjectAgentRootCandidates {
   readonly projectRoot: string;
   readonly candidates: readonly string[];
@@ -79,6 +95,55 @@ export async function configuredAgentRoots(
     await pushExistingRoot(fs, roots, resolveAgentPath(dir, projectRoot, osHomeDir), source, warn);
   }
   return roots;
+}
+
+export async function configuredAgentRootWatchPlans(
+  fs: IHostFileSystem,
+  dirs: readonly string[],
+  workDir: string,
+  osHomeDir: string,
+  warn?: AgentRootWarn,
+): Promise<readonly AgentRootWatchPlan[]> {
+  const projectRoot = await findProjectRoot(fs, workDir, warn);
+  const candidates = dirs.map((dir) => resolveAgentPath(dir, projectRoot, osHomeDir));
+  const rootedCandidates = await Promise.all(
+    candidates.map(async (candidate) => ({
+      root: await nearestExistingParent(fs, candidate, warn),
+      candidate,
+    })),
+  );
+  return groupWatchCandidates(rootedCandidates);
+}
+
+async function nearestExistingParent(
+  fs: IHostFileSystem,
+  candidate: string,
+  warn?: AgentRootWarn,
+): Promise<string> {
+  let current = dirname(candidate);
+  while (true) {
+    try {
+      if (await isDirectoryPath(fs, current)) return current;
+    } catch (error) {
+      if (isUnavailable(error)) throw error;
+      warn?.(`Skipping unreadable agent watch root ${current}: ${errorMessage(error)}`, error);
+    }
+    const parent = dirname(current);
+    if (parent === current) return current;
+    current = parent;
+  }
+}
+
+function groupWatchCandidates(
+  entries: readonly { readonly root: string; readonly candidate: string }[],
+): readonly AgentRootWatchPlan[] {
+  const groups = new Map<string, string[]>();
+  for (const { root, candidate } of entries) {
+    const candidates = groups.get(root) ?? [];
+    if (!candidates.includes(candidate)) candidates.push(candidate);
+    groups.set(root, candidates);
+  }
+  return [...groups].map(([root, candidates]) => ({ root, candidates }));
 }
 
 async function findProjectRoot(

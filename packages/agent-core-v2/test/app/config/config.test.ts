@@ -1862,18 +1862,60 @@ describe('subagent config section', () => {
     disposables.dispose();
   });
 
-  it('inherits the caller binding when the secondary-model experiment is disabled', async () => {
+  it('keeps exact pins and [subagent] defaults while skipping the secondary recipe when disabled', async () => {
     const own = { modelAlias: 'provider/main', thinkingLevel: 'medium' };
     const { config, disposables } = await createConfig(
       {},
-      '[secondary_model]\nmodel = "provider/secondary"\ndefault_effort = "low"\n',
+      [
+        '[subagent]',
+        'default_model = "provider/default"',
+        'default_effort = "low"',
+        '',
+        '[secondary_model]',
+        'model = "provider/secondary"',
+        'default_effort = "high"',
+      ].join('\n'),
     );
+    const flags = secondaryModelFlags(false);
 
-    expect(resolveSubagentBinding(config, secondaryModelFlags(false), own)).toEqual({
-      model: 'provider/main',
-      thinking: 'medium',
-      displayModel: 'provider/main',
+    expect(resolveSubagentBinding(config, flags, own)).toEqual({
+      model: 'provider/default',
+      thinking: 'low',
+      displayModel: 'provider/default',
     });
+    expect(
+      resolveSubagentBinding(
+        config,
+        flags,
+        own,
+        { modelAlias: 'provider/tool', thinkingEffort: 'tool-effort' },
+        { modelAlias: 'provider/profile', thinkingEffort: 'profile-effort' },
+      ),
+    ).toEqual({
+      model: 'provider/tool',
+      thinking: 'tool-effort',
+      displayModel: 'provider/tool',
+    });
+    expect(
+      resolveSubagentBinding(config, flags, own, {}, {
+        modelAlias: 'provider/profile',
+        thinkingEffort: 'profile-effort',
+      }),
+    ).toEqual({
+      model: 'provider/profile',
+      thinking: 'profile-effort',
+      displayModel: 'provider/profile',
+    });
+    expect(
+      resolveSubagentBinding(config, flags, own, {}, { modelPreference: 'secondary' }),
+    ).toEqual({
+      model: 'provider/default',
+      thinking: 'low',
+      displayModel: 'provider/default',
+    });
+    expect(() => resolveSubagentBinding(config, flags, own, 'primary')).toThrowError(
+      expect.objectContaining({ code: ErrorCodes.VALIDATION_FAILED }),
+    );
 
     disposables.dispose();
   });

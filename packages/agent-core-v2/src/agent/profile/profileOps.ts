@@ -3,9 +3,9 @@
  * Op (`configUpdate`) for the agent's persistent configuration slice.
  *
  * Declares the persistent profile config — `modelAlias`, `profileName`,
- * the resolved base thinking effort, `systemPrompt`, its injected AGENTS.md
- * path provenance, the profile `disallowedTools` denylist and `subagents`
- * delegation allowlist, and the environment disclosure snapshot associated
+ * the resolved base thinking effort, the profile `serviceTier`, `systemPrompt`,
+ * its injected AGENTS.md path provenance, the profile `disallowedTools` denylist
+ * and `subagents` delegation allowlist, and the environment disclosure associated
  * with the rendered prompt — as a wire Model (initial `defaultProfileModel()`),
  * plus the single Op whose `apply` is a pure merge of an already-resolved
  * payload. `renderGeneration` advances on accepted system-prompt writes; on
@@ -46,16 +46,19 @@
 import { z } from 'zod';
 
 import type { EnvironmentDisclosureSnapshot } from '#/app/agentProfileCatalog/agentProfileCatalog';
-import type { ThinkingEffort } from '#/kosong/contract/provider';
+import type { ServiceTier, ThinkingEffort } from '#/kosong/contract/provider';
 import { defineModel } from '#/wire/model';
 import type { PayloadOf } from '#/wire/types';
 
 import { ProfileError, ProfileErrors } from './profile';
 
+const ServiceTierSchema = z.enum(['auto', 'default', 'flex', 'priority']);
+
 export interface ProfileModelState {
   readonly modelAlias?: string;
   readonly profileName?: string;
   readonly thinkingLevel: string;
+  readonly serviceTier?: ServiceTier;
   readonly systemPrompt: string;
   readonly environmentDisclosure?: EnvironmentDisclosureSnapshot;
   readonly renderGeneration: number;
@@ -75,6 +78,7 @@ export const profileBind = ProfileModel.defineOp('profile.bind', {
     modelAlias: z.string().optional(),
     profileName: z.string().optional(),
     thinkingEffort: z.custom<ThinkingEffort>(),
+    serviceTier: ServiceTierSchema.optional(),
     systemPrompt: z.string(),
     environmentDisclosure: z.custom<EnvironmentDisclosureSnapshot>().optional(),
     renderGeneration: z.number().optional(),
@@ -87,6 +91,7 @@ export const profileBind = ProfileModel.defineOp('profile.bind', {
     modelAlias: p.modelAlias ?? s.modelAlias,
     profileName: p.profileName ?? s.profileName,
     thinkingLevel: p.thinkingEffort,
+    serviceTier: p.serviceTier,
     systemPrompt: p.systemPrompt,
     environmentDisclosure: p.environmentDisclosure,
     renderGeneration: p.renderGeneration ?? s.renderGeneration + 1,

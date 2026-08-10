@@ -105,6 +105,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     'thinking_effort',
     options.path,
   );
+  const serviceTier = parseServiceTier(frontmatter['service_tier'], options.path);
   if (modelPreference !== undefined && modelAlias !== undefined) {
     throw new AgentFileParseError(
       `Frontmatter fields "model_preference" and "model_alias" in ${options.path} are mutually exclusive`,
@@ -127,6 +128,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     modelPreference,
     modelAlias,
     thinkingEffort,
+    serviceTier,
     prompt,
     path: options.path,
     source: options.source,
@@ -141,6 +143,16 @@ function parseModelPreference(
   if (value === 'primary' || value === 'secondary') return value;
   throw new AgentFileParseError(
     `Frontmatter field "model_preference" in ${filePath} must be "primary" or "secondary"`,
+  );
+}
+
+function parseServiceTier(value: unknown, filePath: string): AgentFileDefinition['serviceTier'] {
+  if (value === undefined || value === null) return undefined;
+  if (value === 'auto' || value === 'default' || value === 'flex' || value === 'priority') {
+    return value;
+  }
+  throw new AgentFileParseError(
+    `Frontmatter field "service_tier" in ${filePath} must be "auto", "default", "flex", or "priority"`,
   );
 }
 

@@ -5,7 +5,10 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
-import { DEFAULT_SUBAGENT_TIMEOUT_MS } from '#/session/subagent/configSection';
+import {
+  DEFAULT_SUBAGENT_TIMEOUT_MS,
+  SUBAGENT_SECTION,
+} from '#/session/subagent/configSection';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionSwarmService, type SessionSwarmRunResult, type SessionSwarmTask } from '#/session/swarm/sessionSwarm';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
@@ -13,6 +16,7 @@ import { AgentSystemReminderService } from '#/agent/systemReminder/systemReminde
 import { IAgentSwarmService } from '#/agent/swarm/swarm';
 import { AgentSwarmService } from '#/agent/swarm/swarmService';
 import { SwarmModel } from '#/agent/swarm/swarmOps';
+import { SECONDARY_MODEL_SECTION } from '#/app/kosongConfig/configSection';
 import { SECONDARY_DERIVED_MODEL_ID } from '#/app/kosongConfig/secondaryModelOverlay';
 import { AgentSwarmToolInputSchema } from '#/agent/tools/agent-swarm/agent-swarm';
 import { AgentSwarmTool } from '#/agent/tools/agent-swarm/agentSwarmTool';
@@ -98,7 +102,17 @@ function stubConfig(section?: {
 }): IConfigService {
   return {
     _serviceBrand: undefined,
-    get: () => section,
+    get: (domain: string) => {
+      if (domain === SUBAGENT_SECTION) {
+        return section?.timeoutMs === undefined ? undefined : { timeoutMs: section.timeoutMs };
+      }
+      if (domain === SECONDARY_MODEL_SECTION) {
+        if (section?.model === undefined) return undefined;
+        if (section.defaultEffort === undefined) return { model: section.model };
+        return { model: section.model, defaultEffort: section.defaultEffort };
+      }
+      return undefined;
+    },
   } as unknown as IConfigService;
 }
 
@@ -393,7 +407,7 @@ describe('AgentSwarmTool', () => {
       'Subagent type used for every new subagent spawned from items; defaults to coder when omitted. Resumed subagents always keep their original type, so passing subagent_type together with resume_agent_ids is allowed — it only affects the item-based spawns.',
     );
     expect(Object.keys(tool.parameters['properties'] as Record<string, unknown>).at(-1)).toBe(
-      'model',
+      'thinking_effort',
     );
 
     const result = await executeTool(tool, context(input));
@@ -847,7 +861,9 @@ describe('AgentSwarmTool', () => {
       modelPreference: 'secondary',
       systemPrompt: () => 'coder',
     });
-    const tool = new AgentSwarmTool(host.swarmService, makeAgentScopeContext({ agentId: host.callerAgentId, agentScope: '' }), mockSwarmMode(), stubConfig({ model: 'provider/secondary', defaultEffort: 'low' }), stubFlag(true), stubSwarmCatalog(DEFAULT_CALLER_PROFILE, [secondaryCoder]), stubCallerProfile({ modelAlias: 'main-model', thinkingLevel: 'high' }), stubModelCatalog());
+    const tool = new AgentSwarmTool(host.swarmService, makeAgentScopeContext({ agentId: host.callerAgentId, agentScope: '' }), mockSwarmMode(), stubConfig({ model: 'provider/secondary', defaultEffort: 'low' }), stubFlag(true), stubSwarmCatalog(DEFAULT_CALLER_PROFILE, [secondaryCoder]), stubCallerProfile({ modelAlias: 'main-model', thinkingLevel: 'high' }), stubModelCatalog({
+      'main-model': { image_in: false, video_in: false, audio_in: false, thinking: false, tool_use: true, max_context_tokens: 262_144 },
+    }));
 
     await executeTool(
       tool,

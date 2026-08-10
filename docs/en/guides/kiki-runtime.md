@@ -42,7 +42,7 @@ The Kiki-only agent features are experimental and off by default. Prefer the fea
 
 | Feature | Enable with | Additional boundary |
 | --- | --- | --- |
-| Explicit subagent model and effort binding | `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` | Applies to new subagent spawns. Resumed or retried subagents retain their persisted binding. |
+| Legacy subagent model selector and secondary recipe | `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` | Gates only the symbolic `model`/`model_preference` selectors and the `[secondary_model]` recipe; explicit `model_alias`/`thinking_effort` binding is stable and always available. Applies to new subagent spawns. Resumed or retried subagents retain their persisted binding. |
 | Five-tool named-agent adapter | `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION=1` | `[agents] enabled = false` still removes the five tools. The adapter has no `send_message` tool and does not copy parent history when spawning. |
 | All registered experiments | `KIMI_CODE_EXPERIMENTAL_FLAG=1` | This is a broad master gate, not a runtime or product selector. |
 

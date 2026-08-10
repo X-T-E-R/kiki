@@ -4,11 +4,12 @@
  * Owns the active agent's model alias, thinking level, system prompt, and
  * active-tool set; reads the bound model's pure data through the App-scope
  * `IModelCatalog` and produces the dialect-free per-turn intent
- * (`resolveRequestParams`: cache key / sampling / thinking effort+keep —
- * wire encoding is each dialect's own hook), persists the profile binding
- * (`cwd` / `modelAlias` / `profileName` / resolved base `thinkingLevel` /
- * `systemPrompt` / injected AGENTS.md paths / `activeToolNames` / profile
- * `disallowedTools` / profile `subagents`) in the `wire` `ProfileModel` through
+ * (`resolveRequestParams`: cache key / service tier / sampling / thinking
+ * effort+keep — wire encoding is each dialect's own hook), persists the profile
+ * binding (`cwd` / `modelAlias` / `profileName` / resolved base `thinkingLevel` /
+ * profile `serviceTier` / `systemPrompt` / injected AGENTS.md paths /
+ * `activeToolNames` / profile `disallowedTools` / profile `subagents`) in the
+ * `wire` `ProfileModel` through
  * the `profile.bind` Op
  * (later slice updates ride the `config.update` Op) and the persisted
  * active-tool set in the `wire` `ActiveToolsModel` through the
@@ -91,7 +92,11 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/_base/state/stateRegistry';
 import { UNKNOWN_CAPABILITY, type ModelCapability } from '#/kosong/contract/capability';
-import { type SamplingOptions, type ThinkingEffort } from '#/kosong/contract/provider';
+import {
+  type SamplingOptions,
+  type ServiceTier,
+  type ThinkingEffort,
+} from '#/kosong/contract/provider';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { type ModelOverrides } from '#/kosong/model/model.types';
 import { type ModelRequestParams } from '#/kosong/model/modelRequester';
@@ -366,6 +371,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         modelAlias: snapshot.modelAlias,
         profileName: snapshot.profileName,
         thinkingEffort: snapshot.thinkingLevel,
+        serviceTier: snapshot.serviceTier,
         systemPrompt: snapshot.systemPrompt,
         environmentDisclosure: snapshot.environmentDisclosure,
         renderGeneration: snapshot.renderGeneration,
@@ -434,6 +440,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       modelAlias: alias,
       profileName: profile.name,
       thinkingEffort: thinkingLevel,
+      serviceTier: profile.serviceTier,
       systemPrompt: rendered.text,
       environmentDisclosure: rendered.environment,
       agentsMdPaths: context.agentsMdPaths ?? [],
@@ -577,6 +584,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       disallowedTools: [...(this.profileState.disallowedTools ?? [])],
       subagents:
         this.profileState.subagents === undefined ? undefined : [...this.profileState.subagents],
+      serviceTier: this.serviceTier,
       environmentDisclosure: this.profileState.environmentDisclosure,
       renderGeneration: this.profileState.renderGeneration,
     };
@@ -610,7 +618,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       temperature: overrides?.temperature,
       topP: overrides?.topP,
     };
-    return {
+    const params: ModelRequestParams = {
       cacheKey: this.sessionContext.sessionId,
       sampling:
         sampling.temperature === undefined && sampling.topP === undefined ? undefined : sampling,
@@ -621,6 +629,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         thinking.effective,
       ),
     };
+    const serviceTier = this.serviceTier;
+    return serviceTier === undefined ? params : { ...params, serviceTier };
   }
 
   getModelCapabilities(): ModelCapability {
@@ -787,6 +797,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   private get profileName(): string | undefined {
     return this.profileState.profileName;
+  }
+
+  private get serviceTier(): ServiceTier | undefined {
+    return this.activeProfile === undefined
+      ? this.profileState.serviceTier
+      : this.activeProfile.serviceTier;
   }
 
   private get systemPrompt(): string {

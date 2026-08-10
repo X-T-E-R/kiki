@@ -6,7 +6,7 @@
  * one immutable ChatProvider per Model (on first use) and caches it for the
  * Model's lifetime; every per-turn variation arrives as `ModelRequestParams` and
  * is mapped onto `GenerateOptions` (overlay order inside the bases:
- * `cacheKey → sampling → thinking → maxCompletionTokens`).
+ * `cacheKey → serviceTier → sampling → thinking → maxCompletionTokens`).
  *
  * The driver itself turns per-turn input (systemPrompt / tools / messages)
  * into the `ModelRequestEvent` stream via the contract's `generate(...)`, measures
@@ -112,6 +112,7 @@ export class ModelRequesterImpl implements ModelRequester {
     const options: GenerateOptions = {
       signal,
       cacheKey: params?.cacheKey,
+      serviceTier: params?.serviceTier,
       sampling: params?.sampling,
       thinking:
         params?.thinkingEffort === undefined

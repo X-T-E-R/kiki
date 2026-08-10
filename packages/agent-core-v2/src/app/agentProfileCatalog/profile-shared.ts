@@ -58,7 +58,9 @@ export function subagentAllowlistFor(
     readonly subagents?: readonly string[];
   },
 ): readonly string[] | undefined {
-  return caller.profileName === undefined ? catalog.getDefault().subagents : caller.subagents;
+  const configured =
+    caller.profileName === undefined ? catalog.getDefault().subagents : caller.subagents;
+  return configured?.includes('*') === true ? undefined : configured;
 }
 
 export function subagentTypeNotAllowedMessage(

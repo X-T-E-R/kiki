@@ -2,36 +2,16 @@
  * `subagent` domain — subagent config-section schema, env binding, and
  * timeout / model resolution.
  *
- * Owns the `[subagent]` configuration section (`default_model`,
- * `default_effort`, and `timeout_ms` on disk) together with the
- * `KIMI_SUBAGENT_TIMEOUT_MS` env override for timeout (precedence: env >
- * config.toml > 2h default). While
- * the env var is set, `stripEnvBoundFields` restores the env-free raw value
- * before persistence, so the override never leaks into `config.toml`. Per-run
- * timeouts resolve through `resolveSubagentTimeoutMs`, and the timeout
- * message renders with `formatSubagentTimeoutDescription`.
- *
- * The same experiment gates exact alias and thinking-effort tool fields,
- * profile fields, `[subagent]` defaults, and the legacy symbolic
- * primary/secondary selector. Model and effort precedence are resolved
- * independently. A secondary recipe with patch fields binds the
- * synthesized derived entry (`SECONDARY_DERIVED_MODEL_ID`); a pointer-only
- * recipe binds the pointed entry directly. `default_effort` is passed as the
- * explicit subagent thinking only when that recipe supplied the model. Both
- * tools resolve spawn
- * bindings through `resolveSubagentBinding`, advertise the pair via
- * `buildSubagentModelDescriptions` (each line suffixed with the entry's
- * resolved capability flags, so the parent can route multimodal or
- * thinking-heavy subagent tasks instead of guessing from the model id),
- * and wrap spawn failures with
- * `wrapSubagentModelError`; while the experiment is off they also strip the
- * no-op binding parameters from their advertised schemas via
- * `stripSubagentModelParameter`. Spawn reporting reads the display-facing
- * alias from `subagentDisplayModel`: the derived entry id means nothing to a
- * user, so it resolves back to the recipe's base alias — flag-independent on
- * purpose, since interpreting an already-persisted derived binding (resume)
- * must keep working after the experiment is switched off. Self-registered
- * at module load via `registerConfigSection`.
+ * Owns the `[subagent]` defaults and timeout override, resolves exact model
+ * aliases and thinking effort independently across tool, profile, default,
+ * and caller layers, and conditionally inserts the legacy secondary recipe
+ * only while the `secondary-model` experiment is enabled. The same flag gates
+ * only the symbolic `model=primary|secondary` selector and its schema field;
+ * exact `model_alias`, `thinking_effort`, and `[subagent]` defaults remain
+ * active when it is off. Also owns display alias normalization, binding-source
+ * tracking, catalog-error classification/wrapping, model descriptions, schema
+ * constraints, and timeout formatting. Self-registered at module load via
+ * `registerConfigSection`.
  */
 
 import { z } from 'zod';
@@ -214,19 +194,26 @@ export function resolveSubagentBinding(
   requested?: SubagentModelChoice | SubagentBindingRequest,
   profileRequest?: SubagentBindingRequest,
 ): SubagentModelBinding {
-  if (!flags.enabled(SECONDARY_MODEL_FLAG_ID)) {
-    return recordBindingSource({
-      model: own.modelAlias,
-      thinking: own.thinkingLevel,
-      displayModel: subagentDisplayModel(config, own.modelAlias),
-    }, 'caller');
-  }
-
+  const secondaryEnabled = flags.enabled(SECONDARY_MODEL_FLAG_ID);
   const tool = normalizeRequest(requested);
-  const profile = normalizeRequest(profileRequest);
+  const rawProfile = normalizeRequest(profileRequest);
+  if (!secondaryEnabled && tool.modelPreference !== undefined) {
+    throw new Error2(
+      ErrorCodes.VALIDATION_FAILED,
+      'The model parameter requires the secondary-model experiment to be enabled',
+      { details: { model: tool.modelPreference, flag: SECONDARY_MODEL_FLAG_ID } },
+    );
+  }
+  const profile: SubagentBindingRequest = secondaryEnabled
+    ? rawProfile
+    : {
+        modelAlias: rawProfile.modelAlias,
+        modelPreference: undefined,
+        thinkingEffort: rawProfile.thinkingEffort,
+      };
   assertValidRequest(tool, 'tool input');
   assertValidRequest(profile, 'agent profile');
-  const secondary = resolveSecondaryModel(config, flags);
+  const secondary = secondaryEnabled ? resolveSecondaryModel(config, flags) : undefined;
   if (secondary?.model === SECONDARY_DERIVED_MODEL_ID) {
     throw invalidInternalAlias('[secondary_model].model');
   }
@@ -342,7 +329,6 @@ export function buildSubagentModelDescriptions(
   callerModelAlias: string | undefined,
   modelCatalog: IModelCatalog,
 ): string | undefined {
-  if (!flags.enabled(SECONDARY_MODEL_FLAG_ID)) return undefined;
   const secondary = resolveSecondaryModel(config, flags);
   const secondaryModel = secondary?.model;
   const aliases = Object.keys(config.get<Record<string, unknown> | undefined>(MODELS_SECTION) ?? {})
@@ -366,7 +352,7 @@ export function buildSubagentModelDescriptions(
 
 export type SubagentBindingSchemaUsage = 'agent' | 'swarm';
 
-const bindingSchemaConstraints = new WeakSet<object>();
+const legacyModelSchemaConstraints = new WeakSet<object>();
 const BINDING_FIELD_NAMES = ['model', 'model_alias', 'thinking_effort'] as const;
 
 export function addSubagentBindingSchemaConstraints(
@@ -380,11 +366,12 @@ export function addSubagentBindingSchemaConstraints(
     if (isPlainObject(property)) property['pattern'] = '\\S';
   }
 
+  const legacyConstraint = { not: { required: ['model', 'model_alias'] } };
+  legacyModelSchemaConstraints.add(legacyConstraint);
   const constraints: Record<string, unknown>[] = [
-    { not: { required: ['model', 'model_alias'] } },
+    legacyConstraint,
     usage === 'agent' ? agentResumeBindingConstraint() : swarmResumeBindingConstraint(),
   ];
-  for (const constraint of constraints) bindingSchemaConstraints.add(constraint);
   const current = parameters['allOf'];
   parameters['allOf'] = [...(Array.isArray(current) ? current : []), ...constraints];
 }
@@ -466,11 +453,9 @@ export function stripSubagentModelParameter(
   parameters: Record<string, unknown>,
 ): Record<string, unknown> {
   const properties = parameters['properties'];
-  if (!isPlainObject(properties)) return parameters;
+  if (!isPlainObject(properties) || !('model' in properties)) return parameters;
   const nextProperties = { ...properties };
-  const bindingFields = ['model', 'model_alias', 'thinking_effort'];
-  if (!bindingFields.some((field) => field in nextProperties)) return parameters;
-  for (const field of bindingFields) delete nextProperties[field];
+  delete nextProperties['model'];
   const next: Record<string, unknown> = { ...parameters, properties: nextProperties };
   const allOf = parameters['allOf'];
   if (Array.isArray(allOf)) {
@@ -478,16 +463,24 @@ export function stripSubagentModelParameter(
       (constraint) =>
         typeof constraint !== 'object' ||
         constraint === null ||
-        !bindingSchemaConstraints.has(constraint),
+        !legacyModelSchemaConstraints.has(constraint),
     );
     if (retained.length > 0) next['allOf'] = retained;
     else delete next['allOf'];
   }
   const required = parameters['required'];
-  if (Array.isArray(required) && required.some((entry) => bindingFields.includes(String(entry)))) {
-    next['required'] = required.filter((entry) => !bindingFields.includes(String(entry)));
+  if (Array.isArray(required) && required.some((entry) => entry === 'model')) {
+    next['required'] = required.filter((entry) => entry !== 'model');
   }
   return next;
+}
+
+export function isMissingSubagentModelAlias(error: unknown, alias: string): boolean {
+  return (
+    isError2(error) &&
+    error.code === ErrorCodes.CONFIG_INVALID &&
+    error.details?.['model'] === alias
+  );
 }
 
 export function wrapSubagentModelError(
