@@ -51,7 +51,7 @@ export function App() {
     return onTrayNewSession(() => navigate('/new'));
   }, [navigate]);
 
-  const sessionMatch = useMatch('/s/:id');
+  const sessionMatch = useMatch('/s/:id/*');
   const activeSessionId = sessionMatch?.params.id;
   const isNewRoute = useMatch('/new') !== null;
   const isSettingsRoute = useMatch('/settings/*') !== null;
@@ -104,7 +104,7 @@ export function App() {
             path="/new"
             element={<NewSessionPage onToggleSidebar={() => setSidebarOpen((value) => !value)} />}
           />
-          <Route path="/s/:id" element={<SessionView />} />
+          <Route path="/s/:id/*" element={<SessionView />} />
           <Route
             path="/settings/:section?"
             element={<SettingsPage onToggleSidebar={() => setSidebarOpen((value) => !value)} />}

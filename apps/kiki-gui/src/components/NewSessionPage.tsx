@@ -36,6 +36,8 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
   const [cwd, setCwd] = useState('');
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.defaultPermissionMode);
   const [planMode, setPlanMode] = useState(settings.defaultPlanMode);
+  const [swarmMode, setSwarmMode] = useState(false);
+  const [goalObjective, setGoalObjective] = useState('');
   const [modelOverride, setModelOverride] = useState<string | undefined>(settings.defaultModel);
   const [effortOverride, setEffortOverride] = useState<string | undefined>(settings.defaultEffort);
 
@@ -108,6 +110,8 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
             thinking: effectiveEffort,
             permissionMode,
             planMode,
+            swarmMode,
+            goalObjective,
           },
           replace: false,
         });
@@ -202,11 +206,18 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
             modelSource={modelOverride !== undefined ? 'override' : 'server-default'}
             permissionMode={permissionMode}
             planMode={planMode}
+            swarmMode={swarmMode}
+            goalObjective={goalObjective}
+            goalStatus={undefined}
+            goalControl={undefined}
             efforts={supportedEfforts}
             effort={effectiveEffort}
             onChangeModel={setModelOverride}
             onChangePermissionMode={setPermissionMode}
             onChangePlanMode={setPlanMode}
+            onChangeSwarmMode={setSwarmMode}
+            onChangeGoalObjective={setGoalObjective}
+            onChangeGoalControl={() => {}}
             onChangeEffort={setEffortOverride}
             onSend={send}
             onAbort={() => {}}

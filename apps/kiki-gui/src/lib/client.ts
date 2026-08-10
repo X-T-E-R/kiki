@@ -15,6 +15,7 @@ import type {
   AuthSummary,
   ConfigResponse,
   Envelope,
+  GoalSnapshot,
   ListMcpServersResponse,
   ListModelsResponse,
   ListProvidersResponse,
@@ -78,6 +79,49 @@ export interface KikiClientOptions {
   /** Absolute base (`http://host:port`) or '' for same-origin (dev proxy). */
   readonly baseUrl: string;
   readonly token?: string;
+}
+
+export type AgentTranscriptFrame =
+  | { kind: 'text'; frameId: string; role: 'assistant' | 'user'; text: string }
+  | { kind: 'thinking'; frameId: string; text: string }
+  | {
+      kind: 'tool';
+      frameId: string;
+      toolCallId: string;
+      name: string;
+      state: 'running' | 'done' | 'error';
+      input?: unknown;
+      output?: unknown;
+      display?: unknown;
+      error?: string;
+      inputText?: string;
+      progress?: { text?: string };
+    }
+  | { kind: 'notice'; frameId: string; level: 'error' | 'warning' | 'info'; message: string };
+
+export interface AgentTranscriptTurn {
+  readonly kind: 'turn';
+  readonly turnId: string;
+  readonly prompt?: string;
+  readonly startedAt?: string;
+  readonly endedAt?: string;
+  readonly durationMs?: number;
+  readonly steps: readonly {
+    stepId: string;
+    startedAt?: string;
+    endedAt?: string;
+    frames: readonly AgentTranscriptFrame[];
+  }[];
+}
+
+export interface AgentTranscriptResponse {
+  readonly agent_id: string;
+  readonly items: readonly (
+    | AgentTranscriptTurn
+    | { kind: 'marker'; markerId: string; marker: string; at?: string }
+    | { kind: 'taskref'; refId: string; taskId: string; at?: string }
+  )[];
+  readonly has_more: boolean;
 }
 
 function joinUrl(baseUrl: string, path: string): string {
@@ -217,6 +261,24 @@ export class KikiClient {
     return this.request<SessionSnapshotResponse>(
       'GET',
       `/sessions/${encodeURIComponent(sessionId)}/snapshot`,
+    );
+  }
+
+  getSessionGoal(sessionId: string): Promise<GoalSnapshot | null> {
+    return this.request<GoalSnapshot | null>(
+      'GET',
+      `/sessions/${encodeURIComponent(sessionId)}/goal`,
+    );
+  }
+
+  getAgentTranscript(
+    sessionId: string,
+    agentId: string,
+  ): Promise<AgentTranscriptResponse> {
+    return this.request<AgentTranscriptResponse>(
+      'GET',
+      `/sessions/${encodeURIComponent(sessionId)}/transcript`,
+      { query: { agent_id: agentId, page_size: 100 } },
     );
   }
 

@@ -90,6 +90,10 @@ class FixtureSession {
     this.pendingApprovals = [...(scenarioData.pending_approvals ?? [])];
     this.pendingQuestions = [...(scenarioData.pending_questions ?? [])];
     this.inFlightTurn = scenarioData.in_flight_turn ?? null;
+    this.subagents = [...(scenarioData.subagents ?? [])];
+    this.agentTranscripts = scenarioData.agent_transcripts ?? {};
+    this.goal = scenarioData.goal ?? null;
+    this.lastPromptSubmission = null;
     this.seq = scenarioData.as_of_seq ?? this.messages.length;
     this.epoch = scenarioData.epoch ?? 'ep_fixture_1';
     this.scriptRunning = false;
@@ -141,8 +145,14 @@ class FixtureServer {
       timestamp: now(),
       // The wire payload IS the event object — it carries its own `type`
       // (sessionEventMessageSchema wraps eventSchema), plus agent/session
-      // routing stamps from the broadcaster.
-      payload: { type: partial.type, ...partial.payload, agentId: 'main', sessionId },
+      // routing stamps from the broadcaster. Scenarios can select the emitting
+      // agent to prove client-side transcript scoping.
+      payload: {
+        type: partial.type,
+        ...partial.payload,
+        agentId: partial.agentId ?? partial.payload?.agentId ?? 'main',
+        sessionId,
+      },
     };
     if (volatile) {
       session.seq += 0; // volatile frames carry the current watermark
@@ -216,8 +226,13 @@ class FixtureServer {
         session.record.busy = true;
         break;
       case 'turn.ended':
-        session.record.busy = false;
-        session.record.pending_interaction = 'none';
+        if ((frame.agentId ?? payload.agentId ?? 'main') === 'main') {
+          session.record.busy = false;
+          session.record.pending_interaction = 'none';
+        }
+        break;
+      case 'goal.updated':
+        session.goal = payload.snapshot ?? null;
         break;
       case 'task.started':
         session.tasks.push({
@@ -482,9 +497,21 @@ class FixtureServer {
         session: session.record,
         messages: { items: session.messages.slice(-50), has_more: session.hasMore || session.messages.length > 50 },
         in_flight_turn: session.inFlightTurn,
+        subagents: session.subagents,
         pending_approvals: session.pendingApprovals,
         pending_questions: session.pendingQuestions,
       });
+    }
+    if (tail === '/goal') {
+      return this.envelope(res, session.goal);
+    }
+    if (tail === '/transcript') {
+      const agentId = query.get('agent_id');
+      const transcript = agentId === null ? undefined : session.agentTranscripts[agentId];
+      if (transcript === undefined) {
+        return this.envelope(res, null, 40402, 'agent.not_found');
+      }
+      return this.envelope(res, transcript);
     }
     if (tail === '/messages') {
       const beforeId = query.get('before_id');
@@ -501,17 +528,29 @@ class FixtureServer {
       return this.envelope(res, { items, has_more: hasMore });
     }
     if (tail === '/prompts' && body !== undefined) {
+      // v2 currently uses one stable id for the prompt, user message, and
+      // durable context message. Keep the stand-in aligned with that graph.
       const promptId = nextId('msg');
-      const userMessageId = nextId('msg');
+      const userMessageId = promptId;
       const text = (body.content ?? []).filter((c) => c.type === 'text').map((c) => c.text).join('\n');
       session.messages.push({ id: userMessageId, session_id: session.record.id, role: 'user', content: body.content, created_at: now(), prompt_id: promptId });
       session.record.message_count += 1;
       session.record.last_prompt = text;
+      session.lastPromptSubmission = body;
       // A parked script owns the turn — queue like the real server.
       if (session.scriptRunning) {
         return this.envelope(res, { prompt_id: promptId, user_message_id: userMessageId, status: 'queued', content: body.content, created_at: now() });
       }
       session.record.busy = true;
+      // Real v2 publishes turn.started before the HTTP reply. Scenarios use this
+      // hook to reproduce that cross-transport race deterministically.
+      const beforeResponse = this.scenario?.data.onSubmitBeforeResponse;
+      if (Array.isArray(beforeResponse)) {
+        for (const frame of bindPrompt(bind(beforeResponse, session.record.id), promptId)) {
+          this.applySideEffects(session, frame);
+          this.emit(session.record.id, frame);
+        }
+      }
       const steps = this.scenario?.data.onPrompt;
       if (Array.isArray(steps)) {
         void this.runScript(session.record.id, bindPrompt(bind(steps, session.record.id), promptId));
@@ -593,6 +632,15 @@ class FixtureServer {
       case 'scenario':
         await this.loadScenario(body.name);
         return this.envelope(res, { active: body.name });
+      case 'session': {
+        const session = this.sessions.get(body.session_id);
+        if (session === undefined) return this.envelope(res, null, 40401, 'session.not_found');
+        return this.envelope(res, {
+          record: session.record,
+          goal: session.goal,
+          last_prompt_submission: session.lastPromptSubmission,
+        });
+      }
       case 'drop_ws':
         for (const ws of this.sockets) {
           try { ws.terminate(); } catch { /* closing */ }

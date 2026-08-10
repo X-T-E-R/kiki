@@ -191,7 +191,7 @@ async function scenarioSubagents() {
 async function scenarioGoalSwarm() {
   await selectSession('Fixture: goal + swarm');
   await waitForText('Prepare the release evidence bundle');
-  await page.click('button:has-text("swarm")');
+  await page.click('button[title^="Swarm mode"]');
   await page.click('button:has-text("goal · active")');
   await page.fill('input[placeholder="Objective (optional)"]', 'Ship the fixture release');
   await page.click('button:has-text("goal · active")');

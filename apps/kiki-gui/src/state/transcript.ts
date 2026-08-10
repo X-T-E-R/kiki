@@ -15,6 +15,7 @@
 import type {
   ApprovalDecision,
   ApprovalRequest,
+  GoalSnapshot,
   Message,
   PermissionMode,
   QuestionRequest,
@@ -27,6 +28,7 @@ import type {
   UsageStatus,
 } from '@moonshot-ai/protocol';
 
+import type { AgentTranscriptResponse } from '../lib/client';
 import type { SessionEventFrame } from '../lib/types';
 
 // ---------------------------------------------------------------------------
@@ -36,6 +38,10 @@ export interface UserBlock {
   readonly id: string;
   readonly text: string;
   readonly createdAt: string;
+  /** Stable daemon identities when known. `turn.started.prompt` placeholders
+   * have neither until the REST result or a future prompt.submitted arrives. */
+  readonly promptId?: string;
+  readonly userMessageId?: string;
 }
 
 export interface AssistantBlock {
@@ -90,9 +96,16 @@ export interface SubagentBlock {
   readonly parentToolCallId: string | undefined;
   readonly name: string;
   readonly description: string | undefined;
+  readonly model: string | undefined;
+  readonly thinkingEffort: string | undefined;
   readonly status: 'running' | 'suspended' | 'completed' | 'failed';
   readonly summary: string | undefined;
   readonly error: string | undefined;
+  readonly startedAt: string;
+  readonly endedAt: string | undefined;
+  readonly toolCallCount: number;
+  /** Events captured for the child in this client's unfiltered session stream. */
+  readonly transcript: readonly Block[];
 }
 
 /** Subtle in-flow notice: compaction, abort, errors, turn failures. */
@@ -162,6 +175,10 @@ export interface SessionViewState {
   readonly model: string | undefined;
   readonly permissionMode: PermissionMode | undefined;
   readonly planMode: boolean;
+  readonly swarmMode: boolean;
+  /** undefined until the goal endpoint has been checked; null means no goal. */
+  readonly goal: GoalSnapshot | null | undefined;
+  readonly goalUpdatedAt: string | undefined;
   readonly contextTokens: number | undefined;
   readonly maxContextTokens: number | undefined;
   readonly usage: UsageStatus | undefined;
@@ -200,6 +217,9 @@ export function createViewState(sessionId: string): SessionViewState {
     model: undefined,
     permissionMode: undefined,
     planMode: false,
+    swarmMode: false,
+    goal: undefined,
+    goalUpdatedAt: undefined,
     contextTokens: undefined,
     maxContextTokens: undefined,
     usage: undefined,
@@ -280,6 +300,8 @@ function messagesToBlocks(messages: readonly Message[]): Block[] {
             id: `user-${message.id}`,
             text,
             createdAt: message.created_at,
+            promptId: message.prompt_id ?? message.id,
+            userMessageId: message.id,
           });
         }
         break;
@@ -354,6 +376,103 @@ function messagesToBlocks(messages: readonly Message[]): Block[] {
   return blocks;
 }
 
+export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Block[] {
+  const blocks: Block[] = [];
+  for (const item of response.items) {
+    if (item.kind === 'marker') {
+      blocks.push({
+        kind: 'notice',
+        id: `agent-marker-${item.markerId}`,
+        text: item.marker,
+        tone: 'neutral',
+      });
+      continue;
+    }
+    if (item.kind !== 'turn') continue;
+    if (item.prompt !== undefined && item.prompt.trim() !== '') {
+      blocks.push({
+        kind: 'user',
+        id: `agent-turn-${item.turnId}-prompt`,
+        text: item.prompt,
+        createdAt: item.startedAt ?? '',
+      });
+    }
+    for (const step of item.steps) {
+      for (const frame of step.frames) {
+        switch (frame.kind) {
+          case 'text':
+            if (
+              frame.role === 'user' &&
+              item.prompt !== undefined &&
+              frame.text === item.prompt
+            ) {
+              break;
+            }
+            blocks.push(
+              frame.role === 'user'
+                ? {
+                    kind: 'user',
+                    id: `agent-frame-${frame.frameId}`,
+                    text: frame.text,
+                    createdAt: step.startedAt ?? item.startedAt ?? '',
+                  }
+                : {
+                    kind: 'assistant',
+                    id: `agent-frame-${frame.frameId}`,
+                    text: frame.text,
+                    streaming: false,
+                    createdAt: step.endedAt ?? item.endedAt,
+                  },
+            );
+            break;
+          case 'thinking':
+            blocks.push({
+              kind: 'thinking',
+              id: `agent-frame-${frame.frameId}`,
+              text: frame.text,
+              streaming: false,
+              createdAt: step.endedAt ?? item.endedAt,
+            });
+            break;
+          case 'tool': {
+            const startedAt = new Date(step.startedAt ?? item.startedAt ?? '').getTime();
+            const endedAt = new Date(step.endedAt ?? item.endedAt ?? '').getTime();
+            blocks.push({
+              kind: 'tool',
+              id: `tool-${frame.toolCallId}`,
+              toolCallId: frame.toolCallId,
+              name: frame.name,
+              argsText: frame.inputText ?? '',
+              args: frame.input,
+              display: frame.display as ToolInputDisplay | undefined,
+              description: undefined,
+              status: frame.state === 'error' ? 'error' : frame.state,
+              output: frame.output ?? frame.error,
+              isError: frame.state === 'error',
+              startedAt: Number.isNaN(startedAt) ? 0 : startedAt,
+              durationMs:
+                Number.isNaN(startedAt) || Number.isNaN(endedAt)
+                  ? item.durationMs
+                  : Math.max(0, endedAt - startedAt),
+              progressText: frame.progress?.text,
+            });
+            break;
+          }
+          case 'notice':
+            blocks.push({
+              kind: 'notice',
+              id: `agent-frame-${frame.frameId}`,
+              text: frame.message,
+              tone: frame.level === 'error' ? 'danger' : 'neutral',
+            });
+            break;
+        }
+      }
+    }
+  }
+  return blocks;
+}
+
 export function applySnapshot(
   sessionId: string,
   snapshot: SessionSnapshotResponse,
@@ -400,6 +519,34 @@ export function applySnapshot(
     }
   }
 
+  for (const subagent of snapshot.subagents ?? []) {
+    const status =
+      subagent.subagent_phase === 'failed' || subagent.status === 'failed'
+        ? 'failed'
+        : subagent.subagent_phase === 'suspended'
+          ? 'suspended'
+          : subagent.subagent_phase === 'completed' || subagent.status === 'completed'
+            ? 'completed'
+            : 'running';
+    blocks.push({
+      kind: 'subagent',
+      id: `subagent-${subagent.id}`,
+      subagentId: subagent.id,
+      parentToolCallId: subagent.parent_tool_call_id,
+      name: subagent.subagent_type ?? subagent.description,
+      description: subagent.description,
+      model: subagent.model,
+      thinkingEffort: subagent.thinking_effort,
+      status,
+      summary: subagent.output_preview,
+      error: subagent.suspended_reason,
+      startedAt: subagent.started_at ?? subagent.created_at,
+      endedAt: subagent.completed_at,
+      toolCallCount: 0,
+      transcript: [],
+    });
+  }
+
   for (const approval of snapshot.pending_approvals) {
     blocks.push(approvalBlock(approval));
   }
@@ -438,6 +585,7 @@ export function applySnapshot(
         : undefined,
     permissionMode: snapshot.session.agent_config.permission_mode,
     planMode: snapshot.session.agent_config.plan_mode ?? false,
+    swarmMode: snapshot.session.agent_config.swarm_mode ?? false,
     loaded: true,
     loadError: undefined,
     resyncFailed: false,
@@ -618,7 +766,39 @@ function taskInfoToTask(info: TaskInfo, sessionId: string): Task {
   };
 }
 
+function isSubagentLifecycle(type: string): boolean {
+  return type.startsWith('subagent.');
+}
+
+function createUnknownSubagent(agentId: string, timestamp: string): SubagentBlock {
+  return {
+    kind: 'subagent',
+    id: `subagent-${agentId}`,
+    subagentId: agentId,
+    parentToolCallId: undefined,
+    name: agentId,
+    description: undefined,
+    model: undefined,
+    thinkingEffort: undefined,
+    status: 'running',
+    summary: undefined,
+    error: undefined,
+    startedAt: timestamp,
+    endedAt: undefined,
+    toolCallCount: 0,
+    transcript: [],
+  };
+}
+
 export function applyFrame(state: SessionViewState, frame: SessionEventFrame): ApplyResult {
+  return applyFrameInternal(state, frame, true);
+}
+
+function applyFrameInternal(
+  state: SessionViewState,
+  frame: SessionEventFrame,
+  routeSubagentEvents: boolean,
+): ApplyResult {
   const payload = frame.payload;
   let next = state;
   let gap = false;
@@ -636,6 +816,46 @@ export function applyFrame(state: SessionViewState, frame: SessionEventFrame): A
       ...next,
       cursor: { seq: frame.seq, epoch },
       version: next.version + 1,
+    };
+  }
+
+  const emittingAgentId = (payload as { agentId?: string }).agentId;
+  if (
+    routeSubagentEvents &&
+    emittingAgentId !== undefined &&
+    emittingAgentId !== 'main' &&
+    !isSubagentLifecycle(payload.type)
+  ) {
+    const key = `subagent-${emittingAgentId}`;
+    const existing =
+      (next.blocks.find((block) => block.id === key) as SubagentBlock | undefined) ??
+      createUnknownSubagent(emittingAgentId, frame.timestamp);
+    const childState: SessionViewState = {
+      ...createViewState(next.sessionId),
+      loaded: true,
+      blocks: existing.transcript,
+      cursor: durable
+        ? { seq: Math.max(0, frame.seq - 1), epoch: frame.epoch }
+        : { seq: 0, epoch: frame.epoch },
+    };
+    const childResult = applyFrameInternal(childState, frame, false);
+    const countedTool =
+      payload.type === 'tool.call.started' &&
+      !existing.transcript.some(
+        (block) => block.kind === 'tool' && block.toolCallId === payload.toolCallId,
+      );
+    const updated: SubagentBlock = {
+      ...existing,
+      transcript: childResult.state.blocks,
+      toolCallCount: existing.toolCallCount + (countedTool ? 1 : 0),
+    };
+    return {
+      state: {
+        ...next,
+        version: next.version + 1,
+        blocks: replaceBlock(next.blocks, updated),
+      },
+      gapDetected: childResult.gapDetected,
     };
   }
 
@@ -677,16 +897,19 @@ export function applyFrame(state: SessionViewState, frame: SessionEventFrame): A
       break;
     }
     case 'turn.started': {
-      // Some turns start without a local prompt.submitted echo (other clients,
-      // scheduled jobs, recovery). Surface the prompt once, and dedupe against
-      // a later durable/local-echo user message by text equality.
+      // v2 publishes this before the prompt REST reply and currently does not
+      // publish prompt.submitted. Create an unidentified placeholder only when
+      // no block is already tied to the active prompt's stable daemon id.
       if (typeof payload.prompt === 'string' && payload.prompt.trim() !== '') {
         const key = `user-turn-${payload.turnId}-prompt`;
-        const exists = next.blocks.some((b) => b.id === key);
-        const duplicateByText = next.blocks.some(
-          (b): b is UserBlock => b.kind === 'user' && b.text === payload.prompt,
-        );
-        if (!exists && !duplicateByText) {
+        const exists = next.blocks.some((block) => block.id === key);
+        const associatedByPromptId =
+          next.activePromptId !== undefined &&
+          next.blocks.some(
+            (block): block is UserBlock =>
+              block.kind === 'user' && block.promptId === next.activePromptId,
+          );
+        if (!exists && !associatedByPromptId) {
           evolve({
             blocks: [
               ...next.blocks,
@@ -847,18 +1070,50 @@ export function applyFrame(state: SessionViewState, frame: SessionEventFrame): A
       break;
     }
     case 'subagent.spawned': {
+      const key = `subagent-${payload.subagentId}`;
+      const existing = next.blocks.find((block) => block.id === key) as SubagentBlock | undefined;
       const block: SubagentBlock = {
         kind: 'subagent',
-        id: `subagent-${payload.subagentId}`,
+        id: key,
         subagentId: payload.subagentId,
         parentToolCallId: payload.parentToolCallId,
         name: payload.subagentName,
         description: payload.description,
+        model: payload.model,
+        thinkingEffort: payload.thinkingEffort,
         status: 'running',
-        summary: undefined,
+        summary: existing?.summary,
         error: undefined,
+        startedAt: existing?.startedAt ?? frame.timestamp,
+        endedAt: undefined,
+        toolCallCount: existing?.toolCallCount ?? 0,
+        transcript: existing?.transcript ?? [],
       };
-      evolve({ blocks: replaceBlock(next.blocks, block) });
+      const parentIndex = next.blocks.findIndex(
+        (candidate) => candidate.kind === 'tool' && candidate.toolCallId === payload.parentToolCallId,
+      );
+      const withoutParentAndOldBubble = next.blocks.filter(
+        (candidate) =>
+          candidate.id !== key &&
+          !(candidate.kind === 'tool' && candidate.toolCallId === payload.parentToolCallId),
+      );
+      const insertionIndex = parentIndex >= 0 ? Math.min(parentIndex, withoutParentAndOldBubble.length) : withoutParentAndOldBubble.length;
+      const blocks = withoutParentAndOldBubble.slice();
+      blocks.splice(insertionIndex, 0, block);
+      evolve({ blocks });
+      break;
+    }
+    case 'subagent.started': {
+      const key = `subagent-${payload.subagentId}`;
+      const existing = next.blocks.find((b) => b.id === key) as SubagentBlock | undefined;
+      if (existing === undefined) break;
+      evolve({
+        blocks: replaceBlock(next.blocks, {
+          ...existing,
+          status: 'running',
+          startedAt: existing.startedAt || frame.timestamp,
+        }),
+      });
       break;
     }
     case 'subagent.suspended': {
@@ -879,6 +1134,7 @@ export function applyFrame(state: SessionViewState, frame: SessionEventFrame): A
           ...existing,
           status: 'completed',
           summary: payload.resultSummary,
+          endedAt: frame.timestamp,
         }),
       });
       break;
@@ -888,7 +1144,12 @@ export function applyFrame(state: SessionViewState, frame: SessionEventFrame): A
       const existing = next.blocks.find((b) => b.id === key) as SubagentBlock | undefined;
       if (existing === undefined) break;
       evolve({
-        blocks: replaceBlock(next.blocks, { ...existing, status: 'failed', error: payload.error }),
+        blocks: replaceBlock(next.blocks, {
+          ...existing,
+          status: 'failed',
+          error: payload.error,
+          endedAt: frame.timestamp,
+        }),
       });
       break;
     }
@@ -917,15 +1178,26 @@ export function applyFrame(state: SessionViewState, frame: SessionEventFrame): A
       const text = textOfContent(payload.content as Message['content']);
       if (text.trim() === '') break;
       let blocks = next.blocks;
-      if (!blocks.some((b) => b.id === key)) {
+      const stableIndex = blocks.findIndex(
+        (block): block is UserBlock =>
+          block.kind === 'user' &&
+          (block.userMessageId === payload.userMessageId || block.promptId === payload.promptId),
+      );
+      if (stableIndex < 0) {
         const placeholderIndex = blocks.findIndex(
-          (b): b is UserBlock => b.kind === 'user' && b.text === text,
+          (block): block is UserBlock =>
+            block.kind === 'user' &&
+            block.userMessageId === undefined &&
+            block.promptId === undefined &&
+            block.text === text,
         );
         const userBlock: UserBlock = {
           kind: 'user',
           id: key,
           text,
           createdAt: payload.createdAt,
+          promptId: payload.promptId,
+          userMessageId: payload.userMessageId,
         };
         if (placeholderIndex >= 0) {
           const nextBlocks = blocks.slice();
@@ -995,10 +1267,15 @@ export function applyFrame(state: SessionViewState, frame: SessionEventFrame): A
         model: payload.model ?? next.model,
         permissionMode: payload.permission ?? next.permissionMode,
         planMode: payload.planMode ?? next.planMode,
+        swarmMode: payload.swarmMode ?? next.swarmMode,
         contextTokens: payload.contextTokens ?? next.contextTokens,
         maxContextTokens: payload.maxContextTokens ?? next.maxContextTokens,
         usage: payload.usage ?? next.usage,
       });
+      break;
+    }
+    case 'goal.updated': {
+      evolve({ goal: payload.snapshot, goalUpdatedAt: frame.timestamp });
       break;
     }
     case 'event.session.work_changed': {
@@ -1140,19 +1417,47 @@ export function appendLocalUserMessage(
   input: { userMessageId: string; promptId: string; text: string; createdAt: string; queued: boolean },
 ): SessionViewState {
   const key = `user-${input.userMessageId}`;
-  if (state.blocks.some((b) => b.id === key)) return state;
+  const stableIndex = state.blocks.findIndex(
+    (block): block is UserBlock =>
+      block.kind === 'user' &&
+      (block.id === key ||
+        block.userMessageId === input.userMessageId ||
+        block.promptId === input.promptId),
+  );
+  const placeholderIndex = state.blocks.findLastIndex(
+    (block): block is UserBlock =>
+      block.kind === 'user' &&
+      block.userMessageId === undefined &&
+      block.promptId === undefined &&
+      block.text === input.text,
+  );
+  const userBlock: UserBlock = {
+    kind: 'user',
+    id: key,
+    text: input.text,
+    createdAt: input.createdAt,
+    promptId: input.promptId,
+    userMessageId: input.userMessageId,
+  };
+  let blocks = state.blocks;
+  if (stableIndex < 0 && placeholderIndex >= 0) {
+    const replaced = blocks.slice();
+    replaced[placeholderIndex] = userBlock;
+    blocks = replaced;
+  } else if (stableIndex < 0) {
+    blocks = [...blocks, userBlock];
+  }
   return {
     ...state,
     version: state.version + 1,
     busy: true,
     activePromptId: input.queued ? state.activePromptId : input.promptId,
     queuedPromptIds: input.queued
-      ? [...state.queuedPromptIds, input.promptId]
+      ? state.queuedPromptIds.includes(input.promptId)
+        ? state.queuedPromptIds
+        : [...state.queuedPromptIds, input.promptId]
       : state.queuedPromptIds,
-    blocks: [
-      ...state.blocks,
-      { kind: 'user', id: key, text: input.text, createdAt: input.createdAt },
-    ],
+    blocks,
   };
 }
 
@@ -1193,6 +1498,54 @@ export function markQuestionOutcome(
 
 export function setTasks(state: SessionViewState, tasks: readonly Task[]): SessionViewState {
   return { ...state, version: state.version + 1, tasks };
+}
+
+/** Snapshot/resync cannot reconstruct finished child history. Preserve events
+ * this client already observed, while letting the fresh snapshot own live
+ * status and roster metadata for agents it still reports. */
+export function preserveCapturedSubagents(
+  rebuilt: SessionViewState,
+  previous: SessionViewState,
+): SessionViewState {
+  const captured = previous.blocks.filter(
+    (block): block is SubagentBlock => block.kind === 'subagent',
+  );
+  if (captured.length === 0) return rebuilt;
+  const capturedById = new Map(captured.map((block) => [block.subagentId, block]));
+  const seen = new Set<string>();
+  const blocks = rebuilt.blocks.map((block) => {
+    if (block.kind !== 'subagent') return block;
+    seen.add(block.subagentId);
+    const prior = capturedById.get(block.subagentId);
+    if (prior === undefined) return block;
+    return {
+      ...prior,
+      ...block,
+      model: block.model ?? prior.model,
+      thinkingEffort: block.thinkingEffort ?? prior.thinkingEffort,
+      toolCallCount: Math.max(block.toolCallCount, prior.toolCallCount),
+      transcript: prior.transcript,
+      summary: block.summary ?? prior.summary,
+      error: block.error ?? prior.error,
+    } satisfies SubagentBlock;
+  });
+  for (const prior of captured) {
+    if (!seen.has(prior.subagentId)) blocks.push(prior);
+  }
+  return { ...rebuilt, version: rebuilt.version + 1, blocks };
+}
+
+export function setGoal(
+  state: SessionViewState,
+  goal: GoalSnapshot | null,
+  updatedAt?: string,
+): SessionViewState {
+  return {
+    ...state,
+    version: state.version + 1,
+    goal,
+    goalUpdatedAt: updatedAt ?? state.goalUpdatedAt,
+  };
 }
 
 export function setSessionRecord(state: SessionViewState, session: Session): SessionViewState {
