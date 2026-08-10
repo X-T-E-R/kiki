@@ -3,12 +3,13 @@
  * a (server URL, token) pair.
  *
  * Config sources, in priority order:
- *   1. deep link `?server=&token=` query params (`?url=` is also honored, but
+ *   1. the Tauri-owned desktop backend (memory-only credentials)
+ *   2. deep link `?server=&token=` query params (`?url=` is also honored, but
  *      Vite's dev server 403s document requests carrying a `url` query key —
  *      its asset-import convention — so `server` is the dev-safe alias; `url`
  *      still works when the build is served by a plain static host)
- *   2. `#token=` URL fragment (token-only handoff; URL stays as-is)
- *   3. localStorage `kiki.connection` from a previous explicit connect
+ *   3. `#token=` URL fragment (token-only handoff; URL stays as-is)
+ *   4. localStorage `kiki.connection` from a previous explicit connect
  * Manual connects persist to localStorage; deep links do too (they are an
  * explicit handoff). `disconnect()` clears storage and returns to the connect
  * screen.
@@ -29,43 +30,20 @@ import type { MetaResponse } from '@moonshot-ai/protocol';
 
 import { ConnectScreen } from '../components/ConnectScreen';
 import { ApiError, KikiClient } from '../lib/client';
+import { detectLocalConnection, isDesktopRuntime } from '../lib/localServer';
 import { KikiSocket, type WsStatus } from '../lib/ws';
+import {
+  readDeepLinkConfig,
+  readStoredConfig,
+  selectInitialConnection,
+  type ConnectionConfig,
+  type ConnectionSelection,
+} from './connectionConfig';
 import type { SessionController } from './sessionController';
 
-export interface ConnectionConfig {
-  /** Server base URL; '' means same-origin (the Vite dev proxy). */
-  readonly url: string;
-  readonly token: string;
-}
+export type { ConnectionConfig } from './connectionConfig';
 
 const STORAGE_KEY = 'kiki.connection';
-
-export function readDeepLinkConfig(): ConnectionConfig | null {
-  const params = new URLSearchParams(window.location.search);
-  const qUrl = params.get('server') ?? params.get('url');
-  const qToken = params.get('token');
-  if (qUrl !== null || qToken !== null) {
-    return { url: qUrl ?? '', token: qToken ?? '' };
-  }
-  const hash = window.location.hash;
-  const match = /(?:^|#|&)token=([^&]+)/.exec(hash);
-  if (match !== null) {
-    return { url: '', token: decodeURIComponent(match[1] ?? '') };
-  }
-  return null;
-}
-
-function readStoredConfig(): ConnectionConfig | null {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw === null) return null;
-    const parsed = JSON.parse(raw) as Partial<ConnectionConfig>;
-    if (typeof parsed.url !== 'string' || typeof parsed.token !== 'string') return null;
-    return { url: parsed.url, token: parsed.token };
-  } catch {
-    return null;
-  }
-}
 
 /** Strip credentials from the address bar once they have been consumed. */
 function scrubUrl(): void {
@@ -86,15 +64,54 @@ interface ConnectionValue {
 const ConnectionContext = createContext<ConnectionValue | null>(null);
 
 export function ConnectionProvider({ children }: { children: ReactNode }) {
-  const [config, setConfig] = useState<ConnectionConfig | null>(() => {
-    const deepLink = readDeepLinkConfig();
-    if (deepLink !== null) return deepLink;
-    return readStoredConfig();
-  });
+  const desktopRuntime = isDesktopRuntime();
+  const [selection, setSelection] = useState<ConnectionSelection | null>(() =>
+    desktopRuntime
+      ? null
+      : selectInitialConnection({
+          deepLink: readDeepLinkConfig(),
+          stored: readStoredConfig(),
+        }),
+  );
+  const config = selection?.config ?? null;
   const [meta, setMeta] = useState<MetaResponse | null>(null);
   const [connectError, setConnectError] = useState<string | null>(null);
+  const [desktopBooting, setDesktopBooting] = useState(desktopRuntime);
   const [wsStatus, setWsStatus] = useState<WsStatus>('closed');
   const controllersRef = useRef(new Set<SessionController>());
+
+  // The desktop shell owns its backend. Resolve that connection before
+  // considering browser handoffs or persisted remote connections, and keep
+  // the bearer token in React memory only.
+  useEffect(() => {
+    if (!desktopRuntime) return;
+    let cancelled = false;
+    void detectLocalConnection().then(
+      (connection) => {
+        if (cancelled) return;
+        setDesktopBooting(false);
+        if (connection === null) {
+          setConnectError('The Kiki desktop backend did not register a local server.');
+          return;
+        }
+        setSelection({
+          config: connection.config,
+          persist: false,
+          source: 'desktop',
+        });
+      },
+      (error: unknown) => {
+        if (cancelled) return;
+        setDesktopBooting(false);
+        setConnectError(
+          `The Kiki desktop backend could not start: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [desktopRuntime]);
 
   const client = useMemo(
     () =>
@@ -116,8 +133,9 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       (value) => {
         if (cancelled) return;
         setMeta(value);
-        // Deep-link / stored credentials verified — keep them for next launch.
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+        if (selection?.persist === true) {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+        }
         scrubUrl();
       },
       (error: unknown) => {
@@ -135,7 +153,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [client, config]);
+  }, [client, config, selection?.persist]);
 
   // One socket per connection; frames route to registered session controllers.
   const socket = useMemo(() => {
@@ -209,14 +227,18 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const disconnect = useCallback(() => {
     localStorage.removeItem(STORAGE_KEY);
     setMeta(null);
-    setConfig(null);
+    setSelection(null);
     setConnectError(null);
   }, []);
 
-  const connect = useCallback((next: ConnectionConfig) => {
+  const connect = useCallback((next: ConnectionConfig, persist = true) => {
     setConnectError(null);
     setMeta(null);
-    setConfig(next);
+    setSelection({
+      config: next,
+      persist,
+      source: persist ? 'manual' : 'local-detection',
+    });
   }, []);
 
   const value = useMemo<ConnectionValue | null>(() => {
@@ -233,7 +255,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       ) : (
         <ConnectScreen
           initial={config ?? { url: '', token: '' }}
-          connecting={config !== null && connectError === null}
+          connecting={desktopBooting || (config !== null && connectError === null)}
           error={connectError}
           onConnect={connect}
           onBack={config !== null ? disconnect : undefined}

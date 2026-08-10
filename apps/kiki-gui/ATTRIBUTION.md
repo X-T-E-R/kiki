@@ -13,10 +13,10 @@ entire kiki-gui target file.
 
 | Donor | Pinned upstream revision | Upstream license | Recorded use in kiki-gui |
 | --- | --- | --- | --- |
-| [codeg](https://github.com/xintaofei/codeg) | [`fa230248d285c3f4fa541a737fc93f209820512e`](https://github.com/xintaofei/codeg/commit/fa230248d285c3f4fa541a737fc93f209820512e) | Apache-2.0 | Lazy Streamdown engine loading; stick-to-bottom and jump-to-latest thread behavior |
+| [codeg](https://github.com/xintaofei/codeg) | [`fa230248d285c3f4fa541a737fc93f209820512e`](https://github.com/xintaofei/codeg/commit/fa230248d285c3f4fa541a737fc93f209820512e) | Apache-2.0 | Lazy Streamdown engine loading; stick-to-bottom and jump-to-latest thread behavior; target-aware Tauri externalBin staging |
 | [AionUi](https://github.com/iOfficeAI/AionUi) | [`28a2a9f57f1bf4f9111b9c33e0cfc1eb918effc8`](https://github.com/iOfficeAI/AionUi/commit/28a2a9f57f1bf4f9111b9c33e0cfc1eb918effc8) | Apache-2.0 | Code-block controls; approval intent and submit guards; capability degradation in the model and effort selector |
 | [grok-build](https://github.com/xai-org/grok-build) | [`a5589e958437d79e13db026eedcb1720bffd4063`](https://github.com/xai-org/grok-build/commit/a5589e958437d79e13db026eedcb1720bffd4063) | Apache-2.0 | Unified-diff hunk generation, context trimming, unchanged-line separators, and diffstat presentation |
-| [LiveAgent](https://github.com/Stack-Cairn/LiveAgent) | [`00a2c6fc43754f40022b0703459824559bee73ea`](https://github.com/Stack-Cairn/LiveAgent/commit/00a2c6fc43754f40022b0703459824559bee73ea) | MIT | Wake-nudge reconnect policy and wake-signal wiring |
+| [LiveAgent](https://github.com/Stack-Cairn/LiveAgent) | [`00a2c6fc43754f40022b0703459824559bee73ea`](https://github.com/Stack-Cairn/LiveAgent/commit/00a2c6fc43754f40022b0703459824559bee73ea) | MIT | Wake-nudge reconnect policy and wake-signal wiring; bounded managed-child shutdown and process-tree fallback |
 
 ## Direct application dependencies
 
@@ -26,6 +26,7 @@ Versions below are the current resolutions for the `apps/kiki-gui` importer in
 | License | Package and current lockfile resolution |
 | --- | --- |
 | Apache-2.0 | `streamdown` 2.5.0; `@streamdown/code` 1.1.1 |
+| Apache-2.0 OR MIT | `@tauri-apps/api` 2.11.1 |
 | BSD-3-Clause | `diff` 8.0.4 |
 | MIT | `@moonshot-ai/protocol` (workspace link); `@tanstack/react-query` 5.99.2; `react` 19.2.5; `react-dom` 19.2.5; `use-stick-to-bottom` 1.1.6 |
 | OFL-1.1 | `@fontsource-variable/fraunces` 5.3.0; `@fontsource/jetbrains-mono` 5.3.0; `@fontsource/space-grotesk` 5.3.0 |

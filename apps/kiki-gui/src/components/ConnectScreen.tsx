@@ -6,17 +6,11 @@
 
 import { useState, type FormEvent } from 'react';
 
-import type { ConnectionConfig } from '../state/connection';
+import { detectLocalConnection, isDesktopRuntime } from '../lib/localServer';
+import type { ConnectionConfig } from '../state/connectionConfig';
 import { Wordmark } from './Wordmark';
 
 declare const __KIKI_PROXY_TARGET__: string;
-
-interface LocalServerPayload {
-  url?: string;
-  token?: string;
-  home?: string;
-  error?: string;
-}
 
 export function ConnectScreen({
   initial,
@@ -28,7 +22,7 @@ export function ConnectScreen({
   initial: ConnectionConfig;
   connecting: boolean;
   error: string | null;
-  onConnect: (config: ConnectionConfig) => void;
+  onConnect: (config: ConnectionConfig, persist?: boolean) => void;
   onBack: (() => void) | undefined;
 }) {
   const [url, setUrl] = useState(initial.url);
@@ -45,18 +39,17 @@ export function ConnectScreen({
     setDetecting(true);
     setDetectNote(null);
     try {
-      const response = await fetch('/__kiki/local-server');
-      const payload = (await response.json()) as LocalServerPayload;
-      if (payload.url === undefined) {
+      const connection = await detectLocalConnection();
+      if (connection === null) {
         setDetectNote('No local kap-server found on this machine.');
         return;
       }
-      // Connecting via the detected URL keeps REST + WS direct; the token from
-      // the kimi home directory authenticates both.
-      onConnect({ url: payload.url, token: payload.token ?? token.trim() });
-    } catch {
+      onConnect(connection.config, connection.persist);
+    } catch (error) {
       setDetectNote(
-        'Detection needs the kiki dev server (vite dev). Enter the server URL and token manually.',
+        isDesktopRuntime()
+          ? `Kiki's local backend could not start: ${error instanceof Error ? error.message : String(error)}`
+          : 'Detection needs the kiki dev server (vite dev). Enter the server URL and token manually.',
       );
     } finally {
       setDetecting(false);
