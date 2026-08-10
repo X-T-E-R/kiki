@@ -61,6 +61,7 @@ export function registerMetaRoute(app: RouteHost, opts: MetaRouteOptions): void 
       mcp: true as const,
       tasks: true as const,
       terminal: true as const,
+      thread_communication: true as const,
     }),
     server_id: opts.serverId,
     started_at: opts.startedAt,

@@ -16,7 +16,12 @@ import type { ContextMessage } from './types';
 export function isUndoAnchor(message: ContextMessage): boolean {
   if (message.role !== 'user') return false;
   const origin = message.origin;
-  if (origin === undefined || origin.kind === 'user') return true;
+  if (
+    origin === undefined ||
+    origin.kind === 'user' ||
+    origin.kind === 'peer_thread' ||
+    origin.kind === 'agent_message'
+  ) return true;
   return (
     (origin.kind === 'skill_activation' || origin.kind === 'plugin_command') &&
     origin.trigger === 'user-slash'

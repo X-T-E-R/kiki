@@ -37,6 +37,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
       "/api/v1/workspaces/{workspace_id}",
     ],
     [
+      "DELETE",
+      "/api/v1/workspaces/{workspace_id}/thread-communication",
+    ],
+    [
       "GET",
       "/api/v1/auth",
     ],
@@ -230,6 +234,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/v1/threads",
+    ],
+    [
+      "GET",
       "/api/v1/tools",
     ],
     [
@@ -239,6 +247,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/v1/workspaces/{workspace_id}/skills",
+    ],
+    [
+      "GET",
+      "/api/v1/workspaces/{workspace_id}/thread-communication",
     ],
     [
       "GET",
@@ -398,6 +410,18 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/v1/threads:read",
+    ],
+    [
+      "POST",
+      "/api/v1/threads:send",
+    ],
+    [
+      "POST",
+      "/api/v1/threads:wait",
+    ],
+    [
+      "POST",
       "/api/v1/workspace/fs:search",
     ],
     [
@@ -415,6 +439,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PUT",
       "/api/v1/providers/{provider_id}",
+    ],
+    [
+      "PUT",
+      "/api/v1/workspaces/{workspace_id}/thread-communication",
     ],
   ],
 }

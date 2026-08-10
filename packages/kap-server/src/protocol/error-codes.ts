@@ -72,6 +72,8 @@ export const ErrorCode = {
   TOOL_CALL_NOT_FOUND: 40416,
   /** 目录（models.dev catalog）中不存在该条目 */
   CATALOG_ENTRY_NOT_FOUND: 40417,
+  /** peer thread reference does not resolve to an existing session */
+  THREAD_NOT_FOUND: 40418,
 
   /** session 有正在进行的 prompt，拒绝新请求 */
   SESSION_BUSY: 40901,
@@ -118,6 +120,18 @@ export const ErrorCode = {
   PROVIDER_ALREADY_EXISTS: 40921,
   /** page_token 损坏 / 版本不符 / 与当前查询条件不匹配，需从首页重新拉取 */
   PAGE_TOKEN_MISMATCH: 40922,
+  /** target thread is archived */
+  THREAD_ARCHIVED: 40923,
+  /** peer-thread communication is disabled for the workspace */
+  THREAD_DISABLED: 40924,
+  /** the reference points at another host */
+  THREAD_CROSS_HOST: 40925,
+  /** source and target identify the same thread */
+  THREAD_SELF_SEND: 40926,
+  /** thread cursor is malformed, stale, or belongs to another query */
+  THREAD_CURSOR_INVALID: 40927,
+  /** an idempotency key was reused with a different payload */
+  THREAD_IDEMPOTENCY_CONFLICT: 40928,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,
@@ -139,6 +153,8 @@ export const ErrorCode = {
 
   /** WS 单连接 watch_paths > 100 */
   FS_WATCH_LIMIT_EXCEEDED: 42902,
+  /** peer-thread list, read, wait, or message bound exceeded */
+  THREAD_LIMIT_EXCEEDED: 42903,
 
   /** 兜底 */
   INTERNAL_ERROR: 50001,
@@ -146,6 +162,8 @@ export const ErrorCode = {
   PERSISTENCE_FAILURE: 50003,
   /** models.dev 目录拉取失败且无内置快照可兜底 */
   CATALOG_UNAVAILABLE: 50004,
+  /** a durably accepted peer message could not be delivered */
+  THREAD_DELIVERY_FAILED: 50005,
 
   /** tool 执行抛错 */
   TOOL_EXECUTION_FAILED: 60001,

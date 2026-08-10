@@ -44,7 +44,7 @@ export function turnPromptText(input: readonly ContentPart[]): string | undefine
 }
 
 export function isDisplayablePromptOrigin(origin: PromptOrigin): boolean {
-  if (origin.kind === 'user') return true;
+  if (origin.kind === 'user' || origin.kind === 'peer_thread') return true;
   return (
     (origin.kind === 'skill_activation' || origin.kind === 'plugin_command') &&
     origin.trigger === 'user-slash'

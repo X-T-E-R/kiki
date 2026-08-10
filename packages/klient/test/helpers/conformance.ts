@@ -87,6 +87,83 @@ export function defineKlientConformance(
       expect(typeof count).toBe('number');
     });
 
+    it('peer threads preserve cross-workspace refs across list/read/send/wait and overrides', async () => {
+      const rootA = await mkdtemp(join(tmpdir(), 'klient-conf-thread-a-'));
+      const rootB = await mkdtemp(join(tmpdir(), 'klient-conf-thread-b-'));
+      const source = await target.klient.global.sessions.create({ workDir: rootA, title: 'source' });
+      const destination = await target.klient.global.sessions.create({ workDir: rootB, title: 'target' });
+      try {
+        const sourceSummary = await target.klient.global.sessions.get(source.id);
+        const targetSummary = await target.klient.global.sessions.get(destination.id);
+        expect(sourceSummary).toBeDefined();
+        expect(targetSummary).toBeDefined();
+        const hostId = await target.klient.global.threads.hostId();
+        const sourceRef = {
+          hostId,
+          workspaceId: sourceSummary!.workspaceId,
+          sessionId: source.id,
+        };
+        const targetRef = {
+          hostId,
+          workspaceId: targetSummary!.workspaceId,
+          sessionId: destination.id,
+        };
+        expect(sourceRef.workspaceId).not.toBe(targetRef.workspaceId);
+
+        const listed = await target.klient.global.threads.list({
+          workspaceId: targetRef.workspaceId,
+        });
+        expect(listed.threads.some((thread) => thread.ref.sessionId === destination.id)).toBe(true);
+
+        await expect(target.klient.global.threads.read({ thread: targetRef })).resolves.toMatchObject({
+          thread: targetRef,
+          turns: [],
+        });
+        await expect(
+          target.klient.global.threads.wait({
+            threads: [{ thread: targetRef }],
+            timeoutMs: 0,
+          }),
+        ).resolves.toMatchObject({ timedOut: true });
+
+        const sent = await target.klient.global.threads.send({
+          target: targetRef,
+          content: 'peer conformance message',
+          idempotencyKey: `${transport}-thread-message`,
+        });
+        expect(sent.messageId.length).toBeGreaterThan(0);
+        expect(['pending', 'delivered', 'undeliverable']).toContain(sent.delivery);
+        await expect(
+          target.klient.global.threads.send({
+            target: { ...targetRef, hostId: 'another-host' },
+            content: 'invalid cross-host send',
+            idempotencyKey: `${transport}-cross-host`,
+          }),
+        ).rejects.toMatchObject({
+          name: 'RPCError',
+          code: 40925,
+          reason: 'thread.cross_host',
+        });
+
+        await target.klient.global.threads.setWorkspaceOverride(targetRef.workspaceId, false);
+        await expect(
+          target.klient.global.threads.getWorkspaceOverride(targetRef.workspaceId),
+        ).resolves.toBe(false);
+        await expect(
+          target.klient.global.threads.isWorkspaceEnabled(targetRef.workspaceId),
+        ).resolves.toBe(false);
+        await target.klient.global.threads.clearWorkspaceOverride(targetRef.workspaceId);
+        await expect(
+          target.klient.global.threads.getWorkspaceOverride(targetRef.workspaceId),
+        ).resolves.toBeUndefined();
+      } finally {
+        await target.klient.session(source.id).close();
+        await target.klient.session(destination.id).close();
+        await rm(rootA, { recursive: true, force: true });
+        await rm(rootB, { recursive: true, force: true });
+      }
+    });
+
     it('creates a titled session through implicit workspace materialization', async () => {
       const created = await target.klient.global.sessions.create({
         workDir: process.cwd(),

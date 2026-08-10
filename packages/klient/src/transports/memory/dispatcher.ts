@@ -22,7 +22,7 @@ import { ISessionInteractionService } from '@moonshot-ai/agent-core-v2/session/i
 import { IEventBus } from '@moonshot-ai/agent-core-v2/app/event/eventBus';
 
 import type { EventSourceRef, IDisposable, ScopeRef } from '../../core/channel.js';
-import { RPCError } from '../../core/errors.js';
+import { RPCError, toRPCError } from '../../core/errors.js';
 import { IEventService, serviceTokens } from './serviceRegistry.js';
 
 /** Structural minimum of an engine `Scope` / `IScopeHandle`. */
@@ -161,8 +161,12 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
         return wireClone(member);
       }
       const clonedArgs = args.map(wireClone);
-      const result = await (member as (...a: unknown[]) => unknown).apply(instance, clonedArgs);
-      return wireClone(result);
+      try {
+        const result = await (member as (...a: unknown[]) => unknown).apply(instance, clonedArgs);
+        return wireClone(result);
+      } catch (error) {
+        throw toRPCError(error);
+      }
     },
 
     stream(scope, service, method, args): AsyncIterable<unknown> {

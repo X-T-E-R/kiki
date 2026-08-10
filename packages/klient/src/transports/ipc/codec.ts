@@ -5,6 +5,8 @@
  * `event` come back.
  */
 
+import { createHash } from 'node:crypto';
+
 /** One NDJSON message. `type` discriminates; other fields depend on it. */
 export interface IpcFrame {
   readonly type: string;
@@ -20,7 +22,15 @@ export interface IpcFrame {
   readonly token?: string;
   readonly code?: number;
   readonly msg?: string;
+  readonly details?: unknown;
+  readonly reason?: string;
   readonly data?: unknown;
+}
+
+export function normalizeIpcSocketPath(socketPath: string): string {
+  if (process.platform !== 'win32' || socketPath.startsWith('\\\\.\\pipe\\')) return socketPath;
+  const digest = createHash('sha256').update(socketPath).digest('hex').slice(0, 24);
+  return `\\\\.\\pipe\\kimi-klient-${digest}`;
 }
 
 export function encodeFrame(frame: IpcFrame): string {

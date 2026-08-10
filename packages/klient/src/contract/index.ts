@@ -31,6 +31,7 @@ import { pluginsContract } from './global/plugins.js';
 import { providersContract } from './global/providers.js';
 import { sessionsContract } from './global/sessions.js';
 import { workspacesContract } from './global/workspaces.js';
+import { threadsContract } from './global/threads.js';
 import { sessionApprovalContract } from './session/approval.js';
 import { sessionInteractionContract } from './session/interaction.js';
 import {
@@ -57,6 +58,7 @@ export const globalContract: KlientContract = {
   capabilityService: capabilitiesContract,
   hostFolderBrowser: hostFsContract,
   bootstrapService: envContract,
+  threadCommunicationService: threadsContract,
   // workspace scope (+ the app-registered handler registry)
   workspaceLifecycleService: workspaceLifecycleContract,
   sessionLifecycleService: sessionLifecycleContract,

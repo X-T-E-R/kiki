@@ -19,6 +19,7 @@ export * from './task';
 export * from './fs';
 export * from './file';
 export * from './modelCatalog';
+export * from './thread';
 
 export * from './rest/meta';
 export * from './rest/auth';
@@ -41,3 +42,4 @@ export * from './rest/config';
 export * from './rest/terminal';
 export * from './rest/connection';
 export * from './rest/guiStore';
+export * from './rest/thread';

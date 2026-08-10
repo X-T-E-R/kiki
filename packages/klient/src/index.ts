@@ -31,6 +31,7 @@ export type {
   GlobalFacade,
   GlobalFlagsFacade,
   GlobalHostFsFacade,
+  GlobalThreadsFacade,
   GlobalKosongFacade,
   GlobalPluginsFacade,
   GlobalSessionsFacade,
@@ -138,3 +139,19 @@ export type {
 export type { SkillSummary } from '@moonshot-ai/agent-core-v2/app/skillCatalog/types';
 export type { ContentPart } from '@moonshot-ai/agent-core-v2/kosong/contract/message';
 export type { PermissionMode } from '@moonshot-ai/agent-core-v2/agent/permissionPolicy/types';
+export type {
+  ListThreadsInput,
+  ListThreadsResult,
+  ReadThreadInput,
+  ReadThreadResult,
+  SendThreadMessageInput,
+  SendThreadMessageResult,
+  ThreadActivity,
+  ThreadRef,
+  ThreadSummary,
+  ThreadTurn,
+  WaitThreadInput,
+  WaitThreadResult,
+  WaitThreadsInput,
+  WaitThreadsResult,
+} from '@moonshot-ai/agent-core-v2/app/threadCommunication/threadCommunication';

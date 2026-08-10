@@ -18,7 +18,8 @@ The classification describes the origin and maintenance boundary of a surface, n
 | `kap-server`, `@moonshot-ai/protocol`, and the session, configuration, and authentication contracts they expose | Inherited | Kiki clients consume these contracts instead of defining a separate server or protocol family. |
 | Model-binding areas in `agent-core` and `agent-core-v2` | Adapted | Kiki extends selected upstream agent-engine paths while preserving their existing session and task lifecycles. |
 | Explicit model-alias and thinking-effort binding for newly spawned subagents | Kiki-only | The binding behavior is a downstream addition implemented in both agent-engine paths and disabled by default. |
-| Five-tool Codex-style collaboration adapter | Kiki-only | The adapter adds `spawn_agent`, `list_agents`, `wait_agent`, `followup_task`, and `interrupt_agent`; it does not claim complete Codex compatibility. |
+| Six-tool Codex-style collaboration adapter | Kiki-only | The adapter adds `spawn_agent`, `list_agents`, `wait_agent`, `followup_task`, `interrupt_agent`, and `send_message`; it does not claim complete Codex compatibility. |
+| Local peer-thread communication | Kiki-only | Main Agents can list, read, message, and wait on existing sessions across local workspaces; REST and Klient provide target-only external-client sends without peer attribution. |
 | Standalone `@kiki/gui` package | Kiki-only | The GUI is a downstream client of the inherited server and protocol surfaces. Some components adapt separately attributed donor material, so those components are classified as adapted within the Kiki-only package. |
 
 The repository fork point used for this guide is `437a1b8`. The hash is a comparison anchor, not a claim that later upstream changes are already present.
@@ -38,15 +39,39 @@ The executable name and the agent engine are separate choices. Start with `kimi`
 
 ## Enable Kiki-only agent features
 
-The Kiki-only agent features are experimental and off by default. Prefer the feature-specific gate when you need only one behavior.
+The model-binding and named-agent features below remain experimental and off by default. Prefer the feature-specific gate when you need only one behavior.
 
 | Feature | Enable with | Additional boundary |
 | --- | --- | --- |
 | Explicit subagent model and effort binding | `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` | Applies to new subagent spawns. Resumed or retried subagents retain their persisted binding. |
-| Five-tool named-agent adapter | `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION=1` | `[agents] enabled = false` still removes the five tools. The adapter has no `send_message` tool and does not copy parent history when spawning. |
+| Six-tool named-agent adapter | `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION=1` | `[agents] enabled = false` still removes the adapter tools. `send_message` queues without waking an idle target, and spawning does not copy parent history. |
 | All registered experiments | `KIMI_CODE_EXPERIMENTAL_FLAG=1` | This is a broad master gate, not a runtime or product selector. |
 
 [Agents and subagents](../customization/agents.md) documents the binding precedence, lifecycle, and exact collaboration limits. [Configuration files](../configuration/config-files.md#subagent) documents the persistent subagent defaults.
+
+## Integrate peer-thread communication
+
+Peer-thread communication is enabled by default through [`[thread_communication] enabled`](../configuration/config-files.md#thread-communication). It coordinates existing sessions on this host, including sessions in different workspaces; every thread reference includes the host, workspace, and session identity, and cross-host sends are rejected. Only main Agents receive the four built-in thread tools, but local clients can use the same contract directly.
+
+The REST surface is available under `/api/v1` when the Kimi server is running:
+
+| Operation | Route |
+| --- | --- |
+| List threads | `GET /api/v1/threads` |
+| Read completed turns | `POST /api/v1/threads:read` |
+| Send a message | `POST /api/v1/threads:send` |
+| Wait for activity | `POST /api/v1/threads:wait` |
+| Read a workspace override | `GET /api/v1/workspaces/{workspace_id}/thread-communication` |
+| Set a workspace override | `PUT /api/v1/workspaces/{workspace_id}/thread-communication` |
+| Clear a workspace override | `DELETE /api/v1/workspaces/{workspace_id}/thread-communication` |
+
+`POST /api/v1/threads:send` accepts exactly `target`, `content`, and `idempotency_key`. It rejects the legacy `source` field and records the delivered turn as user-origin input; a REST client cannot claim a source thread. Use `GET /openapi.json` for the complete request and response schemas. `GET /api/v1/meta` advertises support as `capabilities.thread_communication: true`.
+
+Klient exposes the corresponding methods under `global.threads`: `hostId`, `list`, `read`, `send`, `wait`, `getWorkspaceOverride`, `setWorkspaceOverride`, `clearWorkspaceOverride`, and `isWorkspaceEnabled`. Call `global.threads.send({ target, content, idempotencyKey })`.
+
+The strict Klient facade does not accept `source`, and extra source data sent through a lower-level transport cannot create peer provenance. Like REST, Klient sends are recorded as user-origin input. To record true peer attribution, the source session's main Agent must call `send_message_to_thread`, which derives that source from its current session rather than client-supplied data.
+
+Workspace overrides persist across restarts. Clearing one returns the workspace to the effective global setting; an enabled override cannot bypass a globally disabled `[thread_communication]` section.
 
 ## Separate the GUI, server, and clients
 
@@ -82,6 +107,7 @@ The following repository paths back the classifications in this guide:
 - **Inherited server and protocol**: `packages/kap-server/`, `packages/protocol/`, `packages/node-sdk/`, and `packages/oauth/`
 - **Adapted model-binding areas**: `packages/agent-core/src/session/subagent-binding.ts` and `packages/agent-core-v2/src/session/subagent/`
 - **Kiki-only collaboration adapter**: `packages/agent-core/src/tools/builtin/collaboration/agent-collaboration.ts` and `packages/agent-core-v2/src/agent/tools/agent-collaboration/agentCollaborationTool.ts`
+- **Kiki-only peer-thread core and transport**: `packages/agent-core-v2/src/app/threadCommunication/`, `packages/kap-server/src/routes/threads.ts`, and `packages/klient/src/contract/global/threads.ts`
 - **Kiki-only GUI and its donor boundary**: `apps/kiki-gui/package.json`, `apps/kiki-gui/src/lib/client.ts`, and `apps/kiki-gui/ATTRIBUTION.md`
 
 ## Next steps

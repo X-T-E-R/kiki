@@ -47,6 +47,7 @@ import {
   FOLLOWUP_TASK_PARAMETERS,
   INTERRUPT_AGENT_PARAMETERS,
   LIST_AGENTS_PARAMETERS,
+  SEND_MESSAGE_PARAMETERS,
   SPAWN_AGENT_PARAMETERS,
   WAIT_AGENT_PARAMETERS,
 } from '#/agent/tools/agent-collaboration/agentCollaborationTool';
@@ -117,12 +118,15 @@ describe('agent collaboration production schemas', () => {
     expect(validateToolArgs(compileToolArgsValidator(FOLLOWUP_TASK_PARAMETERS), { target: 'a', message: 'x' })).toBeNull();
     expect(validateToolArgs(compileToolArgsValidator(FOLLOWUP_TASK_PARAMETERS), { target: 'a', message: ' ' })).not.toBeNull();
     expect(validateToolArgs(compileToolArgsValidator(INTERRUPT_AGENT_PARAMETERS), { target: 'a' })).toBeNull();
+    expect(validateToolArgs(compileToolArgsValidator(SEND_MESSAGE_PARAMETERS), { target: 'a', message: 'x' })).toBeNull();
+    expect(validateToolArgs(compileToolArgsValidator(SEND_MESSAGE_PARAMETERS), { target: 'a', message: ' ' })).not.toBeNull();
+    expect(validateToolArgs(compileToolArgsValidator(SEND_MESSAGE_PARAMETERS), { target: 'a', message: 'x', wake: true })).not.toBeNull();
   });
 
-  it('uses the experiment and [agents].enabled gate on all five contributions', () => {
-    const names = new Set(['spawn_agent', 'list_agents', 'wait_agent', 'followup_task', 'interrupt_agent']);
+  it('uses the experiment and [agents].enabled gate on all six contributions', () => {
+    const names = new Set(['spawn_agent', 'list_agents', 'wait_agent', 'followup_task', 'interrupt_agent', 'send_message']);
     const records = getAgentToolContributions().filter((record) => names.has(record.options.name));
-    expect(records).toHaveLength(5);
+    expect(records).toHaveLength(6);
     const admitted = (flag: boolean, enabled: boolean | undefined) => records.every((record) =>
       record.options.when?.({
         get(id: unknown) {
@@ -351,6 +355,7 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
           return {
             _serviceBrand: undefined,
             status: () => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false }),
+            hooks: createHooks(['onWillBeginStep', 'onDidFinishStep']),
           } as never;
         }
         if (serviceId === IAgentPermissionModeService) {
@@ -1133,11 +1138,11 @@ describe('Agent tool execution contract', () => {
       hiddenAtRegistration.push(taskService.list(false).length === 0);
       return taskId;
     });
-    const invoke = async (name: string, args: Record<string, unknown>) => {
+    const invoke = async (name: string, args: Record<string, unknown>, toolCallId = `call_${name}`) => {
       const tool = context.get(IAgentToolRegistryService).resolve(name);
       expect(tool).toBeDefined();
       return executeTool(tool!, {
-        turnId: 0, toolCallId: `call_${name}`, args, signal,
+        turnId: 0, toolCallId, args, signal,
       });
     };
     const result = await invoke('spawn_agent', {
@@ -1162,6 +1167,33 @@ describe('Agent tool execution contract', () => {
         collaborationAgentType: 'coder', collaborationLatestTaskId: firstTaskId,
       },
     });
+    const sendCallId = `call_send_message_${Date.now()}_${Math.random()}`;
+    const sent = await invoke('send_message', { target: 'build_api', message: 'Boundary message' }, sendCallId);
+    expect(JSON.parse(sent.output as string)).toMatchObject({
+      status: 'queued',
+      deduplicated: false,
+      target: { task_name: 'build_api', agent_id: 'agent-named' },
+    });
+    const resent = await invoke('send_message', { target: 'agent-named', message: 'Boundary message' }, sendCallId);
+    expect(JSON.parse(resent.output as string)).toMatchObject({
+      message_id: JSON.parse(sent.output as string).message_id,
+      status: 'queued',
+      deduplicated: true,
+    });
+    const conflict = await invoke('send_message', { target: 'build_api', message: 'Changed content' }, sendCallId);
+    expect(conflict).toMatchObject({ isError: true });
+    expect(conflict.output).toContain('already used with different content');
+    const unknown = await invoke('send_message', { target: 'missing', message: 'No target' });
+    expect(unknown).toMatchObject({ isError: true });
+    expect(unknown.output).toContain('No named adapter agent matches');
+    agents['main'] = { labels: {
+      parentAgentId: 'main', collaborationTaskName: 'self', collaborationAgentType: 'coder',
+    } };
+    const self = await invoke('send_message', { target: 'self', message: 'No self-send' });
+    expect(self).toMatchObject({ isError: true });
+    expect(self.output).toContain('cannot send a message to itself');
+    delete agents['main'];
+    expect(lifecycle.run).toHaveBeenCalledTimes(1);
     const settling = invoke('wait_agent', { timeout_ms: 10_000 });
     firstTurn.resolve({ summary: 'named result' });
     expect(JSON.parse((await settling).output as string)).toMatchObject({

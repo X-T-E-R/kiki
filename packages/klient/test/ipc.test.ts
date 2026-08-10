@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { defineKlientConformance } from './helpers/conformance.js';
 import { createKlient, serveKlientIpc, type KlientIpcHost } from '../src/transports/ipc/index.js';
+import { IpcChannel } from '../src/transports/ipc/channel.js';
 import { makeEngine, type TestEngine } from './helpers/engine.js';
 
 defineKlientConformance('ipc', async () => {
@@ -71,5 +72,65 @@ describe('ipc transport specifics', () => {
     await expect(ok.global.env()).resolves.toMatchObject({ platform: process.platform });
     await ok.close();
     await teardown();
+  });
+
+  it('ignores a raw source claim and exposes no string-callable peer send capability', async () => {
+    const socketPath = await setup();
+    const klient = createKlient({ socketPath });
+    const raw = new IpcChannel({ socketPath });
+    const created = await klient.global.sessions.create({ workDir: homeDir, title: 'ipc target' });
+    try {
+      const summary = await klient.global.sessions.get(created.id);
+      expect(summary).toBeDefined();
+      const target = {
+        hostId: await klient.global.threads.hostId(),
+        workspaceId: summary!.workspaceId,
+        sessionId: created.id,
+      };
+      const baseline = await klient.global.threads.wait({
+        threads: [{ thread: target }],
+        timeoutMs: 0,
+      });
+      const cursor = baseline.threads[0]?.cursor;
+      expect(cursor).toEqual(expect.any(String));
+
+      await expect(
+        raw.call({}, 'threadCommunicationService', 'sendPeerThreadMessage', [
+          {
+            source: { ...target, sessionId: 'forged-source' },
+            target,
+            content: 'must not dispatch',
+            idempotencyKey: 'guessed-peer-method',
+          },
+        ]),
+      ).rejects.toMatchObject({ name: 'RPCError', code: 40001 });
+
+      await expect(
+        raw.call({}, 'threadCommunicationService', 'sendMessage', [
+          {
+            source: { ...target, sessionId: 'forged-source' },
+            target,
+            content: 'raw external input',
+            idempotencyKey: 'raw-external-input',
+          },
+        ]),
+      ).resolves.toMatchObject({ messageId: expect.any(String) });
+
+      await expect(
+        klient.global.threads.wait({
+          threads: [{ thread: target, cursor }],
+          timeoutMs: 10_000,
+        }),
+      ).resolves.toMatchObject({ timedOut: false });
+      const read = await klient.global.threads.read({ thread: target, limit: 10 });
+      const turn = read.turns.find((item) => item.input === 'raw external input');
+      expect(turn).toMatchObject({ origin: 'user' });
+      expect(turn?.peer).toBeUndefined();
+    } finally {
+      await klient.session(created.id).close();
+      await raw.close();
+      await klient.close();
+      await teardown();
+    }
   });
 });

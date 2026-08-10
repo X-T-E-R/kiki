@@ -12,6 +12,7 @@ describe('metaResponseSchema', () => {
       mcp: true,
       tasks: true,
       terminal: true,
+      thread_communication: true,
     },
     server_id: '01HXYZABCDEFGHJKMNPQRSTVWX',
     started_at: '2026-06-04T10:30:00.000Z',

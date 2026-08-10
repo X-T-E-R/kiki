@@ -45,6 +45,16 @@ import type {
   ReloadSummary,
 } from '@moonshot-ai/agent-core-v2/app/plugin/types';
 import type { CapabilityStatus } from '@moonshot-ai/agent-core-v2/app/capability/types';
+import type {
+  ListThreadsInput,
+  ListThreadsResult,
+  ReadThreadInput,
+  ReadThreadResult,
+  SendThreadMessageInput,
+  SendThreadMessageResult,
+  WaitThreadsInput,
+  WaitThreadsResult,
+} from '@moonshot-ai/agent-core-v2/app/threadCommunication/threadCommunication';
 
 /** Low-level caller the klient factory builds: routes + validates one service call. */
 export type Caller = (service: string, method: string, args: unknown[]) => Promise<unknown>;
@@ -221,6 +231,18 @@ export interface GlobalHostFsFacade {
   home(): Promise<FsHomeResponse>;
 }
 
+export interface GlobalThreadsFacade {
+  hostId(): Promise<string>;
+  list(input?: ListThreadsInput): Promise<ListThreadsResult>;
+  read(input: ReadThreadInput): Promise<ReadThreadResult>;
+  send(input: SendThreadMessageInput): Promise<SendThreadMessageResult>;
+  wait(input: WaitThreadsInput): Promise<WaitThreadsResult>;
+  getWorkspaceOverride(workspaceId: string): Promise<boolean | undefined>;
+  setWorkspaceOverride(workspaceId: string, enabled: boolean): Promise<void>;
+  clearWorkspaceOverride(workspaceId: string): Promise<void>;
+  isWorkspaceEnabled(workspaceId: string): Promise<boolean>;
+}
+
 /** Aggregated host/environment snapshot (`bootstrapService` properties). */
 export interface KlientEnvInfo {
   readonly platform: string;
@@ -247,6 +269,7 @@ export interface GlobalFacade {
   readonly plugins: GlobalPluginsFacade;
   readonly capabilities: GlobalCapabilitiesFacade;
   readonly hostFs: GlobalHostFsFacade;
+  readonly threads: GlobalThreadsFacade;
   env(): Promise<KlientEnvInfo>;
 }
 
@@ -468,6 +491,28 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
       browse: (absPath) =>
         call('hostFolderBrowser', 'browse', [absPath]) as Promise<FsBrowseResponse>,
       home: () => call('hostFolderBrowser', 'home', []) as Promise<FsHomeResponse>,
+    },
+
+    threads: {
+      hostId: () => call('threadCommunicationService', 'hostId', []) as Promise<string>,
+      list: (input) =>
+        call('threadCommunicationService', 'listThreads', [input]) as Promise<ListThreadsResult>,
+      read: (input) =>
+        call('threadCommunicationService', 'readThread', [input]) as Promise<ReadThreadResult>,
+      send: (input) =>
+        call('threadCommunicationService', 'sendMessage', [input]) as Promise<SendThreadMessageResult>,
+      wait: (input) =>
+        call('threadCommunicationService', 'waitThreads', [input]) as Promise<WaitThreadsResult>,
+      getWorkspaceOverride: (workspaceId) =>
+        call('threadCommunicationService', 'getWorkspaceOverride', [workspaceId]) as Promise<
+          boolean | undefined
+        >,
+      setWorkspaceOverride: (workspaceId, enabled) =>
+        call('threadCommunicationService', 'setWorkspaceOverride', [workspaceId, enabled]) as Promise<void>,
+      clearWorkspaceOverride: (workspaceId) =>
+        call('threadCommunicationService', 'clearWorkspaceOverride', [workspaceId]) as Promise<void>,
+      isWorkspaceEnabled: (workspaceId) =>
+        call('threadCommunicationService', 'isWorkspaceEnabled', [workspaceId]) as Promise<boolean>,
     },
 
     env,

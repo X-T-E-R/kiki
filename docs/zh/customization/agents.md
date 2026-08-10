@@ -26,7 +26,7 @@ Kimi Code CLI 内置三种子 Agent，开箱即用，分别面向不同任务形
 
 `agent-collaboration` 实验功能在同一套子 Agent 与后台任务生命周期之上增加一层 Codex 风格适配器。设置 `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION=1` 启用；`[agents] enabled = false` 可以在不改实验 flag 的情况下关闭它。这是一层适配器，并不代表完整兼容 Codex。
 
-负责协调的 `agent` 与 `coder` profile 会获得 5 个 snake_case 工具：`spawn_agent`、`list_agents`、`wait_agent`、`followup_task` 和 `interrupt_agent`。`spawn_agent` 始终异步启动，并使用全新上下文；它只接受 `fork_turns = "none"`，不会复制父 Agent 的对话历史。名称必须匹配 `^[a-z0-9_]+$`，不能是 `root`，并且在会话生命周期内保持唯一。
+负责协调的 `agent` 与 `coder` profile 会获得 6 个 snake_case 工具：`spawn_agent`、`list_agents`、`wait_agent`、`followup_task`、`interrupt_agent` 和 `send_message`。`spawn_agent` 始终异步启动，并使用全新上下文；它只接受 `fork_turns = "none"`，不会复制父 Agent 的对话历史。名称必须匹配 `^[a-z0-9_]+$`，不能是 `root`，并且在会话生命周期内保持唯一。
 
 管理工具的 target 必须是精确的 `task_name` 或 `agent_id`，不支持相对路径或分层路径。每个调用方只能列出和管理自己直接创建的具名 Agent；同级 Agent 或其他调用方创建的子 Agent 都不是有效目标：
 
@@ -34,8 +34,19 @@ Kimi Code CLI 内置三种子 Agent，开箱即用，分别面向不同任务形
 - `wait_agent` 默认等待 30 秒，`timeout_ms` 可设置为 10 秒至 1 小时。
 - `followup_task` 只会在同一个空闲 Agent 身份上启动一轮新 turn。目标正在运行时会拒绝，不排队也不注入消息。
 - `interrupt_agent` 只停止当前具名 turn。之后仍可继续使用同一个 Agent。
+- `send_message` 会把消息持久排入具名 Agent 的队列，不会启动、steer 或中断其 turn。运行中的 Agent 会在下一个 step 边界收到排队消息；空闲 Agent 不会被唤醒，要等之后的 turn 到达该边界才会收到。
 
-本实验不提供 `send_message` 工具或持久 mailbox。现有 `Agent` 与 `AgentSwarm` 工具保持不变。
+现有 `Agent` 与 `AgentSwarm` 工具保持不变。
+
+## Peer thread 通信
+
+Peer thread 通信让主 Agent 协调同一台本地主机上的现有 Kimi Code 会话，也可以跨工作区通信。它与上面的实验性具名 Agent 适配器相互独立：`list_threads`、`read_thread`、`send_message_to_thread` 和 `wait_threads` 这 4 个工具默认可用，并且只提供给会话的主 Agent，不提供给子 Agent。
+
+Thread 引用标识主机、工作区和会话。`list_threads` 返回后续调用所需的引用；`read_thread` 读取已完成的主 Agent turn，不会恢复冷会话；`send_message_to_thread` 从当前主 Agent 会话派生来源，并持久接收发往另一条 thread、带 peer 归属的消息；`wait_threads` 最多等待 8 条 thread 的活动，最长等待 60 秒。消息不能跨主机发送。
+
+如需保留真实的 peer 归属，必须由来源 thread 的主 Agent 调用 `send_message_to_thread`。REST 或 Klient 的 `global.threads` facade 只接受目标 thread，提交的消息会记为 user 来源，外部客户端不能自行声明来源 thread。
+
+如需全局关闭，在 `config.toml` 中设置 `[thread_communication] enabled = false`。集成方还可以为单个工作区持久设置启用或禁用覆盖值；全局开关关闭时，工作区覆盖值不能重新启用该功能。接口说明见 [Kiki 运行时边界](../guides/kiki-runtime.md#集成-peer-thread-通信)。
 
 ## 上下文隔离与资源开销
 

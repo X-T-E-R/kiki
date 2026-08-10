@@ -41,6 +41,7 @@ import {
   COLLABORATION_TASK_NAME_LABEL,
   IAgentCollaborationRegistry,
 } from '#/session/agentCollaboration/registry';
+import { IAgentCollaborationMessagingService } from '#/session/agentCollaboration/messageMailbox';
 
 const TASK_NAME = /^(?!root$)[a-z0-9_]+$/;
 const NONBLANK = /\S/;
@@ -58,16 +59,19 @@ export const ListAgentsInputSchema = z.object({}).strict();
 export const WaitAgentInputSchema = z.object({ timeout_ms: z.number().int().min(10_000).max(3_600_000).optional() }).strict();
 export const FollowupTaskInputSchema = z.object({ target: z.string().trim().min(1), message: z.string().regex(NONBLANK) }).strict();
 export const InterruptAgentInputSchema = z.object({ target: z.string().trim().min(1) }).strict();
+export const SendMessageInputSchema = z.object({ target: z.string().trim().min(1), message: z.string().regex(NONBLANK) }).strict();
 
 type SpawnAgentInput = z.infer<typeof SpawnAgentInputSchema>;
 type WaitAgentInput = z.infer<typeof WaitAgentInputSchema>;
 type FollowupTaskInput = z.infer<typeof FollowupTaskInputSchema>;
 type InterruptAgentInput = z.infer<typeof InterruptAgentInputSchema>;
+type SendMessageInput = z.infer<typeof SendMessageInputSchema>;
 export const SPAWN_AGENT_PARAMETERS = toInputJsonSchema(SpawnAgentInputSchema);
 export const LIST_AGENTS_PARAMETERS = toInputJsonSchema(ListAgentsInputSchema);
 export const WAIT_AGENT_PARAMETERS = toInputJsonSchema(WaitAgentInputSchema);
 export const FOLLOWUP_TASK_PARAMETERS = toInputJsonSchema(FollowupTaskInputSchema);
 export const INTERRUPT_AGENT_PARAMETERS = toInputJsonSchema(InterruptAgentInputSchema);
+export const SEND_MESSAGE_PARAMETERS = toInputJsonSchema(SendMessageInputSchema);
 type NamedStatus = 'running' | 'completed' | 'interrupted' | 'errored';
 
 interface NamedRecord {
@@ -111,6 +115,7 @@ abstract class AgentCollaborationToolBase<T> implements AgentTool<T> {
     @IModelCatalog protected readonly modelCatalog: IModelCatalog,
     @IProtocolAdapterRegistry protected readonly protocolAdapters: IProtocolAdapterRegistry,
     @IAgentCollaborationRegistry protected readonly collaborationRegistry: IAgentCollaborationRegistry,
+    @IAgentCollaborationMessagingService protected readonly messaging: IAgentCollaborationMessagingService,
   ) { this.callerAgentId = scope.agentId; }
 
   abstract run(args: T, context: ExecutableToolContext): Promise<ExecutableToolResult> | ExecutableToolResult;
@@ -142,6 +147,12 @@ abstract class AgentCollaborationToolBase<T> implements AgentTool<T> {
     return matches.length === 1 ? matches[0]! : {
       error: `No named adapter agent matches "${raw}". Use list_agents to find a task_name or agent_id; legacy anonymous children are not supported.`,
     };
+  }
+
+  protected async callerTaskName(): Promise<string> {
+    const meta = await this.metadata.read();
+    return meta.agents?.[this.callerAgentId]?.labels?.[COLLABORATION_TASK_NAME_LABEL] ??
+      (this.callerAgentId === 'main' ? 'root' : this.callerAgentId);
   }
 
   protected async materialize(record: NamedRecord): Promise<IAgentScopeHandle> {
@@ -357,6 +368,42 @@ export class InterruptAgentTool extends AgentCollaborationToolBase<InterruptAgen
   }
 }
 
+export interface ISendMessageTool extends AgentTool<SendMessageInput> { readonly _serviceBrand: undefined; }
+export const ISendMessageTool = createDecorator<ISendMessageTool>('sendMessageTool');
+export class SendMessageTool extends AgentCollaborationToolBase<SendMessageInput> implements ISendMessageTool {
+  declare readonly _serviceBrand: undefined;
+  readonly name = 'send_message';
+  readonly description = 'Queue a message for a named adapter agent without starting or interrupting its turn.';
+  readonly parameters = SEND_MESSAGE_PARAMETERS;
+
+  async run(args: SendMessageInput, context: ExecutableToolContext): Promise<ExecutableToolResult> {
+    try {
+      const target = await this.target(nonblank(args.target, 'target'));
+      if ('error' in target) return failure(target.error);
+      if (target.agentId === this.callerAgentId) return failure('An agent cannot send a message to itself with this tool.');
+      const acceptance = await this.messaging.send({
+        sourceAgentId: this.callerAgentId,
+        sourceTaskName: await this.callerTaskName(),
+        targetAgentId: target.agentId,
+        targetTaskName: target.taskName,
+        content: nonblank(args.message, 'message'),
+        idempotencyKey: context.toolCallId,
+      });
+      if (acceptance.payloadConflict) {
+        return failure(`Message identity "${acceptance.message.messageId}" was already used with different content.`);
+      }
+      return success({
+        message_id: acceptance.message.messageId,
+        status: acceptance.delivery,
+        deduplicated: acceptance.deduplicated,
+        target: { task_name: target.taskName, agent_id: target.agentId },
+      });
+    } catch (error) {
+      return failure(errorMessage(error));
+    }
+  }
+}
+
 function collaborationEnabled(accessor: ServicesAccessor): boolean {
   return accessor.get(IFlagService).enabled(AGENT_COLLABORATION_FLAG_ID) && accessor.get(IConfigService).get<AgentsConfig | undefined>(AGENTS_SECTION)?.enabled !== false;
 }
@@ -365,6 +412,7 @@ registerAgentToolService(IListAgentsTool, ListAgentsTool, { name: 'list_agents',
 registerAgentToolService(IWaitAgentTool, WaitAgentTool, { name: 'wait_agent', domain: 'agentCollaboration', when: collaborationEnabled });
 registerAgentToolService(IFollowupTaskTool, FollowupTaskTool, { name: 'followup_task', domain: 'agentCollaboration', when: collaborationEnabled });
 registerAgentToolService(IInterruptAgentTool, InterruptAgentTool, { name: 'interrupt_agent', domain: 'agentCollaboration', when: collaborationEnabled });
+registerAgentToolService(ISendMessageTool, SendMessageTool, { name: 'send_message', domain: 'agentCollaboration', when: collaborationEnabled });
 
 function canonicalTaskName(value: string): string { if (!TASK_NAME.test(value) || value === 'root') throw new Error('task_name must match ^[a-z0-9_]+$ and must not be "root".'); return value; }
 function nonblank(value: string, field: string): string { if (value.trim().length === 0) throw new Error(`${field} must be nonblank.`); return value; }

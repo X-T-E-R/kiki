@@ -1,11 +1,12 @@
 import { rm } from 'node:fs/promises';
 
 import { describe, expect, it } from 'vitest';
+import { Error2, ErrorCodes } from '@moonshot-ai/agent-core-v2/errors';
 
 import { defineKlientConformance } from './helpers/conformance.js';
 import { createKlient } from '../src/transports/memory/index.js';
 import { createMemoryDispatcher } from '../src/transports/memory/dispatcher.js';
-import { RPCError } from '../src/core/errors.js';
+import { RPCError, toRPCError } from '../src/core/errors.js';
 import { makeEngine } from './helpers/engine.js';
 
 defineKlientConformance('memory', async () => {
@@ -23,6 +24,25 @@ defineKlientConformance('memory', async () => {
 });
 
 describe('memory dispatcher specifics', () => {
+  it.each([
+    [ErrorCodes.THREAD_NOT_FOUND, 40418],
+    [ErrorCodes.THREAD_ARCHIVED, 40923],
+    [ErrorCodes.THREAD_DISABLED, 40924],
+    [ErrorCodes.THREAD_CROSS_HOST, 40925],
+    [ErrorCodes.THREAD_SELF_SEND, 40926],
+    [ErrorCodes.THREAD_CURSOR_INVALID, 40927],
+    [ErrorCodes.THREAD_IDEMPOTENCY_CONFLICT, 40928],
+    [ErrorCodes.THREAD_LIMIT_EXCEEDED, 42903],
+    [ErrorCodes.THREAD_DELIVERY_FAILED, 50005],
+  ])('maps engine error %s to RPC code %i', (reason, code) => {
+    expect(toRPCError(new Error2(reason, 'failure', { details: { field: 'value' } }))).toMatchObject({
+      name: 'RPCError',
+      code,
+      reason,
+      details: { field: 'value' },
+    });
+  });
+
   it('rejects unknown services and methods with RPCError(40001)', async () => {
     const { homeDir, app } = await makeEngine();
     const dispatcher = createMemoryDispatcher(app);
@@ -34,6 +54,9 @@ describe('memory dispatcher specifics', () => {
       name: 'RPCError',
       code: 40001,
     });
+    await expect(
+      dispatcher.call({}, 'threadCommunicationService', 'sendPeerThreadMessage', []),
+    ).rejects.toMatchObject({ name: 'RPCError', code: 40001 });
     app.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
   });

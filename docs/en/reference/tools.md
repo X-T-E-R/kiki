@@ -80,9 +80,20 @@ Plan mode is a constrained working state: once entered, `Write` and `Edit` are r
 
 ## Collaboration Tools
 
-With the `agent-collaboration` experiment enabled, `agent` and `coder` also expose `spawn_agent`, `list_agents`, `wait_agent`, `followup_task`, and `interrupt_agent`. These tools manage the caller's directly owned named asynchronous subagents by exact `task_name` or `agent_id`.
+Main Agents receive four peer-thread tools by default: `list_threads`, `read_thread`, `send_message_to_thread`, and `wait_threads`. They address existing sessions on the same local host through a host/workspace/session reference; tool inputs name its fields `host_id`, `workspace_id`, and `session_id`. Sub-agents do not receive these tools.
 
-The adapter supports only fresh spawns (`fork_turns = "none"`), rejects follow-ups while a target is running, and does not provide `send_message` or history forking. See [Agents and Sub-Agents](../customization/agents.md#codex-style-collaboration-adapter).
+- `list_threads` lists enabled, unarchived sessions newest first, optionally filtered by `workspace_id`. `limit` defaults to 50 and accepts 1–100; the result includes an opaque cursor when another page is available.
+- `read_thread` reads completed main-Agent turns without resuming a cold session. It accepts a thread reference plus an optional cursor; `limit` defaults to 20 and accepts 1–100.
+- `send_message_to_thread` durably accepts a message for another thread and records peer provenance from the current main-Agent session. Supply the target thread, non-empty `content` of at most 100,000 characters, and a non-empty `idempotency_key` of at most 256 characters; there is no source parameter, and a key may be reused only for the same message.
+- `wait_threads` waits for terminal, attention, lifecycle, or undeliverable-message activity. A call accepts 1–8 distinct threads. `timeout_ms` defaults to 30,000 and accepts 0–60,000.
+
+Peer-thread communication is local to one host, can cross workspaces, and is controlled globally by [`[thread_communication] enabled`](../configuration/config-files.md#thread-communication). A persisted per-workspace override can also disable a workspace.
+
+Only `send_message_to_thread`, called by the source thread's main Agent, records peer attribution; REST and Klient sends are target-only user-origin input. See [Agents and Sub-Agents](../customization/agents.md#peer-thread-communication).
+
+With the `agent-collaboration` experiment enabled, `agent` and `coder` also expose `spawn_agent`, `list_agents`, `wait_agent`, `followup_task`, `interrupt_agent`, and `send_message`. These tools manage the caller's directly owned named asynchronous subagents by exact `task_name` or `agent_id`.
+
+The adapter supports only fresh spawns (`fork_turns = "none"`) and rejects follow-ups while a target is running. `send_message` is different from `followup_task`: it queues a durable message without starting or interrupting a turn, so an idle target stays idle and receives the message at a step boundary in a later turn. The adapter does not provide history forking. See [Agents and Sub-Agents](../customization/agents.md#codex-style-collaboration-adapter).
 
 Collaboration tools handle inter-Agent coordination, user interaction, and Skill invocation.
 

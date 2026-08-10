@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (26 sections · 3 overlay(s))
+# Index (27 sections · 3 overlay(s))
 #   agents                   src/session/agentCollaboration/configSection.ts
 #   background               src/agent/task/configSection.ts
 #   builtinProductSkills     src/app/skillCatalog/configSection.ts
@@ -33,6 +33,7 @@
 #   subagent                 src/session/subagent/configSection.ts
 #   task                     src/agent/task/configSection.ts
 #   thinking                 src/app/kosongConfig/configSection.ts
+#   threadCommunication      src/app/threadCommunication/configSection.ts
 #   tokenCounting            src/agent/tokenCounting/configSection.ts
 #   tools                    src/agent/toolPolicy/configSection.ts
 #   (overlay) servicesCredentialEnvOverlay  src/app/auth/configSection.ts
@@ -431,6 +432,15 @@ timeout_ms = 7200000
 # effort: string
 # forced_effort: string
 # keep: string
+
+# ##########################################################################
+# threadCommunication (config.toml: thread_communication)
+#   owner: src/app/threadCommunication/configSection.ts
+#   scope: core
+# ##########################################################################
+
+[thread_communication]
+enabled = true
 
 # ##########################################################################
 # tokenCounting (config.toml: token_counting)
