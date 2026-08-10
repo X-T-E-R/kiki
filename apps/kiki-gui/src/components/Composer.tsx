@@ -4,7 +4,7 @@
  * the server catalog, accent send button; busy state swaps in Abort.
  */
 
-import { useEffect, useRef, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import type { PermissionMode } from '@moonshot-ai/protocol';
@@ -28,11 +28,18 @@ export function Composer({
   modelSource,
   permissionMode,
   planMode,
+  swarmMode,
+  goalObjective,
+  goalStatus,
+  goalControl,
   efforts,
   effort,
   onChangeModel,
   onChangePermissionMode,
   onChangePlanMode,
+  onChangeSwarmMode,
+  onChangeGoalObjective,
+  onChangeGoalControl,
   onChangeEffort,
   onSend,
   onAbort,
@@ -52,12 +59,20 @@ export function Composer({
   permissionMode: PermissionMode;
   /** PromptSubmission.plan_mode — the wire field name (verified). */
   planMode: boolean;
+  /** PromptSubmission.swarm_mode — enables concurrent subagent orchestration. */
+  swarmMode: boolean;
+  goalObjective: string;
+  goalStatus: 'active' | 'paused' | 'blocked' | 'complete' | undefined;
+  goalControl: 'pause' | 'resume' | 'cancel' | undefined;
   /** support_efforts of the effective model; effort UI hides when absent. */
   efforts: readonly string[] | undefined;
   effort: string | undefined;
   onChangeModel: (model: string | undefined) => void;
   onChangePermissionMode: (mode: PermissionMode) => void;
   onChangePlanMode: (on: boolean) => void;
+  onChangeSwarmMode: (on: boolean) => void;
+  onChangeGoalObjective: (objective: string) => void;
+  onChangeGoalControl: (control: 'pause' | 'resume' | 'cancel' | undefined) => void;
   onChangeEffort: (effort: string) => void;
   onSend: (text: string) => void;
   onAbort: () => void;
@@ -65,6 +80,7 @@ export function Composer({
   const { client } = useConnection();
   const text = value;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [goalOpen, setGoalOpen] = useState(false);
 
   const modelsQuery = useQuery({
     queryKey: ['models'],
@@ -101,7 +117,7 @@ export function Composer({
     <div className="px-6 pb-5">
       <div className="mx-auto max-w-[760px]">
         <div className="rounded-2xl border border-hairline bg-panel shadow-[0_2px_4px_rgba(28,25,23,0.03),0_16px_40px_-20px_rgba(28,25,23,0.18)]">
-          <div className="flex items-center gap-1.5 px-3.5 pt-2.5">
+          <div className="flex flex-wrap items-center gap-1.5 px-3.5 pt-2.5">
             {MODES.map((mode) => (
               <button
                 key={mode.id}
@@ -130,6 +146,72 @@ export function Composer({
             >
               plan
             </button>
+            <button
+              type="button"
+              title="Swarm mode — allow concurrent subagent work"
+              onClick={() => onChangeSwarmMode(!swarmMode)}
+              className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
+                swarmMode
+                  ? 'border-accent bg-accent-soft text-accent'
+                  : 'border-hairline text-ink-soft hover:border-hairline-strong'
+              }`}
+            >
+              swarm
+            </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setGoalOpen((open) => !open)}
+                aria-expanded={goalOpen}
+                className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
+                  goalOpen || goalObjective !== '' || goalStatus !== undefined
+                    ? 'border-accent bg-accent-soft text-accent'
+                    : 'border-hairline text-ink-soft hover:border-hairline-strong'
+                }`}
+              >
+                goal{goalStatus !== undefined ? ` · ${goalStatus}` : ''}
+              </button>
+              {goalOpen ? (
+                <div className="anim-enter absolute bottom-7 left-0 z-30 w-72 rounded-xl border border-hairline bg-panel p-3 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]">
+                  <label className="text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
+                    Goal objective
+                  </label>
+                  <input
+                    value={goalObjective}
+                    onChange={(event) => onChangeGoalObjective(event.target.value)}
+                    placeholder="Objective (optional)"
+                    className="mt-1.5 w-full rounded-lg border border-hairline bg-paper px-2.5 py-1.5 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
+                  />
+                  <p className="mt-1.5 text-[10.5px] leading-relaxed text-ink-faint">
+                    Sent as <span className="font-mono">goal_objective</span> with the next prompt.
+                  </p>
+                  {goalStatus !== undefined && goalStatus !== 'complete' ? (
+                    <div className="mt-2 flex gap-1.5 border-t border-hairline pt-2">
+                      {(goalStatus === 'paused' ? ['resume', 'cancel'] : ['pause', 'cancel']).map((control) => (
+                        <button
+                          key={control}
+                          type="button"
+                          onClick={() =>
+                            onChangeGoalControl(
+                              goalControl === control
+                                ? undefined
+                                : (control as 'pause' | 'resume' | 'cancel'),
+                            )
+                          }
+                          className={`rounded-full border px-2 py-0.5 text-[10.5px] ${
+                            goalControl === control
+                              ? 'border-accent bg-accent-soft text-accent'
+                              : 'border-hairline text-ink-soft'
+                          }`}
+                        >
+                          {control}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
             <select
               className="max-w-56 truncate rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft outline-none transition-colors hover:border-hairline-strong focus:border-accent focus:ring-2 focus:ring-accent/30"
               value={model ?? ''}

@@ -4,6 +4,7 @@ import type { Message, Session, SessionSnapshotResponse } from '@moonshot-ai/pro
 
 import type { SessionEventFrame } from '../lib/types';
 import {
+  agentTranscriptToBlocks,
   applyDelta,
   applyFrame,
   applySnapshot,
@@ -14,6 +15,7 @@ import {
   markQuestionOutcome,
   pendingApprovalCount,
   prependOlderMessages,
+  preserveCapturedSubagents,
   type AssistantBlock,
   type ApprovalBlock,
   type ToolBlock,
@@ -159,6 +161,46 @@ describe('applySnapshot', () => {
     expect((state.blocks[1] as ToolBlock).status).toBe('running');
     expect(pendingApprovalCount(state)).toBe(1);
     expect(state.activePromptId).toBe('p1');
+  });
+});
+
+describe('agentTranscriptToBlocks', () => {
+  it('projects server transcript frames through the shared block renderers', () => {
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'child-1',
+      has_more: false,
+      items: [
+        {
+          kind: 'turn',
+          turnId: 'turn-1',
+          prompt: 'Inspect the wire.',
+          steps: [
+            {
+              stepId: 'step-1',
+              frames: [
+                { kind: 'thinking', frameId: 'think-1', text: 'Checking.' },
+                {
+                  kind: 'tool',
+                  frameId: 'tool-frame-1',
+                  toolCallId: 'tool-1',
+                  name: 'Read',
+                  state: 'done',
+                  input: { path: 'events.ts' },
+                  output: 'ok',
+                },
+                { kind: 'text', frameId: 'text-1', role: 'assistant', text: 'Report.' },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expect(blocks.map((block) => block.kind)).toEqual([
+      'user',
+      'thinking',
+      'tool',
+      'assistant',
+    ]);
   });
 });
 
@@ -317,6 +359,128 @@ describe('applyFrame', () => {
     expect(state.blocks.filter((b) => b.kind === 'user')).toHaveLength(1);
     expect(state.activePromptId).toBe('p1');
     expect(state.busy).toBe(true);
+  });
+
+  it('reconciles the real v2 turn.started-before-REST sequence by stable prompt identity', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = applyFrame(
+      state,
+      frame(
+        {
+          type: 'turn.started',
+          turnId: 1,
+          origin: { kind: 'user' },
+          prompt: 'same prompt',
+        },
+        { seq: 11 },
+      ),
+    ).state;
+    expect(state.blocks.filter((block) => block.kind === 'user')).toHaveLength(1);
+
+    state = appendLocalUserMessage(state, {
+      userMessageId: 'prompt-1',
+      promptId: 'prompt-1',
+      text: 'same prompt',
+      createdAt: '2026-01-01T00:00:01.000Z',
+      queued: false,
+    });
+    const users = state.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({
+      id: 'user-prompt-1',
+      promptId: 'prompt-1',
+      userMessageId: 'prompt-1',
+    });
+
+    // A later prompt may intentionally repeat the same text; stable ids keep it.
+    state = appendLocalUserMessage(state, {
+      userMessageId: 'prompt-2',
+      promptId: 'prompt-2',
+      text: 'same prompt',
+      createdAt: '2026-01-01T00:01:01.000Z',
+      queued: true,
+    });
+    expect(state.blocks.filter((block) => block.kind === 'user')).toHaveLength(2);
+  });
+
+  it('routes child-agent tools into one subagent bubble and tracks goal updates', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = applyFrame(
+      state,
+      frame(
+        {
+          type: 'subagent.spawned',
+          subagentId: 'child-1',
+          subagentName: 'Researcher',
+          parentToolCallId: 'parent-call',
+          runInBackground: false,
+          model: 'kimi-code/k3',
+        },
+        { seq: 11 },
+      ),
+    ).state;
+    state = applyFrame(
+      state,
+      frame(
+        {
+          type: 'tool.call.started',
+          agentId: 'child-1',
+          sessionId: 'session_test',
+          turnId: 1,
+          toolCallId: 'child-tool',
+          name: 'Read',
+          args: { path: 'events.ts' },
+        } as SessionEventFrame['payload'],
+        { seq: 12 },
+      ),
+    ).state;
+    state = applyFrame(
+      state,
+      frame(
+        {
+          type: 'goal.updated',
+          snapshot: {
+            goalId: 'goal-1',
+            objective: 'Ship the UI',
+            status: 'active',
+            turnsUsed: 1,
+            tokensUsed: 100,
+            wallClockMs: 1000,
+            budget: {
+              tokenBudget: null,
+              turnBudget: 4,
+              wallClockBudgetMs: null,
+              remainingTokens: null,
+              remainingTurns: 3,
+              remainingWallClockMs: null,
+              tokenBudgetReached: false,
+              turnBudgetReached: false,
+              wallClockBudgetReached: false,
+              overBudget: false,
+            },
+          },
+        },
+        { seq: 13 },
+      ),
+    ).state;
+
+    expect(state.blocks.filter((block) => block.kind === 'tool')).toHaveLength(0);
+    const subagent = state.blocks.find(
+      (block): block is import('./transcript').SubagentBlock => block.kind === 'subagent',
+    );
+    expect(subagent?.model).toBe('kimi-code/k3');
+    expect(subagent?.toolCallCount).toBe(1);
+    expect(subagent?.transcript.some((block) => block.kind === 'tool')).toBe(true);
+    expect(state.goal?.objective).toBe('Ship the UI');
+
+    const afterResync = preserveCapturedSubagents(
+      applySnapshot('session_test', snapshot({ as_of_seq: 20 })),
+      state,
+    );
+    const preserved = afterResync.blocks.find(
+      (block): block is import('./transcript').SubagentBlock => block.kind === 'subagent',
+    );
+    expect(preserved?.transcript.some((block) => block.kind === 'tool')).toBe(true);
   });
 
   it('collects tool calls from deltas through results', () => {

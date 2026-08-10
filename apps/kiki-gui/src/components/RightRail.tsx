@@ -3,10 +3,12 @@
  * and session meta (model, cwd, message count, context/token usage).
  */
 
+import { useEffect, useState } from 'react';
+
 import type { Task } from '@moonshot-ai/protocol';
 
-import { formatTokens, relativeTime } from '../lib/time';
-import type { SessionViewState, TodoItem } from '../state/transcript';
+import { formatDuration, formatTokens, relativeTime } from '../lib/time';
+import type { SessionViewState, SubagentBlock, TodoItem } from '../state/transcript';
 
 function todoTone(status: string): { icon: string; className: string } {
   const normalized = status.toLowerCase();
@@ -120,6 +122,104 @@ function TasksSection({
   );
 }
 
+function SubagentsSection({
+  subagents,
+  onOpen,
+}: {
+  subagents: readonly SubagentBlock[];
+  onOpen: (agentId: string) => void;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  const hasRunning = subagents.some((subagent) => subagent.status === 'running');
+  useEffect(() => {
+    if (!hasRunning) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [hasRunning]);
+  if (subagents.length === 0) {
+    return <p className="text-[12px] text-ink-faint">No subagents in this session.</p>;
+  }
+  return (
+    <ul className="space-y-1.5">
+      {subagents.map((subagent) => {
+        const start = new Date(subagent.startedAt).getTime();
+        const end = subagent.endedAt === undefined ? now : new Date(subagent.endedAt).getTime();
+        const elapsed = Number.isNaN(start) || Number.isNaN(end) ? 0 : Math.max(0, end - start);
+        const dot =
+          subagent.status === 'running'
+            ? 'bg-accent'
+            : subagent.status === 'completed'
+              ? 'bg-success'
+              : subagent.status === 'failed'
+                ? 'bg-danger'
+                : 'bg-amber-rule';
+        return (
+          <li key={subagent.subagentId}>
+            <button
+              type="button"
+              onClick={() => onOpen(subagent.subagentId)}
+              className="flex w-full items-center gap-2 rounded-lg border border-hairline bg-panel px-2.5 py-2 text-left transition-colors hover:border-accent/50 hover:bg-accent-soft/30"
+            >
+              <span className={`h-2 w-2 shrink-0 rounded-full ${dot} ${subagent.status === 'running' ? 'status-dot-busy' : ''}`} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[12px] font-medium text-ink">{subagent.name}</span>
+                <span className="block truncate text-[10px] text-ink-faint">
+                  {subagent.status} · {subagent.toolCallCount} tools
+                </span>
+              </span>
+              <span className="shrink-0 font-mono text-[9.5px] text-ink-faint">
+                {formatDuration(elapsed)}
+              </span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function GoalSection({ state }: { state: SessionViewState }) {
+  const goal = state.goal;
+  if (goal === undefined) {
+    return <p className="text-[12px] text-ink-faint">Goal state unavailable from this server.</p>;
+  }
+  if (goal === null) {
+    return <p className="text-[12px] text-ink-faint">No active goal.</p>;
+  }
+  const turnBudget = goal.budget.turnBudget;
+  const tokenBudget = goal.budget.tokenBudget;
+  const ratio =
+    turnBudget !== null && turnBudget > 0
+      ? goal.turnsUsed / turnBudget
+      : tokenBudget !== null && tokenBudget > 0
+        ? goal.tokensUsed / tokenBudget
+        : undefined;
+  return (
+    <div className="rounded-xl border border-amber-rule/40 bg-amber-card/60 p-3">
+      <div className="flex items-center gap-2">
+        <span className="rounded-full bg-panel px-2 py-0.5 text-[10px] font-semibold text-amber-ink">
+          {goal.status}
+        </span>
+        {state.goalUpdatedAt !== undefined ? (
+          <span className="ml-auto text-[10px] text-ink-faint">updated {relativeTime(state.goalUpdatedAt)}</span>
+        ) : null}
+      </div>
+      <p className="mt-2 text-[12.5px] font-medium leading-snug text-ink">{goal.objective}</p>
+      {goal.completionCriterion !== undefined ? (
+        <p className="mt-1 text-[10.5px] leading-snug text-ink-soft">Done when: {goal.completionCriterion}</p>
+      ) : null}
+      {ratio !== undefined ? (
+        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-panel">
+          <div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, ratio * 100)}%` }} />
+        </div>
+      ) : null}
+      <p className="mt-1.5 font-mono text-[9.5px] text-ink-faint">
+        {goal.turnsUsed}{turnBudget === null ? '' : `/${turnBudget}`} turns · {formatTokens(goal.tokensUsed)} tokens
+      </p>
+    </div>
+  );
+}
+
 function MetaRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return (
     <div className="flex items-baseline justify-between gap-2">
@@ -137,10 +237,12 @@ function MetaRow({ label, value, mono = false }: { label: string; value: string;
 export function RightRail({
   state,
   onCancelTask,
+  onOpenSubagent,
   className,
 }: {
   state: SessionViewState;
   onCancelTask: (taskId: string) => void;
+  onOpenSubagent: (agentId: string) => void;
   className?: string;
 }) {
   const session = state.session;
@@ -148,6 +250,9 @@ export function RightRail({
   const contextTokens = state.contextTokens ?? usage?.context_tokens;
   const contextLimit =
     state.maxContextTokens ?? (usage !== undefined && usage.context_limit > 0 ? usage.context_limit : undefined);
+  const subagents = state.blocks.filter(
+    (block): block is SubagentBlock => block.kind === 'subagent',
+  );
 
   return (
     <aside
@@ -155,6 +260,20 @@ export function RightRail({
         className ?? 'flex h-full w-[300px] shrink-0 flex-col gap-5 overflow-y-auto border-l border-hairline bg-panel px-4 py-4'
       }
     >
+      <section>
+        <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
+          Goal
+        </h3>
+        <GoalSection state={state} />
+      </section>
+
+      <section>
+        <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
+          Subagents
+        </h3>
+        <SubagentsSection subagents={subagents} onOpen={onOpenSubagent} />
+      </section>
+
       <section>
         <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
           Todos
@@ -166,7 +285,7 @@ export function RightRail({
         <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
           Background tasks
         </h3>
-        <TasksSection tasks={state.tasks} onCancel={onCancelTask} />
+        <TasksSection tasks={state.tasks.filter((task) => task.kind !== 'subagent')} onCancel={onCancelTask} />
       </section>
 
       <section>

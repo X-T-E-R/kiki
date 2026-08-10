@@ -23,6 +23,8 @@ import {
   markApprovalResolved,
   markQuestionOutcome,
   prependOlderMessages,
+  preserveCapturedSubagents,
+  setGoal,
   setLoadError,
   setLoadingOlder,
   setResyncFailed,
@@ -81,6 +83,7 @@ export class SessionController {
         epoch: snapshot.epoch,
       });
       void this.refreshTasks();
+      void this.refreshGoal();
     } catch (error) {
       if (this.closed) return;
       this.setState(
@@ -146,7 +149,10 @@ export class SessionController {
     try {
       const snapshot = await this.client.snapshot(this.sessionId);
       if (this.closed) return;
-      const rebuilt = applySnapshot(this.sessionId, snapshot);
+      const rebuilt = preserveCapturedSubagents(
+        applySnapshot(this.sessionId, snapshot),
+        this.state,
+      );
       this.setState(setResyncing(rebuilt, false));
       this.socket.subscribe(this.sessionId, {
         seq: snapshot.as_of_seq,
@@ -155,6 +161,7 @@ export class SessionController {
       // Replay quarantined frames that are newer than the rebuilt watermark.
       this.replayPendingFrames(rebuilt.cursor.seq);
       void this.refreshTasks();
+      void this.refreshGoal();
     } catch {
       if (!this.closed) {
         const attempt = this.state.resyncAttempt + 1;
@@ -221,6 +228,15 @@ export class SessionController {
     }
   }
 
+  async refreshGoal(): Promise<void> {
+    try {
+      const goal = await this.client.getSessionGoal(this.sessionId);
+      if (!this.closed) this.setState(setGoal(this.state, goal));
+    } catch {
+      // Older servers may not expose the goal route; goal.updated still works.
+    }
+  }
+
   /**
    * Fetch one older history page and prepend it. Returns true when a page was
    * applied — the scroll layer uses that to re-anchor the viewport.
@@ -257,6 +273,9 @@ export class SessionController {
     thinking?: string;
     permissionMode: PermissionMode;
     planMode?: boolean;
+    swarmMode?: boolean;
+    goalObjective?: string;
+    goalControl?: 'pause' | 'resume' | 'cancel';
   }): Promise<void> {
     const result = await this.client.submitPrompt(this.sessionId, {
       content: [{ type: 'text', text: input.text }],
@@ -264,6 +283,12 @@ export class SessionController {
       thinking: input.thinking,
       permission_mode: input.permissionMode,
       plan_mode: input.planMode === true ? true : undefined,
+      swarm_mode: input.swarmMode === true ? true : undefined,
+      goal_objective:
+        input.goalObjective !== undefined && input.goalObjective.trim() !== ''
+          ? input.goalObjective.trim()
+          : undefined,
+      goal_control: input.goalControl,
     });
     this.setState(
       appendLocalUserMessage(this.state, {

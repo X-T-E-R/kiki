@@ -13,10 +13,12 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { StickToBottom, useStickToBottomContext } from 'use-stick-to-bottom';
 
 import type { ApprovalDecision, QuestionAnswer } from '@moonshot-ai/protocol';
 
+import { formatDuration } from '../lib/time';
 import {
   groupBlocks,
   groupHasError,
@@ -134,51 +136,65 @@ function ShellMessage({ block }: { block: ShellBlock }) {
   );
 }
 
+function useSubagentElapsed(block: SubagentBlock): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (block.endedAt !== undefined || block.status !== 'running') return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [block.endedAt, block.status]);
+  const start = new Date(block.startedAt).getTime();
+  const end = block.endedAt === undefined ? now : new Date(block.endedAt).getTime();
+  return Number.isNaN(start) || Number.isNaN(end) ? 0 : Math.max(0, end - start);
+}
+
 function SubagentCard({ block }: { block: SubagentBlock }) {
-  const [open, setOpen] = useState(false);
+  const elapsed = useSubagentElapsed(block);
+  const statusTone =
+    block.status === 'running'
+      ? 'bg-accent'
+      : block.status === 'completed'
+        ? 'bg-success'
+        : block.status === 'failed'
+          ? 'bg-danger'
+          : 'bg-amber-rule';
   return (
-    <div className="anim-enter ml-6 rounded-xl border border-hairline bg-panel/70">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left"
-      >
-        <span aria-hidden className="font-mono text-[11px] text-ink-soft">⧉</span>
-        <span className="text-[12px] font-semibold text-ink">{block.name}</span>
-        <span
-          className={`rounded-full px-1.5 py-px text-[10px] font-medium ${
-            block.status === 'running'
-              ? 'bg-accent-soft text-accent'
-              : block.status === 'completed'
-                ? 'bg-success/10 text-success'
-                : block.status === 'failed'
-                  ? 'bg-danger/10 text-danger'
-                  : 'bg-paper text-ink-soft'
-          }`}
-        >
-          {block.status}
-        </span>
-        {block.description !== undefined ? (
-          <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink-faint">
-            {block.description}
+    <Link
+      to={`agent/${encodeURIComponent(block.subagentId)}`}
+      data-subagent-id={block.subagentId}
+      className="anim-enter group ml-6 block rounded-xl border border-hairline bg-panel/80 px-3 py-2.5 transition-all hover:-translate-y-px hover:border-accent/50 hover:shadow-[0_8px_24px_-16px_rgba(28,25,23,0.35)]"
+    >
+      <div className="flex items-center gap-2">
+        <span aria-hidden className="font-mono text-[12px] text-accent">⧉</span>
+        <span className={`h-2 w-2 rounded-full ${statusTone} ${block.status === 'running' ? 'status-dot-busy' : ''}`} />
+        <span className="min-w-0 truncate text-[12.5px] font-semibold text-ink">{block.name}</span>
+        {block.model !== undefined ? (
+          <span className="shrink-0 rounded-full border border-hairline bg-paper px-1.5 py-px font-mono text-[9.5px] text-ink-soft">
+            {block.model}
           </span>
-        ) : (
-          <span className="flex-1" />
-        )}
-        <span aria-hidden className={`text-[9px] text-ink-faint transition-transform ${open ? 'rotate-90' : ''}`}>
-          ▶
+        ) : null}
+        <span className="ml-auto shrink-0 font-mono text-[10px] text-ink-faint">
+          {formatDuration(elapsed)}
         </span>
-      </button>
-      {open && (block.summary !== undefined || block.error !== undefined) ? (
-        <div className="border-t border-hairline px-3 py-2 text-[12px] text-ink-soft">
-          {block.error !== undefined ? (
-            <span className="text-danger">{block.error}</span>
-          ) : (
-            <Markdown text={block.summary ?? ''} />
-          )}
-        </div>
+        <span aria-hidden className="text-[10px] text-ink-faint transition-transform group-hover:translate-x-0.5">→</span>
+      </div>
+      <div className="mt-1 flex items-center gap-2 pl-5 text-[10.5px] text-ink-faint">
+        <span>{block.status}</span>
+        <span>·</span>
+        <span>{block.toolCallCount} tool call{block.toolCallCount === 1 ? '' : 's'}</span>
+        {block.thinkingEffort !== undefined ? (
+          <>
+            <span>·</span>
+            <span>{block.thinkingEffort} thinking</span>
+          </>
+        ) : null}
+      </div>
+      {block.description !== undefined || block.error !== undefined ? (
+        <p className={`mt-1 truncate pl-5 text-[11.5px] ${block.error !== undefined ? 'text-danger' : 'text-ink-soft'}`}>
+          {block.error ?? block.description}
+        </p>
       ) : null}
-    </div>
+    </Link>
   );
 }
 
@@ -259,8 +275,10 @@ function BlockView({
   onResolveApproval,
   onAnswerQuestion,
   onDismissQuestion,
+  readOnly,
 }: {
   block: Exclude<Block, ToolBlock>;
+  readOnly: boolean;
   onResolveApproval: (
     approvalId: string,
     decision: ApprovalDecision,
@@ -283,14 +301,32 @@ function BlockView({
     case 'notice':
       return <Notice block={block} />;
     case 'approval':
-      return (
+      return readOnly ? (
+        <Notice
+          block={{
+            kind: 'notice',
+            id: `${block.id}-readonly`,
+            text: `Approval requested: ${block.request.action}`,
+            tone: 'neutral',
+          }}
+        />
+      ) : (
         <ApprovalCard
           block={block}
           onResolve={(decision, scope) => onResolveApproval(block.request.approval_id, decision, scope)}
         />
       );
     case 'question':
-      return (
+      return readOnly ? (
+        <Notice
+          block={{
+            kind: 'notice',
+            id: `${block.id}-readonly`,
+            text: 'This subagent requested input during its run.',
+            tone: 'neutral',
+          }}
+        />
+      ) : (
         <QuestionCard
           block={block}
           onAnswer={(answers) => onAnswerQuestion(block.request.question_id, answers)}
@@ -391,6 +427,7 @@ export function Transcript({
   onAnswerQuestion,
   onDismissQuestion,
   onRetryLoad,
+  readOnly = false,
 }: {
   state: SessionViewState;
   onLoadOlder: () => Promise<boolean>;
@@ -402,6 +439,7 @@ export function Transcript({
   onAnswerQuestion: (questionId: string, answers: Record<string, QuestionAnswer>) => Promise<void>;
   onDismissQuestion: (questionId: string) => Promise<void>;
   onRetryLoad?: () => void;
+  readOnly?: boolean;
 }) {
   const { blocks, loaded, loadError } = state;
   const nodes = useMemo(() => groupBlocks(blocks), [blocks]);
@@ -465,6 +503,7 @@ export function Transcript({
                 onResolveApproval={onResolveApproval}
                 onAnswerQuestion={onAnswerQuestion}
                 onDismissQuestion={onDismissQuestion}
+                readOnly={readOnly}
               />
             )}
           </div>

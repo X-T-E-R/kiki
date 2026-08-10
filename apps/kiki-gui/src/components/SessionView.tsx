@@ -6,7 +6,7 @@
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 
 import type { PermissionMode } from '@moonshot-ai/protocol';
 
@@ -21,10 +21,14 @@ import { readDesktopPrefs, readSettings } from '../lib/settings';
 import { useConnection, useControllerRegistry } from '../state/connection';
 import { SessionController } from '../state/sessionController';
 import {
+  agentTranscriptToBlocks,
   createViewState,
   pendingApprovalCount,
   pendingQuestionCount,
+  type AssistantBlock,
+  type NoticeBlock,
   type SessionViewState,
+  type SubagentBlock,
   type UserBlock,
 } from '../state/transcript';
 
@@ -245,6 +249,8 @@ export function SessionView() {
   const { client, wsStatus } = useConnection();
   const navigate = useNavigate();
   const location = useLocation();
+  const agentMatch = useMatch('/s/:id/agent/:agentId');
+  const selectedAgentId = agentMatch?.params.agentId;
   const initialPromptRef = useRef(
     (location.state as { initialPrompt?: string } | null)?.initialPrompt,
   );
@@ -254,6 +260,8 @@ export function SessionView() {
       thinking?: string;
       permissionMode?: PermissionMode;
       planMode?: boolean;
+      swarmMode?: boolean;
+      goalObjective?: string;
     } | null) ?? {},
   );
   const defaults = useMemo(() => readSettings(), []);
@@ -265,6 +273,11 @@ export function SessionView() {
   const [planMode, setPlanMode] = useState(
     initialOptionsRef.current.planMode ?? defaults.defaultPlanMode,
   );
+  const [swarmMode, setSwarmMode] = useState(initialOptionsRef.current.swarmMode ?? false);
+  const [goalObjective, setGoalObjective] = useState(
+    initialOptionsRef.current.goalObjective ?? '',
+  );
+  const [goalControl, setGoalControl] = useState<'pause' | 'resume' | 'cancel' | undefined>();
   const [modelOverride, setModelOverride] = useState<string | undefined>(
     initialOptionsRef.current.model ?? defaults.defaultModel,
   );
@@ -313,6 +326,13 @@ export function SessionView() {
     controller?.subscribe ?? noopSubscribe,
     controller?.getState ?? emptyState,
   );
+
+  const agentTranscriptQuery = useQuery({
+    queryKey: ['agent-transcript', sessionId, selectedAgentId],
+    queryFn: () => client.getAgentTranscript(sessionId, selectedAgentId!),
+    enabled: selectedAgentId !== undefined,
+    refetchInterval: selectedAgentId === undefined ? false : 1500,
+  });
 
   const sessionsQuery = useInfiniteQuery({
     queryKey: ['sessions', false],
@@ -425,10 +445,14 @@ export function SessionView() {
             thinking: effectiveEffort,
             permissionMode,
             planMode,
+            swarmMode,
+            goalObjective,
+            goalControl,
           })
           .then(() => {
             writeDraft(sessionId, '');
             setDraft('');
+            setGoalControl(undefined);
           })
           .catch((error: unknown) => {
             setSendError(error instanceof Error ? error.message : String(error));
@@ -455,7 +479,17 @@ export function SessionView() {
       dismissQuestion: (questionId: string) => controller.dismissQuestion(questionId),
       cancelTask: (taskId: string) => void controller.cancelTask(taskId).catch(() => undefined),
     };
-  }, [controller, effectiveModel, effectiveEffort, permissionMode, planMode, sessionId]);
+  }, [
+    controller,
+    effectiveModel,
+    effectiveEffort,
+    permissionMode,
+    planMode,
+    swarmMode,
+    goalObjective,
+    goalControl,
+    sessionId,
+  ]);
 
   // Submit the prompt that was drafted on /new, now that the live controller is
   // subscribed and will receive the stream.
@@ -499,6 +533,95 @@ export function SessionView() {
     modelOverride !== undefined ? 'override' : sessionModel !== undefined ? 'session' : 'server-default';
 
   const showBackdrop = sidebarOpen || railOpen;
+  const selectedSubagent =
+    selectedAgentId === undefined
+      ? undefined
+      : (state.blocks.find(
+          (block): block is SubagentBlock =>
+            block.kind === 'subagent' && block.subagentId === selectedAgentId,
+        ) as SubagentBlock | undefined);
+
+  if (selectedAgentId !== undefined) {
+    const serverBlocks =
+      agentTranscriptQuery.data === undefined
+        ? undefined
+        : agentTranscriptToBlocks(agentTranscriptQuery.data);
+    const capturedBlocks = serverBlocks ?? selectedSubagent?.transcript ?? [];
+    const historyNotice: NoticeBlock = {
+      kind: 'notice',
+      id: `subagent-history-${selectedAgentId}`,
+      text:
+        serverBlocks !== undefined
+          ? agentTranscriptQuery.data?.has_more === true
+            ? 'Loaded from the server transcript. Older turns exist beyond this page.'
+            : 'Loaded from the server transcript; live events fill activity while it runs.'
+          : agentTranscriptQuery.isError
+            ? 'The server transcript was unavailable. Showing events captured by this client; earlier or disconnected activity may be missing.'
+            : 'Loading the server transcript. Live events captured by this client are shown meanwhile.',
+      tone: 'neutral',
+    };
+    const includesReport =
+      selectedSubagent?.summary !== undefined &&
+      capturedBlocks.some(
+        (block) => block.kind === 'assistant' && block.text.includes(selectedSubagent.summary ?? ''),
+      );
+    const reportBlock: AssistantBlock | undefined =
+      selectedSubagent?.summary !== undefined && !includesReport
+        ? {
+            kind: 'assistant',
+            id: `subagent-report-${selectedAgentId}`,
+            text: selectedSubagent.summary,
+            streaming: false,
+            createdAt: selectedSubagent.endedAt,
+          }
+        : undefined;
+    const agentState: SessionViewState = {
+      ...state,
+      blocks: [historyNotice, ...capturedBlocks, ...(reportBlock === undefined ? [] : [reportBlock])],
+      busy: false,
+      pendingInteraction: 'none',
+      hasMoreHistory: false,
+      loadingOlder: false,
+      fetchedOlder: false,
+    };
+    return (
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
+        <header className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
+          <button
+            type="button"
+            onClick={() => navigate(`/s/${sessionId}`)}
+            className="rounded-lg border border-hairline px-2 py-1 text-[11.5px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
+          >
+            ← Back to session
+          </button>
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate font-display text-[15px] font-semibold text-ink">
+              {selectedSubagent?.name ?? selectedAgentId}
+            </h1>
+            <p className="truncate text-[10.5px] text-ink-faint">
+              Read-only subagent transcript
+            </p>
+          </div>
+          {selectedSubagent?.model !== undefined ? (
+            <span className="rounded-full border border-hairline bg-paper px-2 py-0.5 font-mono text-[10.5px] text-ink-soft">
+              {selectedSubagent.model}
+            </span>
+          ) : null}
+          <span className="rounded-full border border-hairline px-2 py-0.5 text-[10.5px] text-ink-soft">
+            {selectedSubagent?.status ?? 'history unavailable'}
+          </span>
+        </header>
+        <Transcript
+          state={agentState}
+          readOnly
+          onLoadOlder={() => Promise.resolve(false)}
+          onResolveApproval={() => Promise.resolve()}
+          onAnswerQuestion={() => Promise.resolve()}
+          onDismissQuestion={() => Promise.resolve()}
+        />
+      </main>
+    );
+  }
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
@@ -580,11 +703,18 @@ export function SessionView() {
           modelSource={modelSource}
           permissionMode={permissionMode}
           planMode={planMode}
+          swarmMode={swarmMode}
+          goalObjective={goalObjective}
+          goalStatus={state.goal?.status}
+          goalControl={goalControl}
           efforts={supportedEfforts}
           effort={effectiveEffort}
           onChangeModel={setModelOverride}
           onChangePermissionMode={setPermissionMode}
           onChangePlanMode={setPlanMode}
+          onChangeSwarmMode={setSwarmMode}
+          onChangeGoalObjective={setGoalObjective}
+          onChangeGoalControl={setGoalControl}
           onChangeEffort={setEffortOverride}
           onSend={(text) => actions?.send(text)}
           onAbort={() => actions?.abort()}
@@ -596,6 +726,7 @@ export function SessionView() {
           className={`app-rail ${railOpen ? 'open' : ''}`}
           state={state}
           onCancelTask={(taskId) => actions?.cancelTask(taskId)}
+          onOpenSubagent={(agentId) => navigate(`/s/${sessionId}/agent/${agentId}`)}
         />
       ) : null}
 
