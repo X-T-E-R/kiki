@@ -229,8 +229,12 @@ export class KikiSocket {
         this.helloReceived = true;
         this.reconnectAttempts = 0;
         this.helloCount += 1;
-        const heartbeat = (message.payload as { heartbeat_interval_ms?: unknown } | undefined)
-          ?.heartbeat_interval_ms;
+        // Accept the server's schema name (heartbeat_ms, ws-control.ts) and
+        // the interval variant this client documented first.
+        const helloPayload = message.payload as
+          | { heartbeat_ms?: unknown; heartbeat_interval_ms?: unknown }
+          | undefined;
+        const heartbeat = helloPayload?.heartbeat_ms ?? helloPayload?.heartbeat_interval_ms;
         this.serverHeartbeatMs =
           typeof heartbeat === 'number' && Number.isFinite(heartbeat) && heartbeat > 0
             ? heartbeat

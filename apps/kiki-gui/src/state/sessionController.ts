@@ -88,7 +88,7 @@ export class SessionController {
   private publishedState: SessionViewState;
   private readonly listeners = new Set<Listener>();
   private readonly scheduler: PublicationScheduler;
-  private frameHandle: unknown | null = null;
+  private frameHandle: unknown = null;
   private readonly inboundFrames = new FrameBuffer();
   private readonly pendingFrames = new FrameBuffer({
     maxFrames: QUARANTINE_MAX_FRAMES,

@@ -11,8 +11,10 @@ frames ever arrive to prove otherwise.
 `src/lib/ws.ts` tracks `lastInboundAt` per socket. `KikiSocket.nudge()` — wired
 in `src/state/connection.tsx` to `focus`, `online`, `pageshow`, and
 `visibilitychange` — reconnects a down socket immediately, and only distrusts
-an `OPEN` socket when the server **advertised a heartbeat** in `server_hello`
-(`payload.heartbeat_interval_ms`): with a heartbeat contract, inbound silence
+an `OPEN` socket when the server **advertised a heartbeat** in `server_hello`.
+The field name follows the kap-server ws-control schema (`payload.heartbeat_ms`);
+the client also accepts `heartbeat_interval_ms` for compatibility. With a
+heartbeat contract, inbound silence
 past `max(45s, 3× interval)` means the transport is half-open, so the nudge
 forces the close/reconnect path. kap-server's wsConnectionV1 currently
 advertises no heartbeat, so the stale-silence branch stays disarmed (no
