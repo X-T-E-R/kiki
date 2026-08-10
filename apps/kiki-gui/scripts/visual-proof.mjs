@@ -397,10 +397,60 @@ async function scenarioSettings() {
   await page.waitForTimeout(400);
   await shot('settings-models');
 
+  await page.click('text=Providers & auth');
+  await page.waitForSelector('text=Configured providers', { timeout: 10_000 });
+  await page.waitForTimeout(400);
+  await shot('settings-providers');
+
   await page.click('text=Capabilities');
   await page.waitForSelector('text=Tools', { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('settings-capabilities');
+}
+
+async function scenarioSettingsWrite() {
+  await page.goto(`${WEB_URL}/settings/general?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'networkidle',
+  });
+  await page.waitForSelector('text=New-session defaults', { timeout: 10_000 });
+  await page.locator('button', { hasText: 'auto' }).click();
+  await page.locator('label', { hasText: 'Start new sessions in plan mode' }).click();
+  await page.click('button:has-text("Save server defaults")');
+  await waitForText('Server saved and echoed permission=auto, plan=on.');
+  await shot('settings-write-saved');
+
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForSelector('text=New-session defaults', { timeout: 10_000 });
+  const autoClass = await page.locator('button', { hasText: 'auto' }).getAttribute('class');
+  const planState = await page.locator('label', { hasText: 'Start new sessions in plan mode' }).locator('[role="switch"]').getAttribute('aria-checked');
+  if (!autoClass?.includes('bg-accent-soft') || planState !== 'true') {
+    throw new Error(`server setting did not survive reload: auto=${autoClass} plan=${planState}`);
+  }
+  await shot('settings-write-reloaded');
+}
+
+async function scenarioSettingsInvalid() {
+  await page.goto(`${WEB_URL}/settings/capabilities?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'networkidle',
+  });
+  await page.waitForSelector('text=Skill and experiment defaults', { timeout: 10_000 });
+  await page.fill('textarea[aria-label="Experimental flag overrides"]', '{"search_worker":"yes"}');
+  await page.click('button:has-text("Save capability defaults")');
+  await page.waitForSelector('[role="alert"]', { timeout: 5000 });
+  await waitForText('must be true or false');
+  await shot('settings-invalid-inline-error');
+}
+
+async function scenarioSettingsDesktopGate() {
+  await page.goto(`${WEB_URL}/settings/capabilities?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'networkidle',
+  });
+  await page.waitForSelector('[data-testid="desktop-config-disabled-hint"]', { timeout: 10_000 });
+  const disabled = await page.locator('[data-testid="desktop-config-fields"]').evaluate((node) => node.disabled === true);
+  if (!disabled) throw new Error('desktop-only config fieldset is enabled in the browser build');
+  await page.locator('[data-testid="desktop-config-disabled-hint"]').scrollIntoViewIfNeeded();
+  await page.waitForTimeout(300);
+  await shot('settings-desktop-disabled');
 }
 
 async function scenarioResponsive() {
@@ -463,6 +513,9 @@ const SCENARIOS = [
   ['empty-states', scenarioEmptyStates],
   ['draft-flow', scenarioDraftFlow],
   ['settings', scenarioSettings],
+  ['settings-write', scenarioSettingsWrite],
+  ['settings-invalid', scenarioSettingsInvalid],
+  ['settings-desktop-gate', scenarioSettingsDesktopGate],
   ['responsive', scenarioResponsive],
 ];
 
