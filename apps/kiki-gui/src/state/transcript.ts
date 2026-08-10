@@ -18,6 +18,9 @@ import type {
   GoalSnapshot,
   Message,
   PermissionMode,
+  PromptItem,
+  PromptListResponse,
+  PromptStatus,
   QuestionRequest,
   Session,
   SessionPendingInteraction,
@@ -42,6 +45,15 @@ export interface UserBlock {
    * have neither until the REST result or a future prompt.submitted arrives. */
   readonly promptId?: string;
   readonly userMessageId?: string;
+  /** Present while the prompt is parked, running, or rejected before launch. */
+  readonly promptStatus?: PromptStatus;
+}
+
+export interface SystemReminderBlock {
+  readonly kind: 'system-reminder';
+  readonly id: string;
+  readonly text: string;
+  readonly createdAt: string | undefined;
 }
 
 export interface AssistantBlock {
@@ -142,6 +154,7 @@ export interface QuestionBlock {
 
 export type Block =
   | UserBlock
+  | SystemReminderBlock
   | AssistantBlock
   | ThinkingBlock
   | ToolBlock
@@ -252,6 +265,58 @@ function textOfContent(content: Message['content']): string {
   return parts.join('\n');
 }
 
+export interface SplitSystemRemindersResult {
+  readonly text: string;
+  readonly reminders: readonly string[];
+}
+
+/** Peel daemon-injected reminder envelopes out of user-visible text. The
+ * non-greedy matcher intentionally supports multiple envelopes in one message. */
+export function splitSystemReminders(text: string): SplitSystemRemindersResult {
+  const reminders: string[] = [];
+  const visible = text.replaceAll(/<system-reminder>([\s\S]*?)<\/system-reminder>/gi, (_match, body: string) => {
+    const reminder = body.trim();
+    if (reminder !== '') reminders.push(reminder);
+    return '';
+  });
+  return {
+    text: visible.replaceAll(/\n{3,}/g, '\n\n').trim(),
+    reminders,
+  };
+}
+
+function userAndReminderBlocks(input: {
+  id: string;
+  text: string;
+  createdAt: string;
+  promptId?: string;
+  userMessageId?: string;
+  promptStatus?: PromptStatus;
+}): Block[] {
+  const split = splitSystemReminders(input.text);
+  const blocks: Block[] = [];
+  if (split.text !== '') {
+    blocks.push({
+      kind: 'user',
+      id: `user-${input.id}`,
+      text: split.text,
+      createdAt: input.createdAt,
+      promptId: input.promptId,
+      userMessageId: input.userMessageId,
+      promptStatus: input.promptStatus,
+    });
+  }
+  split.reminders.forEach((reminder, index) => {
+    blocks.push({
+      kind: 'system-reminder',
+      id: `reminder-${input.id}-${index}`,
+      text: reminder,
+      createdAt: input.createdAt,
+    });
+  });
+  return blocks;
+}
+
 function messagesToBlocks(messages: readonly Message[]): Block[] {
   const blocks: Block[] = [];
   const toolByCallId = new Map<string, ToolBlock>();
@@ -293,17 +358,15 @@ function messagesToBlocks(messages: readonly Message[]): Block[] {
   for (const message of messages) {
     switch (message.role) {
       case 'user': {
-        const text = textOfContent(message.content);
-        if (text.trim() !== '') {
-          blocks.push({
-            kind: 'user',
-            id: `user-${message.id}`,
-            text,
+        blocks.push(
+          ...userAndReminderBlocks({
+            id: message.id,
+            text: textOfContent(message.content),
             createdAt: message.created_at,
             promptId: message.prompt_id ?? message.id,
             userMessageId: message.id,
-          });
-        }
+          }),
+        );
         break;
       }
       case 'assistant': {
@@ -360,8 +423,19 @@ function messagesToBlocks(messages: readonly Message[]): Block[] {
       }
       case 'system': {
         const text = textOfContent(message.content);
-        if (text.trim() !== '') {
-          const preview = text.length > 160 ? `${text.slice(0, 160)}…` : text;
+        const split = splitSystemReminders(text);
+        if (split.reminders.length > 0) {
+          split.reminders.forEach((reminder, index) => {
+            blocks.push({
+              kind: 'system-reminder',
+              id: `reminder-${message.id}-${index}`,
+              text: reminder,
+              createdAt: message.created_at,
+            });
+          });
+        }
+        if (split.text !== '') {
+          const preview = split.text.length > 160 ? `${split.text.slice(0, 160)}…` : split.text;
           blocks.push({
             kind: 'notice',
             id: `system-${message.id}`,
@@ -712,6 +786,8 @@ function replaceBlock(blocks: readonly Block[], updated: Block): Block[] {
  * rename matters: volatile offsets reset at every step boundary, so deltas
  * for the next step must start a FRESH block — with the old id kept, the
  * first post-boundary delta (offset 0) would rewrite the finalized text.
+ * The tag carries the durable frame's seq because turn ids may repeat across
+ * a session (per-agent counters), and React keys must stay unique.
  */
 function finalizeStreaming(blocks: readonly Block[], tag: string): Block[] {
   let changed = false;
@@ -722,7 +798,7 @@ function finalizeStreaming(blocks: readonly Block[], tag: string): Block[] {
     }
     return block;
   });
-  return changed ? next : [...blocks];
+  return changed ? next : (blocks as Block[]);
 }
 
 function extractTodosFromDisplay(display: ToolInputDisplay): readonly TodoItem[] | undefined {
@@ -790,8 +866,54 @@ function createUnknownSubagent(agentId: string, timestamp: string): SubagentBloc
   };
 }
 
+function upsertPromptItemBlocks(
+  blocks: readonly Block[],
+  item: PromptItem,
+): readonly Block[] {
+  const text = textOfContent(item.content);
+  const stableIndex = blocks.findIndex(
+    (block): block is UserBlock =>
+      block.kind === 'user' &&
+      (block.userMessageId === item.user_message_id || block.promptId === item.prompt_id),
+  );
+  if (stableIndex >= 0) {
+    const existing = blocks[stableIndex] as UserBlock;
+    if (existing.promptStatus === item.status) return blocks;
+    const next = blocks.slice();
+    next[stableIndex] = { ...existing, promptStatus: item.status };
+    return next;
+  }
+  const split = splitSystemReminders(text);
+  const placeholderIndex = blocks.findIndex(
+    (block): block is UserBlock =>
+      block.kind === 'user' &&
+      block.userMessageId === undefined &&
+      block.promptId === undefined &&
+      block.text === split.text,
+  );
+  const additions = userAndReminderBlocks({
+    id: item.user_message_id,
+    text,
+    createdAt: item.created_at,
+    promptId: item.prompt_id,
+    userMessageId: item.user_message_id,
+    promptStatus: item.status,
+  });
+  if (placeholderIndex >= 0 && additions[0]?.kind === 'user') {
+    const next = blocks.slice();
+    next.splice(placeholderIndex, 1, ...additions);
+    return next;
+  }
+  return additions.length === 0 ? blocks : [...blocks, ...additions];
+}
+
 export function applyFrame(state: SessionViewState, frame: SessionEventFrame): ApplyResult {
   return applyFrameInternal(state, frame, true);
+}
+
+/** Child-agent scoped reducer used by SessionController's per-agent store. */
+export function applyAgentFrame(state: SessionViewState, frame: SessionEventFrame): ApplyResult {
+  return applyFrameInternal(state, frame, false);
 }
 
 function applyFrameInternal(
@@ -899,7 +1021,12 @@ function applyFrameInternal(
     case 'turn.started': {
       // v2 publishes this before the prompt REST reply and currently does not
       // publish prompt.submitted. Create an unidentified placeholder only when
-      // no block is already tied to the active prompt's stable daemon id.
+      // no user block already carries this prompt's text. The match is
+      // deliberately status-agnostic: a queued echo may have had its chip
+      // cleared by an empty prompt-list reconcile (e.g. the queued prompt ran
+      // and finished before any refresh observed it), and an older same-text
+      // block suppressing the placeholder is harmless — the REST echo (or the
+      // next reconcile) still appends/updates the identified block.
       if (typeof payload.prompt === 'string' && payload.prompt.trim() !== '') {
         const key = `user-turn-${payload.turnId}-prompt`;
         const exists = next.blocks.some((block) => block.id === key);
@@ -909,7 +1036,11 @@ function applyFrameInternal(
             (block): block is UserBlock =>
               block.kind === 'user' && block.promptId === next.activePromptId,
           );
-        if (!exists && !associatedByPromptId) {
+        const promptText = splitSystemReminders(payload.prompt).text;
+        const echoedAlready = next.blocks.some(
+          (block): block is UserBlock => block.kind === 'user' && block.text === promptText,
+        );
+        if (!exists && !associatedByPromptId && !echoedAlready) {
           evolve({
             blocks: [
               ...next.blocks,
@@ -930,7 +1061,7 @@ function applyFrameInternal(
     case 'turn.ended': {
       let blocks = finalizeStreaming(
         next.blocks,
-        payload.type === 'turn.step.started' ? `s${payload.step}` : 'end',
+        payload.type === 'turn.step.started' ? `s${payload.step}@${frame.seq}` : `end@${frame.seq}`,
       );
       if (payload.type === 'turn.ended') {
         if (payload.reason === 'failed') {
@@ -946,7 +1077,7 @@ function applyFrameInternal(
         }
         evolve({
           blocks,
-          busy: payload.reason === 'completed' ? false : next.busy,
+          busy: false,
           activePromptId: undefined,
         });
       } else {
@@ -1174,54 +1305,33 @@ function applyFrameInternal(
       break;
     }
     case 'prompt.submitted': {
-      const key = `user-${payload.userMessageId}`;
-      const text = textOfContent(payload.content as Message['content']);
-      if (text.trim() === '') break;
-      let blocks = next.blocks;
-      const stableIndex = blocks.findIndex(
-        (block): block is UserBlock =>
-          block.kind === 'user' &&
-          (block.userMessageId === payload.userMessageId || block.promptId === payload.promptId),
-      );
-      if (stableIndex < 0) {
-        const placeholderIndex = blocks.findIndex(
-          (block): block is UserBlock =>
-            block.kind === 'user' &&
-            block.userMessageId === undefined &&
-            block.promptId === undefined &&
-            block.text === text,
-        );
-        const userBlock: UserBlock = {
-          kind: 'user',
-          id: key,
-          text,
-          createdAt: payload.createdAt,
-          promptId: payload.promptId,
-          userMessageId: payload.userMessageId,
-        };
-        if (placeholderIndex >= 0) {
-          const nextBlocks = blocks.slice();
-          nextBlocks[placeholderIndex] = userBlock;
-          blocks = nextBlocks;
-        } else {
-          blocks = [...blocks, userBlock];
-        }
-      }
+      const item: PromptItem = {
+        prompt_id: payload.promptId,
+        user_message_id: payload.userMessageId,
+        status: payload.status,
+        content: payload.content as Message['content'],
+        created_at: payload.createdAt,
+      };
       const queued =
-        payload.status === 'queued'
-          ? [...next.queuedPromptIds, payload.promptId]
-          : next.queuedPromptIds.filter((id) => id !== payload.promptId);
+        item.status === 'queued'
+          ? next.queuedPromptIds.includes(item.prompt_id)
+            ? next.queuedPromptIds
+            : [...next.queuedPromptIds, item.prompt_id]
+          : next.queuedPromptIds.filter((id) => id !== item.prompt_id);
       evolve({
-        blocks,
+        blocks: upsertPromptItemBlocks(next.blocks, item),
         queuedPromptIds: queued,
-        busy: true,
-        activePromptId:
-          payload.status === 'running' ? payload.promptId : next.activePromptId,
+        busy: item.status === 'running' ? true : next.busy,
+        activePromptId: item.status === 'running' ? item.prompt_id : next.activePromptId,
       });
       break;
     }
     case 'prompt.completed': {
-      const blocks = finalizeStreaming(next.blocks, 'end');
+      const blocks = finalizeStreaming(next.blocks, `end@${frame.seq}`).map((block) =>
+        block.kind === 'user' && block.promptId === payload.promptId
+          ? { ...block, promptStatus: payload.reason === 'blocked' ? ('blocked' as const) : undefined }
+          : block,
+      );
       const failed = payload.reason === 'failed' || payload.reason === 'blocked';
       evolve({
         blocks:
@@ -1244,7 +1354,11 @@ function applyFrameInternal(
       break;
     }
     case 'prompt.aborted': {
-      const blocks = finalizeStreaming(next.blocks, 'end');
+      const blocks = finalizeStreaming(next.blocks, `end@${frame.seq}`).map((block) =>
+        block.kind === 'user' && block.promptId === payload.promptId
+          ? { ...block, promptStatus: undefined }
+          : block,
+      );
       evolve({
         blocks: [
           ...blocks,
@@ -1414,50 +1528,113 @@ function applyFrameInternal(
 /** Local echo of the user's own prompt (from the REST submit result). */
 export function appendLocalUserMessage(
   state: SessionViewState,
-  input: { userMessageId: string; promptId: string; text: string; createdAt: string; queued: boolean },
+  input: {
+    userMessageId: string;
+    promptId: string;
+    text: string;
+    createdAt: string;
+    status: PromptStatus;
+  },
 ): SessionViewState {
-  const key = `user-${input.userMessageId}`;
-  const stableIndex = state.blocks.findIndex(
-    (block): block is UserBlock =>
-      block.kind === 'user' &&
-      (block.id === key ||
-        block.userMessageId === input.userMessageId ||
-        block.promptId === input.promptId),
-  );
-  const placeholderIndex = state.blocks.findLastIndex(
-    (block): block is UserBlock =>
-      block.kind === 'user' &&
-      block.userMessageId === undefined &&
-      block.promptId === undefined &&
-      block.text === input.text,
-  );
-  const userBlock: UserBlock = {
-    kind: 'user',
-    id: key,
-    text: input.text,
-    createdAt: input.createdAt,
-    promptId: input.promptId,
-    userMessageId: input.userMessageId,
+  const item: PromptItem = {
+    prompt_id: input.promptId,
+    user_message_id: input.userMessageId,
+    status: input.status,
+    content: [{ type: 'text', text: input.text }],
+    created_at: input.createdAt,
   };
+  const queuedPromptIds =
+    input.status === 'queued'
+      ? state.queuedPromptIds.includes(input.promptId)
+        ? state.queuedPromptIds
+        : [...state.queuedPromptIds, input.promptId]
+      : state.queuedPromptIds.filter((id) => id !== input.promptId);
+  return {
+    ...state,
+    version: state.version + 1,
+    busy: input.status === 'running' ? true : state.busy,
+    activePromptId: input.status === 'running' ? input.promptId : state.activePromptId,
+    queuedPromptIds,
+    blocks: upsertPromptItemBlocks(state.blocks, item),
+  };
+}
+
+/** Reconcile scheduler truth from GET /sessions/:id/prompts. Returns the SAME
+ * state reference when nothing changed — the refresh runs on every turn and
+ * prompt frame, and a no-op reconcile must not republish. */
+export function reconcilePromptList(
+  state: SessionViewState,
+  prompts: PromptListResponse,
+): SessionViewState {
+  const items = [...(prompts.active === null ? [] : [prompts.active]), ...prompts.queued];
   let blocks = state.blocks;
-  if (stableIndex < 0 && placeholderIndex >= 0) {
-    const replaced = blocks.slice();
-    replaced[placeholderIndex] = userBlock;
-    blocks = replaced;
-  } else if (stableIndex < 0) {
-    blocks = [...blocks, userBlock];
+  for (const item of items) blocks = upsertPromptItemBlocks(blocks, item);
+  const known = new Map(items.map((item) => [item.prompt_id, item.status]));
+  let blocksChanged = blocks !== state.blocks;
+  const mapped = blocks.map((block) => {
+    if (block.kind !== 'user' || block.promptId === undefined) return block;
+    const status = known.get(block.promptId);
+    if (status !== undefined) {
+      if (block.promptStatus === status) return block;
+      blocksChanged = true;
+      return { ...block, promptStatus: status };
+    }
+    if (block.promptStatus === 'running' || block.promptStatus === 'queued') {
+      blocksChanged = true;
+      return { ...block, promptStatus: undefined };
+    }
+    return block;
+  });
+  if (blocksChanged) blocks = mapped;
+  const activePromptId = prompts.active?.prompt_id;
+  const queuedPromptIds = prompts.queued.map((item) => item.prompt_id);
+  const busy = activePromptId !== undefined ? true : state.busy && state.activePromptId === undefined;
+  const queueUnchanged =
+    queuedPromptIds.length === state.queuedPromptIds.length &&
+    queuedPromptIds.every((id, index) => id === state.queuedPromptIds[index]);
+  if (
+    !blocksChanged &&
+    activePromptId === state.activePromptId &&
+    queueUnchanged &&
+    busy === state.busy
+  ) {
+    return state;
   }
   return {
     ...state,
     version: state.version + 1,
-    busy: true,
-    activePromptId: input.queued ? state.activePromptId : input.promptId,
-    queuedPromptIds: input.queued
-      ? state.queuedPromptIds.includes(input.promptId)
-        ? state.queuedPromptIds
-        : [...state.queuedPromptIds, input.promptId]
-      : state.queuedPromptIds,
     blocks,
+    activePromptId,
+    queuedPromptIds,
+    busy,
+  };
+}
+
+export function advanceSessionCursor(
+  state: SessionViewState,
+  frame: SessionEventFrame,
+): SessionViewState {
+  if (frame.volatile === true || frame.seq <= state.cursor.seq) return state;
+  return {
+    ...state,
+    version: state.version + 1,
+    cursor: { seq: frame.seq, epoch: frame.epoch ?? state.cursor.epoch },
+  };
+}
+
+export function incrementSubagentToolCount(
+  state: SessionViewState,
+  agentId: string,
+  timestamp: string,
+): SessionViewState {
+  const key = `subagent-${agentId}`;
+  const existing =
+    (state.blocks.find((block) => block.id === key) as SubagentBlock | undefined) ??
+    createUnknownSubagent(agentId, timestamp);
+  return {
+    ...state,
+    version: state.version + 1,
+    blocks: replaceBlock(state.blocks, { ...existing, toolCallCount: existing.toolCallCount + 1 }),
   };
 }
 

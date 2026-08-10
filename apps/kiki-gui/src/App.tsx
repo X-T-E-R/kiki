@@ -79,6 +79,17 @@ export function App() {
     setSidebarOpen(false);
   }, [activeSessionId, isNewRoute, isSettingsRoute]);
 
+  // Escape closes the mobile sidebar drawer (the backdrop swallows pointer
+  // events, so the key must be handled globally while it is open).
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSidebarOpen(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [sidebarOpen]);
+
   return (
     <div className="flex h-full overflow-hidden bg-paper">
       <Sidebar
@@ -104,7 +115,10 @@ export function App() {
             path="/new"
             element={<NewSessionPage onToggleSidebar={() => setSidebarOpen((value) => !value)} />}
           />
-          <Route path="/s/:id/*" element={<SessionView />} />
+          <Route
+            path="/s/:id/*"
+            element={<SessionView onToggleSidebar={() => setSidebarOpen((value) => !value)} />}
+          />
           <Route
             path="/settings/:section?"
             element={<SettingsPage onToggleSidebar={() => setSidebarOpen((value) => !value)} />}

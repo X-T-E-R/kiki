@@ -4,7 +4,7 @@
  * Mirrors the previous App-session surface, now isolated as a route target.
  */
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 
@@ -219,6 +219,25 @@ function TurnsMenu({
 const noopSubscribe = () => () => {};
 const emptyView = createViewState('');
 const emptyState = () => emptyView;
+/** Stable no-op handlers for the read-only agent transcript (keeps BlockView memos). */
+const noopLoadOlder = () => Promise.resolve(false);
+const noopInteraction = () => Promise.resolve();
+
+/** Live media query (resize-aware) for overlay-vs-inline layout decisions. */
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() =>
+    typeof window.matchMedia === 'function' ? window.matchMedia(query).matches : false,
+  );
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const list = window.matchMedia(query);
+    const onChange = (event: MediaQueryListEvent) => setMatches(event.matches);
+    setMatches(list.matches);
+    list.addEventListener('change', onChange);
+    return () => list.removeEventListener('change', onChange);
+  }, [query]);
+  return matches;
+}
 
 type ModelSource = 'server-default' | 'session' | 'override';
 
@@ -243,7 +262,7 @@ function resolveApprovalShortcutTarget(): string | undefined {
   return undefined;
 }
 
-export function SessionView() {
+export function SessionView({ onToggleSidebar }: { onToggleSidebar: () => void }) {
   const { id } = useParams<{ id: string }>();
   const sessionId = id!;
   const { client, wsStatus } = useConnection();
@@ -265,8 +284,12 @@ export function SessionView() {
     } | null) ?? {},
   );
   const defaults = useMemo(() => readSettings(), []);
-  const [railOpen, setRailOpen] = useState(true);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Below lg the rail is a fixed overlay drawer (see .app-rail in index.css):
+  // start it closed there so no backdrop sits over the transcript uninvited.
+  const railIsOverlay = useMediaQuery('(max-width: 1023px)');
+  const [railOpen, setRailOpen] = useState(
+    () => typeof window.matchMedia !== 'function' || window.matchMedia('(min-width: 1024px)').matches,
+  );
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(
     initialOptionsRef.current.permissionMode ?? defaults.defaultPermissionMode,
   );
@@ -286,6 +309,7 @@ export function SessionView() {
   );
   const [sendError, setSendError] = useState<string | null>(null);
   const [abortError, setAbortError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
 
   const controller = useActiveController(sessionId);
@@ -299,13 +323,10 @@ export function SessionView() {
     }
   }, [sessionId]);
 
-  // Close panels on Escape.
+  // Close the rail drawer on Escape (the app-level sidebar closes itself).
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setSidebarOpen(false);
-        setRailOpen(false);
-      }
+      if (event.key === 'Escape') setRailOpen(false);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -316,6 +337,7 @@ export function SessionView() {
     setDraft(readDraft(sessionId));
     setSendError(null);
     setAbortError(null);
+    setActionError(null);
   }, [sessionId]);
   const updateDraft = (text: string) => {
     setDraft(text);
@@ -333,6 +355,22 @@ export function SessionView() {
     enabled: selectedAgentId !== undefined,
     refetchInterval: selectedAgentId === undefined ? false : 1500,
   });
+
+  // Live per-agent channel: child-agent frames land in their own sub-store, so
+  // an open agent page re-renders from here without the main transcript
+  // republishing for every hidden child delta.
+  const subscribeAgent = useCallback(
+    (listener: () => void) =>
+      controller === null || selectedAgentId === undefined
+        ? () => {}
+        : controller.subscribeAgent(selectedAgentId, listener),
+    [controller, selectedAgentId],
+  );
+  const agentLiveState = useSyncExternalStore(subscribeAgent, () =>
+    controller !== null && selectedAgentId !== undefined
+      ? controller.getAgentState(selectedAgentId)
+      : emptyView,
+  );
 
   const sessionsQuery = useInfiniteQuery({
     queryKey: ['sessions', false],
@@ -427,7 +465,14 @@ export function SessionView() {
       const approvalId = resolveApprovalShortcutTarget();
       if (approvalId === undefined) return;
       event.preventDefault();
-      void controller.resolveApproval(approvalId, event.key === 'y' ? 'approved' : 'rejected');
+      setActionError(null);
+      void controller
+        .resolveApproval(approvalId, event.key === 'y' ? 'approved' : 'rejected')
+        .catch((error: unknown) => {
+          setActionError(
+            `Approval shortcut failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -477,7 +522,22 @@ export function SessionView() {
       answerQuestion: (questionId: string, answers: Parameters<SessionController['answerQuestion']>[1]) =>
         controller.answerQuestion(questionId, answers),
       dismissQuestion: (questionId: string) => controller.dismissQuestion(questionId),
-      cancelTask: (taskId: string) => void controller.cancelTask(taskId).catch(() => undefined),
+      cancelTask: (taskId: string) => {
+        setActionError(null);
+        void controller.cancelTask(taskId).catch((error: unknown) => {
+          setActionError(
+            `Could not stop the task: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
+      },
+      cancelQueued: (promptId: string) => {
+        setActionError(null);
+        void controller.abortPrompt(promptId).catch((error: unknown) => {
+          setActionError(
+            `Could not cancel the queued prompt: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
+      },
     };
   }, [
     controller,
@@ -490,6 +550,33 @@ export function SessionView() {
     goalControl,
     sessionId,
   ]);
+
+  // Stable transcript callbacks: inline arrows would change identity on every
+  // publish, re-registering TopEdge's scroll listener and defeating the
+  // memoized block components.
+  const handleLoadOlder = useCallback(
+    () => controller?.loadOlderMessages() ?? Promise.resolve(false),
+    [controller],
+  );
+  const handleResolveApproval = useCallback(
+    (approvalId: string, decision: 'approved' | 'rejected' | 'cancelled', scope?: 'session') =>
+      controller?.resolveApproval(approvalId, decision, scope) ?? Promise.resolve(),
+    [controller],
+  );
+  const handleAnswerQuestion = useCallback(
+    (questionId: string, answers: Parameters<SessionController['answerQuestion']>[1]) =>
+      controller?.answerQuestion(questionId, answers) ?? Promise.resolve(),
+    [controller],
+  );
+  const handleDismissQuestion = useCallback(
+    (questionId: string) => controller?.dismissQuestion(questionId) ?? Promise.resolve(),
+    [controller],
+  );
+  const handleCancelQueued = useCallback(
+    (promptId: string) => actions?.cancelQueued(promptId),
+    [actions],
+  );
+  const handleRetryLoad = useCallback(() => void controller?.retryOpen(), [controller]);
 
   // Submit the prompt that was drafted on /new, now that the live controller is
   // subscribed and will receive the stream.
@@ -532,7 +619,10 @@ export function SessionView() {
   const modelSource: ModelSource =
     modelOverride !== undefined ? 'override' : sessionModel !== undefined ? 'session' : 'server-default';
 
-  const showBackdrop = sidebarOpen || railOpen;
+  // The backdrop exists only while a drawer actually overlays the transcript:
+  // below lg the rail becomes a fixed overlay (see .app-rail in index.css).
+  // The app-level sidebar renders its own backdrop from App.
+  const showBackdrop = railIsOverlay && railOpen;
   const selectedSubagent =
     selectedAgentId === undefined
       ? undefined
@@ -546,7 +636,12 @@ export function SessionView() {
       agentTranscriptQuery.data === undefined
         ? undefined
         : agentTranscriptToBlocks(agentTranscriptQuery.data);
-    const capturedBlocks = serverBlocks ?? selectedSubagent?.transcript ?? [];
+    // Live per-agent channel: frames captured since this client opened the
+    // session. The polled server transcript wins when available (it carries
+    // pre-open history); the live channel covers fresh activity and servers
+    // without the transcript route.
+    const liveBlocks = agentLiveState.blocks.length > 0 ? agentLiveState.blocks : undefined;
+    const capturedBlocks = serverBlocks ?? liveBlocks ?? selectedSubagent?.transcript ?? [];
     const historyNotice: NoticeBlock = {
       kind: 'notice',
       id: `subagent-history-${selectedAgentId}`,
@@ -614,10 +709,10 @@ export function SessionView() {
         <Transcript
           state={agentState}
           readOnly
-          onLoadOlder={() => Promise.resolve(false)}
-          onResolveApproval={() => Promise.resolve()}
-          onAnswerQuestion={() => Promise.resolve()}
-          onDismissQuestion={() => Promise.resolve()}
+          onLoadOlder={noopLoadOlder}
+          onResolveApproval={noopInteraction}
+          onAnswerQuestion={noopInteraction}
+          onDismissQuestion={noopInteraction}
         />
       </main>
     );
@@ -630,7 +725,7 @@ export function SessionView() {
           controller={controller}
           railOpen={railOpen}
           onToggleRail={() => setRailOpen((value) => !value)}
-          onToggleSidebar={() => setSidebarOpen((value) => !value)}
+          onToggleSidebar={onToggleSidebar}
           onJumpTurn={(blockId) => {
             document
               .querySelector(`[data-block-id="${blockId}"]`)
@@ -648,20 +743,24 @@ export function SessionView() {
 
         <Transcript
           state={state}
-          onLoadOlder={() => controller?.loadOlderMessages() ?? Promise.resolve(false)}
-          onResolveApproval={(id, decision, scope) =>
-            actions?.resolveApproval(id, decision, scope) ?? Promise.resolve()
-          }
-          onAnswerQuestion={(id, answers) =>
-            actions?.answerQuestion(id, answers) ?? Promise.resolve()
-          }
-          onDismissQuestion={(id) => actions?.dismissQuestion(id) ?? Promise.resolve()}
-          onRetryLoad={() => controller?.retryOpen()}
+          onLoadOlder={handleLoadOlder}
+          onResolveApproval={handleResolveApproval}
+          onAnswerQuestion={handleAnswerQuestion}
+          onDismissQuestion={handleDismissQuestion}
+          onCancelQueued={handleCancelQueued}
+          onRetryLoad={handleRetryLoad}
         />
         {sendError !== null ? (
           <div className="px-6 pb-1">
             <div className="mx-auto max-w-[760px] rounded-lg border border-danger/30 bg-danger/5 px-3 py-1.5 font-mono text-[11.5px] text-danger">
               {sendError}
+            </div>
+          </div>
+        ) : null}
+        {actionError !== null ? (
+          <div className="px-6 pb-1">
+            <div className="mx-auto max-w-[760px] rounded-lg border border-danger/30 bg-danger/5 px-3 py-1.5 font-mono text-[11.5px] text-danger">
+              {actionError}
             </div>
           </div>
         ) : null}
@@ -734,15 +833,13 @@ export function SessionView() {
         <div
           role="button"
           tabIndex={-1}
-          aria-label="Close panels"
+          aria-label="Close panel"
           className="app-overlay-backdrop lg:hidden"
           onClick={() => {
-            setSidebarOpen(false);
             setRailOpen(false);
           }}
           onKeyDown={(event) => {
             if (event.key === 'Escape') {
-              setSidebarOpen(false);
               setRailOpen(false);
             }
           }}

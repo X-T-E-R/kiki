@@ -11,13 +11,17 @@ import {
   appendLocalUserMessage,
   createViewState,
   derivePendingInteraction,
+  incrementSubagentToolCount,
   markApprovalResolved,
   markQuestionOutcome,
   pendingApprovalCount,
   prependOlderMessages,
   preserveCapturedSubagents,
+  reconcilePromptList,
+  splitSystemReminders,
   type AssistantBlock,
   type ApprovalBlock,
+  type SystemReminderBlock,
   type ToolBlock,
   type UserBlock,
 } from './transcript';
@@ -338,7 +342,7 @@ describe('applyFrame', () => {
       promptId: 'p1',
       text: 'hi',
       createdAt: '2026-01-01T00:00:00.000Z',
-      queued: false,
+      status: 'running',
     });
     expect(state.blocks.filter((b) => b.kind === 'user')).toHaveLength(1);
     const result = applyFrame(
@@ -382,7 +386,7 @@ describe('applyFrame', () => {
       promptId: 'prompt-1',
       text: 'same prompt',
       createdAt: '2026-01-01T00:00:01.000Z',
-      queued: false,
+      status: 'running',
     });
     const users = state.blocks.filter((block): block is UserBlock => block.kind === 'user');
     expect(users).toHaveLength(1);
@@ -398,7 +402,7 @@ describe('applyFrame', () => {
       promptId: 'prompt-2',
       text: 'same prompt',
       createdAt: '2026-01-01T00:01:01.000Z',
-      queued: true,
+      status: 'queued',
     });
     expect(state.blocks.filter((block) => block.kind === 'user')).toHaveLength(2);
   });
@@ -655,5 +659,195 @@ describe('derivePendingInteraction', () => {
 
     state = markQuestionOutcome(state, 'q1', { kind: 'answered', at: '2026-01-01T00:00:15.000Z' });
     expect(derivePendingInteraction(state)).toBe('none');
+  });
+});
+
+describe('splitSystemReminders', () => {
+  it('peels embedded envelopes out of the user-visible text', () => {
+    const split = splitSystemReminders(
+      'Fix the test.\n\n<system-reminder>\nFirst note.\n</system-reminder>\nMore words.\n<system-reminder>Second note.</system-reminder>',
+    );
+    expect(split.text).toBe('Fix the test.\n\nMore words.');
+    expect(split.reminders).toEqual(['First note.', 'Second note.']);
+  });
+
+  it('leaves reminder-free text untouched', () => {
+    const split = splitSystemReminders('plain words');
+    expect(split).toEqual({ text: 'plain words', reminders: [] });
+  });
+});
+
+describe('reminder peel', () => {
+  it('renders the user bubble without reminder text and keeps the peel as blocks', () => {
+    const state = applySnapshot(
+      'session_test',
+      snapshot({
+        messages: {
+          items: [
+            {
+              id: 'm1',
+              session_id: 'session_test',
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: 'Do the thing.\n\n<system-reminder>\nDaemon note one.\n</system-reminder>',
+                },
+              ],
+              created_at: '2026-01-01T00:00:00.000Z',
+            },
+            {
+              id: 'm2',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: '<system-reminder>\nStandalone note.\n</system-reminder>' }],
+              created_at: '2026-01-01T00:01:00.000Z',
+            },
+          ],
+          has_more: false,
+        },
+      }),
+    );
+    const users = state.blocks.filter((b): b is UserBlock => b.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]!.text).toBe('Do the thing.');
+    const reminders = state.blocks.filter((b): b is SystemReminderBlock => b.kind === 'system-reminder');
+    expect(reminders.map((b) => b.text)).toEqual(['Daemon note one.', 'Standalone note.']);
+  });
+});
+
+describe('prompt queue', () => {
+  it('does not mint a placeholder when turn.started matches a queued echo', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = appendLocalUserMessage(state, {
+      userMessageId: 'm1',
+      promptId: 'p1',
+      text: 'queued words',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      status: 'queued',
+    });
+    state = applyFrame(
+      state,
+      frame(
+        { type: 'turn.started', turnId: 7, origin: { kind: 'user' }, prompt: 'queued words' },
+        { seq: 11 },
+      ),
+    ).state;
+    const users = state.blocks.filter((b): b is UserBlock => b.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({ promptId: 'p1', promptStatus: 'queued' });
+    expect(state.busy).toBe(true);
+  });
+
+  it('does not mint a placeholder when a stale reconcile cleared the echo status', () => {
+    // The queued prompt ran and finished before any refresh saw it active;
+    // the empty list reconcile clears the chip — turn.started must still not
+    // duplicate the block (queue proof flake, placeholder + echo pair).
+    let state = applySnapshot('session_test', snapshot());
+    state = appendLocalUserMessage(state, {
+      userMessageId: 'm1',
+      promptId: 'p1',
+      text: 'queued words',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      status: 'queued',
+    });
+    state = reconcilePromptList(state, { active: null, queued: [] });
+    expect(state.blocks.find((b): b is UserBlock => b.kind === 'user')?.promptStatus).toBeUndefined();
+    state = applyFrame(
+      state,
+      frame(
+        { type: 'turn.started', turnId: 7, origin: { kind: 'user' }, prompt: 'queued words' },
+        { seq: 11 },
+      ),
+    ).state;
+    const users = state.blocks.filter((b): b is UserBlock => b.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({ promptId: 'p1' });
+  });
+
+  it('still mints a placeholder for a genuinely new prompt text', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = appendLocalUserMessage(state, {
+      userMessageId: 'm1',
+      promptId: 'p1',
+      text: 'older words',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      status: 'queued',
+    });
+    state = applyFrame(
+      state,
+      frame(
+        { type: 'turn.started', turnId: 9, origin: { kind: 'user' }, prompt: 'brand new words' },
+        { seq: 11 },
+      ),
+    ).state;
+    const users = state.blocks.filter((b): b is UserBlock => b.kind === 'user');
+    expect(users).toHaveLength(2);
+    expect(users[1]).toMatchObject({ id: 'user-turn-9-prompt', text: 'brand new words' });
+  });
+
+  it('reconciles queued → running → drained from the server prompt list', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = appendLocalUserMessage(state, {
+      userMessageId: 'm2',
+      promptId: 'p2',
+      text: 'parked',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      status: 'queued',
+    });
+    expect(state.queuedPromptIds).toEqual(['p2']);
+
+    const runningItem = {
+      prompt_id: 'p2',
+      user_message_id: 'm2',
+      status: 'running' as const,
+      content: [{ type: 'text' as const, text: 'parked' }],
+      created_at: '2026-01-01T00:00:00.000Z',
+    };
+    state = reconcilePromptList(state, { active: runningItem, queued: [] });
+    expect(state.activePromptId).toBe('p2');
+    expect(state.queuedPromptIds).toEqual([]);
+    expect(state.busy).toBe(true);
+    const block = state.blocks.find((b): b is UserBlock => b.kind === 'user');
+    expect(block?.promptStatus).toBe('running');
+
+    // Drained list: the chip clears and busy falls back to the turn state.
+    state = reconcilePromptList(state, { active: null, queued: [] });
+    expect(state.activePromptId).toBeUndefined();
+    expect(state.blocks.find((b): b is UserBlock => b.kind === 'user')?.promptStatus).toBeUndefined();
+  });
+
+  it('keeps a stable block identity when the prompt status is unchanged', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = appendLocalUserMessage(state, {
+      userMessageId: 'm3',
+      promptId: 'p3',
+      text: 'steady',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      status: 'running',
+    });
+    const before = state.blocks;
+    state = reconcilePromptList(state, {
+      active: {
+        prompt_id: 'p3',
+        user_message_id: 'm3',
+        status: 'running',
+        content: [{ type: 'text', text: 'steady' }],
+        created_at: '2026-01-01T00:00:00.000Z',
+      },
+      queued: [],
+    });
+    expect(state.blocks).toBe(before);
+  });
+});
+
+describe('incrementSubagentToolCount', () => {
+  it('mints a card for an unknown agent and counts exactly once per call', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = incrementSubagentToolCount(state, 'agent-x', '2026-01-01T00:00:01.000Z');
+    state = incrementSubagentToolCount(state, 'agent-x', '2026-01-01T00:00:02.000Z');
+    const cards = state.blocks.filter((b) => b.kind === 'subagent');
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ subagentId: 'agent-x', toolCallCount: 2 });
   });
 });

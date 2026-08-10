@@ -35,6 +35,7 @@ import type {
   PageResponse,
   PatchConfigRequest,
   PromptAbortResponse,
+  PromptListResponse,
   PromptSubmission,
   PromptSubmitResult,
   QuestionDismissResult,
@@ -65,6 +66,7 @@ export class ApiError extends Error {
 }
 
 export const API_CODES = {
+  TIMEOUT: -2,
   SUCCESS: 0,
   UNAUTHORIZED: 40101,
   APPROVAL_ALREADY_RESOLVED: 40902,
@@ -79,6 +81,8 @@ export interface KikiClientOptions {
   /** Absolute base (`http://host:port`) or '' for same-origin (dev proxy). */
   readonly baseUrl: string;
   readonly token?: string;
+  /** Per-request deadline; defaults to 30 seconds. */
+  readonly timeoutMs?: number;
 }
 
 export type AgentTranscriptFrame =
@@ -132,10 +136,12 @@ function joinUrl(baseUrl: string, path: string): string {
 export class KikiClient {
   readonly baseUrl: string;
   private readonly token: string | undefined;
+  private readonly timeoutMs: number;
 
   constructor(options: KikiClientOptions) {
     this.baseUrl = options.baseUrl;
     this.token = options.token !== undefined && options.token !== '' ? options.token : undefined;
+    this.timeoutMs = options.timeoutMs ?? 30_000;
   }
 
   private async request<T>(
@@ -157,37 +163,61 @@ export class KikiClient {
     if (this.token !== undefined) headers['Authorization'] = `Bearer ${this.token}`;
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';
 
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        method,
-        headers,
-        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-        signal: options.signal,
-      });
-    } catch (error) {
-      throw new ApiError({
-        code: -1,
-        msg: error instanceof Error ? error.message : 'network error',
-        data: null,
-      });
-    }
+    const controller = new AbortController();
+    let timedOut = false;
+    const onAbort = () => controller.abort(options.signal?.reason);
+    if (options.signal?.aborted === true) onAbort();
+    else options.signal?.addEventListener('abort', onAbort, { once: true });
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, this.timeoutMs);
 
-    let envelope: Envelope<unknown>;
     try {
-      envelope = (await response.json()) as Envelope<unknown>;
-    } catch {
-      throw new ApiError({
-        code: response.status,
-        msg: `HTTP ${response.status} — non-JSON response`,
-        data: null,
-      });
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          method,
+          headers,
+          body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+          signal: controller.signal,
+        });
+      } catch (error) {
+        throw new ApiError({
+          code: timedOut ? API_CODES.TIMEOUT : -1,
+          msg: timedOut
+            ? `Request timed out after ${this.timeoutMs}ms`
+            : error instanceof Error
+              ? error.message
+              : 'network error',
+          data: null,
+        });
+      }
+
+      let envelope: Envelope<unknown>;
+      try {
+        envelope = (await response.json()) as Envelope<unknown>;
+      } catch {
+        if (timedOut) {
+          throw new ApiError({
+            code: API_CODES.TIMEOUT,
+            msg: `Request timed out after ${this.timeoutMs}ms`,
+            data: null,
+          });
+        }
+        throw new ApiError({
+          code: response.status,
+          msg: `HTTP ${response.status} — non-JSON response`,
+          data: null,
+        });
+      }
+      const okCodes = options.okCodes ?? [API_CODES.SUCCESS];
+      if (!okCodes.includes(envelope.code)) throw new ApiError(envelope);
+      return envelope.data as T;
+    } finally {
+      clearTimeout(timeout);
+      options.signal?.removeEventListener('abort', onAbort);
     }
-    const okCodes = options.okCodes ?? [API_CODES.SUCCESS];
-    if (!okCodes.includes(envelope.code)) {
-      throw new ApiError(envelope);
-    }
-    return envelope.data as T;
   }
 
   /** `GET /healthz` — auth-exempt liveness probe used by "detect local server". */
@@ -291,6 +321,13 @@ export class KikiClient {
       'GET',
       `/sessions/${encodeURIComponent(sessionId)}/messages`,
       { query: { before_id: query.before_id, page_size: query.page_size ?? 50 } },
+    );
+  }
+
+  listPrompts(sessionId: string): Promise<PromptListResponse> {
+    return this.request<PromptListResponse>(
+      'GET',
+      `/sessions/${encodeURIComponent(sessionId)}/prompts`,
     );
   }
 

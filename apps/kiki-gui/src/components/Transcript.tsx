@@ -12,7 +12,7 @@
  * Apache-2.0; kiki auto-expands on error only, not while running).
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { StickToBottom, useStickToBottomContext } from 'use-stick-to-bottom';
 
@@ -34,6 +34,7 @@ import type {
   SessionViewState,
   ShellBlock,
   SubagentBlock,
+  SystemReminderBlock,
   ThinkingBlock,
   ToolBlock,
   UserBlock,
@@ -49,7 +50,34 @@ function absoluteTime(iso: string | undefined): string | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date.toLocaleString();
 }
 
-function UserMessage({ block }: { block: UserBlock }) {
+/**
+ * Split streaming assistant text into a settled prefix (safe to parse as
+ * markdown — ends at a blank-line boundary with balanced code fences) and a
+ * hot tail. The prefix re-parses only when it grows past another boundary;
+ * the tail renders as plain text until a step/turn boundary settles the block
+ * and the whole text upgrades to full markdown. This keeps live rendering off
+ * the O(full-text) re-parse path the lexer benchmarks showed dominating
+ * long streams.
+ */
+function splitStreamingText(text: string): { prefix: string; tail: string } {
+  let cut = text.lastIndexOf('\n\n');
+  while (cut > 0) {
+    const prefix = text.slice(0, cut);
+    if ((prefix.match(/```/g) ?? []).length % 2 === 0) {
+      return { prefix, tail: text.slice(cut + 2) };
+    }
+    cut = text.lastIndexOf('\n\n', cut - 1);
+  }
+  return { prefix: '', tail: text };
+}
+
+const UserMessage = memo(function UserMessage({
+  block,
+  onCancelQueued,
+}: {
+  block: UserBlock;
+  onCancelQueued?: (promptId: string) => void;
+}) {
   return (
     <div className="anim-enter flex flex-col items-end" title={absoluteTime(block.createdAt)}>
       <span className="mb-1 pr-1 text-[10.5px] font-semibold tracking-wide text-ink-faint uppercase">
@@ -58,18 +86,59 @@ function UserMessage({ block }: { block: UserBlock }) {
       <div className="max-w-[85%] rounded-2xl rounded-br-md border border-hairline bg-[#f3ede1] px-3.5 py-2 text-[13.5px] leading-relaxed whitespace-pre-wrap text-ink">
         {block.text}
       </div>
+      {block.promptStatus === 'queued' || block.promptStatus === 'blocked' ? (
+        <span
+          className={`mt-1 mr-1 flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10.5px] font-medium ${
+            block.promptStatus === 'queued'
+              ? 'border-amber-rule/40 bg-amber-card text-amber-ink'
+              : 'border-danger/30 bg-danger/5 text-danger'
+          }`}
+        >
+          {block.promptStatus === 'queued' ? '◔ Queued — starts when the current turn finishes' : 'Blocked'}
+          {block.promptStatus === 'queued' &&
+          block.promptId !== undefined &&
+          onCancelQueued !== undefined ? (
+            <button
+              type="button"
+              aria-label="Cancel queued prompt"
+              title="Cancel this queued prompt"
+              onClick={() => onCancelQueued(block.promptId!)}
+              className="rounded-full text-amber-ink/70 transition-colors hover:text-danger"
+            >
+              ×
+            </button>
+          ) : null}
+        </span>
+      ) : null}
     </div>
   );
-}
+});
 
-function AssistantMessage({ block }: { block: AssistantBlock }) {
+const AssistantMessage = memo(function AssistantMessage({ block }: { block: AssistantBlock }) {
   const [copied, setCopied] = useState(false);
+  const streaming = block.streaming && block.text !== '';
+  const { prefix, tail } = useMemo(
+    () => (streaming ? splitStreamingText(block.text) : { prefix: '', tail: '' }),
+    [streaming, block.text],
+  );
   return (
     <div className="anim-enter group/msg relative flex gap-3" title={absoluteTime(block.createdAt)}>
       <KikiMark className="mt-[7px] shrink-0" />
       <div className="min-w-0 flex-1">
-        <Markdown text={block.text} />
-        {block.streaming ? <span className="stream-caret font-mono">▍</span> : null}
+        {streaming ? (
+          <>
+            {prefix !== '' ? <Markdown text={prefix} /> : null}
+            <div className="text-[14px] leading-[1.65] break-words whitespace-pre-wrap text-ink">
+              {tail}
+              <span className="stream-caret font-mono">▍</span>
+            </div>
+          </>
+        ) : (
+          <>
+            <Markdown text={block.text} />
+            {block.streaming ? <span className="stream-caret font-mono">▍</span> : null}
+          </>
+        )}
       </div>
       {!block.streaming && block.text !== '' ? (
         <button
@@ -93,9 +162,9 @@ function AssistantMessage({ block }: { block: AssistantBlock }) {
       ) : null}
     </div>
   );
-}
+});
 
-function ThinkingMessage({ block }: { block: ThinkingBlock }) {
+const ThinkingMessage = memo(function ThinkingMessage({ block }: { block: ThinkingBlock }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="anim-enter border-l-2 border-hairline-strong pl-3">
@@ -117,9 +186,39 @@ function ThinkingMessage({ block }: { block: ThinkingBlock }) {
       ) : null}
     </div>
   );
-}
+});
 
-function ShellMessage({ block }: { block: ShellBlock }) {
+/** Daemon-injected reminder peeled out of a user message — left lane, dimmed,
+ * collapsed by default so the user's own bubble stays clean. */
+const SystemReminderMessage = memo(function SystemReminderMessage({
+  block,
+}: {
+  block: SystemReminderBlock;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="anim-enter border-l-2 border-dashed border-hairline pl-3" title={absoluteTime(block.createdAt)}>
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className="flex items-center gap-1.5 text-[11px] font-medium text-ink-faint/80 transition-colors hover:text-ink-soft"
+      >
+        <span aria-hidden className={`inline-block transition-transform duration-150 ${open ? 'rotate-90' : ''}`}>
+          ▶
+        </span>
+        System reminder
+      </button>
+      {open ? (
+        <div className="mt-1.5 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-faint">
+          {block.text}
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
+const ShellMessage = memo(function ShellMessage({ block }: { block: ShellBlock }) {
   return (
     <div className="anim-enter overflow-hidden rounded-lg bg-ink">
       <div className="flex items-center gap-2 border-b border-white/10 px-3 py-1.5">
@@ -134,7 +233,7 @@ function ShellMessage({ block }: { block: ShellBlock }) {
       </pre>
     </div>
   );
-}
+});
 
 function useSubagentElapsed(block: SubagentBlock): number {
   const [now, setNow] = useState(() => Date.now());
@@ -148,7 +247,7 @@ function useSubagentElapsed(block: SubagentBlock): number {
   return Number.isNaN(start) || Number.isNaN(end) ? 0 : Math.max(0, end - start);
 }
 
-function SubagentCard({ block }: { block: SubagentBlock }) {
+const SubagentCard = memo(function SubagentCard({ block }: { block: SubagentBlock }) {
   const elapsed = useSubagentElapsed(block);
   const statusTone =
     block.status === 'running'
@@ -196,9 +295,9 @@ function SubagentCard({ block }: { block: SubagentBlock }) {
       ) : null}
     </Link>
   );
-}
+});
 
-function Notice({ block }: { block: NoticeBlock }) {
+const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
   if (block.tone === 'danger') {
     return (
       <div className="anim-enter rounded-lg border border-danger/30 bg-danger/5 px-3 py-1.5 text-[12px] text-danger">
@@ -213,13 +312,14 @@ function Notice({ block }: { block: NoticeBlock }) {
       <span className="h-px flex-1 bg-hairline" />
     </div>
   );
-}
+});
 
 /**
  * Folded tool run — aionui's group summary row, kiki rules: collapsed by
  * default, spinner while any tool runs, auto-expands on error only.
  */
-function ToolGroupRow({ group }: { group: ToolGroup }) {
+const ToolGroupRow = memo(
+  function ToolGroupRow({ group }: { group: ToolGroup }) {
   const running = groupHasRunning(group);
   const hasError = groupHasError(group);
   const [expanded, setExpanded] = useState(false);
@@ -268,13 +368,20 @@ function ToolGroupRow({ group }: { group: ToolGroup }) {
       ) : null}
     </div>
   );
-}
+  },
+  // groupBlocks rebuilds the wrapper per publish; the tool blocks themselves
+  // keep identity, so element-wise comparison preserves the memo.
+  (prev, next) =>
+    prev.group.tools.length === next.group.tools.length &&
+    prev.group.tools.every((tool, index) => tool === next.group.tools[index]),
+);
 
-function BlockView({
+const BlockView = memo(function BlockView({
   block,
   onResolveApproval,
   onAnswerQuestion,
   onDismissQuestion,
+  onCancelQueued,
   readOnly,
 }: {
   block: Exclude<Block, ToolBlock>;
@@ -286,10 +393,13 @@ function BlockView({
   ) => Promise<void>;
   onAnswerQuestion: (questionId: string, answers: Record<string, QuestionAnswer>) => Promise<void>;
   onDismissQuestion: (questionId: string) => Promise<void>;
+  onCancelQueued?: (promptId: string) => void;
 }) {
   switch (block.kind) {
     case 'user':
-      return <UserMessage block={block} />;
+      return <UserMessage block={block} onCancelQueued={readOnly ? undefined : onCancelQueued} />;
+    case 'system-reminder':
+      return <SystemReminderMessage block={block} />;
     case 'assistant':
       return <AssistantMessage block={block} />;
     case 'thinking':
@@ -334,7 +444,7 @@ function BlockView({
         />
       );
   }
-}
+});
 
 function nodeKey(node: DisplayNode): string {
   return node.kind === 'tool-group' ? node.id : node.id;
@@ -426,6 +536,7 @@ export function Transcript({
   onResolveApproval,
   onAnswerQuestion,
   onDismissQuestion,
+  onCancelQueued,
   onRetryLoad,
   readOnly = false,
 }: {
@@ -438,6 +549,7 @@ export function Transcript({
   ) => Promise<void>;
   onAnswerQuestion: (questionId: string, answers: Record<string, QuestionAnswer>) => Promise<void>;
   onDismissQuestion: (questionId: string) => Promise<void>;
+  onCancelQueued?: (promptId: string) => void;
   onRetryLoad?: () => void;
   readOnly?: boolean;
 }) {
@@ -503,6 +615,7 @@ export function Transcript({
                 onResolveApproval={onResolveApproval}
                 onAnswerQuestion={onAnswerQuestion}
                 onDismissQuestion={onDismissQuestion}
+                onCancelQueued={onCancelQueued}
                 readOnly={readOnly}
               />
             )}

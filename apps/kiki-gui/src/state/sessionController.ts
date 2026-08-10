@@ -1,8 +1,7 @@
 /**
- * SessionController — owns one open session: snapshot load, WS event intake,
- * cursor bookkeeping, resync, and all user actions (prompt / abort / approvals
- * / questions / tasks). Plain class with subscribe/getState so React binds via
- * useSyncExternalStore; also directly unit-testable.
+ * SessionController — one session's REST snapshot, ordered WS intake, bounded
+ * resync quarantine, and user actions. Wire frames are coalesced and reduced on
+ * an animation-frame cadence; React sees at most one publication per flush.
  */
 
 import type {
@@ -16,14 +15,20 @@ import type {
 import { API_CODES, ApiError, type KikiClient } from '../lib/client';
 import type { ResyncRequiredPayload, SessionEventFrame } from '../lib/types';
 import type { KikiSocket } from '../lib/ws';
+import { FrameBuffer } from './framePipeline';
 import {
+  advanceSessionCursor,
+  applyAgentFrame,
   applyFrame,
   applySnapshot,
   appendLocalUserMessage,
+  createViewState,
+  incrementSubagentToolCount,
   markApprovalResolved,
   markQuestionOutcome,
   prependOlderMessages,
   preserveCapturedSubagents,
+  reconcilePromptList,
   setGoal,
   setLoadError,
   setLoadingOlder,
@@ -32,74 +37,169 @@ import {
   setSessionRecord,
   setTasks,
   type SessionViewState,
-  createViewState,
 } from './transcript';
 
 export type Listener = () => void;
 
-/** Resync retry backoff: 250ms, 500ms, 1s, 2s, 4s, then 4s capped. */
 const RESYNC_BACKOFF_MS = [250, 500, 1000, 2000, 4000];
+const QUARANTINE_MAX_FRAMES = 1000;
+const QUARANTINE_MAX_BYTES = 2 * 1024 * 1024;
+
+export interface PublicationScheduler {
+  schedule(callback: () => void): unknown;
+  cancel(handle: unknown): void;
+}
+
+const browserScheduler: PublicationScheduler = {
+  schedule(callback) {
+    if (typeof requestAnimationFrame === 'function') return requestAnimationFrame(callback);
+    return setTimeout(callback, 24);
+  },
+  cancel(handle) {
+    if (typeof cancelAnimationFrame === 'function' && typeof handle === 'number') {
+      cancelAnimationFrame(handle);
+    } else {
+      clearTimeout(handle as ReturnType<typeof setTimeout>);
+    }
+  },
+};
+
+function childAgentId(frame: SessionEventFrame): string | undefined {
+  const agentId = (frame.payload as { agentId?: string }).agentId;
+  if (agentId === undefined || agentId === 'main' || frame.payload.type.startsWith('subagent.')) {
+    return undefined;
+  }
+  return agentId;
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof ApiError
+    ? error.message
+    : error instanceof Error
+      ? error.message
+      : fallback;
+}
 
 export class SessionController {
   private readonly client: KikiClient;
   private readonly socket: KikiSocket;
   readonly sessionId: string;
   private state: SessionViewState;
+  private publishedState: SessionViewState;
   private readonly listeners = new Set<Listener>();
+  private readonly scheduler: PublicationScheduler;
+  private frameHandle: unknown | null = null;
+  private readonly inboundFrames = new FrameBuffer();
+  private readonly pendingFrames = new FrameBuffer({
+    maxFrames: QUARANTINE_MAX_FRAMES,
+    maxBytes: QUARANTINE_MAX_BYTES,
+  });
+  private quarantineOverflowed = false;
   private resyncInFlight = false;
   private resyncTimer: ReturnType<typeof setTimeout> | null = null;
+  private promptRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Monotonic refresh counter: only the newest GET /prompts response may
+   * reconcile — an older response landing late must not clobber newer truth. */
+  private promptRefreshSeq = 0;
   private closed = false;
-  /** Frames that arrived while a resync was in flight or failed. */
-  private pendingFrames: SessionEventFrame[] = [];
 
-  constructor(client: KikiClient, socket: KikiSocket, sessionId: string) {
+  private readonly agentStates = new Map<string, SessionViewState>();
+  private readonly publishedAgentStates = new Map<string, SessionViewState>();
+  private readonly agentListeners = new Map<string, Set<Listener>>();
+  private readonly dirtyAgents = new Set<string>();
+  private readonly childToolCalls = new Map<string, Set<string>>();
+  /** Stable empty fallback — useSyncExternalStore needs a cached snapshot. */
+  private readonly emptyAgentState: SessionViewState;
+
+  constructor(
+    client: KikiClient,
+    socket: KikiSocket,
+    sessionId: string,
+    options: { scheduler?: PublicationScheduler } = {},
+  ) {
     this.client = client;
     this.socket = socket;
     this.sessionId = sessionId;
+    this.scheduler = options.scheduler ?? browserScheduler;
     this.state = createViewState(sessionId);
+    this.publishedState = this.state;
+    this.emptyAgentState = { ...createViewState(sessionId), loaded: true };
   }
 
-  getState = (): SessionViewState => this.state;
+  getState = (): SessionViewState => this.publishedState;
 
   subscribe = (listener: Listener): (() => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   };
 
-  private setState(next: SessionViewState): void {
-    if (next === this.state) return;
-    this.state = next;
+  getAgentState = (agentId: string): SessionViewState =>
+    this.publishedAgentStates.get(agentId) ?? this.agentStates.get(agentId) ?? this.emptyAgentState;
+
+  subscribeAgent = (agentId: string, listener: Listener): (() => void) => {
+    const listeners = this.agentListeners.get(agentId) ?? new Set<Listener>();
+    listeners.add(listener);
+    this.agentListeners.set(agentId, listeners);
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) this.agentListeners.delete(agentId);
+    };
+  };
+
+  private notifyMain(): void {
+    this.publishedState = this.state;
     for (const listener of this.listeners) listener();
   }
 
-  /** Initial sync: snapshot → subscribe from the watermark → tasks. */
+  private publishAgents(): void {
+    for (const agentId of this.dirtyAgents) {
+      const state = this.agentStates.get(agentId);
+      if (state === undefined) continue;
+      this.publishedAgentStates.set(agentId, state);
+      for (const listener of this.agentListeners.get(agentId) ?? []) listener();
+    }
+    this.dirtyAgents.clear();
+  }
+
+  private setState(next: SessionViewState, immediate = true): void {
+    if (next === this.state) return;
+    this.state = next;
+    if (immediate) this.notifyMain();
+  }
+
+  private scheduleFrameFlush(): void {
+    if (this.frameHandle !== null || this.closed) return;
+    this.frameHandle = this.scheduler.schedule(() => {
+      this.frameHandle = null;
+      this.flushFrames();
+    });
+  }
+
+  /** Public test seam and fallback for environments without an actual rAF. */
+  flushFrames = (): void => {
+    if (this.closed) return;
+    const frames = this.inboundFrames.drain();
+    if (frames.length === 0) return;
+    const before = this.state;
+    for (const frame of frames) this.applyIncomingFrame(frame);
+    if (this.state !== before) this.notifyMain();
+    this.publishAgents();
+  };
+
+  /** Initial sync: snapshot → subscribe watermark → queue/tasks/goal hydration. */
   async open(): Promise<void> {
     try {
       const snapshot = await this.client.snapshot(this.sessionId);
       if (this.closed) return;
       this.setState(applySnapshot(this.sessionId, snapshot));
-      this.socket.subscribe(this.sessionId, {
-        seq: snapshot.as_of_seq,
-        epoch: snapshot.epoch,
-      });
-      void this.refreshTasks();
-      void this.refreshGoal();
+      this.socket.subscribe(this.sessionId, { seq: snapshot.as_of_seq, epoch: snapshot.epoch });
+      await Promise.allSettled([this.refreshPrompts(), this.refreshTasks(), this.refreshGoal()]);
     } catch (error) {
       if (this.closed) return;
-      this.setState(
-        setLoadError(
-          this.state,
-          error instanceof ApiError
-            ? error.message
-            : error instanceof Error
-              ? error.message
-              : 'Could not load session',
-        ),
-      );
+      this.setState(setLoadError(this.state, errorMessage(error, 'Could not load session')));
     }
   }
 
-  /** Retry the initial sync after a snapshot failure. */
   async retryOpen(): Promise<void> {
     if (this.closed) return;
     this.setState(setLoadError(this.state, undefined));
@@ -109,6 +209,11 @@ export class SessionController {
   close(): void {
     this.closed = true;
     this.clearResyncTimer();
+    if (this.promptRefreshTimer !== null) clearTimeout(this.promptRefreshTimer);
+    if (this.frameHandle !== null) this.scheduler.cancel(this.frameHandle);
+    this.frameHandle = null;
+    this.inboundFrames.clear();
+    this.pendingFrames.clear();
     this.socket.unsubscribe(this.sessionId);
   }
 
@@ -121,81 +226,105 @@ export class SessionController {
 
   handleFrame(frame: SessionEventFrame): void {
     if (this.closed || frame.session_id !== this.sessionId) return;
-    // While the transcript is being rebuilt, quarantine incoming frames so a
-    // gap does not get patched incrementally from a stale baseline.
     if (this.state.resyncing || this.state.resyncFailed) {
-      this.pendingFrames.push(frame);
+      if (!this.quarantineOverflowed && this.pendingFrames.push(frame).overflowed) {
+        this.quarantineOverflowed = true;
+      }
       return;
     }
-    const { state: next, gapDetected } = applyFrame(this.state, frame);
-    if (frame.volatile !== true && next !== this.state) {
-      this.socket.updateCursor(this.sessionId, next.cursor);
+    this.inboundFrames.push(frame);
+    this.scheduleFrameFlush();
+  }
+
+  private applyIncomingFrame(frame: SessionEventFrame): void {
+    const agentId = childAgentId(frame);
+    if (agentId !== undefined) {
+      const current = this.agentStates.get(agentId) ?? this.emptyAgentState;
+      const result = applyAgentFrame(current, frame);
+      this.agentStates.set(agentId, result.state);
+      this.dirtyAgents.add(agentId);
+
+      if (frame.payload.type === 'tool.call.started') {
+        const toolCallId = (frame.payload as { toolCallId?: string }).toolCallId;
+        const seen = this.childToolCalls.get(agentId) ?? new Set<string>();
+        if (toolCallId !== undefined && !seen.has(toolCallId)) {
+          seen.add(toolCallId);
+          this.childToolCalls.set(agentId, seen);
+          this.state = incrementSubagentToolCount(this.state, agentId, frame.timestamp);
+        }
+      }
+      const advanced = advanceSessionCursor(this.state, frame);
+      if (advanced !== this.state) {
+        this.state = advanced;
+        this.socket.updateCursor(this.sessionId, advanced.cursor);
+      }
+      if (result.gapDetected) void this.resync();
+      return;
     }
-    this.setState(next);
-    if (gapDetected) void this.resync();
+
+    const result = applyFrame(this.state, frame);
+    this.state = result.state;
+    if (frame.volatile !== true && result.state.cursor.seq >= frame.seq) {
+      this.socket.updateCursor(this.sessionId, result.state.cursor);
+    }
+    if (
+      frame.payload.type.startsWith('prompt.') ||
+      frame.payload.type === 'turn.started' ||
+      frame.payload.type === 'turn.ended'
+    ) {
+      this.schedulePromptRefresh();
+    }
+    if (result.gapDetected) void this.resync();
   }
 
   handleResyncRequired(payload: ResyncRequiredPayload): void {
-    if (payload.session_id !== this.sessionId) return;
-    void this.resync();
+    if (payload.session_id === this.sessionId) void this.resync();
   }
 
-  /** Full rebuild: fresh snapshot + resubscribe from the new watermark. */
   async resync(): Promise<void> {
     if (this.resyncInFlight || this.closed) return;
     this.resyncInFlight = true;
     this.clearResyncTimer();
     this.setState(setResyncing(this.state, true));
+    let runAgain = false;
     try {
       const snapshot = await this.client.snapshot(this.sessionId);
       if (this.closed) return;
-      const rebuilt = preserveCapturedSubagents(
-        applySnapshot(this.sessionId, snapshot),
-        this.state,
-      );
+      const rebuilt = preserveCapturedSubagents(applySnapshot(this.sessionId, snapshot), this.state);
       this.setState(setResyncing(rebuilt, false));
-      this.socket.subscribe(this.sessionId, {
-        seq: snapshot.as_of_seq,
-        epoch: snapshot.epoch,
-      });
-      // Replay quarantined frames that are newer than the rebuilt watermark.
-      this.replayPendingFrames(rebuilt.cursor.seq);
-      void this.refreshTasks();
-      void this.refreshGoal();
+      this.socket.subscribe(this.sessionId, { seq: snapshot.as_of_seq, epoch: snapshot.epoch });
+      if (this.quarantineOverflowed) {
+        this.pendingFrames.clear();
+        this.quarantineOverflowed = false;
+        runAgain = true;
+      } else {
+        this.replayPendingFrames(rebuilt.cursor.seq);
+      }
+      await Promise.allSettled([this.refreshPrompts(), this.refreshTasks(), this.refreshGoal()]);
     } catch {
       if (!this.closed) {
         const attempt = this.state.resyncAttempt + 1;
-        this.setState(
-          setResyncFailed(setResyncing(this.state, false), true, attempt),
-        );
+        this.setState(setResyncFailed(setResyncing(this.state, false), true, attempt));
         this.scheduleResyncRetry();
       }
     } finally {
       this.resyncInFlight = false;
+      if (runAgain && !this.closed) queueMicrotask(() => void this.resync());
     }
   }
 
   private replayPendingFrames(minSeq: number): void {
-    const frames = this.pendingFrames;
-    this.pendingFrames = [];
-    let state = this.state;
+    const frames = this.pendingFrames.drain();
+    let gap = false;
     for (const frame of frames) {
-      if (frame.volatile === true) continue;
-      if (frame.seq <= minSeq) continue;
-      const result = applyFrame(state, frame);
-      state = result.state;
-      if (!result.gapDetected && frame.seq > state.cursor.seq) {
-        this.socket.updateCursor(this.sessionId, state.cursor);
-      }
-      if (result.gapDetected) {
-        // A fresh gap during replay is unlikely but possible if a frame was
-        // lost while quarantined. Trigger another resync.
-        this.setState(state);
-        void this.resync();
-        return;
-      }
+      if (frame.volatile === true || frame.seq <= minSeq) continue;
+      const before = this.state;
+      this.applyIncomingFrame(frame);
+      if (this.state === before && frame.seq > this.state.cursor.seq) gap = true;
     }
-    this.setState(state);
+    this.notifyMain();
+    this.publishAgents();
+    if (gap) void this.resync();
   }
 
   private scheduleResyncRetry(): void {
@@ -208,23 +337,41 @@ export class SessionController {
     }, delay);
   }
 
-  /** Merge a fresher session record from the list poll. */
+  private schedulePromptRefresh(): void {
+    if (this.closed || this.promptRefreshTimer !== null) return;
+    this.promptRefreshTimer = setTimeout(() => {
+      this.promptRefreshTimer = null;
+      void this.refreshPrompts();
+    }, 60);
+  }
+
   handleSessionRecord = (record: Session): void => {
     if (record.id !== this.sessionId || this.closed) return;
     const current = this.state.session;
-    // The live event stream owns busy/pending while loaded; only adopt the
-    // poll when it is at least as fresh as what we have.
     if (current === undefined || record.updated_at >= current.updated_at) {
       this.setState(setSessionRecord(this.state, record));
     }
   };
+
+  async refreshPrompts(): Promise<void> {
+    const seq = (this.promptRefreshSeq += 1);
+    try {
+      const prompts = await this.client.listPrompts(this.sessionId);
+      if (!this.closed && seq === this.promptRefreshSeq) {
+        this.setState(reconcilePromptList(this.state, prompts));
+      }
+    } catch {
+      // The queue view is best-effort; prompt.* frames and the submit result
+      // remain authoritative when this route is unavailable.
+    }
+  }
 
   async refreshTasks(): Promise<void> {
     try {
       const data = await this.client.listTasks(this.sessionId);
       if (!this.closed) this.setState(setTasks(this.state, data.items));
     } catch {
-      // tasks rail is best-effort
+      // Optional rail data on older servers; explicit task actions still surface failures.
     }
   }
 
@@ -233,14 +380,10 @@ export class SessionController {
       const goal = await this.client.getSessionGoal(this.sessionId);
       if (!this.closed) this.setState(setGoal(this.state, goal));
     } catch {
-      // Older servers may not expose the goal route; goal.updated still works.
+      // Older servers may not expose the goal route; goal.updated remains authoritative.
     }
   }
 
-  /**
-   * Fetch one older history page and prepend it. Returns true when a page was
-   * applied — the scroll layer uses that to re-anchor the viewport.
-   */
   async loadOlderMessages(): Promise<boolean> {
     const current = this.state;
     if (
@@ -296,18 +439,21 @@ export class SessionController {
         promptId: result.prompt_id,
         text: input.text,
         createdAt: result.created_at,
-        queued: result.status === 'queued',
+        status: result.status,
       }),
     );
+    this.schedulePromptRefresh();
   }
 
   async abortActive(): Promise<void> {
     const promptId = this.state.activePromptId;
-    if (promptId === undefined) return;
-    // WS abort is fire-and-forget; REST is the reliable path. Let failures
-    // surface so the UI can warn that the turn may still be running.
-    this.socket.abort(this.sessionId, promptId);
+    if (promptId !== undefined) await this.abortPrompt(promptId);
+  }
+
+  async abortPrompt(promptId: string): Promise<void> {
+    if (promptId === this.state.activePromptId) this.socket.abort(this.sessionId, promptId);
     await this.client.abortPrompt(this.sessionId, promptId);
+    await this.refreshPrompts();
   }
 
   async resolveApproval(
@@ -321,18 +467,11 @@ export class SessionController {
       this.setState(markApprovalResolved(this.state, approvalId, { decision, resolvedAt }));
     } catch (error) {
       if (error instanceof ApiError && error.code === API_CODES.APPROVAL_ALREADY_RESOLVED) {
-        this.setState(
-          markApprovalResolved(this.state, approvalId, {
-            decision: 'resolved_elsewhere',
-            resolvedAt,
-          }),
-        );
+        this.setState(markApprovalResolved(this.state, approvalId, { decision: 'resolved_elsewhere', resolvedAt }));
         return;
       }
       if (error instanceof ApiError && error.code === API_CODES.APPROVAL_EXPIRED) {
-        this.setState(
-          markApprovalResolved(this.state, approvalId, { decision: 'expired', resolvedAt }),
-        );
+        this.setState(markApprovalResolved(this.state, approvalId, { decision: 'expired', resolvedAt }));
         return;
       }
       throw error;

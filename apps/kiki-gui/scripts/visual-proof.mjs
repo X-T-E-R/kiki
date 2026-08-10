@@ -496,20 +496,276 @@ async function scenarioResponsive() {
   }
 }
 
+async function scenarioQueue() {
+  await selectSession('Fixture: queue');
+  await sendPrompt('A: hold the floor.');
+  await waitForText('A holds the floor.');
+  await sendPrompt('B: wait your turn.');
+  // The parked prompt surfaces immediately: one user block + Queued chip + bar.
+  await page.waitForSelector('text=Queued — starts when the current turn finishes', { timeout: 10_000 });
+  const bBlocks = page.locator('[role="log"] [data-block-id^="user-"]', { hasText: 'B: wait your turn.' });
+  if ((await bBlocks.count()) !== 1) throw new Error(`expected one B user block, saw ${await bBlocks.count()}`);
+  await page.waitForSelector('text=1 prompt queued', { timeout: 5000 });
+  await shot('queue-queued');
+  // Release A → B promotes to running; the chip and bar clear.
+  await control({ action: 'release', session_id: 'session_fixture_queue' });
+  await waitForText('B runs after A.');
+  await page.waitForSelector('text=Queued — starts when the current turn finishes', {
+    state: 'detached',
+    timeout: 10_000,
+  });
+  if ((await bBlocks.count()) !== 1) {
+    const ids = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('[role="log"] [data-block-id]')).map((n) => n.getAttribute('data-block-id')),
+    );
+    console.log('[debug] block ids at promotion:', JSON.stringify(ids));
+    throw new Error(`B user block duplicated after promotion: ${await bBlocks.count()}`);
+  }
+  if ((await page.locator('text=/prompts? queued/').count()) !== 0) throw new Error('queue bar still visible after promotion');
+  await shot('queue-promoted');
+  // Cancelling a parked prompt keeps its block but drops the chip.
+  await sendPrompt('A: hold the floor.');
+  await page.waitForSelector('text=working', { timeout: 10_000 });
+  await sendPrompt('B: cancel me.');
+  await page.waitForSelector('text=Queued — starts when the current turn finishes', { timeout: 10_000 });
+  await page.click('button[aria-label="Cancel queued prompt"]');
+  await page.waitForSelector('text=Prompt aborted', { timeout: 10_000 });
+  const cancelled = page.locator('[role="log"] [data-block-id^="user-"]', { hasText: 'B: cancel me.' });
+  if ((await cancelled.count()) !== 1) throw new Error('cancelled queued prompt lost its user block');
+  if ((await page.locator('text=Queued — starts when the current turn finishes').count()) !== 0) {
+    throw new Error('Queued chip survived the cancellation');
+  }
+  await shot('queue-cancelled');
+  await control({ action: 'release', session_id: 'session_fixture_queue' });
+  await page.waitForSelector('text=working', { state: 'detached', timeout: 10_000 }).catch(() => undefined);
+}
+
+async function scenarioBurst() {
+  // Instrument BEFORE the app boots: count WS messages, wrap fetch to time
+  // prompt POSTs, and collect longtasks. The runner already reloaded once for
+  // this scenario; reload again so the init script wins over the app socket.
+  await page.addInitScript(() => {
+    window.__wsMessages = 0;
+    window.__promptFetches = [];
+    window.__longtasks = [];
+    const OriginalWebSocket = window.WebSocket;
+    window.WebSocket = class extends OriginalWebSocket {
+      constructor(...args) {
+        super(...args);
+        this.addEventListener('message', () => {
+          window.__wsMessages += 1;
+        });
+      }
+    };
+    const originalFetch = window.fetch;
+    window.fetch = (input, init) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (typeof url === 'string' && url.includes('/prompts') && (init?.method ?? 'GET') === 'POST') {
+        window.__promptFetches.push(performance.now());
+      }
+      return originalFetch(input, init);
+    };
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) window.__longtasks.push(entry.duration);
+    }).observe({ entryTypes: ['longtask'] });
+  });
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForSelector('text=New session', { timeout: 15_000 });
+  await selectSession('Fixture: burst');
+  // Idle baseline: the same press→POST path before any flood begins.
+  await page.fill('textarea', 'Start the burst.');
+  const idlePressedAt = await page.evaluate(() => performance.now());
+  await page.press('textarea', 'Enter');
+  await page.waitForFunction(() => window.__promptFetches.length > 0, undefined, { timeout: 5000 });
+  const idleLatency = await page.evaluate(
+    (start) => window.__promptFetches[0] - start,
+    idlePressedAt,
+  );
+  console.log(`[check] idle prompt POST initiation baseline: ${idleLatency.toFixed(1)}ms`);
+  // Catch the storm while it is arriving: poll the in-page WS message counter.
+  const baselineCount = await page.evaluate(() => window.__wsMessages);
+  let streaming = false;
+  for (let i = 0; i < 120; i += 1) {
+    const current = await page.evaluate(() => window.__wsMessages);
+    if (current - baselineCount > 100) {
+      streaming = true;
+      break;
+    }
+    await page.waitForTimeout(25);
+  }
+  if (!streaming) throw new Error('burst frames never streamed');
+  // Mid-burst: a prompt POST must still initiate inside ~100ms. Both clocks
+  // are the page's performance.now(): the gap covers event-queue wait plus
+  // React handling plus fetch initiation — exactly what starvation destroys.
+  const fetchesBefore = await page.evaluate(() => window.__promptFetches.length);
+  await page.fill('textarea', 'B: second during burst.');
+  const pressedAt = await page.evaluate(() => performance.now());
+  await page.press('textarea', 'Enter');
+  await page.waitForFunction((before) => window.__promptFetches.length > before, fetchesBefore, { timeout: 5000 });
+  const latency = await page.evaluate(
+    (start) => window.__promptFetches[window.__promptFetches.length - 1] - start,
+    pressedAt,
+  );
+  const framesAtSend = await page.evaluate(() => window.__wsMessages);
+  console.log(
+    `[check] mid-burst prompt POST initiation: ${latency.toFixed(1)}ms (idle baseline ${idleLatency.toFixed(1)}ms)`,
+  );
+  // The second prompt parked behind the parked turn (A holds a release gate
+  // after the storm, so B deterministically lands in the server queue).
+  try {
+    await page.waitForSelector('text=Queued — starts when the current turn finishes', { timeout: 30_000 });
+  } catch (error) {
+    const ids = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('[role="log"] [data-block-id]')).map((n) => n.getAttribute('data-block-id')),
+    );
+    console.log('[debug] block ids at chip timeout:', JSON.stringify(ids));
+    throw error;
+  }
+  await shot('burst-queued');
+  // Let A finish; B promotes out of the queue and runs.
+  await control({ action: 'release', session_id: 'session_fixture_burst' });
+  await waitForText('Burst survived — the composer stayed responsive.', 90_000);
+  await waitForText('Second prompt landed after the burst — exactly once.', 30_000);
+  await page.waitForTimeout(600);
+  const report = await page.evaluate(() => ({
+    frames: window.__wsMessages,
+    longtasks: window.__longtasks.length,
+    maxLongtask: window.__longtasks.length > 0 ? Math.max(...window.__longtasks) : 0,
+  }));
+  console.log(
+    `[check] burst frames=${report.frames} (at B send: ${framesAtSend}) longtasks=${report.longtasks} maxLongtask=${report.maxLongtask.toFixed(0)}ms`,
+  );
+  if (report.frames - framesAtSend < 1000) {
+    throw new Error('B was not sent mid-burst — the storm had already drained');
+  }
+  if (report.maxLongtask > 800) {
+    throw new Error(`main-thread longtask ${report.maxLongtask.toFixed(0)}ms during burst`);
+  }
+  // Latency asserted after reporting so a failing run still prints the full
+  // profile. Pre-pipeline this was seconds (a publish + full render per
+  // frame); the budget is 100ms over the idle floor.
+  if (latency > idleLatency + 100) {
+    throw new Error(
+      `prompt POST took ${latency.toFixed(1)}ms to initiate mid-burst (idle ${idleLatency.toFixed(1)}ms)`,
+    );
+  }
+  const bBlocks = page.locator('[role="log"] [data-block-id^="user-"]', { hasText: 'B: second during burst.' });
+  if ((await bBlocks.count()) !== 1) throw new Error(`expected one B user block, saw ${await bBlocks.count()}`);
+  await shot('burst');
+}
+
+async function scenarioSubagentsBurst() {
+  await selectSession('Fixture: subagents burst');
+  await page.waitForSelector('text=A blank page', { timeout: 10_000 });
+  await page.evaluate(() => {
+    window.__mainMutations = 0;
+    new MutationObserver((records) => {
+      window.__mainMutations += records.length;
+    }).observe(document.querySelector('main'), {
+      childList: true,
+      subtree: true,
+      characterData: true,
+      attributes: true,
+    });
+  });
+  const emitted = await control({ action: 'burst', session_id: 'session_fixture_subagents_burst', count: 8000 });
+  console.log(`[check] hidden child deltas emitted: ${emitted.data?.emitted}`);
+  await page.waitForTimeout(700); // let any straggler flush land
+  const mutations = await page.evaluate(() => window.__mainMutations);
+  console.log(`[check] main-DOM mutations during hidden child burst: ${mutations}`);
+  if (mutations > 2) throw new Error(`hidden child deltas caused ${mutations} main-DOM mutations`);
+  // The scoped per-agent channel captured the stream: open the agent page and
+  // fire a second burst — the tool card materializes without a main resync.
+  await page.goto(
+    `${WEB_URL}/s/session_fixture_subagents_burst/agent/agent-hidden?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`,
+    { waitUntil: 'networkidle' },
+  );
+  await page.waitForSelector('text=Read-only subagent transcript', { timeout: 15_000 });
+  await control({ action: 'burst', session_id: 'session_fixture_subagents_burst', count: 500 });
+  await page.waitForSelector('[data-block-id="tool-burst-call"]', { timeout: 15_000 });
+  await page.waitForTimeout(400);
+  await shot('subagents-burst-agent-page');
+}
+
+async function scenarioResyncHold() {
+  await selectSession('Fixture: resync hold');
+  await sendPrompt('Hold my snapshot.');
+  await waitForText('Settled before the hold.');
+  await page.waitForSelector('text=working', { state: 'detached', timeout: 20_000 }).catch(() => undefined);
+  // Hold every snapshot fetch until released below.
+  const held = [];
+  let holding = true;
+  await page.route('**/api/v1/sessions/*/snapshot', async (route) => {
+    if (!holding) return route.continue();
+    await new Promise((resolve) => held.push({ route, resolve }));
+  });
+  await control({ action: 'resync', session_id: 'session_fixture_resync_hold' });
+  await page.waitForSelector('text=Resyncing…', { timeout: 10_000 });
+  // A duplicate trigger must not stack a second in-flight snapshot.
+  await control({ action: 'resync', session_id: 'session_fixture_resync_hold' });
+  await page.waitForTimeout(1500);
+  console.log(`[check] snapshot requests held in flight: ${held.length}`);
+  if (held.length !== 1) throw new Error(`expected exactly 1 held snapshot request, saw ${held.length}`);
+  await shot('resync-hold-held');
+  holding = false;
+  for (const { route, resolve } of held.splice(0)) {
+    resolve();
+    await route.continue();
+  }
+  await page.waitForSelector('text=Resyncing…', { state: 'detached', timeout: 15_000 });
+  await page.unroute('**/api/v1/sessions/*/snapshot');
+  await page.waitForTimeout(500);
+  const occurrences = await page.evaluate(
+    () => document.body.innerText.split('Settled before the hold.').length - 1,
+  );
+  if (occurrences !== 1) throw new Error(`expected the pre-hold text exactly once, saw ${occurrences}`);
+  const userBlocks = page.locator('[role="log"] [data-block-id^="user-"]', { hasText: 'Hold my snapshot.' });
+  if ((await userBlocks.count()) !== 1) throw new Error(`expected one user block after resync, saw ${await userBlocks.count()}`);
+  await shot('resync-hold-recovered');
+}
+
+async function scenarioReminder() {
+  await selectSession('Fixture: reminder');
+  await waitForText('Fixed — the flake was a missing await on the fixture client.');
+  const bubbles = page.locator('[role="log"] [data-block-id^="user-"]');
+  if ((await bubbles.count()) !== 1) throw new Error(`expected exactly one user bubble, saw ${await bubbles.count()}`);
+  const bubbleText = await bubbles.first().innerText();
+  if (!bubbleText.includes('Fix the flaky integration test.')) throw new Error('user text missing from the bubble');
+  if (bubbleText.includes('system-reminder') || bubbleText.includes('repeated several times')) {
+    throw new Error('reminder content leaked into the user bubble');
+  }
+  const reminders = page.locator('[role="log"] button', { hasText: 'System reminder' });
+  if ((await reminders.count()) !== 2) throw new Error(`expected 2 collapsed reminders, saw ${await reminders.count()}`);
+  if ((await page.locator('text=The same tool call has been repeated').count()) !== 0) {
+    throw new Error('collapsed reminder content rendered before expansion');
+  }
+  await shot('reminder-collapsed');
+  await reminders.first().click();
+  await waitForText('The same tool call has been repeated');
+  await page.waitForTimeout(300);
+  await shot('reminder-expanded');
+}
+
 // ---------------------------------------------------------------------------
 
 const SCENARIOS = [
   ['basic-stream', scenarioBasicStream],
   ['prompt-dedupe', scenarioPromptDedupe],
+  ['queue', scenarioQueue],
   ['subagents', scenarioSubagents],
+  ['subagents-burst', scenarioSubagentsBurst],
   ['goal-swarm', scenarioGoalSwarm],
   ['tool-pipeline', scenarioToolPipeline],
   ['question-card', scenarioQuestionCard],
   ['busy-rail', scenarioBusyRail],
+  ['burst', scenarioBurst],
   ['long-transcript', scenarioLongTranscript],
+  ['reminder', scenarioReminder],
   ['error-abort', scenarioErrorAbort],
   ['approvals-gallery', scenarioApprovalsGallery],
   ['reconnect', scenarioReconnect],
+  ['resync-hold', scenarioResyncHold],
   ['empty-states', scenarioEmptyStates],
   ['draft-flow', scenarioDraftFlow],
   ['settings', scenarioSettings],
@@ -586,11 +842,11 @@ async function main() {
     for (const [name, run] of SCENARIOS) {
       if (!wanted(name)) continue;
       console.log(`[scenario] ${name}`);
-      await control({ action: 'scenario', name });
-      await page.reload({ waitUntil: 'networkidle' });
-      await page.waitForSelector('text=New session', { timeout: 15_000 });
-      await page.waitForTimeout(900); // let the first sessions poll land
       try {
+        await control({ action: 'scenario', name });
+        await page.reload({ waitUntil: 'networkidle' });
+        await page.waitForSelector('text=New session', { timeout: 15_000 });
+        await page.waitForTimeout(900); // let the first sessions poll land
         await run();
       } catch (error) {
         console.error(`[FAIL] scenario ${name}:`, error.message);

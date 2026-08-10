@@ -12,17 +12,28 @@
  * `kimi-code.bearer.*` WS subprotocol, like kap-server).
  *
  * Scenarios are data modules in ../fixtures/*.scenario.mjs. Event scripts are
- * step lists the server plays on a trigger (`onPrompt`); steps:
+ * step lists the server plays on a trigger (`onPrompt`, a plain list or a
+ * `(text, sessionId) => steps` function); steps:
  *   { delay, frame: { type, payload, volatile?, offset? } }  emit a frame
- *   { waitFor: 'approval' | 'question' | 'abort' }           pause until REST
+ *   { waitFor: 'approval' | 'question' | 'abort' | 'release' } pause
  *   { commit: Message }                                    journal a message
+ *   { spam: { count, frame, paceMs? } } emit count copies of frame in dense
+ *                                   500-frame chunks (`$I` binds the index;
+ *                                   paceMs stretches the storm across chunks)
  * `{ waitFor: 'approval' }` resumes when the approval is resolved through the
  * REST route, exactly like a real agent blocked on a human.
+ *
+ * Prompt scheduling mirrors kap-server: a second POST while a turn runs parks
+ * in `queuedPrompts` (reply status 'queued'), `GET /sessions/:id/prompts`
+ * reports {active, queued}, a finished turn promotes the oldest queued prompt,
+ * and `:abort` on a queued id just dequeues it.
  *
  * Control endpoint (not under /api): POST /__control
  *   { action: 'scenario', name }        switch scenario (resets state, drops WS)
  *   { action: 'drop_ws' }               terminate all WS connections abnormally
  *   { action: 'resync', session_id }    bump epoch + send resync_required
+ *   { action: 'release', session_id }   resolve { waitFor: 'release' } steps
+ *   { action: 'burst', session_id, count, frame? }  on-demand frame storm
  *   { action: 'list' }                  list scenario names + active one
  */
 
@@ -105,6 +116,19 @@ function bindPrompt(value, promptId) {
   return value;
 }
 
+/** Deep-replace `$I` with the spam index; `$I-text` suffixes become `<i>-text`. */
+function bindIndex(value, index) {
+  if (typeof value === 'string') {
+    if (value === '$I') return index;
+    return value.includes('$I') ? value.replaceAll('$I', String(index)) : value;
+  }
+  if (Array.isArray(value)) return value.map((item) => bindIndex(item, index));
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, bindIndex(v, index)]));
+  }
+  return value;
+}
+
 class FixtureSession {
   constructor(record, scenarioData) {
     this.record = record; // Session wire record
@@ -124,6 +148,10 @@ class FixtureSession {
     this.scriptRunning = false;
     this.abortRequested = false;
     this.waiters = []; // [{kind, resolve, payload?}]
+    this.releaseArmed = false; // one-shot gate for { waitFor: 'release' }
+    // Prompt queue mirroring kap-server's {active, queued} scheduler surface.
+    this.activePrompt = null; // PromptItem while a turn runs
+    this.queuedPrompts = []; // PromptItem[]
   }
 }
 
@@ -215,6 +243,41 @@ class FixtureServer {
   }
 
   // ------------------------------------------------------------- scripts
+  /** Steps for a prompt: `onPrompt` may be a plain step list or a function of
+   * the prompt text (queued prompts get their own script on promotion). */
+  scriptFor(session, text) {
+    const onPrompt = this.scenario?.data.onPrompt;
+    if (typeof onPrompt === 'function') return onPrompt(text, session.record.id);
+    return Array.isArray(onPrompt) ? onPrompt : null;
+  }
+
+  /** Launch the script for a submitted/promoted prompt item. */
+  startPrompt(session, item) {
+    this.debug(`promote/start ${item.prompt_id} ("${item.text}")`);
+    session.activePrompt = item;
+    session.record.busy = true;
+    const steps = this.scriptFor(session, item.text);
+    if (steps !== null) {
+      void this.runScript(session.record.id, bindPrompt(bind(steps, session.record.id), item.prompt_id));
+    }
+  }
+
+  debug(...args) {
+    if (process.env.KIKI_FIXTURE_DEBUG !== undefined) console.log('[fixture:debug]', ...args);
+  }
+
+  /** A finished turn promotes the oldest queued prompt, like the real
+   * scheduler: queued → running, and the new turn's frames start flowing. */
+  promoteNext(session) {
+    session.activePrompt = null;
+    if (session.queuedPrompts.length === 0) {
+      session.record.busy = false;
+      return;
+    }
+    const next = session.queuedPrompts.shift();
+    this.startPrompt(session, next);
+  }
+
   async runScript(sessionId, steps) {
     const session = this.sessions.get(sessionId);
     if (session === undefined || session.scriptRunning) return;
@@ -229,12 +292,35 @@ class FixtureServer {
         if (step.delay !== undefined) await sleep(step.delay);
         if (session.abortRequested) return;
         if (step.waitFor !== undefined) {
+          // The release gate is one-shot: a release that arrives before the
+          // script parks arms it, and the gate consumes the arm as it passes.
+          if (step.waitFor === 'release' && session.releaseArmed === true) {
+            session.releaseArmed = false;
+            continue;
+          }
           await new Promise((resolve) => session.waiters.push({ kind: step.waitFor, resolve }));
           continue;
         }
         if (step.commit !== undefined) {
           session.messages.push({ ...step.commit, id: nextId('msg'), session_id: sessionId, created_at: now() });
           session.record.message_count += 1;
+          continue;
+        }
+        if (step.spam !== undefined) {
+          // A dense frame storm ({count, frame, paceMs?}); $I in the template
+          // binds the index. Chunks of 500 are emitted back-to-back (no delay
+          // inside a chunk — the client still sees uncoalesced bursts); an
+          // optional paceMs between chunks stretches the storm so a walker can
+          // act deterministically mid-flood. Yields keep HTTP/WS peers serviced.
+          const { count, frame, paceMs } = step.spam;
+          for (let i = 0; i < count; i += 1) {
+            if (session.abortRequested) return;
+            this.emit(sessionId, bindIndex(frame, i));
+            if (i % 500 === 499) {
+              if (paceMs !== undefined) await sleep(paceMs);
+              else await new Promise((resolve) => setImmediate(resolve));
+            }
+          }
           continue;
         }
         if (step.frame !== undefined) {
@@ -244,6 +330,7 @@ class FixtureServer {
       }
     } finally {
       session.scriptRunning = false;
+      this.promoteNext(session);
     }
   }
 
@@ -604,16 +691,20 @@ class FixtureServer {
       // durable context message. Keep the stand-in aligned with that graph.
       const promptId = nextId('msg');
       const userMessageId = promptId;
+      const createdAt = now();
       const text = (body.content ?? []).filter((c) => c.type === 'text').map((c) => c.text).join('\n');
-      session.messages.push({ id: userMessageId, session_id: session.record.id, role: 'user', content: body.content, created_at: now(), prompt_id: promptId });
+      session.messages.push({ id: userMessageId, session_id: session.record.id, role: 'user', content: body.content, created_at: createdAt, prompt_id: promptId });
       session.record.message_count += 1;
       session.record.last_prompt = text;
       session.lastPromptSubmission = body;
-      // A parked script owns the turn — queue like the real server.
-      if (session.scriptRunning) {
-        return this.envelope(res, { prompt_id: promptId, user_message_id: userMessageId, status: 'queued', content: body.content, created_at: now() });
+      const item = { prompt_id: promptId, user_message_id: userMessageId, status: 'running', content: body.content, created_at: createdAt, text };
+      // A parked turn owns the session — park behind it like the real server.
+      if (session.scriptRunning || session.activePrompt !== null) {
+        session.queuedPrompts.push(item);
+        this.debug(`prompt "${text}" queued as ${promptId} (active=${session.activePrompt?.prompt_id ?? 'none'}, queue=${session.queuedPrompts.length})`);
+        return this.envelope(res, { prompt_id: promptId, user_message_id: userMessageId, status: 'queued', content: body.content, created_at: createdAt });
       }
-      session.record.busy = true;
+      this.debug(`prompt "${text}" running as ${promptId}`);
       // Real v2 publishes turn.started before the HTTP reply. Scenarios use this
       // hook to reproduce that cross-transport race deterministically.
       const beforeResponse = this.scenario?.data.onSubmitBeforeResponse;
@@ -623,25 +714,46 @@ class FixtureServer {
           this.emit(session.record.id, frame);
         }
       }
-      const steps = this.scenario?.data.onPrompt;
-      if (Array.isArray(steps)) {
-        void this.runScript(session.record.id, bindPrompt(bind(steps, session.record.id), promptId));
-      }
-      return this.envelope(res, { prompt_id: promptId, user_message_id: userMessageId, status: 'running', content: body.content, created_at: now() });
+      this.startPrompt(session, item);
+      return this.envelope(res, { prompt_id: promptId, user_message_id: userMessageId, status: 'running', content: body.content, created_at: createdAt });
+    }
+    if (tail === '/prompts') {
+      const strip = (item, status) => ({
+        prompt_id: item.prompt_id,
+        user_message_id: item.user_message_id,
+        status,
+        content: item.content,
+        created_at: item.created_at,
+      });
+      this.debug(`GET prompts → active=${session.activePrompt?.prompt_id ?? 'null'} queued=[${session.queuedPrompts.map((p) => p.prompt_id).join(',')}]`);
+      return this.envelope(res, {
+        active: session.activePrompt === null ? null : strip(session.activePrompt, 'running'),
+        queued: session.queuedPrompts.map((item) => strip(item, 'queued')),
+      });
     }
     const abortMatch = /^\/prompts\/([^/]+):abort$/.exec(tail);
     if (abortMatch !== null) {
-      session.abortRequested = true;
-      this.resolveWaiters(session, 'abort');
-      if (session.scriptRunning) {
-        this.emit(session.record.id, {
-          type: 'turn.ended',
-          payload: { turnId: 1, reason: 'cancelled' },
-        });
+      const promptId = abortMatch[1];
+      const queuedIndex = session.queuedPrompts.findIndex((item) => item.prompt_id === promptId);
+      if (queuedIndex >= 0) {
+        session.queuedPrompts.splice(queuedIndex, 1);
+        this.emit(session.record.id, { type: 'prompt.aborted', payload: { promptId, abortedAt: now() } });
+        return this.envelope(res, { aborted: true, at_seq: session.seq });
       }
-      this.emit(session.record.id, { type: 'prompt.aborted', payload: { promptId: abortMatch[1], abortedAt: now() } });
-      session.record.busy = false;
-      return this.envelope(res, { aborted: true, at_seq: session.seq });
+      if (session.activePrompt?.prompt_id === promptId || session.scriptRunning) {
+        session.abortRequested = true;
+        this.resolveWaiters(session, 'abort');
+        if (session.scriptRunning) {
+          this.emit(session.record.id, {
+            type: 'turn.ended',
+            payload: { turnId: 1, reason: 'cancelled' },
+          });
+        }
+        this.emit(session.record.id, { type: 'prompt.aborted', payload: { promptId, abortedAt: now() } });
+        session.record.busy = false;
+        return this.envelope(res, { aborted: true, at_seq: session.seq });
+      }
+      return this.envelope(res, { aborted: false, at_seq: session.seq }, 40903, 'prompt.already_completed');
     }
     if (tail === '/approvals') {
       return this.envelope(res, { items: session.pendingApprovals });
@@ -718,6 +830,33 @@ class FixtureServer {
           try { ws.terminate(); } catch { /* closing */ }
         }
         return this.envelope(res, { dropped: this.sockets.size });
+      case 'release': {
+        // Unblock steps parked on { waitFor: 'release' } (queue/abort pacing).
+        // With none parked yet, arm the one-shot gate for the next one.
+        const session = this.sessions.get(body.session_id);
+        if (session === undefined) return this.envelope(res, null, 40401, 'session.not_found');
+        const parked = session.waiters.filter((w) => w.kind === 'release').length;
+        if (parked > 0) this.resolveWaiters(session, 'release');
+        else session.releaseArmed = true;
+        return this.envelope(res, { released: parked, armed: parked === 0 });
+      }
+      case 'burst': {
+        // On-demand no-delay frame storm (default: child-agent tool deltas) so
+        // a walker can stress the client pipeline at a moment it chooses.
+        const session = this.sessions.get(body.session_id);
+        if (session === undefined) return this.envelope(res, null, 40401, 'session.not_found');
+        const count = Number(body.count ?? 2000);
+        const template = body.frame ?? {
+          type: 'tool.call.delta',
+          agentId: body.agentId ?? 'agent-hidden',
+          payload: { turnId: 900, toolCallId: 'burst-call', name: 'Write', argumentsPart: '$I ' },
+        };
+        for (let i = 0; i < count; i += 1) {
+          this.emit(session.record.id, bindIndex(template, i));
+          if (i % 500 === 499) await new Promise((resolve) => setImmediate(resolve));
+        }
+        return this.envelope(res, { emitted: count });
+      }
       case 'resync': {
         const session = this.sessions.get(body.session_id);
         if (session === undefined) return this.envelope(res, null, 40401, 'session.not_found');

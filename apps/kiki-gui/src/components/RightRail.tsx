@@ -3,9 +3,9 @@
  * and session meta (model, cwd, message count, context/token usage).
  */
 
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 
-import type { Task } from '@moonshot-ai/protocol';
+import type { GoalSnapshot, Task } from '@moonshot-ai/protocol';
 
 import { formatDuration, formatTokens, relativeTime } from '../lib/time';
 import type { SessionViewState, SubagentBlock, TodoItem } from '../state/transcript';
@@ -24,7 +24,7 @@ function todoTone(status: string): { icon: string; className: string } {
   return { icon: '', className: 'border-hairline-strong bg-panel text-transparent' };
 }
 
-function TodosSection({ todos }: { todos: readonly TodoItem[] }) {
+const TodosSection = memo(function TodosSection({ todos }: { todos: readonly TodoItem[] }) {
   if (todos.length === 0) {
     return <p className="text-[12px] text-ink-faint">No todo list yet.</p>;
   }
@@ -61,7 +61,7 @@ function TodosSection({ todos }: { todos: readonly TodoItem[] }) {
       </ul>
     </div>
   );
-}
+});
 
 function taskStatusTone(status: Task['status']): string {
   switch (status) {
@@ -76,7 +76,7 @@ function taskStatusTone(status: Task['status']): string {
   }
 }
 
-function TasksSection({
+const TasksSection = memo(function TasksSection({
   tasks,
   onCancel,
 }: {
@@ -120,9 +120,9 @@ function TasksSection({
       ))}
     </ul>
   );
-}
+});
 
-function SubagentsSection({
+const SubagentsSection = memo(function SubagentsSection({
   subagents,
   onOpen,
 }: {
@@ -176,10 +176,15 @@ function SubagentsSection({
       })}
     </ul>
   );
-}
+});
 
-function GoalSection({ state }: { state: SessionViewState }) {
-  const goal = state.goal;
+const GoalSection = memo(function GoalSection({
+  goal,
+  goalUpdatedAt,
+}: {
+  goal: GoalSnapshot | null | undefined;
+  goalUpdatedAt: string | undefined;
+}) {
   if (goal === undefined) {
     return <p className="text-[12px] text-ink-faint">Goal state unavailable from this server.</p>;
   }
@@ -200,8 +205,8 @@ function GoalSection({ state }: { state: SessionViewState }) {
         <span className="rounded-full bg-panel px-2 py-0.5 text-[10px] font-semibold text-amber-ink">
           {goal.status}
         </span>
-        {state.goalUpdatedAt !== undefined ? (
-          <span className="ml-auto text-[10px] text-ink-faint">updated {relativeTime(state.goalUpdatedAt)}</span>
+        {goalUpdatedAt !== undefined ? (
+          <span className="ml-auto text-[10px] text-ink-faint">updated {relativeTime(goalUpdatedAt)}</span>
         ) : null}
       </div>
       <p className="mt-2 text-[12.5px] font-medium leading-snug text-ink">{goal.objective}</p>
@@ -218,7 +223,7 @@ function GoalSection({ state }: { state: SessionViewState }) {
       </p>
     </div>
   );
-}
+});
 
 function MetaRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return (
@@ -250,8 +255,13 @@ export function RightRail({
   const contextTokens = state.contextTokens ?? usage?.context_tokens;
   const contextLimit =
     state.maxContextTokens ?? (usage !== undefined && usage.context_limit > 0 ? usage.context_limit : undefined);
-  const subagents = state.blocks.filter(
-    (block): block is SubagentBlock => block.kind === 'subagent',
+  const subagents = useMemo(
+    () => state.blocks.filter((block): block is SubagentBlock => block.kind === 'subagent'),
+    [state.blocks],
+  );
+  const backgroundTasks = useMemo(
+    () => state.tasks.filter((task) => task.kind !== 'subagent'),
+    [state.tasks],
   );
 
   return (
@@ -264,7 +274,7 @@ export function RightRail({
         <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
           Goal
         </h3>
-        <GoalSection state={state} />
+        <GoalSection goal={state.goal} goalUpdatedAt={state.goalUpdatedAt} />
       </section>
 
       <section>
@@ -285,7 +295,7 @@ export function RightRail({
         <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
           Background tasks
         </h3>
-        <TasksSection tasks={state.tasks.filter((task) => task.kind !== 'subagent')} onCancel={onCancelTask} />
+        <TasksSection tasks={backgroundTasks} onCancel={onCancelTask} />
       </section>
 
       <section>

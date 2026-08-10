@@ -40,6 +40,7 @@ interface WireMessage {
 }
 
 const BACKOFF_STEPS_MS = [500, 1000, 2000, 4000, 8000] as const;
+const STALE_INBOUND_MS = 45_000;
 
 let clientCounter = 0;
 
@@ -57,6 +58,8 @@ export class KikiSocket {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private helloReceived = false;
   private idCounter = 0;
+  private lastInboundAt = 0;
+  private malformedFrameCount = 0;
 
   constructor(options: { baseUrl: string; token?: string; events: WsEvents }) {
     const root =
@@ -113,25 +116,28 @@ export class KikiSocket {
     }
   }
 
-  /**
-   * Foreground/wake nudge (liveagent pattern): if the stream is healthy, do
-   * nothing — a spurious `online`/`focus` must never force-drop a live
-   * socket. If the socket is down and a backoff timer is pending, reconnect
-   * immediately instead of waiting it out.
-   */
+  /** Foreground/wake nudge. An OPEN readyState is not trusted after a long
+   * inbound silence: focus/online/pageshow force that stale transport through
+   * the normal close/reconnect path. kap-server's wsConnectionV1 has NO
+   * application-level ping/pong heartbeat (see docs/server-heartbeat.md), so
+   * this staleness check is the only half-open detector until the server grows
+   * one; the 'ping' reply handler below is forward-compat for that day. */
   nudge(): void {
     if (this.manuallyClosed) return;
     if (this.ws !== null && this.ws.readyState === WebSocket.OPEN && this.helloReceived) {
-      return; // healthy — nothing to do
+      if (this.lastInboundAt > 0 && Date.now() - this.lastInboundAt <= STALE_INBOUND_MS) return;
+      try {
+        this.ws.close(4000, 'stale inbound stream');
+      } catch {
+        this.ws = null;
+        this.openSocket();
+      }
+      return;
     }
-    if (this.ws !== null && this.ws.readyState === WebSocket.CONNECTING) {
-      return; // a connect attempt is already in flight
-    }
+    if (this.ws !== null && this.ws.readyState === WebSocket.CONNECTING) return;
     this.clearReconnectTimer();
     this.reconnectAttempts = 0;
-    if (this.ws === null) {
-      this.openSocket();
-    }
+    if (this.ws === null) this.openSocket();
   }
 
   abort(sessionId: string, promptId: string): void {
@@ -142,6 +148,16 @@ export class KikiSocket {
 
   get ready(): boolean {
     return this.isReady();
+  }
+
+  /** Frames dropped as unparseable or missing the session_event shape. */
+  get malformedCount(): number {
+    return this.malformedFrameCount;
+  }
+
+  /** Last time any inbound message arrived (0 = none yet on this socket). */
+  get lastInbound(): number {
+    return this.lastInboundAt;
   }
 
   private isReady(): boolean {
@@ -156,6 +172,7 @@ export class KikiSocket {
   private openSocket(): void {
     this.events.onStatus('connecting');
     this.helloReceived = false;
+    this.lastInboundAt = 0;
     const protocols = this.token !== undefined ? [`kimi-code.bearer.${this.token}`] : undefined;
     let ws: WebSocket;
     try {
@@ -186,10 +203,12 @@ export class KikiSocket {
 
   private handleMessage(raw: string): void {
     if (raw === '') return;
+    this.lastInboundAt = Date.now();
     let message: WireMessage;
     try {
       message = JSON.parse(raw) as WireMessage;
     } catch {
+      this.malformedFrameCount += 1;
       return;
     }
     switch (message.type) {
@@ -236,8 +255,10 @@ export class KikiSocket {
           const frame = message as unknown as SessionEventFrame;
           if (typeof frame.seq === 'number') {
             this.events.onFrame(frame);
+            return;
           }
         }
+        this.malformedFrameCount += 1;
       }
     }
   }

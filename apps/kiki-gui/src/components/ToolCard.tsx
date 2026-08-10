@@ -4,7 +4,7 @@
  * island; everything else stays on paper.
  */
 
-import { useMemo, useState, type ReactNode } from 'react';
+import { memo, useMemo, useState, type ReactNode } from 'react';
 
 import type { ToolInputDisplay } from '@moonshot-ai/protocol';
 
@@ -213,7 +213,7 @@ function truncateJson(value: unknown, limit = 6000): string {
   }
 }
 
-export function ToolCard({ block }: { block: ToolBlock }) {
+export const ToolCard = memo(function ToolCard({ block }: { block: ToolBlock }) {
   const [expanded, setExpanded] = useState(false);
   const summary = toolSummary(block);
   const isCommand = block.display?.kind === 'command';
@@ -317,4 +317,4 @@ export function ToolCard({ block }: { block: ToolBlock }) {
       ) : null}
     </div>
   );
-}
+});
