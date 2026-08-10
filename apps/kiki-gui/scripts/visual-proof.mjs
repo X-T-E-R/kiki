@@ -23,8 +23,8 @@ import { selectProofOutput } from './visual-proof-options.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-const FIXTURE_PORT = 58901;
-const WEB_PORT = 5179;
+const FIXTURE_PORT = Number(process.env.KIKI_PROOF_FIXTURE_PORT ?? 58901);
+const WEB_PORT = Number(process.env.KIKI_PROOF_WEB_PORT ?? 5179);
 const FIXTURE_URL = `http://127.0.0.1:${FIXTURE_PORT}`;
 const WEB_URL = `http://localhost:${WEB_PORT}`;
 
@@ -148,6 +148,64 @@ async function scenarioBasicStream() {
   await page.waitForSelector('text=working', { state: 'detached', timeout: 30_000 });
   await page.waitForTimeout(1200); // shiki upgrade
   await shot('basic-stream-done');
+}
+
+async function scenarioPromptDedupe() {
+  await selectSession('Fixture: prompt dedupe');
+  await sendPrompt('One prompt, one user block.');
+  await waitForText('The prompt appears once.');
+  await page.waitForSelector('text=working', { state: 'detached', timeout: 20_000 });
+  const userCount = await page.locator('[role="log"] [data-block-id^="user-"]', {
+    hasText: 'One prompt, one user block.',
+  }).count();
+  console.log(`[check] prompt dedupe user blocks: ${userCount}`);
+  if (userCount !== 1) throw new Error(`expected exactly one user block, saw ${userCount}`);
+  await shot('prompt-dedupe');
+}
+
+async function scenarioSubagents() {
+  await selectSession('Fixture: subagents');
+  await sendPrompt('Delegate the fixture work.');
+  await page.waitForSelector('[data-subagent-id="agent-research"]', { timeout: 20_000 });
+  await page.waitForSelector('[data-subagent-id="agent-review"]', { timeout: 20_000 });
+  await page.waitForSelector('text=working', { state: 'detached', timeout: 20_000 });
+  const bubbleCount = await page.locator('[data-subagent-id]').count();
+  const inlineToolCount = await page.locator('[role="log"] [data-block-id^="tool-"], [role="log"] [data-block-id^="group-"]').count();
+  const railText = await page.locator('.app-rail').innerText();
+  console.log(`[check] subagent bubbles=${bubbleCount} inlineTools=${inlineToolCount}`);
+  if (bubbleCount !== 2 || inlineToolCount !== 0) {
+    throw new Error(`expected 2 subagent bubbles and 0 inline tools, got ${bubbleCount}/${inlineToolCount}`);
+  }
+  if (!railText.includes('Researcher') || !railText.includes('Reviewer')) {
+    throw new Error('subagent rail does not list both agents');
+  }
+  await shot('subagents-main');
+  await page.locator('[data-subagent-id="agent-research"]').click();
+  await page.waitForURL(/\/agent\/agent-research$/, { timeout: 10_000 });
+  await waitForText('Protocol map complete.');
+  await waitForText('Read');
+  await page.waitForTimeout(500);
+  await shot('subagents-agent-page');
+}
+
+async function scenarioGoalSwarm() {
+  await selectSession('Fixture: goal + swarm');
+  await waitForText('Prepare the release evidence bundle');
+  await page.click('button:has-text("swarm")');
+  await page.click('button:has-text("goal · active")');
+  await page.fill('input[placeholder="Objective (optional)"]', 'Ship the fixture release');
+  await page.click('button:has-text("goal · active")');
+  await sendPrompt('Advance the release goal.');
+  await waitForText('Swarm mode is on and the goal state is live.');
+  const inspected = await control({ action: 'session', session_id: 'session_fixture_goal_swarm' });
+  const submission = inspected.data?.last_prompt_submission;
+  console.log(`[check] goal/swarm submission ${JSON.stringify(submission)}`);
+  if (submission?.swarm_mode !== true || submission?.goal_objective !== 'Ship the fixture release') {
+    throw new Error('PromptSubmission did not carry swarm_mode + goal_objective');
+  }
+  await page.click('button:has-text("goal · active")');
+  await page.waitForTimeout(400);
+  await shot('goal-swarm');
 }
 
 async function scenarioToolPipeline() {
@@ -392,6 +450,9 @@ async function scenarioResponsive() {
 
 const SCENARIOS = [
   ['basic-stream', scenarioBasicStream],
+  ['prompt-dedupe', scenarioPromptDedupe],
+  ['subagents', scenarioSubagents],
+  ['goal-swarm', scenarioGoalSwarm],
   ['tool-pipeline', scenarioToolPipeline],
   ['question-card', scenarioQuestionCard],
   ['busy-rail', scenarioBusyRail],
