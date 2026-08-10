@@ -43,6 +43,22 @@ import type { FinishReason } from '#/kosong/contract/provider';
 import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
+export function applyMissingProperties(
+  target: Record<string, unknown>,
+  source: Readonly<Record<string, unknown>> | undefined,
+): void {
+  if (source === undefined) return;
+  for (const [key, value] of Object.entries(source)) {
+    if (Object.hasOwn(target, key)) continue;
+    Object.defineProperty(target, key, {
+      value,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+}
+
 export interface OpenAIContentPart {
   type: string;
   text?: string | undefined;

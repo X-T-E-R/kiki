@@ -5,8 +5,8 @@
  * `IProtocolAdapterRegistry.createChatProvider`: it lazily composes exactly
  * one immutable ChatProvider per Model (on first use) and caches it for the
  * Model's lifetime; every per-turn variation arrives as `ModelRequestParams` and
- * is mapped onto `GenerateOptions` (overlay order inside the bases:
- * `cacheKey → serviceTier → sampling → thinking → maxCompletionTokens`).
+ * is mapped onto `GenerateOptions` 1:1, including the profile's scalar
+ * `requestParams` map.
  *
  * The driver itself turns per-turn input (systemPrompt / tools / messages)
  * into the `ModelRequestEvent` stream via the contract's `generate(...)`, measures
@@ -113,6 +113,7 @@ export class ModelRequesterImpl implements ModelRequester {
       signal,
       cacheKey: params?.cacheKey,
       serviceTier: params?.serviceTier,
+      requestParams: params?.requestParams,
       sampling: params?.sampling,
       thinking:
         params?.thinkingEffort === undefined

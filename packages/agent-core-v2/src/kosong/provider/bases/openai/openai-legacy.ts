@@ -40,6 +40,7 @@ import type {
   FinishReason,
   GenerateOptions,
   ProviderRequestAuth,
+  RequestParams,
   ResponseFormat,
   StreamedMessage,
   ThinkingEffort,
@@ -54,6 +55,7 @@ import {
   type BufferedChatCompletionToolCall,
 } from './chat-completions-stream';
 import {
+  applyMissingProperties,
   convertContentPart,
   convertOpenAIError,
   convertToolMessageContent,
@@ -107,6 +109,10 @@ export interface OpenAIChatCompletionsHooks {
   ) => OpenAILegacyGenerationKwargs | undefined;
   preserveThinking?: (generationKwargs: Record<string, unknown>) => boolean | undefined;
   withMaxCompletionTokens?: (maxCompletionTokens: number) => Record<string, unknown> | undefined;
+  withRequestParams?: (
+    requestParams: RequestParams,
+    generationKwargs: OpenAILegacyGenerationKwargs,
+  ) => OpenAILegacyGenerationKwargs | undefined;
   cacheKey?: (key: string) => Record<string, unknown> | undefined;
   extractUsage?: (chunk: Record<string, unknown>) => Record<string, unknown> | null | undefined;
   reasoningKey?: () => string | undefined;
@@ -632,6 +638,9 @@ export class OpenAILegacyChatProvider implements ChatProvider {
 
     const builtParams = this._hooks?.buildParams?.(createParams);
     const finalParams = builtParams ?? createParams;
+    if (this._hooks?.withRequestParams === undefined) {
+      applyMissingProperties(finalParams, options?.requestParams);
+    }
 
     try {
       const client = this._createClient(options?.auth);
@@ -726,6 +735,11 @@ export class OpenAILegacyChatProvider implements ChatProvider {
         const capped = Math.min(cap, CHAT_COMPLETIONS_MAX_OUTPUT_TOKENS_CEILING);
         kwargs = { ...kwargs, ...completionTokenKwargs(this._model, Math.max(1, capped)) };
       }
+    }
+
+    if (options?.requestParams !== undefined) {
+      const hooked = this._hooks?.withRequestParams?.(options.requestParams, kwargs);
+      if (hooked !== undefined) kwargs = { ...kwargs, ...hooked };
     }
 
     for (const key of Object.keys(kwargs)) {

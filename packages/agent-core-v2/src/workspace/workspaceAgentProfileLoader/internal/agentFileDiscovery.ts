@@ -61,7 +61,12 @@ export async function discoverAgentFiles(
   async function parseAndRegister(filePath: string, root: AgentFileRoot): Promise<void> {
     try {
       const text = await fs.readText(filePath);
-      const agent = parseAgentFileText({ path: filePath, source: root.source, text });
+      const agent = parseAgentFileText({
+        path: filePath,
+        source: root.source,
+        text,
+        warn: (message) => warn?.(message),
+      });
       if (!byName.has(agent.name)) {
         byName.set(agent.name, agent);
       }

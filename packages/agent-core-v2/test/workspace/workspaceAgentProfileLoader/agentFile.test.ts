@@ -60,6 +60,7 @@ describe('parseAgentFileText', () => {
     expect(def.override).toBe(false);
     expect(def.modelPreference).toBeUndefined();
     expect(def.serviceTier).toBeUndefined();
+    expect(def.requestParams).toBeUndefined();
     expect(def.tools).toBeUndefined();
     expect(def.disallowedTools).toBeUndefined();
     expect(def.subagents).toBeUndefined();
@@ -109,6 +110,58 @@ describe('parseAgentFileText', () => {
     expect(() =>
       parse('---\nname: solo\ndescription: d\nservice_tier: 42\n---\n\nbody\n'),
     ).toThrow(/"service_tier"/);
+  });
+
+  it.each([
+    [
+      'block',
+      'request_params:\n  seed: 42\n  enabled: true\n  label: fast',
+    ],
+    [
+      'inline',
+      'request_params: { seed: 42, enabled: true, label: fast }',
+    ],
+  ])('parses a %s scalar request_params map', (_style, field) => {
+    const def = parse(`---\nname: solo\ndescription: d\n${field}\n---\n\nbody\n`);
+
+    expect(def.requestParams).toEqual({ seed: 42, enabled: true, label: 'fast' });
+  });
+
+  it('keeps __proto__ as data without polluting the request-params prototype', () => {
+    const def = parse(
+      '---\nname: solo\ndescription: d\nrequest_params:\n  __proto__: polluted\n  seed: 42\n---\n\nbody\n',
+    );
+
+    expect(Object.hasOwn(def.requestParams!, '__proto__')).toBe(true);
+    expect(def.requestParams?.['__proto__']).toBe('polluted');
+    expect(Object.getPrototypeOf(def.requestParams)).toBe(Object.prototype);
+    expect(({} as { polluted?: unknown }).polluted).toBeUndefined();
+  });
+
+  it.each([
+    'request_params:\n  nested:\n    value: true',
+    'request_params:\n  values: [one, two]',
+    'request_params: null',
+  ])('rejects non-scalar request_params values: %s', (field) => {
+    expect(() =>
+      parse(`---\nname: solo\ndescription: d\n${field}\n---\n\nbody\n`),
+    ).toThrow(AgentFileParseError);
+  });
+
+  it('warns and lets service_tier override request_params.service_tier', () => {
+    const warnings: string[] = [];
+    const def = parseAgentFileText({
+      path: '/tmp/agents/reviewer.md',
+      source: 'project',
+      text: '---\nname: solo\ndescription: d\nservice_tier: priority\nrequest_params:\n  service_tier: flex\n  seed: 42\n---\n\nbody\n',
+      warn: (message) => warnings.push(message),
+    });
+
+    expect(def.serviceTier).toBe('priority');
+    expect(def.requestParams).toEqual({ seed: 42 });
+    expect(warnings).toEqual([
+      expect.stringContaining('service_tier" in /tmp/agents/reviewer.md overrides request_params.service_tier'),
+    ]);
   });
 
   it('rejects an unsupported model preference', () => {
@@ -370,13 +423,14 @@ describe('agentProfileFromFile', () => {
     expect(profile.modelPreference).toBe('secondary');
   });
 
-  it('passes exact model, effort, and service tier fields through', () => {
+  it('passes exact model, effort, service tier, and request params through', () => {
     const profile = agentProfileFromFile(
       {
         ...base,
         modelAlias: 'fast-model',
         thinkingEffort: 'low',
         serviceTier: 'priority',
+        requestParams: { seed: 42, enabled: true },
       },
       basePrompt,
     );
@@ -384,6 +438,7 @@ describe('agentProfileFromFile', () => {
       modelAlias: 'fast-model',
       thinkingEffort: 'low',
       serviceTier: 'priority',
+      requestParams: { seed: 42, enabled: true },
     });
   });
 

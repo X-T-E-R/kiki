@@ -45,6 +45,7 @@ import type { TokenUsage } from '#/kosong/contract/usage';
 import { ProtocolErrors } from '#/kosong/protocol/errors';
 
 import {
+  applyMissingProperties,
   convertOpenAIError,
   hasModelPrefix,
   isMediaPart,
@@ -1170,6 +1171,7 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
           ...responseFormatToResponsesText(options.responseFormat),
         };
       }
+      applyMissingProperties(createParams, options?.requestParams);
 
       if (
         !('responses' in client) ||

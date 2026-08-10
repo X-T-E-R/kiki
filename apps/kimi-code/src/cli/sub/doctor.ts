@@ -269,6 +269,7 @@ const KNOWN_AGENT_FRONTMATTER_KEYS = new Set([
   'model_alias',
   'thinking_effort',
   'service_tier',
+  'request_params',
 ]);
 const MAX_AGENT_SCAN_DEPTH = 8;
 

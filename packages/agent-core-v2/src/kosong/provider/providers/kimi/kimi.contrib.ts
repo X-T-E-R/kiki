@@ -13,7 +13,8 @@
  *       (`{ type: 'disabled' | 'enabled', effort? }`, carrying the per-turn
  *       `keep` when present); `withMaxCompletionTokens` →
  *       `max_completion_tokens` with NO 128k ceiling (the base's window
- *       clamp has already run; the trait takes over the ceiling); and
+ *       clamp has already run; the trait takes over the ceiling);
+ *       `withRequestParams` fills missing `extra_body` keys only; and
  *       `buildParams` (the last hook before send) backfills `max_tokens` →
  *       `max_completion_tokens`, drops `max_tokens`, and expands
  *       `extra_body` into the top-level params;
@@ -87,7 +88,11 @@ import type {
   TraitContext,
 } from '#/kosong/protocol/protocolTrait';
 
-import { type OpenAIToolParam, toolToOpenAI } from '../../bases/openai/openai-common';
+import {
+  applyMissingProperties,
+  type OpenAIToolParam,
+  toolToOpenAI,
+} from '../../bases/openai/openai-common';
 import { registerProviderDefinition } from '../../providerDefinition';
 import { classifyKimiQuotaError } from './kimi-errors';
 import { KimiFiles } from './kimi-files';
@@ -213,6 +218,14 @@ export const kimiOpenAITrait: ProtocolTrait = {
     max_completion_tokens: maxCompletionTokens,
   }),
 
+  withRequestParams: (requestParams, generationKwargs) => {
+    const extraBody: ExtraBody = {
+      ...(generationKwargs['extra_body'] as ExtraBody | undefined),
+    };
+    applyMissingProperties(extraBody, requestParams);
+    return { extra_body: extraBody };
+  },
+
   buildParams: (params) => {
     const {
       extra_body: extraBody,
@@ -226,7 +239,7 @@ export const kimiOpenAITrait: ProtocolTrait = {
       out['max_completion_tokens'] = resolvedMaxCompletionTokens;
     }
     if (extraBody !== undefined && extraBody !== null) {
-      Object.assign(out, extraBody);
+      applyMissingProperties(out, extraBody as Record<string, unknown>);
     }
     return out;
   },

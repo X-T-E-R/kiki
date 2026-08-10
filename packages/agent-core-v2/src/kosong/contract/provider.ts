@@ -7,7 +7,8 @@
  *
  *  - A ChatProvider is immutable after construction. The interface has no
  *    `with*` methods; every per-turn intent (prompt-cache key, service tier,
- *    sampling overrides, thinking effort/keep, completion-token budget) flows through
+ *    additional request params, sampling overrides, thinking effort/keep,
+ *    completion-token budget) flows through
  *    `GenerateOptions` on each `generate` call instead of through morphs.
  *  - `GenerateOptions` is the per-turn intent carrier. Each wire dialect
  *    decides how — or whether — to encode an intent (e.g. a cache key may
@@ -23,6 +24,9 @@ import type { TokenUsage } from './usage';
 export type ThinkingEffort = 'off' | 'on' | (string & {});
 
 export type ServiceTier = 'auto' | 'default' | 'flex' | 'priority';
+
+export type RequestParamValue = string | number | boolean;
+export type RequestParams = Readonly<Record<string, RequestParamValue>>;
 
 export type JsonSchemaObject = Record<string, unknown>;
 
@@ -96,6 +100,7 @@ export interface GenerateOptions {
   responseFormat?: ResponseFormat;
   cacheKey?: string;
   serviceTier?: ServiceTier;
+  requestParams?: RequestParams;
   sampling?: SamplingOptions;
   thinking?: ThinkingRequestOptions;
   maxCompletionTokens?: number;

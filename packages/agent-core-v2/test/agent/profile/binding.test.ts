@@ -86,6 +86,7 @@ describe('AgentProfileService.bind', () => {
       name: 'delegates-explore',
       subagents: ['explore'],
       serviceTier: 'priority',
+      requestParams: { seed: 42, enabled: true },
       systemPrompt: () => 'delegate test',
     });
   });
@@ -217,7 +218,10 @@ describe('AgentProfileService.bind', () => {
       profile: 'delegates-explore',
       model: MOCK_MODEL,
     });
-    expect(profile.resolveRequestParams().serviceTier).toBe('priority');
+    expect(profile.resolveRequestParams()).toMatchObject({
+      serviceTier: 'priority',
+      requestParams: { seed: 42, enabled: true },
+    });
     await ctx.get(IWireService).flush();
 
     const bindingRecord = persistence.records.find((record) => record.type === 'profile.bind');
@@ -225,6 +229,7 @@ describe('AgentProfileService.bind', () => {
       profileName: 'delegates-explore',
       subagents: ['explore'],
       serviceTier: 'priority',
+      requestParams: { seed: 42, enabled: true },
     });
 
     await ctx.dispose();
@@ -254,8 +259,12 @@ describe('AgentProfileService.bind', () => {
       profileName: 'delegates-explore',
       subagents: ['explore'],
       serviceTier: 'priority',
+      requestParams: { seed: 42, enabled: true },
     });
-    expect(restored.resolveRequestParams().serviceTier).toBe('priority');
+    expect(restored.resolveRequestParams()).toMatchObject({
+      serviceTier: 'priority',
+      requestParams: { seed: 42, enabled: true },
+    });
     expect(restored.data().agentsMdPaths).toEqual(bindingRecord?.['agentsMdPaths']);
   });
 

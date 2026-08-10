@@ -2,7 +2,7 @@
  * `kosong/protocol` domain — the declarative trait surface.
  *
  * A `ProtocolTrait` is a stateless declaration of how one vendor deviates
- * from a wire base: seventeen fully optional hooks plus rare metadata markers
+ * from a wire base: eighteen fully optional hooks plus rare metadata markers
  * (non-function fields like `strictThinkingValidation` that qualify how a
  * hook's behavior is governed, without adding a code path). A trait declares
  * a deviation only where one exists; a hook returning `undefined` always
@@ -36,6 +36,7 @@ import type { ChatProviderError } from '#/kosong/contract/errors';
 import type { Message, VideoURLPart } from '#/kosong/contract/message';
 import type {
   GenerateOptions,
+  RequestParams,
   ThinkingEffort,
   ToolCallIdPolicy,
   VideoUploadInput,
@@ -100,6 +101,12 @@ export interface ProtocolTrait {
 
   withMaxCompletionTokens?(
     maxCompletionTokens: number,
+    ctx: TraitContext,
+  ): Record<string, unknown> | undefined;
+
+  withRequestParams?(
+    requestParams: RequestParams,
+    generationKwargs: Record<string, unknown>,
     ctx: TraitContext,
   ): Record<string, unknown> | undefined;
 

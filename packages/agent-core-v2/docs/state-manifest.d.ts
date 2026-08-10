@@ -1075,6 +1075,7 @@ export interface AgentStateSnapshot {
     readonly params: /* ModelRequestParams — packages/agent-core-v2/src/kosong/model/modelRequester.ts */ {
       readonly cacheKey?: string;
       readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
+      readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-core-v2/src/kosong/contract/provider.ts */ boolean | string | number>>;
       readonly sampling?: /* SamplingOptions — packages/agent-core-v2/src/kosong/contract/provider.ts */ {
         readonly temperature?: number;
         readonly topP?: number;

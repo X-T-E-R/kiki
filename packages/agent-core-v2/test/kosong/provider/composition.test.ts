@@ -562,6 +562,7 @@ async function captureOpenAIBody(
   provider: ChatProvider,
   options?: GenerateOptions,
   history: Message[] = PROBE_HISTORY,
+  systemPrompt = '',
 ): Promise<Record<string, unknown>> {
   let captured: Record<string, unknown> | undefined;
   const client = sdkClient(provider) as { chat: { completions: { create: unknown } } };
@@ -575,7 +576,7 @@ async function captureOpenAIBody(
         }),
     };
   });
-  await drain(await provider.generate('', [], history, options));
+  await drain(await provider.generate(systemPrompt, [], history, options));
   if (captured === undefined) throw new Error('expected chat.completions.create to be called');
   return captured;
 }
@@ -637,6 +638,7 @@ async function captureGoogleBody(
 async function captureResponsesBody(
   provider: ChatProvider,
   options?: GenerateOptions,
+  systemPrompt = '',
 ): Promise<Record<string, unknown>> {
   let captured: Record<string, unknown> | undefined;
   const client = sdkClient(provider) as { responses: { create: unknown } };
@@ -644,7 +646,7 @@ async function captureResponsesBody(
     captured = params as Record<string, unknown>;
     return Promise.resolve(responsesEventStream());
   });
-  await drain(await provider.generate('', [], PROBE_HISTORY, options));
+  await drain(await provider.generate(systemPrompt, [], PROBE_HISTORY, options));
   if (captured === undefined) throw new Error('expected responses.create to be called');
   return captured;
 }
@@ -716,6 +718,160 @@ describe('per-turn intent wire encoding (behavior probes)', () => {
     expect(openaiBody).not.toHaveProperty('service_tier');
     expect(kimiBody).not.toHaveProperty('service_tier');
     expect(anthropicBody).not.toHaveProperty('service_tier');
+  });
+
+  it('adds requestParams to OpenAI Responses without overriding typed fields', async () => {
+    const provider = new OpenAIResponsesChatProvider({
+      model: 'gpt-4.1',
+      apiKey: 'sk-probe',
+    });
+
+    const body = await captureResponsesBody(
+      provider,
+      {
+        serviceTier: 'priority',
+        thinking: { effort: 'high' },
+        maxCompletionTokens: 5000,
+        requestParams: {
+          model: 'generic-model',
+          input: 'generic-input',
+          tools: 'generic-tools',
+          store: true,
+          stream: false,
+          instructions: 'generic instructions',
+          reasoning: 'generic reasoning',
+          max_output_tokens: 1,
+          service_tier: 'flex',
+          custom_string: 'value',
+          custom_number: 7,
+          custom_boolean: true,
+        },
+      },
+      'typed instructions',
+    );
+
+    expect(body).toMatchObject({
+      model: 'gpt-4.1',
+      input: expect.any(Array),
+      tools: [],
+      store: false,
+      stream: true,
+      instructions: 'typed instructions',
+      reasoning: { effort: 'high', summary: 'auto' },
+      max_output_tokens: 5000,
+      service_tier: 'priority',
+      custom_string: 'value',
+      custom_number: 7,
+      custom_boolean: true,
+    });
+  });
+
+  it('adds an own __proto__ request param without changing the request prototype', async () => {
+    const provider = new OpenAIResponsesChatProvider({
+      model: 'gpt-4.1',
+      apiKey: 'sk-probe',
+    });
+    const requestParams: Record<string, string | number | boolean> = {
+      model: 'generic-model',
+    };
+    Object.defineProperty(requestParams, '__proto__', {
+      value: 'polluted',
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+
+    const body = await captureResponsesBody(provider, { requestParams });
+
+    expect(body['model']).toBe('gpt-4.1');
+    expect(Object.hasOwn(body, '__proto__')).toBe(true);
+    expect(body['__proto__']).toBe('polluted');
+    expect(Object.getPrototypeOf(body)).toBe(Object.prototype);
+    expect(({} as { polluted?: unknown }).polluted).toBeUndefined();
+  });
+
+  it('adds requestParams to OpenAI legacy without overriding typed fields', async () => {
+    const provider = new OpenAILegacyChatProvider({
+      model: 'gpt-5',
+      apiKey: 'sk-probe',
+      stream: false,
+    });
+
+    const body = await captureOpenAIBody(
+      provider,
+      {
+        responseFormat: { type: 'json_object' },
+        thinking: { effort: 'high' },
+        maxCompletionTokens: 5000,
+        requestParams: {
+          model: 'generic-model',
+          messages: 'generic-messages',
+          stream: true,
+          response_format: 'generic-format',
+          reasoning_effort: 'low',
+          max_completion_tokens: 1,
+          custom_scalar: 'value',
+        },
+      },
+      PROBE_HISTORY,
+      'typed system prompt',
+    );
+
+    expect(body['model']).toBe('gpt-5');
+    expect(body['messages']).toEqual(expect.any(Array));
+    expect(body['stream']).toBe(false);
+    expect(body['response_format']).toEqual({ type: 'json_object' });
+    expect(body['reasoning_effort']).toBe('high');
+    expect(body['max_completion_tokens']).toBe(5000);
+    expect(body['custom_scalar']).toBe('value');
+  });
+
+  it('routes Kimi requestParams through extra_body without overriding typed fields', async () => {
+    const provider = registry.createChatProvider({
+      protocol: 'openai',
+      providerType: 'kimi',
+      modelName: 'kimi-k2',
+      apiKey: 'sk-probe',
+    });
+
+    const body = await captureOpenAIBody(provider, {
+      cacheKey: 'session-probe',
+      thinking: { effort: 'high' },
+      maxCompletionTokens: 5000,
+      requestParams: {
+        model: 'generic-model',
+        messages: 'generic-messages',
+        stream: false,
+        prompt_cache_key: 'generic-cache',
+        thinking: 'generic-thinking',
+        max_completion_tokens: 1,
+        custom_scalar: 'value',
+      },
+    });
+
+    expect(body['model']).toBe('kimi-k2');
+    expect(body['messages']).toEqual(expect.any(Array));
+    expect(body['stream']).toBe(true);
+    expect(body['prompt_cache_key']).toBe('session-probe');
+    expect(body['thinking']).toEqual({ type: 'enabled', effort: 'high' });
+    expect(body['max_completion_tokens']).toBe(5000);
+    expect(body['custom_scalar']).toBe('value');
+    expect(body).not.toHaveProperty('extra_body');
+  });
+
+  it('silently ignores requestParams on Anthropic', async () => {
+    const provider = new AnthropicChatProvider({
+      model: 'claude-opus-4-6',
+      apiKey: 'sk-probe',
+      stream: false,
+    });
+
+    const { params } = await captureAnthropicBody(provider, {
+      requestParams: { custom_scalar: 'value', top_k: 7 },
+    });
+
+    expect(params).not.toHaveProperty('custom_scalar');
+    expect(params).not.toHaveProperty('top_k');
   });
 
   it('encodes cacheKey on Anthropic as metadata.user_id', async () => {

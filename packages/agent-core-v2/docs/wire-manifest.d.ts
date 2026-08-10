@@ -459,6 +459,7 @@ interface ProfileBindPayload {
   /** ThinkingEffort */
   thinkingEffort: 'off' | 'on' | (string & {});
   serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
+  requestParams?: Record<string, string | number | boolean>;
   systemPrompt: string;
   /** EnvironmentDisclosureSnapshot */
   environmentDisclosure?: {

@@ -157,6 +157,7 @@ describe('ModelRequesterImpl request execution', () => {
         {
           cacheKey: 'session-1',
           serviceTier: 'priority',
+          requestParams: { seed: 42, enabled: true },
           sampling: { temperature: 0.5, topP: 0.9 },
           thinkingEffort: 'high',
           thinkingKeep: 'all',
@@ -173,6 +174,7 @@ describe('ModelRequesterImpl request execution', () => {
     expect(options?.auth).toEqual({ apiKey: 'sk-1' });
     expect(options?.cacheKey).toBe('session-1');
     expect(options?.serviceTier).toBe('priority');
+    expect(options?.requestParams).toEqual({ seed: 42, enabled: true });
     expect(options?.sampling).toEqual({ temperature: 0.5, topP: 0.9 });
     expect(options?.thinking).toEqual({ effort: 'high', keep: 'all' });
     expect(options?.maxCompletionTokens).toBe(1024);

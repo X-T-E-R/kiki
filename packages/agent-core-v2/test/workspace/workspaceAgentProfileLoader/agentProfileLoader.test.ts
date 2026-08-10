@@ -594,6 +594,26 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
+  it('surfaces request-param conflicts from explicit agent files', async () => {
+    await withFixture(async (fixture) => {
+      const file = await writeAgent(
+        fixture.workDir,
+        'explicit-warning.md',
+        '---\nname: explicit-warning\ndescription: explicit warning\nservice_tier: priority\nrequest_params:\n  service_tier: flex\n  seed: 42\n---\n\nbody\n',
+      );
+      await withStack(fixture, { explicitFiles: [file] }, async (stack) => {
+        await stack.ready();
+
+        expect(stack.catalog.get('explicit-warning')?.requestParams).toEqual({ seed: 42 });
+        expect(
+          stack.warnings.some((warning) =>
+            warning.includes('overrides request_params.service_tier'),
+          ),
+        ).toBe(true);
+      });
+    });
+  });
+
   it('resolves relative explicit files against the workspace root', async () => {
     await withFixture(async (fixture) => {
       await writeAgent(

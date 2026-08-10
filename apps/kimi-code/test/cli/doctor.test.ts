@@ -316,6 +316,8 @@ name: reviewer
 description: Reviews changes
 model_alias: kimi
 service_tier: priority
+request_params:
+  seed: 42
 subagents:
   - coder
   - explore

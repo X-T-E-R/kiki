@@ -59,7 +59,12 @@ export class ExplicitAgentProfileLoaderService
       const text = await this.fs.readText(filePath);
       profiles.push(
         agentProfileFromFile(
-          parseAgentFileText({ path: filePath, source: 'explicit', text }),
+          parseAgentFileText({
+            path: filePath,
+            source: 'explicit',
+            text,
+            warn: (message) => this.log.warn(message),
+          }),
           (context) => this.user.getDefaultProfile().renderSystemPrompt(context),
         ),
       );

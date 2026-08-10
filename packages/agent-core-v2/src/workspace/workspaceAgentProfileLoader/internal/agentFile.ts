@@ -33,6 +33,7 @@ export interface ParseAgentFileOptions {
   readonly path: string;
   readonly source: AgentFileSource;
   readonly text: string;
+  readonly warn?: (message: string) => void;
 }
 
 const AGENT_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -106,6 +107,21 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     options.path,
   );
   const serviceTier = parseServiceTier(frontmatter['service_tier'], options.path);
+  let requestParams = parseRequestParams(frontmatter['request_params'], options.path);
+  if (
+    serviceTier !== undefined &&
+    requestParams !== undefined &&
+    Object.hasOwn(requestParams, 'service_tier')
+  ) {
+    options.warn?.(
+      `Frontmatter field "service_tier" in ${options.path} overrides request_params.service_tier; ignoring the nested value`,
+    );
+    const withoutServiceTier: Record<string, string | number | boolean> = {
+      ...requestParams,
+    };
+    delete withoutServiceTier['service_tier'];
+    requestParams = withoutServiceTier;
+  }
   if (modelPreference !== undefined && modelAlias !== undefined) {
     throw new AgentFileParseError(
       `Frontmatter fields "model_preference" and "model_alias" in ${options.path} are mutually exclusive`,
@@ -129,6 +145,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     modelAlias,
     thinkingEffort,
     serviceTier,
+    requestParams,
     prompt,
     path: options.path,
     source: options.source,
@@ -154,6 +171,33 @@ function parseServiceTier(value: unknown, filePath: string): AgentFileDefinition
   throw new AgentFileParseError(
     `Frontmatter field "service_tier" in ${filePath} must be "auto", "default", "flex", or "priority"`,
   );
+}
+
+function parseRequestParams(
+  value: unknown,
+  filePath: string,
+): AgentFileDefinition['requestParams'] {
+  if (value === undefined) return undefined;
+  if (!isPlainRecord(value)) {
+    throw new AgentFileParseError(
+      `Frontmatter field "request_params" in ${filePath} must be a mapping of scalar string, number, or boolean values`,
+    );
+  }
+  const out: Record<string, string | number | boolean> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item !== 'string' && typeof item !== 'number' && typeof item !== 'boolean') {
+      throw new AgentFileParseError(
+        `Frontmatter field "request_params.${key}" in ${filePath} must be a scalar string, number, or boolean value`,
+      );
+    }
+    Object.defineProperty(out, key, {
+      value: item,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return out;
 }
 
 function parseBoolean(value: unknown, field: string, filePath: string): boolean {
@@ -232,4 +276,10 @@ function nonEmptyString(value: unknown): string | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }

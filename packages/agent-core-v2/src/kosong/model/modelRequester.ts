@@ -3,18 +3,19 @@
  * streamed events, and the per-turn intent carrier `ModelRequestParams`.
  *
  * `ModelRequestParams` is how every per-turn intent reaches the wire: prompt-cache
- * key, service tier, sampling overrides, thinking effort/keep, and the
- * completion-token budget (with its window-clamp companions). It is deliberately
- * dialect-free — each wire dialect encodes (or silently drops) an intent in its
- * own hooks. The requester maps the params onto `GenerateOptions` 1:1; the fixed
- * overlay order inside the bases is `cacheKey → serviceTier → sampling →
- * thinking → maxCompletionTokens`.
+ * key, service tier, additional request params, sampling overrides, thinking
+ * effort/keep, and the completion-token budget (with its window-clamp companions).
+ * It is deliberately dialect-free — each wire dialect encodes (or silently drops)
+ * an intent in its own hooks. The requester maps the params onto `GenerateOptions`
+ * 1:1; typed fields are resolved before `requestParams`, whose entries only fill
+ * keys the dialect has not already produced.
  */
 
 import type { Message, StreamedMessagePart, VideoURLPart } from '#/kosong/contract/message';
 import type {
   FinishReason,
   ResponseFormat,
+  RequestParams,
   SamplingOptions,
   ServiceTier,
   ThinkingEffort,
@@ -57,6 +58,7 @@ export type ModelRequestEvent =
 export interface ModelRequestParams {
   readonly cacheKey?: string;
   readonly serviceTier?: ServiceTier;
+  readonly requestParams?: RequestParams;
   readonly sampling?: SamplingOptions;
   readonly thinkingEffort?: ThinkingEffort;
   readonly thinkingKeep?: string;

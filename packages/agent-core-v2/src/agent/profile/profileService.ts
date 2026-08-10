@@ -4,11 +4,12 @@
  * Owns the active agent's model alias, thinking level, system prompt, and
  * active-tool set; reads the bound model's pure data through the App-scope
  * `IModelCatalog` and produces the dialect-free per-turn intent
- * (`resolveRequestParams`: cache key / service tier / sampling / thinking
- * effort+keep — wire encoding is each dialect's own hook), persists the profile
- * binding (`cwd` / `modelAlias` / `profileName` / resolved base `thinkingLevel` /
- * profile `serviceTier` / `systemPrompt` / injected AGENTS.md paths /
- * `activeToolNames` / profile `disallowedTools` / profile `subagents`) in the
+ * (`resolveRequestParams`: cache key / service tier / additional request params /
+ * sampling / thinking effort+keep — wire encoding is each dialect's own hook),
+ * persists the profile binding (`cwd` / `modelAlias` / `profileName` / resolved
+ * base `thinkingLevel` / profile `serviceTier` / profile `requestParams` /
+ * `systemPrompt` / injected AGENTS.md paths / `activeToolNames` / profile
+ * `disallowedTools` / profile `subagents`) in the
  * `wire` `ProfileModel` through
  * the `profile.bind` Op
  * (later slice updates ride the `config.update` Op) and the persisted
@@ -93,6 +94,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/_base/state/stateRegistry';
 import { UNKNOWN_CAPABILITY, type ModelCapability } from '#/kosong/contract/capability';
 import {
+  type RequestParams,
   type SamplingOptions,
   type ServiceTier,
   type ThinkingEffort,
@@ -372,6 +374,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         profileName: snapshot.profileName,
         thinkingEffort: snapshot.thinkingLevel,
         serviceTier: snapshot.serviceTier,
+        requestParams:
+          snapshot.requestParams === undefined ? undefined : { ...snapshot.requestParams },
         systemPrompt: snapshot.systemPrompt,
         environmentDisclosure: snapshot.environmentDisclosure,
         renderGeneration: snapshot.renderGeneration,
@@ -441,6 +445,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       profileName: profile.name,
       thinkingEffort: thinkingLevel,
       serviceTier: profile.serviceTier,
+      requestParams:
+        profile.requestParams === undefined ? undefined : { ...profile.requestParams },
       systemPrompt: rendered.text,
       environmentDisclosure: rendered.environment,
       agentsMdPaths: context.agentsMdPaths ?? [],
@@ -585,6 +591,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       subagents:
         this.profileState.subagents === undefined ? undefined : [...this.profileState.subagents],
       serviceTier: this.serviceTier,
+      requestParams:
+        this.requestParams === undefined ? undefined : { ...this.requestParams },
       environmentDisclosure: this.profileState.environmentDisclosure,
       renderGeneration: this.profileState.renderGeneration,
     };
@@ -618,7 +626,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       temperature: overrides?.temperature,
       topP: overrides?.topP,
     };
-    const params: ModelRequestParams = {
+    let params: ModelRequestParams = {
       cacheKey: this.sessionContext.sessionId,
       sampling:
         sampling.temperature === undefined && sampling.topP === undefined ? undefined : sampling,
@@ -630,7 +638,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       ),
     };
     const serviceTier = this.serviceTier;
-    return serviceTier === undefined ? params : { ...params, serviceTier };
+    if (serviceTier !== undefined) params = { ...params, serviceTier };
+    const requestParams = this.requestParams;
+    if (requestParams !== undefined) {
+      params = { ...params, requestParams: { ...requestParams } };
+    }
+    return params;
   }
 
   getModelCapabilities(): ModelCapability {
@@ -803,6 +816,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return this.activeProfile === undefined
       ? this.profileState.serviceTier
       : this.activeProfile.serviceTier;
+  }
+
+  private get requestParams(): RequestParams | undefined {
+    return this.activeProfile === undefined
+      ? this.profileState.requestParams
+      : this.activeProfile.requestParams;
   }
 
   private get systemPrompt(): string {
