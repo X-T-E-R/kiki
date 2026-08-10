@@ -16,12 +16,18 @@ export default {
     [SID]: { messages: [], has_more: false },
   },
   config: {
+    default_provider: 'fixture',
     default_model: 'fixture/kiki-pro',
     default_permission_mode: 'manual',
     default_plan_mode: false,
+    thinking: { enabled: true, effort: 'high' },
+    merge_all_available_skills: true,
+    extra_skill_dirs: ['C:/fixture/skills'],
+    experimental: { search_worker: true },
+    telemetry: true,
     providers: {
       fixture: {
-        type: 'fixture',
+        type: 'openai',
         has_api_key: true,
       },
     },
@@ -47,7 +53,7 @@ export default {
   providers: [
     {
       id: 'fixture',
-      type: 'fixture',
+      type: 'openai',
       has_api_key: true,
       status: 'connected',
       default_model: 'fixture/kiki-pro',

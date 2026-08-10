@@ -60,6 +60,31 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function fixtureProviderFromBody(id, body, previousHasKey = false) {
+  const hasApiKey = body.api_key === undefined ? previousHasKey : body.api_key !== '';
+  const aliases = (body.models ?? []).map((model) => `${id}/${model.model}`);
+  return {
+    id,
+    type: body.type,
+    base_url: body.base_url,
+    default_model: body.default_model === undefined ? aliases[0] : `${id}/${body.default_model}`,
+    has_api_key: hasApiKey,
+    status: hasApiKey || body.type === 'kimi' ? 'connected' : 'unconfigured',
+    models: aliases,
+  };
+}
+
+function fixtureModelsFromBody(providerId, models) {
+  return models.map((model) => ({
+    provider: providerId,
+    model: `${providerId}/${model.model}`,
+    display_name: model.display_name ?? model.model,
+    max_context_size: model.max_context_size,
+    capabilities: model.capabilities,
+    support_efforts: model.support_efforts,
+  }));
+}
+
 /** Deep-replace the `$SID` placeholder with the concrete session id. */
 function bind(value, sessionId) {
   if (typeof value === 'string') return value === '$SID' ? sessionId : value;
@@ -105,6 +130,10 @@ class FixtureSession {
 class FixtureServer {
   constructor() {
     this.scenario = null; // { name, data }
+    this.config = {};
+    this.providers = [];
+    this.models = [];
+    this.auth = null;
     this.sessions = new Map();
     this.sockets = new Set();
     this.http = createServer((req, res) => void this.handleHttp(req, res));
@@ -116,6 +145,14 @@ class FixtureServer {
     const module = await import(pathToFileURL(file).href);
     const data = module.default;
     this.scenario = { name, data };
+    this.config = structuredClone(data.config ?? {
+      default_model: 'fixture/kiki-pro',
+      default_permission_mode: 'manual',
+      providers: {},
+    });
+    this.providers = structuredClone(data.providers ?? []);
+    this.models = structuredClone(data.models ?? []);
+    this.auth = structuredClone(data.auth ?? null);
     this.sessions.clear();
     for (const session of data.sessions ?? []) {
       const bound = bind(session, session.id);
@@ -346,55 +383,90 @@ class FixtureServer {
         backend: 'v2',
       });
     }
+    if (path === '/config' && method === 'POST') {
+      this.config = { ...this.config, ...(body ?? {}) };
+      return this.envelope(res, this.config);
+    }
     if (path === '/config') {
-      return this.envelope(res, this.scenario?.data.config ?? {
-        default_model: 'fixture/kiki-pro',
-        default_permission_mode: 'manual',
-        providers: {},
-      });
+      return this.envelope(res, this.config);
     }
     if (path === '/models') {
       return this.envelope(res, {
-        items: this.scenario?.data.models ?? [
+        items: this.models.length > 0 ? this.models : [
           { provider: 'fixture', model: 'fixture/kiki-pro', display_name: 'Kiki Pro', max_context_size: 262144, support_efforts: ['low', 'high'], default_effort: 'high' },
           { provider: 'fixture', model: 'fixture/kiki-lite', display_name: 'Kiki Lite', max_context_size: 131072 },
         ],
       });
     }
     const setDefaultModelMatch = /^\/models\/([^/]+):set_default$/.exec(path);
-    if (setDefaultModelMatch !== null && body !== undefined) {
-      return this.envelope(res, {
-        default_model: setDefaultModelMatch[1],
-        model: {
-          provider: 'fixture',
-          model: setDefaultModelMatch[1],
-          display_name: setDefaultModelMatch[1],
-          max_context_size: 262144,
-        },
-      });
-    }
-    if (path === '/config' && method === 'POST') {
-      return this.envelope(res, {
-        ...(this.scenario?.data.config ?? {
-          default_model: 'fixture/kiki-pro',
-          default_permission_mode: 'manual',
-          providers: {},
-        }),
-        ...body,
-      });
+    if (setDefaultModelMatch !== null && method === 'POST') {
+      const modelId = decodeURIComponent(setDefaultModelMatch[1]);
+      const model = this.models.find((item) => item.model === modelId) ?? {
+        provider: modelId.split('/')[0] ?? 'fixture',
+        model: modelId,
+        display_name: modelId,
+        max_context_size: 262144,
+      };
+      this.config.default_model = modelId;
+      if (this.auth !== null) this.auth.default_model = modelId;
+      return this.envelope(res, { default_model: modelId, model });
     }
     if (path === '/auth') {
-      return this.envelope(res, this.scenario?.data.auth ?? {
+      return this.envelope(res, this.auth ?? {
         ready: true,
         providers_count: 0,
         default_model: null,
         managed_provider: null,
       });
     }
+    if (path === '/providers' && method === 'POST' && body !== undefined) {
+      const provider = fixtureProviderFromBody(body.id, body);
+      this.providers.push(provider);
+      this.models.push(...fixtureModelsFromBody(provider.id, body.models ?? []));
+      this.config.providers = { ...(this.config.providers ?? {}), [provider.id]: {
+        type: provider.type,
+        base_url: provider.base_url,
+        default_model: provider.default_model,
+        has_api_key: provider.has_api_key,
+      } };
+      if (this.auth !== null) this.auth.providers_count = this.providers.length;
+      return this.envelope(res, provider);
+    }
+    const providerMatch = /^\/providers\/([^/]+)$/.exec(path);
+    if (providerMatch !== null && method === 'PUT' && body !== undefined) {
+      const currentId = decodeURIComponent(providerMatch[1]);
+      const nextId = body.new_id ?? currentId;
+      const current = this.providers.find((provider) => provider.id === currentId);
+      if (current === undefined) return this.envelope(res, null, 40413, 'provider.not_found');
+      const provider = fixtureProviderFromBody(nextId, body, current.has_api_key);
+      this.providers = this.providers.map((entry) => entry.id === currentId ? provider : entry);
+      this.models = [
+        ...this.models.filter((model) => model.provider !== currentId),
+        ...fixtureModelsFromBody(nextId, body.models ?? []),
+      ];
+      const providers = { ...(this.config.providers ?? {}) };
+      delete providers[currentId];
+      providers[nextId] = {
+        type: provider.type,
+        base_url: provider.base_url,
+        default_model: provider.default_model,
+        has_api_key: provider.has_api_key,
+      };
+      this.config.providers = providers;
+      return this.envelope(res, { provider });
+    }
+    if (providerMatch !== null && method === 'DELETE') {
+      const providerId = decodeURIComponent(providerMatch[1]);
+      this.providers = this.providers.filter((provider) => provider.id !== providerId);
+      this.models = this.models.filter((model) => model.provider !== providerId);
+      const providers = { ...(this.config.providers ?? {}) };
+      delete providers[providerId];
+      this.config.providers = providers;
+      if (this.auth !== null) this.auth.providers_count = this.providers.length;
+      return this.envelope(res, null);
+    }
     if (path === '/providers') {
-      return this.envelope(res, {
-        items: this.scenario?.data.providers ?? [],
-      });
+      return this.envelope(res, { items: this.providers });
     }
     if (path === '/oauth/login') {
       if (method === 'GET') {
