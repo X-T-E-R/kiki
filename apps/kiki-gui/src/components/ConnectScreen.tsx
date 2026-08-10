@@ -80,10 +80,11 @@ export function ConnectScreen({
                 <p className="mb-4 -mt-2 text-[12px] text-ink-soft">{detectNote}</p>
               ) : null}
 
-              <label className="mb-1 block text-[12px] font-medium text-ink-soft">
+              <label htmlFor="connect-server-url" className="mb-1 block text-[12px] font-medium text-ink-soft">
                 Server URL
               </label>
               <input
+                id="connect-server-url"
                 className="mb-4 w-full rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent"
                 placeholder={`http://127.0.0.1:58627 (empty = proxy ${__KIKI_PROXY_TARGET__})`}
                 value={url}
@@ -91,10 +92,11 @@ export function ConnectScreen({
                 spellCheck={false}
               />
 
-              <label className="mb-1 block text-[12px] font-medium text-ink-soft">
+              <label htmlFor="connect-token" className="mb-1 block text-[12px] font-medium text-ink-soft">
                 Bearer token
               </label>
               <input
+                id="connect-token"
                 className="mb-5 w-full rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent"
                 placeholder="~/.kimi-code/server.token"
                 value={token}

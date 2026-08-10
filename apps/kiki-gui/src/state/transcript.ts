@@ -21,6 +21,7 @@ import type {
   PromptItem,
   PromptListResponse,
   PromptStatus,
+  QuestionItem,
   QuestionRequest,
   Session,
   SessionPendingInteraction,
@@ -31,8 +32,8 @@ import type {
   UsageStatus,
 } from '@moonshot-ai/protocol';
 
-import type { AgentTranscriptResponse } from '../lib/client';
-import type { SessionEventFrame } from '../lib/types';
+import type { AgentTranscriptInteraction, AgentTranscriptResponse } from '../lib/client';
+import { isInteractionEvent, type SessionEventFrame } from '../lib/types';
 
 // ---------------------------------------------------------------------------
 
@@ -138,6 +139,8 @@ export interface ApprovalBlock {
   readonly id: string;
   readonly request: ApprovalRequest;
   readonly resolution: ApprovalResolution | undefined;
+  /** Set when the request originated from a subagent (card shows its name). */
+  readonly originAgentId?: string;
 }
 
 export type QuestionOutcome =
@@ -150,6 +153,8 @@ export interface QuestionBlock {
   readonly id: string;
   readonly request: QuestionRequest;
   readonly outcome: QuestionOutcome | undefined;
+  /** Set when the request originated from a subagent (card shows its name). */
+  readonly originAgentId?: string;
 }
 
 export type Block =
@@ -450,6 +455,116 @@ function messagesToBlocks(messages: readonly Message[]): Block[] {
   return blocks;
 }
 
+/** Engine (v2) question item → protocol QuestionItem, tolerating missing ids. */
+function engineQuestionItems(raw: unknown): QuestionItem[] {
+  if (!Array.isArray(raw)) return [];
+  const items: QuestionItem[] = [];
+  for (const [index, value] of raw.entries()) {
+    if (typeof value !== 'object' || value === null) continue;
+    const item = value as Record<string, unknown> & { options?: unknown };
+    const options = Array.isArray(item.options) ? item.options : [];
+    items.push({
+      id: typeof item['id'] === 'string' ? (item['id'] as string) : `q-${index}`,
+      header: typeof item['header'] === 'string' ? (item['header'] as string) : undefined,
+      question: typeof item['question'] === 'string' ? (item['question'] as string) : '',
+      body: typeof item['body'] === 'string' ? (item['body'] as string) : undefined,
+      options: options.flatMap((option, optionIndex) => {
+        if (typeof option !== 'object' || option === null) return [];
+        const record = option as Record<string, unknown>;
+        return [
+          {
+            id:
+              typeof record['id'] === 'string'
+                ? (record['id'] as string)
+                : `opt-${index}-${optionIndex}`,
+            label: typeof record['label'] === 'string' ? (record['label'] as string) : '',
+            description:
+              typeof record['description'] === 'string'
+                ? (record['description'] as string)
+                : undefined,
+          },
+        ];
+      }),
+      multi_select:
+        (item['multi_select'] ?? item['multiSelect']) === true ? true : undefined,
+      allow_other: (item['allow_other'] ?? item['allowOther']) === true ? true : undefined,
+    });
+  }
+  return items;
+}
+
+/** Transcript-response interaction entity → an actionable card block. */
+function interactionToBlock(
+  interaction: AgentTranscriptInteraction,
+  agentId: string,
+): Block | undefined {
+  const originAgentId = agentId !== 'main' ? agentId : undefined;
+  if (interaction.interactionKind === 'approval') {
+    const request = (interaction.request ?? {}) as {
+      turnId?: number;
+      toolName?: string;
+      action?: string;
+      display?: ToolInputDisplay;
+    };
+    return {
+      kind: 'approval',
+      id: `approval-${interaction.interactionId}`,
+      request: {
+        approval_id: interaction.interactionId,
+        session_id: '',
+        turn_id: request.turnId,
+        tool_call_id: interaction.toolCallId ?? interaction.interactionId,
+        tool_name: request.toolName ?? 'tool',
+        action: request.action ?? 'Approve the action',
+        tool_input_display: request.display,
+        created_at: '',
+        expires_at: '',
+      },
+      resolution:
+        interaction.state === 'pending'
+          ? undefined
+          : {
+              decision:
+                interaction.state === 'approved' ||
+                interaction.state === 'rejected' ||
+                interaction.state === 'cancelled'
+                  ? interaction.state
+                  : 'resolved_elsewhere',
+              resolvedAt: '',
+            },
+      originAgentId,
+    } satisfies ApprovalBlock;
+  }
+  if (interaction.interactionKind === 'question') {
+    const request = (interaction.request ?? {}) as {
+      turnId?: number;
+      questions?: unknown;
+    };
+    return {
+      kind: 'question',
+      id: `question-${interaction.interactionId}`,
+      request: {
+        question_id: interaction.interactionId,
+        session_id: '',
+        turn_id: request.turnId,
+        tool_call_id: interaction.toolCallId,
+        questions: engineQuestionItems(request.questions),
+        created_at: '',
+      },
+      outcome:
+        interaction.state === 'pending'
+          ? undefined
+          : interaction.state === 'answered'
+            ? { kind: 'answered', at: '' }
+            : interaction.state === 'dismissed'
+              ? { kind: 'dismissed', at: '' }
+              : { kind: 'expired' },
+      originAgentId,
+    } satisfies QuestionBlock;
+  }
+  return undefined;
+}
+
 export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Block[] {
   const blocks: Block[] = [];
   for (const item of response.items) {
@@ -542,6 +657,12 @@ export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Bloc
             break;
         }
       }
+    }
+  }
+  for (const interaction of response.interactions ?? []) {
+    const block = interactionToBlock(interaction, response.agent_id);
+    if (block !== undefined && !blocks.some((existing) => existing.id === block.id)) {
+      blocks.push(block);
     }
   }
   return blocks;
@@ -726,21 +847,23 @@ function extractTodosFromInput(input: unknown): readonly TodoItem[] | undefined 
   return items.length > 0 ? items : undefined;
 }
 
-function approvalBlock(request: ApprovalRequest): ApprovalBlock {
+function approvalBlock(request: ApprovalRequest, originAgentId?: string): ApprovalBlock {
   return {
     kind: 'approval',
     id: `approval-${request.approval_id}`,
     request,
     resolution: undefined,
+    originAgentId,
   };
 }
 
-function questionBlock(request: QuestionRequest): QuestionBlock {
+function questionBlock(request: QuestionRequest, originAgentId?: string): QuestionBlock {
   return {
     kind: 'question',
     id: `question-${request.question_id}`,
     request,
     outcome: undefined,
+    originAgentId,
   };
 }
 
@@ -946,7 +1069,12 @@ function applyFrameInternal(
     routeSubagentEvents &&
     emittingAgentId !== undefined &&
     emittingAgentId !== 'main' &&
-    !isSubagentLifecycle(payload.type)
+    !isSubagentLifecycle(payload.type) &&
+    // Interaction events (approval/question) are session-scoped: a subagent's
+    // request must surface as an actionable card in the main transcript, not
+    // vanish into the child capture. The controller additionally applies them
+    // to the child's sub-store so the agent page carries them too.
+    !isInteractionEvent(payload)
   ) {
     const key = `subagent-${emittingAgentId}`;
     const existing =
@@ -1428,7 +1556,17 @@ function applyFrameInternal(
       };
       const exists = next.blocks.some((b) => b.id === `approval-${request.approval_id}`);
       evolve({
-        blocks: exists ? next.blocks : [...next.blocks, approvalBlock(request)],
+        blocks: exists
+          ? next.blocks
+          : [
+              ...next.blocks,
+              approvalBlock(
+                request,
+                emittingAgentId !== undefined && emittingAgentId !== 'main'
+                  ? emittingAgentId
+                  : undefined,
+              ),
+            ],
         pendingInteraction: 'approval',
       });
       break;
@@ -1461,7 +1599,17 @@ function applyFrameInternal(
       };
       const exists = next.blocks.some((b) => b.id === `question-${request.question_id}`);
       evolve({
-        blocks: exists ? next.blocks : [...next.blocks, questionBlock(request)],
+        blocks: exists
+          ? next.blocks
+          : [
+              ...next.blocks,
+              questionBlock(
+                request,
+                emittingAgentId !== undefined && emittingAgentId !== 'main'
+                  ? emittingAgentId
+                  : undefined,
+              ),
+            ],
         pendingInteraction: 'question',
       });
       break;

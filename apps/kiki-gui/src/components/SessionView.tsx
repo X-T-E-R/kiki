@@ -5,10 +5,10 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 
-import type { PermissionMode } from '@moonshot-ai/protocol';
+import type { PermissionMode, Session } from '@moonshot-ai/protocol';
 
 import { Composer } from './Composer';
 import { RightRail } from './RightRail';
@@ -219,9 +219,8 @@ function TurnsMenu({
 const noopSubscribe = () => () => {};
 const emptyView = createViewState('');
 const emptyState = () => emptyView;
-/** Stable no-op handlers for the read-only agent transcript (keeps BlockView memos). */
+/** Stable no-op handler for the read-only agent transcript (keeps BlockView memos). */
 const noopLoadOlder = () => Promise.resolve(false);
-const noopInteraction = () => Promise.resolve();
 
 /** Live media query (resize-aware) for overlay-vs-inline layout decisions. */
 function useMediaQuery(query: string): boolean {
@@ -262,10 +261,17 @@ function resolveApprovalShortcutTarget(): string | undefined {
   return undefined;
 }
 
-export function SessionView({ onToggleSidebar }: { onToggleSidebar: () => void }) {
+export function SessionView({
+  onToggleSidebar,
+  sessions,
+}: {
+  onToggleSidebar: () => void;
+  /** Polled session records owned by App (page-1 polling there). */
+  sessions: readonly Session[];
+}) {
   const { id } = useParams<{ id: string }>();
   const sessionId = id!;
-  const { client, wsStatus } = useConnection();
+  const { client } = useConnection();
   const navigate = useNavigate();
   const location = useLocation();
   const agentMatch = useMatch('/s/:id/agent/:agentId');
@@ -372,29 +378,13 @@ export function SessionView({ onToggleSidebar }: { onToggleSidebar: () => void }
       : emptyView,
   );
 
-  const sessionsQuery = useInfiniteQuery({
-    queryKey: ['sessions', false],
-    queryFn: ({ pageParam }) =>
-      client.listSessions({
-        page_size: 100,
-        before_id: pageParam,
-      }),
-    getNextPageParam: (lastPage) =>
-      lastPage.has_more ? lastPage.items.at(-1)?.id : undefined,
-    initialPageParam: undefined as string | undefined,
-    refetchInterval: 5000,
-  });
-  const sessions = useMemo(
-    () => sessionsQuery.data?.pages.flatMap((page) => page.items) ?? [],
-    [sessionsQuery.data],
-  );
-
-  // Merge polled session records into the live controller.
+  // The sessions list lives in App (single owner, page-1 polling); this view
+  // only merges the polled record for ITS session into the live controller.
   useEffect(() => {
-    if (controller === null || sessionsQuery.data === undefined) return;
+    if (controller === null) return;
     const record = sessions.find((item) => item.id === controller.sessionId);
     if (record !== undefined) controller.handleSessionRecord(record);
-  }, [controller, sessions, sessionsQuery.data]);
+  }, [controller, sessions]);
 
   const configQuery = useQuery({
     queryKey: ['config'],
@@ -592,6 +582,10 @@ export function SessionView({ onToggleSidebar }: { onToggleSidebar: () => void }
     const text = initialPromptRef.current;
     initialPromptRef.current = undefined;
     navigate(location.pathname, { replace: true });
+    // Seed the session draft first: if this send fails, the text stays
+    // recoverable in the composer (and in localStorage across reloads).
+    writeDraft(sessionId, text);
+    setDraft(text);
     actions.send(text);
   }, [controller, actions, state.loaded, location.pathname, navigate]);
 
@@ -694,7 +688,7 @@ export function SessionView({ onToggleSidebar }: { onToggleSidebar: () => void }
               {selectedSubagent?.name ?? selectedAgentId}
             </h1>
             <p className="truncate text-[10.5px] text-ink-faint">
-              Read-only subagent transcript
+              Subagent transcript — interaction cards resolve for the whole session
             </p>
           </div>
           {selectedSubagent?.model !== undefined ? (
@@ -708,11 +702,10 @@ export function SessionView({ onToggleSidebar }: { onToggleSidebar: () => void }
         </header>
         <Transcript
           state={agentState}
-          readOnly
           onLoadOlder={noopLoadOlder}
-          onResolveApproval={noopInteraction}
-          onAnswerQuestion={noopInteraction}
-          onDismissQuestion={noopInteraction}
+          onResolveApproval={handleResolveApproval}
+          onAnswerQuestion={handleAnswerQuestion}
+          onDismissQuestion={handleDismissQuestion}
         />
       </main>
     );
@@ -732,14 +725,6 @@ export function SessionView({ onToggleSidebar }: { onToggleSidebar: () => void }
               ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
           }}
         />
-
-        {wsStatus !== 'open' ? (
-          <div className="shrink-0 border-b border-amber-rule/40 bg-amber-card px-4 py-1.5 text-center text-[12px] font-medium text-amber-ink">
-            {wsStatus === 'connecting'
-              ? 'Connection lost — reconnecting…'
-              : 'Disconnected from the server. Events will resume on reconnect.'}
-          </div>
-        ) : null}
 
         <Transcript
           state={state}

@@ -357,6 +357,70 @@ describe('SessionController pipeline', () => {
     controller.close();
   });
 
+  it('routes a child-origin approval into BOTH the main list and the child store', async () => {
+    const { controller, flushAll, mainPublishes } = await openController();
+    let agentPublishes = 0;
+    controller.subscribeAgent('agent-x', () => {
+      agentPublishes += 1;
+    });
+    controller.handleFrame(
+      frame({
+        type: 'event.approval.requested',
+        agentId: 'agent-x',
+        sessionId: 'session_test',
+        approval_id: 'a-child',
+        session_id: 'session_test',
+        turn_id: 1,
+        tool_call_id: 'tc-child',
+        tool_name: 'Bash',
+        action: 'Run: rm -rf build',
+        tool_input_display: { kind: 'command', command: 'rm -rf build' },
+        created_at: '2026-01-01T00:00:00.000Z',
+        expires_at: '2026-01-01T01:00:00.000Z',
+      } as never, { seq: 11 }),
+    );
+    flushAll();
+    // Main transcript: an actionable, origin-tagged card.
+    const mainBlock = controller
+      .getState()
+      .blocks.find((b) => b.kind === 'approval') as
+      | { originAgentId?: string; request: { approval_id: string } }
+      | undefined;
+    expect(mainBlock?.request.approval_id).toBe('a-child');
+    expect(mainBlock?.originAgentId).toBe('agent-x');
+    expect(controller.getState().pendingInteraction).toBe('approval');
+    expect(mainPublishes()).toBeGreaterThan(0);
+    // Child sub-store: the agent page's live copy.
+    const childBlock = controller
+      .getAgentState('agent-x')
+      .blocks.find((b) => b.kind === 'approval');
+    expect(childBlock).toBeDefined();
+    expect(agentPublishes).toBeGreaterThan(0);
+    controller.close();
+  });
+
+  it('resyncs after a reconnect ack only when the drop hit live work', async () => {
+    const { controller, client, flushAll } = await openController();
+    const snapshotCalls = () => client.snapshot.mock.calls.length;
+
+    // Idle drop: no resync after the ack.
+    controller.handleWsDrop();
+    controller.handleReconnectAck();
+    expect(snapshotCalls()).toBe(1); // only open()
+
+    // Busy drop: the ack triggers a snapshot resync.
+    controller.handleFrame(
+      frame({ type: 'turn.started', turnId: 1, origin: { kind: 'user' }, prompt: 'work' } as never, { seq: 11 }),
+    );
+    flushAll();
+    expect(controller.getState().busy).toBe(true);
+    controller.handleWsDrop();
+    controller.handleReconnectAck();
+    await waitFor(() => snapshotCalls() >= 2);
+    await waitFor(() => !controller.getState().resyncing);
+    controller.close();
+  });
+
   it('marks a failed resync and retries with backoff until a snapshot lands', async () => {
     const { controller, client } = await openController();
     client.snapshot

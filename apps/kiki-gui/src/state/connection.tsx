@@ -162,7 +162,14 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       baseUrl: config.url.trim().replace(/\/+$/, ''),
       token: config.token.trim(),
       events: {
-        onStatus: (status) => setWsStatus(status),
+        onStatus: (status) => {
+          // A drop mid-turn loses volatile deltas permanently (they are never
+          // journaled or replayed); controllers mark themselves for resync.
+          if (status !== 'open') {
+            for (const controller of controllersRef.current) controller.handleWsDrop();
+          }
+          setWsStatus(status);
+        },
         onFrame: (frame) => {
           for (const controller of controllersRef.current) controller.handleFrame(frame);
         },
@@ -171,9 +178,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
             controller.handleResyncRequired(payload);
           }
         },
-        onSubscribeAck: (accepted, resyncRequired, cursors) => {
+        onSubscribeAck: (accepted, resyncRequired, cursors, reconnected) => {
           for (const controller of controllersRef.current) {
             if (!accepted.includes(controller.sessionId)) continue;
+            if (reconnected) controller.handleReconnectAck();
             const offered = cursors?.[controller.sessionId];
             // Identity change: the journal epoch the server reports no longer
             // matches ours — rebuild from a fresh snapshot and resubscribe

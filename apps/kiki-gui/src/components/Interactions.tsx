@@ -90,9 +90,15 @@ function approvalDetail(block: ApprovalBlock): { label: string; text: string } |
 export function ApprovalCard({
   block,
   onResolve,
+  originAgentName,
+  showShortcutHints = false,
 }: {
   block: ApprovalBlock;
   onResolve: (decision: ApprovalDecision, scope?: 'session') => Promise<void>;
+  /** Display name of the subagent that issued the request, when not main. */
+  originAgentName?: string;
+  /** y/n hints are armed only when this is the single unresolved approval. */
+  showShortcutHints?: boolean;
 }) {
   const [forSession, setForSession] = useState(false);
   const [submitting, setSubmitting] = useState<ApprovalIntent | null>(null);
@@ -185,6 +191,11 @@ export function ApprovalCard({
         <div className="min-w-0 flex-1 px-4 py-3">
           <div className="flex items-baseline gap-2">
             <span className="text-[13px] font-semibold text-amber-ink">Approval needed</span>
+            {originAgentName !== undefined ? (
+              <span className="rounded-full border border-amber-rule/40 bg-panel px-1.5 py-px text-[10px] font-medium text-amber-ink/80">
+                from subagent {originAgentName}
+              </span>
+            ) : null}
             <span className="text-[10.5px] text-amber-ink/60">
               {timeUntil(block.request.expires_at)}
             </span>
@@ -227,7 +238,9 @@ export function ApprovalCard({
                   {submitting === 'allow-once' || submitting === 'allow-always'
                     ? 'Approving…'
                     : 'Approve'}{' '}
-                  <kbd className="ml-1 rounded bg-white/20 px-1 font-mono text-[10px]">y</kbd>
+                  {showShortcutHints ? (
+                    <kbd className="ml-1 rounded bg-white/20 px-1 font-mono text-[10px]">y</kbd>
+                  ) : null}
                 </button>
                 <button
                   type="button"
@@ -236,7 +249,9 @@ export function ApprovalCard({
                   className="rounded-lg border border-hairline-strong bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:border-danger hover:text-danger disabled:opacity-60"
                 >
                   {submitting === 'reject-once' ? 'Rejecting…' : 'Reject'}{' '}
-                  <kbd className="ml-1 rounded bg-paper px-1 font-mono text-[10px]">n</kbd>
+                  {showShortcutHints ? (
+                    <kbd className="ml-1 rounded bg-paper px-1 font-mono text-[10px]">n</kbd>
+                  ) : null}
                 </button>
               </div>
               {failed ? (
@@ -307,6 +322,7 @@ function QuestionItemView({
             <button
               key={option.id}
               type="button"
+              aria-pressed={selected}
               onClick={() => toggle(option.id)}
               className={`flex w-full items-start gap-2 rounded-lg border px-2.5 py-1.5 text-left transition-colors ${
                 selected
@@ -339,6 +355,7 @@ function QuestionItemView({
           >
             <button
               type="button"
+              aria-pressed={answer.useOther}
               onClick={() => onChange({ ...answer, useOther: !answer.useOther })}
               className="flex w-full items-center gap-2 text-left"
             >
@@ -373,16 +390,19 @@ export function QuestionCard({
   block,
   onAnswer,
   onDismiss,
+  originAgentName,
 }: {
   block: QuestionBlock;
   onAnswer: (answers: Record<string, QuestionAnswer>) => Promise<void>;
   onDismiss: () => Promise<void>;
+  /** Display name of the subagent that asked, when not main. */
+  originAgentName?: string;
 }) {
   const [selections, setSelections] = useState<
     Record<string, { optionIds: string[]; otherText: string; useOther: boolean }>
   >({});
   const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
   const [sent, setSent] = useState<null | 'answered' | 'dismissed'>(null);
 
   if (block.outcome !== undefined) {
@@ -403,7 +423,17 @@ export function QuestionCard({
   const answerFor = (id: string) =>
     selections[id] ?? { optionIds: [] as string[], otherText: '', useOther: false };
 
+  const isItemAnswered = (item: (typeof block.request.questions)[number]): boolean => {
+    const selection = answerFor(item.id);
+    if (selection.useOther) return selection.otherText.trim() !== '';
+    return selection.optionIds.length > 0;
+  };
+  // Gate submit: unanswered sub-questions would be silently dropped from the
+  // payload (and the server rejects partial answers with 40001 anyway).
+  const unansweredCount = block.request.questions.filter((item) => !isItemAnswered(item)).length;
+
   const submit = () => {
+    if (unansweredCount > 0) return;
     const answers: Record<string, QuestionAnswer> = {};
     for (const item of block.request.questions) {
       const selection = answerFor(item.id);
@@ -427,23 +457,31 @@ export function QuestionCard({
     }
     if (Object.keys(answers).length === 0) return;
     setBusy(true);
-    setFailed(false);
+    setFailed(null);
     onAnswer(answers)
       .then(() => setSent('answered'))
-      .catch(() => {
+      .catch((error: unknown) => {
         setBusy(false);
-        setFailed(true);
+        setFailed(
+          error instanceof Error
+            ? `Could not send the answers: ${error.message}`
+            : 'Could not send — try again.',
+        );
       });
   };
 
   const dismiss = () => {
     setBusy(true);
-    setFailed(false);
+    setFailed(null);
     onDismiss()
       .then(() => setSent('dismissed'))
-      .catch(() => {
+      .catch((error: unknown) => {
         setBusy(false);
-        setFailed(true);
+        setFailed(
+          error instanceof Error
+            ? `Could not dismiss: ${error.message}`
+            : 'Could not dismiss — try again.',
+        );
       });
   };
 
@@ -452,7 +490,14 @@ export function QuestionCard({
       <div className="flex">
         <div className="w-1 shrink-0 bg-amber-rule" />
         <div className="min-w-0 flex-1 space-y-4 px-4 py-3">
-          <span className="text-[13px] font-semibold text-amber-ink">kiki asks</span>
+          <div className="flex items-center gap-2">
+            <span className="text-[13px] font-semibold text-amber-ink">kiki asks</span>
+            {originAgentName !== undefined ? (
+              <span className="rounded-full border border-amber-rule/40 bg-panel px-1.5 py-px text-[10px] font-medium text-amber-ink/80">
+                from subagent {originAgentName}
+              </span>
+            ) : null}
+          </div>
           {block.request.questions.map((item) => (
             <QuestionItemView
               key={item.id}
@@ -465,7 +510,12 @@ export function QuestionCard({
             <div className="flex flex-wrap items-center gap-2 pt-1">
               <button
                 type="button"
-                disabled={busy}
+                disabled={busy || unansweredCount > 0}
+                title={
+                  unansweredCount > 0
+                    ? `${unansweredCount} question${unansweredCount === 1 ? '' : 's'} still unanswered`
+                    : undefined
+                }
                 onClick={submit}
                 className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep disabled:opacity-60"
               >
@@ -479,9 +529,14 @@ export function QuestionCard({
               >
                 Dismiss
               </button>
-              {failed ? (
+              {unansweredCount > 0 ? (
+                <span className="text-[11px] text-amber-ink/70">
+                  {unansweredCount} question{unansweredCount === 1 ? '' : 's'} still unanswered
+                </span>
+              ) : null}
+              {failed !== null ? (
                 <span role="alert" className="text-[11.5px] text-danger">
-                  Could not send — try again.
+                  {failed}
                 </span>
               ) : null}
             </div>

@@ -228,8 +228,8 @@ function GeneralSection() {
       <SectionCard title="New-session defaults" badge="Server API · live">
         <div className="space-y-4">
           <div>
-            <label className="mb-1.5 block text-[11px] font-medium text-ink-soft">Default permission mode</label>
-            <div className="flex flex-wrap gap-2">
+            <span id="default-permission-mode-label" className="mb-1.5 block text-[11px] font-medium text-ink-soft">Default permission mode</span>
+            <div className="flex flex-wrap gap-2" role="group" aria-labelledby="default-permission-mode-label">
               {(['manual', 'auto', 'yolo'] as PermissionMode[]).map((mode) => (
                 <button
                   key={mode}
@@ -261,8 +261,9 @@ function GeneralSection() {
       <SectionCard title="Composer" badge="This device">
         <div className="space-y-4">
           <div>
-            <label className="mb-1.5 block text-[11px] font-medium text-ink-soft">Send shortcut</label>
+            <label htmlFor="send-shortcut-select" className="mb-1.5 block text-[11px] font-medium text-ink-soft">Send shortcut</label>
             <select
+              id="send-shortcut-select"
               className={SMALL_INPUT}
               value={settings.sendShortcut}
               onChange={(event) => updateLocal({ sendShortcut: event.target.value as SendShortcut })}
@@ -1001,8 +1002,8 @@ function CapabilitiesSection() {
 
       <SectionCard title="Workspace skills" badge="Server catalog">
         <div className="mb-3 flex items-center gap-2">
-          <label className="text-[11px] font-medium text-ink-soft">Workspace</label>
-          <select className={SMALL_INPUT} value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)}>
+          <label htmlFor="workspace-skills-select" className="text-[11px] font-medium text-ink-soft">Workspace</label>
+          <select id="workspace-skills-select" className={SMALL_INPUT} value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)}>
             {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
           </select>
         </div>

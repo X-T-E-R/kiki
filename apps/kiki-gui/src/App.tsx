@@ -9,7 +9,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Navigate,
   Route,
@@ -27,6 +27,7 @@ import {
   onTrayNewSession,
   readNativeDesktopPrefs,
 } from './lib/desktop';
+import { dedupeSessions, mergeSessionFirstPage, type SessionListData } from './lib/sessionList';
 import { readLastSessionId, writeDesktopPrefs } from './lib/settings';
 import { useConnection } from './state/connection';
 
@@ -67,12 +68,25 @@ export function App() {
     getNextPageParam: (lastPage) =>
       lastPage.has_more ? lastPage.items.at(-1)?.id : undefined,
     initialPageParam: undefined as string | undefined,
-    refetchInterval: 5000,
   });
-  const sessions = useMemo(
-    () => sessionsQuery.data?.pages.flatMap((page) => page.items) ?? [],
-    [sessionsQuery.data],
-  );
+  // Poll only the first page (where every change lands). Interval-refetching
+  // an infinite query refetches ALL loaded pages on every tick; older pages
+  // instead refresh on demand (load-more) or on invalidation.
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void client
+        .listSessions({ page_size: 100, include_archive: showArchived || undefined })
+        .then((first) => {
+          queryClient.setQueryData(['sessions', showArchived], (old: SessionListData | undefined) =>
+            mergeSessionFirstPage(old, first),
+          );
+        })
+        .catch(() => undefined);
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [client, queryClient, showArchived]);
+  const sessions = useMemo(() => dedupeSessions(sessionsQuery.data), [sessionsQuery.data]);
 
   // Close mobile sidebar on route change.
   useEffect(() => {
@@ -117,7 +131,12 @@ export function App() {
           />
           <Route
             path="/s/:id/*"
-            element={<SessionView onToggleSidebar={() => setSidebarOpen((value) => !value)} />}
+            element={
+              <SessionView
+                onToggleSidebar={() => setSidebarOpen((value) => !value)}
+                sessions={sessions}
+              />
+            }
           />
           <Route
             path="/settings/:section?"

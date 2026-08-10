@@ -382,6 +382,8 @@ const BlockView = memo(function BlockView({
   onAnswerQuestion,
   onDismissQuestion,
   onCancelQueued,
+  agentNames,
+  approvalShortcutHints,
   readOnly,
 }: {
   block: Exclude<Block, ToolBlock>;
@@ -394,7 +396,15 @@ const BlockView = memo(function BlockView({
   onAnswerQuestion: (questionId: string, answers: Record<string, QuestionAnswer>) => Promise<void>;
   onDismissQuestion: (questionId: string) => Promise<void>;
   onCancelQueued?: (promptId: string) => void;
+  /** subagentId → display name, for tagging child-origin interaction cards. */
+  agentNames?: ReadonlyMap<string, string>;
+  /** y/n shortcut hints are armed only for the single unresolved approval. */
+  approvalShortcutHints?: boolean;
 }) {
+  const originAgentName =
+    (block.kind === 'approval' || block.kind === 'question') && block.originAgentId !== undefined
+      ? (agentNames?.get(block.originAgentId) ?? block.originAgentId)
+      : undefined;
   switch (block.kind) {
     case 'user':
       return <UserMessage block={block} onCancelQueued={readOnly ? undefined : onCancelQueued} />;
@@ -423,6 +433,8 @@ const BlockView = memo(function BlockView({
       ) : (
         <ApprovalCard
           block={block}
+          originAgentName={originAgentName}
+          showShortcutHints={approvalShortcutHints === true}
           onResolve={(decision, scope) => onResolveApproval(block.request.approval_id, decision, scope)}
         />
       );
@@ -439,6 +451,7 @@ const BlockView = memo(function BlockView({
       ) : (
         <QuestionCard
           block={block}
+          originAgentName={originAgentName}
           onAnswer={(answers) => onAnswerQuestion(block.request.question_id, answers)}
           onDismiss={() => onDismissQuestion(block.request.question_id)}
         />
@@ -555,6 +568,19 @@ export function Transcript({
 }) {
   const { blocks, loaded, loadError } = state;
   const nodes = useMemo(() => groupBlocks(blocks), [blocks]);
+  const agentNames = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const block of blocks) {
+      if (block.kind === 'subagent') map.set(block.subagentId, block.name);
+    }
+    return map;
+  }, [blocks]);
+  // The y/n keyboard shortcut only fires for a single visible unresolved
+  // approval (SessionView's resolver); hints mirror that eligibility.
+  const unresolvedApprovals = useMemo(
+    () => blocks.filter((b) => b.kind === 'approval' && b.resolution === undefined).length,
+    [blocks],
+  );
 
   if (loadError !== undefined) {
     return (
@@ -616,6 +642,8 @@ export function Transcript({
                 onAnswerQuestion={onAnswerQuestion}
                 onDismissQuestion={onDismissQuestion}
                 onCancelQueued={onCancelQueued}
+                agentNames={agentNames}
+                approvalShortcutHints={unresolvedApprovals === 1}
                 readOnly={readOnly}
               />
             )}

@@ -13,7 +13,7 @@ import type {
 } from '@moonshot-ai/protocol';
 
 import { API_CODES, ApiError, type KikiClient } from '../lib/client';
-import type { ResyncRequiredPayload, SessionEventFrame } from '../lib/types';
+import { isInteractionEvent, type ResyncRequiredPayload, type SessionEventFrame } from '../lib/types';
 import type { KikiSocket } from '../lib/ws';
 import { FrameBuffer } from './framePipeline';
 import {
@@ -244,6 +244,19 @@ export class SessionController {
       this.agentStates.set(agentId, result.state);
       this.dirtyAgents.add(agentId);
 
+      // Interaction events are session-scoped: a subagent's approval/question
+      // must ALSO land in the main transcript as an actionable card (tagged
+      // with its origin by the reducer) — otherwise it hangs to expiry.
+      if (isInteractionEvent(frame.payload)) {
+        const mainResult = applyFrame(this.state, frame);
+        this.state = mainResult.state;
+        if (frame.volatile !== true && mainResult.state.cursor.seq >= frame.seq) {
+          this.socket.updateCursor(this.sessionId, mainResult.state.cursor);
+        }
+        if (result.gapDetected || mainResult.gapDetected) void this.resync();
+        return;
+      }
+
       if (frame.payload.type === 'tool.call.started') {
         const toolCallId = (frame.payload as { toolCallId?: string }).toolCallId;
         const seen = this.childToolCalls.get(agentId) ?? new Set<string>();
@@ -279,6 +292,25 @@ export class SessionController {
 
   handleResyncRequired(payload: ResyncRequiredPayload): void {
     if (payload.session_id === this.sessionId) void this.resync();
+  }
+
+  /** Volatile deltas are never journaled or replayed, so a turn that was
+   * live when the socket dropped has holes the durable replay cannot fill.
+   * Remember the drop; the next post-reconnect subscribe ack resyncs. */
+  private droppedWithLiveWork = false;
+
+  handleWsDrop(): void {
+    if (this.closed) return;
+    const streaming = this.state.blocks.some(
+      (block) => (block.kind === 'assistant' || block.kind === 'thinking') && block.streaming,
+    );
+    if (this.state.busy || streaming) this.droppedWithLiveWork = true;
+  }
+
+  handleReconnectAck(): void {
+    if (this.closed || !this.droppedWithLiveWork) return;
+    this.droppedWithLiveWork = false;
+    void this.resync();
   }
 
   async resync(): Promise<void> {

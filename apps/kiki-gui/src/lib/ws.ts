@@ -22,11 +22,14 @@ export interface WsEvents {
   onStatus(status: WsStatus, detail?: string): void;
   onFrame(frame: SessionEventFrame): void;
   onResyncRequired(payload: ResyncRequiredPayload): void;
-  /** subscribe ack: server-side current cursor per accepted session. */
+  /** subscribe ack: server-side current cursor per accepted session.
+   * `reconnected` is true when the subscribe rode the hello of a re-established
+   * socket (as opposed to the first connect or an explicit resubscribe). */
   onSubscribeAck(
     accepted: readonly string[],
     resyncRequired: readonly string[],
     cursors: Record<string, SessionCursor> | undefined,
+    reconnected: boolean,
   ): void;
 }
 
@@ -60,6 +63,12 @@ export class KikiSocket {
   private idCounter = 0;
   private lastInboundAt = 0;
   private malformedFrameCount = 0;
+  private helloCount = 0;
+  /** Set when the in-flight subscribe rode a reconnect hello; consumed by the ack. */
+  private subscribeFromReconnect = false;
+  /** Heartbeat cadence advertised by server_hello (undefined = none — kap-server
+   * does not currently advertise one; see docs/server-heartbeat.md). */
+  private serverHeartbeatMs: number | undefined;
 
   constructor(options: { baseUrl: string; token?: string; events: WsEvents }) {
     const root =
@@ -117,15 +126,18 @@ export class KikiSocket {
   }
 
   /** Foreground/wake nudge. An OPEN readyState is not trusted after a long
-   * inbound silence: focus/online/pageshow force that stale transport through
-   * the normal close/reconnect path. kap-server's wsConnectionV1 has NO
-   * application-level ping/pong heartbeat (see docs/server-heartbeat.md), so
-   * this staleness check is the only half-open detector until the server grows
-   * one; the 'ping' reply handler below is forward-compat for that day. */
+   * inbound silence ONLY when the server advertised an application-level
+   * heartbeat in its hello: with a heartbeat, silence past the window means
+   * the transport is half-open. kap-server's wsConnectionV1 currently
+   * advertises none (see docs/server-heartbeat.md), so the stale branch stays
+   * disarmed and reconnects remain close-driven; the 'ping' reply handler is
+   * forward-compat for the day the server grows one. */
   nudge(): void {
     if (this.manuallyClosed) return;
     if (this.ws !== null && this.ws.readyState === WebSocket.OPEN && this.helloReceived) {
-      if (this.lastInboundAt > 0 && Date.now() - this.lastInboundAt <= STALE_INBOUND_MS) return;
+      if (this.serverHeartbeatMs === undefined) return;
+      const staleAfter = Math.max(STALE_INBOUND_MS, this.serverHeartbeatMs * 3);
+      if (this.lastInboundAt > 0 && Date.now() - this.lastInboundAt <= staleAfter) return;
       try {
         this.ws.close(4000, 'stale inbound stream');
       } catch {
@@ -173,6 +185,7 @@ export class KikiSocket {
     this.events.onStatus('connecting');
     this.helloReceived = false;
     this.lastInboundAt = 0;
+    this.serverHeartbeatMs = undefined;
     const protocols = this.token !== undefined ? [`kimi-code.bearer.${this.token}`] : undefined;
     let ws: WebSocket;
     try {
@@ -215,6 +228,13 @@ export class KikiSocket {
       case 'server_hello': {
         this.helloReceived = true;
         this.reconnectAttempts = 0;
+        this.helloCount += 1;
+        const heartbeat = (message.payload as { heartbeat_interval_ms?: unknown } | undefined)
+          ?.heartbeat_interval_ms;
+        this.serverHeartbeatMs =
+          typeof heartbeat === 'number' && Number.isFinite(heartbeat) && heartbeat > 0
+            ? heartbeat
+            : undefined;
         this.send({
           type: 'client_hello',
           id: this.nextId(),
@@ -222,6 +242,7 @@ export class KikiSocket {
         });
         this.events.onStatus('open');
         if (this.desired.size > 0) {
+          this.subscribeFromReconnect = this.helloCount > 1;
           this.sendSubscribe([...this.desired.keys()]);
         }
         return;
@@ -276,7 +297,9 @@ export class KikiSocket {
     const accepted = payload.accepted ?? payload.accepted_subscriptions ?? [];
     const resyncRequired = payload.resync_required ?? [];
     if (accepted.length > 0 || resyncRequired.length > 0) {
-      this.events.onSubscribeAck(accepted, resyncRequired, payload.cursors);
+      const reconnected = this.subscribeFromReconnect;
+      this.subscribeFromReconnect = false;
+      this.events.onSubscribeAck(accepted, resyncRequired, payload.cursors, reconnected);
     }
   }
 

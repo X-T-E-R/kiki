@@ -126,6 +126,19 @@ export interface AgentTranscriptResponse {
     | { kind: 'taskref'; refId: string; taskId: string; at?: string }
   )[];
   readonly has_more: boolean;
+  /** Session-global interaction entities (approval/question), shipped
+   * unpaginated with every transcript response. `request`/`response` carry
+   * the engine payloads (v2 field names: toolName/action/display/questions). */
+  readonly interactions?: readonly AgentTranscriptInteraction[];
+}
+
+export interface AgentTranscriptInteraction {
+  readonly interactionId: string;
+  readonly interactionKind: 'approval' | 'question';
+  readonly toolCallId?: string;
+  readonly state: 'pending' | 'approved' | 'rejected' | 'cancelled' | 'answered' | 'dismissed';
+  readonly request?: unknown;
+  readonly response?: unknown;
 }
 
 function joinUrl(baseUrl: string, path: string): string {

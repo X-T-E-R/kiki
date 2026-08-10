@@ -500,7 +500,10 @@ async function scenarioQueue() {
   await selectSession('Fixture: queue');
   await sendPrompt('A: hold the floor.');
   await waitForText('A holds the floor.');
-  await sendPrompt('B: wait your turn.');
+  // The busy composer keeps a mouse path to the queue: fill, then click Send.
+  await page.fill('textarea', 'B: wait your turn.');
+  await page.click('button[aria-label="Queue prompt"]');
+  console.log('[flow] queued via the busy Send button');
   // The parked prompt surfaces immediately: one user block + Queued chip + bar.
   await page.waitForSelector('text=Queued — starts when the current turn finishes', { timeout: 10_000 });
   const bBlocks = page.locator('[role="log"] [data-block-id^="user-"]', { hasText: 'B: wait your turn.' });
@@ -681,7 +684,7 @@ async function scenarioSubagentsBurst() {
     `${WEB_URL}/s/session_fixture_subagents_burst/agent/agent-hidden?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`,
     { waitUntil: 'networkidle' },
   );
-  await page.waitForSelector('text=Read-only subagent transcript', { timeout: 15_000 });
+  await page.waitForSelector('text=Subagent transcript', { timeout: 15_000 });
   await control({ action: 'burst', session_id: 'session_fixture_subagents_burst', count: 500 });
   await page.waitForSelector('[data-block-id="tool-burst-call"]', { timeout: 15_000 });
   await page.waitForTimeout(400);
@@ -747,6 +750,83 @@ async function scenarioReminder() {
   await shot('reminder-expanded');
 }
 
+async function scenarioSubagentApproval() {
+  await selectSession('Fixture: subagent approval');
+  await sendPrompt('Clean the build output.');
+  // The child's request surfaces in the MAIN transcript, tagged with its
+  // subagent name — and it is actionable in place.
+  const card = page.locator('[data-approval-id="approval_fixture_child"]');
+  await card.waitFor({ timeout: 15_000 });
+  await waitForText('from subagent Approver');
+  await shot('subagent-approval-main');
+  await card.locator('button', { hasText: 'Approve' }).click();
+  // Resolving with that approval_id unblocks the child (a wrong id would
+  // 40902 and strand the run): the card collapses to its resolution line
+  // (the resolved card no longer carries data-approval-id) and the turn ends.
+  await page.getByText('Approved', { exact: true }).waitFor({ timeout: 10_000 });
+  await waitForText('The gated cleanup finished.');
+  await page.waitForSelector('text=working', { state: 'detached', timeout: 20_000 }).catch(() => undefined);
+  // The agent page carries the same interaction (from the transcript
+  // response's interactions array), now resolved.
+  await page.locator('[data-subagent-id="agent-worker"]').click();
+  await page.waitForURL(/\/agent\/agent-worker$/, { timeout: 10_000 });
+  await page.getByText('Approved', { exact: true }).waitFor({ timeout: 15_000 });
+  await page.waitForTimeout(400);
+  await shot('subagent-approval-agent-page');
+}
+
+async function scenarioReconnectMidTurn() {
+  await selectSession('Fixture: reconnect mid-turn');
+  await sendPrompt('Stream both halves.');
+  await waitForText('Part one streamed before the drop.');
+  await control({ action: 'drop_ws' });
+  await page.waitForSelector('text=/Connection lost|Disconnected from the server/', { timeout: 10_000 });
+  // The turn continues and ENDS during the blackout: its volatile deltas are
+  // lost to the wire, only the journal commit persists. No epoch bump.
+  await control({ action: 'release', session_id: 'session_fixture_reconnect_mid_turn' });
+  await page.waitForSelector('text=/Connection lost|Disconnected from the server/', {
+    state: 'detached',
+    timeout: 15_000,
+  });
+  // Busy at drop ⇒ the post-reconnect ack triggers a snapshot resync, and the
+  // finalized text must be COMPLETE — not truncated at the drop point.
+  await page.waitForSelector(
+    'text=Part two streamed during the blackout.',
+    { timeout: 15_000 },
+  );
+  await page.waitForTimeout(600);
+  const full = 'Part one streamed before the drop. Part two streamed during the blackout.';
+  const occurrences = await page.evaluate(
+    (needle) => document.body.innerText.split(needle).length - 1,
+    full,
+  );
+  console.log(`[check] full-text occurrences after mid-turn reconnect: ${occurrences}`);
+  if (occurrences !== 1) throw new Error(`expected the complete text exactly once, saw ${occurrences}`);
+  await shot('reconnect-mid-turn');
+}
+
+async function scenarioSessionPages() {
+  // 125 sessions: page 1 (100) + load-more page 2 (25) via before_id keyset.
+  await page.waitForSelector('text=Fixture: paged session 001', { timeout: 15_000 });
+  const rows = page.locator('aside div.group');
+  const firstCount = await rows.count();
+  console.log(`[check] sidebar first page rows: ${firstCount}`);
+  if (firstCount !== 100) throw new Error(`expected 100 first-page rows, saw ${firstCount}`);
+  await page.click('button:has-text("Load more sessions")');
+  await page.waitForFunction(
+    () => document.querySelectorAll('aside div.group').length === 125,
+    undefined,
+    { timeout: 15_000 },
+  );
+  // The page-1 poll keeps ticking every 5s; the merge must not duplicate rows.
+  await page.waitForTimeout(6000);
+  const finalCount = await rows.count();
+  console.log(`[check] sidebar rows after load-more + poll ticks: ${finalCount}`);
+  if (finalCount !== 125) throw new Error(`expected 125 unique rows, saw ${finalCount}`);
+  await page.locator('aside div.group', { hasText: 'paged session 125' }).scrollIntoViewIfNeeded();
+  await shot('session-pages');
+}
+
 // ---------------------------------------------------------------------------
 
 const SCENARIOS = [
@@ -754,6 +834,7 @@ const SCENARIOS = [
   ['prompt-dedupe', scenarioPromptDedupe],
   ['queue', scenarioQueue],
   ['subagents', scenarioSubagents],
+  ['subagent-approval', scenarioSubagentApproval],
   ['subagents-burst', scenarioSubagentsBurst],
   ['goal-swarm', scenarioGoalSwarm],
   ['tool-pipeline', scenarioToolPipeline],
@@ -765,7 +846,9 @@ const SCENARIOS = [
   ['error-abort', scenarioErrorAbort],
   ['approvals-gallery', scenarioApprovalsGallery],
   ['reconnect', scenarioReconnect],
+  ['reconnect-mid-turn', scenarioReconnectMidTurn],
   ['resync-hold', scenarioResyncHold],
+  ['session-pages', scenarioSessionPages],
   ['empty-states', scenarioEmptyStates],
   ['draft-flow', scenarioDraftFlow],
   ['settings', scenarioSettings],

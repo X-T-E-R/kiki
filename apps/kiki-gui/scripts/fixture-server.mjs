@@ -152,6 +152,10 @@ class FixtureSession {
     // Prompt queue mirroring kap-server's {active, queued} scheduler surface.
     this.activePrompt = null; // PromptItem while a turn runs
     this.queuedPrompts = []; // PromptItem[]
+    // Durable frames journaled for subscribe replay (getBufferedSince model).
+    this.journal = []; // [{seq, frame}]
+    // interactionId → resolved state, so /transcript interactions stay honest.
+    this.resolvedInteractions = new Map();
   }
 }
 
@@ -228,6 +232,10 @@ class FixtureServer {
       session.seq += 1;
       frame.seq = session.seq;
       frame.epoch = session.epoch;
+      // Journal durable frames for subscribe replay; the advertised buffer
+      // bound (1000) caps how far back a resubscribe can reach.
+      session.journal.push({ seq: session.seq, frame });
+      if (session.journal.length > 1000) session.journal.splice(0, session.journal.length - 1000);
     }
     for (const connection of this.sockets) {
       if (connection.subscriptions?.has(sessionId)) this.sendFrame(connection, frame);
@@ -608,7 +616,20 @@ class FixtureServer {
       if (query.get('include_archive') !== 'true') items = items.filter((s) => s.archived !== true);
       if (query.get('archived_only') === 'true') items = items.filter((s) => s.archived === true);
       items.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-      return this.envelope(res, { items, has_more: false });
+      // Keyset pagination like the real route: before_id pages older than the
+      // cursor, after_id newer; page_size bounds the wire page (default 20).
+      const beforeId = query.get('before_id');
+      const afterId = query.get('after_id');
+      if (beforeId !== null) {
+        const index = items.findIndex((s) => s.id === beforeId);
+        if (index >= 0) items = items.slice(index + 1);
+      } else if (afterId !== null) {
+        const index = items.findIndex((s) => s.id === afterId);
+        if (index >= 0) items = items.slice(0, index);
+      }
+      const pageSize = Math.min(Number(query.get('page_size') ?? 20), 100);
+      const page = items.slice(0, pageSize);
+      return this.envelope(res, { items: page, has_more: items.length > pageSize });
     }
     if (path === '/sessions' && body !== undefined) {
       const id = nextId('session');
@@ -669,6 +690,17 @@ class FixtureServer {
       const transcript = agentId === null ? undefined : session.agentTranscripts[agentId];
       if (transcript === undefined) {
         return this.envelope(res, null, 40402, 'agent.not_found');
+      }
+      // Keep interaction entities honest across resolves (the real transcript
+      // store folds resolve facts into the global interaction set).
+      if (Array.isArray(transcript.interactions) && session.resolvedInteractions.size > 0) {
+        return this.envelope(res, {
+          ...transcript,
+          interactions: transcript.interactions.map((interaction) => {
+            const outcome = session.resolvedInteractions.get(interaction.interactionId);
+            return outcome === undefined ? interaction : { ...interaction, state: outcome };
+          }),
+        });
       }
       return this.envelope(res, transcript);
     }
@@ -761,11 +793,22 @@ class FixtureServer {
     const approvalMatch = /^\/approvals\/([^/]+)$/.exec(tail);
     if (approvalMatch !== null && body !== undefined) {
       const approval = session.pendingApprovals.find((a) => a.approval_id === approvalMatch[1]);
-      if (approval === undefined) return this.envelope(res, { resolved: false }, 40404, 'approval.not_found');
+      // A second resolve (or an unknown id) reports already-resolved, exactly
+      // like the real server's 40902 — never a bare not-found.
+      if (approval === undefined) {
+        return this.envelope(res, { resolved: false }, 40902, 'approval.already_resolved');
+      }
       session.pendingApprovals = session.pendingApprovals.filter((a) => a.approval_id !== approval.approval_id);
       session.record.pending_interaction = 'none';
+      session.resolvedInteractions.set(
+        approval.approval_id,
+        body.decision === 'approved' ? 'approved' : body.decision === 'cancelled' ? 'cancelled' : 'rejected',
+      );
       this.emit(session.record.id, {
         type: 'event.approval.resolved',
+        // Echo the origin agent so both the main store and the child's
+        // sub-store mark their cards resolved.
+        agentId: approval.agentId ?? 'main',
         payload: { approval_id: approval.approval_id, decision: body.decision, scope: body.scope, resolved_at: now() },
       });
       this.resolveWaiters(session, 'approval');
@@ -777,15 +820,17 @@ class FixtureServer {
     const questionMatch = /^\/questions\/([^/]+)(:dismiss)?$/.exec(tail);
     if (questionMatch !== null && body !== undefined) {
       const question = session.pendingQuestions.find((q) => q.question_id === questionMatch[1]);
-      if (question === undefined) return this.envelope(res, { resolved: false }, 40405, 'question.not_found');
+      if (question === undefined) return this.envelope(res, { resolved: false }, 40902, 'question.already_resolved');
       session.pendingQuestions = session.pendingQuestions.filter((q) => q.question_id !== question.question_id);
       session.record.pending_interaction = 'none';
       if (questionMatch[2] === ':dismiss') {
-        this.emit(session.record.id, { type: 'event.question.dismissed', payload: { question_id: question.question_id, dismissed_at: now() } });
+        session.resolvedInteractions.set(question.question_id, 'dismissed');
+        this.emit(session.record.id, { type: 'event.question.dismissed', agentId: question.agentId ?? 'main', payload: { question_id: question.question_id, dismissed_at: now() } });
         this.resolveWaiters(session, 'question');
         return this.envelope(res, { dismissed: true, dismissed_at: now() }, 40909, 'question.dismissed');
       }
-      this.emit(session.record.id, { type: 'event.question.answered', payload: { question_id: question.question_id, answers: body.answers ?? {}, resolved_at: now() } });
+      session.resolvedInteractions.set(question.question_id, 'answered');
+      this.emit(session.record.id, { type: 'event.question.answered', agentId: question.agentId ?? 'main', payload: { question_id: question.question_id, answers: body.answers ?? {}, resolved_at: now() } });
       this.resolveWaiters(session, 'question');
       return this.envelope(res, { resolved: true, resolved_at: now() });
     }
@@ -923,14 +968,50 @@ class FixtureServer {
           break;
         case 'subscribe': {
           const ids = message.payload?.session_ids ?? [];
+          const offeredCursors = message.payload?.cursors ?? {};
           const accepted = ids.filter((id) => this.sessions.has(id));
-          for (const id of accepted) ws.subscriptions.add(id);
+          const resyncRequired = [];
+          for (const id of accepted) {
+            ws.subscriptions.add(id);
+            const session = this.sessions.get(id);
+            // Replay like kap-server's getBufferedSince: epoch/foreign-cursor
+            // mismatch and journal overflow force resync_required; otherwise
+            // journaled durable frames newer than the cursor replay in order,
+            // before the ack.
+            const cursor = offeredCursors[id];
+            if (cursor !== undefined && cursor.epoch !== undefined && cursor.epoch !== session.epoch) {
+              resyncRequired.push(id);
+              this.sendFrame(ws, {
+                type: 'resync_required',
+                timestamp: now(),
+                payload: { session_id: id, reason: 'epoch_changed', current_seq: session.seq, epoch: session.epoch },
+              });
+            } else if (cursor !== undefined && cursor.seq > session.seq) {
+              resyncRequired.push(id);
+              this.sendFrame(ws, {
+                type: 'resync_required',
+                timestamp: now(),
+                payload: { session_id: id, reason: 'epoch_changed', current_seq: session.seq, epoch: session.epoch },
+              });
+            } else if (cursor !== undefined && session.seq - cursor.seq > session.journal.length) {
+              resyncRequired.push(id);
+              this.sendFrame(ws, {
+                type: 'resync_required',
+                timestamp: now(),
+                payload: { session_id: id, reason: 'buffer_overflow', current_seq: session.seq, epoch: session.epoch },
+              });
+            } else if (cursor !== undefined) {
+              for (const entry of session.journal) {
+                if (entry.seq > cursor.seq) this.sendFrame(ws, entry.frame);
+              }
+            }
+          }
           const cursors = {};
           for (const id of accepted) {
             const session = this.sessions.get(id);
             cursors[id] = { seq: session.seq, epoch: session.epoch };
           }
-          ack({ accepted, not_found: ids.filter((id) => !this.sessions.has(id)), resync_required: [], cursors });
+          ack({ accepted, not_found: ids.filter((id) => !this.sessions.has(id)), resync_required: resyncRequired, cursors });
           break;
         }
         case 'unsubscribe':

@@ -122,7 +122,6 @@ export default {
       frame: {
         type: 'thinking.delta',
         agentId: 'agent-research',
-        offset: 0,
         payload: { turnId: 1, delta: 'Tracing the event envelope and model binding fields.' },
       },
     },
@@ -150,7 +149,6 @@ export default {
       frame: {
         type: 'assistant.delta',
         agentId: 'agent-research',
-        offset: 0,
         payload: { turnId: 1, delta: 'Protocol map complete.' },
       },
     },
@@ -186,7 +184,6 @@ export default {
       frame: {
         type: 'assistant.delta',
         agentId: 'agent-review',
-        offset: 0,
         payload: { turnId: 1, delta: 'Presentation contract verified.' },
       },
     },

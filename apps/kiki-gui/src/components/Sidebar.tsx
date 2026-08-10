@@ -214,7 +214,7 @@ export function Sidebar({
                       : { session, x: rect.right + 4, y: rect.top },
                   );
                 }}
-                className={`absolute top-1.5 right-1.5 rounded-md px-1.5 py-0.5 text-[12px] leading-none text-ink-faint transition-opacity hover:bg-panel hover:text-ink ${
+                className={`absolute top-1.5 right-1.5 rounded-md px-1.5 py-0.5 text-[12px] leading-none text-ink-faint transition-opacity hover:bg-panel hover:text-ink focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-accent/30 focus-visible:outline-none ${
                   menu?.session.id === session.id
                     ? 'opacity-100'
                     : 'opacity-0 group-hover:opacity-100'

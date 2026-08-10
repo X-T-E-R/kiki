@@ -851,3 +851,98 @@ describe('incrementSubagentToolCount', () => {
     expect(cards[0]).toMatchObject({ subagentId: 'agent-x', toolCallCount: 2 });
   });
 });
+
+describe('child-origin interactions', () => {
+  const childApproval = {
+    type: 'event.approval.requested',
+    agentId: 'agent-x',
+    sessionId: 'session_test',
+    approval_id: 'a-child',
+    session_id: 'session_test',
+    turn_id: 1,
+    tool_call_id: 'tc-1',
+    tool_name: 'Bash',
+    action: 'Run: rm -rf build',
+    tool_input_display: { kind: 'command', command: 'rm -rf build' },
+    created_at: '2026-01-01T00:00:00.000Z',
+    expires_at: '2026-01-01T01:00:00.000Z',
+  } as const;
+
+  it('a child approval lands on the main block list, tagged with its origin', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = applyFrame(state, frame(childApproval, { seq: 11 })).state;
+    const approvals = state.blocks.filter((b): b is ApprovalBlock => b.kind === 'approval');
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0]).toMatchObject({ originAgentId: 'agent-x', resolution: undefined });
+    expect(state.pendingInteraction).toBe('approval');
+    // And the resolution frame from any client clears it again.
+    state = applyFrame(
+      state,
+      frame(
+        {
+          type: 'event.approval.resolved',
+          agentId: 'agent-x',
+          sessionId: 'session_test',
+          approval_id: 'a-child',
+          decision: 'approved',
+          resolved_at: '2026-01-01T00:00:30.000Z',
+        },
+        { seq: 12 },
+      ),
+    ).state;
+    expect((state.blocks[0] as ApprovalBlock).resolution?.decision).toBe('approved');
+    expect(derivePendingInteraction(state)).toBe('none');
+  });
+
+  it('agentTranscriptToBlocks projects the interactions array into card blocks', () => {
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'agent-x',
+      has_more: false,
+      items: [],
+      interactions: [
+        {
+          interactionId: 'a-pending',
+          interactionKind: 'approval',
+          toolCallId: 'tc-1',
+          state: 'pending',
+          request: {
+            turnId: 1,
+            toolCallId: 'tc-1',
+            toolName: 'Bash',
+            action: 'Run: rm -rf build',
+            display: { kind: 'command', command: 'rm -rf build' },
+          },
+        },
+        {
+          interactionId: 'a-done',
+          interactionKind: 'approval',
+          state: 'approved',
+          request: { toolName: 'Read', action: 'Read a file' },
+        },
+        {
+          interactionId: 'q-1',
+          interactionKind: 'question',
+          state: 'pending',
+          request: {
+            questions: [
+              { question: 'Proceed?', options: [{ label: 'Yes' }, { label: 'No' }] },
+            ],
+          },
+        },
+      ],
+    });
+    const pending = blocks.find((b) => b.id === 'approval-a-pending');
+    expect(pending).toMatchObject({
+      kind: 'approval',
+      originAgentId: 'agent-x',
+      resolution: undefined,
+    });
+    expect((pending as ApprovalBlock).request.approval_id).toBe('a-pending');
+    expect((pending as ApprovalBlock).request.tool_name).toBe('Bash');
+    const done = blocks.find((b) => b.id === 'approval-a-done') as ApprovalBlock;
+    expect(done.resolution).toMatchObject({ decision: 'approved' });
+    const question = blocks.find((b) => b.id === 'question-q-1');
+    expect(question).toMatchObject({ kind: 'question', outcome: undefined });
+    expect((question as { request: { questions: { id: string; options: { id: string }[] }[] } }).request.questions[0]?.options).toHaveLength(2);
+  });
+});

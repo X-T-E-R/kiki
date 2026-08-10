@@ -34,6 +34,7 @@ export function Composer({
   goalControl,
   efforts,
   effort,
+  busyPlaceholder,
   onChangeModel,
   onChangePermissionMode,
   onChangePlanMode,
@@ -67,6 +68,8 @@ export function Composer({
   /** support_efforts of the effective model; effort UI hides when absent. */
   efforts: readonly string[] | undefined;
   effort: string | undefined;
+  /** Placeholder while busy (queue steering on /s, creation progress on /new). */
+  busyPlaceholder?: string;
   onChangeModel: (model: string | undefined) => void;
   onChangePermissionMode: (mode: PermissionMode) => void;
   onChangePlanMode: (on: boolean) => void;
@@ -75,7 +78,8 @@ export function Composer({
   onChangeGoalControl: (control: 'pause' | 'resume' | 'cancel' | undefined) => void;
   onChangeEffort: (effort: string) => void;
   onSend: (text: string) => void;
-  onAbort: () => void;
+  /** Omit when there is nothing to abort (e.g. /new session creation). */
+  onAbort?: () => void;
 }) {
   const { client } = useConnection();
   const text = value;
@@ -265,10 +269,14 @@ export function Composer({
               disabled={disabled}
               onChange={(event) => onChange(event.target.value)}
               onKeyDown={onKeyDown}
-              placeholder={busy ? 'Steer kiki — this queues while it works…' : 'Ask kiki anything…'}
+              placeholder={
+                busy
+                  ? (busyPlaceholder ?? 'Steer kiki — this queues while it works…')
+                  : 'Ask kiki anything…'
+              }
               className="max-h-[190px] min-h-[24px] flex-1 resize-none bg-transparent text-[14px] leading-relaxed text-ink outline-none placeholder:text-ink-faint disabled:opacity-60"
             />
-            {busy ? (
+            {busy && onAbort !== undefined ? (
               <button
                 type="button"
                 onClick={onAbort}
@@ -278,26 +286,27 @@ export function Composer({
               >
                 <span aria-hidden className="text-[11px] font-bold">■</span>
               </button>
-            ) : (
-              <button
-                type="button"
-                onClick={send}
-                disabled={!canSend}
-                title="Send (Enter)"
-                aria-label="Send message"
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-accent text-white transition-colors hover:bg-accent-deep disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
-              >
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
-                  <path
-                    d="M2.5 8h10M9 3.5 13.5 8 9 12.5"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </button>
-            )}
+            ) : null}
+            {/* While busy, Send stays mounted beside Stop so a queued prompt
+                has a mouse path too (Enter works as before). */}
+            <button
+              type="button"
+              onClick={send}
+              disabled={!canSend}
+              title={busy ? 'Queue this prompt (Enter)' : 'Send (Enter)'}
+              aria-label={busy ? 'Queue prompt' : 'Send message'}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-accent text-white transition-colors hover:bg-accent-deep disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+                <path
+                  d="M2.5 8h10M9 3.5 13.5 8 9 12.5"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
           </div>
         </div>
         <p className="mt-1.5 text-center text-[10.5px] text-ink-faint">

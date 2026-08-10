@@ -212,6 +212,7 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
             goalControl={undefined}
             efforts={supportedEfforts}
             effort={effectiveEffort}
+            busyPlaceholder="Creating the session…"
             onChangeModel={setModelOverride}
             onChangePermissionMode={setPermissionMode}
             onChangePlanMode={setPlanMode}
@@ -220,7 +221,6 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
             onChangeGoalControl={() => {}}
             onChangeEffort={setEffortOverride}
             onSend={send}
-            onAbort={() => {}}
           />
 
           {error !== null ? (
