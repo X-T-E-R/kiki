@@ -38,6 +38,8 @@ export interface SubagentTaskInfo extends AgentTaskInfoBase {
   readonly subagentType?: string;
   readonly model?: string;
   readonly thinkingEffort?: string;
+  readonly collaborationTaskName?: string;
+  readonly collaborationAgentType?: string;
 }
 
 declare module '#/agent/task/types' {
@@ -86,16 +88,21 @@ export class SubagentTask implements AgentTask {
   readonly subagentType: string;
   readonly model?: string;
   readonly thinkingEffort?: string;
+  readonly collaborationTaskName?: string;
+  readonly collaborationAgentType?: string;
 
   constructor(
     private readonly handle: SubagentHandle,
     readonly description: string,
     private readonly abortController: AbortController,
+    collaboration?: { readonly taskName: string; readonly agentType: string },
   ) {
     this.agentId = handle.agentId;
     this.subagentType = handle.profileName;
     this.model = handle.model;
     this.thinkingEffort = handle.thinkingEffort;
+    this.collaborationTaskName = collaboration?.taskName;
+    this.collaborationAgentType = collaboration?.agentType;
   }
 
   async start(sink: AgentTaskSink): Promise<void> {
@@ -131,6 +138,8 @@ export class SubagentTask implements AgentTask {
       subagentType: this.subagentType,
       model: this.model,
       thinkingEffort: this.thinkingEffort,
+      collaborationTaskName: this.collaborationTaskName,
+      collaborationAgentType: this.collaborationAgentType,
     };
   }
 }

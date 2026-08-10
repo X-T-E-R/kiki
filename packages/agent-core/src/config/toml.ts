@@ -323,7 +323,7 @@ export function transformTomlData(data: Record<string, unknown>): Record<string,
       result[targetKey] = transformPlainObject(value);
     } else if (targetKey === 'experimental' && isPlainObject(value)) {
       result[targetKey] = cloneRecord(value);
-    } else if (targetKey === 'subagent' && isPlainObject(value)) {
+    } else if ((targetKey === 'subagent' || targetKey === 'agents') && isPlainObject(value)) {
       result[targetKey] = transformPlainObject(value);
     } else if (targetKey === 'secondaryModel' && isPlainObject(value)) {
       result[targetKey] = transformPlainObject(value);
@@ -507,6 +507,7 @@ export function configToTomlData(config: KimiConfig): Record<string, unknown> {
   setSection(out, 'loop_control', config.loopControl, loopControlToToml);
   setSection(out, 'background', config.background, backgroundToToml);
   setSection(out, 'subagent', config.subagent, subagentToToml);
+  setSection(out, 'agents', config.agents, plainSectionToToml);
   setSection(out, 'secondary_model', config.secondaryModel, secondaryModelToToml);
   setSection(out, 'mcp', config.mcp, mcpToToml);
   setSection(out, 'image', config.image, imageToToml);
@@ -694,6 +695,17 @@ function backgroundToToml(
 function subagentToToml(subagent: SubagentConfig, rawSubagent: unknown): Record<string, unknown> {
   const out = cloneRecord(rawSubagent);
   for (const [key, value] of Object.entries(subagent)) {
+    setDefined(out, camelToSnake(key), value);
+  }
+  return out;
+}
+
+function plainSectionToToml<T extends object>(
+  section: T,
+  rawSection: unknown,
+): Record<string, unknown> {
+  const out = cloneRecord(rawSection);
+  for (const [key, value] of Object.entries(section)) {
     setDefined(out, camelToSnake(key), value);
   }
   return out;

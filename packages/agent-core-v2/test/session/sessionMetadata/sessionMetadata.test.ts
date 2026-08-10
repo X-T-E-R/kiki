@@ -316,6 +316,18 @@ describe('SessionMetadata', () => {
     expect(next.updatedAt).toBeGreaterThan(before);
   });
 
+  it('unregisters one agent atomically without changing other persisted metadata', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.registerAgent('agent-remove', { type: 'sub', labels: { collaborationTaskName: 'retryable' } });
+    await meta.registerAgent('agent-keep', { type: 'sub', labels: { collaborationTaskName: 'durable' } });
+
+    await meta.unregisterAgent?.('agent-remove');
+
+    const stored = await meta.read();
+    expect(stored.agents?.['agent-remove']).toBeUndefined();
+    expect(stored.agents?.['agent-keep']?.labels?.['collaborationTaskName']).toBe('durable');
+  });
+
   it('records the fresh summary into the session index mirror on update', async () => {
     const meta = ix.get(ISessionMetadata);
     await meta.ready;

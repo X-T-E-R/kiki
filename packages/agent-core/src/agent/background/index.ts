@@ -122,6 +122,7 @@ interface ManagedTask {
    * foreground tasks. Until then output stays in `pendingOutput`.
    */
   outputPersistStarted: boolean;
+  rolledBack?: boolean;
 }
 
 /**
@@ -242,6 +243,10 @@ export interface RegisterBackgroundTaskOptions {
   readonly autoBackgroundOnTimeout?: boolean;
   /** Foreground caller signal. Ignored for tasks created already detached. */
   readonly signal?: AbortSignal;
+  /** Preallocated by transactional adapters so durable metadata can reference the task before start. */
+  readonly taskId?: string;
+  /** Keep the task private until a transactional adapter commits registration. */
+  readonly deferVisibility?: boolean;
 }
 
 export type ForegroundTaskReleaseReason = 'detached' | 'timeout_detached' | 'terminal';
@@ -308,6 +313,15 @@ export class BackgroundManager {
     throw new Error('Too many background tasks are already running.');
   }
 
+  /** Preflight admission for async adapters that must fail before allocation. */
+  assertCanRegisterBackground(): void {
+    this.assertCanRegister(true);
+  }
+
+  allocateTaskId(kind: string): string {
+    return generateTaskId(kind);
+  }
+
   private activeBackgroundAdmissionCount(): number {
     let count = 0;
     for (const entry of this.tasks.values()) {
@@ -343,7 +357,7 @@ export class BackgroundManager {
       signal: detached ? undefined : options.signal,
     };
     this.assertCanRegister(detached);
-    const taskId = generateTaskId(task.idPrefix);
+    const taskId = options.taskId ?? generateTaskId(task.idPrefix);
     const entry: ManagedTask = {
       taskId,
       task,
@@ -363,7 +377,7 @@ export class BackgroundManager {
       outputWriteQueue: Promise.resolve(),
       pendingOutput: [],
       pendingOutputBytes: 0,
-      outputPersistStarted: detached,
+      outputPersistStarted: detached && options.deferVisibility !== true,
     };
     this.tasks.set(taskId, entry);
     void this.runTaskLifecycle(entry);
@@ -371,12 +385,41 @@ export class BackgroundManager {
     // Initial persistence (snapshot at start). Foreground tasks defer all
     // persistence until they detach (or spill) — see appendOutput / detach /
     // finalizeTask — so ordinary commands leave nothing undiscoverable on disk.
-    if (this.isDetached(entry)) {
+    if (this.isDetached(entry) && options.deferVisibility !== true) {
       void this.persistLive(entry);
       this.emitTaskStarted(this.toInfo(entry));
     }
 
     return taskId;
+  }
+
+  commitTaskRegistration(taskId: string): void {
+    const entry = this.tasks.get(taskId);
+    if (entry === undefined || !this.isDetached(entry) || entry.outputPersistStarted) return;
+    entry.outputPersistStarted = true;
+    void this.persistLive(entry);
+    this.emitTaskStarted(this.toInfo(entry));
+  }
+
+  async rollbackTaskRegistration(taskId: string, reason?: unknown): Promise<void> {
+    const entry = this.tasks.get(taskId);
+    if (entry === undefined) {
+      this.ghosts.delete(taskId);
+      await this.persistence?.deleteTask(taskId).catch(() => {});
+      return;
+    }
+    this.tasks.delete(taskId);
+    this.ghosts.delete(taskId);
+    entry.rolledBack = true;
+    entry.status = 'killed';
+    entry.endedAt = Date.now();
+    entry.timeoutHandle?.clear();
+    entry.abortController.abort(reason);
+    entry.stop.resolve({ abortReason: reason });
+    entry.foregroundRelease?.resolve('terminal');
+    entry.terminal.resolve();
+    void Promise.resolve(entry.terminal).catch(() => {});
+    await this.persistence?.deleteTask(taskId).catch(() => {});
   }
 
   /** Get info about a specific task. Falls back to reconcile ghosts. */
@@ -998,6 +1041,13 @@ export class BackgroundManager {
     entry.endedAt = Date.now();
     entry.stopReason =
       settlement.stopReason ?? (settlement.status === 'killed' ? entry.stopReason : undefined);
+    if (entry.rolledBack === true) {
+      entry.pendingOutput = [];
+      entry.pendingOutputBytes = 0;
+      entry.foregroundRelease?.resolve('terminal');
+      entry.terminal.resolve();
+      return;
+    }
     // Persist the terminal record only when the task actually touched disk:
     // detached tasks, and foreground tasks that spilled past the in-memory
     // buffer. A foreground task whose output stayed in memory leaves nothing on

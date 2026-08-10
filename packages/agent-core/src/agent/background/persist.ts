@@ -12,7 +12,7 @@
  * background-specific shape and the output.log helpers together.
  */
 
-import { appendFile, mkdir, open, stat } from 'node:fs/promises';
+import { appendFile, mkdir, open, rm, stat } from 'node:fs/promises';
 import { dirname, join } from 'pathe';
 
 import { createPerIdJsonStore, type PerIdJsonStore } from '../../utils/per-id-json-store';
@@ -67,6 +67,13 @@ export class BackgroundTaskPersistence {
   /** Atomically write a task's persisted state. Creates dirs as needed. */
   async writeTask(task: PersistedTask): Promise<void> {
     await this.store.write(task.taskId, task);
+  }
+
+  async deleteTask(taskId: string): Promise<void> {
+    await Promise.all([
+      this.store.remove(taskId),
+      rm(taskOutputDir(this.sessionDir, taskId), { recursive: true, force: true }),
+    ]);
   }
 
   /** Read a single task file. Returns undefined when missing/corrupt/unrecognized. */

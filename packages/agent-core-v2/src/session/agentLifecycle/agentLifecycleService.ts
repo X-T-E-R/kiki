@@ -39,7 +39,7 @@ import { PermissionModeConfiguredModel } from '#/agent/permissionMode/permission
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { IAgentTaskService } from '#/agent/task/task';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -68,6 +68,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   private readonly onDidDisposeEmitter = this._register(new Emitter<string>());
   private readonly interactionBusDisposables = new Map<string, IDisposable>();
   private readonly creating = new Map<string, Promise<IAgentScopeHandle>>();
+  private readonly deferredCreateEvents = new Set<string>();
 
   get onDidCreate() {
     return this.onDidCreateEmitter.event;
@@ -144,6 +145,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   }
 
   private async doCreate(agentId: string, opts: CreateAgentOptions): Promise<IAgentScopeHandle> {
+    let priorAgentMeta: AgentMeta | undefined;
     const agentScope = this.ctx.scope(`agents/${agentId}`);
     const agentHomedir = join(this.bootstrap.homeDir, agentScope);
     const handle = createScopedChildHandle(
@@ -159,8 +161,12 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     ) as IAgentScopeHandle;
     this.handles.set(agentId, handle);
     try {
+      priorAgentMeta = (await this.sessionMetadata.read()).agents?.[agentId];
       const wire = handle.accessor.get(IWireService);
       await wire.seal();
+      await wire.restore();
+      await this.bindBootstrap(handle, opts);
+      await handle.accessor.get(IAgentToolActivationService).activate();
       await this.sessionMetadata.registerAgent(agentId, {
         homedir: agentHomedir,
         type: agentId === 'main' ? 'main' : 'sub',
@@ -168,19 +174,35 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         forkedFrom: opts.forkedFrom,
         labels: opts.labels,
       });
-      this.onDidCreateEmitter.fire(handle);
-      await wire.restore();
-      await this.bindBootstrap(handle, opts);
-      await handle.accessor.get(IAgentToolActivationService).activate();
+      if (opts.deferCreateEvent === true) this.deferredCreateEvents.add(agentId);
+      else this.onDidCreateEmitter.fire(handle);
       return handle;
     } catch (error) {
+      this.deferredCreateEvents.delete(agentId);
       if (this.handles.get(agentId) === handle) this.handles.delete(agentId);
+      if (priorAgentMeta === undefined) {
+        await this.sessionMetadata.unregisterAgent?.(agentId).catch(() => {});
+      } else {
+        await this.sessionMetadata.registerAgent(agentId, priorAgentMeta).catch(() => {});
+      }
       try {
         handle.dispose();
       } catch { }
       this.onDidDisposeEmitter.fire(agentId);
       throw error;
     }
+  }
+
+  commitCreate(agentId: string): void {
+    if (!this.deferredCreateEvents.delete(agentId)) return;
+    const handle = this.handles.get(agentId);
+    if (handle !== undefined) this.onDidCreateEmitter.fire(handle);
+  }
+
+  async discard(agentId: string): Promise<void> {
+    this.deferredCreateEvents.delete(agentId);
+    await this.remove(agentId);
+    await this.sessionMetadata.unregisterAgent?.(agentId);
   }
 
   private async bindBootstrap(
@@ -255,6 +277,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     const handle = this.handles.get(agentId);
     if (handle === undefined) return;
     this.handles.delete(agentId);
+    this.deferredCreateEvents.delete(agentId);
     await handle.accessor.get(IAgentTaskService).stopAllOnExit('Session closed');
     const loop = handle.accessor.get(IAgentLoopService);
     const compaction = handle.accessor.get(IAgentFullCompactionService).compacting;

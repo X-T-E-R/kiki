@@ -24,6 +24,11 @@ tools:
   - WebSearch
   - Agent
   - AgentSwarm
+  - spawn_agent
+  - list_agents
+  - wait_agent
+  - followup_task
+  - interrupt_agent
   - FetchURL
   - AskUserQuestion
   - EnterPlanMode

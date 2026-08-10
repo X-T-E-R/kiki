@@ -34,6 +34,8 @@ export interface CreateAgentOptions {
   readonly binding?: BindAgentInput;
   readonly forkedFrom?: string;
   readonly labels?: Readonly<Record<string, string>>;
+  /** Internal transaction hook: publish onDidCreate only after the caller commits. */
+  readonly deferCreateEvent?: boolean;
 }
 
 export interface ForkAgentOptions {
@@ -52,6 +54,9 @@ export interface IAgentLifecycleService {
   readonly onDidDispose: Event<string>;
 
   create(opts?: CreateAgentOptions): Promise<IAgentScopeHandle>;
+  commitCreate?(agentId: string): void;
+  /** Remove an incomplete allocation from live state and durable session metadata. */
+  discard?(agentId: string): Promise<void>;
 
   fork(sourceAgentId: string, opts?: ForkAgentOptions): Promise<IAgentScopeHandle>;
 

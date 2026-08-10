@@ -36,6 +36,81 @@ export interface SubagentModelBinding {
   readonly thinkingEffort?: string;
 }
 
+/**
+ * Resolve a named collaboration spawn. Canonical adapter fields are available
+ * independently of the legacy secondary-model experiment; only the legacy
+ * symbolic profile/default recipe fallback remains gated by that experiment.
+ */
+export function resolveAgentCollaborationBinding(
+  config: KimiConfig | undefined,
+  flags: ExperimentalFlagResolver,
+  own: { readonly modelAlias: string | undefined; readonly thinkingEffort: string },
+  request: Pick<SubagentBindingRequest, 'modelAlias' | 'thinkingEffort'>,
+  profile: SubagentBindingRequest,
+): SubagentModelBinding {
+  const exactModel = normalizeExact(request.modelAlias) ?? normalizeExact(profile.modelAlias);
+  if (exactModel !== undefined) assertSelectableAlias(exactModel, 'agent collaboration binding');
+  const legacyProfileModel = flags.enabled('secondary-model')
+    ? legacyPreferenceModel(profile.modelPreference, config, own.modelAlias)
+    : undefined;
+  const configuredDefault = normalizeExact(config?.agents?.defaultSubagentModel);
+  if (configuredDefault !== undefined) assertSelectableAlias(configuredDefault, '[agents].default_subagent_model');
+  const legacyDefault = flags.enabled('secondary-model')
+    ? legacyDefaultModel(config, own.modelAlias)
+    : undefined;
+  const modelAlias = exactModel ?? legacyProfileModel ?? configuredDefault ?? legacyDefault ?? own.modelAlias;
+  const inheritsCaller = modelAlias === own.modelAlias && (
+    (exactModel === undefined && legacyProfileModel === undefined && configuredDefault === undefined && legacyDefault === undefined) ||
+    (flags.enabled('secondary-model') && profile.modelPreference === 'primary')
+  );
+  const thinkingEffort =
+    normalizeExact(request.thinkingEffort) ??
+    normalizeExact(profile.thinkingEffort) ??
+    normalizeExact(config?.agents?.defaultSubagentReasoningEffort) ??
+    (flags.enabled('secondary-model') ? legacyDefaultEffort(config, modelAlias) : undefined) ??
+    (inheritsCaller ? own.thinkingEffort : undefined);
+  return { modelAlias, thinkingEffort };
+}
+
+function legacyPreferenceModel(
+  preference: AgentModelPreference | undefined,
+  config: KimiConfig | undefined,
+  callerModel: string | undefined,
+): string | undefined {
+  if (preference === 'primary') return callerModel;
+  if (preference !== 'secondary') return undefined;
+  const secondary = config?.secondaryModel;
+  return secondary?.model === undefined ? callerModel : secondaryBindingAlias(secondary);
+}
+
+function legacyDefaultModel(
+  config: KimiConfig | undefined,
+  callerModel: string | undefined,
+): string | undefined {
+  const subagentDefault = normalizeExact(config?.subagent?.defaultModel);
+  if (subagentDefault !== undefined) return subagentDefault;
+  const secondary = config?.secondaryModel;
+  return secondary?.model === undefined ? callerModel : secondaryBindingAlias(secondary);
+}
+
+function legacyDefaultEffort(
+  config: KimiConfig | undefined,
+  selectedModel: string | undefined,
+): string | undefined {
+  const subagentDefault = normalizeExact(config?.subagent?.defaultEffort);
+  if (subagentDefault !== undefined) return subagentDefault;
+  const secondary = config?.secondaryModel;
+  if (secondary?.model === undefined) return undefined;
+  const secondaryAlias = secondaryBindingAlias(secondary);
+  return selectedModel === secondaryAlias ? normalizeExact(secondary.defaultEffort) : undefined;
+}
+
+function normalizeExact(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? undefined : trimmed;
+}
+
 const bindingSources = new WeakMap<SubagentModelBinding, SubagentModelSource>();
 
 export function subagentModelSource(binding: SubagentModelBinding): SubagentModelSource {

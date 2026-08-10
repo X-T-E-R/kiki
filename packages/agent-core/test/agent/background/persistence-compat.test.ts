@@ -25,6 +25,17 @@ async function writeLegacyTask(taskId: string, task: Record<string, unknown>): P
 }
 
 describe('BackgroundTaskPersistence legacy compatibility', () => {
+  it('replays additive named-adapter task metadata', async () => {
+    await writeLegacyTask('agent-named001', {
+      taskId: 'agent-named001', kind: 'agent', description: 'named task', status: 'completed',
+      detached: true, startedAt: 1, endedAt: 2, agentId: 'agent-1', subagentType: 'coder',
+      collaborationTaskName: 'build_api', collaborationAgentType: 'coder',
+    });
+    await expect(new BackgroundTaskPersistence(sessionDir).readTask('agent-named001')).resolves.toMatchObject({
+      taskId: 'agent-named001', collaborationTaskName: 'build_api', collaborationAgentType: 'coder',
+    });
+  });
+
   it('normalizes legacy snake_case process task records', async () => {
     await writeLegacyTask('bash-legacy01', {
       task_id: 'bash-legacy01',

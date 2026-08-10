@@ -207,7 +207,14 @@ export class SubagentTool implements ISubagentTool {
 
   private knownToolReferences(): ToolReference[] {
     const refs = new Map<string, ToolReference>();
+    const collaborationEnabled =
+      this.flags.enabled('agent-collaboration') &&
+      this.config.get<{ enabled?: boolean } | undefined>('agents')?.enabled !== false;
+    const collaborationNames = new Set([
+      'spawn_agent', 'list_agents', 'wait_agent', 'followup_task', 'interrupt_agent',
+    ]);
     for (const contribution of getAgentToolContributions()) {
+      if (!collaborationEnabled && collaborationNames.has(contribution.options.name)) continue;
       refs.set(contribution.options.name, {
         name: contribution.options.name,
         source: contribution.options.source ?? 'builtin',

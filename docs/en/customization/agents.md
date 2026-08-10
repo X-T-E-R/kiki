@@ -22,6 +22,21 @@ Each dispatch is presented in the terminal as an approval request (unless it mat
 
 Sub-agents support running in the background: results are automatically returned to the main Agent upon completion, with no manual polling needed. You can also call back an existing sub-agent instance to continue the same task.
 
+## Codex-style collaboration adapter
+
+The `agent-collaboration` experiment adds a Codex-style adapter over the same sub-agent and background-task lifecycle. Enable `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION=1`; `[agents] enabled = false` can disable it without changing the experiment flag. This is an adapter, not complete Codex compatibility.
+
+The coordinating `agent` and `coder` profiles receive five snake-case tools: `spawn_agent`, `list_agents`, `wait_agent`, `followup_task`, and `interrupt_agent`. `spawn_agent` always starts asynchronously with fresh context and accepts only `fork_turns = "none"`; it does not copy parent conversation history. Names must match `^[a-z0-9_]+$`, cannot be `root`, and remain unique for the session.
+
+Management targets are an exact `task_name` or `agent_id`, not a relative or hierarchical path. Each caller can list and manage only the named agents it created directly; a sibling or another caller's child is not a valid target:
+
+- `list_agents` returns named agents in ascending `task_name` order.
+- `wait_agent` waits 30 seconds by default and accepts `timeout_ms` from 10 seconds to 1 hour.
+- `followup_task` starts exactly one new turn on the same idle agent identity. It rejects a running target and does not queue or inject a message.
+- `interrupt_agent` stops only the current named turn. The same agent can be continued afterward.
+
+There is no `send_message` tool or durable mailbox in this experiment. The existing `Agent` and `AgentSwarm` tools are unchanged.
+
 ## Context Isolation and Resource Cost
 
 Each sub-agent has a fully independent context window. It can only see the task description explicitly passed by the main Agent and cannot see the main Agent's conversation history. The sub-agent's own intermediate reasoning and tool call records do not flow back; only the final result appears in the main Agent's context.

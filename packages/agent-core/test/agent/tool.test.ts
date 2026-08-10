@@ -369,6 +369,21 @@ describe('Agent tools', () => {
     expect(ctx.agent.tools.loopTools.some((tool) => tool.name === 'AgentSwarm')).toBe(true);
   });
 
+  it('gates named collaboration tools by experiment and [agents].enabled', () => {
+    const names = ['spawn_agent', 'list_agents', 'wait_agent', 'followup_task', 'interrupt_agent'];
+    const subagentHost = { delegatableSubagents: vi.fn(() => ({})) } as unknown as SessionSubagentHost;
+    const make = (flag: boolean, enabled: boolean | undefined) => {
+      const ctx = testAgent({ subagentHost, initialConfig: { providers: {}, agents: enabled === undefined ? undefined : { enabled } },
+        experimentalFlags: new FlagResolver({}, FLAG_DEFINITIONS, flag ? { 'agent-collaboration': true } : {}) });
+      ctx.configure({ tools: names });
+      return ctx.agent.tools.loopTools.map((tool) => tool.name);
+    };
+    expect(make(false, undefined)).not.toEqual(expect.arrayContaining(names));
+    expect(make(true, undefined)).toEqual(expect.arrayContaining(names));
+    expect(make(true, true)).toEqual(expect.arrayContaining(names));
+    expect(make(true, false)).not.toEqual(expect.arrayContaining(names));
+  });
+
   it('shows the model preference for a subagent type when the experiment is enabled', () => {
     const subagentHost = {
       delegatableSubagents: vi.fn(() => ({

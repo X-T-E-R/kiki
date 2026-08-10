@@ -168,6 +168,7 @@ export class AgentTool implements BuiltinTool<AgentToolInput> {
       // no-op model and effort binding fields are stripped from the advertised
       // schema so the experimental concept never enters the prompt.
       modelChoiceEnabled?: boolean;
+      collaborationEnabled?: boolean;
     },
   ) {
     const log = options?.log;
@@ -182,6 +183,7 @@ export class AgentTool implements BuiltinTool<AgentToolInput> {
     const typeLines = buildSubagentDescriptions(
       subagents,
       options?.showModelPreferences ?? false,
+      options?.collaborationEnabled ?? false,
     );
     const baseDescription = `${AGENT_DESCRIPTION_BASE}\n\n${
       this.allowBackground ? AGENT_BACKGROUND_DESCRIPTION : AGENT_BACKGROUND_DISABLED_DESCRIPTION
@@ -458,6 +460,7 @@ function launchErrorMessage(error: unknown, signal: AbortSignal): string {
 function buildSubagentDescriptions(
   subagents: ResolvedAgentProfile['subagents'],
   showModelPreferences: boolean,
+  showCollaborationTools: boolean,
 ): string {
   if (subagents === undefined) return '';
   return Object.entries(subagents)
@@ -469,7 +472,11 @@ function buildSubagentDescriptions(
       const deniedExact = new Set(
         (subagent.disallowedTools ?? []).filter((tool) => !tool.startsWith('mcp__')),
       );
-      const shownTools = subagent.tools.filter((tool) => !deniedExact.has(tool));
+      const collaborationTools = new Set([
+        'spawn_agent', 'list_agents', 'wait_agent', 'followup_task', 'interrupt_agent',
+      ]);
+      const shownTools = subagent.tools.filter((tool) =>
+        !deniedExact.has(tool) && (showCollaborationTools || !collaborationTools.has(tool)));
       const lines = [header];
       if (showModelPreferences && subagent.modelPreference !== undefined) {
         lines.push(`  Model preference: ${subagent.modelPreference}`);

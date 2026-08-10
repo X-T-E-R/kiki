@@ -61,6 +61,7 @@ import type { ModelCapability } from '#/kosong/contract/capability';
 import type { IModelCatalog } from '#/kosong/model/catalog';
 
 import { SECONDARY_MODEL_FLAG_ID } from './flag';
+import { AGENTS_SECTION, type AgentsConfig } from '#/session/agentCollaboration/configSection';
 
 export const SUBAGENT_SECTION = 'subagent';
 
@@ -117,6 +118,71 @@ export interface SubagentModelBinding {
   readonly model: string;
   readonly thinking?: string;
   readonly displayModel: string;
+}
+
+export function resolveAgentCollaborationBinding(
+  config: IConfigService,
+  flags: IFlagService,
+  own: { modelAlias: string; thinkingLevel: string },
+  request: Pick<SubagentBindingRequest, 'modelAlias' | 'thinkingEffort'>,
+  profile: SubagentBindingRequest,
+): SubagentModelBinding {
+  const agents = config.get<AgentsConfig | undefined>(AGENTS_SECTION);
+  const exactModel = normalized(request.modelAlias) ?? normalized(profile.modelAlias);
+  if (exactModel !== undefined) assertSelectableAlias(exactModel, 'agent collaboration binding');
+  const legacyProfile = flags.enabled(SECONDARY_MODEL_FLAG_ID)
+    ? legacyPreferenceModel(profile.modelPreference, config, flags, own.modelAlias)
+    : undefined;
+  const configuredDefault = normalized(agents?.defaultSubagentModel);
+  if (configuredDefault !== undefined) assertSelectableAlias(configuredDefault, '[agents].default_subagent_model');
+  const legacyDefault = flags.enabled(SECONDARY_MODEL_FLAG_ID)
+    ? legacyDefaultModel(config, flags, own.modelAlias)
+    : undefined;
+  const model = exactModel ?? legacyProfile ?? configuredDefault ?? legacyDefault ?? own.modelAlias;
+  const inheritsCaller = model === own.modelAlias && (
+    (exactModel === undefined && legacyProfile === undefined && configuredDefault === undefined && legacyDefault === undefined) ||
+    (flags.enabled(SECONDARY_MODEL_FLAG_ID) && profile.modelPreference === 'primary')
+  );
+  const thinking =
+    normalized(request.thinkingEffort) ??
+    normalized(profile.thinkingEffort) ??
+    normalized(agents?.defaultSubagentReasoningEffort) ??
+    (flags.enabled(SECONDARY_MODEL_FLAG_ID) ? legacyDefaultEffort(config, flags, model) : undefined) ??
+    (inheritsCaller ? own.thinkingLevel : undefined);
+  return { model, thinking, displayModel: subagentDisplayModel(config, model) };
+}
+
+function legacyPreferenceModel(
+  preference: AgentModelPreference | undefined,
+  config: IConfigService,
+  flags: IFlagService,
+  caller: string,
+): string | undefined {
+  if (preference === 'primary') return caller;
+  if (preference !== 'secondary') return undefined;
+  const secondary = resolveSecondaryModel(config, flags);
+  return secondary?.model === undefined ? caller : secondaryBindingAlias(secondary);
+}
+
+function legacyDefaultModel(config: IConfigService, flags: IFlagService, caller: string): string {
+  const defaults = config.get<SubagentConfig | undefined>(SUBAGENT_SECTION);
+  if (normalized(defaults?.defaultModel) !== undefined) return defaults!.defaultModel!;
+  const secondary = resolveSecondaryModel(config, flags);
+  return secondary?.model === undefined ? caller : secondaryBindingAlias(secondary);
+}
+
+function legacyDefaultEffort(config: IConfigService, flags: IFlagService, model: string): string | undefined {
+  const defaults = config.get<SubagentConfig | undefined>(SUBAGENT_SECTION);
+  if (normalized(defaults?.defaultEffort) !== undefined) return defaults!.defaultEffort;
+  const secondary = resolveSecondaryModel(config, flags);
+  return secondary?.model !== undefined && secondaryBindingAlias(secondary) === model
+    ? normalized(secondary.defaultEffort)
+    : undefined;
+}
+
+function normalized(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
 }
 
 const bindingSources = new WeakMap<SubagentModelBinding, SubagentModelSource>();

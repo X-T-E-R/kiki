@@ -106,6 +106,14 @@ export class AgentTaskPersistence {
     await this.docs.set(this.tasksScope(), `${task.taskId}${JSON_SUFFIX}`, task);
   }
 
+  async deleteTask(taskId: string): Promise<void> {
+    validateTaskId(taskId);
+    await Promise.all([
+      this.docs.delete(this.tasksScope(), `${taskId}${JSON_SUFFIX}`),
+      this.bytes.delete(this.taskOutputScope(taskId), OUTPUT_LOG_KEY),
+    ]);
+  }
+
   async readTask(taskId: string): Promise<PersistedTask | undefined> {
     validateTaskId(taskId);
     const key = `${taskId}${JSON_SUFFIX}`;

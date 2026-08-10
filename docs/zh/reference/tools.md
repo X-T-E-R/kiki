@@ -80,6 +80,10 @@ Plan 模式是一种受约束的工作状态：进入后 `Write` 与 `Edit` 只�
 
 ## 协作类
 
+启用 `agent-collaboration` 实验功能后，`agent` 与 `coder` 还会提供 `spawn_agent`、`list_agents`、`wait_agent`、`followup_task` 和 `interrupt_agent`。这些工具通过精确的 `task_name` 或 `agent_id` 管理调用方直接拥有的具名异步子 Agent。
+
+适配器只支持全新派生（`fork_turns = "none"`），目标正在运行时会拒绝 follow-up，也不提供 `send_message` 或历史 fork。详见 [Agent 与子 Agent](../customization/agents.md#codex-风格协作适配器)。
+
 协作类工具负责 Agent 间协作、用户交互和 Skill 调用。
 
 | 工具 | 默认审批 | 说明 |

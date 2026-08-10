@@ -46,6 +46,10 @@ export interface RegisterAgentTaskOptions {
   readonly detachTimeoutMs?: number;
   readonly autoBackgroundOnTimeout?: boolean;
   readonly signal?: AbortSignal;
+  /** Preallocated by a transactional adapter before the task starts. */
+  readonly taskId?: string;
+  /** Keep the task private until a transactional caller commits registration. */
+  readonly deferVisibility?: boolean;
 }
 
 export type ForegroundTaskReleaseReason = 'detached' | 'timeout_detached' | 'terminal';
@@ -80,7 +84,10 @@ export interface IAgentTaskService {
   readonly _serviceBrand: undefined;
 
   track(handle: ITaskHandle, options: AgentTaskTrackOptions): IAgentTaskEntry;
+  allocateTaskId?(idPrefix: string): string;
   registerTask(task: AgentTask, options?: RegisterAgentTaskOptions): string;
+  commitTaskRegistration?(taskId: string): void;
+  rollbackTaskRegistration?(taskId: string, reason?: unknown): Promise<void>;
   getTask(taskId: string): AgentTaskInfo | undefined;
   list(activeOnly?: boolean, limit?: number): readonly AgentTaskInfo[];
   persistOutput(taskId: string): void;

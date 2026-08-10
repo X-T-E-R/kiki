@@ -156,6 +156,7 @@ describe('AgentLifecycleService', () => {
   let disposables: DisposableStore;
   let ix: TestInstantiationService;
   let registerAgent: ReturnType<typeof vi.fn<ISessionMetadata['registerAgent']>>;
+  let unregisterAgent: ReturnType<typeof vi.fn<NonNullable<ISessionMetadata['unregisterAgent']>>>;
   let atomicDocs: Map<string, unknown>;
   let permissionModeSetMode: ReturnType<typeof vi.fn>;
   let stopAllOnExit: ReturnType<typeof vi.fn>;
@@ -175,6 +176,7 @@ describe('AgentLifecycleService', () => {
     ix.stub(IAppendLogStore, recordingAppendLog().store);
     stubBlobPassThrough(ix);
     registerAgent = vi.fn<ISessionMetadata['registerAgent']>().mockResolvedValue(undefined);
+    unregisterAgent = vi.fn<NonNullable<ISessionMetadata['unregisterAgent']>>().mockResolvedValue(undefined);
     atomicDocs = new Map();
     ix.stub(ISessionContext, {
       _serviceBrand: undefined,
@@ -196,6 +198,7 @@ describe('AgentLifecycleService', () => {
       setTitle: () => Promise.resolve(),
       setArchived: () => Promise.resolve(),
       registerAgent,
+      unregisterAgent,
     });
     ix.stub(IBootstrapService, {
       _serviceBrand: undefined,
@@ -718,6 +721,7 @@ describe('AgentLifecycleService', () => {
 
     await expect(svc.create({ agentId: 'main' })).rejects.toThrow('bootstrap boom');
     expect(svc.get('main')).toBeUndefined();
+    expect(unregisterAgent).toHaveBeenCalledWith('main');
 
     const main = await svc.create({ agentId: 'main' });
     expect(main.id).toBe('main');
@@ -772,6 +776,23 @@ describe('AgentLifecycleService', () => {
 
     await svc.remove(a.id);
     expect(disposed).toEqual([a.id]);
+  });
+
+  it('defers the create event until commit and discards incomplete metadata on rollback', async () => {
+    const svc = ix.get(IAgentLifecycleService);
+    const created: string[] = [];
+    disposables.add(svc.onDidCreate((handle) => created.push(handle.id)));
+
+    const committed = await svc.create({ agentId: 'committed', deferCreateEvent: true });
+    expect(created).toEqual([]);
+    svc.commitCreate?.(committed.id);
+    expect(created).toEqual(['committed']);
+
+    const rolledBack = await svc.create({ agentId: 'rolled-back', deferCreateEvent: true });
+    await svc.discard?.(rolledBack.id);
+    expect(created).toEqual(['committed']);
+    expect(svc.get('rolled-back')).toBeUndefined();
+    expect(unregisterAgent).toHaveBeenCalledWith('rolled-back');
   });
 
   it('de-dupes concurrent create calls for the same agent id', async () => {

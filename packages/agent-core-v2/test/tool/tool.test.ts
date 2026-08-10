@@ -7,6 +7,8 @@ import { type IAgentScopeHandle } from '#/_base/di/scope';
 import { Event, type Event as KimiEvent } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
 import { IFlagService } from '#/app/flag/flag';
+import { IConfigService } from '#/app/config/config';
+import { getAgentToolContributions } from '#/agent/toolRegistry/toolContribution';
 import { MASTER_ENV } from '#/app/flag/flagService';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { compileToolArgsValidator, validateToolArgs } from '#/tool/args-validator';
@@ -41,6 +43,15 @@ import {
   SubagentToolInputSchema,
   type SubagentToolInput,
 } from '#/agent/tools/agent/agent';
+import {
+  FOLLOWUP_TASK_PARAMETERS,
+  INTERRUPT_AGENT_PARAMETERS,
+  LIST_AGENTS_PARAMETERS,
+  SPAWN_AGENT_PARAMETERS,
+  WAIT_AGENT_PARAMETERS,
+} from '#/agent/tools/agent-collaboration/agentCollaborationTool';
+import { AGENT_COLLABORATION_FLAG_ID } from '#/session/agentCollaboration/flag';
+import { AgentCollaborationRegistry } from '#/session/agentCollaboration/registry';
 import { DEFAULT_SUBAGENT_TIMEOUT_MS } from '#/session/subagent/configSection';
 import { Error2, ErrorCodes } from '#/errors';
 import { runAgentTurn } from '#/session/subagent/runAgentTurn';
@@ -86,6 +97,67 @@ import { executeTool } from '../tools/fixtures/execute-tool';
 import { stubFlag } from '../app/flag/stubs';
 
 const signal = new AbortController().signal;
+
+describe('agent collaboration production schemas', () => {
+  it('strictly validates every adapter input with the runtime AJV path', () => {
+    const spawn = compileToolArgsValidator(SPAWN_AGENT_PARAMETERS);
+    expect(validateToolArgs(spawn, { task_name: 'build_api', message: 'Keep whitespace\n', fork_turns: 'NONE' })).toBeNull();
+    const invalidInputs: Array<Record<string, string | boolean>> = [
+      { task_name: 'root', message: 'x' }, { task_name: 'Bad', message: 'x' },
+      { task_name: 'a/b', message: 'x' }, { task_name: 'ok', message: '   ' },
+      { task_name: 'ok', message: 'x', fork_turns: 'all' },
+      { task_name: 'ok', message: 'x', fork_context: true },
+      { task_name: 'ok', message: 'x', run_in_background: true },
+    ];
+    for (const invalid of invalidInputs) expect(validateToolArgs(spawn, invalid)).not.toBeNull();
+    expect(validateToolArgs(compileToolArgsValidator(LIST_AGENTS_PARAMETERS), {})).toBeNull();
+    expect(validateToolArgs(compileToolArgsValidator(LIST_AGENTS_PARAMETERS), { all: true })).not.toBeNull();
+    expect(validateToolArgs(compileToolArgsValidator(WAIT_AGENT_PARAMETERS), { timeout_ms: 10_000 })).toBeNull();
+    expect(validateToolArgs(compileToolArgsValidator(WAIT_AGENT_PARAMETERS), { timeout_ms: 9_999 })).not.toBeNull();
+    expect(validateToolArgs(compileToolArgsValidator(FOLLOWUP_TASK_PARAMETERS), { target: 'a', message: 'x' })).toBeNull();
+    expect(validateToolArgs(compileToolArgsValidator(FOLLOWUP_TASK_PARAMETERS), { target: 'a', message: ' ' })).not.toBeNull();
+    expect(validateToolArgs(compileToolArgsValidator(INTERRUPT_AGENT_PARAMETERS), { target: 'a' })).toBeNull();
+  });
+
+  it('uses the experiment and [agents].enabled gate on all five contributions', () => {
+    const names = new Set(['spawn_agent', 'list_agents', 'wait_agent', 'followup_task', 'interrupt_agent']);
+    const records = getAgentToolContributions().filter((record) => names.has(record.options.name));
+    expect(records).toHaveLength(5);
+    const admitted = (flag: boolean, enabled: boolean | undefined) => records.every((record) =>
+      record.options.when?.({
+        get(id: unknown) {
+          if (id === IFlagService) return { enabled: () => flag };
+          if (id === IConfigService) return { get: () => enabled === undefined ? undefined : { enabled } };
+          throw new Error('unexpected service');
+        },
+      } as never) === true);
+    expect(admitted(false, undefined)).toBe(false);
+    expect(admitted(true, undefined)).toBe(true);
+    expect(admitted(true, true)).toBe(true);
+    expect(admitted(true, false)).toBe(false);
+  });
+});
+
+describe('agent collaboration session registry', () => {
+  it('atomically reserves one session-wide name and keeps committed names durable', async () => {
+    const agents: Record<string, AgentMeta> = {};
+    const metadata: ISessionMetadata = {
+      ...sessionMetadataStub(agents),
+      read: async () => ({ id: 'test-session', createdAt: 0, updatedAt: 0, archived: false, agents }),
+    };
+    const registry = new AgentCollaborationRegistry(metadata);
+    const results = await Promise.all([registry.reserve('same', 'caller-a'), registry.reserve('same', 'caller-b')]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    const owner = results[0] ? 'caller-a' : 'caller-b';
+    registry.commit('same', owner);
+    agents['agent-named'] = { labels: { parentAgentId: owner, collaborationTaskName: 'same', collaborationAgentType: 'coder' } };
+    expect(await registry.reserve('same', 'caller-c')).toBe(false);
+
+    expect(await registry.reserve('retryable', 'caller-a')).toBe(true);
+    registry.release('retryable', 'caller-a');
+    expect(await registry.reserve('retryable', 'caller-b')).toBe(true);
+  });
+});
 
 function secondaryModelFlags(enabled = true): TestAgentServiceOverride {
   return appService(
@@ -219,12 +291,15 @@ interface AgentLifecycleStubOptions {
   ) => Promise<{ readonly summary: string; readonly usage?: TokenUsage }>;
   readonly createError?: Error;
   readonly handleServices?: ReadonlyMap<string, ReadonlyMap<unknown, unknown>>;
+  readonly onPublishedEvent?: (event: DomainEvent) => void;
 }
 
 interface AgentLifecycleStub extends IAgentLifecycleService, ISessionSubagentService {
   readonly create: ReturnType<typeof vi.fn<IAgentLifecycleService['create']>>;
   readonly run: ReturnType<typeof vi.fn<ISessionSubagentService['run']>>;
   readonly get: ReturnType<typeof vi.fn<IAgentLifecycleService['get']>>;
+  readonly commitCreate: ReturnType<typeof vi.fn<NonNullable<IAgentLifecycleService['commitCreate']>>>;
+  readonly discard: ReturnType<typeof vi.fn<NonNullable<IAgentLifecycleService['discard']>>>;
   /** Domain events published through any handle's event-bus stub. */
   readonly publishedEvents: DomainEvent[];
   addHandle(
@@ -306,6 +381,7 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
             _serviceBrand: undefined,
             publish: (event: DomainEvent) => {
               publishedEvents.push(event);
+              options.onPublishedEvent?.(event);
             },
             subscribe: () => noopDisposable(),
           } as never;
@@ -363,6 +439,8 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
       };
     }),
     get: vi.fn((agentId) => handles.get(agentId)),
+    commitCreate: vi.fn(),
+    discard: vi.fn(async (agentId) => { handles.delete(agentId); }),
     list: vi.fn(() => [...handles.values()]),
     broadcastPermissionMode: vi.fn(),
     remove: vi.fn(async (agentId) => {
@@ -436,6 +514,7 @@ function sessionMetadataStub(agents: Readonly<Record<string, AgentMeta>>): ISess
     setTitle: async () => {},
     setArchived: async () => {},
     registerAgent: async () => {},
+    unregisterAgent: async () => {},
   };
 }
 
@@ -1017,6 +1096,270 @@ describe('Agent tool execution contract', () => {
       reload: async () => {},
     };
   }
+
+  it('spawns a named adapter agent asynchronously on the existing lifecycle and task manager', async () => {
+    const firstTurn = deferred<{ summary: string }>();
+    let runCount = 0;
+    let taskRegistered = false;
+    const registeredAtRun: boolean[] = [];
+    const hiddenAtRegistration: boolean[] = [];
+    const agents: Record<string, AgentMeta> = {};
+    const metadata: ISessionMetadata = {
+      ...sessionMetadataStub(agents),
+      read: async () => ({ id: 'test-session', createdAt: 0, updatedAt: 0, archived: false, agents }),
+      registerAgent: async (agentId, meta) => { agents[agentId] = meta; },
+    };
+    const lifecycle = createAgentLifecycleStub({
+      createAgentIds: ['agent-named'],
+      runCompletion: async (_agentId, _request, options) => {
+        registeredAtRun.push(taskRegistered);
+        if (++runCount === 1) return firstTurn.promise;
+        return new Promise<{ summary: string }>((_resolve, reject) => {
+          options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+        });
+      },
+    });
+    const context = createAgentToolContext(
+      lifecycle,
+      appService(IFlagService, stubFlag((id) => id === AGENT_COLLABORATION_FLAG_ID)),
+      { initialConfig: { agents: { enabled: true } } },
+      sessionService(ISessionMetadata, metadata),
+    );
+    const taskService = context.get(IAgentTaskService);
+    const registerTask = taskService.registerTask.bind(taskService);
+    vi.spyOn(taskService, 'registerTask').mockImplementation((task, options) => {
+      const taskId = registerTask(task, options);
+      taskRegistered = true;
+      hiddenAtRegistration.push(taskService.list(false).length === 0);
+      return taskId;
+    });
+    const invoke = async (name: string, args: Record<string, unknown>) => {
+      const tool = context.get(IAgentToolRegistryService).resolve(name);
+      expect(tool).toBeDefined();
+      return executeTool(tool!, {
+        turnId: 0, toolCallId: `call_${name}`, args, signal,
+      });
+    };
+    const result = await invoke('spawn_agent', {
+      task_name: 'build_api', message: 'Preserve this message', fork_turns: 'none',
+    });
+    expect(JSON.parse(result.output as string)).toMatchObject({
+      task_name: 'build_api', agent_id: 'agent-named', agent_type: 'coder', status: 'running',
+    });
+    expect(lifecycle.create).toHaveBeenCalledWith(expect.objectContaining({
+      binding: expect.objectContaining({ profile: 'coder' }),
+      labels: expect.objectContaining({ parentAgentId: 'main', collaborationTaskName: 'build_api' }),
+    }));
+    expect(context.get(IAgentTaskService).list(false)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'agent', agentId: 'agent-named', collaborationTaskName: 'build_api' }),
+    ]));
+    expect(registeredAtRun[0]).toBe(true);
+    expect(hiddenAtRegistration[0]).toBe(true);
+    const firstTaskId = JSON.parse(result.output as string).task_id as string;
+    await metadata.registerAgent('agent-named', {
+      labels: {
+        parentAgentId: 'main', collaborationTaskName: 'build_api',
+        collaborationAgentType: 'coder', collaborationLatestTaskId: firstTaskId,
+      },
+    });
+    const settling = invoke('wait_agent', { timeout_ms: 10_000 });
+    firstTurn.resolve({ summary: 'named result' });
+    expect(JSON.parse((await settling).output as string)).toMatchObject({
+      timed_out: false,
+      agents: [expect.objectContaining({ task_name: 'build_api', agent_id: 'agent-named', status: 'completed' })],
+    });
+    expect(JSON.parse((await invoke('list_agents', {})).output as string)).toMatchObject({
+      agents: [expect.objectContaining({ task_name: 'build_api', agent_id: 'agent-named', status: 'completed' })],
+    });
+    expect(JSON.parse((await invoke('wait_agent', {})).output as string).timed_out).toBe(false);
+
+    const followup = await invoke('followup_task', { target: 'build_api', message: 'Exact follow-up' });
+    expect(JSON.parse(followup.output as string)).toMatchObject({ agent_id: 'agent-named', status: 'running' });
+    const rejected = await invoke('followup_task', { target: 'agent-named', message: 'Do not queue' });
+    expect(rejected).toMatchObject({ isError: true });
+    expect(rejected.output).toContain('already running');
+    expect(lifecycle.run).toHaveBeenCalledTimes(2);
+
+    vi.useFakeTimers();
+    const timingOut = invoke('wait_agent', { timeout_ms: 10_000 });
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(JSON.parse((await timingOut).output as string)).toMatchObject({ timed_out: true });
+    vi.useRealTimers();
+
+    const interrupted = await invoke('interrupt_agent', { target: 'build_api' });
+    expect(JSON.parse(interrupted.output as string)).toMatchObject({ agent_id: 'agent-named', status: 'interrupted' });
+    const resumed = await invoke('followup_task', { target: 'agent-named', message: 'Reuse identity' });
+    expect(JSON.parse(resumed.output as string)).toMatchObject({ agent_id: 'agent-named', status: 'running' });
+    expect(lifecycle.create).toHaveBeenCalledTimes(1);
+    expect(lifecycle.run).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects unsupported effort before allocation and releases a failed post-allocation reservation', async () => {
+    const agents: Record<string, AgentMeta> = {};
+    const metadata: ISessionMetadata = {
+      ...sessionMetadataStub(agents),
+      read: async () => ({ id: 'test-session', createdAt: 0, updatedAt: 0, archived: false, agents }),
+      registerAgent: async (agentId, meta) => { agents[agentId] = meta; },
+      unregisterAgent: async (agentId) => { delete agents[agentId]; },
+    };
+    const strictCatalog = modelCatalogResolving('mock-model', 'provider/secondary', SECONDARY_DERIVED_MODEL_ID, 'primary', 'secondary');
+    const originalGet = strictCatalog.get.bind(strictCatalog);
+    strictCatalog.get = ((alias: string) => ({ ...originalGet(alias), protocol: 'anthropic', providerType: 'kimi',
+      capabilities: { image_in: false, video_in: false, audio_in: false, thinking: true,
+        tool_use: true, max_context_tokens: 262_144 }, supportEfforts: ['low'] })) as IModelCatalog['get'];
+    const lifecycle = createAgentLifecycleStub({ createAgentIds: ['agent-failed', 'agent-retry'] });
+    const context = createAgentToolContext(
+      lifecycle,
+      appService(IFlagService, stubFlag((id) => id === AGENT_COLLABORATION_FLAG_ID)),
+      { initialConfig: { agents: { enabled: true } } },
+      sessionService(ISessionMetadata, metadata),
+      modelProviderServices(strictCatalog),
+      appService(IModelCatalog, strictCatalog),
+    );
+    const tool = context.get(IAgentToolRegistryService).resolve('spawn_agent')!;
+    const invoke = (args: Record<string, unknown>) => executeTool(tool, {
+      turnId: 0, toolCallId: 'call_spawn_transaction', args, signal,
+    });
+
+    const unsupported = await invoke({ task_name: 'effort', message: 'x', reasoning_effort: 'high' });
+    expect(unsupported).toMatchObject({ isError: true });
+    expect(lifecycle.create).not.toHaveBeenCalled();
+    expect(lifecycle.publishedEvents).toEqual([]);
+    expect(context.get(IAgentTaskService).list(false)).toEqual([]);
+    expect(agents).toEqual({});
+
+    const taskService = context.get(IAgentTaskService);
+    const registerTask = taskService.registerTask.bind(taskService);
+    vi.spyOn(taskService, 'registerTask').mockImplementationOnce((task, options) => {
+      registerTask(task, options);
+      throw new Error('injected registration failure after partial registration');
+    });
+    const failed = await invoke({ task_name: 'retryable', message: 'first', reasoning_effort: 'low' });
+    expect(failed).toMatchObject({ isError: true });
+    expect(lifecycle.discard).toHaveBeenCalledWith('agent-failed');
+    expect(lifecycle.get('agent-failed')).toBeUndefined();
+    expect(lifecycle.commitCreate).not.toHaveBeenCalled();
+    expect(lifecycle.publishedEvents).toEqual([]);
+    expect(taskService.list(false)).toEqual([]);
+    expect(agents).toEqual({});
+
+    const retried = await invoke({ task_name: 'retryable', message: 'second', reasoning_effort: 'low' });
+    expect(retried.isError).not.toBe(true);
+    expect(lifecycle.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects cross-owner management by both task name and agent id before materialization', async () => {
+    const agents: Record<string, AgentMeta> = {
+      'agent-other': { labels: { parentAgentId: 'other', collaborationTaskName: 'foreign',
+        collaborationAgentType: 'coder', collaborationLatestTaskId: 'agent-deadbeef' } },
+    };
+    const lifecycle = createAgentLifecycleStub();
+    const context = createAgentToolContext(
+      lifecycle,
+      appService(IFlagService, stubFlag((id) => id === AGENT_COLLABORATION_FLAG_ID)),
+      { initialConfig: { agents: { enabled: true } } },
+      sessionService(ISessionMetadata, sessionMetadataStub(agents)),
+    );
+    const taskService = context.get(IAgentTaskService);
+    const getTask = vi.spyOn(taskService, 'getTask');
+    const stopTask = vi.spyOn(taskService, 'stop');
+    const invoke = async (name: string, args: Record<string, unknown>) => executeTool(
+      context.get(IAgentToolRegistryService).resolve(name)!,
+      { turnId: 0, toolCallId: `call_${name}`, args, signal },
+    );
+    expect(JSON.parse((await invoke('list_agents', {})).output as string).agents).toEqual([]);
+    for (const target of ['foreign', 'agent-other']) {
+      await expect(invoke('followup_task', { target, message: 'x' })).resolves.toMatchObject({ isError: true });
+      await expect(invoke('interrupt_agent', { target })).resolves.toMatchObject({ isError: true });
+    }
+    expect(lifecycle.create).not.toHaveBeenCalled();
+    expect(lifecycle.run).not.toHaveBeenCalled();
+    expect(getTask).not.toHaveBeenCalled();
+    expect(stopTask).not.toHaveBeenCalled();
+  });
+
+  it('rolls back failed follow-up registration and publishes only after the replacement task is visible', async () => {
+    const originalMeta: AgentMeta = { labels: { parentAgentId: 'main', collaborationTaskName: 'existing',
+      collaborationAgentType: 'coder', collaborationLatestTaskId: 'agent-old0000' } };
+    const agents: Record<string, AgentMeta> = { 'agent-existing': originalMeta };
+    const metadata: ISessionMetadata = {
+      ...sessionMetadataStub(agents),
+      read: async () => ({ id: 'test-session', createdAt: 0, updatedAt: 0, archived: false, agents }),
+      registerAgent: async (agentId, meta) => { agents[agentId] = meta; },
+    };
+    let taskServiceForEvent: IAgentTaskService | undefined;
+    const visibleAtPublish: boolean[] = [];
+    const registeredAtRun: boolean[] = [];
+    let taskRegistered = false;
+    const hiddenAtRegistration: boolean[] = [];
+    const historySentinel = [{ role: 'user', content: 'persisted history sentinel' }];
+    const appendHistory = vi.fn();
+    let runCount = 0;
+    const lifecycle = createAgentLifecycleStub({
+      handleServices: new Map([['agent-existing', new Map([[IAgentContextMemoryService, {
+        _serviceBrand: undefined, get: () => historySentinel, append: appendHistory,
+      }]])]]),
+      runCompletion: async (_agentId, _request, options) => {
+        runCount++;
+        registeredAtRun.push(taskRegistered);
+        return new Promise<{ summary: string }>((_resolve, reject) => {
+          options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+        });
+      },
+      onPublishedEvent: (event) => {
+        if (event.type === 'subagent.started') visibleAtPublish.push((taskServiceForEvent?.list(false).length ?? 0) > 0);
+      },
+    });
+    lifecycle.addHandle('agent-existing', 'coder');
+    const context = createAgentToolContext(
+      lifecycle,
+      appService(IFlagService, stubFlag((id) => id === AGENT_COLLABORATION_FLAG_ID)),
+      { initialConfig: { agents: { enabled: true } } },
+      sessionService(ISessionMetadata, metadata),
+    );
+    const taskService = context.get(IAgentTaskService);
+    taskServiceForEvent = taskService;
+    const registerTask = taskService.registerTask.bind(taskService);
+    let injectRegistrationFailure = true;
+    vi.spyOn(taskService, 'registerTask').mockImplementation((task, options) => {
+      const taskId = registerTask(task, options);
+      taskRegistered = true;
+      hiddenAtRegistration.push(taskService.list(false).length === 0);
+      if (injectRegistrationFailure) {
+        injectRegistrationFailure = false;
+        throw new Error('injected follow-up registration failure after partial registration');
+      }
+      return taskId;
+    });
+    const tool = context.get(IAgentToolRegistryService).resolve('followup_task')!;
+    const invoke = (message: string) => executeTool(tool, {
+      turnId: 0, toolCallId: 'call_followup_transaction', args: { target: 'existing', message }, signal,
+    });
+
+    const failed = await invoke('first');
+    expect(failed).toMatchObject({ isError: true });
+    expect(lifecycle.publishedEvents).toEqual([]);
+    expect(taskService.list(false)).toEqual([]);
+    expect(agents['agent-existing']).toEqual(originalMeta);
+    expect(lifecycle.get('agent-existing')).toBeDefined();
+    expect(runCount).toBe(0);
+    expect(lifecycle.get('agent-existing')?.accessor.get(IAgentContextMemoryService).get()).toEqual(historySentinel);
+    expect(appendHistory).not.toHaveBeenCalled();
+    expect(hiddenAtRegistration).toEqual([true]);
+    taskRegistered = false;
+
+    const retried = await invoke('second');
+    expect(retried.isError).not.toBe(true);
+    expect(JSON.parse(retried.output as string)).toMatchObject({ agent_id: 'agent-existing', status: 'running' });
+    expect(runCount).toBe(1);
+    expect(registeredAtRun).toEqual([true]);
+    expect(hiddenAtRegistration).toEqual([true, true]);
+    expect(visibleAtPublish).toEqual([true]);
+    expect(taskService.list(false)).toHaveLength(1);
+    expect(agents['agent-existing']?.labels?.['collaborationLatestTaskId']).not.toBe('agent-old0000');
+  });
 
   it('rejects a subagent type outside the caller allowlist', async () => {
     const lifecycle = createAgentLifecycleStub();

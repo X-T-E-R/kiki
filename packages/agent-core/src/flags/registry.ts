@@ -41,6 +41,15 @@ export const FLAG_DEFINITIONS = [
     default: false,
     surface: 'core',
   },
+  {
+    id: 'agent-collaboration',
+    title: 'Codex-style agent collaboration adapter',
+    description:
+      'Expose named asynchronous collaboration tools over the existing subagent lifecycle.',
+    env: 'KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION',
+    default: false,
+    surface: 'core',
+  },
 ] as const satisfies readonly FlagDefinitionInput[];
 
 /** Literal union of registered flag ids. */

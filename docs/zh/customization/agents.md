@@ -22,6 +22,21 @@ Kimi Code CLI 内置三种子 Agent，开箱即用，分别面向不同任务形
 
 子 Agent 支持在后台运行：完成后结果自动回到主 Agent，无需手动轮询。也可以唤回已有的子 Agent 实例继续推进同一任务。
 
+## Codex 风格协作适配器
+
+`agent-collaboration` 实验功能在同一套子 Agent 与后台任务生命周期之上增加一层 Codex 风格适配器。设置 `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION=1` 启用；`[agents] enabled = false` 可以在不改实验 flag 的情况下关闭它。这是一层适配器，并不代表完整兼容 Codex。
+
+负责协调的 `agent` 与 `coder` profile 会获得 5 个 snake_case 工具：`spawn_agent`、`list_agents`、`wait_agent`、`followup_task` 和 `interrupt_agent`。`spawn_agent` 始终异步启动，并使用全新上下文；它只接受 `fork_turns = "none"`，不会复制父 Agent 的对话历史。名称必须匹配 `^[a-z0-9_]+$`，不能是 `root`，并且在会话生命周期内保持唯一。
+
+管理工具的 target 必须是精确的 `task_name` 或 `agent_id`，不支持相对路径或分层路径。每个调用方只能列出和管理自己直接创建的具名 Agent；同级 Agent 或其他调用方创建的子 Agent 都不是有效目标：
+
+- `list_agents` 按 `task_name` 升序返回具名 Agent。
+- `wait_agent` 默认等待 30 秒，`timeout_ms` 可设置为 10 秒至 1 小时。
+- `followup_task` 只会在同一个空闲 Agent 身份上启动一轮新 turn。目标正在运行时会拒绝，不排队也不注入消息。
+- `interrupt_agent` 只停止当前具名 turn。之后仍可继续使用同一个 Agent。
+
+本实验不提供 `send_message` 工具或持久 mailbox。现有 `Agent` 与 `AgentSwarm` 工具保持不变。
+
 ## 上下文隔离与资源开销
 
 每个子 Agent 拥有完全独立的上下文窗口，只能看到主 Agent 显式传入的任务描述，看不到主 Agent 的对话历史。子 Agent 自己的中间思考和工具调用记录不会回流，只有最终结果会出现在主 Agent 的上下文里。

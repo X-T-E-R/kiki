@@ -80,6 +80,10 @@ Plan mode is a constrained working state: once entered, `Write` and `Edit` are r
 
 ## Collaboration Tools
 
+With the `agent-collaboration` experiment enabled, `agent` and `coder` also expose `spawn_agent`, `list_agents`, `wait_agent`, `followup_task`, and `interrupt_agent`. These tools manage the caller's directly owned named asynchronous subagents by exact `task_name` or `agent_id`.
+
+The adapter supports only fresh spawns (`fork_turns = "none"`), rejects follow-ups while a target is running, and does not provide `send_message` or history forking. See [Agents and Sub-Agents](../customization/agents.md#codex-style-collaboration-adapter).
+
 Collaboration tools handle inter-Agent coordination, user interaction, and Skill invocation.
 
 | Tool | Default Approval | Description |

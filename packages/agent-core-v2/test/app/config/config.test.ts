@@ -88,9 +88,12 @@ import {
 } from '#/agent/task/configSection';
 import { applyPrintModeConfigDefaults } from '#/agent/task/printDefaults';
 import '#/session/subagent/configSection';
+import '#/session/agentCollaboration/configSection';
+import { AGENTS_SECTION, type AgentsConfig } from '#/session/agentCollaboration/configSection';
 import {
   DEFAULT_SUBAGENT_TIMEOUT_MS,
   resolveSecondaryModel,
+  resolveAgentCollaborationBinding,
   resolveSubagentBinding,
   resolveSubagentTimeoutMs,
   SUBAGENT_SECTION,
@@ -1944,6 +1947,52 @@ describe('subagent config section', () => {
       { details: { model: 'provider/other' } },
     );
     expect(wrapSubagentModelError(unrelated, 'provider/secondary', 'provider/main')).toBe(unrelated);
+  });
+});
+
+describe('agent collaboration config and binding', () => {
+  async function createAgentsConfig(env: Record<string, string>, toml?: string) {
+    const disposables = new DisposableStore();
+    const ix = disposables.add(new TestInstantiationService());
+    const storage = new InMemoryStorageService();
+    if (toml !== undefined) await storage.write('', 'config.toml', new TextEncoder().encode(toml));
+    ix.stub(ILogService, stubLog());
+    ix.stub(IBootstrapService, stubBootstrap('/tmp/kimi-agents-cfg', env));
+    ix.stub(IFileSystemStorageService, storage);
+    ix.set(IAtomicTomlDocumentStore, new SyncDescriptor(TomlAtomicDocumentStore));
+    ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry));
+    ix.set(IConfigService, new SyncDescriptor(ConfigService));
+    const config = ix.get(IConfigService);
+    await config.ready;
+    return { config, disposables };
+  }
+
+  it('loads strict [agents] config and diagnoses unknown nested keys', async () => {
+    const valid = await createAgentsConfig({}, '[agents]\nenabled = false\ndefault_subagent_model = "primary"\ndefault_subagent_reasoning_effort = "high"\n');
+    expect(valid.config.get<AgentsConfig>(AGENTS_SECTION)).toEqual({ enabled: false, defaultSubagentModel: 'primary', defaultSubagentReasoningEffort: 'high' });
+    valid.disposables.dispose();
+
+    const invalid = await createAgentsConfig({}, '[agents]\nenabled = true\nroles = {}\n');
+    expect(invalid.config.diagnostics().some((item) => /agents|roles|unrecognized/i.test(item.message))).toBe(true);
+    invalid.disposables.dispose();
+  });
+
+  it('resolves exact aliases independently and gates legacy fallback sources', async () => {
+    const own = { modelAlias: 'caller', thinkingLevel: 'caller-effort' };
+    const withAgents = await createAgentsConfig({}, '[agents]\ndefault_subagent_model = "configured"\ndefault_subagent_reasoning_effort = "configured-effort"\n');
+    expect(resolveAgentCollaborationBinding(withAgents.config, secondaryModelFlags(false), own,
+      { modelAlias: 'primary' }, { modelAlias: 'profile', thinkingEffort: 'profile-effort' }))
+      .toEqual({ model: 'primary', thinking: 'profile-effort', displayModel: 'primary' });
+    expect(resolveAgentCollaborationBinding(withAgents.config, secondaryModelFlags(false), own, {}, {}))
+      .toEqual({ model: 'configured', thinking: 'configured-effort', displayModel: 'configured' });
+    withAgents.disposables.dispose();
+
+    const legacy = await createAgentsConfig({}, '[subagent]\ndefault_model = "legacy"\ndefault_effort = "legacy-effort"\n');
+    expect(resolveAgentCollaborationBinding(legacy.config, secondaryModelFlags(false), own, { modelAlias: 'secondary' }, {}))
+      .toEqual({ model: 'secondary', thinking: undefined, displayModel: 'secondary' });
+    expect(resolveAgentCollaborationBinding(legacy.config, secondaryModelFlags(), own, {}, {}))
+      .toEqual({ model: 'legacy', thinking: 'legacy-effort', displayModel: 'legacy' });
+    legacy.disposables.dispose();
   });
 });
 

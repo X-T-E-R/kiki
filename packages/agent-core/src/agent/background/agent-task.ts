@@ -16,6 +16,8 @@ export interface AgentBackgroundTaskInfo extends BackgroundTaskInfoBase {
   readonly model?: string;
   /** The subagent's effective thinking effort at spawn (v2 engine). */
   readonly thinkingEffort?: string;
+  readonly collaborationTaskName?: string;
+  readonly collaborationAgentType?: string;
 }
 
 export class AgentBackgroundTask implements BackgroundTask {
@@ -25,17 +27,22 @@ export class AgentBackgroundTask implements BackgroundTask {
   readonly subagentType: string;
   readonly model?: string;
   readonly thinkingEffort?: string;
+  readonly collaborationTaskName?: string;
+  readonly collaborationAgentType?: string;
 
   constructor(
     private readonly handle: SubagentHandle,
     readonly description: string,
     private readonly subagentHost: Pick<SessionSubagentHost, 'markActiveChildDetached'>,
     private readonly abortController: AbortController,
+    collaboration?: { readonly taskName: string; readonly agentType: string },
   ) {
     this.agentId = handle.agentId;
     this.subagentType = handle.profileName;
     this.model = handle.model;
     this.thinkingEffort = handle.thinkingEffort;
+    this.collaborationTaskName = collaboration?.taskName;
+    this.collaborationAgentType = collaboration?.agentType;
   }
 
   async start(sink: BackgroundTaskSink): Promise<void> {
@@ -75,6 +82,8 @@ export class AgentBackgroundTask implements BackgroundTask {
       subagentType: this.subagentType,
       model: this.model,
       thinkingEffort: this.thinkingEffort,
+      collaborationTaskName: this.collaborationTaskName,
+      collaborationAgentType: this.collaborationAgentType,
     };
   }
 }

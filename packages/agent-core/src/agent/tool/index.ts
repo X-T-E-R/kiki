@@ -792,6 +792,17 @@ export class ToolManager {
       this.isExactToolEnabled('TaskOutput') &&
       this.isExactToolEnabled('TaskStop');
     const goalToolsEnabled = this.agent.type === 'main';
+    const collaborationEnabled =
+      this.agent.subagentHost !== undefined &&
+      this.agent.experimentalFlags.enabled('agent-collaboration') &&
+      this.agent.kimiConfig?.agents?.enabled !== false;
+    const collaboration = collaborationEnabled
+      ? new b.AgentCollaborationController(
+          this.agent.subagentHost!,
+          background,
+          resolveSubagentTimeoutMs(this.agent.kimiConfig?.subagent?.timeoutMs),
+        )
+      : undefined;
     this.builtinTools = new Map(
       [
         new b.ReadTool(kaos, workspace),
@@ -849,6 +860,7 @@ export class ToolManager {
               subagentTimeoutMs: resolveSubagentTimeoutMs(this.agent.kimiConfig?.subagent?.timeoutMs),
               showModelPreferences: this.agent.experimentalFlags.enabled('secondary-model'),
               modelChoiceEnabled: this.agent.experimentalFlags.enabled('secondary-model'),
+              collaborationEnabled,
               subagentModelDescription: buildSubagentModelDescriptions(
                 this.agent.kimiConfig,
                 this.agent.experimentalFlags,
@@ -868,6 +880,11 @@ export class ToolManager {
             ),
             this.agent.experimentalFlags.enabled('secondary-model'),
           ),
+        collaboration && new b.SpawnAgentTool(collaboration),
+        collaboration && new b.ListAgentsTool(collaboration),
+        collaboration && new b.WaitAgentTool(collaboration),
+        collaboration && new b.FollowupTaskTool(collaboration),
+        collaboration && new b.InterruptAgentTool(collaboration),
         toolServices?.webSearcher && new b.WebSearchTool(toolServices.webSearcher),
         toolServices?.urlFetcher && new b.FetchURLTool(toolServices.urlFetcher),
       ]

@@ -13,7 +13,7 @@ import {
 import { parseConfigString } from '../../src/config/toml';
 import type { KimiConfig, ModelAlias } from '../../src/config/schema';
 import { FLAG_DEFINITIONS, FlagResolver } from '../../src/flags';
-import { resolveSubagentBinding } from '../../src/session/subagent-binding';
+import { resolveAgentCollaborationBinding, resolveSubagentBinding } from '../../src/session/subagent-binding';
 
 const baseAlias: ModelAlias = {
   provider: 'p1',
@@ -220,6 +220,42 @@ describe('subagent binding resolution', () => {
   });
 });
 
+describe('agent collaboration binding resolution', () => {
+  const enabled = new FlagResolver({}, FLAG_DEFINITIONS, { 'secondary-model': true });
+  const disabled = new FlagResolver({}, FLAG_DEFINITIONS);
+  const own = { modelAlias: 'caller', thinkingEffort: 'caller-effort' };
+  const config: KimiConfig = {
+    providers: {},
+    models: { caller: baseAlias, primary: baseAlias, secondary: baseAlias, profile: baseAlias, configured: baseAlias },
+    agents: { defaultSubagentModel: 'configured', defaultSubagentReasoningEffort: 'configured-effort' },
+    subagent: { defaultModel: 'legacy', defaultEffort: 'legacy-effort' },
+    secondaryModel: { model: 'secondary', defaultEffort: 'secondary-effort' },
+  };
+
+  it('uses exact aliases and resolves model and effort independently', () => {
+    expect(resolveAgentCollaborationBinding(config, disabled, own,
+      { modelAlias: 'primary' }, { modelAlias: 'profile', thinkingEffort: 'profile-effort' }))
+      .toEqual({ modelAlias: 'primary', thinkingEffort: 'profile-effort' });
+    expect(resolveAgentCollaborationBinding(config, disabled, own, {}, { modelAlias: 'profile' }))
+      .toEqual({ modelAlias: 'profile', thinkingEffort: 'configured-effort' });
+    expect(resolveAgentCollaborationBinding(config, disabled, own, {}, {}))
+      .toEqual({ modelAlias: 'configured', thinkingEffort: 'configured-effort' });
+  });
+
+  it('uses legacy fallback sources only when secondary-model is enabled', () => {
+    const withoutAgents = { ...config, agents: undefined };
+    expect(resolveAgentCollaborationBinding(withoutAgents, disabled, own, {}, {}))
+      .toEqual({ modelAlias: 'caller', thinkingEffort: 'caller-effort' });
+    expect(resolveAgentCollaborationBinding(withoutAgents, enabled, own, {}, {}))
+      .toEqual({ modelAlias: 'legacy', thinkingEffort: 'legacy-effort' });
+  });
+
+  it('does not carry stale caller effort to a concrete model', () => {
+    expect(resolveAgentCollaborationBinding({ ...config, agents: undefined, subagent: undefined, secondaryModel: undefined }, disabled, own,
+      { modelAlias: 'secondary' }, {})).toEqual({ modelAlias: 'secondary', thinkingEffort: undefined });
+  });
+});
+
 describe('stripSecondaryModelConfig', () => {
   it('removes the derived entry and rolls back a default_model pointer at it', () => {
     const config = applySecondaryModelConfig(configWithSecondary(), {});
@@ -291,6 +327,11 @@ describe('stripSecondaryModelConfig', () => {
 });
 
 describe('[secondary_model] TOML wiring', () => {
+  it('parses strict [agents] keys and round-trips snake_case', async () => {
+    const config = parseConfigString('[agents]\nenabled = false\ndefault_subagent_model = "primary"\ndefault_subagent_reasoning_effort = "high"\n');
+    expect(config.agents).toEqual({ enabled: false, defaultSubagentModel: 'primary', defaultSubagentReasoningEffort: 'high' });
+    expect(() => parseConfigString('[agents]\nenabled = true\nroles = {}\n')).toThrow(/unrecognized key|roles/i);
+  });
   it('parses and round-trips subagent model and effort defaults', async () => {
     const config = parseConfigString(
       '[subagent]\ndefault_model = "cheap"\ndefault_effort = "low"\ntimeout_ms = 5000\n',

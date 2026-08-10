@@ -10,11 +10,202 @@ import {
   type SessionSubagentHost,
 } from '../../src/session/subagent-host';
 import { AgentTool, AgentToolInputSchema } from '../../src/tools/builtin/collaboration/agent';
+import {
+  AgentCollaborationController,
+  FOLLOWUP_TASK_PARAMETERS,
+  INTERRUPT_AGENT_PARAMETERS,
+  LIST_AGENTS_PARAMETERS,
+  SPAWN_AGENT_PARAMETERS,
+  WAIT_AGENT_PARAMETERS,
+} from '../../src/tools/builtin/collaboration/agent-collaboration';
+import type { BackgroundManager, BackgroundTaskInfo } from '../../src/agent/background';
 import { userCancellationReason } from '../../src/utils/abort';
 import { agentTask, createBackgroundManager } from '../agent/background/helpers';
 import { executeTool } from './fixtures/execute-tool';
 
 const signal = new AbortController().signal;
+
+describe('agent collaboration production schemas', () => {
+  it('strictly validates every adapter input with the runtime AJV path', () => {
+    const spawn = compileToolArgsValidator(SPAWN_AGENT_PARAMETERS);
+    expect(validateToolArgs(spawn, { task_name: 'build_api', message: 'Keep whitespace\n', fork_turns: 'NONE' })).toBeNull();
+    const invalidInputs: Array<Record<string, string | boolean>> = [
+      { task_name: 'root', message: 'x' },
+      { task_name: 'Bad', message: 'x' },
+      { task_name: 'a/b', message: 'x' },
+      { task_name: 'ok', message: '   ' },
+      { task_name: 'ok', message: 'x', fork_turns: 'all' },
+      { task_name: 'ok', message: 'x', fork_context: true },
+      { task_name: 'ok', message: 'x', run_in_background: true },
+    ];
+    for (const invalid of invalidInputs) expect(validateToolArgs(spawn, invalid)).not.toBeNull();
+
+    expect(validateToolArgs(compileToolArgsValidator(LIST_AGENTS_PARAMETERS), {})).toBeNull();
+    expect(validateToolArgs(compileToolArgsValidator(LIST_AGENTS_PARAMETERS), { all: true })).not.toBeNull();
+    expect(validateToolArgs(compileToolArgsValidator(WAIT_AGENT_PARAMETERS), { timeout_ms: 10_000 })).toBeNull();
+    expect(validateToolArgs(compileToolArgsValidator(WAIT_AGENT_PARAMETERS), { timeout_ms: 9_999 })).not.toBeNull();
+    expect(validateToolArgs(compileToolArgsValidator(FOLLOWUP_TASK_PARAMETERS), { target: 'a', message: 'x' })).toBeNull();
+    expect(validateToolArgs(compileToolArgsValidator(FOLLOWUP_TASK_PARAMETERS), { target: 'a', message: ' ' })).not.toBeNull();
+    expect(validateToolArgs(compileToolArgsValidator(INTERRUPT_AGENT_PARAMETERS), { target: 'a' })).toBeNull();
+  });
+});
+
+describe('agent collaboration lifecycle adapter', () => {
+  type NamedFixture = { taskName: string; agentId: string; agentType: string; ownerAgentId: string; latestTaskId?: string };
+  interface SharedFixtureState { named: NamedFixture[]; pending: Map<string, string>; nextAgent: number; events: string[]; onPublish?: () => void; }
+  function fixture(ownerAgentId = 'main', shared: SharedFixtureState = { named: [], pending: new Map(), nextAgent: 0, events: [] }) {
+    const named = shared.named;
+    const tasks = new Map<string, BackgroundTaskInfo>();
+    let nextTask = 0;
+    const spawn = vi.fn(async (options: { collaborationTaskName?: string; collaborationTaskId?: string; profileName: string; prompt: string; deferCollaborationRun?: boolean }) => {
+      const agentId = `agent-${String(shared.nextAgent++)}`;
+      named.push({ taskName: options.collaborationTaskName!, agentId, agentType: options.profileName,
+        ownerAgentId, latestTaskId: options.collaborationTaskId });
+      return { agentId, profileName: options.profileName, resumed: false,
+        completion: new Promise<never>(() => {}),
+        publishPrepared: options.deferCollaborationRun === true ? () => {
+          shared.events.push(`spawned:${agentId}`);
+          shared.onPublish?.();
+        } : undefined,
+        cancelPrepared: vi.fn() };
+    });
+    const resume = vi.fn(async (agentId: string, _options: { prompt: string }) => ({ agentId,
+      profileName: named.find((entry) => entry.agentId === agentId)!.agentType,
+      resumed: true, completion: new Promise<never>(() => {}) }));
+    const host = {
+      spawn,
+      resume,
+      currentAgentId: () => ownerAgentId,
+      namedAgents: () => named.filter((entry) => entry.ownerAgentId === ownerAgentId).toSorted((a, b) => a.taskName.localeCompare(b.taskName)),
+      reserveNamedAgent: (taskName: string) => {
+        if (shared.pending.has(taskName) || named.some((entry) => entry.taskName === taskName)) return false;
+        shared.pending.set(taskName, ownerAgentId);
+        return true;
+      },
+      commitNamedAgent: (taskName: string) => { if (shared.pending.get(taskName) === ownerAgentId) shared.pending.delete(taskName); },
+      releaseNamedAgent: (taskName: string) => { if (shared.pending.get(taskName) === ownerAgentId) shared.pending.delete(taskName); },
+      discardNamedAgent: async (agentId: string) => {
+        const index = named.findIndex((entry) => entry.agentId === agentId);
+        if (index >= 0) named.splice(index, 1);
+      },
+      recordNamedTask: async (agentId: string, taskId: string) => {
+        const entry = named.find((candidate) => candidate.agentId === agentId)!;
+        entry.latestTaskId = taskId;
+      },
+    } as unknown as SessionSubagentHost;
+    const background = {
+      assertCanRegisterBackground: vi.fn(),
+      allocateTaskId: vi.fn(() => `agent-task000${String(nextTask)}`),
+      registerTask: vi.fn((task: { toInfo(base: object): BackgroundTaskInfo }) => {
+        const taskId = `agent-task000${String(nextTask++)}`;
+        tasks.set(taskId, task.toInfo({ taskId, description: 'named', status: 'running', detached: true,
+          startedAt: 1, endedAt: null }));
+        return taskId;
+      }),
+      commitTaskRegistration: vi.fn((taskId: string) => { shared.events.push(`task:${taskId}`); }),
+      rollbackTaskRegistration: vi.fn(async (taskId: string) => { tasks.delete(taskId); }),
+      getTask: vi.fn((taskId: string) => tasks.get(taskId)),
+      stop: vi.fn(async (taskId: string) => {
+        const current = tasks.get(taskId)!;
+        const stopped = { ...current, status: 'killed' as const, endedAt: 2 };
+        tasks.set(taskId, stopped);
+        return stopped;
+      }),
+      wait: vi.fn(async (taskId: string) => tasks.get(taskId)),
+    } as unknown as BackgroundManager;
+    return { controller: new AgentCollaborationController(host, background, 1_000), host, named, tasks, spawn, resume, background, events: shared.events };
+  }
+
+  it('spawns asynchronously, rejects duplicate names, and lists in task-name order', async () => {
+    const { controller, spawn } = fixture();
+    const ctx = context({}, 'call_named') as never;
+    const zed = await controller.spawn({ task_name: 'zed', message: '  preserve me  ', fork_turns: 'none' }, ctx);
+    const alpha = await controller.spawn({ task_name: 'alpha', message: 'work' }, ctx);
+    expect(resultJson(zed)).toMatchObject({ task_name: 'zed', agent_id: 'agent-0', status: 'running' });
+    expect(resultJson(alpha)).toMatchObject({ task_name: 'alpha', agent_id: 'agent-1', status: 'running' });
+    expect(spawn.mock.calls[0]?.[0].prompt).toBe('  preserve me  ');
+    await expect(controller.spawn({ task_name: 'zed', message: 'again' }, ctx)).resolves.toMatchObject({ isError: true });
+    expect(resultJson(controller.list()).agents.map((entry: { task_name: string }) => entry.task_name)).toEqual(['alpha', 'zed']);
+  });
+
+  it('rejects running follow-up, interrupts nonrecursively, and resumes the same identity once', async () => {
+    const { controller, resume } = fixture();
+    const ctx = context({}, 'call_named') as never;
+    await controller.spawn({ task_name: 'work', message: 'start' }, ctx);
+    await expect(controller.followup({ target: 'work', message: 'next' }, ctx)).resolves.toMatchObject({ isError: true });
+    const interrupted = await controller.interrupt({ target: 'work' });
+    expect(resultJson(interrupted)).toMatchObject({ agent_id: 'agent-0', status: 'interrupted' });
+    const followed = await controller.followup({ target: 'agent-0', message: '  exact follow-up  ' }, ctx);
+    expect(resultJson(followed)).toMatchObject({ agent_id: 'agent-0', status: 'running' });
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(resume.mock.calls[0]?.[1].prompt).toBe('  exact follow-up  ');
+  });
+
+  it('returns immediately without runners and reports a bounded timeout truthfully', async () => {
+    const { controller } = fixture();
+    expect(resultJson(await controller.wait({})).timed_out).toBe(false);
+    await controller.spawn({ task_name: 'work', message: 'start' }, context({}, 'call_named') as never);
+    const clock = vi.spyOn(Date, 'now').mockReturnValueOnce(100).mockReturnValue(10_100);
+    try {
+      const result = await controller.wait({ timeout_ms: 10_000 });
+      expect(resultJson(result).timed_out).toBe(true);
+    } finally { clock.mockRestore(); }
+  });
+
+  it('reserves names session-wide and rejects cross-owner management by name or id', async () => {
+    const shared: SharedFixtureState = { named: [], pending: new Map(), nextAgent: 0, events: [] };
+    const first = fixture('caller-a', shared);
+    const second = fixture('caller-b', shared);
+    const ctx = context({}, 'call_named') as never;
+    const [a, b] = await Promise.all([
+      first.controller.spawn({ task_name: 'same', message: 'a' }, ctx),
+      second.controller.spawn({ task_name: 'same', message: 'b' }, ctx),
+    ]);
+    expect([a, b].filter((result) => result.isError !== true)).toHaveLength(1);
+    expect(first.spawn.mock.calls.length + second.spawn.mock.calls.length).toBe(1);
+
+    const owner = a.isError === true ? second : first;
+    const outsider = fixture('caller-restored-outsider', shared);
+    const agentId = shared.named[0]!.agentId;
+    expect(resultJson(outsider.controller.list()).agents).toEqual([]);
+    await expect(outsider.controller.followup({ target: 'same', message: 'x' }, ctx)).resolves.toMatchObject({ isError: true });
+    await expect(outsider.controller.followup({ target: agentId, message: 'x' }, ctx)).resolves.toMatchObject({ isError: true });
+    await expect(outsider.controller.interrupt({ target: 'same' })).resolves.toMatchObject({ isError: true });
+    await expect(outsider.controller.interrupt({ target: agentId })).resolves.toMatchObject({ isError: true });
+    expect(outsider.background.getTask).not.toHaveBeenCalled();
+    expect(outsider.background.stop).not.toHaveBeenCalled();
+    expect(resultJson(owner.controller.list()).agents).toHaveLength(1);
+    await expect(owner.controller.spawn({ task_name: 'same', message: 'again' }, ctx)).resolves.toMatchObject({ isError: true });
+  });
+
+  it('releases a failed allocation reservation so the same name can be retried', async () => {
+    const background = createBackgroundManager().manager;
+    const visibleAtPublish: boolean[] = [];
+    const shared: SharedFixtureState = { named: [], pending: new Map(), nextAgent: 0, events: [],
+      onPublish: () => { visibleAtPublish.push(background.list(false).length > 0); } };
+    const { host, spawn, events } = fixture('main', shared);
+    const controller = new AgentCollaborationController(host, background, 1_000);
+    const registerTask = background.registerTask.bind(background);
+    vi.spyOn(background, 'registerTask').mockImplementationOnce((task, options) => {
+      registerTask(task, options);
+      throw new Error('register failed after partial registration');
+    });
+    const ctx = context({}, 'call_named') as never;
+    await expect(controller.spawn({ task_name: 'retryable', message: 'first' }, ctx)).resolves.toMatchObject({ isError: true });
+    expect(events).toEqual([]);
+    expect(background.list(false)).toEqual([]);
+    const retried = await controller.spawn({ task_name: 'retryable', message: 'second' }, ctx);
+    expect(retried.isError).not.toBe(true);
+    expect(spawn).toHaveBeenCalledTimes(2);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatch(/^spawned:/);
+    expect(visibleAtPublish).toEqual([true]);
+  });
+});
+
+function resultJson(result: { output: unknown }): any {
+  return JSON.parse(result.output as string);
+}
 
 function context<Input>(args: Input, toolCallId = 'call_agent') {
   return { turnId: '0', toolCallId, args, signal };

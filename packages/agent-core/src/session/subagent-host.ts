@@ -6,7 +6,7 @@ import {
 
 import type { Agent } from '../agent';
 import type { PromptOrigin } from '../agent/context';
-import { ErrorCodes } from '../errors';
+import { ErrorCodes, KimiError } from '../errors';
 import { DenyAllPermissionPolicy } from '../agent/permission/policies/deny-all';
 import { InMemoryAgentRecordPersistence } from '../agent/records';
 import { isAbortError } from '../loop/errors';
@@ -22,6 +22,7 @@ import { collectGitContext } from './git-context';
 import type { Session } from './index';
 import {
   resolveSubagentBinding,
+  resolveAgentCollaborationBinding,
   subagentDisplayModel,
   subagentModelSource,
   wrapSubagentModelError,
@@ -137,6 +138,9 @@ export interface SpawnSubagentOptions extends RunSubagentOptions {
   readonly modelChoice?: SubagentModelChoice;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
+  readonly collaborationTaskName?: string;
+  readonly collaborationTaskId?: string;
+  readonly deferCollaborationRun?: boolean;
 }
 
 type SubagentCompletion = {
@@ -153,6 +157,8 @@ export type SubagentHandle = {
   readonly model?: string;
   readonly thinkingEffort?: string;
   readonly completion: Promise<SubagentCompletion>;
+  readonly publishPrepared?: () => void;
+  readonly cancelPrepared?: (reason?: unknown) => void;
 };
 
 export class SessionSubagentHost {
@@ -179,17 +185,34 @@ export class SessionSubagentHost {
       modelPreference: options.modelChoice,
       modelAlias: options.modelAlias,
       thinkingEffort: options.thinkingEffort,
+      collaborationTaskName: options.collaborationTaskName,
     });
     const { id, agent } = await this.session.createAgent(
       { type: 'sub', generate: parent.rawGenerate },
-      { parentAgentId: this.ownerAgentId, swarmItem: options.swarmItem },
+      {
+        parentAgentId: this.ownerAgentId,
+        swarmItem: options.swarmItem,
+        collaboration:
+          options.collaborationTaskName === undefined
+            ? undefined
+            : {
+                taskName: options.collaborationTaskName,
+                agentType: profile.name,
+                latestTaskId: options.collaborationTaskId,
+              },
+      },
     );
-    await this.configureChild(parent, agent, profile, binding);
+    try {
+      await this.configureChild(parent, agent, profile, binding);
+    } catch (error) {
+      await this.session.discardAgent(id);
+      throw error;
+    }
     const effective = this.effectiveChildBinding(
       agent,
       subagentDisplayModel(this.session.kimiConfig, binding.modelAlias),
     );
-    const completion = this.runWithActiveChild(id, options, async (runOptions) => {
+    const startRun = (): Promise<SubagentCompletion> => this.runWithActiveChild(id, options, async (runOptions) => {
       this.emitSubagentSpawned(parent, id, profile.name, runOptions, effective);
       try {
         return await this.runPromptTurn(parent, id, agent, profile.name, runOptions);
@@ -198,6 +221,35 @@ export class SessionSubagentHost {
         throw error;
       }
     });
+    if (options.deferCollaborationRun === true) {
+      let resolveCompletion!: (value: SubagentCompletion) => void;
+      let rejectCompletion!: (reason?: unknown) => void;
+      let settled = false;
+      const completion = new Promise<SubagentCompletion>((resolve, reject) => {
+        resolveCompletion = resolve;
+        rejectCompletion = reject;
+      });
+      void completion.catch(() => {});
+      return {
+        agentId: id,
+        profileName: profile.name,
+        resumed: false,
+        model: effective.model,
+        thinkingEffort: effective.thinkingEffort,
+        completion,
+        publishPrepared: () => {
+          if (settled) return;
+          settled = true;
+          void startRun().then(resolveCompletion, rejectCompletion);
+        },
+        cancelPrepared: (reason) => {
+          if (settled) return;
+          settled = true;
+          rejectCompletion(reason ?? new Error('Prepared collaboration run cancelled'));
+        },
+      };
+    }
+    const completion = startRun();
     return {
       agentId: id,
       profileName: profile.name,
@@ -353,6 +405,52 @@ export class SessionSubagentHost {
     return metadata.swarmItem;
   }
 
+  namedAgents(): ReadonlyArray<{
+    readonly taskName: string;
+    readonly agentId: string;
+    readonly agentType: string;
+    readonly latestTaskId?: string;
+  }> {
+    return Object.entries(this.session.metadata.agents)
+      .flatMap(([agentId, meta]) => {
+        const named = meta.collaboration;
+        if (meta.type !== 'sub' || meta.parentAgentId !== this.ownerAgentId || named === undefined) {
+          return [];
+        }
+        return [{
+          taskName: named.taskName,
+          agentId,
+          agentType: named.agentType,
+          latestTaskId: named.latestTaskId,
+        }];
+      })
+      .sort((a, b) => a.taskName.localeCompare(b.taskName));
+  }
+
+  currentAgentId(): string {
+    return this.ownerAgentId;
+  }
+
+  reserveNamedAgent(taskName: string): boolean {
+    return this.session.reserveAgentCollaborationName(taskName, this.ownerAgentId);
+  }
+
+  commitNamedAgent(taskName: string): void {
+    this.session.commitAgentCollaborationName(taskName, this.ownerAgentId);
+  }
+
+  releaseNamedAgent(taskName: string): void {
+    this.session.releaseAgentCollaborationName(taskName, this.ownerAgentId);
+  }
+
+  async discardNamedAgent(agentId: string): Promise<void> {
+    await this.session.discardAgent(agentId);
+  }
+
+  async recordNamedTask(agentId: string, taskId: string): Promise<void> {
+    await this.session.updateAgentCollaborationTask(agentId, taskId);
+  }
+
   private resolveProfile(parent: Agent, profileName: string): ResolvedAgentProfile {
     const profile = this.resolveDelegatableSubagents(
       parent.config.profileName,
@@ -502,23 +600,35 @@ export class SessionSubagentHost {
   private resolveSpawnBinding(
     parent: Agent,
     profile: ResolvedAgentProfile,
-    request: SubagentBindingRequest,
+    request: SubagentBindingRequest & { readonly collaborationTaskName?: string },
   ): SubagentModelBinding {
-    const binding = resolveSubagentBinding(
-      this.session.kimiConfig,
-      this.session.experimentalFlags,
-      { modelAlias: parent.config.modelAlias, thinkingEffort: parent.config.thinkingEffort },
-      request,
-      {
-        modelPreference: profile.modelPreference,
-        modelAlias: profile.modelAlias,
-        thinkingEffort: profile.thinkingEffort,
-      },
-    );
+    const profileRequest = {
+      modelPreference: profile.modelPreference,
+      modelAlias: profile.modelAlias,
+      thinkingEffort: profile.thinkingEffort,
+    };
+    const binding = request.collaborationTaskName !== undefined
+      ? resolveAgentCollaborationBinding(
+          this.session.kimiConfig,
+          this.session.experimentalFlags,
+          { modelAlias: parent.config.modelAlias, thinkingEffort: parent.config.thinkingEffort },
+          request,
+          profileRequest,
+        )
+      : resolveSubagentBinding(
+          this.session.kimiConfig,
+          this.session.experimentalFlags,
+          { modelAlias: parent.config.modelAlias, thinkingEffort: parent.config.thinkingEffort },
+          request,
+          profileRequest,
+        );
     if (binding.modelAlias !== undefined) {
       const providerManager = this.session.options.providerManager;
       try {
-        providerManager?.resolveProviderConfig(binding.modelAlias);
+        const resolved = providerManager?.resolveProviderConfig(binding.modelAlias);
+        if (request.collaborationTaskName !== undefined && binding.thinkingEffort !== undefined && resolved !== undefined) {
+          assertCollaborationEffort(binding.thinkingEffort, binding.modelAlias, resolved);
+        }
       } catch (error) {
         throw wrapSubagentModelError(
           error,
@@ -675,6 +785,25 @@ export class SessionSubagentHost {
       error: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+function assertCollaborationEffort(
+  effort: string,
+  modelAlias: string,
+  resolved: {
+    readonly provider: { readonly type: string };
+    readonly modelCapabilities: { readonly thinking?: boolean };
+    readonly supportEfforts?: readonly string[];
+  },
+): void {
+  if (resolved.provider.type !== 'kimi' || effort === 'off') return;
+  const supported = resolved.supportEfforts?.filter((value) => value.length > 0) ?? [];
+  if (resolved.modelCapabilities.thinking === true &&
+      (supported.length === 0 || effort === 'on' || supported.includes(effort))) return;
+  throw new KimiError(
+    ErrorCodes.MODEL_CONFIG_INVALID,
+    `Thinking effort "${effort}" is not supported by model "${modelAlias}". Supported efforts: ${supported.length === 0 ? 'off' : ['off', ...supported].join(', ')}.`,
+  );
 }
 
 async function runChildTurnToCompletion(child: Agent, signal: AbortSignal): Promise<void> {

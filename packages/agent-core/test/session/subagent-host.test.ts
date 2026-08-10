@@ -97,6 +97,33 @@ describe('formatSubagentTimeoutDescription', () => {
 });
 
 describe('SessionSubagentHost', () => {
+  it('defers collaboration spawn visibility and child execution until publication', async () => {
+    const parent = testAgent();
+    parent.configure();
+    parent.newEvents();
+    const child = testAgent();
+    child.mockNextResponse({ type: 'text', text: 'Completed the named collaboration task with enough implementation detail, verification evidence, and handoff context for the parent to continue without repeating the work.' });
+    child.mockNextResponse({ type: 'text', text: 'The named collaboration task is complete. The implementation, affected behavior, focused verification results, and remaining handoff context are documented precisely enough for the parent agent to continue without rerunning or rediscovering the completed work.' });
+    const host = new SessionSubagentHost(fakeSession(parent.agent, child.agent), 'main');
+
+    const handle = await host.spawn({
+      profileName: 'coder', parentToolCallId: 'call_collaboration', prompt: 'work',
+      description: 'named work', runInBackground: true, signal: new AbortController().signal,
+      collaborationTaskName: 'named', collaborationTaskId: 'agent-deadbeef', deferCollaborationRun: true,
+    });
+    expect(child.llmCalls).toHaveLength(0);
+    expect(parent.allEvents).not.toContainEqual(expect.objectContaining({
+      type: '[rpc]', event: 'subagent.spawned',
+    }));
+
+    handle.publishPrepared?.();
+    await handle.completion;
+    expect(child.llmCalls.length).toBeGreaterThan(0);
+    expect(parent.allEvents).toContainEqual(expect.objectContaining({
+      type: '[rpc]', event: 'subagent.spawned',
+    }));
+  });
+
   it('emits a suspended event for a requeued child', () => {
     const parent = testAgent();
     parent.configure();

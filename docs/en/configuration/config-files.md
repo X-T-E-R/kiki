@@ -110,6 +110,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `thinking` | `table` | — | Default parameters for Thinking mode → [`thinking`](#thinking) |
 | `loop_control` | `table` | — | Agent loop control parameters → [`loop_control`](#loop-control) |
 | `background` | `table` | — | Background task runtime parameters → [`background`](#background) |
+| `agents` | `table` | — | Codex-style collaboration adapter defaults → [`agents`](#agents) |
 | `tools` | `table` | — | Global tool switch → [`tools`](#tools) |
 | `image` | `table` | — | Image compression parameters → [`image`](#image) |
 | `services` | `table` | — | Built-in external service configuration → [`services`](#services) |
@@ -117,7 +118,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `hooks` | `array<table>` | — | Lifecycle hooks; see [Hooks](../customization/hooks.md) |
 | `identity` | `table` | — | Custom agent identity → [`identity`](#identity) |
 
-The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `background`, `tools`, `image`, `services`, and `permission`.
+The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `background`, `agents`, `tools`, `image`, `services`, and `permission`.
 
 ## `providers`
 
@@ -290,6 +291,16 @@ In print mode (`kimi -p "<prompt>"`), Kimi Code stays alive after the main agent
 | `default_model` | `string` | — | Fill-only exact `[models]` alias for new subagents. Active only while the secondary-model experiment is enabled |
 | `default_effort` | `string` | — | Fill-only thinking effort for new subagents. Active only while the secondary-model experiment is enabled |
 | `timeout_ms` | `integer` | `7200000` (2 hours) | Maximum wall-clock time (milliseconds) a single subagent (`Agent` / `AgentSwarm`) is allowed to run before it is settled as `timed_out`. `0` means no timeout — the subagent runs until it finishes or the model stops it. This is the background-task manager's per-task timeout for each subagent task, so it applies to both foreground and background subagents. In print mode (`kimi -p`) the default is `0` unless explicitly set. Note: any value above `2147483647` (about 24.8 days) is clamped to roughly 24.8 days by the runtime |
+
+## `agents`
+
+This strict section configures the experimental [Codex-style collaboration adapter](../customization/agents.md#codex-style-collaboration-adapter). Unknown keys are reported as configuration errors.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `enabled` | `boolean` | `true` | Enables the adapter when the `agent-collaboration` experiment is also enabled |
+| `default_subagent_model` | `string` | — | Exact configured `[models]` alias used when a spawn and its selected profile do not choose a model |
+| `default_subagent_reasoning_effort` | `string` | — | Nonblank reasoning effort used when a spawn and its selected profile do not choose one |
 
 Only `timeout_ms` has an environment override: `KIMI_SUBAGENT_TIMEOUT_MS` takes higher priority than `config.toml`. There are no environment variables for `default_model` or `default_effort`.
 

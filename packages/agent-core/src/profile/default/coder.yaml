@@ -11,6 +11,11 @@ tools:
   - Agent
   - AgentSwarm
   - Bash
+  - spawn_agent
+  - list_agents
+  - wait_agent
+  - followup_task
+  - interrupt_agent
   - CronCreate
   - CronDelete
   - CronList

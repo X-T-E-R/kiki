@@ -167,6 +167,7 @@ interface ManagedTask {
   timedOut: boolean;
   readonly waiters: Array<() => void>;
   handleSubscription?: { dispose(): void };
+  visible: boolean;
 }
 
 const MAX_OUTPUT_BYTES = 1024 * 1024;
@@ -380,7 +381,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     };
     this.assertCanRegister(detached);
     const entry: ManagedTask = {
-      taskId: generateTaskId(task.idPrefix),
+      taskId: options.taskId ?? generateTaskId(task.idPrefix),
       task,
       handle: undefined,
       outputChunks: [],
@@ -398,10 +399,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       outputWriteQueue: Promise.resolve(),
       pendingOutput: [],
       pendingOutputBytes: 0,
-      outputPersistStarted: detached,
+      outputPersistStarted: detached && options.deferVisibility !== true,
       waiters: [],
       terminalFired: false,
       timedOut: false,
+      visible: options.deferVisibility !== true,
     };
     this.tasks.set(entry.taskId, entry);
     this.ghosts.delete(entry.taskId);
@@ -438,11 +440,47 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       });
     this.installForegroundSignal(entry);
 
-    if (this.isDetached(entry)) {
+    if (this.isDetached(entry) && options.deferVisibility !== true) {
       void this.persistLive(entry);
       this.recordTaskStarted(this.toInfo(entry));
     }
     return entry.taskId;
+  }
+
+  allocateTaskId(idPrefix: string): string {
+    return generateTaskId(idPrefix);
+  }
+
+  commitTaskRegistration(taskId: string): void {
+    const entry = this.tasks.get(taskId);
+    if (entry === undefined || entry.visible) return;
+    entry.visible = true;
+    if (!this.isDetached(entry) || entry.outputPersistStarted) return;
+    entry.outputPersistStarted = true;
+    void this.persistLive(entry);
+    this.recordTaskStarted(this.toInfo(entry));
+  }
+
+  async rollbackTaskRegistration(taskId: string, reason?: unknown): Promise<void> {
+    const entry = this.tasks.get(taskId);
+    if (entry === undefined) {
+      this.ghosts.delete(taskId);
+      await this.persistence.deleteTask(taskId).catch(() => {});
+      return;
+    }
+    this.tasks.delete(taskId);
+    this.ghosts.delete(taskId);
+    entry.status = 'killed';
+    entry.endedAt = Date.now();
+    entry.terminalFired = true;
+    entry.foregroundSignalCleanup?.();
+    entry.handleSubscription?.dispose();
+    if (entry.timeoutHandle !== undefined) clearTimeout(entry.timeoutHandle);
+    entry.abortController.abort(reason);
+    entry.foregroundRelease?.resolve('terminal');
+    this.resolveWaiters(entry);
+    await entry.lifecyclePromise.catch(() => {});
+    await this.persistence.deleteTask(taskId).catch(() => {});
   }
 
   track(handle: ITaskHandle, options: AgentTaskTrackOptions): IAgentTaskEntry {
@@ -478,6 +516,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       waiters: [],
       terminalFired: false,
       timedOut: false,
+      visible: true,
     };
     this.tasks.set(taskId, entry);
     this.ghosts.delete(taskId);
@@ -523,12 +562,13 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
   getTask(taskId: string): AgentTaskInfo | undefined {
     const entry = this.tasks.get(taskId);
-    return entry === undefined ? this.ghosts.get(taskId) : this.toInfo(entry);
+    return entry === undefined ? this.ghosts.get(taskId) : entry.visible ? this.toInfo(entry) : undefined;
   }
 
   list(activeOnly = true, limit?: number): readonly AgentTaskInfo[] {
     const result: AgentTaskInfo[] = [];
     for (const entry of this.tasks.values()) {
+      if (!entry.visible) continue;
       const info = this.toInfo(entry);
       if (!shouldListTask(info, activeOnly)) continue;
       result.push(info);

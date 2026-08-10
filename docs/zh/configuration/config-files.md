@@ -110,6 +110,7 @@ timeout = 5
 | `thinking` | `table` | — | Thinking 模式默认参数 → [`thinking`](#thinking) |
 | `loop_control` | `table` | — | Agent 循环控制参数 → [`loop_control`](#loop-control) |
 | `background` | `table` | — | 后台任务运行参数 → [`background`](#background) |
+| `agents` | `table` | — | Codex 风格协作适配器默认值 → [`agents`](#agents) |
 | `tools` | `table` | — | 全局工具开关 → [`tools`](#tools) |
 | `image` | `table` | — | 图片压缩参数 → [`image`](#image) |
 | `services` | `table` | — | 内置外部服务配置 → [`services`](#services) |
@@ -117,7 +118,7 @@ timeout = 5
 | `hooks` | `array<table>` | — | 生命周期 hook，详见 [Hooks](../customization/hooks.md) |
 | `identity` | `table` | — | 自定义 Agent 身份 → [`identity`](#identity) |
 
-以下各节对 `providers`、`models`、`thinking`、`loop_control`、`background`、`image`、`services`、`permission` 等嵌套表逐一展开。
+以下各节对 `providers`、`models`、`thinking`、`loop_control`、`background`、`agents`、`image`、`services`、`permission` 等嵌套表逐一展开。
 
 ## `providers`
 
@@ -290,6 +291,16 @@ max_output_size = 8192
 | `default_model` | `string` | — | 新子 Agent 的 fill-only 精确 `[models]` alias，仅在次主力模型实验功能启用时生效 |
 | `default_effort` | `string` | — | 新子 Agent 的 fill-only thinking effort，仅在次主力模型实验功能启用时生效 |
 | `timeout_ms` | `integer` | `7200000`（2 小时） | 单个子代理（`Agent` / `AgentSwarm`）允许运行的最长时间（毫秒）。超时后子代理以 `timed_out` 收尾。`0` 表示无超时——子代理一直运行到自行结束或被模型手动停止。该值是后台任务管理器对每个子代理任务的 per-task timeout，因此对前台与后台子代理同时生效。在 print 模式（`kimi -p`）下未显式设置时默认为 `0`。注意：超过 `2147483647`（约 24.8 天）的值会被运行时钳到约 24.8 天 |
+
+## `agents`
+
+这个严格配置节用于设置实验性的 [Codex 风格协作适配器](../customization/agents.md#codex-风格协作适配器)。未知字段会被报告为配置错误。
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `enabled` | `boolean` | `true` | 仅当 `agent-collaboration` 实验功能同时启用时，才启用适配器 |
+| `default_subagent_model` | `string` | — | 当派生请求和所选 profile 都未指定模型时使用的精确 `[models]` alias |
+| `default_subagent_reasoning_effort` | `string` | — | 当派生请求和所选 profile 都未指定 effort 时使用的非空 reasoning effort |
 
 只有 `timeout_ms` 有环境变量覆盖：`KIMI_SUBAGENT_TIMEOUT_MS` 的优先级高于配置文件。`default_model` 与 `default_effort` 没有对应的环境变量。
 

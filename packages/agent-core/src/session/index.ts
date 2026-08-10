@@ -142,6 +142,11 @@ export interface AgentMeta {
   readonly type: AgentType;
   readonly parentAgentId?: string | null;
   readonly swarmItem?: string;
+  readonly collaboration?: {
+    readonly taskName: string;
+    readonly agentType: string;
+    readonly latestTaskId?: string;
+  };
 }
 
 interface ResumedAgent {
@@ -156,6 +161,7 @@ export interface CreateAgentOptions {
   readonly parentAgentId?: string;
   readonly swarmItem?: string;
   readonly persistMetadata?: boolean;
+  readonly collaboration?: AgentMeta['collaboration'];
 }
 
 export interface SessionMeta {
@@ -229,6 +235,8 @@ export class Session {
   private readonly pluginCommands: readonly PluginCommandDef[];
   private pluginSystemPrompts: readonly EnabledPluginSystemPrompt[];
   private agentIdCounter = 0;
+  /** Session-wide pending reservations; persisted collaboration metadata owns committed names. */
+  private readonly pendingCollaborationNames = new Map<string, string>();
   private readonly skillsReady: Promise<void>;
   metadata: SessionMeta = {
     createdAt: new Date().toISOString(),
@@ -747,11 +755,58 @@ export class Session {
         type,
         parentAgentId,
         swarmItem: options.swarmItem,
+        collaboration: options.collaboration,
       };
       void this.writeMetadata();
     }
 
     return { id, agent };
+  }
+
+  async updateAgentCollaborationTask(agentId: string, latestTaskId: string): Promise<void> {
+    const current = this.metadata.agents[agentId];
+    if (current?.collaboration === undefined) return;
+    this.metadata.agents[agentId] = {
+      ...current,
+      collaboration: { ...current.collaboration, latestTaskId },
+    };
+    await this.writeMetadata();
+  }
+
+  reserveAgentCollaborationName(taskName: string, ownerAgentId: string): boolean {
+    if (this.pendingCollaborationNames.has(taskName)) return false;
+    if (Object.values(this.metadata.agents).some((meta) => meta.collaboration?.taskName === taskName)) {
+      return false;
+    }
+    this.pendingCollaborationNames.set(taskName, ownerAgentId);
+    return true;
+  }
+
+  commitAgentCollaborationName(taskName: string, ownerAgentId: string): void {
+    if (this.pendingCollaborationNames.get(taskName) === ownerAgentId) {
+      this.pendingCollaborationNames.delete(taskName);
+    }
+  }
+
+  releaseAgentCollaborationName(taskName: string, ownerAgentId: string): void {
+    if (this.pendingCollaborationNames.get(taskName) === ownerAgentId) {
+      this.pendingCollaborationNames.delete(taskName);
+    }
+  }
+
+  async discardAgent(agentId: string): Promise<void> {
+    const entry = this.agents.get(agentId);
+    if (entry instanceof Agent) {
+      if (entry.turn.hasActiveTurn) entry.turn.cancel(undefined, abortError('Agent allocation rolled back'));
+      await entry.background.stopAll('Agent allocation rolled back');
+    }
+    this.agents.delete(agentId);
+    if (this.metadata.agents[agentId] !== undefined) {
+      const agents = { ...this.metadata.agents };
+      delete agents[agentId];
+      this.metadata.agents = agents;
+      await this.writeMetadata();
+    }
   }
 
   async ensureAgentResumed(id: string): Promise<Agent> {
