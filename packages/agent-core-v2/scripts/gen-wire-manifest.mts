@@ -68,7 +68,7 @@ function scanOpOwners(): { owners: Map<string, string>; opFiles: string[] } {
     opFiles.push(file);
     for (const match of matches) {
       const type = match[1];
-      if (type !== undefined) owners.set(type, relative(PKG, file));
+      if (type !== undefined) owners.set(type, relative(PKG, file).replaceAll('\\', '/'));
     }
   }
   return { owners, opFiles };
@@ -867,7 +867,7 @@ export async function buildWireManifest(): Promise<string> {
   // the static pass fills OP_REGISTRY, even for modules index.ts does not load.
   await import('../src/index.ts');
   for (const file of opFiles) {
-    await import(relative(join(PKG, 'scripts'), file));
+    await import(pathToFileURL(file).href);
   }
   const { WIRE_PROTOCOL_VERSION } = (await import('#/wire/migration/migration')) as {
     WIRE_PROTOCOL_VERSION: string;
