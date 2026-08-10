@@ -1,0 +1,194 @@
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { IConfigService } from '@moonshot-ai/agent-core-v2';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { createKikiMcpServer } from '../src/mcp/server';
+import { registerApiV2Routes } from '../src/routes/registerApiV2Routes';
+import { descriptorFromMeta } from '../src/services/transcript/coreBinding';
+
+describe('Kiki external delegation MCP server', () => {
+  const close: Array<() => Promise<void>> = [];
+
+  afterEach(async () => {
+    await Promise.all(close.splice(0).map((dispose) => dispose()));
+  });
+
+  it('initializes, lists the narrow tool set, and preserves JSON/structured parity', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
+      const href = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+      expect(href).toContain('/api/v2/sessions/session-operator/external-delegation/list');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer SECRET_TOKEN');
+      expect(new Headers(init?.headers).get('x-kiki-delegation-token')).toBe('DELEGATION_SECRET');
+      expect(new Headers(init?.headers).has('x-kiki-principal-id')).toBe(false);
+      return new Response(
+        JSON.stringify({ code: 0, msg: 'ok', data: { delegationId: 'delegation_1', dispatchables: [{ kind: 'main' }] } }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    const server = createKikiMcpServer(
+      { endpoint: 'http://127.0.0.1:58627', token: 'SECRET_TOKEN', delegationToken: 'DELEGATION_SECRET', sessionId: 'session-operator' },
+      { fetch: fetchMock },
+    );
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    close.push(() => client.close(), () => server.close());
+
+    const tools = await client.listTools();
+    expect(tools.tools.map((tool) => tool.name).toSorted()).toEqual([
+      'kiki_cancel',
+      'kiki_continue',
+      'kiki_dispatch',
+      'kiki_events',
+      'kiki_list',
+      'kiki_result',
+      'kiki_status',
+      'kiki_transcript',
+    ]);
+    const called = await client.callTool({ name: 'kiki_list', arguments: {} });
+    expect(called.structuredContent).toEqual({ delegationId: 'delegation_1', dispatchables: [{ kind: 'main' }] });
+    expect(JSON.parse(((called as { content: Array<{ text: string }> }).content[0]!).text)).toEqual(called.structuredContent);
+  });
+
+  it('pages result text on a UTF-8 byte boundary without leaking operator configuration', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify({ code: 0, msg: 'ok', data: { text: '你你你', dispatch: { dispatchId: 'dispatch_1' } } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const server = createKikiMcpServer(
+      { endpoint: 'http://127.0.0.1:58627', token: 'DO_NOT_EXPOSE', delegationToken: 'DELEGATION_SECRET', sessionId: 'session-operator' },
+      { fetch: fetchMock },
+    );
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    close.push(() => client.close(), () => server.close());
+
+    const called = await client.callTool({ name: 'kiki_result', arguments: { dispatch_id: 'dispatch_1', max_bytes: 6 } });
+    expect(called.structuredContent).toMatchObject({ text: '你你', nextCursor: 2 });
+    expect(JSON.stringify(called)).not.toContain('DO_NOT_EXPOSE');
+  });
+
+  it('pages astral and mixed text without splitting Unicode or losing code units', async () => {
+    const source = 'A😀你B🧪终';
+    const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { cursor?: number };
+      const cursor = body.cursor ?? 0;
+      // Deliberately split after two UTF-16 code units. The first backend
+      // response ends with a high surrogate, independently exercising the
+      // MCP edge's repair cursor rather than relying on a friendly backend.
+      const text = source.slice(cursor, cursor + 2);
+      const nextCursor = cursor + text.length < source.length ? cursor + text.length : undefined;
+      return new Response(
+        JSON.stringify({ code: 0, msg: 'ok', data: { text, nextCursor, dispatch: { dispatchId: 'dispatch_1' } } }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    const server = createKikiMcpServer(
+      { endpoint: 'http://127.0.0.1:58627', token: 'TOKEN', delegationToken: 'DELEGATION_SECRET', sessionId: 'session-operator' },
+      { fetch: fetchMock },
+    );
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    close.push(() => client.close(), () => server.close());
+
+    let cursor: number | undefined;
+    let concatenated = '';
+    do {
+      const called = await client.callTool({
+        name: 'kiki_result',
+        arguments: { dispatch_id: 'dispatch_1', cursor, max_bytes: 4 },
+      });
+      expect(called.isError).not.toBe(true);
+      const page = called.structuredContent as { text: string; nextCursor?: number };
+      expect(Buffer.byteLength(page.text, 'utf8')).toBeLessThanOrEqual(4);
+      expect(Buffer.from(page.text, 'utf8').toString('utf8')).toBe(page.text);
+      concatenated += page.text;
+      cursor = page.nextCursor;
+    } while (cursor !== undefined);
+
+    expect(concatenated).toBe(source);
+  });
+
+  it('returns typed redacted tool errors for rejected REST requests', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify({ code: 40001, msg: 'Bearer SECRET_TOKEN was rejected' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const server = createKikiMcpServer(
+      { endpoint: 'http://127.0.0.1:58627', token: 'SECRET_TOKEN', delegationToken: 'DELEGATION_SECRET', sessionId: 'session-operator' },
+      { fetch: fetchMock },
+    );
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    close.push(() => client.close(), () => server.close());
+
+    const called = await client.callTool({ name: 'kiki_status', arguments: { dispatch_id: 'dispatch_1' } });
+    expect(called.isError).toBe(true);
+    expect(called.structuredContent).toEqual({
+      error: { code: 'request_rejected', message: 'Kiki delegation request failed.' },
+    });
+    expect(JSON.stringify(called)).not.toContain('SECRET_TOKEN');
+  });
+});
+
+describe('external delegation route exposure', () => {
+  const originalPrincipal = process.env['KIKI_EXTERNAL_PRINCIPAL_ID'];
+  const originalSession = process.env['KIKI_EXTERNAL_SESSION_ID'];
+  const originalToken = process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'];
+
+  afterEach(() => {
+    if (originalPrincipal === undefined) delete process.env['KIKI_EXTERNAL_PRINCIPAL_ID'];
+    else process.env['KIKI_EXTERNAL_PRINCIPAL_ID'] = originalPrincipal;
+    if (originalSession === undefined) delete process.env['KIKI_EXTERNAL_SESSION_ID'];
+    else process.env['KIKI_EXTERNAL_SESSION_ID'] = originalSession;
+    if (originalToken === undefined) delete process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'];
+    else process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'] = originalToken;
+  });
+
+  it('does not register any external route while the feature is off', async () => {
+    process.env['KIKI_EXTERNAL_PRINCIPAL_ID'] = 'example-principal';
+    process.env['KIKI_EXTERNAL_SESSION_ID'] = 'session-operator';
+    process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'] = 'DELEGATION_SECRET';
+    const paths: string[] = [];
+    const api = { get: (path: string) => paths.push(path), post: (path: string) => paths.push(path) };
+    const app = { register: async (plugin: (host: unknown) => Promise<void> | void) => plugin(api) };
+    const core = {
+      accessor: {
+        get: (id: unknown) =>
+          id === IConfigService
+            ? { ready: Promise.resolve() }
+            : { enabled: () => false },
+      },
+    };
+
+    await registerApiV2Routes(app as never, core as never);
+    expect(paths.some((path) => path.includes('external-delegation'))).toBe(false);
+  });
+});
+
+describe('external delegation transcript projection', () => {
+  it('projects the typed delegator before legacy labels and never fabricates main', () => {
+    expect(
+      descriptorFromMeta('external-child', {
+        type: 'independent',
+        delegator: { kind: 'external', delegationId: 'delegation_test' },
+        labels: { parentAgentId: 'main' },
+        parentAgentId: 'main',
+      }),
+    ).toEqual({
+      agentId: 'external-child',
+      type: 'independent',
+      delegator: { kind: 'external', delegationId: 'delegation_test' },
+      parentAgentId: undefined,
+      label: undefined,
+    });
+  });
+});

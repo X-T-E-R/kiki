@@ -130,6 +130,12 @@ export interface ServerStartOptions {
    * unset unless a second, distinct RPC credential is genuinely needed.
    */
   readonly rpcToken?: string;
+  /** Operator-owned authority for the experimental external-delegation edge. */
+  readonly externalDelegation?: {
+    readonly principalId: string;
+    readonly sessionId: string;
+    readonly token: string;
+  };
   /** Extra scope seeds applied at bootstrap (e.g. a host-provided `ISessionModelResolver`). */
   readonly seeds?: ScopeSeed;
   /**
@@ -169,6 +175,18 @@ export interface ServerStartOptions {
    * endpoint unintentionally; the CLI's `kimi web` host passes true.
    */
   readonly telemetry?: boolean;
+}
+
+function externalDelegationAuthorityFromEnv(
+  env: NodeJS.ProcessEnv,
+): ServerStartOptions['externalDelegation'] {
+  const principalId = env['KIKI_EXTERNAL_PRINCIPAL_ID']?.trim();
+  const sessionId = env['KIKI_EXTERNAL_SESSION_ID']?.trim();
+  const token = env['KIKI_EXTERNAL_DELEGATION_TOKEN']?.trim();
+  if (principalId === undefined || principalId.length === 0) return undefined;
+  if (sessionId === undefined || sessionId.length === 0) return undefined;
+  if (token === undefined || token.length === 0) return undefined;
+  return { principalId, sessionId, token };
 }
 
 export interface RunningServer {
@@ -515,7 +533,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
 
   // `/api/v2` — same envelope conventions as v1, domain-grouped payloads.
   // Mounted after v1; the root auth/host/origin hooks cover it identically.
-  await registerApiV2Routes(app, core);
+  await registerApiV2Routes(app, core, {
+    externalDelegation:
+      opts.externalDelegation ?? externalDelegationAuthorityFromEnv(process.env),
+  });
 
   const wssV1 = registerWsV1(core, {
     validateCredential,

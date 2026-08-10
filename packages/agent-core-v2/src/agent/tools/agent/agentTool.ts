@@ -396,6 +396,7 @@ export class SubagentTool implements ISubagentTool {
             thinking: binding.thinking,
           },
           labels: subagentLabels(this.callerAgentId),
+          delegator: { kind: 'agent', agentId: this.callerAgentId },
         });
       } catch (error) {
         throw wrapSubagentModelError(error, binding.model, own.modelAlias, bindingSource);

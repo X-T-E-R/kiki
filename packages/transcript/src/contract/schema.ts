@@ -532,6 +532,12 @@ export const agentDescriptorSchema = z.object({
   agentId: agentIdSchema,
   type: z.enum(['main', 'sub', 'independent']).optional(),
   parentAgentId: agentIdSchema.optional(),
+  delegator: z
+    .discriminatedUnion('kind', [
+      z.object({ kind: z.literal('agent'), agentId: agentIdSchema }),
+      z.object({ kind: z.literal('external'), delegationId: z.string().min(1) }),
+    ])
+    .optional(),
   label: z.string().optional(),
   createdAt: z.string().optional(),
   disposedAt: z.string().optional(),

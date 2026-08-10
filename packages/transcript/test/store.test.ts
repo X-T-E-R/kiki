@@ -615,4 +615,22 @@ describe('TranscriptStore', () => {
     expect(store.agents()[0]?.disposedAt).toBe('2026-07-20T01:00:00.000Z');
     expect(rosters).toHaveLength(1);
   });
+
+  it('keeps an external delegation descriptor independent of main', () => {
+    const store = new TranscriptStore('s1');
+    store.ensureAgent('external-child', {
+      agentId: 'external-child',
+      type: 'independent',
+      delegator: { kind: 'external', delegationId: 'delegation_test' },
+    });
+
+    expect(store.agents()).toEqual([
+      {
+        agentId: 'external-child',
+        type: 'independent',
+        delegator: { kind: 'external', delegationId: 'delegation_test' },
+      },
+    ]);
+    expect(store.agents()[0]?.parentAgentId).toBeUndefined();
+  });
 });

@@ -316,6 +316,28 @@ describe('SessionMetadata', () => {
     expect(next.updatedAt).toBeGreaterThan(before);
   });
 
+  it('treats the delegator union as durable agent metadata', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.registerAgent('external-child', {
+      type: 'independent',
+      delegator: { kind: 'external', delegationId: 'delegation_a' },
+    });
+    const before = (await meta.read()).updatedAt;
+    await new Promise((r) => setTimeout(r, 2));
+
+    await meta.registerAgent('external-child', {
+      type: 'independent',
+      delegator: { kind: 'external', delegationId: 'delegation_b' },
+    });
+
+    const next = await meta.read();
+    expect(next.agents?.['external-child']?.delegator).toEqual({
+      kind: 'external',
+      delegationId: 'delegation_b',
+    });
+    expect(next.updatedAt).toBeGreaterThan(before);
+  });
+
   it('unregisters one agent atomically without changing other persisted metadata', async () => {
     const meta = ix.get(ISessionMetadata);
     await meta.registerAgent('agent-remove', { type: 'sub', labels: { collaborationTaskName: 'retryable' } });

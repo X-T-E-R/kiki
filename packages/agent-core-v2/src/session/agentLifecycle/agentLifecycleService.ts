@@ -169,8 +169,16 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       await handle.accessor.get(IAgentToolActivationService).activate();
       await this.sessionMetadata.registerAgent(agentId, {
         homedir: agentHomedir,
-        type: agentId === 'main' ? 'main' : 'sub',
-        parentAgentId: agentId === 'main' ? undefined : 'main',
+        type: agentId === 'main' ? 'main' : opts.delegator?.kind === 'external' ? 'independent' : 'sub',
+        parentAgentId:
+          agentId === 'main'
+            ? undefined
+            : opts.delegator?.kind === 'external'
+              ? undefined
+              : opts.delegator?.kind === 'agent'
+                ? opts.delegator.agentId
+                : 'main',
+        delegator: opts.delegator,
         forkedFrom: opts.forkedFrom,
         labels: opts.labels,
       });

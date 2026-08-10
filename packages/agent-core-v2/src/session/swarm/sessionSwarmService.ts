@@ -198,6 +198,7 @@ export class SessionSwarmService implements ISessionSwarmService {
           thinking: binding.thinking,
         },
         labels: subagentLabels(callerAgentId, { swarmItem: options.swarmItem }),
+        delegator: { kind: 'agent', agentId: callerAgentId },
       });
     } catch (error) {
       throw wrapSubagentModelError(error, binding.model, callerData.modelAlias, modelSource);

@@ -541,6 +541,25 @@ describe('AgentLifecycleService', () => {
     });
   });
 
+  it('persists an external delegator without fabricating main ownership', async () => {
+    const svc = ix.get(IAgentLifecycleService);
+
+    await svc.create({
+      agentId: 'external-child',
+      delegator: { kind: 'external', delegationId: 'delegation_test' },
+      labels: { externalDelegationTaskName: 'reviewer' },
+    });
+
+    expect(registerAgent).toHaveBeenCalledWith('external-child', {
+      homedir: '/tmp/kimi-agentLifecycle-home/sessions/ws_test/sess_test/agents/external-child',
+      type: 'independent',
+      parentAgentId: undefined,
+      delegator: { kind: 'external', delegationId: 'delegation_test' },
+      forkedFrom: undefined,
+      labels: { externalDelegationTaskName: 'reviewer' },
+    });
+  });
+
   it('seals a fresh wire log with the metadata envelope as the first record', async () => {
     const log = recordingAppendLog();
     ix.stub(IAppendLogStore, log.store);
