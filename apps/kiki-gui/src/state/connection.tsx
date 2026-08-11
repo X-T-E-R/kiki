@@ -220,7 +220,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (socket === null) return;
     socket.connect();
-    return () => socket.close();
+    return () => { socket.close(); };
   }, [socket]);
 
   // Wake signals (liveagent's foreground-nudge pattern): on network recovery,

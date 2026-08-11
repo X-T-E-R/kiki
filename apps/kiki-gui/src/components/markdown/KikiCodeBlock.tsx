@@ -32,7 +32,10 @@ function extractCode(children: ReactNode): { code: string; language: string } {
     const text = Array.isArray(raw) ? raw.join('') : typeof raw === 'string' ? raw : '';
     return { code: text.replace(/\n$/, ''), language: match?.[1] ?? 'text' };
   }
-  return { code: String(children ?? ''), language: 'text' };
+  // Fallback for non-element children (elements are unwrapped above); typed to
+  // the primitives that can reach here so String() can't hit Object.toString.
+  const primitive = children as string | number | null | undefined;
+  return { code: String(primitive ?? ''), language: 'text' };
 }
 
 type PreProps = ComponentProps<'pre'> & { isIncomplete?: boolean; node?: unknown };
@@ -50,7 +53,7 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
       .writeText(code)
       .then(() => {
         setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
+        setTimeout(() => { setCopied(false); }, 1500);
       })
       .catch(() => undefined);
   };
@@ -65,7 +68,7 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
           {canCollapse ? (
             <button
               type="button"
-              onClick={() => setExpanded((value) => !value)}
+              onClick={() => { setExpanded((value) => !value); }}
               title={expanded ? t('cb.collapse') : t('cb.expand')}
               className="rounded px-1 py-0.5 font-mono text-[10.5px] text-ink-faint transition-colors hover:text-ink"
             >
@@ -101,7 +104,7 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
       {canCollapse ? (
         <button
           type="button"
-          onClick={() => setExpanded((value) => !value)}
+          onClick={() => { setExpanded((value) => !value); }}
           className="flex w-full items-center justify-center gap-1 border-t border-hairline py-1 text-[11px] text-ink-faint transition-colors hover:text-ink"
         >
           {expanded ? t('cb.showLess') : t('cb.viewMore', { count: totalLines - PREVIEW_LINES })}

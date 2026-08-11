@@ -68,7 +68,7 @@ export async function exportSessionArchive(
     anchor.remove();
   } finally {
     // Defer revocation so the download stack has materialized the blob.
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    setTimeout(() => { URL.revokeObjectURL(url); }, 10_000);
   }
 }
 

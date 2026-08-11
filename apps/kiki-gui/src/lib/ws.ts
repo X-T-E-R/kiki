@@ -224,6 +224,10 @@ export class KikiSocket {
       this.malformedFrameCount += 1;
       return;
     }
+    // Intentional partial router: the default case below funnels session_event
+    // frames and counts anything else as malformed — listing all ~50 union
+    // members would be dead no-op cases.
+    // eslint-disable-next-line typescript/switch-exhaustiveness-check
     switch (message.type) {
       case 'server_hello': {
         this.helloReceived = true;

@@ -545,7 +545,7 @@ describe('applyFrame', () => {
       state,
       frame({ type: 'assistant.delta', turnId: 1, delta: 'step two' }, { volatile: true, offset: 0 }),
     ).state;
-    const texts = state.blocks.filter((b) => b.kind === 'assistant').map((b) => (b as AssistantBlock).text);
+    const texts = state.blocks.filter((b) => b.kind === 'assistant').map((b) => b.text);
     expect(texts).toEqual(['step one text', 'step two']);
   });
 

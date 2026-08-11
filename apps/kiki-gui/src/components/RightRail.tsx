@@ -102,7 +102,7 @@ const TasksSection = memo(function TasksSection({
             {task.status === 'running' ? (
               <button
                 type="button"
-                onClick={() => onCancel(task.id)}
+                onClick={() => { onCancel(task.id); }}
                 title={t('rail.stopTitle')}
                 className="shrink-0 rounded-md border border-hairline px-1.5 py-0.5 text-[10px] text-ink-soft transition-colors hover:border-danger hover:text-danger"
               >
@@ -136,8 +136,8 @@ const SubagentsSection = memo(function SubagentsSection({
   const hasRunning = subagents.some((subagent) => subagent.status === 'running');
   useEffect(() => {
     if (!hasRunning) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
+    const timer = setInterval(() => { setNow(Date.now()); }, 1000);
+    return () => { clearInterval(timer); };
   }, [hasRunning]);
   if (subagents.length === 0) {
     return <p className="text-[12px] text-ink-faint">{t('rail.noSubagents')}</p>;
@@ -160,7 +160,7 @@ const SubagentsSection = memo(function SubagentsSection({
           <li key={subagent.subagentId}>
             <button
               type="button"
-              onClick={() => onOpen(subagent.subagentId)}
+              onClick={() => { onOpen(subagent.subagentId); }}
               className="flex w-full items-center gap-2 rounded-lg border border-hairline bg-panel px-2.5 py-2 text-left transition-colors hover:border-accent/50 hover:bg-accent-soft/30"
             >
               <span className={`h-2 w-2 shrink-0 rounded-full ${dot} ${subagent.status === 'running' ? 'status-dot-busy' : ''}`} />

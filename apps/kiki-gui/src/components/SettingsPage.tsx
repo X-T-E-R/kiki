@@ -150,7 +150,7 @@ function Toggle({
         className="sr-only"
         checked={checked}
         disabled={disabled}
-        onChange={(event) => onChange(event.target.checked)}
+        onChange={(event) => { onChange(event.target.checked); }}
       />
       <span className="text-[12.5px] text-ink-soft">{label}</span>
     </label>
@@ -241,7 +241,7 @@ function GeneralSection() {
               id="language-select"
               className={SMALL_INPUT}
               value={locale}
-              onChange={(event) => setLocale(event.target.value as Locale)}
+              onChange={(event) => { setLocale(event.target.value as Locale); }}
             >
               <option value="en">English</option>
               <option value="zh">中文</option>
@@ -260,7 +260,7 @@ function GeneralSection() {
                 <button
                   key={mode}
                   type="button"
-                  onClick={() => setPermissionMode(mode)}
+                  onClick={() => { setPermissionMode(mode); }}
                   className={`rounded-full border px-3 py-1 text-[11px] font-medium transition-colors ${
                     permissionMode === mode
                       ? 'border-accent bg-accent-soft text-accent'
@@ -274,7 +274,7 @@ function GeneralSection() {
           </div>
           <Toggle label={t('st.defaults.planMode')} checked={planMode} onChange={setPlanMode} />
           <div className="flex flex-wrap items-center gap-3">
-            <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={saveServerDefaults}>
+            <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void saveServerDefaults()}>
               {saving ? t('common.saving') : t('st.defaults.save')}
             </button>
             <Hint>{t('st.defaults.hint')}</Hint>
@@ -292,7 +292,7 @@ function GeneralSection() {
               id="send-shortcut-select"
               className={SMALL_INPUT}
               value={settings.sendShortcut}
-              onChange={(event) => updateLocal({ sendShortcut: event.target.value as SendShortcut })}
+              onChange={(event) => { updateLocal({ sendShortcut: event.target.value as SendShortcut }); }}
             >
               <option value="enter">{t('st.composer.shortcutEnter')}</option>
               <option value="cmd-enter">{t('st.composer.shortcutCmdEnter')}</option>
@@ -301,7 +301,7 @@ function GeneralSection() {
           <Toggle
             label={t('st.composer.persistDrafts')}
             checked={settings.draftPersistence}
-            onChange={(checked) => updateLocal({ draftPersistence: checked })}
+            onChange={(checked) => { updateLocal({ draftPersistence: checked }); }}
           />
         </div>
       </SectionCard>
@@ -450,11 +450,11 @@ function ModelsSection() {
         <div className="space-y-3">
           <Toggle label={t('st.thinking.enable')} checked={thinkingEnabled} onChange={setThinkingEnabled} />
           {defaultItem?.support_efforts !== undefined && defaultItem.support_efforts.length > 0 ? (
-            <select className={SMALL_INPUT} value={effort} disabled={!thinkingEnabled} onChange={(event) => setEffort(event.target.value)}>
+            <select className={SMALL_INPUT} value={effort} disabled={!thinkingEnabled} onChange={(event) => { setEffort(event.target.value); }}>
               {defaultItem.support_efforts.map((level) => <option key={level} value={level}>{level}</option>)}
             </select>
           ) : (
-            <input className={INPUT} value={effort} disabled={!thinkingEnabled} onChange={(event) => setEffort(event.target.value)} placeholder={t('st.thinking.placeholder')} />
+            <input className={INPUT} value={effort} disabled={!thinkingEnabled} onChange={(event) => { setEffort(event.target.value); }} placeholder={t('st.thinking.placeholder')} />
           )}
           <div className="flex flex-wrap items-center gap-3">
             <button type="button" className={PRIMARY_BUTTON} disabled={busyModel !== null} onClick={() => void saveEffort()}>
@@ -525,7 +525,7 @@ function ConnectionSection() {
           <p>{t('st.conn.version')}: <span className="font-mono text-ink">{meta.server_version}</span></p>
           <p>{t('st.conn.backend')}: <span className="font-mono text-ink">{meta.backend ?? 'v1'}</span></p>
           <p>WebSocket: <span className={wsStatus === 'open' ? 'font-medium text-success' : 'font-medium text-amber-ink'}>{wsStatus}</span></p>
-          <button type="button" onClick={() => socket?.nudge()} className={SECONDARY_BUTTON}>{t('st.conn.reconnect')}</button>
+          <button type="button" onClick={() => { socket?.nudge(); }} className={SECONDARY_BUTTON}>{t('st.conn.reconnect')}</button>
         </div>
       </SectionCard>
 
@@ -641,7 +641,7 @@ function ProvidersSection() {
           ) : null}
           <div className="flex flex-wrap items-end gap-2">
             <label className="text-[11px] font-medium text-ink-soft">{t('st.auth.defaultProvider')}
-              <select className={`${SMALL_INPUT} ml-2`} value={defaultProvider} onChange={(event) => setDefaultProvider(event.target.value)}>
+              <select className={`${SMALL_INPUT} ml-2`} value={defaultProvider} onChange={(event) => { setDefaultProvider(event.target.value); }}>
                 {(providersQuery.data?.items ?? []).map((provider) => <option key={provider.id} value={provider.id}>{provider.id}</option>)}
               </select>
             </label>
@@ -694,11 +694,11 @@ function ProviderEditor({
 }) {
   const { t, locale } = useI18n();
   const initial = useMemo(() => providerDraftFromCatalog(provider, models), [provider, models]);
-  const [draft, setDraft] = useState<ProviderDraft | null>(initial);
+  const [draft, setDraft] = useState(initial);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
 
-  useEffect(() => setDraft(initial), [initial]);
+  useEffect(() => { setDraft(initial); }, [initial]);
 
   if (draft === null) {
     return (
@@ -785,7 +785,7 @@ function NewProviderForm({
   const save = async () => {
     const normalized = {
       ...draft,
-      defaultModel: draft.defaultModel || draft.models[0]?.model || '',
+      defaultModel: draft.defaultModel || (draft.models[0]?.model ?? ''),
     };
     const validation = validateProviderDraft(normalized);
     if (validation !== null) {
@@ -836,16 +836,16 @@ function ProviderFields({
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="text-[11px] font-medium text-ink-soft">{t('st.providers.idLabel')}
-          <input className={`${INPUT} mt-1`} value={draft.id} onChange={(event) => onChange({ ...draft, id: event.target.value })} />
+          <input className={`${INPUT} mt-1`} value={draft.id} onChange={(event) => { onChange({ ...draft, id: event.target.value }); }} />
         </label>
         <label className="text-[11px] font-medium text-ink-soft">{t('st.providers.protocol')}
-          <select className={`${INPUT} mt-1`} value={draft.type} onChange={(event) => onChange({ ...draft, type: event.target.value as ProviderDraft['type'] })}>
+          <select className={`${INPUT} mt-1`} value={draft.type} onChange={(event) => { onChange({ ...draft, type: event.target.value as ProviderDraft['type'] }); }}>
             {PROVIDER_WIRE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
           </select>
         </label>
       </div>
       <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.baseUrl')}
-        <input className={`${INPUT} mt-1`} value={draft.baseUrl} onChange={(event) => onChange({ ...draft, baseUrl: event.target.value })} placeholder="https://api.example.com/v1" />
+        <input className={`${INPUT} mt-1`} value={draft.baseUrl} onChange={(event) => { onChange({ ...draft, baseUrl: event.target.value }); }} placeholder="https://api.example.com/v1" />
       </label>
       <div>
         <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.apiKey')}
@@ -855,35 +855,35 @@ function ProviderFields({
             className={`${INPUT} mt-1`}
             value={draft.apiKey}
             disabled={draft.clearApiKey}
-            onChange={(event) => onChange({ ...draft, apiKey: event.target.value })}
+            onChange={(event) => { onChange({ ...draft, apiKey: event.target.value }); }}
             placeholder={hasStoredKey ? t('st.providers.keyStored') : t('st.providers.keyNew')}
           />
         </label>
         <div className="mt-2">
-          <Toggle label={t('st.providers.clearKey')} checked={draft.clearApiKey} onChange={(checked) => onChange({ ...draft, clearApiKey: checked, apiKey: '' })} />
+          <Toggle label={t('st.providers.clearKey')} checked={draft.clearApiKey} onChange={(checked) => { onChange({ ...draft, clearApiKey: checked, apiKey: '' }); }} />
         </div>
         <Hint>{t('st.providers.keyHint')}</Hint>
       </div>
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <p className="text-[11px] font-medium text-ink-soft">{t('st.providers.models')}</p>
-          <button type="button" className={SECONDARY_BUTTON} onClick={() => onChange({ ...draft, models: [...draft.models, { model: '', maxContextSize: 128000, displayName: '', capabilities: [], supportEfforts: [] }] })}>{t('st.providers.addModel')}</button>
+          <button type="button" className={SECONDARY_BUTTON} onClick={() => { onChange({ ...draft, models: [...draft.models, { model: '', maxContextSize: 128000, displayName: '', capabilities: [], supportEfforts: [] }] }); }}>{t('st.providers.addModel')}</button>
         </div>
         {draft.models.map((model, index) => (
           <div key={`${index}-${model.model}`} className="rounded-lg border border-hairline bg-panel p-3">
             <div className="grid gap-2 sm:grid-cols-2">
-              <input className={INPUT} aria-label={t('st.providers.modelIdAria', { n: index + 1 })} value={model.model} onChange={(event) => updateModel(index, { model: event.target.value })} placeholder="model-id" />
-              <input className={INPUT} aria-label={t('st.providers.modelContextAria', { n: index + 1 })} type="number" min={1} value={model.maxContextSize} onChange={(event) => updateModel(index, { maxContextSize: Number(event.target.value) })} />
-              <input className={INPUT} aria-label={t('st.providers.modelNameAria', { n: index + 1 })} value={model.displayName} onChange={(event) => updateModel(index, { displayName: event.target.value })} placeholder={t('st.providers.displayNamePlaceholder')} />
-              <input className={INPUT} aria-label={t('st.providers.modelCapsAria', { n: index + 1 })} value={model.capabilities.join(', ')} onChange={(event) => updateModel(index, { capabilities: commaList(event.target.value) })} placeholder="reasoning, vision" />
-              <input className={INPUT} aria-label={t('st.providers.modelEffortsAria', { n: index + 1 })} value={model.supportEfforts.join(', ')} onChange={(event) => updateModel(index, { supportEfforts: commaList(event.target.value) })} placeholder="low, medium, high" />
-              <button type="button" className={`${SECONDARY_BUTTON} text-danger`} disabled={draft.models.length === 1} onClick={() => onChange({ ...draft, models: draft.models.filter((_, modelIndex) => modelIndex !== index) })}>{t('st.providers.removeModel')}</button>
+              <input className={INPUT} aria-label={t('st.providers.modelIdAria', { n: index + 1 })} value={model.model} onChange={(event) => { updateModel(index, { model: event.target.value }); }} placeholder="model-id" />
+              <input className={INPUT} aria-label={t('st.providers.modelContextAria', { n: index + 1 })} type="number" min={1} value={model.maxContextSize} onChange={(event) => { updateModel(index, { maxContextSize: Number(event.target.value) }); }} />
+              <input className={INPUT} aria-label={t('st.providers.modelNameAria', { n: index + 1 })} value={model.displayName} onChange={(event) => { updateModel(index, { displayName: event.target.value }); }} placeholder={t('st.providers.displayNamePlaceholder')} />
+              <input className={INPUT} aria-label={t('st.providers.modelCapsAria', { n: index + 1 })} value={model.capabilities.join(', ')} onChange={(event) => { updateModel(index, { capabilities: commaList(event.target.value) }); }} placeholder="reasoning, vision" />
+              <input className={INPUT} aria-label={t('st.providers.modelEffortsAria', { n: index + 1 })} value={model.supportEfforts.join(', ')} onChange={(event) => { updateModel(index, { supportEfforts: commaList(event.target.value) }); }} placeholder="low, medium, high" />
+              <button type="button" className={`${SECONDARY_BUTTON} text-danger`} disabled={draft.models.length === 1} onClick={() => { onChange({ ...draft, models: draft.models.filter((_, modelIndex) => modelIndex !== index) }); }}>{t('st.providers.removeModel')}</button>
             </div>
           </div>
         ))}
       </div>
       <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.defaultModel')}
-        <select className={`${INPUT} mt-1`} value={draft.defaultModel} onChange={(event) => onChange({ ...draft, defaultModel: event.target.value })}>
+        <select className={`${INPUT} mt-1`} value={draft.defaultModel} onChange={(event) => { onChange({ ...draft, defaultModel: event.target.value }); }}>
           <option value="">{t('st.providers.chooseModel')}</option>
           {draft.models.filter((model) => model.model !== '').map((model) => <option key={model.model} value={model.model}>{model.model}</option>)}
         </select>
@@ -1008,10 +1008,10 @@ function CapabilitiesSection() {
           <Toggle label={t('st.caps.mergeSkills')} checked={mergeSkills} onChange={setMergeSkills} />
           <Toggle label={t('st.caps.telemetry')} checked={telemetry} onChange={setTelemetry} />
           <label className="block text-[11px] font-medium text-ink-soft">{t('st.caps.extraDirs')}
-            <textarea className={`${INPUT} mt-1 min-h-24 font-mono`} value={extraDirs} onChange={(event) => setExtraDirs(event.target.value)} placeholder={'C:/skills/shared\nC:/skills/team'} />
+            <textarea className={`${INPUT} mt-1 min-h-24 font-mono`} value={extraDirs} onChange={(event) => { setExtraDirs(event.target.value); }} placeholder={'C:/skills/shared\nC:/skills/team'} />
           </label>
           <label className="block text-[11px] font-medium text-ink-soft">{t('st.caps.experimental')}
-            <textarea className={`${INPUT} mt-1 min-h-32 font-mono`} value={experimental} onChange={(event) => setExperimental(event.target.value)} aria-label={t('st.caps.experimentalAria')} />
+            <textarea className={`${INPUT} mt-1 min-h-32 font-mono`} value={experimental} onChange={(event) => { setExperimental(event.target.value); }} aria-label={t('st.caps.experimentalAria')} />
           </label>
           <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? t('common.saving') : t('st.caps.save')}</button>
           <FeedbackLine feedback={feedback} />
@@ -1021,7 +1021,7 @@ function CapabilitiesSection() {
       <SectionCard title={t('st.advanced.title')} badge={t('st.badge.serverLive')}>
         <div className="space-y-3">
           <Hint>{t('st.advanced.hint')}</Hint>
-          <textarea className={`${INPUT} min-h-64 font-mono`} value={advanced} onChange={(event) => setAdvanced(event.target.value)} aria-label={t('st.advanced.aria')} />
+          <textarea className={`${INPUT} min-h-64 font-mono`} value={advanced} onChange={(event) => { setAdvanced(event.target.value); }} aria-label={t('st.advanced.aria')} />
           <button type="button" className={PRIMARY_BUTTON} disabled={advancedSaving} onClick={() => void saveAdvanced()}>{advancedSaving ? t('common.saving') : t('st.advanced.save')}</button>
           <FeedbackLine feedback={advancedFeedback} />
         </div>
@@ -1048,7 +1048,7 @@ function CapabilitiesSection() {
       <SectionCard title={t('st.skills.title')} badge={t('st.badge.serverCatalog')}>
         <div className="mb-3 flex items-center gap-2">
           <label htmlFor="workspace-skills-select" className="text-[11px] font-medium text-ink-soft">{t('st.skills.workspace')}</label>
-          <select id="workspace-skills-select" className={SMALL_INPUT} value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)}>
+          <select id="workspace-skills-select" className={SMALL_INPUT} value={workspaceId} onChange={(event) => { setWorkspaceId(event.target.value); }}>
             {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
           </select>
         </div>
@@ -1075,7 +1075,7 @@ const EMPTY_DESKTOP_CONFIG: DesktopServerConfig = {
 function DesktopServerFileCard() {
   const isDesktop = isDesktopRuntime();
   const { t, locale } = useI18n();
-  const [config, setConfig] = useState<DesktopServerConfig>(EMPTY_DESKTOP_CONFIG);
+  const [config, setConfig] = useState(EMPTY_DESKTOP_CONFIG);
   const [restart, setRestart] = useState(readRestartRequirement);
   const [loading, setLoading] = useState(isDesktop);
   const [saving, setSaving] = useState(false);
@@ -1163,27 +1163,27 @@ function DesktopServerFileCard() {
         <fieldset disabled={!isDesktop || loading || saving} data-testid="desktop-config-fields" className="space-y-4 disabled:opacity-60">
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.subagentModel')}
-              <input className={`${INPUT} mt-1`} value={config.subagent.defaultModel} onChange={(event) => setConfig({ ...config, subagent: { ...config.subagent, defaultModel: event.target.value } })} placeholder="provider/model" />
+              <input className={`${INPUT} mt-1`} value={config.subagent.defaultModel} onChange={(event) => { setConfig({ ...config, subagent: { ...config.subagent, defaultModel: event.target.value } }); }} placeholder="provider/model" />
             </label>
             <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.subagentEffort')}
-              <input className={`${INPUT} mt-1`} value={config.subagent.defaultEffort} onChange={(event) => setConfig({ ...config, subagent: { ...config.subagent, defaultEffort: event.target.value } })} placeholder="high" />
+              <input className={`${INPUT} mt-1`} value={config.subagent.defaultEffort} onChange={(event) => { setConfig({ ...config, subagent: { ...config.subagent, defaultEffort: event.target.value } }); }} placeholder="high" />
             </label>
             <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.subagentTimeout')}
-              <input className={`${INPUT} mt-1`} type="number" min={0} max={86400000} value={config.subagent.timeoutMs} onChange={(event) => setConfig({ ...config, subagent: { ...config.subagent, timeoutMs: Number(event.target.value) } })} />
+              <input className={`${INPUT} mt-1`} type="number" min={0} max={86400000} value={config.subagent.timeoutMs} onChange={(event) => { setConfig({ ...config, subagent: { ...config.subagent, timeoutMs: Number(event.target.value) } }); }} />
             </label>
             <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.collabModel')}
-              <input className={`${INPUT} mt-1`} value={config.agents.defaultSubagentModel} onChange={(event) => setConfig({ ...config, agents: { ...config.agents, defaultSubagentModel: event.target.value } })} placeholder="provider/model" />
+              <input className={`${INPUT} mt-1`} value={config.agents.defaultSubagentModel} onChange={(event) => { setConfig({ ...config, agents: { ...config.agents, defaultSubagentModel: event.target.value } }); }} placeholder="provider/model" />
             </label>
             <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.collabEffort')}
-              <input className={`${INPUT} mt-1`} value={config.agents.defaultSubagentReasoningEffort} onChange={(event) => setConfig({ ...config, agents: { ...config.agents, defaultSubagentReasoningEffort: event.target.value } })} placeholder="medium" />
+              <input className={`${INPUT} mt-1`} value={config.agents.defaultSubagentReasoningEffort} onChange={(event) => { setConfig({ ...config, agents: { ...config.agents, defaultSubagentReasoningEffort: event.target.value } }); }} placeholder="medium" />
             </label>
             <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.catalogInterval')}
-              <input className={`${INPUT} mt-1`} type="number" min={0} value={config.modelCatalog.refreshIntervalMs} onChange={(event) => setConfig({ ...config, modelCatalog: { ...config.modelCatalog, refreshIntervalMs: Number(event.target.value) } })} />
+              <input className={`${INPUT} mt-1`} type="number" min={0} value={config.modelCatalog.refreshIntervalMs} onChange={(event) => { setConfig({ ...config, modelCatalog: { ...config.modelCatalog, refreshIntervalMs: Number(event.target.value) } }); }} />
             </label>
           </div>
-          <Toggle label={t('st.sidecar.enableCollab')} checked={config.agents.enabled} disabled={!isDesktop} onChange={(checked) => setConfig({ ...config, agents: { ...config.agents, enabled: checked } })} />
-          <Toggle label={t('st.sidecar.builtinSkills')} checked={config.builtinProductSkills} disabled={!isDesktop} onChange={(checked) => setConfig({ ...config, builtinProductSkills: checked })} />
-          <Toggle label={t('st.sidecar.refreshOnStart')} checked={config.modelCatalog.refreshOnStart} disabled={!isDesktop} onChange={(checked) => setConfig({ ...config, modelCatalog: { ...config.modelCatalog, refreshOnStart: checked } })} />
+          <Toggle label={t('st.sidecar.enableCollab')} checked={config.agents.enabled} disabled={!isDesktop} onChange={(checked) => { setConfig({ ...config, agents: { ...config.agents, enabled: checked } }); }} />
+          <Toggle label={t('st.sidecar.builtinSkills')} checked={config.builtinProductSkills} disabled={!isDesktop} onChange={(checked) => { setConfig({ ...config, builtinProductSkills: checked }); }} />
+          <Toggle label={t('st.sidecar.refreshOnStart')} checked={config.modelCatalog.refreshOnStart} disabled={!isDesktop} onChange={(checked) => { setConfig({ ...config, modelCatalog: { ...config.modelCatalog, refreshOnStart: checked } }); }} />
         </fieldset>
         <Hint>{t('st.sidecar.hint', { path: config.configPath })}</Hint>
         {Object.keys(config.experimentalEnv).length > 0 ? (
@@ -1196,7 +1196,7 @@ function DesktopServerFileCard() {
         <div className="flex flex-wrap gap-2">
           <button type="button" className={PRIMARY_BUTTON} disabled={!isDesktop || loading || saving} onClick={() => void save()}>{saving ? t('st.sidecar.saving') : t('st.sidecar.save')}</button>
           <button type="button" className={SECONDARY_BUTTON} disabled={!isDesktop || !restart.required || restarting} onClick={() => void applyRestart()}>{restarting ? t('st.sidecar.restarting') : t('st.sidecar.applyRestart')}</button>
-          {!isDesktop && restart.required ? <button type="button" className={SECONDARY_BUTTON} onClick={() => setRestart(clearRestartRequirement())}>{t('st.sidecar.acknowledge')}</button> : null}
+          {!isDesktop && restart.required ? <button type="button" className={SECONDARY_BUTTON} onClick={() => { setRestart(clearRestartRequirement()); }}>{t('st.sidecar.acknowledge')}</button> : null}
         </div>
         {restart.required ? <Hint>{t('st.sidecar.pendingFields', { fields: restart.fields.join(', ') })}</Hint> : null}
         <FeedbackLine feedback={feedback} />
@@ -1253,7 +1253,7 @@ function WorkspacesSection() {
         {query.data?.items.map((workspace) => (
           <div key={workspace.id} className="flex items-center justify-between gap-3 rounded-lg border border-hairline bg-paper px-3 py-2">
             <div className="min-w-0"><p className="truncate text-[13px] font-medium text-ink">{workspace.name}</p><p className="truncate font-mono text-[10.5px] text-ink-faint">{workspace.root}</p></div>
-            <button type="button" onClick={() => navigate(`/new?workspace=${encodeURIComponent(workspace.id)}`)} className={SECONDARY_BUTTON}>{t('st.workspaces.newSession')}</button>
+            <button type="button" onClick={() => void navigate(`/new?workspace=${encodeURIComponent(workspace.id)}`)} className={SECONDARY_BUTTON}>{t('st.workspaces.newSession')}</button>
           </div>
         ))}
         {query.isLoading ? <Hint>{t('st.workspaces.loading')}</Hint> : null}
@@ -1286,7 +1286,7 @@ function SettingsNav({ active }: { active: SectionId }) {
   return (
     <nav className="flex h-full w-full flex-col border-r border-hairline bg-panel p-2 lg:w-[200px]">
       {SECTIONS.map((section) => (
-        <button key={section.id} type="button" onClick={() => navigate(`/settings/${section.id}`)} className={`rounded-lg px-3 py-2 text-left text-[13px] transition-colors ${active === section.id ? 'bg-accent-soft font-medium text-accent' : 'text-ink-soft hover:bg-paper hover:text-ink'}`}>{t(section.labelKey)}</button>
+        <button key={section.id} type="button" onClick={() => void navigate(`/settings/${section.id}`)} className={`rounded-lg px-3 py-2 text-left text-[13px] transition-colors ${active === section.id ? 'bg-accent-soft font-medium text-accent' : 'text-ink-soft hover:bg-paper hover:text-ink'}`}>{t(section.labelKey)}</button>
       ))}
     </nav>
   );
@@ -1309,7 +1309,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
         <div className="hidden lg:block"><SettingsNav active={active} /></div>
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="border-b border-hairline bg-panel px-4 py-2 lg:hidden">
-            <select className="w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-[13px] text-ink outline-none focus:border-accent" value={active} onChange={(event) => navigate(`/settings/${event.target.value}`)}>
+            <select className="w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-[13px] text-ink outline-none focus:border-accent" value={active} onChange={(event) => void navigate(`/settings/${event.target.value}`)}>
               {SECTIONS.map((candidate) => <option key={candidate.id} value={candidate.id}>{t(candidate.labelKey)}</option>)}
             </select>
           </div>

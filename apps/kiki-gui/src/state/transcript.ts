@@ -471,10 +471,10 @@ function engineQuestionItems(raw: unknown): QuestionItem[] {
     const item = value as Record<string, unknown> & { options?: unknown };
     const options = Array.isArray(item.options) ? item.options : [];
     items.push({
-      id: typeof item['id'] === 'string' ? (item['id'] as string) : `q-${index}`,
-      header: typeof item['header'] === 'string' ? (item['header'] as string) : undefined,
-      question: typeof item['question'] === 'string' ? (item['question'] as string) : '',
-      body: typeof item['body'] === 'string' ? (item['body'] as string) : undefined,
+      id: typeof item['id'] === 'string' ? item['id'] : `q-${index}`,
+      header: typeof item['header'] === 'string' ? item['header'] : undefined,
+      question: typeof item['question'] === 'string' ? item['question'] : '',
+      body: typeof item['body'] === 'string' ? item['body'] : undefined,
       options: options.flatMap((option, optionIndex) => {
         if (typeof option !== 'object' || option === null) return [];
         const record = option as Record<string, unknown>;
@@ -482,12 +482,12 @@ function engineQuestionItems(raw: unknown): QuestionItem[] {
           {
             id:
               typeof record['id'] === 'string'
-                ? (record['id'] as string)
+                ? record['id']
                 : `opt-${index}-${optionIndex}`,
-            label: typeof record['label'] === 'string' ? (record['label'] as string) : '',
+            label: typeof record['label'] === 'string' ? record['label'] : '',
             description:
               typeof record['description'] === 'string'
-                ? (record['description'] as string)
+                ? record['description']
                 : undefined,
           },
         ];
@@ -1116,6 +1116,9 @@ function applyFrameInternal(
     };
   }
 
+  // Intentional partial router: the reducer handles the event kinds that
+  // mutate transcript blocks; the default case ignores the rest.
+  // eslint-disable-next-line typescript/switch-exhaustiveness-check
   switch (payload.type) {
     case 'assistant.delta': {
       const key = `assistant-live-${payload.turnId}`;
@@ -1280,7 +1283,7 @@ function applyFrameInternal(
       evolve({
         blocks: replaceBlock(next.blocks, {
           ...existing,
-          progressText: text !== undefined ? text : existing.progressText,
+          progressText: text ?? existing.progressText,
         }),
       });
       break;

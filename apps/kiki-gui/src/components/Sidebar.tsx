@@ -111,8 +111,8 @@ export function Sidebar({
 
   // Debounced global search; react-query cancels superseded requests.
   useEffect(() => {
-    const timer = setTimeout(() => setSearchQuery(searchInput.trim()), SEARCH_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
+    const timer = setTimeout(() => { setSearchQuery(searchInput.trim()); }, SEARCH_DEBOUNCE_MS);
+    return () => { clearTimeout(timer); };
   }, [searchInput]);
   const searchActive = isSearchable(searchQuery);
   const searchResultsQuery = useQuery({
@@ -137,13 +137,13 @@ export function Sidebar({
       }
     };
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    return () => { window.removeEventListener('keydown', onKeyDown); };
   }, []);
 
   useEffect(() => {
     if (actionNotice === null) return;
-    const timer = setTimeout(() => setActionNotice(null), 3000);
-    return () => clearTimeout(timer);
+    const timer = setTimeout(() => { setActionNotice(null); }, 3000);
+    return () => { clearTimeout(timer); };
   }, [actionNotice]);
 
   // The undo-confirm dialog is an overlay: Escape closes it (and must not
@@ -178,17 +178,17 @@ export function Sidebar({
       });
     } else if (action === 'export') {
       void exportSessionArchive(actionContext, session)
-        .then(() =>
-          setActionNotice(t('action.exportDone', { title: sessionLabel(session, untitled) })),
-        )
+        .then(() => {
+          setActionNotice(t('action.exportDone', { title: sessionLabel(session, untitled) }));
+        })
         .catch((error: unknown) => {
           setActionError(t('action.exportFailed', { detail: sessionActionErrorText(locale, error) }));
         });
     } else {
       void compactSessionContext(actionContext, session)
-        .then(() =>
-          setActionNotice(t('action.compactRequested', { title: sessionLabel(session, untitled) })),
-        )
+        .then(() => {
+          setActionNotice(t('action.compactRequested', { title: sessionLabel(session, untitled) }));
+        })
         .catch((error: unknown) => {
           setActionError(
             t('action.compactFailed', { detail: sessionActionErrorText(locale, error) }),
@@ -202,7 +202,7 @@ export function Sidebar({
     setActionError(null);
     void client
       .archiveSession(session.id)
-      .then(() => refreshSessions())
+      .then(() => { refreshSessions(); })
       .catch((error: unknown) => {
         setActionError(error instanceof Error ? error.message : String(error));
       });
@@ -213,7 +213,7 @@ export function Sidebar({
     setActionError(null);
     void client
       .restoreSession(session.id)
-      .then(() => refreshSessions())
+      .then(() => { refreshSessions(); })
       .catch((error: unknown) => {
         setActionError(error instanceof Error ? error.message : String(error));
       });
@@ -251,7 +251,7 @@ export function Sidebar({
       <div className="px-3 pb-2">
         <button
           type="button"
-          onClick={() => navigate('/new')}
+          onClick={() => void navigate('/new')}
           className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-hairline-strong bg-paper px-3 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:border-accent hover:text-accent"
         >
           <span aria-hidden className="text-[14px] leading-none">＋</span> {t('sidebar.newSession')}
@@ -262,7 +262,7 @@ export function Sidebar({
             type="text"
             value={searchInput}
             data-search-box
-            onChange={(event) => setSearchInput(event.target.value)}
+            onChange={(event) => { setSearchInput(event.target.value); }}
             onKeyDown={(event) => {
               if (event.key === 'Escape') {
                 setSearchInput('');
@@ -281,7 +281,7 @@ export function Sidebar({
             <button
               type="button"
               aria-label={t('sidebar.clearSearch')}
-              onClick={() => setSearchInput('')}
+              onClick={() => { setSearchInput(''); }}
               className="absolute top-1/2 right-2 flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
             >
               ×
@@ -371,7 +371,7 @@ export function Sidebar({
             </p>
             <button
               type="button"
-              onClick={() => queryClient.invalidateQueries({ queryKey: ['sessions'] })}
+              onClick={() => void queryClient.invalidateQueries({ queryKey: ['sessions'] })}
               className="mt-1.5 text-[11px] font-medium text-danger underline"
             >
               {t('common.retry')}
@@ -400,7 +400,7 @@ export function Sidebar({
             <div key={session.id} className="group relative mb-0.5">
               <button
                 type="button"
-                onClick={() => navigate(`/s/${session.id}`)}
+                onClick={() => void navigate(`/s/${session.id}`)}
                 className={`flex w-full items-start gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors ${
                   active
                     ? 'border-hairline bg-accent-soft'
@@ -452,7 +452,7 @@ export function Sidebar({
           <button
             type="button"
             disabled={sessionsQuery.isFetchingNextPage}
-            onClick={() => sessionsQuery.fetchNextPage?.()}
+            onClick={() => void sessionsQuery.fetchNextPage?.()}
             className="mt-2 w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-center text-[11px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-60"
           >
             {sessionsQuery.isFetchingNextPage ? t('sidebar.loadingMore') : t('sidebar.loadMore')}
@@ -471,7 +471,7 @@ export function Sidebar({
       <div className="border-t border-hairline px-3 py-2.5 space-y-1">
         <button
           type="button"
-          onClick={() => navigate('/settings')}
+          onClick={() => void navigate('/settings')}
           className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11.5px] text-ink-soft transition-colors hover:bg-paper hover:text-ink"
         >
           <span aria-hidden className="text-[13px]">⚙</span> {t('sidebar.settings')}
@@ -490,20 +490,20 @@ export function Sidebar({
           session={menu.session}
           x={menu.x}
           y={menu.y}
-          onClose={() => setMenu(null)}
+          onClose={() => { setMenu(null); }}
           onRename={() => {
             setRenaming(menu.session);
             setMenu(null);
           }}
-          onAction={(action) => runAction(menu.session, action)}
-          onArchive={() => archive(menu.session)}
-          onRestore={() => restore(menu.session)}
+          onAction={(action) => { runAction(menu.session, action); }}
+          onArchive={() => { archive(menu.session); }}
+          onRestore={() => { restore(menu.session); }}
         />
       ) : null}
       {renaming !== null ? (
         <RenameDialog
           session={renaming}
-          onClose={() => setRenaming(null)}
+          onClose={() => { setRenaming(null); }}
           onRenamed={() => {
             setRenaming(null);
             refreshSessions();
@@ -513,11 +513,11 @@ export function Sidebar({
       {confirmUndo !== null ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-ink/20"
-          onClick={() => setConfirmUndo(null)}
+          onClick={() => { setConfirmUndo(null); }}
         >
           <div
             className="anim-enter w-full max-w-[360px] rounded-2xl border border-hairline bg-panel p-5 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]"
-            onClick={(event) => event.stopPropagation()}
+            onClick={(event) => { event.stopPropagation(); }}
           >
             <h2 className="font-display text-[16px] font-semibold text-ink">{t('undo.title')}</h2>
             <p className="mt-2 text-[12.5px] leading-relaxed text-ink-soft">
@@ -526,7 +526,7 @@ export function Sidebar({
             <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setConfirmUndo(null)}
+                onClick={() => { setConfirmUndo(null); }}
                 className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] text-ink-soft transition-colors hover:text-ink"
               >
                 {t('common.cancel')}
@@ -538,11 +538,11 @@ export function Sidebar({
                   setConfirmUndo(null);
                   setActionError(null);
                   void undoLastTurn(actionContext, session)
-                    .then(() =>
+                    .then(() => {
                       setActionNotice(
                         t('action.undoDone', { title: sessionLabel(session, untitled) }),
-                      ),
-                    )
+                      );
+                    })
                     .catch((error: unknown) => {
                       setActionError(
                         t('action.undoFailed', { detail: sessionActionErrorText(locale, error) }),
@@ -618,20 +618,20 @@ function SessionMenu({
         </button>
       ) : (
         <>
-          <button type="button" role="menuitem" className={itemClass} onClick={() => onAction('fork')}>
+          <button type="button" role="menuitem" className={itemClass} onClick={() => { onAction('fork'); }}>
             {t('menu.fork')}
           </button>
-          <button type="button" role="menuitem" className={itemClass} onClick={() => onAction('export')}>
+          <button type="button" role="menuitem" className={itemClass} onClick={() => { onAction('export'); }}>
             {t('menu.export')}
           </button>
-          <button type="button" role="menuitem" className={itemClass} onClick={() => onAction('compact')}>
+          <button type="button" role="menuitem" className={itemClass} onClick={() => { onAction('compact'); }}>
             {t('menu.compact')}
           </button>
           <button
             type="button"
             role="menuitem"
             className={`${itemClass} hover:text-danger`}
-            onClick={() => onAction('undo')}
+            onClick={() => { onAction('undo'); }}
           >
             {t('menu.undo')}
           </button>
@@ -692,14 +692,14 @@ function RenameDialog({
     >
       <div
         className="anim-enter w-full max-w-[360px] rounded-2xl border border-hairline bg-panel p-5 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]"
-        onClick={(event) => event.stopPropagation()}
+        onClick={(event) => { event.stopPropagation(); }}
       >
         <h2 className="font-display text-[16px] font-semibold text-ink">{t('rename.title')}</h2>
         <input
           autoFocus
           className="mt-3 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink outline-none focus:border-accent"
           value={title}
-          onChange={(event) => setTitle(event.target.value)}
+          onChange={(event) => { setTitle(event.target.value); }}
           onKeyDown={(event) => {
             if (event.key === 'Enter') submit();
             if (event.key === 'Escape') onClose();

@@ -205,7 +205,7 @@ function TurnsMenu({
     <div className="relative shrink-0" data-turns-menu>
       <button
         type="button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => { setOpen((value) => !value); }}
         title={t('sv.jumpTitle')}
         className={`rounded-full border px-2 py-0.5 text-[10.5px] font-medium transition-colors ${
           open
@@ -281,7 +281,7 @@ function SessionActionsMenu({
     <div className="relative shrink-0" data-session-actions>
       <button
         type="button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => { setOpen((value) => !value); }}
         title={t('sv.actionsAria')}
         aria-label={t('sv.actionsAria')}
         aria-expanded={open}
@@ -295,20 +295,20 @@ function SessionActionsMenu({
       </button>
       {open ? (
         <div className="anim-enter absolute right-0 top-7 z-40 w-48 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)]">
-          <button type="button" role="menuitem" className={itemClass} onClick={() => pick('fork')}>
+          <button type="button" role="menuitem" className={itemClass} onClick={() => { pick('fork'); }}>
             {t('menu.fork')}
           </button>
-          <button type="button" role="menuitem" className={itemClass} onClick={() => pick('export')}>
+          <button type="button" role="menuitem" className={itemClass} onClick={() => { pick('export'); }}>
             {t('menu.export')}
           </button>
-          <button type="button" role="menuitem" className={itemClass} onClick={() => pick('compact')}>
+          <button type="button" role="menuitem" className={itemClass} onClick={() => { pick('compact'); }}>
             {t('menu.compact')}
           </button>
           <button
             type="button"
             role="menuitem"
             className={`${itemClass} hover:text-danger`}
-            onClick={() => pick('undo')}
+            onClick={() => { pick('undo'); }}
           >
             {t('menu.undo')}
           </button>
@@ -330,10 +330,10 @@ function useMediaQuery(query: string): boolean {
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return;
     const list = window.matchMedia(query);
-    const onChange = (event: MediaQueryListEvent) => setMatches(event.matches);
+    const onChange = (event: MediaQueryListEvent) => { setMatches(event.matches); };
     setMatches(list.matches);
     list.addEventListener('change', onChange);
-    return () => list.removeEventListener('change', onChange);
+    return () => { list.removeEventListener('change', onChange); };
   }, [query]);
   return matches;
 }
@@ -409,10 +409,10 @@ export function SessionView({
     initialOptionsRef.current.goalObjective ?? '',
   );
   const [goalControl, setGoalControl] = useState<'pause' | 'resume' | 'cancel' | undefined>();
-  const [modelOverride, setModelOverride] = useState<string | undefined>(
+  const [modelOverride, setModelOverride] = useState(
     initialOptionsRef.current.model ?? defaults.defaultModel,
   );
-  const [effortOverride, setEffortOverride] = useState<string | undefined>(
+  const [effortOverride, setEffortOverride] = useState(
     initialOptionsRef.current.thinking ?? defaults.defaultEffort,
   );
   const [sendError, setSendError] = useState<string | null>(null);
@@ -443,7 +443,7 @@ export function SessionView({
       if (event.key === 'Escape') setRailOpen(false);
     };
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    return () => { window.removeEventListener('keydown', onKeyDown); };
   }, []);
 
   // Per-session composer drafts.
@@ -468,14 +468,14 @@ export function SessionView({
       if (detail?.sessionId === sessionId) void controller?.resync();
     };
     window.addEventListener(SESSION_REWRITTEN_EVENT, onRewritten);
-    return () => window.removeEventListener(SESSION_REWRITTEN_EVENT, onRewritten);
+    return () => { window.removeEventListener(SESSION_REWRITTEN_EVENT, onRewritten); };
   }, [controller, sessionId]);
 
   // Success notices self-dismiss; errors stay until dismissed or retried.
   useEffect(() => {
     if (actionNotice === null) return;
-    const timer = setTimeout(() => setActionNotice(null), 3000);
-    return () => clearTimeout(timer);
+    const timer = setTimeout(() => { setActionNotice(null); }, 3000);
+    return () => { clearTimeout(timer); };
   }, [actionNotice]);
 
   // The undo-confirm dialog is an overlay: Escape closes it (and must not
@@ -583,7 +583,7 @@ export function SessionView({
           setAbortError(null);
           void controller
             .abortActive()
-            .then(() => setAbortError(null))
+            .then(() => { setAbortError(null); })
             .catch((error: unknown) => {
               setAbortError(
                 error instanceof Error ? error.message : t('sv.abortMaybeRunning'),
@@ -608,7 +608,7 @@ export function SessionView({
         });
     };
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    return () => { window.removeEventListener('keydown', onKeyDown); };
   }, [controller, t]);
 
   const actions = useMemo(() => {
@@ -676,7 +676,7 @@ export function SessionView({
         setAbortError(null);
         return controller
           .abortActive()
-          .then(() => setAbortError(null))
+          .then(() => { setAbortError(null); })
           .catch((error: unknown) => {
             const message = error instanceof Error ? error.message : t('sv.abortFailed');
             setAbortError(`${message}${t('sv.abortStillRunning')}`);
@@ -751,7 +751,7 @@ export function SessionView({
         });
       } else if (action === 'export') {
         void exportSessionArchive(actionContext, record)
-          .then(() => setActionNotice(t('action.exportDoneSession')))
+          .then(() => { setActionNotice(t('action.exportDoneSession')); })
           .catch((error: unknown) => {
             setActionError(
               t('action.exportFailed', { detail: sessionActionErrorText(locale, error) }),
@@ -759,7 +759,7 @@ export function SessionView({
           });
       } else {
         void compactSessionContext(actionContext, record)
-          .then(() => setActionNotice(t('action.compactRequestedSession')))
+          .then(() => { setActionNotice(t('action.compactRequestedSession')); })
           .catch((error: unknown) => {
             setActionError(
               t('action.compactFailed', { detail: sessionActionErrorText(locale, error) }),
@@ -776,7 +776,7 @@ export function SessionView({
     if (record === undefined) return;
     setActionError(null);
     void undoLastTurn(actionContext, record)
-      .then(() => setActionNotice(t('action.undoDoneSession')))
+      .then(() => { setActionNotice(t('action.undoDoneSession')); })
       .catch((error: unknown) => {
         setActionError(t('action.undoFailed', { detail: sessionActionErrorText(locale, error) }));
       });
@@ -824,7 +824,9 @@ export function SessionView({
     const initialAttachments = initialOptionsRef.current.initialAttachments ?? [];
     initialPromptRef.current = undefined;
     initialOptionsRef.current = {};
-    navigate(location.pathname, { replace: true });
+    // Fire-and-forget: strip the one-shot nav state from history so a refresh
+    // doesn't resend the drafted prompt.
+    void navigate(location.pathname, { replace: true });
     // Seed the session draft first: if this send fails, the text stays
     // recoverable in the composer (and in localStorage across reloads).
     writeDraft(sessionId, text);
@@ -864,10 +866,10 @@ export function SessionView({
   const selectedSubagent =
     selectedAgentId === undefined
       ? undefined
-      : (state.blocks.find(
+      : state.blocks.find(
           (block): block is SubagentBlock =>
             block.kind === 'subagent' && block.subagentId === selectedAgentId,
-        ) as SubagentBlock | undefined);
+        );
 
   if (selectedAgentId !== undefined) {
     const serverBlocks =
@@ -924,7 +926,7 @@ export function SessionView({
         <header className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
           <button
             type="button"
-            onClick={() => navigate(`/s/${sessionId}`)}
+            onClick={() => void navigate(`/s/${sessionId}`)}
             className="rounded-lg border border-hairline px-2 py-1 text-[11.5px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
           >
             {t('sv.backToSession')}
@@ -965,7 +967,7 @@ export function SessionView({
         <Header
           controller={controller}
           railOpen={railOpen}
-          onToggleRail={() => setRailOpen((value) => !value)}
+          onToggleRail={() => { setRailOpen((value) => !value); }}
           onToggleSidebar={onToggleSidebar}
           onJumpTurn={(blockId) => {
             document
@@ -1009,7 +1011,7 @@ export function SessionView({
           <div className="px-6 pb-1">
             <div className="mx-auto max-w-[760px] rounded-lg border border-danger/30 bg-danger/5 px-3 py-1.5 font-mono text-[11.5px] text-danger">
               {abortError}
-              <button type="button" onClick={() => actions?.abort()} className="ml-2 underline">
+              <button type="button" onClick={() => void actions?.abort()} className="ml-2 underline">
                 {t('common.retry')}
               </button>
             </div>
@@ -1067,7 +1069,7 @@ export function SessionView({
           onChangeGoalControl={setGoalControl}
           onChangeEffort={setEffortOverride}
           onSend={(text, composerAttachments) => actions?.send(text, composerAttachments)}
-          onAbort={() => actions?.abort()}
+          onAbort={() => void actions?.abort()}
         />
       </main>
 
@@ -1076,7 +1078,7 @@ export function SessionView({
           className={`app-rail ${railOpen ? 'open' : ''}`}
           state={state}
           onCancelTask={(taskId) => actions?.cancelTask(taskId)}
-          onOpenSubagent={(agentId) => navigate(`/s/${sessionId}/agent/${agentId}`)}
+          onOpenSubagent={(agentId) => void navigate(`/s/${sessionId}/agent/${agentId}`)}
         />
       ) : null}
 
@@ -1110,11 +1112,11 @@ export function SessionView({
       {confirmUndo ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-ink/20"
-          onClick={() => setConfirmUndo(false)}
+          onClick={() => { setConfirmUndo(false); }}
         >
           <div
             className="anim-enter w-full max-w-[360px] rounded-2xl border border-hairline bg-panel p-5 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]"
-            onClick={(event) => event.stopPropagation()}
+            onClick={(event) => { event.stopPropagation(); }}
           >
             <h2 className="font-display text-[16px] font-semibold text-ink">{t('undo.title')}</h2>
             <p className="mt-2 text-[12.5px] leading-relaxed text-ink-soft">
@@ -1123,7 +1125,7 @@ export function SessionView({
             <div className="mt-4 flex justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setConfirmUndo(false)}
+                onClick={() => { setConfirmUndo(false); }}
                 className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] text-ink-soft transition-colors hover:text-ink"
               >
                 {t('common.cancel')}

@@ -232,7 +232,7 @@ export function ApprovalCard({
                   type="checkbox"
                   checked={forSession}
                   disabled={submitting !== null}
-                  onChange={(event) => setForSession(event.target.checked)}
+                  onChange={(event) => { setForSession(event.target.checked); }}
                   className="h-3 w-3 accent-[#e8590c]"
                 />
                 {t('ia.remember')}
@@ -242,7 +242,7 @@ export function ApprovalCard({
                 <button
                   type="button"
                   disabled={submitting !== null}
-                  onClick={() => submit('approved')}
+                  onClick={() => { submit('approved'); }}
                   className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep disabled:opacity-60"
                 >
                   {submitting === 'allow-once' || submitting === 'allow-always'
@@ -255,7 +255,7 @@ export function ApprovalCard({
                 <button
                   type="button"
                   disabled={submitting !== null}
-                  onClick={() => submit('rejected')}
+                  onClick={() => { submit('rejected'); }}
                   className="rounded-lg border border-hairline-strong bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:border-danger hover:text-danger disabled:opacity-60"
                 >
                   {submitting === 'reject-once' ? t('ia.rejecting') : t('ia.reject')}{' '}
@@ -335,7 +335,7 @@ function QuestionItemView({
               key={option.id}
               type="button"
               aria-pressed={selected}
-              onClick={() => toggle(option.id)}
+              onClick={() => { toggle(option.id); }}
               className={`flex w-full items-start gap-2 rounded-lg border px-2.5 py-1.5 text-left transition-colors ${
                 selected
                   ? 'border-accent bg-accent-soft'
@@ -368,7 +368,7 @@ function QuestionItemView({
             <button
               type="button"
               aria-pressed={answer.useOther}
-              onClick={() => onChange({ ...answer, useOther: !answer.useOther })}
+              onClick={() => { onChange({ ...answer, useOther: !answer.useOther }); }}
               className="flex w-full items-center gap-2 text-left"
             >
               <span
@@ -388,7 +388,7 @@ function QuestionItemView({
                 className="mt-1.5 w-full rounded-md border border-hairline bg-panel px-2 py-1 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
                 placeholder={item.other_description ?? t('ia.otherPlaceholder')}
                 value={answer.otherText}
-                onChange={(event) => onChange({ ...answer, otherText: event.target.value })}
+                onChange={(event) => { onChange({ ...answer, otherText: event.target.value }); }}
               />
             ) : null}
           </div>
@@ -472,7 +472,7 @@ export function QuestionCard({
     setBusy(true);
     setFailed(null);
     onAnswer(answers)
-      .then(() => setSent('answered'))
+      .then(() => { setSent('answered'); })
       .catch((error: unknown) => {
         setBusy(false);
         setFailed(
@@ -487,7 +487,7 @@ export function QuestionCard({
     setBusy(true);
     setFailed(null);
     onDismiss()
-      .then(() => setSent('dismissed'))
+      .then(() => { setSent('dismissed'); })
       .catch((error: unknown) => {
         setBusy(false);
         setFailed(
@@ -516,7 +516,7 @@ export function QuestionCard({
               key={item.id}
               item={item}
               answer={answerFor(item.id)}
-              onChange={(next) => setSelections((prev) => ({ ...prev, [item.id]: next }))}
+              onChange={(next) => { setSelections((prev) => ({ ...prev, [item.id]: next })); }}
             />
           ))}
           {sent === null ? (

@@ -51,7 +51,7 @@ export function App() {
     void readNativeDesktopPrefs().then((prefs) => {
       if (prefs !== null) writeDesktopPrefs(prefs);
     });
-    return onTrayNewSession(() => navigate('/new'));
+    return onTrayNewSession(() => void navigate('/new'));
   }, [navigate]);
 
   const sessionMatch = useMatch('/s/:id/*');
@@ -86,7 +86,7 @@ export function App() {
         })
         .catch(() => undefined);
     }, 5000);
-    return () => clearInterval(timer);
+    return () => { clearInterval(timer); };
   }, [client, queryClient, showArchived]);
   const sessions = useMemo(() => dedupeSessions(sessionsQuery.data), [sessionsQuery.data]);
 
@@ -103,7 +103,7 @@ export function App() {
       if (event.key === 'Escape') setSidebarOpen(false);
     };
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    return () => { window.removeEventListener('keydown', onKeyDown); };
   }, [sidebarOpen]);
 
   return (
@@ -114,7 +114,7 @@ export function App() {
         sessions={sessions}
         sessionsQuery={sessionsQuery}
         showArchived={showArchived}
-        onToggleArchived={() => setShowArchived((value) => !value)}
+        onToggleArchived={() => { setShowArchived((value) => !value); }}
       />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -127,20 +127,20 @@ export function App() {
           <Route path="/" element={<RootRedirect />} />
           <Route
             path="/new"
-            element={<NewSessionPage onToggleSidebar={() => setSidebarOpen((value) => !value)} />}
+            element={<NewSessionPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
           />
           <Route
             path="/s/:id/*"
             element={
               <SessionView
-                onToggleSidebar={() => setSidebarOpen((value) => !value)}
+                onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
                 sessions={sessions}
               />
             }
           />
           <Route
             path="/settings/:section?"
-            element={<SettingsPage onToggleSidebar={() => setSidebarOpen((value) => !value)} />}
+            element={<SettingsPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
           />
           <Route path="*" element={<RootRedirect />} />
         </Routes>
@@ -152,7 +152,7 @@ export function App() {
           tabIndex={-1}
           aria-label={t('app.closeSidebar')}
           className="app-overlay-backdrop md:hidden"
-          onClick={() => setSidebarOpen(false)}
+          onClick={() => { setSidebarOpen(false); }}
           onKeyDown={(event) => {
             if (event.key === 'Escape') setSidebarOpen(false);
           }}

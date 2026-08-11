@@ -129,7 +129,9 @@ export function onTrayNewSession(callback: () => void): () => void {
   if (!isTauri()) return () => {};
   let unsubscribed = false;
   let unlisten: (() => void) | undefined;
-  listen('kiki://new-session', () => {
+  // Fire-and-forget: the unlisten fn arrives asynchronously; callers get the
+  // synchronous guard via `unsubscribed` in the meantime.
+  void listen('kiki://new-session', () => {
     if (!unsubscribed) callback();
   }).then((fn) => {
     unlisten = fn;

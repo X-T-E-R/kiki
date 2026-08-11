@@ -190,8 +190,8 @@ export function Composer({
   // Debounced file-picker query (fires only while the mention menu is open).
   useEffect(() => {
     if (menu?.kind !== 'mention') return;
-    const timer = setTimeout(() => setMentionQuery(menu.query), MENTION_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
+    const timer = setTimeout(() => { setMentionQuery(menu.query); }, MENTION_DEBOUNCE_MS);
+    return () => { clearTimeout(timer); };
   }, [menu]);
   const fsQuery = useQuery({
     queryKey: ['fs-search', mentionScopeKey ?? sessionId ?? 'none', mentionQuery],
@@ -310,7 +310,7 @@ export function Composer({
     if (accepted.length === 0) return;
     setAttachmentError(null);
     void Promise.all(accepted.map((file) => fileToImageAttachment(file)))
-      .then((images) => onChangeAttachments([...attachments, ...images]))
+      .then((images) => { onChangeAttachments([...attachments, ...images]); })
       .catch((error: unknown) => {
         setAttachmentError(errorText(locale, error));
       });
@@ -420,7 +420,7 @@ export function Composer({
                 key={mode.id}
                 type="button"
                 title={t(mode.hintKey)}
-                onClick={() => onChangePermissionMode(mode.id)}
+                onClick={() => { onChangePermissionMode(mode.id); }}
                 className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
                   permissionMode === mode.id
                     ? 'border-accent bg-accent-soft text-accent'
@@ -435,7 +435,7 @@ export function Composer({
               type="button"
               title={t('composer.planHint')}
               aria-pressed={planMode}
-              onClick={() => onChangePlanMode(!planMode)}
+              onClick={() => { onChangePlanMode(!planMode); }}
               className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
                 planMode
                   ? 'border-accent bg-accent-soft text-accent'
@@ -448,7 +448,7 @@ export function Composer({
               type="button"
               title={t('composer.swarmHint')}
               aria-pressed={swarmMode}
-              onClick={() => onChangeSwarmMode(!swarmMode)}
+              onClick={() => { onChangeSwarmMode(!swarmMode); }}
               className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
                 swarmMode
                   ? 'border-accent bg-accent-soft text-accent'
@@ -460,7 +460,7 @@ export function Composer({
             <div className="relative">
               <button
                 type="button"
-                onClick={() => setGoalOpen((open) => !open)}
+                onClick={() => { setGoalOpen((open) => !open); }}
                 aria-expanded={goalOpen}
                 className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
                   goalOpen || goalObjective !== '' || goalStatus !== undefined
@@ -478,7 +478,7 @@ export function Composer({
                   </label>
                   <input
                     value={goalObjective}
-                    onChange={(event) => onChangeGoalObjective(event.target.value)}
+                    onChange={(event) => { onChangeGoalObjective(event.target.value); }}
                     placeholder={t('composer.goalObjectivePlaceholder')}
                     className="mt-1.5 w-full rounded-lg border border-hairline bg-paper px-2.5 py-1.5 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
                   />
@@ -493,13 +493,13 @@ export function Composer({
                         <button
                           key={control}
                           type="button"
-                          onClick={() =>
+                          onClick={() => {
                             onChangeGoalControl(
                               goalControl === control
                                 ? undefined
                                 : (control as 'pause' | 'resume' | 'cancel'),
-                            )
-                          }
+                            );
+                          }}
                           className={`rounded-full border px-2 py-0.5 text-[10.5px] ${
                             goalControl === control
                               ? 'border-accent bg-accent-soft text-accent'
@@ -517,9 +517,9 @@ export function Composer({
             <select
               className="max-w-56 truncate rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft outline-none transition-colors hover:border-hairline-strong focus:border-accent focus:ring-2 focus:ring-accent/30"
               value={model ?? ''}
-              onChange={(event) =>
-                onChangeModel(event.target.value === '' ? undefined : event.target.value)
-              }
+              onChange={(event) => {
+                onChangeModel(event.target.value === '' ? undefined : event.target.value);
+              }}
               title={t('composer.modelTitle', { source: t(`composer.modelSource.${modelSource}`) })}
               aria-label={t('composer.modelAria')}
             >
@@ -547,7 +547,7 @@ export function Composer({
               <select
                 className="rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft outline-none transition-colors hover:border-hairline-strong focus:border-accent"
                 value={effort}
-                onChange={(event) => onChangeEffort(event.target.value)}
+                onChange={(event) => { onChangeEffort(event.target.value); }}
                 title={t('composer.effortTitle')}
               >
                 {efforts.map((level) => (
@@ -574,9 +574,9 @@ export function Composer({
                     <button
                       type="button"
                       aria-label={t('composer.removeAttachment', { name: attachment.name })}
-                      onClick={() =>
-                        onChangeAttachments(attachments.filter((_, i) => i !== index))
-                      }
+                      onClick={() => {
+                        onChangeAttachments(attachments.filter((_, i) => i !== index));
+                      }}
                       className="flex h-4 w-4 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
                     >
                       ×
@@ -604,9 +604,9 @@ export function Composer({
                       aria-label={t('composer.removeAttachment', {
                         name: attachment.name === '' ? t('attach.pastedImage') : attachment.name,
                       })}
-                      onClick={() =>
-                        onChangeAttachments(attachments.filter((_, i) => i !== index))
-                      }
+                      onClick={() => {
+                        onChangeAttachments(attachments.filter((_, i) => i !== index));
+                      }}
                       className="flex h-4 w-4 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
                     >
                       ×
@@ -628,7 +628,7 @@ export function Composer({
                 aria-label={menu.kind === 'slash' ? t('composer.slashAria') : t('composer.filesAria')}
                 className="anim-enter absolute right-0 bottom-full left-0 z-30 mb-1 max-h-72 overflow-y-auto rounded-xl border border-hairline bg-panel p-1 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
                 // Keep textarea focus while rows are clicked.
-                onMouseDown={(event) => event.preventDefault()}
+                onMouseDown={(event) => { event.preventDefault(); }}
               >
                 {menu.kind === 'slash' ? (
                   <SlashMenuBody
@@ -667,8 +667,8 @@ export function Composer({
                   refreshMenu(text, event.currentTarget.selectionStart);
                 }
               }}
-              onClick={(event) => refreshMenu(text, event.currentTarget.selectionStart)}
-              onBlur={() => setMenu(null)}
+              onClick={(event) => { refreshMenu(text, event.currentTarget.selectionStart); }}
+              onBlur={() => { setMenu(null); }}
               onPaste={(event) => {
                 const files = [...event.clipboardData.files];
                 if (files.length === 0) return;
@@ -753,7 +753,7 @@ function SlashMenuBody({
         role="option"
         aria-selected={active}
         aria-disabled={item.disabled === true}
-        onClick={() => onAccept(item)}
+        onClick={() => { onAccept(item); }}
         className={`flex w-full items-baseline gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors ${
           item.disabled === true ? 'opacity-50' : ''
         } ${active ? 'bg-accent-soft' : 'hover:bg-paper'}`}
@@ -854,7 +854,7 @@ function MentionMenuBody({
             type="button"
             role="option"
             aria-selected={active}
-            onClick={() => onAccept(item)}
+            onClick={() => { onAccept(item); }}
             className={`flex w-full items-baseline gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors ${
               active ? 'bg-accent-soft' : 'hover:bg-paper'
             }`}

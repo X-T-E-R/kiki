@@ -88,7 +88,7 @@ export function fileToImageAttachment(file: File): Promise<ImageAttachment> {
         params: { name: file.name === '' ? '(image)' : file.name },
       });
     const reader = new FileReader();
-    reader.onerror = () => reject(readFailed());
+    reader.onerror = () => { reject(readFailed()); };
     reader.onload = () => {
       const result = typeof reader.result === 'string' ? reader.result : '';
       const comma = result.indexOf(',');

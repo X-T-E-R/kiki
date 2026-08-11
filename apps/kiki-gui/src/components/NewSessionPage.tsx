@@ -36,14 +36,14 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [workspaceId, setWorkspaceId] = useState<string>(workspaceParam ?? '');
+  const [workspaceId, setWorkspaceId] = useState(workspaceParam ?? '');
   const [cwd, setCwd] = useState('');
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(settings.defaultPermissionMode);
   const [planMode, setPlanMode] = useState(settings.defaultPlanMode);
   const [swarmMode, setSwarmMode] = useState(false);
   const [goalObjective, setGoalObjective] = useState('');
-  const [modelOverride, setModelOverride] = useState<string | undefined>(settings.defaultModel);
-  const [effortOverride, setEffortOverride] = useState<string | undefined>(settings.defaultEffort);
+  const [modelOverride, setModelOverride] = useState(settings.defaultModel);
+  const [effortOverride, setEffortOverride] = useState(settings.defaultEffort);
 
   const workspacesQuery = useQuery({
     queryKey: ['workspaces'],
@@ -108,7 +108,9 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
       .createSession(body)
       .then((session) => {
         writeDraft(DRAFT_KEY, '');
-        navigate(`/s/${session.id}`, {
+        // react-router's navigate returns a promise in data routers; the
+        // navigation is fire-and-forget here (the catch below covers createSession).
+        void navigate(`/s/${session.id}`, {
           state: {
             initialPrompt: text.trim(),
             initialAttachments: composerAttachments,
@@ -176,7 +178,7 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
               <input
                 type="text"
                 value={cwd}
-                onChange={(event) => setCwd(event.target.value)}
+                onChange={(event) => { setCwd(event.target.value); }}
                 placeholder="C:/path/to/project"
                 className="min-w-0 flex-1 rounded-md border border-hairline bg-paper px-2 py-1 font-mono text-[11.5px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
               />
@@ -191,7 +193,7 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
                   <button
                     key={session.id}
                     type="button"
-                    onClick={() => navigate(`/s/${session.id}`)}
+                    onClick={() => void navigate(`/s/${session.id}`)}
                     className="max-w-[200px] truncate rounded-full border border-hairline bg-panel px-3 py-1 text-[11.5px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
                   >
                     {session.title !== '' ? session.title : session.last_prompt ?? session.id}

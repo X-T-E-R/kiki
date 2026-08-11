@@ -28,6 +28,9 @@ export function volatileFrameKey(frame: SessionEventFrame): string | undefined {
     commandId?: string;
   };
   const prefix = `${frame.session_id ?? ''}:${emittingAgent(frame)}`;
+  // Intentional partial router: only coalescible volatile payloads get keys;
+  // the default case declines everything else.
+  // eslint-disable-next-line typescript/switch-exhaustiveness-check
   switch (payload.type) {
     case 'assistant.delta':
       return `${prefix}:turn:${String(payload.turnId)}:assistant`;
@@ -64,6 +67,9 @@ export function mergeVolatileFrames(
     update?: { text?: string; [key: string]: unknown };
   };
   const b = incoming.payload as typeof a;
+  // Intentional partial router: only the mergeable volatile kinds have cases;
+  // the default case refuses to merge everything else.
+  // eslint-disable-next-line typescript/switch-exhaustiveness-check
   switch (a.type) {
     case 'assistant.delta':
     case 'thinking.delta': {

@@ -239,7 +239,7 @@ export class KikiClient {
 
     const controller = new AbortController();
     let timedOut = false;
-    const onAbort = () => controller.abort(options.signal?.reason);
+    const onAbort = () => { controller.abort(options.signal?.reason); };
     if (options.signal?.aborted === true) onAbort();
     else options.signal?.addEventListener('abort', onAbort, { once: true });
     const timeout = setTimeout(() => {

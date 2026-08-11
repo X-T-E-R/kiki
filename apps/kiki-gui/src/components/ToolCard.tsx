@@ -235,7 +235,7 @@ export const ToolCard = memo(function ToolCard({ block }: { block: ToolBlock }) 
     <div className="anim-enter overflow-hidden rounded-xl border border-hairline bg-panel">
       <button
         type="button"
-        onClick={() => setExpanded((value) => !value)}
+        onClick={() => { setExpanded((value) => !value); }}
         className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-paper/60"
       >
         <span className="w-6 shrink-0 text-center font-mono text-[12px] text-ink-soft">

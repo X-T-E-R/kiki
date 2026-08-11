@@ -42,7 +42,7 @@ export function buildHunks(oldText: string, newText: string, startLine = 1): Dif
   let lo = startLine;
   let ln = startLine;
   for (const part of parts) {
-    const tag: DiffTag = part.added === true ? 'insert' : part.removed === true ? 'delete' : 'equal';
+    const tag: DiffTag = part.added ? 'insert' : part.removed ? 'delete' : 'equal';
     const lines = part.value.split('\n');
     // diffLines values keep their trailing '\n', which splits into a phantom
     // empty final element — drop it (a real blank line ends the value without

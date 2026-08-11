@@ -4,7 +4,7 @@ import type { InfiniteData } from '@tanstack/react-query';
 
 import type { PageResponse, Session } from '@moonshot-ai/protocol';
 
-export type SessionListData = InfiniteData<PageResponse<Session>, unknown>;
+export type SessionListData = InfiniteData<PageResponse<Session>>;
 
 /**
  * Poll merge for the 5s cadence: only page 1 is refetched (every sidebar

@@ -97,7 +97,7 @@ const UserMessage = memo(function UserMessage({
               type="button"
               aria-label={t('transcript.cancelQueuedAria')}
               title={t('transcript.cancelQueuedTitle')}
-              onClick={() => onCancelQueued(block.promptId!)}
+              onClick={() => { onCancelQueued(block.promptId!); }}
               className="rounded-full text-amber-ink/70 transition-colors hover:text-danger"
             >
               ×
@@ -145,7 +145,7 @@ const AssistantMessage = memo(function AssistantMessage({ block }: { block: Assi
               .writeText(block.text)
               .then(() => {
                 setCopied(true);
-                setTimeout(() => setCopied(false), 1400);
+                setTimeout(() => { setCopied(false); }, 1400);
               })
               .catch(() => undefined);
           }}
@@ -167,7 +167,7 @@ const ThinkingMessage = memo(function ThinkingMessage({ block }: { block: Thinki
     <div className="anim-enter border-l-2 border-hairline-strong pl-3">
       <button
         type="button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => { setOpen((value) => !value); }}
         className="flex items-center gap-1.5 text-[11.5px] font-medium text-ink-faint transition-colors hover:text-ink-soft"
       >
         <span aria-hidden className={`inline-block transition-transform duration-150 ${open ? 'rotate-90' : ''}`}>
@@ -198,7 +198,7 @@ const SystemReminderMessage = memo(function SystemReminderMessage({
     <div className="anim-enter border-l-2 border-dashed border-hairline pl-3" title={time.absoluteTime(block.createdAt)}>
       <button
         type="button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => { setOpen((value) => !value); }}
         aria-expanded={open}
         className="flex items-center gap-1.5 text-[11px] font-medium text-ink-faint/80 transition-colors hover:text-ink-soft"
       >
@@ -238,8 +238,8 @@ function useSubagentElapsed(block: SubagentBlock): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (block.endedAt !== undefined || block.status !== 'running') return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
+    const timer = setInterval(() => { setNow(Date.now()); }, 1000);
+    return () => { clearInterval(timer); };
   }, [block.endedAt, block.status]);
   const start = new Date(block.startedAt).getTime();
   const end = block.endedAt === undefined ? now : new Date(block.endedAt).getTime();
@@ -335,7 +335,7 @@ const ToolGroupRow = memo(
     <div className="anim-enter overflow-hidden rounded-xl border border-hairline bg-panel">
       <button
         type="button"
-        onClick={() => setExpanded((value) => !value)}
+        onClick={() => { setExpanded((value) => !value); }}
         className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-paper/60"
       >
         <span className="w-6 shrink-0 text-center font-mono text-[12px] text-ink-soft">☰</span>
@@ -478,7 +478,7 @@ function JumpToBottom() {
   return (
     <button
       type="button"
-      onClick={() => scrollToBottom()}
+      onClick={() => void scrollToBottom()}
       className="anim-enter absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline bg-panel/95 px-3 py-1.5 text-[11.5px] font-medium text-ink-soft shadow-[0_4px_16px_-6px_rgba(28,25,23,0.25)] transition-colors hover:border-accent hover:text-accent"
     >
       <span aria-hidden className="text-[10px]">▼</span> {t('transcript.jumpToLatest')}
@@ -526,7 +526,7 @@ function TopEdge({ state, onLoadOlder }: {
       });
     };
     element.addEventListener('scroll', onScroll, { passive: true });
-    return () => element.removeEventListener('scroll', onScroll);
+    return () => { element.removeEventListener('scroll', onScroll); };
   }, [scrollRef, state.loadingOlder, state.hasMoreHistory, onLoadOlder]);
 
   if (state.loadingOlder) {

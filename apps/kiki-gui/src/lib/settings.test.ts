@@ -146,7 +146,9 @@ describe('settings persistence and validation', () => {
 
   it('uses the provider PUT wire and omits a blank write-once secret', async () => {
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      // The client always sends a JSON string body; JSON.parse stringifies its
+      // argument anyway, so dropping String() is behavior-identical here.
+      const body = JSON.parse(init?.body as string) as Record<string, unknown>;
       expect(init?.method).toBe('PUT');
       expect(body['api_key']).toBeUndefined();
       expect(body['models']).toEqual([
@@ -178,7 +180,7 @@ describe('settings persistence and validation', () => {
 
   it('sends an explicit empty API key only when the user chooses clear', async () => {
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const body = JSON.parse(init?.body as string) as Record<string, unknown>;
       expect(body['api_key']).toBe('');
       return new Response(JSON.stringify({
         code: 0,
