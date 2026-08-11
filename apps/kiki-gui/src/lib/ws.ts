@@ -23,15 +23,25 @@ export type WsStatus = 'connecting' | 'open' | 'closed';
  * carry the wire `terminal_output` / `terminal_exit` frames; `attached` fires
  * on every successful `terminal_attach` ack — including the automatic
  * re-attaches after a reconnect, which is how a listener learns the stream
- * resumed.
+ * resumed. `unavailable` reports an automatic attach failure.
  */
 export type TerminalSignal =
-  | { readonly kind: 'attached'; readonly sessionId: string; readonly terminalId: string; readonly replayed: number }
+  | {
+      readonly kind: 'attached';
+      readonly sessionId: string;
+      readonly terminalId: string;
+      readonly replayed: number;
+      readonly earliestSeq: number | null;
+      readonly truncated: boolean;
+    }
   | { readonly kind: 'output'; readonly sessionId: string; readonly terminalId: string; readonly seq: number; readonly data: string }
-  | { readonly kind: 'exit'; readonly sessionId: string; readonly terminalId: string; readonly exitCode: number | null };
+  | { readonly kind: 'exit'; readonly sessionId: string; readonly terminalId: string; readonly exitCode: number | null }
+  | { readonly kind: 'unavailable'; readonly sessionId: string; readonly terminalId: string };
 
 export interface TerminalAttachResult {
   readonly replayed: number;
+  readonly earliestSeq: number | null;
+  readonly truncated: boolean;
 }
 
 export interface WsEvents {
@@ -105,7 +115,8 @@ export class KikiSocket {
   /**
    * Terminals this connection wants attached, keyed by session+terminal id.
    * Survives reconnects: every fresh hello re-attaches them with
-   * `since_seq = lastSeq` so replay closes the blackout gap.
+   * `since_seq = lastSeq` so the server's bounded replay buffer can cover the
+   * blackout when it still retains every missed frame.
    */
   private readonly trackedTerminals = new Map<string, TrackedTerminal>();
   private readonly terminalListeners = new Set<(signal: TerminalSignal) => void>();
@@ -208,7 +219,7 @@ export class KikiSocket {
   // are fire-and-forget (keystroke frequency makes per-frame acks pointless);
   // attach is the only awaited verb — its ack carries the replay count.
 
-  /** Subscribe to terminal signals (`attached` / `output` / `exit`). */
+  /** Subscribe to terminal signals (`attached` / `output` / `exit` / `unavailable`). */
   onTerminalSignal(listener: (signal: TerminalSignal) => void): () => void {
     this.terminalListeners.add(listener);
     return () => {
@@ -220,8 +231,7 @@ export class KikiSocket {
    * Attach to a terminal's IO stream. The terminal stays tracked across
    * reconnects (re-attached automatically); `terminalDetach` untracks it.
    * Resolves with the attach ack; rejects when the socket is down or the
-   * server never answers (today's kap-server ignores terminal frames — the
-   * timeout is how the UI learns that).
+   * server never answers (the timeout is how the UI learns that).
    */
   terminalAttach(sessionId: string, terminalId: string): Promise<TerminalAttachResult> {
     const key = terminalKey(sessionId, terminalId);
@@ -408,15 +418,25 @@ export class KikiSocket {
           this.subscribeFromReconnect = this.helloCount > 1;
           this.sendSubscribe([...this.desired.keys()]);
         }
-        // Re-attach tracked terminals on every (re)connect; replay from
+        // Attach tracked terminals on every hello, including the first one.
+        // A create can finish while the initial socket is still handshaking;
+        // in that case terminalAttach() records the desired stream but cannot
+        // send yet. Replay from
         // `lastSeq` closes whatever the blackout missed. Attach acks flow to
         // terminal listeners as `attached` signals.
-        if (this.helloCount > 1) {
-          for (const tracked of this.trackedTerminals.values()) {
-            void this.sendTerminalAttach(tracked).catch(() => {
-              // a failed re-attach stays tracked; the next reconnect retries
+        for (const tracked of this.trackedTerminals.values()) {
+          void this.sendTerminalAttach(tracked).catch(() => {
+            // A failed attach stays tracked so the next reconnect retries, but
+            // listeners must not keep presenting this stream as live. A socket
+            // close is different: SessionView marks streams attaching so input
+            // can buffer through the reconnect.
+            if (!this.isReady()) return;
+            this.emitTerminalSignal({
+              kind: 'unavailable',
+              sessionId: tracked.sessionId,
+              terminalId: tracked.terminalId,
             });
-          }
+          });
         }
         return;
       }
@@ -513,15 +533,20 @@ export class KikiSocket {
         this.pendingTerminalControls.delete(message.id);
         clearTimeout(pending.timer);
         if (message.code === 0) {
-          const payload = message.payload as { replayed?: unknown } | undefined;
-          pending.resolve({
+          const payload = message.payload as
+            | { replayed?: unknown; earliest_seq?: unknown; truncated?: unknown }
+            | undefined;
+          const result: TerminalAttachResult = {
             replayed: typeof payload?.replayed === 'number' ? payload.replayed : 0,
-          });
+            earliestSeq: typeof payload?.earliest_seq === 'number' ? payload.earliest_seq : null,
+            truncated: payload?.truncated === true,
+          };
+          pending.resolve(result);
           this.emitTerminalSignal({
             kind: 'attached',
             sessionId: pending.sessionId,
             terminalId: pending.terminalId,
-            replayed: typeof payload?.replayed === 'number' ? payload.replayed : 0,
+            ...result,
           });
         } else {
           pending.reject(

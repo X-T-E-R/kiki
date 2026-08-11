@@ -108,9 +108,18 @@ function TerminalCanvas({
     termRef.current = term;
     fitRef.current = fit;
 
-    const unbind = manager.bindOutput(tabId, (data) => {
-      term.write(data);
-    });
+    const unbind = manager.bindOutput(
+      tabId,
+      (data) => {
+        term.write(data);
+      },
+      (data) => {
+        // Queue RIS + retained suffix as one atomic xterm write. Unlike the
+        // imperative reset(), this stays ordered after replay writes already
+        // in xterm's parser queue and before any subsequent live output.
+        term.write(`\u001Bc${data}`);
+      },
+    );
     const dataSub = term.onData((data) => {
       manager.input(tabId, data);
     });
@@ -428,6 +437,16 @@ export function TerminalPanel({
         {activeTab?.status === 'attaching' ? (
           <div className="pointer-events-none absolute right-2 bottom-2 rounded bg-black/40 px-2 py-0.5 font-mono text-[10.5px] text-[#e8dcc4]">
             {t('term.attaching')}
+          </div>
+        ) : null}
+
+        {activeTab?.scrollbackIncomplete ? (
+          <div
+            role="status"
+            data-terminal-truncated
+            className="pointer-events-none absolute top-2 right-2 max-w-[70%] rounded border border-amber-rule/40 bg-black/70 px-2 py-1 font-mono text-[10.5px] text-amber-rule"
+          >
+            {t('term.scrollbackIncomplete')}
           </div>
         ) : null}
 

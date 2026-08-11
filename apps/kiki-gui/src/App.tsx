@@ -19,7 +19,7 @@ import {
 } from 'react-router-dom';
 
 import { NewSessionPage } from './components/NewSessionPage';
-import { SessionView } from './components/SessionView';
+import { SessionRouteView } from './components/SessionView';
 import { SettingsPage } from './components/SettingsPage';
 import { Sidebar } from './components/Sidebar';
 import {
@@ -132,7 +132,8 @@ export function App() {
           <Route
             path="/s/:id/*"
             element={
-              <SessionView
+              <SessionRouteView
+                sessionId={activeSessionId}
                 onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
                 sessions={sessions}
               />

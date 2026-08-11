@@ -4,12 +4,8 @@
  * Returns `server_version`, the declared `capabilities` map, a per-process
  * `server_id` (ULID minted at boot), and `started_at`.
  *
- * **Capabilities**: the wire schema (`metaCapabilitiesSchema`) only permits the
- * literal `true` for each capability, so this mirrors the v1 response exactly to
- * keep the interface unchanged. server-v2 v0.1 does not yet back every
- * capability (no WebSocket / file upload / fs query / mcp / terminal); clients
- * must treat unbacked capabilities as not-yet-available until the corresponding
- * routes are wired.
+ * **Capabilities**: present entries use the literal `true`; an exposure-gated
+ * capability is omitted rather than advertised as usable.
  *
  * **No DI for the static fields**: pure server-self info; that part of the
  * payload is frozen at registration time. `experimental_flags` is the
@@ -37,6 +33,8 @@ export interface MetaRouteOptions {
   readonly serverVersion: string;
   readonly serverId: string;
   readonly startedAt: string;
+  /** Whether terminal REST and WebSocket controls are exposed on this bind. */
+  readonly enableTerminals: boolean;
   /**
    * Whether the server was started with `--dangerous-bypass-auth`. Surfaced so
    * the web UI can skip the token prompt and connect without a credential.
@@ -52,16 +50,17 @@ export interface MetaRouteOptions {
 }
 
 export function registerMetaRoute(app: RouteHost, opts: MetaRouteOptions): void {
+  const capabilities = {
+    websocket: true as const,
+    file_upload: true as const,
+    fs_query: true as const,
+    mcp: true as const,
+    tasks: true as const,
+    terminal: opts.enableTerminals ? (true as const) : undefined,
+  };
   const staticData = Object.freeze({
     server_version: opts.serverVersion,
-    capabilities: Object.freeze({
-      websocket: true as const,
-      file_upload: true as const,
-      fs_query: true as const,
-      mcp: true as const,
-      tasks: true as const,
-      terminal: true as const,
-    }),
+    capabilities: Object.freeze(capabilities),
     server_id: opts.serverId,
     started_at: opts.startedAt,
     open_in_apps: [],

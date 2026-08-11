@@ -17,6 +17,7 @@ import {
 import { HostTerminalService } from '#/os/backends/node-local/hostTerminalService';
 import {
   ISessionTerminalService,
+  resolveDefaultShell,
   SessionTerminalService,
 } from '#/session/terminal/terminalService';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -135,6 +136,13 @@ describe('SessionTerminalService', () => {
     expect(terminal.rows).toBe(24);
   });
 
+  it('preserves an explicit shell override', async () => {
+    const svc = ix.get(ISessionTerminalService);
+    const terminal = await svc.create({ shell: 'example-shell' });
+    expect(terminal.shell).toBe('example-shell');
+    expect(host.lastOptions[0]?.shell).toBe('example-shell');
+  });
+
   it('lists and gets terminals', async () => {
     const svc = ix.get(ISessionTerminalService);
     const created = await svc.create({});
@@ -185,9 +193,27 @@ describe('SessionTerminalService', () => {
     proc.emitData('c');
 
     const { sink, frames } = collectSink();
-    const { replayed } = await svc.attach(terminal.id, sink, { sinceSeq: 1 });
-    expect(replayed).toBe(2);
+    const result = await svc.attach(terminal.id, sink, { sinceSeq: 1 });
+    expect(result).toEqual({ replayed: 2, earliestSeq: 1, truncated: false });
     expect(frames.map((f) => (f as { seq?: number }).seq)).toEqual([2, 3]);
+  });
+
+  it('reports a truncated replay when the requested cursor predates the 2,000-frame suffix', async () => {
+    const svc = ix.get(ISessionTerminalService);
+    const terminal = await svc.create({});
+    const proc = host.processes[0]!;
+    for (let seq = 1; seq <= 2001; seq += 1) proc.emitData(`frame-${seq}`);
+
+    const first = collectSink('first');
+    const truncated = await svc.attach(terminal.id, first.sink, { sinceSeq: 0 });
+    expect(truncated).toEqual({ replayed: 2000, earliestSeq: 2, truncated: true });
+    expect(first.frames[0]).toMatchObject({ type: 'terminal_output', seq: 2 });
+    expect(first.frames.at(-1)).toMatchObject({ type: 'terminal_output', seq: 2001 });
+
+    svc.detach(terminal.id, first.sink.id);
+    const second = collectSink('second');
+    const complete = await svc.attach(terminal.id, second.sink, { sinceSeq: 1 });
+    expect(complete).toEqual({ replayed: 2000, earliestSeq: 2, truncated: false });
   });
 
   it('emits an exit frame and marks the terminal exited on process exit', async () => {
@@ -253,6 +279,42 @@ describe('SessionTerminalService', () => {
 
     disposables.dispose();
     expect(proc.killed).toBe(true);
+  });
+});
+
+describe('resolveDefaultShell', () => {
+  it('keeps the POSIX SHELL preference and /bin/sh fallback', () => {
+    expect(resolveDefaultShell('linux', { SHELL: '/bin/zsh' }, () => false)).toBe('/bin/zsh');
+    expect(resolveDefaultShell('linux', {}, () => false)).toBe('/bin/sh');
+  });
+
+  it('uses an existing ComSpec on Windows and falls back to an existing PowerShell', () => {
+    const existing = new Set([
+      'C:\\Windows\\System32\\cmd.exe',
+      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+    ]);
+    const isExecutable = (candidate: string): boolean => existing.has(candidate);
+
+    expect(
+      resolveDefaultShell(
+        'win32',
+        { ComSpec: 'C:\\Windows\\System32\\cmd.exe', SystemRoot: 'C:\\Windows' },
+        isExecutable,
+      ),
+    ).toBe('C:\\Windows\\System32\\cmd.exe');
+    expect(
+      resolveDefaultShell(
+        'win32',
+        { ComSpec: 'C:\\missing\\cmd.exe', SystemRoot: 'C:\\Windows' },
+        isExecutable,
+      ),
+    ).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+  });
+
+  it('fails instead of selecting a nonexistent Windows executable', () => {
+    expect(() => resolveDefaultShell('win32', {}, () => false)).toThrow(
+      /No usable Windows shell executable/,
+    );
   });
 });
 

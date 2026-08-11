@@ -260,6 +260,10 @@ export type TerminalAttachMessage = z.infer<typeof terminalAttachMessageSchema>;
 export const terminalAttachAckPayloadSchema = z.object({
   attached: z.literal(true),
   replayed: z.number().int().nonnegative(),
+  /** First retained terminal_output seq, or null when no output is retained. */
+  earliest_seq: z.number().int().positive().nullable(),
+  /** The requested since_seq predates the retained contiguous output suffix. */
+  truncated: z.boolean(),
 });
 
 export const terminalAttachAckMessageSchema = wsAckEnvelopeSchema(
@@ -615,10 +619,28 @@ export const sessionEventOperation = {
   description: 'Session-scoped agent event envelope; frame type is the payload event type.',
 } as const satisfies WsOperationDefinition;
 
+export const terminalEventOperations = [
+  {
+    type: 'terminal_output',
+    direction: 'server_to_client',
+    kind: 'event',
+    messageSchema: terminalOutputMessageSchema,
+    description: 'Raw terminal output delivered to an attached connection.',
+  },
+  {
+    type: 'terminal_exit',
+    direction: 'server_to_client',
+    kind: 'event',
+    messageSchema: terminalExitMessageSchema,
+    description: 'Terminal process exit delivered to an attached connection.',
+  },
+] as const satisfies readonly WsOperationDefinition[];
+
 export const wsOperations = [
   ...clientControlOperations,
   ...serverSystemOperations,
   sessionEventOperation,
+  ...terminalEventOperations,
 ] as const satisfies readonly WsOperationDefinition[];
 
 export function getClientControlOperation(

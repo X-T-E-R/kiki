@@ -103,6 +103,7 @@ export async function registerApiV1Routes(
         serverVersion: opts.serverVersion,
         serverId: ulid(),
         startedAt: new Date().toISOString(),
+        enableTerminals: opts.enableTerminals !== false,
         dangerousBypassAuth: opts.dangerousBypassAuth === true,
         getExperimentalFlags: async () => {
           // Same edge-facade contract as the config route: never project

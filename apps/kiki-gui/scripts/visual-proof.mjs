@@ -1131,6 +1131,30 @@ async function scenarioTerminal() {
   }
   await page.waitForTimeout(400);
   await shot('terminal-restored');
+
+  // Overflow the bounded server buffer while the socket is down. The
+  // reconnect must reset old xterm/ANSI history and visibly disclose that the
+  // replay is only a retained suffix.
+  const restored = await control({ action: 'session', session_id: SID });
+  const running = restored.data?.terminals?.find((terminal) => terminal.status === 'running');
+  if (running?.id === undefined) throw new Error('no running terminal for truncation proof');
+  await control({
+    action: 'terminal_gap',
+    session_id: SID,
+    terminal_id: running.id,
+    count: 2001,
+  });
+  await page.waitForSelector('[data-terminal-truncated]', { timeout: 20_000 });
+  const suffix = await waitMirror(
+    (text) => text.includes('gap-output-2001') && !text.includes('back-alive'),
+    'truncated replay suffix replaces prior scrollback',
+    20_000,
+  );
+  if (suffix.includes('gap-output-1\n')) {
+    throw new Error('truncated replay incorrectly retained the evicted first frame');
+  }
+  await page.waitForTimeout(400);
+  await shot('terminal-truncated');
 }
 
 // ---------------------------------------------------------------------------

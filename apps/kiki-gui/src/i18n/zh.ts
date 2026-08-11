@@ -330,7 +330,8 @@ export const zh: Record<I18nKey, string> = {
   'term.exited': '进程已退出（代码 {code}）',
   'term.exitedNoCode': '进程已退出',
   'term.restart': '重新启动',
-  'term.unavailable': '此服务器没有应答终端数据流 —— 终端输入输出需要支持终端 WS 帧的 kap-server 版本。',
+  'term.scrollbackIncomplete': '更早的输出已不可用——当前仅显示服务器保留的输出。',
+  'term.unavailable': '终端数据流当前不可用。请在连接恢复后重试。',
 
   // ---- new session page ----
   'new.title': '新会话',

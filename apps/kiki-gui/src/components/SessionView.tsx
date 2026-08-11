@@ -41,7 +41,11 @@ import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
 import { readDesktopPrefs, readSettings } from '../lib/settings';
 import { useConnection, useControllerRegistry } from '../state/connection';
 import { SessionController } from '../state/sessionController';
-import { TerminalManager } from '../state/terminalManager';
+import {
+  activeTerminalManager,
+  terminalCapabilityAvailable,
+  TerminalManager,
+} from '../state/terminalManager';
 import {
   agentTranscriptToBlocks,
   createViewState,
@@ -84,6 +88,7 @@ function useActiveController(sessionId: string | undefined): SessionController |
 function Header({
   controller,
   railOpen,
+  terminalAvailable,
   terminalOpen,
   onToggleRail,
   onToggleTerminal,
@@ -93,6 +98,7 @@ function Header({
 }: {
   controller: SessionController | null;
   railOpen: boolean;
+  terminalAvailable: boolean;
   terminalOpen: boolean;
   onToggleRail: () => void;
   onToggleTerminal: () => void;
@@ -148,21 +154,11 @@ function Header({
       ) : (
         <span className="flex-1" />
       )}
-      <button
-        type="button"
-        onClick={onToggleTerminal}
-        title={terminalOpen ? t('term.hidePanel') : t('term.showPanel')}
-        aria-label={t('term.toggleAria')}
-        aria-expanded={terminalOpen}
-        data-terminal-toggle
-        className={`shrink-0 rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors ${
-          terminalOpen
-            ? 'border-accent bg-accent-soft text-accent'
-            : 'border-hairline text-ink-soft hover:border-hairline-strong'
-        }`}
-      >
-        {t('term.toggle')}
-      </button>
+      <TerminalToggle
+        available={terminalAvailable}
+        open={terminalOpen}
+        onToggle={onToggleTerminal}
+      />
       <button
         type="button"
         onClick={onToggleRail}
@@ -178,6 +174,59 @@ function Header({
         {t('sv.panel')}
       </button>
     </header>
+  );
+}
+
+export function TerminalToggle({
+  available,
+  open,
+  onToggle,
+}: {
+  available: boolean;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const { t } = useI18n();
+  if (!available) return null;
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      title={open ? t('term.hidePanel') : t('term.showPanel')}
+      aria-label={t('term.toggleAria')}
+      aria-expanded={open}
+      data-terminal-toggle
+      className={`shrink-0 rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors ${
+        open
+          ? 'border-accent bg-accent-soft text-accent'
+          : 'border-hairline text-ink-soft hover:border-hairline-strong'
+      }`}
+    >
+      {t('term.toggle')}
+    </button>
+  );
+}
+
+/**
+ * Route boundary for `/s/:id/*`. The child key is the synchronous ownership
+ * fence: changing A -> B unmounts every A-specific controller/terminal handler
+ * instead of letting React reuse them for B.
+ */
+export function SessionRouteView({
+  sessionId,
+  onToggleSidebar,
+  sessions,
+}: {
+  sessionId: string | undefined;
+  onToggleSidebar: () => void;
+  sessions: readonly Session[];
+}) {
+  return (
+    <SessionView
+      key={sessionId}
+      onToggleSidebar={onToggleSidebar}
+      sessions={sessions}
+    />
   );
 }
 
@@ -396,7 +445,8 @@ export function SessionView({
 }) {
   const { id } = useParams<{ id: string }>();
   const sessionId = id!;
-  const { client, socket, wsStatus } = useConnection();
+  const { client, socket, meta, wsStatus } = useConnection();
+  const terminalAvailable = terminalCapabilityAvailable(meta.capabilities);
   const { t, tp, locale } = useI18n();
   const navigate = useNavigate();
   const location = useLocation();
@@ -464,24 +514,39 @@ export function SessionView({
     () => readTerminalPanelPrefs(sessionId).height,
   );
   useEffect(() => {
+    if (!terminalAvailable) {
+      setTerminalManager(null);
+      return;
+    }
     const manager = new TerminalManager({ sessionId, client, transport: socket });
     setTerminalManager(manager);
     return () => {
       manager.dispose();
       setTerminalManager(null);
     };
-  }, [client, socket, sessionId]);
+  }, [client, socket, sessionId, terminalAvailable]);
+  // React can reuse SessionView for /s/A -> /s/B. The keyed route remounts the
+  // owner, while this synchronous identity guard also ensures the old manager
+  // cannot render or receive UI actions during reconciliation.
+  const currentTerminalManager = activeTerminalManager(
+    terminalManager,
+    sessionId,
+    terminalAvailable,
+  );
   useEffect(() => {
     const prefs = readTerminalPanelPrefs(sessionId);
     setTerminalOpen(prefs.open);
     setTerminalHeight(prefs.height);
   }, [sessionId]);
   useEffect(() => {
+    currentTerminalManager?.setTransportConnected(wsStatus === 'open');
+  }, [currentTerminalManager, wsStatus]);
+  useEffect(() => {
     // Gate on the socket: attach frames need an open, hello'd connection.
-    if (terminalOpen && terminalManager !== null && wsStatus === 'open') {
-      void terminalManager.open();
+    if (terminalOpen && currentTerminalManager !== null && wsStatus === 'open') {
+      void currentTerminalManager.open();
     }
-  }, [terminalOpen, terminalManager, wsStatus]);
+  }, [terminalOpen, currentTerminalManager, wsStatus]);
   const toggleTerminalPanel = useCallback(() => {
     setTerminalOpen((value) => {
       writeTerminalPanelPrefs(sessionId, { open: !value });
@@ -1035,6 +1100,7 @@ export function SessionView({
         <Header
           controller={controller}
           railOpen={railOpen}
+          terminalAvailable={terminalAvailable}
           terminalOpen={terminalOpen}
           onToggleRail={() => { setRailOpen((value) => !value); }}
           onToggleTerminal={toggleTerminalPanel}
@@ -1141,9 +1207,9 @@ export function SessionView({
           onSend={(text, composerAttachments) => actions?.send(text, composerAttachments)}
           onAbort={() => void actions?.abort()}
         />
-        {terminalOpen && terminalManager !== null ? (
+        {terminalOpen && currentTerminalManager !== null ? (
           <TerminalPanel
-            manager={terminalManager}
+            manager={currentTerminalManager}
             height={terminalHeight}
             wsStatus={wsStatus}
             onHeightChange={handleTerminalHeightChange}

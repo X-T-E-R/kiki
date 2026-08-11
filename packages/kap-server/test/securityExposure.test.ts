@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { WebSocket } from 'ws';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -113,6 +114,58 @@ describe('server-v2 exposure hardening hooks', () => {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(terminals.statusCode).toBe(404);
+
+    const meta = await server.app.inject({
+      method: 'GET',
+      url: '/api/v1/meta',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const capabilities = (meta.json() as { data: { capabilities: Record<string, unknown> } }).data
+      .capabilities;
+    expect(capabilities['terminal']).toBeUndefined();
+
+    const asyncApi = await server.app.inject({
+      method: 'GET',
+      url: '/asyncapi.json',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const disabledDocument = asyncApi.json() as {
+      components: { messages: Record<string, unknown> };
+    };
+    const disabledMessages = disabledDocument.components.messages;
+    expect(disabledMessages['client_hello']).toBeDefined();
+    expect(Object.keys(disabledMessages).some((id) => id.startsWith('terminal_'))).toBe(false);
+    expect(JSON.stringify(disabledDocument)).not.toContain('terminal_');
+
+    const ws = new WebSocket(
+      `ws://127.0.0.1:${server.port}/api/v1/ws`,
+      [`kimi-code.bearer.${token}`],
+    );
+    const ack = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      ws.once('error', reject);
+      ws.on('message', (data) => {
+        const frame = JSON.parse((data as Buffer).toString()) as Record<string, unknown>;
+        if (frame['type'] === 'server_hello') {
+          ws.send(
+            JSON.stringify({
+              type: 'terminal_attach',
+              id: 'terminal-disabled',
+              payload: { session_id: 'sess_missing', terminal_id: 'term_missing' },
+            }),
+          );
+        } else if (frame['id'] === 'terminal-disabled') {
+          resolve(frame);
+        }
+      });
+    });
+    expect(ack).toMatchObject({
+      type: 'ack',
+      id: 'terminal-disabled',
+      code: 40414,
+      msg: 'terminal unavailable',
+    });
+    ws.close();
+    await new Promise<void>((resolve) => ws.once('close', resolve));
   });
 
   it('can explicitly re-enable terminal routes on non-loopback', async () => {
@@ -133,5 +186,26 @@ describe('server-v2 exposure hardening hooks', () => {
     });
     const body = res.json() as Record<string, unknown>;
     expect(body['code']).toBe(40401);
+
+    const meta = await server.app.inject({
+      method: 'GET',
+      url: '/api/v1/meta',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const capabilities = (meta.json() as { data: { capabilities: Record<string, unknown> } }).data
+      .capabilities;
+    expect(capabilities['terminal']).toBe(true);
+
+    const asyncApi = await server.app.inject({
+      method: 'GET',
+      url: '/asyncapi.json',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const enabledMessages = (asyncApi.json() as {
+      components: { messages: Record<string, unknown> };
+    }).components.messages;
+    expect(enabledMessages['terminal_attach']).toBeDefined();
+    expect(enabledMessages['terminal_attach_ack']).toBeDefined();
+    expect(enabledMessages['terminal_output']).toBeDefined();
   });
 });

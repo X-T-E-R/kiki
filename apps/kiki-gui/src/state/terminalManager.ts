@@ -17,8 +17,7 @@
  *     replacement PTY with the same shell/cwd and swaps the tab's binding);
  *   - `kill` (user-confirmed in the UI) closes over REST and removes the tab;
  *   - an attach the server never answers flips the tab to `unavailable`
- *     (kap-server's WS currently ignores terminal frames — the panel says so
- *     instead of hanging), with a retry path.
+ *     instead of hanging, with a retry path.
  *
  * Input typed while an attach is in flight buffers per tab and flushes on
  * the `attached` signal; a resize that lands before/without a live stream is
@@ -36,7 +35,10 @@ import type { TerminalSignal } from '../lib/ws';
 
 /** The socket surface the manager needs (KikiSocket satisfies it). */
 export interface TerminalTransport {
-  terminalAttach(sessionId: string, terminalId: string): Promise<{ replayed: number }>;
+  terminalAttach(
+    sessionId: string,
+    terminalId: string,
+  ): Promise<{ replayed: number; earliestSeq: number | null; truncated: boolean }>;
   terminalDetach(sessionId: string, terminalId: string): void;
   terminalInput(sessionId: string, terminalId: string, data: string): void;
   terminalResize(sessionId: string, terminalId: string, cols: number, rows: number): void;
@@ -64,6 +66,8 @@ export interface TerminalTab {
   readonly exitCode: number | null;
   readonly cols: number;
   readonly rows: number;
+  /** The server could replay only a suffix; earlier scrollback is unavailable. */
+  readonly scrollbackIncomplete: boolean;
 }
 
 export interface TerminalManagerState {
@@ -79,13 +83,15 @@ export interface TerminalManagerState {
 
 interface TabRecord {
   tab: TerminalTab;
-  /** Chunks received before a renderer bound; flushed by `bindOutput`. */
-  pendingOutput: string[];
+  /** Raw trailing output replayed whenever a fresh xterm renderer binds. */
+  outputBuffer: Array<{ seq: number; data: string }>;
   /** Keystrokes typed while `attaching`; flushed on `attached`. */
   pendingInput: string[];
   /** Last size the renderer reported; pushed on attach when it differs. */
   desiredSize: { cols: number; rows: number } | undefined;
   outputListener: ((data: string) => void) | undefined;
+  /** Resets a mounted renderer's scrollback + ANSI state, then writes a suffix. */
+  resetOutputListener: ((data: string) => void) | undefined;
   /** ANSI-stripped trailing lines — the panel's screen-reader mirror. */
   plainTail: string;
   /**
@@ -103,13 +109,28 @@ const EMPTY_STATE: TerminalManagerState = {
   errorKey: 'term.loadFailed',
 };
 
-/** Cap on buffered output while no renderer is bound (panel closed). */
-const MAX_PENDING_OUTPUT_CHUNKS = 2000;
+/** Match the server's bounded scrollback window for renderer remounts. */
+const MAX_OUTPUT_BUFFER_CHUNKS = 2000;
 
 export function shellDisplayName(shell: string): string {
   const normalized = shell.replaceAll('\\', '/');
   const base = normalized.slice(normalized.lastIndexOf('/') + 1);
   return base === '' ? shell : base;
+}
+
+export function terminalCapabilityAvailable(capabilities: {
+  readonly terminal?: true;
+}): boolean {
+  return capabilities.terminal === true;
+}
+
+/** Synchronous route/capability guard for terminal rendering and actions. */
+export function activeTerminalManager(
+  manager: TerminalManager | null,
+  sessionId: string,
+  terminalAvailable: boolean,
+): TerminalManager | null {
+  return terminalAvailable && manager?.sessionId === sessionId ? manager : null;
 }
 
 export class TerminalManager {
@@ -274,11 +295,13 @@ export class TerminalManager {
         exitCode: null,
         cols: terminal.cols,
         rows: terminal.rows,
+        scrollbackIncomplete: false,
       },
-      pendingOutput: [],
+      outputBuffer: [],
       pendingInput,
       desiredSize,
       outputListener: undefined,
+      resetOutputListener: undefined,
       plainTail: '',
       lastSeq: 0,
     };
@@ -298,6 +321,22 @@ export class TerminalManager {
     const record = this.records.get(id);
     if (record === undefined || record.tab.status !== 'unavailable') return;
     this.attach(id);
+  }
+
+  /**
+   * Tell the manager the shared socket dropped. Live tabs become attaching so
+   * keystrokes and the latest fitted size are held until the socket's automatic
+   * terminal re-attach ack arrives.
+   */
+  setTransportConnected(connected: boolean): void {
+    if (connected || this.disposed) return;
+    let changed = false;
+    for (const record of this.records.values()) {
+      if (record.tab.status !== 'live') continue;
+      record.tab = { ...record.tab, status: 'attaching' };
+      changed = true;
+    }
+    if (changed) this.publishTabs();
   }
 
   /** Keystrokes from the renderer. Buffers while the attach is in flight. */
@@ -324,21 +363,25 @@ export class TerminalManager {
   }
 
   /**
-   * Register the renderer's output sink for a tab. Chunks that arrived while
-   * no renderer was bound (attach replay racing the React mount) flush first.
-   * Returns the unbind.
+   * Register the renderer's output sink for a tab. A fresh xterm receives the
+   * bounded raw output buffer first, preserving ANSI state and scrollback when
+   * the panel or route remounts. Returns the unbind.
    */
-  bindOutput(id: string, listener: (data: string) => void): () => void {
+  bindOutput(
+    id: string,
+    listener: (data: string) => void,
+    resetListener?: (data: string) => void,
+  ): () => void {
     const record = this.records.get(id);
     if (record === undefined) return () => {};
     record.outputListener = listener;
-    if (record.pendingOutput.length > 0) {
-      const backlog = record.pendingOutput.join('');
-      record.pendingOutput = [];
-      listener(backlog);
+    record.resetOutputListener = resetListener;
+    if (record.outputBuffer.length > 0) {
+      listener(record.outputBuffer.map((chunk) => chunk.data).join(''));
     }
     return () => {
       if (record.outputListener === listener) record.outputListener = undefined;
+      if (record.resetOutputListener === resetListener) record.resetOutputListener = undefined;
     };
   }
 
@@ -372,11 +415,13 @@ export class TerminalManager {
         exitCode: terminal.exit_code ?? null,
         cols: terminal.cols,
         rows: terminal.rows,
+        scrollbackIncomplete: false,
       },
-      pendingOutput: [],
+      outputBuffer: [],
       pendingInput: [],
       desiredSize: undefined,
       outputListener: undefined,
+      resetOutputListener: undefined,
       plainTail: '',
       lastSeq: 0,
     };
@@ -401,6 +446,32 @@ export class TerminalManager {
     if (record === undefined) return;
     switch (signal.kind) {
       case 'attached': {
+        if (signal.truncated) {
+          // Replay frames arrive before the attach ack. Discard any older local
+          // prefix, reset the mounted xterm (including ANSI parser state), and
+          // redraw only the retained suffix so it cannot look continuous.
+          const earliestSeq = signal.earliestSeq;
+          if (earliestSeq !== null) {
+            record.outputBuffer = record.outputBuffer.filter((chunk) => chunk.seq >= earliestSeq);
+          } else {
+            record.outputBuffer = [];
+          }
+          record.plainTail = '';
+          for (const chunk of record.outputBuffer) {
+            record.plainTail = appendPlainTail(record.plainTail, chunk.data);
+          }
+          record.resetOutputListener?.(
+            record.outputBuffer.map((chunk) => chunk.data).join(''),
+          );
+          record.tab = { ...record.tab, scrollbackIncomplete: true };
+        }
+        // An exited terminal can be replayed immediately before its attach ack.
+        // Apply continuity metadata above, but never let the later ack
+        // resurrect the dead tab as live.
+        if (record.tab.status === 'exited') {
+          if (signal.truncated) this.publishTabs();
+          return;
+        }
         const wasAttaching = record.tab.status === 'attaching' || record.tab.status === 'unavailable';
         record.tab = { ...record.tab, status: 'live' };
         // Push the renderer's size when it disagrees with the PTY's.
@@ -423,21 +494,20 @@ export class TerminalManager {
         if (signal.seq <= record.lastSeq) return;
         record.lastSeq = signal.seq;
         record.plainTail = appendPlainTail(record.plainTail, signal.data);
-        if (record.outputListener !== undefined) {
-          record.outputListener(signal.data);
-        } else {
-          // No renderer bound (panel closed / mount race): buffer, capped
-          // like the server-side scrollback — the excess is gone either way.
-          record.pendingOutput.push(signal.data);
-          if (record.pendingOutput.length > MAX_PENDING_OUTPUT_CHUNKS) {
-            record.pendingOutput.splice(0, record.pendingOutput.length - MAX_PENDING_OUTPUT_CHUNKS);
-          }
+        record.outputBuffer.push({ seq: signal.seq, data: signal.data });
+        if (record.outputBuffer.length > MAX_OUTPUT_BUFFER_CHUNKS) {
+          record.outputBuffer.splice(0, record.outputBuffer.length - MAX_OUTPUT_BUFFER_CHUNKS);
         }
+        record.outputListener?.(signal.data);
         return;
       }
       case 'exit': {
         record.tab = { ...record.tab, status: 'exited', exitCode: signal.exitCode };
         this.publishTabs();
+        return;
+      }
+      case 'unavailable': {
+        if (record.tab.status !== 'exited') this.patchTab(signal.terminalId, { status: 'unavailable' });
         return;
       }
     }

@@ -28,6 +28,21 @@ describe('metaResponseSchema', () => {
     expect(parsed.dangerous_bypass_auth).toBe(false);
   });
 
+  it('accepts an omitted terminal capability but rejects terminal = false', () => {
+    const { terminal: _omit, ...capabilitiesWithoutTerminal } = sample.capabilities;
+    const parsed = metaResponseSchema.parse({
+      ...sample,
+      capabilities: capabilitiesWithoutTerminal,
+    });
+    expect(parsed.capabilities.terminal).toBeUndefined();
+
+    const bad = {
+      ...sample,
+      capabilities: { ...sample.capabilities, terminal: false },
+    };
+    expect(metaResponseSchema.safeParse(bad).success).toBe(false);
+  });
+
   it('normalizes started_at to UTC Z with millisecond precision', () => {
     const offsetForm = {
       ...sample,

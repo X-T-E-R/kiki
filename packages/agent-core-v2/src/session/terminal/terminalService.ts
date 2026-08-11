@@ -8,6 +8,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { statSync } from 'node:fs';
+import { win32 } from 'node:path';
 
 import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
@@ -52,12 +54,20 @@ export interface ISessionTerminalService {
     terminalId: string,
     sink: TerminalAttachSink,
     options?: TerminalAttachOptions,
-  ): Promise<{ replayed: number }>;
+  ): Promise<TerminalAttachResult>;
   detach(terminalId: string, sinkId: string): void;
   detachAllForSink(sinkId: string): void;
   write(terminalId: string, data: string): Promise<void>;
   resize(terminalId: string, cols: number, rows: number): Promise<void>;
   close(terminalId: string): Promise<{ closed: true }>;
+}
+
+export interface TerminalAttachResult {
+  readonly replayed: number;
+  /** First retained output sequence, or null when no output has been retained. */
+  readonly earliestSeq: number | null;
+  /** True when `sinceSeq` predates the retained contiguous suffix. */
+  readonly truncated: boolean;
 }
 
 export const ISessionTerminalService: ServiceIdentifier<ISessionTerminalService> =
@@ -82,7 +92,7 @@ export class SessionTerminalService extends Disposable implements ISessionTermin
       input.cwd === undefined
         ? this.workspace.workDir
         : this.workspace.assertAllowed(input.cwd, 'execute');
-    const shell = input.shell ?? defaultShell();
+    const shell = input.shell ?? resolveDefaultShell();
     const cols = input.cols ?? DEFAULT_COLS;
     const rows = input.rows ?? DEFAULT_ROWS;
     const process = await this.terminalService.spawn({ cwd, shell, cols, rows });
@@ -127,15 +137,20 @@ export class SessionTerminalService extends Disposable implements ISessionTermin
     terminalId: string,
     sink: TerminalAttachSink,
     options: TerminalAttachOptions = {},
-  ): Promise<{ replayed: number }> {
+  ): Promise<TerminalAttachResult> {
     const record = this.requireRecord(terminalId);
     record.sinks.set(sink.id, sink);
     const sinceSeq = options.sinceSeq ?? 0;
+    const earliestSeq = earliestOutputSeq(record.buffer);
     const replay = record.buffer.filter((frame) => frameSeq(frame) > sinceSeq);
     for (const frame of replay) {
       sink.send(frame);
     }
-    return { replayed: replay.length };
+    return {
+      replayed: replay.length,
+      earliestSeq,
+      truncated: earliestSeq !== null && sinceSeq + 1 < earliestSeq,
+    };
   }
 
   detach(terminalId: string, sinkId: string): void {
@@ -250,8 +265,52 @@ function frameSeq(frame: TerminalFrame): number {
   return frame.type === 'terminal_output' ? frame.seq : Number.MAX_SAFE_INTEGER;
 }
 
-function defaultShell(): string {
-  return process.env['SHELL'] || '/bin/sh';
+function earliestOutputSeq(frames: readonly TerminalFrame[]): number | null {
+  for (const frame of frames) {
+    if (frame.type === 'terminal_output') return frame.seq;
+  }
+  return null;
+}
+
+export function resolveDefaultShell(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  isExecutableFile: (path: string) => boolean = isFile,
+): string {
+  if (platform !== 'win32') {
+    const shell = env['SHELL']?.trim();
+    return shell === undefined || shell.length === 0 ? '/bin/sh' : shell;
+  }
+
+  const windowsDir = env['SystemRoot'] ?? env['WINDIR'];
+  const pathDirs = (env['Path'] ?? env['PATH'] ?? '')
+    .split(win32.delimiter)
+    .map((entry) => entry.trim().replaceAll(/^"|"$/g, ''))
+    .filter((entry) => entry.length > 0);
+  const candidates = [
+    env['ComSpec'],
+    windowsDir === undefined
+      ? undefined
+      : win32.join(windowsDir, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    ...pathDirs.map((entry) => win32.join(entry, 'pwsh.exe')),
+    ...pathDirs.map((entry) => win32.join(entry, 'powershell.exe')),
+    windowsDir === undefined ? undefined : win32.join(windowsDir, 'System32', 'cmd.exe'),
+    ...pathDirs.map((entry) => win32.join(entry, 'cmd.exe')),
+  ];
+  for (const candidate of candidates) {
+    if (candidate !== undefined && candidate.length > 0 && isExecutableFile(candidate)) {
+      return candidate;
+    }
+  }
+  throw new Error('No usable Windows shell executable was found');
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
 }
 
 registerScopedService(

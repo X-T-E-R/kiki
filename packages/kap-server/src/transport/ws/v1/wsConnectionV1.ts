@@ -1,7 +1,8 @@
 /**
  * `/api/v1/ws` connection — speaks the v1 WebSocket protocol
  * (`server_hello` / `client_hello` / `subscribe` / `subscribe_v2` /
- * `unsubscribe` / `ack` / `resync_required` / event envelopes).
+ * `unsubscribe` / terminal controls / `ack` / `resync_required` / event
+ * envelopes).
  *
  * Each connection is a {@link BroadcastTarget}: sequenced envelopes from the
  * {@link SessionEventBroadcaster} are forwarded to the socket. Subscription
@@ -19,10 +20,24 @@
  */
 
 import {
+  terminalAttachMessageSchema,
+  terminalCloseMessageSchema,
+  terminalDetachMessageSchema,
+  terminalInputMessageSchema,
+  terminalResizeMessageSchema,
   unsubscribeV2PayloadSchema,
   WS_PROTOCOL_VERSION,
   type SessionCursor,
 } from '../../../protocol/ws-control';
+import {
+  Error2,
+  ErrorCodes as CoreErrorCodes,
+  ISessionTerminalService,
+  isError2,
+  resumeSessionById,
+  type Scope,
+  type TerminalFrame,
+} from '@moonshot-ai/agent-core-v2';
 import {
   detachGrades,
   transcriptSubscribeV2PayloadSchema,
@@ -51,6 +66,7 @@ import {
   type TargetSubscription,
 } from './sessionEventBroadcaster';
 import { FsWatchBridge } from './fsWatchBridge';
+import { ErrorCode } from '../../../protocol/error-codes';
 
 const DEFAULT_MAX_BUFFER_SIZE = 1000;
 
@@ -77,6 +93,10 @@ export interface WsConnectionV1Options {
   readonly socket: WebSocket;
   readonly broadcaster: SessionEventBroadcaster;
   readonly fsWatchBridge?: FsWatchBridge;
+  /** Core scope used to resolve Session-scoped terminal services. */
+  readonly terminalCore?: Scope;
+  /** Exposure-policy gate shared with the terminal REST routes and `/meta`. */
+  readonly enableTerminals?: boolean;
   readonly connectionRegistry: IConnectionRegistry;
   /**
    * Present-only credential check for the post-connect `client_hello`
@@ -107,6 +127,8 @@ export class WsConnectionV1 implements BroadcastTarget {
   private readonly socket: WebSocket;
   private readonly broadcaster: SessionEventBroadcaster;
   private readonly fsWatchBridge?: FsWatchBridge;
+  private readonly terminalCore?: Scope;
+  private readonly enableTerminals: boolean;
   private readonly validateCredential?: CredentialValidator;
   private readonly maxBufferSize: number;
   private readonly flushIntervalMs: number;
@@ -133,6 +155,7 @@ export class WsConnectionV1 implements BroadcastTarget {
   private backpressureRetryTimer?: ReturnType<typeof setTimeout>;
   /** Epoch ms when the current backpressure deferral started; caps the wait. */
   private backpressureSince?: number;
+  private readonly terminalAttachments = new Map<string, ISessionTerminalService>();
 
   constructor(opts: WsConnectionV1Options) {
     this.id = `conn_${ulid()}`;
@@ -142,6 +165,8 @@ export class WsConnectionV1 implements BroadcastTarget {
     this.socket = opts.socket;
     this.broadcaster = opts.broadcaster;
     this.fsWatchBridge = opts.fsWatchBridge;
+    this.terminalCore = opts.terminalCore;
+    this.enableTerminals = opts.enableTerminals === true && opts.terminalCore !== undefined;
     this.validateCredential = opts.validateCredential;
     this.logger = opts.logger;
     this.maxBufferSize = opts.maxBufferSize ?? DEFAULT_MAX_BUFFER_SIZE;
@@ -214,9 +239,15 @@ export class WsConnectionV1 implements BroadcastTarget {
       case 'watch_fs_remove':
         this.enqueueControl(() => this.onWatchFs(frame, false));
         return;
+      case 'terminal_attach':
+      case 'terminal_detach':
+      case 'terminal_input':
+      case 'terminal_resize':
+      case 'terminal_close':
+        this.enqueueControl(() => this.onTerminalControl(frame));
+        return;
       default:
-        // Unknown / not-yet-implemented control frame (e.g. terminal_*, abort)
-        // — ignore for now; terminal/abort stay on REST.
+        // Unknown / not-yet-implemented control frame (e.g. abort) — ignore.
         return;
     }
   }
@@ -427,6 +458,170 @@ export class WsConnectionV1 implements BroadcastTarget {
     );
   }
 
+  private async onTerminalControl(frame: InboundFrame): Promise<void> {
+    if (!this.enableTerminals) {
+      this.sendImmediateFrame(
+        buildAck(frame.id ?? '', ErrorCode.TERMINAL_NOT_FOUND, 'terminal unavailable', {}),
+      );
+      return;
+    }
+
+    try {
+      switch (frame.type) {
+        case 'terminal_attach': {
+          const parsed = terminalAttachMessageSchema.safeParse(frame);
+          if (!parsed.success) {
+            this.sendInvalidTerminalControl(frame);
+            return;
+          }
+          const { session_id, terminal_id, since_seq } = parsed.data.payload;
+          const service = await this.resolveTerminalService(session_id);
+          if (this.closed) return;
+          const key = terminalAttachmentKey(session_id, terminal_id);
+          this.terminalAttachments.set(key, service);
+          try {
+            const result = await service.attach(
+              terminal_id,
+              {
+                id: this.id,
+                send: (terminalFrame) => {
+                  this.onTerminalFrame(service, terminalFrame);
+                },
+              },
+              { sinceSeq: since_seq },
+            );
+            if (this.closed) {
+              service.detach(terminal_id, this.id);
+              this.terminalAttachments.delete(key);
+              return;
+            }
+            this.sendImmediateFrame(
+              buildAck(frame.id ?? '', ErrorCode.SUCCESS, 'success', {
+                attached: true as const,
+                replayed: result.replayed,
+                earliest_seq: result.earliestSeq,
+                truncated: result.truncated,
+              }),
+            );
+          } catch (error) {
+            this.terminalAttachments.delete(key);
+            throw error;
+          }
+          return;
+        }
+        case 'terminal_detach': {
+          const parsed = terminalDetachMessageSchema.safeParse(frame);
+          if (!parsed.success) {
+            this.sendInvalidTerminalControl(frame);
+            return;
+          }
+          const { session_id, terminal_id } = parsed.data.payload;
+          const service = await this.resolveTerminalService(session_id);
+          await service.get(terminal_id);
+          service.detach(terminal_id, this.id);
+          this.terminalAttachments.delete(terminalAttachmentKey(session_id, terminal_id));
+          this.sendImmediateFrame(
+            buildAck(frame.id ?? '', ErrorCode.SUCCESS, 'success', { detached: true as const }),
+          );
+          return;
+        }
+        case 'terminal_input': {
+          const parsed = terminalInputMessageSchema.safeParse(frame);
+          if (!parsed.success) {
+            this.sendInvalidTerminalControl(frame);
+            return;
+          }
+          const { session_id, terminal_id, data } = parsed.data.payload;
+          await (await this.resolveTerminalService(session_id)).write(terminal_id, data);
+          this.sendImmediateFrame(
+            buildAck(frame.id ?? '', ErrorCode.SUCCESS, 'success', { accepted: true as const }),
+          );
+          return;
+        }
+        case 'terminal_resize': {
+          const parsed = terminalResizeMessageSchema.safeParse(frame);
+          if (!parsed.success) {
+            this.sendInvalidTerminalControl(frame);
+            return;
+          }
+          const { session_id, terminal_id, cols, rows } = parsed.data.payload;
+          await (await this.resolveTerminalService(session_id)).resize(terminal_id, cols, rows);
+          this.sendImmediateFrame(
+            buildAck(frame.id ?? '', ErrorCode.SUCCESS, 'success', { resized: true as const }),
+          );
+          return;
+        }
+        case 'terminal_close': {
+          const parsed = terminalCloseMessageSchema.safeParse(frame);
+          if (!parsed.success) {
+            this.sendInvalidTerminalControl(frame);
+            return;
+          }
+          const { session_id, terminal_id } = parsed.data.payload;
+          const service = await this.resolveTerminalService(session_id);
+          const result = await service.close(terminal_id);
+          service.detach(terminal_id, this.id);
+          this.terminalAttachments.delete(terminalAttachmentKey(session_id, terminal_id));
+          this.sendImmediateFrame(
+            buildAck(frame.id ?? '', ErrorCode.SUCCESS, 'success', result),
+          );
+          return;
+        }
+      }
+    } catch (error) {
+      this.sendTerminalError(frame, error);
+    }
+  }
+
+  private async resolveTerminalService(sessionId: string): Promise<ISessionTerminalService> {
+    const core = this.terminalCore;
+    if (core === undefined) throw new Error('terminal core unavailable');
+    const session = await resumeSessionById(core.accessor, sessionId);
+    if (session === undefined) {
+      throw new Error2(
+        CoreErrorCodes.SESSION_NOT_FOUND,
+        `session ${sessionId} does not exist`,
+      );
+    }
+    return session.accessor.get(ISessionTerminalService);
+  }
+
+  private onTerminalFrame(service: ISessionTerminalService, frame: TerminalFrame): void {
+    if (this.closed) return;
+    this.sendImmediateFrame(frame);
+    if (frame.type === 'terminal_exit') {
+      service.detach(frame.terminal_id, this.id);
+      this.terminalAttachments.delete(
+        terminalAttachmentKey(frame.session_id, frame.terminal_id),
+      );
+    }
+  }
+
+  private sendInvalidTerminalControl(frame: InboundFrame): void {
+    this.sendImmediateFrame(
+      buildAck(frame.id ?? '', ErrorCode.VALIDATION_FAILED, `invalid ${frame.type} payload`, {}),
+    );
+  }
+
+  private sendTerminalError(frame: InboundFrame, error: unknown): void {
+    if (isError2(error)) {
+      const code =
+        error.code === CoreErrorCodes.SESSION_NOT_FOUND
+          ? ErrorCode.SESSION_NOT_FOUND
+          : error.code === CoreErrorCodes.TERMINAL_NOT_FOUND
+            ? ErrorCode.TERMINAL_NOT_FOUND
+            : undefined;
+      if (code !== undefined) {
+        this.sendImmediateFrame(buildAck(frame.id ?? '', code, error.message, {}));
+        return;
+      }
+    }
+    this.logger?.error?.({ err: error }, 'terminal WebSocket control failed');
+    this.sendImmediateFrame(
+      buildAck(frame.id ?? '', ErrorCode.INTERNAL_ERROR, 'internal error', {}),
+    );
+  }
+
   /**
    * Shared attach path behind `client_hello` (legacy inline subscriptions)
    * and `subscribe`. Subscribes the connection via the broadcaster, then
@@ -620,8 +815,17 @@ export class WsConnectionV1 implements BroadcastTarget {
     this.broadcaster.removeGlobalTarget(this);
     for (const sid of this.subscriptions.keys()) this.broadcaster.unsubscribe(sid, this);
     this.fsWatchBridge?.detachConnection(this);
+    const terminalServices = new Set(this.terminalAttachments.values());
+    for (const service of terminalServices) {
+      service.detachAllForSink(this.id);
+    }
+    this.terminalAttachments.clear();
     // registry removal is handled by registerWsV1 on the socket 'close' event.
   }
+}
+
+function terminalAttachmentKey(sessionId: string, terminalId: string): string {
+  return `${sessionId}\0${terminalId}`;
 }
 
 function asStringArray(value: unknown): string[] {

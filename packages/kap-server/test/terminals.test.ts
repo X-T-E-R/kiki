@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import {
+  getLiveSessionById,
   IHostTerminalService,
+  ISessionTerminalService,
   ScopeActivation,
   LifecycleScope,
   registerScopedService,
@@ -12,11 +14,21 @@ import {
 } from '@moonshot-ai/agent-core-v2';
 import { ErrorCode } from '../src/protocol/error-codes';
 import type { Terminal } from '@moonshot-ai/agent-core-v2/os/interface/terminal';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { WebSocket } from 'ws';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
+import {
+  terminalAttachAckMessageSchema,
+  terminalCloseAckMessageSchema,
+  terminalDetachAckMessageSchema,
+  terminalExitMessageSchema,
+  terminalInputAckMessageSchema,
+  terminalOutputMessageSchema,
+  terminalResizeAckMessageSchema,
+} from '../src/protocol/ws-control';
 
 // --- Fake PTY service -------------------------------------------------------
 //
@@ -92,6 +104,89 @@ interface Envelope<T> {
   data: T;
   request_id: string;
   details?: { path: string; message: string }[];
+}
+
+interface WsFrame {
+  type: string;
+  id?: string;
+  code?: number;
+  msg?: string;
+  seq?: number;
+  session_id?: string;
+  terminal_id?: string;
+  payload?: Record<string, unknown>;
+}
+
+interface TerminalConn {
+  ws: WebSocket;
+  closed: Promise<void>;
+  send(frame: unknown): void;
+  next(predicate: (frame: WsFrame) => boolean, timeoutMs?: number): Promise<WsFrame>;
+}
+
+function openTerminalConn(url: string, token: string): Promise<TerminalConn> {
+  return new Promise((resolveConn, reject) => {
+    const ws = new WebSocket(url, [`kimi-code.bearer.${token}`]);
+    const frames: WsFrame[] = [];
+    const waiters: Array<(frame: WsFrame) => void> = [];
+    const closed = new Promise<void>((resolveClosed) => ws.on('close', resolveClosed));
+    ws.on('message', (data) => {
+      let frame: WsFrame;
+      try {
+        frame = JSON.parse((data as Buffer).toString()) as WsFrame;
+      } catch {
+        return;
+      }
+      const waiter = waiters.shift();
+      if (waiter === undefined) frames.push(frame);
+      else waiter(frame);
+    });
+    ws.once('open', () => {
+      resolveConn({
+        ws,
+        closed,
+        send: (frame) => {
+          ws.send(JSON.stringify(frame));
+        },
+        next: (predicate, timeoutMs = 2000) =>
+          new Promise((resolveFrame, rejectFrame) => {
+            const existing = frames.findIndex(predicate);
+            if (existing >= 0) {
+              resolveFrame(frames.splice(existing, 1)[0]!);
+              return;
+            }
+            const deadline = Date.now() + timeoutMs;
+            let timer: ReturnType<typeof setTimeout>;
+            const waiter = (frame: WsFrame): void => {
+              clearTimeout(timer);
+              if (predicate(frame)) resolveFrame(frame);
+              else {
+                frames.push(frame);
+                waiters.push(waiter);
+                arm();
+              }
+            };
+            const arm = (): void => {
+              const remaining = deadline - Date.now();
+              if (remaining <= 0) {
+                const index = waiters.indexOf(waiter);
+                if (index >= 0) waiters.splice(index, 1);
+                rejectFrame(new Error('timeout waiting for WebSocket frame'));
+                return;
+              }
+              timer = setTimeout(() => {
+                const index = waiters.indexOf(waiter);
+                if (index >= 0) waiters.splice(index, 1);
+                rejectFrame(new Error('timeout waiting for WebSocket frame'));
+              }, remaining);
+            };
+            arm();
+            waiters.push(waiter);
+          }),
+      });
+    });
+    ws.once('error', reject);
+  });
 }
 
 describe('server-v2 /api/v1/sessions/{sid}/terminals', () => {
@@ -240,5 +335,221 @@ describe('server-v2 /api/v1/sessions/{sid}/terminals', () => {
 
     const noSession = await get<unknown>(`/api/v1/sessions/sess_missing/terminals`);
     expect(noSession.code).toBe(ErrorCode.SESSION_NOT_FOUND);
+  });
+
+  it('bridges terminal attach, input, output, resize, reconnect replay, detach, close and exit', async () => {
+    const sid = await createSession(work as string);
+    const terminal = (await post<Terminal>(`/api/v1/sessions/${sid}/terminals`, {})).data;
+    const token = (server as RunningServer).authTokenService.getToken();
+    const url = `ws://127.0.0.1:${(server as RunningServer).port}/api/v1/ws`;
+    const session = getLiveSessionById((server as RunningServer).core.accessor, sid);
+    expect(session).toBeDefined();
+    const terminalService = session!.accessor.get(ISessionTerminalService);
+    const detachAll = vi.spyOn(terminalService, 'detachAllForSink');
+
+    const first = await openTerminalConn(url, token);
+    const firstHello = await first.next((frame) => frame.type === 'server_hello');
+    const firstConnectionId = firstHello.payload?.['ws_connection_id'];
+    expect(typeof firstConnectionId).toBe('string');
+
+    first.send({
+      type: 'terminal_attach',
+      id: 'attach-1',
+      payload: { session_id: sid, terminal_id: terminal.id, since_seq: 0 },
+    });
+    expect(
+      terminalAttachAckMessageSchema.parse(
+        await first.next((frame) => frame.type === 'ack' && frame.id === 'attach-1'),
+      ).payload,
+    ).toEqual({ attached: true, replayed: 0, earliest_seq: null, truncated: false });
+
+    first.send({
+      type: 'terminal_input',
+      id: 'input-1',
+      payload: { session_id: sid, terminal_id: terminal.id, data: 'echo hello\r' },
+    });
+    terminalInputAckMessageSchema.parse(
+      await first.next((frame) => frame.type === 'ack' && frame.id === 'input-1'),
+    );
+    expect(processes[0]?.writes).toEqual(['echo hello\r']);
+
+    processes[0]!.emitData('hello\r\n');
+    const liveOutput = terminalOutputMessageSchema.parse(
+      await first.next((frame) => frame.type === 'terminal_output'),
+    );
+    expect(liveOutput).toMatchObject({
+      seq: 1,
+      session_id: sid,
+      terminal_id: terminal.id,
+      payload: { data: 'hello\r\n' },
+    });
+
+    first.send({
+      type: 'terminal_resize',
+      id: 'resize-1',
+      payload: { session_id: sid, terminal_id: terminal.id, cols: 100, rows: 31 },
+    });
+    terminalResizeAckMessageSchema.parse(
+      await first.next((frame) => frame.type === 'ack' && frame.id === 'resize-1'),
+    );
+    expect(processes[0]?.resizes).toEqual([[100, 31]]);
+
+    first.ws.close();
+    await first.closed;
+    await vi.waitFor(() => {
+      expect(detachAll).toHaveBeenCalledWith(firstConnectionId);
+    });
+
+    processes[0]!.emitData('while disconnected\r\n');
+    const second = await openTerminalConn(url, token);
+    await second.next((frame) => frame.type === 'server_hello');
+    second.send({
+      type: 'terminal_attach',
+      id: 'attach-2',
+      payload: { session_id: sid, terminal_id: terminal.id, since_seq: 1 },
+    });
+    const replay = terminalOutputMessageSchema.parse(
+      await second.next((frame) => frame.type === 'terminal_output'),
+    );
+    expect(replay).toMatchObject({ seq: 2, payload: { data: 'while disconnected\r\n' } });
+    expect(
+      terminalAttachAckMessageSchema.parse(
+        await second.next((frame) => frame.type === 'ack' && frame.id === 'attach-2'),
+      ).payload,
+    ).toEqual({ attached: true, replayed: 1, earliest_seq: 1, truncated: false });
+
+    second.send({
+      type: 'terminal_detach',
+      id: 'detach-1',
+      payload: { session_id: sid, terminal_id: terminal.id },
+    });
+    terminalDetachAckMessageSchema.parse(
+      await second.next((frame) => frame.type === 'ack' && frame.id === 'detach-1'),
+    );
+    processes[0]!.emitData('while detached\r\n');
+    await expect(second.next((frame) => frame.type === 'terminal_output', 100)).rejects.toThrow(
+      /timeout/,
+    );
+
+    second.send({
+      type: 'terminal_attach',
+      id: 'attach-3',
+      payload: { session_id: sid, terminal_id: terminal.id, since_seq: 2 },
+    });
+    expect(
+      terminalOutputMessageSchema.parse(
+        await second.next((frame) => frame.type === 'terminal_output'),
+      ),
+    ).toMatchObject({ seq: 3, payload: { data: 'while detached\r\n' } });
+    await second.next((frame) => frame.type === 'ack' && frame.id === 'attach-3');
+
+    second.send({
+      type: 'terminal_close',
+      id: 'close-1',
+      payload: { session_id: sid, terminal_id: terminal.id },
+    });
+    expect(
+      terminalExitMessageSchema.parse(
+        await second.next((frame) => frame.type === 'terminal_exit'),
+      ),
+    ).toMatchObject({ session_id: sid, terminal_id: terminal.id, payload: { exit_code: null } });
+    terminalCloseAckMessageSchema.parse(
+      await second.next((frame) => frame.type === 'ack' && frame.id === 'close-1'),
+    );
+    expect(processes[0]?.killed).toBe(true);
+
+    second.ws.close();
+    await second.closed;
+
+    const third = await openTerminalConn(url, token);
+    await third.next((frame) => frame.type === 'server_hello');
+    third.send({
+      type: 'terminal_attach',
+      id: 'attach-exited',
+      payload: { session_id: sid, terminal_id: terminal.id, since_seq: 3 },
+    });
+    terminalExitMessageSchema.parse(
+      await third.next((frame) => frame.type === 'terminal_exit'),
+    );
+    expect(
+      terminalAttachAckMessageSchema.parse(
+        await third.next((frame) => frame.type === 'ack' && frame.id === 'attach-exited'),
+      ).payload,
+    ).toEqual({ attached: true, replayed: 1, earliest_seq: 1, truncated: false });
+    third.ws.close();
+    await third.closed;
+  });
+
+  it('reports a replay gap after more than 2,000 buffered output frames', async () => {
+    const sid = await createSession(work as string);
+    const terminal = (await post<Terminal>(`/api/v1/sessions/${sid}/terminals`, {})).data;
+    for (let seq = 1; seq <= 2001; seq += 1) processes[0]!.emitData(`frame-${seq}`);
+
+    const conn = await openTerminalConn(
+      `ws://127.0.0.1:${(server as RunningServer).port}/api/v1/ws`,
+      (server as RunningServer).authTokenService.getToken(),
+    );
+    await conn.next((frame) => frame.type === 'server_hello');
+    conn.send({
+      type: 'terminal_attach',
+      id: 'attach-truncated',
+      payload: { session_id: sid, terminal_id: terminal.id, since_seq: 0 },
+    });
+
+    expect(
+      terminalAttachAckMessageSchema.parse(
+        await conn.next((frame) => frame.type === 'ack' && frame.id === 'attach-truncated'),
+      ).payload,
+    ).toEqual({ attached: true, replayed: 2000, earliest_seq: 2, truncated: true });
+    expect(
+      terminalOutputMessageSchema.parse(
+        await conn.next((frame) => frame.type === 'terminal_output'),
+      ).seq,
+    ).toBe(2);
+
+    conn.ws.close();
+    await conn.closed;
+  });
+
+  it('maps malformed, unknown-session and unknown-terminal WS controls to protocol codes', async () => {
+    const sid = await createSession(work as string);
+    const conn = await openTerminalConn(
+      `ws://127.0.0.1:${(server as RunningServer).port}/api/v1/ws`,
+      (server as RunningServer).authTokenService.getToken(),
+    );
+    await conn.next((frame) => frame.type === 'server_hello');
+
+    conn.send({
+      type: 'terminal_resize',
+      id: 'bad-resize',
+      payload: { session_id: sid, terminal_id: 'term_missing', cols: 0, rows: 24 },
+    });
+    expect(await conn.next((frame) => frame.id === 'bad-resize')).toMatchObject({
+      type: 'ack',
+      code: ErrorCode.VALIDATION_FAILED,
+    });
+
+    conn.send({
+      type: 'terminal_input',
+      id: 'missing-terminal',
+      payload: { session_id: sid, terminal_id: 'term_missing', data: 'x' },
+    });
+    expect(await conn.next((frame) => frame.id === 'missing-terminal')).toMatchObject({
+      type: 'ack',
+      code: ErrorCode.TERMINAL_NOT_FOUND,
+    });
+
+    conn.send({
+      type: 'terminal_attach',
+      id: 'missing-session',
+      payload: { session_id: 'sess_missing', terminal_id: 'term_missing' },
+    });
+    expect(await conn.next((frame) => frame.id === 'missing-session')).toMatchObject({
+      type: 'ack',
+      code: ErrorCode.SESSION_NOT_FOUND,
+    });
+
+    conn.ws.close();
+    await conn.closed;
   });
 });

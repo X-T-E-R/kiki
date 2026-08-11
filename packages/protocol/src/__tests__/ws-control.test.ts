@@ -29,6 +29,7 @@ import {
   terminalResizeMessageSchema,
   terminalOutputMessageSchema,
   terminalExitMessageSchema,
+  terminalEventOperations,
   unsubscribeAckMessageSchema,
   unsubscribeMessageSchema,
   watchFsAckMessageSchema,
@@ -694,9 +695,18 @@ describe('ws-control — operation registry', () => {
         id: 't1',
         code: 0,
         msg: 'success',
-        payload: { attached: true, replayed: 2 },
+        payload: { attached: true, replayed: 2, earliest_seq: 1, truncated: false },
       }).success,
     ).toBe(true);
+    expect(
+      terminalAttachAckMessageSchema.safeParse({
+        type: 'ack',
+        id: 't1-legacy',
+        code: 0,
+        msg: 'success',
+        payload: { attached: true, replayed: 2 },
+      }).success,
+    ).toBe(false);
     expect(
       terminalDetachAckMessageSchema.safeParse({
         type: 'ack',
@@ -760,5 +770,11 @@ describe('ws-control — operation registry', () => {
     ).toBe(true);
 
     expect(wsOperations.some((op) => op.type === 'session_event')).toBe(true);
+    expect(terminalEventOperations.map((op) => op.type)).toEqual([
+      'terminal_output',
+      'terminal_exit',
+    ]);
+    expect(wsOperations.some((op) => op.type === 'terminal_output')).toBe(true);
+    expect(wsOperations.some((op) => op.type === 'terminal_exit')).toBe(true);
   });
 });

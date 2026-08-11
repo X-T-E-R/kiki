@@ -256,6 +256,13 @@ class FakeTerminal {
     }
   }
 
+  /** Add output while simulating a disconnected client (proof-only gap). */
+  emitBuffered(data) {
+    const frame = this.frame(data);
+    this.buffer.push(frame);
+    if (this.buffer.length > 2000) this.buffer.splice(0, this.buffer.length - 2000);
+  }
+
   write(data) {
     if (this.record.status !== 'running') return;
     for (const char of String(data)) {
@@ -1234,6 +1241,24 @@ class FixtureServer {
           try { ws.terminate(); } catch { /* closing */ }
         }
         return this.envelope(res, { dropped: this.sockets.size });
+      case 'terminal_gap': {
+        const session = this.sessions.get(body.session_id);
+        if (session === undefined) return this.envelope(res, null, 40401, 'session.not_found');
+        const term = session.terminals.get(body.terminal_id);
+        if (term === undefined) return this.envelope(res, null, 40414, 'terminal.not_found');
+        for (const ws of this.sockets) {
+          try { ws.terminate(); } catch { /* closing */ }
+        }
+        const count = Number(body.count ?? 2001);
+        for (let i = 0; i < count; i += 1) {
+          term.emitBuffered(`gap-output-${i + 1}\r\n`);
+        }
+        return this.envelope(res, {
+          emitted: count,
+          earliest_seq: term.buffer[0]?.seq ?? null,
+          latest_seq: term.buffer.at(-1)?.seq ?? null,
+        });
+      }
       case 'release': {
         // Unblock steps parked on { waitFor: 'release' } (queue/abort pacing).
         // With none parked yet, arm the one-shot gate for the next one.
@@ -1404,6 +1429,7 @@ class FixtureServer {
           term.attachments.add(ws);
           let replayed = 0;
           const sinceSeq = Number(payload.since_seq ?? 0);
+          const earliestSeq = term.buffer[0]?.seq ?? null;
           for (const frame of term.buffer) {
             if (frame.seq > sinceSeq) {
               this.sendFrame(ws, frame);
@@ -1413,7 +1439,12 @@ class FixtureServer {
           // The exit frame always replays (the engine ranks it +∞), so a
           // late attacher still learns the terminal is dead.
           if (term.record.status === 'exited') this.sendFrame(ws, term.exitFrame());
-          ack({ attached: true, replayed });
+          ack({
+            attached: true,
+            replayed,
+            earliest_seq: earliestSeq,
+            truncated: earliestSeq !== null && sinceSeq + 1 < earliestSeq,
+          });
           break;
         }
         case 'terminal_detach': {

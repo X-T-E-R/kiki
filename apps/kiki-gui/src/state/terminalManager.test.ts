@@ -4,7 +4,9 @@ import type { Terminal } from '@moonshot-ai/protocol';
 
 import type { TerminalSignal } from '../lib/ws';
 import {
+  activeTerminalManager,
   shellDisplayName,
+  terminalCapabilityAvailable,
   TerminalManager,
   type TerminalRestClient,
   type TerminalTransport,
@@ -33,9 +35,15 @@ class FakeTransport implements TerminalTransport {
   attachError: Error | undefined;
   autoAck = true;
   private listener: ((signal: TerminalSignal) => void) | undefined;
-  private pending = new Map<string, (result: { replayed: number }) => void>();
+  private pending = new Map<
+    string,
+    (result: { replayed: number; earliestSeq: number | null; truncated: boolean }) => void
+  >();
 
-  terminalAttach(sessionId: string, terminalId: string): Promise<{ replayed: number }> {
+  terminalAttach(
+    sessionId: string,
+    terminalId: string,
+  ): Promise<{ replayed: number; earliestSeq: number | null; truncated: boolean }> {
     this.attached.push(terminalId);
     if (this.attachError !== undefined) return Promise.reject(this.attachError);
     if (!this.autoAck) {
@@ -44,9 +52,16 @@ class FakeTransport implements TerminalTransport {
       });
     }
     queueMicrotask(() => {
-      this.listener?.({ kind: 'attached', sessionId, terminalId, replayed: 0 });
+      this.listener?.({
+        kind: 'attached',
+        sessionId,
+        terminalId,
+        replayed: 0,
+        earliestSeq: null,
+        truncated: false,
+      });
     });
-    return Promise.resolve({ replayed: 0 });
+    return Promise.resolve({ replayed: 0, earliestSeq: null, truncated: false });
   }
 
   terminalDetach(_sessionId: string, terminalId: string): void {
@@ -73,9 +88,16 @@ class FakeTransport implements TerminalTransport {
   }
 
   flushAttach(terminalId: string): void {
-    this.pending.get(terminalId)?.({ replayed: 0 });
+    this.pending.get(terminalId)?.({ replayed: 0, earliestSeq: null, truncated: false });
     this.pending.delete(terminalId);
-    this.emit({ kind: 'attached', sessionId: 'sess_1', terminalId, replayed: 0 });
+    this.emit({
+      kind: 'attached',
+      sessionId: 'sess_1',
+      terminalId,
+      replayed: 0,
+      earliestSeq: null,
+      truncated: false,
+    });
   }
 }
 
@@ -122,6 +144,28 @@ describe('shellDisplayName', () => {
     expect(shellDisplayName('/bin/sh')).toBe('sh');
     expect(shellDisplayName('C:\\Windows\\System32\\cmd.exe')).toBe('cmd.exe');
     expect(shellDisplayName('pwsh')).toBe('pwsh');
+  });
+});
+
+describe('terminal route/capability ownership', () => {
+  it('synchronously rejects session A manager on the first session B render', () => {
+    const managerA = makeManager(new FakeRest(), new FakeTransport());
+    const managerB = new TerminalManager({
+      sessionId: 'sess_2',
+      client: new FakeRest(),
+      transport: new FakeTransport(),
+    });
+
+    expect(activeTerminalManager(managerA, 'sess_1', true)).toBe(managerA);
+    expect(activeTerminalManager(managerA, 'sess_2', true)).toBeNull();
+    expect(activeTerminalManager(managerB, 'sess_2', true)).toBe(managerB);
+  });
+
+  it('rejects even a matching manager when the server omits terminal capability', () => {
+    const manager = makeManager(new FakeRest(), new FakeTransport());
+    expect(terminalCapabilityAvailable({})).toBe(false);
+    expect(terminalCapabilityAvailable({ terminal: true })).toBe(true);
+    expect(activeTerminalManager(manager, 'sess_1', false)).toBeNull();
   });
 });
 
@@ -238,7 +282,7 @@ describe('TerminalManager input/output', () => {
     expect(manager.getState().tabs[0]?.exitCode).toBe(0);
   });
 
-  it('buffers output until a renderer binds (replay racing the mount)', async () => {
+  it('replays buffered output whenever a fresh renderer binds', async () => {
     const rest = new FakeRest();
     const transport = new FakeTransport();
     rest.terminals = [fakeTerminal({ id: 'term_a' })];
@@ -247,8 +291,30 @@ describe('TerminalManager input/output', () => {
 
     transport.emit({ kind: 'output', sessionId: 'sess_1', terminalId: 'term_a', seq: 1, data: 'early' });
     const chunks: string[] = [];
-    manager.bindOutput('term_a', (data) => chunks.push(data));
+    const unbind = manager.bindOutput('term_a', (data) => chunks.push(data));
     expect(chunks.join('')).toBe('early');
+    transport.emit({ kind: 'output', sessionId: 'sess_1', terminalId: 'term_a', seq: 2, data: ' later' });
+    expect(chunks.join('')).toBe('early later');
+
+    unbind();
+    const remounted: string[] = [];
+    manager.bindOutput('term_a', (data) => remounted.push(data));
+    expect(remounted.join('')).toBe('early later');
+  });
+
+  it('deduplicates replay overlap by terminal sequence', async () => {
+    const rest = new FakeRest();
+    const transport = new FakeTransport();
+    rest.terminals = [fakeTerminal({ id: 'term_a' })];
+    const manager = makeManager(rest, transport);
+    await manager.open();
+
+    const chunks: string[] = [];
+    manager.bindOutput('term_a', (data) => chunks.push(data));
+    transport.emit({ kind: 'output', sessionId: 'sess_1', terminalId: 'term_a', seq: 4, data: 'once' });
+    transport.emit({ kind: 'output', sessionId: 'sess_1', terminalId: 'term_a', seq: 4, data: 'duplicate' });
+    transport.emit({ kind: 'output', sessionId: 'sess_1', terminalId: 'term_a', seq: 3, data: 'stale' });
+    expect(chunks).toEqual(['once']);
   });
 
   it('buffers keystrokes while attaching and flushes them on attached', async () => {
@@ -266,6 +332,126 @@ describe('TerminalManager input/output', () => {
     expect(transport.inputs).toEqual([{ id: 'term_a', data: 'echo hi\r' }]);
   });
 
+  it('buffers input and resize across a socket reconnect', async () => {
+    const rest = new FakeRest();
+    const transport = new FakeTransport();
+    rest.terminals = [fakeTerminal({ id: 'term_a', cols: 80, rows: 24 })];
+    const manager = makeManager(rest, transport);
+    await manager.open();
+    await tick();
+
+    manager.setTransportConnected(false);
+    manager.input('term_a', 'during reconnect');
+    manager.resize('term_a', 110, 32);
+    expect(manager.getState().tabs[0]?.status).toBe('attaching');
+    expect(transport.inputs).toHaveLength(0);
+    expect(transport.resizes).toHaveLength(0);
+
+    transport.emit({
+      kind: 'attached',
+      sessionId: 'sess_1',
+      terminalId: 'term_a',
+      replayed: 0,
+      earliestSeq: null,
+      truncated: false,
+    });
+    expect(transport.inputs).toEqual([{ id: 'term_a', data: 'during reconnect' }]);
+    expect(transport.resizes).toEqual([{ id: 'term_a', cols: 110, rows: 32 }]);
+  });
+
+  it('does not let a replayed attach ack resurrect an exited terminal', async () => {
+    const rest = new FakeRest();
+    const transport = new FakeTransport();
+    transport.autoAck = false;
+    rest.terminals = [fakeTerminal({ id: 'term_a' })];
+    const manager = makeManager(rest, transport);
+    await manager.open();
+
+    transport.emit({ kind: 'exit', sessionId: 'sess_1', terminalId: 'term_a', exitCode: 7 });
+    transport.flushAttach('term_a');
+
+    expect(manager.getState().tabs[0]?.status).toBe('exited');
+    expect(manager.getState().tabs[0]?.exitCode).toBe(7);
+  });
+
+  it('resets ANSI/scrollback state and marks a truncated replay incomplete', async () => {
+    const rest = new FakeRest();
+    const transport = new FakeTransport();
+    rest.terminals = [fakeTerminal({ id: 'term_a' })];
+    const manager = makeManager(rest, transport);
+    await manager.open();
+    await tick();
+
+    const writes: string[] = [];
+    const resets: string[] = [];
+    manager.bindOutput(
+      'term_a',
+      (data) => writes.push(data),
+      (data) => resets.push(data),
+    );
+    transport.emit({
+      kind: 'output',
+      sessionId: 'sess_1',
+      terminalId: 'term_a',
+      seq: 1,
+      data: '\u001B[31mold prefix',
+    });
+    transport.emit({
+      kind: 'output',
+      sessionId: 'sess_1',
+      terminalId: 'term_a',
+      seq: 3,
+      data: 'retained suffix\u001B[0m',
+    });
+    transport.emit({
+      kind: 'attached',
+      sessionId: 'sess_1',
+      terminalId: 'term_a',
+      replayed: 1,
+      earliestSeq: 3,
+      truncated: true,
+    });
+
+    expect(writes).toEqual(['\u001B[31mold prefix', 'retained suffix\u001B[0m']);
+    expect(resets).toEqual(['retained suffix\u001B[0m']);
+    expect(manager.getState().tabs[0]?.scrollbackIncomplete).toBe(true);
+    expect(manager.getPlainTail('term_a')).toBe('retained suffix');
+
+    const remounted: string[] = [];
+    manager.bindOutput('term_a', (data) => remounted.push(data));
+    expect(remounted).toEqual(['retained suffix\u001B[0m']);
+  });
+
+  it('keeps complete replay continuous without resetting the renderer', async () => {
+    const rest = new FakeRest();
+    const transport = new FakeTransport();
+    rest.terminals = [fakeTerminal({ id: 'term_a' })];
+    const manager = makeManager(rest, transport);
+    await manager.open();
+    await tick();
+
+    const resets: string[] = [];
+    manager.bindOutput('term_a', () => {}, (data) => resets.push(data));
+    transport.emit({
+      kind: 'output',
+      sessionId: 'sess_1',
+      terminalId: 'term_a',
+      seq: 1,
+      data: 'complete',
+    });
+    transport.emit({
+      kind: 'attached',
+      sessionId: 'sess_1',
+      terminalId: 'term_a',
+      replayed: 1,
+      earliestSeq: 1,
+      truncated: false,
+    });
+
+    expect(resets).toEqual([]);
+    expect(manager.getState().tabs[0]?.scrollbackIncomplete).toBe(false);
+  });
+
   it('ignores signals for other sessions and unknown terminals', async () => {
     const rest = new FakeRest();
     const transport = new FakeTransport();
@@ -277,6 +463,18 @@ describe('TerminalManager input/output', () => {
     transport.emit({ kind: 'exit', sessionId: 'sess_other', terminalId: 'term_a', exitCode: 9 });
     transport.emit({ kind: 'exit', sessionId: 'sess_1', terminalId: 'term_unknown', exitCode: 9 });
     expect(manager.getState().tabs[0]?.status).toBe('live');
+  });
+
+  it('detaches every tracked PTY when the session manager is disposed', async () => {
+    const rest = new FakeRest();
+    const transport = new FakeTransport();
+    rest.terminals = [fakeTerminal({ id: 'term_a' }), fakeTerminal({ id: 'term_b' })];
+    const manager = makeManager(rest, transport);
+    await manager.open();
+
+    manager.dispose();
+
+    expect(transport.detached).toEqual(['term_a', 'term_b']);
   });
 });
 
@@ -353,6 +551,19 @@ describe('TerminalManager restart / unavailable', () => {
     const manager = makeManager(rest, transport);
     await manager.open();
     await tick();
+    expect(manager.getState().tabs[0]?.status).toBe('unavailable');
+  });
+
+  it('marks a live tab unavailable when an automatic re-attach fails', async () => {
+    const rest = new FakeRest();
+    const transport = new FakeTransport();
+    rest.terminals = [fakeTerminal({ id: 'term_a' })];
+    const manager = makeManager(rest, transport);
+    await manager.open();
+    await tick();
+
+    transport.emit({ kind: 'unavailable', sessionId: 'sess_1', terminalId: 'term_a' });
+
     expect(manager.getState().tabs[0]?.status).toBe('unavailable');
   });
 });

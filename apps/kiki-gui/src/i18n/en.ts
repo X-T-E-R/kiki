@@ -337,8 +337,9 @@ export const en = {
   'term.exited': 'Process exited (code {code})',
   'term.exitedNoCode': 'Process exited',
   'term.restart': 'Restart',
+  'term.scrollbackIncomplete': 'Earlier output is unavailable — showing retained output only.',
   'term.unavailable':
-    'This server is not answering terminal streams — terminal I/O needs a kap-server build that speaks the terminal WS frames.',
+    'The terminal stream is unavailable. Retry after the connection recovers.',
 
   // ---- new session page ----
   'new.title': 'New session',

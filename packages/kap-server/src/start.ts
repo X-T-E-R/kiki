@@ -522,6 +522,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     registry: connectionRegistry,
     broadcaster,
     fsWatchBridge,
+    enableTerminals,
     logger,
   });
 
@@ -621,7 +622,13 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     // reachable beyond localhost). Gated by the global auth hook (meta doc).
     return reply
       .type('application/json')
-      .send(createAsyncApiDocument({ version: serverVersion, serverHost: host }));
+      .send(
+        createAsyncApiDocument({
+          version: serverVersion,
+          serverHost: host,
+          enableTerminals,
+        }),
+      );
   });
 
   app.get('/openapi.json', async (_req, reply) => {

@@ -27,6 +27,7 @@ export interface RegisterWsV1Options {
   readonly registry: IConnectionRegistry;
   readonly broadcaster: SessionEventBroadcaster;
   readonly fsWatchBridge: FsWatchBridge;
+  readonly enableTerminals: boolean;
   readonly logger?: JournalLogger;
   readonly maxBufferSize?: number;
   readonly flushIntervalMs?: number;
@@ -35,7 +36,6 @@ export interface RegisterWsV1Options {
 }
 
 export function registerWsV1(core: Scope, opts: RegisterWsV1Options): WebSocketServer {
-  void core; // the broadcaster already holds the Core scope
   const wss = new WebSocketServer({ noServer: true, handleProtocols: selectWsBearerProtocol });
   const { registry, broadcaster } = opts;
 
@@ -44,6 +44,8 @@ export function registerWsV1(core: Scope, opts: RegisterWsV1Options): WebSocketS
       socket,
       broadcaster,
       fsWatchBridge: opts.fsWatchBridge,
+      terminalCore: core,
+      enableTerminals: opts.enableTerminals,
       connectionRegistry: registry,
       validateCredential: opts.validateCredential,
       remoteAddress: req.socket.remoteAddress ?? null,
