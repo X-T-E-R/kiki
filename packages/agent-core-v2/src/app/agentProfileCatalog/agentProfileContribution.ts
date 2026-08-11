@@ -17,15 +17,17 @@
  */
 
 import { collection } from '#/_base/di/collection';
-import type { AgentProfile } from './agentProfileCatalog';
+import type { AgentProfile, AgentProfileRouteDefinition } from './agentProfileCatalog';
 
 export interface SkippedAgentFile {
   readonly path: string;
   readonly reason: string;
+  readonly code?: string;
 }
 
 export interface AgentProfileContribution {
   readonly profiles: readonly AgentProfile[];
+  readonly routes?: readonly AgentProfileRouteDefinition[];
   readonly skipped?: readonly SkippedAgentFile[];
   readonly scannedRoots?: readonly string[];
 }

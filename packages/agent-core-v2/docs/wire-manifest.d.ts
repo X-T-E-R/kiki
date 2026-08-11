@@ -133,7 +133,7 @@ interface ContextAppendMessagePayload {
     }[];
     id?: string;
     providerMessageId?: string;
-    origin?: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | undefined;
+    origin?: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message' | undefined;
     isError?: boolean;
     note?: string;
   };
@@ -456,6 +456,9 @@ interface ProfileBindPayload {
   _name: 'profile.bind';
   modelAlias?: string;
   profileName?: string;
+  routeId?: string;
+  lockedModelAlias?: string;
+  lockedThinkingEffort?: string;
   /** ThinkingEffort */
   thinkingEffort: 'off' | 'on' | (string & {});
   serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
@@ -469,6 +472,7 @@ interface ProfileBindPayload {
   renderGeneration?: number;
   agentsMdPaths?: string[];
   activeToolNames?: string[];
+  toolAllowPolicies?: string[][];
   disallowedTools: string[];
   subagents?: string[];
 }
@@ -685,7 +689,7 @@ interface TurnPromptPayload {
   _name: 'turn.prompt';
   input: readonly ContentPart[];
   /** PromptOrigin */
-  origin: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry';
+  origin: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message';
 }
 
 /**
@@ -696,7 +700,7 @@ interface TurnSteerPayload {
   _name: 'turn.steer';
   input: readonly ContentPart[];
   /** PromptOrigin */
-  origin: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry';
+  origin: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message';
 }
 
 /**

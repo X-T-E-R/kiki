@@ -17,7 +17,10 @@ import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { SECONDARY_MODEL_SECTION } from '#/app/kosongConfig/configSection';
 import { SECONDARY_MODEL_FLAG_ID } from '#/session/subagent/flag';
-import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import {
+  normalizeAgentProfile,
+  type ResolvedAgentProfileRoute,
+} from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { APIProviderRateLimitError } from '#/kosong/contract/errors';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
@@ -1057,6 +1060,65 @@ describe('SessionSwarmService metadata compatibility', () => {
     );
   });
 
+  it('resolves and binds a named route through the Session swarm boundary', async () => {
+    const base = normalizeAgentProfile({
+      name: 'coder',
+      tools: ['Read', 'send_message', 'mcp__*'],
+      systemPrompt: () => 'coder',
+    });
+    const effective = normalizeAgentProfile({
+      ...base,
+      routeId: 'coder.review',
+      toolAllowPolicies: [base.tools!, ['Read', 'send_message', 'mcp__github__*']],
+      systemPrompt: () => 'routed coder',
+    });
+    const route: ResolvedAgentProfileRoute = {
+      id: 'coder.review',
+      profile: 'coder',
+      description: 'Review route',
+      overriddenFields: ['tools'],
+      effectiveProfile: effective,
+    };
+    ix.stub(ISessionAgentProfileCatalog, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChange: Event.None as ISessionAgentProfileCatalog['onDidChange'],
+      get: (name) => (name === base.name ? base : undefined),
+      getDefault: () => base,
+      list: () => [base],
+      listRoutes: () => [route],
+      routeDiagnostics: () => [],
+      resolveSelection: ({ profile, route: routeId }) => {
+        if (routeId !== route.id || profile !== base.name) throw new Error('unexpected route');
+        return { profile: effective, baseProfile: base, route };
+      },
+      inspect: () => undefined,
+      load: async () => {},
+      reload: async () => {},
+    });
+    const task: SessionSwarmSpawnTask = {
+      ...spawnSessionTask('src/a.ts'),
+      routeId: route.id,
+      binding: { model: 'kimi-test', thinking: 'medium' },
+    };
+
+    await expect(
+      ix.get(ISessionSwarmService).run({ callerAgentId: 'main', tasks: [task] }),
+    ).resolves.toMatchObject([{ status: 'completed', agentId: 'agent-new' }]);
+
+    expect(createAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        binding: {
+          profile: 'coder',
+          route: 'coder.review',
+          model: 'kimi-test',
+          thinking: 'medium',
+        },
+        delegator: { kind: 'agent', agentId: 'main' },
+      }),
+    );
+  });
+
   it('inherits parent user tools on spawned children', async () => {
     const parentUserTools = userToolServiceStub();
     const childUserTools = userToolServiceStub();
@@ -1112,6 +1174,62 @@ describe('SessionSwarmService metadata compatibility', () => {
       },
     ]);
     expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it('preserves a legacy non-main owner across repeated cold swarm resumes', async () => {
+    agents['agent-existing'] = {
+      type: 'sub',
+      parentAgentId: 'orchestrator',
+      swarmItem: 'legacy-item',
+      forkedFrom: 'agent-origin',
+    };
+    handles.set('orchestrator', agentHandle('orchestrator', lifecycle, eventBus));
+    createAgent.mockImplementation(async (opts: CreateAgentOptions = {}) => {
+      const id = opts.agentId ?? 'agent-new';
+      const handle = agentHandle(id, lifecycle, eventBus);
+      handles.set(id, handle);
+      agents[id] = {
+        type: opts.delegator?.kind === 'external' ? 'independent' : 'sub',
+        parentAgentId: opts.delegator?.kind === 'agent' ? opts.delegator.agentId : 'main',
+        delegator: opts.delegator,
+        forkedFrom: opts.forkedFrom,
+        labels: opts.labels,
+      };
+      return handle;
+    });
+    const service = ix.get(ISessionSwarmService);
+
+    await expect(
+      service.run({
+        callerAgentId: 'orchestrator',
+        tasks: [resumeSessionTask('agent-existing')],
+      }),
+    ).resolves.toMatchObject([{ status: 'completed', agentId: 'agent-existing' }]);
+    expect(agents['agent-existing']).toMatchObject({
+      parentAgentId: 'orchestrator',
+      delegator: { kind: 'agent', agentId: 'orchestrator' },
+      labels: { parentAgentId: 'orchestrator', swarmItem: 'legacy-item' },
+    });
+
+    handles.delete('agent-existing');
+    await expect(
+      service.run({
+        callerAgentId: 'orchestrator',
+        tasks: [resumeSessionTask('agent-existing')],
+      }),
+    ).resolves.toMatchObject([{ status: 'completed', agentId: 'agent-existing' }]);
+
+    expect(createAgent).toHaveBeenCalledTimes(2);
+    expect(createAgent).toHaveBeenLastCalledWith({
+      agentId: 'agent-existing',
+      forkedFrom: 'agent-origin',
+      labels: { parentAgentId: 'orchestrator', swarmItem: 'legacy-item' },
+      delegator: { kind: 'agent', agentId: 'orchestrator' },
+    });
+    expect(agents['agent-existing']).toMatchObject({
+      parentAgentId: 'orchestrator',
+      delegator: { kind: 'agent', agentId: 'orchestrator' },
+    });
   });
 
   it('keeps resumed children on their own recorded model', async () => {

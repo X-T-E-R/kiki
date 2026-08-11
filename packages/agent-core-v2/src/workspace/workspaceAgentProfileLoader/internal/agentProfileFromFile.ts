@@ -63,6 +63,7 @@ export function profilesFromDiscovery(
 ): AgentProfileContribution {
   return {
     profiles: result.agents.map((definition) => agentProfileFromFile(definition, basePrompt)),
+    routes: result.routes,
     skipped: result.skipped,
     scannedRoots: result.scannedRoots,
   };

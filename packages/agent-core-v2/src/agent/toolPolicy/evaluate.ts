@@ -29,6 +29,7 @@ import { isMcpToolName, type ToolSource } from '#/tool/toolContract';
 
 export interface ToolActivationPolicy {
   readonly tools?: readonly string[];
+  readonly toolAllowPolicies?: readonly (readonly string[])[];
   readonly disallowedTools?: readonly string[];
 }
 
@@ -37,11 +38,14 @@ export function isToolActive(
   name: string,
   source: ToolSource = 'builtin',
 ): boolean {
-  if (policy.tools !== undefined) {
+  const allowPolicies = [policy.tools, ...(policy.toolAllowPolicies ?? [])].filter(
+    (candidate): candidate is readonly string[] => candidate !== undefined,
+  );
+  for (const allowPolicy of allowPolicies) {
     const allowed =
       source !== 'mcp'
-        ? policy.tools.includes(name)
-        : policy.tools
+        ? allowPolicy.includes(name)
+        : allowPolicy
             .filter((pattern) => isMcpToolName(pattern))
             .some((pattern) => picomatch.isMatch(name, pattern));
     if (!allowed) return false;
@@ -88,8 +92,9 @@ export function isToolActiveComposed(
 export function resolveActiveToolNames(
   policy: ToolActivationPolicy,
 ): readonly string[] | undefined {
-  if (policy.tools === undefined) return undefined;
-  return policy.tools.filter((name) =>
+  const source = policy.tools ?? policy.toolAllowPolicies?.[0];
+  if (source === undefined) return undefined;
+  return source.filter((name) =>
     isToolActive(policy, name, isMcpToolName(name) ? 'mcp' : 'builtin'),
   );
 }

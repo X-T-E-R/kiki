@@ -12,6 +12,7 @@ import { TOOLS_SECTION } from '#/agent/toolPolicy/configSection';
 import {
   DEFAULT_AGENT_PROFILE_NAME,
   normalizeAgentProfile,
+  type ResolvedAgentProfileRoute,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { BuiltinAgentProfileLoaderService } from '#/app/agentProfileCatalog/builtinAgentProfileLoaderService';
 import { registerAgentProfile } from '#/app/agentProfileCatalog/contribution';
@@ -75,6 +76,65 @@ function createAtomicDocumentStore(): AtomicDocumentStore {
         .map((key) => key.slice(scope.length + 1)),
     watch: () => Event.None as Event<void>,
     acquire: () => ({ dispose: () => {} }),
+  };
+}
+
+function routedCatalog(
+  modelAlias = MOCK_MODEL,
+  thinkingEffort = 'off',
+): ISessionAgentProfileCatalog {
+  const base = normalizeAgentProfile({
+    name: 'reviewer',
+    description: 'Reviewer',
+    tools: ['Read', 'Bash'],
+    disallowedTools: ['Write'],
+    subagents: ['explore', 'coder'],
+    systemPrompt: () => 'base reviewer',
+  });
+  const {
+    renderSystemPrompt: _baseRenderSystemPrompt,
+    systemPrompt: _baseSystemPrompt,
+    ...baseFields
+  } = base;
+  const effective = normalizeAgentProfile({
+    ...baseFields,
+    routeId: 'reviewer.ui-k3',
+    modelAlias,
+    thinkingEffort,
+    toolAllowPolicies: [base.tools!, ['Read']],
+    disallowedTools: ['Write', 'Bash'],
+    subagents: ['explore'],
+    systemPrompt: () => 'routed reviewer',
+  });
+  const route: ResolvedAgentProfileRoute = {
+    id: 'reviewer.ui-k3',
+    profile: base.name,
+    description: 'UI review route',
+    modelAlias,
+    thinkingEffort,
+    overriddenFields: ['model_alias', 'thinking_effort', 'tools'],
+    effectiveProfile: effective,
+    lockedModelAlias: modelAlias,
+    lockedThinkingEffort: thinkingEffort,
+  };
+  return {
+    _serviceBrand: undefined,
+    ready: Promise.resolve(),
+    onDidChange: Event.None as ISessionAgentProfileCatalog['onDidChange'],
+    get: (name) => (name === base.name ? base : undefined),
+    getDefault: () => base,
+    list: () => [base],
+    listRoutes: () => [route],
+    routeDiagnostics: () => [],
+    resolveSelection: ({ profile, route: routeId }) => {
+      if (routeId !== route.id || (profile !== undefined && profile !== base.name)) {
+        throw new Error(`Unexpected route selection: ${routeId ?? 'none'}`);
+      }
+      return { profile: effective, baseProfile: base, route };
+    },
+    inspect: () => undefined,
+    load: async () => {},
+    reload: async () => {},
   };
 }
 
@@ -236,6 +296,97 @@ describe('AgentProfileService.bind', () => {
       activeToolNames: expect.arrayContaining(['Read', 'Write', 'Bash']),
       disallowedTools: [],
     });
+  });
+
+  it('binds and persists the routed authority snapshot and keeps its pins locked', async () => {
+    const persistence = new InMemoryWireRecordPersistence();
+    ctx = createTestAgent(
+      { persistence },
+      hostEnvironmentServices(homeDir),
+      sessionService(ISessionAgentProfileCatalog, routedCatalog()),
+    );
+    const { profile, toolPolicy } = profileServices(ctx);
+
+    await profile.bind({ route: 'reviewer.ui-k3' });
+    await ctx.get(IWireService).flush();
+
+    expect(profile.data()).toMatchObject({
+      profileName: 'reviewer',
+      routeId: 'reviewer.ui-k3',
+      modelAlias: MOCK_MODEL,
+      lockedModelAlias: MOCK_MODEL,
+      lockedThinkingEffort: 'off',
+      thinkingLevel: 'off',
+      systemPrompt: 'routed reviewer',
+      activeToolNames: ['Read', 'Bash'],
+      toolAllowPolicies: [['Read', 'Bash'], ['Read']],
+      disallowedTools: ['Write', 'Bash'],
+      subagents: ['explore'],
+    });
+    expect(toolPolicy.isToolActive('Read')).toBe(true);
+    expect(toolPolicy.isToolActive('Bash')).toBe(false);
+    expect(toolPolicy.isToolActive('Write')).toBe(false);
+    expect(persistence.records.find((record) => record.type === 'profile.bind')).toMatchObject({
+      profileName: 'reviewer',
+      routeId: 'reviewer.ui-k3',
+      toolAllowPolicies: [['Read', 'Bash'], ['Read']],
+      lockedModelAlias: MOCK_MODEL,
+      lockedThinkingEffort: 'off',
+    });
+    await expect(profile.setModel('other-model')).rejects.toMatchObject({
+      code: 'agent_profile_route.binding_conflict',
+    });
+    expect(() => profile.setThinking('high')).toThrow(
+      expect.objectContaining({ code: 'agent_profile_route.binding_conflict' }),
+    );
+    await expect(profile.bind({ profile: 'reviewer', model: MOCK_MODEL })).rejects.toMatchObject({
+      code: 'agent_profile_route.switch_forbidden',
+    });
+  });
+
+  it('fails a routed bind atomically when its pinned model alias is unavailable', async () => {
+    ctx = createTestAgent(
+      hostEnvironmentServices(homeDir),
+      sessionService(ISessionAgentProfileCatalog, routedCatalog('removed-model')),
+    );
+    const profile = ctx.get(IAgentProfileService);
+
+    await expect(profile.bind({ route: 'reviewer.ui-k3' })).rejects.toMatchObject({
+      code: 'agent_profile_route.model_alias_missing',
+    });
+    expect(profile.data().profileName).toBeUndefined();
+    expect(profile.data().routeId).toBeUndefined();
+  });
+
+  it('fails a routed bind when the pinned effort cannot be honored exactly', async () => {
+    const alias = 'kimi-code/kimi-for-coding';
+    ctx = createTestAgent(
+      {
+        initialConfig: {
+          providers: {
+            kimi: { type: 'kimi', apiKey: 'test-key', baseUrl: 'https://api.example.test/v1' },
+          },
+          models: {
+            [alias]: {
+              provider: 'kimi',
+              model: 'kimi-for-coding',
+              maxContextSize: 1_000_000,
+              capabilities: ['thinking'],
+              supportEfforts: ['low', 'high'],
+            },
+          },
+        },
+      },
+      hostEnvironmentServices(homeDir),
+      sessionService(ISessionAgentProfileCatalog, routedCatalog(alias, 'ultra')),
+    );
+    const profile = ctx.get(IAgentProfileService);
+
+    await expect(profile.bind({ route: 'reviewer.ui-k3' })).rejects.toMatchObject({
+      code: 'agent_profile_route.binding_conflict',
+    });
+    expect(profile.data().profileName).toBeUndefined();
+    expect(profile.data().routeId).toBeUndefined();
   });
 
   it('restores profile request settings from the binding record without catalog resolution', async () => {
@@ -1099,6 +1250,36 @@ describe('AgentProfileService tool-pattern warnings', () => {
       true,
     );
     expect(messages.some((m) => m.includes('"*"') && m.includes('disallowedTools'))).toBe(true);
+  });
+
+  it('warns about inert patterns in every routed allow-policy layer', async () => {
+    ctx = createTestAgent(hostEnvironmentServices(homeDir));
+    const catalog = routedCatalog();
+    const selection = catalog.resolveSelection({ route: 'reviewer.ui-k3' });
+    const effective = normalizeAgentProfile({
+      ...selection.profile,
+      toolAllowPolicies: [['Read', 'mcp__github'], ['Read', 'Bash*']],
+    });
+
+    await ctx.get(IAgentProfileService).applyProfile(effective);
+
+    const messages = toolPatternWarnings().map((warning) => warning.message ?? '');
+    expect(
+      messages.some(
+        (message) =>
+          message.includes('profile route "reviewer.ui-k3"') &&
+          message.includes('tools policy layer 1') &&
+          message.includes('"mcp__github"'),
+      ),
+    ).toBe(true);
+    expect(
+      messages.some(
+        (message) =>
+          message.includes('profile route "reviewer.ui-k3"') &&
+          message.includes('tools policy layer 2') &&
+          message.includes('"Bash*"'),
+      ),
+    ).toBe(true);
   });
 
 });

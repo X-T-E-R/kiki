@@ -24,6 +24,8 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
+import { IFlagService } from '#/app/flag/flag';
+import { AGENT_PROFILE_ROUTES_FLAG_ID } from '#/app/agentProfileCatalog/flag';
 
 import { discoverAgentFiles } from './internal/agentFileDiscovery';
 import { AgentProfileLoaderBase } from './internal/agentProfileLoader';
@@ -58,6 +60,7 @@ export class UserAgentProfileLoaderService
     @IBuiltinAgentProfileLoader private readonly builtin: IBuiltinAgentProfileLoader,
     @IWorkspaceContext private readonly workspace: IWorkspaceContext,
     @IHostFsWatchService private readonly fsWatch: IHostFsWatchService,
+    @IFlagService private readonly flags: IFlagService,
   ) {
     super(log);
     this.defaultProfile = builtin.getDefault();
@@ -91,7 +94,9 @@ export class UserAgentProfileLoaderService
     );
     this.defaultProfile = systemMd ?? this.builtin.getDefault();
     const contribution = profilesFromDiscovery(
-      await discoverAgentFiles(this.fs, roots, (message) => this.log.warn(message)),
+      await discoverAgentFiles(this.fs, roots, (message) => this.log.warn(message), {
+        includeRoutes: this.flags.enabled(AGENT_PROFILE_ROUTES_FLAG_ID),
+      }),
       (context) => this.defaultProfile.renderSystemPrompt(context),
     );
     if (systemMd === undefined) return contribution;

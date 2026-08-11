@@ -384,6 +384,54 @@ describe('AgentProfileService (wire-backed config.update)', () => {
     replay.ix.dispose();
   });
 
+  it('replays a routed effective snapshot without consulting the current catalog', async () => {
+    svc.applyBindingSnapshot({
+      modelAlias: 'removed-route-model',
+      profileName: 'reviewer',
+      routeId: 'reviewer.ui-k3',
+      lockedModelAlias: 'removed-route-model',
+      lockedThinkingEffort: 'high',
+      thinkingLevel: 'high',
+      serviceTier: 'priority',
+      requestParams: { route: true },
+      systemPrompt: 'persisted routed prompt',
+      activeToolNames: ['Read', 'Bash'],
+      toolAllowPolicies: [['Read', 'Bash'], ['Read']],
+      disallowedTools: ['Write', 'Bash'],
+      subagents: ['explore'],
+    });
+    const records = await readRecords();
+
+    const replay = buildHost('profile-replay-route-snapshot');
+    await restoreTestAgentWire(
+      replay.wire,
+      replay.log,
+      testWireScope(SCOPE, 'profile-replay-route-snapshot'),
+      records,
+    );
+    expect(replay.svc.data()).toMatchObject({
+      profileName: 'reviewer',
+      routeId: 'reviewer.ui-k3',
+      lockedModelAlias: 'removed-route-model',
+      lockedThinkingEffort: 'high',
+      thinkingLevel: 'high',
+      serviceTier: 'priority',
+      requestParams: { route: true },
+      systemPrompt: 'persisted routed prompt',
+      activeToolNames: ['Read', 'Bash'],
+      toolAllowPolicies: [['Read', 'Bash'], ['Read']],
+      disallowedTools: ['Write', 'Bash'],
+      subagents: ['explore'],
+    });
+    await expect(replay.svc.setModel('other-model')).rejects.toMatchObject({
+      code: 'agent_profile_route.binding_conflict',
+    });
+    expect(() => replay.svc.setThinking('low')).toThrow(
+      expect.objectContaining({ code: 'agent_profile_route.binding_conflict' }),
+    );
+    replay.ix.dispose();
+  });
+
   it('replays a legacy config.update record with an explicit renderGeneration verbatim', async () => {
     const environment: EnvironmentDisclosureSnapshot = {
       cwd: '/work',

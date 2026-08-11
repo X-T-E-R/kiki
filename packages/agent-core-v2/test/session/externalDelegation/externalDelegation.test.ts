@@ -99,7 +99,7 @@ describe('SessionExternalDelegationService', () => {
     ix.stub(ISessionAgentProfileCatalog, {
       _serviceBrand: undefined,
       ready: Promise.resolve(),
-      get: (name) => name === profile.name ? profile : undefined,
+      get: (name: string) => name === profile.name ? profile : undefined,
       getDefault: () => profile,
       list: () => [profile],
     });
@@ -179,6 +179,40 @@ describe('SessionExternalDelegationService', () => {
     const continued = await service.continue({ authority, dispatchId: first.dispatchId, message: 'continue' });
     expect(continued.continuationOf).toBe(first.dispatchId);
     expect(createdWith).toHaveLength(1);
+  });
+
+  it('keeps the external contract profile-only instead of advertising an unselectable route', async () => {
+    ix.stub(ISessionAgentProfileCatalog, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      get: (name: string) => name === profile.name ? profile : undefined,
+      getDefault: () => profile,
+      list: () => [profile],
+      listRoutes: () => [{
+        id: 'coder.review',
+        profile: 'coder',
+        description: 'Review route',
+        overriddenFields: ['tools'],
+      }],
+    } as unknown as ISessionAgentProfileCatalog);
+    const service = ix.get(ISessionExternalDelegationService);
+
+    const root = await service.list(authority);
+
+    expect(root.dispatchables).toEqual([
+      { kind: 'main' },
+      { kind: 'named', profileName: 'coder', description: 'Code owner' },
+    ]);
+    await expect(
+      service.dispatch({
+        authority,
+        target: 'named',
+        taskName: 'routed',
+        profileName: 'coder.review',
+        message: 'review',
+      }),
+    ).rejects.toThrow('Unknown named-agent profile');
+    expect(createdWith).toEqual([]);
   });
 
   it('rejects another principal and unknown dispatch handles', async () => {

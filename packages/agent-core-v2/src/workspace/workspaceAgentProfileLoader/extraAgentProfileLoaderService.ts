@@ -36,6 +36,8 @@ import { IConfigService } from '#/app/config/config';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
+import { IFlagService } from '#/app/flag/flag';
+import { AGENT_PROFILE_ROUTES_FLAG_ID } from '#/app/agentProfileCatalog/flag';
 
 import { IExtraAgentProfileLoader } from './extraAgentProfileLoader';
 
@@ -63,6 +65,7 @@ export class ExtraAgentProfileLoaderService
     @ILogService log: ILogService,
     @IUserAgentProfileLoader private readonly user: IUserAgentProfileLoader,
     @IHostFsWatchService private readonly fsWatch: IHostFsWatchService,
+    @IFlagService private readonly flags: IFlagService,
   ) {
     super(log);
     this._register(
@@ -99,6 +102,7 @@ export class ExtraAgentProfileLoaderService
           },
         ),
         (message) => this.log.warn(message),
+        { includeRoutes: this.flags.enabled(AGENT_PROFILE_ROUTES_FLAG_ID) },
       ),
       (context) => this.user.getDefaultProfile().renderSystemPrompt(context),
     );

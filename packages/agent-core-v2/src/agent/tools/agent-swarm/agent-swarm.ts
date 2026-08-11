@@ -32,6 +32,14 @@ export const AgentSwarmToolInputSchema = z
       .describe(
         'Subagent type used for every new subagent spawned from items; defaults to coder when omitted. Resumed subagents always keep their original type, so passing subagent_type together with resume_agent_ids is allowed — it only affects the item-based spawns.',
       ),
+    route: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe(
+        'Named profile route used for every new item-spawned subagent. The base type is derived when subagent_type is omitted.',
+      ),
     prompt_template: z
       .string()
       .trim()
@@ -85,11 +93,11 @@ export const AgentSwarmToolInputSchema = z
     if (
       (args.items?.length ?? 0) === 0 &&
       Object.keys(args.resume_agent_ids ?? {}).length > 0 &&
-      (args.model !== undefined || args.model_alias !== undefined || args.thinking_effort !== undefined)
+      (args.route !== undefined || args.model !== undefined || args.model_alias !== undefined || args.thinking_effort !== undefined)
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'Cannot set model, model_alias, or thinking_effort for a resume-only swarm',
+        message: 'Cannot set route, model, model_alias, or thinking_effort for a resume-only swarm',
       });
     }
   });

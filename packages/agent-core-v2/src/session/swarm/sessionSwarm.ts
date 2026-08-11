@@ -13,6 +13,7 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 type SessionSwarmTaskBase<T> = {
   readonly data: T;
   readonly profileName: string;
+  readonly routeId?: string;
   readonly parentToolCallId: string;
   readonly parentToolCallUuid?: string;
   readonly prompt: string;

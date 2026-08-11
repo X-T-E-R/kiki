@@ -30,6 +30,7 @@ import {
 import { BUILTIN_AGENT_PROFILE_SOURCE_ID } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
 import { AgentProfileRegistryService } from '#/app/agentProfileCatalog/agentProfileRegistryService';
 import { IConfigService } from '#/app/config/config';
+import type { IFlagService } from '#/app/flag/flag';
 import { SessionAgentProfileCatalogService } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalogService';
 import { DISABLED_BUILTIN_PROFILES_SECTION } from '#/workspace/workspaceAgentProfileLoader/configSection';
 import {
@@ -109,6 +110,7 @@ function makeCatalog(workspaceKey: string = WORKSPACE_KEY, disabled: readonly st
     { _serviceBrand: undefined, workspaceKey },
     config.service,
     log,
+    { enabled: () => false } as unknown as IFlagService,
   );
   const contribute = (
     sourceId: string,

@@ -90,10 +90,12 @@ export interface SystemPromptRenderResult {
 
 export interface AgentProfile {
   readonly name: string;
+  readonly routeId?: string;
   readonly description?: string;
   readonly whenToUse?: string;
   readonly override?: boolean;
   readonly tools?: readonly string[];
+  readonly toolAllowPolicies?: readonly (readonly string[])[];
   readonly disallowedTools?: readonly string[];
   readonly subagents?: readonly string[];
   readonly modelPreference?: AgentModelPreference;
@@ -105,6 +107,44 @@ export interface AgentProfile {
   readonly renderSystemPrompt: (context: AgentProfileContext) => SystemPromptRenderResult;
   readonly promptPrefix?: (ctx: AgentProfilePromptPrefixContext) => Promise<string>;
   readonly summaryPolicy?: AgentProfileSummaryPolicy;
+}
+
+export type AgentProfileRoutePromptMode = 'inherit' | 'prepend' | 'append' | 'wrap';
+
+export interface AgentProfileRouteDefinition {
+  readonly id: string;
+  readonly profile: string;
+  readonly description: string;
+  readonly whenToUse?: string;
+  readonly promptMode: AgentProfileRoutePromptMode;
+  readonly prompt: string;
+  readonly tools?: readonly string[];
+  readonly disallowedTools?: readonly string[];
+  readonly subagents?: readonly string[];
+  readonly modelPreference?: AgentModelPreference;
+  readonly modelAlias?: string;
+  readonly thinkingEffort?: string;
+  readonly serviceTier?: ServiceTier | null;
+  readonly requestParams?: RequestParams | null;
+  readonly overriddenFields: readonly string[];
+  readonly path: string;
+}
+
+export interface AgentProfileRouteCatalogEntry {
+  readonly id: string;
+  readonly profile: string;
+  readonly description: string;
+  readonly whenToUse?: string;
+  readonly modelPreference?: AgentModelPreference;
+  readonly modelAlias?: string;
+  readonly thinkingEffort?: string;
+  readonly overriddenFields: readonly string[];
+}
+
+export interface ResolvedAgentProfileRoute extends AgentProfileRouteCatalogEntry {
+  readonly effectiveProfile: AgentProfile;
+  readonly lockedModelAlias?: string;
+  readonly lockedThinkingEffort?: string;
 }
 
 /**

@@ -45,6 +45,9 @@ export interface AgentConfigData {
   modelAlias?: string;
   modelCapabilities: ModelCapability;
   profileName?: string;
+  routeId?: string;
+  readonly lockedModelAlias?: string;
+  readonly lockedThinkingEffort?: string;
   thinkingLevel: string;
   systemPrompt: string;
 }
@@ -66,6 +69,7 @@ export type ResolvedAgentProfile = AgentProfile;
 export interface ProfileData extends AgentConfigData {
   readonly agentsMdPaths?: readonly string[];
   readonly activeToolNames?: readonly string[];
+  readonly toolAllowPolicies?: readonly (readonly string[])[];
   readonly disallowedTools?: readonly string[];
   readonly subagents?: readonly string[];
   readonly serviceTier?: ServiceTier;
@@ -88,6 +92,9 @@ export type ProfileUpdateData = Partial<{
 export interface ProfileBindingSnapshot {
   readonly modelAlias?: string;
   readonly profileName?: string;
+  readonly routeId?: string;
+  readonly lockedModelAlias?: string;
+  readonly lockedThinkingEffort?: string;
   readonly thinkingLevel: string;
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;
@@ -96,6 +103,7 @@ export interface ProfileBindingSnapshot {
   readonly renderGeneration?: number;
   readonly agentsMdPaths?: readonly string[];
   readonly activeToolNames?: readonly string[];
+  readonly toolAllowPolicies?: readonly (readonly string[])[];
   readonly disallowedTools?: readonly string[];
   readonly subagents?: readonly string[];
 }
@@ -124,7 +132,8 @@ export interface ProfileSetModelResult {
 }
 
 export interface BindAgentInput {
-  readonly profile: string;
+  readonly profile?: string;
+  readonly route?: string;
   readonly model?: string;
   readonly thinking?: string;
   readonly strictThinking?: boolean;

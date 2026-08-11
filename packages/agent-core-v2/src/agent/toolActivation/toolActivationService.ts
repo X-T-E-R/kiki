@@ -82,7 +82,11 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
   private activateRecords(records: readonly AgentToolContribution[]): void {
     if (records.length === 0) return;
     const data = this.profile.data();
-    const policy = { tools: data.activeToolNames, disallowedTools: data.disallowedTools };
+    const policy = {
+      tools: data.activeToolNames,
+      toolAllowPolicies: data.toolAllowPolicies,
+      disallowedTools: data.disallowedTools,
+    };
     const workspaceVeto = { disallowedTools: this.toolPolicyGate.disabledTools };
     this.instantiationService.invokeFunction((accessor) => {
       for (const record of records) {

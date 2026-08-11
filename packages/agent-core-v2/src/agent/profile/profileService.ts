@@ -372,6 +372,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       profileBind({
         modelAlias: snapshot.modelAlias,
         profileName: snapshot.profileName,
+        routeId: snapshot.routeId,
+        lockedModelAlias: snapshot.lockedModelAlias,
+        lockedThinkingEffort: snapshot.lockedThinkingEffort,
         thinkingEffort: snapshot.thinkingLevel,
         serviceTier: snapshot.serviceTier,
         requestParams:
@@ -381,6 +384,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         renderGeneration: snapshot.renderGeneration,
         agentsMdPaths,
         activeToolNames: snapshot.activeToolNames,
+        toolAllowPolicies: snapshot.toolAllowPolicies,
         disallowedTools: snapshot.disallowedTools ?? [],
         subagents: snapshot.subagents,
       }),
@@ -400,27 +404,64 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   async bind(input: BindAgentInput): Promise<void> {
     await this.catalog.ready;
     await this.identity.resolved();
-    this.assertBindable(input.profile);
-    const profile = this.catalog.get(input.profile);
-    if (profile === undefined) {
-      const available = this.catalog
-        .list()
-        .map((p) => p.name)
-        .join(', ');
-      throw new ProfileError(
-        ProfileErrors.codes.PROFILE_UNKNOWN,
-        `Unknown agent profile: "${input.profile}". Available profiles: ${available}`,
-        { profile: input.profile, available },
+    const selection =
+      input.route === undefined
+        ? (() => {
+            const base = input.profile === undefined ? undefined : this.catalog.get(input.profile);
+            if (base === undefined) {
+              const available = this.catalog.list().map((item) => item.name).join(', ');
+              throw new ProfileError(
+                ProfileErrors.codes.PROFILE_UNKNOWN,
+                `Unknown agent profile: "${input.profile ?? ''}". Available profiles: ${available}`,
+                { profile: input.profile, available },
+              );
+            }
+            return { profile: base, baseProfile: base, route: undefined };
+          })()
+        : this.catalog.resolveSelection({ profile: input.profile, route: input.route });
+    const profile = selection.profile;
+    this.assertBindable(selection.baseProfile.name, selection.route?.id);
+    if (
+      selection.route?.lockedModelAlias !== undefined &&
+      input.model !== undefined &&
+      input.model !== selection.route.lockedModelAlias
+    ) {
+      throw new Error2(
+        ErrorCodes.ROUTE_BINDING_CONFLICT,
+        `Agent profile route "${selection.route.id}" locks model_alias to "${selection.route.lockedModelAlias}"`,
       );
     }
-    const alias = input.model ?? this.config.get<string>('defaultModel');
+    if (
+      selection.route?.lockedThinkingEffort !== undefined &&
+      input.thinking !== undefined &&
+      input.thinking !== selection.route.lockedThinkingEffort
+    ) {
+      throw new Error2(
+        ErrorCodes.ROUTE_BINDING_CONFLICT,
+        `Agent profile route "${selection.route.id}" locks thinking_effort to "${selection.route.lockedThinkingEffort}"`,
+      );
+    }
+    const alias =
+      input.model ??
+      selection.route?.lockedModelAlias ??
+      this.config.get<string>('defaultModel');
     if (alias === undefined || alias === '') {
       throw new ProfileError(
         ProfileErrors.codes.MODEL_NOT_CONFIGURED,
-        `model is required to bind profile "${input.profile}" (no default model configured)`,
+        `model is required to bind profile "${selection.baseProfile.name}" (no default model configured)`,
       );
     }
-    const model = this.modelCatalog.get(alias);
+    let model: Model;
+    try {
+      model = this.modelCatalog.get(alias);
+    } catch (error) {
+      if (selection.route?.lockedModelAlias !== alias) throw error;
+      throw new Error2(
+        ErrorCodes.ROUTE_MODEL_ALIAS_MISSING,
+        `Agent profile route "${selection.route.id}" requires unavailable model alias "${alias}"`,
+        { details: { route: selection.route.id, modelAlias: alias }, cause: error },
+      );
+    }
 
     if (input.strictThinking === true && input.thinking !== undefined) {
       this.assertThinkingEffortSupported(input.thinking, model, alias);
@@ -428,21 +469,48 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
     await this.sessionToolPolicy.ready;
     const context = await this.buildSystemPromptContext(profile);
-    this.assertBindable(profile.name);
+    this.assertBindable(selection.baseProfile.name, selection.route?.id);
     const currentProfileName = this.profileName;
     const rendered = profile.renderSystemPrompt(context);
-    this.activeProfile = profile;
     this.cacheAgentsMdWarning(context);
 
     const thinkingLevel = this.resolveThinkingEffort(
-      input.thinking ?? (currentProfileName !== undefined ? this.thinkingLevel : undefined),
+      input.thinking ??
+        selection.route?.lockedThinkingEffort ??
+        (currentProfileName !== undefined ? this.thinkingLevel : undefined),
       model,
     );
+    const resolvedRoute = selection.route;
+    const lockedThinkingEffort = resolvedRoute?.lockedThinkingEffort;
+    const normalizedLockedThinkingEffort = normalizeRequestedThinkingEffort(lockedThinkingEffort);
+    if (
+      lockedThinkingEffort !== undefined &&
+      resolvedRoute !== undefined &&
+      normalizedLockedThinkingEffort !== undefined &&
+      thinkingLevel !== normalizedLockedThinkingEffort
+    ) {
+      throw new Error2(
+        ErrorCodes.ROUTE_BINDING_CONFLICT,
+        `Agent profile route "${resolvedRoute.id}" requires thinking_effort "${lockedThinkingEffort}", which model "${alias}" cannot honor`,
+        {
+          details: {
+            route: resolvedRoute.id,
+            modelAlias: alias,
+            lockedThinkingEffort,
+            resolvedThinkingEffort: thinkingLevel,
+          },
+        },
+      );
+    }
 
+    this.activeProfile = profile;
     this.activeToolNamesOverlay = undefined;
     this.wire.dispatch(profileBind({
       modelAlias: alias,
-      profileName: profile.name,
+      profileName: selection.baseProfile.name,
+      routeId: selection.route?.id,
+      lockedModelAlias: selection.route?.lockedModelAlias,
+      lockedThinkingEffort: selection.route?.lockedThinkingEffort,
       thinkingEffort: thinkingLevel,
       serviceTier: profile.serviceTier,
       requestParams:
@@ -451,6 +519,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       environmentDisclosure: rendered.environment,
       agentsMdPaths: context.agentsMdPaths ?? [],
       activeToolNames: profile.tools,
+      toolAllowPolicies: profile.toolAllowPolicies,
       disallowedTools: profile.disallowedTools ?? [],
       subagents: profile.subagents,
     }));
@@ -468,6 +537,15 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   async setModel(alias: string): Promise<ProfileSetModelResult> {
+    if (
+      this.profileState.lockedModelAlias !== undefined &&
+      alias !== this.profileState.lockedModelAlias
+    ) {
+      throw new Error2(
+        ErrorCodes.ROUTE_BINDING_CONFLICT,
+        `Agent profile route "${this.routeId}" locks model_alias to "${this.profileState.lockedModelAlias}"`,
+      );
+    }
     const model = this.modelCatalog.get(alias);
     if (this.profileName === undefined) {
       await this.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: alias });
@@ -483,6 +561,15 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   setThinking(level: string): void {
+    if (
+      this.profileState.lockedThinkingEffort !== undefined &&
+      level !== this.profileState.lockedThinkingEffort
+    ) {
+      throw new Error2(
+        ErrorCodes.ROUTE_BINDING_CONFLICT,
+        `Agent profile route "${this.routeId}" locks thinking_effort to "${this.profileState.lockedThinkingEffort}"`,
+      );
+    }
     const previousEffort = this.thinkingLevel;
     this.assertThinkingEffortSupported(level, this.tryResolveRawModel(), this.modelAlias ?? '');
     const normalized = normalizeRequestedThinkingEffort(level);
@@ -583,10 +670,14 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       modelAlias: this.modelAlias,
       modelCapabilities: model?.capabilities ?? UNKNOWN_CAPABILITY,
       profileName: this.profileName,
+      routeId: this.routeId,
+      lockedModelAlias: this.profileState.lockedModelAlias,
+      lockedThinkingEffort: this.profileState.lockedThinkingEffort,
       thinkingLevel: this.thinkingLevel,
       systemPrompt: this.systemPrompt,
       agentsMdPaths: this.profileState.agentsMdPaths,
       activeToolNames: this.activeToolNames === undefined ? undefined : [...this.activeToolNames],
+      toolAllowPolicies: this.profileState.toolAllowPolicies?.map((policy) => [...policy]),
       disallowedTools: [...(this.profileState.disallowedTools ?? [])],
       subagents:
         this.profileState.subagents === undefined ? undefined : [...this.profileState.subagents],
@@ -812,6 +903,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return this.profileState.profileName;
   }
 
+  private get routeId(): string | undefined {
+    return this.profileState.routeId;
+  }
+
   private get serviceTier(): ServiceTier | undefined {
     return this.activeProfile === undefined
       ? this.profileState.serviceTier
@@ -892,7 +987,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     }
   }
 
-  private assertBindable(requested: string): void {
+  private assertBindable(requested: string, requestedRoute?: string): void {
     const current = this.profileName;
     if (current !== undefined && current !== requested) {
       throw new ProfileError(
@@ -901,12 +996,21 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         { current, requested },
       );
     }
+    const currentRoute = this.routeId;
+    if (current !== undefined && currentRoute !== requestedRoute) {
+      throw new Error2(
+        ErrorCodes.ROUTE_SWITCH_FORBIDDEN,
+        `agent route is already bound to "${currentRoute ?? 'base'}"; cannot switch to "${requestedRoute ?? 'base'}" in this session`,
+        { details: { currentRoute, requestedRoute } },
+      );
+    }
   }
 
   private resolveActiveProfile(): ResolvedAgentProfile | undefined {
     if (this.activeProfile !== undefined) return this.activeProfile;
     const profileName = this.profileName;
     if (profileName === undefined) return undefined;
+    if (this.routeId !== undefined) return undefined;
     return this.catalog.get(profileName);
   }
 
@@ -950,6 +1054,16 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
           patterns: profile.disallowedTools,
         },
       );
+      for (const [index, patterns] of (profile.toolAllowPolicies ?? []).entries()) {
+        checks.push({
+          context:
+            profile.routeId === undefined
+              ? `profile "${profile.name}"`
+              : `profile route "${profile.routeId}"`,
+          field: `tools policy layer ${String(index + 1)}`,
+          patterns,
+        });
+      }
     }
     const global = this.config.get<ToolsConfig>(TOOLS_SECTION);
     checks.push(

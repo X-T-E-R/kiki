@@ -17,6 +17,10 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { Event } from '#/_base/event';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import '#/agent/profile/profileService';
+import {
+  normalizeAgentProfile,
+  type ResolvedAgentProfileRoute,
+} from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
 import { IAgentMcpService } from '#/agent/mcp/mcp';
 import { McpConnectionManager } from '#/mcpCore/connection-manager';
@@ -68,6 +72,8 @@ import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import '#/agent/toolActivation/toolActivationService';
 import { IAgentMediaToolsRegistrar } from '#/agent/media/mediaTools';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import { Error2, ErrorCodes } from '#/errors';
+import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import type { OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
 
@@ -150,6 +156,70 @@ function stubBlobPassThrough(ix: TestInstantiationService): void {
     loadParts: async (parts) => parts,
     isBlobRef: () => false,
   } satisfies IAgentBlobService);
+}
+
+function lifecycleRouteCatalog(options?: {
+  readonly resolveError?: Error2;
+  readonly modelAlias?: string;
+  readonly thinkingEffort?: string;
+}): ISessionAgentProfileCatalog {
+  const base = normalizeAgentProfile({
+    name: 'reviewer',
+    description: 'Reviewer',
+    systemPrompt: () => 'base reviewer',
+  });
+  const modelAlias = options?.modelAlias ?? 'route-model';
+  const thinkingEffort = options?.thinkingEffort ?? 'high';
+  const effective = normalizeAgentProfile({
+    ...base,
+    routeId: 'reviewer.ui-k3',
+    modelAlias,
+    thinkingEffort,
+    systemPrompt: () => 'routed reviewer',
+  });
+  const route: ResolvedAgentProfileRoute = {
+    id: 'reviewer.ui-k3',
+    profile: base.name,
+    description: 'UI review route',
+    modelAlias,
+    thinkingEffort,
+    overriddenFields: ['model_alias', 'thinking_effort'],
+    effectiveProfile: effective,
+    lockedModelAlias: modelAlias,
+    lockedThinkingEffort: thinkingEffort,
+  };
+  return {
+    _serviceBrand: undefined,
+    ready: Promise.resolve(),
+    onDidChange: Event.None as ISessionAgentProfileCatalog['onDidChange'],
+    get: (name) => (name === base.name ? base : undefined),
+    getDefault: () => base,
+    list: () => [base],
+    listRoutes: () => [route],
+    routeDiagnostics: () => [],
+    resolveSelection: ({ profile, route: routeId }) => {
+      if (options?.resolveError !== undefined) throw options.resolveError;
+      if (routeId !== route.id || (profile !== undefined && profile !== base.name)) {
+        throw new Error2(ErrorCodes.ROUTE_UNKNOWN, `Unknown route "${routeId ?? ''}"`);
+      }
+      return { profile: effective, baseProfile: base, route };
+    },
+    inspect: () => undefined,
+    load: async () => {},
+    reload: async () => {},
+  };
+}
+
+function modelCatalogResolvingForLifecycle(...aliases: readonly string[]): IModelCatalog {
+  return {
+    _serviceBrand: undefined,
+    get: (alias: string) => {
+      if (!aliases.includes(alias)) {
+        throw new Error2(ErrorCodes.CONFIG_INVALID, `Model "${alias}" is not configured.`);
+      }
+      return { id: alias, supportEfforts: ['high'] } as unknown as Model;
+    },
+  } as unknown as IModelCatalog;
 }
 
 describe('AgentLifecycleService', () => {
@@ -522,6 +592,138 @@ describe('AgentLifecycleService', () => {
     expect(a.id).not.toBe(b.id);
   });
 
+  it.each([
+    {
+      name: 'feature-disabled route',
+      catalog: lifecycleRouteCatalog({
+        resolveError: new Error2(
+          ErrorCodes.ROUTE_FEATURE_DISABLED,
+          'Agent profile routes are disabled.',
+        ),
+      }),
+      binding: { route: 'reviewer.ui-k3' },
+      code: ErrorCodes.ROUTE_FEATURE_DISABLED,
+    },
+    {
+      name: 'missing route',
+      catalog: lifecycleRouteCatalog({
+        resolveError: new Error2(ErrorCodes.ROUTE_UNKNOWN, 'Unknown route.'),
+      }),
+      binding: { route: 'reviewer.missing' },
+      code: ErrorCodes.ROUTE_UNKNOWN,
+    },
+    {
+      name: 'conflicting locked model',
+      catalog: lifecycleRouteCatalog(),
+      binding: { route: 'reviewer.ui-k3', model: 'other-model' },
+      code: ErrorCodes.ROUTE_BINDING_CONFLICT,
+    },
+    {
+      name: 'conflicting locked effort',
+      catalog: lifecycleRouteCatalog(),
+      binding: { route: 'reviewer.ui-k3', thinking: 'low' },
+      code: ErrorCodes.ROUTE_BINDING_CONFLICT,
+    },
+    {
+      name: 'unavailable locked model',
+      catalog: lifecycleRouteCatalog(),
+      binding: { route: 'reviewer.ui-k3' },
+      code: ErrorCodes.ROUTE_MODEL_ALIAS_MISSING,
+    },
+  ])('rejects a $name before allocating an Agent scope', async ({ catalog, binding, code }) => {
+    ix.stub(ISessionAgentProfileCatalog, catalog);
+    ix.stub(IModelCatalog, modelCatalogResolvingForLifecycle());
+    const svc = ix.get(IAgentLifecycleService);
+
+    await expect(svc.create({ agentId: 'route-child', binding })).rejects.toMatchObject({ code });
+
+    expect(svc.get('route-child')).toBeUndefined();
+    expect(svc.list()).toEqual([]);
+    expect(registerAgent).not.toHaveBeenCalled();
+  });
+
+  it('rejects a locked effort the selected model cannot honor before allocation', async () => {
+    ix.stub(
+      ISessionAgentProfileCatalog,
+      lifecycleRouteCatalog({ modelAlias: 'always-model', thinkingEffort: 'off' }),
+    );
+    ix.stub(IModelCatalog, {
+      _serviceBrand: undefined,
+      get: () => ({
+        id: 'always-model',
+        alwaysThinking: true,
+        supportEfforts: ['high'],
+      }) as unknown as Model,
+    } as unknown as IModelCatalog);
+    const svc = ix.get(IAgentLifecycleService);
+
+    await expect(
+      svc.create({ agentId: 'route-child', binding: { route: 'reviewer.ui-k3' } }),
+    ).rejects.toMatchObject({ code: ErrorCodes.ROUTE_BINDING_CONFLICT });
+
+    expect(svc.get('route-child')).toBeUndefined();
+    expect(registerAgent).not.toHaveBeenCalled();
+  });
+
+  it('restores a persisted route snapshot after the flag is off and the sidecar is gone', async () => {
+    const resolveSelection = vi.fn(() => {
+      throw new Error2(ErrorCodes.ROUTE_FEATURE_DISABLED, 'Agent profile routes are disabled.');
+    });
+    const emptyCatalog = lifecycleRouteCatalog({
+      resolveError: new Error2(
+        ErrorCodes.ROUTE_FEATURE_DISABLED,
+        'Agent profile routes are disabled.',
+      ),
+    });
+    ix.stub(ISessionAgentProfileCatalog, {
+      ...emptyCatalog,
+      listRoutes: () => [],
+      resolveSelection,
+    });
+    ix.stub(IModelCatalog, modelCatalogResolvingForLifecycle('removed-route-model'));
+    ix.stub(
+      IAppendLogStore,
+      recordingAppendLog([
+        createWireMetadataRecord(1),
+        {
+          type: 'profile.bind',
+          modelAlias: 'removed-route-model',
+          profileName: 'reviewer',
+          routeId: 'reviewer.ui-k3',
+          lockedModelAlias: 'removed-route-model',
+          lockedThinkingEffort: 'high',
+          thinkingEffort: 'high',
+          serviceTier: 'priority',
+          requestParams: { route: true },
+          systemPrompt: 'persisted routed prompt',
+          activeToolNames: ['Read', 'Bash'],
+          toolAllowPolicies: [['Read', 'Bash'], ['Read']],
+          disallowedTools: ['Write', 'Bash'],
+          subagents: ['explore'],
+          time: 2,
+        } as WireRecord,
+      ]).store,
+    );
+
+    const handle = await ix.get(IAgentLifecycleService).create({ agentId: 'resumed-route' });
+
+    expect(handle.accessor.get(IAgentProfileService).data()).toMatchObject({
+      profileName: 'reviewer',
+      routeId: 'reviewer.ui-k3',
+      lockedModelAlias: 'removed-route-model',
+      lockedThinkingEffort: 'high',
+      thinkingLevel: 'high',
+      serviceTier: 'priority',
+      requestParams: { route: true },
+      systemPrompt: 'persisted routed prompt',
+      activeToolNames: ['Read', 'Bash'],
+      toolAllowPolicies: [['Read', 'Bash'], ['Read']],
+      disallowedTools: ['Write', 'Bash'],
+      subagents: ['explore'],
+    });
+    expect(resolveSelection).not.toHaveBeenCalled();
+  });
+
   it('persists complete agent metadata when creating a child', async () => {
     const svc = ix.get(IAgentLifecycleService);
 
@@ -773,6 +975,101 @@ describe('AgentLifecycleService', () => {
       disallowedTools: ['Bash'],
       subagents: ['explore'],
     });
+  });
+
+  it.each([
+    {
+      name: 'disabled route',
+      catalog: lifecycleRouteCatalog({
+        resolveError: new Error2(
+          ErrorCodes.ROUTE_FEATURE_DISABLED,
+          'Agent profile routes are disabled.',
+        ),
+      }),
+      modelCatalog: modelCatalogResolvingForLifecycle('route-model'),
+      binding: { route: 'reviewer.ui-k3', model: 'route-model', thinking: 'high' },
+      code: ErrorCodes.ROUTE_FEATURE_DISABLED,
+    },
+    {
+      name: 'unknown route',
+      catalog: lifecycleRouteCatalog({
+        resolveError: new Error2(ErrorCodes.ROUTE_UNKNOWN, 'Unknown route.'),
+      }),
+      modelCatalog: modelCatalogResolvingForLifecycle('route-model'),
+      binding: { route: 'reviewer.missing', model: 'route-model', thinking: 'high' },
+      code: ErrorCodes.ROUTE_UNKNOWN,
+    },
+    {
+      name: 'missing locked model',
+      catalog: lifecycleRouteCatalog(),
+      modelCatalog: modelCatalogResolvingForLifecycle(),
+      binding: { route: 'reviewer.ui-k3', model: 'route-model', thinking: 'high' },
+      code: ErrorCodes.ROUTE_MODEL_ALIAS_MISSING,
+    },
+    {
+      name: 'conflicting locked model',
+      catalog: lifecycleRouteCatalog(),
+      modelCatalog: modelCatalogResolvingForLifecycle('route-model', 'other-model'),
+      binding: { route: 'reviewer.ui-k3', model: 'other-model', thinking: 'high' },
+      code: ErrorCodes.ROUTE_BINDING_CONFLICT,
+    },
+    {
+      name: 'conflicting locked effort',
+      catalog: lifecycleRouteCatalog(),
+      modelCatalog: modelCatalogResolvingForLifecycle('route-model'),
+      binding: { route: 'reviewer.ui-k3', model: 'route-model', thinking: 'low' },
+      code: ErrorCodes.ROUTE_BINDING_CONFLICT,
+    },
+  ])('fork rejects a $name without allocating or persisting a child', async ({
+    catalog,
+    modelCatalog,
+    binding,
+    code,
+  }) => {
+    ix.stub(ISessionAgentProfileCatalog, catalog);
+    ix.stub(IModelCatalog, modelCatalog);
+    const svc = ix.get(IAgentLifecycleService);
+    const source = await svc.create({ agentId: 'main' });
+    const beforeHandles = svc.list();
+    registerAgent.mockClear();
+
+    await expect(
+      svc.fork(source.id, { agentId: 'forked-route', binding }),
+    ).rejects.toMatchObject({ code });
+
+    expect(svc.get('forked-route')).toBeUndefined();
+    expect(svc.list()).toEqual(beforeHandles);
+    expect(registerAgent).not.toHaveBeenCalled();
+  });
+
+  it('fork rejects an unsupported locked effort without allocating or persisting a child', async () => {
+    ix.stub(
+      ISessionAgentProfileCatalog,
+      lifecycleRouteCatalog({ modelAlias: 'always-model', thinkingEffort: 'off' }),
+    );
+    ix.stub(IModelCatalog, {
+      _serviceBrand: undefined,
+      get: () => ({
+        id: 'always-model',
+        alwaysThinking: true,
+        supportEfforts: ['high'],
+      }) as unknown as Model,
+    } as unknown as IModelCatalog);
+    const svc = ix.get(IAgentLifecycleService);
+    const source = await svc.create({ agentId: 'main' });
+    const beforeHandles = svc.list();
+    registerAgent.mockClear();
+
+    await expect(
+      svc.fork(source.id, {
+        agentId: 'forked-route',
+        binding: { route: 'reviewer.ui-k3', model: 'always-model', thinking: 'off' },
+      }),
+    ).rejects.toMatchObject({ code: ErrorCodes.ROUTE_BINDING_CONFLICT });
+
+    expect(svc.get('forked-route')).toBeUndefined();
+    expect(svc.list()).toEqual(beforeHandles);
+    expect(registerAgent).not.toHaveBeenCalled();
   });
 
   it('run throws when the agent does not exist', () => {

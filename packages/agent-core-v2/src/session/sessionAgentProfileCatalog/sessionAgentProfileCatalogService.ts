@@ -24,7 +24,16 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
 import { BugIndicatingError } from '#/errors';
-import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { Error2, ErrorCodes } from '#/errors';
+import type {
+  AgentProfile,
+  AgentProfileRouteCatalogEntry,
+  AgentProfileRouteDefinition,
+  ResolvedAgentProfileRoute,
+} from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { resolveAgentProfileRoute } from '#/app/agentProfileCatalog/agentProfileRoute';
+import { AGENT_PROFILE_ROUTES_FLAG_ID } from '#/app/agentProfileCatalog/flag';
+import { IFlagService } from '#/app/flag/flag';
 import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import {
   IAgentProfileRegistry,
@@ -42,6 +51,8 @@ import {
   ISessionAgentProfileCatalog,
   type AgentProfileInspection,
   type AgentProfileSuppressedCandidate,
+  type AgentProfileRouteDiagnostic,
+  type AgentProfileSelection,
 } from './sessionAgentProfileCatalog';
 
 interface ProfileCandidate {
@@ -59,6 +70,8 @@ export class SessionAgentProfileCatalogService
 
   private merged = new Map<string, AgentProfile>();
   private inspections = new Map<string, AgentProfileInspection>();
+  private routes = new Map<string, ResolvedAgentProfileRoute>();
+  private routeDiagnosticsValue: AgentProfileRouteDiagnostic[] = [];
   private warnedDefaultDisable = false;
   private readonly readyPromise: Promise<void>;
   private readonly onDidChangeEmitter = this._register(new Emitter<string>());
@@ -69,6 +82,7 @@ export class SessionAgentProfileCatalogService
     @ISessionAgentProfileCatalogSeed private readonly seed: ISessionAgentProfileCatalogSeed,
     @IConfigService private readonly config: IConfigService,
     @ILogService private readonly log: ILogService,
+    @IFlagService private readonly flags: IFlagService,
   ) {
     super();
     this.reproject();
@@ -111,6 +125,74 @@ export class SessionAgentProfileCatalogService
 
   list(): readonly AgentProfile[] {
     return [...this.merged.values()];
+  }
+
+  listRoutes(): readonly AgentProfileRouteCatalogEntry[] {
+    if (!this.flags.enabled(AGENT_PROFILE_ROUTES_FLAG_ID)) return [];
+    return [...this.routes.values()].map(
+      ({
+        effectiveProfile: _profile,
+        lockedModelAlias: _alias,
+        lockedThinkingEffort: _effort,
+        ...entry
+      }) => entry,
+    );
+  }
+
+  routeDiagnostics(): readonly AgentProfileRouteDiagnostic[] {
+    return this.flags.enabled(AGENT_PROFILE_ROUTES_FLAG_ID)
+      ? this.routeDiagnosticsValue
+      : [];
+  }
+
+  resolveSelection(input: {
+    readonly profile?: string;
+    readonly route?: string;
+  }): AgentProfileSelection {
+    if (input.route === undefined) {
+      const profile = input.profile === undefined ? undefined : this.get(input.profile);
+      if (profile === undefined) {
+        throw new Error2(ErrorCodes.PROFILE_UNKNOWN, `Unknown agent type: "${input.profile ?? ''}"`, {
+          details: { profileName: input.profile },
+        });
+      }
+      return { profile, baseProfile: profile };
+    }
+    if (!this.flags.enabled(AGENT_PROFILE_ROUTES_FLAG_ID)) {
+      throw new Error2(
+        ErrorCodes.ROUTE_FEATURE_DISABLED,
+        `Agent profile route "${input.route}" cannot be used because agent-profile-routes is disabled`,
+        { details: { route: input.route } },
+      );
+    }
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*(?:\.[a-z0-9]+(?:-[a-z0-9]+)*)+$/.test(input.route)) {
+      throw new Error2(ErrorCodes.ROUTE_INVALID_ID, `Invalid agent profile route id: "${input.route}"`, {
+        details: { route: input.route },
+      });
+    }
+    const route = this.routes.get(input.route);
+    if (route === undefined) {
+      const missingBase = this.routeDiagnosticsValue.find(
+        (diagnostic) =>
+          diagnostic.routeId === input.route && diagnostic.code === ErrorCodes.ROUTE_BASE_MISSING,
+      );
+      if (missingBase !== undefined) {
+        throw new Error2(ErrorCodes.ROUTE_BASE_MISSING, missingBase.message, {
+          details: { route: input.route },
+        });
+      }
+      throw new Error2(ErrorCodes.ROUTE_UNKNOWN, `Unknown agent profile route: "${input.route}"`, {
+        details: { route: input.route },
+      });
+    }
+    if (input.profile !== undefined && input.profile !== route.profile) {
+      throw new Error2(
+        ErrorCodes.ROUTE_BASE_MISMATCH,
+        `Agent profile route "${route.id}" belongs to "${route.profile}", not "${input.profile}"`,
+        { details: { route: route.id, expectedProfile: route.profile, profile: input.profile } },
+      );
+    }
+    return { profile: route.effectiveProfile, baseProfile: this.get(route.profile)!, route };
   }
 
   inspect(name: string): AgentProfileInspection | undefined {
@@ -236,6 +318,45 @@ export class SessionAgentProfileCatalogService
 
     this.merged = merged;
     this.inspections = inspections;
+    this.reprojectRoutes(entries, merged);
+  }
+
+  private reprojectRoutes(
+    entries: readonly AgentProfileRegistration[],
+    profiles: ReadonlyMap<string, AgentProfile>,
+  ): void {
+    const diagnostics: AgentProfileRouteDiagnostic[] = [];
+    for (const entry of entries) {
+      for (const skipped of entry.contribution.skipped ?? []) {
+        if (skipped.code?.startsWith('agent_profile_route.') !== true) continue;
+        diagnostics.push({ code: skipped.code, message: skipped.reason, path: skipped.path });
+      }
+    }
+    const candidates = new Map<string, AgentProfileRouteDefinition>();
+    const ordered = entries.toSorted((a, b) => b.priority - a.priority);
+    for (const entry of ordered) {
+      for (const route of entry.contribution.routes ?? []) {
+        if (!candidates.has(route.id)) candidates.set(route.id, route);
+      }
+    }
+    const routes = new Map<string, ResolvedAgentProfileRoute>();
+    for (const route of candidates.values()) {
+      const base = profiles.get(route.profile);
+      if (base === undefined) {
+        const message = `Agent profile route "${route.id}" ignored because base profile "${route.profile}" is unavailable`;
+        diagnostics.push({
+          code: ErrorCodes.ROUTE_BASE_MISSING,
+          message,
+          path: route.path,
+          routeId: route.id,
+        });
+        this.log.warn(message);
+        continue;
+      }
+      routes.set(route.id, resolveAgentProfileRoute(route, base));
+    }
+    this.routes = routes;
+    this.routeDiagnosticsValue = diagnostics;
   }
 }
 

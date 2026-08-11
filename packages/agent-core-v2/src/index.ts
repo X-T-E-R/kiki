@@ -209,6 +209,7 @@ export {
   _clearAgentProfileContributionsForTests,
 } from '#/app/agentProfileCatalog/contribution';
 export * from '#/workspace/workspaceAgentProfileLoader/configSection';
+export * from '#/app/agentProfileCatalog/flag';
 export { parseAgentFileText } from '#/workspace/workspaceAgentProfileLoader/internal/agentFile';
 export { resolveAgentPath } from '#/workspace/workspaceAgentProfileLoader/internal/paths';
 export * from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoader';
@@ -397,6 +398,7 @@ export * from '#/workspace/workspaceMcp/workspaceMcpService';
 export * from '#/session/subagent/subagent';
 export * from '#/session/subagent/subagentService';
 import '#/session/subagent/flag';
+import '#/app/agentProfileCatalog/flag';
 import '#/session/agentCollaboration/flag';
 import '#/session/agentCollaboration/configSection';
 export * from '#/session/agentCollaboration/messageMailbox';

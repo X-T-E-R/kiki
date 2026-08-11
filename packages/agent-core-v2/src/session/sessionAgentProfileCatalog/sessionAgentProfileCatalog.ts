@@ -15,7 +15,24 @@
 
 import { createDecorator } from '#/_base/di/instantiation';
 import type { Event } from '#/_base/event';
-import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import type {
+  AgentProfile,
+  AgentProfileRouteCatalogEntry,
+  ResolvedAgentProfileRoute,
+} from '#/app/agentProfileCatalog/agentProfileCatalog';
+
+export interface AgentProfileRouteDiagnostic {
+  readonly code: string;
+  readonly message: string;
+  readonly path?: string;
+  readonly routeId?: string;
+}
+
+export interface AgentProfileSelection {
+  readonly profile: AgentProfile;
+  readonly baseProfile: AgentProfile;
+  readonly route?: ResolvedAgentProfileRoute;
+}
 
 export interface AgentProfileSuppressedCandidate {
   readonly sourceId: string;
@@ -39,6 +56,9 @@ export interface ISessionAgentProfileCatalog {
   get(name: string): AgentProfile | undefined;
   getDefault(): AgentProfile;
   list(): readonly AgentProfile[];
+  listRoutes(): readonly AgentProfileRouteCatalogEntry[];
+  routeDiagnostics(): readonly AgentProfileRouteDiagnostic[];
+  resolveSelection(input: { readonly profile?: string; readonly route?: string }): AgentProfileSelection;
   inspect(name: string): AgentProfileInspection | undefined;
   load(): Promise<void>;
   reload(): Promise<void>;

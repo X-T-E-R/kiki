@@ -29,6 +29,8 @@ import { IUserAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
+import { IFlagService } from '#/app/flag/flag';
+import { AGENT_PROFILE_ROUTES_FLAG_ID } from '#/app/agentProfileCatalog/flag';
 
 import { IWorkspaceAgentProfileLoader } from './workspaceAgentProfileLoader';
 
@@ -52,6 +54,7 @@ export class WorkspaceAgentProfileLoaderService
     @ILogService log: ILogService,
     @IUserAgentProfileLoader private readonly user: IUserAgentProfileLoader,
     @IHostFsWatchService private readonly fsWatch: IHostFsWatchService,
+    @IFlagService private readonly flags: IFlagService,
   ) {
     super(log);
     this.watchReady = this.watchProjectAgentRoots();
@@ -68,7 +71,9 @@ export class WorkspaceAgentProfileLoaderService
       this.log.warn(message, error);
     });
     return profilesFromDiscovery(
-      await discoverAgentFiles(this.fs, roots, (message) => this.log.warn(message)),
+      await discoverAgentFiles(this.fs, roots, (message) => this.log.warn(message), {
+        includeRoutes: this.flags.enabled(AGENT_PROFILE_ROUTES_FLAG_ID),
+      }),
       (context) => this.user.getDefaultProfile().renderSystemPrompt(context),
     );
   }

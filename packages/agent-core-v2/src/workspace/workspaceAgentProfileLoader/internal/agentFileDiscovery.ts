@@ -22,6 +22,7 @@ import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { HostFsError, OsFsErrors } from '#/os/interface/hostFsErrors';
 
 import { AgentFileParseError, parseAgentFileText } from './agentFile';
+import { parseAgentRouteFileText } from './agentRouteFile';
 import { isDirectoryPath, isFilePath } from './paths';
 import type {
   AgentFileDefinition,
@@ -41,8 +42,10 @@ export async function discoverAgentFiles(
   fs: IHostFileSystem,
   roots: readonly AgentFileRoot[],
   warn?: DiscoverAgentFilesWarn,
+  options?: { readonly includeRoutes?: boolean },
 ): Promise<AgentFileDiscoveryResult> {
   const byName = new Map<string, AgentFileDefinition>();
+  const byRouteId = new Map<string, AgentFileDiscoveryResult['routes'][number]>();
   const skipped: SkippedAgentFile[] = [];
 
   let emittedWarnings = 0;
@@ -129,9 +132,70 @@ export async function discoverAgentFiles(
     }
   }
 
+  async function discoverRoutes(root: AgentFileRoot): Promise<void> {
+    const routesRoot = join(root.path, '.routes');
+    let profiles: readonly string[];
+    try {
+      profiles = (await fs.readdir(routesRoot)).map((entry) => entry.name).toSorted();
+    } catch (error) {
+      if (
+        error instanceof HostFsError &&
+        (error.code === OsFsErrors.codes.OS_FS_NOT_FOUND ||
+          error.code === OsFsErrors.codes.OS_FS_NOT_DIRECTORY)
+      ) {
+        return;
+      }
+      throw error;
+    }
+    for (const profile of profiles) {
+      const profileDir = join(routesRoot, profile);
+      if (!(await isDirectoryPath(fs, profileDir))) continue;
+      let entries: readonly string[];
+      try {
+        entries = (await fs.readdir(profileDir)).map((entry) => entry.name).toSorted();
+      } catch (error) {
+        warnCapped(profileDir, `Skipping unreadable route directory ${profileDir}: ${errorMessage(error)}`, error);
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.endsWith('.md')) continue;
+        const path = join(profileDir, entry);
+        try {
+          if (!(await isFilePath(fs, path))) continue;
+          const route = parseAgentRouteFileText({
+            path,
+            expectedProfile: profile,
+            expectedRouteName: entry.slice(0, -3),
+            text: await fs.readText(path),
+            warn: (message) => warn?.(message),
+          });
+          const prior = byRouteId.get(route.id);
+          if (prior !== undefined) {
+            const reason = `Duplicate route id "${route.id}" in the same source; keeping ${prior.path}`;
+            skipped.push({ path, reason, code: 'agent_profile_route.duplicate' });
+            warnCapped(path, `Skipping duplicate agent route at ${path}: ${reason}`);
+            continue;
+          }
+          byRouteId.set(route.id, route);
+        } catch (error) {
+          if (
+            error instanceof HostFsError &&
+            error.code === OsFsErrors.codes.OS_FS_UNAVAILABLE
+          ) {
+            throw error;
+          }
+          const reason = error instanceof Error ? error.message : String(error);
+          skipped.push({ path, reason, code: 'agent_profile_route.invalid_sidecar' });
+          warnCapped(path, `Skipping invalid agent route at ${path}: ${reason}`, error);
+        }
+      }
+    }
+  }
+
   for (const root of roots) {
     try {
       await walk(root.path, root, 0);
+      if (options?.includeRoutes === true) await discoverRoutes(root);
     } catch (error) {
       if (
         error instanceof HostFsError &&
@@ -152,6 +216,7 @@ export async function discoverAgentFiles(
 
   return {
     agents: [...byName.values()].toSorted((a, b) => a.name.localeCompare(b.name)),
+    routes: [...byRouteId.values()].toSorted((a, b) => a.id.localeCompare(b.id)),
     skipped,
     scannedRoots: roots.map((root) => root.path),
   };

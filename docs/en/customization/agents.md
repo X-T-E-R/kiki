@@ -146,7 +146,45 @@ The body is the agent's system prompt, and it is rendered as a template each tim
 
 Unknown fields are ignored, so newer files stay readable by older versions. Fields from other agent tools (such as Claude Code's `model` or OpenCode's `mode`) are ignored the same way, the comma-separated `tools` form keeps Claude Code-style agent files loadable, and a missing `name` falls back to the file name so OpenCode-style files load too — a minimal file with `description` and a body works across tools.
 
-`model_alias` and `thinking_effort` are stable profile fields and `Agent` / `AgentSwarm` tool parameters; they do not require `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL`. For a newly spawned subagent, model and effort resolve independently in this order: tool parameter → profile field → `[subagent]` `default_model` / `default_effort` → caller binding. If a profile pins a `model_alias` that is absent from `[models]`, the CLI warns and falls back to the caller's model and effort; an unknown alias passed explicitly as a tool parameter is an error.
+### Named profile routes (experimental)
+
+A named route specializes an existing Agent without creating a new permission identity. Enable discovery at startup with `[experimental] agent-profile-routes = true` in `config.toml`, or set `KIMI_CODE_EXPERIMENTAL_AGENT_PROFILE_ROUTES=1`.
+
+Keep the base profile at `agents/<role>.md`. Put routes under `agents/.routes/<role>/<route>.md`; the canonical ID is `<role>.<route>`, with every segment in lowercase kebab-case. For example, `agents/.routes/reviewer/ui-k3.md` defines `reviewer.ui-k3`:
+
+```markdown
+---
+id: reviewer.ui-k3
+profile: reviewer
+description: Review UI changes with the K3 model
+whenToUse: Frontend and interaction reviews
+prompt_mode: prepend
+model_alias: k3-review
+thinking_effort: high
+tools: [Read, Grep, Glob]
+disallowedTools: [Bash]
+subagents: [explore]
+service_tier: priority
+request_params:
+  temperature: 0.2
+---
+
+Focus on interaction regressions, accessibility, and visual consistency.
+```
+
+The required fields are `id`, `profile`, `description`, and `prompt_mode`. Optional fields are `whenToUse` plus `model_preference`, `model_alias`, `thinking_effort`, `service_tier`, `request_params`, `tools`, `disallowedTools`, and `subagents`. Unlike ordinary Agent files, route frontmatter is strict. Unknown fields, invalid types, a path/ID/profile mismatch, duplicate IDs in one source, and incompatible model selectors cause only that sidecar to be skipped with a coded diagnostic; the base profile and sibling routes still load.
+
+`prompt_mode` always preserves the base prompt: `inherit` requires an empty body; `prepend` and `append` require a non-empty body and reject `${base_prompt}`; `wrap` requires `${base_prompt}` exactly once. There is no unguarded replace mode.
+
+Routes can only narrow authority. Route `tools` is an additional allow layer (base **and** route must allow a tool), `disallowedTools` is added to the base denylist, and `subagents` is intersected with the base allowlist; `subagents: []` makes the route a leaf. Caller checks still use the base role, so a route cannot introduce a role the caller could not dispatch. Create and allowlist another base profile when broader authority is required.
+
+An omitted request field inherits the base value. `service_tier: null` clears the base tier; another tier replaces it. `request_params: null` clears the base map; a mapping overlays scalar keys on it. A route-declared `model_alias` or `thinking_effort` is locked: a call may omit it or repeat the same value, but a conflict is rejected. A missing locked alias fails before Agent allocation and never uses the ordinary profile-alias fallback; dispatch also fails if the selected model cannot honor a locked effort exactly.
+
+When enabled, both `Agent` and `AgentSwarm` show compact route entries filtered through the caller's base-role allowlist. Entries contain the route ID, base role, description/usage hint, model and effort defaults, and overridden field names—never the prompt body. Pass `route: reviewer.ui-k3`; omit `subagent_type` to derive `reviewer`, or pass that matching base explicitly. A mismatch is a coded error. There is no automatic ranking or silent fallback.
+
+Resume never reselects or switches a route. The journal stores the canonical base role and route ID with the rendered prompt, layered tool policy, denylist, subagent restriction, model/effort locks, service tier, and request parameters. Existing routed Agents therefore resume from their snapshot even if the flag is disabled or the sidecar changes, disappears, or becomes invalid; those changes affect only new dispatches. Old journals remain compatible. In a mixed `AgentSwarm` call, `route` applies only to new item-based spawns; resumed entries keep their snapshots.
+
+`model_alias` and `thinking_effort` are stable profile fields and `Agent` / `AgentSwarm` tool parameters; they do not require `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL`. For a newly spawned subagent, model and effort resolve independently in this order: tool parameter → profile field → `[subagent]` `default_model` / `default_effort` → caller binding. If an ordinary (non-route) profile selects a `model_alias` that is absent from `[models]`, the CLI warns and falls back to the caller's model and effort; an unknown alias passed explicitly as a tool parameter is an error.
 
 Only the legacy tool parameter `model` (`primary` / `secondary`), the profile field `model_preference`, and the secondary recipe remain behind the secondary-model experiment. When enabled, the secondary recipe is inserted between the `[subagent]` defaults and the caller binding. When disabled, a profile's `model_preference` is ignored with a warning, while explicitly passing the `model` tool parameter returns a clear error. Resumed and retried subagents keep their persisted model and effort; passing binding fields on an `Agent` resume is rejected. A mixed `AgentSwarm` call applies them only to item-based new spawns.
 

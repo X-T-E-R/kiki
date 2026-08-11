@@ -353,7 +353,7 @@ export function buildSubagentModelDescriptions(
 export type SubagentBindingSchemaUsage = 'agent' | 'swarm';
 
 const legacyModelSchemaConstraints = new WeakSet<object>();
-const BINDING_FIELD_NAMES = ['model', 'model_alias', 'thinking_effort'] as const;
+const BINDING_FIELD_NAMES = ['route', 'model', 'model_alias', 'thinking_effort'] as const;
 
 export function addSubagentBindingSchemaConstraints(
   parameters: Record<string, unknown>,

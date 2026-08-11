@@ -32,6 +32,7 @@ import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
 import { IFlagService } from '#/app/flag/flag';
 import { IModelCatalog } from '#/kosong/model/catalog';
+import type { AgentProfileRouteCatalogEntry } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { ISessionSwarmService, type SessionSwarmTask } from '#/session/swarm/sessionSwarm';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -52,6 +53,10 @@ import {
   wrapSubagentModelError,
 } from '#/session/subagent/configSection';
 import { SECONDARY_MODEL_FLAG_ID } from '#/session/subagent/flag';
+import {
+  assertProfileRouteBinding,
+  assertProfileRouteModelAvailable,
+} from '#/session/subagent/profileRouteBinding';
 import { publishIgnoredProfileModelPreferenceWarning } from '#/session/subagent/secondaryModelWarning';
 import {
   AgentSwarmToolInputSchema,
@@ -106,6 +111,8 @@ export class AgentSwarmTool implements IAgentSwarmTool {
   }
 
   private readonly callerAgentId: string;
+  private catalogReady = false;
+  private frozenCatalogRoutes: readonly AgentProfileRouteCatalogEntry[] | undefined;
 
   constructor(
     @ISessionSwarmService private readonly swarmService: ISessionSwarmService,
@@ -119,6 +126,9 @@ export class AgentSwarmTool implements IAgentSwarmTool {
     @IEventBus private readonly eventBus?: IEventBus,
   ) {
     this.callerAgentId = scopeContext.agentId;
+    void this.catalog.ready.then(() => {
+      this.catalogReady = true;
+    });
   }
 
   get description(): string {
@@ -128,9 +138,24 @@ export class AgentSwarmTool implements IAgentSwarmTool {
       this.profile.data().modelAlias,
       this.modelCatalog,
     );
-    return modelLines === undefined
+    let description = modelLines === undefined
       ? AGENT_SWARM_DESCRIPTION
       : `${AGENT_SWARM_DESCRIPTION}\n\n${modelLines}`;
+    const allowlist = subagentAllowlistFor(this.catalog, this.profile.data());
+    const routes = this.catalogRoutes().filter(
+      (route) => allowlist === undefined || allowlist.includes(route.profile),
+    );
+    if (routes.length > 0) {
+      description += `\n\nAvailable agent routes (pass via route):\n${formatRouteDescriptions(routes)}`;
+    }
+    return description;
+  }
+
+  private catalogRoutes(): readonly AgentProfileRouteCatalogEntry[] {
+    if (this.frozenCatalogRoutes !== undefined) return this.frozenCatalogRoutes;
+    const routes = this.catalog.listRoutes?.() ?? [];
+    if (this.catalogReady) this.frozenCatalogRoutes = routes;
+    return routes;
   }
 
   resolveExecution(args: AgentSwarmToolInput): ToolExecution {
@@ -179,18 +204,36 @@ export class AgentSwarmTool implements IAgentSwarmTool {
     if (
       (args.items?.length ?? 0) === 0 &&
       Object.keys(args.resume_agent_ids ?? {}).length > 0 &&
-      (args.model !== undefined || modelAlias !== undefined || thinkingEffort !== undefined)
+      (args.route !== undefined || args.model !== undefined || modelAlias !== undefined || thinkingEffort !== undefined)
     ) {
       throw new Error2(
         ErrorCodes.VALIDATION_FAILED,
-        'Cannot set model, model_alias, or thinking_effort for a resume-only swarm.',
+        'Cannot set route, model, model_alias, or thinking_effort for a resume-only swarm.',
       );
     }
-    const profileName = normalizeOptionalString(args.subagent_type) ?? DEFAULT_SUBAGENT_TYPE;
+    const requestedProfileName =
+      normalizeOptionalString(args.subagent_type) ??
+      (args.route === undefined ? DEFAULT_SUBAGENT_TYPE : undefined);
+    let profileName = requestedProfileName ?? DEFAULT_SUBAGENT_TYPE;
+    let routeId: string | undefined;
     let binding: { model: string; thinking?: string } | undefined;
     if ((args.items?.length ?? 0) > 0) {
       await this.catalog.ready;
       const own = this.profile.data();
+      const selection =
+        args.route === undefined
+          ? (() => {
+              const base = this.catalog.get(requestedProfileName!);
+              if (base === undefined) {
+                throw new Error2(ErrorCodes.PROFILE_UNKNOWN, `Unknown agent type: "${requestedProfileName}"`, {
+                  details: { profileName: requestedProfileName },
+                });
+              }
+              return { profile: base, baseProfile: base, route: undefined };
+            })()
+          : this.catalog.resolveSelection({ profile: requestedProfileName, route: args.route });
+      profileName = selection.baseProfile.name;
+      routeId = selection.route?.id;
       const allowlist = subagentAllowlistFor(this.catalog, own);
       if (allowlist !== undefined && !allowlist.includes(profileName)) {
         throw new Error2(
@@ -199,12 +242,13 @@ export class AgentSwarmTool implements IAgentSwarmTool {
           { details: { profileName, allowlist } },
         );
       }
-      const targetProfile = this.catalog.get(profileName);
-      if (targetProfile === undefined) {
-        throw new Error2(ErrorCodes.PROFILE_UNKNOWN, `Unknown agent type: "${profileName}"`, {
-          details: { profileName },
-        });
-      }
+      const targetProfile = selection.profile;
+      assertProfileRouteBinding(selection.route, {
+        modelAlias,
+        thinkingEffort,
+        modelPreference: args.model,
+      });
+      assertProfileRouteModelAvailable(selection.route, this.modelCatalog);
       if (own.modelAlias !== undefined) {
         const resolved = resolveSubagentBinding(
           this.config,
@@ -257,10 +301,11 @@ export class AgentSwarmTool implements IAgentSwarmTool {
       this.swarmService.getSwarmItem({ callerAgentId: this.callerAgentId, agentId }),
     );
     const tasks: SessionSwarmTask<AgentSwarmSpec>[] = specs.map((spec) => {
-      const descriptionName = spec.kind === 'resume' ? 'resume' : profileName;
+      const descriptionName = spec.kind === 'resume' ? 'resume' : routeId ?? profileName;
       const common = {
         data: spec,
         profileName: spec.kind === 'resume' ? 'subagent' : profileName,
+        routeId: spec.kind === 'resume' ? undefined : routeId,
         parentToolCallId: toolCallId,
         prompt: spec.prompt,
         description: childDescription(args.description, spec.index, descriptionName),
@@ -376,6 +421,21 @@ function hasMinimumAgentSwarmInputs(itemCount: number, resumeCount: number): boo
 
 function childDescription(swarmDescription: string, index: number, profileName: string): string {
   return `${swarmDescription} #${String(index)} (${profileName})`;
+}
+
+function formatRouteDescriptions(routes: readonly AgentProfileRouteCatalogEntry[]): string {
+  return routes
+    .map((route) => {
+      const details = [route.description, route.whenToUse].filter(Boolean).join(' ');
+      const bindings = [
+        route.modelPreference === undefined ? undefined : `model=${route.modelPreference}`,
+        route.modelAlias === undefined ? undefined : `model_alias=${route.modelAlias}`,
+        route.thinkingEffort === undefined ? undefined : `thinking_effort=${route.thinkingEffort}`,
+      ].filter((value): value is string => value !== undefined);
+      const fields = route.overriddenFields.join(',') || 'none';
+      return `- ${route.id} (base: ${route.profile}): ${details}\n  ${bindings.join(', ')}${bindings.length > 0 ? '; ' : ''}overrides=${fields}`;
+    })
+    .join('\n');
 }
 
 function renderSwarmResults(results: readonly SwarmRunResult[]): string {

@@ -62,6 +62,9 @@ const RequestParamsSchema = z.record(
 export interface ProfileModelState {
   readonly modelAlias?: string;
   readonly profileName?: string;
+  readonly routeId?: string;
+  readonly lockedModelAlias?: string;
+  readonly lockedThinkingEffort?: string;
   readonly thinkingLevel: string;
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;
@@ -71,6 +74,7 @@ export interface ProfileModelState {
   readonly agentsMdPaths?: readonly string[];
   readonly disallowedTools?: readonly string[];
   readonly subagents?: readonly string[];
+  readonly toolAllowPolicies?: readonly (readonly string[])[];
 }
 
 export const ProfileModel = defineModel<ProfileModelState>('profile', () => ({
@@ -83,6 +87,9 @@ export const profileBind = ProfileModel.defineOp('profile.bind', {
   schema: z.object({
     modelAlias: z.string().optional(),
     profileName: z.string().optional(),
+    routeId: z.string().optional(),
+    lockedModelAlias: z.string().optional(),
+    lockedThinkingEffort: z.string().optional(),
     thinkingEffort: z.custom<ThinkingEffort>(),
     serviceTier: ServiceTierSchema.optional(),
     requestParams: RequestParamsSchema.readonly().optional(),
@@ -91,12 +98,16 @@ export const profileBind = ProfileModel.defineOp('profile.bind', {
     renderGeneration: z.number().optional(),
     agentsMdPaths: z.array(z.string()).readonly().optional(),
     activeToolNames: z.array(z.string()).readonly().optional(),
+    toolAllowPolicies: z.array(z.array(z.string()).readonly()).readonly().optional(),
     disallowedTools: z.array(z.string()).readonly(),
     subagents: z.array(z.string()).readonly().optional(),
   }),
   apply: (s, p) => ({
     modelAlias: p.modelAlias ?? s.modelAlias,
     profileName: p.profileName ?? s.profileName,
+    routeId: p.routeId,
+    lockedModelAlias: p.lockedModelAlias,
+    lockedThinkingEffort: p.lockedThinkingEffort,
     thinkingLevel: p.thinkingEffort,
     serviceTier: p.serviceTier,
     requestParams: p.requestParams,
@@ -106,6 +117,7 @@ export const profileBind = ProfileModel.defineOp('profile.bind', {
     agentsMdPaths: p.agentsMdPaths ?? s.agentsMdPaths,
     disallowedTools: p.disallowedTools,
     subagents: p.subagents,
+    toolAllowPolicies: p.toolAllowPolicies,
   }),
 });
 

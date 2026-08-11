@@ -69,6 +69,10 @@ import { IPluginAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoad
 import { IWorkspaceAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/workspaceAgentProfileLoader';
 import { IExtraAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/extraAgentProfileLoader';
 import { IExplicitAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/explicitAgentProfileLoader';
+import { IFlagService } from '#/app/flag/flag';
+import { AGENT_PROFILE_ROUTES_FLAG_ID } from '#/app/agentProfileCatalog/flag';
+import { isToolActive } from '#/agent/toolPolicy/evaluate';
+import { parseAgentRouteFileText } from '#/workspace/workspaceAgentProfileLoader/internal/agentRouteFile';
 
 import { stubBootstrap } from '../../app/bootstrap/stubs';
 
@@ -173,6 +177,15 @@ function recordingFsWatchStub(): {
 function agentMd(name: string, description: string, override = false): string {
   const overrideLine = override ? 'override: true\n' : '';
   return `---\nname: ${name}\ndescription: ${description}\n${overrideLine}---\n\nYou are ${name}.\n`;
+}
+
+function routeMd(
+  id: string,
+  profile: string,
+  body: string,
+  extra = '',
+): string {
+  return `---\nid: ${id}\nprofile: ${profile}\ndescription: ${id} route\nprompt_mode: prepend\n${extra}---\n\n${body}\n`;
 }
 
 interface Fixture {
@@ -286,6 +299,7 @@ interface StackOptions {
   readonly pluginReloadEmitter?: Emitter<ReloadSummary>;
   readonly hostFs?: HostFileSystem;
   readonly fsWatch?: IHostFsWatchService;
+  readonly routesEnabled?: boolean;
 }
 
 function makeStack(fixture: Fixture, opts?: StackOptions) {
@@ -302,6 +316,10 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
   };
   const hostFs = opts?.hostFs ?? new HostFileSystem();
   const workspaceContext = workspaceContextStub(fixture.workDir);
+  const flags = {
+    _serviceBrand: undefined,
+    enabled: (id: string) => id === AGENT_PROFILE_ROUTES_FLAG_ID && opts?.routesEnabled === true,
+  } as IFlagService;
 
   const container = new InstantiationService(
     new ServiceCollection(
@@ -312,6 +330,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
       [IHostFsWatchService, opts?.fsWatch ?? fsWatchStub()],
       [IWorkspaceContext, workspaceContext],
       [IPluginService, pluginStub(opts?.pluginAgentRoots ?? [], opts?.pluginReloadEmitter)],
+      [IFlagService, flags],
       [IAgentProfileRegistry, new SyncDescriptor(AgentProfileRegistryService)],
       [IBuiltinAgentProfileLoader, new SyncDescriptor(BuiltinAgentProfileLoaderService)],
       [IUserAgentProfileLoader, new SyncDescriptor(UserAgentProfileLoaderService)],
@@ -335,7 +354,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
     _serviceBrand: undefined,
     workspaceKey: workspaceContext.workspaceId,
   };
-  const catalog = new SessionAgentProfileCatalogService(registry, seed, config, log);
+  const catalog = new SessionAgentProfileCatalogService(registry, seed, config, log, flags);
 
   return {
     registry,
@@ -391,6 +410,21 @@ describe('agent profile loaders + session catalog', () => {
     registerAgentProfile(builtinDefault);
   });
 
+  it('strictly validates route prompt composition modes', () => {
+    const parse = (mode: string, body: string) =>
+      parseAgentRouteFileText({
+        path: '/agents/.routes/reviewer/wrapped.md',
+        expectedProfile: 'reviewer',
+        expectedRouteName: 'wrapped',
+        text: `---\nid: reviewer.wrapped\nprofile: reviewer\ndescription: wrapped\nprompt_mode: ${mode}\n---\n\n${body}`,
+      });
+    expect(parse('wrap', 'before ${base_prompt} after').promptMode).toBe('wrap');
+    expect(() => parse('wrap', 'no base')).toThrow(/exactly once/);
+    expect(() => parse('wrap', '${base_prompt} twice ${base_prompt}')).toThrow(/exactly once/);
+    expect(() => parse('prepend', '${base_prompt}')).toThrow(/does not allow/);
+    expect(() => parse('inherit', 'not empty')).toThrow(/empty body/);
+  });
+
   it('lists builtin profiles when no agent directories exist', async () => {
     await withFixture(async (fixture) => {
       await withStack(fixture, undefined, async (stack) => {
@@ -400,6 +434,212 @@ describe('agent profile loaders + session catalog', () => {
         expect(stack.catalog.getDefault().name).toBe(DEFAULT_AGENT_PROFILE_NAME);
         expect(stack.catalog.list().length).toBeGreaterThan(0);
         expect(stack.catalog.inspect(DEFAULT_AGENT_PROFILE_NAME)?.sourceId).toBe('builtin');
+      });
+    });
+  });
+
+  it('loads and composes a named route without widening base authority', async () => {
+    await withFixture(async (fixture) => {
+      const root = join(fixture.homeDir, 'agents');
+      await writeAgent(
+        root,
+        'reviewer.md',
+        `---\nname: reviewer\ndescription: reviewer\ntools: [Read, Bash]\ndisallowedTools: [Write]\nsubagents: [explore, coder]\nservice_tier: priority\nrequest_params:\n  base: true\n  service_tier: auto\n---\n\nBASE REVIEWER`,
+      );
+      await writeAgent(
+        join(root, '.routes', 'reviewer'),
+        'ui-k3.md',
+        routeMd(
+          'reviewer.ui-k3',
+          'reviewer',
+          'ROUTE OVERLAY',
+          `whenToUse: UI review\nmodel_alias: route-model\nthinking_effort: high\ntools: [Read]\ndisallowedTools: [Bash]\nsubagents: [explore, added]\nservice_tier: null\nrequest_params:\n  route: true\n  service_tier: flex\n`,
+        ),
+      );
+
+      await withStack(fixture, { routesEnabled: true }, async (stack) => {
+        await stack.ready();
+        expect(stack.catalog.listRoutes()).toMatchObject([
+          {
+            id: 'reviewer.ui-k3',
+            profile: 'reviewer',
+            modelAlias: 'route-model',
+            thinkingEffort: 'high',
+          },
+        ]);
+        const selection = stack.catalog.resolveSelection({ route: 'reviewer.ui-k3' });
+        const effective = selection.profile;
+        expect(effective.renderSystemPrompt({}).text).toBe('ROUTE OVERLAY\n\nBASE REVIEWER');
+        expect(isToolActive(effective, 'Read')).toBe(true);
+        expect(isToolActive(effective, 'Bash')).toBe(false);
+        expect(isToolActive(effective, 'Write')).toBe(false);
+        expect(effective.subagents).toEqual(['explore']);
+        expect(effective.serviceTier).toBeUndefined();
+        expect(effective.requestParams).toEqual({ base: true, route: true });
+        expect(
+          stack.warnings.some(
+            (warning) =>
+              warning.includes('service_tier') &&
+              warning.includes('overrides request_params.service_tier'),
+          ),
+        ).toBe(true);
+        expect(() =>
+          stack.catalog.resolveSelection({ profile: 'coder', route: 'reviewer.ui-k3' }),
+        ).toThrow(expect.objectContaining({ code: 'agent_profile_route.base_mismatch' }));
+      });
+    });
+  });
+
+  it('narrows MCP and collaboration tools without widening the builtin base profile', async () => {
+    await withFixture(async (fixture) => {
+      const agentsRoot = join(fixture.homeDir, 'agents');
+      await writeAgent(
+        agentsRoot,
+        'coder.md',
+        `---\nname: coder\ndescription: coder\ntools: [Read, list_agents, send_message, mcp__*]\n---\n\nCODER`,
+      );
+      await writeAgent(
+        agentsRoot,
+        'explore.md',
+        `---\nname: explore\ndescription: explore\ntools: [Read]\n---\n\nEXPLORE`,
+      );
+      const root = join(agentsRoot, '.routes');
+      await writeAgent(
+        join(root, 'coder'),
+        'review.md',
+        routeMd(
+          'coder.review',
+          'coder',
+          'CODER ROUTE',
+          'tools: [Read, send_message, mcp__github__*]\n',
+        ),
+      );
+      await writeAgent(
+        join(root, 'explore'),
+        'review.md',
+        routeMd(
+          'explore.review',
+          'explore',
+          'EXPLORE ROUTE',
+          'tools: [Read, send_message, mcp__github__*]\n',
+        ),
+      );
+
+      await withStack(fixture, { routesEnabled: true }, async (stack) => {
+        await stack.ready();
+        const coder = stack.catalog.resolveSelection({ route: 'coder.review' }).profile;
+        expect(isToolActive(coder, 'Read')).toBe(true);
+        expect(isToolActive(coder, 'send_message')).toBe(true);
+        expect(isToolActive(coder, 'list_agents')).toBe(false);
+        expect(isToolActive(coder, 'mcp__github__create_issue', 'mcp')).toBe(true);
+        expect(isToolActive(coder, 'mcp__other__ping', 'mcp')).toBe(false);
+
+        const explore = stack.catalog.resolveSelection({ route: 'explore.review' }).profile;
+        expect(isToolActive(explore, 'Read')).toBe(true);
+        expect(isToolActive(explore, 'send_message')).toBe(false);
+        expect(isToolActive(explore, 'mcp__github__create_issue', 'mcp')).toBe(false);
+      });
+    });
+  });
+
+  it('reloads route creation and removal without retaining a stale catalog entry', async () => {
+    await withFixture(async (fixture) => {
+      const agentsRoot = join(fixture.homeDir, 'agents');
+      await writeAgent(agentsRoot, 'coder.md', agentMd('coder', 'coder'));
+      const routeDir = join(agentsRoot, '.routes', 'coder');
+      const routePath = await writeAgent(
+        routeDir,
+        'temporary.md',
+        routeMd('coder.temporary', 'coder', 'TEMPORARY ROUTE'),
+      );
+      await withStack(fixture, { routesEnabled: true }, async (stack) => {
+        await stack.ready();
+        expect(stack.catalog.listRoutes().map((route) => route.id)).toContain('coder.temporary');
+
+        await rm(routePath);
+        await stack.userLoader.reload();
+
+        expect(stack.catalog.listRoutes().map((route) => route.id)).not.toContain('coder.temporary');
+        expect(() => stack.catalog.resolveSelection({ route: 'coder.temporary' })).toThrow(
+          expect.objectContaining({ code: 'agent_profile_route.unknown' }),
+        );
+      });
+    });
+  });
+
+  it('keeps route discovery flag-off and isolates invalid or missing-base sidecars', async () => {
+    await withFixture(async (fixture) => {
+      const root = join(fixture.homeDir, 'agents');
+      await writeAgent(root, 'reviewer.md', agentMd('reviewer', 'reviewer'));
+      await writeAgent(
+        join(root, '.routes', 'reviewer'),
+        'good.md',
+        routeMd('reviewer.good', 'reviewer', 'GOOD'),
+      );
+      await writeAgent(
+        join(root, '.routes', 'reviewer'),
+        'bad.md',
+        routeMd('reviewer.bad', 'reviewer', 'BAD', 'unknown_field: true\n'),
+      );
+      await writeAgent(
+        join(root, '.routes', 'missing'),
+        'orphan.md',
+        routeMd('missing.orphan', 'missing', 'ORPHAN'),
+      );
+
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        expect(stack.catalog.listRoutes()).toEqual([]);
+        expect(stack.catalog.routeDiagnostics()).toEqual([]);
+        expect(() => stack.catalog.resolveSelection({ route: 'reviewer.good' })).toThrow(
+          expect.objectContaining({ code: 'agent_profile_route.feature_disabled' }),
+        );
+      });
+      await withStack(fixture, { routesEnabled: true }, async (stack) => {
+        await stack.ready();
+        expect(stack.catalog.listRoutes().map((route) => route.id)).toEqual(['reviewer.good']);
+        expect(stack.catalog.routeDiagnostics().map((item) => item.code)).toEqual(
+          expect.arrayContaining([
+            'agent_profile_route.invalid_sidecar',
+            'agent_profile_route.base_missing',
+          ]),
+        );
+      });
+    });
+  });
+
+  it('uses profile source precedence for route ID collisions', async () => {
+    await withFixture(async (fixture) => {
+      const userRoot = join(fixture.homeDir, 'agents');
+      const genericUserRoot = join(fixture.osHomeDir, '.agents', 'agents');
+      const workspaceRoot = join(fixture.workDir, '.kimi-code', 'agents');
+      await writeAgent(userRoot, 'reviewer.md', agentMd('reviewer', 'reviewer'));
+      await writeAgent(
+        join(userRoot, '.routes', 'reviewer'),
+        'shared.md',
+        routeMd('reviewer.shared', 'reviewer', 'USER ROUTE'),
+      );
+      await writeAgent(
+        join(genericUserRoot, '.routes', 'reviewer'),
+        'shared.md',
+        routeMd('reviewer.shared', 'reviewer', 'GENERIC USER ROUTE'),
+      );
+      await writeAgent(
+        join(workspaceRoot, '.routes', 'reviewer'),
+        'shared.md',
+        routeMd('reviewer.shared', 'reviewer', 'WORKSPACE ROUTE'),
+      );
+      await withStack(fixture, { routesEnabled: true }, async (stack) => {
+        await stack.ready();
+        expect(
+          stack.catalog.resolveSelection({ route: 'reviewer.shared' }).profile
+            .renderSystemPrompt({}).text,
+        ).toBe('WORKSPACE ROUTE\n\nYou are reviewer.');
+        expect(stack.catalog.routeDiagnostics()).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ code: 'agent_profile_route.duplicate' }),
+          ]),
+        );
       });
     });
   });

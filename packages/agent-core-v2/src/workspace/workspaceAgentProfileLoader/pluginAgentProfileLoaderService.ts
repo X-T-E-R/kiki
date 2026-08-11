@@ -16,6 +16,8 @@ import { ILogService } from '#/_base/log/log';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
+import { IFlagService } from '#/app/flag/flag';
+import { AGENT_PROFILE_ROUTES_FLAG_ID } from '#/app/agentProfileCatalog/flag';
 
 import { discoverAgentFiles } from './internal/agentFileDiscovery';
 import { AgentProfileLoaderBase } from './internal/agentProfileLoader';
@@ -42,6 +44,7 @@ export class PluginAgentProfileLoaderService
     @ILogService log: ILogService,
     @IUserAgentProfileLoader private readonly user: IUserAgentProfileLoader,
     @IWorkspaceContext private readonly workspace: IWorkspaceContext,
+    @IFlagService private readonly flags: IFlagService,
   ) {
     super(log);
     this._register(
@@ -63,6 +66,8 @@ export class PluginAgentProfileLoaderService
     return profilesFromDiscovery(
       await discoverAgentFiles(this.fs, roots, (message) => {
         this.log.warn(message);
+      }, {
+        includeRoutes: this.flags.enabled(AGENT_PROFILE_ROUTES_FLAG_ID),
       }),
       (context) => this.user.getDefaultProfile().renderSystemPrompt(context),
     );

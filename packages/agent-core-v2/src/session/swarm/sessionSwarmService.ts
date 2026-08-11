@@ -20,6 +20,10 @@
 
 import type { TokenUsage } from '#/kosong/contract/usage';
 import { IModelCatalog } from '#/kosong/model/catalog';
+import {
+  assertProfileRouteBinding,
+  assertProfileRouteModelAvailable,
+} from '#/session/subagent/profileRouteBinding';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2, ErrorCodes } from '#/errors';
@@ -35,7 +39,9 @@ import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalo
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import {
+  delegatorRef,
   isSubagentMeta,
+  labelsFromAgentMeta,
   subagentLabels,
   subagentParentAgentId,
   subagentSwarmItem,
@@ -151,12 +157,19 @@ export class SessionSwarmService implements ISessionSwarmService {
     options.signal.throwIfAborted();
     const caller = this.requireHandle(callerAgentId, 'Caller agent');
     await this.catalog.ready;
-    const profile = this.catalog.get(options.profileName);
-    if (profile === undefined) {
-      throw new Error2(ErrorCodes.PROFILE_UNKNOWN, `Unknown agent type: "${options.profileName}"`, {
-        details: { profileName: options.profileName },
-      });
-    }
+    const selection =
+      options.routeId === undefined
+        ? (() => {
+            const base = this.catalog.get(options.profileName);
+            if (base === undefined) {
+              throw new Error2(ErrorCodes.PROFILE_UNKNOWN, `Unknown agent type: "${options.profileName}"`, {
+                details: { profileName: options.profileName },
+              });
+            }
+            return { profile: base, baseProfile: base, route: undefined };
+          })()
+        : this.catalog.resolveSelection({ profile: options.profileName, route: options.routeId });
+    const profile = selection.profile;
     const callerData = caller.accessor.get(IAgentProfileService).data();
     if (callerData.modelAlias === undefined) {
       throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'Caller agent has no model bound', {
@@ -164,10 +177,21 @@ export class SessionSwarmService implements ISessionSwarmService {
       });
     }
     let binding = options.binding ?? {
-      model: callerData.modelAlias,
-      thinking: callerData.thinkingLevel,
-      modelSource: 'caller' as const,
+      model: selection.route?.lockedModelAlias ?? profile.modelAlias ?? callerData.modelAlias,
+      thinking:
+        selection.route?.lockedThinkingEffort ??
+        profile.thinkingEffort ??
+        callerData.thinkingLevel,
+      modelSource:
+        selection.route?.lockedModelAlias !== undefined || profile.modelAlias !== undefined
+          ? ('profile' as const)
+          : ('caller' as const),
     };
+    assertProfileRouteBinding(selection.route, {
+      modelAlias: binding.model,
+      thinkingEffort: binding.thinking,
+    });
+    assertProfileRouteModelAvailable(selection.route, this.modelCatalog);
     let modelSource = binding.modelSource ?? 'secondary';
     try {
       this.modelCatalog.get(binding.model);
@@ -193,7 +217,8 @@ export class SessionSwarmService implements ISessionSwarmService {
     try {
       child = await this.lifecycle.create({
         binding: {
-          profile: profile.name,
+          profile: selection.baseProfile.name,
+          route: selection.route?.id,
           model: binding.model,
           thinking: binding.thinking,
         },
@@ -210,7 +235,7 @@ export class SessionSwarmService implements ISessionSwarmService {
       .get(IAgentUserToolService)
       .inheritUserTools(caller.accessor.get(IAgentUserToolService));
     emitAgentRunSpawned(caller, child.id, {
-      profileName: options.profileName,
+      profileName: selection.route?.id ?? options.profileName,
       parentToolCallId: options.parentToolCallId,
       parentToolCallUuid: options.parentToolCallUuid,
       description: options.description,
@@ -223,7 +248,7 @@ export class SessionSwarmService implements ISessionSwarmService {
       runner: this.processRunner,
       log: this.log,
     });
-    return this.observe(caller, child.id, options.profileName, {
+    return this.observe(caller, child.id, selection.route?.id ?? options.profileName, {
       kind: 'prompt',
       prompt: promptText,
     }, options);
@@ -236,14 +261,21 @@ export class SessionSwarmService implements ISessionSwarmService {
     retryTurn: boolean,
   ): Promise<AgentRunAttemptHandle> {
     options.signal.throwIfAborted();
-    await this.requireOwnedSubagent(callerAgentId, agentId);
+    const meta = await this.requireOwnedSubagent(callerAgentId, agentId);
     const caller = this.requireHandle(callerAgentId, 'Caller agent');
-    const child = this.requireHandle(agentId, 'Agent instance');
+    const child =
+      this.lifecycle.get(agentId) ??
+      (await this.lifecycle.create({
+        agentId,
+        forkedFrom: meta.forkedFrom,
+        labels: labelsFromAgentMeta(meta),
+        delegator: delegatorRef(meta),
+      }));
     this.requireIdleSubagent(agentId, child);
-    const profileName =
-      child.accessor.get(IAgentProfileService).data().profileName ?? RESUMED_PROFILE_FALLBACK;
+    const childProfile = child.accessor.get(IAgentProfileService).data();
+    const profileName = childProfile.routeId ?? childProfile.profileName ?? RESUMED_PROFILE_FALLBACK;
     if (!retryTurn) {
-      const resumedModel = child.accessor.get(IAgentProfileService).data().modelAlias;
+      const resumedModel = childProfile.modelAlias;
       emitAgentRunSpawned(caller, agentId, {
         profileName,
         parentToolCallId: options.parentToolCallId,
@@ -307,9 +339,9 @@ export class SessionSwarmService implements ISessionSwarmService {
     }
   }
 
-  private async requireOwnedSubagent(callerAgentId: string, agentId: string): Promise<void> {
+  private async requireOwnedSubagent(callerAgentId: string, agentId: string): Promise<AgentMeta> {
     const meta = await this.agentMeta(agentId);
-    if (!isSubagentMeta(meta)) {
+    if (meta === undefined || !isSubagentMeta(meta)) {
       throw new Error2(ErrorCodes.AGENT_NOT_A_SUBAGENT, `Agent instance "${agentId}" is not a subagent`, {
         details: { agentId },
       });
@@ -321,6 +353,7 @@ export class SessionSwarmService implements ISessionSwarmService {
         { details: { agentId, callerAgentId } },
       );
     }
+    return meta;
   }
 
   private async agentMeta(agentId: string): Promise<AgentMeta | undefined> {

@@ -31,6 +31,7 @@ export interface AgentRunAttemptOptions {
 
 export interface AgentSpawnAttemptOptions extends AgentRunAttemptOptions {
   readonly profileName: string;
+  readonly routeId?: string;
   readonly swarmItem?: string;
   readonly binding?: {
     readonly model: string;
@@ -306,6 +307,7 @@ export class AgentRunBatch<T> {
       } else {
         const spawnOptions: AgentSpawnAttemptOptions = {
           profileName: task.profileName,
+          routeId: task.routeId,
           swarmItem: task.swarmItem,
           binding: task.binding,
           ...runOptions,

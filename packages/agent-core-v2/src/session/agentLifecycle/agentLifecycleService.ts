@@ -51,6 +51,16 @@ import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivati
 import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { IWireService } from '#/wire/wire';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
+import { IModelCatalog, type Model } from '#/kosong/model/catalog';
+import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
+import {
+  normalizeRequestedThinkingEffort,
+  requiresStrictThinkingValidation,
+  resolveThinkingEffortForModel,
+  type ThinkingConfig,
+} from '#/kosong/model/thinking';
+import { THINKING_SECTION } from '#/app/kosongConfig/configSection';
 import {
   type AgentListFilter,
   type CreateAgentOptions,
@@ -85,6 +95,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     @IConfigService private readonly config: IConfigService,
     @ISessionInteractionService private readonly interaction: ISessionInteractionService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
+    @ISessionAgentProfileCatalog private readonly profileCatalog: ISessionAgentProfileCatalog,
+    @IModelCatalog private readonly modelCatalog: IModelCatalog,
+    @IProtocolAdapterRegistry private readonly protocolAdapters: IProtocolAdapterRegistry,
   ) {
     super();
     this._register(this.onDidCreate((handle) => this.subscribeInteractionBus(handle)));
@@ -118,16 +131,129 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       const inflight = this.creating.get(opts.agentId);
       if (inflight !== undefined) return inflight;
       const existing = this.handles.get(opts.agentId);
-      if (existing !== undefined) return existing;
+      if (existing !== undefined) {
+        const persisted = existing.accessor.get(IAgentProfileService).data();
+        if (opts.binding !== undefined && opts.binding.route !== persisted.routeId) {
+          throw new Error2(
+            ErrorCodes.ROUTE_SWITCH_FORBIDDEN,
+            `Agent "${opts.agentId}" is bound to route "${persisted.routeId ?? 'base'}" and cannot switch to "${opts.binding.route}"`,
+          );
+        }
+        if (
+          persisted.lockedModelAlias !== undefined &&
+          opts.binding?.model !== undefined &&
+          opts.binding.model !== persisted.lockedModelAlias
+        ) {
+          throw new Error2(
+            ErrorCodes.ROUTE_BINDING_CONFLICT,
+            `Agent profile route "${persisted.routeId}" locks model_alias to "${persisted.lockedModelAlias}"`,
+          );
+        }
+        if (
+          persisted.lockedThinkingEffort !== undefined &&
+          opts.binding?.thinking !== undefined &&
+          opts.binding.thinking !== persisted.lockedThinkingEffort
+        ) {
+          throw new Error2(
+            ErrorCodes.ROUTE_BINDING_CONFLICT,
+            `Agent profile route "${persisted.routeId}" locks thinking_effort to "${persisted.lockedThinkingEffort}"`,
+          );
+        }
+        return existing;
+      }
     }
     const agentId = opts.agentId ?? (await this.nextAvailableAgentId());
-    const promise = this.doCreate(agentId, opts);
+    const promise =
+      opts.binding?.route === undefined
+        ? this.doCreate(agentId, opts)
+        : this.doCreateAfterRoutePreflight(agentId, opts);
     this.creating.set(agentId, promise);
     try {
       return await promise;
     } finally {
       this.creating.delete(agentId);
     }
+  }
+
+  private async preflightRouteBinding(binding: CreateAgentOptions['binding']): Promise<void> {
+    if (binding?.route === undefined) return;
+    await this.profileCatalog.ready;
+    const selection = this.profileCatalog.resolveSelection({
+      profile: binding.profile,
+      route: binding.route,
+    });
+    const route = selection.route!;
+    if (
+      route.lockedModelAlias !== undefined &&
+      binding.model !== undefined &&
+      binding.model !== route.lockedModelAlias
+    ) {
+      throw new Error2(
+        ErrorCodes.ROUTE_BINDING_CONFLICT,
+        `Agent profile route "${route.id}" locks model_alias to "${route.lockedModelAlias}"`,
+      );
+    }
+    if (
+      route.lockedThinkingEffort !== undefined &&
+      binding.thinking !== undefined &&
+      binding.thinking !== route.lockedThinkingEffort
+    ) {
+      throw new Error2(
+        ErrorCodes.ROUTE_BINDING_CONFLICT,
+        `Agent profile route "${route.id}" locks thinking_effort to "${route.lockedThinkingEffort}"`,
+      );
+    }
+    const alias = route.lockedModelAlias ?? binding.model ?? this.config.get<string>('defaultModel');
+    if (alias === undefined || alias === '') return;
+    let model: Model;
+    try {
+      model = this.modelCatalog.get(alias);
+    } catch (error) {
+      if (route.lockedModelAlias === undefined) throw error;
+      throw new Error2(
+        ErrorCodes.ROUTE_MODEL_ALIAS_MISSING,
+        `Agent profile route "${route.id}" requires unavailable model alias "${route.lockedModelAlias}"`,
+        {
+          details: { route: route.id, modelAlias: route.lockedModelAlias },
+          cause: error,
+        },
+      );
+    }
+    const lockedEffort = normalizeRequestedThinkingEffort(route.lockedThinkingEffort);
+    if (lockedEffort === undefined) return;
+    const strict = requiresStrictThinkingValidation(
+      this.protocolAdapters,
+      model.protocol,
+      model.providerType,
+    );
+    const resolved = resolveThinkingEffortForModel(
+      lockedEffort,
+      this.config.get<ThinkingConfig>(THINKING_SECTION),
+      model,
+      strict,
+    );
+    if (resolved !== lockedEffort) {
+      throw new Error2(
+        ErrorCodes.ROUTE_BINDING_CONFLICT,
+        `Agent profile route "${route.id}" requires thinking_effort "${route.lockedThinkingEffort}", which model "${alias}" cannot honor`,
+        {
+          details: {
+            route: route.id,
+            modelAlias: alias,
+            lockedThinkingEffort: route.lockedThinkingEffort,
+            resolvedThinkingEffort: resolved,
+          },
+        },
+      );
+    }
+  }
+
+  private async doCreateAfterRoutePreflight(
+    agentId: string,
+    opts: CreateAgentOptions,
+  ): Promise<IAgentScopeHandle> {
+    await this.preflightRouteBinding(opts.binding);
+    return this.doCreate(agentId, opts);
   }
 
   private async nextAvailableAgentId(): Promise<string> {
@@ -240,18 +366,24 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         details: { agentId: opts.agentId },
       });
     }
-    const child = await this.create({ agentId: opts?.agentId, forkedFrom: source.id });
-
     const sourceData = source.accessor.get(IAgentProfileService).data();
-    const childProfile = child.accessor.get(IAgentProfileService);
     const override = opts?.binding;
-    if (override?.profile !== undefined) {
-      await childProfile.bind({
-        profile: override.profile,
-        model: override.model ?? sourceData.modelAlias,
-        thinking: override?.thinking ?? sourceData.thinkingLevel,
-      });
-    } else {
+    const overrideBinding =
+      override?.profile !== undefined || override?.route !== undefined
+        ? {
+            profile: override.profile,
+            route: override.route,
+            model: override.model ?? sourceData.modelAlias,
+            thinking: override.thinking ?? sourceData.thinkingLevel,
+          }
+        : undefined;
+    const child = await this.create({
+      agentId: opts?.agentId,
+      forkedFrom: source.id,
+      binding: overrideBinding,
+    });
+    const childProfile = child.accessor.get(IAgentProfileService);
+    if (overrideBinding === undefined) {
       childProfile.applyBindingSnapshot(sourceData);
       if (override?.model !== undefined) await childProfile.setModel(override.model);
       if (override?.thinking !== undefined) childProfile.setThinking(override.thinking);

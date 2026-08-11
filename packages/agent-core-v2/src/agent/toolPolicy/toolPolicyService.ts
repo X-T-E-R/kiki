@@ -56,6 +56,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     return this.isToolActiveForProfile(
       {
         tools: profile.activeToolNames,
+        toolAllowPolicies: profile.toolAllowPolicies,
         disallowedTools: profile.disallowedTools,
       },
       name,

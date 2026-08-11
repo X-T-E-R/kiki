@@ -146,7 +146,45 @@ disallowedTools:
 
 未知字段会被忽略，新版本写的文件在旧版本上仍可读取。其他 Agent 工具的字段（如 Claude Code 的 `model`、OpenCode 的 `mode`）同样会被忽略；加上 `tools` 的逗号分隔写法和 `name` 缺省回退到文件名，Claude Code 与 OpenCode 风格的 Agent 文件一般可直接加载 —— 只含 `description` 和正文的最小文件可跨工具通用。
 
-`model_alias` 与 `thinking_effort` 已是稳定的 profile 字段和 `Agent` / `AgentSwarm` 工具参数，不需要启用 `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL`。新派生子 Agent 的模型与 effort 分别按以下顺序解析：工具参数 → profile 字段 → `[subagent]` 的 `default_model` / `default_effort` → 调用方绑定。profile 固定的 `model_alias` 不存在于 `[models]` 时，CLI 会告警并回退到调用方的模型与 effort；通过工具参数显式传入未知 alias 时则会报错。
+### 具名 profile route（实验功能）
+
+具名 route 在现有 Agent 上增加专用运行方式，但不会创建新的权限身份。启动时在 `config.toml` 中设置 `[experimental] agent-profile-routes = true`，或设置 `KIMI_CODE_EXPERIMENTAL_AGENT_PROFILE_ROUTES=1`。
+
+基础 profile 仍放在 `agents/<role>.md`。Route 放在 `agents/.routes/<role>/<route>.md`，规范 ID 为 `<role>.<route>`，每一段都必须是小写 kebab-case。例如 `agents/.routes/reviewer/ui-k3.md` 定义 `reviewer.ui-k3`：
+
+```markdown
+---
+id: reviewer.ui-k3
+profile: reviewer
+description: 使用 K3 模型审查 UI 改动
+whenToUse: 前端与交互评审
+prompt_mode: prepend
+model_alias: k3-review
+thinking_effort: high
+tools: [Read, Grep, Glob]
+disallowedTools: [Bash]
+subagents: [explore]
+service_tier: priority
+request_params:
+  temperature: 0.2
+---
+
+重点检查交互回归、无障碍与视觉一致性。
+```
+
+必填字段为 `id`、`profile`、`description` 和 `prompt_mode`。可选字段为 `whenToUse`、`model_preference`、`model_alias`、`thinking_effort`、`service_tier`、`request_params`、`tools`、`disallowedTools`、`subagents`。与普通 Agent 文件不同，route Frontmatter 使用严格解析。未知字段、非法类型、路径 / ID / profile 不匹配、同一来源内重复 ID、互斥的模型选择器只会让该 sidecar 被跳过并产生带 code 的诊断；基础 profile 和其他 route 仍会加载。
+
+`prompt_mode` 始终保留基础提示词：`inherit` 要求正文为空；`prepend` 与 `append` 要求正文非空且不能包含 `${base_prompt}`；`wrap` 要求正文必须且只能包含一次 `${base_prompt}`。不提供无保护的 replace 模式。
+
+Route 只能收紧权限。Route 的 `tools` 是额外 allow 层（基础与 route 必须同时允许某个工具）；`disallowedTools` 与基础 denylist 合并；`subagents` 与基础 allowlist 取交集，`subagents: []` 会让 route 成为叶子。调用方检查仍针对基础 role，因此 route 不能引入调用方原本不能派发的 role。需要更大权限时，应新建并 allowlist 一个基础 profile。
+
+请求字段省略时继承基础值。`service_tier: null` 清除基础 tier，其他值直接替换；`request_params: null` 清除基础 map，传入 map 时按标量 key 覆盖。Route 声明的 `model_alias` 或 `thinking_effort` 会被锁定：调用可以省略或重复同一值，但冲突值会被拒绝。锁定的 alias 不存在时会在分配 Agent 之前报错，不会走普通 profile alias 的回退逻辑；所选模型无法精确执行锁定 effort 时，派发同样会失败。
+
+启用后，`Agent` 与 `AgentSwarm` 都会列出经调用方基础 role allowlist 过滤后的精简 route 条目。条目只包含 route ID、基础 role、描述 / 使用提示、模型与 effort 默认值、被覆盖的字段名，绝不包含提示词正文。调用时传入 `route: reviewer.ui-k3`；可以省略 `subagent_type` 让系统推导 `reviewer`，也可以显式传入这个匹配的基础 role。Role 不匹配会产生带 code 的错误。系统不会自动排序选择或静默回退。
+
+恢复时不会重新选择或切换 route。Journal 会保存规范基础 role、route ID、渲染后的提示词、分层工具策略、denylist、子 Agent 限制、模型 / effort 锁、service tier 与请求参数。因此，即使后来关闭 flag，或 sidecar 被修改、删除、写坏，已有 routed Agent 仍从快照恢复；这些变化只影响新派发。旧 journal 继续兼容。混合 `AgentSwarm` 调用只把 `route` 应用于基于 item 的新 Agent，resume 条目保留原快照。
+
+`model_alias` 与 `thinking_effort` 已是稳定的 profile 字段和 `Agent` / `AgentSwarm` 工具参数，不需要启用 `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL`。新派生子 Agent 的模型与 effort 分别按以下顺序解析：工具参数 → profile 字段 → `[subagent]` 的 `default_model` / `default_effort` → 调用方绑定。普通（非 route）profile 指定的 `model_alias` 不存在于 `[models]` 时，CLI 会告警并回退到调用方的模型与 effort；通过工具参数显式传入未知 alias 时则会报错。
 
 只有旧版工具参数 `model`（`primary` / `secondary`）、profile 字段 `model_preference` 和次主力 recipe 仍受次主力模型实验功能控制。启用后，次主力 recipe 会插在 `[subagent]` 默认值与调用方绑定之间。关闭时，profile 中的 `model_preference` 会被忽略并告警；显式传入 `model` 工具参数则会返回清晰错误。恢复或重试的子 Agent 保持已持久化的模型与 effort；`Agent` resume 传入绑定字段会被拒绝。`AgentSwarm` 混合调用只把这些字段应用到基于 item 的新派生项。
 

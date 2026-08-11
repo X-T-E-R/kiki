@@ -27,7 +27,8 @@ export const SubagentToolInputSchema = z.preprocess(
       typeof normalized['resume'] === 'string' && normalized['resume'].trim().length > 0;
     const hasSubagentType =
       typeof normalized['subagent_type'] === 'string' && normalized['subagent_type'].length > 0;
-    if (!hasSubagentType && !hasResumeId) {
+    const hasRoute = typeof normalized['route'] === 'string' && normalized['route'].length > 0;
+    if (!hasSubagentType && !hasResumeId && !hasRoute) {
       normalized['subagent_type'] = DEFAULT_PROFILE_NAME;
     } else if (!hasSubagentType) {
       delete normalized['subagent_type'];
@@ -43,11 +44,19 @@ export const SubagentToolInputSchema = z.preprocess(
       .describe(
         'One of the available agent types (see "Available agent types" in this tool description). Defaults to "coder" when omitted.',
       ),
+    route: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe(
+        'Named profile route for a new subagent. The base type is derived from the route when subagent_type is omitted.',
+      ),
     resume: z
       .string()
       .optional()
       .describe(
-        'Optional agent ID to resume instead of creating a new instance. When set, do not also pass subagent_type, model, model_alias, or thinking_effort; the resumed agent keeps its persisted binding.',
+        'Optional agent ID to resume instead of creating a new instance. When set, do not also pass subagent_type, route, model, model_alias, or thinking_effort; the resumed agent keeps its persisted binding.',
       ),
     run_in_background: z
       .boolean()
@@ -84,11 +93,11 @@ export const SubagentToolInputSchema = z.preprocess(
     }
     if (
       args.resume?.trim() &&
-      (args.model !== undefined || args.model_alias !== undefined || args.thinking_effort !== undefined)
+      (args.route !== undefined || args.model !== undefined || args.model_alias !== undefined || args.thinking_effort !== undefined)
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'Cannot set model, model_alias, or thinking_effort when resuming an existing agent',
+        message: 'Cannot set route, model, model_alias, or thinking_effort when resuming an existing agent',
       });
     }
   }),
