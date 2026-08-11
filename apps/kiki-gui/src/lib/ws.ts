@@ -18,6 +18,22 @@ import type { ResyncRequiredPayload, SessionEventFrame } from './types';
 
 export type WsStatus = 'connecting' | 'open' | 'closed';
 
+/**
+ * Terminal channel signals lifted out of the frame stream. `output`/`exit`
+ * carry the wire `terminal_output` / `terminal_exit` frames; `attached` fires
+ * on every successful `terminal_attach` ack — including the automatic
+ * re-attaches after a reconnect, which is how a listener learns the stream
+ * resumed.
+ */
+export type TerminalSignal =
+  | { readonly kind: 'attached'; readonly sessionId: string; readonly terminalId: string; readonly replayed: number }
+  | { readonly kind: 'output'; readonly sessionId: string; readonly terminalId: string; readonly seq: number; readonly data: string }
+  | { readonly kind: 'exit'; readonly sessionId: string; readonly terminalId: string; readonly exitCode: number | null };
+
+export interface TerminalAttachResult {
+  readonly replayed: number;
+}
+
 export interface WsEvents {
   onStatus(status: WsStatus, detail?: string): void;
   onFrame(frame: SessionEventFrame): void;
@@ -44,6 +60,26 @@ interface WireMessage {
 
 const BACKOFF_STEPS_MS = [500, 1000, 2000, 4000, 8000] as const;
 const STALE_INBOUND_MS = 45_000;
+/** Deadline for a terminal control ack (attach is the only awaited verb). */
+const TERMINAL_CONTROL_TIMEOUT_MS = 8_000;
+
+interface TrackedTerminal {
+  readonly sessionId: string;
+  readonly terminalId: string;
+  lastSeq: number;
+}
+
+interface PendingTerminalControl {
+  readonly sessionId: string;
+  readonly terminalId: string;
+  readonly resolve: (result: TerminalAttachResult) => void;
+  readonly reject: (error: Error) => void;
+  readonly timer: ReturnType<typeof setTimeout>;
+}
+
+function terminalKey(sessionId: string, terminalId: string): string {
+  return `${sessionId} ${terminalId}`;
+}
 
 let clientCounter = 0;
 
@@ -66,6 +102,14 @@ export class KikiSocket {
   private helloCount = 0;
   /** Set when the in-flight subscribe rode a reconnect hello; consumed by the ack. */
   private subscribeFromReconnect = false;
+  /**
+   * Terminals this connection wants attached, keyed by session+terminal id.
+   * Survives reconnects: every fresh hello re-attaches them with
+   * `since_seq = lastSeq` so replay closes the blackout gap.
+   */
+  private readonly trackedTerminals = new Map<string, TrackedTerminal>();
+  private readonly terminalListeners = new Set<(signal: TerminalSignal) => void>();
+  private readonly pendingTerminalControls = new Map<string, PendingTerminalControl>();
   /** Heartbeat cadence advertised by server_hello (undefined = none — kap-server
    * does not currently advertise one; see docs/server-heartbeat.md). */
   private serverHeartbeatMs: number | undefined;
@@ -158,6 +202,115 @@ export class KikiSocket {
     }
   }
 
+  // ── Terminal channel ───────────────────────────────────────────────────
+  // Terminal I/O rides this same socket as `terminal_*` control frames with
+  // `terminal_output` / `terminal_exit` frames coming back. Input and resize
+  // are fire-and-forget (keystroke frequency makes per-frame acks pointless);
+  // attach is the only awaited verb — its ack carries the replay count.
+
+  /** Subscribe to terminal signals (`attached` / `output` / `exit`). */
+  onTerminalSignal(listener: (signal: TerminalSignal) => void): () => void {
+    this.terminalListeners.add(listener);
+    return () => {
+      this.terminalListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Attach to a terminal's IO stream. The terminal stays tracked across
+   * reconnects (re-attached automatically); `terminalDetach` untracks it.
+   * Resolves with the attach ack; rejects when the socket is down or the
+   * server never answers (today's kap-server ignores terminal frames — the
+   * timeout is how the UI learns that).
+   */
+  terminalAttach(sessionId: string, terminalId: string): Promise<TerminalAttachResult> {
+    const key = terminalKey(sessionId, terminalId);
+    if (!this.trackedTerminals.has(key)) {
+      this.trackedTerminals.set(key, { sessionId, terminalId, lastSeq: 0 });
+    }
+    if (!this.isReady()) {
+      return Promise.reject(new Error('socket is not connected'));
+    }
+    return this.sendTerminalAttach(this.trackedTerminals.get(key)!);
+  }
+
+  /** Detach and stop tracking (no re-attach on the next reconnect). */
+  terminalDetach(sessionId: string, terminalId: string): void {
+    this.trackedTerminals.delete(terminalKey(sessionId, terminalId));
+    if (this.isReady()) {
+      this.send({
+        type: 'terminal_detach',
+        id: this.nextId(),
+        payload: { session_id: sessionId, terminal_id: terminalId },
+      });
+    }
+  }
+
+  terminalInput(sessionId: string, terminalId: string, data: string): void {
+    if (this.isReady()) {
+      this.send({
+        type: 'terminal_input',
+        id: this.nextId(),
+        payload: { session_id: sessionId, terminal_id: terminalId, data },
+      });
+    }
+  }
+
+  terminalResize(sessionId: string, terminalId: string, cols: number, rows: number): void {
+    if (this.isReady()) {
+      this.send({
+        type: 'terminal_resize',
+        id: this.nextId(),
+        payload: { session_id: sessionId, terminal_id: terminalId, cols, rows },
+      });
+    }
+  }
+
+  private sendTerminalAttach(tracked: TrackedTerminal): Promise<TerminalAttachResult> {
+    const id = this.nextId();
+    return new Promise<TerminalAttachResult>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingTerminalControls.delete(id);
+        reject(new Error('terminal attach timed out — the server does not answer terminal frames'));
+      }, TERMINAL_CONTROL_TIMEOUT_MS);
+      this.pendingTerminalControls.set(id, {
+        sessionId: tracked.sessionId,
+        terminalId: tracked.terminalId,
+        resolve,
+        reject,
+        timer,
+      });
+      this.send({
+        type: 'terminal_attach',
+        id,
+        payload: {
+          session_id: tracked.sessionId,
+          terminal_id: tracked.terminalId,
+          // since_seq=0 means "full replay"; omit it rather than send 0.
+          since_seq: tracked.lastSeq > 0 ? tracked.lastSeq : undefined,
+        },
+      });
+    });
+  }
+
+  private emitTerminalSignal(signal: TerminalSignal): void {
+    for (const listener of this.terminalListeners) {
+      try {
+        listener(signal);
+      } catch {
+        // a broken listener must not break the frame pump
+      }
+    }
+  }
+
+  private failPendingTerminalControls(reason: string): void {
+    for (const pending of this.pendingTerminalControls.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error(reason));
+    }
+    this.pendingTerminalControls.clear();
+  }
+
   get ready(): boolean {
     return this.isReady();
   }
@@ -206,6 +359,8 @@ export class KikiSocket {
     ws.onclose = (event) => {
       if (this.ws === ws) this.ws = null;
       this.helloReceived = false;
+      // Attach waiters must not hang until their timeout when the socket dies.
+      this.failPendingTerminalControls('socket closed before the attach ack arrived');
       this.events.onStatus('closed', `code ${event.code}`);
       this.scheduleReconnect();
     };
@@ -253,6 +408,16 @@ export class KikiSocket {
           this.subscribeFromReconnect = this.helloCount > 1;
           this.sendSubscribe([...this.desired.keys()]);
         }
+        // Re-attach tracked terminals on every (re)connect; replay from
+        // `lastSeq` closes whatever the blackout missed. Attach acks flow to
+        // terminal listeners as `attached` signals.
+        if (this.helloCount > 1) {
+          for (const tracked of this.trackedTerminals.values()) {
+            void this.sendTerminalAttach(tracked).catch(() => {
+              // a failed re-attach stays tracked; the next reconnect retries
+            });
+          }
+        }
         return;
       }
       case 'ping': {
@@ -278,6 +443,53 @@ export class KikiSocket {
         }
         return;
       }
+      case 'terminal_output': {
+        // Intercept before the session-event default: terminal seqs are
+        // per-terminal and would corrupt session cursor tracking.
+        const frame = message as WireMessage & {
+          session_id?: unknown;
+          terminal_id?: unknown;
+          seq?: unknown;
+        };
+        if (
+          typeof frame.session_id === 'string' &&
+          typeof frame.terminal_id === 'string' &&
+          typeof frame.seq === 'number'
+        ) {
+          const data = (message.payload as { data?: unknown } | undefined)?.data;
+          const key = terminalKey(frame.session_id, frame.terminal_id);
+          const tracked = this.trackedTerminals.get(key);
+          if (tracked !== undefined && frame.seq > tracked.lastSeq) {
+            tracked.lastSeq = frame.seq;
+          }
+          this.emitTerminalSignal({
+            kind: 'output',
+            sessionId: frame.session_id,
+            terminalId: frame.terminal_id,
+            seq: frame.seq,
+            data: typeof data === 'string' ? data : '',
+          });
+        }
+        return;
+      }
+      case 'terminal_exit': {
+        const frame = message as WireMessage & {
+          session_id?: unknown;
+          terminal_id?: unknown;
+        };
+        if (typeof frame.session_id === 'string' && typeof frame.terminal_id === 'string') {
+          // A dead terminal is never re-attached on reconnect.
+          this.trackedTerminals.delete(terminalKey(frame.session_id, frame.terminal_id));
+          const exitCode = (message.payload as { exit_code?: unknown } | undefined)?.exit_code;
+          this.emitTerminalSignal({
+            kind: 'exit',
+            sessionId: frame.session_id,
+            terminalId: frame.terminal_id,
+            exitCode: typeof exitCode === 'number' ? exitCode : null,
+          });
+        }
+        return;
+      }
       default: {
         // session_event frames carry seq+payload; anything else is ignored.
         if (typeof message.type === 'string' && message.payload !== undefined) {
@@ -293,6 +505,34 @@ export class KikiSocket {
   }
 
   private handleAck(message: WireMessage): void {
+    // Terminal control acks correlate by frame id; everything else falls
+    // through to the legacy subscribe-ack handling.
+    if (message.id !== undefined) {
+      const pending = this.pendingTerminalControls.get(message.id);
+      if (pending !== undefined) {
+        this.pendingTerminalControls.delete(message.id);
+        clearTimeout(pending.timer);
+        if (message.code === 0) {
+          const payload = message.payload as { replayed?: unknown } | undefined;
+          pending.resolve({
+            replayed: typeof payload?.replayed === 'number' ? payload.replayed : 0,
+          });
+          this.emitTerminalSignal({
+            kind: 'attached',
+            sessionId: pending.sessionId,
+            terminalId: pending.terminalId,
+            replayed: typeof payload?.replayed === 'number' ? payload.replayed : 0,
+          });
+        } else {
+          pending.reject(
+            new Error(
+              `terminal attach rejected: ${message.msg ?? 'unknown error'} (code ${String(message.code)})`,
+            ),
+          );
+        }
+        return;
+      }
+    }
     const payload = message.payload as
       | {
           accepted?: string[];

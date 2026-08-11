@@ -35,6 +35,12 @@
  *   { action: 'release', session_id }   resolve { waitFor: 'release' } steps
  *   { action: 'burst', session_id, count, frame? }  on-demand frame storm
  *   { action: 'list' }                  list scenario names + active one
+ *
+ * Terminals: `/sessions/{id}/terminals*` REST plus the `terminal_*` WS control
+ * frames are served by FakeTerminal, a line-oriented echo shell (`echo`, `pwd`,
+ * `clear`, `exit [n]`) with PTY-style echo, a 2000-frame replay buffer, and
+ * attach/detach/input/resize/close acks. A scenario can seed running PTYs via
+ * a snapshot entry's `terminals: [{shell?, cwd?, cols?, rows?, banner?}]`.
  */
 
 import { createServer } from 'node:http';
@@ -180,6 +186,145 @@ class FixtureSession {
     this.journal = []; // [{seq, frame}]
     // interactionId → resolved state, so /transcript interactions stay honest.
     this.resolvedInteractions = new Map();
+    // Fake PTYs (terminal domain). Scenario seeds: snapshot entry `terminals:
+    // [{shell?, cwd?, cols?, rows?, banner?}]` — a banner line proves attach
+    // replay without any typing.
+    this.terminals = new Map(); // terminal_id → FakeTerminal
+    for (const seed of scenarioData.terminals ?? []) {
+      const term = new FakeTerminal(this, seed);
+      if (typeof seed.banner === 'string') term.emit(`${seed.banner}\r\n`);
+      this.terminals.set(term.record.id, term);
+    }
+  }
+}
+
+/**
+ * FakeTerminal — a line-oriented echo shell behind the terminal wire verbs.
+ * PTY-style: input chars echo back, CR runs the line buffer, backspace erases
+ * (`\b \b`), Ctrl+C (`ETX`) cancels the line. Commands: `echo …`, `exit [n]`,
+ * `clear`, `pwd`; anything else is "command not found". Output frames carry a
+ * per-terminal seq and buffer (cap 2000) for attach replay, exactly like the
+ * engine's SessionTerminalService; the exit frame replays unconditionally.
+ */
+class FakeTerminal {
+  constructor(session, options = {}) {
+    this.session = session;
+    this.record = {
+      id: nextId('term'),
+      session_id: session.record.id,
+      cwd: options.cwd ?? session.record.metadata?.cwd ?? 'C:/fixture',
+      shell: options.shell ?? '/bin/sh',
+      cols: options.cols ?? 80,
+      rows: options.rows ?? 24,
+      status: 'running',
+      created_at: now(),
+    };
+    this.buffer = []; // output frames, capped like the engine's 2000
+    this.nextSeq = 0;
+    this.line = '';
+    this.attachments = new Set(); // ws connections attached to this terminal
+    this.emit('$ ');
+  }
+
+  frame(data) {
+    return {
+      type: 'terminal_output',
+      seq: (this.nextSeq += 1),
+      session_id: this.record.session_id,
+      terminal_id: this.record.id,
+      timestamp: now(),
+      payload: { data },
+    };
+  }
+
+  exitFrame() {
+    return {
+      type: 'terminal_exit',
+      session_id: this.record.session_id,
+      terminal_id: this.record.id,
+      timestamp: now(),
+      payload: { exit_code: this.record.exit_code ?? null },
+    };
+  }
+
+  emit(data) {
+    const frame = this.frame(data);
+    this.buffer.push(frame);
+    if (this.buffer.length > 2000) this.buffer.splice(0, this.buffer.length - 2000);
+    for (const ws of this.attachments) {
+      if (ws.readyState === 1) ws.send(JSON.stringify(frame));
+    }
+  }
+
+  write(data) {
+    if (this.record.status !== 'running') return;
+    for (const char of String(data)) {
+      const code = char.codePointAt(0);
+      if (code === 13) {
+        // CR: run the buffered line (PTYs deliver \r for Enter).
+        const line = this.line;
+        this.line = '';
+        this.emit('\r\n');
+        this.run(line);
+        if (this.record.status === 'running') this.emit('$ ');
+      } else if (code === 127 || code === 8) {
+        if (this.line.length > 0) {
+          this.line = this.line.slice(0, -1);
+          this.emit('\b \b');
+        }
+      } else if (code === 3) {
+        this.line = '';
+        this.emit('^C\r\n$ ');
+      } else if (code >= 32) {
+        this.line += char;
+        this.emit(char);
+      }
+      // other control bytes are swallowed, like a raw-mode-less shell
+    }
+  }
+
+  run(line) {
+    const trimmed = line.trim();
+    if (trimmed === '') return;
+    if (trimmed === 'echo') {
+      this.emit('\r\n');
+      return;
+    }
+    if (trimmed.startsWith('echo ')) {
+      this.emit(`${trimmed.slice(5)}\r\n`);
+      return;
+    }
+    if (trimmed === 'pwd') {
+      this.emit(`${this.record.cwd}\r\n`);
+      return;
+    }
+    if (trimmed === 'clear') {
+      this.emit(`${String.fromCharCode(27)}[H${String.fromCharCode(27)}[2J`);
+      return;
+    }
+    if (trimmed === 'exit' || trimmed.startsWith('exit ')) {
+      const code = trimmed === 'exit' ? 0 : Number(trimmed.slice(5).trim());
+      this.close(Number.isFinite(code) ? code : 0);
+      return;
+    }
+    this.emit(`sh: ${trimmed.split(' ')[0]}: command not found\r\n`);
+  }
+
+  resize(cols, rows) {
+    this.record.cols = cols;
+    this.record.rows = rows;
+  }
+
+  /** Kill the PTY (engine semantics: exit_code null on close). */
+  close(exitCode = null) {
+    if (this.record.status === 'exited') return;
+    this.record.status = 'exited';
+    this.record.exited_at = now();
+    this.record.exit_code = exitCode;
+    const frame = this.exitFrame();
+    for (const ws of this.attachments) {
+      if (ws.readyState === 1) ws.send(JSON.stringify(frame));
+    }
   }
 }
 
@@ -1030,6 +1175,30 @@ class FixtureServer {
       task.completed_at = now();
       return this.envelope(res, { cancelled: true });
     }
+    // Terminal lifecycle (kap-server's /sessions/{id}/terminals REST surface).
+    if (tail === '/terminals' && body === undefined) {
+      return this.envelope(res, { items: [...session.terminals.values()].map((t) => t.record) });
+    }
+    if (tail === '/terminals' && body !== undefined) {
+      const term = new FakeTerminal(session, {
+        cwd: body.cwd,
+        shell: body.shell,
+        cols: body.cols,
+        rows: body.rows,
+      });
+      session.terminals.set(term.record.id, term);
+      return this.envelope(res, term.record);
+    }
+    const terminalMatch = /^\/terminals\/([^/:]+)(?::(close))?$/.exec(tail);
+    if (terminalMatch !== null) {
+      const term = session.terminals.get(terminalMatch[1]);
+      if (term === undefined) return this.envelope(res, null, 40414, 'terminal.not_found');
+      if (terminalMatch[2] === 'close') {
+        term.close(null);
+        return this.envelope(res, { closed: true });
+      }
+      return this.envelope(res, term.record);
+    }
     return this.envelope(res, null, 40404, `fixture: no route ${path}`);
   }
 
@@ -1055,6 +1224,7 @@ class FixtureServer {
           last_prompt_submission: session.lastPromptSubmission,
           last_skill_activation: session.lastSkillActivation,
           last_fs_search: session.lastFsSearch,
+          terminals: [...session.terminals.values()].map((t) => t.record),
         });
       }
       case 'state':
@@ -1132,7 +1302,13 @@ class FixtureServer {
   onConnection(ws) {
     ws.subscriptions = new Set();
     this.sockets.add(ws);
-    ws.on('close', () => this.sockets.delete(ws));
+    ws.on('close', () => {
+      this.sockets.delete(ws);
+      // A dead connection detaches from every terminal stream.
+      for (const session of this.sessions.values()) {
+        for (const term of session.terminals.values()) term.attachments.delete(ws);
+      }
+    });
     this.sendFrame(ws, {
       type: 'server_hello',
       timestamp: now(),
@@ -1215,6 +1391,61 @@ class FixtureServer {
             session.record.busy = false;
           }
           ack({ aborted: session !== undefined, at_seq: session?.seq ?? 0 });
+          break;
+        }
+        // ── terminal IO channel (kap-server WS control frames) ──
+        case 'terminal_attach': {
+          const payload = message.payload ?? {};
+          const term = this.sessions.get(payload.session_id)?.terminals.get(payload.terminal_id);
+          if (term === undefined) {
+            this.sendFrame(ws, { type: 'ack', id: message.id, code: 40414, msg: 'terminal.not_found', payload: {} });
+            break;
+          }
+          term.attachments.add(ws);
+          let replayed = 0;
+          const sinceSeq = Number(payload.since_seq ?? 0);
+          for (const frame of term.buffer) {
+            if (frame.seq > sinceSeq) {
+              this.sendFrame(ws, frame);
+              replayed += 1;
+            }
+          }
+          // The exit frame always replays (the engine ranks it +∞), so a
+          // late attacher still learns the terminal is dead.
+          if (term.record.status === 'exited') this.sendFrame(ws, term.exitFrame());
+          ack({ attached: true, replayed });
+          break;
+        }
+        case 'terminal_detach': {
+          const payload = message.payload ?? {};
+          const term = this.sessions.get(payload.session_id)?.terminals.get(payload.terminal_id);
+          if (term !== undefined) term.attachments.delete(ws);
+          ack({ detached: true });
+          break;
+        }
+        case 'terminal_input': {
+          const payload = message.payload ?? {};
+          const term = this.sessions.get(payload.session_id)?.terminals.get(payload.terminal_id);
+          if (term !== undefined) term.write(payload.data ?? '');
+          ack({ accepted: true });
+          break;
+        }
+        case 'terminal_resize': {
+          const payload = message.payload ?? {};
+          const term = this.sessions.get(payload.session_id)?.terminals.get(payload.terminal_id);
+          if (term !== undefined) term.resize(Number(payload.cols), Number(payload.rows));
+          ack({ resized: true });
+          break;
+        }
+        case 'terminal_close': {
+          const payload = message.payload ?? {};
+          const term = this.sessions.get(payload.session_id)?.terminals.get(payload.terminal_id);
+          if (term === undefined) {
+            this.sendFrame(ws, { type: 'ack', id: message.id, code: 40414, msg: 'terminal.not_found', payload: {} });
+            break;
+          }
+          term.close(null);
+          ack({ closed: true });
           break;
         }
         case 'pong':

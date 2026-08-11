@@ -104,6 +104,9 @@ const STRINGS = {
     togglePanelAria: 'Toggle panel',
     openMenuAria: 'Open session menu',
     sessionActionsAria: 'Session actions',
+    terminalEmpty: 'No terminals yet',
+    terminalKillConfirm: 'sure?',
+    terminalExited: 'Process exited (code 0)',
   },
   zh: {
     newSession: '新会话',
@@ -164,6 +167,9 @@ const STRINGS = {
     togglePanelAria: '切换面板',
     openMenuAria: '打开会话菜单',
     sessionActionsAria: '会话操作',
+    terminalEmpty: '还没有终端',
+    terminalKillConfirm: '确认？',
+    terminalExited: '进程已退出（代码 0）',
   },
 };
 const S = STRINGS[LOCALE];
@@ -991,6 +997,142 @@ async function scenarioSessionPages() {
   await shot('session-pages');
 }
 
+async function scenarioTerminal() {
+  const SID = 'session_fixture_terminal';
+  const mirrorText = () =>
+    page.evaluate(
+      () => document.querySelector('[data-terminal-screen]')?.textContent ?? '',
+    );
+  const waitMirror = async (predicate, label, timeout = 15_000) => {
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      const text = await mirrorText();
+      if (predicate(text)) return text;
+      if (Date.now() > deadline) {
+        throw new Error(`terminal mirror never satisfied "${label}"; tail: ${JSON.stringify(text.slice(-120))}`);
+      }
+      await page.waitForTimeout(120);
+    }
+  };
+  const canvas = page.locator('[data-terminal-canvas]:visible');
+
+  await selectSession('Fixture: terminal');
+  await page.click('[data-terminal-toggle]');
+  await page.waitForSelector('[data-terminal-panel]', { timeout: 10_000 });
+  // Empty state → the first terminal is created from it.
+  await page.waitForSelector(`text=${S.terminalEmpty}`, { timeout: 10_000 });
+  await shot('terminal-empty');
+  await page.click('[data-terminal-new-empty]');
+  await page.waitForSelector('[data-terminal-tab]', { timeout: 10_000 });
+  // The fake shell's prompt rides the attach replay.
+  await waitMirror((text) => text.includes('$'), 'initial prompt');
+
+  // Full keyboard round-trip: typed input echoes, the command output follows.
+  await canvas.click();
+  await page.keyboard.type('echo kiki-term-ok');
+  await page.keyboard.press('Enter');
+  await waitMirror(
+    (text) => text.split('kiki-term-ok').length - 1 >= 2,
+    'echo input + output',
+  );
+  await page.waitForTimeout(400);
+  await shot('terminal-open');
+
+  // Drag the panel taller → fit → a resize frame reaches the fixture.
+  const beforeResize = await control({ action: 'session', session_id: SID });
+  const rowsBefore = beforeResize.data?.terminals?.[0]?.rows;
+  const handle = page.locator('[data-terminal-panel] [role="separator"]');
+  const box = await handle.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + 1);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2, box.y - 140, { steps: 6 });
+  await page.mouse.up();
+  let rowsAfter = rowsBefore;
+  for (let i = 0; i < 40 && rowsAfter === rowsBefore; i += 1) {
+    await sleep(150);
+    const state = await control({ action: 'session', session_id: SID });
+    rowsAfter = state.data?.terminals?.[0]?.rows;
+  }
+  console.log(`[check] terminal rows after drag: ${rowsBefore} → ${rowsAfter}`);
+  if (rowsAfter === undefined || rowsAfter === rowsBefore) {
+    throw new Error('panel drag never resized the PTY');
+  }
+  const heightBefore = await page.locator('[data-terminal-panel]').evaluate((node) => node.offsetHeight);
+
+  // Second terminal in a tab; independent IO.
+  await page.click('[data-terminal-new]');
+  await page.waitForFunction(
+    () => document.querySelectorAll('[data-terminal-tab]').length === 2,
+    undefined,
+    { timeout: 10_000 },
+  );
+  await canvas.click();
+  await page.keyboard.type('echo second-shell');
+  await page.keyboard.press('Enter');
+  await waitMirror(
+    (text) => text.split('second-shell').length - 1 >= 2,
+    'second tab output',
+  );
+  await page.waitForTimeout(300);
+  await shot('terminal-tabs');
+
+  // Back on tab 1 its scrollback is still there (per-tab xterm instances).
+  await page.locator('[data-terminal-tab]').first().click();
+  await waitMirror((text) => text.includes('kiki-term-ok'), 'tab-1 scrollback');
+
+  // Kill tab 2 — the two-step confirm guards it.
+  await page.locator('[data-terminal-kill]').nth(1).click();
+  await page.waitForSelector(`text=${S.terminalKillConfirm}`, { timeout: 5000 });
+  await page.locator('[data-terminal-kill]').nth(1).click();
+  await page.waitForFunction(
+    () => document.querySelectorAll('[data-terminal-tab]').length === 1,
+    undefined,
+    { timeout: 10_000 },
+  );
+  const afterKill = await control({ action: 'session', session_id: SID });
+  if (afterKill.data?.terminals?.[1]?.status !== 'exited') {
+    throw new Error(`killed terminal did not exit server-side: ${JSON.stringify(afterKill.data?.terminals)}`);
+  }
+
+  // `exit` in tab 1 → the dead state with the exit code, then restart.
+  await canvas.click();
+  await page.keyboard.type('exit');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector(`text=${S.terminalExited}`, { timeout: 10_000 });
+  await page.waitForTimeout(300);
+  await shot('terminal-dead');
+  await page.click('[data-terminal-restart]');
+  await page.waitForSelector('[data-terminal-restart]', { state: 'detached', timeout: 10_000 });
+  await canvas.click();
+  await page.keyboard.type('echo back-alive');
+  await page.keyboard.press('Enter');
+  await waitMirror(
+    (text) => text.split('back-alive').length - 1 >= 2,
+    'restarted terminal output',
+  );
+
+  // Reload: the panel reopens at the dragged height, terminals relist, the
+  // running one reattaches and replays its buffer without any typing.
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-terminal-panel]', { timeout: 20_000 });
+  await page.waitForFunction(
+    () => document.querySelectorAll('[data-terminal-tab]').length === 3,
+    undefined,
+    { timeout: 15_000 },
+  );
+  await waitMirror(
+    (text) => text.split('back-alive').length - 1 >= 2,
+    'replayed scrollback after reload',
+  );
+  const heightAfter = await page.locator('[data-terminal-panel]').evaluate((node) => node.offsetHeight);
+  console.log(`[check] panel height persisted: ${heightBefore} → ${heightAfter}`);
+  if (Math.abs(heightAfter - heightBefore) > 4) {
+    throw new Error(`panel height not persisted: ${heightBefore} vs ${heightAfter}`);
+  }
+  await page.waitForTimeout(400);
+  await shot('terminal-restored');
+}
+
 // ---------------------------------------------------------------------------
 
 /** 1x1 transparent PNG — the paste payload for the attachments walker. */
@@ -1255,6 +1397,7 @@ const SCENARIOS = [
   ['attachments', scenarioAttachments],
   ['search', scenarioSearch],
   ['session-actions', scenarioSessionActions],
+  ['terminal', scenarioTerminal],
   ['i18n', scenarioI18n],
   // responsive stays last: it shrinks the viewport to 320px and nothing
   // afterward may assume a desktop layout.
@@ -1323,30 +1466,44 @@ async function main() {
     console.log(`[proof] web up at ${WEB_URL}`);
 
     const browser = await chromium.launch();
-    page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-    page.on('pageerror', (error) => console.error(`[pageerror] ${error}`));
-    page.on('console', (message) => {
-      if (message.type() === 'error') console.error(`[console:error] ${message.text()}`);
-    });
-    // Seed the UI locale before any app code runs — only when no choice
-    // exists yet, so the i18n walker's settings-toggle survives its reload
-    // (persistence check) while every other scenario still boots in LOCALE.
-    await page.addInitScript((locale) => {
-      try {
-        if (localStorage.getItem('kiki.locale') === null) {
-          localStorage.setItem('kiki.locale', locale);
+    const bootPage = async () => {
+      const next = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+      next.on('pageerror', (error) => console.error(`[pageerror] ${error}`));
+      next.on('console', (message) => {
+        if (message.type() === 'error') console.error(`[console:error] ${message.text()}`);
+      });
+      // Seed the UI locale before any app code runs — only when no choice
+      // exists yet, so the i18n walker's settings-toggle survives its reload
+      // (persistence check) while every other scenario still boots in LOCALE.
+      await next.addInitScript((locale) => {
+        try {
+          if (localStorage.getItem('kiki.locale') === null) {
+            localStorage.setItem('kiki.locale', locale);
+          }
+        } catch {
+          // storage unavailable — the app falls back to the navigator default
         }
-      } catch {
-        // storage unavailable — the app falls back to the navigator default
-      }
-    }, LOCALE);
+      }, LOCALE);
+      return next;
+    };
+    page = await bootPage();
     console.log(`[proof] locale: ${LOCALE}`);
 
     const deepLink = `${WEB_URL}/?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
     // domcontentloaded + an explicit app-ready selector: the app opens a WS
     // and polls sessions on a 5s cadence, so 'networkidle' is never a
     // reliable condition (30s startup flake under cold vite transforms).
-    await page.goto(deepLink, { waitUntil: 'domcontentloaded' });
+    // The FIRST navigation right after a previous run's teardown can wedge
+    // entirely (a half-recycled port answers waitForServer's plain fetch but
+    // never serves the document): retry once with a fresh page before failing.
+    try {
+      await page.goto(deepLink, { waitUntil: 'domcontentloaded' });
+    } catch (error) {
+      console.log(`[proof] first navigation failed (${error.message}) — retrying on a fresh page`);
+      await page.close().catch(() => undefined);
+      page = await bootPage();
+      await page.goto(deepLink, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+    }
     await page.waitForSelector(`text=${S.newSession}`, { timeout: 30_000 });
     console.log('[proof] connected to fixture');
 

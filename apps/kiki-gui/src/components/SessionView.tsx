@@ -12,6 +12,7 @@ import type { PermissionMode, Session } from '@moonshot-ai/protocol';
 
 import { Composer } from './Composer';
 import { RightRail } from './RightRail';
+import { TerminalPanel } from './TerminalPanel';
 import { Transcript } from './Transcript';
 import { KikiMark } from './Wordmark';
 import {
@@ -32,10 +33,15 @@ import {
   undoLastTurn,
   type SessionActionContext,
 } from '../lib/sessionActions';
+import {
+  readTerminalPanelPrefs,
+  writeTerminalPanelPrefs,
+} from '../lib/terminalPrefs';
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
 import { readDesktopPrefs, readSettings } from '../lib/settings';
 import { useConnection, useControllerRegistry } from '../state/connection';
 import { SessionController } from '../state/sessionController';
+import { TerminalManager } from '../state/terminalManager';
 import {
   agentTranscriptToBlocks,
   createViewState,
@@ -78,14 +84,18 @@ function useActiveController(sessionId: string | undefined): SessionController |
 function Header({
   controller,
   railOpen,
+  terminalOpen,
   onToggleRail,
+  onToggleTerminal,
   onToggleSidebar,
   onJumpTurn,
   onSessionAction,
 }: {
   controller: SessionController | null;
   railOpen: boolean;
+  terminalOpen: boolean;
   onToggleRail: () => void;
+  onToggleTerminal: () => void;
   onToggleSidebar: () => void;
   onJumpTurn: (blockId: string) => void;
   onSessionAction: (action: 'fork' | 'undo' | 'compact' | 'export') => void;
@@ -138,6 +148,21 @@ function Header({
       ) : (
         <span className="flex-1" />
       )}
+      <button
+        type="button"
+        onClick={onToggleTerminal}
+        title={terminalOpen ? t('term.hidePanel') : t('term.showPanel')}
+        aria-label={t('term.toggleAria')}
+        aria-expanded={terminalOpen}
+        data-terminal-toggle
+        className={`shrink-0 rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors ${
+          terminalOpen
+            ? 'border-accent bg-accent-soft text-accent'
+            : 'border-hairline text-ink-soft hover:border-hairline-strong'
+        }`}
+      >
+        {t('term.toggle')}
+      </button>
       <button
         type="button"
         onClick={onToggleRail}
@@ -371,7 +396,7 @@ export function SessionView({
 }) {
   const { id } = useParams<{ id: string }>();
   const sessionId = id!;
-  const { client } = useConnection();
+  const { client, socket, wsStatus } = useConnection();
   const { t, tp, locale } = useI18n();
   const navigate = useNavigate();
   const location = useLocation();
@@ -427,6 +452,49 @@ export function SessionView({
 
   const controller = useActiveController(sessionId);
   const queryClient = useQueryClient();
+
+  // Embedded terminal panel: per-session manager (terminal list + attach
+  // state) and per-session persisted panel chrome (open, height). The
+  // manager opens lazily — no PTY attaches until the panel is shown.
+  const [terminalManager, setTerminalManager] = useState<TerminalManager | null>(null);
+  const [terminalOpen, setTerminalOpen] = useState(
+    () => readTerminalPanelPrefs(sessionId).open,
+  );
+  const [terminalHeight, setTerminalHeight] = useState(
+    () => readTerminalPanelPrefs(sessionId).height,
+  );
+  useEffect(() => {
+    const manager = new TerminalManager({ sessionId, client, transport: socket });
+    setTerminalManager(manager);
+    return () => {
+      manager.dispose();
+      setTerminalManager(null);
+    };
+  }, [client, socket, sessionId]);
+  useEffect(() => {
+    const prefs = readTerminalPanelPrefs(sessionId);
+    setTerminalOpen(prefs.open);
+    setTerminalHeight(prefs.height);
+  }, [sessionId]);
+  useEffect(() => {
+    // Gate on the socket: attach frames need an open, hello'd connection.
+    if (terminalOpen && terminalManager !== null && wsStatus === 'open') {
+      void terminalManager.open();
+    }
+  }, [terminalOpen, terminalManager, wsStatus]);
+  const toggleTerminalPanel = useCallback(() => {
+    setTerminalOpen((value) => {
+      writeTerminalPanelPrefs(sessionId, { open: !value });
+      return !value;
+    });
+  }, [sessionId]);
+  const handleTerminalHeightChange = useCallback(
+    (height: number, final: boolean) => {
+      setTerminalHeight(height);
+      if (final) writeTerminalPanelPrefs(sessionId, { height });
+    },
+    [sessionId],
+  );
 
   // Remember this session as the redirect target for `/`.
   useEffect(() => {
@@ -967,7 +1035,9 @@ export function SessionView({
         <Header
           controller={controller}
           railOpen={railOpen}
+          terminalOpen={terminalOpen}
           onToggleRail={() => { setRailOpen((value) => !value); }}
+          onToggleTerminal={toggleTerminalPanel}
           onToggleSidebar={onToggleSidebar}
           onJumpTurn={(blockId) => {
             document
@@ -1071,6 +1141,15 @@ export function SessionView({
           onSend={(text, composerAttachments) => actions?.send(text, composerAttachments)}
           onAbort={() => void actions?.abort()}
         />
+        {terminalOpen && terminalManager !== null ? (
+          <TerminalPanel
+            manager={terminalManager}
+            height={terminalHeight}
+            wsStatus={wsStatus}
+            onHeightChange={handleTerminalHeightChange}
+            onClose={toggleTerminalPanel}
+          />
+        ) : null}
       </main>
 
       {railOpen ? (

@@ -191,7 +191,7 @@ export const zh: Record<I18nKey, string> = {
   'subagent.status.suspended': '已挂起',
   'subagent.status.completed': '已完成',
   'subagent.status.failed': '失败',
-  'subagent.tools': '{count} 次工具',
+  'subagent.tools': '{count} 次工具调用',
 
   // ---- notices (stream-generated) ----
   'notice.compacting': '正在压缩上下文…',
@@ -307,6 +307,30 @@ export const zh: Record<I18nKey, string> = {
   'sv.imageEcho': '[图片]',
   'sv.queueBar.one': '◔ {count} 条消息已排队 — 当前轮次结束后开始',
   'sv.queueBar.other': '◔ {count} 条消息已排队 — 当前轮次结束后开始',
+
+  // ---- embedded terminal panel ----
+  'term.toggle': '>_ 终端',
+  'term.toggleAria': '切换终端面板',
+  'term.showPanel': '显示终端',
+  'term.hidePanel': '隐藏终端',
+  'term.panelAria': '终端面板',
+  'term.tabsAria': '终端标签页',
+  'term.new': '新建终端',
+  'term.killAria': '终止终端',
+  'term.killConfirm': '确认？',
+  'term.closePanel': '关闭终端面板',
+  'term.resizeAria': '拖动调整终端面板高度',
+  'term.screenAria': '终端输出的文本镜像',
+  'term.loading': '正在加载终端…',
+  'term.loadFailed': '无法加载终端：{detail}',
+  'term.createFailed': '无法启动终端：{detail}',
+  'term.empty': '还没有终端。在此会话的工作区里启动一个 shell —— 聊天时它会一直运行。',
+  'term.attaching': '正在连接…',
+  'term.reconnecting': '正在重连…',
+  'term.exited': '进程已退出（代码 {code}）',
+  'term.exitedNoCode': '进程已退出',
+  'term.restart': '重新启动',
+  'term.unavailable': '此服务器没有应答终端数据流 —— 终端输入输出需要支持终端 WS 帧的 kap-server 版本。',
 
   // ---- new session page ----
   'new.title': '新会话',

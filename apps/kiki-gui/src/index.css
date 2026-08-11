@@ -1,3 +1,4 @@
+@import '@xterm/xterm/css/xterm.css';
 @import 'tailwindcss';
 
 /* Let Tailwind see the utility classes used inside Streamdown's dist (the
@@ -77,6 +78,24 @@ body {
 
 .font-display {
   font-optical-sizing: auto;
+}
+
+/* ---- embedded terminal (xterm.js) ---- */
+/* Inner breathing room for the ink island; the fit addon measures the host
+ * element, so the padding lives on xterm's own box. */
+.kiki-term .xterm {
+  padding: 8px 12px;
+}
+.kiki-term .xterm-viewport {
+  /* warm scrollbar on the dark island */
+  scrollbar-color: #4a4238 transparent;
+}
+.kiki-term .xterm .xterm-viewport::-webkit-scrollbar-thumb {
+  background: #4a4238;
+}
+/* The bar cursor reads better with a touch of glow on ink. */
+.kiki-term .xterm .xterm-cursor-layer .xterm-cursor {
+  box-shadow: 0 0 6px rgba(232, 89, 12, 0.45);
 }
 
 /* ---- scrollbars: thin warm neutral ---- */

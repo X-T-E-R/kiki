@@ -315,6 +315,31 @@ export const en = {
   'sv.queueBar.one': '◔ {count} prompt queued — starts when the current turn finishes',
   'sv.queueBar.other': '◔ {count} prompts queued — starts when the current turn finishes',
 
+  // ---- embedded terminal panel ----
+  'term.toggle': '>_ Terminal',
+  'term.toggleAria': 'Toggle terminal panel',
+  'term.showPanel': 'Show terminal',
+  'term.hidePanel': 'Hide terminal',
+  'term.panelAria': 'Terminal panel',
+  'term.tabsAria': 'Terminal tabs',
+  'term.new': 'New terminal',
+  'term.killAria': 'Kill terminal',
+  'term.killConfirm': 'sure?',
+  'term.closePanel': 'Close terminal panel',
+  'term.resizeAria': 'Drag to resize the terminal panel',
+  'term.screenAria': 'Terminal output, text mirror',
+  'term.loading': 'Loading terminals…',
+  'term.loadFailed': 'Could not load terminals: {detail}',
+  'term.createFailed': 'Could not start a terminal: {detail}',
+  'term.empty': 'No terminals yet. Start a shell in this session’s workspace — it keeps running while you chat.',
+  'term.attaching': 'attaching…',
+  'term.reconnecting': 'reconnecting…',
+  'term.exited': 'Process exited (code {code})',
+  'term.exitedNoCode': 'Process exited',
+  'term.restart': 'Restart',
+  'term.unavailable':
+    'This server is not answering terminal streams — terminal I/O needs a kap-server build that speaks the terminal WS frames.',
+
   // ---- new session page ----
   'new.title': 'New session',
   'new.tagline': 'Pick where kiki works, then ask anything.',

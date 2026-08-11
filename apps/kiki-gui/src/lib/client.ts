@@ -15,12 +15,15 @@ import type {
   ApprovalResolveResult,
   ArchiveSessionResponse,
   AuthSummary,
+  CloseTerminalResponse,
   CompactSessionRequest,
   CompactSessionResponse,
   ConfigResponse,
+  CreateTerminalRequest,
   Envelope,
   ForkSessionRequest,
   FsSearchResponse,
+  GetTerminalResponse,
   GoalSnapshot,
   ListMcpServersResponse,
   ListModelsResponse,
@@ -28,6 +31,7 @@ import type {
   ListSessionsQuery,
   ListSkillsResponse,
   ListTasksResponse,
+  ListTerminalsResponse,
   ListToolsResponse,
   ListWorkspacesResponse,
   Message,
@@ -54,6 +58,7 @@ import type {
   SessionCreate,
   SessionSnapshotResponse,
   SetDefaultModelResponse,
+  Terminal,
   UndoSessionResponse,
   UpdateSessionProfileRequest,
 } from '@moonshot-ai/protocol';
@@ -87,6 +92,7 @@ export const API_CODES = {
   SKILL_NOT_ACTIVATABLE: 40912,
   APPROVAL_EXPIRED: 41001,
   QUESTION_EXPIRED: 41002,
+  TERMINAL_NOT_FOUND: 40414,
 } as const;
 
 /**
@@ -482,6 +488,43 @@ export class KikiClient {
       'POST',
       `/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}:cancel`,
       { body: {}, okCodes: [API_CODES.SUCCESS, API_CODES.TASK_ALREADY_FINISHED] },
+    );
+  }
+
+  /**
+   * Terminal lifecycle over REST (`/sessions/{id}/terminals*`). I/O (attach,
+   * input, resize) rides the shared WebSocket as `terminal_*` control frames —
+   * see `lib/ws.ts`. PTYs are loopback-only on kap-server
+   * (`exposureClass === 'loopback'` gates the routes).
+   */
+  listTerminals(sessionId: string): Promise<ListTerminalsResponse> {
+    return this.request<ListTerminalsResponse>(
+      'GET',
+      `/sessions/${encodeURIComponent(sessionId)}/terminals`,
+    );
+  }
+
+  createTerminal(sessionId: string, body: CreateTerminalRequest = {}): Promise<Terminal> {
+    return this.request<Terminal>(
+      'POST',
+      `/sessions/${encodeURIComponent(sessionId)}/terminals`,
+      { body },
+    );
+  }
+
+  getTerminal(sessionId: string, terminalId: string): Promise<GetTerminalResponse> {
+    return this.request<GetTerminalResponse>(
+      'GET',
+      `/sessions/${encodeURIComponent(sessionId)}/terminals/${encodeURIComponent(terminalId)}`,
+    );
+  }
+
+  /** `POST /sessions/{id}/terminals/{tid}:close` — kills the PTY. */
+  closeTerminal(sessionId: string, terminalId: string): Promise<CloseTerminalResponse> {
+    return this.request<CloseTerminalResponse>(
+      'POST',
+      `/sessions/${encodeURIComponent(sessionId)}/terminals/${encodeURIComponent(terminalId)}:close`,
+      { body: {} },
     );
   }
 

@@ -28,7 +28,7 @@ Versions below are the current resolutions for the `apps/kiki-gui` importer in
 | Apache-2.0 | `streamdown` 2.5.0; `@streamdown/code` 1.1.1 |
 | Apache-2.0 OR MIT | `@tauri-apps/api` 2.11.1 |
 | BSD-3-Clause | `diff` 8.0.4 |
-| MIT | `@moonshot-ai/protocol` (workspace link); `@tanstack/react-query` 5.99.2; `react` 19.2.5; `react-dom` 19.2.5; `use-stick-to-bottom` 1.1.6 |
+| MIT | `@moonshot-ai/protocol` (workspace link); `@tanstack/react-query` 5.99.2; `@xterm/addon-fit` 0.10.0; `@xterm/addon-web-links` 0.11.0; `@xterm/xterm` 5.5.0; `react` 19.2.5; `react-dom` 19.2.5; `use-stick-to-bottom` 1.1.6 |
 | OFL-1.1 | `@fontsource-variable/fraunces` 5.3.0; `@fontsource/jetbrains-mono` 5.3.0; `@fontsource/space-grotesk` 5.3.0 |
 
 Shiki 3.23.0 is an MIT-licensed transitive dependency of
