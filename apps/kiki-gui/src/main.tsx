@@ -12,6 +12,7 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 
 import { App } from './App';
+import { I18nProvider } from './i18n';
 import { ConnectionProvider } from './state/connection';
 import './index.css';
 
@@ -24,11 +25,13 @@ const queryClient = new QueryClient({
 createRoot(document.querySelector('#root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <ConnectionProvider>
-        <BrowserRouter>
-          <App />
-        </BrowserRouter>
-      </ConnectionProvider>
+      <I18nProvider>
+        <ConnectionProvider>
+          <BrowserRouter>
+            <App />
+          </BrowserRouter>
+        </ConnectionProvider>
+      </I18nProvider>
     </QueryClientProvider>
   </StrictMode>,
 );

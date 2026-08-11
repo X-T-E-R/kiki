@@ -7,6 +7,7 @@
 
 import type { Session } from '@moonshot-ai/protocol';
 
+import { translate, type I18nKey, type Locale } from '../i18n/locale';
 import { API_CODES, ApiError, type KikiClient } from './client';
 
 export interface SessionActionContext {
@@ -71,6 +72,23 @@ export async function exportSessionArchive(
   }
 }
 
+/** Maps wire error codes to dictionary keys; null when there is no local copy. */
+export function sessionActionErrorKey(error: unknown): I18nKey | null {
+  if (error instanceof ApiError) {
+    switch (error.code) {
+      case API_CODES.SESSION_UNDO_UNAVAILABLE:
+        return 'error.nothingToUndo';
+      case API_CODES.COMPACTION_UNABLE:
+        return 'error.nothingToCompact';
+      case API_CODES.SESSION_BUSY:
+        return 'error.sessionBusy';
+      default:
+        return null;
+    }
+  }
+  return null;
+}
+
 /** Maps wire error codes to plain copy; falls back to the envelope message. */
 export function sessionActionErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
@@ -86,4 +104,10 @@ export function sessionActionErrorMessage(error: unknown): string {
     }
   }
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Localized detail for an action failure: dictionary copy, else the raw message. */
+export function sessionActionErrorText(locale: Locale, error: unknown): string {
+  const key = sessionActionErrorKey(error);
+  return key === null ? sessionActionErrorMessage(error) : translate(locale, key);
 }

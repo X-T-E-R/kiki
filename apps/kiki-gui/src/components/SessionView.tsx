@@ -22,12 +22,13 @@ import {
 import { API_CODES, ApiError } from '../lib/client';
 import { readDraft, writeDraft } from '../lib/drafts';
 import { isMainWindowVisibleAndFocused, showDesktopNotification } from '../lib/desktop';
+import { useI18n } from '../i18n';
 import {
   SESSION_REWRITTEN_EVENT,
   compactSessionContext,
   exportSessionArchive,
   forkSession,
-  sessionActionErrorMessage,
+  sessionActionErrorText,
   undoLastTurn,
   type SessionActionContext,
 } from '../lib/sessionActions';
@@ -89,6 +90,7 @@ function Header({
   onJumpTurn: (blockId: string) => void;
   onSessionAction: (action: 'fork' | 'undo' | 'compact' | 'export') => void;
 }) {
+  const { t, tp } = useI18n();
   const state = useSyncExternalStore(
     controller?.subscribe ?? noopSubscribe,
     controller?.getState ?? emptyState,
@@ -102,7 +104,7 @@ function Header({
       <button
         type="button"
         onClick={onToggleSidebar}
-        aria-label="Open session menu"
+        aria-label={t('sv.openMenuAria')}
         className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden"
       >
         <span aria-hidden>☰</span>
@@ -110,19 +112,19 @@ function Header({
       {session !== undefined ? (
         <>
           <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
-            {session.title !== '' ? session.title : 'Untitled session'}
+            {session.title !== '' ? session.title : t('sidebar.untitled')}
           </h1>
           {approvals > 0 || questions > 0 ? (
             <span className="shrink-0 rounded-full bg-amber-card px-2 py-0.5 text-[10.5px] font-semibold text-amber-ink">
-              {approvals > 0 ? `${approvals} approval${approvals === 1 ? '' : 's'}` : ''}
+              {approvals > 0 ? tp('sv.approvals', approvals) : ''}
               {approvals > 0 && questions > 0 ? ' · ' : ''}
-              {questions > 0 ? `${questions} question${questions === 1 ? '' : 's'}` : ''}
+              {questions > 0 ? tp('sv.questions', questions) : ''}
             </span>
           ) : null}
           {state.busy ? (
             <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-accent">
               <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
-              working
+              {t('sv.working')}
             </span>
           ) : null}
           {state.model !== undefined && state.model !== '' ? (
@@ -139,8 +141,8 @@ function Header({
       <button
         type="button"
         onClick={onToggleRail}
-        title={railOpen ? 'Hide panel' : 'Show panel'}
-        aria-label="Toggle panel"
+        title={railOpen ? t('sv.hidePanel') : t('sv.showPanel')}
+        aria-label={t('sv.togglePanelAria')}
         aria-expanded={railOpen}
         className={`shrink-0 rounded-lg border px-2 py-1 text-[11px] transition-colors ${
           railOpen
@@ -148,7 +150,7 @@ function Header({
             : 'border-hairline text-ink-soft hover:border-hairline-strong'
         }`}
       >
-        ☰ Panel
+        {t('sv.panel')}
       </button>
     </header>
   );
@@ -161,6 +163,7 @@ function TurnsMenu({
   state: SessionViewState;
   onJump: (blockId: string) => void;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const turns = useMemo(
     () =>
@@ -203,14 +206,14 @@ function TurnsMenu({
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        title="Jump to a turn"
+        title={t('sv.jumpTitle')}
         className={`rounded-full border px-2 py-0.5 text-[10.5px] font-medium transition-colors ${
           open
             ? 'border-accent bg-accent-soft text-accent'
             : 'border-hairline text-ink-soft hover:border-hairline-strong'
         }`}
       >
-        ↕ {turns.length} turns
+        {t('sv.turns', { count: turns.length })}
       </button>
       {open ? (
         <div className="anim-enter absolute right-0 top-7 z-40 max-h-80 w-72 overflow-y-auto rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)]">
@@ -242,6 +245,7 @@ function SessionActionsMenu({
 }: {
   onAction: (action: 'fork' | 'undo' | 'compact' | 'export') => void;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
@@ -278,8 +282,8 @@ function SessionActionsMenu({
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        title="Session actions"
-        aria-label="Session actions"
+        title={t('sv.actionsAria')}
+        aria-label={t('sv.actionsAria')}
         aria-expanded={open}
         className={`rounded-full border px-2 py-0.5 text-[10.5px] font-medium transition-colors ${
           open
@@ -287,18 +291,18 @@ function SessionActionsMenu({
             : 'border-hairline text-ink-soft hover:border-hairline-strong'
         }`}
       >
-        ⋯ actions
+        {t('sv.actions')}
       </button>
       {open ? (
         <div className="anim-enter absolute right-0 top-7 z-40 w-48 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)]">
           <button type="button" role="menuitem" className={itemClass} onClick={() => pick('fork')}>
-            Fork session
+            {t('menu.fork')}
           </button>
           <button type="button" role="menuitem" className={itemClass} onClick={() => pick('export')}>
-            Export archive…
+            {t('menu.export')}
           </button>
           <button type="button" role="menuitem" className={itemClass} onClick={() => pick('compact')}>
-            Compact context
+            {t('menu.compact')}
           </button>
           <button
             type="button"
@@ -306,7 +310,7 @@ function SessionActionsMenu({
             className={`${itemClass} hover:text-danger`}
             onClick={() => pick('undo')}
           >
-            Undo last turn…
+            {t('menu.undo')}
           </button>
         </div>
       ) : null}
@@ -368,6 +372,7 @@ export function SessionView({
   const { id } = useParams<{ id: string }>();
   const sessionId = id!;
   const { client } = useConnection();
+  const { t, tp, locale } = useI18n();
   const navigate = useNavigate();
   const location = useLocation();
   const agentMatch = useMatch('/s/:id/agent/:agentId');
@@ -581,9 +586,7 @@ export function SessionView({
             .then(() => setAbortError(null))
             .catch((error: unknown) => {
               setAbortError(
-                error instanceof Error
-                  ? error.message
-                  : 'Could not abort — the turn may still be running',
+                error instanceof Error ? error.message : t('sv.abortMaybeRunning'),
               );
             });
         }
@@ -598,13 +601,15 @@ export function SessionView({
         .resolveApproval(approvalId, event.key === 'y' ? 'approved' : 'rejected')
         .catch((error: unknown) => {
           setActionError(
-            `Approval shortcut failed: ${error instanceof Error ? error.message : String(error)}`,
+            t('sv.approvalShortcutFailed', {
+              detail: error instanceof Error ? error.message : String(error),
+            }),
           );
         });
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [controller]);
+  }, [controller, t]);
 
   const actions = useMemo(() => {
     if (controller === null) return null;
@@ -616,7 +621,7 @@ export function SessionView({
         // Local echo shows the mention-folded text; an image-only message
         // echoes the same placeholder the transcript uses for image parts.
         const echoText =
-          textPart !== undefined && textPart.type === 'text' ? textPart.text : '[image]';
+          textPart !== undefined && textPart.type === 'text' ? textPart.text : t('sv.imageEcho');
         setSendError(null);
         void controller
           .sendPrompt({
@@ -659,9 +664,9 @@ export function SessionView({
           })
           .catch((error: unknown) => {
             if (error instanceof ApiError && error.code === API_CODES.SKILL_NOT_FOUND) {
-              setSendError(`Skill "${name}" is no longer available — reopen the / menu to refresh.`);
+              setSendError(t('sv.skillGone', { name }));
             } else if (error instanceof ApiError && error.code === API_CODES.SKILL_NOT_ACTIVATABLE) {
-              setSendError(`Skill "${name}" is a reference skill — it cannot be run from the composer.`);
+              setSendError(t('sv.skillReference', { name }));
             } else {
               setSendError(error instanceof Error ? error.message : String(error));
             }
@@ -673,8 +678,8 @@ export function SessionView({
           .abortActive()
           .then(() => setAbortError(null))
           .catch((error: unknown) => {
-            const message = error instanceof Error ? error.message : 'Abort failed';
-            setAbortError(`${message} — this turn may still be running`);
+            const message = error instanceof Error ? error.message : t('sv.abortFailed');
+            setAbortError(`${message}${t('sv.abortStillRunning')}`);
             throw error;
           });
       },
@@ -690,7 +695,9 @@ export function SessionView({
         setActionError(null);
         void controller.cancelTask(taskId).catch((error: unknown) => {
           setActionError(
-            `Could not stop the task: ${error instanceof Error ? error.message : String(error)}`,
+            t('sv.stopTaskFailed', {
+              detail: error instanceof Error ? error.message : String(error),
+            }),
           );
         });
       },
@@ -698,7 +705,9 @@ export function SessionView({
         setActionError(null);
         void controller.abortPrompt(promptId).catch((error: unknown) => {
           setActionError(
-            `Could not cancel the queued prompt: ${error instanceof Error ? error.message : String(error)}`,
+            t('sv.cancelQueuedFailed', {
+              detail: error instanceof Error ? error.message : String(error),
+            }),
           );
         });
       },
@@ -714,6 +723,7 @@ export function SessionView({
     goalObjective,
     goalControl,
     sessionId,
+    t,
   ]);
 
   const actionContext: SessionActionContext = useMemo(
@@ -737,23 +747,27 @@ export function SessionView({
       setActionNotice(null);
       if (action === 'fork') {
         void forkSession(actionContext, record).catch((error: unknown) => {
-          setActionError(`Fork failed: ${sessionActionErrorMessage(error)}`);
+          setActionError(t('action.forkFailed', { detail: sessionActionErrorText(locale, error) }));
         });
       } else if (action === 'export') {
         void exportSessionArchive(actionContext, record)
-          .then(() => setActionNotice('Session archive downloaded.'))
+          .then(() => setActionNotice(t('action.exportDoneSession')))
           .catch((error: unknown) => {
-            setActionError(`Export failed: ${sessionActionErrorMessage(error)}`);
+            setActionError(
+              t('action.exportFailed', { detail: sessionActionErrorText(locale, error) }),
+            );
           });
       } else {
         void compactSessionContext(actionContext, record)
-          .then(() => setActionNotice('Compaction requested — older context will be summarized.'))
+          .then(() => setActionNotice(t('action.compactRequestedSession')))
           .catch((error: unknown) => {
-            setActionError(`Compact failed: ${sessionActionErrorMessage(error)}`);
+            setActionError(
+              t('action.compactFailed', { detail: sessionActionErrorText(locale, error) }),
+            );
           });
       }
     },
-    [actionContext, state.session],
+    [actionContext, state.session, t, locale],
   );
 
   const confirmUndoRun = useCallback(() => {
@@ -762,11 +776,11 @@ export function SessionView({
     if (record === undefined) return;
     setActionError(null);
     void undoLastTurn(actionContext, record)
-      .then(() => setActionNotice('Last turn removed.'))
+      .then(() => setActionNotice(t('action.undoDoneSession')))
       .catch((error: unknown) => {
-        setActionError(`Undo failed: ${sessionActionErrorMessage(error)}`);
+        setActionError(t('action.undoFailed', { detail: sessionActionErrorText(locale, error) }));
       });
-  }, [actionContext, state.session]);
+  }, [actionContext, state.session, t, locale]);
 
   // Stable transcript callbacks: inline arrows would change identity on every
   // publish, re-registering TopEdge's scroll listener and defeating the
@@ -834,10 +848,10 @@ export function SessionView({
       if (visibleAndFocused) return;
       void showDesktopNotification({
         title: 'Kiki',
-        body: 'An approval is waiting for you.',
+        body: t('sv.notificationBody'),
       });
     });
-  }, [state.pendingInteraction]);
+  }, [state.pendingInteraction, t]);
 
   const composerDisabled = controller === null || !state.loaded || state.loadError !== undefined;
   const modelSource: ModelSource =
@@ -866,18 +880,20 @@ export function SessionView({
     // without the transcript route.
     const liveBlocks = agentLiveState.blocks.length > 0 ? agentLiveState.blocks : undefined;
     const capturedBlocks = serverBlocks ?? liveBlocks ?? selectedSubagent?.transcript ?? [];
+    const historyKey =
+      serverBlocks !== undefined
+        ? agentTranscriptQuery.data?.has_more === true
+          ? 'sv.agentHistoryMore'
+          : 'sv.agentHistoryLive'
+        : agentTranscriptQuery.isError
+          ? 'sv.agentHistoryUnavailable'
+          : 'sv.agentHistoryLoading';
     const historyNotice: NoticeBlock = {
       kind: 'notice',
       id: `subagent-history-${selectedAgentId}`,
-      text:
-        serverBlocks !== undefined
-          ? agentTranscriptQuery.data?.has_more === true
-            ? 'Loaded from the server transcript. Older turns exist beyond this page.'
-            : 'Loaded from the server transcript; live events fill activity while it runs.'
-          : agentTranscriptQuery.isError
-            ? 'The server transcript was unavailable. Showing events captured by this client; earlier or disconnected activity may be missing.'
-            : 'Loading the server transcript. Live events captured by this client are shown meanwhile.',
+      text: t(historyKey),
       tone: 'neutral',
+      i18n: { key: historyKey },
     };
     const includesReport =
       selectedSubagent?.summary !== undefined &&
@@ -911,14 +927,14 @@ export function SessionView({
             onClick={() => navigate(`/s/${sessionId}`)}
             className="rounded-lg border border-hairline px-2 py-1 text-[11.5px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
           >
-            ← Back to session
+            {t('sv.backToSession')}
           </button>
           <div className="min-w-0 flex-1">
             <h1 className="truncate font-display text-[15px] font-semibold text-ink">
               {selectedSubagent?.name ?? selectedAgentId}
             </h1>
             <p className="truncate text-[10.5px] text-ink-faint">
-              Subagent transcript — interaction cards resolve for the whole session
+              {t('sv.subagentNote')}
             </p>
           </div>
           {selectedSubagent?.model !== undefined ? (
@@ -927,7 +943,9 @@ export function SessionView({
             </span>
           ) : null}
           <span className="rounded-full border border-hairline px-2 py-0.5 text-[10.5px] text-ink-soft">
-            {selectedSubagent?.status ?? 'history unavailable'}
+            {selectedSubagent !== undefined
+              ? t(`subagent.status.${selectedSubagent.status}`)
+              : t('sv.historyUnavailable')}
           </span>
         </header>
         <Transcript
@@ -992,7 +1010,7 @@ export function SessionView({
             <div className="mx-auto max-w-[760px] rounded-lg border border-danger/30 bg-danger/5 px-3 py-1.5 font-mono text-[11.5px] text-danger">
               {abortError}
               <button type="button" onClick={() => actions?.abort()} className="ml-2 underline">
-                Retry
+                {t('common.retry')}
               </button>
             </div>
           </div>
@@ -1001,7 +1019,7 @@ export function SessionView({
           {state.resyncing || state.resyncFailed ? (
             <span className="mx-auto flex items-center gap-1.5 text-[11px] text-ink-faint">
               <KikiMark className="status-dot-busy" />
-              {state.resyncFailed ? 'Resync failed — retrying…' : 'Resyncing…'}
+              {state.resyncFailed ? t('sv.resyncFailed') : t('sv.resyncing')}
             </span>
           ) : null}
         </div>
@@ -1009,7 +1027,7 @@ export function SessionView({
           <div className="px-6 pb-1.5">
             <div className="mx-auto flex max-w-[760px]">
               <span className="rounded-full border border-amber-rule/40 bg-amber-card px-2.5 py-0.5 text-[11px] font-medium text-amber-ink">
-                ◔ {state.queuedPromptIds.length} prompt{state.queuedPromptIds.length === 1 ? '' : 's'} queued — starts when the current turn finishes
+                {tp('sv.queueBar', state.queuedPromptIds.length)}
               </span>
             </div>
           </div>
@@ -1066,7 +1084,7 @@ export function SessionView({
         <div
           role="button"
           tabIndex={-1}
-          aria-label="Close panel"
+          aria-label={t('sv.closePanel')}
           className="app-overlay-backdrop lg:hidden"
           onClick={() => {
             setRailOpen(false);
@@ -1081,11 +1099,11 @@ export function SessionView({
 
       <div aria-live="polite" aria-atomic="true" className="sr-only">
         {state.pendingInteraction === 'approval'
-          ? 'Awaiting approval'
+          ? t('sv.ariaAwaitingApproval')
           : state.pendingInteraction === 'question'
-            ? 'Awaiting answer'
+            ? t('sv.ariaAwaitingAnswer')
             : state.busy
-              ? 'Kiki is working'
+              ? t('sv.ariaWorking')
               : ''}
       </div>
 
@@ -1098,10 +1116,9 @@ export function SessionView({
             className="anim-enter w-full max-w-[360px] rounded-2xl border border-hairline bg-panel p-5 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]"
             onClick={(event) => event.stopPropagation()}
           >
-            <h2 className="font-display text-[16px] font-semibold text-ink">Undo the last turn?</h2>
+            <h2 className="font-display text-[16px] font-semibold text-ink">{t('undo.title')}</h2>
             <p className="mt-2 text-[12.5px] leading-relaxed text-ink-soft">
-              This removes your most recent message and kiki&rsquo;s reply from this
-              session&rsquo;s history. Earlier turns are kept.
+              {t('undo.bodySession')}
             </p>
             <div className="mt-4 flex justify-end gap-2">
               <button
@@ -1109,14 +1126,14 @@ export function SessionView({
                 onClick={() => setConfirmUndo(false)}
                 className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] text-ink-soft transition-colors hover:text-ink"
               >
-                Cancel
+                {t('common.cancel')}
               </button>
               <button
                 type="button"
                 onClick={confirmUndoRun}
                 className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep"
               >
-                Undo turn
+                {t('undo.confirm')}
               </button>
             </div>
           </div>

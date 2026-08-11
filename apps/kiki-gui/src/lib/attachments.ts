@@ -14,6 +14,8 @@
 
 import type { ImageContent, MessageContent } from '@moonshot-ai/protocol';
 
+import { LocalizedError, type ValidationIssue } from '../i18n/locale';
+
 export interface FileMention {
   kind: 'file';
   /** Workspace-relative path from `fs:search`. */
@@ -49,25 +51,30 @@ export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024;
 export const MAX_ATTACHMENTS = 8;
 
-/** Returns an error string when the file cannot be attached, else null. */
+/** Returns a localized validation issue when the file cannot be attached, else null. */
 export function validateImageFile(
   file: { name: string; size: number; type: string },
   current: readonly ComposerAttachment[],
-): string | null {
+): ValidationIssue | null {
   if (!ACCEPTED_IMAGE_MIMES.includes(file.type)) {
-    return `"${file.name}" is ${file.type === '' ? 'an unknown type' : file.type} — only PNG, JPEG, GIF, and WebP images can be sent.`;
+    return file.type === ''
+      ? { key: 'attach.imageTypeUnknown', params: { name: file.name } }
+      : { key: 'attach.imageType', params: { name: file.name, type: file.type } };
   }
   if (file.size > MAX_IMAGE_BYTES) {
-    return `"${file.name}" is ${formatBytes(file.size)} — images are capped at ${formatBytes(MAX_IMAGE_BYTES)} each.`;
+    return {
+      key: 'attach.imageTooLarge',
+      params: { name: file.name, size: formatBytes(file.size), max: formatBytes(MAX_IMAGE_BYTES) },
+    };
   }
   const used = current
     .filter((item): item is ImageAttachment => item.kind === 'image')
     .reduce((sum, item) => sum + item.size, 0);
   if (used + file.size > MAX_TOTAL_IMAGE_BYTES) {
-    return `Images together are capped at ${formatBytes(MAX_TOTAL_IMAGE_BYTES)} per message.`;
+    return { key: 'attach.totalTooLarge', params: { max: formatBytes(MAX_TOTAL_IMAGE_BYTES) } };
   }
   if (current.length >= MAX_ATTACHMENTS) {
-    return `At most ${MAX_ATTACHMENTS} attachments per message.`;
+    return { key: 'attach.tooMany', params: { max: MAX_ATTACHMENTS } };
   }
   return null;
 }
@@ -75,18 +82,25 @@ export function validateImageFile(
 /** Reads a pasted/dropped image File into an attachment (base64 + preview). */
 export function fileToImageAttachment(file: File): Promise<ImageAttachment> {
   return new Promise((resolve, reject) => {
+    const readFailed = () =>
+      new LocalizedError({
+        key: 'attach.readFailed',
+        params: { name: file.name === '' ? '(image)' : file.name },
+      });
     const reader = new FileReader();
-    reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
+    reader.onerror = () => reject(readFailed());
     reader.onload = () => {
       const result = typeof reader.result === 'string' ? reader.result : '';
       const comma = result.indexOf(',');
       if (!result.startsWith('data:') || comma === -1) {
-        reject(new Error(`Could not read ${file.name}`));
+        reject(readFailed());
         return;
       }
       resolve({
         kind: 'image',
-        name: file.name === '' ? 'pasted image' : file.name,
+        // An empty name means a clipboard image; the chip renders a
+        // localized "pasted image" label for it.
+        name: file.name,
         mediaType: file.type,
         data: result.slice(comma + 1),
         size: file.size,

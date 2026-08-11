@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { issueText } from '../i18n/locale';
 import {
   buildPromptContent,
   buildSkillActivation,
@@ -39,17 +40,20 @@ describe('validateImageFile', () => {
 
   it('rejects formats the model providers refuse', () => {
     const problem = validateImageFile({ name: 'a.svg', size: 100, type: 'image/svg+xml' }, []);
-    expect(problem).toContain('PNG, JPEG, GIF, and WebP');
+    expect(problem?.key).toBe('attach.imageType');
+    expect(issueText('en', problem!)).toContain('PNG, JPEG, GIF, and WebP');
+    expect(issueText('zh', problem!)).toContain('PNG、JPEG、GIF 和 WebP');
   });
 
   it('rejects oversized images and oversized totals', () => {
     expect(
-      validateImageFile({ name: 'big.png', size: MAX_IMAGE_BYTES + 1, type: 'image/png' }, []),
-    ).toContain('capped');
+      validateImageFile({ name: 'big.png', size: MAX_IMAGE_BYTES + 1, type: 'image/png' }, [])
+        ?.key,
+    ).toBe('attach.imageTooLarge');
     const current: ComposerAttachment[] = [image('a.png', 15 * 1024 * 1024)];
     expect(
-      validateImageFile({ name: 'b.png', size: 6 * 1024 * 1024, type: 'image/png' }, current),
-    ).toContain('per message');
+      validateImageFile({ name: 'b.png', size: 6 * 1024 * 1024, type: 'image/png' }, current)?.key,
+    ).toBe('attach.totalTooLarge');
   });
 });
 

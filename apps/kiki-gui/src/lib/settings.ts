@@ -1,5 +1,7 @@
 import type { ModelCatalogItem, ProviderCatalogItem } from '@moonshot-ai/protocol';
 
+import { LocalizedError, type ValidationIssue } from '../i18n/locale';
+
 /** Client-local preferences stored in localStorage (`kiki.settings`). */
 export type SendShortcut = 'enter' | 'cmd-enter';
 
@@ -210,15 +212,13 @@ export function clearRestartRequirement(): RestartRequirement {
   return next;
 }
 
-export function validateServerDefaults(permissionMode: string): string | null {
-  return isPermissionMode(permissionMode)
-    ? null
-    : 'Permission mode must be manual, auto, or yolo.';
+export function validateServerDefaults(permissionMode: string): ValidationIssue | null {
+  return isPermissionMode(permissionMode) ? null : { key: 'val.permissionMode' };
 }
 
-export function validateExtraSkillDirs(value: string): string | null {
+export function validateExtraSkillDirs(value: string): ValidationIssue | null {
   const entries = value.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean);
-  if (entries.some((entry) => entry.includes('\0'))) return 'Skill directories cannot contain NUL bytes.';
+  if (entries.some((entry) => entry.includes('\0'))) return { key: 'val.skillDirsNul' };
   return null;
 }
 
@@ -227,16 +227,16 @@ export function parseExperimentalFlags(value: string): Record<string, boolean> {
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new Error('Experimental flags must be valid JSON.');
+    throw new LocalizedError({ key: 'val.flagsJson' });
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('Experimental flags must be a JSON object.');
+    throw new LocalizedError({ key: 'val.flagsObject' });
   }
   const flags: Record<string, boolean> = {};
   for (const [name, enabled] of Object.entries(parsed)) {
-    if (name.trim() === '') throw new Error('Experimental flag names cannot be empty.');
+    if (name.trim() === '') throw new LocalizedError({ key: 'val.flagNameEmpty' });
     if (typeof enabled !== 'boolean') {
-      throw new TypeError(`Experimental flag "${name}" must be true or false.`);
+      throw new LocalizedError({ key: 'val.flagBool', params: { name } });
     }
     flags[name] = enabled;
   }
@@ -256,22 +256,22 @@ export function parseAdvancedServerConfig(value: string): AdvancedServerConfigPa
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new Error('Advanced server config must be valid JSON.');
+    throw new LocalizedError({ key: 'val.advancedJson' });
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new TypeError('Advanced server config must be a JSON object.');
+    throw new LocalizedError({ key: 'val.advancedObject' });
   }
   const source = parsed as Record<string, unknown>;
   const allowed = new Set(['permission', 'hooks', 'services', 'loop_control', 'background']);
   const unknownKeys = Object.keys(source).filter((key) => !allowed.has(key));
   if (unknownKeys.length > 0) {
-    throw new Error(`Unsupported advanced config field: ${unknownKeys.join(', ')}.`);
+    throw new LocalizedError({ key: 'val.advancedUnknown', params: { fields: unknownKeys.join(', ') } });
   }
   if (source['hooks'] !== undefined && !Array.isArray(source['hooks'])) {
-    throw new TypeError('Advanced config hooks must be a JSON array.');
+    throw new LocalizedError({ key: 'val.advancedHooks' });
   }
   if (Object.keys(source).length === 0) {
-    throw new Error('Add at least one advanced config field before saving.');
+    throw new LocalizedError({ key: 'val.advancedEmpty' });
   }
   return {
     permission: source['permission'],
@@ -289,26 +289,26 @@ export function validateDesktopConfigDraft(input: {
   defaultSubagentModel: string;
   defaultSubagentReasoningEffort: string;
   modelCatalogRefreshIntervalMs: number;
-}): string | null {
-  for (const [label, value] of [
-    ['Subagent model', input.subagentDefaultModel],
-    ['Subagent effort', input.subagentDefaultEffort],
-    ['Collaboration model', input.defaultSubagentModel],
-    ['Collaboration effort', input.defaultSubagentReasoningEffort],
+}): ValidationIssue | null {
+  for (const [key, value] of [
+    ['val.spacesSubagentModel', input.subagentDefaultModel],
+    ['val.spacesSubagentEffort', input.subagentDefaultEffort],
+    ['val.spacesCollabModel', input.defaultSubagentModel],
+    ['val.spacesCollabEffort', input.defaultSubagentReasoningEffort],
   ] as const) {
-    if (value !== value.trim()) return `${label} cannot start or end with spaces.`;
+    if (value !== value.trim()) return { key };
   }
   if (!Number.isInteger(input.subagentTimeoutMs) || input.subagentTimeoutMs < 0) {
-    return 'Subagent timeout must be a non-negative whole number of milliseconds.';
+    return { key: 'val.timeoutWhole' };
   }
   if (input.subagentTimeoutMs > 86_400_000) {
-    return 'Subagent timeout cannot exceed 24 hours (86,400,000 ms).';
+    return { key: 'val.timeoutMax' };
   }
   if (
     !Number.isInteger(input.modelCatalogRefreshIntervalMs) ||
     input.modelCatalogRefreshIntervalMs < 0
   ) {
-    return 'Catalog refresh interval must be a non-negative whole number of milliseconds.';
+    return { key: 'val.catalogIntervalWhole' };
   }
   return null;
 }
@@ -344,39 +344,39 @@ export function providerDraftFromCatalog(
   };
 }
 
-export function validateProviderDraft(draft: ProviderDraft): string | null {
+export function validateProviderDraft(draft: ProviderDraft): ValidationIssue | null {
   if (!/^[A-Za-z0-9][A-Za-z0-9 _-]*$/.test(draft.id)) {
-    return 'Provider ID must start with a letter or digit and use only letters, digits, spaces, - or _.';
+    return { key: 'val.providerId' };
   }
-  if (!isProviderWireType(draft.type)) return 'Choose a supported provider protocol.';
+  if (!isProviderWireType(draft.type)) return { key: 'val.providerProtocol' };
   if (draft.baseUrl !== '') {
     let url: URL;
     try {
       url = new URL(draft.baseUrl);
     } catch {
-      return 'Base URL must be a valid absolute URL.';
+      return { key: 'val.baseUrlAbsolute' };
     }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-      return 'Base URL must use http or https.';
+      return { key: 'val.baseUrlHttp' };
     }
     if (draft.baseUrl.includes('${')) {
-      return 'Base URL cannot contain an environment-variable placeholder.';
+      return { key: 'val.baseUrlEnv' };
     }
   }
   if (draft.apiKey.includes('\n') || draft.apiKey.includes('\r')) {
-    return 'API keys cannot contain line breaks.';
+    return { key: 'val.apiKeyLineBreaks' };
   }
-  if (draft.models.length === 0) return 'Add at least one model.';
+  if (draft.models.length === 0) return { key: 'val.modelsEmpty' };
   const seen = new Set<string>();
   for (const model of draft.models) {
-    if (model.model.trim() === '') return 'Model IDs cannot be empty.';
+    if (model.model.trim() === '') return { key: 'val.modelIdEmpty' };
     if (!Number.isInteger(model.maxContextSize) || model.maxContextSize < 1) {
-      return `Model ${model.model || '(unnamed)'} needs a positive whole context size.`;
+      return { key: 'val.modelContextSize', params: { model: model.model || '(unnamed)' } };
     }
-    if (seen.has(model.model)) return `Duplicate model: ${model.model}.`;
+    if (seen.has(model.model)) return { key: 'val.modelDuplicate', params: { model: model.model } };
     seen.add(model.model);
   }
-  if (!seen.has(draft.defaultModel)) return 'Default model must be one of the provider models.';
+  if (!seen.has(draft.defaultModel)) return { key: 'val.defaultModelInModels' };
   return null;
 }
 
@@ -385,7 +385,7 @@ export async function createProvider(
   draft: ProviderDraft,
 ): Promise<ProviderCatalogItem> {
   const validation = validateProviderDraft(draft);
-  if (validation !== null) throw new Error(validation);
+  if (validation !== null) throw new LocalizedError(validation);
   return serverRequest<ProviderCatalogItem>(connection, 'POST', '/providers', providerBody(draft, true));
 }
 
@@ -395,7 +395,7 @@ export async function replaceProvider(
   draft: ProviderDraft,
 ): Promise<ProviderCatalogItem> {
   const validation = validateProviderDraft(draft);
-  if (validation !== null) throw new Error(validation);
+  if (validation !== null) throw new LocalizedError(validation);
   const result = await serverRequest<{ provider: ProviderCatalogItem }>(
     connection,
     'PUT',

@@ -7,7 +7,7 @@ import { memo, useEffect, useMemo, useState } from 'react';
 
 import type { GoalSnapshot, Task } from '@moonshot-ai/protocol';
 
-import { formatDuration, formatTokens, relativeTime } from '../lib/time';
+import { useI18n } from '../i18n';
 import type { SessionViewState, SubagentBlock, TodoItem } from '../state/transcript';
 
 function todoTone(status: string): { icon: string; className: string } {
@@ -25,8 +25,9 @@ function todoTone(status: string): { icon: string; className: string } {
 }
 
 const TodosSection = memo(function TodosSection({ todos }: { todos: readonly TodoItem[] }) {
+  const { t } = useI18n();
   if (todos.length === 0) {
-    return <p className="text-[12px] text-ink-faint">No todo list yet.</p>;
+    return <p className="text-[12px] text-ink-faint">{t('rail.noTodos')}</p>;
   }
   const done = todos.filter((todo) => {
     const status = todo.status.toLowerCase();
@@ -35,7 +36,7 @@ const TodosSection = memo(function TodosSection({ todos }: { todos: readonly Tod
   return (
     <div>
       <p className="mb-1.5 text-[10.5px] text-ink-faint">
-        {done}/{todos.length} done
+        {t('rail.todosDone', { done, total: todos.length })}
       </p>
       <ul className="space-y-1">
         {todos.map((todo, index) => {
@@ -83,8 +84,9 @@ const TasksSection = memo(function TasksSection({
   tasks: readonly Task[];
   onCancel: (taskId: string) => void;
 }) {
+  const { t } = useI18n();
   if (tasks.length === 0) {
-    return <p className="text-[12px] text-ink-faint">No background tasks.</p>;
+    return <p className="text-[12px] text-ink-faint">{t('rail.noTasks')}</p>;
   }
   return (
     <ul className="space-y-1.5">
@@ -92,7 +94,7 @@ const TasksSection = memo(function TasksSection({
         <li key={task.id} className="rounded-lg border border-hairline bg-panel px-2.5 py-1.5">
           <div className="flex items-center gap-1.5">
             <span className={`rounded-full px-1.5 py-px text-[10px] font-medium ${taskStatusTone(task.status)}`}>
-              {task.status}
+              {t(`rail.taskStatus.${task.status}`)}
             </span>
             <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-ink">
               {task.description}
@@ -101,10 +103,10 @@ const TasksSection = memo(function TasksSection({
               <button
                 type="button"
                 onClick={() => onCancel(task.id)}
-                title="Terminate task"
+                title={t('rail.stopTitle')}
                 className="shrink-0 rounded-md border border-hairline px-1.5 py-0.5 text-[10px] text-ink-soft transition-colors hover:border-danger hover:text-danger"
               >
-                Stop
+                {t('rail.stop')}
               </button>
             ) : null}
           </div>
@@ -129,6 +131,7 @@ const SubagentsSection = memo(function SubagentsSection({
   subagents: readonly SubagentBlock[];
   onOpen: (agentId: string) => void;
 }) {
+  const { t, time } = useI18n();
   const [now, setNow] = useState(() => Date.now());
   const hasRunning = subagents.some((subagent) => subagent.status === 'running');
   useEffect(() => {
@@ -137,7 +140,7 @@ const SubagentsSection = memo(function SubagentsSection({
     return () => clearInterval(timer);
   }, [hasRunning]);
   if (subagents.length === 0) {
-    return <p className="text-[12px] text-ink-faint">No subagents in this session.</p>;
+    return <p className="text-[12px] text-ink-faint">{t('rail.noSubagents')}</p>;
   }
   return (
     <ul className="space-y-1.5">
@@ -164,11 +167,11 @@ const SubagentsSection = memo(function SubagentsSection({
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-[12px] font-medium text-ink">{subagent.name}</span>
                 <span className="block truncate text-[10px] text-ink-faint">
-                  {subagent.status} · {subagent.toolCallCount} tools
+                  {t(`subagent.status.${subagent.status}`)} · {t('subagent.tools', { count: subagent.toolCallCount })}
                 </span>
               </span>
               <span className="shrink-0 font-mono text-[9.5px] text-ink-faint">
-                {formatDuration(elapsed)}
+                {time.formatDuration(elapsed)}
               </span>
             </button>
           </li>
@@ -185,11 +188,12 @@ const GoalSection = memo(function GoalSection({
   goal: GoalSnapshot | null | undefined;
   goalUpdatedAt: string | undefined;
 }) {
+  const { t, time } = useI18n();
   if (goal === undefined) {
-    return <p className="text-[12px] text-ink-faint">Goal state unavailable from this server.</p>;
+    return <p className="text-[12px] text-ink-faint">{t('rail.goalUnavailable')}</p>;
   }
   if (goal === null) {
-    return <p className="text-[12px] text-ink-faint">No active goal.</p>;
+    return <p className="text-[12px] text-ink-faint">{t('rail.noGoal')}</p>;
   }
   const turnBudget = goal.budget.turnBudget;
   const tokenBudget = goal.budget.tokenBudget;
@@ -203,15 +207,19 @@ const GoalSection = memo(function GoalSection({
     <div className="rounded-xl border border-amber-rule/40 bg-amber-card/60 p-3">
       <div className="flex items-center gap-2">
         <span className="rounded-full bg-panel px-2 py-0.5 text-[10px] font-semibold text-amber-ink">
-          {goal.status}
+          {t(`composer.goalStatus.${goal.status}`)}
         </span>
         {goalUpdatedAt !== undefined ? (
-          <span className="ml-auto text-[10px] text-ink-faint">updated {relativeTime(goalUpdatedAt)}</span>
+          <span className="ml-auto text-[10px] text-ink-faint">
+            {t('rail.updatedPrefix', { time: time.relativeTime(goalUpdatedAt) })}
+          </span>
         ) : null}
       </div>
       <p className="mt-2 text-[12.5px] font-medium leading-snug text-ink">{goal.objective}</p>
       {goal.completionCriterion !== undefined ? (
-        <p className="mt-1 text-[10.5px] leading-snug text-ink-soft">Done when: {goal.completionCriterion}</p>
+        <p className="mt-1 text-[10.5px] leading-snug text-ink-soft">
+          {t('rail.doneWhen', { criterion: goal.completionCriterion })}
+        </p>
       ) : null}
       {ratio !== undefined ? (
         <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-panel">
@@ -219,7 +227,10 @@ const GoalSection = memo(function GoalSection({
         </div>
       ) : null}
       <p className="mt-1.5 font-mono text-[9.5px] text-ink-faint">
-        {goal.turnsUsed}{turnBudget === null ? '' : `/${turnBudget}`} turns · {formatTokens(goal.tokensUsed)} tokens
+        {t('rail.goalUsage', {
+          turns: `${goal.turnsUsed}${turnBudget === null ? '' : `/${turnBudget}`}`,
+          tokens: time.formatTokens(goal.tokensUsed),
+        })}
       </p>
     </div>
   );
@@ -250,6 +261,7 @@ export function RightRail({
   onOpenSubagent: (agentId: string) => void;
   className?: string;
 }) {
+  const { t, time } = useI18n();
   const session = state.session;
   const usage = session?.usage;
   const contextTokens = state.contextTokens ?? usage?.context_tokens;
@@ -272,65 +284,68 @@ export function RightRail({
     >
       <section>
         <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-          Goal
+          {t('rail.goal')}
         </h3>
         <GoalSection goal={state.goal} goalUpdatedAt={state.goalUpdatedAt} />
       </section>
 
       <section>
         <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-          Subagents
+          {t('rail.subagents')}
         </h3>
         <SubagentsSection subagents={subagents} onOpen={onOpenSubagent} />
       </section>
 
       <section>
         <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-          Todos
+          {t('rail.todos')}
         </h3>
         <TodosSection todos={state.todos} />
       </section>
 
       <section>
         <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-          Background tasks
+          {t('rail.tasks')}
         </h3>
         <TasksSection tasks={backgroundTasks} onCancel={onCancelTask} />
       </section>
 
       <section>
         <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-          Session
+          {t('rail.session')}
         </h3>
         <div className="space-y-1.5">
-          {state.model !== undefined ? <MetaRow label="Model" value={state.model} mono /> : null}
+          {state.model !== undefined ? <MetaRow label={t('rail.model')} value={state.model} mono /> : null}
           {session !== undefined ? (
-            <MetaRow label="Directory" value={session.metadata.cwd} mono />
+            <MetaRow label={t('rail.directory')} value={session.metadata.cwd} mono />
           ) : null}
           {session !== undefined ? (
-            <MetaRow label="Messages" value={String(session.message_count)} />
+            <MetaRow label={t('rail.messages')} value={String(session.message_count)} />
           ) : null}
           {session !== undefined ? (
-            <MetaRow label="Updated" value={relativeTime(session.updated_at)} />
+            <MetaRow label={t('rail.updatedRow')} value={time.relativeTime(session.updated_at)} />
           ) : null}
           {contextTokens !== undefined ? (
             <MetaRow
-              label="Context"
+              label={t('rail.context')}
               value={
                 contextLimit !== undefined
-                  ? `${formatTokens(contextTokens)} / ${formatTokens(contextLimit)}`
-                  : formatTokens(contextTokens)
+                  ? `${time.formatTokens(contextTokens)} / ${time.formatTokens(contextLimit)}`
+                  : time.formatTokens(contextTokens)
               }
               mono
             />
           ) : null}
           {usage !== undefined && usage.total_cost_usd > 0 ? (
-            <MetaRow label="Cost" value={`$${usage.total_cost_usd.toFixed(4)}`} mono />
+            <MetaRow label={t('rail.cost')} value={`$${usage.total_cost_usd.toFixed(4)}`} mono />
           ) : null}
           {usage !== undefined && (usage.input_tokens > 0 || usage.output_tokens > 0) ? (
             <MetaRow
-              label="Tokens"
-              value={`${formatTokens(usage.input_tokens)} in · ${formatTokens(usage.output_tokens)} out`}
+              label={t('rail.tokens')}
+              value={t('rail.tokensInOut', {
+                input: time.formatTokens(usage.input_tokens),
+                output: time.formatTokens(usage.output_tokens),
+              })}
               mono
             />
           ) : null}

@@ -86,7 +86,7 @@ describe('settings persistence and validation', () => {
   });
 
   it('rejects invalid server, desktop, provider, and experiment values before writes', () => {
-    expect(validateServerDefaults('root')).toMatch('manual');
+    expect(validateServerDefaults('root')?.key).toBe('val.permissionMode');
     expect(validateServerDefaults('auto')).toBeNull();
     expect(validateDesktopConfigDraft({
       subagentDefaultModel: ' example/chat',
@@ -95,7 +95,7 @@ describe('settings persistence and validation', () => {
       defaultSubagentModel: '',
       defaultSubagentReasoningEffort: '',
       modelCatalogRefreshIntervalMs: 0,
-    })).toMatch('spaces');
+    })?.key).toBe('val.spacesSubagentModel');
     expect(validateDesktopConfigDraft({
       subagentDefaultModel: 'example/chat',
       subagentDefaultEffort: 'high',
@@ -103,9 +103,9 @@ describe('settings persistence and validation', () => {
       defaultSubagentModel: '',
       defaultSubagentReasoningEffort: '',
       modelCatalogRefreshIntervalMs: 0,
-    })).toMatch('24 hours');
-    expect(validateProviderDraft(providerDraft({ baseUrl: 'file:///secret' }))).toMatch('http');
-    expect(validateProviderDraft(providerDraft({ apiKey: 'bad\nkey' }))).toMatch('line breaks');
+    })?.key).toBe('val.timeoutMax');
+    expect(validateProviderDraft(providerDraft({ baseUrl: 'file:///secret' }))?.key).toBe('val.baseUrlHttp');
+    expect(validateProviderDraft(providerDraft({ apiKey: 'bad\nkey' }))?.key).toBe('val.apiKeyLineBreaks');
     expect(() => parseExperimentalFlags('{"flag":"yes"}')).toThrow('true or false');
     expect(parseExperimentalFlags('{"search_worker":true}')).toEqual({ search_worker: true });
     expect(() => parseAdvancedServerConfig('{"hooks":{}}')).toThrow('JSON array');

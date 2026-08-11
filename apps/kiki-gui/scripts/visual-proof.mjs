@@ -9,10 +9,17 @@
  *   node scripts/visual-proof.mjs                         # disposable full walk
  *   node scripts/visual-proof.mjs --only=reconnect        # disposable subset
  *   node scripts/visual-proof.mjs --update-goldens        # replace tracked goldens
+ *
+ * Locale: KIKI_PROOF_LOCALE=zh runs the same suite against the Chinese UI —
+ * the runner seeds `kiki.locale` into localStorage before every app boot and
+ * the walkers read UI chrome through the per-locale S table below (fixture
+ * transcript content stays English; only chrome localizes). The `i18n`
+ * scenario additionally toggles the language through Settings → General.
  */
 
 import { spawn, execSync } from 'node:child_process';
 import { mkdirSync, rmSync } from 'node:fs';
+import net from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -27,6 +34,139 @@ const FIXTURE_PORT = Number(process.env.KIKI_PROOF_FIXTURE_PORT ?? 58901);
 const WEB_PORT = Number(process.env.KIKI_PROOF_WEB_PORT ?? 5179);
 const FIXTURE_URL = `http://127.0.0.1:${FIXTURE_PORT}`;
 const WEB_URL = `http://localhost:${WEB_PORT}`;
+
+/** UI language for the run; the app defaults to English when unset. */
+const LOCALE = process.env.KIKI_PROOF_LOCALE === 'zh' ? 'zh' : 'en';
+
+/**
+ * UI-chrome strings the walkers key on, per locale. Values must match
+ * src/i18n/en.ts / zh.ts exactly — the proof fails loudly when they drift.
+ * (Fixture content — session titles, streamed answers, question options —
+ * comes from the server and stays English in both runs.)
+ */
+const STRINGS = {
+  en: {
+    newSession: 'New session',
+    working: 'working',
+    approvalNeeded: 'Approval needed',
+    approve: 'Approve',
+    approved: 'Approved',
+    kikiAsks: 'kiki asks',
+    submit: 'Submit',
+    settings: 'Settings',
+    models: 'Models',
+    providersAuth: 'Providers & auth',
+    capabilities: 'Capabilities',
+    configuredProviders: 'Configured providers',
+    tools: 'Tools',
+    newSessionDefaults: 'New-session defaults',
+    saveServerDefaults: 'Save server defaults',
+    planModeToggle: 'Start new sessions in plan mode',
+    permissionModeAuto: 'auto',
+    settingsSavedEcho: 'Server saved and echoed permission=auto, plan=on.',
+    skillDefaults: 'Skill and experiment defaults',
+    saveCapabilityDefaults: 'Save capability defaults',
+    experimentalAria: 'Experimental flag overrides',
+    flagBoolFragment: 'must be true or false',
+    loadMore: 'Load more sessions',
+    queuedChip: 'Queued — starts when the current turn finishes',
+    onePromptQueued: '1 prompt queued',
+    queueBarPattern: /prompts? queued/,
+    promptAborted: 'Prompt aborted',
+    archiveDownloaded: 'Session archive downloaded.',
+    undoTitle: 'Undo the last turn?',
+    undoTurn: 'Undo turn',
+    lastTurnRemoved: 'Last turn removed.',
+    compactionRequested: 'Compaction requested',
+    forkSession: 'Fork session',
+    exportArchive: 'Export archive',
+    undoLastTurn: 'Undo last turn',
+    compactContext: 'Compact context',
+    bannerPattern: /Connection lost|Disconnected from the server/,
+    resyncing: 'Resyncing…',
+    noSessions: 'No sessions yet',
+    subagentTranscript: 'Subagent transcript',
+    blankPage: 'A blank page',
+    steps3: 'Steps · 3',
+    filesHeader: 'Files — mentioned as @path',
+    notActivatable: 'not activatable',
+    shortcuts: 'Shortcuts',
+    planPill: 'plan',
+    swarmTitlePrefix: 'Swarm mode',
+    goalActive: 'goal · active',
+    objectivePlaceholder: 'Objective (optional)',
+    turns: 'turns',
+    noMatches: 'No matches',
+    systemReminder: 'System reminder',
+    fromSubagentApprover: 'from subagent Approver',
+    queuePromptAria: 'Queue prompt',
+    cancelQueuedAria: 'Cancel queued prompt',
+    togglePanelAria: 'Toggle panel',
+    openMenuAria: 'Open session menu',
+    sessionActionsAria: 'Session actions',
+  },
+  zh: {
+    newSession: '新会话',
+    working: '工作中',
+    approvalNeeded: '需要批准',
+    approve: '批准',
+    approved: '已批准',
+    kikiAsks: 'kiki 提问',
+    submit: '提交',
+    settings: '设置',
+    models: '模型',
+    providersAuth: '提供商与认证',
+    capabilities: '能力',
+    configuredProviders: '已配置的提供商',
+    tools: '工具',
+    newSessionDefaults: '新会话默认值',
+    saveServerDefaults: '保存服务器默认值',
+    planModeToggle: '新会话默认开启计划模式',
+    permissionModeAuto: '自动',
+    settingsSavedEcho: '服务器已保存并回显 permission=auto、plan=开。',
+    skillDefaults: '技能与实验默认值',
+    saveCapabilityDefaults: '保存能力默认值',
+    experimentalAria: '实验开关覆盖',
+    flagBoolFragment: '必须为 true 或 false',
+    loadMore: '加载更多会话',
+    queuedChip: '已排队 — 当前轮次结束后开始',
+    onePromptQueued: '1 条消息已排队',
+    queueBarPattern: /条消息已排队/,
+    promptAborted: '消息已中止',
+    archiveDownloaded: '会话归档已下载。',
+    undoTitle: '撤销最后一轮？',
+    undoTurn: '撤销本轮',
+    lastTurnRemoved: '已移除最后一轮。',
+    compactionRequested: '已请求压缩',
+    forkSession: '复刻会话',
+    exportArchive: '导出归档',
+    undoLastTurn: '撤销最后一轮',
+    compactContext: '压缩上下文',
+    bannerPattern: /正在重连|已与服务器断开连接/,
+    resyncing: '正在重新同步…',
+    noSessions: '还没有会话',
+    subagentTranscript: '子代理会话记录',
+    blankPage: '白纸一张',
+    steps3: '步骤 · 3',
+    filesHeader: '文件 — 在消息中以 @路径 引用',
+    notActivatable: '不可激活',
+    shortcuts: '快捷指令',
+    planPill: '计划',
+    swarmTitlePrefix: '集群模式',
+    goalActive: '目标 · 进行中',
+    objectivePlaceholder: '目标（可选）',
+    turns: '轮',
+    noMatches: '没有匹配',
+    systemReminder: '系统提醒',
+    fromSubagentApprover: '来自子代理 Approver',
+    queuePromptAria: '加入队列',
+    cancelQueuedAria: '取消排队的消息',
+    togglePanelAria: '切换面板',
+    openMenuAria: '打开会话菜单',
+    sessionActionsAria: '会话操作',
+  },
+};
+const S = STRINGS[LOCALE];
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -51,6 +191,29 @@ async function waitForServer(url, timeoutMs = 30_000) {
       // not up yet
     }
     if (Date.now() > deadline) throw new Error(`server never came up: ${url}`);
+    await sleep(300);
+  }
+}
+
+/**
+ * Wait until a TCP port answers NO connection. A stale listener (orphaned
+ * vite grandchild) must be gone before we spawn our own — otherwise
+ * waitForServer can report "web up" against the zombie and strictPort then
+ * kills our real dev server, hanging the suite mid-run.
+ */
+async function waitForPortFree(port, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const taken = await new Promise((resolve) => {
+      const probe = net.createConnection({ port, host: '127.0.0.1' });
+      probe.once('connect', () => {
+        probe.destroy();
+        resolve(true);
+      });
+      probe.once('error', () => resolve(false));
+    });
+    if (!taken) return;
+    if (Date.now() > deadline) throw new Error(`port ${port} is still held by a stale process — kill it and rerun`);
     await sleep(300);
   }
 }
@@ -141,11 +304,11 @@ async function scenarioBasicStream() {
   await waitForText('Here is the fixture answer');
   await page.waitForTimeout(700);
   await shot('basic-stream-streaming');
-  await waitForText('Approval needed');
+  await waitForText(S.approvalNeeded);
   await page.waitForTimeout(300);
   await shot('basic-stream-approval');
   await approveViaKeyboard();
-  await page.waitForSelector('text=working', { state: 'detached', timeout: 30_000 });
+  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 30_000 });
   await page.waitForTimeout(1200); // shiki upgrade
   await shot('basic-stream-done');
 }
@@ -154,7 +317,7 @@ async function scenarioPromptDedupe() {
   await selectSession('Fixture: prompt dedupe');
   await sendPrompt('One prompt, one user block.');
   await waitForText('The prompt appears once.');
-  await page.waitForSelector('text=working', { state: 'detached', timeout: 20_000 });
+  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 });
   const userCount = await page.locator('[role="log"] [data-block-id^="user-"]', {
     hasText: 'One prompt, one user block.',
   }).count();
@@ -168,7 +331,7 @@ async function scenarioSubagents() {
   await sendPrompt('Delegate the fixture work.');
   await page.waitForSelector('[data-subagent-id="agent-research"]', { timeout: 20_000 });
   await page.waitForSelector('[data-subagent-id="agent-review"]', { timeout: 20_000 });
-  await page.waitForSelector('text=working', { state: 'detached', timeout: 20_000 });
+  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 });
   const bubbleCount = await page.locator('[data-subagent-id]').count();
   const inlineToolCount = await page.locator('[role="log"] [data-block-id^="tool-"], [role="log"] [data-block-id^="group-"]').count();
   const railText = await page.locator('.app-rail').innerText();
@@ -191,10 +354,10 @@ async function scenarioSubagents() {
 async function scenarioGoalSwarm() {
   await selectSession('Fixture: goal + swarm');
   await waitForText('Prepare the release evidence bundle');
-  await page.click('button[title^="Swarm mode"]');
-  await page.click('button:has-text("goal · active")');
-  await page.fill('input[placeholder="Objective (optional)"]', 'Ship the fixture release');
-  await page.click('button:has-text("goal · active")');
+  await page.click(`button[title^="${S.swarmTitlePrefix}"]`);
+  await page.click(`button:has-text("${S.goalActive}")`);
+  await page.fill(`input[placeholder="${S.objectivePlaceholder}"]`, 'Ship the fixture release');
+  await page.click(`button:has-text("${S.goalActive}")`);
   await sendPrompt('Advance the release goal.');
   await waitForText('Swarm mode is on and the goal state is live.');
   const inspected = await control({ action: 'session', session_id: 'session_fixture_goal_swarm' });
@@ -203,19 +366,19 @@ async function scenarioGoalSwarm() {
   if (submission?.swarm_mode !== true || submission?.goal_objective !== 'Ship the fixture release') {
     throw new Error('PromptSubmission did not carry swarm_mode + goal_objective');
   }
-  await page.click('button:has-text("goal · active")');
+  await page.click(`button:has-text("${S.goalActive}")`);
   await page.waitForTimeout(400);
   await shot('goal-swarm');
 }
 
 async function scenarioToolPipeline() {
   await selectSession('Fixture: tool pipeline');
-  await waitForText('Steps · 3');
+  await waitForText(S.steps3);
   await shot('tool-pipeline-grouped');
   // Expand the group, then the Edit card inside it (DiffCard with 2 hunks).
   // NB: target the card by its summary text — the group row itself contains
   // the tool names, so a bare hasText:'Edit' matches the row and re-toggles.
-  await page.click('text=Steps · 3');
+  await page.click(`text=${S.steps3}`);
   await page.waitForTimeout(400);
   // The journaled Edit block has no display payload; its summary is the path —
   // same as Read's, so take the SECOND card carrying it (Read is first).
@@ -232,9 +395,9 @@ async function scenarioToolPipeline() {
     { timeout: 20_000 },
   );
   // Live sequence 2: tool / approval / tool boundary — approval flushes the group.
-  await waitForText('Approval needed');
+  await waitForText(S.approvalNeeded);
   await approveViaKeyboard();
-  await page.waitForSelector('text=working', { state: 'detached', timeout: 30_000 });
+  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 30_000 });
   await page.waitForTimeout(600);
   const kinds = await displayNodeKinds();
   const groups = kinds.filter((k) => k === 'group').length;
@@ -252,15 +415,15 @@ async function scenarioToolPipeline() {
 async function scenarioQuestionCard() {
   await selectSession('Fixture: question card');
   await sendPrompt('Ask me the fixture questions.');
-  await waitForText('kiki asks');
+  await waitForText(S.kikiAsks);
   await page.waitForTimeout(400);
   await shot('question-card');
   // single select "Both" + two multi options, then submit
   await page.click('text=Both (Recommended)');
   await page.click('text=Typecheck');
   await page.click('text=Visual proof');
-  await page.click('button:has-text("Submit")');
-  await page.waitForSelector('text=working', { state: 'detached', timeout: 30_000 });
+  await page.click(`button:has-text("${S.submit}")`);
+  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 30_000 });
   await page.waitForTimeout(400);
   await shot('question-card-answered');
 }
@@ -288,7 +451,7 @@ async function scenarioLongTranscript() {
   }
   await shot('long-transcript-top');
   // Turn jump dropdown.
-  await page.click('button:has-text("turns")');
+  await page.click(`button:has-text("${S.turns}")`);
   await page.waitForTimeout(400);
   await shot('long-transcript-turns');
   await page.keyboard.press('Escape');
@@ -297,7 +460,7 @@ async function scenarioLongTranscript() {
 async function scenarioErrorAbort() {
   await selectSession('Fixture: error + abort');
   await sendPrompt('Run the failing then slow fixture.');
-  await waitForText('Approval needed');
+  await waitForText(S.approvalNeeded);
   await approveViaKeyboard();
   // The failed Bash + Read cards group and auto-expand on error; the slow
   // stream then starts — abort it mid-flight.
@@ -305,7 +468,7 @@ async function scenarioErrorAbort() {
   await page.waitForTimeout(500);
   await page.mouse.click(720, 300); // non-editable focus
   await page.keyboard.press('Escape'); // …then aborted mid-stream
-  await page.waitForSelector('text=Prompt aborted', { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.promptAborted}`, { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('error-abort');
 }
@@ -316,7 +479,7 @@ async function scenarioApprovalsGallery() {
   await page.waitForTimeout(400);
   await shot('approvals-gallery');
   // Resolve the raw-JSON fallback card (last card) to show the outcome line.
-  const approve = page.locator('button:has-text("Approve")').nth(4);
+  const approve = page.locator(`button:has-text("${S.approve}")`).nth(4);
   await approve.click();
   await page.waitForTimeout(600);
   await shot('approvals-gallery-resolved');
@@ -328,19 +491,19 @@ async function scenarioReconnect() {
   await waitForText('Segment A');
   await page.waitForTimeout(400);
   await control({ action: 'drop_ws' });
-  // 'connecting' → "Connection lost — reconnecting…"; 'closed' → the
-  // "Disconnected from the server" variant. Either proves the banner.
-  await page.waitForSelector('text=/Connection lost|Disconnected from the server/', { timeout: 10_000 });
+  // 'connecting' → the reconnecting banner; 'closed' → the disconnected
+  // variant. Either proves the banner.
+  await page.waitForSelector(`text=${S.bannerPattern}`, { timeout: 10_000 });
   await shot('reconnect-banner');
   // The script keeps running server-side; bump the epoch → client resyncs.
   await sleep(2500);
-  await page.waitForSelector('text=/Connection lost|Disconnected from the server/', {
+  await page.waitForSelector(`text=${S.bannerPattern}`, {
     state: 'detached',
     timeout: 15_000,
   });
   await control({ action: 'resync', session_id: 'session_fixture_reconnect' });
   await page.waitForSelector('text=Segment B', { timeout: 15_000 });
-  await page.waitForSelector('text=working', { state: 'detached', timeout: 20_000 }).catch(() => undefined);
+  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 }).catch(() => undefined);
   await page.waitForTimeout(600);
   const aCount = await page.evaluate(
     () => document.body.innerText.split('Segment A — this part streamed live').length - 1,
@@ -358,11 +521,11 @@ async function scenarioReconnect() {
 
 async function scenarioEmptyStates() {
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('text=No sessions yet', { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.noSessions}`, { timeout: 10_000 });
   await shot('empty-states');
   // Create a session through the /new draft page.
-  await page.click('text=New session');
-  await page.waitForSelector('text=New session', { timeout: 5000 });
+  await page.click(`text=${S.newSession}`);
+  await page.waitForSelector(`text=${S.newSession}`, { timeout: 5000 });
   await page.fill('textarea', 'Fixture blank session');
   await page.press('textarea', 'Enter');
   await page.waitForURL(/\/s\//, { timeout: 10_000 });
@@ -374,11 +537,11 @@ async function scenarioDraftFlow() {
   await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
-  await page.waitForSelector('text=New session', { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.newSession}`, { timeout: 10_000 });
   await page.fill('textarea', 'Run the fixture draft flow.');
   await page.press('textarea', 'Enter');
   await page.waitForURL(/\/s\//, { timeout: 10_000 });
-  await page.waitForSelector('text=working', { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.working}`, { timeout: 10_000 });
   await page.waitForSelector('text=Here is the fixture answer', { timeout: 20_000 });
   await page.waitForTimeout(600);
   await shot('draft-flow');
@@ -388,22 +551,22 @@ async function scenarioSettings() {
   await page.goto(`${WEB_URL}/settings?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
-  await page.waitForSelector('text=Settings', { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.settings}`, { timeout: 10_000 });
   await page.waitForTimeout(500);
   await shot('settings-general');
 
-  await page.click('text=Models');
+  await page.click(`text=${S.models}`);
   await page.waitForSelector('text=Kiki Pro', { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('settings-models');
 
-  await page.click('text=Providers & auth');
-  await page.waitForSelector('text=Configured providers', { timeout: 10_000 });
+  await page.click(`text=${S.providersAuth}`);
+  await page.waitForSelector(`text=${S.configuredProviders}`, { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('settings-providers');
 
-  await page.click('text=Capabilities');
-  await page.waitForSelector('text=Tools', { timeout: 10_000 });
+  await page.click(`text=${S.capabilities}`);
+  await page.waitForSelector(`text=${S.tools}`, { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('settings-capabilities');
 }
@@ -412,17 +575,17 @@ async function scenarioSettingsWrite() {
   await page.goto(`${WEB_URL}/settings/general?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
-  await page.waitForSelector('text=New-session defaults', { timeout: 10_000 });
-  await page.locator('button', { hasText: 'auto' }).click();
-  await page.locator('label', { hasText: 'Start new sessions in plan mode' }).click();
-  await page.click('button:has-text("Save server defaults")');
-  await waitForText('Server saved and echoed permission=auto, plan=on.');
+  await page.waitForSelector(`text=${S.newSessionDefaults}`, { timeout: 10_000 });
+  await page.locator('button', { hasText: S.permissionModeAuto }).click();
+  await page.locator('label', { hasText: S.planModeToggle }).click();
+  await page.click(`button:has-text("${S.saveServerDefaults}")`);
+  await waitForText(S.settingsSavedEcho);
   await shot('settings-write-saved');
 
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('text=New-session defaults', { timeout: 10_000 });
-  const autoClass = await page.locator('button', { hasText: 'auto' }).getAttribute('class');
-  const planState = await page.locator('label', { hasText: 'Start new sessions in plan mode' }).locator('[role="switch"]').getAttribute('aria-checked');
+  await page.waitForSelector(`text=${S.newSessionDefaults}`, { timeout: 10_000 });
+  const autoClass = await page.locator('button', { hasText: S.permissionModeAuto }).getAttribute('class');
+  const planState = await page.locator('label', { hasText: S.planModeToggle }).locator('[role="switch"]').getAttribute('aria-checked');
   if (!autoClass?.includes('bg-accent-soft') || planState !== 'true') {
     throw new Error(`server setting did not survive reload: auto=${autoClass} plan=${planState}`);
   }
@@ -433,11 +596,11 @@ async function scenarioSettingsInvalid() {
   await page.goto(`${WEB_URL}/settings/capabilities?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
-  await page.waitForSelector('text=Skill and experiment defaults', { timeout: 10_000 });
-  await page.fill('textarea[aria-label="Experimental flag overrides"]', '{"search_worker":"yes"}');
-  await page.click('button:has-text("Save capability defaults")');
+  await page.waitForSelector(`text=${S.skillDefaults}`, { timeout: 10_000 });
+  await page.fill(`textarea[aria-label="${S.experimentalAria}"]`, '{"search_worker":"yes"}');
+  await page.click(`button:has-text("${S.saveCapabilityDefaults}")`);
   await page.waitForSelector('[role="alert"]', { timeout: 5000 });
-  await waitForText('must be true or false');
+  await waitForText(S.flagBoolFragment);
   await shot('settings-invalid-inline-error');
 }
 
@@ -464,7 +627,7 @@ async function scenarioResponsive() {
     await page.waitForTimeout(600);
     await shot(`responsive-session-${width}`);
 
-    const railToggle = page.locator('button[aria-label="Toggle panel"]');
+    const railToggle = page.locator(`button[aria-label="${S.togglePanelAria}"]`);
     await railToggle.waitFor({ timeout: 10_000 });
     if ((await railToggle.getAttribute('aria-expanded')) !== 'true') {
       await railToggle.click();
@@ -475,7 +638,7 @@ async function scenarioResponsive() {
     await page.waitForTimeout(200);
 
     if (width < 768) {
-      await page.click('button[aria-label="Open session menu"]');
+      await page.click(`button[aria-label="${S.openMenuAria}"]`);
       await page.waitForTimeout(400);
       await shot(`responsive-sidebar-${width}`);
       await page.keyboard.press('Escape');
@@ -485,7 +648,7 @@ async function scenarioResponsive() {
     await page.goto(`${WEB_URL}/settings?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
       waitUntil: 'domcontentloaded',
     });
-    await page.waitForSelector('text=Settings', { timeout: 10_000 });
+    await page.waitForSelector(`text=${S.settings}`, { timeout: 10_000 });
     await page.waitForTimeout(400);
     await shot(`responsive-settings-${width}`);
 
@@ -502,18 +665,18 @@ async function scenarioQueue() {
   await waitForText('A holds the floor.');
   // The busy composer keeps a mouse path to the queue: fill, then click Send.
   await page.fill('textarea', 'B: wait your turn.');
-  await page.click('button[aria-label="Queue prompt"]');
+  await page.click(`button[aria-label="${S.queuePromptAria}"]`);
   console.log('[flow] queued via the busy Send button');
   // The parked prompt surfaces immediately: one user block + Queued chip + bar.
-  await page.waitForSelector('text=Queued — starts when the current turn finishes', { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.queuedChip}`, { timeout: 10_000 });
   const bBlocks = page.locator('[role="log"] [data-block-id^="user-"]', { hasText: 'B: wait your turn.' });
   if ((await bBlocks.count()) !== 1) throw new Error(`expected one B user block, saw ${await bBlocks.count()}`);
-  await page.waitForSelector('text=1 prompt queued', { timeout: 5000 });
+  await page.waitForSelector(`text=${S.onePromptQueued}`, { timeout: 5000 });
   await shot('queue-queued');
   // Release A → B promotes to running; the chip and bar clear.
   await control({ action: 'release', session_id: 'session_fixture_queue' });
   await waitForText('B runs after A.');
-  await page.waitForSelector('text=Queued — starts when the current turn finishes', {
+  await page.waitForSelector(`text=${S.queuedChip}`, {
     state: 'detached',
     timeout: 10_000,
   });
@@ -524,23 +687,23 @@ async function scenarioQueue() {
     console.log('[debug] block ids at promotion:', JSON.stringify(ids));
     throw new Error(`B user block duplicated after promotion: ${await bBlocks.count()}`);
   }
-  if ((await page.locator('text=/prompts? queued/').count()) !== 0) throw new Error('queue bar still visible after promotion');
+  if ((await page.locator(`text=${S.queueBarPattern}`).count()) !== 0) throw new Error('queue bar still visible after promotion');
   await shot('queue-promoted');
   // Cancelling a parked prompt keeps its block but drops the chip.
   await sendPrompt('A: hold the floor.');
-  await page.waitForSelector('text=working', { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.working}`, { timeout: 10_000 });
   await sendPrompt('B: cancel me.');
-  await page.waitForSelector('text=Queued — starts when the current turn finishes', { timeout: 10_000 });
-  await page.click('button[aria-label="Cancel queued prompt"]');
-  await page.waitForSelector('text=Prompt aborted', { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.queuedChip}`, { timeout: 10_000 });
+  await page.click(`button[aria-label="${S.cancelQueuedAria}"]`);
+  await page.waitForSelector(`text=${S.promptAborted}`, { timeout: 10_000 });
   const cancelled = page.locator('[role="log"] [data-block-id^="user-"]', { hasText: 'B: cancel me.' });
   if ((await cancelled.count()) !== 1) throw new Error('cancelled queued prompt lost its user block');
-  if ((await page.locator('text=Queued — starts when the current turn finishes').count()) !== 0) {
+  if ((await page.locator(`text=${S.queuedChip}`).count()) !== 0) {
     throw new Error('Queued chip survived the cancellation');
   }
   await shot('queue-cancelled');
   await control({ action: 'release', session_id: 'session_fixture_queue' });
-  await page.waitForSelector('text=working', { state: 'detached', timeout: 10_000 }).catch(() => undefined);
+  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 10_000 }).catch(() => undefined);
 }
 
 async function scenarioBurst() {
@@ -574,7 +737,7 @@ async function scenarioBurst() {
     }).observe({ entryTypes: ['longtask'] });
   });
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('text=New session', { timeout: 15_000 });
+  await page.waitForSelector(`text=${S.newSession}`, { timeout: 15_000 });
   await selectSession('Fixture: burst');
   // Idle baseline: the same press→POST path before any flood begins.
   await page.fill('textarea', 'Start the burst.');
@@ -617,7 +780,7 @@ async function scenarioBurst() {
   // The second prompt parked behind the parked turn (A holds a release gate
   // after the storm, so B deterministically lands in the server queue).
   try {
-    await page.waitForSelector('text=Queued — starts when the current turn finishes', { timeout: 30_000 });
+    await page.waitForSelector(`text=${S.queuedChip}`, { timeout: 30_000 });
   } catch (error) {
     const ids = await page.evaluate(() =>
       Array.from(document.querySelectorAll('[role="log"] [data-block-id]')).map((n) => n.getAttribute('data-block-id')),
@@ -661,7 +824,7 @@ async function scenarioBurst() {
 
 async function scenarioSubagentsBurst() {
   await selectSession('Fixture: subagents burst');
-  await page.waitForSelector('text=A blank page', { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.blankPage}`, { timeout: 10_000 });
   await page.evaluate(() => {
     window.__mainMutations = 0;
     new MutationObserver((records) => {
@@ -685,7 +848,7 @@ async function scenarioSubagentsBurst() {
     `${WEB_URL}/s/session_fixture_subagents_burst/agent/agent-hidden?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`,
     { waitUntil: 'domcontentloaded' },
   );
-  await page.waitForSelector('text=Subagent transcript', { timeout: 15_000 });
+  await page.waitForSelector(`text=${S.subagentTranscript}`, { timeout: 15_000 });
   await control({ action: 'burst', session_id: 'session_fixture_subagents_burst', count: 500 });
   await page.waitForSelector('[data-block-id="tool-burst-call"]', { timeout: 15_000 });
   await page.waitForTimeout(400);
@@ -696,7 +859,7 @@ async function scenarioResyncHold() {
   await selectSession('Fixture: resync hold');
   await sendPrompt('Hold my snapshot.');
   await waitForText('Settled before the hold.');
-  await page.waitForSelector('text=working', { state: 'detached', timeout: 20_000 }).catch(() => undefined);
+  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 }).catch(() => undefined);
   // Hold every snapshot fetch until released below.
   const held = [];
   let holding = true;
@@ -705,7 +868,7 @@ async function scenarioResyncHold() {
     await new Promise((resolve) => held.push({ route, resolve }));
   });
   await control({ action: 'resync', session_id: 'session_fixture_resync_hold' });
-  await page.waitForSelector('text=Resyncing…', { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.resyncing}`, { timeout: 10_000 });
   // A duplicate trigger must not stack a second in-flight snapshot.
   await control({ action: 'resync', session_id: 'session_fixture_resync_hold' });
   await page.waitForTimeout(1500);
@@ -717,7 +880,7 @@ async function scenarioResyncHold() {
     resolve();
     await route.continue();
   }
-  await page.waitForSelector('text=Resyncing…', { state: 'detached', timeout: 15_000 });
+  await page.waitForSelector(`text=${S.resyncing}`, { state: 'detached', timeout: 15_000 });
   await page.unroute('**/api/v1/sessions/*/snapshot');
   await page.waitForTimeout(500);
   const occurrences = await page.evaluate(
@@ -739,7 +902,7 @@ async function scenarioReminder() {
   if (bubbleText.includes('system-reminder') || bubbleText.includes('repeated several times')) {
     throw new Error('reminder content leaked into the user bubble');
   }
-  const reminders = page.locator('[role="log"] button', { hasText: 'System reminder' });
+  const reminders = page.locator('[role="log"] button', { hasText: S.systemReminder });
   if ((await reminders.count()) !== 2) throw new Error(`expected 2 collapsed reminders, saw ${await reminders.count()}`);
   if ((await page.locator('text=The same tool call has been repeated').count()) !== 0) {
     throw new Error('collapsed reminder content rendered before expansion');
@@ -758,20 +921,20 @@ async function scenarioSubagentApproval() {
   // subagent name — and it is actionable in place.
   const card = page.locator('[data-approval-id="approval_fixture_child"]');
   await card.waitFor({ timeout: 15_000 });
-  await waitForText('from subagent Approver');
+  await waitForText(S.fromSubagentApprover);
   await shot('subagent-approval-main');
-  await card.locator('button', { hasText: 'Approve' }).click();
+  await card.locator('button', { hasText: S.approve }).click();
   // Resolving with that approval_id unblocks the child (a wrong id would
   // 40902 and strand the run): the card collapses to its resolution line
   // (the resolved card no longer carries data-approval-id) and the turn ends.
-  await page.getByText('Approved', { exact: true }).waitFor({ timeout: 10_000 });
+  await page.getByText(S.approved, { exact: true }).waitFor({ timeout: 10_000 });
   await waitForText('The gated cleanup finished.');
-  await page.waitForSelector('text=working', { state: 'detached', timeout: 20_000 }).catch(() => undefined);
+  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 }).catch(() => undefined);
   // The agent page carries the same interaction (from the transcript
   // response's interactions array), now resolved.
   await page.locator('[data-subagent-id="agent-worker"]').click();
   await page.waitForURL(/\/agent\/agent-worker$/, { timeout: 10_000 });
-  await page.getByText('Approved', { exact: true }).waitFor({ timeout: 15_000 });
+  await page.getByText(S.approved, { exact: true }).waitFor({ timeout: 15_000 });
   await page.waitForTimeout(400);
   await shot('subagent-approval-agent-page');
 }
@@ -781,11 +944,11 @@ async function scenarioReconnectMidTurn() {
   await sendPrompt('Stream both halves.');
   await waitForText('Part one streamed before the drop.');
   await control({ action: 'drop_ws' });
-  await page.waitForSelector('text=/Connection lost|Disconnected from the server/', { timeout: 10_000 });
+  await page.waitForSelector(`text=${S.bannerPattern}`, { timeout: 10_000 });
   // The turn continues and ENDS during the blackout: its volatile deltas are
   // lost to the wire, only the journal commit persists. No epoch bump.
   await control({ action: 'release', session_id: 'session_fixture_reconnect_mid_turn' });
-  await page.waitForSelector('text=/Connection lost|Disconnected from the server/', {
+  await page.waitForSelector(`text=${S.bannerPattern}`, {
     state: 'detached',
     timeout: 15_000,
   });
@@ -813,7 +976,7 @@ async function scenarioSessionPages() {
   const firstCount = await rows.count();
   console.log(`[check] sidebar first page rows: ${firstCount}`);
   if (firstCount !== 100) throw new Error(`expected 100 first-page rows, saw ${firstCount}`);
-  await page.click('button:has-text("Load more sessions")');
+  await page.click(`button:has-text("${S.loadMore}")`);
   await page.waitForFunction(
     () => document.querySelectorAll('aside div.group').length === 125,
     undefined,
@@ -841,11 +1004,11 @@ async function scenarioSlashCommands() {
   await page.fill('textarea', '/');
   await page.waitForSelector('text=/review', { timeout: 5000 });
   await page.waitForSelector('text=/handoff', { timeout: 5000 });
-  await page.waitForSelector('text=Shortcuts', { timeout: 5000 });
+  await page.waitForSelector(`text=${S.shortcuts}`, { timeout: 5000 });
   await page.waitForTimeout(450); // let the menu entrance animation settle
   await shot('slash-commands-menu');
   // The reference-type skill is visible but marked not activatable.
-  await page.waitForSelector('text=not activatable', { timeout: 5000 });
+  await page.waitForSelector(`text=${S.notActivatable}`, { timeout: 5000 });
   // Filter + keyboard-accept the skill: draft becomes "/review " for args.
   await page.fill('textarea', '/rev');
   await page.waitForTimeout(300);
@@ -867,12 +1030,12 @@ async function scenarioSlashCommands() {
   // (settings-write) can start plan mode either way. aria-pressed is the
   // contractual hook; the accent class is presentation.
   const planPressed = () =>
-    page.evaluate(() => {
+    page.evaluate((pillText) => {
       const pill = [...document.querySelectorAll('button')].find(
-        (button) => button.textContent?.trim() === 'plan',
+        (button) => button.textContent?.trim() === pillText,
       );
       return pill?.getAttribute('aria-pressed');
-    });
+    }, S.planPill);
   const planBefore = await planPressed();
   await page.fill('textarea', '/pl');
   await page.waitForTimeout(300);
@@ -903,7 +1066,7 @@ async function scenarioAttachments() {
   await page.click('textarea');
   // "@" opens the picker; an empty query lists the workspace top level.
   await page.fill('textarea', '@');
-  await page.waitForSelector('text=Files — mentioned as @path', { timeout: 5000 });
+  await page.waitForSelector(`text=${S.filesHeader}`, { timeout: 5000 });
   await page.waitForSelector('[role="option"]:has-text("README.md")', { timeout: 5000 });
   await page.waitForTimeout(450); // menu entrance settle
   await shot('attachments-picker');
@@ -983,7 +1146,7 @@ async function scenarioSearch() {
   await shot('search-opened');
   // Empty state.
   await page.fill('[data-search-box]', 'zzzznothing');
-  await page.waitForSelector('text=No matches', { timeout: 5000 });
+  await page.waitForSelector(`text=${S.noMatches}`, { timeout: 5000 });
   await shot('search-empty');
   await page.fill('[data-search-box]', '');
 }
@@ -994,20 +1157,20 @@ async function scenarioSessionActions() {
   // Export (header overflow) — playwright captures the raw download.
   await page.locator('[data-session-actions] > button').click();
   const downloadPromise = page.waitForEvent('download', { timeout: 10_000 });
-  await page.locator('[data-session-actions] button', { hasText: 'Export archive' }).click();
+  await page.locator('[data-session-actions] button', { hasText: S.exportArchive }).click();
   const download = await downloadPromise;
   const filename = download.suggestedFilename();
   if (!filename.includes('export')) throw new Error(`unexpected export filename: ${filename}`);
-  await page.waitForSelector('text=Session archive downloaded.', { timeout: 5000 });
+  await page.waitForSelector(`text=${S.archiveDownloaded}`, { timeout: 5000 });
   await shot('session-actions-export');
   // Undo (header overflow) — confirm-first, then the transcript resyncs.
   await page.locator('[data-session-actions] > button').click();
-  await page.locator('[data-session-actions] button', { hasText: 'Undo last turn' }).click();
-  await page.waitForSelector('text=Undo the last turn?', { timeout: 5000 });
+  await page.locator('[data-session-actions] button', { hasText: S.undoLastTurn }).click();
+  await page.waitForSelector(`text=${S.undoTitle}`, { timeout: 5000 });
   await page.waitForTimeout(400); // dialog entrance settle
   await shot('session-actions-undo-confirm');
-  await page.locator('button', { hasText: 'Undo turn' }).click();
-  await page.waitForSelector('text=Last turn removed.', { timeout: 5000 });
+  await page.locator('button', { hasText: S.undoTurn }).click();
+  await page.waitForSelector(`text=${S.lastTurnRemoved}`, { timeout: 5000 });
   await page.waitForSelector('text=Second exchange — removed by undo.', {
     state: 'detached',
     timeout: 10_000,
@@ -1017,16 +1180,47 @@ async function scenarioSessionActions() {
   // Compact (sidebar context menu).
   const row = page.locator('aside div.group', { hasText: 'Fixture: session actions' }).first();
   await row.hover();
-  await row.locator('button[aria-label^="Session actions"]').click();
-  await page.locator('[data-session-menu] button', { hasText: 'Compact context' }).click();
-  await page.waitForSelector('text=Compaction requested', { timeout: 5000 });
+  await row.locator(`button[aria-label^="${S.sessionActionsAria}"]`).click();
+  await page.locator('[data-session-menu] button', { hasText: S.compactContext }).click();
+  await page.waitForSelector(`text=${S.compactionRequested}`, { timeout: 5000 });
   await shot('session-actions-compact');
   // Fork (sidebar context menu) → lands on the copy.
   await row.hover();
-  await row.locator('button[aria-label^="Session actions"]').click();
-  await page.locator('[data-session-menu] button', { hasText: 'Fork session' }).click();
+  await row.locator(`button[aria-label^="${S.sessionActionsAria}"]`).click();
+  await page.locator('[data-session-menu] button', { hasText: S.forkSession }).click();
   await page.waitForSelector('text=Fixture: session actions (fork)', { timeout: 10_000 });
   await shot('session-actions-fork');
+}
+
+/**
+ * Language toggle through Settings → General: switch to the OTHER locale,
+ * assert the chrome re-renders instantly (no reload), verify the choice
+ * persists across a reload, then switch back so later scenarios stay in the
+ * run's locale.
+ */
+async function scenarioI18n() {
+  const other = LOCALE === 'zh' ? 'en' : 'zh';
+  const otherDefaults = STRINGS[other].newSessionDefaults;
+  await page.goto(`${WEB_URL}/settings/general?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'domcontentloaded',
+  });
+  await page.waitForSelector(`text=${S.newSessionDefaults}`, { timeout: 10_000 });
+  await page.selectOption('#language-select', other);
+  // Instant switch: the same page re-renders in the other locale, no reload.
+  await page.waitForSelector(`text=${otherDefaults}`, { timeout: 5000 });
+  const htmlLang = await page.evaluate(() => document.documentElement.lang);
+  if ((other === 'zh' ? 'zh-CN' : 'en') !== htmlLang) {
+    throw new Error(`<html lang> did not follow the locale: ${htmlLang}`);
+  }
+  await page.waitForTimeout(400);
+  await shot(`i18n-switched-${other}`);
+  // Persisted per device: a reload keeps the choice.
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector(`text=${otherDefaults}`, { timeout: 10_000 });
+  // Back to the run locale.
+  await page.selectOption('#language-select', LOCALE);
+  await page.waitForSelector(`text=${S.newSessionDefaults}`, { timeout: 5000 });
+  await shot(`i18n-restored-${LOCALE}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1061,6 +1255,7 @@ const SCENARIOS = [
   ['attachments', scenarioAttachments],
   ['search', scenarioSearch],
   ['session-actions', scenarioSessionActions],
+  ['i18n', scenarioI18n],
   // responsive stays last: it shrinks the viewport to 320px and nothing
   // afterward may assume a desktop layout.
   ['responsive', scenarioResponsive],
@@ -1083,6 +1278,8 @@ mkdirSync(SHOTS, { recursive: true });
 async function main() {
   killPort(FIXTURE_PORT);
   killPort(WEB_PORT);
+  await waitForPortFree(FIXTURE_PORT);
+  await waitForPortFree(WEB_PORT);
   const fixture = await startFixtureServer({ port: FIXTURE_PORT, scenario: 'basic-stream' });
 
   // Always spawn our own vite on a dedicated port so a stray dev server can't
@@ -1098,6 +1295,10 @@ async function main() {
   vite.stdout.on('data', (d) => process.stdout.write(`[vite] ${d}`));
   vite.stderr.on('data', (d) => process.stdout.write(`[vite:err] ${d}`));
   vite.on('error', (error) => console.error('[vite:spawn-error]', error.message));
+  let viteExited = null;
+  vite.on('exit', (code) => {
+    viteExited = code;
+  });
   const cleanup = async () => {
     // Tree-kill: the shell wrapper dies but the vite grandchild holds the port.
     if (process.platform === 'win32' && vite.pid !== undefined) {
@@ -1116,6 +1317,9 @@ async function main() {
 
   try {
     await waitForServer(WEB_URL);
+    if (viteExited !== null) {
+      throw new Error(`vite dev server exited early (code ${viteExited}) — refusing to run against a stale listener on ${WEB_URL}`);
+    }
     console.log(`[proof] web up at ${WEB_URL}`);
 
     const browser = await chromium.launch();
@@ -1124,13 +1328,26 @@ async function main() {
     page.on('console', (message) => {
       if (message.type() === 'error') console.error(`[console:error] ${message.text()}`);
     });
+    // Seed the UI locale before any app code runs — only when no choice
+    // exists yet, so the i18n walker's settings-toggle survives its reload
+    // (persistence check) while every other scenario still boots in LOCALE.
+    await page.addInitScript((locale) => {
+      try {
+        if (localStorage.getItem('kiki.locale') === null) {
+          localStorage.setItem('kiki.locale', locale);
+        }
+      } catch {
+        // storage unavailable — the app falls back to the navigator default
+      }
+    }, LOCALE);
+    console.log(`[proof] locale: ${LOCALE}`);
 
     const deepLink = `${WEB_URL}/?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
     // domcontentloaded + an explicit app-ready selector: the app opens a WS
     // and polls sessions on a 5s cadence, so 'networkidle' is never a
     // reliable condition (30s startup flake under cold vite transforms).
     await page.goto(deepLink, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('text=New session', { timeout: 30_000 });
+    await page.waitForSelector(`text=${S.newSession}`, { timeout: 30_000 });
     console.log('[proof] connected to fixture');
 
     for (const [name, run] of SCENARIOS) {
@@ -1139,7 +1356,7 @@ async function main() {
       try {
         await control({ action: 'scenario', name });
         await page.reload({ waitUntil: 'domcontentloaded' });
-        await page.waitForSelector('text=New session', { timeout: 30_000 });
+        await page.waitForSelector(`text=${S.newSession}`, { timeout: 30_000 });
         await page.waitForTimeout(900); // let the first sessions poll land
         await run();
       } catch (error) {

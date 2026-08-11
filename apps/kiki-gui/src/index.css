@@ -34,9 +34,12 @@
   --color-primary-foreground: #fffdf8;
   --color-sidebar: #f7f3ec;
 
-  --font-display: 'Fraunces Variable', 'Fraunces', Georgia, 'Times New Roman', serif;
-  --font-sans: 'Space Grotesk', ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  /* Fraunces/Space Grotesk/JetBrains Mono carry no CJK glyphs — the fallback
+   * stacks keep the Latin identity and land Chinese on deliberate Song-style
+   * serif (display) and system sans (body/mono) faces. */
+  --font-display: 'Fraunces Variable', 'Fraunces', Georgia, 'Songti SC', 'Noto Serif SC', 'SimSun', 'Times New Roman', serif;
+  --font-sans: 'Space Grotesk', ui-sans-serif, system-ui, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', monospace;
 }
 
 :root {

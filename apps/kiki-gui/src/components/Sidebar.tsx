@@ -13,26 +13,27 @@ import { useNavigate } from 'react-router-dom';
 
 import type { Session } from '@moonshot-ai/protocol';
 
+import { useI18n } from '../i18n';
 import { groupSearchHits, isSearchable, SEARCH_DEBOUNCE_MS } from '../lib/search';
 import {
   compactSessionContext,
   exportSessionArchive,
   forkSession,
-  sessionActionErrorMessage,
+  sessionActionErrorText,
   undoLastTurn,
   type SessionActionContext,
 } from '../lib/sessionActions';
-import { relativeTime } from '../lib/time';
 import { registerOverlay } from '../lib/uiBusy';
 import { useConnection } from '../state/connection';
 import { Wordmark } from './Wordmark';
 
 function StatusDot({ session }: { session: Session }) {
+  const { t } = useI18n();
   const pending = session.pending_interaction ?? 'none';
   if (pending === 'approval' || pending === 'question') {
     return (
       <span
-        title={pending === 'approval' ? 'Awaiting approval' : 'Awaiting answer'}
+        title={pending === 'approval' ? t('sidebar.status.approval') : t('sidebar.status.question')}
         className="block h-2 w-2 shrink-0 rounded-full bg-amber-rule shadow-[0_0_0_2px_rgba(232,176,75,0.25)]"
       />
     );
@@ -40,25 +41,25 @@ function StatusDot({ session }: { session: Session }) {
   if (session.busy) {
     return (
       <span
-        title="Working"
+        title={t('sidebar.status.working')}
         className="status-dot-busy block h-2 w-2 shrink-0 rounded-full bg-accent"
       />
     );
   }
   return (
     <span
-      title="Idle"
+      title={t('sidebar.status.idle')}
       className="block h-2 w-2 shrink-0 rounded-full border border-hairline-strong bg-panel"
     />
   );
 }
 
-function sessionLabel(session: Session): string {
+function sessionLabel(session: Session, untitled: string): string {
   if (session.title.trim() !== '') return session.title;
   if (session.last_prompt !== undefined && session.last_prompt.trim() !== '') {
     return session.last_prompt;
   }
-  return 'Untitled session';
+  return untitled;
 }
 
 export function Sidebar({
@@ -85,6 +86,8 @@ export function Sidebar({
 }) {
   const navigate = useNavigate();
   const { client, meta, wsStatus, disconnect } = useConnection();
+  const { t, locale, time } = useI18n();
+  const untitled = t('sidebar.untitled');
   const queryClient = useQueryClient();
   const [menu, setMenu] = useState<{ session: Session; x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState<Session | null>(null);
@@ -171,19 +174,25 @@ export function Sidebar({
     setActionNotice(null);
     if (action === 'fork') {
       void forkSession(actionContext, session).catch((error: unknown) => {
-        setActionError(`Fork failed: ${sessionActionErrorMessage(error)}`);
+        setActionError(t('action.forkFailed', { detail: sessionActionErrorText(locale, error) }));
       });
     } else if (action === 'export') {
       void exportSessionArchive(actionContext, session)
-        .then(() => setActionNotice(`Archive downloaded for “${sessionLabel(session)}”.`))
+        .then(() =>
+          setActionNotice(t('action.exportDone', { title: sessionLabel(session, untitled) })),
+        )
         .catch((error: unknown) => {
-          setActionError(`Export failed: ${sessionActionErrorMessage(error)}`);
+          setActionError(t('action.exportFailed', { detail: sessionActionErrorText(locale, error) }));
         });
     } else {
       void compactSessionContext(actionContext, session)
-        .then(() => setActionNotice(`Compaction requested for “${sessionLabel(session)}”.`))
+        .then(() =>
+          setActionNotice(t('action.compactRequested', { title: sessionLabel(session, untitled) })),
+        )
         .catch((error: unknown) => {
-          setActionError(`Compact failed: ${sessionActionErrorMessage(error)}`);
+          setActionError(
+            t('action.compactFailed', { detail: sessionActionErrorText(locale, error) }),
+          );
         });
     }
   };
@@ -233,7 +242,9 @@ export function Sidebar({
                   : 'bg-danger'
             }`}
           />
-          {wsStatus === 'open' ? `v${meta.server_version}` : wsStatus}
+          {wsStatus === 'open'
+            ? `v${meta.server_version}`
+            : t(wsStatus === 'connecting' ? 'sidebar.ws.connecting' : 'sidebar.ws.closed')}
         </span>
       </div>
 
@@ -243,7 +254,7 @@ export function Sidebar({
           onClick={() => navigate('/new')}
           className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-hairline-strong bg-paper px-3 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:border-accent hover:text-accent"
         >
-          <span aria-hidden className="text-[14px] leading-none">＋</span> New session
+          <span aria-hidden className="text-[14px] leading-none">＋</span> {t('sidebar.newSession')}
         </button>
         <div className="relative mt-2">
           <input
@@ -258,8 +269,8 @@ export function Sidebar({
                 event.currentTarget.blur();
               }
             }}
-            placeholder="Search sessions…"
-            aria-label="Search sessions"
+            placeholder={t('sidebar.searchPlaceholder')}
+            aria-label={t('sidebar.searchAria')}
             className="w-full rounded-lg border border-hairline bg-paper px-2.5 py-1.5 pr-9 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
           />
           {searchInput === '' ? (
@@ -269,7 +280,7 @@ export function Sidebar({
           ) : (
             <button
               type="button"
-              aria-label="Clear search"
+              aria-label={t('sidebar.clearSearch')}
               onClick={() => setSearchInput('')}
               className="absolute top-1/2 right-2 flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
             >
@@ -284,27 +295,27 @@ export function Sidebar({
           {searchResultsQuery.isPending ? (
             <div className="flex items-center justify-center gap-2 px-2 pt-6 text-[12px] text-ink-faint">
               <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
-              Searching…
+              {t('sidebar.searching')}
             </div>
           ) : searchResultsQuery.isError ? (
             <div className="mx-1 mt-2 rounded-md border border-danger/30 bg-danger/5 p-2">
-              <p className="text-[11.5px] font-medium text-danger">Search failed</p>
+              <p className="text-[11.5px] font-medium text-danger">{t('sidebar.searchFailed')}</p>
               <p className="font-mono text-[10px] text-danger/80">
                 {searchResultsQuery.error instanceof Error
                   ? searchResultsQuery.error.message
-                  : 'Unknown error'}
+                  : t('common.unknownError')}
               </p>
             </div>
           ) : searchGroups.length === 0 ? (
             <p className="px-2 pt-6 text-center text-[12px] text-ink-faint">
-              No matches for “{searchQuery}”.
+              {t('sidebar.noMatches', { query: searchQuery })}
             </p>
           ) : (
             <>
               {searchGroups.map((group) => (
                 <div key={group.sessionId} className="mb-2">
                   <p className="truncate px-2 pt-1 pb-0.5 text-[10px] font-semibold tracking-[0.06em] text-ink-faint uppercase">
-                    {group.title.trim() !== '' ? group.title : 'Untitled session'}
+                    {group.title.trim() !== '' ? group.title : untitled}
                   </p>
                   {group.hits.map((hit, index) => (
                     <button
@@ -323,7 +334,7 @@ export function Sidebar({
                         <span className="rounded border border-hairline px-1 font-mono">
                           {hit.role}
                         </span>
-                        <span>{relativeTime(new Date(hit.time).toISOString())}</span>
+                        <span>{time.relativeTime(new Date(hit.time).toISOString())}</span>
                       </span>
                     </button>
                   ))}
@@ -334,8 +345,11 @@ export function Sidebar({
                 searchResultsQuery.data.incomplete !== undefined) ? (
                 <p className="px-2 pt-1 text-center font-mono text-[9.5px] text-ink-faint">
                   {searchResultsQuery.data.index_state.state === 'building'
-                    ? `Index is building (${searchResultsQuery.data.index_state.indexed_sessions}/${searchResultsQuery.data.index_state.total_sessions} sessions) — results may be incomplete.`
-                    : 'Results may be incomplete — the search hit a server budget.'}
+                    ? t('sidebar.indexBuilding', {
+                        indexed: searchResultsQuery.data.index_state.indexed_sessions,
+                        total: searchResultsQuery.data.index_state.total_sessions,
+                      })
+                    : t('sidebar.indexIncomplete')}
                 </p>
               ) : null}
             </>
@@ -346,27 +360,27 @@ export function Sidebar({
         {sessionsQuery.isLoading && sessions.length === 0 ? (
           <div className="flex items-center justify-center gap-2 px-2 pt-6 text-[12px] text-ink-faint">
             <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
-            Loading sessions…
+            {t('sidebar.loadingSessions')}
           </div>
         ) : null}
         {sessionsQuery.isError ? (
           <div className="mx-1 mt-2 rounded-md border border-danger/30 bg-danger/5 p-2">
-            <p className="text-[11.5px] font-medium text-danger">Could not load sessions</p>
+            <p className="text-[11.5px] font-medium text-danger">{t('sidebar.loadFailed')}</p>
             <p className="font-mono text-[10px] text-danger/80">
-              {sessionsQuery.error?.message ?? 'Unknown error'}
+              {sessionsQuery.error?.message ?? t('common.unknownError')}
             </p>
             <button
               type="button"
               onClick={() => queryClient.invalidateQueries({ queryKey: ['sessions'] })}
               className="mt-1.5 text-[11px] font-medium text-danger underline"
             >
-              Retry
+              {t('common.retry')}
             </button>
           </div>
         ) : null}
         {sessions.length === 0 && !sessionsQuery.isLoading && !sessionsQuery.isError ? (
           <p className="px-2 pt-6 text-center text-[12px] text-ink-faint">
-            No sessions yet — start one above.
+            {t('sidebar.noSessions')}
           </p>
         ) : null}
         {actionError !== null ? (
@@ -402,18 +416,18 @@ export function Sidebar({
                       active ? 'font-semibold text-ink' : 'font-medium text-ink'
                     }`}
                   >
-                    {sessionLabel(session)}
+                    {sessionLabel(session, untitled)}
                   </span>
                   <span className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-ink-faint">
                     <span className="truncate font-mono">{shortCwd(session.metadata.cwd)}</span>
-                    <span className="shrink-0">· {relativeTime(session.updated_at)}</span>
-                    {archived ? <span className="shrink-0">· archived</span> : null}
+                    <span className="shrink-0">· {time.relativeTime(session.updated_at)}</span>
+                    {archived ? <span className="shrink-0">· {t('sidebar.archived')}</span> : null}
                   </span>
                 </span>
               </button>
               <button
                 type="button"
-                aria-label={`Session actions for ${sessionLabel(session)}`}
+                aria-label={t('sidebar.sessionActionsFor', { title: sessionLabel(session, untitled) })}
                 onClick={(event) => {
                   event.stopPropagation();
                   const rect = event.currentTarget.getBoundingClientRect();
@@ -441,7 +455,7 @@ export function Sidebar({
             onClick={() => sessionsQuery.fetchNextPage?.()}
             className="mt-2 w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-center text-[11px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-60"
           >
-            {sessionsQuery.isFetchingNextPage ? 'Loading…' : 'Load more sessions'}
+            {sessionsQuery.isFetchingNextPage ? t('sidebar.loadingMore') : t('sidebar.loadMore')}
           </button>
         ) : null}
         <button
@@ -449,7 +463,7 @@ export function Sidebar({
           onClick={onToggleArchived}
           className="mt-1 w-full rounded-md px-2 py-1 text-center text-[10.5px] text-ink-faint transition-colors hover:text-ink-soft focus-visible:ring-2 focus-visible:ring-accent/30 focus-visible:outline-none"
         >
-          {showArchived ? 'Hide archived' : 'Show archived'}
+          {showArchived ? t('sidebar.hideArchived') : t('sidebar.showArchived')}
         </button>
       </div>
       )}
@@ -460,14 +474,14 @@ export function Sidebar({
           onClick={() => navigate('/settings')}
           className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11.5px] text-ink-soft transition-colors hover:bg-paper hover:text-ink"
         >
-          <span aria-hidden className="text-[13px]">⚙</span> Settings
+          <span aria-hidden className="text-[13px]">⚙</span> {t('sidebar.settings')}
         </button>
         <button
           type="button"
           onClick={disconnect}
           className="w-full rounded-lg px-2 py-1 text-left text-[11.5px] text-ink-soft transition-colors hover:text-danger"
         >
-          Disconnect
+          {t('sidebar.disconnect')}
         </button>
       </div>
 
@@ -505,10 +519,9 @@ export function Sidebar({
             className="anim-enter w-full max-w-[360px] rounded-2xl border border-hairline bg-panel p-5 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]"
             onClick={(event) => event.stopPropagation()}
           >
-            <h2 className="font-display text-[16px] font-semibold text-ink">Undo the last turn?</h2>
+            <h2 className="font-display text-[16px] font-semibold text-ink">{t('undo.title')}</h2>
             <p className="mt-2 text-[12.5px] leading-relaxed text-ink-soft">
-              This removes the most recent user message and kiki&rsquo;s reply from
-              &ldquo;{sessionLabel(confirmUndo)}&rdquo;. Earlier turns are kept.
+              {t('undo.bodyNamed', { title: sessionLabel(confirmUndo, untitled) })}
             </p>
             <div className="mt-4 flex justify-end gap-2">
               <button
@@ -516,7 +529,7 @@ export function Sidebar({
                 onClick={() => setConfirmUndo(null)}
                 className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] text-ink-soft transition-colors hover:text-ink"
               >
-                Cancel
+                {t('common.cancel')}
               </button>
               <button
                 type="button"
@@ -525,14 +538,20 @@ export function Sidebar({
                   setConfirmUndo(null);
                   setActionError(null);
                   void undoLastTurn(actionContext, session)
-                    .then(() => setActionNotice(`Last turn removed from “${sessionLabel(session)}”.`))
+                    .then(() =>
+                      setActionNotice(
+                        t('action.undoDone', { title: sessionLabel(session, untitled) }),
+                      ),
+                    )
                     .catch((error: unknown) => {
-                      setActionError(`Undo failed: ${sessionActionErrorMessage(error)}`);
+                      setActionError(
+                        t('action.undoFailed', { detail: sessionActionErrorText(locale, error) }),
+                      );
                     });
                 }}
                 className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep"
               >
-                Undo turn
+                {t('undo.confirm')}
               </button>
             </div>
           </div>
@@ -563,6 +582,7 @@ function SessionMenu({
   onArchive: () => void;
   onRestore: () => void;
 }) {
+  const { t } = useI18n();
   const archived = session.archived === true;
   useEffect(() => {
     const unregister = registerOverlay('session-menu');
@@ -594,18 +614,18 @@ function SessionMenu({
     >
       {archived ? (
         <button type="button" role="menuitem" className={itemClass} onClick={onRestore}>
-          Restore
+          {t('menu.restore')}
         </button>
       ) : (
         <>
           <button type="button" role="menuitem" className={itemClass} onClick={() => onAction('fork')}>
-            Fork session
+            {t('menu.fork')}
           </button>
           <button type="button" role="menuitem" className={itemClass} onClick={() => onAction('export')}>
-            Export archive…
+            {t('menu.export')}
           </button>
           <button type="button" role="menuitem" className={itemClass} onClick={() => onAction('compact')}>
-            Compact context
+            {t('menu.compact')}
           </button>
           <button
             type="button"
@@ -613,11 +633,11 @@ function SessionMenu({
             className={`${itemClass} hover:text-danger`}
             onClick={() => onAction('undo')}
           >
-            Undo last turn…
+            {t('menu.undo')}
           </button>
           <div className="mx-1 my-1 border-t border-hairline" />
           <button type="button" role="menuitem" className={itemClass} onClick={onRename}>
-            Rename…
+            {t('menu.rename')}
           </button>
           <button
             type="button"
@@ -625,7 +645,7 @@ function SessionMenu({
             className={`${itemClass} hover:text-danger`}
             onClick={onArchive}
           >
-            Archive
+            {t('menu.archive')}
           </button>
         </>
       )}
@@ -644,6 +664,7 @@ function RenameDialog({
   onRenamed: () => void;
 }) {
   const { client } = useConnection();
+  const { t } = useI18n();
   const [title, setTitle] = useState(session.title);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -673,7 +694,7 @@ function RenameDialog({
         className="anim-enter w-full max-w-[360px] rounded-2xl border border-hairline bg-panel p-5 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]"
         onClick={(event) => event.stopPropagation()}
       >
-        <h2 className="font-display text-[16px] font-semibold text-ink">Rename session</h2>
+        <h2 className="font-display text-[16px] font-semibold text-ink">{t('rename.title')}</h2>
         <input
           autoFocus
           className="mt-3 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink outline-none focus:border-accent"
@@ -693,7 +714,7 @@ function RenameDialog({
             onClick={onClose}
             className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] text-ink-soft transition-colors hover:text-ink"
           >
-            Cancel
+            {t('common.cancel')}
           </button>
           <button
             type="button"
@@ -701,7 +722,7 @@ function RenameDialog({
             onClick={submit}
             className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep disabled:opacity-50"
           >
-            {busy ? 'Saving…' : 'Save'}
+            {busy ? t('common.saving') : t('common.save')}
           </button>
         </div>
       </div>

@@ -15,6 +15,7 @@ import type { PermissionMode, Workspace } from '@moonshot-ai/protocol';
 
 import { Composer } from './Composer';
 import { Wordmark } from './Wordmark';
+import { useI18n } from '../i18n';
 import { buildPromptContent, type ComposerAttachment } from '../lib/attachments';
 import { readDraft, writeDraft } from '../lib/drafts';
 import { readSettings } from '../lib/settings';
@@ -24,6 +25,7 @@ const DRAFT_KEY = 'new';
 
 export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => void }) {
   const { client } = useConnection();
+  const { t } = useI18n();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const workspaceParam = searchParams.get('workspace') ?? undefined;
@@ -132,13 +134,13 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
         <button
           type="button"
           onClick={onToggleSidebar}
-          aria-label="Open session menu"
+          aria-label={t('sv.openMenuAria')}
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden"
         >
           <span aria-hidden>☰</span>
         </button>
         <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
-          New session
+          {t('new.title')}
         </h1>
       </header>
 
@@ -147,13 +149,13 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
           <div className="mb-8 text-center">
             <Wordmark size="lg" />
             <p className="mt-3 text-[13px] text-ink-soft">
-              Pick where kiki works, then ask anything.
+              {t('new.tagline')}
             </p>
           </div>
 
           <div className="mb-6 space-y-3 rounded-2xl border border-hairline bg-panel p-4 shadow-[0_2px_4px_rgba(28,25,23,0.03),0_16px_40px_-20px_rgba(28,25,23,0.18)]">
             <div className="flex flex-wrap items-center gap-3">
-              <label className="text-[11px] font-medium text-ink-soft">Workspace</label>
+              <label className="text-[11px] font-medium text-ink-soft">{t('new.workspace')}</label>
               <select
                 className="max-w-xs truncate rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink outline-none focus:border-accent"
                 value={workspaceId !== '' ? workspaceId : (effectiveWorkspace?.id ?? '')}
@@ -163,14 +165,14 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
                 }}
                 disabled={workspacesQuery.isLoading}
               >
-                {workspaces.length === 0 ? <option value="">(no workspaces)</option> : null}
+                {workspaces.length === 0 ? <option value="">{t('new.noWorkspaces')}</option> : null}
                 {workspaces.map((workspace) => (
                   <option key={workspace.id} value={workspace.id}>
                     {workspace.name}
                   </option>
                 ))}
               </select>
-              <span className="text-[11px] text-ink-faint">or</span>
+              <span className="text-[11px] text-ink-faint">{t('new.or')}</span>
               <input
                 type="text"
                 value={cwd}
@@ -183,7 +185,7 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
 
           {recentSessions.length > 0 ? (
             <div className="mb-6">
-              <p className="mb-2 text-[11px] font-medium text-ink-soft">Recent sessions</p>
+              <p className="mb-2 text-[11px] font-medium text-ink-soft">{t('new.recent')}</p>
               <div className="flex flex-wrap gap-2">
                 {recentSessions.map((session) => (
                   <button
@@ -216,7 +218,7 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
             goalControl={undefined}
             efforts={supportedEfforts}
             effort={effectiveEffort}
-            busyPlaceholder="Creating the session…"
+            busyPlaceholder={t('new.creating')}
             fsSearch={
               // The session-less `@` picker searches the workspace directly
               // (kap-server `POST /workspace/fs:search`); a custom cwd rides

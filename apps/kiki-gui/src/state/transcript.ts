@@ -34,6 +34,7 @@ import type {
 
 import type { AgentTranscriptInteraction, AgentTranscriptResponse } from '../lib/client';
 import { isInteractionEvent, type SessionEventFrame } from '../lib/types';
+import type { I18nKey, I18nParams } from '../i18n/locale';
 
 // ---------------------------------------------------------------------------
 
@@ -127,6 +128,12 @@ export interface NoticeBlock {
   readonly id: string;
   readonly text: string;
   readonly tone: 'neutral' | 'danger';
+  /**
+   * Dictionary key + params for client-authored notices. `text` stays the
+   * English rendering (state-layer tests and logs read it); the Transcript
+   * prefers this when rendering so notices follow the active locale.
+   */
+  readonly i18n?: { readonly key: I18nKey; readonly params?: I18nParams };
 }
 
 export interface ApprovalResolution {
@@ -1200,6 +1207,9 @@ function applyFrameInternal(
               id: nextNoticeId('turn-failed'),
               text: payload.error?.message ?? 'Turn failed',
               tone: 'danger' as const,
+              // A server message is already final copy; only the bare
+              // fallback gets a localized rendering.
+              i18n: payload.error?.message === undefined ? { key: 'notice.turnFailed' } : undefined,
             },
           ];
         }
@@ -1418,16 +1428,22 @@ function applyFrameInternal(
         id: nextNoticeId('compaction'),
         text: 'Compacting context…',
         tone: 'neutral',
+        i18n: { key: 'notice.compacting' },
       };
       evolve({ blocks: [...next.blocks, notice] });
       break;
     }
     case 'compaction.completed': {
+      const params = {
+        before: payload.result.tokensBefore.toLocaleString(),
+        after: payload.result.tokensAfter.toLocaleString(),
+      };
       const notice: NoticeBlock = {
         kind: 'notice',
         id: nextNoticeId('compaction'),
-        text: `Context compacted — ${payload.result.tokensBefore.toLocaleString()} → ${payload.result.tokensAfter.toLocaleString()} tokens`,
+        text: `Context compacted — ${params.before} → ${params.after} tokens`,
         tone: 'neutral',
+        i18n: { key: 'notice.compacted', params },
       };
       evolve({ blocks: [...next.blocks, notice] });
       break;
@@ -1495,6 +1511,7 @@ function applyFrameInternal(
             id: nextNoticeId('prompt'),
             text: 'Prompt aborted',
             tone: 'neutral' as const,
+            i18n: { key: 'notice.promptAborted' },
           },
         ],
         busy: false,

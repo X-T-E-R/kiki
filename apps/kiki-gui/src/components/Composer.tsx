@@ -20,6 +20,8 @@ import { useNavigate } from 'react-router-dom';
 
 import type { FsSearchHit, PermissionMode } from '@moonshot-ai/protocol';
 
+import { useI18n } from '../i18n';
+import { errorText, issueText, type I18nKey } from '../i18n/locale';
 import {
   fileToImageAttachment,
   formatBytes,
@@ -38,11 +40,21 @@ import {
 import { registerOverlay } from '../lib/uiBusy';
 import { useConnection } from '../state/connection';
 
-const MODES: readonly { id: PermissionMode; hint: string }[] = [
-  { id: 'manual', hint: 'Approve every action' },
-  { id: 'auto', hint: 'Approve reads, ask for writes' },
-  { id: 'yolo', hint: 'Never ask' },
+const MODES: readonly { id: PermissionMode; labelKey: I18nKey; hintKey: I18nKey }[] = [
+  { id: 'manual', labelKey: 'composer.mode.manual', hintKey: 'composer.mode.manualHint' },
+  { id: 'auto', labelKey: 'composer.mode.auto', hintKey: 'composer.mode.autoHint' },
+  { id: 'yolo', labelKey: 'composer.mode.yolo', hintKey: 'composer.mode.yoloHint' },
 ];
+
+/** Localized descriptions for the client-side slash shortcuts (skills carry server text). */
+const SLASH_ACTION_DESCRIPTIONS: Record<SlashActionId, I18nKey> = {
+  plan: 'composer.slash.plan',
+  goal: 'composer.slash.goal',
+  new: 'composer.slash.new',
+  fork: 'composer.slash.fork',
+  undo: 'composer.slash.undo',
+  compact: 'composer.slash.compact',
+};
 
 const MENTION_DEBOUNCE_MS = 250;
 const MENTION_ROW_LIMIT = 8;
@@ -139,6 +151,7 @@ export function Composer({
   onAbort?: () => void;
 }) {
   const { client } = useConnection();
+  const { t, locale } = useI18n();
   const navigate = useNavigate();
   const text = value;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -278,7 +291,7 @@ export function Composer({
     for (const file of files) {
       const problem = validateImageFile(file, batch);
       if (problem !== null) {
-        setAttachmentError(problem);
+        setAttachmentError(issueText(locale, problem));
         continue;
       }
       accepted.push(file);
@@ -299,7 +312,7 @@ export function Composer({
     void Promise.all(accepted.map((file) => fileToImageAttachment(file)))
       .then((images) => onChangeAttachments([...attachments, ...images]))
       .catch((error: unknown) => {
-        setAttachmentError(error instanceof Error ? error.message : String(error));
+        setAttachmentError(errorText(locale, error));
       });
   };
 
@@ -406,7 +419,7 @@ export function Composer({
               <button
                 key={mode.id}
                 type="button"
-                title={mode.hint}
+                title={t(mode.hintKey)}
                 onClick={() => onChangePermissionMode(mode.id)}
                 className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
                   permissionMode === mode.id
@@ -414,13 +427,13 @@ export function Composer({
                     : 'border-hairline text-ink-soft hover:border-hairline-strong'
                 }`}
               >
-                {mode.id}
+                {t(mode.labelKey)}
               </button>
             ))}
             <span className="mx-1 h-3 w-px bg-hairline" />
             <button
               type="button"
-              title="Plan mode — kiki proposes a plan before acting"
+              title={t('composer.planHint')}
               aria-pressed={planMode}
               onClick={() => onChangePlanMode(!planMode)}
               className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
@@ -429,11 +442,11 @@ export function Composer({
                   : 'border-hairline text-ink-soft hover:border-hairline-strong'
               }`}
             >
-              plan
+              {t('composer.plan')}
             </button>
             <button
               type="button"
-              title="Swarm mode — allow concurrent subagent work"
+              title={t('composer.swarmHint')}
               aria-pressed={swarmMode}
               onClick={() => onChangeSwarmMode(!swarmMode)}
               className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
@@ -442,7 +455,7 @@ export function Composer({
                   : 'border-hairline text-ink-soft hover:border-hairline-strong'
               }`}
             >
-              swarm
+              {t('composer.swarm')}
             </button>
             <div className="relative">
               <button
@@ -455,21 +468,24 @@ export function Composer({
                     : 'border-hairline text-ink-soft hover:border-hairline-strong'
                 }`}
               >
-                goal{goalStatus !== undefined ? ` · ${goalStatus}` : ''}
+                {t('composer.goal')}
+                {goalStatus !== undefined ? ` · ${t(`composer.goalStatus.${goalStatus}`)}` : ''}
               </button>
               {goalOpen ? (
                 <div className="anim-enter absolute bottom-7 left-0 z-30 w-72 rounded-xl border border-hairline bg-panel p-3 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]">
                   <label className="text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-                    Goal objective
+                    {t('composer.goalObjective')}
                   </label>
                   <input
                     value={goalObjective}
                     onChange={(event) => onChangeGoalObjective(event.target.value)}
-                    placeholder="Objective (optional)"
+                    placeholder={t('composer.goalObjectivePlaceholder')}
                     className="mt-1.5 w-full rounded-lg border border-hairline bg-paper px-2.5 py-1.5 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
                   />
                   <p className="mt-1.5 text-[10.5px] leading-relaxed text-ink-faint">
-                    Sent as <span className="font-mono">goal_objective</span> with the next prompt.
+                    {t('composer.goalNoteBefore')}
+                    <span className="font-mono">goal_objective</span>
+                    {t('composer.goalNoteAfter')}
                   </p>
                   {goalStatus !== undefined && goalStatus !== 'complete' ? (
                     <div className="mt-2 flex gap-1.5 border-t border-hairline pt-2">
@@ -490,7 +506,7 @@ export function Composer({
                               : 'border-hairline text-ink-soft'
                           }`}
                         >
-                          {control}
+                          {t(`composer.goalControl.${control as 'pause' | 'resume' | 'cancel'}`)}
                         </button>
                       ))}
                     </div>
@@ -504,22 +520,24 @@ export function Composer({
               onChange={(event) =>
                 onChangeModel(event.target.value === '' ? undefined : event.target.value)
               }
-              title={`Model — ${modelSource} source`}
-              aria-label="Model"
+              title={t('composer.modelTitle', { source: t(`composer.modelSource.${modelSource}`) })}
+              aria-label={t('composer.modelAria')}
             >
               {models.length === 0 ? (
-                <option value="">{effectiveModel ?? 'inherit default'}</option>
+                <option value="">{effectiveModel ?? t('composer.inheritDefault')}</option>
               ) : (
                 <>
                   <option value="">
                     {defaultModel !== undefined
-                      ? `inherit session · ${defaultModel}`
-                      : `inherit server default · ${serverDefaultModel ?? 'unknown'}`}
+                      ? t('composer.inheritSession', { model: defaultModel })
+                      : t('composer.inheritServer', {
+                          model: serverDefaultModel ?? t('composer.unknown'),
+                        })}
                   </option>
                   {models.map((item) => (
                     <option key={`${item.provider}/${item.model}`} value={item.model}>
                       {item.display_name ?? item.model}
-                      {item.model === defaultModel ? ' · session default' : ''}
+                      {item.model === defaultModel ? t('composer.sessionDefaultSuffix') : ''}
                     </option>
                   ))}
                 </>
@@ -530,7 +548,7 @@ export function Composer({
                 className="rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft outline-none transition-colors hover:border-hairline-strong focus:border-accent"
                 value={effort}
                 onChange={(event) => onChangeEffort(event.target.value)}
-                title="Thinking effort"
+                title={t('composer.effortTitle')}
               >
                 {efforts.map((level) => (
                   <option key={level} value={level}>
@@ -555,7 +573,7 @@ export function Composer({
                     {attachment.isDir ? '/' : ''}
                     <button
                       type="button"
-                      aria-label={`Remove ${attachment.name}`}
+                      aria-label={t('composer.removeAttachment', { name: attachment.name })}
                       onClick={() =>
                         onChangeAttachments(attachments.filter((_, i) => i !== index))
                       }
@@ -567,21 +585,25 @@ export function Composer({
                 ) : (
                   <span
                     key={`image-${attachment.name}-${attachment.size}`}
-                    title={`${attachment.name} · ${formatBytes(attachment.size)}`}
+                    title={`${attachment.name === '' ? t('attach.pastedImage') : attachment.name} · ${formatBytes(attachment.size)}`}
                     className="flex items-center gap-1.5 rounded-full border border-hairline bg-paper py-0.5 pr-1 pl-0.5 text-[11px] text-ink-soft"
                   >
                     <img
                       src={attachment.previewUrl}
-                      alt={attachment.name}
+                      alt={attachment.name === '' ? t('attach.pastedImage') : attachment.name}
                       className="h-5 w-5 rounded-full object-cover"
                     />
-                    <span className="max-w-32 truncate">{attachment.name}</span>
+                    <span className="max-w-32 truncate">
+                      {attachment.name === '' ? t('attach.pastedImage') : attachment.name}
+                    </span>
                     <span className="font-mono text-[9.5px] text-ink-faint">
                       {formatBytes(attachment.size)}
                     </span>
                     <button
                       type="button"
-                      aria-label={`Remove ${attachment.name}`}
+                      aria-label={t('composer.removeAttachment', {
+                        name: attachment.name === '' ? t('attach.pastedImage') : attachment.name,
+                      })}
                       onClick={() =>
                         onChangeAttachments(attachments.filter((_, i) => i !== index))
                       }
@@ -603,7 +625,7 @@ export function Composer({
               <div
                 data-composer-menu
                 role="listbox"
-                aria-label={menu.kind === 'slash' ? 'Slash commands' : 'Files'}
+                aria-label={menu.kind === 'slash' ? t('composer.slashAria') : t('composer.filesAria')}
                 className="anim-enter absolute right-0 bottom-full left-0 z-30 mb-1 max-h-72 overflow-y-auto rounded-xl border border-hairline bg-panel p-1 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
                 // Keep textarea focus while rows are clicked.
                 onMouseDown={(event) => event.preventDefault()}
@@ -655,8 +677,8 @@ export function Composer({
               }}
               placeholder={
                 busy
-                  ? (busyPlaceholder ?? 'Steer kiki — this queues while it works…')
-                  : 'Ask kiki anything…'
+                  ? (busyPlaceholder ?? t('composer.placeholderBusy'))
+                  : t('composer.placeholder')
               }
               className="max-h-[190px] min-h-[24px] flex-1 resize-none bg-transparent text-[14px] leading-relaxed text-ink outline-none placeholder:text-ink-faint disabled:opacity-60"
             />
@@ -664,8 +686,8 @@ export function Composer({
               <button
                 type="button"
                 onClick={onAbort}
-                title="Abort the running prompt"
-                aria-label="Abort the running prompt"
+                title={t('composer.abortTitle')}
+                aria-label={t('composer.abortTitle')}
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-danger/40 text-danger transition-colors hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none"
               >
                 <span aria-hidden className="text-[11px] font-bold">■</span>
@@ -677,8 +699,8 @@ export function Composer({
               type="button"
               onClick={send}
               disabled={!canSend}
-              title={busy ? 'Queue this prompt (Enter)' : 'Send (Enter)'}
-              aria-label={busy ? 'Queue prompt' : 'Send message'}
+              title={busy ? t('composer.queueTitle') : t('composer.sendTitle')}
+              aria-label={busy ? t('composer.queueAria') : t('composer.sendAria')}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-accent text-white transition-colors hover:bg-accent-deep disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
             >
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
@@ -694,8 +716,9 @@ export function Composer({
           </div>
         </div>
         <p className="mt-1.5 text-center text-[10.5px] text-ink-faint">
-          Enter to send · Shift+Enter for a new line{sessionId !== undefined ? ' · / for skills' : ' · / for shortcuts'}
-          {fsSearch !== undefined ? ' · @ for files' : ''}
+          {t('composer.footerBase')}
+          {t(sessionId !== undefined ? 'composer.footerSkills' : 'composer.footerShortcuts')}
+          {fsSearch !== undefined ? t('composer.footerFiles') : ''}
         </p>
       </div>
     </div>
@@ -715,6 +738,7 @@ function SlashMenuBody({
   hasSession: boolean;
   onAccept: (item: SlashItem) => void;
 }) {
+  const { t } = useI18n();
   const skills = items.filter((item) => item.kind === 'skill');
   const actions = items.filter((item) => item.kind === 'action');
   let rowIndex = -1;
@@ -738,12 +762,14 @@ function SlashMenuBody({
           /{item.name}
         </span>
         <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink-soft">
-          {item.description}
+          {item.kind === 'action' && item.action !== undefined
+            ? t(SLASH_ACTION_DESCRIPTIONS[item.action])
+            : item.description}
         </span>
         {item.disabled === true ? (
-          <span className="shrink-0 text-[9.5px] text-ink-faint">not activatable</span>
+          <span className="shrink-0 text-[9.5px] text-ink-faint">{t('composer.slash.notActivatable')}</span>
         ) : item.kind === 'skill' ? (
-          <span className="shrink-0 text-[9.5px] text-ink-faint">skill</span>
+          <span className="shrink-0 text-[9.5px] text-ink-faint">{t('composer.slash.skillBadge')}</span>
         ) : null}
       </button>
     );
@@ -753,7 +779,7 @@ function SlashMenuBody({
       {skills.length > 0 ? (
         <>
           <p className="px-2.5 pt-1 pb-0.5 text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-            Skills
+            {t('composer.slash.skills')}
           </p>
           {skills.map(renderRow)}
         </>
@@ -761,19 +787,19 @@ function SlashMenuBody({
       {actions.length > 0 ? (
         <>
           <p className="px-2.5 pt-1 pb-0.5 text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-            Shortcuts
+            {t('composer.slash.shortcuts')}
           </p>
           {actions.map(renderRow)}
         </>
       ) : null}
       {items.length === 0 ? (
         <p className="px-2.5 py-2 text-[11.5px] text-ink-faint">
-          No matching commands — Enter sends the line as a plain prompt.
+          {t('composer.slash.empty')}
         </p>
       ) : null}
       {skillsFailed && hasSession ? (
         <p className="border-t border-hairline px-2.5 py-1 font-mono text-[9.5px] text-ink-faint">
-          Could not load skills — showing shortcuts only.
+          {t('composer.slash.skillsFailed')}
         </p>
       ) : null}
     </>
@@ -795,24 +821,29 @@ function MentionMenuBody({
   query: string;
   onAccept: (item: FsSearchHit) => void;
 }) {
+  const { t } = useI18n();
   if (failed) {
     return (
       <p className="px-2.5 py-2 font-mono text-[10.5px] text-danger">
-        File search failed — the picker is unavailable for this session.
+        {t('composer.filesFailed')}
       </p>
     );
   }
   if (items.length === 0) {
     return (
       <p className="px-2.5 py-2 text-[11.5px] text-ink-faint">
-        {loading ? 'Searching files…' : query === '' ? 'No files in this workspace.' : `No files match "${query}".`}
+        {loading
+          ? t('composer.filesSearching')
+          : query === ''
+            ? t('composer.filesEmpty')
+            : t('composer.filesNoMatch', { query })}
       </p>
     );
   }
   return (
     <>
       <p className="px-2.5 pt-1 pb-0.5 text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-        Files — mentioned as @path in the prompt
+        {t('composer.filesHeader')}
       </p>
       {items.map((item, index) => {
         const active = index === activeIndex;

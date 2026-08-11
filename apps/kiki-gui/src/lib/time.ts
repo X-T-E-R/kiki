@@ -1,27 +1,32 @@
-/** Relative/duration time formatting for the UI. */
+/** Relative/duration time formatting for the UI, localized via the i18n layer. */
 
-export function relativeTime(iso: string): string {
+import { translate, type Locale } from '../i18n/locale';
+
+export function relativeTime(iso: string, locale: Locale = 'en'): string {
   const then = new Date(iso).getTime();
   if (Number.isNaN(then)) return '';
   const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
-  if (seconds < 10) return 'just now';
-  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 10) return translate(locale, 'time.justNow');
+  if (seconds < 60) return translate(locale, 'time.secondsAgo', { n: seconds });
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return translate(locale, 'time.minutesAgo', { n: minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return translate(locale, 'time.hoursAgo', { n: hours });
   const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
+  if (days < 7) return translate(locale, 'time.daysAgo', { n: days });
   const date = new Date(then);
-  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  return date.toLocaleDateString(locale === 'zh' ? 'zh-CN' : undefined, {
+    month: 'short',
+    day: 'numeric',
+  });
 }
 
-export function formatDuration(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)}ms`;
+export function formatDuration(ms: number, locale: Locale = 'en'): string {
+  if (ms < 1000) return translate(locale, 'time.durationMs', { n: Math.round(ms) });
   const seconds = ms / 1000;
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  if (seconds < 60) return translate(locale, 'time.durationSeconds', { n: seconds.toFixed(1) });
   const minutes = Math.floor(seconds / 60);
-  return `${minutes}m ${Math.round(seconds % 60)}s`;
+  return translate(locale, 'time.durationMinutes', { m: minutes, s: Math.round(seconds % 60) });
 }
 
 export function formatTokens(count: number): string {
@@ -31,14 +36,14 @@ export function formatTokens(count: number): string {
 }
 
 /** "in 5m" style for future instants; 'expired' once past. */
-export function timeUntil(iso: string): string {
+export function timeUntil(iso: string, locale: Locale = 'en'): string {
   const then = new Date(iso).getTime();
   if (Number.isNaN(then)) return '';
   const seconds = Math.floor((then - Date.now()) / 1000);
-  if (seconds <= 0) return 'expired';
-  if (seconds < 60) return `${seconds}s left`;
+  if (seconds <= 0) return translate(locale, 'time.expired');
+  if (seconds < 60) return translate(locale, 'time.secondsLeft', { n: seconds });
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m left`;
+  if (minutes < 60) return translate(locale, 'time.minutesLeft', { n: minutes });
   const hours = Math.floor(minutes / 60);
-  return `${hours}h left`;
+  return translate(locale, 'time.hoursLeft', { n: hours });
 }

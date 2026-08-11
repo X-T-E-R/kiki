@@ -29,6 +29,8 @@ import {
 import type { MetaResponse } from '@moonshot-ai/protocol';
 
 import { ConnectScreen } from '../components/ConnectScreen';
+import { translate, type I18nKey, type I18nParams } from '../i18n/locale';
+import { useI18n } from '../i18n';
 import { ApiError, KikiClient } from '../lib/client';
 import { detectLocalConnection, isDesktopRuntime } from '../lib/localServer';
 import { KikiSocket, type WsStatus } from '../lib/ws';
@@ -44,6 +46,14 @@ import type { SessionController } from './sessionController';
 export type { ConnectionConfig } from './connectionConfig';
 
 const STORAGE_KEY = 'kiki.connection';
+
+/**
+ * Connect-screen error: client-authored text carries a dictionary key so it
+ * re-renders in the active locale; server/envelope text passes through raw.
+ */
+type ConnectError =
+  | { readonly kind: 'key'; readonly key: I18nKey; readonly params?: I18nParams }
+  | { readonly kind: 'raw'; readonly text: string };
 
 /** Strip credentials from the address bar once they have been consumed. */
 function scrubUrl(): void {
@@ -65,6 +75,7 @@ const ConnectionContext = createContext<ConnectionValue | null>(null);
 
 export function ConnectionProvider({ children }: { children: ReactNode }) {
   const desktopRuntime = isDesktopRuntime();
+  const { locale } = useI18n();
   const [selection, setSelection] = useState<ConnectionSelection | null>(() =>
     desktopRuntime
       ? null
@@ -75,7 +86,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   );
   const config = selection?.config ?? null;
   const [meta, setMeta] = useState<MetaResponse | null>(null);
-  const [connectError, setConnectError] = useState<string | null>(null);
+  const [connectError, setConnectError] = useState<ConnectError | null>(null);
   const [desktopBooting, setDesktopBooting] = useState(desktopRuntime);
   const [wsStatus, setWsStatus] = useState<WsStatus>('closed');
   const controllersRef = useRef(new Set<SessionController>());
@@ -91,7 +102,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         if (cancelled) return;
         setDesktopBooting(false);
         if (connection === null) {
-          setConnectError('The Kiki desktop backend did not register a local server.');
+          setConnectError({ kind: 'key', key: 'conn.desktopNoServer' });
           return;
         }
         setSelection({
@@ -103,9 +114,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       (error: unknown) => {
         if (cancelled) return;
         setDesktopBooting(false);
-        setConnectError(
-          `The Kiki desktop backend could not start: ${error instanceof Error ? error.message : String(error)}`,
-        );
+        setConnectError({
+          kind: 'key',
+          key: 'conn.desktopStartFailed',
+          params: { detail: error instanceof Error ? error.message : String(error) },
+        });
       },
     );
     return () => {
@@ -141,13 +154,15 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       (error: unknown) => {
         if (cancelled) return;
         setMeta(null);
-        setConnectError(
-          error instanceof ApiError
-            ? error.message
-            : error instanceof Error
+        setConnectError({
+          kind: 'raw',
+          text:
+            error instanceof ApiError
               ? error.message
-              : String(error),
-        );
+              : error instanceof Error
+                ? error.message
+                : String(error),
+        });
       },
     );
     return () => {
@@ -264,7 +279,13 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         <ConnectScreen
           initial={config ?? { url: '', token: '' }}
           connecting={desktopBooting || (config !== null && connectError === null)}
-          error={connectError}
+          error={
+            connectError === null
+              ? null
+              : connectError.kind === 'key'
+                ? translate(locale, connectError.key, connectError.params)
+                : connectError.text
+          }
           onConnect={connect}
           onBack={config !== null ? disconnect : undefined}
         />

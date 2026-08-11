@@ -21,7 +21,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import type { ApprovalDecision, QuestionAnswer, QuestionItem } from '@moonshot-ai/protocol';
 
-import { timeUntil } from '../lib/time';
+import { useI18n } from '../i18n';
 import type { ApprovalBlock, QuestionBlock } from '../state/transcript';
 import { Markdown } from './Markdown';
 
@@ -32,56 +32,65 @@ function intentFor(decision: ApprovalDecision, scope: 'session' | undefined): Ap
   return 'reject-once';
 }
 
+type Translate = ReturnType<typeof useI18n>['t'];
+
 /**
  * The displayable detail for a request. Returns `{ label, text }`; when the
  * display payload has no recognizable command/path/summary, falls back to a
  * labeled raw-JSON dump (aionui's honest-degradation rule) rather than
  * inventing a title. Undefined when there is genuinely nothing to show.
  */
-function approvalDetail(block: ApprovalBlock): { label: string; text: string } | undefined {
+function approvalDetail(
+  block: ApprovalBlock,
+  t: Translate,
+): { label: string; text: string } | undefined {
   const display = block.request.tool_input_display;
   if (typeof display !== 'object' || display === null) return undefined;
   const kind = (display as { kind?: unknown }).kind;
   if (kind === 'command') {
     const command = (display as { command?: string }).command;
-    return command !== undefined && command !== '' ? { label: 'Command', text: command } : undefined;
+    return command !== undefined && command !== ''
+      ? { label: t('ia.detail.command'), text: command }
+      : undefined;
   }
   if (kind === 'file_io') {
     const d = display as { operation?: string; path?: string };
     const text = `${d.operation ?? ''} ${d.path ?? ''}`.trim();
-    return text !== '' ? { label: 'File', text } : undefined;
+    return text !== '' ? { label: t('ia.detail.file'), text } : undefined;
   }
   if (kind === 'diff') {
     const path = (display as { path?: string }).path;
-    return path !== undefined ? { label: 'File', text: path } : undefined;
+    return path !== undefined ? { label: t('ia.detail.file'), text: path } : undefined;
   }
   if (kind === 'url_fetch') {
     const url = (display as { url?: string }).url;
-    return url !== undefined ? { label: 'URL', text: url } : undefined;
+    return url !== undefined ? { label: t('ia.detail.url'), text: url } : undefined;
   }
   if (kind === 'search') {
     const d = display as { query?: string; scope?: string };
     const text = d.scope !== undefined ? `${d.query ?? ''} — ${d.scope}` : d.query;
-    return text !== undefined && text !== '' ? { label: 'Search', text } : undefined;
+    return text !== undefined && text !== '' ? { label: t('ia.detail.search'), text } : undefined;
   }
   if (kind === 'agent_call') {
     const d = display as { agent_name?: string; prompt?: string };
     const text = `${d.agent_name ?? ''}${d.prompt !== undefined ? ` — ${d.prompt}` : ''}`.trim();
-    return text !== '' ? { label: 'Subagent', text } : undefined;
+    return text !== '' ? { label: t('ia.detail.subagent'), text } : undefined;
   }
   if (kind === 'skill_call') {
     const d = display as { skill_name?: string; args?: string };
     const text = `${d.skill_name ?? ''}${d.args !== undefined ? ` ${d.args}` : ''}`.trim();
-    return text !== '' ? { label: 'Skill', text } : undefined;
+    return text !== '' ? { label: t('ia.detail.skill'), text } : undefined;
   }
   if (kind === 'generic') {
     const summary = (display as { summary?: string }).summary;
-    return summary !== undefined && summary !== '' ? { label: 'Details', text: summary } : undefined;
+    return summary !== undefined && summary !== ''
+      ? { label: t('ia.detail.details'), text: summary }
+      : undefined;
   }
   try {
     const json = JSON.stringify(display, null, 2);
     if (json === undefined || json === '{}') return undefined;
-    return { label: 'Details', text: json.length > 800 ? `${json.slice(0, 800)}…` : json };
+    return { label: t('ia.detail.details'), text: json.length > 800 ? `${json.slice(0, 800)}…` : json };
   } catch {
     return undefined;
   }
@@ -100,6 +109,7 @@ export function ApprovalCard({
   /** y/n hints are armed only when this is the single unresolved approval. */
   showShortcutHints?: boolean;
 }) {
+  const { t, time } = useI18n();
   const [forSession, setForSession] = useState(false);
   const [submitting, setSubmitting] = useState<ApprovalIntent | null>(null);
   const [answered, setAnswered] = useState<ApprovalDecision | null>(null);
@@ -127,14 +137,14 @@ export function ApprovalCard({
     const { decision } = block.resolution;
     const label =
       decision === 'approved'
-        ? 'Approved'
+        ? t('ia.resolution.approved')
         : decision === 'rejected'
-          ? 'Rejected'
+          ? t('ia.resolution.rejected')
           : decision === 'cancelled'
-            ? 'Cancelled'
+            ? t('ia.resolution.cancelled')
             : decision === 'expired'
-              ? 'Expired'
-              : 'Resolved elsewhere';
+              ? t('ia.resolution.expired')
+              : t('ia.resolution.resolvedElsewhere');
     const tone =
       decision === 'approved'
         ? 'border-success/40 text-success'
@@ -154,7 +164,7 @@ export function ApprovalCard({
     );
   }
 
-  const detail = approvalDetail(block);
+  const detail = approvalDetail(block, t);
 
   const submit = (decision: ApprovalDecision) => {
     // In-flight guard: drop double-clicks and clicks during submission.
@@ -190,14 +200,14 @@ export function ApprovalCard({
         <div className="w-1 shrink-0 bg-amber-rule" />
         <div className="min-w-0 flex-1 px-4 py-3">
           <div className="flex items-baseline gap-2">
-            <span className="text-[13px] font-semibold text-amber-ink">Approval needed</span>
+            <span className="text-[13px] font-semibold text-amber-ink">{t('ia.approvalNeeded')}</span>
             {originAgentName !== undefined ? (
               <span className="rounded-full border border-amber-rule/40 bg-panel px-1.5 py-px text-[10px] font-medium text-amber-ink/80">
-                from subagent {originAgentName}
+                {t('ia.fromSubagent', { name: originAgentName })}
               </span>
             ) : null}
             <span className="text-[10.5px] text-amber-ink/60">
-              {timeUntil(block.request.expires_at)}
+              {time.timeUntil(block.request.expires_at)}
             </span>
           </div>
           <p className="mt-1 text-[13px] text-ink">
@@ -225,7 +235,7 @@ export function ApprovalCard({
                   onChange={(event) => setForSession(event.target.checked)}
                   className="h-3 w-3 accent-[#e8590c]"
                 />
-                Remember for this session
+                {t('ia.remember')}
               </label>
 
               <div className="mt-3 flex items-center gap-2" aria-busy={submitting !== null}>
@@ -236,8 +246,8 @@ export function ApprovalCard({
                   className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep disabled:opacity-60"
                 >
                   {submitting === 'allow-once' || submitting === 'allow-always'
-                    ? 'Approving…'
-                    : 'Approve'}{' '}
+                    ? t('ia.approving')
+                    : t('ia.approve')}{' '}
                   {showShortcutHints ? (
                     <kbd className="ml-1 rounded bg-white/20 px-1 font-mono text-[10px]">y</kbd>
                   ) : null}
@@ -248,7 +258,7 @@ export function ApprovalCard({
                   onClick={() => submit('rejected')}
                   className="rounded-lg border border-hairline-strong bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:border-danger hover:text-danger disabled:opacity-60"
                 >
-                  {submitting === 'reject-once' ? 'Rejecting…' : 'Reject'}{' '}
+                  {submitting === 'reject-once' ? t('ia.rejecting') : t('ia.reject')}{' '}
                   {showShortcutHints ? (
                     <kbd className="ml-1 rounded bg-paper px-1 font-mono text-[10px]">n</kbd>
                   ) : null}
@@ -256,7 +266,7 @@ export function ApprovalCard({
               </div>
               {failed ? (
                 <p role="alert" className="mt-2 text-[11.5px] text-danger">
-                  Could not send the decision — the request may have expired. Try again.
+                  {t('ia.sendFailed')}
                 </p>
               ) : null}
             </>
@@ -268,7 +278,8 @@ export function ApprovalCard({
               }`}
             >
               <span aria-hidden>{answered === 'approved' ? '✓' : '×'}</span>
-              {answered === 'approved' ? 'Approved' : 'Rejected'} — sent to kiki
+              {answered === 'approved' ? t('ia.resolution.approved') : t('ia.resolution.rejected')}
+              {t('ia.sentToKikiSuffix')}
             </p>
           )}
         </div>
@@ -291,6 +302,7 @@ function QuestionItemView({
   answer: { optionIds: string[]; otherText: string; useOther: boolean };
   onChange: (next: { optionIds: string[]; otherText: string; useOther: boolean }) => void;
 }) {
+  const { t } = useI18n();
   const multi = item.multi_select === true;
   const toggle = (optionId: string) => {
     if (multi) {
@@ -368,13 +380,13 @@ function QuestionItemView({
                 {answer.useOther ? '✓' : ''}
               </span>
               <span className="text-[12.5px] font-medium text-ink">
-                {item.other_label ?? 'Other'}
+                {item.other_label ?? t('ia.other')}
               </span>
             </button>
             {answer.useOther ? (
               <input
                 className="mt-1.5 w-full rounded-md border border-hairline bg-panel px-2 py-1 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
-                placeholder={item.other_description ?? 'Type your answer…'}
+                placeholder={item.other_description ?? t('ia.otherPlaceholder')}
                 value={answer.otherText}
                 onChange={(event) => onChange({ ...answer, otherText: event.target.value })}
               />
@@ -398,6 +410,7 @@ export function QuestionCard({
   /** Display name of the subagent that asked, when not main. */
   originAgentName?: string;
 }) {
+  const { t, tp } = useI18n();
   const [selections, setSelections] = useState<
     Record<string, { optionIds: string[]; otherText: string; useOther: boolean }>
   >({});
@@ -408,10 +421,10 @@ export function QuestionCard({
   if (block.outcome !== undefined) {
     const label =
       block.outcome.kind === 'answered'
-        ? 'Question answered'
+        ? t('ia.question.answered')
         : block.outcome.kind === 'dismissed'
-          ? 'Question dismissed'
-          : 'Question expired';
+          ? t('ia.question.dismissed')
+          : t('ia.question.expired');
     return (
       <div className="anim-enter flex items-center gap-2 rounded-lg border border-hairline bg-panel px-3 py-1.5 text-[12px] text-ink-faint">
         <span aria-hidden>·</span>
@@ -464,8 +477,8 @@ export function QuestionCard({
         setBusy(false);
         setFailed(
           error instanceof Error
-            ? `Could not send the answers: ${error.message}`
-            : 'Could not send — try again.',
+            ? t('ia.answerFailed', { detail: error.message })
+            : t('ia.answerFailedGeneric'),
         );
       });
   };
@@ -479,8 +492,8 @@ export function QuestionCard({
         setBusy(false);
         setFailed(
           error instanceof Error
-            ? `Could not dismiss: ${error.message}`
-            : 'Could not dismiss — try again.',
+            ? t('ia.dismissFailed', { detail: error.message })
+            : t('ia.dismissFailedGeneric'),
         );
       });
   };
@@ -491,10 +504,10 @@ export function QuestionCard({
         <div className="w-1 shrink-0 bg-amber-rule" />
         <div className="min-w-0 flex-1 space-y-4 px-4 py-3">
           <div className="flex items-center gap-2">
-            <span className="text-[13px] font-semibold text-amber-ink">kiki asks</span>
+            <span className="text-[13px] font-semibold text-amber-ink">{t('ia.kikiAsks')}</span>
             {originAgentName !== undefined ? (
               <span className="rounded-full border border-amber-rule/40 bg-panel px-1.5 py-px text-[10px] font-medium text-amber-ink/80">
-                from subagent {originAgentName}
+                {t('ia.fromSubagent', { name: originAgentName })}
               </span>
             ) : null}
           </div>
@@ -513,13 +526,13 @@ export function QuestionCard({
                 disabled={busy || unansweredCount > 0}
                 title={
                   unansweredCount > 0
-                    ? `${unansweredCount} question${unansweredCount === 1 ? '' : 's'} still unanswered`
+                    ? tp('ia.unanswered', unansweredCount)
                     : undefined
                 }
                 onClick={submit}
                 className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep disabled:opacity-60"
               >
-                {busy ? 'Sending…' : 'Submit'}
+                {busy ? t('ia.sending') : t('ia.submit')}
               </button>
               <button
                 type="button"
@@ -527,11 +540,11 @@ export function QuestionCard({
                 onClick={dismiss}
                 className="rounded-lg border border-hairline-strong bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:text-danger disabled:opacity-60"
               >
-                Dismiss
+                {t('ia.dismiss')}
               </button>
               {unansweredCount > 0 ? (
                 <span className="text-[11px] text-amber-ink/70">
-                  {unansweredCount} question{unansweredCount === 1 ? '' : 's'} still unanswered
+                  {tp('ia.unanswered', unansweredCount)}
                 </span>
               ) : null}
               {failed !== null ? (
@@ -543,7 +556,7 @@ export function QuestionCard({
           ) : (
             <p role="status" className="pt-1 text-[12px] font-medium text-success">
               <span aria-hidden>✓</span>{' '}
-              {sent === 'answered' ? 'Sent to kiki' : 'Dismissed'}
+              {sent === 'answered' ? t('ia.sentToKiki') : t('ia.dismissed')}
             </p>
           )}
         </div>

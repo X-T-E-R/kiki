@@ -8,6 +8,7 @@
 
 import type { DiffHunk, DiffLine } from '../lib/diff';
 import { hunkGapLines } from '../lib/diff';
+import { useI18n } from '../i18n';
 
 function DiffRow({ line, gutterWidth }: { line: DiffLine; gutterWidth: number }) {
   const gutter =
@@ -43,6 +44,7 @@ function DiffRow({ line, gutterWidth }: { line: DiffLine; gutterWidth: number })
 }
 
 export function DiffCard({ hunks }: { hunks: readonly DiffHunk[] }) {
+  const { tp, t } = useI18n();
   // Gutter width from the largest line number shown (grok-build's layout).
   let maxLine = 1;
   for (const hunk of hunks) {
@@ -61,7 +63,7 @@ export function DiffCard({ hunks }: { hunks: readonly DiffHunk[] }) {
           <div key={hunkIndex}>
             {hunkIndex > 0 ? (
               <div className="border-y border-hairline bg-paper px-3 py-0.5 text-[10.5px] text-ink-faint select-none">
-                … {gap !== undefined ? `${gap} unchanged line${gap === 1 ? '' : 's'}` : 'unchanged lines'}
+                {gap !== undefined ? tp('diff.unchanged', gap) : t('diff.unchangedSome')}
               </div>
             ) : null}
             <div className="py-1">

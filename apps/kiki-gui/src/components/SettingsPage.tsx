@@ -19,6 +19,8 @@ import {
   writeNativeServerConfig,
   type DesktopServerConfig,
 } from '../lib/desktop';
+import { useI18n } from '../i18n';
+import { errorText, issueText, type I18nKey, type Locale } from '../i18n/locale';
 import {
   clearRestartRequirement,
   createProvider,
@@ -44,15 +46,15 @@ import {
 } from '../lib/settings';
 import { useConnection } from '../state/connection';
 
-const SECTIONS = [
-  { id: 'general', label: 'General' },
-  { id: 'models', label: 'Models' },
-  { id: 'connection', label: 'Connection' },
-  { id: 'providers', label: 'Providers & auth' },
-  { id: 'capabilities', label: 'Capabilities' },
-  { id: 'workspaces', label: 'Workspaces' },
-  { id: 'about', label: 'About' },
-] as const;
+const SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
+  { id: 'general', labelKey: 'st.section.general' },
+  { id: 'models', labelKey: 'st.section.models' },
+  { id: 'connection', labelKey: 'st.section.connection' },
+  { id: 'providers', labelKey: 'st.section.providers' },
+  { id: 'capabilities', labelKey: 'st.section.capabilities' },
+  { id: 'workspaces', labelKey: 'st.section.workspaces' },
+  { id: 'about', labelKey: 'st.section.about' },
+];
 
 type SectionId = (typeof SECTIONS)[number]['id'];
 type Feedback = { tone: 'success' | 'error' | 'info'; text: string } | null;
@@ -161,6 +163,7 @@ function Hint({ children }: { children: React.ReactNode }) {
 
 function GeneralSection() {
   const { client } = useConnection();
+  const { t, locale, setLocale } = useI18n();
   const queryClient = useQueryClient();
   const [settings, setSettings] = useState(readSettings);
   const [desktopPrefs, setDesktopPrefs] = useState(readDesktopPrefs);
@@ -187,7 +190,7 @@ function GeneralSection() {
   const saveServerDefaults = async () => {
     const validation = validateServerDefaults(permissionMode);
     if (validation !== null) {
-      setFeedback({ tone: 'error', text: validation });
+      setFeedback({ tone: 'error', text: issueText(locale, validation) });
       return;
     }
     setSaving(true);
@@ -208,10 +211,13 @@ function GeneralSection() {
       writeSettings({ defaultPlanMode: echoedPlan });
       setFeedback({
         tone: 'success',
-        text: `Server saved and echoed permission=${echoedMode ?? 'manual'}, plan=${echoedPlan ? 'on' : 'off'}.`,
+        text: t('st.defaults.savedEcho', {
+          permission: echoedMode ?? 'manual',
+          plan: echoedPlan ? t('st.defaults.planOn') : t('st.defaults.planOff'),
+        }),
       });
     } catch (error) {
-      setFeedback({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setSaving(false);
     }
@@ -225,10 +231,30 @@ function GeneralSection() {
 
   return (
     <div className="space-y-5">
-      <SectionCard title="New-session defaults" badge="Server API · live">
+      <SectionCard title={t('st.language.title')} badge={t('st.badge.thisDevice')}>
+        <div className="space-y-3">
+          <div>
+            <label htmlFor="language-select" className="mb-1.5 block text-[11px] font-medium text-ink-soft">
+              {t('st.language.title')}
+            </label>
+            <select
+              id="language-select"
+              className={SMALL_INPUT}
+              value={locale}
+              onChange={(event) => setLocale(event.target.value as Locale)}
+            >
+              <option value="en">English</option>
+              <option value="zh">中文</option>
+            </select>
+          </div>
+          <Hint>{t('st.language.hint')}</Hint>
+        </div>
+      </SectionCard>
+
+      <SectionCard title={t('st.defaults.title')} badge={t('st.badge.serverLive')}>
         <div className="space-y-4">
           <div>
-            <span id="default-permission-mode-label" className="mb-1.5 block text-[11px] font-medium text-ink-soft">Default permission mode</span>
+            <span id="default-permission-mode-label" className="mb-1.5 block text-[11px] font-medium text-ink-soft">{t('st.defaults.permissionMode')}</span>
             <div className="flex flex-wrap gap-2" role="group" aria-labelledby="default-permission-mode-label">
               {(['manual', 'auto', 'yolo'] as PermissionMode[]).map((mode) => (
                 <button
@@ -241,49 +267,49 @@ function GeneralSection() {
                       : 'border-hairline text-ink-soft hover:border-hairline-strong'
                   }`}
                 >
-                  {mode}
+                  {t(`composer.mode.${mode}`)}
                 </button>
               ))}
             </div>
           </div>
-          <Toggle label="Start new sessions in plan mode" checked={planMode} onChange={setPlanMode} />
+          <Toggle label={t('st.defaults.planMode')} checked={planMode} onChange={setPlanMode} />
           <div className="flex flex-wrap items-center gap-3">
             <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={saveServerDefaults}>
-              {saving ? 'Saving…' : 'Save server defaults'}
+              {saving ? t('common.saving') : t('st.defaults.save')}
             </button>
-            <Hint>Applies to sessions created after the server confirms the write.</Hint>
+            <Hint>{t('st.defaults.hint')}</Hint>
           </div>
           <FeedbackLine feedback={feedback} />
           {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         </div>
       </SectionCard>
 
-      <SectionCard title="Composer" badge="This device">
+      <SectionCard title={t('st.composer.title')} badge={t('st.badge.thisDevice')}>
         <div className="space-y-4">
           <div>
-            <label htmlFor="send-shortcut-select" className="mb-1.5 block text-[11px] font-medium text-ink-soft">Send shortcut</label>
+            <label htmlFor="send-shortcut-select" className="mb-1.5 block text-[11px] font-medium text-ink-soft">{t('st.composer.sendShortcut')}</label>
             <select
               id="send-shortcut-select"
               className={SMALL_INPUT}
               value={settings.sendShortcut}
               onChange={(event) => updateLocal({ sendShortcut: event.target.value as SendShortcut })}
             >
-              <option value="enter">Enter sends · Shift+Enter newline</option>
-              <option value="cmd-enter">⌘/Ctrl+Enter sends · Enter newline</option>
+              <option value="enter">{t('st.composer.shortcutEnter')}</option>
+              <option value="cmd-enter">{t('st.composer.shortcutCmdEnter')}</option>
             </select>
           </div>
           <Toggle
-            label="Persist composer drafts"
+            label={t('st.composer.persistDrafts')}
             checked={settings.draftPersistence}
             onChange={(checked) => updateLocal({ draftPersistence: checked })}
           />
         </div>
       </SectionCard>
 
-      <SectionCard title="Desktop behaviour" badge={isDesktop ? 'This device' : 'Desktop app'}>
+      <SectionCard title={t('st.desktop.title')} badge={isDesktop ? t('st.badge.thisDevice') : t('st.badge.desktopApp')}>
         <fieldset disabled={!isDesktop} className="space-y-4">
           <Toggle
-            label="Show approval notifications"
+            label={t('st.desktop.notifications')}
             checked={desktopPrefs.notifications}
             disabled={!isDesktop}
             onChange={(checked) => {
@@ -294,12 +320,12 @@ function GeneralSection() {
             }}
           />
           <div className="grid gap-2 sm:grid-cols-2">
-            {[
-              { closeToTray: true, title: 'Hide to tray', description: 'Keep Kiki and its local backend running.' },
-              { closeToTray: false, title: 'Quit Kiki', description: 'Exit Kiki and stop its local backend.' },
-            ].map((option) => (
+            {([
+              { closeToTray: true, titleKey: 'st.desktop.tray', descriptionKey: 'st.desktop.trayDesc' },
+              { closeToTray: false, titleKey: 'st.desktop.quit', descriptionKey: 'st.desktop.quitDesc' },
+            ] as const).map((option) => (
               <label
-                key={option.title}
+                key={option.titleKey}
                 className={`rounded-xl border p-3 ${
                   desktopPrefs.closeToTray === option.closeToTray ? 'border-accent bg-accent-soft' : 'border-hairline bg-paper'
                 } ${isDesktop ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
@@ -318,15 +344,15 @@ function GeneralSection() {
                     className="mt-0.5 accent-[var(--color-accent)]"
                   />
                   <span>
-                    <span className="block text-[12.5px] font-semibold text-ink">{option.title}</span>
-                    <span className="mt-0.5 block text-[11px] text-ink-faint">{option.description}</span>
+                    <span className="block text-[12.5px] font-semibold text-ink">{t(option.titleKey)}</span>
+                    <span className="mt-0.5 block text-[11px] text-ink-faint">{t(option.descriptionKey)}</span>
                   </span>
                 </span>
               </label>
             ))}
           </div>
         </fieldset>
-        {!isDesktop ? <Hint>Install and open the Kiki desktop app to change native window and notification behaviour.</Hint> : null}
+        {!isDesktop ? <Hint>{t('st.desktop.browserHint')}</Hint> : null}
       </SectionCard>
     </div>
   );
@@ -334,6 +360,7 @@ function GeneralSection() {
 
 function ModelsSection() {
   const { client } = useConnection();
+  const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const [busyModel, setBusyModel] = useState<string | null>(null);
   const [thinkingEnabled, setThinkingEnabled] = useState(true);
@@ -363,9 +390,9 @@ function ModelsSection() {
         default_model: echoed.default_model,
       }));
       writeSettings({ defaultModel: echoed.default_model });
-      setFeedback({ tone: 'success', text: `Server confirmed ${echoed.default_model} as the default model.` });
+      setFeedback({ tone: 'success', text: t('st.models.savedEcho', { model: echoed.default_model }) });
     } catch (error) {
-      setFeedback({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setBusyModel(null);
     }
@@ -373,7 +400,7 @@ function ModelsSection() {
 
   const saveEffort = async () => {
     if (thinkingEnabled && effort.trim() === '') {
-      setFeedback({ tone: 'error', text: 'Choose or enter a non-empty effort value.' });
+      setFeedback({ tone: 'error', text: t('st.thinking.emptyError') });
       return;
     }
     setBusyModel('effort');
@@ -387,9 +414,14 @@ function ModelsSection() {
       setThinkingEnabled(echoedEnabled);
       setEffort(echoedEffort);
       writeSettings({ defaultEffort: echoedEffort || undefined });
-      setFeedback({ tone: 'success', text: `Server saved thinking ${echoedEnabled ? `at ${echoedEffort}` : 'off'}.` });
+      setFeedback({
+        tone: 'success',
+        text: echoedEnabled
+          ? t('st.thinking.savedAt', { effort: echoedEffort })
+          : t('st.thinking.savedOff'),
+      });
     } catch (error) {
-      setFeedback({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setBusyModel(null);
     }
@@ -397,7 +429,7 @@ function ModelsSection() {
 
   return (
     <div className="space-y-5">
-      <SectionCard title="Default model" badge="Server API · live">
+      <SectionCard title={t('st.models.defaultTitle')} badge={t('st.badge.serverLive')}>
         <div className="space-y-3">
           {items.map((item) => (
             <ModelRow
@@ -408,27 +440,27 @@ function ModelsSection() {
               onSetDefault={() => void selectDefault(item.model)}
             />
           ))}
-          {modelsQuery.isLoading ? <Hint>Loading model catalog…</Hint> : null}
+          {modelsQuery.isLoading ? <Hint>{t('st.models.loading')}</Hint> : null}
           {modelsQuery.isError ? <InlineError error={modelsQuery.error} /> : null}
           <FeedbackLine feedback={feedback} />
         </div>
       </SectionCard>
 
-      <SectionCard title="Default thinking" badge="Server API · live">
+      <SectionCard title={t('st.thinking.title')} badge={t('st.badge.serverLive')}>
         <div className="space-y-3">
-          <Toggle label="Enable thinking by default" checked={thinkingEnabled} onChange={setThinkingEnabled} />
+          <Toggle label={t('st.thinking.enable')} checked={thinkingEnabled} onChange={setThinkingEnabled} />
           {defaultItem?.support_efforts !== undefined && defaultItem.support_efforts.length > 0 ? (
             <select className={SMALL_INPUT} value={effort} disabled={!thinkingEnabled} onChange={(event) => setEffort(event.target.value)}>
               {defaultItem.support_efforts.map((level) => <option key={level} value={level}>{level}</option>)}
             </select>
           ) : (
-            <input className={INPUT} value={effort} disabled={!thinkingEnabled} onChange={(event) => setEffort(event.target.value)} placeholder="for example: high" />
+            <input className={INPUT} value={effort} disabled={!thinkingEnabled} onChange={(event) => setEffort(event.target.value)} placeholder={t('st.thinking.placeholder')} />
           )}
           <div className="flex flex-wrap items-center gap-3">
             <button type="button" className={PRIMARY_BUTTON} disabled={busyModel !== null} onClick={() => void saveEffort()}>
-              {busyModel === 'effort' ? 'Saving…' : 'Save thinking default'}
+              {busyModel === 'effort' ? t('common.saving') : t('st.thinking.save')}
             </button>
-            <Hint>The server validates the selected model and returns the effective config.</Hint>
+            <Hint>{t('st.thinking.hint')}</Hint>
           </div>
         </div>
       </SectionCard>
@@ -447,17 +479,18 @@ function ModelRow({
   busy: boolean;
   onSetDefault: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="flex items-center justify-between gap-3 rounded-lg border border-hairline bg-paper px-3 py-2">
       <div className="min-w-0">
         <p className="truncate text-[13px] font-medium text-ink">{item.display_name ?? item.model}</p>
         <p className="truncate font-mono text-[10.5px] text-ink-faint">
-          {item.model} · {item.max_context_size.toLocaleString()} context
+          {item.model} · {item.max_context_size.toLocaleString()} {t('st.models.context')}
           {item.capabilities?.length ? ` · ${item.capabilities.join(', ')}` : ''}
         </p>
       </div>
       <button type="button" onClick={onSetDefault} disabled={isDefault || busy} className={isDefault ? `${SECONDARY_BUTTON} border-success/30 bg-success/10 text-success` : SECONDARY_BUTTON}>
-        {isDefault ? 'Default' : busy ? 'Saving…' : 'Set default'}
+        {isDefault ? t('st.models.default') : busy ? t('common.saving') : t('st.models.setDefault')}
       </button>
     </div>
   );
@@ -465,6 +498,7 @@ function ModelRow({
 
 function ConnectionSection() {
   const { config, meta, wsStatus, socket } = useConnection();
+  const { t, locale } = useI18n();
   const isDesktop = isDesktopRuntime();
   const [restarting, setRestarting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -475,35 +509,35 @@ function ConnectionSection() {
     try {
       await restartNativeServer();
       clearRestartRequirement();
-      setFeedback({ tone: 'success', text: 'The desktop server restarted and passed its authenticated health check.' });
+      setFeedback({ tone: 'success', text: t('st.conn.restarted') });
       window.location.reload();
     } catch (error) {
-      setFeedback({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
       setRestarting(false);
     }
   };
 
   return (
     <div className="space-y-5">
-      <SectionCard title="Connected server" badge="Live status">
+      <SectionCard title={t('st.conn.connectedTitle')} badge={t('st.badge.liveStatus')}>
         <div className="space-y-2 text-[12.5px] text-ink-soft">
           <p>URL: <span className="font-mono text-ink">{config.url}</span></p>
-          <p>Version: <span className="font-mono text-ink">{meta.server_version}</span></p>
-          <p>Backend: <span className="font-mono text-ink">{meta.backend ?? 'v1'}</span></p>
+          <p>{t('st.conn.version')}: <span className="font-mono text-ink">{meta.server_version}</span></p>
+          <p>{t('st.conn.backend')}: <span className="font-mono text-ink">{meta.backend ?? 'v1'}</span></p>
           <p>WebSocket: <span className={wsStatus === 'open' ? 'font-medium text-success' : 'font-medium text-amber-ink'}>{wsStatus}</span></p>
-          <button type="button" onClick={() => socket?.nudge()} className={SECONDARY_BUTTON}>Reconnect now</button>
+          <button type="button" onClick={() => socket?.nudge()} className={SECONDARY_BUTTON}>{t('st.conn.reconnect')}</button>
         </div>
       </SectionCard>
 
-      <SectionCard title="Owned desktop server" badge={isDesktop ? 'Desktop native' : 'Desktop app'}>
+      <SectionCard title={t('st.conn.ownedTitle')} badge={isDesktop ? t('st.badge.desktopNative') : t('st.badge.desktopApp')}>
         <div className="space-y-3">
           <p className="text-[12.5px] text-ink-soft">
-            Kiki desktop owns the sidecar lifecycle. Restart waits for shutdown, launches a new sidecar, and verifies its authenticated endpoint before returning.
+            {t('st.conn.ownedBody')}
           </p>
           <button type="button" className={PRIMARY_BUTTON} disabled={!isDesktop || restarting} onClick={() => void restart()}>
-            {restarting ? 'Restarting server…' : 'Restart server'}
+            {restarting ? t('st.conn.restarting') : t('st.conn.restart')}
           </button>
-          {!isDesktop ? <Hint>This action is disabled in the browser build. Open the same settings page in Kiki desktop.</Hint> : null}
+          {!isDesktop ? <Hint>{t('st.conn.browserHint')}</Hint> : null}
           <FeedbackLine feedback={feedback} />
         </div>
       </SectionCard>
@@ -513,6 +547,7 @@ function ConnectionSection() {
 
 function ProvidersSection() {
   const { client, config: connection } = useConnection();
+  const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const [oauthBusy, setOauthBusy] = useState(false);
   const [defaultProvider, setDefaultProvider] = useState('');
@@ -541,7 +576,7 @@ function ProvidersSection() {
 
   const saveDefaultProvider = async () => {
     if (defaultProvider === '') {
-      setOauthFeedback({ tone: 'error', text: 'Choose a configured provider.' });
+      setOauthFeedback({ tone: 'error', text: t('st.auth.chooseProvider') });
       return;
     }
     setOauthBusy(true);
@@ -550,9 +585,12 @@ function ProvidersSection() {
       const echoed = await client.patchConfig({ default_provider: defaultProvider });
       queryClient.setQueryData(['config'], echoed);
       setDefaultProvider(echoed.default_provider ?? defaultProvider);
-      setOauthFeedback({ tone: 'success', text: `Server saved default provider ${echoed.default_provider ?? defaultProvider}.` });
+      setOauthFeedback({
+        tone: 'success',
+        text: t('st.auth.savedEcho', { provider: echoed.default_provider ?? defaultProvider }),
+      });
     } catch (error) {
-      setOauthFeedback({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      setOauthFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setOauthBusy(false);
     }
@@ -563,10 +601,13 @@ function ProvidersSection() {
     setOauthFeedback(null);
     try {
       const result = await client.startOAuthLogin();
-      setOauthFeedback({ tone: 'success', text: result.status === 'authenticated' ? 'Already authenticated.' : 'Device-code flow started — check your browser.' });
+      setOauthFeedback({
+        tone: 'success',
+        text: result.status === 'authenticated' ? t('st.auth.already') : t('st.auth.deviceFlow'),
+      });
       await refreshProviderData();
     } catch (error) {
-      setOauthFeedback({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      setOauthFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setOauthBusy(false);
     }
@@ -577,10 +618,10 @@ function ProvidersSection() {
     setOauthFeedback(null);
     try {
       await client.logoutOAuth();
-      setOauthFeedback({ tone: 'success', text: 'OAuth credentials removed.' });
+      setOauthFeedback({ tone: 'success', text: t('st.auth.removed') });
       await refreshProviderData();
     } catch (error) {
-      setOauthFeedback({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      setOauthFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setOauthBusy(false);
     }
@@ -588,27 +629,27 @@ function ProvidersSection() {
 
   return (
     <div className="space-y-5">
-      <SectionCard title="Authentication" badge="Server API">
+      <SectionCard title={t('st.auth.title')} badge={t('st.badge.serverApi')}>
         <div className="space-y-3">
           {authQuery.data !== undefined ? (
             <div className="grid gap-2 text-[12.5px] text-ink-soft sm:grid-cols-2">
-              <p>Ready: <span className="text-ink">{authQuery.data.ready ? 'yes' : 'no'}</span></p>
-              <p>Providers: <span className="text-ink">{authQuery.data.providers_count}</span></p>
-              <p>Default model: <span className="font-mono text-ink">{authQuery.data.default_model ?? 'none'}</span></p>
-              <p>Managed auth: <span className="text-ink">{authQuery.data.managed_provider?.status ?? 'none'}</span></p>
+              <p>{t('st.auth.ready')}: <span className="text-ink">{authQuery.data.ready ? t('st.auth.yes') : t('st.auth.no')}</span></p>
+              <p>{t('st.auth.providers')}: <span className="text-ink">{authQuery.data.providers_count}</span></p>
+              <p>{t('st.auth.defaultModel')}: <span className="font-mono text-ink">{authQuery.data.default_model ?? t('st.auth.none')}</span></p>
+              <p>{t('st.auth.managedAuth')}: <span className="text-ink">{authQuery.data.managed_provider?.status ?? t('st.auth.none')}</span></p>
             </div>
           ) : null}
           <div className="flex flex-wrap items-end gap-2">
-            <label className="text-[11px] font-medium text-ink-soft">Default provider
+            <label className="text-[11px] font-medium text-ink-soft">{t('st.auth.defaultProvider')}
               <select className={`${SMALL_INPUT} ml-2`} value={defaultProvider} onChange={(event) => setDefaultProvider(event.target.value)}>
                 {(providersQuery.data?.items ?? []).map((provider) => <option key={provider.id} value={provider.id}>{provider.id}</option>)}
               </select>
             </label>
-            <button type="button" disabled={oauthBusy || defaultProvider === ''} onClick={() => void saveDefaultProvider()} className={SECONDARY_BUTTON}>Save default provider</button>
+            <button type="button" disabled={oauthBusy || defaultProvider === ''} onClick={() => void saveDefaultProvider()} className={SECONDARY_BUTTON}>{t('st.auth.saveDefault')}</button>
           </div>
           <div className="flex gap-2">
-            <button type="button" disabled={oauthBusy} onClick={() => void startOAuth()} className={PRIMARY_BUTTON}>{oauthBusy ? 'Working…' : 'Sign in'}</button>
-            <button type="button" disabled={oauthBusy} onClick={() => void logout()} className={SECONDARY_BUTTON}>Sign out</button>
+            <button type="button" disabled={oauthBusy} onClick={() => void startOAuth()} className={PRIMARY_BUTTON}>{oauthBusy ? t('st.auth.working') : t('st.auth.signIn')}</button>
+            <button type="button" disabled={oauthBusy} onClick={() => void logout()} className={SECONDARY_BUTTON}>{t('st.auth.signOut')}</button>
           </div>
           {oauthQuery.data !== null && oauthQuery.data !== undefined ? <Hint>{oauthQuery.data.provider} · {oauthQuery.data.status}</Hint> : null}
           <FeedbackLine feedback={oauthFeedback} />
@@ -616,7 +657,7 @@ function ProvidersSection() {
         </div>
       </SectionCard>
 
-      <SectionCard title="Configured providers" badge="Server API · live">
+      <SectionCard title={t('st.providers.title')} badge={t('st.badge.serverLive')}>
         <div className="space-y-4">
           {(providersQuery.data?.items ?? []).map((provider) => (
             <ProviderEditor
@@ -627,13 +668,13 @@ function ProvidersSection() {
               onSaved={refreshProviderData}
             />
           ))}
-          {providersQuery.isLoading ? <Hint>Loading providers…</Hint> : null}
-          {providersQuery.data?.items.length === 0 ? <Hint>No providers configured yet.</Hint> : null}
+          {providersQuery.isLoading ? <Hint>{t('st.providers.loading')}</Hint> : null}
+          {providersQuery.data?.items.length === 0 ? <Hint>{t('st.providers.empty')}</Hint> : null}
           {providersQuery.isError ? <InlineError error={providersQuery.error} /> : null}
         </div>
       </SectionCard>
 
-      <SectionCard title="Add provider" badge="Server API · live">
+      <SectionCard title={t('st.providers.addTitle')} badge={t('st.badge.serverLive')}>
         <NewProviderForm connection={connection} onSaved={refreshProviderData} />
       </SectionCard>
     </div>
@@ -651,6 +692,7 @@ function ProviderEditor({
   connection: { url: string; token: string };
   onSaved: () => Promise<void>;
 }) {
+  const { t, locale } = useI18n();
   const initial = useMemo(() => providerDraftFromCatalog(provider, models), [provider, models]);
   const [draft, setDraft] = useState<ProviderDraft | null>(initial);
   const [saving, setSaving] = useState(false);
@@ -663,7 +705,7 @@ function ProviderEditor({
       <div className="rounded-xl border border-hairline bg-paper p-3">
         <p className="text-[13px] font-semibold text-ink">{provider.id}</p>
         <Hint>
-          This provider cannot be rewritten safely: PUT /providers/:id only accepts the six built-in wire types and requires complete model metadata, which this catalog entry does not expose.
+          {t('st.providers.cannotRewrite')}
         </Hint>
       </div>
     );
@@ -672,7 +714,7 @@ function ProviderEditor({
   const save = async () => {
     const validation = validateProviderDraft(draft);
     if (validation !== null) {
-      setFeedback({ tone: 'error', text: validation });
+      setFeedback({ tone: 'error', text: issueText(locale, validation) });
       return;
     }
     setSaving(true);
@@ -681,23 +723,23 @@ function ProviderEditor({
       const echoed = await replaceProvider(connection, provider.id, draft);
       setDraft((current) => current === null ? null : { ...current, apiKey: '', clearApiKey: false });
       await onSaved();
-      setFeedback({ tone: 'success', text: `Server saved provider ${echoed.id}. The secret field was cleared locally.` });
+      setFeedback({ tone: 'success', text: t('st.providers.savedEcho', { id: echoed.id }) });
     } catch (error) {
-      setFeedback({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setSaving(false);
     }
   };
 
   const remove = async () => {
-    if (!window.confirm(`Remove provider ${provider.id} and its model aliases?`)) return;
+    if (!window.confirm(t('st.providers.removeConfirm', { id: provider.id }))) return;
     setSaving(true);
     setFeedback(null);
     try {
       await deleteProvider(connection, provider.id);
       await onSaved();
     } catch (error) {
-      setFeedback({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
       setSaving(false);
     }
   };
@@ -710,8 +752,8 @@ function ProviderEditor({
       <div className="mt-4 space-y-4">
         <ProviderFields draft={draft} onChange={setDraft} hasStoredKey={provider.has_api_key} />
         <div className="flex flex-wrap gap-2">
-          <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? 'Saving…' : 'Save provider'}</button>
-          <button type="button" className={`${SECONDARY_BUTTON} text-danger`} disabled={saving} onClick={() => void remove()}>Remove</button>
+          <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? t('common.saving') : t('st.providers.save')}</button>
+          <button type="button" className={`${SECONDARY_BUTTON} text-danger`} disabled={saving} onClick={() => void remove()}>{t('common.remove')}</button>
         </div>
         <FeedbackLine feedback={feedback} />
       </div>
@@ -726,6 +768,7 @@ function NewProviderForm({
   connection: { url: string; token: string };
   onSaved: () => Promise<void>;
 }) {
+  const { t, locale } = useI18n();
   const blank = (): ProviderDraft => ({
     id: '',
     type: 'openai',
@@ -746,7 +789,7 @@ function NewProviderForm({
     };
     const validation = validateProviderDraft(normalized);
     if (validation !== null) {
-      setFeedback({ tone: 'error', text: validation });
+      setFeedback({ tone: 'error', text: issueText(locale, validation) });
       return;
     }
     setSaving(true);
@@ -755,9 +798,9 @@ function NewProviderForm({
       const echoed = await createProvider(connection, normalized);
       setDraft(blank());
       await onSaved();
-      setFeedback({ tone: 'success', text: `Server created provider ${echoed.id}. The secret field was cleared locally.` });
+      setFeedback({ tone: 'success', text: t('st.providers.createdEcho', { id: echoed.id }) });
     } catch (error) {
-      setFeedback({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setSaving(false);
     }
@@ -766,7 +809,7 @@ function NewProviderForm({
   return (
     <div className="space-y-4">
       <ProviderFields draft={draft} onChange={setDraft} hasStoredKey={false} />
-      <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? 'Creating…' : 'Create provider'}</button>
+      <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? t('st.providers.creating') : t('st.providers.create')}</button>
       <FeedbackLine feedback={feedback} />
     </div>
   );
@@ -781,6 +824,7 @@ function ProviderFields({
   onChange: (draft: ProviderDraft) => void;
   hasStoredKey: boolean;
 }) {
+  const { t } = useI18n();
   const updateModel = (index: number, patch: Partial<ProviderModelDraft>) => {
     onChange({
       ...draft,
@@ -791,20 +835,20 @@ function ProviderFields({
   return (
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2">
-        <label className="text-[11px] font-medium text-ink-soft">Provider ID
+        <label className="text-[11px] font-medium text-ink-soft">{t('st.providers.idLabel')}
           <input className={`${INPUT} mt-1`} value={draft.id} onChange={(event) => onChange({ ...draft, id: event.target.value })} />
         </label>
-        <label className="text-[11px] font-medium text-ink-soft">Protocol
+        <label className="text-[11px] font-medium text-ink-soft">{t('st.providers.protocol')}
           <select className={`${INPUT} mt-1`} value={draft.type} onChange={(event) => onChange({ ...draft, type: event.target.value as ProviderDraft['type'] })}>
             {PROVIDER_WIRE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
           </select>
         </label>
       </div>
-      <label className="block text-[11px] font-medium text-ink-soft">Base URL
+      <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.baseUrl')}
         <input className={`${INPUT} mt-1`} value={draft.baseUrl} onChange={(event) => onChange({ ...draft, baseUrl: event.target.value })} placeholder="https://api.example.com/v1" />
       </label>
       <div>
-        <label className="block text-[11px] font-medium text-ink-soft">API key
+        <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.apiKey')}
           <input
             type="password"
             autoComplete="new-password"
@@ -812,35 +856,35 @@ function ProviderFields({
             value={draft.apiKey}
             disabled={draft.clearApiKey}
             onChange={(event) => onChange({ ...draft, apiKey: event.target.value })}
-            placeholder={hasStoredKey ? 'Stored key present — leave blank to keep it' : 'Paste a new key'}
+            placeholder={hasStoredKey ? t('st.providers.keyStored') : t('st.providers.keyNew')}
           />
         </label>
         <div className="mt-2">
-          <Toggle label="Clear stored API key on save" checked={draft.clearApiKey} onChange={(checked) => onChange({ ...draft, clearApiKey: checked, apiKey: '' })} />
+          <Toggle label={t('st.providers.clearKey')} checked={draft.clearApiKey} onChange={(checked) => onChange({ ...draft, clearApiKey: checked, apiKey: '' })} />
         </div>
-        <Hint>Existing credentials are never requested or echoed. A newly entered key is cleared from this form after save.</Hint>
+        <Hint>{t('st.providers.keyHint')}</Hint>
       </div>
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <p className="text-[11px] font-medium text-ink-soft">Models</p>
-          <button type="button" className={SECONDARY_BUTTON} onClick={() => onChange({ ...draft, models: [...draft.models, { model: '', maxContextSize: 128000, displayName: '', capabilities: [], supportEfforts: [] }] })}>Add model</button>
+          <p className="text-[11px] font-medium text-ink-soft">{t('st.providers.models')}</p>
+          <button type="button" className={SECONDARY_BUTTON} onClick={() => onChange({ ...draft, models: [...draft.models, { model: '', maxContextSize: 128000, displayName: '', capabilities: [], supportEfforts: [] }] })}>{t('st.providers.addModel')}</button>
         </div>
         {draft.models.map((model, index) => (
           <div key={`${index}-${model.model}`} className="rounded-lg border border-hairline bg-panel p-3">
             <div className="grid gap-2 sm:grid-cols-2">
-              <input className={INPUT} aria-label={`Model ${index + 1} ID`} value={model.model} onChange={(event) => updateModel(index, { model: event.target.value })} placeholder="model-id" />
-              <input className={INPUT} aria-label={`Model ${index + 1} context size`} type="number" min={1} value={model.maxContextSize} onChange={(event) => updateModel(index, { maxContextSize: Number(event.target.value) })} />
-              <input className={INPUT} aria-label={`Model ${index + 1} display name`} value={model.displayName} onChange={(event) => updateModel(index, { displayName: event.target.value })} placeholder="Display name (optional)" />
-              <input className={INPUT} aria-label={`Model ${index + 1} capabilities`} value={model.capabilities.join(', ')} onChange={(event) => updateModel(index, { capabilities: commaList(event.target.value) })} placeholder="reasoning, vision" />
-              <input className={INPUT} aria-label={`Model ${index + 1} efforts`} value={model.supportEfforts.join(', ')} onChange={(event) => updateModel(index, { supportEfforts: commaList(event.target.value) })} placeholder="low, medium, high" />
-              <button type="button" className={`${SECONDARY_BUTTON} text-danger`} disabled={draft.models.length === 1} onClick={() => onChange({ ...draft, models: draft.models.filter((_, modelIndex) => modelIndex !== index) })}>Remove model</button>
+              <input className={INPUT} aria-label={t('st.providers.modelIdAria', { n: index + 1 })} value={model.model} onChange={(event) => updateModel(index, { model: event.target.value })} placeholder="model-id" />
+              <input className={INPUT} aria-label={t('st.providers.modelContextAria', { n: index + 1 })} type="number" min={1} value={model.maxContextSize} onChange={(event) => updateModel(index, { maxContextSize: Number(event.target.value) })} />
+              <input className={INPUT} aria-label={t('st.providers.modelNameAria', { n: index + 1 })} value={model.displayName} onChange={(event) => updateModel(index, { displayName: event.target.value })} placeholder={t('st.providers.displayNamePlaceholder')} />
+              <input className={INPUT} aria-label={t('st.providers.modelCapsAria', { n: index + 1 })} value={model.capabilities.join(', ')} onChange={(event) => updateModel(index, { capabilities: commaList(event.target.value) })} placeholder="reasoning, vision" />
+              <input className={INPUT} aria-label={t('st.providers.modelEffortsAria', { n: index + 1 })} value={model.supportEfforts.join(', ')} onChange={(event) => updateModel(index, { supportEfforts: commaList(event.target.value) })} placeholder="low, medium, high" />
+              <button type="button" className={`${SECONDARY_BUTTON} text-danger`} disabled={draft.models.length === 1} onClick={() => onChange({ ...draft, models: draft.models.filter((_, modelIndex) => modelIndex !== index) })}>{t('st.providers.removeModel')}</button>
             </div>
           </div>
         ))}
       </div>
-      <label className="block text-[11px] font-medium text-ink-soft">Provider default model
+      <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.defaultModel')}
         <select className={`${INPUT} mt-1`} value={draft.defaultModel} onChange={(event) => onChange({ ...draft, defaultModel: event.target.value })}>
-          <option value="">Choose a model</option>
+          <option value="">{t('st.providers.chooseModel')}</option>
           {draft.models.filter((model) => model.model !== '').map((model) => <option key={model.model} value={model.model}>{model.model}</option>)}
         </select>
       </label>
@@ -850,6 +894,7 @@ function ProviderFields({
 
 function CapabilitiesSection() {
   const { client } = useConnection();
+  const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const [workspaceId, setWorkspaceId] = useState('');
   const [mergeSkills, setMergeSkills] = useState(true);
@@ -896,14 +941,14 @@ function CapabilitiesSection() {
   const save = async () => {
     const pathError = validateExtraSkillDirs(extraDirs);
     if (pathError !== null) {
-      setFeedback({ tone: 'error', text: pathError });
+      setFeedback({ tone: 'error', text: issueText(locale, pathError) });
       return;
     }
     let flags: Record<string, boolean>;
     try {
       flags = parseExperimentalFlags(experimental);
     } catch (error) {
-      setFeedback({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
       return;
     }
     setSaving(true);
@@ -920,9 +965,9 @@ function CapabilitiesSection() {
       setExtraDirs((echoed.extra_skill_dirs ?? []).join('\n'));
       setExperimental(JSON.stringify(echoed.experimental ?? {}, null, 2));
       setTelemetry(echoed.telemetry !== false);
-      setFeedback({ tone: 'success', text: 'Server saved and echoed capability defaults.' });
+      setFeedback({ tone: 'success', text: t('st.caps.saved') });
     } catch (error) {
-      setFeedback({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setSaving(false);
     }
@@ -933,7 +978,7 @@ function CapabilitiesSection() {
     try {
       patch = parseAdvancedServerConfig(advanced);
     } catch (error) {
-      setAdvancedFeedback({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      setAdvancedFeedback({ tone: 'error', text: errorText(locale, error) });
       return;
     }
     setAdvancedSaving(true);
@@ -948,9 +993,9 @@ function CapabilitiesSection() {
         loop_control: echoed.loop_control ?? {},
         background: echoed.background ?? {},
       }, null, 2));
-      setAdvancedFeedback({ tone: 'success', text: 'Server validated, saved, and echoed the advanced engine domains.' });
+      setAdvancedFeedback({ tone: 'success', text: t('st.advanced.saved') });
     } catch (error) {
-      setAdvancedFeedback({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      setAdvancedFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setAdvancedSaving(false);
     }
@@ -958,58 +1003,58 @@ function CapabilitiesSection() {
 
   return (
     <div className="space-y-5">
-      <SectionCard title="Skill and experiment defaults" badge="Server API · live">
+      <SectionCard title={t('st.caps.title')} badge={t('st.badge.serverLive')}>
         <div className="space-y-4">
-          <Toggle label="Merge all available skills" checked={mergeSkills} onChange={setMergeSkills} />
-          <Toggle label="Enable telemetry" checked={telemetry} onChange={setTelemetry} />
-          <label className="block text-[11px] font-medium text-ink-soft">Extra skill directories
+          <Toggle label={t('st.caps.mergeSkills')} checked={mergeSkills} onChange={setMergeSkills} />
+          <Toggle label={t('st.caps.telemetry')} checked={telemetry} onChange={setTelemetry} />
+          <label className="block text-[11px] font-medium text-ink-soft">{t('st.caps.extraDirs')}
             <textarea className={`${INPUT} mt-1 min-h-24 font-mono`} value={extraDirs} onChange={(event) => setExtraDirs(event.target.value)} placeholder={'C:/skills/shared\nC:/skills/team'} />
           </label>
-          <label className="block text-[11px] font-medium text-ink-soft">Experimental flag overrides (JSON)
-            <textarea className={`${INPUT} mt-1 min-h-32 font-mono`} value={experimental} onChange={(event) => setExperimental(event.target.value)} aria-label="Experimental flag overrides" />
+          <label className="block text-[11px] font-medium text-ink-soft">{t('st.caps.experimental')}
+            <textarea className={`${INPUT} mt-1 min-h-32 font-mono`} value={experimental} onChange={(event) => setExperimental(event.target.value)} aria-label={t('st.caps.experimentalAria')} />
           </label>
-          <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? 'Saving…' : 'Save capability defaults'}</button>
+          <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? t('common.saving') : t('st.caps.save')}</button>
           <FeedbackLine feedback={feedback} />
         </div>
       </SectionCard>
 
-      <SectionCard title="Advanced engine domains" badge="Server API · live">
+      <SectionCard title={t('st.advanced.title')} badge={t('st.badge.serverLive')}>
         <div className="space-y-3">
-          <Hint>Edit the protocol-backed permission, hooks, services, loop_control, and background domains. Unknown fields and malformed hook lists are rejected before the request; domain schemas are then validated by kap-server.</Hint>
-          <textarea className={`${INPUT} min-h-64 font-mono`} value={advanced} onChange={(event) => setAdvanced(event.target.value)} aria-label="Advanced engine domains" />
-          <button type="button" className={PRIMARY_BUTTON} disabled={advancedSaving} onClick={() => void saveAdvanced()}>{advancedSaving ? 'Saving…' : 'Save advanced domains'}</button>
+          <Hint>{t('st.advanced.hint')}</Hint>
+          <textarea className={`${INPUT} min-h-64 font-mono`} value={advanced} onChange={(event) => setAdvanced(event.target.value)} aria-label={t('st.advanced.aria')} />
+          <button type="button" className={PRIMARY_BUTTON} disabled={advancedSaving} onClick={() => void saveAdvanced()}>{advancedSaving ? t('common.saving') : t('st.advanced.save')}</button>
           <FeedbackLine feedback={advancedFeedback} />
         </div>
       </SectionCard>
 
       <DesktopServerFileCard />
 
-      <SectionCard title="Tools" badge="Server catalog">
+      <SectionCard title={t('st.tools.title')} badge={t('st.badge.serverCatalog')}>
         <div className="space-y-2">
           {toolsQuery.data?.tools.map((tool) => <ToolRow key={tool.name} tool={tool} />)}
-          {toolsQuery.isLoading ? <Hint>Loading tools…</Hint> : null}
+          {toolsQuery.isLoading ? <Hint>{t('st.tools.loading')}</Hint> : null}
           {toolsQuery.isError ? <InlineError error={toolsQuery.error} /> : null}
         </div>
       </SectionCard>
 
-      <SectionCard title="MCP servers" badge="Server actions">
+      <SectionCard title={t('st.mcp.title')} badge={t('st.badge.serverActions')}>
         <div className="space-y-2">
           {mcpQuery.data?.servers.map((server) => <McpRow key={server.id} server={server} />)}
-          {mcpQuery.isLoading ? <Hint>Loading MCP servers…</Hint> : null}
+          {mcpQuery.isLoading ? <Hint>{t('st.mcp.loading')}</Hint> : null}
           {mcpQuery.isError ? <InlineError error={mcpQuery.error} /> : null}
         </div>
       </SectionCard>
 
-      <SectionCard title="Workspace skills" badge="Server catalog">
+      <SectionCard title={t('st.skills.title')} badge={t('st.badge.serverCatalog')}>
         <div className="mb-3 flex items-center gap-2">
-          <label htmlFor="workspace-skills-select" className="text-[11px] font-medium text-ink-soft">Workspace</label>
+          <label htmlFor="workspace-skills-select" className="text-[11px] font-medium text-ink-soft">{t('st.skills.workspace')}</label>
           <select id="workspace-skills-select" className={SMALL_INPUT} value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)}>
             {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
           </select>
         </div>
         <div className="space-y-2">
           {skillsQuery.data?.skills.map((skill) => <SkillRow key={skill.name} skill={skill} />)}
-          {skillsQuery.isLoading ? <Hint>Loading skills…</Hint> : null}
+          {skillsQuery.isLoading ? <Hint>{t('st.skills.loading')}</Hint> : null}
           {skillsQuery.isError ? <InlineError error={skillsQuery.error} /> : null}
         </div>
       </SectionCard>
@@ -1029,6 +1074,7 @@ const EMPTY_DESKTOP_CONFIG: DesktopServerConfig = {
 
 function DesktopServerFileCard() {
   const isDesktop = isDesktopRuntime();
+  const { t, locale } = useI18n();
   const [config, setConfig] = useState<DesktopServerConfig>(EMPTY_DESKTOP_CONFIG);
   const [restart, setRestart] = useState(readRestartRequirement);
   const [loading, setLoading] = useState(isDesktop);
@@ -1048,13 +1094,13 @@ function DesktopServerFileCard() {
       },
       (error: unknown) => {
         if (!cancelled) {
-          setFeedback({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+          setFeedback({ tone: 'error', text: errorText(locale, error) });
           setLoading(false);
         }
       },
     );
     return () => { cancelled = true; };
-  }, [isDesktop]);
+  }, [isDesktop, locale]);
 
   const save = async () => {
     const validation = validateDesktopConfigDraft({
@@ -1066,7 +1112,7 @@ function DesktopServerFileCard() {
       modelCatalogRefreshIntervalMs: config.modelCatalog.refreshIntervalMs,
     });
     if (validation !== null) {
-      setFeedback({ tone: 'error', text: validation });
+      setFeedback({ tone: 'error', text: issueText(locale, validation) });
       return;
     }
     setSaving(true);
@@ -1085,9 +1131,9 @@ function DesktopServerFileCard() {
       });
       setConfig(echoed);
       setRestart(markRestartRequired(['subagent', 'agents', 'builtin_product_skills', 'model_catalog']));
-      setFeedback({ tone: 'success', text: `Saved atomically. Backup: ${echoed.backupPath}` });
+      setFeedback({ tone: 'success', text: t('st.sidecar.savedEcho', { path: echoed.backupPath }) });
     } catch (error) {
-      setFeedback({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setSaving(false);
     }
@@ -1101,58 +1147,58 @@ function DesktopServerFileCard() {
       setRestart(clearRestartRequirement());
       window.location.reload();
     } catch (error) {
-      setFeedback({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
       setRestarting(false);
     }
   };
 
   return (
-    <SectionCard title="Sidecar-only defaults" badge={restart.required ? 'Restart required' : isDesktop ? 'Desktop file' : 'Desktop app'}>
+    <SectionCard title={t('st.sidecar.title')} badge={restart.required ? t('st.badge.restartRequired') : isDesktop ? t('st.badge.desktopFile') : t('st.badge.desktopApp')}>
       <div className="space-y-4">
         {!isDesktop ? (
           <p data-testid="desktop-config-disabled-hint" className="rounded-lg border border-amber-ink/25 bg-amber-ink/5 px-3 py-2 text-[11.5px] text-amber-ink">
-            These controls edit ~/.kimi-code/config.toml and are disabled in the browser build. Open Kiki desktop to change them.
+            {t('st.sidecar.disabledHint')}
           </p>
         ) : null}
         <fieldset disabled={!isDesktop || loading || saving} data-testid="desktop-config-fields" className="space-y-4 disabled:opacity-60">
           <div className="grid gap-3 sm:grid-cols-2">
-            <label className="text-[11px] font-medium text-ink-soft">Subagent default model
+            <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.subagentModel')}
               <input className={`${INPUT} mt-1`} value={config.subagent.defaultModel} onChange={(event) => setConfig({ ...config, subagent: { ...config.subagent, defaultModel: event.target.value } })} placeholder="provider/model" />
             </label>
-            <label className="text-[11px] font-medium text-ink-soft">Subagent default effort
+            <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.subagentEffort')}
               <input className={`${INPUT} mt-1`} value={config.subagent.defaultEffort} onChange={(event) => setConfig({ ...config, subagent: { ...config.subagent, defaultEffort: event.target.value } })} placeholder="high" />
             </label>
-            <label className="text-[11px] font-medium text-ink-soft">Subagent timeout (ms)
+            <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.subagentTimeout')}
               <input className={`${INPUT} mt-1`} type="number" min={0} max={86400000} value={config.subagent.timeoutMs} onChange={(event) => setConfig({ ...config, subagent: { ...config.subagent, timeoutMs: Number(event.target.value) } })} />
             </label>
-            <label className="text-[11px] font-medium text-ink-soft">Collaboration default model
+            <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.collabModel')}
               <input className={`${INPUT} mt-1`} value={config.agents.defaultSubagentModel} onChange={(event) => setConfig({ ...config, agents: { ...config.agents, defaultSubagentModel: event.target.value } })} placeholder="provider/model" />
             </label>
-            <label className="text-[11px] font-medium text-ink-soft">Collaboration default effort
+            <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.collabEffort')}
               <input className={`${INPUT} mt-1`} value={config.agents.defaultSubagentReasoningEffort} onChange={(event) => setConfig({ ...config, agents: { ...config.agents, defaultSubagentReasoningEffort: event.target.value } })} placeholder="medium" />
             </label>
-            <label className="text-[11px] font-medium text-ink-soft">Catalog refresh interval (ms)
+            <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.catalogInterval')}
               <input className={`${INPUT} mt-1`} type="number" min={0} value={config.modelCatalog.refreshIntervalMs} onChange={(event) => setConfig({ ...config, modelCatalog: { ...config.modelCatalog, refreshIntervalMs: Number(event.target.value) } })} />
             </label>
           </div>
-          <Toggle label="Enable agent collaboration" checked={config.agents.enabled} disabled={!isDesktop} onChange={(checked) => setConfig({ ...config, agents: { ...config.agents, enabled: checked } })} />
-          <Toggle label="Include built-in product skills" checked={config.builtinProductSkills} disabled={!isDesktop} onChange={(checked) => setConfig({ ...config, builtinProductSkills: checked })} />
-          <Toggle label="Refresh model catalog when the server starts" checked={config.modelCatalog.refreshOnStart} disabled={!isDesktop} onChange={(checked) => setConfig({ ...config, modelCatalog: { ...config.modelCatalog, refreshOnStart: checked } })} />
+          <Toggle label={t('st.sidecar.enableCollab')} checked={config.agents.enabled} disabled={!isDesktop} onChange={(checked) => setConfig({ ...config, agents: { ...config.agents, enabled: checked } })} />
+          <Toggle label={t('st.sidecar.builtinSkills')} checked={config.builtinProductSkills} disabled={!isDesktop} onChange={(checked) => setConfig({ ...config, builtinProductSkills: checked })} />
+          <Toggle label={t('st.sidecar.refreshOnStart')} checked={config.modelCatalog.refreshOnStart} disabled={!isDesktop} onChange={(checked) => setConfig({ ...config, modelCatalog: { ...config.modelCatalog, refreshOnStart: checked } })} />
         </fieldset>
-        <Hint>Writes are validated against the documented config sections, backed up first, and atomically replace {config.configPath}. Applies after server restart.</Hint>
+        <Hint>{t('st.sidecar.hint', { path: config.configPath })}</Hint>
         {Object.keys(config.experimentalEnv).length > 0 ? (
           <div className="rounded-lg border border-hairline bg-paper p-3">
-            <p className="mb-2 text-[11px] font-semibold text-ink">Environment overrides in effect</p>
+            <p className="mb-2 text-[11px] font-semibold text-ink">{t('st.sidecar.envTitle')}</p>
             {Object.entries(config.experimentalEnv).map(([name, value]) => <p key={name} className="font-mono text-[10px] text-ink-faint">{name}={value}</p>)}
-            <Hint>Environment gates override the matching [experimental] value until the sidecar environment changes.</Hint>
+            <Hint>{t('st.sidecar.envHint')}</Hint>
           </div>
         ) : null}
         <div className="flex flex-wrap gap-2">
-          <button type="button" className={PRIMARY_BUTTON} disabled={!isDesktop || loading || saving} onClick={() => void save()}>{saving ? 'Saving file…' : 'Save sidecar defaults'}</button>
-          <button type="button" className={SECONDARY_BUTTON} disabled={!isDesktop || !restart.required || restarting} onClick={() => void applyRestart()}>{restarting ? 'Restarting…' : 'Apply & restart server'}</button>
-          {!isDesktop && restart.required ? <button type="button" className={SECONDARY_BUTTON} onClick={() => setRestart(clearRestartRequirement())}>Acknowledge restart notice</button> : null}
+          <button type="button" className={PRIMARY_BUTTON} disabled={!isDesktop || loading || saving} onClick={() => void save()}>{saving ? t('st.sidecar.saving') : t('st.sidecar.save')}</button>
+          <button type="button" className={SECONDARY_BUTTON} disabled={!isDesktop || !restart.required || restarting} onClick={() => void applyRestart()}>{restarting ? t('st.sidecar.restarting') : t('st.sidecar.applyRestart')}</button>
+          {!isDesktop && restart.required ? <button type="button" className={SECONDARY_BUTTON} onClick={() => setRestart(clearRestartRequirement())}>{t('st.sidecar.acknowledge')}</button> : null}
         </div>
-        {restart.required ? <Hint>Pending fields: {restart.fields.join(', ')}. This badge remains until a verified desktop restart or explicit browser acknowledgement.</Hint> : null}
+        {restart.required ? <Hint>{t('st.sidecar.pendingFields', { fields: restart.fields.join(', ') })}</Hint> : null}
         <FeedbackLine feedback={feedback} />
       </div>
     </SectionCard>
@@ -1160,11 +1206,13 @@ function DesktopServerFileCard() {
 }
 
 function ToolRow({ tool }: { tool: ToolDescriptor }) {
-  return <div className="rounded-lg border border-hairline bg-paper px-3 py-2"><p className="text-[13px] font-medium text-ink">{tool.name}</p><p className="text-[11px] text-ink-soft">{tool.description}</p><p className="mt-0.5 font-mono text-[10px] text-ink-faint">source: {tool.source}</p></div>;
+  const { t } = useI18n();
+  return <div className="rounded-lg border border-hairline bg-paper px-3 py-2"><p className="text-[13px] font-medium text-ink">{tool.name}</p><p className="text-[11px] text-ink-soft">{tool.description}</p><p className="mt-0.5 font-mono text-[10px] text-ink-faint">{t('st.tools.source', { source: tool.source })}</p></div>;
 }
 
 function McpRow({ server }: { server: McpServer }) {
   const { client } = useConnection();
+  const { t, locale } = useI18n();
   const [restarting, setRestarting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const restart = async () => {
@@ -1172,9 +1220,9 @@ function McpRow({ server }: { server: McpServer }) {
     setFeedback(null);
     try {
       await client.restartMcpServer(server.id);
-      setFeedback({ tone: 'success', text: 'Restart requested.' });
+      setFeedback({ tone: 'success', text: t('st.mcp.restartRequested') });
     } catch (error) {
-      setFeedback({ tone: 'error', text: error instanceof Error ? error.message : String(error) });
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setRestarting(false);
     }
@@ -1182,8 +1230,8 @@ function McpRow({ server }: { server: McpServer }) {
   return (
     <div className="rounded-lg border border-hairline bg-paper px-3 py-2">
       <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0"><p className="truncate text-[13px] font-medium text-ink">{server.name}</p><p className="truncate font-mono text-[10.5px] text-ink-faint">{server.transport} · {server.status} · {server.tool_count} tools</p></div>
-        <button type="button" disabled={restarting} onClick={() => void restart()} className={SECONDARY_BUTTON}>{restarting ? 'Restarting…' : 'Restart'}</button>
+        <div className="min-w-0"><p className="truncate text-[13px] font-medium text-ink">{server.name}</p><p className="truncate font-mono text-[10.5px] text-ink-faint">{server.transport} · {server.status} · {t('st.mcp.toolsCount', { count: server.tool_count })}</p></div>
+        <button type="button" disabled={restarting} onClick={() => void restart()} className={SECONDARY_BUTTON}>{restarting ? t('st.mcp.restarting') : t('st.mcp.restart')}</button>
       </div>
       <FeedbackLine feedback={feedback} />
     </div>
@@ -1196,20 +1244,21 @@ function SkillRow({ skill }: { skill: SkillDescriptor }) {
 
 function WorkspacesSection() {
   const { client } = useConnection();
+  const { t } = useI18n();
   const navigate = useNavigate();
   const query = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
   return (
-    <SectionCard title="Workspaces" badge="Server catalog">
+    <SectionCard title={t('st.workspaces.title')} badge={t('st.badge.serverCatalog')}>
       <div className="space-y-2">
         {query.data?.items.map((workspace) => (
           <div key={workspace.id} className="flex items-center justify-between gap-3 rounded-lg border border-hairline bg-paper px-3 py-2">
             <div className="min-w-0"><p className="truncate text-[13px] font-medium text-ink">{workspace.name}</p><p className="truncate font-mono text-[10.5px] text-ink-faint">{workspace.root}</p></div>
-            <button type="button" onClick={() => navigate(`/new?workspace=${encodeURIComponent(workspace.id)}`)} className={SECONDARY_BUTTON}>New session</button>
+            <button type="button" onClick={() => navigate(`/new?workspace=${encodeURIComponent(workspace.id)}`)} className={SECONDARY_BUTTON}>{t('st.workspaces.newSession')}</button>
           </div>
         ))}
-        {query.isLoading ? <Hint>Loading workspaces…</Hint> : null}
+        {query.isLoading ? <Hint>{t('st.workspaces.loading')}</Hint> : null}
         {query.isError ? <InlineError error={query.error} /> : null}
-        <Hint>Workspace roots are discovered and managed by the server. This page exposes the real action available for each entry instead of a fake edit form.</Hint>
+        <Hint>{t('st.workspaces.hint')}</Hint>
       </div>
     </SectionCard>
   );
@@ -1217,25 +1266,27 @@ function WorkspacesSection() {
 
 function AboutSection() {
   const { meta } = useConnection();
+  const { t } = useI18n();
   const guiVersion = import.meta.env['VITE_APP_VERSION'] ?? '0.0.0-dev';
   return (
-    <SectionCard title="About" badge="Build info">
+    <SectionCard title={t('st.about.title')} badge={t('st.badge.buildInfo')}>
       <div className="space-y-2 text-[12.5px] text-ink-soft">
         <p>Kiki GUI: <span className="font-mono text-ink">{guiVersion}</span></p>
-        <p>Server version: <span className="font-mono text-ink">{meta.server_version}</span></p>
-        <p>Server ID: <span className="font-mono text-ink">{meta.server_id}</span></p>
-        <p>Backend: <span className="font-mono text-ink">{meta.backend ?? 'v1'}</span></p>
+        <p>{t('st.about.serverVersion')}: <span className="font-mono text-ink">{meta.server_version}</span></p>
+        <p>{t('st.about.serverId')}: <span className="font-mono text-ink">{meta.server_id}</span></p>
+        <p>{t('st.about.backend')}: <span className="font-mono text-ink">{meta.backend ?? 'v1'}</span></p>
       </div>
     </SectionCard>
   );
 }
 
 function SettingsNav({ active }: { active: SectionId }) {
+  const { t } = useI18n();
   const navigate = useNavigate();
   return (
     <nav className="flex h-full w-full flex-col border-r border-hairline bg-panel p-2 lg:w-[200px]">
       {SECTIONS.map((section) => (
-        <button key={section.id} type="button" onClick={() => navigate(`/settings/${section.id}`)} className={`rounded-lg px-3 py-2 text-left text-[13px] transition-colors ${active === section.id ? 'bg-accent-soft font-medium text-accent' : 'text-ink-soft hover:bg-paper hover:text-ink'}`}>{section.label}</button>
+        <button key={section.id} type="button" onClick={() => navigate(`/settings/${section.id}`)} className={`rounded-lg px-3 py-2 text-left text-[13px] transition-colors ${active === section.id ? 'bg-accent-soft font-medium text-accent' : 'text-ink-soft hover:bg-paper hover:text-ink'}`}>{t(section.labelKey)}</button>
       ))}
     </nav>
   );
@@ -1243,6 +1294,7 @@ function SettingsNav({ active }: { active: SectionId }) {
 
 export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void }) {
   const { section } = useParams<{ section?: string }>();
+  const { t } = useI18n();
   const active: SectionId = SECTIONS.find((candidate) => candidate.id === section)?.id ?? 'general';
   const navigate = useNavigate();
   const pane = active === 'general' ? <GeneralSection /> : active === 'models' ? <ModelsSection /> : active === 'connection' ? <ConnectionSection /> : active === 'providers' ? <ProvidersSection /> : active === 'capabilities' ? <CapabilitiesSection /> : active === 'workspaces' ? <WorkspacesSection /> : <AboutSection />;
@@ -1250,15 +1302,15 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   return (
     <>
       <header className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
-        <button type="button" onClick={onToggleSidebar} aria-label="Open session menu" className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden"><span aria-hidden>☰</span></button>
-        <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">Settings</h1>
+        <button type="button" onClick={onToggleSidebar} aria-label={t('sv.openMenuAria')} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden"><span aria-hidden>☰</span></button>
+        <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">{t('st.title')}</h1>
       </header>
       <main className="flex min-h-0 flex-1">
         <div className="hidden lg:block"><SettingsNav active={active} /></div>
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="border-b border-hairline bg-panel px-4 py-2 lg:hidden">
             <select className="w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-[13px] text-ink outline-none focus:border-accent" value={active} onChange={(event) => navigate(`/settings/${event.target.value}`)}>
-              {SECTIONS.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.label}</option>)}
+              {SECTIONS.map((candidate) => <option key={candidate.id} value={candidate.id}>{t(candidate.labelKey)}</option>)}
             </select>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 lg:px-8"><div className="mx-auto max-w-[760px] space-y-5">{pane}</div></div>

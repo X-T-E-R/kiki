@@ -6,6 +6,7 @@
 
 import { useState, type FormEvent } from 'react';
 
+import { useI18n } from '../i18n';
 import { detectLocalConnection, isDesktopRuntime } from '../lib/localServer';
 import type { ConnectionConfig } from '../state/connectionConfig';
 import { Wordmark } from './Wordmark';
@@ -25,6 +26,7 @@ export function ConnectScreen({
   onConnect: (config: ConnectionConfig, persist?: boolean) => void;
   onBack: (() => void) | undefined;
 }) {
+  const { t } = useI18n();
   const [url, setUrl] = useState(initial.url);
   const [token, setToken] = useState(initial.token);
   const [detecting, setDetecting] = useState(false);
@@ -41,15 +43,17 @@ export function ConnectScreen({
     try {
       const connection = await detectLocalConnection();
       if (connection === null) {
-        setDetectNote('No local kap-server found on this machine.');
+        setDetectNote(t('connect.noneFound'));
         return;
       }
       onConnect(connection.config, connection.persist);
     } catch (error) {
       setDetectNote(
         isDesktopRuntime()
-          ? `Kiki's local backend could not start: ${error instanceof Error ? error.message : String(error)}`
-          : 'Detection needs the kiki dev server (vite dev). Enter the server URL and token manually.',
+          ? t('connect.desktopStartFailed', {
+              detail: error instanceof Error ? error.message : String(error),
+            })
+          : t('connect.detectNeedsDev'),
       );
     } finally {
       setDetecting(false);
@@ -64,7 +68,7 @@ export function ConnectScreen({
           <div className="px-7 pt-6 pb-7">
             <Wordmark size="lg" />
             <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">
-              A workshop desk for your agent. Connect to a running kap-server to begin.
+              {t('connect.tagline')}
             </p>
 
             <form onSubmit={submit} className="mt-6">
@@ -74,26 +78,26 @@ export function ConnectScreen({
                 disabled={detecting || connecting}
                 className="mb-5 w-full rounded-lg border border-hairline-strong bg-paper px-3 py-2 text-[13px] font-medium text-ink transition-colors hover:border-accent hover:text-accent disabled:opacity-50"
               >
-                {detecting ? 'Detecting…' : 'Detect local server'}
+                {detecting ? t('connect.detecting') : t('connect.detect')}
               </button>
               {detectNote !== null ? (
                 <p className="mb-4 -mt-2 text-[12px] text-ink-soft">{detectNote}</p>
               ) : null}
 
               <label htmlFor="connect-server-url" className="mb-1 block text-[12px] font-medium text-ink-soft">
-                Server URL
+                {t('connect.serverUrl')}
               </label>
               <input
                 id="connect-server-url"
                 className="mb-4 w-full rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[13px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent"
-                placeholder={`http://127.0.0.1:58627 (empty = proxy ${__KIKI_PROXY_TARGET__})`}
+                placeholder={t('connect.urlPlaceholder', { target: __KIKI_PROXY_TARGET__ })}
                 value={url}
                 onChange={(event) => setUrl(event.target.value)}
                 spellCheck={false}
               />
 
               <label htmlFor="connect-token" className="mb-1 block text-[12px] font-medium text-ink-soft">
-                Bearer token
+                {t('connect.token')}
               </label>
               <input
                 id="connect-token"
@@ -116,7 +120,7 @@ export function ConnectScreen({
                 disabled={connecting}
                 className="w-full rounded-lg bg-accent px-3 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-accent-deep disabled:opacity-60"
               >
-                {connecting ? 'Connecting…' : 'Connect'}
+                {connecting ? t('connect.connecting') : t('connect.connect')}
               </button>
               {onBack !== undefined ? (
                 <button
@@ -124,15 +128,17 @@ export function ConnectScreen({
                   onClick={onBack}
                   className="mt-2 w-full rounded-lg px-3 py-1.5 text-[12px] text-ink-soft transition-colors hover:text-ink"
                 >
-                  Back
+                  {t('connect.back')}
                 </button>
               ) : null}
             </form>
 
             <p className="mt-5 border-t border-hairline pt-4 text-[11px] leading-relaxed text-ink-faint">
-              Deep links supported: <span className="font-mono">?server=…&token=…</span> or{' '}
-              <span className="font-mono">#token=…</span>. The connection is remembered in this
-              browser only.
+              {t('connect.deepLinkBefore')}
+              <span className="font-mono">?server=…&token=…</span>
+              {t('connect.deepLinkOr')}
+              <span className="font-mono">#token=…</span>
+              {t('connect.deepLinkAfter')}
             </p>
           </div>
         </div>

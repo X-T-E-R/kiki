@@ -29,6 +29,7 @@ import {
 } from './lib/desktop';
 import { dedupeSessions, mergeSessionFirstPage, type SessionListData } from './lib/sessionList';
 import { readLastSessionId, writeDesktopPrefs } from './lib/settings';
+import { useI18n } from './i18n';
 import { useConnection } from './state/connection';
 
 function RootRedirect() {
@@ -38,6 +39,7 @@ function RootRedirect() {
 
 export function App() {
   const { client, wsStatus } = useConnection();
+  const { t } = useI18n();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -118,9 +120,7 @@ export function App() {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {wsStatus !== 'open' && !isSettingsRoute ? (
           <div className="shrink-0 border-b border-amber-rule/40 bg-amber-card px-4 py-1.5 text-center text-[12px] font-medium text-amber-ink">
-            {wsStatus === 'connecting'
-              ? 'Connection lost — reconnecting…'
-              : 'Disconnected from the server. Events will resume on reconnect.'}
+            {wsStatus === 'connecting' ? t('app.reconnecting') : t('app.disconnected')}
           </div>
         ) : null}
         <Routes>
@@ -150,7 +150,7 @@ export function App() {
         <div
           role="button"
           tabIndex={-1}
-          aria-label="Close sidebar"
+          aria-label={t('app.closeSidebar')}
           className="app-overlay-backdrop md:hidden"
           onClick={() => setSidebarOpen(false)}
           onKeyDown={(event) => {

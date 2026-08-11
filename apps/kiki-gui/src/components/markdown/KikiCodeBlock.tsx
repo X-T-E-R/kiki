@@ -14,6 +14,8 @@
 import { useState, type ComponentProps, type ReactElement, type ReactNode } from 'react';
 import { CodeBlock } from 'streamdown';
 
+import { useI18n } from '../../i18n';
+
 /** Lines shown before a fence collapses behind "View more". */
 const PREVIEW_LINES = 12;
 /** JetBrains Mono 12.5px × 1.55 line-height + vertical padding. */
@@ -36,6 +38,7 @@ function extractCode(children: ReactNode): { code: string; language: string } {
 type PreProps = ComponentProps<'pre'> & { isIncomplete?: boolean; node?: unknown };
 
 export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
+  const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const { code, language } = extractCode(children);
@@ -63,7 +66,7 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
             <button
               type="button"
               onClick={() => setExpanded((value) => !value)}
-              title={expanded ? 'Collapse' : 'Expand'}
+              title={expanded ? t('cb.collapse') : t('cb.expand')}
               className="rounded px-1 py-0.5 font-mono text-[10.5px] text-ink-faint transition-colors hover:text-ink"
             >
               {expanded ? '▴' : '▾'}
@@ -72,12 +75,12 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
           <button
             type="button"
             onClick={copy}
-            title="Copy code"
+            title={t('cb.copyTitle')}
             className={`rounded px-1 py-0.5 font-mono text-[10.5px] transition-colors ${
               copied ? 'text-success' : 'text-ink-faint hover:text-ink'
             }`}
           >
-            {copied ? '✓ copied' : 'copy'}
+            {copied ? t('cb.copied') : t('cb.copy')}
           </button>
         </div>
       </div>
@@ -101,7 +104,7 @@ export function KikiCodeBlock({ children, isIncomplete }: PreProps) {
           onClick={() => setExpanded((value) => !value)}
           className="flex w-full items-center justify-center gap-1 border-t border-hairline py-1 text-[11px] text-ink-faint transition-colors hover:text-ink"
         >
-          {expanded ? 'Show less' : `View more (${totalLines - PREVIEW_LINES} lines)`}
+          {expanded ? t('cb.showLess') : t('cb.viewMore', { count: totalLines - PREVIEW_LINES })}
           <span aria-hidden>{expanded ? '▴' : '▾'}</span>
         </button>
       ) : null}

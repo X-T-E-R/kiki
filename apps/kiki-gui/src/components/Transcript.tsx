@@ -18,7 +18,7 @@ import { StickToBottom, useStickToBottomContext } from 'use-stick-to-bottom';
 
 import type { ApprovalDecision, QuestionAnswer } from '@moonshot-ai/protocol';
 
-import { formatDuration } from '../lib/time';
+import { useI18n } from '../i18n';
 import {
   groupBlocks,
   groupHasError,
@@ -43,12 +43,6 @@ import { ApprovalCard, QuestionCard } from './Interactions';
 import { Markdown } from './Markdown';
 import { ToolCard } from './ToolCard';
 import { KikiMark, Wordmark } from './Wordmark';
-
-function absoluteTime(iso: string | undefined): string | undefined {
-  if (iso === undefined) return undefined;
-  const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? undefined : date.toLocaleString();
-}
 
 /**
  * Split streaming assistant text into a settled prefix (safe to parse as
@@ -78,10 +72,11 @@ const UserMessage = memo(function UserMessage({
   block: UserBlock;
   onCancelQueued?: (promptId: string) => void;
 }) {
+  const { t, time } = useI18n();
   return (
-    <div className="anim-enter flex flex-col items-end" title={absoluteTime(block.createdAt)}>
+    <div className="anim-enter flex flex-col items-end" title={time.absoluteTime(block.createdAt)}>
       <span className="mb-1 pr-1 text-[10.5px] font-semibold tracking-wide text-ink-faint uppercase">
-        You
+        {t('transcript.you')}
       </span>
       <div className="max-w-[85%] rounded-2xl rounded-br-md border border-hairline bg-[#f3ede1] px-3.5 py-2 text-[13.5px] leading-relaxed whitespace-pre-wrap text-ink">
         {block.text}
@@ -94,14 +89,14 @@ const UserMessage = memo(function UserMessage({
               : 'border-danger/30 bg-danger/5 text-danger'
           }`}
         >
-          {block.promptStatus === 'queued' ? '◔ Queued — starts when the current turn finishes' : 'Blocked'}
+          {block.promptStatus === 'queued' ? t('transcript.queuedChip') : t('transcript.blocked')}
           {block.promptStatus === 'queued' &&
           block.promptId !== undefined &&
           onCancelQueued !== undefined ? (
             <button
               type="button"
-              aria-label="Cancel queued prompt"
-              title="Cancel this queued prompt"
+              aria-label={t('transcript.cancelQueuedAria')}
+              title={t('transcript.cancelQueuedTitle')}
               onClick={() => onCancelQueued(block.promptId!)}
               className="rounded-full text-amber-ink/70 transition-colors hover:text-danger"
             >
@@ -115,6 +110,7 @@ const UserMessage = memo(function UserMessage({
 });
 
 const AssistantMessage = memo(function AssistantMessage({ block }: { block: AssistantBlock }) {
+  const { t, time } = useI18n();
   const [copied, setCopied] = useState(false);
   const streaming = block.streaming && block.text !== '';
   const { prefix, tail } = useMemo(
@@ -122,7 +118,7 @@ const AssistantMessage = memo(function AssistantMessage({ block }: { block: Assi
     [streaming, block.text],
   );
   return (
-    <div className="anim-enter group/msg relative flex gap-3" title={absoluteTime(block.createdAt)}>
+    <div className="anim-enter group/msg relative flex gap-3" title={time.absoluteTime(block.createdAt)}>
       <KikiMark className="mt-[7px] shrink-0" />
       <div className="min-w-0 flex-1">
         {streaming ? (
@@ -143,7 +139,7 @@ const AssistantMessage = memo(function AssistantMessage({ block }: { block: Assi
       {!block.streaming && block.text !== '' ? (
         <button
           type="button"
-          title="Copy markdown"
+          title={t('transcript.copyTitle')}
           onClick={() => {
             void navigator.clipboard
               .writeText(block.text)
@@ -157,7 +153,7 @@ const AssistantMessage = memo(function AssistantMessage({ block }: { block: Assi
             copied ? 'text-success opacity-100' : 'text-ink-faint opacity-0 group-hover/msg:opacity-100 hover:text-ink'
           }`}
         >
-          {copied ? '✓' : 'copy'}
+          {copied ? '✓' : t('transcript.copy')}
         </button>
       ) : null}
     </div>
@@ -165,6 +161,7 @@ const AssistantMessage = memo(function AssistantMessage({ block }: { block: Assi
 });
 
 const ThinkingMessage = memo(function ThinkingMessage({ block }: { block: ThinkingBlock }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   return (
     <div className="anim-enter border-l-2 border-hairline-strong pl-3">
@@ -176,7 +173,7 @@ const ThinkingMessage = memo(function ThinkingMessage({ block }: { block: Thinki
         <span aria-hidden className={`inline-block transition-transform duration-150 ${open ? 'rotate-90' : ''}`}>
           ▶
         </span>
-        Thinking{block.streaming ? '…' : ''}
+        {t('transcript.thinking')}{block.streaming ? '…' : ''}
         {block.streaming ? <span className="stream-caret">▍</span> : null}
       </button>
       {open ? (
@@ -195,9 +192,10 @@ const SystemReminderMessage = memo(function SystemReminderMessage({
 }: {
   block: SystemReminderBlock;
 }) {
+  const { t, time } = useI18n();
   const [open, setOpen] = useState(false);
   return (
-    <div className="anim-enter border-l-2 border-dashed border-hairline pl-3" title={absoluteTime(block.createdAt)}>
+    <div className="anim-enter border-l-2 border-dashed border-hairline pl-3" title={time.absoluteTime(block.createdAt)}>
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
@@ -207,7 +205,7 @@ const SystemReminderMessage = memo(function SystemReminderMessage({
         <span aria-hidden className={`inline-block transition-transform duration-150 ${open ? 'rotate-90' : ''}`}>
           ▶
         </span>
-        System reminder
+        {t('transcript.systemReminder')}
       </button>
       {open ? (
         <div className="mt-1.5 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-faint">
@@ -219,13 +217,14 @@ const SystemReminderMessage = memo(function SystemReminderMessage({
 });
 
 const ShellMessage = memo(function ShellMessage({ block }: { block: ShellBlock }) {
+  const { t } = useI18n();
   return (
     <div className="anim-enter overflow-hidden rounded-lg bg-ink">
       <div className="flex items-center gap-2 border-b border-white/10 px-3 py-1.5">
         <span className="font-mono text-[11px] font-semibold text-accent">shell</span>
         {!block.done ? <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" /> : null}
         {block.done && block.isError === true ? (
-          <span className="font-mono text-[10.5px] text-danger">failed</span>
+          <span className="font-mono text-[10.5px] text-danger">{t('transcript.failed')}</span>
         ) : null}
       </div>
       <pre className="max-h-80 overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-[#e8dcc4]">
@@ -248,6 +247,7 @@ function useSubagentElapsed(block: SubagentBlock): number {
 }
 
 const SubagentCard = memo(function SubagentCard({ block }: { block: SubagentBlock }) {
+  const { t, tp, time } = useI18n();
   const elapsed = useSubagentElapsed(block);
   const statusTone =
     block.status === 'running'
@@ -273,18 +273,18 @@ const SubagentCard = memo(function SubagentCard({ block }: { block: SubagentBloc
           </span>
         ) : null}
         <span className="ml-auto shrink-0 font-mono text-[10px] text-ink-faint">
-          {formatDuration(elapsed)}
+          {time.formatDuration(elapsed)}
         </span>
         <span aria-hidden className="text-[10px] text-ink-faint transition-transform group-hover:translate-x-0.5">→</span>
       </div>
       <div className="mt-1 flex items-center gap-2 pl-5 text-[10.5px] text-ink-faint">
-        <span>{block.status}</span>
+        <span>{t(`subagent.status.${block.status}`)}</span>
         <span>·</span>
-        <span>{block.toolCallCount} tool call{block.toolCallCount === 1 ? '' : 's'}</span>
+        <span>{tp('transcript.toolCalls', block.toolCallCount)}</span>
         {block.thinkingEffort !== undefined ? (
           <>
             <span>·</span>
-            <span>{block.thinkingEffort} thinking</span>
+            <span>{t('transcript.thinkingSuffix', { effort: block.thinkingEffort })}</span>
           </>
         ) : null}
       </div>
@@ -298,17 +298,19 @@ const SubagentCard = memo(function SubagentCard({ block }: { block: SubagentBloc
 });
 
 const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
+  const { t } = useI18n();
+  const text = block.i18n !== undefined ? t(block.i18n.key, block.i18n.params) : block.text;
   if (block.tone === 'danger') {
     return (
       <div className="anim-enter rounded-lg border border-danger/30 bg-danger/5 px-3 py-1.5 text-[12px] text-danger">
-        {block.text}
+        {text}
       </div>
     );
   }
   return (
     <div className="anim-enter flex items-center gap-3 py-1">
       <span className="h-px flex-1 bg-hairline" />
-      <span className="text-[11px] text-ink-faint">{block.text}</span>
+      <span className="text-[11px] text-ink-faint">{text}</span>
       <span className="h-px flex-1 bg-hairline" />
     </div>
   );
@@ -320,6 +322,7 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
  */
 const ToolGroupRow = memo(
   function ToolGroupRow({ group }: { group: ToolGroup }) {
+  const { t } = useI18n();
   const running = groupHasRunning(group);
   const hasError = groupHasError(group);
   const [expanded, setExpanded] = useState(false);
@@ -337,13 +340,13 @@ const ToolGroupRow = memo(
       >
         <span className="w-6 shrink-0 text-center font-mono text-[12px] text-ink-soft">☰</span>
         <span className="shrink-0 text-[12.5px] font-semibold text-ink">
-          Steps · {group.tools.length}
+          {t('transcript.steps', { count: group.tools.length })}
         </span>
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint">
           {groupToolNames(group)}
         </span>
         {running ? (
-          <svg className="spinner h-3.5 w-3.5 text-accent" viewBox="0 0 16 16" fill="none" aria-label="running">
+          <svg className="spinner h-3.5 w-3.5 text-accent" viewBox="0 0 16 16" fill="none" aria-label={t('transcript.runningAria')}>
             <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2" />
             <path d="M14.5 8a6.5 6.5 0 0 0-6.5-6.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
           </svg>
@@ -401,6 +404,7 @@ const BlockView = memo(function BlockView({
   /** y/n shortcut hints are armed only for the single unresolved approval. */
   approvalShortcutHints?: boolean;
 }) {
+  const { t } = useI18n();
   const originAgentName =
     (block.kind === 'approval' || block.kind === 'question') && block.originAgentId !== undefined
       ? (agentNames?.get(block.originAgentId) ?? block.originAgentId)
@@ -426,7 +430,7 @@ const BlockView = memo(function BlockView({
           block={{
             kind: 'notice',
             id: `${block.id}-readonly`,
-            text: `Approval requested: ${block.request.action}`,
+            text: t('transcript.approvalReadonly', { action: block.request.action }),
             tone: 'neutral',
           }}
         />
@@ -444,7 +448,7 @@ const BlockView = memo(function BlockView({
           block={{
             kind: 'notice',
             id: `${block.id}-readonly`,
-            text: 'This subagent requested input during its run.',
+            text: t('transcript.questionReadonly'),
             tone: 'neutral',
           }}
         />
@@ -468,6 +472,7 @@ function nodeKey(node: DisplayNode): string {
  * conditional centered pill driven by useStickToBottomContext).
  */
 function JumpToBottom() {
+  const { t } = useI18n();
   const { isAtBottom, scrollToBottom } = useStickToBottomContext();
   if (isAtBottom) return null;
   return (
@@ -476,7 +481,7 @@ function JumpToBottom() {
       onClick={() => scrollToBottom()}
       className="anim-enter absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline bg-panel/95 px-3 py-1.5 text-[11.5px] font-medium text-ink-soft shadow-[0_4px_16px_-6px_rgba(28,25,23,0.25)] transition-colors hover:border-accent hover:text-accent"
     >
-      <span aria-hidden className="text-[10px]">▼</span> Jump to latest
+      <span aria-hidden className="text-[10px]">▼</span> {t('transcript.jumpToLatest')}
     </button>
   );
 }
@@ -491,6 +496,7 @@ function TopEdge({ state, onLoadOlder }: {
   state: SessionViewState;
   onLoadOlder: () => Promise<boolean>;
 }) {
+  const { t } = useI18n();
   const { scrollRef } = useStickToBottomContext();
   const inflightRef = useRef(false);
 
@@ -527,7 +533,7 @@ function TopEdge({ state, onLoadOlder }: {
     return (
       <div className="flex items-center justify-center gap-2 pb-2 text-[11.5px] text-ink-faint">
         <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
-        Loading earlier messages…
+        {t('transcript.loadingEarlier')}
       </div>
     );
   }
@@ -535,7 +541,7 @@ function TopEdge({ state, onLoadOlder }: {
     return (
       <div className="flex items-center gap-3 pb-1">
         <span className="h-px flex-1 bg-hairline" />
-        <span className="text-[10.5px] text-ink-faint">beginning of history</span>
+        <span className="text-[10.5px] text-ink-faint">{t('transcript.beginning')}</span>
         <span className="h-px flex-1 bg-hairline" />
       </div>
     );
@@ -566,6 +572,7 @@ export function Transcript({
   onRetryLoad?: () => void;
   readOnly?: boolean;
 }) {
+  const { t } = useI18n();
   const { blocks, loaded, loadError } = state;
   const nodes = useMemo(() => groupBlocks(blocks), [blocks]);
   const agentNames = useMemo(() => {
@@ -586,7 +593,7 @@ export function Transcript({
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6">
         <div className="max-w-[360px] rounded-xl border border-danger/30 bg-danger/5 p-4 text-center">
-          <p className="text-[13px] font-medium text-danger">Could not open session</p>
+          <p className="text-[13px] font-medium text-danger">{t('transcript.couldNotOpen')}</p>
           <p className="mt-1 font-mono text-[11px] text-danger/80">{loadError}</p>
           {onRetryLoad !== undefined ? (
             <button
@@ -594,7 +601,7 @@ export function Transcript({
               onClick={onRetryLoad}
               className="mt-3 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-accent-deep"
             >
-              Retry
+              {t('common.retry')}
             </button>
           ) : null}
         </div>
@@ -606,7 +613,7 @@ export function Transcript({
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 text-[13px] text-ink-faint">
         <span className="status-dot-busy h-2 w-2 rounded-full bg-accent" />
-        Opening session…
+        {t('transcript.opening')}
       </div>
     );
   }
@@ -615,7 +622,7 @@ export function Transcript({
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 opacity-70">
         <Wordmark size="lg" />
-        <p className="text-[13px] text-ink-faint">A blank page. Tell kiki what to make.</p>
+        <p className="text-[13px] text-ink-faint">{t('transcript.blank')}</p>
       </div>
     );
   }
