@@ -34,6 +34,21 @@ function message(text: string): ContextMessage {
   return { role: 'user', content: [{ type: 'text', text }], toolCalls: [], origin: { kind: 'user' } };
 }
 
+function peerMessage(messageId: string, text: string): ContextMessage {
+  return {
+    id: messageId,
+    role: 'user',
+    content: [{ type: 'text', text }],
+    toolCalls: [],
+    origin: {
+      kind: 'peer_thread',
+      source: { hostId: 'host', workspaceId: 'source-workspace', sessionId: 'source-session' },
+      messageId,
+      acceptedAt: 1,
+    },
+  };
+}
+
 function harness() {
   const disposables = new DisposableStore();
   onTestFinished(() => disposables.dispose());
@@ -77,6 +92,24 @@ describe('AgentPromptService', () => {
     const first = await prompt.enqueue({ message: message('one') });
     const second = await prompt.enqueue({ message: message('two') });
     expect(prompt.list().pending.map((item) => item.id)).toEqual([first.id, second.id]);
+  });
+
+  it('deduplicates a peer origin already present in durable context', async () => {
+    const { prompt, context, loop } = harness();
+    context.append(peerMessage('peer-message-1', 'already delivered'));
+    const enqueue = vi.spyOn(loop, 'enqueue');
+
+    const handle = await prompt.enqueue({
+      id: 'peer-message-1',
+      message: peerMessage('peer-message-1', 'already delivered'),
+    });
+
+    expect(handle.state).toBe('completed');
+    expect(enqueue).not.toHaveBeenCalled();
+    await expect(handle.completion).resolves.toMatchObject({
+      promptId: 'peer-message-1',
+      state: 'completed',
+    });
   });
 
   it('publishes prompt.queued only for prompts that cannot launch immediately', async () => {

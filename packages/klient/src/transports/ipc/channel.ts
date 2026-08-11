@@ -1,8 +1,8 @@
 /**
- * IPC client channel — connects to a `serveKlientIpc` host over a unix
- * domain socket. Calls are correlated by client-chosen ids with a per-call
- * deadline; event subscriptions are registered before the handshake
- * completes and flushed once it does. There is no automatic reconnect: a
+ * IPC client channel — connects to a `serveKlientIpc` host over a local
+ * socket or Windows named pipe. Calls are correlated by client-chosen ids
+ * with a per-call deadline; event subscriptions are registered before the
+ * handshake completes and flushed once it does. There is no automatic reconnect: a
  * broken socket rejects in-flight calls and stays closed (the WS transport
  * owns the resumable-connection story).
  */
@@ -17,14 +17,19 @@ import type {
 } from '../../core/channel.js';
 import { RPCError } from '../../core/errors.js';
 import { trimTrailingUndefined } from '../args.js';
-import { encodeFrame, NdjsonDecoder, type IpcFrame } from './codec.js';
+import {
+  encodeFrame,
+  NdjsonDecoder,
+  normalizeIpcSocketPath,
+  type IpcFrame,
+} from './codec.js';
 
-const DEFAULT_CALL_TIMEOUT_MS = 30_000;
+const DEFAULT_CALL_TIMEOUT_MS = 65_000;
 
 export interface IpcChannelOptions {
   readonly socketPath: string;
   readonly token?: string;
-  /** Per-call deadline (ms). Default `30000`; `0` disables. */
+  /** Per-call deadline (ms). Default `65000`; `0` disables. */
   readonly callTimeoutMs?: number;
 }
 
@@ -69,7 +74,7 @@ export class IpcChannel implements KlientChannel {
 
   constructor(options: IpcChannelOptions) {
     this.callTimeoutMs = options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
-    this.socket = createConnection(options.socketPath);
+    this.socket = createConnection(normalizeIpcSocketPath(options.socketPath));
     this.ready = new Promise<void>((resolve, reject) => {
       const onError = (error: Error): void => {
         reject(error);
@@ -315,6 +320,8 @@ export class IpcChannel implements KlientChannel {
         const error = new RPCError(
           typeof frame.code === 'number' ? frame.code : 50001,
           frame.msg ?? 'error',
+          frame.details,
+          frame.reason,
         );
         const p = this.take(id);
         if (p !== undefined) {
@@ -349,6 +356,8 @@ export class IpcChannel implements KlientChannel {
             new RPCError(
               typeof frame.code === 'number' ? frame.code : 50001,
               frame.msg ?? 'stream error',
+              frame.details,
+              frame.reason,
             ),
           );
         }

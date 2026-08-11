@@ -122,6 +122,22 @@ import type {
   Workspace,
   WorkspaceUpdate,
 } from '@moonshot-ai/agent-core-v2/app/workspace/workspace';
+import type {
+  ListThreadsInput,
+  ListThreadsResult,
+  ReadThreadInput,
+  ReadThreadResult,
+  SendThreadMessageInput,
+  SendThreadMessageResult,
+  ThreadActivity,
+  ThreadRef,
+  ThreadSummary,
+  ThreadTurn,
+  WaitThreadInput,
+  WaitThreadResult,
+  WaitThreadsInput,
+  WaitThreadsResult,
+} from '@moonshot-ai/agent-core-v2/app/threadCommunication/threadCommunication';
 // Test-only: `@moonshot-ai/protocol` is a devDependency; importing its types
 // here (never in `src/`) strengthens parity for the agent event stream.
 import type {
@@ -291,6 +307,22 @@ import {
   workspaceSchema,
   workspaceUpdateSchema,
 } from '../src/contract/global/workspaces.js';
+import {
+  listThreadsInputSchema,
+  listThreadsResultSchema,
+  readThreadInputSchema,
+  readThreadResultSchema,
+  sendThreadMessageInputSchema,
+  sendThreadMessageResultSchema,
+  threadActivitySchema,
+  threadRefSchema,
+  threadSummarySchema,
+  threadTurnSchema,
+  waitThreadInputSchema,
+  waitThreadResultSchema,
+  waitThreadsInputSchema,
+  waitThreadsResultSchema,
+} from '../src/contract/global/threads.js';
 
 import type { AssertWire, MutableDeep } from './helpers/typeAssert.js';
 
@@ -327,6 +359,28 @@ const _sessionListQuery: AssertWire<typeof sessionListQuerySchema, SessionListQu
 // workspaces.ts
 const _workspace: AssertWire<typeof workspaceSchema, Workspace> = true;
 const _workspaceUpdate: AssertWire<typeof workspaceUpdateSchema, WorkspaceUpdate> = true;
+
+// threads.ts
+const _threadRef: AssertWire<typeof threadRefSchema, ThreadRef> = true;
+const _threadSummary: AssertWire<typeof threadSummarySchema, ThreadSummary> = true;
+const _listThreadsInput: AssertWire<typeof listThreadsInputSchema, ListThreadsInput> = true;
+const _listThreadsResult: AssertWire<typeof listThreadsResultSchema, ListThreadsResult> = true;
+const _threadTurn: AssertWire<typeof threadTurnSchema, ThreadTurn> = true;
+const _readThreadInput: AssertWire<typeof readThreadInputSchema, ReadThreadInput> = true;
+const _readThreadResult: AssertWire<typeof readThreadResultSchema, ReadThreadResult> = true;
+const _sendThreadMessageInput: AssertWire<
+  typeof sendThreadMessageInputSchema,
+  SendThreadMessageInput
+> = true;
+const _sendThreadMessageResult: AssertWire<
+  typeof sendThreadMessageResultSchema,
+  SendThreadMessageResult
+> = true;
+const _threadActivity: AssertWire<typeof threadActivitySchema, ThreadActivity> = true;
+const _waitThreadInput: AssertWire<typeof waitThreadInputSchema, WaitThreadInput> = true;
+const _waitThreadResult: AssertWire<typeof waitThreadResultSchema, WaitThreadResult> = true;
+const _waitThreadsInput: AssertWire<typeof waitThreadsInputSchema, WaitThreadsInput> = true;
+const _waitThreadsResult: AssertWire<typeof waitThreadsResultSchema, WaitThreadsResult> = true;
 
 // config.ts
 // One-directional: the engine declares the `ConfigInspectValue` keys as

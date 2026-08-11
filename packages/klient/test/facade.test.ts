@@ -156,6 +156,74 @@ describe('facade routing', () => {
   });
 });
 
+describe('thread facade routing', () => {
+  const target = { hostId: 'host-a', workspaceId: 'workspace-b', sessionId: 'session-b' };
+
+  it('routes host-qualified list/read/send/wait and override calls at App scope', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    channel.results.set('threadCommunicationService.hostId', 'host-a');
+    channel.results.set('threadCommunicationService.listThreads', { threads: [] });
+    channel.results.set('threadCommunicationService.readThread', { thread: target, turns: [] });
+    channel.results.set('threadCommunicationService.sendMessage', {
+      messageId: 'message-a', targetSeq: 1, acceptedAt: 2, deduplicated: false, delivery: 'pending',
+    });
+    channel.results.set('threadCommunicationService.waitThreads', {
+      threads: [{ thread: target, cursor: 'cursor-a', activities: [] }], timedOut: true,
+    });
+    channel.results.set('threadCommunicationService.getWorkspaceOverride', false);
+    channel.results.set('threadCommunicationService.setWorkspaceOverride', undefined);
+    channel.results.set('threadCommunicationService.clearWorkspaceOverride', undefined);
+    channel.results.set('threadCommunicationService.isWorkspaceEnabled', false);
+
+    await expect(klient.global.threads.hostId()).resolves.toBe('host-a');
+    await klient.global.threads.list({ workspaceId: 'workspace-b' });
+    await klient.global.threads.read({ thread: target, limit: 3 });
+    await klient.global.threads.send({ target, content: 'hello', idempotencyKey: 'key-a' });
+    await klient.global.threads.wait({ threads: [{ thread: target }], timeoutMs: 0 });
+    await expect(klient.global.threads.getWorkspaceOverride('workspace-b')).resolves.toBe(false);
+    await klient.global.threads.setWorkspaceOverride('workspace-b', false);
+    await klient.global.threads.clearWorkspaceOverride('workspace-b');
+    await expect(klient.global.threads.isWorkspaceEnabled('workspace-b')).resolves.toBe(false);
+
+    expect(channel.calls.every((call) => Object.keys(call.scope).length === 0)).toBe(true);
+    expect(channel.calls.map(({ service, method, args }) => ({ service, method, args }))).toEqual([
+      { service: 'threadCommunicationService', method: 'hostId', args: [] },
+      { service: 'threadCommunicationService', method: 'listThreads', args: [{ workspaceId: 'workspace-b' }] },
+      { service: 'threadCommunicationService', method: 'readThread', args: [{ thread: target, limit: 3 }] },
+      { service: 'threadCommunicationService', method: 'sendMessage', args: [{ target, content: 'hello', idempotencyKey: 'key-a' }] },
+      { service: 'threadCommunicationService', method: 'waitThreads', args: [{ threads: [{ thread: target }], timeoutMs: 0 }] },
+      { service: 'threadCommunicationService', method: 'getWorkspaceOverride', args: ['workspace-b'] },
+      { service: 'threadCommunicationService', method: 'setWorkspaceOverride', args: ['workspace-b', false] },
+      { service: 'threadCommunicationService', method: 'clearWorkspaceOverride', args: ['workspace-b'] },
+      { service: 'threadCommunicationService', method: 'isWorkspaceEnabled', args: ['workspace-b'] },
+    ]);
+  });
+
+  it('rejects malformed references and wait bounds before transport', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    await expect(
+      klient.global.threads.read({ thread: { ...target, hostId: '' } }),
+    ).rejects.toBeInstanceOf(KlientValidationError);
+    await expect(
+      klient.global.threads.wait({ threads: Array.from({ length: 9 }, () => ({ thread: target })) }),
+    ).rejects.toBeInstanceOf(KlientValidationError);
+    await expect(
+      klient.global.threads.wait({ threads: [{ thread: target }, { thread: target }] }),
+    ).rejects.toBeInstanceOf(KlientValidationError);
+    await expect(
+      klient.global.threads.send({
+        source: { ...target, sessionId: 'forged-source' },
+        target,
+        content: 'legacy input',
+        idempotencyKey: 'legacy-key',
+      } as never),
+    ).rejects.toBeInstanceOf(KlientValidationError);
+    expect(channel.calls).toEqual([]);
+  });
+});
+
 describe('agent profile routing', () => {
   it('thinking calls route to agentProfileService with the agent scope', async () => {
     const channel = new FakeChannel();

@@ -43,6 +43,7 @@ import { registerTasksRoutes } from './tasks';
 import { registerTerminalsRoutes } from './terminals';
 import { registerToolsRoutes } from './tools';
 import { registerTranscriptRoutes } from './transcript';
+import { registerThreadsRoutes } from './threads';
 import { registerWorkspaceFsRoutes } from './workspaceFs';
 import { registerWorkspacesRoutes } from './workspaces';
 
@@ -181,6 +182,7 @@ export async function registerApiV1Routes(
         core,
         transcriptService: opts.transcriptService,
       });
+      registerThreadsRoutes(apiV1 as unknown as Parameters<typeof registerThreadsRoutes>[0], core);
       if (opts.enableShutdown !== false) {
         registerShutdownRoutes(apiV1 as unknown as Parameters<typeof registerShutdownRoutes>[0], {
           onShutdown: opts.onShutdown,

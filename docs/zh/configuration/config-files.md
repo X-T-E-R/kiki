@@ -112,6 +112,7 @@ timeout = 5
 | `loop_control` | `table` | — | Agent 循环控制参数 → [`loop_control`](#loop-control) |
 | `background` | `table` | — | 后台任务运行参数 → [`background`](#background) |
 | `agents` | `table` | — | Codex 风格协作适配器默认值 → [`agents`](#agents) |
+| `thread_communication` | `table` | `{ enabled = true }` | 本地 peer thread 通信 → [`thread_communication`](#thread-communication) |
 | `tools` | `table` | — | 全局工具开关 → [`tools`](#tools) |
 | `image` | `table` | — | 图片压缩参数 → [`image`](#image) |
 | `services` | `table` | — | 内置外部服务配置 → [`services`](#services) |
@@ -119,7 +120,7 @@ timeout = 5
 | `hooks` | `array<table>` | — | 生命周期 hook，详见 [Hooks](../customization/hooks.md) |
 | `identity` | `table` | — | 自定义 Agent 身份 → [`identity`](#identity) |
 
-以下各节对 `providers`、`models`、`thinking`、`loop_control`、`background`、`agents`、`image`、`services`、`permission` 等嵌套表逐一展开。
+以下各节对 `providers`、`models`、`thinking`、`loop_control`、`background`、`agents`、`thread_communication`、`image`、`services`、`permission` 等嵌套表逐一展开。
 
 ## `providers`
 
@@ -304,6 +305,16 @@ max_output_size = 8192
 | `default_subagent_reasoning_effort` | `string` | — | 当派生请求和所选 profile 都未指定 effort 时使用的非空 reasoning effort |
 
 只有 `timeout_ms` 有环境变量覆盖：`KIMI_SUBAGENT_TIMEOUT_MS` 的优先级高于配置文件。`default_model` 与 `default_effort` 没有对应的环境变量。
+
+## `thread_communication`
+
+这个严格配置节控制[本地 peer thread 通信](../customization/agents.md#peer-thread-通信)。功能默认开启，没有对应的环境变量覆盖。
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `enabled` | `boolean` | `true` | 允许 4 个主 Agent peer thread 工具以及本地 REST 与 Klient thread 操作；设为 `false` 可全局关闭这些操作 |
+
+单个工作区的覆盖值单独持久化，通过本地 REST API 或 Klient 管理。全局开关开启时，覆盖值可以关闭某个工作区；全局开关关闭时，覆盖值不能重新启用通信。
 
 ## `mcp`
 

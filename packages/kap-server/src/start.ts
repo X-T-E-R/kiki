@@ -492,6 +492,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
           { name: 'messages', description: 'Message history' },
           { name: 'search', description: 'Global message search' },
           { name: 'transcript', description: 'Turn-granular session transcript' },
+          { name: 'threads', description: 'Host-qualified peer-thread communication' },
           { name: 'prompts', description: 'Prompt submission & abort' },
           { name: 'approvals', description: 'Approval resolution' },
           { name: 'questions', description: 'Question resolution & dismiss' },

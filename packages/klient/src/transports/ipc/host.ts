@@ -1,7 +1,7 @@
 /**
- * IPC host — serves one engine scope over a unix domain socket. Incoming
- * frames are bridged to the shared in-process dispatcher (the same code the
- * memory transport uses), so ipc and in-memory behavior are identical by
+ * IPC host — serves one engine scope over a local socket or Windows named
+ * pipe. Incoming frames are bridged to the shared in-process dispatcher (the
+ * same code the memory transport uses), so ipc and in-memory behavior are identical by
  * construction; only serialization separates them.
  */
 
@@ -11,7 +11,12 @@ import { unlink } from 'node:fs/promises';
 import type { EventSourceRef, IDisposable, ScopeRef } from '../../core/channel.js';
 import { RPCError } from '../../core/errors.js';
 import { createMemoryDispatcher, type ScopeLike } from '../memory/dispatcher.js';
-import { encodeFrame, NdjsonDecoder, type IpcFrame } from './codec.js';
+import {
+  encodeFrame,
+  NdjsonDecoder,
+  normalizeIpcSocketPath,
+  type IpcFrame,
+} from './codec.js';
 
 const REQUEST_INVALID = 40001;
 const UNAUTHORIZED = 40100;
@@ -19,7 +24,7 @@ const UNAUTHORIZED = 40100;
 export interface ServeKlientIpcOptions {
   /** A bootstrapped engine app scope (same value `createKlient({ scope })` takes). */
   readonly scope: ScopeLike;
-  /** Unix socket path to listen on. A stale file at the path is removed first. */
+  /** Local endpoint path. On Windows it is deterministically mapped to a named pipe. */
   readonly socketPath: string;
   /** Optional token; when set, the client's `hello` must carry the same token. */
   readonly token?: string;
@@ -50,13 +55,16 @@ function eventSourceFromFrame(frame: IpcFrame): EventSourceRef {
 
 export async function serveKlientIpc(options: ServeKlientIpcOptions): Promise<KlientIpcHost> {
   const dispatcher = createMemoryDispatcher(options.scope);
+  const listenPath = normalizeIpcSocketPath(options.socketPath);
 
   // Best-effort cleanup of a stale socket file; ignore everything but a real
   // leftover (ENOENT = nothing to remove).
-  try {
-    await unlink(options.socketPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  if (process.platform !== 'win32') {
+    try {
+      await unlink(listenPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
   }
 
   const connections = new Set<Socket>();
@@ -73,7 +81,14 @@ export async function serveKlientIpc(options: ServeKlientIpcOptions): Promise<Kl
     };
     const sendError = (id: string, error: unknown): void => {
       if (error instanceof RPCError) {
-        send({ type: 'error', id, code: error.code, msg: error.message });
+        send({
+          type: 'error',
+          id,
+          code: error.code,
+          msg: error.message,
+          details: error.details,
+          reason: error.reason,
+        });
       } else {
         send({
           type: 'error',
@@ -86,7 +101,14 @@ export async function serveKlientIpc(options: ServeKlientIpcOptions): Promise<Kl
 
     const sendStreamError = (id: string, error: unknown): void => {
       if (error instanceof RPCError) {
-        send({ type: 'stream_error', id, code: error.code, msg: error.message });
+        send({
+          type: 'stream_error',
+          id,
+          code: error.code,
+          msg: error.message,
+          details: error.details,
+          reason: error.reason,
+        });
       } else {
         send({
           type: 'stream_error',
@@ -220,7 +242,7 @@ export async function serveKlientIpc(options: ServeKlientIpcOptions): Promise<Kl
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(options.socketPath, resolve);
+    server.listen(listenPath, resolve);
   });
 
   return {
@@ -232,7 +254,8 @@ export async function serveKlientIpc(options: ServeKlientIpcOptions): Promise<Kl
       connections.clear();
       return new Promise<void>((resolve) => {
         server.close(() => {
-          void unlink(options.socketPath).then(
+          const cleanup = process.platform === 'win32' ? Promise.resolve() : unlink(listenPath);
+          void cleanup.then(
             () => {
               resolve();
             },

@@ -59,6 +59,8 @@ export const ErrorCode = {
   SKILL_NOT_FOUND: 40415,
   /** tool_call_id 不存在，或该调用没有对应的 plan（非 ExitPlanMode） */
   TOOL_CALL_NOT_FOUND: 40416,
+  /** peer thread reference does not resolve to an existing session */
+  THREAD_NOT_FOUND: 40418,
 
   /** session 有正在进行的 prompt，拒绝新请求 */
   SESSION_BUSY: 40901,
@@ -101,6 +103,18 @@ export const ErrorCode = {
   FS_ALREADY_EXISTS: 40919,
   /** goal 只允许主 agent 使用 */
   GOAL_UNSUPPORTED_AGENT: 40920,
+  /** target thread is archived */
+  THREAD_ARCHIVED: 40923,
+  /** peer-thread communication is disabled for the workspace */
+  THREAD_DISABLED: 40924,
+  /** the reference points at another host */
+  THREAD_CROSS_HOST: 40925,
+  /** source and target identify the same thread */
+  THREAD_SELF_SEND: 40926,
+  /** thread cursor is malformed, stale, or belongs to another query */
+  THREAD_CURSOR_INVALID: 40927,
+  /** an idempotency key was reused with a different payload */
+  THREAD_IDEMPOTENCY_CONFLICT: 40928,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,
@@ -122,11 +136,15 @@ export const ErrorCode = {
 
   /** WS 单连接 watch_paths > 100 */
   FS_WATCH_LIMIT_EXCEEDED: 42902,
+  /** peer-thread list, read, wait, or message bound exceeded */
+  THREAD_LIMIT_EXCEEDED: 42903,
 
   /** 兜底 */
   INTERNAL_ERROR: 50001,
   /** 写入 session 持久化失败 */
   PERSISTENCE_FAILURE: 50003,
+  /** a durably accepted peer message could not be delivered */
+  THREAD_DELIVERY_FAILED: 50005,
 
   /** tool 执行抛错 */
   TOOL_EXECUTION_FAILED: 60001,
@@ -175,6 +193,7 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.TERMINAL_NOT_FOUND]: 'terminal.not_found',
   [ErrorCode.SKILL_NOT_FOUND]: 'skill.not_found',
   [ErrorCode.TOOL_CALL_NOT_FOUND]: 'tool_call.not_found',
+  [ErrorCode.THREAD_NOT_FOUND]: 'thread.not_found',
 
   [ErrorCode.SESSION_BUSY]: 'session.busy',
   [ErrorCode.APPROVAL_ALREADY_RESOLVED]: 'approval.already_resolved',
@@ -197,6 +216,12 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.GOAL_OBJECTIVE_TOO_LONG]: 'goal.objective_too_long',
   [ErrorCode.FS_ALREADY_EXISTS]: 'fs.already_exists',
   [ErrorCode.GOAL_UNSUPPORTED_AGENT]: 'goal.unsupported_agent',
+  [ErrorCode.THREAD_ARCHIVED]: 'thread.archived',
+  [ErrorCode.THREAD_DISABLED]: 'thread.disabled',
+  [ErrorCode.THREAD_CROSS_HOST]: 'thread.cross_host',
+  [ErrorCode.THREAD_SELF_SEND]: 'thread.self_send',
+  [ErrorCode.THREAD_CURSOR_INVALID]: 'thread.cursor_invalid',
+  [ErrorCode.THREAD_IDEMPOTENCY_CONFLICT]: 'thread.idempotency_conflict',
 
   [ErrorCode.APPROVAL_EXPIRED]: 'approval.expired',
   [ErrorCode.QUESTION_EXPIRED]: 'question.expired',
@@ -209,9 +234,11 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.FS_GREP_TIMEOUT]: 'fs.grep_timeout',
 
   [ErrorCode.FS_WATCH_LIMIT_EXCEEDED]: 'fs.watch_limit_exceeded',
+  [ErrorCode.THREAD_LIMIT_EXCEEDED]: 'thread.limit_exceeded',
 
   [ErrorCode.INTERNAL_ERROR]: 'internal.error',
   [ErrorCode.PERSISTENCE_FAILURE]: 'persistence.failure',
+  [ErrorCode.THREAD_DELIVERY_FAILED]: 'thread.delivery_failed',
 
   [ErrorCode.TOOL_EXECUTION_FAILED]: 'tool.execution_failed',
   [ErrorCode.TOOL_NOT_AVAILABLE]: 'tool.not_available',

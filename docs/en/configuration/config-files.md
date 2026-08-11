@@ -112,6 +112,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `loop_control` | `table` | — | Agent loop control parameters → [`loop_control`](#loop-control) |
 | `background` | `table` | — | Background task runtime parameters → [`background`](#background) |
 | `agents` | `table` | — | Codex-style collaboration adapter defaults → [`agents`](#agents) |
+| `thread_communication` | `table` | `{ enabled = true }` | Local peer-thread communication → [`thread_communication`](#thread-communication) |
 | `tools` | `table` | — | Global tool switch → [`tools`](#tools) |
 | `image` | `table` | — | Image compression parameters → [`image`](#image) |
 | `services` | `table` | — | Built-in external service configuration → [`services`](#services) |
@@ -119,7 +120,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `hooks` | `array<table>` | — | Lifecycle hooks; see [Hooks](../customization/hooks.md) |
 | `identity` | `table` | — | Custom agent identity → [`identity`](#identity) |
 
-The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `background`, `agents`, `tools`, `image`, `services`, and `permission`.
+The following sections cover each of the nested tables in turn: `providers`, `models`, `thinking`, `loop_control`, `background`, `agents`, `thread_communication`, `tools`, `image`, `services`, and `permission`.
 
 ## `providers`
 
@@ -304,6 +305,16 @@ This strict section configures the experimental [Codex-style collaboration adapt
 | `default_subagent_reasoning_effort` | `string` | — | Nonblank reasoning effort used when a spawn and its selected profile do not choose one |
 
 Only `timeout_ms` has an environment override: `KIMI_SUBAGENT_TIMEOUT_MS` takes higher priority than `config.toml`. There are no environment variables for `default_model` or `default_effort`.
+
+## `thread_communication`
+
+This strict section controls [local peer-thread communication](../customization/agents.md#peer-thread-communication). It is enabled by default and has no environment-variable override.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `enabled` | `boolean` | `true` | Permits the four main-Agent peer-thread tools and local REST and Klient thread operations. Set to `false` to disable those operations globally |
+
+Per-workspace overrides are persisted separately and managed through the local REST API or Klient. An override can disable one workspace while the global switch remains on, but cannot enable communication while this global switch is off.
 
 ## `mcp`
 

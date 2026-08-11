@@ -67,6 +67,11 @@ describe('server-v2 OpenAPI', () => {
     expect(paths['/api/v1/sessions']).toBeDefined();
     expect(paths['/api/v1/files']).toBeDefined();
     expect(paths['/api/v1/sessions/{session_id}/fs/{*}']).toBeDefined();
+    expect(paths['/api/v1/threads']).toBeDefined();
+    expect(paths['/api/v1/threads:read']).toBeDefined();
+    expect(paths['/api/v1/threads:send']).toBeDefined();
+    expect(paths['/api/v1/threads:wait']).toBeDefined();
+    expect(paths['/api/v1/workspaces/{workspace_id}/thread-communication']).toBeDefined();
   });
 
   it('projects the session-action dispatcher into archive only', async () => {
@@ -116,6 +121,20 @@ describe('server-v2 OpenAPI', () => {
     expect(headers['content-disposition']).toBeDefined();
     expect(headers['content-length']).toBeDefined();
     expect(headers['cache-control']).toBeDefined();
+  });
+
+  it('documents thread send as a strict target-only request', async () => {
+    const doc = await fetchOpenApi();
+    const sendOp = operation(doc, '/api/v1/threads:send', 'post');
+    const requestBody = asRecord(sendOp['requestBody']);
+    const content = asRecord(requestBody['content']);
+    const schema = asRecord(asRecord(content['application/json'])['schema']);
+    const properties = asRecord(schema['properties']);
+    expect(properties['target']).toBeDefined();
+    expect(properties['content']).toBeDefined();
+    expect(properties['idempotency_key']).toBeDefined();
+    expect(properties['source']).toBeUndefined();
+    expect(schema['additionalProperties']).toBe(false);
   });
 
   it('represents the fs-action dispatcher as a oneOf union', async () => {

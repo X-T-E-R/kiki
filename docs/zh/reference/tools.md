@@ -80,9 +80,20 @@ Plan 模式是一种受约束的工作状态：进入后 `Write` 与 `Edit` 只�
 
 ## 协作类
 
-启用 `agent-collaboration` 实验功能后，`agent` 与 `coder` 还会提供 `spawn_agent`、`list_agents`、`wait_agent`、`followup_task` 和 `interrupt_agent`。这些工具通过精确的 `task_name` 或 `agent_id` 管理调用方直接拥有的具名异步子 Agent。
+主 Agent 默认提供 4 个 peer thread 工具：`list_threads`、`read_thread`、`send_message_to_thread` 和 `wait_threads`。这些工具通过主机/工作区/会话引用访问同一台本地主机上的现有会话，工具输入中的字段名为 `host_id`、`workspace_id` 与 `session_id`。子 Agent 不提供这些工具。
 
-适配器只支持全新派生（`fork_turns = "none"`），目标正在运行时会拒绝 follow-up，也不提供 `send_message` 或历史 fork。详见 [Agent 与子 Agent](../customization/agents.md#codex-风格协作适配器)。
+- `list_threads` 按更新时间从新到旧列出已启用且未归档的会话，也可以用 `workspace_id` 筛选。`limit` 默认为 50，取值为 1–100；还有下一页时会返回不透明 cursor。
+- `read_thread` 读取已完成的主 Agent turn，不会恢复冷会话。参数包括 thread 引用与可选 cursor；`limit` 默认为 20，取值为 1–100。
+- `send_message_to_thread` 持久接收发往另一条 thread 的消息，并从当前主 Agent 会话记录 peer 来源。传入目标 thread、非空且最多 100,000 字符的 `content`，以及非空且最多 256 字符的 `idempotency_key`；它没有来源参数，同一个 key 只能用于同一条消息。
+- `wait_threads` 等待 terminal、attention、lifecycle 或消息无法投递活动。单次可等待 1–8 条互不重复的 thread；`timeout_ms` 默认为 30,000，取值为 0–60,000。
+
+Peer thread 通信只能在同一台主机内进行，可以跨工作区，并受 [`[thread_communication] enabled`](../configuration/config-files.md#thread-communication) 全局控制。持久化的单工作区覆盖值也可以关闭某个工作区。
+
+只有来源 thread 的主 Agent 调用 `send_message_to_thread` 才会记录 peer 归属；REST 与 Klient 发送属于只指定目标的 user 来源输入。详见 [Agent 与子 Agent](../customization/agents.md#peer-thread-通信)。
+
+启用 `agent-collaboration` 实验功能后，`agent` 与 `coder` 还会提供 `spawn_agent`、`list_agents`、`wait_agent`、`followup_task`、`interrupt_agent` 和 `send_message`。这些工具通过精确的 `task_name` 或 `agent_id` 管理调用方直接拥有的具名异步子 Agent。
+
+适配器只支持全新派生（`fork_turns = "none"`），目标正在运行时会拒绝 follow-up。`send_message` 与 `followup_task` 不同：它把消息持久排入队列，不会启动或中断 turn，因此空闲目标会保持空闲，到之后的 turn 进入 step 边界时才收到消息。适配器不提供历史 fork。详见 [Agent 与子 Agent](../customization/agents.md#codex-风格协作适配器)。
 
 协作类工具负责 Agent 间协作、用户交互和 Skill 调用。
 

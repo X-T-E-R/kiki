@@ -100,6 +100,12 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   async enqueue(input: PromptInput): Promise<PromptHandle> {
+    const peerMessageId =
+      input.message.origin?.kind === 'peer_thread' ? input.message.origin.messageId : undefined;
+    if (peerMessageId !== undefined) {
+      const existing = this.findPeerOriginHandle(peerMessageId);
+      if (existing !== undefined) return existing;
+    }
     const id = input.id ?? input.message.id ?? newMessageId();
     const message = { ...input.message, id };
     const launchedDeferred = deferred<Turn | undefined>();
@@ -127,6 +133,39 @@ export class AgentPromptService implements IAgentPromptService {
       this.publishQueued(record);
     }
     return record.handle;
+  }
+
+  private findPeerOriginHandle(messageId: string): PromptHandle | undefined {
+    const live = [this.active, ...this.pending]
+      .filter((item): item is Record => item !== undefined)
+      .find(
+        (item) =>
+          item.message.origin?.kind === 'peer_thread' &&
+          item.message.origin.messageId === messageId,
+      );
+    if (live !== undefined) return live.handle;
+    const persisted = this.context
+      .get()
+      .find(
+        (message) =>
+          message.origin?.kind === 'peer_thread' && message.origin.messageId === messageId,
+      );
+    if (persisted === undefined) return undefined;
+    const id = persisted.id ?? messageId;
+    const completion: PromptCompletion = {
+      promptId: id,
+      result: undefined,
+      state: 'completed',
+    };
+    return {
+      id,
+      userMessageId: id,
+      createdAt: new Date(0).toISOString(),
+      state: 'completed',
+      message: persisted,
+      launched: Promise.resolve(undefined),
+      completion: Promise.resolve(completion),
+    };
   }
 
   list(): PromptQueueSnapshot {

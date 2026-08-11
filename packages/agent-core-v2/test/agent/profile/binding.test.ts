@@ -20,6 +20,7 @@ import { IAgentProfileService, type ResolvedAgentProfile } from '#/agent/profile
 import { IHostClock } from '#/os/interface/hostClock';
 import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { isToolActive } from '#/agent/toolPolicy/evaluate';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { SELECT_TOOLS_TOOL_NAME } from '#/agent/toolSelect/toolSelect';
@@ -123,6 +124,34 @@ describe('AgentProfileService.bind', () => {
     expect(svc.isRunnable()).toBe(true);
     expect(svc.getActiveToolNames()?.length).toBeGreaterThan(0);
     expect(svc.getSystemPrompt()).toContain('Kimi Code CLI');
+  });
+
+  it('admits all six collaboration tools only in the intended builtin profile policies', () => {
+    const container = new InstantiationService(new ServiceCollection(), true);
+    const catalog = new BuiltinAgentProfileLoaderService(container);
+    const collaborationTools = [
+      'spawn_agent',
+      'list_agents',
+      'wait_agent',
+      'followup_task',
+      'interrupt_agent',
+      'send_message',
+    ];
+
+    for (const profileName of ['agent', 'coder']) {
+      const profile = catalog.get(profileName);
+      expect(profile).toBeDefined();
+      expect(collaborationTools.filter((name) => isToolActive(profile!, name))).toEqual(
+        collaborationTools,
+      );
+    }
+
+    const explore = catalog.get('explore');
+    expect(explore).toBeDefined();
+    expect(isToolActive(explore!, 'send_message')).toBe(false);
+
+    catalog.dispose();
+    container.dispose();
   });
 
   // A fast bootstrap can bind while config is still loading; the model

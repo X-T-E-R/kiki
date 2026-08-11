@@ -18,7 +18,8 @@
 | `kap-server`、`@moonshot-ai/protocol`，以及它们提供的会话、配置和认证契约 | 继承 | Kiki 客户端使用这些契约，不另行定义一套服务端或协议。 |
 | `agent-core` 和 `agent-core-v2` 中的模型绑定区域 | 改造 | Kiki 扩展了选定的上游 Agent 引擎路径，同时保留原有的会话和任务生命周期。 |
 | 为新派生子 Agent 显式绑定模型 alias 和 thinking effort | Kiki 独有 | 绑定行为是下游新增功能，在两条 Agent 引擎路径中实现，默认关闭。 |
-| 由 5 个工具组成的 Codex 风格协作适配器 | Kiki 独有 | 适配器新增 `spawn_agent`、`list_agents`、`wait_agent`、`followup_task` 和 `interrupt_agent`，但不表示完整兼容 Codex。 |
+| 由 6 个工具组成的 Codex 风格协作适配器 | Kiki 独有 | 适配器新增 `spawn_agent`、`list_agents`、`wait_agent`、`followup_task`、`interrupt_agent` 和 `send_message`，但不表示完整兼容 Codex。 |
+| 本地 peer thread 通信 | Kiki 独有 | 主 Agent 可以跨本地工作区列出、读取、发送消息并等待现有会话；REST 和 Klient 只允许外部客户端指定目标，发送结果不带 peer 归属。 |
 | 独立的 `@kiki/gui` package | Kiki 独有 | GUI 是继承服务端和协议表面的下游客户端。部分组件改造自已单独标注来源的其他开源项目，因此这些组件在 Kiki 独有 package 内归类为改造。 |
 
 本指南使用的仓库 fork point 是 `437a1b8`。这个提交哈希只作为比较锚点，不表示此后的上游变更已经存在于当前仓库中。
@@ -38,15 +39,39 @@
 
 ## 启用 Kiki 独有的 Agent 功能
 
-Kiki 独有的 Agent 功能目前属于实验功能，默认关闭。只需要一种行为时，优先使用对应功能的独立开关。
+下面的模型绑定与具名 Agent 功能仍属于实验功能，默认关闭。只需要一种行为时，优先使用对应功能的独立开关。
 
 | 功能 | 启用方式 | 额外边界 |
 | --- | --- | --- |
 | 旧版子 Agent 模型选择器与次主力配方 | `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` | 只门控符号化的 `model` / `model_preference` 选择器和 `[secondary_model]` 配方；显式 `model_alias` / `thinking_effort` 绑定是稳定能力，始终可用。只应用于新派生的子 Agent。恢复或重试的子 Agent 保持已持久化的绑定。 |
-| 由 5 个工具组成的具名 Agent 适配器 | `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION=1` | `[agents] enabled = false` 仍会移除这 5 个工具。适配器没有 `send_message` 工具，派生时也不会复制父 Agent 的对话历史。 |
+| 由 6 个工具组成的具名 Agent 适配器 | `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION=1` | `[agents] enabled = false` 仍会移除适配器工具。`send_message` 不会唤醒空闲目标，派生时也不会复制父 Agent 的对话历史。 |
 | 所有已注册的实验功能 | `KIMI_CODE_EXPERIMENTAL_FLAG=1` | 这是宽范围的总开关，不是运行时或产品选择器。 |
 
 [Agent 与子 Agent](../customization/agents.md)说明绑定优先级、生命周期和协作限制；[配置文件](../configuration/config-files.md#subagent)说明持久化的子 Agent 默认值。
+
+## 集成 peer thread 通信
+
+Peer thread 通信通过 [`[thread_communication] enabled`](../configuration/config-files.md#thread-communication) 默认开启。它协调本机上的现有会话，也可以跨工作区；每条 thread 引用都包含主机、工作区和会话身份，跨主机发送会被拒绝。只有主 Agent 能使用 4 个内置 thread 工具，本地客户端也可以直接调用同一套契约。
+
+Kimi 服务运行后，以下 REST 接口位于 `/api/v1` 下：
+
+| 操作 | 路由 |
+| --- | --- |
+| 列出 thread | `GET /api/v1/threads` |
+| 读取已完成 turn | `POST /api/v1/threads:read` |
+| 发送消息 | `POST /api/v1/threads:send` |
+| 等待活动 | `POST /api/v1/threads:wait` |
+| 读取工作区覆盖值 | `GET /api/v1/workspaces/{workspace_id}/thread-communication` |
+| 设置工作区覆盖值 | `PUT /api/v1/workspaces/{workspace_id}/thread-communication` |
+| 清除工作区覆盖值 | `DELETE /api/v1/workspaces/{workspace_id}/thread-communication` |
+
+`POST /api/v1/threads:send` 只接受 `target`、`content` 和 `idempotency_key`。旧的 `source` 字段会被拒绝，投递后的 turn 记为 user 来源输入；REST 客户端不能自行声明来源 thread。完整请求与响应 schema 见 `GET /openapi.json`。`GET /api/v1/meta` 通过 `capabilities.thread_communication: true` 表明服务端支持该功能。
+
+Klient 在 `global.threads` 下提供对应方法：`hostId`、`list`、`read`、`send`、`wait`、`getWorkspaceOverride`、`setWorkspaceOverride`、`clearWorkspaceOverride` 和 `isWorkspaceEnabled`。发送时调用 `global.threads.send({ target, content, idempotencyKey })`。
+
+这个严格 facade 不接受 `source`，通过底层传输附加来源数据也不能生成 peer 归属。与 REST 相同，Klient 发送会记为 user 来源输入。如需记录真实的 peer 归属，来源会话的主 Agent 必须调用 `send_message_to_thread`，由工具根据当前会话派生来源，而不是使用客户端提交的数据。
+
+工作区覆盖值会跨重启保留。清除覆盖值后，该工作区重新使用全局设置；即使覆盖值为启用，也不能绕过已关闭的全局 `[thread_communication]` 配置节。
 
 ## 区分 GUI、服务端和客户端
 
@@ -82,6 +107,7 @@ GUI package 在 `apps/kiki-gui/ATTRIBUTION.md` 中记录了改造自 codeg、Aio
 - **继承的服务端和协议**：`packages/kap-server/`、`packages/protocol/`、`packages/node-sdk/` 和 `packages/oauth/`
 - **改造过的模型绑定区域**：`packages/agent-core/src/session/subagent-binding.ts` 和 `packages/agent-core-v2/src/session/subagent/`
 - **Kiki 独有的协作适配器**：`packages/agent-core/src/tools/builtin/collaboration/agent-collaboration.ts` 和 `packages/agent-core-v2/src/agent/tools/agent-collaboration/agentCollaborationTool.ts`
+- **Kiki 独有的 peer thread 核心与传输层**：`packages/agent-core-v2/src/app/threadCommunication/`、`packages/kap-server/src/routes/threads.ts` 和 `packages/klient/src/contract/global/threads.ts`
 - **Kiki 独有 GUI 及其来源项目边界**：`apps/kiki-gui/package.json`、`apps/kiki-gui/src/lib/client.ts` 和 `apps/kiki-gui/ATTRIBUTION.md`
 
 ## 下一步

@@ -1,6 +1,7 @@
 import type { ContentPart, Message } from '#/kosong/contract/message';
 
 import type { AgentTaskStatus } from '#/agent/task/task';
+import type { ThreadRef } from '#/app/threadCommunication/threadCommunication';
 
 export type SkillSource = 'project' | 'user' | 'extra' | 'builtin';
 
@@ -91,6 +92,20 @@ export interface RetryOrigin {
   readonly trigger?: string;
 }
 
+export interface PeerThreadOrigin {
+  readonly kind: 'peer_thread';
+  readonly source: ThreadRef;
+  readonly messageId: string;
+  readonly acceptedAt: number;
+}
+
+export interface AgentMessageOrigin {
+  readonly kind: 'agent_message';
+  readonly messageId: string;
+  readonly senderAgentId: string;
+  readonly senderTaskName: string;
+}
+
 export type PromptOrigin =
   | UserPromptOrigin
   | SkillActivationOrigin
@@ -103,7 +118,9 @@ export type PromptOrigin =
   | CronJobOrigin
   | CronMissedOrigin
   | HookResultOrigin
-  | RetryOrigin;
+  | RetryOrigin
+  | PeerThreadOrigin
+  | AgentMessageOrigin;
 
 export type ContextMessage = Message & {
   readonly id?: string;
