@@ -129,6 +129,28 @@ function bindIndex(value, index) {
   return value;
 }
 
+/**
+ * Default skill-activation turn: the real route renders the skill prompt into
+ * a user message and starts a turn with a `skill_activation` origin. Scenarios
+ * override this with `onSkill(name, args, sessionId)` when they need more.
+ */
+function defaultSkillSteps(name, args, sessionId) {
+  const slashText = `/${name}${args !== '' ? ` ${args}` : ''}`;
+  const replyText = `Skill /${name} ran in the fixture${args !== '' ? ` with args "${args}"` : ''}.`;
+  return [
+    { frame: { type: 'turn.started', payload: { turnId: 1, origin: { kind: 'skill_activation' }, prompt: slashText } } },
+    { frame: { type: 'event.session.work_changed', payload: { busy: true, pending_interaction: 'none' } } },
+    { frame: { type: 'turn.step.started', payload: { turnId: 1, step: 1 } } },
+    { delay: 150 },
+    { frame: { type: 'assistant.delta', offset: 0, payload: { turnId: 1, delta: replyText } } },
+    { frame: { type: 'turn.step.completed', payload: { turnId: 1, step: 1 } } },
+    { commit: { id: 'placeholder', session_id: sessionId, role: 'user', content: [{ type: 'text', text: slashText }], created_at: now() } },
+    { commit: { id: 'placeholder', session_id: sessionId, role: 'assistant', content: [{ type: 'text', text: replyText }], created_at: now() } },
+    { frame: { type: 'turn.ended', payload: { turnId: 1, reason: 'completed', durationMs: 300 } } },
+    { frame: { type: 'event.session.work_changed', payload: { busy: false, pending_interaction: 'none' } } },
+  ];
+}
+
 class FixtureSession {
   constructor(record, scenarioData) {
     this.record = record; // Session wire record
@@ -143,6 +165,8 @@ class FixtureSession {
     this.agentTranscripts = scenarioData.agent_transcripts ?? {};
     this.goal = scenarioData.goal ?? null;
     this.lastPromptSubmission = null;
+    this.lastSkillActivation = null; // {name, args, attachments} — walker assertions
+    this.lastFsSearch = null; // last fs:search body
     this.seq = scenarioData.as_of_seq ?? this.messages.length;
     this.epoch = scenarioData.epoch ?? 'ep_fixture_1';
     this.scriptRunning = false;
@@ -168,6 +192,7 @@ class FixtureServer {
     this.auth = null;
     this.sessions = new Map();
     this.sockets = new Set();
+    this.lastSearchBody = null; // last POST /search body (walker assertions)
     this.http = createServer((req, res) => void this.handleHttp(req, res));
     this.wss = new WebSocketServer({ noServer: true });
   }
@@ -194,6 +219,7 @@ class FixtureServer {
       try { ws.terminate(); } catch { /* closing */ }
     }
     this.sockets.clear();
+    this.lastSearchBody = null;
     console.log(`[fixture] scenario "${name}" loaded (${this.sessions.size} sessions)`);
   }
 
@@ -397,6 +423,30 @@ class FixtureServer {
     for (const waiter of pending) waiter.resolve();
   }
 
+  /**
+   * `fs:search` for both the session route and the session-less workspace
+   * route: scenario-seeded entries, empty query → top-level entries only
+   * (dirs first), otherwise a case-insensitive substring match on the path.
+   */
+  replyFsSearch(res, session, body) {
+    const entries = this.scenario?.data.fsEntries ?? [];
+    const q = String(body?.query ?? '').toLowerCase();
+    if (session !== null) session.lastFsSearch = body ?? null;
+    const matched = q === ''
+      ? entries.filter((entry) => !entry.path.includes('/'))
+      : entries.filter((entry) => entry.path.toLowerCase().includes(q));
+    matched.sort((a, b) => (a.kind === b.kind ? a.path.localeCompare(b.path) : a.kind === 'directory' ? -1 : 1));
+    const limit = Math.min(Number(body?.limit ?? 50), 200);
+    const items = matched.slice(0, limit).map((entry) => ({
+      path: entry.path,
+      name: entry.name,
+      kind: entry.kind,
+      score: 1,
+      match_positions: [],
+    }));
+    return this.envelope(res, { items, truncated: matched.length > items.length });
+  }
+
   // ------------------------------------------------------------- HTTP
   envelope(res, data, code = 0, msg = 'success') {
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -423,6 +473,9 @@ class FixtureServer {
       res.setHeader('access-control-allow-origin', origin);
       res.setHeader('access-control-allow-methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
       res.setHeader('access-control-allow-headers', 'Content-Type, Authorization');
+      // The export download's filename rides Content-Disposition; browsers
+      // hide it from cross-origin fetch unless it is exposed.
+      res.setHeader('access-control-expose-headers', 'Content-Disposition');
       res.setHeader('vary', 'Origin');
     }
     if (req.method === 'OPTIONS') {
@@ -462,9 +515,13 @@ class FixtureServer {
 
   route(res, path, query, body, method) {
     const sessions = [...this.sessions.values()];
-    const sessionMatch = /^\/sessions\/([^/]+)(\/.*)?$/.exec(path);
+    // Action suffixes bind tighter than the tail: `/sessions/{id}:undo`,
+    // mirroring kap-server's parseActionSuffix (session ids never contain
+    // ':' or '/'); `/sessions/{id}/prompts/{pid}:abort` keeps its tail form.
+    const sessionMatch = /^\/sessions\/([^/:]+)(?::([^/]+))?(\/.*)?$/.exec(path);
     const sessionId = sessionMatch?.[1];
-    const tail = sessionMatch?.[2] ?? '';
+    const action = sessionMatch?.[2];
+    const tail = action !== undefined ? `:${action}` : (sessionMatch?.[3] ?? '');
     const session = sessionId !== undefined ? this.sessions.get(sessionId) : undefined;
 
     if (path === '/meta') {
@@ -611,6 +668,31 @@ class FixtureServer {
         ],
       });
     }
+    // Session-less workspace file search (`@` mentions on /new) — same
+    // filtering as the session route, `workspace` carried in the body.
+    if (path === '/workspace/fs:search' && method === 'POST') {
+      return this.replyFsSearch(res, null, body);
+    }
+    // Global full-text search — hits are scenario-seeded and substring-matched.
+    if (path === '/search' && method === 'POST') {
+      const q = String(body?.query ?? '').toLowerCase();
+      this.lastSearchBody = body ?? null;
+      const hits = (this.scenario?.data.searchHits ?? []).filter((hit) =>
+        q === '' ||
+        hit.snippet.toLowerCase().includes(q) ||
+        hit.session_title.toLowerCase().includes(q));
+      return this.envelope(res, {
+        items: hits,
+        has_more: false,
+        index_state: {
+          state: 'ready',
+          indexed_sessions: this.sessions.size,
+          total_sessions: this.sessions.size,
+          documents: hits.length,
+        },
+        source: 'index',
+      });
+    }
     if (path === '/sessions' && body === undefined) {
       let items = sessions.map((s) => s.record);
       if (query.get('include_archive') !== 'true') items = items.filter((s) => s.archived !== true);
@@ -684,6 +766,109 @@ class FixtureServer {
     }
     if (tail === '/goal') {
       return this.envelope(res, session.goal);
+    }
+    // Session skill catalog (slash menu) + activation. Activation starts a
+    // turn with a skill_activation origin, like the real route.
+    if (tail === '/skills' && body === undefined) {
+      const skills = this.scenario?.data.sessionSkills?.[session.record.id]
+        ?? this.scenario?.data.skills
+        ?? [];
+      return this.envelope(res, { skills });
+    }
+    const skillActivateMatch = /^\/skills\/([^/]+):activate$/.exec(tail);
+    if (skillActivateMatch !== null && method === 'POST') {
+      const name = decodeURIComponent(skillActivateMatch[1]);
+      const skills = this.scenario?.data.sessionSkills?.[session.record.id]
+        ?? this.scenario?.data.skills
+        ?? [];
+      const skill = skills.find((entry) => entry.name === name);
+      if (skill === undefined) return this.envelope(res, null, 40415, 'skill.not_found');
+      if (skill.type === 'reference') return this.envelope(res, null, 40912, 'skill.not_activatable');
+      const args = typeof body?.args === 'string' ? body.args : '';
+      session.lastSkillActivation = { name, args, attachments: body?.attachments ?? null };
+      const custom = this.scenario?.data.onSkill;
+      const steps = typeof custom === 'function'
+        ? custom(name, args, session.record.id)
+        : defaultSkillSteps(name, args, session.record.id);
+      if (Array.isArray(steps) && steps.length > 0) {
+        void this.runScript(session.record.id, bind(steps, session.record.id));
+      }
+      return this.envelope(res, { activated: true, skill_name: name });
+    }
+    if (tail === '/fs:search' && method === 'POST') {
+      return this.replyFsSearch(res, session, body);
+    }
+    if (tail === ':fork') {
+      const id = nextId('session');
+      const record = {
+        ...structuredClone(session.record),
+        id,
+        title: typeof body?.title === 'string'
+          ? body.title
+          : session.record.title !== ''
+            ? `${session.record.title} (fork)`
+            : 'Forked session',
+        created_at: now(),
+        updated_at: now(),
+        busy: false,
+        pending_interaction: 'none',
+        archived: false,
+      };
+      this.sessions.set(id, new FixtureSession(record, {
+        messages: structuredClone(session.messages),
+      }));
+      return this.envelope(res, record);
+    }
+    if (tail === ':undo') {
+      const all = [...session.older, ...session.messages];
+      let lastUserIndex = -1;
+      for (let i = all.length - 1; i >= 0; i -= 1) {
+        if (all[i].role === 'user') { lastUserIndex = i; break; }
+      }
+      if (lastUserIndex === -1) {
+        return this.envelope(res, null, 40911, 'session.undo_unavailable');
+      }
+      const keep = all.slice(0, lastUserIndex);
+      session.older = [];
+      session.messages = keep;
+      session.record.message_count = keep.length;
+      return this.envelope(res, {
+        messages: { items: keep.slice(-50), has_more: keep.length > 50 },
+        status: {
+          busy: false,
+          thinking_level: 'high',
+          permission: 'manual',
+          plan_mode: false,
+          swarm_mode: false,
+          context_tokens: 0,
+          context_usage: 0,
+        },
+      });
+    }
+    if (tail === ':compact') {
+      if (session.record.busy || session.activePrompt !== null || session.scriptRunning) {
+        return this.envelope(res, null, 40901, 'session.busy');
+      }
+      if (session.messages.length + session.older.length === 0) {
+        return this.envelope(res, null, 40910, 'compaction.unable');
+      }
+      return this.envelope(res, {});
+    }
+    // Raw binary (no envelope), mirroring kap-server's zip stream.
+    if (tail === '/export' && method === 'POST') {
+      const payload = Buffer.from(JSON.stringify({
+        fixture: true,
+        exported_at: now(),
+        session: session.record,
+        messages: session.messages,
+      }, null, 2));
+      res.writeHead(200, {
+        'content-type': 'application/zip',
+        'content-disposition': `attachment; filename="kiki-${session.record.id}-export.zip"`,
+        'content-length': payload.length,
+      });
+      res.end(payload);
+      return undefined;
     }
     if (tail === '/transcript') {
       const agentId = query.get('agent_id');
@@ -868,8 +1053,12 @@ class FixtureServer {
           record: session.record,
           goal: session.goal,
           last_prompt_submission: session.lastPromptSubmission,
+          last_skill_activation: session.lastSkillActivation,
+          last_fs_search: session.lastFsSearch,
         });
       }
+      case 'state':
+        return this.envelope(res, { last_search: this.lastSearchBody });
       case 'drop_ws':
         for (const ws of this.sockets) {
           try { ws.terminate(); } catch { /* closing */ }

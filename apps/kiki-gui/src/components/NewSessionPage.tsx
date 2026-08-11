@@ -15,6 +15,7 @@ import type { PermissionMode, Workspace } from '@moonshot-ai/protocol';
 
 import { Composer } from './Composer';
 import { Wordmark } from './Wordmark';
+import { buildPromptContent, type ComposerAttachment } from '../lib/attachments';
 import { readDraft, writeDraft } from '../lib/drafts';
 import { readSettings } from '../lib/settings';
 import { useConnection } from '../state/connection';
@@ -29,6 +30,7 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
   const settings = useMemo(() => readSettings(), []);
 
   const [draft, setDraft] = useState('');
+  const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -88,8 +90,9 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
     writeDraft(DRAFT_KEY, text);
   };
 
-  const send = (text: string) => {
-    if (busy || text.trim() === '') return;
+  const send = (text: string, composerAttachments: readonly ComposerAttachment[]) => {
+    if (busy) return;
+    if (buildPromptContent(text, composerAttachments) === null) return;
     setBusy(true);
     setError(null);
 
@@ -106,6 +109,7 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
         navigate(`/s/${session.id}`, {
           state: {
             initialPrompt: text.trim(),
+            initialAttachments: composerAttachments,
             model: effectiveModel,
             thinking: effectiveEffort,
             permissionMode,
@@ -213,6 +217,23 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
             efforts={supportedEfforts}
             effort={effectiveEffort}
             busyPlaceholder="Creating the session…"
+            fsSearch={
+              // The session-less `@` picker searches the workspace directly
+              // (kap-server `POST /workspace/fs:search`); a custom cwd rides
+              // the same `workspace` slot as an absolute root.
+              cwd.trim() !== '' || effectiveWorkspace !== undefined
+                ? (query) =>
+                    client
+                      .workspaceFsSearch(
+                        cwd.trim() !== '' ? cwd.trim() : effectiveWorkspace!.id,
+                        { query, limit: 30 },
+                      )
+                      .then((result) => result.items)
+                : undefined
+            }
+            attachments={attachments}
+            onChangeAttachments={setAttachments}
+            mentionScopeKey={cwd.trim() !== '' ? `cwd:${cwd.trim()}` : `ws:${effectiveWorkspace?.id ?? ''}`}
             onChangeModel={setModelOverride}
             onChangePermissionMode={setPermissionMode}
             onChangePlanMode={setPlanMode}

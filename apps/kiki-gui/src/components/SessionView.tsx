@@ -5,7 +5,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 
 import type { PermissionMode, Session } from '@moonshot-ai/protocol';
@@ -14,8 +14,23 @@ import { Composer } from './Composer';
 import { RightRail } from './RightRail';
 import { Transcript } from './Transcript';
 import { KikiMark } from './Wordmark';
+import {
+  buildPromptContent,
+  buildSkillActivation,
+  type ComposerAttachment,
+} from '../lib/attachments';
+import { API_CODES, ApiError } from '../lib/client';
 import { readDraft, writeDraft } from '../lib/drafts';
 import { isMainWindowVisibleAndFocused, showDesktopNotification } from '../lib/desktop';
+import {
+  SESSION_REWRITTEN_EVENT,
+  compactSessionContext,
+  exportSessionArchive,
+  forkSession,
+  sessionActionErrorMessage,
+  undoLastTurn,
+  type SessionActionContext,
+} from '../lib/sessionActions';
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
 import { readDesktopPrefs, readSettings } from '../lib/settings';
 import { useConnection, useControllerRegistry } from '../state/connection';
@@ -65,12 +80,14 @@ function Header({
   onToggleRail,
   onToggleSidebar,
   onJumpTurn,
+  onSessionAction,
 }: {
   controller: SessionController | null;
   railOpen: boolean;
   onToggleRail: () => void;
   onToggleSidebar: () => void;
   onJumpTurn: (blockId: string) => void;
+  onSessionAction: (action: 'fork' | 'undo' | 'compact' | 'export') => void;
 }) {
   const state = useSyncExternalStore(
     controller?.subscribe ?? noopSubscribe,
@@ -114,6 +131,7 @@ function Header({
             </span>
           ) : null}
           <TurnsMenu state={state} onJump={onJumpTurn} />
+          <SessionActionsMenu onAction={onSessionAction} />
         </>
       ) : (
         <span className="flex-1" />
@@ -217,6 +235,84 @@ function TurnsMenu({
 }
 
 const noopSubscribe = () => () => {};
+
+/** Header overflow menu: fork / export / compact / undo for the open session. */
+function SessionActionsMenu({
+  onAction,
+}: {
+  onAction: (action: 'fork' | 'undo' | 'compact' | 'export') => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const unregister = registerOverlay('session-actions-menu');
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (
+        !(event.target instanceof HTMLElement) ||
+        event.target.closest('[data-session-actions]') === null
+      ) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('pointerdown', onPointerDown, true);
+    return () => {
+      unregister();
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('pointerdown', onPointerDown, true);
+    };
+  }, [open]);
+
+  const itemClass =
+    'w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper';
+  const pick = (action: 'fork' | 'undo' | 'compact' | 'export') => {
+    setOpen(false);
+    onAction(action);
+  };
+  return (
+    <div className="relative shrink-0" data-session-actions>
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        title="Session actions"
+        aria-label="Session actions"
+        aria-expanded={open}
+        className={`rounded-full border px-2 py-0.5 text-[10.5px] font-medium transition-colors ${
+          open
+            ? 'border-accent bg-accent-soft text-accent'
+            : 'border-hairline text-ink-soft hover:border-hairline-strong'
+        }`}
+      >
+        ⋯ actions
+      </button>
+      {open ? (
+        <div className="anim-enter absolute right-0 top-7 z-40 w-48 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)]">
+          <button type="button" role="menuitem" className={itemClass} onClick={() => pick('fork')}>
+            Fork session
+          </button>
+          <button type="button" role="menuitem" className={itemClass} onClick={() => pick('export')}>
+            Export archive…
+          </button>
+          <button type="button" role="menuitem" className={itemClass} onClick={() => pick('compact')}>
+            Compact context
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className={`${itemClass} hover:text-danger`}
+            onClick={() => pick('undo')}
+          >
+            Undo last turn…
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 const emptyView = createViewState('');
 const emptyState = () => emptyView;
 /** Stable no-op handler for the read-only agent transcript (keeps BlockView memos). */
@@ -287,6 +383,7 @@ export function SessionView({
       planMode?: boolean;
       swarmMode?: boolean;
       goalObjective?: string;
+      initialAttachments?: ComposerAttachment[];
     } | null) ?? {},
   );
   const defaults = useMemo(() => readSettings(), []);
@@ -316,9 +413,15 @@ export function SessionView({
   const [sendError, setSendError] = useState<string | null>(null);
   const [abortError, setAbortError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [confirmUndo, setConfirmUndo] = useState(false);
   const [draft, setDraft] = useState('');
+  const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>(
+    () => initialOptionsRef.current.initialAttachments ?? [],
+  );
 
   const controller = useActiveController(sessionId);
+  const queryClient = useQueryClient();
 
   // Remember this session as the redirect target for `/`.
   useEffect(() => {
@@ -341,14 +444,49 @@ export function SessionView({
   // Per-session composer drafts.
   useEffect(() => {
     setDraft(readDraft(sessionId));
+    setAttachments([]);
     setSendError(null);
     setAbortError(null);
     setActionError(null);
+    setActionNotice(null);
   }, [sessionId]);
   const updateDraft = (text: string) => {
     setDraft(text);
     writeDraft(sessionId, text);
   };
+
+  // A sidebar-initiated undo rewrites this session's history; resync the open
+  // controller so the transcript matches the server.
+  useEffect(() => {
+    const onRewritten = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
+      if (detail?.sessionId === sessionId) void controller?.resync();
+    };
+    window.addEventListener(SESSION_REWRITTEN_EVENT, onRewritten);
+    return () => window.removeEventListener(SESSION_REWRITTEN_EVENT, onRewritten);
+  }, [controller, sessionId]);
+
+  // Success notices self-dismiss; errors stay until dismissed or retried.
+  useEffect(() => {
+    if (actionNotice === null) return;
+    const timer = setTimeout(() => setActionNotice(null), 3000);
+    return () => clearTimeout(timer);
+  }, [actionNotice]);
+
+  // The undo-confirm dialog is an overlay: Escape closes it (and must not
+  // fall through to the global Escape-to-abort handler).
+  useEffect(() => {
+    if (!confirmUndo) return;
+    const unregister = registerOverlay('confirm-undo');
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setConfirmUndo(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      unregister();
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [confirmUndo]);
 
   const state = useSyncExternalStore(
     controller?.subscribe ?? noopSubscribe,
@@ -471,11 +609,19 @@ export function SessionView({
   const actions = useMemo(() => {
     if (controller === null) return null;
     return {
-      send: (text: string) => {
+      send: (text: string, composerAttachments: readonly ComposerAttachment[]) => {
+        const content = buildPromptContent(text, composerAttachments);
+        if (content === null) return;
+        const textPart = content.find((part) => part.type === 'text');
+        // Local echo shows the mention-folded text; an image-only message
+        // echoes the same placeholder the transcript uses for image parts.
+        const echoText =
+          textPart !== undefined && textPart.type === 'text' ? textPart.text : '[image]';
         setSendError(null);
         void controller
           .sendPrompt({
-            text,
+            text: echoText,
+            content,
             model: effectiveModel,
             thinking: effectiveEffort,
             permissionMode,
@@ -487,10 +633,38 @@ export function SessionView({
           .then(() => {
             writeDraft(sessionId, '');
             setDraft('');
+            setAttachments([]);
             setGoalControl(undefined);
           })
           .catch((error: unknown) => {
             setSendError(error instanceof Error ? error.message : String(error));
+          });
+      },
+      activateSkill: (
+        name: string,
+        args: string,
+        composerAttachments: readonly ComposerAttachment[],
+      ) => {
+        const activation = buildSkillActivation(args, composerAttachments);
+        setSendError(null);
+        void client
+          .activateSkill(sessionId, name, {
+            args: activation.args === '' ? undefined : activation.args,
+            attachments: activation.attachments,
+          })
+          .then(() => {
+            writeDraft(sessionId, '');
+            setDraft('');
+            setAttachments([]);
+          })
+          .catch((error: unknown) => {
+            if (error instanceof ApiError && error.code === API_CODES.SKILL_NOT_FOUND) {
+              setSendError(`Skill "${name}" is no longer available — reopen the / menu to refresh.`);
+            } else if (error instanceof ApiError && error.code === API_CODES.SKILL_NOT_ACTIVATABLE) {
+              setSendError(`Skill "${name}" is a reference skill — it cannot be run from the composer.`);
+            } else {
+              setSendError(error instanceof Error ? error.message : String(error));
+            }
           });
       },
       abort: () => {
@@ -531,6 +705,7 @@ export function SessionView({
     };
   }, [
     controller,
+    client,
     effectiveModel,
     effectiveEffort,
     permissionMode,
@@ -540,6 +715,58 @@ export function SessionView({
     goalControl,
     sessionId,
   ]);
+
+  const actionContext: SessionActionContext = useMemo(
+    () => ({
+      client,
+      refreshSessions: () => void queryClient.invalidateQueries({ queryKey: ['sessions'] }),
+      navigate,
+    }),
+    [client, queryClient, navigate],
+  );
+
+  const runSessionAction = useCallback(
+    (action: 'fork' | 'undo' | 'compact' | 'export') => {
+      const record = state.session;
+      if (record === undefined) return;
+      if (action === 'undo') {
+        setConfirmUndo(true);
+        return;
+      }
+      setActionError(null);
+      setActionNotice(null);
+      if (action === 'fork') {
+        void forkSession(actionContext, record).catch((error: unknown) => {
+          setActionError(`Fork failed: ${sessionActionErrorMessage(error)}`);
+        });
+      } else if (action === 'export') {
+        void exportSessionArchive(actionContext, record)
+          .then(() => setActionNotice('Session archive downloaded.'))
+          .catch((error: unknown) => {
+            setActionError(`Export failed: ${sessionActionErrorMessage(error)}`);
+          });
+      } else {
+        void compactSessionContext(actionContext, record)
+          .then(() => setActionNotice('Compaction requested — older context will be summarized.'))
+          .catch((error: unknown) => {
+            setActionError(`Compact failed: ${sessionActionErrorMessage(error)}`);
+          });
+      }
+    },
+    [actionContext, state.session],
+  );
+
+  const confirmUndoRun = useCallback(() => {
+    const record = state.session;
+    setConfirmUndo(false);
+    if (record === undefined) return;
+    setActionError(null);
+    void undoLastTurn(actionContext, record)
+      .then(() => setActionNotice('Last turn removed.'))
+      .catch((error: unknown) => {
+        setActionError(`Undo failed: ${sessionActionErrorMessage(error)}`);
+      });
+  }, [actionContext, state.session]);
 
   // Stable transcript callbacks: inline arrows would change identity on every
   // publish, re-registering TopEdge's scroll listener and defeating the
@@ -580,13 +807,16 @@ export function SessionView({
       return;
     }
     const text = initialPromptRef.current;
+    const initialAttachments = initialOptionsRef.current.initialAttachments ?? [];
     initialPromptRef.current = undefined;
+    initialOptionsRef.current = {};
     navigate(location.pathname, { replace: true });
     // Seed the session draft first: if this send fails, the text stays
     // recoverable in the composer (and in localStorage across reloads).
     writeDraft(sessionId, text);
     setDraft(text);
-    actions.send(text);
+    setAttachments(initialAttachments);
+    actions.send(text, initialAttachments);
   }, [controller, actions, state.loaded, location.pathname, navigate]);
 
   // Desktop approval notification: if the window is hidden or blurred, nudge
@@ -724,6 +954,7 @@ export function SessionView({
               .querySelector(`[data-block-id="${blockId}"]`)
               ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
           }}
+          onSessionAction={runSessionAction}
         />
 
         <Transcript
@@ -746,6 +977,13 @@ export function SessionView({
           <div className="px-6 pb-1">
             <div className="mx-auto max-w-[760px] rounded-lg border border-danger/30 bg-danger/5 px-3 py-1.5 font-mono text-[11.5px] text-danger">
               {actionError}
+            </div>
+          </div>
+        ) : null}
+        {actionNotice !== null ? (
+          <div className="px-6 pb-1">
+            <div className="mx-auto max-w-[760px] rounded-lg border border-success/30 bg-success/5 px-3 py-1.5 font-mono text-[11.5px] text-success">
+              {actionNotice}
             </div>
           </div>
         ) : null}
@@ -793,6 +1031,16 @@ export function SessionView({
           goalControl={goalControl}
           efforts={supportedEfforts}
           effort={effectiveEffort}
+          sessionId={sessionId}
+          fsSearch={(query) =>
+            client.fsSearch(sessionId, { query, limit: 30 }).then((result) => result.items)
+          }
+          attachments={attachments}
+          onChangeAttachments={setAttachments}
+          onActivateSkill={(name, args, skillAttachments) =>
+            actions?.activateSkill(name, args, skillAttachments)
+          }
+          onSessionAction={runSessionAction}
           onChangeModel={setModelOverride}
           onChangePermissionMode={setPermissionMode}
           onChangePlanMode={setPlanMode}
@@ -800,7 +1048,7 @@ export function SessionView({
           onChangeGoalObjective={setGoalObjective}
           onChangeGoalControl={setGoalControl}
           onChangeEffort={setEffortOverride}
-          onSend={(text) => actions?.send(text)}
+          onSend={(text, composerAttachments) => actions?.send(text, composerAttachments)}
           onAbort={() => actions?.abort()}
         />
       </main>
@@ -840,6 +1088,40 @@ export function SessionView({
               ? 'Kiki is working'
               : ''}
       </div>
+
+      {confirmUndo ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/20"
+          onClick={() => setConfirmUndo(false)}
+        >
+          <div
+            className="anim-enter w-full max-w-[360px] rounded-2xl border border-hairline bg-panel p-5 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 className="font-display text-[16px] font-semibold text-ink">Undo the last turn?</h2>
+            <p className="mt-2 text-[12.5px] leading-relaxed text-ink-soft">
+              This removes your most recent message and kiki&rsquo;s reply from this
+              session&rsquo;s history. Earlier turns are kept.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmUndo(false)}
+                className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] text-ink-soft transition-colors hover:text-ink"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmUndoRun}
+                className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep"
+              >
+                Undo turn
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

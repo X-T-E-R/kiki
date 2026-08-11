@@ -1,0 +1,89 @@
+/**
+ * Session actions shared by the sidebar context menu and the session header
+ * overflow menu: fork / undo / export / compact. Each one is a real
+ * kap-server route — see `packages/protocol/src/rest/session.ts` and
+ * kap-server `routes/sessionExport.ts`.
+ */
+
+import type { Session } from '@moonshot-ai/protocol';
+
+import { API_CODES, ApiError, type KikiClient } from './client';
+
+export interface SessionActionContext {
+  client: KikiClient;
+  refreshSessions: () => void;
+  navigate: (path: string) => void;
+}
+
+/**
+ * Dispatched after an action rewrote a session's history (undo). The open
+ * SessionView resyncs its controller so the transcript matches the server.
+ */
+export const SESSION_REWRITTEN_EVENT = 'kiki:session-rewritten';
+
+export function notifySessionRewritten(sessionId: string): void {
+  window.dispatchEvent(new CustomEvent(SESSION_REWRITTEN_EVENT, { detail: { sessionId } }));
+}
+
+/** Fork → open the copy. The sidebar list catches up via invalidation. */
+export async function forkSession(ctx: SessionActionContext, session: Session): Promise<void> {
+  const fork = await ctx.client.forkSession(session.id, {});
+  ctx.refreshSessions();
+  ctx.navigate(`/s/${fork.id}`);
+}
+
+/** Undo the last turn (user message + agent reply). Server: 40911 when empty. */
+export async function undoLastTurn(ctx: SessionActionContext, session: Session): Promise<void> {
+  await ctx.client.undoSession(session.id, { count: 1 });
+  ctx.refreshSessions();
+  notifySessionRewritten(session.id);
+}
+
+/**
+ * Compact older context into a summary. The transcript itself is unchanged
+ * (compaction is context-level), so no resync is triggered.
+ */
+export async function compactSessionContext(
+  ctx: SessionActionContext,
+  session: Session,
+): Promise<void> {
+  await ctx.client.compactSession(session.id, {});
+  ctx.refreshSessions();
+}
+
+/** Export the diagnostic archive and hand it to the browser as a download. */
+export async function exportSessionArchive(
+  ctx: SessionActionContext,
+  session: Session,
+): Promise<void> {
+  const { blob, filename } = await ctx.client.exportSession(session.id);
+  const url = URL.createObjectURL(blob);
+  try {
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+  } finally {
+    // Defer revocation so the download stack has materialized the blob.
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+}
+
+/** Maps wire error codes to plain copy; falls back to the envelope message. */
+export function sessionActionErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    switch (error.code) {
+      case API_CODES.SESSION_UNDO_UNAVAILABLE:
+        return 'Nothing to undo — there is no earlier turn to roll back to.';
+      case API_CODES.COMPACTION_UNABLE:
+        return 'Nothing to compact yet — the history is too short.';
+      case API_CODES.SESSION_BUSY:
+        return 'The session is busy — try again when the current turn finishes.';
+      default:
+        return error.message;
+    }
+  }
+  return error instanceof Error ? error.message : String(error);
+}

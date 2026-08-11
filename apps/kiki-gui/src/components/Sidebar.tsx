@@ -1,14 +1,27 @@
 /**
  * Session sidebar — wordmark header with connection pill, new-session shortcut,
- * settings entry, and the session list (polled every 5s).
+ * global search, settings entry, and the session list (polled every 5s).
+ *
+ * The search box queries `POST /search` (global full-text index); results
+ * replace the list while a query is active. Hits carry no message id — only
+ * session_id + turn — so navigation opens the session.
  */
 
-import { useEffect, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
 import type { Session } from '@moonshot-ai/protocol';
 
+import { groupSearchHits, isSearchable, SEARCH_DEBOUNCE_MS } from '../lib/search';
+import {
+  compactSessionContext,
+  exportSessionArchive,
+  forkSession,
+  sessionActionErrorMessage,
+  undoLastTurn,
+  type SessionActionContext,
+} from '../lib/sessionActions';
 import { relativeTime } from '../lib/time';
 import { registerOverlay } from '../lib/uiBusy';
 import { useConnection } from '../state/connection';
@@ -75,9 +88,105 @@ export function Sidebar({
   const queryClient = useQueryClient();
   const [menu, setMenu] = useState<{ session: Session; x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState<Session | null>(null);
+  const [confirmUndo, setConfirmUndo] = useState<Session | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
 
-  const refreshSessions = () => queryClient.invalidateQueries({ queryKey: ['sessions'] });
+  const [searchInput, setSearchInput] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchBoxRef = useRef<HTMLInputElement>(null);
+
+  const refreshSessions = useCallback(
+    () => void queryClient.invalidateQueries({ queryKey: ['sessions'] }),
+    [queryClient],
+  );
+
+  const actionContext: SessionActionContext = useMemo(
+    () => ({ client, refreshSessions, navigate }),
+    [client, refreshSessions, navigate],
+  );
+
+  // Debounced global search; react-query cancels superseded requests.
+  useEffect(() => {
+    const timer = setTimeout(() => setSearchQuery(searchInput.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+  const searchActive = isSearchable(searchQuery);
+  const searchResultsQuery = useQuery({
+    queryKey: ['global-search', searchQuery],
+    queryFn: ({ signal }) =>
+      client.searchMessages({ query: searchQuery, page_size: 30, sort: 'score' }, signal),
+    enabled: searchActive,
+    staleTime: 15_000,
+  });
+  const searchGroups = useMemo(
+    () => groupSearchHits(searchResultsQuery.data?.items ?? []),
+    [searchResultsQuery.data],
+  );
+
+  // ⌘K / Ctrl+K focuses the search box.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        searchBoxRef.current?.focus();
+        searchBoxRef.current?.select();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    if (actionNotice === null) return;
+    const timer = setTimeout(() => setActionNotice(null), 3000);
+    return () => clearTimeout(timer);
+  }, [actionNotice]);
+
+  // The undo-confirm dialog is an overlay: Escape closes it (and must not
+  // fall through to the global Escape-to-abort handler).
+  useEffect(() => {
+    if (confirmUndo === null) return;
+    const unregister = registerOverlay('sidebar-confirm-undo');
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setConfirmUndo(null);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      unregister();
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [confirmUndo]);
+
+  const runAction = (
+    session: Session,
+    action: 'fork' | 'undo' | 'compact' | 'export',
+  ) => {
+    setMenu(null);
+    if (action === 'undo') {
+      setConfirmUndo(session);
+      return;
+    }
+    setActionError(null);
+    setActionNotice(null);
+    if (action === 'fork') {
+      void forkSession(actionContext, session).catch((error: unknown) => {
+        setActionError(`Fork failed: ${sessionActionErrorMessage(error)}`);
+      });
+    } else if (action === 'export') {
+      void exportSessionArchive(actionContext, session)
+        .then(() => setActionNotice(`Archive downloaded for “${sessionLabel(session)}”.`))
+        .catch((error: unknown) => {
+          setActionError(`Export failed: ${sessionActionErrorMessage(error)}`);
+        });
+    } else {
+      void compactSessionContext(actionContext, session)
+        .then(() => setActionNotice(`Compaction requested for “${sessionLabel(session)}”.`))
+        .catch((error: unknown) => {
+          setActionError(`Compact failed: ${sessionActionErrorMessage(error)}`);
+        });
+    }
+  };
 
   const archive = (session: Session) => {
     setMenu(null);
@@ -136,8 +245,103 @@ export function Sidebar({
         >
           <span aria-hidden className="text-[14px] leading-none">＋</span> New session
         </button>
+        <div className="relative mt-2">
+          <input
+            ref={searchBoxRef}
+            type="text"
+            value={searchInput}
+            data-search-box
+            onChange={(event) => setSearchInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                setSearchInput('');
+                event.currentTarget.blur();
+              }
+            }}
+            placeholder="Search sessions…"
+            aria-label="Search sessions"
+            className="w-full rounded-lg border border-hairline bg-paper px-2.5 py-1.5 pr-9 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
+          />
+          {searchInput === '' ? (
+            <kbd className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 rounded border border-hairline px-1 font-mono text-[9px] text-ink-faint">
+              ⌘K
+            </kbd>
+          ) : (
+            <button
+              type="button"
+              aria-label="Clear search"
+              onClick={() => setSearchInput('')}
+              className="absolute top-1/2 right-2 flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
+            >
+              ×
+            </button>
+          )}
+        </div>
       </div>
 
+      {searchActive ? (
+        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-search-results>
+          {searchResultsQuery.isPending ? (
+            <div className="flex items-center justify-center gap-2 px-2 pt-6 text-[12px] text-ink-faint">
+              <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+              Searching…
+            </div>
+          ) : searchResultsQuery.isError ? (
+            <div className="mx-1 mt-2 rounded-md border border-danger/30 bg-danger/5 p-2">
+              <p className="text-[11.5px] font-medium text-danger">Search failed</p>
+              <p className="font-mono text-[10px] text-danger/80">
+                {searchResultsQuery.error instanceof Error
+                  ? searchResultsQuery.error.message
+                  : 'Unknown error'}
+              </p>
+            </div>
+          ) : searchGroups.length === 0 ? (
+            <p className="px-2 pt-6 text-center text-[12px] text-ink-faint">
+              No matches for “{searchQuery}”.
+            </p>
+          ) : (
+            <>
+              {searchGroups.map((group) => (
+                <div key={group.sessionId} className="mb-2">
+                  <p className="truncate px-2 pt-1 pb-0.5 text-[10px] font-semibold tracking-[0.06em] text-ink-faint uppercase">
+                    {group.title.trim() !== '' ? group.title : 'Untitled session'}
+                  </p>
+                  {group.hits.map((hit, index) => (
+                    <button
+                      key={`${hit.session_id}-${hit.turn ?? 'x'}-${hit.role}-${index}`}
+                      type="button"
+                      onClick={() => {
+                        setSearchInput('');
+                        void navigate(`/s/${hit.session_id}`);
+                      }}
+                      className="flex w-full flex-col gap-0.5 rounded-lg border border-transparent px-2.5 py-1.5 text-left transition-colors hover:bg-paper"
+                    >
+                      <span className="line-clamp-2 text-[11.5px] leading-snug text-ink">
+                        {hit.snippet}
+                      </span>
+                      <span className="flex items-center gap-1.5 text-[9.5px] text-ink-faint">
+                        <span className="rounded border border-hairline px-1 font-mono">
+                          {hit.role}
+                        </span>
+                        <span>{relativeTime(new Date(hit.time).toISOString())}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ))}
+              {searchResultsQuery.data !== undefined &&
+              (searchResultsQuery.data.index_state.state === 'building' ||
+                searchResultsQuery.data.incomplete !== undefined) ? (
+                <p className="px-2 pt-1 text-center font-mono text-[9.5px] text-ink-faint">
+                  {searchResultsQuery.data.index_state.state === 'building'
+                    ? `Index is building (${searchResultsQuery.data.index_state.indexed_sessions}/${searchResultsQuery.data.index_state.total_sessions} sessions) — results may be incomplete.`
+                    : 'Results may be incomplete — the search hit a server budget.'}
+                </p>
+              ) : null}
+            </>
+          )}
+        </div>
+      ) : (
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         {sessionsQuery.isLoading && sessions.length === 0 ? (
           <div className="flex items-center justify-center gap-2 px-2 pt-6 text-[12px] text-ink-faint">
@@ -168,6 +372,11 @@ export function Sidebar({
         {actionError !== null ? (
           <p className="mx-1 mb-1 rounded-md border border-danger/30 bg-danger/5 px-2 py-1 font-mono text-[10.5px] text-danger">
             {actionError}
+          </p>
+        ) : null}
+        {actionNotice !== null ? (
+          <p className="mx-1 mb-1 rounded-md border border-success/30 bg-success/5 px-2 py-1 font-mono text-[10.5px] text-success">
+            {actionNotice}
           </p>
         ) : null}
         {sessions.map((session) => {
@@ -243,6 +452,7 @@ export function Sidebar({
           {showArchived ? 'Hide archived' : 'Show archived'}
         </button>
       </div>
+      )}
 
       <div className="border-t border-hairline px-3 py-2.5 space-y-1">
         <button
@@ -271,6 +481,7 @@ export function Sidebar({
             setRenaming(menu.session);
             setMenu(null);
           }}
+          onAction={(action) => runAction(menu.session, action)}
           onArchive={() => archive(menu.session)}
           onRestore={() => restore(menu.session)}
         />
@@ -281,9 +492,51 @@ export function Sidebar({
           onClose={() => setRenaming(null)}
           onRenamed={() => {
             setRenaming(null);
-            void refreshSessions();
+            refreshSessions();
           }}
         />
+      ) : null}
+      {confirmUndo !== null ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/20"
+          onClick={() => setConfirmUndo(null)}
+        >
+          <div
+            className="anim-enter w-full max-w-[360px] rounded-2xl border border-hairline bg-panel p-5 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 className="font-display text-[16px] font-semibold text-ink">Undo the last turn?</h2>
+            <p className="mt-2 text-[12.5px] leading-relaxed text-ink-soft">
+              This removes the most recent user message and kiki&rsquo;s reply from
+              &ldquo;{sessionLabel(confirmUndo)}&rdquo;. Earlier turns are kept.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmUndo(null)}
+                className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] text-ink-soft transition-colors hover:text-ink"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const session = confirmUndo;
+                  setConfirmUndo(null);
+                  setActionError(null);
+                  void undoLastTurn(actionContext, session)
+                    .then(() => setActionNotice(`Last turn removed from “${sessionLabel(session)}”.`))
+                    .catch((error: unknown) => {
+                      setActionError(`Undo failed: ${sessionActionErrorMessage(error)}`);
+                    });
+                }}
+                className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep"
+              >
+                Undo turn
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
     </aside>
   );
@@ -297,6 +550,7 @@ function SessionMenu({
   y,
   onClose,
   onRename,
+  onAction,
   onArchive,
   onRestore,
 }: {
@@ -305,6 +559,7 @@ function SessionMenu({
   y: number;
   onClose: () => void;
   onRename: () => void;
+  onAction: (action: 'fork' | 'undo' | 'compact' | 'export') => void;
   onArchive: () => void;
   onRestore: () => void;
 }) {
@@ -334,8 +589,8 @@ function SessionMenu({
     <div
       data-session-menu
       role="menu"
-      className="anim-enter fixed z-50 w-36 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)]"
-      style={{ left: Math.min(x, window.innerWidth - 160), top: y }}
+      className="anim-enter fixed z-50 w-44 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)]"
+      style={{ left: Math.min(x, window.innerWidth - 190), top: y }}
     >
       {archived ? (
         <button type="button" role="menuitem" className={itemClass} onClick={onRestore}>
@@ -343,6 +598,24 @@ function SessionMenu({
         </button>
       ) : (
         <>
+          <button type="button" role="menuitem" className={itemClass} onClick={() => onAction('fork')}>
+            Fork session
+          </button>
+          <button type="button" role="menuitem" className={itemClass} onClick={() => onAction('export')}>
+            Export archive…
+          </button>
+          <button type="button" role="menuitem" className={itemClass} onClick={() => onAction('compact')}>
+            Compact context
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className={`${itemClass} hover:text-danger`}
+            onClick={() => onAction('undo')}
+          >
+            Undo last turn…
+          </button>
+          <div className="mx-1 my-1 border-t border-hairline" />
           <button type="button" role="menuitem" className={itemClass} onClick={onRename}>
             Rename…
           </button>

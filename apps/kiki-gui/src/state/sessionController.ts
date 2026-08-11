@@ -7,6 +7,7 @@
 import type {
   ApprovalDecision,
   ApprovalScope,
+  MessageContent,
   PermissionMode,
   QuestionResponse,
   Session,
@@ -444,6 +445,11 @@ export class SessionController {
 
   async sendPrompt(input: {
     text: string;
+    /**
+     * Full wire content override (mentions folded into the text part, images
+     * as base64 parts). When omitted, a single text part carries `text`.
+     */
+    content?: MessageContent[];
     model?: string;
     thinking?: string;
     permissionMode: PermissionMode;
@@ -453,7 +459,7 @@ export class SessionController {
     goalControl?: 'pause' | 'resume' | 'cancel';
   }): Promise<void> {
     const result = await this.client.submitPrompt(this.sessionId, {
-      content: [{ type: 'text', text: input.text }],
+      content: input.content ?? [{ type: 'text', text: input.text }],
       model: input.model,
       thinking: input.thinking,
       permission_mode: input.permissionMode,

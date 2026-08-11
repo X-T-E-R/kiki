@@ -18,7 +18,10 @@ export default defineConfig({
   },
   server: {
     port: webPort,
-    strictPort: false,
+    // An explicitly demanded port (the proof sets KIKI_GUI_PORT) must bind or
+    // fail loudly — never slide to a neighbouring port while a zombie serves
+    // a stale app on the expected one. Plain `pnpm dev` stays lenient.
+    strictPort: process.env['KIKI_GUI_PORT'] !== undefined,
     proxy: {
       '/api': { target: serverTarget, changeOrigin: true, ws: true },
     },
