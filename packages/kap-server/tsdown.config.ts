@@ -6,7 +6,7 @@ import {
 } from '../../apps/kimi-code/scripts/built-in-catalog.mjs';
 
 export default defineConfig({
-  entry: ['./src/index.ts'],
+  entry: ['./src/index.ts', './src/mcp/stdio.ts'],
   format: ['esm'],
   dts: true,
   outDir: 'dist',

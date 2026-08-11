@@ -26,6 +26,7 @@ import type { IAgentScopeHandle } from '#/_base/di/scope';
 import type { Event } from '#/_base/event';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import type { BindAgentInput } from '#/agent/profile/profile';
+import type { DelegatorRef } from '#/session/sessionMetadata/sessionMetadata';
 
 export const MAIN_AGENT_ID = 'main';
 
@@ -34,6 +35,7 @@ export interface CreateAgentOptions {
   readonly binding?: BindAgentInput;
   readonly forkedFrom?: string;
   readonly labels?: Readonly<Record<string, string>>;
+  readonly delegator?: DelegatorRef;
   /** Internal transaction hook: publish onDidCreate only after the caller commits. */
   readonly deferCreateEvent?: boolean;
 }

@@ -397,6 +397,18 @@ describe('contract schemas', () => {
       pending_interactions: [],
     });
     expect(ok.success).toBe(true);
+    expect(
+      transcriptResponseSchema.safeParse({
+        ...ok.data,
+        agents: [
+          {
+            agentId: 'external-child',
+            type: 'independent',
+            delegator: { kind: 'external', delegationId: 'delegation_test' },
+          },
+        ],
+      }).success,
+    ).toBe(true);
   });
 
   it('rejects path-hostile agent ids in the transcript query', () => {

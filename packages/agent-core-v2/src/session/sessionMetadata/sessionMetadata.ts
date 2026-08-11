@@ -17,10 +17,15 @@ export interface AgentMeta {
   readonly homedir?: string;
   readonly type?: 'main' | 'sub' | 'independent';
   readonly parentAgentId?: string | null;
+  readonly delegator?: DelegatorRef;
   readonly forkedFrom?: string;
   readonly labels?: Readonly<Record<string, string>>;
   readonly swarmItem?: string;
 }
+
+export type DelegatorRef =
+  | { readonly kind: 'agent'; readonly agentId: string }
+  | { readonly kind: 'external'; readonly delegationId: string };
 
 export const SESSION_META_VERSION = 2;
 

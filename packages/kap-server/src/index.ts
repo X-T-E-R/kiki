@@ -25,6 +25,8 @@ export {
   DEFAULT_SERVER_INSTANCES_DIR,
   HEARTBEAT_INTERVAL_MS,
 } from './instanceRegistry';
+export { createKikiMcpServer, kikiMcpConfigFromEnv } from './mcp/server';
+export type { KikiMcpConfig, KikiMcpServerOptions } from './mcp/server';
 export type {
   IInstanceRegistry,
   InstanceRegistration,

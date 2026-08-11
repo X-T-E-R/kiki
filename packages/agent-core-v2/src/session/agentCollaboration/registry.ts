@@ -1,7 +1,14 @@
+/**
+ * `agentCollaboration` domain — Session-scoped named-delegation reservation registry.
+ *
+ * Coordinates task-name ownership across agent and external delegators while
+ * durable ownership remains in Session metadata and delegation documents.
+ */
+
 import { createDecorator } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionMetadata, type DelegatorRef } from '#/session/sessionMetadata/sessionMetadata';
 
 export const COLLABORATION_TASK_NAME_LABEL = 'collaborationTaskName';
 export const COLLABORATION_AGENT_TYPE_LABEL = 'collaborationAgentType';
@@ -9,9 +16,9 @@ export const COLLABORATION_LATEST_TASK_LABEL = 'collaborationLatestTaskId';
 
 export interface IAgentCollaborationRegistry {
   readonly _serviceBrand: undefined;
-  reserve(taskName: string, ownerAgentId: string): Promise<boolean>;
-  commit(taskName: string, ownerAgentId: string): void;
-  release(taskName: string, ownerAgentId: string): void;
+  reserve(taskName: string, owner: DelegatorRef): Promise<boolean>;
+  commit(taskName: string, owner: DelegatorRef): void;
+  release(taskName: string, owner: DelegatorRef): void;
 }
 
 export const IAgentCollaborationRegistry =
@@ -23,25 +30,32 @@ export class AgentCollaborationRegistry implements IAgentCollaborationRegistry {
 
   constructor(@ISessionMetadata private readonly metadata: ISessionMetadata) {}
 
-  async reserve(taskName: string, ownerAgentId: string): Promise<boolean> {
+  async reserve(taskName: string, owner: DelegatorRef): Promise<boolean> {
     await this.metadata.ready;
     if (this.pending.has(taskName)) return false;
     const agents = (await this.metadata.read()).agents ?? {};
     if (this.pending.has(taskName)) return false;
-    if (Object.values(agents).some((meta) => meta.labels?.[COLLABORATION_TASK_NAME_LABEL] === taskName)) {
+    if (Object.values(agents).some((meta) =>
+      meta.labels?.[COLLABORATION_TASK_NAME_LABEL] === taskName ||
+      meta.labels?.['externalDelegationTaskName'] === taskName,
+    )) {
       return false;
     }
-    this.pending.set(taskName, ownerAgentId);
+    this.pending.set(taskName, ownerKey(owner));
     return true;
   }
 
-  commit(taskName: string, ownerAgentId: string): void {
-    if (this.pending.get(taskName) === ownerAgentId) this.pending.delete(taskName);
+  commit(taskName: string, owner: DelegatorRef): void {
+    if (this.pending.get(taskName) === ownerKey(owner)) this.pending.delete(taskName);
   }
 
-  release(taskName: string, ownerAgentId: string): void {
-    if (this.pending.get(taskName) === ownerAgentId) this.pending.delete(taskName);
+  release(taskName: string, owner: DelegatorRef): void {
+    if (this.pending.get(taskName) === ownerKey(owner)) this.pending.delete(taskName);
   }
+}
+
+function ownerKey(owner: DelegatorRef): string {
+  return owner.kind === 'agent' ? `agent:${owner.agentId}` : `external:${owner.delegationId}`;
 }
 
 registerScopedService(

@@ -337,13 +337,18 @@ export function bindSessionTranscript(
 export function descriptorFromMeta(agentId: string, meta: AgentMeta | undefined): AgentDescriptor {
   const parentFromLabels = meta?.labels?.['parentAgentId'];
   const swarmItem = meta?.labels?.['swarmItem'] ?? meta?.swarmItem;
+  const delegator =
+    meta?.delegator ??
+    (parentFromLabels !== undefined && parentFromLabels.length > 0
+      ? { kind: 'agent' as const, agentId: parentFromLabels }
+      : meta?.parentAgentId !== undefined && meta.parentAgentId !== null
+        ? { kind: 'agent' as const, agentId: meta.parentAgentId }
+        : undefined);
   return {
     agentId,
     type: meta?.type ?? (agentId === MAIN_AGENT_ID ? 'main' : 'sub'),
-    parentAgentId:
-      parentFromLabels !== undefined && parentFromLabels.length > 0
-        ? parentFromLabels
-        : (meta?.parentAgentId ?? undefined),
+    parentAgentId: delegator?.kind === 'agent' ? delegator.agentId : undefined,
+    delegator,
     label: swarmItem !== undefined && swarmItem.length > 0 ? swarmItem : undefined,
   };
 }

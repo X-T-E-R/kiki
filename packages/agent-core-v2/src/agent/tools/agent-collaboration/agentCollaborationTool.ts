@@ -238,12 +238,14 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
         throw new Error(`Thinking effort "${binding.thinking}" is not supported by model "${binding.model}".`);
       }
       const prompt = await applyProfilePromptPrefix(selectedProfile, message, { cwd: this.workspace.workDir, runner: this.processRunner, log: this.log });
-      if (!(await this.collaborationRegistry.reserve(taskName, this.callerAgentId))) return failure(`Named agent "${taskName}" already exists in this session.`);
+      const delegator = { kind: 'agent' as const, agentId: this.callerAgentId };
+      if (!(await this.collaborationRegistry.reserve(taskName, delegator))) return failure(`Named agent "${taskName}" already exists in this session.`);
 
       taskId = this.tasks.allocateTaskId?.('agent');
       if (taskId === undefined) throw new Error('Agent task service cannot allocate a transactional task id.');
       created = await this.lifecycle.create({ binding: { profile: selectedProfile.name, model: binding.model,
         thinking: binding.thinking, strictThinking: binding.thinking !== undefined }, deferCreateEvent: true,
+        delegator: { kind: 'agent', agentId: this.callerAgentId },
         labels: { ...subagentLabels(this.callerAgentId), [COLLABORATION_TASK_NAME_LABEL]: taskName,
           [COLLABORATION_AGENT_TYPE_LABEL]: selectedProfile.name, [COLLABORATION_LATEST_TASK_LABEL]: taskId } });
       created.accessor.get(IAgentPermissionModeService).setMode(this.permissionMode.mode);
@@ -258,7 +260,7 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
       const publication = await bridge.start(context.toolCallId);
       this.tasks.commitTaskRegistration?.(taskId);
       this.lifecycle.commitCreate?.(created.id);
-      this.collaborationRegistry.commit(taskName, this.callerAgentId);
+      this.collaborationRegistry.commit(taskName, delegator);
       publication.publish();
       return success({ task_name: taskName, agent_id: created.id, task_id: taskId, agent_type: selectedProfile.name, status: 'running', fork_turns: 'none' });
     } catch (error) {
@@ -266,7 +268,7 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
       controller?.abort(error);
       if (taskId !== undefined) await this.tasks.rollbackTaskRegistration?.(taskId, error);
       if (created !== undefined) await this.lifecycle.discard?.(created.id).catch(() => {});
-      if (taskName !== undefined) this.collaborationRegistry.release(taskName, this.callerAgentId);
+      if (taskName !== undefined) this.collaborationRegistry.release(taskName, { kind: 'agent', agentId: this.callerAgentId });
       return failure(errorMessage(error));
     }
   }

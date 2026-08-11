@@ -512,6 +512,21 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           ? await sourceHandle.accessor.get(ISessionMetadata).read()
           : await this.readMetaFromDisk(sourceId);
 
+      // An external-delegation root is Session-scoped authority, not ordinary
+      // conversation state. The MVP has no authority-transfer protocol, so a
+      // fork must fail before allocating or copying a target rather than
+      // recursively cloning the root and leaving its child ownership dangling.
+      const externalRoot = await this.docs.get(
+        join(sessionScopeOf(this.handlerScope, sourceId), 'external-delegation'),
+        'root',
+      );
+      if (externalRoot !== undefined) {
+        throw new Error2(
+          ErrorCodes.SESSION_FORK_EXTERNAL_DELEGATION,
+          'A Session with an external delegation root cannot be forked.',
+        );
+      }
+
       targetId = opts.newSessionId ?? createSessionId();
       if (this.sessions.has(targetId) || (await this.index.get(targetId)) !== undefined) {
         throw new Error2(
@@ -534,7 +549,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       const targetMeta = target.accessor.get(ISessionMetadata);
 
       const sourceAgents = sourceMeta?.agents ?? {};
-      const agentIds = Object.keys(sourceAgents);
+      const agentIds = Object.keys(sourceAgents).filter(
+        (agentId) => sourceAgents[agentId]?.delegator?.kind !== 'external',
+      );
       for (const agentId of agentIds) {
         await this.copyAgentWire({
           sourceHandle,
@@ -566,6 +583,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           agentId,
           forkedFrom: sourceAgent.forkedFrom,
           labels: labelsFromAgentMeta(sourceAgent),
+          delegator: sourceAgent.delegator,
         });
       }
 
@@ -673,7 +691,12 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   ): Promise<void> {
     for (const entry of entries) {
       const rel = relBase === '' ? entry.name : `${relBase}/${entry.name}`;
-      if (rel === 'state.json' || rel === 'logs' || entry.name === AGENT_WIRE_RECORD_KEY) {
+      if (
+        rel === 'state.json' ||
+        rel === 'logs' ||
+        rel === 'external-delegation' ||
+        entry.name === AGENT_WIRE_RECORD_KEY
+      ) {
         continue;
       }
       if (entry.isSymbolicLink === true) continue;

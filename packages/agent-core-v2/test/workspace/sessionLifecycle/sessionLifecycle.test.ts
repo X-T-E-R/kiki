@@ -1503,6 +1503,41 @@ describe('SessionLifecycleService', () => {
   });
 
   describe('fork session state', () => {
+    it('rejects forking an external delegation root without altering the source or target', async () => {
+      const sourceRoot = {
+        version: 1,
+        delegationId: 'delegation_source',
+        principalFingerprint: 'a'.repeat(64),
+        children: { reviewer: { agentId: 'external-child' } },
+        dispatches: { dispatch_1: { status: 'completed', result: 'source-result' } },
+      };
+      let exposeExternalRoot = true;
+      const store: IAtomicDocumentStore = {
+        ...atomicDocumentStoreStub(),
+        get: async <T>(scope: string, key: string) =>
+          (exposeExternalRoot && scope.endsWith('/src/external-delegation') && key === 'root'
+            ? structuredClone(sourceRoot)
+            : undefined) as T | undefined,
+      };
+      const svc = await build([stubPair(IAtomicDocumentStore, store)]);
+      await svc.create({ sessionId: 'src', workDir: '/tmp/proj' });
+
+      await expect(
+        svc.fork({ sourceSessionId: 'src', newSessionId: 'dst' }),
+      ).rejects.toMatchObject({ code: ErrorCodes.SESSION_FORK_EXTERNAL_DELEGATION });
+      expect(svc.get('src')).toBeDefined();
+      expect(svc.get('dst')).toBeUndefined();
+      await expect(
+        store.get('sessions/wd_stub/src/external-delegation', 'root'),
+      ).resolves.toEqual(sourceRoot);
+
+      // The ordinary fork path remains available once no external authority
+      // document exists on the source Session.
+      exposeExternalRoot = false;
+      const ordinary = await svc.fork({ sourceSessionId: 'src', newSessionId: 'dst' });
+      expect(ordinary.id).toBe('dst');
+    });
+
     it('fork inherits the source session\'s last turn outcome', async () => {
       const updates: { readonly lastTurnReason?: unknown }[] = [];
       const metaStub: ISessionMetadata = {

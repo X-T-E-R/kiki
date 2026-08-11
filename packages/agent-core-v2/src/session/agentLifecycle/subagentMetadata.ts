@@ -6,7 +6,7 @@
  * itself.
  */
 
-import type { AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
+import type { AgentMeta, DelegatorRef } from '#/session/sessionMetadata/sessionMetadata';
 
 export function subagentLabels(
   parentAgentId: string,
@@ -17,6 +17,12 @@ export function subagentLabels(
     labels['swarmItem'] = options.swarmItem;
   }
   return labels;
+}
+
+export function delegatorRef(meta: AgentMeta | undefined): DelegatorRef | undefined {
+  if (meta?.delegator !== undefined) return meta.delegator;
+  const agentId = firstNonEmpty(meta?.labels?.['parentAgentId'], meta?.parentAgentId ?? undefined);
+  return agentId === undefined ? undefined : { kind: 'agent', agentId };
 }
 
 export function labelsFromAgentMeta(
@@ -41,8 +47,8 @@ export function isSubagentMeta(meta: AgentMeta | undefined): boolean {
 }
 
 export function subagentParentAgentId(meta: AgentMeta | undefined): string | undefined {
-  if (meta === undefined) return undefined;
-  return firstNonEmpty(meta.labels?.['parentAgentId'], meta.parentAgentId ?? undefined);
+  const ref = delegatorRef(meta);
+  return ref?.kind === 'agent' ? ref.agentId : undefined;
 }
 
 export function subagentSwarmItem(meta: AgentMeta | undefined): string | undefined {

@@ -16,6 +16,9 @@ export interface AgentDescriptor {
   /** Engine metadata, mirrored for display (e.g. 'main' | 'sub' | swarm member). */
   readonly type?: 'main' | 'sub' | 'independent';
   readonly parentAgentId?: AgentId;
+  readonly delegator?:
+    | { readonly kind: 'agent'; readonly agentId: AgentId }
+    | { readonly kind: 'external'; readonly delegationId: string };
   readonly label?: string;
   readonly createdAt?: string;
   readonly disposedAt?: string;

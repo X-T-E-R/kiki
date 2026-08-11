@@ -234,10 +234,19 @@ function agentMetaEquals(a: AgentMeta, b: AgentMeta): boolean {
     a.homedir === b.homedir &&
     a.type === b.type &&
     (a.parentAgentId ?? null) === (b.parentAgentId ?? null) &&
+    delegatorEquals(a.delegator, b.delegator) &&
     a.forkedFrom === b.forkedFrom &&
     a.swarmItem === b.swarmItem &&
     recordEquals(a.labels, b.labels)
   );
+}
+
+function delegatorEquals(a: AgentMeta['delegator'], b: AgentMeta['delegator']): boolean {
+  if (a?.kind !== b?.kind) return false;
+  if (a === undefined || b === undefined) return true;
+  return a.kind === 'agent' && b.kind === 'agent'
+    ? a.agentId === b.agentId
+    : a.kind === 'external' && b.kind === 'external' && a.delegationId === b.delegationId;
 }
 
 function recordEquals(a: AgentMeta['labels'], b: AgentMeta['labels']): boolean {

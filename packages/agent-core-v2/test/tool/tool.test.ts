@@ -146,16 +146,19 @@ describe('agent collaboration session registry', () => {
       read: async () => ({ id: 'test-session', createdAt: 0, updatedAt: 0, archived: false, agents }),
     };
     const registry = new AgentCollaborationRegistry(metadata);
-    const results = await Promise.all([registry.reserve('same', 'caller-a'), registry.reserve('same', 'caller-b')]);
+    const results = await Promise.all([
+      registry.reserve('same', { kind: 'agent', agentId: 'caller-a' }),
+      registry.reserve('same', { kind: 'agent', agentId: 'caller-b' }),
+    ]);
     expect(results.filter(Boolean)).toHaveLength(1);
     const owner = results[0] ? 'caller-a' : 'caller-b';
-    registry.commit('same', owner);
+    registry.commit('same', { kind: 'agent', agentId: owner });
     agents['agent-named'] = { labels: { parentAgentId: owner, collaborationTaskName: 'same', collaborationAgentType: 'coder' } };
-    expect(await registry.reserve('same', 'caller-c')).toBe(false);
+    expect(await registry.reserve('same', { kind: 'agent', agentId: 'caller-c' })).toBe(false);
 
-    expect(await registry.reserve('retryable', 'caller-a')).toBe(true);
-    registry.release('retryable', 'caller-a');
-    expect(await registry.reserve('retryable', 'caller-b')).toBe(true);
+    expect(await registry.reserve('retryable', { kind: 'agent', agentId: 'caller-a' })).toBe(true);
+    registry.release('retryable', { kind: 'agent', agentId: 'caller-a' });
+    expect(await registry.reserve('retryable', { kind: 'agent', agentId: 'caller-b' })).toBe(true);
   });
 });
 
