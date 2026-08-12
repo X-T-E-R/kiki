@@ -1778,6 +1778,25 @@ export function reconcilePromptList(
   };
 }
 
+export interface QueuedPromptPreview {
+  readonly promptId: string;
+  readonly text: string;
+}
+
+/** Queue-strip rows in scheduler (drain) order. The preview text comes from
+ * the prompt's user block — the local echo, a prompt.submitted frame, and the
+ * reconciled upsert all carry it; a prompt whose block has not landed yet
+ * previews as ''. */
+export function queuedPromptPreviews(state: SessionViewState): readonly QueuedPromptPreview[] {
+  return state.queuedPromptIds.map((promptId) => {
+    const block = state.blocks.find(
+      (candidate): candidate is UserBlock =>
+        candidate.kind === 'user' && candidate.promptId === promptId,
+    );
+    return { promptId, text: block?.text ?? '' };
+  });
+}
+
 export function advanceSessionCursor(
   state: SessionViewState,
   frame: SessionEventFrame,

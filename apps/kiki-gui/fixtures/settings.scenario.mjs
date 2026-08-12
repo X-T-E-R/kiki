@@ -30,6 +30,10 @@ export default {
         type: 'openai',
         has_api_key: true,
       },
+      alt: {
+        type: 'anthropic',
+        has_api_key: false,
+      },
     },
   },
   models: [
@@ -49,6 +53,13 @@ export default {
       max_context_size: 131072,
       capabilities: ['chat'],
     },
+    {
+      provider: 'alt',
+      model: 'alt/claude-x',
+      display_name: 'Alt Claude X',
+      max_context_size: 200000,
+      capabilities: ['reasoning', 'tools'],
+    },
   ],
   providers: [
     {
@@ -59,19 +70,27 @@ export default {
       default_model: 'fixture/kiki-pro',
       models: ['fixture/kiki-pro', 'fixture/kiki-lite'],
     },
+    {
+      id: 'alt',
+      type: 'anthropic',
+      has_api_key: false,
+      status: 'unconfigured',
+      default_model: 'alt/claude-x',
+      models: ['alt/claude-x'],
+    },
   ],
   auth: {
     ready: true,
-    providers_count: 1,
+    providers_count: 2,
     default_model: 'fixture/kiki-pro',
     managed_provider: null,
   },
   oauth: {
     flow_id: fid('oauth'),
     provider: 'fixture',
-    status: 'authenticated',
+    status: 'pending',
     verification_uri: 'https://fixture.test/verify',
-    verification_uri_complete: 'https://fixture.test/verify?code=ABCD',
+    verification_uri_complete: 'https://fixture.test/verify?code=ABCD-EFGH',
     user_code: 'ABCD-EFGH',
     expires_in: 600,
     expires_at: new Date(Date.now() + 600_000).toISOString(),
@@ -80,7 +99,13 @@ export default {
   oauthStart: {
     flow_id: fid('oauth'),
     provider: 'fixture',
-    status: 'authenticated',
+    status: 'pending',
+    verification_uri: 'https://fixture.test/verify',
+    verification_uri_complete: 'https://fixture.test/verify?code=WXYZ-1234',
+    user_code: 'WXYZ-1234',
+    expires_in: 600,
+    expires_at: new Date(Date.now() + 600_000).toISOString(),
+    interval: 5,
   },
   tools: [
     {

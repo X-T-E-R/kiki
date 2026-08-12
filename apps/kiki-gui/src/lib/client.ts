@@ -46,6 +46,7 @@ import type {
   PatchConfigRequest,
   PromptAbortResponse,
   PromptListResponse,
+  PromptSteerResult,
   PromptSubmission,
   PromptSubmitResult,
   QuestionDismissResult,
@@ -81,6 +82,8 @@ export const API_CODES = {
   TIMEOUT: -2,
   SUCCESS: 0,
   UNAUTHORIZED: 40101,
+  SESSION_NOT_FOUND: 40401,
+  PROMPT_NOT_FOUND: 40402,
   SKILL_NOT_FOUND: 40415,
   SESSION_BUSY: 40901,
   APPROVAL_ALREADY_RESOLVED: 40902,
@@ -94,6 +97,16 @@ export const API_CODES = {
   QUESTION_EXPIRED: 41002,
   TERMINAL_NOT_FOUND: 40414,
 } as const;
+
+/**
+ * True when a human-readable load error (ApiError's `${msg} (code ${code})`
+ * string) reports a missing session — drives the /s/:id auto-fallback.
+ */
+export function isSessionNotFoundMessage(message: string): boolean {
+  return (
+    message.includes('session.not_found') || message.includes(`code ${API_CODES.SESSION_NOT_FOUND}`)
+  );
+}
 
 /**
  * Wire shapes for `POST /search` — the global cross-session message search.
@@ -424,6 +437,21 @@ export class KikiClient {
       'POST',
       `/sessions/${encodeURIComponent(sessionId)}/prompts/${encodeURIComponent(promptId)}:abort`,
       { body: {}, okCodes: [API_CODES.SUCCESS, API_CODES.PROMPT_ALREADY_COMPLETED] },
+    );
+  }
+
+  /**
+   * Steer a queued prompt into the currently running turn (`POST …:steer`):
+   * the server merges its content into the active turn immediately instead of
+   * waiting for the turn to end, and the prompt leaves the queue. The server
+   * answers PROMPT_NOT_FOUND when no turn is active or the prompt already
+   * left the queue.
+   */
+  steerPrompt(sessionId: string, promptId: string): Promise<PromptSteerResult> {
+    return this.request<PromptSteerResult>(
+      'POST',
+      `/sessions/${encodeURIComponent(sessionId)}/prompts/${encodeURIComponent(promptId)}:steer`,
+      { body: {} },
     );
   }
 

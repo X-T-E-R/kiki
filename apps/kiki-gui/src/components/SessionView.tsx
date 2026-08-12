@@ -11,6 +11,7 @@ import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom'
 import type { PermissionMode, Session } from '@moonshot-ai/protocol';
 
 import { Composer } from './Composer';
+import { QueueStrip } from './QueueStrip';
 import { RightRail } from './RightRail';
 import { TerminalPanel } from './TerminalPanel';
 import { Transcript } from './Transcript';
@@ -20,7 +21,7 @@ import {
   buildSkillActivation,
   type ComposerAttachment,
 } from '../lib/attachments';
-import { API_CODES, ApiError } from '../lib/client';
+import { API_CODES, ApiError, isSessionNotFoundMessage } from '../lib/client';
 import { readDraft, writeDraft } from '../lib/drafts';
 import { isMainWindowVisibleAndFocused, showDesktopNotification } from '../lib/desktop';
 import { useI18n } from '../i18n';
@@ -37,8 +38,9 @@ import {
   readTerminalPanelPrefs,
   writeTerminalPanelPrefs,
 } from '../lib/terminalPrefs';
+import { pushToast } from '../lib/toasts';
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
-import { readDesktopPrefs, readSettings } from '../lib/settings';
+import { readDesktopPrefs, readLastSessionId, readSettings, writeLastSessionId } from '../lib/settings';
 import { useConnection, useControllerRegistry } from '../state/connection';
 import { SessionController } from '../state/sessionController';
 import {
@@ -49,8 +51,9 @@ import {
 import {
   agentTranscriptToBlocks,
   createViewState,
-  pendingApprovalCount,
   pendingQuestionCount,
+  queuedPromptPreviews,
+  type ApprovalBlock,
   type AssistantBlock,
   type NoticeBlock,
   type SessionViewState,
@@ -112,8 +115,38 @@ function Header({
     controller?.getState ?? emptyState,
   );
   const session = state.session;
-  const approvals = pendingApprovalCount(state);
+  const unresolvedApprovalIds = useMemo(
+    () =>
+      state.blocks
+        .filter(
+          (block): block is ApprovalBlock =>
+            block.kind === 'approval' && block.resolution === undefined,
+        )
+        .map((block) => block.request.approval_id),
+    [state.blocks],
+  );
+  const approvals = unresolvedApprovalIds.length;
   const questions = pendingQuestionCount(state);
+
+  // The amber badge doubles as a locator: clicking it smooth-scrolls the
+  // transcript to the first unresolved approval card.
+  const scrollToFirstApproval = () => {
+    document
+      .querySelector('[data-approval-id]')
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+
+  const resolveAll = (decision: 'approved' | 'rejected') => {
+    if (controller === null || unresolvedApprovalIds.length === 0) return;
+    const ids = unresolvedApprovalIds;
+    void resolveAllApprovals(controller, ids, decision).then(({ total, failed }) => {
+      if (failed === 0) {
+        pushToast({ tone: 'success', text: tp('sv.batchResolved', total) });
+      } else {
+        pushToast({ tone: 'error', text: t('sv.batchFailed', { failed, total }) });
+      }
+    });
+  };
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
@@ -131,10 +164,35 @@ function Header({
             {session.title !== '' ? session.title : t('sidebar.untitled')}
           </h1>
           {approvals > 0 || questions > 0 ? (
-            <span className="shrink-0 rounded-full bg-amber-card px-2 py-0.5 text-[10.5px] font-semibold text-amber-ink">
+            <button
+              type="button"
+              onClick={approvals > 0 ? scrollToFirstApproval : undefined}
+              title={approvals > 0 ? t('sv.scrollToApprovals') : undefined}
+              className={`shrink-0 rounded-full bg-amber-card px-2 py-0.5 text-[10.5px] font-semibold text-amber-ink ${
+                approvals > 0 ? 'cursor-pointer transition-colors hover:bg-amber-rule/30' : ''
+              }`}
+            >
               {approvals > 0 ? tp('sv.approvals', approvals) : ''}
               {approvals > 0 && questions > 0 ? ' · ' : ''}
               {questions > 0 ? tp('sv.questions', questions) : ''}
+            </button>
+          ) : null}
+          {approvals >= 2 ? (
+            <span className="flex shrink-0 items-center gap-1" data-approval-batch>
+              <button
+                type="button"
+                onClick={() => { resolveAll('approved'); }}
+                className="rounded-full border border-accent bg-accent-soft px-2 py-0.5 text-[10.5px] font-semibold text-accent transition-colors hover:bg-accent hover:text-white"
+              >
+                {t('sv.approveAll')}
+              </button>
+              <button
+                type="button"
+                onClick={() => { resolveAll('rejected'); }}
+                className="rounded-full border border-hairline px-2 py-0.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-danger hover:text-danger"
+              >
+                {t('sv.rejectAll')}
+              </button>
             </span>
           ) : null}
           {state.busy ? (
@@ -414,6 +472,75 @@ function useMediaQuery(query: string): boolean {
 
 type ModelSource = 'server-default' | 'session' | 'override';
 
+/** How long the not-found card stays before /s/:id falls back home. */
+export const NOT_FOUND_FALLBACK_MS = 3000;
+
+/**
+ * Permission/plan/swarm pills are controlled by the server-reported store
+ * fields (snapshot agent_config + `agent.status.updated`): another client —
+ * or the server itself — can move them. The local override is only an
+ * optimistic echo: an uncommitted pill click wins until the store reports the
+ * same value, then `shouldClearModeOverride` retires it.
+ */
+export function resolveControlledValue<T>(
+  override: T | undefined,
+  storeValue: T | undefined,
+  fallback: T,
+): T {
+  return override ?? storeValue ?? fallback;
+}
+
+export function resolveControlledFlag(
+  override: boolean | undefined,
+  storeValue: boolean,
+  loaded: boolean,
+  fallback: boolean,
+): boolean {
+  // Before the snapshot lands the store holds zero-value defaults, so the
+  // caller's configured default still wins over them.
+  return override ?? (loaded ? storeValue : fallback);
+}
+
+export function shouldClearModeOverride<T>(
+  override: T | undefined,
+  storeValue: T | undefined,
+): boolean {
+  return override !== undefined && storeValue === override;
+}
+
+/**
+ * Batch approval resolution: settles every pending card, reporting how many
+ * decisions failed to send (individual cards keep their own retry path).
+ */
+export async function resolveAllApprovals(
+  controller: Pick<SessionController, 'resolveApproval'>,
+  approvalIds: readonly string[],
+  decision: 'approved' | 'rejected',
+): Promise<{ total: number; failed: number }> {
+  const results = await Promise.allSettled(
+    approvalIds.map((id) => controller.resolveApproval(id, decision)),
+  );
+  return {
+    total: approvalIds.length,
+    failed: results.filter((result) => result.status === 'rejected').length,
+  };
+}
+
+/** Sticky toast for a failed abort; the retry button re-runs it and re-toasts on failure. */
+function pushAbortFailureToast(controller: SessionController, message: string): void {
+  pushToast({
+    tone: 'error',
+    text: message,
+    retry: {
+      run: () => {
+        void controller
+          .abortActive()
+          .catch(() => { pushAbortFailureToast(controller, message); });
+      },
+    },
+  });
+}
+
 function resolveApprovalShortcutTarget(): string | undefined {
   const active = document.activeElement;
   if (active instanceof HTMLElement) {
@@ -428,7 +555,9 @@ function resolveApprovalShortcutTarget(): string | undefined {
     const rect = card.getBoundingClientRect();
     return rect.top < window.innerHeight && rect.bottom > 0;
   });
-  if (visible.length === 1) {
+  // With no focused card, y/n acts on the topmost visible pending card — the
+  // <kbd> hints on every pending card advertise exactly that target.
+  if (visible.length > 0) {
     const id = visible[0]!.dataset['approvalId'];
     if (id !== undefined) return id;
   }
@@ -447,7 +576,7 @@ export function SessionView({
   const sessionId = id!;
   const { client, socket, meta, wsStatus } = useConnection();
   const terminalAvailable = terminalCapabilityAvailable(meta.capabilities);
-  const { t, tp, locale } = useI18n();
+  const { t, locale } = useI18n();
   const navigate = useNavigate();
   const location = useLocation();
   const agentMatch = useMatch('/s/:id/agent/:agentId');
@@ -473,13 +602,17 @@ export function SessionView({
   const [railOpen, setRailOpen] = useState(
     () => typeof window.matchMedia !== 'function' || window.matchMedia('(min-width: 1024px)').matches,
   );
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>(
-    initialOptionsRef.current.permissionMode ?? defaults.defaultPermissionMode,
+  // Permission/plan/swarm are store-controlled (see resolveControlledValue):
+  // local state is only the optimistic echo of an uncommitted pill click.
+  const [permissionOverride, setPermissionOverride] = useState<PermissionMode | undefined>(
+    initialOptionsRef.current.permissionMode,
   );
-  const [planMode, setPlanMode] = useState(
-    initialOptionsRef.current.planMode ?? defaults.defaultPlanMode,
+  const [planOverride, setPlanOverride] = useState(
+    initialOptionsRef.current.planMode,
   );
-  const [swarmMode, setSwarmMode] = useState(initialOptionsRef.current.swarmMode ?? false);
+  const [swarmOverride, setSwarmOverride] = useState(
+    initialOptionsRef.current.swarmMode,
+  );
   const [goalObjective, setGoalObjective] = useState(
     initialOptionsRef.current.goalObjective ?? '',
   );
@@ -490,10 +623,6 @@ export function SessionView({
   const [effortOverride, setEffortOverride] = useState(
     initialOptionsRef.current.thinking ?? defaults.defaultEffort,
   );
-  const [sendError, setSendError] = useState<string | null>(null);
-  const [abortError, setAbortError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [confirmUndo, setConfirmUndo] = useState(false);
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>(
@@ -570,23 +699,27 @@ export function SessionView({
     }
   }, [sessionId]);
 
-  // Close the rail drawer on Escape (the app-level sidebar closes itself).
+  // Close the rail drawer on Escape (the app-level sidebar closes itself);
+  // the terminal panel gets the same treatment, and while it is open it is a
+  // registered overlay so Escape cannot also abort the running turn.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setRailOpen(false);
+      if (event.key !== 'Escape') return;
+      setRailOpen(false);
+      if (terminalOpen) toggleTerminalPanel();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, []);
+  }, [terminalOpen, toggleTerminalPanel]);
+  useEffect(() => {
+    if (!terminalOpen) return;
+    return registerOverlay('terminal-panel');
+  }, [terminalOpen]);
 
   // Per-session composer drafts.
   useEffect(() => {
     setDraft(readDraft(sessionId));
     setAttachments([]);
-    setSendError(null);
-    setAbortError(null);
-    setActionError(null);
-    setActionNotice(null);
   }, [sessionId]);
   const updateDraft = (text: string) => {
     setDraft(text);
@@ -603,13 +736,6 @@ export function SessionView({
     window.addEventListener(SESSION_REWRITTEN_EVENT, onRewritten);
     return () => { window.removeEventListener(SESSION_REWRITTEN_EVENT, onRewritten); };
   }, [controller, sessionId]);
-
-  // Success notices self-dismiss; errors stay until dismissed or retried.
-  useEffect(() => {
-    if (actionNotice === null) return;
-    const timer = setTimeout(() => { setActionNotice(null); }, 3000);
-    return () => { clearTimeout(timer); };
-  }, [actionNotice]);
 
   // The undo-confirm dialog is an overlay: Escape closes it (and must not
   // fall through to the global Escape-to-abort handler).
@@ -630,6 +756,45 @@ export function SessionView({
     controller?.subscribe ?? noopSubscribe,
     controller?.getState ?? emptyState,
   );
+
+  // Store-controlled pills: the server-reported value wins unless a local
+  // click is still waiting to be committed with the next prompt.
+  const permissionMode = resolveControlledValue(
+    permissionOverride,
+    state.permissionMode,
+    defaults.defaultPermissionMode,
+  );
+  const planMode = resolveControlledFlag(planOverride, state.planMode, state.loaded, defaults.defaultPlanMode);
+  const swarmMode = resolveControlledFlag(swarmOverride, state.swarmMode, state.loaded, false);
+  useEffect(() => {
+    if (shouldClearModeOverride(permissionOverride, state.permissionMode)) {
+      setPermissionOverride(undefined);
+    }
+  }, [permissionOverride, state.permissionMode]);
+  useEffect(() => {
+    if (state.loaded && shouldClearModeOverride(planOverride, state.planMode)) {
+      setPlanOverride(undefined);
+    }
+  }, [planOverride, state.loaded, state.planMode]);
+  useEffect(() => {
+    if (state.loaded && shouldClearModeOverride(swarmOverride, state.swarmMode)) {
+      setSwarmOverride(undefined);
+    }
+  }, [swarmOverride, state.loaded, state.swarmMode]);
+
+  // A deleted/unknown session can never recover: toast the reason, keep the
+  // card visible for a beat, then fall back home (clearing the remembered id
+  // so `/` doesn't redirect straight back into the 404).
+  const loadError = state.loadError;
+  useEffect(() => {
+    if (loadError === undefined || !isSessionNotFoundMessage(loadError)) return;
+    pushToast({ tone: 'info', text: t('sv.sessionGone') });
+    const timer = setTimeout(() => {
+      if (readLastSessionId() === sessionId) writeLastSessionId(undefined);
+      void navigate('/new', { replace: true });
+    }, NOT_FOUND_FALLBACK_MS);
+    return () => { clearTimeout(timer); };
+  }, [loadError, sessionId, navigate, t]);
 
   const agentTranscriptQuery = useQuery({
     queryKey: ['agent-transcript', sessionId, selectedAgentId],
@@ -713,12 +878,11 @@ export function SessionView({
         const current = controller.getState();
         if (current.busy && current.activePromptId !== undefined) {
           event.preventDefault();
-          setAbortError(null);
           void controller
             .abortActive()
-            .then(() => { setAbortError(null); })
             .catch((error: unknown) => {
-              setAbortError(
+              pushAbortFailureToast(
+                controller,
                 error instanceof Error ? error.message : t('sv.abortMaybeRunning'),
               );
             });
@@ -729,15 +893,15 @@ export function SessionView({
       const approvalId = resolveApprovalShortcutTarget();
       if (approvalId === undefined) return;
       event.preventDefault();
-      setActionError(null);
       void controller
         .resolveApproval(approvalId, event.key === 'y' ? 'approved' : 'rejected')
         .catch((error: unknown) => {
-          setActionError(
-            t('sv.approvalShortcutFailed', {
+          pushToast({
+            tone: 'error',
+            text: t('sv.approvalShortcutFailed', {
               detail: error instanceof Error ? error.message : String(error),
             }),
-          );
+          });
         });
     };
     window.addEventListener('keydown', onKeyDown);
@@ -755,7 +919,6 @@ export function SessionView({
         // echoes the same placeholder the transcript uses for image parts.
         const echoText =
           textPart !== undefined && textPart.type === 'text' ? textPart.text : t('sv.imageEcho');
-        setSendError(null);
         void controller
           .sendPrompt({
             text: echoText,
@@ -775,7 +938,10 @@ export function SessionView({
             setGoalControl(undefined);
           })
           .catch((error: unknown) => {
-            setSendError(error instanceof Error ? error.message : String(error));
+            pushToast({
+              tone: 'error',
+              text: error instanceof Error ? error.message : String(error),
+            });
           });
       },
       activateSkill: (
@@ -784,7 +950,6 @@ export function SessionView({
         composerAttachments: readonly ComposerAttachment[],
       ) => {
         const activation = buildSkillActivation(args, composerAttachments);
-        setSendError(null);
         void client
           .activateSkill(sessionId, name, {
             args: activation.args === '' ? undefined : activation.args,
@@ -796,26 +961,23 @@ export function SessionView({
             setAttachments([]);
           })
           .catch((error: unknown) => {
-            if (error instanceof ApiError && error.code === API_CODES.SKILL_NOT_FOUND) {
-              setSendError(t('sv.skillGone', { name }));
-            } else if (error instanceof ApiError && error.code === API_CODES.SKILL_NOT_ACTIVATABLE) {
-              setSendError(t('sv.skillReference', { name }));
-            } else {
-              setSendError(error instanceof Error ? error.message : String(error));
-            }
+            const text =
+              error instanceof ApiError && error.code === API_CODES.SKILL_NOT_FOUND
+                ? t('sv.skillGone', { name })
+                : error instanceof ApiError && error.code === API_CODES.SKILL_NOT_ACTIVATABLE
+                  ? t('sv.skillReference', { name })
+                  : error instanceof Error
+                    ? error.message
+                    : String(error);
+            pushToast({ tone: 'error', text });
           });
       },
-      abort: () => {
-        setAbortError(null);
-        return controller
-          .abortActive()
-          .then(() => { setAbortError(null); })
-          .catch((error: unknown) => {
-            const message = error instanceof Error ? error.message : t('sv.abortFailed');
-            setAbortError(`${message}${t('sv.abortStillRunning')}`);
-            throw error;
-          });
-      },
+      abort: () =>
+        controller.abortActive().catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : t('sv.abortFailed');
+          pushAbortFailureToast(controller, `${message}${t('sv.abortStillRunning')}`);
+          // Not rethrown: the sticky toast (with retry) carries the failure.
+        }),
       resolveApproval: (
         approvalId: string,
         decision: 'approved' | 'rejected' | 'cancelled',
@@ -825,24 +987,39 @@ export function SessionView({
         controller.answerQuestion(questionId, answers),
       dismissQuestion: (questionId: string) => controller.dismissQuestion(questionId),
       cancelTask: (taskId: string) => {
-        setActionError(null);
         void controller.cancelTask(taskId).catch((error: unknown) => {
-          setActionError(
-            t('sv.stopTaskFailed', {
+          pushToast({
+            tone: 'error',
+            text: t('sv.stopTaskFailed', {
               detail: error instanceof Error ? error.message : String(error),
             }),
-          );
+          });
         });
       },
       cancelQueued: (promptId: string) => {
-        setActionError(null);
-        void controller.abortPrompt(promptId).catch((error: unknown) => {
-          setActionError(
-            t('sv.cancelQueuedFailed', {
+        // Returned so the queue strip can hold its row pending until settle.
+        return controller.abortPrompt(promptId).catch((error: unknown) => {
+          pushToast({
+            tone: 'error',
+            text: t('sv.cancelQueuedFailed', {
               detail: error instanceof Error ? error.message : String(error),
             }),
-          );
+          });
         });
+      },
+      sendNowQueued: (promptId: string) => {
+        return controller.steerQueued(promptId).catch((error: unknown) => {
+          pushToast({
+            tone: 'error',
+            text: t('sv.steerQueuedFailed', {
+              detail: error instanceof Error ? error.message : String(error),
+            }),
+          });
+        });
+      },
+      clearQueue: () => {
+        // clearQueue settles per-prompt (allSettled) — nothing to surface.
+        void controller.clearQueue();
       },
     };
   }, [
@@ -876,27 +1053,32 @@ export function SessionView({
         setConfirmUndo(true);
         return;
       }
-      setActionError(null);
-      setActionNotice(null);
       if (action === 'fork') {
         void forkSession(actionContext, record).catch((error: unknown) => {
-          setActionError(t('action.forkFailed', { detail: sessionActionErrorText(locale, error) }));
+          pushToast({
+            tone: 'error',
+            text: t('action.forkFailed', { detail: sessionActionErrorText(locale, error) }),
+          });
         });
       } else if (action === 'export') {
         void exportSessionArchive(actionContext, record)
-          .then(() => { setActionNotice(t('action.exportDoneSession')); })
+          .then((saved) => {
+            if (saved) pushToast({ tone: 'success', text: t('action.exportDoneSession') });
+          })
           .catch((error: unknown) => {
-            setActionError(
-              t('action.exportFailed', { detail: sessionActionErrorText(locale, error) }),
-            );
+            pushToast({
+              tone: 'error',
+              text: t('action.exportFailed', { detail: sessionActionErrorText(locale, error) }),
+            });
           });
       } else {
         void compactSessionContext(actionContext, record)
-          .then(() => { setActionNotice(t('action.compactRequestedSession')); })
+          .then(() => { pushToast({ tone: 'success', text: t('action.compactRequestedSession') }); })
           .catch((error: unknown) => {
-            setActionError(
-              t('action.compactFailed', { detail: sessionActionErrorText(locale, error) }),
-            );
+            pushToast({
+              tone: 'error',
+              text: t('action.compactFailed', { detail: sessionActionErrorText(locale, error) }),
+            });
           });
       }
     },
@@ -907,11 +1089,13 @@ export function SessionView({
     const record = state.session;
     setConfirmUndo(false);
     if (record === undefined) return;
-    setActionError(null);
     void undoLastTurn(actionContext, record)
-      .then(() => { setActionNotice(t('action.undoDoneSession')); })
+      .then(() => { pushToast({ tone: 'success', text: t('action.undoDoneSession') }); })
       .catch((error: unknown) => {
-        setActionError(t('action.undoFailed', { detail: sessionActionErrorText(locale, error) }));
+        pushToast({
+          tone: 'error',
+          text: t('action.undoFailed', { detail: sessionActionErrorText(locale, error) }),
+        });
       });
   }, [actionContext, state.session, t, locale]);
 
@@ -937,9 +1121,21 @@ export function SessionView({
     [controller],
   );
   const handleCancelQueued = useCallback(
-    (promptId: string) => actions?.cancelQueued(promptId),
+    (promptId: string) => actions?.cancelQueued(promptId) ?? Promise.resolve(),
     [actions],
   );
+  // Transcript's prop type predates the queue strip and wants a void return:
+  // hand it a memoized fire-and-forget view of the same action.
+  const handleCancelQueuedChips = useCallback(
+    (promptId: string) => { void handleCancelQueued(promptId); },
+    [handleCancelQueued],
+  );
+  const handleSendNowQueued = useCallback(
+    (promptId: string) => actions?.sendNowQueued(promptId),
+    [actions],
+  );
+  const handleClearQueue = useCallback(() => actions?.clearQueue(), [actions]);
+  const queuedItems = useMemo(() => queuedPromptPreviews(state), [state]);
   const handleRetryLoad = useCallback(() => void controller?.retryOpen(), [controller]);
 
   // Submit the prompt that was drafted on /new, now that the live controller is
@@ -991,6 +1187,12 @@ export function SessionView({
   const composerDisabled = controller === null || !state.loaded || state.loadError !== undefined;
   const modelSource: ModelSource =
     modelOverride !== undefined ? 'override' : sessionModel !== undefined ? 'session' : 'server-default';
+  // The composer footer's mini meter reads the same usage fields as the rail.
+  const usage = state.session?.usage;
+  const contextUsed = state.contextTokens ?? usage?.context_tokens;
+  const contextLimit =
+    state.maxContextTokens ??
+    (usage !== undefined && usage.context_limit > 0 ? usage.context_limit : undefined);
 
   // The backdrop exists only while a drawer actually overlays the transcript:
   // below lg the rail becomes a fixed overlay (see .app-rail in index.css).
@@ -1119,40 +1321,9 @@ export function SessionView({
           onResolveApproval={handleResolveApproval}
           onAnswerQuestion={handleAnswerQuestion}
           onDismissQuestion={handleDismissQuestion}
-          onCancelQueued={handleCancelQueued}
+          onCancelQueued={handleCancelQueuedChips}
           onRetryLoad={handleRetryLoad}
         />
-        {sendError !== null ? (
-          <div className="px-6 pb-1">
-            <div className="mx-auto max-w-[760px] rounded-lg border border-danger/30 bg-danger/5 px-3 py-1.5 font-mono text-[11.5px] text-danger">
-              {sendError}
-            </div>
-          </div>
-        ) : null}
-        {actionError !== null ? (
-          <div className="px-6 pb-1">
-            <div className="mx-auto max-w-[760px] rounded-lg border border-danger/30 bg-danger/5 px-3 py-1.5 font-mono text-[11.5px] text-danger">
-              {actionError}
-            </div>
-          </div>
-        ) : null}
-        {actionNotice !== null ? (
-          <div className="px-6 pb-1">
-            <div className="mx-auto max-w-[760px] rounded-lg border border-success/30 bg-success/5 px-3 py-1.5 font-mono text-[11.5px] text-success">
-              {actionNotice}
-            </div>
-          </div>
-        ) : null}
-        {abortError !== null ? (
-          <div className="px-6 pb-1">
-            <div className="mx-auto max-w-[760px] rounded-lg border border-danger/30 bg-danger/5 px-3 py-1.5 font-mono text-[11.5px] text-danger">
-              {abortError}
-              <button type="button" onClick={() => void actions?.abort()} className="ml-2 underline">
-                {t('common.retry')}
-              </button>
-            </div>
-          </div>
-        ) : null}
         <div className="flex items-center gap-2 px-6 pt-1">
           {state.resyncing || state.resyncFailed ? (
             <span className="mx-auto flex items-center gap-1.5 text-[11px] text-ink-faint">
@@ -1161,14 +1332,13 @@ export function SessionView({
             </span>
           ) : null}
         </div>
-        {state.queuedPromptIds.length > 0 ? (
-          <div className="px-6 pb-1.5">
-            <div className="mx-auto flex max-w-[760px]">
-              <span className="rounded-full border border-amber-rule/40 bg-amber-card px-2.5 py-0.5 text-[11px] font-medium text-amber-ink">
-                {tp('sv.queueBar', state.queuedPromptIds.length)}
-              </span>
-            </div>
-          </div>
+        {queuedItems.length > 0 ? (
+          <QueueStrip
+            items={queuedItems}
+            onSendNow={handleSendNowQueued}
+            onRemove={handleCancelQueued}
+            onClearAll={handleClearQueue}
+          />
         ) : null}
         <Composer
           busy={state.busy && state.activePromptId !== undefined}
@@ -1187,6 +1357,11 @@ export function SessionView({
           goalControl={goalControl}
           efforts={supportedEfforts}
           effort={effectiveEffort}
+          contextUsage={
+            contextUsed !== undefined && contextLimit !== undefined
+              ? { used: contextUsed, limit: contextLimit }
+              : undefined
+          }
           sessionId={sessionId}
           fsSearch={(query) =>
             client.fsSearch(sessionId, { query, limit: 30 }).then((result) => result.items)
@@ -1197,10 +1372,11 @@ export function SessionView({
             actions?.activateSkill(name, args, skillAttachments)
           }
           onSessionAction={runSessionAction}
+          onCompactContext={() => { runSessionAction('compact'); }}
           onChangeModel={setModelOverride}
-          onChangePermissionMode={setPermissionMode}
-          onChangePlanMode={setPlanMode}
-          onChangeSwarmMode={setSwarmMode}
+          onChangePermissionMode={setPermissionOverride}
+          onChangePlanMode={setPlanOverride}
+          onChangeSwarmMode={setSwarmOverride}
           onChangeGoalObjective={setGoalObjective}
           onChangeGoalControl={setGoalControl}
           onChangeEffort={setEffortOverride}

@@ -75,8 +75,11 @@ const UserMessage = memo(function UserMessage({
   const { t, time } = useI18n();
   return (
     <div className="anim-enter flex flex-col items-end" title={time.absoluteTime(block.createdAt)}>
-      <span className="mb-1 pr-1 text-[10.5px] font-semibold tracking-wide text-ink-faint uppercase">
-        {t('transcript.you')}
+      <span className="mb-1 flex items-baseline gap-1.5 pr-1">
+        <span className="text-[10.5px] font-semibold tracking-wide text-ink-faint uppercase">
+          {t('transcript.you')}
+        </span>
+        <span className="text-xs text-ink-faint">{time.relativeTime(block.createdAt)}</span>
       </span>
       <div className="max-w-[85%] rounded-2xl rounded-br-md border border-hairline bg-[#f3ede1] px-3.5 py-2 text-[13.5px] leading-relaxed whitespace-pre-wrap text-ink">
         {block.text}
@@ -401,7 +404,7 @@ const BlockView = memo(function BlockView({
   onCancelQueued?: (promptId: string) => void;
   /** subagentId → display name, for tagging child-origin interaction cards. */
   agentNames?: ReadonlyMap<string, string>;
-  /** y/n shortcut hints are armed only for the single unresolved approval. */
+  /** y/n shortcut hints show on every pending approval card. */
   approvalShortcutHints?: boolean;
 }) {
   const { t } = useI18n();
@@ -582,10 +585,10 @@ export function Transcript({
     }
     return map;
   }, [blocks]);
-  // The y/n keyboard shortcut only fires for a single visible unresolved
-  // approval (SessionView's resolver); hints mirror that eligibility.
-  const unresolvedApprovals = useMemo(
-    () => blocks.filter((b) => b.kind === 'approval' && b.resolution === undefined).length,
+  // y/n acts on the focused card, else the topmost visible pending card
+  // (SessionView's resolver); every pending card advertises that shortcut.
+  const hasUnresolvedApproval = useMemo(
+    () => blocks.some((b) => b.kind === 'approval' && b.resolution === undefined),
     [blocks],
   );
 
@@ -650,7 +653,7 @@ export function Transcript({
                 onDismissQuestion={onDismissQuestion}
                 onCancelQueued={onCancelQueued}
                 agentNames={agentNames}
-                approvalShortcutHints={unresolvedApprovals === 1}
+                approvalShortcutHints={hasUnresolvedApproval}
                 readOnly={readOnly}
               />
             )}

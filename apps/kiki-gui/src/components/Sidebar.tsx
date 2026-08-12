@@ -5,15 +5,20 @@
  * The search box queries `POST /search` (global full-text index); results
  * replace the list while a query is active. Hits carry no message id — only
  * session_id + turn — so navigation opens the session.
+ *
+ * The session row menu opens from the hover ⋯ button or a right-click
+ * anywhere on the row; the undo confirmation and rename dialog build on the
+ * shared `Dialog` primitive.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
 import type { Session } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../i18n';
+import { clampOverlayPosition } from '../lib/overlayPosition';
 import { groupSearchHits, isSearchable, SEARCH_DEBOUNCE_MS } from '../lib/search';
 import {
   compactSessionContext,
@@ -25,6 +30,8 @@ import {
 } from '../lib/sessionActions';
 import { registerOverlay } from '../lib/uiBusy';
 import { useConnection } from '../state/connection';
+import { Dialog } from './Dialog';
+import { PendingBadge } from './PendingBadge';
 import { Wordmark } from './Wordmark';
 
 function StatusDot({ session }: { session: Session }) {
@@ -68,6 +75,7 @@ export function Sidebar({
   sessionsQuery,
   showArchived,
   onToggleArchived,
+  onNewSession,
   className,
 }: {
   activeSessionId: string | undefined;
@@ -82,6 +90,8 @@ export function Sidebar({
   };
   showArchived: boolean;
   onToggleArchived: () => void;
+  /** Opens the new-session dialog (the /new page stays the no-session landing). */
+  onNewSession: () => void;
   className?: string;
 }) {
   const navigate = useNavigate();
@@ -97,7 +107,6 @@ export function Sidebar({
 
   const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const searchBoxRef = useRef<HTMLInputElement>(null);
 
   const refreshSessions = useCallback(
     () => void queryClient.invalidateQueries({ queryKey: ['sessions'] }),
@@ -127,39 +136,11 @@ export function Sidebar({
     [searchResultsQuery.data],
   );
 
-  // ⌘K / Ctrl+K focuses the search box.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
-        event.preventDefault();
-        searchBoxRef.current?.focus();
-        searchBoxRef.current?.select();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, []);
-
   useEffect(() => {
     if (actionNotice === null) return;
     const timer = setTimeout(() => { setActionNotice(null); }, 3000);
     return () => { clearTimeout(timer); };
   }, [actionNotice]);
-
-  // The undo-confirm dialog is an overlay: Escape closes it (and must not
-  // fall through to the global Escape-to-abort handler).
-  useEffect(() => {
-    if (confirmUndo === null) return;
-    const unregister = registerOverlay('sidebar-confirm-undo');
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setConfirmUndo(null);
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => {
-      unregister();
-      window.removeEventListener('keydown', onKeyDown);
-    };
-  }, [confirmUndo]);
 
   const runAction = (
     session: Session,
@@ -178,8 +159,8 @@ export function Sidebar({
       });
     } else if (action === 'export') {
       void exportSessionArchive(actionContext, session)
-        .then(() => {
-          setActionNotice(t('action.exportDone', { title: sessionLabel(session, untitled) }));
+        .then((saved) => {
+          if (saved) setActionNotice(t('action.exportDone', { title: sessionLabel(session, untitled) }));
         })
         .catch((error: unknown) => {
           setActionError(t('action.exportFailed', { detail: sessionActionErrorText(locale, error) }));
@@ -251,14 +232,13 @@ export function Sidebar({
       <div className="px-3 pb-2">
         <button
           type="button"
-          onClick={() => void navigate('/new')}
+          onClick={onNewSession}
           className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-hairline-strong bg-paper px-3 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:border-accent hover:text-accent"
         >
           <span aria-hidden className="text-[14px] leading-none">＋</span> {t('sidebar.newSession')}
         </button>
         <div className="relative mt-2">
           <input
-            ref={searchBoxRef}
             type="text"
             value={searchInput}
             data-search-box
@@ -273,11 +253,7 @@ export function Sidebar({
             aria-label={t('sidebar.searchAria')}
             className="w-full rounded-lg border border-hairline bg-paper px-2.5 py-1.5 pr-9 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
           />
-          {searchInput === '' ? (
-            <kbd className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 rounded border border-hairline px-1 font-mono text-[9px] text-ink-faint">
-              ⌘K
-            </kbd>
-          ) : (
+          {searchInput === '' ? null : (
             <button
               type="button"
               aria-label={t('sidebar.clearSearch')}
@@ -397,7 +373,14 @@ export function Sidebar({
           const active = session.id === activeSessionId;
           const archived = session.archived === true;
           return (
-            <div key={session.id} className="group relative mb-0.5">
+            <div
+              key={session.id}
+              className="group relative mb-0.5"
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setMenu({ session, x: event.clientX, y: event.clientY });
+              }}
+            >
               <button
                 type="button"
                 onClick={() => void navigate(`/s/${session.id}`)}
@@ -469,6 +452,7 @@ export function Sidebar({
       )}
 
       <div className="border-t border-hairline px-3 py-2.5 space-y-1">
+        <PendingBadge sessions={sessions} />
         <button
           type="button"
           onClick={() => void navigate('/settings')}
@@ -511,58 +495,55 @@ export function Sidebar({
         />
       ) : null}
       {confirmUndo !== null ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/20"
-          onClick={() => { setConfirmUndo(null); }}
+        <Dialog
+          onClose={() => { setConfirmUndo(null); }}
+          ariaLabel={t('undo.title')}
+          overlayId="sidebar-confirm-undo"
         >
-          <div
-            className="anim-enter w-full max-w-[360px] rounded-2xl border border-hairline bg-panel p-5 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]"
-            onClick={(event) => { event.stopPropagation(); }}
-          >
-            <h2 className="font-display text-[16px] font-semibold text-ink">{t('undo.title')}</h2>
-            <p className="mt-2 text-[12.5px] leading-relaxed text-ink-soft">
-              {t('undo.bodyNamed', { title: sessionLabel(confirmUndo, untitled) })}
-            </p>
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => { setConfirmUndo(null); }}
-                className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] text-ink-soft transition-colors hover:text-ink"
-              >
-                {t('common.cancel')}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const session = confirmUndo;
-                  setConfirmUndo(null);
-                  setActionError(null);
-                  void undoLastTurn(actionContext, session)
-                    .then(() => {
-                      setActionNotice(
-                        t('action.undoDone', { title: sessionLabel(session, untitled) }),
-                      );
-                    })
-                    .catch((error: unknown) => {
-                      setActionError(
-                        t('action.undoFailed', { detail: sessionActionErrorText(locale, error) }),
-                      );
-                    });
-                }}
-                className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep"
-              >
-                {t('undo.confirm')}
-              </button>
-            </div>
+          <h2 className="font-display text-[16px] font-semibold text-ink">{t('undo.title')}</h2>
+          <p className="mt-2 text-[12.5px] leading-relaxed text-ink-soft">
+            {t('undo.bodyNamed', { title: sessionLabel(confirmUndo, untitled) })}
+          </p>
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => { setConfirmUndo(null); }}
+              className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] text-ink-soft transition-colors hover:text-ink"
+            >
+              {t('common.cancel')}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const session = confirmUndo;
+                setConfirmUndo(null);
+                setActionError(null);
+                void undoLastTurn(actionContext, session)
+                  .then(() => {
+                    setActionNotice(
+                      t('action.undoDone', { title: sessionLabel(session, untitled) }),
+                    );
+                  })
+                  .catch((error: unknown) => {
+                    setActionError(
+                      t('action.undoFailed', { detail: sessionActionErrorText(locale, error) }),
+                    );
+                  });
+              }}
+              className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep"
+            >
+              {t('undo.confirm')}
+            </button>
           </div>
-        </div>
+        </Dialog>
       ) : null}
     </aside>
   );
 }
 
 /** Small hand-rolled context menu (no Radix): fixed panel, outside-click and
- * Escape to close. */
+ * Escape to close. The panel size is measured after mount so the position can
+ * be clamped inside the viewport on both axes (right-click near an edge). */
 function SessionMenu({
   session,
   x,
@@ -584,6 +565,19 @@ function SessionMenu({
 }) {
   const { t } = useI18n();
   const archived = session.archived === true;
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [size, setSize] = useState<{ width: number; height: number } | undefined>(undefined);
+  // Layout effect: the clamped position lands before the first paint.
+  useLayoutEffect(() => {
+    const node = menuRef.current;
+    if (node !== null) setSize({ width: node.offsetWidth, height: node.offsetHeight });
+  }, []);
+  const position = clampOverlayPosition(
+    x,
+    y,
+    size ?? { width: 176, height: 0 },
+    { width: window.innerWidth, height: window.innerHeight },
+  );
   useEffect(() => {
     const unregister = registerOverlay('session-menu');
     const onKeyDown = (event: KeyboardEvent) => {
@@ -607,10 +601,11 @@ function SessionMenu({
     'w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper';
   return (
     <div
+      ref={menuRef}
       data-session-menu
       role="menu"
       className="anim-enter fixed z-50 w-44 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)]"
-      style={{ left: Math.min(x, window.innerWidth - 190), top: y }}
+      style={{ left: position.left, top: position.top }}
     >
       {archived ? (
         <button type="button" role="menuitem" className={itemClass} onClick={onRestore}>
@@ -669,8 +664,6 @@ function RenameDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => registerOverlay('rename-dialog'), []);
-
   const submit = () => {
     const trimmed = title.trim();
     if (trimmed === '' || busy) return;
@@ -686,47 +679,38 @@ function RenameDialog({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/20"
-      onClick={onClose}
-    >
-      <div
-        className="anim-enter w-full max-w-[360px] rounded-2xl border border-hairline bg-panel p-5 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]"
-        onClick={(event) => { event.stopPropagation(); }}
-      >
-        <h2 className="font-display text-[16px] font-semibold text-ink">{t('rename.title')}</h2>
-        <input
-          autoFocus
-          className="mt-3 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink outline-none focus:border-accent"
-          value={title}
-          onChange={(event) => { setTitle(event.target.value); }}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') submit();
-            if (event.key === 'Escape') onClose();
-          }}
-        />
-        {error !== null ? (
-          <p className="mt-2 font-mono text-[11px] text-danger">{error}</p>
-        ) : null}
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] text-ink-soft transition-colors hover:text-ink"
-          >
-            {t('common.cancel')}
-          </button>
-          <button
-            type="button"
-            disabled={busy || title.trim() === ''}
-            onClick={submit}
-            className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep disabled:opacity-50"
-          >
-            {busy ? t('common.saving') : t('common.save')}
-          </button>
-        </div>
+    <Dialog onClose={onClose} ariaLabel={t('rename.title')} overlayId="rename-dialog">
+      <h2 className="font-display text-[16px] font-semibold text-ink">{t('rename.title')}</h2>
+      <input
+        data-autofocus
+        className="mt-3 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink outline-none focus:border-accent"
+        value={title}
+        onChange={(event) => { setTitle(event.target.value); }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') submit();
+        }}
+      />
+      {error !== null ? (
+        <p className="mt-2 font-mono text-[11px] text-danger">{error}</p>
+      ) : null}
+      <div className="mt-4 flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] text-ink-soft transition-colors hover:text-ink"
+        >
+          {t('common.cancel')}
+        </button>
+        <button
+          type="button"
+          disabled={busy || title.trim() === ''}
+          onClick={submit}
+          className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep disabled:opacity-50"
+        >
+          {busy ? t('common.saving') : t('common.save')}
+        </button>
       </div>
-    </div>
+    </Dialog>
   );
 }
 

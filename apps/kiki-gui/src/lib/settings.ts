@@ -1,6 +1,6 @@
 import type { ModelCatalogItem, ProviderCatalogItem } from '@moonshot-ai/protocol';
 
-import { LocalizedError, type ValidationIssue } from '../i18n/locale';
+import { LocalizedError, type I18nKey, type ValidationIssue } from '../i18n/locale';
 
 /** Client-local preferences stored in localStorage (`kiki.settings`). */
 export type SendShortcut = 'enter' | 'cmd-enter';
@@ -19,6 +19,8 @@ export interface DesktopSettings {
 export interface DesktopNativePrefs {
   notifications: boolean;
   closeToTray: boolean;
+  /** UI locale mirrored to the native side (tray menu labels); frontend-owned. */
+  locale?: string;
 }
 
 export interface RestartRequirement {
@@ -187,6 +189,28 @@ export function readRestartRequirement(): RestartRequirement {
   };
 }
 
+// The restart requirement is app-global chrome (a banner outside the settings
+// tree renders it), so mutations fan out through a tiny pub/sub; the snapshot
+// cache keeps `useSyncExternalStore` happy (a fresh object per read would loop).
+const restartListeners = new Set<() => void>();
+let restartSnapshotCache: RestartRequirement | undefined;
+
+export function subscribeRestartRequirement(listener: () => void): () => void {
+  restartListeners.add(listener);
+  return () => { restartListeners.delete(listener); };
+}
+
+export function restartRequirementSnapshot(): RestartRequirement {
+  restartSnapshotCache ??= readRestartRequirement();
+  return restartSnapshotCache;
+}
+
+function publishRestartRequirement(next: RestartRequirement): RestartRequirement {
+  restartSnapshotCache = next;
+  for (const listener of restartListeners) listener();
+  return next;
+}
+
 export function markRestartRequired(fields: readonly string[]): RestartRequirement {
   const current = readRestartRequirement();
   const next: RestartRequirement = {
@@ -199,7 +223,7 @@ export function markRestartRequired(fields: readonly string[]): RestartRequireme
   } catch {
     // The UI still keeps the returned in-memory state for this visit.
   }
-  return next;
+  return publishRestartRequirement(next);
 }
 
 export function clearRestartRequirement(): RestartRequirement {
@@ -209,7 +233,7 @@ export function clearRestartRequirement(): RestartRequirement {
   } catch {
     // ignore
   }
-  return next;
+  return publishRestartRequirement(next);
 }
 
 export function validateServerDefaults(permissionMode: string): ValidationIssue | null {
@@ -378,6 +402,291 @@ export function validateProviderDraft(draft: ProviderDraft): ValidationIssue | n
   }
   if (!seen.has(draft.defaultModel)) return { key: 'val.defaultModelInModels' };
   return null;
+}
+
+// ---- provider templates, chip editing, dirty tracking ----
+
+export interface ProviderTemplate {
+  readonly type: ProviderWireType;
+  /** Brand label — wire values stay English in both locales. */
+  readonly label: string;
+  readonly baseUrl: string;
+  readonly defaultContextSize: number;
+}
+
+/** First-wizard-step cards; `providerTemplateFor` covers the other wire types. */
+export const PROVIDER_TEMPLATES: readonly ProviderTemplate[] = [
+  { type: 'kimi', label: 'Kimi', baseUrl: 'https://api.moonshot.ai/v1', defaultContextSize: 131072 },
+  { type: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', defaultContextSize: 128000 },
+  { type: 'anthropic', label: 'Anthropic', baseUrl: 'https://api.anthropic.com/v1', defaultContextSize: 200000 },
+];
+
+export function providerTemplateFor(type: ProviderWireType): ProviderTemplate {
+  return PROVIDER_TEMPLATES.find((template) => template.type === type) ?? {
+    type,
+    label: type,
+    baseUrl: '',
+    defaultContextSize: 128000,
+  };
+}
+
+/** Known enum chips; the chip editor also accepts free-form custom values. */
+export const KNOWN_CAPABILITIES = ['chat', 'reasoning', 'vision', 'tools'] as const;
+export const KNOWN_EFFORTS = ['low', 'medium', 'high', 'max'] as const;
+
+/** Trim, drop empties, dedupe — the chip editor's canonical output. */
+export function normalizeTags(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (trimmed === '' || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
+}
+
+function stringArraysEqual(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+/** Deep field equality for "unsaved changes" badges and leave-section guards. */
+export function providerDraftsEqual(a: ProviderDraft, b: ProviderDraft): boolean {
+  if (a.id !== b.id || a.type !== b.type || a.baseUrl !== b.baseUrl) return false;
+  if (a.defaultModel !== b.defaultModel || a.apiKey !== b.apiKey) return false;
+  if (a.clearApiKey !== b.clearApiKey) return false;
+  if (a.models.length !== b.models.length) return false;
+  return a.models.every((model, index) => {
+    const other = b.models[index];
+    return other !== undefined
+      && model.model === other.model
+      && model.maxContextSize === other.maxContextSize
+      && model.displayName === other.displayName
+      && stringArraysEqual(model.capabilities, other.capabilities)
+      && stringArraysEqual(model.supportEfforts, other.supportEfforts);
+  });
+}
+
+export function isProviderDraftDirty(draft: ProviderDraft, initial: ProviderDraft): boolean {
+  return !providerDraftsEqual(draft, initial);
+}
+
+// ---- remote /models probe ("test connection and pull models") ----
+
+export interface RemoteModelsProbe {
+  readonly type: ProviderWireType;
+  readonly baseUrl: string;
+  readonly apiKey: string;
+}
+
+/** Every supported wire family lists models at `{baseUrl}/models`. */
+export function remoteModelsUrl(baseUrl: string): string {
+  return `${baseUrl.trim().replace(/\/+$/, '')}/models`;
+}
+
+export function remoteModelsHeaders(type: ProviderWireType, apiKey: string): Record<string, string> {
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  const key = apiKey.trim();
+  if (type === 'anthropic') {
+    if (key !== '') headers['x-api-key'] = key;
+    headers['anthropic-version'] = '2023-06-01';
+  } else if (key !== '') {
+    headers['Authorization'] = `Bearer ${key}`;
+  }
+  return headers;
+}
+
+function idFromEntry(entry: unknown, keys: readonly string[]): string {
+  if (typeof entry === 'string') return entry;
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return '';
+  const record = entry as Record<string, unknown>;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string') return value;
+  }
+  return '';
+}
+
+/**
+ * Parse a `/models` reply across the wire families into a clean id list:
+ * openai-style `{data: [{id}]}`, anthropic `{data: [{id, display_name}]}`,
+ * google-genai `{models: [{name: 'models/<id>'}]}` (prefix stripped).
+ */
+export function parseRemoteModels(payload: unknown): string[] {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    throw new LocalizedError({ key: 'val.remoteModelsShape' });
+  }
+  const record = payload as Record<string, unknown>;
+  if (Array.isArray(record['data'])) {
+    return normalizeTags(record['data'].map((entry) => idFromEntry(entry, ['id', 'name'])));
+  }
+  if (Array.isArray(record['models'])) {
+    return normalizeTags(
+      record['models'].map((entry) => {
+        const raw = idFromEntry(entry, ['name', 'id']);
+        return raw.startsWith('models/') ? raw.slice('models/'.length) : raw;
+      }),
+    );
+  }
+  throw new LocalizedError({ key: 'val.remoteModelsShape' });
+}
+
+/**
+ * Probe the provider's `/models` with the draft's baseUrl + key. Filled
+ * context sizes fall back to the protocol default; display names and
+ * capabilities stay blank for the user to refine. Throws LocalizedError for
+ * client-side problems, a plain Error with the HTTP status upstream ones.
+ */
+export async function fetchRemoteModels(probe: RemoteModelsProbe): Promise<ProviderModelDraft[]> {
+  const baseUrl = probe.baseUrl.trim();
+  if (baseUrl === '') throw new LocalizedError({ key: 'val.baseUrlRequired' });
+  let url: URL;
+  try {
+    url = new URL(remoteModelsUrl(baseUrl));
+  } catch {
+    throw new LocalizedError({ key: 'val.baseUrlAbsolute' });
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new LocalizedError({ key: 'val.baseUrlHttp' });
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => { controller.abort(); }, 15_000);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: remoteModelsHeaders(probe.type, probe.apiKey),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    throw error instanceof Error && error.name === 'AbortError'
+      ? new Error('Model probe timed out after 15000ms')
+      : error;
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!response.ok) {
+    const detail = (await response.text()).replaceAll(/\s+/g, ' ').trim().slice(0, 200);
+    throw new Error(`HTTP ${response.status}${detail === '' ? '' : ` — ${detail}`}`);
+  }
+  const payload = (await response.json()) as unknown;
+  const ids = parseRemoteModels(payload);
+  if (ids.length === 0) throw new LocalizedError({ key: 'val.remoteModelsEmpty' });
+  const contextSize = providerTemplateFor(probe.type).defaultContextSize;
+  return ids.map((id) => ({
+    model: id,
+    maxContextSize: contextSize,
+    displayName: '',
+    capabilities: [],
+    supportEfforts: [],
+  }));
+}
+
+// ---- settings search index ----
+
+export interface SettingsSearchSpecEntry {
+  readonly section: string;
+  /** DOM id the SectionCard renders so a result can scroll + flash it. */
+  readonly cardId: string;
+  readonly titleKey: I18nKey;
+  readonly keywordKeys: readonly I18nKey[];
+}
+
+export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
+  { section: 'general', cardId: 'st-card-language', titleKey: 'st.language.title', keywordKeys: ['st.language.hint'] },
+  { section: 'general', cardId: 'st-card-defaults', titleKey: 'st.defaults.title', keywordKeys: ['st.defaults.permissionMode', 'st.defaults.planMode', 'st.defaults.hint'] },
+  { section: 'general', cardId: 'st-card-composer', titleKey: 'st.composer.title', keywordKeys: ['st.composer.sendShortcut', 'st.composer.persistDrafts'] },
+  { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.notifications', 'st.desktop.tray', 'st.desktop.quit'] },
+  { section: 'models', cardId: 'st-card-models', titleKey: 'st.models.defaultTitle', keywordKeys: ['st.models.providerLabel', 'st.models.searchPlaceholder'] },
+  { section: 'models', cardId: 'st-card-thinking', titleKey: 'st.thinking.title', keywordKeys: ['st.thinking.enable', 'st.thinking.hint'] },
+  { section: 'connection', cardId: 'st-card-conn-server', titleKey: 'st.conn.connectedTitle', keywordKeys: ['st.conn.version', 'st.conn.reconnect'] },
+  { section: 'connection', cardId: 'st-card-conn-owned', titleKey: 'st.conn.ownedTitle', keywordKeys: ['st.conn.ownedBody', 'st.conn.restart'] },
+  { section: 'providers', cardId: 'st-card-auth', titleKey: 'st.auth.title', keywordKeys: ['st.auth.signIn', 'st.auth.signOut'] },
+  { section: 'providers', cardId: 'st-card-providers', titleKey: 'st.providers.title', keywordKeys: ['st.providers.empty'] },
+  { section: 'providers', cardId: 'st-card-providers-add', titleKey: 'st.providers.addTitle', keywordKeys: ['st.wizard.chooseTemplate', 'st.fetchModels.button'] },
+  { section: 'capabilities', cardId: 'st-card-caps', titleKey: 'st.caps.title', keywordKeys: ['st.caps.mergeSkills', 'st.caps.telemetry', 'st.caps.extraDirs', 'st.caps.experimental'] },
+  { section: 'capabilities', cardId: 'st-card-advanced', titleKey: 'st.advanced.title', keywordKeys: ['st.advanced.hint'] },
+  { section: 'capabilities', cardId: 'st-card-sidecar', titleKey: 'st.sidecar.title', keywordKeys: ['st.sidecar.hint'] },
+  { section: 'capabilities', cardId: 'st-card-tools', titleKey: 'st.tools.title', keywordKeys: [] },
+  { section: 'capabilities', cardId: 'st-card-mcp', titleKey: 'st.mcp.title', keywordKeys: ['st.mcp.restart'] },
+  { section: 'capabilities', cardId: 'st-card-skills', titleKey: 'st.skills.title', keywordKeys: ['st.skills.workspace'] },
+  { section: 'workspaces', cardId: 'st-card-workspaces', titleKey: 'st.workspaces.title', keywordKeys: ['st.workspaces.hint'] },
+  { section: 'about', cardId: 'st-card-about', titleKey: 'st.about.title', keywordKeys: ['st.about.serverVersion', 'st.about.serverId'] },
+];
+
+export interface SettingsSearchEntry {
+  readonly section: string;
+  readonly cardId: string;
+  readonly sectionLabel: string;
+  readonly title: string;
+  readonly haystack: string;
+}
+
+export function buildSettingsSearchIndex(
+  sectionLabels: Readonly<Record<string, string>>,
+  t: (key: I18nKey) => string,
+): SettingsSearchEntry[] {
+  return SETTINGS_SEARCH_SPEC.map((entry) => {
+    const title = t(entry.titleKey);
+    return {
+      section: entry.section,
+      cardId: entry.cardId,
+      sectionLabel: sectionLabels[entry.section] ?? entry.section,
+      title,
+      haystack: [title, ...entry.keywordKeys.map((key) => t(key))].join('\n').toLowerCase(),
+    };
+  });
+}
+
+export function searchSettings(
+  entries: readonly SettingsSearchEntry[],
+  query: string,
+): SettingsSearchEntry[] {
+  const needle = query.trim().toLowerCase();
+  if (needle === '') return [];
+  return entries.filter((entry) =>
+    entry.title.toLowerCase().includes(needle)
+    || entry.sectionLabel.toLowerCase().includes(needle)
+    || entry.haystack.includes(needle));
+}
+
+// ---- millisecond humanizing (unit-ed inputs) ----
+
+export type MsUnit = 'ms' | 'seconds' | 'minutes' | 'hours';
+
+export interface HumanizedMs {
+  readonly value: number;
+  readonly unit: MsUnit;
+}
+
+function roundTwo(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/** 7_200_000 → {value: 2, unit: 'hours'}; 90_000 → {value: 1.5, unit: 'minutes'}. */
+export function humanizeMs(ms: number): HumanizedMs {
+  if (!Number.isFinite(ms) || ms < 1000) return { value: Math.max(0, Math.round(ms)), unit: 'ms' };
+  const seconds = ms / 1000;
+  if (seconds < 60) return { value: roundTwo(seconds), unit: 'seconds' };
+  const minutes = seconds / 60;
+  if (minutes < 60) return { value: roundTwo(minutes), unit: 'minutes' };
+  return { value: roundTwo(minutes / 60), unit: 'hours' };
+}
+
+export const MS_UNIT_FACTORS: Readonly<Record<MsUnit, number>> = {
+  ms: 1,
+  seconds: 1_000,
+  minutes: 60_000,
+  hours: 3_600_000,
+};
+
+/** Largest unit whose converted value stays a whole number (unit select default). */
+export function msUnitFor(ms: number): MsUnit {
+  for (const unit of ['hours', 'minutes', 'seconds'] as const) {
+    if (ms >= MS_UNIT_FACTORS[unit] && ms % MS_UNIT_FACTORS[unit] === 0) return unit;
+  }
+  return 'ms';
 }
 
 export async function createProvider(

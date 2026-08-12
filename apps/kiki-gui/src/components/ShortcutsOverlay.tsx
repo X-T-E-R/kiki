@@ -1,0 +1,113 @@
+/**
+ * ShortcutsOverlay — the Ctrl+/ (or `?`) keyboard map, built on the shared
+ * Dialog primitive. Rows reflect the bindings actually wired in code:
+ * App.tsx global keys, Composer's textarea keys, SessionView's Esc/y/n, and
+ * TerminalPanel's Ctrl+Shift+C/V; the desktop show/hide hotkey only appears
+ * in the desktop runtime.
+ */
+
+import { useI18n } from '../i18n';
+import type { I18nKey } from '../i18n/locale';
+import { isDesktopRuntime } from '../lib/desktop';
+import { Dialog } from './Dialog';
+
+interface ShortcutRow {
+  readonly keys: readonly string[];
+  readonly labelKey: I18nKey;
+}
+
+interface ShortcutGroup {
+  readonly titleKey: I18nKey;
+  readonly rows: readonly ShortcutRow[];
+}
+
+function groups(): readonly ShortcutGroup[] {
+  const globalRows: ShortcutRow[] = [
+    { keys: ['Ctrl', 'N'], labelKey: 'shortcuts.newSession' },
+    { keys: ['Ctrl', 'K'], labelKey: 'shortcuts.switcher' },
+    { keys: ['Ctrl', 'Tab'], labelKey: 'shortcuts.nextSession' },
+    { keys: ['Ctrl', ','], labelKey: 'shortcuts.settings' },
+    { keys: ['Ctrl', '/'], labelKey: 'shortcuts.thisPanel' },
+    { keys: ['?'], labelKey: 'shortcuts.thisPanel' },
+  ];
+  if (isDesktopRuntime()) {
+    globalRows.push({ keys: ['Ctrl', 'Shift', 'K'], labelKey: 'shortcuts.showHide' });
+  }
+  return [
+    { titleKey: 'shortcuts.group.global', rows: globalRows },
+    {
+      titleKey: 'shortcuts.group.session',
+      rows: [
+        { keys: ['Enter'], labelKey: 'shortcuts.send' },
+        { keys: ['Shift', 'Enter'], labelKey: 'shortcuts.newline' },
+        { keys: ['Esc'], labelKey: 'shortcuts.abortOrClose' },
+        { keys: ['/'], labelKey: 'shortcuts.slashMenu' },
+        { keys: ['@'], labelKey: 'shortcuts.fileMention' },
+      ],
+    },
+    {
+      titleKey: 'shortcuts.group.approvals',
+      rows: [
+        { keys: ['y'], labelKey: 'shortcuts.approve' },
+        { keys: ['n'], labelKey: 'shortcuts.reject' },
+      ],
+    },
+    {
+      titleKey: 'shortcuts.group.terminal',
+      rows: [
+        { keys: ['Ctrl', 'Shift', 'C'], labelKey: 'shortcuts.termCopy' },
+        { keys: ['Ctrl', 'Shift', 'V'], labelKey: 'shortcuts.termPaste' },
+        { keys: ['Esc'], labelKey: 'shortcuts.termClose' },
+      ],
+    },
+  ];
+}
+
+function Kbd({ label }: { label: string }) {
+  return (
+    <kbd className="rounded-md border border-hairline bg-paper px-1.5 py-0.5 font-mono text-[10.5px] font-medium text-ink-soft shadow-[0_1px_0_rgba(28,25,23,0.08)]">
+      {label}
+    </kbd>
+  );
+}
+
+export function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
+  const { t } = useI18n();
+  return (
+    <Dialog
+      onClose={onClose}
+      ariaLabel={t('shortcuts.title')}
+      overlayId="shortcuts-overlay"
+      panelClassName="anim-enter w-full max-w-[440px] rounded-2xl border border-hairline bg-panel p-5 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]"
+    >
+      <h2 className="font-display text-[16px] font-semibold text-ink">{t('shortcuts.title')}</h2>
+      <div className="mt-3 max-h-[60vh] space-y-4 overflow-y-auto pr-1">
+        {groups().map((group) => (
+          <section key={group.titleKey}>
+            <h3 className="mb-1.5 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
+              {t(group.titleKey)}
+            </h3>
+            <ul className="space-y-1">
+              {group.rows.map((row) => (
+                <li
+                  key={`${row.labelKey}-${row.keys.join('+')}`}
+                  className="flex items-center justify-between gap-3 rounded-lg px-2 py-1"
+                >
+                  <span className="text-[12.5px] text-ink">{t(row.labelKey)}</span>
+                  <span className="flex shrink-0 items-center gap-1">
+                    {row.keys.map((key) => (
+                      <Kbd key={key} label={key} />
+                    ))}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
+      </div>
+      <p className="mt-3 border-t border-hairline pt-2 text-center text-[10.5px] text-ink-faint">
+        {t('shortcuts.hint')}
+      </p>
+    </Dialog>
+  );
+}

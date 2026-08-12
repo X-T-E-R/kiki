@@ -275,6 +275,12 @@ export function RightRail({
     () => state.tasks.filter((task) => task.kind !== 'subagent'),
     [state.tasks],
   );
+  // Empty sections collapse entirely (header included); when all four are
+  // empty the rail shrinks to just the session meta card below.
+  const showGoal = state.goal !== undefined && state.goal !== null;
+  const showSubagents = subagents.length > 0;
+  const showTodos = state.todos.length > 0;
+  const showTasks = backgroundTasks.length > 0;
 
   return (
     <aside
@@ -282,33 +288,41 @@ export function RightRail({
         className ?? 'flex h-full w-[300px] shrink-0 flex-col gap-5 overflow-y-auto border-l border-hairline bg-panel px-4 py-4'
       }
     >
-      <section>
-        <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-          {t('rail.goal')}
-        </h3>
-        <GoalSection goal={state.goal} goalUpdatedAt={state.goalUpdatedAt} />
-      </section>
+      {showGoal ? (
+        <section>
+          <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
+            {t('rail.goal')}
+          </h3>
+          <GoalSection goal={state.goal} goalUpdatedAt={state.goalUpdatedAt} />
+        </section>
+      ) : null}
 
-      <section>
-        <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-          {t('rail.subagents')}
-        </h3>
-        <SubagentsSection subagents={subagents} onOpen={onOpenSubagent} />
-      </section>
+      {showSubagents ? (
+        <section>
+          <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
+            {t('rail.subagents')}
+          </h3>
+          <SubagentsSection subagents={subagents} onOpen={onOpenSubagent} />
+        </section>
+      ) : null}
 
-      <section>
-        <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-          {t('rail.todos')}
-        </h3>
-        <TodosSection todos={state.todos} />
-      </section>
+      {showTodos ? (
+        <section>
+          <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
+            {t('rail.todos')}
+          </h3>
+          <TodosSection todos={state.todos} />
+        </section>
+      ) : null}
 
-      <section>
-        <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-          {t('rail.tasks')}
-        </h3>
-        <TasksSection tasks={backgroundTasks} onCancel={onCancelTask} />
-      </section>
+      {showTasks ? (
+        <section>
+          <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
+            {t('rail.tasks')}
+          </h3>
+          <TasksSection tasks={backgroundTasks} onCancel={onCancelTask} />
+        </section>
+      ) : null}
 
       <section>
         <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">

@@ -26,7 +26,8 @@
  * Prompt scheduling mirrors kap-server: a second POST while a turn runs parks
  * in `queuedPrompts` (reply status 'queued'), `GET /sessions/:id/prompts`
  * reports {active, queued}, a finished turn promotes the oldest queued prompt,
- * and `:abort` on a queued id just dequeues it.
+ * `:abort` on a queued id just dequeues it, and `:steer` merges a queued id
+ * into the running turn (prompt.steered; 40402 without one).
  *
  * Control endpoint (not under /api): POST /__control
  *   { action: 'scenario', name }        switch scenario (resets state, drops WS)
@@ -345,6 +346,7 @@ class FixtureServer {
     this.sessions = new Map();
     this.sockets = new Set();
     this.lastSearchBody = null; // last POST /search body (walker assertions)
+    this.oauthOverride = null; // mutable oauth flow state (POST/DELETE /oauth/login)
     this.http = createServer((req, res) => void this.handleHttp(req, res));
     this.wss = new WebSocketServer({ noServer: true });
   }
@@ -372,6 +374,7 @@ class FixtureServer {
     }
     this.sockets.clear();
     this.lastSearchBody = null;
+    this.oauthOverride = null;
     console.log(`[fixture] scenario "${name}" loaded (${this.sessions.size} sessions)`);
   }
 
@@ -624,7 +627,7 @@ class FixtureServer {
     if (typeof origin === 'string') {
       res.setHeader('access-control-allow-origin', origin);
       res.setHeader('access-control-allow-methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-      res.setHeader('access-control-allow-headers', 'Content-Type, Authorization');
+      res.setHeader('access-control-allow-headers', 'Content-Type, Authorization, x-api-key, anthropic-version');
       // The export download's filename rides Content-Disposition; browsers
       // hide it from cross-origin fetch unless it is exposed.
       res.setHeader('access-control-expose-headers', 'Content-Disposition');
@@ -644,6 +647,27 @@ class FixtureServer {
 
     if (url.pathname === '/api/v1/healthz') {
       this.envelope(res, { ok: true });
+      return;
+    }
+
+    // Mock upstream provider endpoint for the settings "pull models" flow: the
+    // GUI fetches `{baseUrl}/models` directly (browser fetch, no /api proxy),
+    // so this route sits outside the fixture-token auth check and instead
+    // demands whatever API key the form sent as a Bearer token.
+    if (url.pathname === '/provider-mock/v1/models') {
+      // Anthropic-flavoured clients send x-api-key, openai-flavoured send a
+      // Bearer token — the mock accepts either as proof the form key was sent.
+      const credential = req.headers.authorization ?? req.headers['x-api-key'];
+      if (typeof credential !== 'string' || credential === '') {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'missing API key', type: 'authentication_error' } }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        object: 'list',
+        data: [{ id: 'mock-pro', object: 'model' }, { id: 'mock-lite', object: 'model' }],
+      }));
       return;
     }
 
@@ -774,16 +798,19 @@ class FixtureServer {
     }
     if (path === '/oauth/login') {
       if (method === 'GET') {
-        return this.envelope(res, this.scenario?.data.oauth ?? null);
+        return this.envelope(res, this.oauthOverride ?? this.scenario?.data.oauth ?? null);
       }
       if (method === 'POST') {
-        return this.envelope(res, this.scenario?.data.oauthStart ?? {
+        const started = this.scenario?.data.oauthStart ?? {
           flow_id: nextId('oauth'),
           provider: 'fixture',
           status: 'authenticated',
-        });
+        };
+        this.oauthOverride = started;
+        return this.envelope(res, started);
       }
       if (method === 'DELETE') {
+        this.oauthOverride = { status: 'cancelled' };
         return this.envelope(res, { cancelled: true, status: 'cancelled' });
       }
     }
@@ -1123,6 +1150,29 @@ class FixtureServer {
         return this.envelope(res, { aborted: true, at_seq: session.seq });
       }
       return this.envelope(res, { aborted: false, at_seq: session.seq }, 40903, 'prompt.already_completed');
+    }
+    const steerMatch = /^\/prompts\/([^/]+):steer$/.exec(tail);
+    if (steerMatch !== null) {
+      // Mirrors kap-server: the queued prompt leaves the queue and its content
+      // merges into the RUNNING turn (prompt.steered); the turn keeps running
+      // and the steered prompt settles with it. Without an active prompt the
+      // real route answers PROMPT_NOT_FOUND (40402).
+      const promptId = steerMatch[1];
+      const queuedIndex = session.queuedPrompts.findIndex((item) => item.prompt_id === promptId);
+      if (queuedIndex < 0 || session.activePrompt === null) {
+        return this.envelope(res, null, 40402, 'prompt.not_found');
+      }
+      const [item] = session.queuedPrompts.splice(queuedIndex, 1);
+      this.emit(session.record.id, {
+        type: 'prompt.steered',
+        payload: {
+          activePromptId: session.activePrompt.prompt_id,
+          promptIds: [promptId],
+          content: item.content,
+          steeredAt: now(),
+        },
+      });
+      return this.envelope(res, { steered: true, prompt_ids: [promptId] });
     }
     if (tail === '/approvals') {
       return this.envelope(res, { items: session.pendingApprovals });

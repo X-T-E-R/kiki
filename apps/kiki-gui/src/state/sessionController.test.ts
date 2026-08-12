@@ -109,6 +109,7 @@ interface Harness {
     listPrompts: ReturnType<typeof vi.fn>;
     submitPrompt: ReturnType<typeof vi.fn>;
     abortPrompt: ReturnType<typeof vi.fn>;
+    steerPrompt: ReturnType<typeof vi.fn>;
   };
   socket: { subscribe: ReturnType<typeof vi.fn>; updateCursor: ReturnType<typeof vi.fn> };
   flushAll: () => void;
@@ -125,6 +126,7 @@ async function openController(): Promise<Harness> {
     listMessages: vi.fn(async () => ({ items: [], has_more: false })),
     submitPrompt: vi.fn(),
     abortPrompt: vi.fn(async () => ({ aborted: true, at_seq: 1 })),
+    steerPrompt: vi.fn(async () => ({ steered: true as const, prompt_ids: [] as string[] })),
   };
   const socket = {
     subscribe: vi.fn(),
@@ -315,6 +317,60 @@ describe('SessionController pipeline', () => {
     // Cancelling a parked prompt goes straight at its id.
     await controller.abortPrompt('p9');
     expect(client.abortPrompt).toHaveBeenCalledWith('session_test', 'p9');
+    controller.close();
+  });
+
+  it('steers a queued prompt into the running turn, then clears the rest', async () => {
+    const { controller, client } = await openController();
+    const item = (
+      promptId: string,
+      text: string,
+      status: 'running' | 'queued',
+      second: number,
+    ) => ({
+      prompt_id: promptId,
+      user_message_id: `m-${promptId}`,
+      status,
+      content: [{ type: 'text' as const, text }],
+      created_at: `2026-01-01T00:00:0${second}.000Z`,
+    });
+    client.submitPrompt
+      .mockResolvedValueOnce(item('p1', 'A', 'running', 2))
+      .mockResolvedValueOnce(item('p2', 'B', 'queued', 3))
+      .mockResolvedValueOnce(item('p3', 'C', 'queued', 4));
+    await controller.sendPrompt({ text: 'A', permissionMode: 'manual' });
+    await controller.sendPrompt({ text: 'B', permissionMode: 'manual' });
+    await controller.sendPrompt({ text: 'C', permissionMode: 'manual' });
+    expect(controller.getState().queuedPromptIds).toEqual(['p2', 'p3']);
+
+    // Send now = wire steer: straight at the prompt id, then the follow-up
+    // reconcile repaints the queue without the steered prompt.
+    client.steerPrompt.mockResolvedValue({ steered: true, prompt_ids: ['p2'] });
+    client.listPrompts.mockResolvedValue({
+      active: item('p1', 'A', 'running', 2),
+      queued: [item('p3', 'C', 'queued', 4)],
+    });
+    await controller.steerQueued('p2');
+    expect(client.steerPrompt).toHaveBeenCalledWith('session_test', 'p2');
+    expect(controller.getState().queuedPromptIds).toEqual(['p3']);
+    expect(
+      controller.getState().blocks.find((b): b is UserBlock => b.kind === 'user' && b.promptId === 'p2')
+        ?.promptStatus,
+    ).toBeUndefined();
+
+    // Clear all: one abort per parked prompt, then the queue drains empty.
+    client.listPrompts.mockResolvedValue({ active: item('p1', 'A', 'running', 2), queued: [] });
+    await controller.clearQueue();
+    expect(client.abortPrompt).toHaveBeenCalledTimes(1);
+    expect(client.abortPrompt).toHaveBeenCalledWith('session_test', 'p3');
+    expect(controller.getState().queuedPromptIds).toEqual([]);
+    controller.close();
+  });
+
+  it('steer failures propagate so the view can surface them', async () => {
+    const { controller, client } = await openController();
+    client.steerPrompt.mockRejectedValue(new Error('prompt.not_found (code 40402)'));
+    await expect(controller.steerQueued('p9')).rejects.toThrow('40402');
     controller.close();
   });
 

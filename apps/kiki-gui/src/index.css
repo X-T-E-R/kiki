@@ -159,6 +159,21 @@ body {
   animation: kiki-enter 200ms ease-out both;
 }
 
+/* Search-result landing: a short accent pulse on the target settings card. */
+@keyframes kiki-card-flash {
+  0% {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px var(--color-accent-soft);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.settings-card-flash {
+  animation: kiki-card-flash 1.8s ease-out;
+}
+
 .status-dot-busy {
   animation: kiki-pulse-dot 1.6s ease-in-out infinite;
 }
@@ -178,6 +193,7 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .anim-enter,
+  .settings-card-flash,
   .status-dot-busy,
   .stream-caret,
   .spinner {

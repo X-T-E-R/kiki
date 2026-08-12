@@ -79,6 +79,24 @@ export async function focusMainWindow(): Promise<void> {
   }
 }
 
+/**
+ * Save a blob through the native save dialog (tauri-plugin-dialog) and write
+ * it with tauri-plugin-fs. Resolves `false` when the user cancels the dialog.
+ * Browser callers keep their blob-download path — this throws off-Tauri.
+ */
+export async function saveBlobNative(blob: Blob, filename: string): Promise<boolean> {
+  if (!isTauri()) throw new Error('Native save requires the Kiki desktop app.');
+  const [{ save }, { writeFile }] = await Promise.all([
+    import('@tauri-apps/plugin-dialog'),
+    import('@tauri-apps/plugin-fs'),
+  ]);
+  const path = await save({ defaultPath: filename });
+  if (path === null) return false;
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  await writeFile(path, bytes);
+  return true;
+}
+
 export async function isMainWindowVisibleAndFocused(): Promise<boolean> {
   if (!isTauri()) return true;
   try {

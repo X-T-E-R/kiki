@@ -17,6 +17,7 @@ import {
   pendingApprovalCount,
   prependOlderMessages,
   preserveCapturedSubagents,
+  queuedPromptPreviews,
   reconcilePromptList,
   splitSystemReminders,
   type AssistantBlock,
@@ -838,6 +839,38 @@ describe('prompt queue', () => {
       queued: [],
     });
     expect(state.blocks).toBe(before);
+  });
+});
+
+describe('queuedPromptPreviews', () => {
+  it('returns queue-strip rows in drain order with the user-block preview text', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = appendLocalUserMessage(state, {
+      userMessageId: 'm1',
+      promptId: 'p1',
+      text: 'first parked',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      status: 'queued',
+    });
+    state = appendLocalUserMessage(state, {
+      userMessageId: 'm2',
+      promptId: 'p2',
+      text: 'second parked',
+      createdAt: '2026-01-01T00:00:01.000Z',
+      status: 'queued',
+    });
+    expect(queuedPromptPreviews(state)).toEqual([
+      { promptId: 'p1', text: 'first parked' },
+      { promptId: 'p2', text: 'second parked' },
+    ]);
+  });
+
+  it('previews an empty string when the prompt block has not landed yet', () => {
+    const state = {
+      ...applySnapshot('session_test', snapshot()),
+      queuedPromptIds: ['p9'],
+    };
+    expect(queuedPromptPreviews(state)).toEqual([{ promptId: 'p9', text: '' }]);
   });
 });
 

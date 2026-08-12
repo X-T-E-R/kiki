@@ -1,21 +1,35 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  buildSettingsSearchIndex,
   clearRestartRequirement,
+  fetchRemoteModels,
+  humanizeMs,
+  isProviderDraftDirty,
   markRestartRequired,
+  msUnitFor,
+  normalizeTags,
   parseAdvancedServerConfig,
   parseExperimentalFlags,
+  parseRemoteModels,
   providerDraftFromCatalog,
+  providerTemplateFor,
   readDesktopPrefs,
   readRestartRequirement,
   readSettings,
+  remoteModelsHeaders,
+  remoteModelsUrl,
   replaceProvider,
+  restartRequirementSnapshot,
+  searchSettings,
+  subscribeRestartRequirement,
   validateDesktopConfigDraft,
   validateProviderDraft,
   validateServerDefaults,
   writeDesktopPrefs,
   type ProviderDraft,
 } from './settings';
+import { translate, type I18nKey } from '../i18n/locale';
 
 class MemoryStorage implements Storage {
   readonly #items = new Map<string, string>();
@@ -194,5 +208,144 @@ describe('settings persistence and validation', () => {
       'example',
       providerDraft({ clearApiKey: true }),
     );
+  });
+});
+
+describe('provider templates, chips, and dirty tracking', () => {
+  it('falls back to a generic template for wire types without a card', () => {
+    expect(providerTemplateFor('anthropic').defaultContextSize).toBe(200000);
+    expect(providerTemplateFor('kimi').baseUrl).toContain('moonshot');
+    expect(providerTemplateFor('vertexai').baseUrl).toBe('');
+    expect(providerTemplateFor('vertexai').defaultContextSize).toBe(128000);
+  });
+
+  it('normalizes chip lists: trim, drop empties, dedupe in order', () => {
+    expect(normalizeTags([' reasoning ', '', 'vision', 'reasoning', '  '])).toEqual(['reasoning', 'vision']);
+    expect(normalizeTags([])).toEqual([]);
+  });
+
+  it('tracks dirty state across every draft field, including chip edits', () => {
+    const initial = providerDraft();
+    expect(isProviderDraftDirty(providerDraft(), initial)).toBe(false);
+    expect(isProviderDraftDirty(providerDraft({ baseUrl: 'https://other.test/v1' }), initial)).toBe(true);
+    expect(isProviderDraftDirty(providerDraft({ apiKey: 'sk-new' }), initial)).toBe(true);
+    expect(isProviderDraftDirty(providerDraft({ clearApiKey: true }), initial)).toBe(true);
+    const capsEdited = providerDraft();
+    capsEdited.models[0]!.capabilities = ['reasoning', 'vision'];
+    expect(isProviderDraftDirty(capsEdited, initial)).toBe(true);
+    const effortsReordered = providerDraft();
+    effortsReordered.models[0]!.supportEfforts = ['high', 'low'];
+    expect(isProviderDraftDirty(effortsReordered, initial)).toBe(true);
+    const modelRemoved = providerDraft({ models: [] });
+    expect(isProviderDraftDirty(modelRemoved, initial)).toBe(true);
+  });
+});
+
+describe('remote /models probe', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('builds the models URL and per-protocol auth headers', () => {
+    expect(remoteModelsUrl('https://api.example.test/v1/')).toBe('https://api.example.test/v1/models');
+    expect(remoteModelsHeaders('openai', 'sk-1')['Authorization']).toBe('Bearer sk-1');
+    expect(remoteModelsHeaders('kimi', ' ')['Authorization']).toBeUndefined();
+    const anthropic = remoteModelsHeaders('anthropic', 'key-9');
+    expect(anthropic['x-api-key']).toBe('key-9');
+    expect(anthropic['anthropic-version']).toBe('2023-06-01');
+    expect(anthropic['Authorization']).toBeUndefined();
+  });
+
+  it('parses openai, anthropic, and google listing shapes', () => {
+    expect(parseRemoteModels({ object: 'list', data: [{ id: 'gpt-a' }, { id: 'gpt-a' }, { id: ' ' }, 'gpt-b', 42] }))
+      .toEqual(['gpt-a', 'gpt-b']);
+    expect(parseRemoteModels({ data: [{ id: 'claude-a', display_name: 'Claude A' }] })).toEqual(['claude-a']);
+    expect(parseRemoteModels({ models: [{ name: 'models/gemini-a' }, { name: 'gemini-b' }] }))
+      .toEqual(['gemini-a', 'gemini-b']);
+    expect(() => parseRemoteModels({ items: [] })).toThrow(/model listing/);
+    expect(() => parseRemoteModels(null)).toThrow(/model listing/);
+  });
+
+  it('maps fetched ids to drafts with the protocol default context size', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      expect(String(url)).toBe('https://api.example.test/v1/models');
+      expect(new Headers(init?.headers).get('x-api-key')).toBe('key-9');
+      return new Response(JSON.stringify({ data: [{ id: 'claude-a' }, { id: 'claude-b' }] }), { status: 200 });
+    }));
+    const models = await fetchRemoteModels({ type: 'anthropic', baseUrl: 'https://api.example.test/v1', apiKey: 'key-9' });
+    expect(models.map((model) => model.model)).toEqual(['claude-a', 'claude-b']);
+    expect(models[0]?.maxContextSize).toBe(200000);
+    expect(models[0]?.capabilities).toEqual([]);
+  });
+
+  it('rejects bad input and upstream failures with localized or HTTP errors', async () => {
+    await expect(fetchRemoteModels({ type: 'openai', baseUrl: ' ', apiKey: '' }))
+      .rejects.toThrow(/Fill in the Base URL/);
+    await expect(fetchRemoteModels({ type: 'openai', baseUrl: 'not a url', apiKey: '' }))
+      .rejects.toThrow(/absolute URL/);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data: [] }), { status: 200 })));
+    await expect(fetchRemoteModels({ type: 'openai', baseUrl: 'https://api.example.test/v1', apiKey: '' }))
+      .rejects.toThrow(/did not return any models/);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{"error":"nope"}', { status: 401 })));
+    await expect(fetchRemoteModels({ type: 'openai', baseUrl: 'https://api.example.test/v1', apiKey: 'bad' }))
+      .rejects.toThrow(/HTTP 401/);
+  });
+});
+
+describe('settings search index', () => {
+  const t = (key: I18nKey): string => translate('en', key);
+  const labels = { general: 'General', models: 'Models' };
+
+  it('matches card titles, section labels, and hint keywords', () => {
+    const index = buildSettingsSearchIndex(labels, t);
+    expect(index.length).toBeGreaterThan(10);
+    expect(searchSettings(index, 'language')[0]?.cardId).toBe('st-card-language');
+    expect(searchSettings(index, 'Models').some((hit) => hit.section === 'models')).toBe(true);
+    // hint-keyword-only hit: "NUL" appears nowhere in a card title
+    expect(searchSettings(index, 'experimental flag').some((hit) => hit.cardId === 'st-card-caps')).toBe(true);
+    expect(searchSettings(index, '  ')).toEqual([]);
+    expect(searchSettings(index, 'zzzz-no-such-setting')).toEqual([]);
+  });
+});
+
+describe('millisecond humanizing', () => {
+  it('picks the largest readable unit with at most two decimals', () => {
+    expect(humanizeMs(500)).toEqual({ value: 500, unit: 'ms' });
+    expect(humanizeMs(45_000)).toEqual({ value: 45, unit: 'seconds' });
+    expect(humanizeMs(90_000)).toEqual({ value: 1.5, unit: 'minutes' });
+    expect(humanizeMs(7_200_000)).toEqual({ value: 2, unit: 'hours' });
+    expect(humanizeMs(86_400_000)).toEqual({ value: 24, unit: 'hours' });
+  });
+
+  it('chooses the largest exactly-dividing unit for the unit selector', () => {
+    expect(msUnitFor(7_200_000)).toBe('hours');
+    expect(msUnitFor(90_000)).toBe('seconds');
+    expect(msUnitFor(60_000)).toBe('minutes');
+    expect(msUnitFor(1_500)).toBe('ms');
+    expect(msUnitFor(0)).toBe('ms');
+  });
+});
+
+describe('restart requirement pub/sub', () => {
+  beforeEach(() => {
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: new MemoryStorage(),
+    });
+  });
+
+  it('notifies subscribers and serves a stable cached snapshot', () => {
+    const seen: boolean[] = [];
+    const unsubscribe = subscribeRestartRequirement(() => {
+      seen.push(restartRequirementSnapshot().required);
+    });
+    markRestartRequired(['subagent']);
+    expect(restartRequirementSnapshot()).toBe(restartRequirementSnapshot());
+    clearRestartRequirement();
+    expect(seen).toEqual([true, false]);
+    unsubscribe();
+    markRestartRequired(['agents']);
+    expect(seen).toEqual([true, false]);
+    clearRestartRequirement();
   });
 });

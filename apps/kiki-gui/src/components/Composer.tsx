@@ -39,6 +39,7 @@ import {
 } from '../lib/slashCommands';
 import { registerOverlay } from '../lib/uiBusy';
 import { useConnection } from '../state/connection';
+import { ContextMeter } from './ContextMeter';
 
 const MODES: readonly { id: PermissionMode; labelKey: I18nKey; hintKey: I18nKey }[] = [
   { id: 'manual', labelKey: 'composer.mode.manual', hintKey: 'composer.mode.manualHint' },
@@ -80,6 +81,7 @@ export function Composer({
   goalControl,
   efforts,
   effort,
+  contextUsage,
   busyPlaceholder,
   sessionId,
   fsSearch,
@@ -88,6 +90,7 @@ export function Composer({
   onChangeAttachments,
   onActivateSkill,
   onSessionAction,
+  onCompactContext,
   onChangeModel,
   onChangePermissionMode,
   onChangePlanMode,
@@ -97,6 +100,7 @@ export function Composer({
   onChangeEffort,
   onSend,
   onAbort,
+  autoFocus,
 }: {
   busy: boolean;
   disabled: boolean;
@@ -121,6 +125,8 @@ export function Composer({
   /** support_efforts of the effective model; effort UI hides when absent. */
   efforts: readonly string[] | undefined;
   effort: string | undefined;
+  /** Session context usage for the footer's mini meter (hidden when absent). */
+  contextUsage?: { readonly used: number; readonly limit: number };
   /** Placeholder while busy (queue steering on /s, creation progress on /new). */
   busyPlaceholder?: string;
   /** Session scope for the skills catalog + session-scoped shortcuts. */
@@ -139,6 +145,8 @@ export function Composer({
   onActivateSkill?: (name: string, args: string, attachments: readonly ComposerAttachment[]) => void;
   /** Session-scoped shortcuts (/fork, /undo, /compact). */
   onSessionAction?: (action: 'fork' | 'undo' | 'compact') => void;
+  /** The context meter's click target (asks the session to compact). */
+  onCompactContext?: () => void;
   onChangeModel: (model: string | undefined) => void;
   onChangePermissionMode: (mode: PermissionMode) => void;
   onChangePlanMode: (on: boolean) => void;
@@ -149,6 +157,8 @@ export function Composer({
   onSend: (text: string, attachments: readonly ComposerAttachment[]) => void;
   /** Omit when there is nothing to abort (e.g. /new session creation). */
   onAbort?: () => void;
+  /** Marks the textarea as the dialog's initial-focus target (`data-autofocus`). */
+  autoFocus?: boolean;
 }) {
   const { client } = useConnection();
   const { t, locale } = useI18n();
@@ -655,6 +665,7 @@ export function Composer({
               rows={1}
               value={text}
               data-composer
+              data-autofocus={autoFocus === true ? '' : undefined}
               disabled={disabled}
               onChange={(event) => {
                 onChange(event.target.value);
@@ -715,11 +726,20 @@ export function Composer({
             </button>
           </div>
         </div>
-        <p className="mt-1.5 text-center text-[10.5px] text-ink-faint">
-          {t('composer.footerBase')}
-          {t(sessionId !== undefined ? 'composer.footerSkills' : 'composer.footerShortcuts')}
-          {fsSearch !== undefined ? t('composer.footerFiles') : ''}
-        </p>
+        <div className="mt-1.5 flex items-center gap-3">
+          <p className="min-w-0 flex-1 text-center text-[10.5px] text-ink-faint">
+            {t('composer.footerBase')}
+            {t(sessionId !== undefined ? 'composer.footerSkills' : 'composer.footerShortcuts')}
+            {fsSearch !== undefined ? t('composer.footerFiles') : ''}
+          </p>
+          {contextUsage !== undefined ? (
+            <ContextMeter
+              used={contextUsage.used}
+              limit={contextUsage.limit}
+              onCompact={onCompactContext}
+            />
+          ) : null}
+        </div>
       </div>
     </div>
   );

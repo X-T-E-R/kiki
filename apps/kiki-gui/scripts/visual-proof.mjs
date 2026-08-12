@@ -60,10 +60,11 @@ const STRINGS = {
     configuredProviders: 'Configured providers',
     tools: 'Tools',
     newSessionDefaults: 'New-session defaults',
-    saveServerDefaults: 'Save server defaults',
+    savedTick: '✓ Saved',
     planModeToggle: 'Start new sessions in plan mode',
     permissionModeAuto: 'auto',
-    settingsSavedEcho: 'Server saved and echoed permission=auto, plan=on.',
+    fetchModelsButton: 'Test connection & pull models',
+    dirtyDiscard: 'Discard and leave',
     skillDefaults: 'Skill and experiment defaults',
     saveCapabilityDefaults: 'Save capability defaults',
     experimentalAria: 'Experimental flag overrides',
@@ -101,6 +102,10 @@ const STRINGS = {
     fromSubagentApprover: 'from subagent Approver',
     queuePromptAria: 'Queue prompt',
     cancelQueuedAria: 'Cancel queued prompt',
+    sendNow: 'Send now',
+    removeQueued: 'Remove',
+    clearQueue: 'Clear all',
+    twoPromptsQueued: '2 prompts queued',
     togglePanelAria: 'Toggle panel',
     openMenuAria: 'Open session menu',
     sessionActionsAria: 'Session actions',
@@ -123,10 +128,11 @@ const STRINGS = {
     configuredProviders: '已配置的提供商',
     tools: '工具',
     newSessionDefaults: '新会话默认值',
-    saveServerDefaults: '保存服务器默认值',
+    savedTick: '✓ 已保存',
     planModeToggle: '新会话默认开启计划模式',
     permissionModeAuto: '自动',
-    settingsSavedEcho: '服务器已保存并回显 permission=auto、plan=开。',
+    fetchModelsButton: '测试连接并拉取模型',
+    dirtyDiscard: '丢弃并离开',
     skillDefaults: '技能与实验默认值',
     saveCapabilityDefaults: '保存能力默认值',
     experimentalAria: '实验开关覆盖',
@@ -164,6 +170,10 @@ const STRINGS = {
     fromSubagentApprover: '来自子代理 Approver',
     queuePromptAria: '加入队列',
     cancelQueuedAria: '取消排队的消息',
+    sendNow: '立即追加',
+    removeQueued: '移除',
+    clearQueue: '全部清除',
+    twoPromptsQueued: '2 条消息已排队',
     togglePanelAria: '切换面板',
     openMenuAria: '打开会话菜单',
     sessionActionsAria: '会话操作',
@@ -563,15 +573,36 @@ async function scenarioSettings() {
 
   await page.click(`text=${S.models}`);
   await page.waitForSelector('text=Kiki Pro', { timeout: 10_000 });
+  // The second fixture provider proves the per-provider grouping renders.
+  await page.waitForSelector('text=Alt Claude X', { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('settings-models');
 
   await page.click(`text=${S.providersAuth}`);
   await page.waitForSelector(`text=${S.configuredProviders}`, { timeout: 10_000 });
+  // The pending device-code flow is seeded by the scenario — proof for the
+  // OAuth card (code, countdown, polling indicator).
+  await page.waitForSelector('text=ABCD-EFGH', { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('settings-providers');
 
+  // New-provider wizard: pick the Anthropic template, point it at the fixture
+  // server's mock upstream, and pull its model list through the browser fetch.
+  await page.locator('button:has(span:text-is("Anthropic"))').click();
+  await page.locator('input[placeholder="https://api.example.com/v1"]:visible')
+    .fill(`${FIXTURE_URL}/provider-mock/v1`);
+  await page.locator('input[type="password"]:visible').fill('fixture-key');
+  await page.locator(`button:has-text("${S.fetchModelsButton}"):visible`).click();
+  await page.waitForSelector('text=mock-pro', { timeout: 10_000 });
+  await page.waitForTimeout(300);
+  await shot('settings-providers-wizard');
+
   await page.click(`text=${S.capabilities}`);
+  // The unsaved wizard draft arms the dirty guard: confirm the discard so the
+  // navigation proceeds (the dialog itself is proof the guard fired).
+  await page.waitForSelector(`text=${S.dirtyDiscard}`, { timeout: 5000 });
+  await shot('settings-dirty-guard');
+  await page.click(`text=${S.dirtyDiscard}`);
   await page.waitForSelector(`text=${S.tools}`, { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('settings-capabilities');
@@ -582,10 +613,11 @@ async function scenarioSettingsWrite() {
     waitUntil: 'domcontentloaded',
   });
   await page.waitForSelector(`text=${S.newSessionDefaults}`, { timeout: 10_000 });
+  // Defaults apply on change now — no save button; each click PATCHes and the
+  // ✓ Saved tick confirms the server echo.
   await page.locator('button', { hasText: S.permissionModeAuto }).click();
+  await waitForText(S.savedTick);
   await page.locator('label', { hasText: S.planModeToggle }).click();
-  await page.click(`button:has-text("${S.saveServerDefaults}")`);
-  await waitForText(S.settingsSavedEcho);
   await shot('settings-write-saved');
 
   await page.reload({ waitUntil: 'domcontentloaded' });
@@ -708,6 +740,50 @@ async function scenarioQueue() {
     throw new Error('Queued chip survived the cancellation');
   }
   await shot('queue-cancelled');
+  await control({ action: 'release', session_id: 'session_fixture_queue' });
+  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 10_000 }).catch(() => undefined);
+
+  // Queue strip: two parked prompts render as ordered rows above the composer.
+  await sendPrompt('A: hold the floor.');
+  await page.waitForSelector(`text=${S.working}`, { timeout: 10_000 });
+  await sendPrompt('B: steer me in.');
+  // Back-to-back queueing must wait out the previous send's draft clear,
+  // otherwise the next fill is wiped before Enter fires.
+  await page.waitForSelector('[data-queue-strip] li', { timeout: 10_000 });
+  await page.waitForFunction(() => document.querySelector('textarea')?.value === '');
+  await sendPrompt('C: clear me out.');
+  await page.waitForSelector(`text=${S.twoPromptsQueued}`, { timeout: 10_000 });
+  const strip = page.locator('[data-queue-strip]');
+  if ((await strip.locator('li').count()) !== 2) {
+    throw new Error(`expected 2 queue-strip rows, saw ${await strip.locator('li').count()}`);
+  }
+  await shot('queue-two-rows');
+
+  // Send now (wire steer): B leaves the queue immediately while A keeps
+  // running; the strip drops to one row and B's transcript chip detaches.
+  // Chip queries are scoped to the transcript log: the strip header copy
+  // itself matches the chip's "…queued — starts when…" substring.
+  const transcriptChips = page.locator('[role="log"]').locator(`text=${S.queuedChip}`);
+  await strip.locator('li', { hasText: 'B: steer me in.' })
+    .locator(`button[aria-label="${S.sendNow}"]`)
+    .click();
+  await page.waitForSelector(`text=${S.onePromptQueued}`, { timeout: 10_000 });
+  if ((await strip.locator('li').count()) !== 1) throw new Error('steered prompt stayed in the strip');
+  if ((await transcriptChips.count()) !== 1) {
+    throw new Error('steered prompt kept its Queued chip');
+  }
+  await shot('queue-steered');
+
+  // Clear all empties the queue: the strip and every Queued chip disappear.
+  await page.getByRole('button', { name: S.clearQueue }).click();
+  await page.waitForSelector('[data-queue-strip]', { state: 'detached', timeout: 10_000 });
+  if ((await page.locator(`text=${S.queueBarPattern}`).count()) !== 0) {
+    throw new Error('queue bar survived Clear all');
+  }
+  if ((await transcriptChips.count()) !== 0) {
+    throw new Error('a Queued chip survived Clear all');
+  }
+  await shot('queue-cleared');
   await control({ action: 'release', session_id: 'session_fixture_queue' });
   await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 10_000 }).catch(() => undefined);
 }

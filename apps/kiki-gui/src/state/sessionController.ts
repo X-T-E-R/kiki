@@ -494,6 +494,30 @@ export class SessionController {
     await this.refreshPrompts();
   }
 
+  /**
+   * "Send now" for a parked prompt — a REAL wire capability, not a client
+   * approximation: `POST …:steer` injects the queued prompt's content into
+   * the currently running turn immediately, and the prompt leaves the queue
+   * and settles with that turn. Throws PROMPT_NOT_FOUND when no turn is
+   * active or the prompt already left the queue (the UI surfaces that as an
+   * action error; the next reconcile repaints the strip).
+   */
+  async steerQueued(promptId: string): Promise<void> {
+    await this.client.steerPrompt(this.sessionId, promptId);
+    await this.refreshPrompts();
+  }
+
+  /** Clear the whole queue: the wire has no bulk-remove route, so abort each
+   * parked prompt; one reconcile at the end repaints the strip. */
+  async clearQueue(): Promise<void> {
+    const ids = this.state.queuedPromptIds;
+    if (ids.length === 0) return;
+    await Promise.allSettled(
+      ids.map((promptId) => this.client.abortPrompt(this.sessionId, promptId)),
+    );
+    await this.refreshPrompts();
+  }
+
   async resolveApproval(
     approvalId: string,
     decision: ApprovalDecision,

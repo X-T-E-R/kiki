@@ -9,6 +9,7 @@ import type { Session } from '@moonshot-ai/protocol';
 
 import { translate, type I18nKey, type Locale } from '../i18n/locale';
 import { API_CODES, ApiError, type KikiClient } from './client';
+import { isDesktopRuntime, saveBlobNative } from './desktop';
 
 export interface SessionActionContext {
   client: KikiClient;
@@ -52,12 +53,20 @@ export async function compactSessionContext(
   ctx.refreshSessions();
 }
 
-/** Export the diagnostic archive and hand it to the browser as a download. */
+/**
+ * Export the diagnostic archive. The desktop build asks for a destination via
+ * the native save dialog and writes through tauri-plugin-fs; the browser build
+ * keeps the blob download. Resolves `true` when the archive was saved, `false`
+ * when the user cancelled the save dialog.
+ */
 export async function exportSessionArchive(
   ctx: SessionActionContext,
   session: Session,
-): Promise<void> {
+): Promise<boolean> {
   const { blob, filename } = await ctx.client.exportSession(session.id);
+  if (isDesktopRuntime()) {
+    return saveBlobNative(blob, filename);
+  }
   const url = URL.createObjectURL(blob);
   try {
     const anchor = document.createElement('a');
@@ -70,6 +79,7 @@ export async function exportSessionArchive(
     // Defer revocation so the download stack has materialized the blob.
     setTimeout(() => { URL.revokeObjectURL(url); }, 10_000);
   }
+  return true;
 }
 
 /** Maps wire error codes to dictionary keys; null when there is no local copy. */

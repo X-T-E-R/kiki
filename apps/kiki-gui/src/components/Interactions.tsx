@@ -106,7 +106,7 @@ export function ApprovalCard({
   onResolve: (decision: ApprovalDecision, scope?: 'session') => Promise<void>;
   /** Display name of the subagent that issued the request, when not main. */
   originAgentName?: string;
-  /** y/n hints are armed only when this is the single unresolved approval. */
+  /** y/n hints show on every pending card (focused or topmost visible wins). */
   showShortcutHints?: boolean;
 }) {
   const { t, time } = useI18n();

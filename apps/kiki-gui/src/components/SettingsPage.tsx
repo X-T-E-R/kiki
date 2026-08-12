@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 
@@ -6,7 +6,6 @@ import type {
   McpServer,
   ModelCatalogItem,
   PermissionMode,
-  ProviderCatalogItem,
   SkillDescriptor,
   ToolDescriptor,
 } from '@moonshot-ai/protocol';
@@ -22,29 +21,30 @@ import {
 import { useI18n } from '../i18n';
 import { errorText, issueText, type I18nKey, type Locale } from '../i18n/locale';
 import {
+  buildSettingsSearchIndex,
   clearRestartRequirement,
-  createProvider,
-  deleteProvider,
   markRestartRequired,
   parseAdvancedServerConfig,
   parseExperimentalFlags,
-  providerDraftFromCatalog,
-  PROVIDER_WIRE_TYPES,
   readDesktopPrefs,
-  readRestartRequirement,
   readSettings,
-  replaceProvider,
+  searchSettings,
   validateDesktopConfigDraft,
   validateExtraSkillDirs,
-  validateProviderDraft,
-  validateServerDefaults,
   writeDesktopPrefs,
   writeSettings,
-  type ProviderDraft,
-  type ProviderModelDraft,
   type SendShortcut,
+  type SettingsSearchEntry,
 } from '../lib/settings';
+import { formatTokens } from '../lib/time';
 import { useConnection } from '../state/connection';
+import { ConfirmDialog } from './ConfirmDialog';
+import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from './controls';
+import { DirtyGuardContext } from './dirtyGuard';
+import { OAuthDeviceCard } from './OAuthDeviceCard';
+import { MsUnitInput, NewProviderWizard, ProviderEditor } from './ProviderFields';
+import { useRestartRequirement } from './RestartBanner';
+import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
 
 const SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'general', labelKey: 'st.section.general' },
@@ -57,33 +57,38 @@ const SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
 ];
 
 type SectionId = (typeof SECTIONS)[number]['id'];
-type Feedback = { tone: 'success' | 'error' | 'info'; text: string } | null;
 
-const INPUT =
-  'w-full rounded-lg border border-hairline bg-paper px-2.5 py-2 text-[12px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint';
-const SMALL_INPUT =
-  'rounded-md border border-hairline bg-paper px-2 py-1.5 text-[12px] text-ink outline-none focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint';
-const PRIMARY_BUTTON =
-  'rounded-md bg-accent px-3 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:opacity-50';
-const SECONDARY_BUTTON =
-  'rounded-md border border-hairline bg-paper px-3 py-1.5 text-[12px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50';
+/** Card id a settings-search hit asked to flash; null when idle. */
+const SettingsFlashContext = createContext<string | null>(null);
+
+type CardBadge = 'restart' | 'desktop';
 
 function SectionCard({
+  id,
   title,
   children,
   badge,
 }: {
+  id?: string;
   title: string;
   children: React.ReactNode;
-  badge?: string;
+  badge?: CardBadge;
 }) {
+  const { t } = useI18n();
+  const flashId = useContext(SettingsFlashContext);
+  const badgeClass = badge === 'restart'
+    ? 'border-amber-rule/60 bg-amber-card text-amber-ink'
+    : 'border-hairline bg-paper text-ink-faint';
   return (
-    <section className="rounded-2xl border border-hairline bg-panel p-5 shadow-[0_2px_4px_rgba(28,25,23,0.03)]">
+    <section
+      id={id}
+      className={`rounded-2xl border border-hairline bg-panel p-5 shadow-[0_2px_4px_rgba(28,25,23,0.03)] ${flashId !== null && flashId === id ? 'settings-card-flash' : ''}`}
+    >
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <h2 className="font-display text-[16px] font-semibold text-ink">{title}</h2>
         {badge !== undefined ? (
-          <span className="rounded-full border border-hairline bg-paper px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-ink-faint">
-            {badge}
+          <span className={`rounded-full border px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide ${badgeClass}`}>
+            {badge === 'restart' ? t('st.badge.restartRequired') : t('st.badge.desktopOnly')}
           </span>
         ) : null}
       </div>
@@ -92,73 +97,17 @@ function SectionCard({
   );
 }
 
-function FeedbackLine({ feedback }: { feedback: Feedback }) {
-  if (feedback === null) return null;
-  const classes =
-    feedback.tone === 'error'
-      ? 'border-danger/30 bg-danger/5 text-danger'
-      : feedback.tone === 'success'
-        ? 'border-success/30 bg-success/5 text-success'
-        : 'border-hairline bg-paper text-ink-soft';
-  return (
-    <p role={feedback.tone === 'error' ? 'alert' : 'status'} className={`rounded-md border px-2.5 py-2 font-mono text-[11px] ${classes}`}>
-      {feedback.text}
-    </p>
-  );
-}
-
-function InlineError({ error }: { error: unknown }) {
-  return (
-    <FeedbackLine
-      feedback={{
-        tone: 'error',
-        text: error instanceof Error ? error.message : String(error),
-      }}
-    />
-  );
-}
-
-function Toggle({
-  label,
-  checked,
-  onChange,
-  disabled = false,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <label className={`flex items-center gap-2 ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
-      <span
-        role="switch"
-        aria-checked={checked}
-        aria-disabled={disabled}
-        className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-          checked ? 'bg-accent' : 'bg-hairline-strong'
-        }`}
-      >
-        <span
-          className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-            checked ? 'translate-x-[18px]' : 'translate-x-1'
-          }`}
-        />
-      </span>
-      <input
-        type="checkbox"
-        className="sr-only"
-        checked={checked}
-        disabled={disabled}
-        onChange={(event) => { onChange(event.target.checked); }}
-      />
-      <span className="text-[12.5px] text-ink-soft">{label}</span>
-    </label>
-  );
-}
-
-function Hint({ children }: { children: React.ReactNode }) {
-  return <p className="text-[11px] leading-relaxed text-ink-faint">{children}</p>;
+/** Transient ✓-saved affirmation with auto-clear, for instant-apply controls. */
+function useSavedTick(): [boolean, () => void] {
+  const [nonce, setNonce] = useState(0);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (timer.current !== null) clearTimeout(timer.current); }, []);
+  const ping = useCallback(() => {
+    setNonce((value) => value + 1);
+    if (timer.current !== null) clearTimeout(timer.current);
+    timer.current = setTimeout(() => { setNonce(0); }, 2500);
+  }, []);
+  return [nonce > 0, ping];
 }
 
 function GeneralSection() {
@@ -171,6 +120,7 @@ function GeneralSection() {
   const [planMode, setPlanMode] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [tick, ping] = useSavedTick();
   const isDesktop = isDesktopRuntime();
 
   const configQuery = useQuery({
@@ -179,45 +129,38 @@ function GeneralSection() {
     staleTime: 60_000,
   });
 
-  useEffect(() => {
-    const config = configQuery.data;
+  const syncFromConfig = useCallback((config: Record<string, unknown> | undefined) => {
     if (config === undefined) return;
-    const mode = config.default_permission_mode;
+    const mode = config['default_permission_mode'];
     if (mode === 'manual' || mode === 'auto' || mode === 'yolo') setPermissionMode(mode);
-    setPlanMode(config.default_plan_mode === true);
-  }, [configQuery.data]);
+    setPlanMode(config['default_plan_mode'] === true);
+  }, []);
 
-  const saveServerDefaults = async () => {
-    const validation = validateServerDefaults(permissionMode);
-    if (validation !== null) {
-      setFeedback({ tone: 'error', text: issueText(locale, validation) });
-      return;
-    }
+  useEffect(() => { syncFromConfig(configQuery.data); }, [configQuery.data, syncFromConfig]);
+
+  // Server defaults apply on change: optimistic local state, echo confirms,
+  // failure reverts to the last server-known config.
+  const applyDefaults = async (mode: PermissionMode, plan: boolean) => {
+    setPermissionMode(mode);
+    setPlanMode(plan);
     setSaving(true);
     setFeedback(null);
     try {
       const echoed = await client.patchConfig({
-        default_permission_mode: permissionMode,
-        default_plan_mode: planMode,
+        default_permission_mode: mode,
+        default_plan_mode: plan,
       });
       queryClient.setQueryData(['config'], echoed);
+      syncFromConfig(echoed as Record<string, unknown>);
       const echoedMode = echoed.default_permission_mode;
       if (echoedMode === 'manual' || echoedMode === 'auto' || echoedMode === 'yolo') {
-        setPermissionMode(echoedMode);
         writeSettings({ defaultPermissionMode: echoedMode });
       }
-      const echoedPlan = echoed.default_plan_mode === true;
-      setPlanMode(echoedPlan);
-      writeSettings({ defaultPlanMode: echoedPlan });
-      setFeedback({
-        tone: 'success',
-        text: t('st.defaults.savedEcho', {
-          permission: echoedMode ?? 'manual',
-          plan: echoedPlan ? t('st.defaults.planOn') : t('st.defaults.planOff'),
-        }),
-      });
+      writeSettings({ defaultPlanMode: echoed.default_plan_mode === true });
+      ping();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
+      syncFromConfig(configQuery.data);
     } finally {
       setSaving(false);
     }
@@ -231,7 +174,7 @@ function GeneralSection() {
 
   return (
     <div className="space-y-5">
-      <SectionCard title={t('st.language.title')} badge={t('st.badge.thisDevice')}>
+      <SectionCard id="st-card-language" title={t('st.language.title')}>
         <div className="space-y-3">
           <div>
             <label htmlFor="language-select" className="mb-1.5 block text-[11px] font-medium text-ink-soft">
@@ -251,17 +194,18 @@ function GeneralSection() {
         </div>
       </SectionCard>
 
-      <SectionCard title={t('st.defaults.title')} badge={t('st.badge.serverLive')}>
+      <SectionCard id="st-card-defaults" title={t('st.defaults.title')}>
         <div className="space-y-4">
           <div>
             <span id="default-permission-mode-label" className="mb-1.5 block text-[11px] font-medium text-ink-soft">{t('st.defaults.permissionMode')}</span>
-            <div className="flex flex-wrap gap-2" role="group" aria-labelledby="default-permission-mode-label">
+            <div className="flex flex-wrap items-center gap-2" role="group" aria-labelledby="default-permission-mode-label">
               {(['manual', 'auto', 'yolo'] as PermissionMode[]).map((mode) => (
                 <button
                   key={mode}
                   type="button"
-                  onClick={() => { setPermissionMode(mode); }}
-                  className={`rounded-full border px-3 py-1 text-[11px] font-medium transition-colors ${
+                  disabled={saving}
+                  onClick={() => void applyDefaults(mode, planMode)}
+                  className={`rounded-full border px-3 py-1 text-[11px] font-medium transition-colors disabled:opacity-50 ${
                     permissionMode === mode
                       ? 'border-accent bg-accent-soft text-accent'
                       : 'border-hairline text-ink-soft hover:border-hairline-strong'
@@ -270,21 +214,19 @@ function GeneralSection() {
                   {t(`composer.mode.${mode}`)}
                 </button>
               ))}
+              <SavedTick show={tick} />
             </div>
           </div>
-          <Toggle label={t('st.defaults.planMode')} checked={planMode} onChange={setPlanMode} />
-          <div className="flex flex-wrap items-center gap-3">
-            <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void saveServerDefaults()}>
-              {saving ? t('common.saving') : t('st.defaults.save')}
-            </button>
-            <Hint>{t('st.defaults.hint')}</Hint>
+          <div className="flex items-center gap-3">
+            <Toggle label={t('st.defaults.planMode')} checked={planMode} disabled={saving} onChange={(checked) => void applyDefaults(permissionMode, checked)} />
           </div>
+          <Hint>{t('st.defaults.hint')}</Hint>
           <FeedbackLine feedback={feedback} />
           {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         </div>
       </SectionCard>
 
-      <SectionCard title={t('st.composer.title')} badge={t('st.badge.thisDevice')}>
+      <SectionCard id="st-card-composer" title={t('st.composer.title')}>
         <div className="space-y-4">
           <div>
             <label htmlFor="send-shortcut-select" className="mb-1.5 block text-[11px] font-medium text-ink-soft">{t('st.composer.sendShortcut')}</label>
@@ -306,7 +248,7 @@ function GeneralSection() {
         </div>
       </SectionCard>
 
-      <SectionCard title={t('st.desktop.title')} badge={isDesktop ? t('st.badge.thisDevice') : t('st.badge.desktopApp')}>
+      <SectionCard id="st-card-desktop" title={t('st.desktop.title')} badge="desktop">
         <fieldset disabled={!isDesktop} className="space-y-4">
           <Toggle
             label={t('st.desktop.notifications')}
@@ -362,106 +304,211 @@ function ModelsSection() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
-  const [busyModel, setBusyModel] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [thinkingEnabled, setThinkingEnabled] = useState(true);
   const [effort, setEffort] = useState('');
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [tick, ping] = useSavedTick();
+  const [modelQuery, setModelQuery] = useState('');
 
   const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
+  const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
   const items = modelsQuery.data?.items ?? [];
   const defaultModel = configQuery.data?.default_model;
+  const defaultProvider = configQuery.data?.default_provider ?? '';
   const defaultItem = items.find((item) => item.model === defaultModel);
   const thinking = asRecord(configQuery.data?.thinking);
 
-  useEffect(() => {
+  const syncThinking = useCallback(() => {
     const configured = thinking?.['effort'];
     setThinkingEnabled(thinking?.['enabled'] !== false);
     setEffort(typeof configured === 'string' ? configured : (defaultItem?.default_effort ?? ''));
   }, [defaultItem?.default_effort, thinking]);
 
-  const selectDefault = async (modelId: string) => {
-    setBusyModel(modelId);
+  useEffect(() => { syncThinking(); }, [syncThinking]);
+
+  // Provider grouping: default provider's group first, default model first
+  // inside its group; the search box filters by id, name, provider, or chip.
+  const groups = useMemo(() => {
+    const needle = modelQuery.trim().toLowerCase();
+    const matched = needle === ''
+      ? items
+      : items.filter((item) =>
+          item.model.toLowerCase().includes(needle)
+          || (item.display_name ?? '').toLowerCase().includes(needle)
+          || item.provider.toLowerCase().includes(needle)
+          || (item.capabilities ?? []).some((capability) => capability.toLowerCase().includes(needle)));
+    const byProvider = new Map<string, ModelCatalogItem[]>();
+    for (const item of matched) {
+      const list = byProvider.get(item.provider) ?? [];
+      list.push(item);
+      byProvider.set(item.provider, list);
+    }
+    return [...byProvider.entries()]
+      .map(([provider, models]) => ({
+        provider,
+        models: models.toSorted((a, b) =>
+          Number(b.model === defaultModel) - Number(a.model === defaultModel)
+          || (a.display_name ?? a.model).localeCompare(b.display_name ?? b.model)),
+      }))
+      .toSorted((a, b) =>
+        Number(b.provider === defaultProvider) - Number(a.provider === defaultProvider)
+        || a.provider.localeCompare(b.provider));
+  }, [items, modelQuery, defaultModel, defaultProvider]);
+
+  const selectDefaultProvider = async (providerId: string) => {
+    setBusy(true);
     setFeedback(null);
     try {
-      const echoed = await client.setDefaultModel(modelId);
+      const echoed = await client.patchConfig({ default_provider: providerId });
+      queryClient.setQueryData(['config'], echoed);
+      ping();
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Starring a model carries its provider along as the default provider.
+  const selectDefaultModel = async (item: ModelCatalogItem) => {
+    setBusy(true);
+    setFeedback(null);
+    try {
+      const echoed = await client.setDefaultModel(item.model);
       queryClient.setQueryData(['config'], (current: Record<string, unknown> | undefined) => ({
         ...current,
         default_model: echoed.default_model,
       }));
       writeSettings({ defaultModel: echoed.default_model });
-      setFeedback({ tone: 'success', text: t('st.models.savedEcho', { model: echoed.default_model }) });
+      if (item.provider !== defaultProvider) {
+        const echoedConfig = await client.patchConfig({ default_provider: item.provider });
+        queryClient.setQueryData(['config'], echoedConfig);
+      }
+      ping();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
-      setBusyModel(null);
+      setBusy(false);
     }
   };
 
-  const saveEffort = async () => {
-    if (thinkingEnabled && effort.trim() === '') {
+  const saveThinking = async (enabled: boolean, nextEffort: string) => {
+    setThinkingEnabled(enabled);
+    setEffort(nextEffort);
+    if (enabled && nextEffort.trim() === '') {
       setFeedback({ tone: 'error', text: t('st.thinking.emptyError') });
+      syncThinking();
       return;
     }
-    setBusyModel('effort');
+    setBusy(true);
     setFeedback(null);
     try {
-      const echoed = await client.patchConfig({ thinking: { enabled: thinkingEnabled, effort: effort.trim() || undefined } });
+      const echoed = await client.patchConfig({ thinking: { enabled, effort: nextEffort.trim() || undefined } });
       queryClient.setQueryData(['config'], echoed);
       const echoedThinking = asRecord(echoed.thinking);
       const echoedEnabled = echoedThinking?.['enabled'] !== false;
-      const echoedEffort = typeof echoedThinking?.['effort'] === 'string' ? echoedThinking['effort'] : effort.trim();
+      const echoedEffort = typeof echoedThinking?.['effort'] === 'string' ? echoedThinking['effort'] : nextEffort.trim();
       setThinkingEnabled(echoedEnabled);
       setEffort(echoedEffort);
       writeSettings({ defaultEffort: echoedEffort || undefined });
-      setFeedback({
-        tone: 'success',
-        text: echoedEnabled
-          ? t('st.thinking.savedAt', { effort: echoedEffort })
-          : t('st.thinking.savedOff'),
-      });
+      ping();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
+      syncThinking();
     } finally {
-      setBusyModel(null);
+      setBusy(false);
     }
   };
 
   return (
     <div className="space-y-5">
-      <SectionCard title={t('st.models.defaultTitle')} badge={t('st.badge.serverLive')}>
-        <div className="space-y-3">
-          {items.map((item) => (
-            <ModelRow
-              key={item.model}
-              item={item}
-              isDefault={item.model === defaultModel}
-              busy={busyModel === item.model}
-              onSetDefault={() => void selectDefault(item.model)}
-            />
-          ))}
+      <SectionCard id="st-card-models" title={t('st.models.defaultTitle')}>
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-[11px] font-medium text-ink-soft">{t('st.models.providerLabel')}
+              <select
+                className={`${SMALL_INPUT} ml-2`}
+                value={defaultProvider}
+                disabled={busy}
+                onChange={(event) => void selectDefaultProvider(event.target.value)}
+              >
+                {(providersQuery.data?.items ?? []).map((provider) => <option key={provider.id} value={provider.id}>{provider.id}</option>)}
+              </select>
+            </label>
+            <SavedTick show={tick} />
+          </div>
+          <input
+            type="search"
+            aria-label={t('st.models.searchAria')}
+            placeholder={t('st.models.searchPlaceholder')}
+            className={INPUT}
+            value={modelQuery}
+            onChange={(event) => { setModelQuery(event.target.value); }}
+          />
+          <div className="space-y-4">
+            {groups.map((group) => (
+              <div key={group.provider}>
+                <div className="mb-1.5 flex items-center gap-2">
+                  <p className="font-mono text-[11px] font-semibold text-ink-soft">{group.provider}</p>
+                  {group.provider === defaultProvider ? (
+                    <span className="rounded-full border border-success/30 bg-success/10 px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-success">{t('st.models.default')}</span>
+                  ) : null}
+                </div>
+                <div className="space-y-1.5">
+                  {group.models.map((item) => (
+                    <ModelRow
+                      key={item.model}
+                      item={item}
+                      isDefault={item.model === defaultModel}
+                      busy={busy}
+                      onSetDefault={() => void selectDefaultModel(item)}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          {modelQuery.trim() !== '' && groups.length === 0 ? (
+            <Hint>{t('st.models.searchEmpty', { query: modelQuery.trim() })}</Hint>
+          ) : null}
           {modelsQuery.isLoading ? <Hint>{t('st.models.loading')}</Hint> : null}
           {modelsQuery.isError ? <InlineError error={modelsQuery.error} /> : null}
           <FeedbackLine feedback={feedback} />
         </div>
       </SectionCard>
 
-      <SectionCard title={t('st.thinking.title')} badge={t('st.badge.serverLive')}>
+      <SectionCard id="st-card-thinking" title={t('st.thinking.title')}>
         <div className="space-y-3">
-          <Toggle label={t('st.thinking.enable')} checked={thinkingEnabled} onChange={setThinkingEnabled} />
+          <div className="flex items-center gap-3">
+            <Toggle label={t('st.thinking.enable')} checked={thinkingEnabled} disabled={busy} onChange={(checked) => void saveThinking(checked, effort)} />
+            <SavedTick show={tick} />
+          </div>
           {defaultItem?.support_efforts !== undefined && defaultItem.support_efforts.length > 0 ? (
-            <select className={SMALL_INPUT} value={effort} disabled={!thinkingEnabled} onChange={(event) => { setEffort(event.target.value); }}>
+            <select
+              className={SMALL_INPUT}
+              value={effort}
+              disabled={!thinkingEnabled || busy}
+              onChange={(event) => void saveThinking(thinkingEnabled, event.target.value)}
+            >
               {defaultItem.support_efforts.map((level) => <option key={level} value={level}>{level}</option>)}
             </select>
           ) : (
-            <input className={INPUT} value={effort} disabled={!thinkingEnabled} onChange={(event) => { setEffort(event.target.value); }} placeholder={t('st.thinking.placeholder')} />
+            <input
+              className={INPUT}
+              value={effort}
+              disabled={!thinkingEnabled || busy}
+              onChange={(event) => { setEffort(event.target.value); }}
+              onBlur={() => void saveThinking(thinkingEnabled, effort)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void saveThinking(thinkingEnabled, effort);
+              }}
+              placeholder={t('st.thinking.placeholder')}
+            />
           )}
-          <div className="flex flex-wrap items-center gap-3">
-            <button type="button" className={PRIMARY_BUTTON} disabled={busyModel !== null} onClick={() => void saveEffort()}>
-              {busyModel === 'effort' ? t('common.saving') : t('st.thinking.save')}
-            </button>
-            <Hint>{t('st.thinking.hint')}</Hint>
-          </div>
+          <Hint>{t('st.thinking.hint')}</Hint>
+          <FeedbackLine feedback={feedback} />
         </div>
       </SectionCard>
     </div>
@@ -481,17 +528,37 @@ function ModelRow({
 }) {
   const { t } = useI18n();
   return (
-    <div className="flex items-center justify-between gap-3 rounded-lg border border-hairline bg-paper px-3 py-2">
-      <div className="min-w-0">
-        <p className="truncate text-[13px] font-medium text-ink">{item.display_name ?? item.model}</p>
+    <div className="flex items-center gap-3 rounded-lg border border-hairline bg-paper px-3 py-2">
+      <button
+        type="button"
+        onClick={onSetDefault}
+        disabled={busy || isDefault}
+        aria-label={t('st.models.starAria', { model: item.model })}
+        title={isDefault ? t('st.models.starredTitle') : t('st.models.unstarredTitle')}
+        className={`shrink-0 text-[15px] leading-none transition-colors disabled:cursor-default ${
+          isDefault ? 'text-accent' : 'text-hairline-strong hover:text-accent'
+        }`}
+      >
+        {isDefault ? '★' : '☆'}
+      </button>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[13px] font-medium text-ink">
+          {item.display_name ?? item.model}
+          {isDefault ? (
+            <span className="ml-2 rounded-full border border-success/30 bg-success/10 px-1.5 py-px align-middle text-[9px] font-medium uppercase tracking-wide text-success">{t('st.models.default')}</span>
+          ) : null}
+        </p>
         <p className="truncate font-mono text-[10.5px] text-ink-faint">
-          {item.model} · {item.max_context_size.toLocaleString()} {t('st.models.context')}
-          {item.capabilities?.length ? ` · ${item.capabilities.join(', ')}` : ''}
+          {item.model} · {formatTokens(item.max_context_size)} {t('st.models.context')}
         </p>
       </div>
-      <button type="button" onClick={onSetDefault} disabled={isDefault || busy} className={isDefault ? `${SECONDARY_BUTTON} border-success/30 bg-success/10 text-success` : SECONDARY_BUTTON}>
-        {isDefault ? t('st.models.default') : busy ? t('common.saving') : t('st.models.setDefault')}
-      </button>
+      {item.capabilities !== undefined && item.capabilities.length > 0 ? (
+        <div className="hidden shrink-0 flex-wrap justify-end gap-1 sm:flex">
+          {item.capabilities.map((capability) => (
+            <span key={capability} className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[9.5px] text-ink-faint">{capability}</span>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -499,6 +566,7 @@ function ModelRow({
 function ConnectionSection() {
   const { config, meta, wsStatus, socket } = useConnection();
   const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
   const isDesktop = isDesktopRuntime();
   const [restarting, setRestarting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -509,17 +577,21 @@ function ConnectionSection() {
     try {
       await restartNativeServer();
       clearRestartRequirement();
+      // Fresh sidecar on the same endpoint: reattach the WS and refetch
+      // instead of reloading the page.
+      socket?.nudge();
+      await queryClient.invalidateQueries();
       setFeedback({ tone: 'success', text: t('st.conn.restarted') });
-      window.location.reload();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
       setRestarting(false);
     }
   };
 
   return (
     <div className="space-y-5">
-      <SectionCard title={t('st.conn.connectedTitle')} badge={t('st.badge.liveStatus')}>
+      <SectionCard id="st-card-conn-server" title={t('st.conn.connectedTitle')}>
         <div className="space-y-2 text-[12.5px] text-ink-soft">
           <p>URL: <span className="font-mono text-ink">{config.url}</span></p>
           <p>{t('st.conn.version')}: <span className="font-mono text-ink">{meta.server_version}</span></p>
@@ -529,7 +601,7 @@ function ConnectionSection() {
         </div>
       </SectionCard>
 
-      <SectionCard title={t('st.conn.ownedTitle')} badge={isDesktop ? t('st.badge.desktopNative') : t('st.badge.desktopApp')}>
+      <SectionCard id="st-card-conn-owned" title={t('st.conn.ownedTitle')} badge="desktop">
         <div className="space-y-3">
           <p className="text-[12.5px] text-ink-soft">
             {t('st.conn.ownedBody')}
@@ -550,66 +622,85 @@ function ProvidersSection() {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const [oauthBusy, setOauthBusy] = useState(false);
-  const [defaultProvider, setDefaultProvider] = useState('');
+  const [oauthCancelling, setOauthCancelling] = useState(false);
   const [oauthFeedback, setOauthFeedback] = useState<Feedback>(null);
+  const [dismissedFlows, setDismissedFlows] = useState<readonly string[]>([]);
+  const prevFlowStatus = useRef<string | null>(null);
 
   const authQuery = useQuery({ queryKey: ['auth'], queryFn: () => client.getAuth(), staleTime: 10_000 });
-  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
   const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
-  const oauthQuery = useQuery({ queryKey: ['oauth'], queryFn: () => client.getOAuthStatus(), staleTime: 5000 });
+  // The device flow polls at the server-suggested interval while pending and
+  // stops on any terminal state.
+  const oauthQuery = useQuery({
+    queryKey: ['oauth'],
+    queryFn: () => client.getOAuthStatus(),
+    staleTime: 0,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      return data !== null && data !== undefined && data.status === 'pending'
+        ? Math.max(2000, data.interval * 1000)
+        : false;
+    },
+  });
 
-  useEffect(() => {
-    const configured = configQuery.data?.default_provider;
-    const first = providersQuery.data?.items[0]?.id;
-    setDefaultProvider(configured ?? first ?? '');
-  }, [configQuery.data?.default_provider, providersQuery.data?.items]);
+  const snapshot = oauthQuery.data ?? null;
 
-  const refreshProviderData = async () => {
+  const refreshProviderData = useCallback(async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['providers'] }),
       queryClient.invalidateQueries({ queryKey: ['models'] }),
       queryClient.invalidateQueries({ queryKey: ['auth'] }),
       queryClient.invalidateQueries({ queryKey: ['config'] }),
     ]);
-  };
+  }, [queryClient]);
 
-  const saveDefaultProvider = async () => {
-    if (defaultProvider === '') {
-      setOauthFeedback({ tone: 'error', text: t('st.auth.chooseProvider') });
+  // authenticated → auto-collapse the card and refresh provider data.
+  useEffect(() => {
+    if (snapshot === null) {
+      prevFlowStatus.current = null;
       return;
     }
-    setOauthBusy(true);
-    setOauthFeedback(null);
-    try {
-      const echoed = await client.patchConfig({ default_provider: defaultProvider });
-      queryClient.setQueryData(['config'], echoed);
-      setDefaultProvider(echoed.default_provider ?? defaultProvider);
-      setOauthFeedback({
-        tone: 'success',
-        text: t('st.auth.savedEcho', { provider: echoed.default_provider ?? defaultProvider }),
-      });
-    } catch (error) {
-      setOauthFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setOauthBusy(false);
+    if (snapshot.status === 'authenticated' && !dismissedFlows.includes(snapshot.flow_id)) {
+      if (prevFlowStatus.current === 'pending') {
+        setOauthFeedback({ tone: 'success', text: t('st.oauth.authenticated') });
+      }
+      setDismissedFlows((flows) => [...flows, snapshot.flow_id]);
+      void refreshProviderData();
     }
-  };
+    prevFlowStatus.current = snapshot.status;
+  }, [snapshot, dismissedFlows, t, refreshProviderData]);
 
   const startOAuth = async () => {
     setOauthBusy(true);
     setOauthFeedback(null);
     try {
       const result = await client.startOAuthLogin();
-      setOauthFeedback({
-        tone: 'success',
-        text: result.status === 'authenticated' ? t('st.auth.already') : t('st.auth.deviceFlow'),
-      });
-      await refreshProviderData();
+      if (result.status === 'authenticated') {
+        setOauthFeedback({ tone: 'success', text: t('st.auth.already') });
+        await refreshProviderData();
+      } else {
+        // Surface the fresh pending flow immediately; the interval poller
+        // takes over from here.
+        setDismissedFlows([]);
+        queryClient.setQueryData(['oauth'], result);
+      }
     } catch (error) {
       setOauthFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setOauthBusy(false);
+    }
+  };
+
+  const cancelOAuth = async () => {
+    setOauthCancelling(true);
+    try {
+      await client.cancelOAuthLogin();
+    } catch (error) {
+      setOauthFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setOauthCancelling(false);
+      await queryClient.invalidateQueries({ queryKey: ['oauth'] });
     }
   };
 
@@ -618,8 +709,9 @@ function ProvidersSection() {
     setOauthFeedback(null);
     try {
       await client.logoutOAuth();
+      setDismissedFlows([]);
       setOauthFeedback({ tone: 'success', text: t('st.auth.removed') });
-      await refreshProviderData();
+      await Promise.all([refreshProviderData(), queryClient.invalidateQueries({ queryKey: ['oauth'] })]);
     } catch (error) {
       setOauthFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -627,38 +719,48 @@ function ProvidersSection() {
     }
   };
 
+  const visibleSnapshot = snapshot !== null
+    && snapshot.status !== 'authenticated'
+    && !dismissedFlows.includes(snapshot.flow_id)
+    ? snapshot
+    : null;
+
   return (
     <div className="space-y-5">
-      <SectionCard title={t('st.auth.title')} badge={t('st.badge.serverApi')}>
+      <SectionCard id="st-card-auth" title={t('st.auth.title')}>
         <div className="space-y-3">
           {authQuery.data !== undefined ? (
-            <div className="grid gap-2 text-[12.5px] text-ink-soft sm:grid-cols-2">
-              <p>{t('st.auth.ready')}: <span className="text-ink">{authQuery.data.ready ? t('st.auth.yes') : t('st.auth.no')}</span></p>
-              <p>{t('st.auth.providers')}: <span className="text-ink">{authQuery.data.providers_count}</span></p>
-              <p>{t('st.auth.defaultModel')}: <span className="font-mono text-ink">{authQuery.data.default_model ?? t('st.auth.none')}</span></p>
-              <p>{t('st.auth.managedAuth')}: <span className="text-ink">{authQuery.data.managed_provider?.status ?? t('st.auth.none')}</span></p>
+            <div className="flex items-start gap-2.5">
+              <span aria-hidden className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${authQuery.data.ready ? 'bg-success' : 'bg-amber-rule'}`} />
+              <div className="min-w-0 text-[12.5px]">
+                <p className="font-medium text-ink">{authQuery.data.ready ? t('st.auth.statusReady') : t('st.auth.statusNotReady')}</p>
+                <p className="text-ink-soft">{t('st.auth.summary', { count: authQuery.data.providers_count, model: authQuery.data.default_model ?? t('st.auth.none') })}</p>
+                {authQuery.data.managed_provider ? (
+                  <p className="text-ink-soft">{t('st.auth.managed', { status: authQuery.data.managed_provider.status })}</p>
+                ) : null}
+              </div>
             </div>
           ) : null}
-          <div className="flex flex-wrap items-end gap-2">
-            <label className="text-[11px] font-medium text-ink-soft">{t('st.auth.defaultProvider')}
-              <select className={`${SMALL_INPUT} ml-2`} value={defaultProvider} onChange={(event) => { setDefaultProvider(event.target.value); }}>
-                {(providersQuery.data?.items ?? []).map((provider) => <option key={provider.id} value={provider.id}>{provider.id}</option>)}
-              </select>
-            </label>
-            <button type="button" disabled={oauthBusy || defaultProvider === ''} onClick={() => void saveDefaultProvider()} className={SECONDARY_BUTTON}>{t('st.auth.saveDefault')}</button>
-          </div>
+          {visibleSnapshot !== null ? (
+            <OAuthDeviceCard
+              snapshot={visibleSnapshot}
+              cancelling={oauthCancelling}
+              onCancel={() => void cancelOAuth()}
+              onRetry={() => void startOAuth()}
+              onDismiss={() => { setDismissedFlows((flows) => [...flows, visibleSnapshot.flow_id]); }}
+            />
+          ) : null}
           <div className="flex gap-2">
             <button type="button" disabled={oauthBusy} onClick={() => void startOAuth()} className={PRIMARY_BUTTON}>{oauthBusy ? t('st.auth.working') : t('st.auth.signIn')}</button>
             <button type="button" disabled={oauthBusy} onClick={() => void logout()} className={SECONDARY_BUTTON}>{t('st.auth.signOut')}</button>
           </div>
-          {oauthQuery.data !== null && oauthQuery.data !== undefined ? <Hint>{oauthQuery.data.provider} · {oauthQuery.data.status}</Hint> : null}
           <FeedbackLine feedback={oauthFeedback} />
           {authQuery.isError ? <InlineError error={authQuery.error} /> : null}
         </div>
       </SectionCard>
 
-      <SectionCard title={t('st.providers.title')} badge={t('st.badge.serverLive')}>
-        <div className="space-y-4">
+      <SectionCard id="st-card-providers" title={t('st.providers.title')}>
+        <div className="space-y-3">
           {(providersQuery.data?.items ?? []).map((provider) => (
             <ProviderEditor
               key={provider.id}
@@ -674,220 +776,9 @@ function ProvidersSection() {
         </div>
       </SectionCard>
 
-      <SectionCard title={t('st.providers.addTitle')} badge={t('st.badge.serverLive')}>
-        <NewProviderForm connection={connection} onSaved={refreshProviderData} />
+      <SectionCard id="st-card-providers-add" title={t('st.providers.addTitle')}>
+        <NewProviderWizard connection={connection} onSaved={refreshProviderData} />
       </SectionCard>
-    </div>
-  );
-}
-
-function ProviderEditor({
-  provider,
-  models,
-  connection,
-  onSaved,
-}: {
-  provider: ProviderCatalogItem;
-  models: readonly ModelCatalogItem[];
-  connection: { url: string; token: string };
-  onSaved: () => Promise<void>;
-}) {
-  const { t, locale } = useI18n();
-  const initial = useMemo(() => providerDraftFromCatalog(provider, models), [provider, models]);
-  const [draft, setDraft] = useState(initial);
-  const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState<Feedback>(null);
-
-  useEffect(() => { setDraft(initial); }, [initial]);
-
-  if (draft === null) {
-    return (
-      <div className="rounded-xl border border-hairline bg-paper p-3">
-        <p className="text-[13px] font-semibold text-ink">{provider.id}</p>
-        <Hint>
-          {t('st.providers.cannotRewrite')}
-        </Hint>
-      </div>
-    );
-  }
-
-  const save = async () => {
-    const validation = validateProviderDraft(draft);
-    if (validation !== null) {
-      setFeedback({ tone: 'error', text: issueText(locale, validation) });
-      return;
-    }
-    setSaving(true);
-    setFeedback(null);
-    try {
-      const echoed = await replaceProvider(connection, provider.id, draft);
-      setDraft((current) => current === null ? null : { ...current, apiKey: '', clearApiKey: false });
-      await onSaved();
-      setFeedback({ tone: 'success', text: t('st.providers.savedEcho', { id: echoed.id }) });
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const remove = async () => {
-    if (!window.confirm(t('st.providers.removeConfirm', { id: provider.id }))) return;
-    setSaving(true);
-    setFeedback(null);
-    try {
-      await deleteProvider(connection, provider.id);
-      await onSaved();
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-      setSaving(false);
-    }
-  };
-
-  return (
-    <details className="rounded-xl border border-hairline bg-paper p-3" open>
-      <summary className="cursor-pointer text-[13px] font-semibold text-ink">
-        {provider.id} <span className="font-mono text-[10px] font-normal text-ink-faint">{provider.status}</span>
-      </summary>
-      <div className="mt-4 space-y-4">
-        <ProviderFields draft={draft} onChange={setDraft} hasStoredKey={provider.has_api_key} />
-        <div className="flex flex-wrap gap-2">
-          <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? t('common.saving') : t('st.providers.save')}</button>
-          <button type="button" className={`${SECONDARY_BUTTON} text-danger`} disabled={saving} onClick={() => void remove()}>{t('common.remove')}</button>
-        </div>
-        <FeedbackLine feedback={feedback} />
-      </div>
-    </details>
-  );
-}
-
-function NewProviderForm({
-  connection,
-  onSaved,
-}: {
-  connection: { url: string; token: string };
-  onSaved: () => Promise<void>;
-}) {
-  const { t, locale } = useI18n();
-  const blank = (): ProviderDraft => ({
-    id: '',
-    type: 'openai',
-    baseUrl: '',
-    defaultModel: '',
-    apiKey: '',
-    clearApiKey: false,
-    models: [{ model: '', maxContextSize: 128000, displayName: '', capabilities: [], supportEfforts: [] }],
-  });
-  const [draft, setDraft] = useState<ProviderDraft>(blank);
-  const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState<Feedback>(null);
-
-  const save = async () => {
-    const normalized = {
-      ...draft,
-      defaultModel: draft.defaultModel || (draft.models[0]?.model ?? ''),
-    };
-    const validation = validateProviderDraft(normalized);
-    if (validation !== null) {
-      setFeedback({ tone: 'error', text: issueText(locale, validation) });
-      return;
-    }
-    setSaving(true);
-    setFeedback(null);
-    try {
-      const echoed = await createProvider(connection, normalized);
-      setDraft(blank());
-      await onSaved();
-      setFeedback({ tone: 'success', text: t('st.providers.createdEcho', { id: echoed.id }) });
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="space-y-4">
-      <ProviderFields draft={draft} onChange={setDraft} hasStoredKey={false} />
-      <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? t('st.providers.creating') : t('st.providers.create')}</button>
-      <FeedbackLine feedback={feedback} />
-    </div>
-  );
-}
-
-function ProviderFields({
-  draft,
-  onChange,
-  hasStoredKey,
-}: {
-  draft: ProviderDraft;
-  onChange: (draft: ProviderDraft) => void;
-  hasStoredKey: boolean;
-}) {
-  const { t } = useI18n();
-  const updateModel = (index: number, patch: Partial<ProviderModelDraft>) => {
-    onChange({
-      ...draft,
-      models: draft.models.map((model, modelIndex) => modelIndex === index ? { ...model, ...patch } : model),
-    });
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2">
-        <label className="text-[11px] font-medium text-ink-soft">{t('st.providers.idLabel')}
-          <input className={`${INPUT} mt-1`} value={draft.id} onChange={(event) => { onChange({ ...draft, id: event.target.value }); }} />
-        </label>
-        <label className="text-[11px] font-medium text-ink-soft">{t('st.providers.protocol')}
-          <select className={`${INPUT} mt-1`} value={draft.type} onChange={(event) => { onChange({ ...draft, type: event.target.value as ProviderDraft['type'] }); }}>
-            {PROVIDER_WIRE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
-          </select>
-        </label>
-      </div>
-      <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.baseUrl')}
-        <input className={`${INPUT} mt-1`} value={draft.baseUrl} onChange={(event) => { onChange({ ...draft, baseUrl: event.target.value }); }} placeholder="https://api.example.com/v1" />
-      </label>
-      <div>
-        <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.apiKey')}
-          <input
-            type="password"
-            autoComplete="new-password"
-            className={`${INPUT} mt-1`}
-            value={draft.apiKey}
-            disabled={draft.clearApiKey}
-            onChange={(event) => { onChange({ ...draft, apiKey: event.target.value }); }}
-            placeholder={hasStoredKey ? t('st.providers.keyStored') : t('st.providers.keyNew')}
-          />
-        </label>
-        <div className="mt-2">
-          <Toggle label={t('st.providers.clearKey')} checked={draft.clearApiKey} onChange={(checked) => { onChange({ ...draft, clearApiKey: checked, apiKey: '' }); }} />
-        </div>
-        <Hint>{t('st.providers.keyHint')}</Hint>
-      </div>
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <p className="text-[11px] font-medium text-ink-soft">{t('st.providers.models')}</p>
-          <button type="button" className={SECONDARY_BUTTON} onClick={() => { onChange({ ...draft, models: [...draft.models, { model: '', maxContextSize: 128000, displayName: '', capabilities: [], supportEfforts: [] }] }); }}>{t('st.providers.addModel')}</button>
-        </div>
-        {draft.models.map((model, index) => (
-          <div key={`${index}-${model.model}`} className="rounded-lg border border-hairline bg-panel p-3">
-            <div className="grid gap-2 sm:grid-cols-2">
-              <input className={INPUT} aria-label={t('st.providers.modelIdAria', { n: index + 1 })} value={model.model} onChange={(event) => { updateModel(index, { model: event.target.value }); }} placeholder="model-id" />
-              <input className={INPUT} aria-label={t('st.providers.modelContextAria', { n: index + 1 })} type="number" min={1} value={model.maxContextSize} onChange={(event) => { updateModel(index, { maxContextSize: Number(event.target.value) }); }} />
-              <input className={INPUT} aria-label={t('st.providers.modelNameAria', { n: index + 1 })} value={model.displayName} onChange={(event) => { updateModel(index, { displayName: event.target.value }); }} placeholder={t('st.providers.displayNamePlaceholder')} />
-              <input className={INPUT} aria-label={t('st.providers.modelCapsAria', { n: index + 1 })} value={model.capabilities.join(', ')} onChange={(event) => { updateModel(index, { capabilities: commaList(event.target.value) }); }} placeholder="reasoning, vision" />
-              <input className={INPUT} aria-label={t('st.providers.modelEffortsAria', { n: index + 1 })} value={model.supportEfforts.join(', ')} onChange={(event) => { updateModel(index, { supportEfforts: commaList(event.target.value) }); }} placeholder="low, medium, high" />
-              <button type="button" className={`${SECONDARY_BUTTON} text-danger`} disabled={draft.models.length === 1} onClick={() => { onChange({ ...draft, models: draft.models.filter((_, modelIndex) => modelIndex !== index) }); }}>{t('st.providers.removeModel')}</button>
-            </div>
-          </div>
-        ))}
-      </div>
-      <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.defaultModel')}
-        <select className={`${INPUT} mt-1`} value={draft.defaultModel} onChange={(event) => { onChange({ ...draft, defaultModel: event.target.value }); }}>
-          <option value="">{t('st.providers.chooseModel')}</option>
-          {draft.models.filter((model) => model.model !== '').map((model) => <option key={model.model} value={model.model}>{model.model}</option>)}
-        </select>
-      </label>
     </div>
   );
 }
@@ -1003,7 +894,7 @@ function CapabilitiesSection() {
 
   return (
     <div className="space-y-5">
-      <SectionCard title={t('st.caps.title')} badge={t('st.badge.serverLive')}>
+      <SectionCard id="st-card-caps" title={t('st.caps.title')}>
         <div className="space-y-4">
           <Toggle label={t('st.caps.mergeSkills')} checked={mergeSkills} onChange={setMergeSkills} />
           <Toggle label={t('st.caps.telemetry')} checked={telemetry} onChange={setTelemetry} />
@@ -1018,7 +909,7 @@ function CapabilitiesSection() {
         </div>
       </SectionCard>
 
-      <SectionCard title={t('st.advanced.title')} badge={t('st.badge.serverLive')}>
+      <SectionCard id="st-card-advanced" title={t('st.advanced.title')}>
         <div className="space-y-3">
           <Hint>{t('st.advanced.hint')}</Hint>
           <textarea className={`${INPUT} min-h-64 font-mono`} value={advanced} onChange={(event) => { setAdvanced(event.target.value); }} aria-label={t('st.advanced.aria')} />
@@ -1029,7 +920,7 @@ function CapabilitiesSection() {
 
       <DesktopServerFileCard />
 
-      <SectionCard title={t('st.tools.title')} badge={t('st.badge.serverCatalog')}>
+      <SectionCard id="st-card-tools" title={t('st.tools.title')}>
         <div className="space-y-2">
           {toolsQuery.data?.tools.map((tool) => <ToolRow key={tool.name} tool={tool} />)}
           {toolsQuery.isLoading ? <Hint>{t('st.tools.loading')}</Hint> : null}
@@ -1037,7 +928,7 @@ function CapabilitiesSection() {
         </div>
       </SectionCard>
 
-      <SectionCard title={t('st.mcp.title')} badge={t('st.badge.serverActions')}>
+      <SectionCard id="st-card-mcp" title={t('st.mcp.title')}>
         <div className="space-y-2">
           {mcpQuery.data?.servers.map((server) => <McpRow key={server.id} server={server} />)}
           {mcpQuery.isLoading ? <Hint>{t('st.mcp.loading')}</Hint> : null}
@@ -1045,7 +936,7 @@ function CapabilitiesSection() {
         </div>
       </SectionCard>
 
-      <SectionCard title={t('st.skills.title')} badge={t('st.badge.serverCatalog')}>
+      <SectionCard id="st-card-skills" title={t('st.skills.title')}>
         <div className="mb-3 flex items-center gap-2">
           <label htmlFor="workspace-skills-select" className="text-[11px] font-medium text-ink-soft">{t('st.skills.workspace')}</label>
           <select id="workspace-skills-select" className={SMALL_INPUT} value={workspaceId} onChange={(event) => { setWorkspaceId(event.target.value); }}>
@@ -1075,8 +966,10 @@ const EMPTY_DESKTOP_CONFIG: DesktopServerConfig = {
 function DesktopServerFileCard() {
   const isDesktop = isDesktopRuntime();
   const { t, locale } = useI18n();
+  const { socket } = useConnection();
+  const queryClient = useQueryClient();
   const [config, setConfig] = useState(EMPTY_DESKTOP_CONFIG);
-  const [restart, setRestart] = useState(readRestartRequirement);
+  const restart = useRestartRequirement();
   const [loading, setLoading] = useState(isDesktop);
   const [saving, setSaving] = useState(false);
   const [restarting, setRestarting] = useState(false);
@@ -1130,7 +1023,7 @@ function DesktopServerFileCard() {
         modelCatalogRefreshOnStart: config.modelCatalog.refreshOnStart,
       });
       setConfig(echoed);
-      setRestart(markRestartRequired(['subagent', 'agents', 'builtin_product_skills', 'model_catalog']));
+      markRestartRequired(['subagent', 'agents', 'builtin_product_skills', 'model_catalog']);
       setFeedback({ tone: 'success', text: t('st.sidecar.savedEcho', { path: echoed.backupPath }) });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -1144,8 +1037,9 @@ function DesktopServerFileCard() {
     setFeedback(null);
     try {
       await restartNativeServer();
-      setRestart(clearRestartRequirement());
-      window.location.reload();
+      clearRestartRequirement();
+      socket?.nudge();
+      await queryClient.invalidateQueries();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
       setRestarting(false);
@@ -1153,7 +1047,7 @@ function DesktopServerFileCard() {
   };
 
   return (
-    <SectionCard title={t('st.sidecar.title')} badge={restart.required ? t('st.badge.restartRequired') : isDesktop ? t('st.badge.desktopFile') : t('st.badge.desktopApp')}>
+    <SectionCard id="st-card-sidecar" title={t('st.sidecar.title')} badge={restart.required ? 'restart' : 'desktop'}>
       <div className="space-y-4">
         {!isDesktop ? (
           <p data-testid="desktop-config-disabled-hint" className="rounded-lg border border-amber-ink/25 bg-amber-ink/5 px-3 py-2 text-[11.5px] text-amber-ink">
@@ -1169,7 +1063,11 @@ function DesktopServerFileCard() {
               <input className={`${INPUT} mt-1`} value={config.subagent.defaultEffort} onChange={(event) => { setConfig({ ...config, subagent: { ...config.subagent, defaultEffort: event.target.value } }); }} placeholder="high" />
             </label>
             <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.subagentTimeout')}
-              <input className={`${INPUT} mt-1`} type="number" min={0} max={86400000} value={config.subagent.timeoutMs} onChange={(event) => { setConfig({ ...config, subagent: { ...config.subagent, timeoutMs: Number(event.target.value) } }); }} />
+              <MsUnitInput
+                value={config.subagent.timeoutMs}
+                onChange={(timeoutMs) => { setConfig({ ...config, subagent: { ...config.subagent, timeoutMs } }); }}
+                ariaLabel={t('st.sidecar.subagentTimeout')}
+              />
             </label>
             <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.collabModel')}
               <input className={`${INPUT} mt-1`} value={config.agents.defaultSubagentModel} onChange={(event) => { setConfig({ ...config, agents: { ...config.agents, defaultSubagentModel: event.target.value } }); }} placeholder="provider/model" />
@@ -1178,7 +1076,11 @@ function DesktopServerFileCard() {
               <input className={`${INPUT} mt-1`} value={config.agents.defaultSubagentReasoningEffort} onChange={(event) => { setConfig({ ...config, agents: { ...config.agents, defaultSubagentReasoningEffort: event.target.value } }); }} placeholder="medium" />
             </label>
             <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.catalogInterval')}
-              <input className={`${INPUT} mt-1`} type="number" min={0} value={config.modelCatalog.refreshIntervalMs} onChange={(event) => { setConfig({ ...config, modelCatalog: { ...config.modelCatalog, refreshIntervalMs: Number(event.target.value) } }); }} />
+              <MsUnitInput
+                value={config.modelCatalog.refreshIntervalMs}
+                onChange={(refreshIntervalMs) => { setConfig({ ...config, modelCatalog: { ...config.modelCatalog, refreshIntervalMs } }); }}
+                ariaLabel={t('st.sidecar.catalogInterval')}
+              />
             </label>
           </div>
           <Toggle label={t('st.sidecar.enableCollab')} checked={config.agents.enabled} disabled={!isDesktop} onChange={(checked) => { setConfig({ ...config, agents: { ...config.agents, enabled: checked } }); }} />
@@ -1196,7 +1098,7 @@ function DesktopServerFileCard() {
         <div className="flex flex-wrap gap-2">
           <button type="button" className={PRIMARY_BUTTON} disabled={!isDesktop || loading || saving} onClick={() => void save()}>{saving ? t('st.sidecar.saving') : t('st.sidecar.save')}</button>
           <button type="button" className={SECONDARY_BUTTON} disabled={!isDesktop || !restart.required || restarting} onClick={() => void applyRestart()}>{restarting ? t('st.sidecar.restarting') : t('st.sidecar.applyRestart')}</button>
-          {!isDesktop && restart.required ? <button type="button" className={SECONDARY_BUTTON} onClick={() => { setRestart(clearRestartRequirement()); }}>{t('st.sidecar.acknowledge')}</button> : null}
+          {!isDesktop && restart.required ? <button type="button" className={SECONDARY_BUTTON} onClick={() => { clearRestartRequirement(); }}>{t('st.sidecar.acknowledge')}</button> : null}
         </div>
         {restart.required ? <Hint>{t('st.sidecar.pendingFields', { fields: restart.fields.join(', ') })}</Hint> : null}
         <FeedbackLine feedback={feedback} />
@@ -1248,7 +1150,7 @@ function WorkspacesSection() {
   const navigate = useNavigate();
   const query = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
   return (
-    <SectionCard title={t('st.workspaces.title')} badge={t('st.badge.serverCatalog')}>
+    <SectionCard id="st-card-workspaces" title={t('st.workspaces.title')}>
       <div className="space-y-2">
         {query.data?.items.map((workspace) => (
           <div key={workspace.id} className="flex items-center justify-between gap-3 rounded-lg border border-hairline bg-paper px-3 py-2">
@@ -1269,7 +1171,7 @@ function AboutSection() {
   const { t } = useI18n();
   const guiVersion = import.meta.env['VITE_APP_VERSION'] ?? '0.0.0-dev';
   return (
-    <SectionCard title={t('st.about.title')} badge={t('st.badge.buildInfo')}>
+    <SectionCard id="st-card-about" title={t('st.about.title')}>
       <div className="space-y-2 text-[12.5px] text-ink-soft">
         <p>Kiki GUI: <span className="font-mono text-ink">{guiVersion}</span></p>
         <p>{t('st.about.serverVersion')}: <span className="font-mono text-ink">{meta.server_version}</span></p>
@@ -1280,14 +1182,69 @@ function AboutSection() {
   );
 }
 
-function SettingsNav({ active }: { active: SectionId }) {
+function SettingsNav({
+  active,
+  onNavigate,
+  onSearchHit,
+}: {
+  active: SectionId;
+  onNavigate: (section: SectionId) => void;
+  onSearchHit: (entry: SettingsSearchEntry) => void;
+}) {
   const { t } = useI18n();
-  const navigate = useNavigate();
+  const [query, setQuery] = useState('');
+  const sectionLabels = useMemo(
+    () => Object.fromEntries(SECTIONS.map((section) => [section.id, t(section.labelKey)])),
+    [t],
+  );
+  const index = useMemo(() => buildSettingsSearchIndex(sectionLabels, t), [sectionLabels, t]);
+  const results = useMemo(() => searchSettings(index, query), [index, query]);
+  const searching = query.trim() !== '';
+
   return (
     <nav className="flex h-full w-full flex-col border-r border-hairline bg-panel p-2 lg:w-[200px]">
-      {SECTIONS.map((section) => (
-        <button key={section.id} type="button" onClick={() => void navigate(`/settings/${section.id}`)} className={`rounded-lg px-3 py-2 text-left text-[13px] transition-colors ${active === section.id ? 'bg-accent-soft font-medium text-accent' : 'text-ink-soft hover:bg-paper hover:text-ink'}`}>{t(section.labelKey)}</button>
-      ))}
+      <div className="mb-2 px-1">
+        <input
+          type="search"
+          aria-label={t('st.search.aria')}
+          placeholder={t('st.search.placeholder')}
+          value={query}
+          onChange={(event) => { setQuery(event.target.value); }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.stopPropagation();
+              setQuery('');
+              event.currentTarget.blur();
+            }
+          }}
+          className="w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
+        />
+      </div>
+      {searching ? (
+        <div className="space-y-0.5" role="listbox" aria-label={t('st.search.aria')}>
+          {results.map((entry) => (
+            <button
+              key={entry.cardId}
+              type="button"
+              role="option"
+              aria-selected="false"
+              onClick={() => { onSearchHit(entry); setQuery(''); }}
+              className="w-full truncate rounded-lg px-3 py-2 text-left text-[12px] text-ink-soft transition-colors hover:bg-paper hover:text-ink"
+            >
+              <span className="text-ink-faint">{entry.sectionLabel}</span>
+              <span className="mx-1 text-ink-faint">›</span>
+              <span className="text-ink">{entry.title}</span>
+            </button>
+          ))}
+          {results.length === 0 ? (
+            <p className="px-3 py-2 text-[11.5px] text-ink-faint">{t('st.search.empty', { query: query.trim() })}</p>
+          ) : null}
+        </div>
+      ) : (
+        SECTIONS.map((section) => (
+          <button key={section.id} type="button" onClick={() => { onNavigate(section.id); }} className={`rounded-lg px-3 py-2 text-left text-[13px] transition-colors ${active === section.id ? 'bg-accent-soft font-medium text-accent' : 'text-ink-soft hover:bg-paper hover:text-ink'}`}>{t(section.labelKey)}</button>
+        ))
+      )}
     </nav>
   );
 }
@@ -1297,31 +1254,90 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const { t } = useI18n();
   const active: SectionId = SECTIONS.find((candidate) => candidate.id === section)?.id ?? 'general';
   const navigate = useNavigate();
+  const [dirtyIds, setDirtyIds] = useState<readonly string[]>([]);
+  const [pendingLeave, setPendingLeave] = useState<string | null>(null);
+  const [focusCard, setFocusCard] = useState<{ cardId: string; nonce: number } | null>(null);
+
+  const reportDirty = useCallback((id: string, dirty: boolean) => {
+    setDirtyIds((current) => {
+      const has = current.includes(id);
+      if (dirty === has) return current;
+      return dirty ? [...current, id] : current.filter((entry) => entry !== id);
+    });
+  }, []);
+  const guardValue = useMemo(() => ({ reportDirty }), [reportDirty]);
+
+  // Leaving a dirty providers section asks first; everything else navigates.
+  const guardedNavigate = useCallback((target: string) => {
+    if (active === 'providers' && target !== 'providers' && dirtyIds.length > 0) {
+      setPendingLeave(target);
+      return;
+    }
+    void navigate(`/settings/${target}`);
+  }, [active, dirtyIds.length, navigate]);
+
+  const confirmLeave = () => {
+    const target = pendingLeave;
+    setPendingLeave(null);
+    setDirtyIds([]);
+    if (target !== null) void navigate(`/settings/${target}`);
+  };
+
+  // Scroll + flash the card a search hit pointed at, then disarm.
+  useEffect(() => {
+    if (focusCard === null) return;
+    const frame = requestAnimationFrame(() => {
+      document.querySelector(`#${CSS.escape(focusCard.cardId)}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    const timer = setTimeout(() => { setFocusCard(null); }, 2000);
+    return () => { cancelAnimationFrame(frame); clearTimeout(timer); };
+  }, [focusCard]);
+
+  // A dirty providers editor also guards closing the app itself.
+  useEffect(() => {
+    if (dirtyIds.length === 0) return;
+    const handler = (event: BeforeUnloadEvent) => { event.preventDefault(); };
+    window.addEventListener('beforeunload', handler);
+    return () => { window.removeEventListener('beforeunload', handler); };
+  }, [dirtyIds.length]);
+
+  const onSearchHit = (entry: SettingsSearchEntry) => {
+    setFocusCard({ cardId: entry.cardId, nonce: Date.now() });
+    if (entry.section !== active) guardedNavigate(entry.section);
+  };
+
   const pane = active === 'general' ? <GeneralSection /> : active === 'models' ? <ModelsSection /> : active === 'connection' ? <ConnectionSection /> : active === 'providers' ? <ProvidersSection /> : active === 'capabilities' ? <CapabilitiesSection /> : active === 'workspaces' ? <WorkspacesSection /> : <AboutSection />;
 
   return (
-    <>
-      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
-        <button type="button" onClick={onToggleSidebar} aria-label={t('sv.openMenuAria')} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden"><span aria-hidden>☰</span></button>
-        <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">{t('st.title')}</h1>
-      </header>
-      <main className="flex min-h-0 flex-1">
-        <div className="hidden lg:block"><SettingsNav active={active} /></div>
-        <div className="flex min-w-0 flex-1 flex-col">
-          <div className="border-b border-hairline bg-panel px-4 py-2 lg:hidden">
-            <select className="w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-[13px] text-ink outline-none focus:border-accent" value={active} onChange={(event) => void navigate(`/settings/${event.target.value}`)}>
-              {SECTIONS.map((candidate) => <option key={candidate.id} value={candidate.id}>{t(candidate.labelKey)}</option>)}
-            </select>
+    <DirtyGuardContext.Provider value={guardValue}>
+      <SettingsFlashContext.Provider value={focusCard?.cardId ?? null}>
+        <header className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
+          <button type="button" onClick={onToggleSidebar} aria-label={t('sv.openMenuAria')} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden"><span aria-hidden>☰</span></button>
+          <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">{t('st.title')}</h1>
+        </header>
+        <main className="flex min-h-0 flex-1">
+          <div className="hidden lg:block"><SettingsNav active={active} onNavigate={guardedNavigate} onSearchHit={onSearchHit} /></div>
+          <div className="flex min-w-0 flex-1 flex-col">
+            <div className="border-b border-hairline bg-panel px-4 py-2 lg:hidden">
+              <select className="w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-[13px] text-ink outline-none focus:border-accent" value={active} onChange={(event) => { guardedNavigate(event.target.value); }}>
+                {SECTIONS.map((candidate) => <option key={candidate.id} value={candidate.id}>{t(candidate.labelKey)}</option>)}
+              </select>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 lg:px-8"><div className="mx-auto max-w-[760px] space-y-5">{pane}</div></div>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 lg:px-8"><div className="mx-auto max-w-[760px] space-y-5">{pane}</div></div>
-        </div>
-      </main>
-    </>
+        </main>
+        <ConfirmDialog
+          open={pendingLeave !== null}
+          title={t('st.dirty.leaveTitle')}
+          body={t('st.dirty.leaveBody')}
+          confirmLabel={t('st.dirty.leaveConfirm')}
+          cancelLabel={t('st.dirty.stay')}
+          onConfirm={confirmLeave}
+          onCancel={() => { setPendingLeave(null); }}
+        />
+      </SettingsFlashContext.Provider>
+    </DirtyGuardContext.Provider>
   );
-}
-
-function commaList(value: string): string[] {
-  return value.split(',').map((entry) => entry.trim()).filter(Boolean);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
