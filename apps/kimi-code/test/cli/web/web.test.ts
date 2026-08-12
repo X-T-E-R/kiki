@@ -532,6 +532,37 @@ describe('shared parsers stay strict', () => {
   });
 });
 
+describe('Kiki MCP catalog source', () => {
+  it('accepts only complete absolute read-only source bindings', async () => {
+    const { externalCatalogSourceFromEnv } = await import('#/cli/sub/web/run');
+    expect(externalCatalogSourceFromEnv({})).toBeUndefined();
+    expect(
+      externalCatalogSourceFromEnv({
+        KIKI_MCP_CONFIG_PATH: '/active/config.toml',
+        KIKI_MCP_AGENT_PROFILE_HOME: '/active',
+        KIKI_MCP_CONFIG_READ_ONLY: '1',
+      }),
+    ).toEqual({
+      configPath: '/active/config.toml',
+      configReadOnly: true,
+      userAgentProfileHomeDir: '/active',
+    });
+    expect(() =>
+      externalCatalogSourceFromEnv({
+        KIKI_MCP_CONFIG_PATH: '/active/config.toml',
+        KIKI_MCP_AGENT_PROFILE_HOME: '/active',
+      }),
+    ).toThrow(/incomplete or unsafe/);
+    expect(() =>
+      externalCatalogSourceFromEnv({
+        KIKI_MCP_CONFIG_PATH: 'config.toml',
+        KIKI_MCP_AGENT_PROFILE_HOME: 'agents',
+        KIKI_MCP_CONFIG_READ_ONLY: '1',
+      }),
+    ).toThrow(/incomplete or unsafe/);
+  });
+});
+
 describe('server web asset directory resolution', () => {
   it('uses extracted SEA web assets when available', async () => {
     const { resolveServerWebAssetsDir } = await import('#/cli/sub/web/run');

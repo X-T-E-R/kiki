@@ -55,6 +55,7 @@ describe('SessionExternalDelegationService', () => {
   let completions: Array<{ resolve(value: { summary: string }): void; reject(error: unknown): void }>;
   let nextRunHandleGate: Promise<void> | undefined;
   let runSignals: AbortSignal[];
+  let runAgentIds: string[];
   let createdWith: unknown[];
   let lifecycleHooks: Hooks<SessionLifecycleHookSlots>;
 
@@ -66,6 +67,7 @@ describe('SessionExternalDelegationService', () => {
     completions = [];
     nextRunHandleGate = undefined;
     runSignals = [];
+    runAgentIds = [];
     createdWith = [];
 
     ix.stub(IFlagService, { enabled: () => true });
@@ -104,12 +106,17 @@ describe('SessionExternalDelegationService', () => {
       list: () => [profile],
     });
 
-    const makeHandle = (id: string, profileName: string): IAgentScopeHandle => {
+    const makeHandle = (
+      id: string,
+      profileName: string,
+      modelAlias = 'model',
+      thinkingLevel = 'off',
+    ): IAgentScopeHandle => {
       const agent = new TestInstantiationService();
       disposables.add(agent);
       agent.stub(IAgentProfileService, {
         _serviceBrand: undefined,
-        data: () => ({ modelAlias: 'model', modelCapabilities: UNKNOWN_CAPABILITY, profileName, thinkingLevel: 'off', systemPrompt: '', subagents: ['coder'] }),
+        data: () => ({ modelAlias, modelCapabilities: UNKNOWN_CAPABILITY, profileName, thinkingLevel, systemPrompt: '', subagents: ['coder'] }),
       });
       agent.stub(IAgentPermissionModeService, { mode: 'auto', setMode: () => {} });
       agent.stub(IAgentUserToolService, { inheritUserTools: () => {} });
@@ -123,7 +130,12 @@ describe('SessionExternalDelegationService', () => {
       get: (id) => handles.get(id),
       create: async (opts) => {
         createdWith.push(opts);
-        const handle = makeHandle('external-child', opts?.binding?.profile ?? 'coder');
+        const handle = makeHandle(
+          'external-child',
+          opts?.binding?.profile ?? 'coder',
+          opts?.binding?.model,
+          opts?.binding?.thinking,
+        );
         handles.set(handle.id, handle);
         return handle;
       },
@@ -131,6 +143,7 @@ describe('SessionExternalDelegationService', () => {
     ix.stub(ISessionSubagentService, {
       _serviceBrand: undefined,
       run: async (agentId, _request, opts) => {
+        runAgentIds.push(agentId);
         runSignals.push(opts.signal);
         const gate = nextRunHandleGate;
         nextRunHandleGate = undefined;
@@ -179,6 +192,87 @@ describe('SessionExternalDelegationService', () => {
     const continued = await service.continue({ authority, dispatchId: first.dispatchId, message: 'continue' });
     expect(continued.continuationOf).toBe(first.dispatchId);
     expect(createdWith).toHaveLength(1);
+  });
+
+  it('binds an exact model and effort only when creating a named child', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const first = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'exact_binding',
+      profileName: 'coder',
+      modelAlias: 'grok-4.6',
+      thinkingEffort: 'high',
+      message: 'inspect',
+    });
+
+    expect(createdWith[0]).toMatchObject({
+      binding: {
+        profile: 'coder',
+        model: 'grok-4.6',
+        thinking: 'high',
+        strictThinking: true,
+      },
+      delegator: { kind: 'external' },
+    });
+    expect(first).toMatchObject({
+      target: 'named',
+      taskName: 'exact_binding',
+      profileName: 'coder',
+      modelAlias: 'grok-4.6',
+      thinkingEffort: 'high',
+    });
+    expect(runAgentIds).toEqual(['external-child']);
+    expect(runAgentIds).not.toContain('main');
+
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: first.dispatchId })).status).toBe('completed');
+    });
+
+    await expect(
+      service.dispatch({
+        authority,
+        target: 'named',
+        taskName: 'exact_binding',
+        modelAlias: 'other-model',
+        message: 'switch',
+      }),
+    ).rejects.toThrow(/cannot change model_alias/);
+    await expect(
+      service.dispatch({
+        authority,
+        target: 'named',
+        taskName: 'exact_binding',
+        thinkingEffort: 'low',
+        message: 'switch',
+      }),
+    ).rejects.toThrow(/cannot change thinking_effort/);
+
+    const repeated = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'exact_binding',
+      modelAlias: 'grok-4.6',
+      thinkingEffort: 'high',
+      message: 'same binding',
+    });
+    expect(repeated).toMatchObject({ modelAlias: 'grok-4.6', thinkingEffort: 'high' });
+    expect(createdWith).toHaveLength(1);
+  });
+
+  it('rejects named-child binding fields for a main dispatch', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+
+    await expect(
+      service.dispatch({
+        authority,
+        target: 'main',
+        modelAlias: 'grok-4.6',
+        message: 'work',
+      }),
+    ).rejects.toThrow(/not admitted for target main/);
+    expect(runAgentIds).toEqual([]);
   });
 
   it('keeps the external contract profile-only instead of advertising an unselectable route', async () => {

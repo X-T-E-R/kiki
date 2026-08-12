@@ -347,6 +347,50 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(Number.isNaN(Date.parse(body.data.created_at))).toBe(false);
   });
 
+  it('binds an explicitly requested model and thinking effort while creating a session', async () => {
+    await (server as RunningServer).close();
+    server = undefined;
+    await writeFile(
+      join(home as string, 'config.toml'),
+      [
+        '[providers.stub]',
+        'type = "openai"',
+        'base_url = "http://127.0.0.1:9999"',
+        'api_key = "stub"',
+        '',
+        '[models.stub]',
+        'provider = "stub"',
+        'model = "stub"',
+        'max_context_size = 1000',
+        'capabilities = ["thinking"]',
+        'support_efforts = ["low", "medium", "high"]',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home as string,
+      logLevel: 'silent',
+      debugEndpoints: true,
+    });
+    base = `http://127.0.0.1:${server.port}`;
+
+    const created = await postJson<SessionWire>('/api/v1/sessions', {
+      metadata: { cwd: home as string },
+      agent_config: { model: 'stub', thinking: 'high' },
+    });
+    expect(created.body.code, JSON.stringify(created.body)).toBe(0);
+
+    const status = await getJson<{ model: string; thinking_level: string }>(
+      `/api/v1/sessions/${created.body.data.id}/status`,
+    );
+    expect(status.body.code).toBe(0);
+    expect(status.body.data).toMatchObject({ model: 'stub', thinking_level: 'high' });
+  });
+
   it('rejects create without cwd or workspace_id (40001)', async () => {
     const { body } = await postJson<null>('/api/v1/sessions', { title: 'no cwd' });
     expect(body.code).toBe(40001);

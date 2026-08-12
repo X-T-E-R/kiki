@@ -46,7 +46,20 @@ const dispatchSchema = z
     target: z.enum(['main', 'named']),
     task_name: z.string().optional(),
     profile_name: z.string().optional(),
+    model_alias: z.string().optional(),
+    thinking_effort: z.string().optional(),
     message: z.string().min(1).max(1_000_000),
+  })
+  .superRefine((value, ctx) => {
+    if (
+      value.target === 'main' &&
+      (value.task_name !== undefined ||
+        value.profile_name !== undefined ||
+        value.model_alias !== undefined ||
+        value.thinking_effort !== undefined)
+    ) {
+      ctx.addIssue({ code: 'custom', message: 'Named-child fields require target named.' });
+    }
   })
   .strict();
 const continueSchema = z.object({ dispatch_id: z.string().min(1), message: z.string().min(1).max(1_000_000) }).strict();
@@ -60,7 +73,15 @@ export function registerV2ExternalDelegationRoutes(
 ): void {
   command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/list', emptySchema, async (service, authority) => service.list(authority));
   command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/dispatch', dispatchSchema, async (service, authority, body) =>
-    service.dispatch({ authority, target: body.target, taskName: body.task_name, profileName: body.profile_name, message: body.message }),
+    service.dispatch({
+      authority,
+      target: body.target,
+      taskName: body.task_name,
+      profileName: body.profile_name,
+      modelAlias: body.model_alias,
+      thinkingEffort: body.thinking_effort,
+      message: body.message,
+    }),
   );
   command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/continue', continueSchema, async (service, authority, body) =>
     service.continue({ authority, dispatchId: body.dispatch_id, message: body.message }),
@@ -137,7 +158,7 @@ function authorityFor(principal: string): ExternalAuthority {
   return {
     principalFingerprint: sha256(`principal:v1:${principal}`),
     authorityFingerprint: sha256(`authority:v1:${principal}:external-delegation`),
-    configFingerprint: sha256('config:v1:main+named:no-overrides'),
+    configFingerprint: sha256('config:v2:main+named:immutable-new-child-bindings'),
   };
 }
 

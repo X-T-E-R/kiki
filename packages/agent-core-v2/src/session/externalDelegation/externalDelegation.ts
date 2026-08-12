@@ -38,6 +38,8 @@ export interface ExternalDispatchView {
   readonly target: 'main' | 'named';
   readonly taskName?: string;
   readonly profileName?: string;
+  readonly modelAlias?: string;
+  readonly thinkingEffort?: string;
   readonly status: ExternalDispatchStatus;
   readonly createdAt: number;
   readonly startedAt?: number;
@@ -62,6 +64,10 @@ export interface ExternalDispatchRequest {
   readonly target: 'main' | 'named';
   readonly taskName?: string;
   readonly profileName?: string;
+  /** Exact model binding for a newly-created named child. */
+  readonly modelAlias?: string;
+  /** Exact thinking binding for a newly-created named child. */
+  readonly thinkingEffort?: string;
 }
 
 export interface ExternalContinueRequest {

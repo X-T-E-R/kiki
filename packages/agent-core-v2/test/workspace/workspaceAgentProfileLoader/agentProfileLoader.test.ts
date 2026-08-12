@@ -300,6 +300,7 @@ interface StackOptions {
   readonly hostFs?: HostFileSystem;
   readonly fsWatch?: IHostFsWatchService;
   readonly routesEnabled?: boolean;
+  readonly userAgentProfileHomeDir?: string;
 }
 
 function makeStack(fixture: Fixture, opts?: StackOptions) {
@@ -313,6 +314,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
   const bootstrap: IBootstrapService = {
     ...stubBootstrap(fixture.homeDir, {}, { agentFiles: opts?.explicitFiles }),
     osHomeDir: fixture.osHomeDir,
+    userAgentProfileHomeDir: opts?.userAgentProfileHomeDir ?? fixture.homeDir,
   };
   const hostFs = opts?.hostFs ?? new HostFileSystem();
   const workspaceContext = workspaceContextStub(fixture.workDir);
@@ -710,6 +712,23 @@ describe('agent profile loaders + session catalog', () => {
           reason: 'priority',
         });
       });
+    });
+  });
+
+  it('loads user profiles from an independent runtime source instead of the persistence home', async () => {
+    await withFixture(async (fixture) => {
+      await writeAgent(join(fixture.homeDir, 'agents'), 'isolated.md', agentMd('isolated', 'isolated'));
+      await writeAgent(join(fixture.extraDir, 'agents'), 'active.md', agentMd('active', 'active GUI'));
+
+      await withStack(
+        fixture,
+        { userAgentProfileHomeDir: fixture.extraDir },
+        async (stack) => {
+          await stack.ready();
+          expect(stack.catalog.get('active')?.description).toBe('active GUI');
+          expect(stack.catalog.get('isolated')).toBeUndefined();
+        },
+      );
     });
   });
 

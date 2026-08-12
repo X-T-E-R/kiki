@@ -174,10 +174,25 @@ export class SessionExternalDelegationService
     return this.exclusive(async () => {
       const message = requireNonblank(request.message, 'message');
       const doc = await this.authorize(request.authority);
+      if (
+        request.target === 'main' &&
+        (request.taskName !== undefined ||
+          request.profileName !== undefined ||
+          request.modelAlias !== undefined ||
+          request.thinkingEffort !== undefined)
+      ) {
+        throw invalid('Named-child fields are not admitted for target main.');
+      }
       const target =
         request.target === 'main'
-          ? { agent: this.requireMain(), taskName: undefined, profileName: undefined }
-          : await this.namedTarget(doc, request.taskName, request.profileName);
+          ? targetView(this.requireMain(), undefined, undefined)
+          : await this.namedTarget(
+              doc,
+              request.taskName,
+              request.profileName,
+              request.modelAlias,
+              request.thinkingEffort,
+            );
       return this.startDispatch(doc, target, message, undefined);
     });
   }
@@ -190,7 +205,7 @@ export class SessionExternalDelegationService
       if (ACTIVE.has(previous.status)) throw invalid('Cannot continue an active dispatch.');
       const target =
         previous.target === 'main'
-          ? { agent: this.requireMain(), taskName: undefined, profileName: undefined }
+          ? targetView(this.requireMain(), undefined, undefined)
           : await this.existingNamedTarget(doc, previous.taskName!);
       return this.startDispatch(doc, target, message, previous.dispatchId);
     });
@@ -288,13 +303,24 @@ export class SessionExternalDelegationService
     doc: ExternalDelegationDocument,
     rawTaskName: string | undefined,
     rawProfileName: string | undefined,
-  ): Promise<{ agent: IAgentScopeHandle; taskName: string; profileName: string }> {
+    rawModelAlias: string | undefined,
+    rawThinkingEffort: string | undefined,
+  ): Promise<DispatchTarget> {
     const taskName = rawTaskName?.trim();
     if (taskName === undefined || !TASK_NAME.test(taskName)) throw invalid('task_name must match [a-z0-9_]+ and must not be root.');
+    const modelAlias = optionalNonblank(rawModelAlias, 'model_alias');
+    const thinkingEffort = optionalNonblank(rawThinkingEffort, 'thinking_effort');
     const existing = doc.children[taskName];
     if (existing !== undefined) {
       if (rawProfileName !== undefined && rawProfileName !== existing.profileName) throw invalid('A named child cannot change profile.');
-      return this.existingNamedTarget(doc, taskName);
+      const target = await this.existingNamedTarget(doc, taskName);
+      if (modelAlias !== undefined && modelAlias !== target.modelAlias) {
+        throw invalid('A named child cannot change model_alias.');
+      }
+      if (thinkingEffort !== undefined && thinkingEffort !== target.thinkingEffort) {
+        throw invalid('A named child cannot change thinking_effort.');
+      }
+      return target;
     }
     const profileName = requireNonblank(rawProfileName, 'profile_name');
     await this.profiles.ready;
@@ -312,9 +338,9 @@ export class SessionExternalDelegationService
       const child = await this.agents.create({
         binding: {
           profile: profile.name,
-          model: profile.modelAlias ?? mainData.modelAlias,
-          thinking: profile.thinkingEffort ?? mainData.thinkingLevel,
-          strictThinking: profile.thinkingEffort !== undefined,
+          model: modelAlias ?? profile.modelAlias ?? mainData.modelAlias,
+          thinking: thinkingEffort ?? profile.thinkingEffort ?? mainData.thinkingLevel,
+          strictThinking: thinkingEffort !== undefined || profile.thinkingEffort !== undefined,
         },
         delegator,
         labels: { externalDelegationTaskName: taskName, externalDelegationProfile: profile.name },
@@ -324,7 +350,7 @@ export class SessionExternalDelegationService
       doc.children[taskName] = { taskName, agentId: child.id, profileName: profile.name, createdAt: Date.now() };
       await this.persist();
       this.names.commit(taskName, delegator);
-      return { agent: child, taskName, profileName: profile.name };
+      return targetView(child, taskName, profile.name);
     } catch (error) {
       this.names.release(taskName, delegator);
       throw error;
@@ -334,11 +360,11 @@ export class SessionExternalDelegationService
   private async existingNamedTarget(
     doc: ExternalDelegationDocument,
     taskName: string,
-  ): Promise<{ agent: IAgentScopeHandle; taskName: string; profileName: string }> {
+  ): Promise<DispatchTarget> {
     const child = doc.children[taskName];
     if (child === undefined) throw invalid('Unknown named child.');
     const agent = await this.materialize(child.agentId, taskName);
-    return { agent, taskName, profileName: child.profileName };
+    return targetView(agent, taskName, child.profileName);
   }
 
   private async materialize(agentId: string, taskName: string | undefined): Promise<IAgentScopeHandle> {
@@ -352,7 +378,7 @@ export class SessionExternalDelegationService
 
   private async startDispatch(
     doc: ExternalDelegationDocument,
-    target: { agent: IAgentScopeHandle; taskName: string | undefined; profileName: string | undefined },
+    target: DispatchTarget,
     rawMessage: string,
     continuationOf: string | undefined,
   ): Promise<ExternalDispatchView> {
@@ -378,6 +404,8 @@ export class SessionExternalDelegationService
       target: target.taskName === undefined ? 'main' : 'named',
       taskName: target.taskName,
       profileName: target.profileName,
+      modelAlias: target.modelAlias,
+      thinkingEffort: target.thinkingEffort,
       agentId: target.agent.id,
       status: 'queued',
       createdAt: Date.now(),
@@ -518,6 +546,8 @@ function dispatchView(dispatch: StoredDispatch): ExternalDispatchView {
     target: dispatch.target,
     taskName: dispatch.taskName,
     profileName: dispatch.profileName,
+    modelAlias: dispatch.modelAlias,
+    thinkingEffort: dispatch.thinkingEffort,
     status: dispatch.status,
     createdAt: dispatch.createdAt,
     startedAt: dispatch.startedAt,
@@ -565,6 +595,34 @@ function requireNonblank(value: string | undefined, name: string): string {
   const trimmed = value?.trim();
   if (trimmed === undefined || trimmed.length === 0) throw invalid(`${name} must not be blank.`);
   return trimmed;
+}
+
+function optionalNonblank(value: string | undefined, name: string): string | undefined {
+  return value === undefined ? undefined : requireNonblank(value, name);
+}
+
+interface DispatchTarget {
+  readonly agent: IAgentScopeHandle;
+  readonly taskName: string | undefined;
+  readonly profileName: string | undefined;
+  readonly modelAlias: string;
+  readonly thinkingEffort: string;
+}
+
+function targetView(
+  agent: IAgentScopeHandle,
+  taskName: string | undefined,
+  profileName: string | undefined,
+): DispatchTarget {
+  const binding = agent.accessor.get(IAgentProfileService).data();
+  if (binding.modelAlias === undefined) throw invalid('Target agent has no configured model.');
+  return {
+    agent,
+    taskName,
+    profileName,
+    modelAlias: binding.modelAlias,
+    thinkingEffort: binding.thinkingLevel,
+  };
 }
 
 function requireFingerprint(value: string, name: string): string {

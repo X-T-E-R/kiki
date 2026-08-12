@@ -362,7 +362,9 @@ export class ConfigService extends Disposable implements IConfigService {
     const { configKey } = this;
     const { homeDir } = this.bootstrap;
     this.ready = (async () => {
-      await migrateThinkingEffortMaxToHigh(this.documentStore, configKey, homeDir);
+      if (!this.bootstrap.configReadOnly) {
+        await migrateThinkingEffortMaxToHigh(this.documentStore, configKey, homeDir);
+      }
       await this.load('load');
     })();
     this._register(

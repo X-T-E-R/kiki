@@ -26,7 +26,20 @@ const dispatchInput = z
     target: z.enum(['main', 'named']),
     task_name: z.string().regex(/^(?!root$)[a-z0-9_]+$/).optional(),
     profile_name: z.string().trim().min(1).optional(),
+    model_alias: z.string().trim().min(1).optional(),
+    thinking_effort: z.string().trim().min(1).optional(),
     message: z.string().trim().min(1).max(1_000_000),
+  })
+  .superRefine((value, ctx) => {
+    if (
+      value.target === 'main' &&
+      (value.task_name !== undefined ||
+        value.profile_name !== undefined ||
+        value.model_alias !== undefined ||
+        value.thinking_effort !== undefined)
+    ) {
+      ctx.addIssue({ code: 'custom', message: 'Named-child fields require target named.' });
+    }
   })
   .strict();
 const continueInput = z.object({ dispatch_id: z.string().min(1), message: z.string().trim().min(1).max(1_000_000) }).strict();
@@ -41,27 +54,27 @@ export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServe
 
   server.registerTool(
     'kiki_list',
-    { description: 'List admitted main/named dispatchables and owned continuations.', inputSchema: emptyInput.shape },
+    { description: 'List admitted main/named dispatchables and owned continuations.', inputSchema: emptyInput },
     async () => toolResult(client.call('list', {})),
   );
   server.registerTool(
     'kiki_dispatch',
-    { description: 'Dispatch main-agent work or one stable named child asynchronously.', inputSchema: dispatchInput.shape },
+    { description: 'Dispatch main-agent work or one stable named child asynchronously. Exact model_alias and thinking_effort bindings apply only when the named child is first created.', inputSchema: dispatchInput },
     async (input) => toolResult(client.call('dispatch', dispatchInput.parse(input))),
   );
   server.registerTool(
     'kiki_continue',
-    { description: 'Continue an owned terminal main or named-child dispatch.', inputSchema: continueInput.shape },
+    { description: 'Continue an owned terminal main or named-child dispatch.', inputSchema: continueInput },
     async (input) => toolResult(client.call('continue', continueInput.parse(input))),
   );
   server.registerTool(
     'kiki_status',
-    { description: 'Read status for an owned dispatch handle.', inputSchema: lookupInput.shape },
+    { description: 'Read status for an owned dispatch handle.', inputSchema: lookupInput },
     async (input) => toolResult(client.call('status', lookupInput.parse(input))),
   );
   server.registerTool(
     'kiki_result',
-    { description: 'Read a UTF-8-bounded result page for an owned dispatch.', inputSchema: resultInput.shape },
+    { description: 'Read a UTF-8-bounded result page for an owned dispatch.', inputSchema: resultInput },
     async (input) => {
       const parsed = resultInput.parse(input);
       return toolResult(
@@ -77,17 +90,17 @@ export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServe
   );
   server.registerTool(
     'kiki_events',
-    { description: 'Read a bounded event page for an owned dispatch.', inputSchema: pageInput.shape },
+    { description: 'Read a bounded event page for an owned dispatch.', inputSchema: pageInput },
     async (input) => toolResult(client.call('events', pageInput.parse(input))),
   );
   server.registerTool(
     'kiki_transcript',
-    { description: 'Read a bounded transcript page for an owned dispatch.', inputSchema: pageInput.shape },
+    { description: 'Read a bounded transcript page for an owned dispatch.', inputSchema: pageInput },
     async (input) => toolResult(client.call('transcript', pageInput.parse(input))),
   );
   server.registerTool(
     'kiki_cancel',
-    { description: 'Idempotently cancel an owned active dispatch.', inputSchema: lookupInput.shape },
+    { description: 'Idempotently cancel an owned active dispatch.', inputSchema: lookupInput },
     async (input) => toolResult(client.call('cancel', lookupInput.parse(input))),
   );
 

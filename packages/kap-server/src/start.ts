@@ -105,6 +105,8 @@ export interface ServerStartOptions {
   readonly port?: number;
   readonly homeDir?: string;
   readonly configPath?: string;
+  readonly configReadOnly?: boolean;
+  readonly userAgentProfileHomeDir?: string;
   /**
    * Override the instance-registry directory — used in tests that need the
    * registry OUTSIDE `homeDir` (e.g. folder-picker fixtures browsing the home
@@ -269,6 +271,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     {
       homeDir,
       configPath,
+      configReadOnly: opts.configReadOnly,
+      userAgentProfileHomeDir: opts.userAgentProfileHomeDir,
       clientIdentity: opts.hostIdentity,
       args: {
         // Default host identity headers derived from `hostIdentity`: outbound

@@ -80,7 +80,7 @@ export class UserAgentProfileLoaderService
     await this.watchReady;
     const roots = await userAgentRoots(
       this.fs,
-      this.bootstrap.homeDir,
+      this.bootstrap.userAgentProfileHomeDir,
       this.bootstrap.osHomeDir,
       (message, error) => {
         this.log.warn(message, error);
@@ -88,7 +88,7 @@ export class UserAgentProfileLoaderService
     );
     const systemMd = await loadSystemMdProfile(
       this.fs,
-      this.bootstrap.homeDir,
+      this.bootstrap.userAgentProfileHomeDir,
       this.builtin.getDefault(),
       (message) => this.log.warn(message),
     );
@@ -105,7 +105,7 @@ export class UserAgentProfileLoaderService
 
   private async watchUserAgentRoots(): Promise<void> {
     for (const { root, candidates } of userAgentRootWatchPlans(
-      this.bootstrap.homeDir,
+      this.bootstrap.userAgentProfileHomeDir,
       this.bootstrap.osHomeDir,
     )) {
       const handle = this.fsWatch.watch(root, {

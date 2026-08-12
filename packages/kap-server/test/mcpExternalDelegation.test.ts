@@ -72,6 +72,84 @@ describe('Kiki external delegation MCP server', () => {
     expect(JSON.stringify(called)).not.toContain('DO_NOT_EXPOSE');
   });
 
+  it('forwards exact new-child bindings and keeps continuation binding-free', async () => {
+    const requests: Array<{ action: string; body: Record<string, unknown> }> = [];
+    const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
+      const href = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
+      requests.push({
+        action: href.split('/').at(-1)!,
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+      });
+      return new Response(
+        JSON.stringify({
+          code: 0,
+          msg: 'ok',
+          data: {
+            dispatchId: 'dispatch_exact',
+            target: 'named',
+            taskName: 'exact_probe',
+            profileName: 'explore',
+            modelAlias: 'grok-4.6',
+            thinkingEffort: 'high',
+            status: 'queued',
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    const server = createKikiMcpServer(
+      { endpoint: 'http://127.0.0.1:58627', token: 'TOKEN', delegationToken: 'DELEGATION_SECRET', sessionId: 'session-operator' },
+      { fetch: fetchMock },
+    );
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    close.push(() => client.close(), () => server.close());
+
+    const dispatched = await client.callTool({
+      name: 'kiki_dispatch',
+      arguments: {
+        target: 'named',
+        task_name: 'exact_probe',
+        profile_name: 'explore',
+        model_alias: 'grok-4.6',
+        thinking_effort: 'high',
+        message: 'inspect',
+      },
+    });
+    expect(dispatched.isError).not.toBe(true);
+    expect(requests[0]).toEqual({
+      action: 'dispatch',
+      body: {
+        target: 'named',
+        task_name: 'exact_probe',
+        profile_name: 'explore',
+        model_alias: 'grok-4.6',
+        thinking_effort: 'high',
+        message: 'inspect',
+      },
+    });
+
+    await client.callTool({
+      name: 'kiki_continue',
+      arguments: { dispatch_id: 'dispatch_exact', message: 'continue' },
+    });
+    expect(requests[1]).toEqual({
+      action: 'continue',
+      body: { dispatch_id: 'dispatch_exact', message: 'continue' },
+    });
+    const rebound = await client.callTool({
+      name: 'kiki_continue',
+      arguments: {
+        dispatch_id: 'dispatch_exact',
+        message: 'continue',
+        model_alias: 'other-model',
+      },
+    });
+    expect(rebound.isError).toBe(true);
+    expect(requests).toHaveLength(2);
+  });
+
   it('pages astral and mixed text without splitting Unicode or losing code units', async () => {
     const source = 'A😀你B🧪终';
     const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {

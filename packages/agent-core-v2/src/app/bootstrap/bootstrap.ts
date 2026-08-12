@@ -20,7 +20,7 @@
 import { mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 
-import { join } from 'pathe';
+import { dirname, join } from 'pathe';
 
 import type { KimiHostIdentity } from '@moonshot-ai/kimi-code-oauth';
 
@@ -29,8 +29,15 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 import { createAppScope, type Scope, type ScopeSeed } from '#/_base/di/scope';
 import {
   IFileSystemStorageService,
+  StorageError,
+  StorageErrors,
 } from '#/persistence/interface/storage';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import {
+  IAtomicTomlDocumentStore,
+  type IAtomicDocumentStore,
+} from '#/persistence/interface/atomicDocumentStore';
+import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileSkillDiscovery } from '#/app/skillCatalog/fileSkillDiscovery';
 import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
 
@@ -63,6 +70,8 @@ export function resolveHostArgs(input: HostArgsInput | undefined): HostArgs {
 export interface IBootstrapOptions {
   readonly homeDir: string;
   readonly configPath: string;
+  readonly configReadOnly: boolean;
+  readonly userAgentProfileHomeDir: string;
   readonly osHomeDir: string;
   readonly platform: NodeJS.Platform;
   readonly arch: string;
@@ -94,6 +103,8 @@ export interface IBootstrapService {
   readonly osHomeDir: string;
   readonly homeDir: string;
   readonly configPath: string;
+  readonly configReadOnly: boolean;
+  readonly userAgentProfileHomeDir: string;
   readonly clientIdentity: KimiHostIdentity;
   readonly args: HostArgs;
   readonly sessionsDir: string;
@@ -112,6 +123,8 @@ export const IBootstrapService: ServiceIdentifier<IBootstrapService> =
 export interface BootstrapInput {
   readonly homeDir?: string;
   readonly configPath?: string;
+  readonly configReadOnly?: boolean;
+  readonly userAgentProfileHomeDir?: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly osHomeDir?: string;
   readonly platform?: NodeJS.Platform;
@@ -129,6 +142,8 @@ export function resolveBootstrapOptions(input: BootstrapInput): IBootstrapOption
   return {
     homeDir,
     configPath,
+    configReadOnly: input.configReadOnly ?? false,
+    userAgentProfileHomeDir: input.userAgentProfileHomeDir ?? homeDir,
     osHomeDir,
     platform: input.platform ?? process.platform,
     arch: input.arch ?? process.arch,
@@ -163,9 +178,54 @@ export function bootstrap(input: BootstrapInput, extraSeeds: ScopeSeed = []): Bo
 function storageSeed(options: IBootstrapOptions): ScopeSeed {
   const file = (): SyncDescriptor<IFileSystemStorageService> =>
     new SyncDescriptor(FileStorageService, [options.homeDir, 0o700, 0o600]);
+  const configStorage = new FileStorageService(dirname(options.configPath), 0o700, 0o600);
+  const configDocuments: IAtomicDocumentStore = new TomlAtomicDocumentStore(configStorage);
   return [
     [IFileSystemStorageService as ServiceIdentifier<unknown>, file()],
+    [
+      IAtomicTomlDocumentStore as ServiceIdentifier<unknown>,
+      options.configReadOnly
+        ? new ReadOnlyAtomicDocumentStore(configDocuments)
+        : configDocuments,
+    ],
   ];
+}
+
+class ReadOnlyAtomicDocumentStore implements IAtomicDocumentStore {
+  declare readonly _serviceBrand: undefined;
+
+  constructor(private readonly delegate: IAtomicDocumentStore) {}
+
+  get<T>(scope: string, key: string): Promise<T | undefined> {
+    return this.delegate.get<T>(scope, key);
+  }
+
+  set<T>(_scope: string, _key: string, _value: T): Promise<void> {
+    return Promise.reject(readOnlyConfigError());
+  }
+
+  delete(_scope: string, _key: string): Promise<void> {
+    return Promise.reject(readOnlyConfigError());
+  }
+
+  list(scope: string, prefix?: string): Promise<readonly string[]> {
+    return this.delegate.list(scope, prefix);
+  }
+
+  watch(scope: string, key: string) {
+    return this.delegate.watch(scope, key);
+  }
+
+  acquire(scope: string, key: string) {
+    return this.delegate.acquire(scope, key);
+  }
+}
+
+function readOnlyConfigError(): StorageError {
+  return new StorageError(
+    StorageErrors.codes.STORAGE_PERMISSION_DENIED,
+    'the configured runtime source is read-only',
+  );
 }
 
 function skillSeed(): ScopeSeed {

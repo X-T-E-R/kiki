@@ -43,6 +43,8 @@ export function stubBootstrap(
     osHomeDir: '/home/test',
     homeDir,
     configPath: `${homeDir}/config.toml`,
+    configReadOnly: false,
+    userAgentProfileHomeDir: homeDir,
     configKey: 'config.toml',
     clientIdentity: stubClientIdentity,
     args: resolveHostArgs(args),

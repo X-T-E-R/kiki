@@ -31,6 +31,8 @@ export class BootstrapService implements IBootstrapService {
   readonly osHomeDir: string;
   readonly homeDir: string;
   readonly configPath: string;
+  readonly configReadOnly: boolean;
+  readonly userAgentProfileHomeDir: string;
   readonly clientIdentity: KimiHostIdentity;
   readonly args: HostArgs;
   readonly sessionsDir: string;
@@ -51,6 +53,8 @@ export class BootstrapService implements IBootstrapService {
     this.env = options.env;
     this.homeDir = options.homeDir;
     this.configPath = options.configPath;
+    this.configReadOnly = options.configReadOnly;
+    this.userAgentProfileHomeDir = options.userAgentProfileHomeDir;
     this.clientIdentity = options.clientIdentity;
     this.args = options.args;
     this.sessionsDir = join(options.homeDir, 'sessions');

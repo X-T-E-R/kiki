@@ -9,7 +9,7 @@
  */
 
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 
 import { createServerLogger, startServer, type ServerLogger } from '@moonshot-ai/kap-server';
 import { shutdownTelemetry, track } from '@moonshot-ai/kimi-telemetry';
@@ -62,6 +62,12 @@ interface RoutedServer {
 
 export interface WebCliOptions extends ServerCliOptions {
   open?: boolean;
+}
+
+export interface ExternalCatalogSourceOptions {
+  readonly configPath: string;
+  readonly configReadOnly: true;
+  readonly userAgentProfileHomeDir: string;
 }
 
 export interface StartForegroundHooks {
@@ -272,6 +278,7 @@ async function runServerInProcess(
       'dev mode: web assets not built; starting the API server without the web UI',
     );
   }
+  const externalCatalog = externalCatalogSourceFromEnv(process.env);
   const v2 = await startServer({
     host: options.host,
     port: options.port,
@@ -289,6 +296,9 @@ async function runServerInProcess(
     },
     logLevel: options.logLevel,
     logger,
+    configPath: externalCatalog?.configPath,
+    configReadOnly: externalCatalog?.configReadOnly,
+    userAgentProfileHomeDir: externalCatalog?.userAgentProfileHomeDir,
     debugEndpoints: options.debugEndpoints,
     insecureNoTls: options.insecureNoTls,
     allowRemoteShutdown: options.allowRemoteShutdown,
@@ -324,6 +334,27 @@ async function runServerInProcess(
   return new Promise<never>(() => {
     // Keeps the event loop alive; the process ends via shutdown()/process.exit.
   });
+}
+
+export function externalCatalogSourceFromEnv(
+  env: NodeJS.ProcessEnv,
+): ExternalCatalogSourceOptions | undefined {
+  const configPath = env['KIKI_MCP_CONFIG_PATH'];
+  const userAgentProfileHomeDir = env['KIKI_MCP_AGENT_PROFILE_HOME'];
+  const readOnly = env['KIKI_MCP_CONFIG_READ_ONLY'];
+  if (configPath === undefined && userAgentProfileHomeDir === undefined && readOnly === undefined) {
+    return undefined;
+  }
+  if (
+    configPath === undefined ||
+    userAgentProfileHomeDir === undefined ||
+    readOnly !== '1' ||
+    !isAbsolute(configPath) ||
+    !isAbsolute(userAgentProfileHomeDir)
+  ) {
+    throw new Error('Kiki MCP catalog source configuration is incomplete or unsafe.');
+  }
+  return { configPath, configReadOnly: true, userAgentProfileHomeDir };
 }
 
 /**

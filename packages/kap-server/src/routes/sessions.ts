@@ -77,6 +77,7 @@
 
 import {
   ErrorCodes,
+  DEFAULT_AGENT_PROFILE_NAME,
   IAgentContextMemoryService,
   IAgentProfileService,
   IAgentConversationUndoService,
@@ -329,6 +330,15 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
         });
         const handle = await handler.accessor.get(ISessionLifecycleService).create({
           workDir,
+          mainAgentBinding:
+            body.agent_config?.model === undefined
+              ? undefined
+              : {
+                  profile: DEFAULT_AGENT_PROFILE_NAME,
+                  model: body.agent_config.model,
+                  thinking: body.agent_config.thinking,
+                  strictThinking: body.agent_config.thinking !== undefined,
+                },
         });
         if (typeof body.title === 'string') {
           await handle.accessor.get(ISessionMetadata).setTitle(body.title);
