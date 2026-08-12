@@ -23,8 +23,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, RunEvent, State, WindowEvent,
+    AppHandle, Emitter, Manager, RunEvent, State, WindowEvent, Wry,
 };
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_shell::{process::CommandChild, ShellExt};
 use toml_edit::{table, value, DocumentMut, Item};
 
@@ -32,6 +33,7 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const MAX_HTTP_STATUS_LINE_BYTES: usize = 256;
+const TRAY_ID: &str = "main-tray";
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -183,6 +185,8 @@ impl BackendManager {
 struct DesktopPrefs {
     notifications: bool,
     close_to_tray: bool,
+    /// UI locale mirrored from the frontend ("en"/"zh"); drives tray labels.
+    locale: Option<String>,
 }
 
 impl Default for DesktopPrefs {
@@ -190,6 +194,7 @@ impl Default for DesktopPrefs {
         Self {
             notifications: true,
             close_to_tray: true,
+            locale: None,
         }
     }
 }
@@ -203,6 +208,7 @@ fn should_hide_on_close(prefs: &DesktopPrefs) -> bool {
 struct DesktopPrefsPatch {
     notifications: Option<bool>,
     close_to_tray: Option<bool>,
+    locale: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -524,13 +530,23 @@ fn read_desktop_prefs() -> DesktopPrefs {
 }
 
 #[tauri::command]
-fn write_desktop_prefs(prefs: DesktopPrefsPatch) -> Result<(), String> {
+fn write_desktop_prefs(app: AppHandle, prefs: DesktopPrefsPatch) -> Result<(), String> {
     let current = read_desktop_prefs_file();
+    let locale_changed = prefs.locale.is_some() && prefs.locale != current.locale;
     let next = DesktopPrefs {
         notifications: prefs.notifications.unwrap_or(current.notifications),
         close_to_tray: prefs.close_to_tray.unwrap_or(current.close_to_tray),
+        locale: prefs.locale.or(current.locale),
     };
-    write_desktop_prefs_file(&next)
+    write_desktop_prefs_file(&next)?;
+    // The frontend owns the UI locale; mirror it onto the tray menu live.
+    if locale_changed {
+        if let Some(tray) = app.tray_by_id(TRAY_ID) {
+            let menu = build_tray_menu(&app, tray_labels(next.locale.as_deref()))?;
+            tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -756,16 +772,41 @@ fn force_stop(backend: OwnedBackend) {
     let _ = backend.child.kill();
 }
 
-fn build_tray(app: &AppHandle) -> Result<(), String> {
+struct TrayLabels {
+    show: &'static str,
+    hide: &'static str,
+    new_session: &'static str,
+    quit: &'static str,
+}
+
+/// Tray menu copy follows the frontend's UI locale (mirrored into desktop.json).
+fn tray_labels(locale: Option<&str>) -> TrayLabels {
+    match locale {
+        Some("zh") => TrayLabels {
+            show: "显示",
+            hide: "隐藏",
+            new_session: "新会话",
+            quit: "退出",
+        },
+        _ => TrayLabels {
+            show: "Show",
+            hide: "Hide",
+            new_session: "New Session",
+            quit: "Quit",
+        },
+    }
+}
+
+fn build_tray_menu(app: &AppHandle, labels: TrayLabels) -> Result<Menu<Wry>, String> {
     let show_i =
-        MenuItem::with_id(app, "show", "Show", true, None::<&str>).map_err(|e| e.to_string())?;
+        MenuItem::with_id(app, "show", labels.show, true, None::<&str>).map_err(|e| e.to_string())?;
     let hide_i =
-        MenuItem::with_id(app, "hide", "Hide", true, None::<&str>).map_err(|e| e.to_string())?;
-    let new_i = MenuItem::with_id(app, "new", "New Session", true, None::<&str>)
+        MenuItem::with_id(app, "hide", labels.hide, true, None::<&str>).map_err(|e| e.to_string())?;
+    let new_i = MenuItem::with_id(app, "new", labels.new_session, true, None::<&str>)
         .map_err(|e| e.to_string())?;
     let quit_i =
-        MenuItem::with_id(app, "quit", "Quit", true, None::<&str>).map_err(|e| e.to_string())?;
-    let menu = Menu::with_items(
+        MenuItem::with_id(app, "quit", labels.quit, true, None::<&str>).map_err(|e| e.to_string())?;
+    Menu::with_items(
         app,
         &[
             &show_i,
@@ -775,14 +816,34 @@ fn build_tray(app: &AppHandle) -> Result<(), String> {
             &quit_i,
         ],
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())
+}
+
+/// Toggle used by the global show/hide shortcut: hide only when the window is
+/// both visible and focused, otherwise restore and focus it.
+fn toggle_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let visible = window.is_visible().unwrap_or(false);
+        let focused = window.is_focused().unwrap_or(false);
+        if visible && focused {
+            let _ = window.hide();
+        } else {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }
+}
+
+fn build_tray(app: &AppHandle) -> Result<(), String> {
+    let menu = build_tray_menu(app, tray_labels(read_desktop_prefs_file().locale.as_deref()))?;
 
     let icon = app
         .default_window_icon()
         .cloned()
         .ok_or_else(|| "No default window icon".to_string())?;
 
-    TrayIconBuilder::new()
+    TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
         .tooltip("Kiki")
         .menu(&menu)
@@ -830,6 +891,20 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        // Window geometry memory: restores on window creation, saves on
+        // move/resize/close — no frontend involvement.
+        .plugin(tauri_plugin_window_state::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state == ShortcutState::Pressed {
+                        toggle_main_window(app);
+                    }
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .manage(manager)
@@ -858,6 +933,13 @@ pub fn run() {
             // best-effort decoration: close-to-tray would strand a hidden
             // window if the icon could not be created.
             build_tray(app.handle()).map_err(std::io::Error::other)?;
+            // Global show/hide hotkey (hardcoded; a configurable surface is a
+            // settings-page concern). A collision with another app degrades to
+            // no hotkey rather than a startup failure.
+            let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyK);
+            if let Err(error) = app.global_shortcut().register(shortcut) {
+                eprintln!("Kiki could not register the Ctrl+Shift+K show/hide hotkey: {error}");
+            }
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -894,9 +976,25 @@ mod tests {
         let partial: DesktopPrefs = serde_json::from_str(r#"{"notifications":false}"#).unwrap();
         assert!(!partial.notifications);
         assert!(partial.close_to_tray);
+        assert_eq!(partial.locale, None);
 
         let corrupt = serde_json::from_str::<DesktopPrefs>("{not-json").unwrap_or_default();
         assert!(corrupt.close_to_tray);
+    }
+
+    #[test]
+    fn tray_labels_follow_the_mirrored_ui_locale() {
+        let zh: DesktopPrefs = serde_json::from_str(r#"{"locale":"zh"}"#).unwrap();
+        let zh_labels = tray_labels(zh.locale.as_deref());
+        assert_eq!(zh_labels.show, "显示");
+        assert_eq!(zh_labels.quit, "退出");
+
+        let en_labels = tray_labels(DesktopPrefs::default().locale.as_deref());
+        assert_eq!(en_labels.show, "Show");
+        assert_eq!(en_labels.new_session, "New Session");
+
+        // Unknown values fall back to English instead of rendering raw ids.
+        assert_eq!(tray_labels(Some("fr")).show, "Show");
     }
 
     #[test]

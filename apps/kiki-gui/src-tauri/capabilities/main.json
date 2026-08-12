@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Main Kiki desktop window: window management, tray, notifications, and shell sidecar.",
+  "description": "Main Kiki desktop window: window management, tray, notifications, shell sidecar, native save dialog, and file writes for session export.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -12,6 +12,8 @@
     "core:window:allow-minimize",
     "core:app:allow-app-show",
     "core:app:allow-app-hide",
-    "notification:default"
+    "notification:default",
+    "dialog:allow-save",
+    "fs:allow-write-file"
   ]
 }
