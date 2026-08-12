@@ -27,7 +27,18 @@ export interface SwitcherHitItem {
   time: number;
 }
 
-export type SwitcherItem = SwitcherSessionItem | SwitcherHitItem;
+/** A static page destination (e.g. the usage dashboard), listed like a row. */
+export interface SwitcherActionItem {
+  kind: 'action';
+  actionId: string;
+  title: string;
+  route: string;
+}
+
+export type SwitcherItem = SwitcherSessionItem | SwitcherHitItem | SwitcherActionItem;
+
+/** Caller-supplied page actions; titles are already localized. */
+export type SwitcherAction = Omit<SwitcherActionItem, 'kind'>;
 
 export const SWITCHER_RECENT_LIMIT = 10;
 export const SWITCHER_TITLE_MATCH_LIMIT = 5;
@@ -67,11 +78,18 @@ export function buildSwitcherItems(input: {
   sessions: readonly Session[];
   hits: readonly SearchMessageHit[];
   untitled: string;
+  actions?: readonly SwitcherAction[];
 }): SwitcherItem[] {
   const ordered = sessionsByRecency(input.sessions);
   const query = input.query.trim().toLowerCase();
+  const actions: SwitcherActionItem[] = (input.actions ?? [])
+    .filter((action) => query === '' || action.title.toLowerCase().includes(query))
+    .map((action) => ({ kind: 'action', ...action }));
   if (query === '') {
-    return ordered.slice(0, SWITCHER_RECENT_LIMIT).map((session) => toSessionItem(session, input.untitled));
+    return [
+      ...actions,
+      ...ordered.slice(0, SWITCHER_RECENT_LIMIT).map((session) => toSessionItem(session, input.untitled)),
+    ];
   }
   const titleMatches = ordered
     .filter((session) => matchesQuery(session, query, input.untitled))
@@ -85,5 +103,5 @@ export function buildSwitcherItems(input: {
     role: hit.role,
     time: hit.time,
   }));
-  return [...titleMatches, ...hitItems];
+  return [...actions, ...titleMatches, ...hitItems];
 }

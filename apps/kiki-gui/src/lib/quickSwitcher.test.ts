@@ -90,7 +90,8 @@ describe('buildSwitcherItems — with query', () => {
       hits: [hit('renderer', '…the persimmon cache…')],
       untitled: 'Untitled',
     });
-    expect(items.map((item) => item.sessionId)).toEqual(['persimmon-notes', 'cwd-match', 'renderer']);
+    const ids = items.map((item) => (item.kind === 'action' ? item.actionId : item.sessionId));
+    expect(ids).toEqual(['persimmon-notes', 'cwd-match', 'renderer']);
     expect(items[2]).toMatchObject({ kind: 'hit', snippet: '…the persimmon cache…' });
   });
 
@@ -114,5 +115,44 @@ describe('buildSwitcherItems — with query', () => {
   it('returns no session rows when nothing matches', () => {
     const items = buildSwitcherItems({ query: 'zzz', sessions, hits: [], untitled: 'Untitled' });
     expect(items).toEqual([]);
+  });
+});
+
+describe('buildSwitcherItems — page actions', () => {
+  const usageAction = { actionId: 'usage', title: 'Open usage dashboard', route: '/usage' };
+  const sessions = [session('s1', '2026-01-02T00:00:00.000Z')];
+
+  it('pins actions above the recent sessions on an empty query', () => {
+    const items = buildSwitcherItems({
+      query: '',
+      sessions,
+      hits: [],
+      untitled: 'Untitled',
+      actions: [usageAction],
+    });
+    expect(items[0]).toMatchObject({ kind: 'action', actionId: 'usage', route: '/usage' });
+    expect(items[1]).toMatchObject({ kind: 'session', sessionId: 's1' });
+  });
+
+  it('matches actions by title substring, ahead of session matches', () => {
+    const items = buildSwitcherItems({
+      query: 'usage',
+      sessions: [session('usage-notes', '2026-01-02T00:00:00.000Z', { title: 'Usage notes' })],
+      hits: [],
+      untitled: 'Untitled',
+      actions: [usageAction],
+    });
+    expect(items.map((item) => item.kind)).toEqual(['action', 'session']);
+  });
+
+  it('drops actions whose title does not match the query', () => {
+    const items = buildSwitcherItems({
+      query: 'persimmon',
+      sessions,
+      hits: [],
+      untitled: 'Untitled',
+      actions: [usageAction],
+    });
+    expect(items.every((item) => item.kind !== 'action')).toBe(true);
   });
 });

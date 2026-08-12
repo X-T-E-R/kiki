@@ -4,6 +4,7 @@
  */
 
 import { memo, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import type { GoalSnapshot, Task } from '@moonshot-ai/protocol';
 
@@ -262,6 +263,7 @@ export function RightRail({
   className?: string;
 }) {
   const { t, time } = useI18n();
+  const navigate = useNavigate();
   const session = state.session;
   const usage = session?.usage;
   const contextTokens = state.contextTokens ?? usage?.context_tokens;
@@ -362,6 +364,17 @@ export function RightRail({
               })}
               mono
             />
+          ) : null}
+          {usage !== undefined ? (
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={() => void navigate('/usage')}
+                className="text-[10.5px] font-medium text-accent transition-colors hover:text-accent-deep"
+              >
+                {t('usage.viewAll')}
+              </button>
+            </div>
           ) : null}
         </div>
       </section>

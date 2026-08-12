@@ -33,6 +33,7 @@ import { SettingsPage } from './components/SettingsPage';
 import { ShortcutsOverlay } from './components/ShortcutsOverlay';
 import { Sidebar } from './components/Sidebar';
 import { Toasts } from './components/Toasts';
+import { UsagePage } from './components/UsagePage';
 import {
   isDesktopRuntime,
   onTrayNewSession,
@@ -80,6 +81,7 @@ export function App() {
   const activeSessionId = sessionMatch?.params.id;
   const isNewRoute = useMatch('/new') !== null;
   const isSettingsRoute = useMatch('/settings/*') !== null;
+  const isUsageRoute = useMatch('/usage') !== null;
 
   const sessionsQuery = useInfiniteQuery({
     queryKey: ['sessions', showArchived],
@@ -121,13 +123,16 @@ export function App() {
           ? { kind: 'new' }
           : isSettingsRoute
             ? { kind: 'settings' }
-            : { kind: 'other' };
+            : isUsageRoute
+              ? { kind: 'usage' }
+              : { kind: 'other' };
     document.title = resolveWindowTitle(route, sessions, {
       untitled: t('sidebar.untitled'),
       newSession: t('new.title'),
       settings: t('st.title'),
+      usage: t('usage.title'),
     });
-  }, [activeSessionId, isNewRoute, isSettingsRoute, sessions, t]);
+  }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute, sessions, t]);
 
   // ⌘N / Ctrl+N opens the new-session dialog from any route; ⌘K / Ctrl+K
   // toggles the quick switcher; Ctrl+Tab jumps to the most recent other
@@ -220,7 +225,7 @@ export function App() {
   // Close mobile sidebar on route change.
   useEffect(() => {
     setSidebarOpen(false);
-  }, [activeSessionId, isNewRoute, isSettingsRoute]);
+  }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute]);
 
   // Escape closes the mobile sidebar drawer (the backdrop swallows pointer
   // events, so the key must be handled globally while it is open).
@@ -271,6 +276,10 @@ export function App() {
           <Route
             path="/settings/:section?"
             element={<SettingsPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
+          />
+          <Route
+            path="/usage"
+            element={<UsagePage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
           />
           <Route path="*" element={<RootRedirect />} />
         </Routes>

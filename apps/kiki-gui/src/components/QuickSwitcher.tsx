@@ -49,6 +49,7 @@ export function QuickSwitcher({
   });
 
   const untitled = t('sidebar.untitled');
+  const usageActionTitle = t('switcher.action.usage');
   const items = useMemo(
     () =>
       buildSwitcherItems({
@@ -56,8 +57,9 @@ export function QuickSwitcher({
         sessions,
         hits: searchActive ? (searchQuery.data?.items ?? []) : [],
         untitled,
+        actions: [{ actionId: 'usage', title: usageActionTitle, route: '/usage' }],
       }),
-    [input, sessions, searchActive, searchQuery.data, untitled],
+    [input, sessions, searchActive, searchQuery.data, untitled, usageActionTitle],
   );
 
   useEffect(() => {
@@ -74,7 +76,8 @@ export function QuickSwitcher({
   const openItem = (item: SwitcherItem | undefined) => {
     if (item === undefined) return;
     onClose();
-    void navigate(`/s/${item.sessionId}`);
+    if (item.kind === 'action') void navigate(item.route);
+    else void navigate(`/s/${item.sessionId}`);
   };
 
   const onInputKeyDown = (event: React.KeyboardEvent) => {
@@ -93,6 +96,8 @@ export function QuickSwitcher({
   };
 
   const searching = searchActive && searchQuery.isPending;
+  const firstActionIndex = items.findIndex((item) => item.kind === 'action');
+  const firstSessionIndex = items.findIndex((item) => item.kind === 'session');
   const firstHitIndex = items.findIndex((item) => item.kind === 'hit');
 
   return (
@@ -132,23 +137,25 @@ export function QuickSwitcher({
         ) : (
           items.map((item, index) => {
             const active = index === activeIndex;
-            const header =
-              index === 0 ? (
-                <p className="px-2 pt-1 pb-0.5 text-[10px] font-semibold tracking-[0.06em] text-ink-faint uppercase">
-                  {input.trim() === ''
+            const headerText =
+              index === firstActionIndex
+                ? t('switcher.pages')
+                : index === firstSessionIndex
+                  ? input.trim() === ''
                     ? t('switcher.recent')
-                    : item.kind === 'session'
-                      ? t('switcher.sessions')
-                      : t('switcher.matches')}
-                </p>
-              ) : index === firstHitIndex && item.kind === 'hit' ? (
-                <p className="px-2 pt-1.5 pb-0.5 text-[10px] font-semibold tracking-[0.06em] text-ink-faint uppercase">
-                  {t('switcher.matches')}
-                </p>
-              ) : null;
+                    : t('switcher.sessions')
+                  : index === firstHitIndex
+                    ? t('switcher.matches')
+                    : null;
+            const itemKey =
+              item.kind === 'action' ? `action-${item.actionId}` : `${item.kind}-${item.sessionId}-${index}`;
             return (
-              <div key={`${item.kind}-${item.sessionId}-${index}`}>
-                {header}
+              <div key={itemKey}>
+                {headerText !== null ? (
+                  <p className={`px-2 pb-0.5 text-[10px] font-semibold tracking-[0.06em] text-ink-faint uppercase ${index === 0 ? 'pt-1' : 'pt-1.5'}`}>
+                    {headerText}
+                  </p>
+                ) : null}
                 <button
                   type="button"
                   id={`quick-switcher-item-${index}`}
@@ -161,7 +168,19 @@ export function QuickSwitcher({
                     active ? 'bg-accent-soft' : 'hover:bg-paper'
                   }`}
                 >
-                  {item.kind === 'session' ? (
+                  {item.kind === 'action' ? (
+                    <span className="flex items-center gap-2">
+                      <span
+                        aria-hidden
+                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-hairline bg-paper text-[11px] font-semibold text-accent"
+                      >
+                        $
+                      </span>
+                      <span className="truncate text-[12.5px] font-medium text-ink">
+                        {item.title}
+                      </span>
+                    </span>
+                  ) : item.kind === 'session' ? (
                     <>
                       <span className="truncate text-[12.5px] font-medium text-ink">
                         {item.title}

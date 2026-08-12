@@ -4,7 +4,12 @@ import type { Session } from '@moonshot-ai/protocol';
 
 import { composeWindowTitle, resolveWindowTitle } from './windowTitle';
 
-const TEXT = { untitled: 'Untitled session', newSession: 'New session', settings: 'Settings' };
+const TEXT = {
+  untitled: 'Untitled session',
+  newSession: 'New session',
+  settings: 'Settings',
+  usage: 'Usage',
+};
 
 function session(id: string, overrides: Partial<Session> = {}): Session {
   return {
@@ -67,9 +72,10 @@ describe('resolveWindowTitle', () => {
     expect(resolveWindowTitle({ kind: 'session', sessionId: 'gone' }, [], TEXT)).toBe('Kiki');
   });
 
-  it('titles the /new and /settings routes with their page names', () => {
+  it('titles the /new, /settings, and /usage routes with their page names', () => {
     expect(resolveWindowTitle({ kind: 'new' }, [], TEXT)).toBe('New session — Kiki');
     expect(resolveWindowTitle({ kind: 'settings' }, [], TEXT)).toBe('Settings — Kiki');
+    expect(resolveWindowTitle({ kind: 'usage' }, [], TEXT)).toBe('Usage — Kiki');
     expect(resolveWindowTitle({ kind: 'other' }, [], TEXT)).toBe('Kiki');
   });
 });

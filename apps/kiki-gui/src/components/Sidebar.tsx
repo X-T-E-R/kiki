@@ -30,6 +30,7 @@ import {
 } from '../lib/sessionActions';
 import { registerOverlay } from '../lib/uiBusy';
 import { useConnection } from '../state/connection';
+import { ActivityPanel } from './ActivityPanel';
 import { Dialog } from './Dialog';
 import { PendingBadge } from './PendingBadge';
 import { Wordmark } from './Wordmark';
@@ -266,6 +267,8 @@ export function Sidebar({
         </div>
       </div>
 
+      <ActivityPanel sessions={sessions} />
+
       {searchActive ? (
         <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-search-results>
           {searchResultsQuery.isPending ? (
@@ -453,6 +456,14 @@ export function Sidebar({
 
       <div className="border-t border-hairline px-3 py-2.5 space-y-1">
         <PendingBadge sessions={sessions} />
+        <button
+          type="button"
+          onClick={() => void navigate('/usage')}
+          aria-label={t('usage.navAria')}
+          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11.5px] text-ink-soft transition-colors hover:bg-paper hover:text-ink"
+        >
+          <span aria-hidden className="w-[13px] text-center text-[12px]">$</span> {t('usage.nav')}
+        </button>
         <button
           type="button"
           onClick={() => void navigate('/settings')}

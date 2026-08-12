@@ -181,8 +181,11 @@ class FixtureSession {
     this.waiters = []; // [{kind, resolve, payload?}]
     this.releaseArmed = false; // one-shot gate for { waitFor: 'release' }
     // Prompt queue mirroring kap-server's {active, queued} scheduler surface.
-    this.activePrompt = null; // PromptItem while a turn runs
-    this.queuedPrompts = []; // PromptItem[]
+    // Scenarios may seed a running/queued backlog for list-prompts consumers:
+    // snapshot entries `active_prompt` / `queued_prompts` carry the PromptItem
+    // wire fields plus the internal `text` used by onPrompt script selection.
+    this.activePrompt = scenarioData.active_prompt ?? null; // PromptItem while a turn runs
+    this.queuedPrompts = [...(scenarioData.queued_prompts ?? [])]; // PromptItem[]
     // Durable frames journaled for subscribe replay (getBufferedSince model).
     this.journal = []; // [{seq, frame}]
     // interactionId → resolved state, so /transcript interactions stay honest.

@@ -9,6 +9,7 @@ export type WindowRoute =
   | { kind: 'session'; sessionId: string }
   | { kind: 'new' }
   | { kind: 'settings' }
+  | { kind: 'usage' }
   | { kind: 'other' };
 
 export function composeWindowTitle(page: string | undefined): string {
@@ -18,13 +19,15 @@ export function composeWindowTitle(page: string | undefined): string {
 export function resolveWindowTitle(
   route: WindowRoute,
   sessions: readonly Session[],
-  text: { untitled: string; newSession: string; settings: string },
+  text: { untitled: string; newSession: string; settings: string; usage: string },
 ): string {
   switch (route.kind) {
     case 'new':
       return composeWindowTitle(text.newSession);
     case 'settings':
       return composeWindowTitle(text.settings);
+    case 'usage':
+      return composeWindowTitle(text.usage);
     case 'session': {
       const session = sessions.find((item) => item.id === route.sessionId);
       if (session === undefined) return composeWindowTitle(undefined);
