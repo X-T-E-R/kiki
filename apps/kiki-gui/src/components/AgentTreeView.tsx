@@ -1,0 +1,178 @@
+/**
+ * Shared session agent tree. RightRail and the agent-detail page both render
+ * this view over the same `buildAgentForest` result.
+ */
+
+import { memo, useEffect, useMemo, useState } from 'react';
+
+import { useI18n } from '../i18n';
+import type { I18nKey } from '../i18n/locale';
+import {
+  agentChildren,
+  type AgentForest,
+  type AgentStatus,
+  type AgentTreeNode,
+} from '../state/agentTree';
+
+const STATUS_I18N: Record<AgentStatus, I18nKey> = {
+  running: 'subagent.status.running',
+  suspended: 'subagent.status.suspended',
+  completed: 'subagent.status.completed',
+  failed: 'subagent.status.failed',
+  cancelled: 'subagent.status.cancelled',
+  background: 'subagent.status.background',
+};
+
+function statusDot(status: AgentStatus): string {
+  switch (status) {
+    case 'running':
+    case 'background':
+      return 'bg-accent';
+    case 'completed':
+      return 'bg-success';
+    case 'failed':
+      return 'bg-danger';
+    case 'cancelled':
+      return 'bg-ink-faint';
+    case 'suspended':
+      return 'bg-amber-rule';
+  }
+}
+
+function isActiveStatus(status: AgentStatus): boolean {
+  return status === 'running' || status === 'suspended' || status === 'background';
+}
+
+const AgentTreeRow = memo(function AgentTreeRow({
+  forest,
+  node,
+  depth,
+  selectedAgentId,
+  onOpen,
+}: {
+  forest: AgentForest;
+  node: AgentTreeNode;
+  depth: number;
+  selectedAgentId: string | undefined;
+  onOpen: (agentId: string) => void;
+}) {
+  const { t, tp } = useI18n();
+  const children = agentChildren(forest, node.agentId);
+  const hasActiveChild = children.some((child) => isActiveStatus(child.status));
+  const [expanded, setExpanded] = useState(() => isActiveStatus(node.status) || hasActiveChild);
+  useEffect(() => {
+    if (hasActiveChild || isActiveStatus(node.status)) setExpanded(true);
+  }, [hasActiveChild, node.status]);
+
+  const selected = selectedAgentId === node.agentId;
+  const indent = Math.min(depth, 6) * 12;
+
+  return (
+    <li>
+      <div className="flex items-stretch">
+        {depth > 0 ? (
+          <span
+            aria-hidden
+            className="mr-1 shrink-0 border-l border-hairline"
+            style={{ marginLeft: indent - 8 }}
+          />
+        ) : null}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-0.5">
+            {children.length > 0 ? (
+              <button
+                type="button"
+                aria-expanded={expanded}
+                aria-label={expanded ? t('subagent.collapseChildren') : t('subagent.expandChildren')}
+                onClick={() => {
+                  setExpanded((value) => !value);
+                }}
+                className="flex h-6 w-5 shrink-0 items-center justify-center text-[9px] text-ink-faint transition-colors hover:text-ink"
+              >
+                <span aria-hidden className={`transition-transform ${expanded ? 'rotate-90' : ''}`}>
+                  ▶
+                </span>
+              </button>
+            ) : (
+              <span className="w-5 shrink-0" />
+            )}
+            <button
+              type="button"
+              data-agent-id={node.agentId}
+              data-agent-depth={depth}
+              aria-current={selected ? 'page' : undefined}
+              aria-label={t('subagent.openAgent', { name: node.label })}
+              onClick={() => {
+                onOpen(node.agentId);
+              }}
+              className={`flex min-w-0 flex-1 items-center gap-2 rounded-lg border px-2 py-1.5 text-left transition-colors ${
+                selected
+                  ? 'border-accent/50 bg-accent-soft/40'
+                  : 'border-hairline bg-panel hover:border-accent/50 hover:bg-accent-soft/30'
+              }`}
+            >
+              <span
+                className={`h-2 w-2 shrink-0 rounded-full ${statusDot(node.status)} ${
+                  node.busy ? 'status-dot-busy' : ''
+                }`}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[12px] font-medium text-ink">{node.label}</span>
+                <span className="block truncate text-[10px] text-ink-faint">
+                  {t(STATUS_I18N[node.status])}
+                  {node.model !== undefined ? ` · ${node.model}` : ''}
+                  {` · ${t('subagent.tools', { count: node.toolCallCount })}`}
+                  {children.length > 0 ? ` · ${tp('subagent.children', children.length)}` : ''}
+                </span>
+              </span>
+            </button>
+          </div>
+          {expanded && children.length > 0 ? (
+            <ul className="mt-1 space-y-1">
+              {children.map((child) => (
+                <AgentTreeRow
+                  key={child.agentId}
+                  forest={forest}
+                  node={child}
+                  depth={depth + 1}
+                  selectedAgentId={selectedAgentId}
+                  onOpen={onOpen}
+                />
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      </div>
+    </li>
+  );
+});
+
+export const AgentTreeView = memo(function AgentTreeView({
+  forest,
+  selectedAgentId,
+  onOpen,
+}: {
+  forest: AgentForest;
+  selectedAgentId?: string;
+  onOpen: (agentId: string) => void;
+}) {
+  const { t } = useI18n();
+  const roots = useMemo(() => forest.roots, [forest]);
+  if (roots.length === 0) {
+    return <p className="text-[12px] text-ink-faint">{t('rail.noSubagents')}</p>;
+  }
+  return (
+    <ul data-agent-tree className="space-y-1.5">
+      {roots.map((root) => (
+        <AgentTreeRow
+          key={root.agentId}
+          forest={forest}
+          node={root}
+          depth={0}
+          selectedAgentId={selectedAgentId}
+          onOpen={onOpen}
+        />
+      ))}
+    </ul>
+  );
+});

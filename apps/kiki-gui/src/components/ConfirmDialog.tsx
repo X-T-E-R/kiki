@@ -7,6 +7,7 @@
 import { useEffect, useRef } from 'react';
 
 import { useI18n } from '../i18n';
+import { registerOverlay } from '../lib/uiBusy';
 import { DANGER_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 
 export interface ConfirmDialogProps {
@@ -19,6 +20,8 @@ export interface ConfirmDialogProps {
   readonly cancelLabel?: string;
   readonly tone?: 'danger' | 'default';
   readonly busy?: boolean;
+  /** uiBusy overlay id so Escape closes this dialog instead of aborting. */
+  readonly overlayId?: string;
   readonly onConfirm: () => void;
   readonly onCancel: () => void;
 }
@@ -32,6 +35,7 @@ export function ConfirmDialog({
   cancelLabel,
   tone = 'danger',
   busy = false,
+  overlayId = 'confirm-dialog',
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -45,6 +49,23 @@ export function ConfirmDialog({
     cancelRef.current?.focus();
     return () => { restoreRef.current?.focus(); };
   }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const unregister = registerOverlay(overlayId);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      onCancel();
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      unregister();
+      window.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [open, overlayId, onCancel]);
 
   if (!open) return null;
 

@@ -123,9 +123,75 @@ export function readSettings(): DesktopSettings {
       typeof stored.draftPersistence === 'boolean'
         ? stored.draftPersistence
         : DEFAULTS.draftPersistence,
+    defaultModel: typeof stored.defaultModel === 'string' && stored.defaultModel !== ''
+      ? stored.defaultModel
+      : undefined,
+    defaultEffort: typeof stored.defaultEffort === 'string' && stored.defaultEffort !== ''
+      ? stored.defaultEffort
+      : undefined,
     closeToTray:
       typeof stored.closeToTray === 'boolean' ? stored.closeToTray : DEFAULTS.closeToTray,
   };
+}
+
+// Local settings fan out through a tiny pub/sub so Composer / overlays react
+// the moment Settings writes — a cached snapshot keeps useSyncExternalStore
+// from looping on a fresh object per read. Cross-document writes arrive via
+// the `storage` event (same-window setItem does not fire it).
+const settingsListeners = new Set<() => void>();
+let settingsSnapshotCache: DesktopSettings | undefined;
+let storageListening = false;
+
+function handleSettingsStorageEvent(event: StorageEvent): void {
+  if (event.storageArea !== undefined && event.storageArea !== null) {
+    try {
+      if (event.storageArea !== localStorage) return;
+    } catch {
+      return;
+    }
+  }
+  if (event.key !== null && event.key !== STORAGE_KEY) return;
+  publishSettings(readSettings());
+}
+
+function attachSettingsStorageListener(): void {
+  if (storageListening) return;
+  if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
+  window.addEventListener('storage', handleSettingsStorageEvent);
+  storageListening = true;
+}
+
+function detachSettingsStorageListener(): void {
+  if (!storageListening) return;
+  if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+    window.removeEventListener('storage', handleSettingsStorageEvent);
+  }
+  storageListening = false;
+}
+
+export function subscribeSettings(listener: () => void): () => void {
+  settingsListeners.add(listener);
+  if (settingsListeners.size === 1) attachSettingsStorageListener();
+  return () => {
+    settingsListeners.delete(listener);
+    if (settingsListeners.size === 0) detachSettingsStorageListener();
+  };
+}
+
+export function settingsSnapshot(): DesktopSettings {
+  settingsSnapshotCache ??= readSettings();
+  return settingsSnapshotCache;
+}
+
+/** Stable SSR/server snapshot — never allocate a new object per read. */
+export function settingsServerSnapshot(): DesktopSettings {
+  return DEFAULTS;
+}
+
+function publishSettings(next: DesktopSettings): DesktopSettings {
+  settingsSnapshotCache = next;
+  for (const listener of settingsListeners) listener();
+  return next;
 }
 
 export function writeSettings(patch: Partial<DesktopSettings>): void {
@@ -135,6 +201,52 @@ export function writeSettings(patch: Partial<DesktopSettings>): void {
   } catch {
     // Browser storage is a convenience; server-backed settings remain authoritative.
   }
+  publishSettings(readSettings());
+}
+
+export type ComposerModelSource = 'server-default' | 'local-default' | 'session' | 'override';
+
+/** Local default is never an implicit session override — only an explicit pick or nav hand-off. */
+function presentModel(value: string | undefined): string | undefined {
+  return value !== undefined && value !== '' ? value : undefined;
+}
+
+export function resolveSessionModelOverride(explicitModel: string | undefined): string | undefined {
+  return presentModel(explicitModel);
+}
+
+export function resolveEffectiveModel(
+  override: string | undefined,
+  sessionModel: string | undefined,
+  inheritedDefault: string | undefined,
+): string | undefined {
+  return presentModel(override) ?? presentModel(sessionModel) ?? presentModel(inheritedDefault);
+}
+
+export function resolveModelSource(
+  override: string | undefined,
+  sessionModel: string | undefined,
+  localDefault?: string,
+  _serverDefault?: string,
+): ComposerModelSource {
+  if (presentModel(override) !== undefined) return 'override';
+  if (presentModel(sessionModel) !== undefined) return 'session';
+  if (presentModel(localDefault) !== undefined) return 'local-default';
+  return 'server-default';
+}
+
+export interface ComposerKeyLike {
+  readonly key: string;
+  readonly shiftKey: boolean;
+  readonly metaKey: boolean;
+  readonly ctrlKey: boolean;
+}
+
+/** True when the key event should send (or queue) according to the saved shortcut. */
+export function isComposerSendKey(event: ComposerKeyLike, shortcut: SendShortcut): boolean {
+  if (event.key !== 'Enter' || event.shiftKey) return false;
+  const modified = event.metaKey || event.ctrlKey;
+  return shortcut === 'cmd-enter' ? modified : !modified;
 }
 
 export function readLastSessionId(): string | undefined {
@@ -607,7 +719,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'providers', cardId: 'st-card-providers-add', titleKey: 'st.providers.addTitle', keywordKeys: ['st.wizard.chooseTemplate', 'st.fetchModels.button'] },
   { section: 'capabilities', cardId: 'st-card-caps', titleKey: 'st.caps.title', keywordKeys: ['st.caps.mergeSkills', 'st.caps.telemetry', 'st.caps.extraDirs', 'st.caps.experimental'] },
   { section: 'capabilities', cardId: 'st-card-advanced', titleKey: 'st.advanced.title', keywordKeys: ['st.advanced.hint'] },
-  { section: 'capabilities', cardId: 'st-card-sidecar', titleKey: 'st.sidecar.title', keywordKeys: ['st.sidecar.hint'] },
+  { section: 'agents', cardId: 'st-card-sidecar', titleKey: 'st.sidecar.title', keywordKeys: ['st.sidecar.hint', 'st.sidecar.subagentModel', 'st.sidecar.enableCollab', 'st.agents.webHint'] },
   { section: 'capabilities', cardId: 'st-card-tools', titleKey: 'st.tools.title', keywordKeys: [] },
   { section: 'capabilities', cardId: 'st-card-mcp', titleKey: 'st.mcp.title', keywordKeys: ['st.mcp.restart'] },
   { section: 'capabilities', cardId: 'st-card-skills', titleKey: 'st.skills.title', keywordKeys: ['st.skills.workspace'] },

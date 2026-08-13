@@ -20,6 +20,7 @@ import {
 } from '../lib/desktop';
 import { useI18n } from '../i18n';
 import { errorText, issueText, type I18nKey, type Locale } from '../i18n/locale';
+import { clearStoredDrafts } from '../lib/drafts';
 import {
   buildSettingsSearchIndex,
   clearRestartRequirement,
@@ -51,6 +52,7 @@ const SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'models', labelKey: 'st.section.models' },
   { id: 'connection', labelKey: 'st.section.connection' },
   { id: 'providers', labelKey: 'st.section.providers' },
+  { id: 'agents', labelKey: 'st.section.agents' },
   { id: 'capabilities', labelKey: 'st.section.capabilities' },
   { id: 'workspaces', labelKey: 'st.section.workspaces' },
   { id: 'about', labelKey: 'st.section.about' },
@@ -243,8 +245,12 @@ function GeneralSection() {
           <Toggle
             label={t('st.composer.persistDrafts')}
             checked={settings.draftPersistence}
-            onChange={(checked) => { updateLocal({ draftPersistence: checked }); }}
+            onChange={(checked) => {
+              updateLocal({ draftPersistence: checked });
+              if (!checked) clearStoredDrafts();
+            }}
           />
+          <Hint>{t('st.composer.persistDraftsHint')}</Hint>
         </div>
       </SectionCard>
 
@@ -767,6 +773,7 @@ function ProvidersSection() {
               provider={provider}
               models={modelsQuery.data?.items ?? []}
               connection={connection}
+              managed={provider.id === authQuery.data?.managed_provider?.name}
               onSaved={refreshProviderData}
             />
           ))}
@@ -797,6 +804,7 @@ function CapabilitiesSection() {
   const [advancedSaving, setAdvancedSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [advancedFeedback, setAdvancedFeedback] = useState<Feedback>(null);
+  const restart = useRestartRequirement();
 
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
@@ -856,7 +864,13 @@ function CapabilitiesSection() {
       setExtraDirs((echoed.extra_skill_dirs ?? []).join('\n'));
       setExperimental(JSON.stringify(echoed.experimental ?? {}, null, 2));
       setTelemetry(echoed.telemetry !== false);
-      setFeedback({ tone: 'success', text: t('st.caps.saved') });
+      const previousTelemetry = configQuery.data?.telemetry !== false;
+      if (telemetry !== previousTelemetry) {
+        markRestartRequired(['telemetry']);
+        setFeedback({ tone: 'success', text: t('st.caps.savedRestart') });
+      } else {
+        setFeedback({ tone: 'success', text: t('st.caps.saved') });
+      }
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -894,10 +908,17 @@ function CapabilitiesSection() {
 
   return (
     <div className="space-y-5">
-      <SectionCard id="st-card-caps" title={t('st.caps.title')}>
+      <SectionCard
+        id="st-card-caps"
+        title={t('st.caps.title')}
+        badge={restart.fields.includes('telemetry') ? 'restart' : undefined}
+      >
         <div className="space-y-4">
           <Toggle label={t('st.caps.mergeSkills')} checked={mergeSkills} onChange={setMergeSkills} />
-          <Toggle label={t('st.caps.telemetry')} checked={telemetry} onChange={setTelemetry} />
+          <div className="space-y-1.5">
+            <Toggle label={t('st.caps.telemetry')} checked={telemetry} onChange={setTelemetry} />
+            <Hint>{t('st.caps.telemetryHint')}</Hint>
+          </div>
           <label className="block text-[11px] font-medium text-ink-soft">{t('st.caps.extraDirs')}
             <textarea className={`${INPUT} mt-1 min-h-24 font-mono`} value={extraDirs} onChange={(event) => { setExtraDirs(event.target.value); }} placeholder={'C:/skills/shared\nC:/skills/team'} />
           </label>
@@ -917,8 +938,6 @@ function CapabilitiesSection() {
           <FeedbackLine feedback={advancedFeedback} />
         </div>
       </SectionCard>
-
-      <DesktopServerFileCard />
 
       <SectionCard id="st-card-tools" title={t('st.tools.title')}>
         <div className="space-y-2">
@@ -949,6 +968,16 @@ function CapabilitiesSection() {
           {skillsQuery.isError ? <InlineError error={skillsQuery.error} /> : null}
         </div>
       </SectionCard>
+    </div>
+  );
+}
+
+function AgentsSection() {
+  const { t } = useI18n();
+  return (
+    <div className="space-y-5">
+      <Hint>{t('st.agents.webHint')}</Hint>
+      <DesktopServerFileCard />
     </div>
   );
 }
@@ -1306,7 +1335,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     if (entry.section !== active) guardedNavigate(entry.section);
   };
 
-  const pane = active === 'general' ? <GeneralSection /> : active === 'models' ? <ModelsSection /> : active === 'connection' ? <ConnectionSection /> : active === 'providers' ? <ProvidersSection /> : active === 'capabilities' ? <CapabilitiesSection /> : active === 'workspaces' ? <WorkspacesSection /> : <AboutSection />;
+  const pane = active === 'general' ? <GeneralSection /> : active === 'models' ? <ModelsSection /> : active === 'connection' ? <ConnectionSection /> : active === 'providers' ? <ProvidersSection /> : active === 'agents' ? <AgentsSection /> : active === 'capabilities' ? <CapabilitiesSection /> : active === 'workspaces' ? <WorkspacesSection /> : <AboutSection />;
 
   return (
     <DirtyGuardContext.Provider value={guardValue}>

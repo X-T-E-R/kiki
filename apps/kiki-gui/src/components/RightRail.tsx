@@ -3,13 +3,15 @@
  * and session meta (model, cwd, message count, context/token usage).
  */
 
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import type { GoalSnapshot, Task } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../i18n';
-import type { SessionViewState, SubagentBlock, TodoItem } from '../state/transcript';
+import type { AgentForest } from '../state/agentTree';
+import type { SessionViewState, TodoItem } from '../state/transcript';
+import { AgentTreeView } from './AgentTreeView';
 
 function todoTone(status: string): { icon: string; className: string } {
   const normalized = status.toLowerCase();
@@ -126,60 +128,15 @@ const TasksSection = memo(function TasksSection({
 });
 
 const SubagentsSection = memo(function SubagentsSection({
-  subagents,
+  forest,
+  selectedAgentId,
   onOpen,
 }: {
-  subagents: readonly SubagentBlock[];
+  forest: AgentForest;
+  selectedAgentId?: string;
   onOpen: (agentId: string) => void;
 }) {
-  const { t, time } = useI18n();
-  const [now, setNow] = useState(() => Date.now());
-  const hasRunning = subagents.some((subagent) => subagent.status === 'running');
-  useEffect(() => {
-    if (!hasRunning) return;
-    const timer = setInterval(() => { setNow(Date.now()); }, 1000);
-    return () => { clearInterval(timer); };
-  }, [hasRunning]);
-  if (subagents.length === 0) {
-    return <p className="text-[12px] text-ink-faint">{t('rail.noSubagents')}</p>;
-  }
-  return (
-    <ul className="space-y-1.5">
-      {subagents.map((subagent) => {
-        const start = new Date(subagent.startedAt).getTime();
-        const end = subagent.endedAt === undefined ? now : new Date(subagent.endedAt).getTime();
-        const elapsed = Number.isNaN(start) || Number.isNaN(end) ? 0 : Math.max(0, end - start);
-        const dot =
-          subagent.status === 'running'
-            ? 'bg-accent'
-            : subagent.status === 'completed'
-              ? 'bg-success'
-              : subagent.status === 'failed'
-                ? 'bg-danger'
-                : 'bg-amber-rule';
-        return (
-          <li key={subagent.subagentId}>
-            <button
-              type="button"
-              onClick={() => { onOpen(subagent.subagentId); }}
-              className="flex w-full items-center gap-2 rounded-lg border border-hairline bg-panel px-2.5 py-2 text-left transition-colors hover:border-accent/50 hover:bg-accent-soft/30"
-            >
-              <span className={`h-2 w-2 shrink-0 rounded-full ${dot} ${subagent.status === 'running' ? 'status-dot-busy' : ''}`} />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[12px] font-medium text-ink">{subagent.name}</span>
-                <span className="block truncate text-[10px] text-ink-faint">
-                  {t(`subagent.status.${subagent.status}`)} · {t('subagent.tools', { count: subagent.toolCallCount })}
-                </span>
-              </span>
-              <span className="shrink-0 font-mono text-[9.5px] text-ink-faint">
-                {time.formatDuration(elapsed)}
-              </span>
-            </button>
-          </li>
-        );
-      })}
-    </ul>
-  );
+  return <AgentTreeView forest={forest} selectedAgentId={selectedAgentId} onOpen={onOpen} />;
 });
 
 const GoalSection = memo(function GoalSection({
@@ -253,11 +210,15 @@ function MetaRow({ label, value, mono = false }: { label: string; value: string;
 
 export function RightRail({
   state,
+  forest,
+  selectedAgentId,
   onCancelTask,
   onOpenSubagent,
   className,
 }: {
   state: SessionViewState;
+  forest: AgentForest;
+  selectedAgentId?: string;
   onCancelTask: (taskId: string) => void;
   onOpenSubagent: (agentId: string) => void;
   className?: string;
@@ -269,10 +230,6 @@ export function RightRail({
   const contextTokens = state.contextTokens ?? usage?.context_tokens;
   const contextLimit =
     state.maxContextTokens ?? (usage !== undefined && usage.context_limit > 0 ? usage.context_limit : undefined);
-  const subagents = useMemo(
-    () => state.blocks.filter((block): block is SubagentBlock => block.kind === 'subagent'),
-    [state.blocks],
-  );
   const backgroundTasks = useMemo(
     () => state.tasks.filter((task) => task.kind !== 'subagent'),
     [state.tasks],
@@ -280,7 +237,7 @@ export function RightRail({
   // Empty sections collapse entirely (header included); when all four are
   // empty the rail shrinks to just the session meta card below.
   const showGoal = state.goal !== undefined && state.goal !== null;
-  const showSubagents = subagents.length > 0;
+  const showSubagents = Object.keys(forest.byId).some((id) => id !== 'main') || forest.roots.some((root) => root.agentId !== 'main');
   const showTodos = state.todos.length > 0;
   const showTasks = backgroundTasks.length > 0;
 
@@ -304,7 +261,7 @@ export function RightRail({
           <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
             {t('rail.subagents')}
           </h3>
-          <SubagentsSection subagents={subagents} onOpen={onOpenSubagent} />
+          <SubagentsSection forest={forest} selectedAgentId={selectedAgentId} onOpen={onOpenSubagent} />
         </section>
       ) : null}
 

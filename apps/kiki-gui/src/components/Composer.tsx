@@ -1,6 +1,6 @@
 /**
  * Composer — floating rounded-2xl card: permission-mode pills above a
- * multiline input (Enter sends, Shift+Enter newline), model selector fed from
+ * multiline input (send shortcut from settings), model selector fed from
  * the server catalog, accent send button; busy state swaps in Abort.
  *
  * Batch B additions:
@@ -14,7 +14,7 @@
  *     image content parts (the server format-gates and compresses them).
  */
 
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
@@ -38,6 +38,13 @@ import {
   type SlashItem,
 } from '../lib/slashCommands';
 import { registerOverlay } from '../lib/uiBusy';
+import {
+  isComposerSendKey,
+  settingsServerSnapshot,
+  settingsSnapshot,
+  subscribeSettings,
+  type ComposerModelSource,
+} from '../lib/settings';
 import { useConnection } from '../state/connection';
 import { ContextMeter } from './ContextMeter';
 
@@ -113,7 +120,7 @@ export function Composer({
   /** The server's configured default model (fresh sessions bind nothing). */
   serverDefaultModel: string | undefined;
   /** Where the effective model value comes from. */
-  modelSource: 'server-default' | 'session' | 'override';
+  modelSource: ComposerModelSource;
   permissionMode: PermissionMode;
   /** PromptSubmission.plan_mode — the wire field name (verified). */
   planMode: boolean;
@@ -163,6 +170,11 @@ export function Composer({
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const navigate = useNavigate();
+  const sendShortcut = useSyncExternalStore(
+    subscribeSettings,
+    settingsSnapshot,
+    settingsServerSnapshot,
+  ).sendShortcut;
   const text = value;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [goalOpen, setGoalOpen] = useState(false);
@@ -400,7 +412,15 @@ export function Composer({
       setMenu(null);
       return;
     }
-    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+    if (event.nativeEvent.isComposing) return;
+    // An open menu always owns plain Enter (accept the row), even when the
+    // send shortcut is ⌘/Ctrl+Enter.
+    if (menu !== null && menuRowCount > 0 && event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      send();
+      return;
+    }
+    if (isComposerSendKey(event, sendShortcut)) {
       event.preventDefault();
       send();
     }
@@ -540,9 +560,12 @@ export function Composer({
                   <option value="">
                     {defaultModel !== undefined
                       ? t('composer.inheritSession', { model: defaultModel })
-                      : t('composer.inheritServer', {
-                          model: serverDefaultModel ?? t('composer.unknown'),
-                        })}
+                      : t(
+                          modelSource === 'local-default'
+                            ? 'composer.inheritLocal'
+                            : 'composer.inheritServer',
+                          { model: serverDefaultModel ?? t('composer.unknown') },
+                        )}
                   </option>
                   {models.map((item) => (
                     <option key={`${item.provider}/${item.model}`} value={item.model}>
@@ -710,7 +733,9 @@ export function Composer({
               type="button"
               onClick={send}
               disabled={!canSend}
-              title={busy ? t('composer.queueTitle') : t('composer.sendTitle')}
+              title={busy
+                ? t(sendShortcut === 'cmd-enter' ? 'composer.queueTitleCmdEnter' : 'composer.queueTitle')
+                : t(sendShortcut === 'cmd-enter' ? 'composer.sendTitleCmdEnter' : 'composer.sendTitle')}
               aria-label={busy ? t('composer.queueAria') : t('composer.sendAria')}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-accent text-white transition-colors hover:bg-accent-deep disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
             >
@@ -728,7 +753,7 @@ export function Composer({
         </div>
         <div className="mt-1.5 flex items-center gap-3">
           <p className="min-w-0 flex-1 text-center text-[10.5px] text-ink-faint">
-            {t('composer.footerBase')}
+            {t(sendShortcut === 'cmd-enter' ? 'composer.footerBaseCmdEnter' : 'composer.footerBase')}
             {t(sessionId !== undefined ? 'composer.footerSkills' : 'composer.footerShortcuts')}
             {fsSearch !== undefined ? t('composer.footerFiles') : ''}
           </p>

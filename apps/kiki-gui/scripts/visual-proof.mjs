@@ -105,6 +105,7 @@ const STRINGS = {
     sendNow: 'Send now',
     removeQueued: 'Remove',
     clearQueue: 'Clear all',
+    queueClearTitle: 'Clear 1 queued prompts?',
     twoPromptsQueued: '2 prompts queued',
     togglePanelAria: 'Toggle panel',
     openMenuAria: 'Open session menu',
@@ -173,6 +174,7 @@ const STRINGS = {
     sendNow: '立即追加',
     removeQueued: '移除',
     clearQueue: '全部清除',
+    queueClearTitle: '清除 1 条排队消息？',
     twoPromptsQueued: '2 条消息已排队',
     togglePanelAria: '切换面板',
     openMenuAria: '打开会话菜单',
@@ -643,7 +645,7 @@ async function scenarioSettingsInvalid() {
 }
 
 async function scenarioSettingsDesktopGate() {
-  await page.goto(`${WEB_URL}/settings/capabilities?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/settings/agents?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
   await page.waitForSelector('[data-testid="desktop-config-disabled-hint"]', { timeout: 10_000 });
@@ -774,8 +776,12 @@ async function scenarioQueue() {
   }
   await shot('queue-steered');
 
-  // Clear all empties the queue: the strip and every Queued chip disappear.
+  // Clear all empties the queue: confirm the dialog, then the strip and every
+  // Queued chip disappear.
   await page.getByRole('button', { name: S.clearQueue }).click();
+  const clearDialog = page.getByRole('alertdialog', { name: S.queueClearTitle });
+  await clearDialog.waitFor({ timeout: 5000 });
+  await clearDialog.getByRole('button', { name: S.clearQueue }).click();
   await page.waitForSelector('[data-queue-strip]', { state: 'detached', timeout: 10_000 });
   if ((await page.locator(`text=${S.queueBarPattern}`).count()) !== 0) {
     throw new Error('queue bar survived Clear all');

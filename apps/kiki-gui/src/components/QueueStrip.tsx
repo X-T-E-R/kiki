@@ -28,11 +28,14 @@ export function QueueStrip({
   onSendNow,
   onRemove,
   onClearAll,
+  sendNowDisabled = false,
 }: {
   readonly items: readonly QueuedPromptPreview[];
   readonly onSendNow: (promptId: string) => Promise<void> | void;
   readonly onRemove: (promptId: string) => Promise<void> | void;
   readonly onClearAll: () => void;
+  /** Steer is a send-equivalent; disable it while the session is resyncing. */
+  readonly sendNowDisabled?: boolean;
 }) {
   const { t, tp } = useI18n();
   // A row with an in-flight action stays disabled until the action settles
@@ -93,9 +96,9 @@ export function QueueStrip({
                 <span className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                   <button
                     type="button"
-                    disabled={pending}
+                    disabled={pending || sendNowDisabled}
                     onClick={() => { run(item.promptId, onSendNow); }}
-                    title={t('sv.queueSendNowTitle')}
+                    title={sendNowDisabled ? t('sv.sendPaused') : t('sv.queueSendNowTitle')}
                     aria-label={t('sv.queueSendNow')}
                     className="rounded-full bg-amber-ink px-2 py-0.5 text-[10.5px] font-medium text-white transition-colors hover:bg-amber-ink/85 disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none"
                   >

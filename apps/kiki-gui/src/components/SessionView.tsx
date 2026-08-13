@@ -10,6 +10,8 @@ import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom'
 
 import type { PermissionMode, Session } from '@moonshot-ai/protocol';
 
+import { AgentBreadcrumb } from './AgentBreadcrumb';
+import { ConfirmDialog } from './ConfirmDialog';
 import { Composer } from './Composer';
 import { QueueStrip } from './QueueStrip';
 import { RightRail } from './RightRail';
@@ -25,6 +27,7 @@ import { API_CODES, ApiError, isSessionNotFoundMessage } from '../lib/client';
 import { readDraft, writeDraft } from '../lib/drafts';
 import { isMainWindowVisibleAndFocused, showDesktopNotification } from '../lib/desktop';
 import { useI18n } from '../i18n';
+import type { I18nKey } from '../i18n/locale';
 import {
   SESSION_REWRITTEN_EVENT,
   compactSessionContext,
@@ -40,21 +43,50 @@ import {
 } from '../lib/terminalPrefs';
 import { pushToast } from '../lib/toasts';
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
-import { readDesktopPrefs, readLastSessionId, readSettings, writeLastSessionId } from '../lib/settings';
+import {
+  readDesktopPrefs,
+  readLastSessionId,
+  readSettings,
+  resolveEffectiveModel,
+  resolveModelSource,
+  resolveSessionModelOverride,
+  settingsServerSnapshot,
+  settingsSnapshot,
+  subscribeSettings,
+  writeLastSessionId,
+  type ComposerModelSource,
+} from '../lib/settings';
 import { useConnection, useControllerRegistry } from '../state/connection';
-import { SessionController } from '../state/sessionController';
+import { assertSessionWritable, SessionController } from '../state/sessionController';
 import {
   activeTerminalManager,
   terminalCapabilityAvailable,
   TerminalManager,
 } from '../state/terminalManager';
 import {
+  agentChildren,
+  agentPath,
+  agentSiblings,
+  applyNewestAgentPage,
+  mergeAgentTranscript,
+  prependOlderAgentPage,
+  type AgentHistoryCache,
+} from '../state/agentTree';
+import {
+  MAIN_AGENT_ID,
+  agentBusyFromMeta,
+  agentTranscriptPageFromResponse,
   agentTranscriptToBlocks,
+  countToolBlocks,
   createViewState,
+  filterBlocksToDirectChildren,
+  oldestTurnIdFromResponse,
   pendingQuestionCount,
   queuedPromptPreviews,
+  sessionAgentForestFromTranscript,
   type ApprovalBlock,
   type AssistantBlock,
+  type Block,
   type NoticeBlock,
   type SessionViewState,
   type SubagentBlock,
@@ -93,21 +125,27 @@ function Header({
   railOpen,
   terminalAvailable,
   terminalOpen,
+  effectiveModel,
+  modelSource,
   onToggleRail,
   onToggleTerminal,
   onToggleSidebar,
   onJumpTurn,
   onSessionAction,
+  onRequestBatchResolve,
 }: {
   controller: SessionController | null;
   railOpen: boolean;
   terminalAvailable: boolean;
   terminalOpen: boolean;
+  effectiveModel: string | undefined;
+  modelSource: ModelSource;
   onToggleRail: () => void;
   onToggleTerminal: () => void;
   onToggleSidebar: () => void;
   onJumpTurn: (blockId: string) => void;
   onSessionAction: (action: 'fork' | 'undo' | 'compact' | 'export') => void;
+  onRequestBatchResolve: (decision: 'approved' | 'rejected', ids: readonly string[]) => void;
 }) {
   const { t, tp } = useI18n();
   const state = useSyncExternalStore(
@@ -136,16 +174,9 @@ function Header({
       ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
-  const resolveAll = (decision: 'approved' | 'rejected') => {
-    if (controller === null || unresolvedApprovalIds.length === 0) return;
-    const ids = unresolvedApprovalIds;
-    void resolveAllApprovals(controller, ids, decision).then(({ total, failed }) => {
-      if (failed === 0) {
-        pushToast({ tone: 'success', text: tp('sv.batchResolved', total) });
-      } else {
-        pushToast({ tone: 'error', text: t('sv.batchFailed', { failed, total }) });
-      }
-    });
+  const requestBatch = (decision: 'approved' | 'rejected') => {
+    if (unresolvedApprovalIds.length === 0) return;
+    onRequestBatchResolve(decision, unresolvedApprovalIds);
   };
 
   return (
@@ -181,14 +212,14 @@ function Header({
             <span className="flex shrink-0 items-center gap-1" data-approval-batch>
               <button
                 type="button"
-                onClick={() => { resolveAll('approved'); }}
+                onClick={() => { requestBatch('approved'); }}
                 className="rounded-full border border-accent bg-accent-soft px-2 py-0.5 text-[10.5px] font-semibold text-accent transition-colors hover:bg-accent hover:text-white"
               >
                 {t('sv.approveAll')}
               </button>
               <button
                 type="button"
-                onClick={() => { resolveAll('rejected'); }}
+                onClick={() => { requestBatch('rejected'); }}
                 className="rounded-full border border-hairline px-2 py-0.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-danger hover:text-danger"
               >
                 {t('sv.rejectAll')}
@@ -201,9 +232,12 @@ function Header({
               {t('sv.working')}
             </span>
           ) : null}
-          {state.model !== undefined && state.model !== '' ? (
-            <span className="shrink-0 rounded-full border border-hairline bg-paper px-2 py-0.5 font-mono text-[10.5px] text-ink-soft">
-              {state.model}
+          {effectiveModel !== undefined && effectiveModel !== '' ? (
+            <span
+              className="shrink-0 rounded-full border border-hairline bg-paper px-2 py-0.5 font-mono text-[10.5px] text-ink-soft"
+              title={t('composer.modelTitle', { source: t(`composer.modelSource.${modelSource}`) })}
+            >
+              {effectiveModel}
             </span>
           ) : null}
           <TurnsMenu state={state} onJump={onJumpTurn} />
@@ -451,8 +485,6 @@ function SessionActionsMenu({
 }
 const emptyView = createViewState('');
 const emptyState = () => emptyView;
-/** Stable no-op handler for the read-only agent transcript (keeps BlockView memos). */
-const noopLoadOlder = () => Promise.resolve(false);
 
 /** Live media query (resize-aware) for overlay-vs-inline layout decisions. */
 function useMediaQuery(query: string): boolean {
@@ -470,7 +502,7 @@ function useMediaQuery(query: string): boolean {
   return matches;
 }
 
-type ModelSource = 'server-default' | 'session' | 'override';
+type ModelSource = ComposerModelSource;
 
 /** How long the not-found card stays before /s/:id falls back home. */
 export const NOT_FOUND_FALLBACK_MS = 3000;
@@ -541,27 +573,224 @@ function pushAbortFailureToast(controller: SessionController, message: string): 
   });
 }
 
-function resolveApprovalShortcutTarget(): string | undefined {
-  const active = document.activeElement;
-  if (active instanceof HTMLElement) {
-    const focusedCard = active.closest('[data-approval-id]') as HTMLElement | null;
-    if (focusedCard !== null) {
-      const id = focusedCard.dataset['approvalId'];
-      if (id !== undefined) return id;
-    }
-  }
-  const cards = Array.from(document.querySelectorAll<HTMLElement>('[data-approval-id]'));
-  const visible = cards.filter((card) => {
+export interface ApprovalShortcutCard {
+  readonly id: string;
+  readonly pending: boolean;
+  readonly visible: boolean;
+  readonly focused: boolean;
+}
+
+/**
+ * y/n target: the focused pending approval, or the only visible pending card.
+ * Multiple visible pending cards with no focus, and any resolved card, miss.
+ */
+export function resolveApprovalShortcutTarget(
+  cards: readonly ApprovalShortcutCard[],
+): string | undefined {
+  const focused = cards.find((card) => card.focused);
+  if (focused !== undefined) return focused.pending ? focused.id : undefined;
+  const visiblePending = cards.filter((card) => card.pending && card.visible);
+  return visiblePending.length === 1 ? visiblePending[0]!.id : undefined;
+}
+
+/** y/n must not fire while a dialog, overlay, or popover owns the keyboard. */
+export function shouldHandleApprovalShortcut(input: {
+  key: string;
+  overlayOpen: boolean;
+  inEditable: boolean;
+}): boolean {
+  if (input.overlayOpen || input.inEditable) return false;
+  return input.key === 'y' || input.key === 'n';
+}
+
+export function collectApprovalShortcutCards(
+  root: ParentNode = document,
+  viewport: { innerHeight: number } = window,
+  active: Element | null = document.activeElement,
+): ApprovalShortcutCard[] {
+  return Array.from(root.querySelectorAll<HTMLElement>('[data-approval-id]')).flatMap((card) => {
+    const id = card.dataset['approvalId'];
+    if (id === undefined) return [];
     const rect = card.getBoundingClientRect();
-    return rect.top < window.innerHeight && rect.bottom > 0;
+    return [{
+      id,
+      // Only pending cards mount `[data-approval-id]`; resolved cards drop it.
+      pending: true,
+      visible: rect.top < viewport.innerHeight && rect.bottom > 0,
+      focused: active instanceof Node && card.contains(active),
+    }];
   });
-  // With no focused card, y/n acts on the topmost visible pending card — the
-  // <kbd> hints on every pending card advertise exactly that target.
-  if (visible.length > 0) {
-    const id = visible[0]!.dataset['approvalId'];
-    if (id !== undefined) return id;
+}
+
+/** True when Escape should go to the PTY instead of closing chrome or aborting. */
+export function isTerminalEscapeTarget(target: EventTarget | null): boolean {
+  if (target === null || typeof Element === 'undefined' || !(target instanceof Element)) {
+    return false;
   }
-  return undefined;
+  return (
+    target.closest('[data-terminal-canvas]') !== null ||
+    target.closest('.xterm') !== null ||
+    target.closest('.xterm-helper-textarea') !== null
+  );
+}
+
+/**
+ * Global Escape closer for rail / terminal. Overlay and PTY own the key first;
+ * abort stays in the other listener and must not double-fire.
+ */
+export function shouldCloseSessionChromeOnEscape(input: {
+  key: string;
+  defaultPrevented: boolean;
+  overlayOpen: boolean;
+  terminalFocused: boolean;
+}): boolean {
+  if (input.key !== 'Escape') return false;
+  if (input.defaultPrevented || input.overlayOpen || input.terminalFocused) return false;
+  return true;
+}
+
+export function agentTranscriptPoll(input: {
+  selectedAgentId: string | undefined;
+}): { pageSize: number; refetchInterval: number } {
+  return input.selectedAgentId === undefined
+    ? { pageSize: 1, refetchInterval: 5000 }
+    : { pageSize: 100, refetchInterval: 1500 };
+}
+
+export interface AgentOlderFetchGate {
+  readonly generation: number;
+  readonly inFlight: boolean;
+}
+
+export interface AgentOlderRequest {
+  readonly generation: number;
+  readonly sessionId: string;
+  readonly agentId: string;
+}
+
+export const INITIAL_AGENT_OLDER_FETCH_GATE: AgentOlderFetchGate = {
+  generation: 0,
+  inFlight: false,
+};
+
+/** Bump the token so a previous agent's in-flight request can no longer commit. */
+export function resetAgentOlderFetchGate(gate: AgentOlderFetchGate): AgentOlderFetchGate {
+  return { generation: gate.generation + 1, inFlight: false };
+}
+
+export function beginAgentOlderFetch(input: {
+  selectedAgentId: string | undefined;
+  sessionId: string;
+  oldestTurnId: string | undefined;
+  hasMore: boolean;
+  gate: AgentOlderFetchGate;
+}): { gate: AgentOlderFetchGate; request: AgentOlderRequest } | undefined {
+  if (
+    input.selectedAgentId === undefined ||
+    input.oldestTurnId === undefined ||
+    !input.hasMore ||
+    input.gate.inFlight
+  ) {
+    return undefined;
+  }
+  return {
+    gate: { generation: input.gate.generation, inFlight: true },
+    request: {
+      generation: input.gate.generation,
+      sessionId: input.sessionId,
+      agentId: input.selectedAgentId,
+    },
+  };
+}
+
+export function isLiveAgentOlderRequest(
+  gate: AgentOlderFetchGate,
+  request: AgentOlderRequest,
+  current: { sessionId: string; selectedAgentId: string | undefined },
+): boolean {
+  return (
+    request.generation === gate.generation &&
+    request.sessionId === current.sessionId &&
+    request.agentId === current.selectedAgentId
+  );
+}
+
+/** Drop a stale finally so it cannot clear a newer agent's in-flight bit. */
+export function finishAgentOlderFetch(
+  gate: AgentOlderFetchGate,
+  request: Pick<AgentOlderRequest, 'generation'>,
+): AgentOlderFetchGate {
+  if (request.generation !== gate.generation) return gate;
+  return { generation: gate.generation, inFlight: false };
+}
+
+export async function settleAgentOlderFetch<T>(input: {
+  getGate: () => AgentOlderFetchGate;
+  setGate: (next: AgentOlderFetchGate) => void;
+  request: AgentOlderRequest;
+  current: () => { sessionId: string; selectedAgentId: string | undefined };
+  work: () => Promise<T>;
+  onSuccess: (value: T) => void;
+  onError: (error: unknown) => void;
+}): Promise<{ committed: boolean; value?: T }> {
+  try {
+    const value = await input.work();
+    if (!isLiveAgentOlderRequest(input.getGate(), input.request, input.current())) {
+      return { committed: false };
+    }
+    input.onSuccess(value);
+    return { committed: true, value };
+  } catch (error) {
+    if (!isLiveAgentOlderRequest(input.getGate(), input.request, input.current())) {
+      return { committed: false };
+    }
+    input.onError(error);
+    return { committed: false };
+  } finally {
+    input.setGate(finishAgentOlderFetch(input.getGate(), input.request));
+  }
+}
+
+export function agentOlderErrorText(error: unknown): string {
+  return error instanceof Error && error.message !== '' ? error.message : String(error);
+}
+
+export function agentDetailPath(sessionId: string, agentId: string): string {
+  return `/s/${sessionId}/agent/${encodeURIComponent(agentId)}`;
+}
+
+function ResyncStatusBanner({
+  resyncing,
+  resyncFailed,
+  onRetry,
+}: {
+  resyncing: boolean;
+  resyncFailed: boolean;
+  onRetry?: () => void;
+}) {
+  const { t } = useI18n();
+  if (!resyncing && !resyncFailed) return null;
+  return (
+    <div className="flex items-center gap-2 px-6 pt-1">
+      <span className="mx-auto flex items-center gap-2 text-[11px] text-ink-faint">
+        <KikiMark className="status-dot-busy" />
+        <span>
+          {resyncing ? t('sv.resyncing') : t('sv.resyncFailed')}
+          {' · '}
+          {t('sv.sendPaused')}
+        </span>
+        {resyncFailed && !resyncing && onRetry !== undefined ? (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="rounded-full border border-hairline px-2 py-0.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent"
+          >
+            {t('sv.resyncRetryNow')}
+          </button>
+        ) : null}
+      </span>
+    </div>
+  );
 }
 
 export function SessionView({
@@ -576,11 +805,15 @@ export function SessionView({
   const sessionId = id!;
   const { client, socket, meta, wsStatus } = useConnection();
   const terminalAvailable = terminalCapabilityAvailable(meta.capabilities);
-  const { t, locale } = useI18n();
+  const { t, tp, locale } = useI18n();
   const navigate = useNavigate();
   const location = useLocation();
   const agentMatch = useMatch('/s/:id/agent/:agentId');
   const selectedAgentId = agentMatch?.params.agentId;
+  const selectedAgentIdRef = useRef(selectedAgentId);
+  selectedAgentIdRef.current = selectedAgentId;
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
   const initialPromptRef = useRef(
     (location.state as { initialPrompt?: string } | null)?.initialPrompt,
   );
@@ -594,6 +827,11 @@ export function SessionView({
       goalObjective?: string;
       initialAttachments?: ComposerAttachment[];
     } | null) ?? {},
+  );
+  const liveSettings = useSyncExternalStore(
+    subscribeSettings,
+    settingsSnapshot,
+    settingsServerSnapshot,
   );
   const defaults = useMemo(() => readSettings(), []);
   // Below lg the rail is a fixed overlay drawer (see .app-rail in index.css):
@@ -617,13 +855,17 @@ export function SessionView({
     initialOptionsRef.current.goalObjective ?? '',
   );
   const [goalControl, setGoalControl] = useState<'pause' | 'resume' | 'cancel' | undefined>();
-  const [modelOverride, setModelOverride] = useState(
-    initialOptionsRef.current.model ?? defaults.defaultModel,
+  const [modelOverride, setModelOverride] = useState(() =>
+    resolveSessionModelOverride(initialOptionsRef.current.model),
   );
   const [effortOverride, setEffortOverride] = useState(
     initialOptionsRef.current.thinking ?? defaults.defaultEffort,
   );
   const [confirmUndo, setConfirmUndo] = useState(false);
+  const [batchConfirm, setBatchConfirm] = useState<
+    { decision: 'approved' | 'rejected'; ids: readonly string[] } | undefined
+  >(undefined);
+  const [confirmClearQueue, setConfirmClearQueue] = useState(false);
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>(
     () => initialOptionsRef.current.initialAttachments ?? [],
@@ -699,22 +941,29 @@ export function SessionView({
     }
   }, [sessionId]);
 
-  // Close the rail drawer on Escape (the app-level sidebar closes itself);
-  // the terminal panel gets the same treatment, and while it is open it is a
-  // registered overlay so Escape cannot also abort the running turn.
+  // Close the rail drawer on Escape (the app-level sidebar closes itself).
+  // Overlay / PTY own the key first; abort lives in the other listener and
+  // skips when the terminal panel is open so the two cannot double-fire.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
+      if (
+        !shouldCloseSessionChromeOnEscape({
+          key: event.key,
+          defaultPrevented: event.defaultPrevented,
+          overlayOpen: anyOverlayOpen(),
+          terminalFocused: isTerminalEscapeTarget(event.target),
+        })
+      ) {
+        return;
+      }
+      if (!railOpen && !terminalOpen) return;
+      event.preventDefault();
       setRailOpen(false);
       if (terminalOpen) toggleTerminalPanel();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [terminalOpen, toggleTerminalPanel]);
-  useEffect(() => {
-    if (!terminalOpen) return;
-    return registerOverlay('terminal-panel');
-  }, [terminalOpen]);
+  }, [railOpen, terminalOpen, toggleTerminalPanel]);
 
   // Per-session composer drafts.
   useEffect(() => {
@@ -736,21 +985,6 @@ export function SessionView({
     window.addEventListener(SESSION_REWRITTEN_EVENT, onRewritten);
     return () => { window.removeEventListener(SESSION_REWRITTEN_EVENT, onRewritten); };
   }, [controller, sessionId]);
-
-  // The undo-confirm dialog is an overlay: Escape closes it (and must not
-  // fall through to the global Escape-to-abort handler).
-  useEffect(() => {
-    if (!confirmUndo) return;
-    const unregister = registerOverlay('confirm-undo');
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setConfirmUndo(false);
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => {
-      unregister();
-      window.removeEventListener('keydown', onKeyDown);
-    };
-  }, [confirmUndo]);
 
   const state = useSyncExternalStore(
     controller?.subscribe ?? noopSubscribe,
@@ -796,12 +1030,35 @@ export function SessionView({
     return () => { clearTimeout(timer); };
   }, [loadError, sessionId, navigate, t]);
 
+  const rosterAgentId = selectedAgentId ?? MAIN_AGENT_ID;
+  const agentPoll = agentTranscriptPoll({ selectedAgentId });
   const agentTranscriptQuery = useQuery({
-    queryKey: ['agent-transcript', sessionId, selectedAgentId],
-    queryFn: () => client.getAgentTranscript(sessionId, selectedAgentId!),
-    enabled: selectedAgentId !== undefined,
-    refetchInterval: selectedAgentId === undefined ? false : 1500,
+    queryKey: ['agent-transcript', sessionId, rosterAgentId, agentPoll.pageSize],
+    queryFn: () => client.getAgentTranscript(sessionId, rosterAgentId, { pageSize: agentPoll.pageSize }),
+    refetchInterval: agentPoll.refetchInterval,
   });
+  const [agentHistory, setAgentHistory] = useState<(AgentHistoryCache & { blocks: readonly Block[] }) | null>(null);
+  const agentHistoryRef = useRef(agentHistory);
+  agentHistoryRef.current = agentHistory;
+  const [loadingOlderAgent, setLoadingOlderAgent] = useState(false);
+  const agentOlderFetchGateRef = useRef<AgentOlderFetchGate>(INITIAL_AGENT_OLDER_FETCH_GATE);
+  const [agentOlderError, setAgentOlderError] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    agentOlderFetchGateRef.current = resetAgentOlderFetchGate(agentOlderFetchGateRef.current);
+    setAgentHistory(null);
+    setLoadingOlderAgent(false);
+    setAgentOlderError(undefined);
+  }, [selectedAgentId, sessionId]);
+  useEffect(() => {
+    if (selectedAgentId === undefined || agentTranscriptQuery.data === undefined) return;
+    const response = agentTranscriptQuery.data;
+    const serverBlocks = agentTranscriptToBlocks(response);
+    const newestPage = agentTranscriptPageFromResponse(response, serverBlocks);
+    setAgentHistory((current) => {
+      const next = applyNewestAgentPage(current, selectedAgentId, newestPage);
+      return { ...next, blocks: next.page.blocks as readonly Block[] };
+    });
+  }, [agentTranscriptQuery.data, selectedAgentId]);
 
   // Live per-agent channel: child-agent frames land in their own sub-store, so
   // an open agent page re-renders from here without the main transcript
@@ -841,7 +1098,8 @@ export function SessionView({
   });
 
   const sessionModel = state.model;
-  const effectiveModel = modelOverride ?? sessionModel ?? serverDefaultModel;
+  const inheritedDefault = liveSettings.defaultModel ?? serverDefaultModel;
+  const effectiveModel = resolveEffectiveModel(modelOverride, sessionModel, inheritedDefault);
   const catalogItem = (modelsQuery.data?.items ?? []).find((item) => item.model === effectiveModel);
   const supportedEfforts = catalogItem?.support_efforts;
   useEffect(() => {
@@ -868,6 +1126,8 @@ export function SessionView({
       }
       if (event.key === 'Escape') {
         if (anyOverlayOpen()) return;
+        if (isTerminalEscapeTarget(event.target)) return;
+        if (terminalOpen) return;
         const inFormField =
           target !== null &&
           (target.tagName === 'INPUT' ||
@@ -889,8 +1149,16 @@ export function SessionView({
         }
         return;
       }
-      if (event.key !== 'y' && event.key !== 'n') return;
-      const approvalId = resolveApprovalShortcutTarget();
+      if (
+        !shouldHandleApprovalShortcut({
+          key: event.key,
+          overlayOpen: anyOverlayOpen(),
+          inEditable: false,
+        })
+      ) {
+        return;
+      }
+      const approvalId = resolveApprovalShortcutTarget(collectApprovalShortcutCards());
       if (approvalId === undefined) return;
       event.preventDefault();
       void controller
@@ -906,7 +1174,7 @@ export function SessionView({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [controller, t]);
+  }, [controller, t, terminalOpen]);
 
   const actions = useMemo(() => {
     if (controller === null) return null;
@@ -949,6 +1217,15 @@ export function SessionView({
         args: string,
         composerAttachments: readonly ComposerAttachment[],
       ) => {
+        try {
+          assertSessionWritable(controller.getState());
+        } catch (error: unknown) {
+          pushToast({
+            tone: 'error',
+            text: error instanceof Error ? error.message : t('sv.sendPaused'),
+          });
+          return;
+        }
         const activation = buildSkillActivation(args, composerAttachments);
         void client
           .activateSkill(sessionId, name, {
@@ -1017,10 +1294,16 @@ export function SessionView({
           });
         });
       },
-      clearQueue: () => {
-        // clearQueue settles per-prompt (allSettled) — nothing to surface.
-        void controller.clearQueue();
-      },
+      clearQueue: () =>
+        controller.clearQueue().then((result) => {
+          if (result.failed > 0) {
+            pushToast({
+              tone: 'error',
+              text: t('sv.queueClearFailed', { failed: result.failed, total: result.total }),
+            });
+          }
+          return result;
+        }),
     };
   }, [
     controller,
@@ -1099,6 +1382,29 @@ export function SessionView({
       });
   }, [actionContext, state.session, t, locale]);
 
+  const confirmClearQueueRun = useCallback(() => {
+    setConfirmClearQueue(false);
+    void actions?.clearQueue();
+  }, [actions]);
+  const handleBatchResolve = useCallback(
+    (decision: 'approved' | 'rejected', ids: readonly string[]) => {
+      setBatchConfirm({ decision, ids });
+    },
+    [],
+  );
+  const confirmBatchRun = useCallback(() => {
+    if (controller === null || batchConfirm === undefined) return;
+    const { decision, ids } = batchConfirm;
+    setBatchConfirm(undefined);
+    void resolveAllApprovals(controller, ids, decision).then(({ total, failed }) => {
+      if (failed === 0) {
+        pushToast({ tone: 'success', text: tp('sv.batchResolved', total) });
+      } else {
+        pushToast({ tone: 'error', text: t('sv.batchFailed', { failed, total }) });
+      }
+    });
+  }, [batchConfirm, controller, t, tp]);
+
   // Stable transcript callbacks: inline arrows would change identity on every
   // publish, re-registering TopEdge's scroll listener and defeating the
   // memoized block components.
@@ -1106,6 +1412,69 @@ export function SessionView({
     () => controller?.loadOlderMessages() ?? Promise.resolve(false),
     [controller],
   );
+  const openAgent = useCallback(
+    (agentId: string) => {
+      if (agentId === MAIN_AGENT_ID) {
+        void navigate(`/s/${sessionId}`);
+        return;
+      }
+      void navigate(agentDetailPath(sessionId, agentId));
+    },
+    [navigate, sessionId],
+  );
+  const handleLoadOlderAgent = useCallback(async (): Promise<boolean> => {
+    if (selectedAgentId === undefined) return false;
+    const currentHistory = agentHistoryRef.current;
+    const cursor = currentHistory?.agentId === selectedAgentId ? currentHistory.page.oldestTurnId : undefined;
+    const started = beginAgentOlderFetch({
+      selectedAgentId,
+      sessionId,
+      oldestTurnId: cursor,
+      hasMore: currentHistory?.page.hasMore === true,
+      gate: agentOlderFetchGateRef.current,
+    });
+    if (started === undefined) return false;
+    agentOlderFetchGateRef.current = started.gate;
+    setLoadingOlderAgent(true);
+    setAgentOlderError(undefined);
+    const settled = await settleAgentOlderFetch({
+      getGate: () => agentOlderFetchGateRef.current,
+      setGate: (next) => {
+        agentOlderFetchGateRef.current = next;
+        if (next.generation === started.request.generation) {
+          setLoadingOlderAgent(next.inFlight);
+        }
+      },
+      request: started.request,
+      current: () => ({
+        sessionId: sessionIdRef.current,
+        selectedAgentId: selectedAgentIdRef.current,
+      }),
+      work: async () => {
+        const older = await client.getAgentTranscript(sessionId, selectedAgentId, { beforeTurn: cursor });
+        const olderBlocks = agentTranscriptToBlocks(older);
+        return { olderBlocks, olderPage: agentTranscriptPageFromResponse(older, olderBlocks) };
+      },
+      onSuccess: ({ olderBlocks, olderPage }) => {
+        setAgentHistory((current) => {
+          if (current === null || current.agentId !== selectedAgentId) {
+            return { agentId: selectedAgentId, page: olderPage, blocks: olderBlocks };
+          }
+          const nextPage = prependOlderAgentPage(current.page, olderPage);
+          return {
+            agentId: selectedAgentId,
+            page: nextPage,
+            blocks: nextPage.blocks as readonly Block[],
+          };
+        });
+        setAgentOlderError(undefined);
+      },
+      onError: (error) => {
+        setAgentOlderError(agentOlderErrorText(error));
+      },
+    });
+    return settled.committed && (settled.value?.olderBlocks.length ?? 0) > 0;
+  }, [client, selectedAgentId, sessionId]);
   const handleResolveApproval = useCallback(
     (approvalId: string, decision: 'approved' | 'rejected' | 'cancelled', scope?: 'session') =>
       controller?.resolveApproval(approvalId, decision, scope) ?? Promise.resolve(),
@@ -1134,7 +1503,10 @@ export function SessionView({
     (promptId: string) => actions?.sendNowQueued(promptId),
     [actions],
   );
-  const handleClearQueue = useCallback(() => actions?.clearQueue(), [actions]);
+  const handleClearQueue = useCallback(() => {
+    if ((actions?.clearQueue) === undefined) return;
+    setConfirmClearQueue(true);
+  }, [actions]);
   const queuedItems = useMemo(() => queuedPromptPreviews(state), [state]);
   const handleRetryLoad = useCallback(() => void controller?.retryOpen(), [controller]);
 
@@ -1145,6 +1517,8 @@ export function SessionView({
       controller === null ||
       actions === null ||
       !state.loaded ||
+      state.resyncing ||
+      state.resyncFailed ||
       initialPromptRef.current === undefined
     ) {
       return;
@@ -1162,7 +1536,7 @@ export function SessionView({
     setDraft(text);
     setAttachments(initialAttachments);
     actions.send(text, initialAttachments);
-  }, [controller, actions, state.loaded, location.pathname, navigate]);
+  }, [controller, actions, state.loaded, state.resyncing, state.resyncFailed, location.pathname, navigate, sessionId]);
 
   // Desktop approval notification: if the window is hidden or blurred, nudge
   // the user once per approval request.
@@ -1184,9 +1558,18 @@ export function SessionView({
     });
   }, [state.pendingInteraction, t]);
 
-  const composerDisabled = controller === null || !state.loaded || state.loadError !== undefined;
-  const modelSource: ModelSource =
-    modelOverride !== undefined ? 'override' : sessionModel !== undefined ? 'session' : 'server-default';
+  const composerDisabled =
+    controller === null ||
+    !state.loaded ||
+    state.loadError !== undefined ||
+    state.resyncing ||
+    state.resyncFailed;
+  const modelSource: ModelSource = resolveModelSource(
+    modelOverride,
+    sessionModel,
+    liveSettings.defaultModel,
+    serverDefaultModel,
+  );
   // The composer footer's mini meter reads the same usage fields as the rail.
   const usage = state.session?.usage;
   const contextUsed = state.contextTokens ?? usage?.context_tokens;
@@ -1198,6 +1581,11 @@ export function SessionView({
   // below lg the rail becomes a fixed overlay (see .app-rail in index.css).
   // The app-level sidebar renders its own backdrop from App.
   const showBackdrop = railIsOverlay && railOpen;
+  const forest = useMemo(
+    () => sessionAgentForestFromTranscript(state, agentTranscriptQuery.data),
+    [state, agentTranscriptQuery.data],
+  );
+  const selectedNode = selectedAgentId === undefined ? undefined : forest.byId[selectedAgentId];
   const selectedSubagent =
     selectedAgentId === undefined
       ? undefined
@@ -1205,21 +1593,47 @@ export function SessionView({
           (block): block is SubagentBlock =>
             block.kind === 'subagent' && block.subagentId === selectedAgentId,
         );
+  const crumbs = useMemo(
+    () => (selectedAgentId === undefined ? [] : agentPath(forest, selectedAgentId)),
+    [forest, selectedAgentId],
+  );
+  const parentNode = crumbs.length > 1 ? crumbs[crumbs.length - 2] : undefined;
+  const siblingNodes = selectedAgentId === undefined ? [] : agentSiblings(forest, selectedAgentId);
+  const childNodes = selectedAgentId === undefined ? [] : agentChildren(forest, selectedAgentId);
 
   if (selectedAgentId !== undefined) {
-    const serverBlocks =
-      agentTranscriptQuery.data === undefined
-        ? undefined
-        : agentTranscriptToBlocks(agentTranscriptQuery.data);
-    // Live per-agent channel: frames captured since this client opened the
-    // session. The polled server transcript wins when available (it carries
-    // pre-open history); the live channel covers fresh activity and servers
-    // without the transcript route.
-    const liveBlocks = agentLiveState.blocks.length > 0 ? agentLiveState.blocks : undefined;
-    const capturedBlocks = serverBlocks ?? liveBlocks ?? selectedSubagent?.transcript ?? [];
+    const historyForAgent = agentHistory?.agentId === selectedAgentId ? agentHistory : null;
+    const serverPage =
+      historyForAgent?.page ??
+      (agentTranscriptQuery.data === undefined
+        ? {
+            blocks: [],
+            hasMore: false,
+            oldestTurnId: oldestTurnIdFromResponse(agentTranscriptQuery.data),
+          }
+        : agentTranscriptPageFromResponse(
+            agentTranscriptQuery.data,
+            agentTranscriptToBlocks(agentTranscriptQuery.data),
+          ));
+    const liveLoaded = agentLiveState.loaded && agentLiveState.blocks.length > 0;
+    const liveBlocks = agentLiveState.blocks;
+    const fallbackBlocks = selectedSubagent?.transcript ?? [];
+    const merged = mergeAgentTranscript(
+      serverPage,
+      {
+        blocks: liveBlocks,
+        busy: liveLoaded ? agentLiveState.busy : undefined,
+        toolCallCount: liveLoaded ? countToolBlocks(liveBlocks) : undefined,
+      },
+      {
+        blocks: fallbackBlocks,
+        toolCallCount: selectedSubagent?.toolCallCount,
+      },
+    );
+    const capturedBlocks = merged.blocks as Block[];
     const historyKey =
-      serverBlocks !== undefined
-        ? agentTranscriptQuery.data?.has_more === true
+      agentTranscriptQuery.data !== undefined || historyForAgent !== null
+        ? merged.hasMore
           ? 'sv.agentHistoryMore'
           : 'sv.agentHistoryLive'
         : agentTranscriptQuery.isError
@@ -1247,52 +1661,204 @@ export function SessionView({
             createdAt: selectedSubagent.endedAt,
           }
         : undefined;
+    const headerBusy =
+      selectedNode?.busy === true ||
+      merged.busy ||
+      agentBusyFromMeta(agentTranscriptQuery.data) === true;
+    const statusLabel =
+      selectedNode !== undefined
+        ? t(`subagent.status.${selectedNode.status}` as I18nKey)
+        : selectedSubagent !== undefined
+          ? t(`subagent.status.${selectedSubagent.status}` as I18nKey)
+          : t('sv.historyUnavailable');
+    const displayName = selectedNode?.label ?? selectedSubagent?.name ?? selectedAgentId;
+    const displayModel = selectedNode?.model ?? selectedSubagent?.model;
     const agentState: SessionViewState = {
       ...state,
-      blocks: [historyNotice, ...capturedBlocks, ...(reportBlock === undefined ? [] : [reportBlock])],
-      busy: false,
+      blocks: [
+        historyNotice,
+        ...filterBlocksToDirectChildren(capturedBlocks, forest, selectedAgentId),
+        ...(reportBlock === undefined ? [] : [reportBlock]),
+      ],
+      busy: headerBusy,
       pendingInteraction: 'none',
-      hasMoreHistory: false,
-      loadingOlder: false,
-      fetchedOlder: false,
+      hasMoreHistory: merged.hasMore,
+      loadingOlder: loadingOlderAgent,
+      fetchedOlder: historyForAgent !== null && historyForAgent.page.oldestTurnId !== undefined,
+      olderError: agentOlderError,
     };
     return (
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
-        <header className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
-          <button
-            type="button"
-            onClick={() => void navigate(`/s/${sessionId}`)}
-            className="rounded-lg border border-hairline px-2 py-1 text-[11.5px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
-          >
-            {t('sv.backToSession')}
-          </button>
-          <div className="min-w-0 flex-1">
-            <h1 className="truncate font-display text-[15px] font-semibold text-ink">
-              {selectedSubagent?.name ?? selectedAgentId}
-            </h1>
-            <p className="truncate text-[10.5px] text-ink-faint">
-              {t('sv.subagentNote')}
-            </p>
-          </div>
-          {selectedSubagent?.model !== undefined ? (
-            <span className="rounded-full border border-hairline bg-paper px-2 py-0.5 font-mono text-[10.5px] text-ink-soft">
-              {selectedSubagent.model}
+      <div className="flex min-h-0 min-w-0 flex-1">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
+          <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-3 border-b border-hairline bg-panel px-4 py-2">
+            <button
+              type="button"
+              onClick={() => void navigate(`/s/${sessionId}`)}
+              className="rounded-lg border border-hairline px-2 py-1 text-[11.5px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
+            >
+              {t('sv.backToSession')}
+            </button>
+            <div className="min-w-0 flex-1">
+              <AgentBreadcrumb
+                crumbs={crumbs}
+                onOpenSession={() => void navigate(`/s/${sessionId}`)}
+                onOpenAgent={openAgent}
+              />
+              <h1 className="truncate font-display text-[15px] font-semibold text-ink">
+                {displayName}
+              </h1>
+              <p className="truncate text-[10.5px] text-ink-faint">
+                {t('sv.subagentNote')}
+                {' · '}
+                {t('sv.agentReadOnly')}
+              </p>
+            </div>
+            {displayModel !== undefined ? (
+              <span className="rounded-full border border-hairline bg-paper px-2 py-0.5 font-mono text-[10.5px] text-ink-soft">
+                {displayModel}
+              </span>
+            ) : null}
+            <span
+              className={`rounded-full border px-2 py-0.5 text-[10.5px] ${
+                headerBusy ? 'border-accent/50 text-accent' : 'border-hairline text-ink-soft'
+              }`}
+            >
+              {headerBusy ? t('sv.working') : statusLabel}
             </span>
-          ) : null}
-          <span className="rounded-full border border-hairline px-2 py-0.5 text-[10.5px] text-ink-soft">
-            {selectedSubagent !== undefined
-              ? t(`subagent.status.${selectedSubagent.status}`)
-              : t('sv.historyUnavailable')}
-          </span>
-        </header>
-        <Transcript
-          state={agentState}
-          onLoadOlder={noopLoadOlder}
-          onResolveApproval={handleResolveApproval}
-          onAnswerQuestion={handleAnswerQuestion}
-          onDismissQuestion={handleDismissQuestion}
+            <button
+              type="button"
+              onClick={() => { setRailOpen((value) => !value); }}
+              title={railOpen ? t('sv.hidePanel') : t('sv.showPanel')}
+              aria-label={t('sv.togglePanelAria')}
+              aria-expanded={railOpen}
+              data-agent-rail-toggle
+              className={`shrink-0 rounded-lg border px-2 py-1 text-[11px] transition-colors ${
+                railOpen
+                  ? 'border-accent bg-accent-soft text-accent'
+                  : 'border-hairline text-ink-soft hover:border-hairline-strong'
+              }`}
+            >
+              {t('sv.panel')}
+            </button>
+          </header>
+          <div className="flex flex-wrap gap-3 border-b border-hairline px-4 py-2 text-[11px]">
+            {parentNode !== undefined && parentNode.agentId !== MAIN_AGENT_ID ? (
+              <button
+                type="button"
+                onClick={() => { openAgent(parentNode.agentId); }}
+                className="rounded-full border border-hairline px-2 py-0.5 text-ink-soft transition-colors hover:border-accent hover:text-accent"
+              >
+                {t('sv.parentAgents')}: {parentNode.label}
+              </button>
+            ) : null}
+            {siblingNodes.map((sibling) => (
+              <button
+                key={sibling.agentId}
+                type="button"
+                onClick={() => { openAgent(sibling.agentId); }}
+                className="rounded-full border border-hairline px-2 py-0.5 text-ink-soft transition-colors hover:border-accent hover:text-accent"
+              >
+                {t('sv.siblingAgents')}: {sibling.label}
+              </button>
+            ))}
+            {childNodes.map((child) => (
+              <button
+                key={child.agentId}
+                type="button"
+                onClick={() => { openAgent(child.agentId); }}
+                className="rounded-full border border-hairline px-2 py-0.5 text-ink-soft transition-colors hover:border-accent hover:text-accent"
+              >
+                {t('sv.childAgents')}: {child.label}
+              </button>
+            ))}
+          </div>
+          <Transcript
+            state={agentState}
+            onLoadOlder={handleLoadOlderAgent}
+            onResolveApproval={handleResolveApproval}
+            onAnswerQuestion={handleAnswerQuestion}
+            onDismissQuestion={handleDismissQuestion}
+            forest={forest}
+            onOpenAgent={openAgent}
+          />
+          <ResyncStatusBanner
+            resyncing={state.resyncing}
+            resyncFailed={state.resyncFailed}
+            onRetry={controller === null ? undefined : () => { void controller.resync(); }}
+          />
+          <div aria-live="polite" aria-atomic="true" className="sr-only">
+            {state.pendingInteraction === 'approval'
+              ? t('sv.ariaAwaitingApproval')
+              : state.pendingInteraction === 'question'
+                ? t('sv.ariaAwaitingAnswer')
+                : state.busy
+                  ? t('sv.ariaWorking')
+                  : ''}
+          </div>
+        </main>
+        {railOpen ? (
+          <RightRail
+            className={`app-rail ${railOpen ? 'open' : ''}`}
+            state={state}
+            forest={forest}
+            selectedAgentId={selectedAgentId}
+            onCancelTask={(taskId) => actions?.cancelTask(taskId)}
+            onOpenSubagent={openAgent}
+          />
+        ) : null}
+        {showBackdrop ? (
+          <div
+            role="button"
+            tabIndex={-1}
+            aria-label={t('sv.closePanel')}
+            className="app-overlay-backdrop lg:hidden"
+            onClick={() => {
+              setRailOpen(false);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                setRailOpen(false);
+              }
+            }}
+          />
+        ) : null}
+        <ConfirmDialog
+          open={confirmUndo}
+          overlayId="confirm-undo"
+          title={t('undo.title')}
+          body={t('undo.bodySession')}
+          confirmLabel={t('undo.confirm')}
+          onConfirm={confirmUndoRun}
+          onCancel={() => { setConfirmUndo(false); }}
         />
-      </main>
+        <ConfirmDialog
+          open={batchConfirm !== undefined}
+          overlayId="confirm-batch-approvals"
+          title={
+            batchConfirm?.decision === 'rejected'
+              ? t('sv.rejectAllTitle', { count: batchConfirm.ids.length })
+              : t('sv.approveAllTitle', { count: batchConfirm?.ids.length ?? 0 })
+          }
+          body={
+            batchConfirm?.decision === 'rejected'
+              ? t('sv.rejectAllBody')
+              : t('sv.approveAllBody')
+          }
+          confirmLabel={batchConfirm?.decision === 'rejected' ? t('sv.rejectAll') : t('sv.approveAll')}
+          tone={batchConfirm?.decision === 'rejected' ? 'danger' : 'default'}
+          onConfirm={confirmBatchRun}
+          onCancel={() => { setBatchConfirm(undefined); }}
+        />
+        <ConfirmDialog
+          open={confirmClearQueue}
+          overlayId="confirm-clear-queue"
+          title={t('sv.queueClearTitle', { count: queuedItems.length })}
+          body={t('sv.queueClearBody')}
+          confirmLabel={t('sv.queueClearAll')}
+          onConfirm={confirmClearQueueRun}
+          onCancel={() => { setConfirmClearQueue(false); }}
+        />
+      </div>
     );
   }
 
@@ -1304,6 +1870,8 @@ export function SessionView({
           railOpen={railOpen}
           terminalAvailable={terminalAvailable}
           terminalOpen={terminalOpen}
+          effectiveModel={effectiveModel}
+          modelSource={modelSource}
           onToggleRail={() => { setRailOpen((value) => !value); }}
           onToggleTerminal={toggleTerminalPanel}
           onToggleSidebar={onToggleSidebar}
@@ -1313,41 +1881,46 @@ export function SessionView({
               ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
           }}
           onSessionAction={runSessionAction}
+          onRequestBatchResolve={handleBatchResolve}
         />
 
         <Transcript
-          state={state}
+          state={{
+            ...state,
+            blocks: filterBlocksToDirectChildren(state.blocks, forest, MAIN_AGENT_ID),
+          }}
           onLoadOlder={handleLoadOlder}
           onResolveApproval={handleResolveApproval}
           onAnswerQuestion={handleAnswerQuestion}
           onDismissQuestion={handleDismissQuestion}
           onCancelQueued={handleCancelQueuedChips}
           onRetryLoad={handleRetryLoad}
+          forest={forest}
+          onOpenAgent={openAgent}
         />
-        <div className="flex items-center gap-2 px-6 pt-1">
-          {state.resyncing || state.resyncFailed ? (
-            <span className="mx-auto flex items-center gap-1.5 text-[11px] text-ink-faint">
-              <KikiMark className="status-dot-busy" />
-              {state.resyncFailed ? t('sv.resyncFailed') : t('sv.resyncing')}
-            </span>
-          ) : null}
-        </div>
+        <ResyncStatusBanner
+          resyncing={state.resyncing}
+          resyncFailed={state.resyncFailed}
+          onRetry={controller === null ? undefined : () => { void controller.resync(); }}
+        />
         {queuedItems.length > 0 ? (
           <QueueStrip
             items={queuedItems}
             onSendNow={handleSendNowQueued}
             onRemove={handleCancelQueued}
             onClearAll={handleClearQueue}
+            sendNowDisabled={state.resyncing || state.resyncFailed}
           />
         ) : null}
         <Composer
           busy={state.busy && state.activePromptId !== undefined}
           disabled={composerDisabled}
+          busyPlaceholder={state.resyncing || state.resyncFailed ? t('sv.sendPaused') : undefined}
           value={draft}
           onChange={updateDraft}
           model={modelOverride}
           defaultModel={sessionModel}
-          serverDefaultModel={serverDefaultModel}
+          serverDefaultModel={inheritedDefault}
           modelSource={modelSource}
           permissionMode={permissionMode}
           planMode={planMode}
@@ -1398,8 +1971,10 @@ export function SessionView({
         <RightRail
           className={`app-rail ${railOpen ? 'open' : ''}`}
           state={state}
+          forest={forest}
+          selectedAgentId={selectedAgentId}
           onCancelTask={(taskId) => actions?.cancelTask(taskId)}
-          onOpenSubagent={(agentId) => void navigate(`/s/${sessionId}/agent/${agentId}`)}
+          onOpenSubagent={openAgent}
         />
       ) : null}
 
@@ -1430,38 +2005,42 @@ export function SessionView({
               : ''}
       </div>
 
-      {confirmUndo ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/20"
-          onClick={() => { setConfirmUndo(false); }}
-        >
-          <div
-            className="anim-enter w-full max-w-[360px] rounded-2xl border border-hairline bg-panel p-5 shadow-[0_16px_48px_-16px_rgba(28,25,23,0.35)]"
-            onClick={(event) => { event.stopPropagation(); }}
-          >
-            <h2 className="font-display text-[16px] font-semibold text-ink">{t('undo.title')}</h2>
-            <p className="mt-2 text-[12.5px] leading-relaxed text-ink-soft">
-              {t('undo.bodySession')}
-            </p>
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => { setConfirmUndo(false); }}
-                className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] text-ink-soft transition-colors hover:text-ink"
-              >
-                {t('common.cancel')}
-              </button>
-              <button
-                type="button"
-                onClick={confirmUndoRun}
-                className="rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-colors hover:bg-accent-deep"
-              >
-                {t('undo.confirm')}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <ConfirmDialog
+        open={confirmUndo}
+        overlayId="confirm-undo"
+        title={t('undo.title')}
+        body={t('undo.bodySession')}
+        confirmLabel={t('undo.confirm')}
+        onConfirm={confirmUndoRun}
+        onCancel={() => { setConfirmUndo(false); }}
+      />
+      <ConfirmDialog
+        open={batchConfirm !== undefined}
+        overlayId="confirm-batch-approvals"
+        title={
+          batchConfirm?.decision === 'rejected'
+            ? t('sv.rejectAllTitle', { count: batchConfirm.ids.length })
+            : t('sv.approveAllTitle', { count: batchConfirm?.ids.length ?? 0 })
+        }
+        body={
+          batchConfirm?.decision === 'rejected'
+            ? t('sv.rejectAllBody')
+            : t('sv.approveAllBody')
+        }
+        confirmLabel={batchConfirm?.decision === 'rejected' ? t('sv.rejectAll') : t('sv.approveAll')}
+        tone={batchConfirm?.decision === 'rejected' ? 'danger' : 'default'}
+        onConfirm={confirmBatchRun}
+        onCancel={() => { setBatchConfirm(undefined); }}
+      />
+      <ConfirmDialog
+        open={confirmClearQueue}
+        overlayId="confirm-clear-queue"
+        title={t('sv.queueClearTitle', { count: queuedItems.length })}
+        body={t('sv.queueClearBody')}
+        confirmLabel={t('sv.queueClearAll')}
+        onConfirm={confirmClearQueueRun}
+        onCancel={() => { setConfirmClearQueue(false); }}
+      />
     </div>
   );
 }

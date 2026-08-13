@@ -14,21 +14,30 @@ import {
   parseRemoteModels,
   providerDraftFromCatalog,
   providerTemplateFor,
+  isComposerSendKey,
   readDesktopPrefs,
   readRestartRequirement,
   readSettings,
   remoteModelsHeaders,
   remoteModelsUrl,
   replaceProvider,
+  resolveEffectiveModel,
+  resolveModelSource,
+  resolveSessionModelOverride,
   restartRequirementSnapshot,
   searchSettings,
+  settingsServerSnapshot,
+  settingsSnapshot,
   subscribeRestartRequirement,
+  subscribeSettings,
   validateDesktopConfigDraft,
   validateProviderDraft,
   validateServerDefaults,
   writeDesktopPrefs,
+  writeSettings,
   type ProviderDraft,
 } from './settings';
+import { clearStoredDrafts, readDraft, resetDraftMemoryForTests, writeDraft } from './drafts';
 import { translate, type I18nKey } from '../i18n/locale';
 
 class MemoryStorage implements Storage {
@@ -70,6 +79,7 @@ describe('settings persistence and validation', () => {
   });
 
   it('defaults absent, partial, and malformed storage to safe local values', () => {
+    writeSettings({});
     expect(readSettings().closeToTray).toBe(true);
     expect(readDesktopPrefs().closeToTray).toBe(true);
 
@@ -303,8 +313,130 @@ describe('settings search index', () => {
     expect(searchSettings(index, 'Models').some((hit) => hit.section === 'models')).toBe(true);
     // hint-keyword-only hit: "NUL" appears nowhere in a card title
     expect(searchSettings(index, 'experimental flag').some((hit) => hit.cardId === 'st-card-caps')).toBe(true);
+    expect(searchSettings(index, 'subagent')[0]?.section).toBe('agents');
     expect(searchSettings(index, '  ')).toEqual([]);
     expect(searchSettings(index, 'zzzz-no-such-setting')).toEqual([]);
+  });
+});
+
+describe('composer send shortcut and live settings', () => {
+  beforeEach(() => {
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: new MemoryStorage(),
+    });
+  });
+
+  it('sends on Enter unless cmd-enter is selected', () => {
+    expect(isComposerSendKey({ key: 'Enter', shiftKey: false, metaKey: false, ctrlKey: false }, 'enter')).toBe(true);
+    expect(isComposerSendKey({ key: 'Enter', shiftKey: true, metaKey: false, ctrlKey: false }, 'enter')).toBe(false);
+    expect(isComposerSendKey({ key: 'Enter', shiftKey: false, metaKey: true, ctrlKey: false }, 'enter')).toBe(false);
+    expect(isComposerSendKey({ key: 'Enter', shiftKey: false, metaKey: true, ctrlKey: false }, 'cmd-enter')).toBe(true);
+    expect(isComposerSendKey({ key: 'Enter', shiftKey: false, metaKey: false, ctrlKey: true }, 'cmd-enter')).toBe(true);
+    expect(isComposerSendKey({ key: 'Enter', shiftKey: false, metaKey: false, ctrlKey: false }, 'cmd-enter')).toBe(false);
+  });
+
+  it('notifies subscribers as soon as sendShortcut is written', () => {
+    const seen: string[] = [];
+    const unsubscribe = subscribeSettings(() => {
+      seen.push(settingsSnapshot().sendShortcut);
+    });
+    writeSettings({ sendShortcut: 'cmd-enter' });
+    expect(readSettings().sendShortcut).toBe('cmd-enter');
+    expect(settingsSnapshot()).toBe(settingsSnapshot());
+    expect(seen).toEqual(['cmd-enter']);
+    unsubscribe();
+    writeSettings({ sendShortcut: 'enter' });
+    expect(seen).toEqual(['cmd-enter']);
+  });
+
+  it('serves a stable server snapshot for useSyncExternalStore', () => {
+    expect(settingsServerSnapshot()).toBe(settingsServerSnapshot());
+    expect(settingsServerSnapshot().sendShortcut).toBe('enter');
+  });
+
+  it('refreshes the snapshot from a cross-document storage event', () => {
+    const listeners = new Set<(event: StorageEvent) => void>();
+    vi.stubGlobal('window', {
+      addEventListener: (type: string, listener: (event: StorageEvent) => void) => {
+        if (type === 'storage') listeners.add(listener);
+      },
+      removeEventListener: (type: string, listener: (event: StorageEvent) => void) => {
+        if (type === 'storage') listeners.delete(listener);
+      },
+    });
+    writeSettings({ sendShortcut: 'enter' });
+    const seen: string[] = [];
+    const unsubscribe = subscribeSettings(() => {
+      seen.push(settingsSnapshot().sendShortcut);
+    });
+    expect(listeners.size).toBe(1);
+    localStorage.setItem('kiki.settings', JSON.stringify({ sendShortcut: 'cmd-enter' }));
+    expect(settingsSnapshot().sendShortcut).toBe('enter');
+    for (const listener of listeners) {
+      listener({ key: 'kiki.settings', storageArea: localStorage } as StorageEvent);
+    }
+    expect(settingsSnapshot().sendShortcut).toBe('cmd-enter');
+    expect(seen).toEqual(['cmd-enter']);
+    for (const listener of listeners) {
+      listener({ key: 'kiki.other', storageArea: localStorage } as StorageEvent);
+    }
+    expect(seen).toEqual(['cmd-enter']);
+    unsubscribe();
+    expect(listeners.size).toBe(0);
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('draft persistence gate', () => {
+  beforeEach(() => {
+    resetDraftMemoryForTests();
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: new MemoryStorage(),
+    });
+    writeSettings({ draftPersistence: true });
+  });
+
+  it('keeps in-memory drafts when persistence is off and does not write disk', () => {
+    writeDraft('s1', 'keep me');
+    expect(readDraft('s1')).toBe('keep me');
+    expect(localStorage.getItem('kiki.drafts')).toContain('keep me');
+    writeSettings({ draftPersistence: false });
+    clearStoredDrafts();
+    expect(localStorage.getItem('kiki.drafts')).toBeNull();
+    expect(readDraft('s1')).toBe('keep me');
+    writeDraft('s1', 'still here');
+    expect(readDraft('s1')).toBe('still here');
+    expect(localStorage.getItem('kiki.drafts')).toBeNull();
+    writeSettings({ draftPersistence: true });
+    writeDraft('s1', 'now persisted');
+    expect(localStorage.getItem('kiki.drafts')).toContain('now persisted');
+  });
+
+  it('does not restore disk drafts after a fresh process when persistence is off', () => {
+    writeDraft('s1', 'on disk');
+    writeSettings({ draftPersistence: false });
+    clearStoredDrafts();
+    localStorage.setItem('kiki.drafts', JSON.stringify({ s1: 'stale disk' }));
+    resetDraftMemoryForTests();
+    expect(readDraft('s1')).toBe('');
+    expect(localStorage.getItem('kiki.drafts')).toContain('stale disk');
+  });
+});
+
+describe('default model inheritance', () => {
+  it('never treats a local default as an implicit session override', () => {
+    expect(resolveSessionModelOverride(undefined)).toBeUndefined();
+    expect(resolveSessionModelOverride('kimi/k2')).toBe('kimi/k2');
+    expect(resolveEffectiveModel(undefined, undefined, 'server/default')).toBe('server/default');
+    expect(resolveEffectiveModel(undefined, 'session/bound', 'server/default')).toBe('session/bound');
+    expect(resolveEffectiveModel('picked/model', 'session/bound', 'server/default')).toBe('picked/model');
+    expect(resolveModelSource(undefined, undefined)).toBe('server-default');
+    expect(resolveModelSource(undefined, 'session/bound')).toBe('session');
+    expect(resolveModelSource('picked/model', 'session/bound')).toBe('override');
+    expect(resolveModelSource(undefined, undefined, 'local/k2', 'server/default')).toBe('local-default');
+    expect(resolveModelSource(undefined, undefined, undefined, 'server/default')).toBe('server-default');
   });
 });
 

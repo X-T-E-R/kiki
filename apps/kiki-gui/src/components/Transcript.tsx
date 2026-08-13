@@ -13,12 +13,17 @@
  */
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { StickToBottom, useStickToBottomContext } from 'use-stick-to-bottom';
 
 import type { ApprovalDecision, QuestionAnswer } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../i18n';
+import type { I18nKey } from '../i18n/locale';
+import {
+  agentChildren,
+  type AgentForest,
+  type AgentTreeNode,
+} from '../state/agentTree';
 import {
   groupBlocks,
   groupHasError,
@@ -33,7 +38,10 @@ import type {
   NoticeBlock,
   SessionViewState,
   ShellBlock,
+  SkillBlock,
+  SteerBlock,
   SubagentBlock,
+  SystemBlock,
   SystemReminderBlock,
   ThinkingBlock,
   ToolBlock,
@@ -219,6 +227,93 @@ const SystemReminderMessage = memo(function SystemReminderMessage({
   );
 });
 
+const SYSTEM_VARIANT_KEYS = {
+  injection: 'transcript.system.injection',
+  system_trigger: 'transcript.system.trigger',
+  compaction_summary: 'transcript.system.compaction',
+  hook_result: 'transcript.system.hook',
+  cron_job: 'transcript.system.cron',
+  cron_missed: 'transcript.system.cronMissed',
+  task: 'transcript.system.task',
+  retry: 'transcript.system.retry',
+  agent_message: 'transcript.system.agent',
+  system: 'transcript.system.generic',
+} as const;
+
+const SystemMessage = memo(function SystemMessage({ block }: { block: SystemBlock }) {
+  const { t, time } = useI18n();
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="anim-enter border-l-2 border-hairline pl-3" title={time.absoluteTime(block.createdAt)}>
+      <button
+        type="button"
+        onClick={() => { setOpen((value) => !value); }}
+        aria-expanded={open}
+        className="flex items-center gap-1.5 text-[11px] font-medium text-ink-faint/80 transition-colors hover:text-ink-soft"
+      >
+        <span aria-hidden className={`inline-block transition-transform duration-150 ${open ? 'rotate-90' : ''}`}>
+          ▶
+        </span>
+        {t(SYSTEM_VARIANT_KEYS[block.variant])}
+      </button>
+      {open ? (
+        <div className="mt-1.5 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-faint">
+          {block.text}
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
+const SkillMessage = memo(function SkillMessage({ block }: { block: SkillBlock }) {
+  const { t, time } = useI18n();
+  const [open, setOpen] = useState(false);
+  const title =
+    block.source === 'plugin'
+      ? t('transcript.skill.plugin', { name: block.name })
+      : t('transcript.skill.skill', { name: block.name });
+  return (
+    <div className="anim-enter max-w-[85%] rounded-xl border border-hairline bg-panel px-3 py-2" title={time.absoluteTime(block.createdAt)}>
+      <button
+        type="button"
+        onClick={() => { setOpen((value) => !value); }}
+        aria-expanded={open}
+        className="flex w-full items-center gap-1.5 text-left text-[11.5px] font-medium text-ink-soft transition-colors hover:text-ink"
+      >
+        <span aria-hidden className={`inline-block text-[10px] transition-transform duration-150 ${open ? 'rotate-90' : ''}`}>
+          ▶
+        </span>
+        <span className="min-w-0 truncate">{title}</span>
+        {block.args !== undefined && block.args !== '' ? (
+          <span className="min-w-0 truncate font-mono text-[10.5px] text-ink-faint">{block.args}</span>
+        ) : null}
+      </button>
+      {open && block.text !== '' ? (
+        <div className="mt-1.5 text-[12.5px] leading-relaxed whitespace-pre-wrap text-ink-soft">
+          {block.text}
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
+const SteerMessage = memo(function SteerMessage({ block }: { block: SteerBlock }) {
+  const { t, time } = useI18n();
+  return (
+    <div className="anim-enter flex flex-col items-start" title={time.absoluteTime(block.createdAt)}>
+      <span className="mb-1 flex items-baseline gap-1.5 pl-1">
+        <span className="rounded-full border border-accent/30 bg-accent-soft px-1.5 py-px text-[10px] font-semibold tracking-wide text-accent uppercase">
+          {t('transcript.steerChip')}
+        </span>
+        <span className="text-xs text-ink-faint">{time.relativeTime(block.createdAt)}</span>
+      </span>
+      <div className="max-w-[85%] rounded-2xl rounded-bl-md border border-accent/20 bg-accent-soft/40 px-3.5 py-2 text-[13.5px] leading-relaxed whitespace-pre-wrap text-ink">
+        {block.text}
+      </div>
+    </div>
+  );
+});
+
 const ShellMessage = memo(function ShellMessage({ block }: { block: ShellBlock }) {
   const { t } = useI18n();
   return (
@@ -249,30 +344,54 @@ function useSubagentElapsed(block: SubagentBlock): number {
   return Number.isNaN(start) || Number.isNaN(end) ? 0 : Math.max(0, end - start);
 }
 
-const SubagentCard = memo(function SubagentCard({ block }: { block: SubagentBlock }) {
+function subagentStatusTone(status: AgentTreeNode['status'] | SubagentBlock['status']): string {
+  switch (status) {
+    case 'running':
+    case 'background':
+      return 'bg-accent';
+    case 'completed':
+      return 'bg-success';
+    case 'failed':
+      return 'bg-danger';
+    case 'cancelled':
+      return 'bg-ink-faint';
+    default:
+      return 'bg-amber-rule';
+  }
+}
+
+function SubagentCardBody({
+  name,
+  model,
+  status,
+  toolCallCount,
+  childCount,
+  thinkingEffort,
+  description,
+  error,
+  elapsed,
+}: {
+  name: string;
+  model?: string;
+  status: AgentTreeNode['status'] | SubagentBlock['status'];
+  toolCallCount: number;
+  childCount: number;
+  thinkingEffort?: string;
+  description?: string;
+  error?: string;
+  elapsed: number;
+}) {
   const { t, tp, time } = useI18n();
-  const elapsed = useSubagentElapsed(block);
-  const statusTone =
-    block.status === 'running'
-      ? 'bg-accent'
-      : block.status === 'completed'
-        ? 'bg-success'
-        : block.status === 'failed'
-          ? 'bg-danger'
-          : 'bg-amber-rule';
+  const busy = status === 'running' || status === 'background';
   return (
-    <Link
-      to={`agent/${encodeURIComponent(block.subagentId)}`}
-      data-subagent-id={block.subagentId}
-      className="anim-enter group ml-6 block rounded-xl border border-hairline bg-panel/80 px-3 py-2.5 transition-all hover:-translate-y-px hover:border-accent/50 hover:shadow-[0_8px_24px_-16px_rgba(28,25,23,0.35)]"
-    >
+    <>
       <div className="flex items-center gap-2">
         <span aria-hidden className="font-mono text-[12px] text-accent">⧉</span>
-        <span className={`h-2 w-2 rounded-full ${statusTone} ${block.status === 'running' ? 'status-dot-busy' : ''}`} />
-        <span className="min-w-0 truncate text-[12.5px] font-semibold text-ink">{block.name}</span>
-        {block.model !== undefined ? (
+        <span className={`h-2 w-2 rounded-full ${subagentStatusTone(status)} ${busy ? 'status-dot-busy' : ''}`} />
+        <span className="min-w-0 truncate text-[12.5px] font-semibold text-ink">{name}</span>
+        {model !== undefined ? (
           <span className="shrink-0 rounded-full border border-hairline bg-paper px-1.5 py-px font-mono text-[9.5px] text-ink-soft">
-            {block.model}
+            {model}
           </span>
         ) : null}
         <span className="ml-auto shrink-0 font-mono text-[10px] text-ink-faint">
@@ -281,24 +400,153 @@ const SubagentCard = memo(function SubagentCard({ block }: { block: SubagentBloc
         <span aria-hidden className="text-[10px] text-ink-faint transition-transform group-hover:translate-x-0.5">→</span>
       </div>
       <div className="mt-1 flex items-center gap-2 pl-5 text-[10.5px] text-ink-faint">
-        <span>{t(`subagent.status.${block.status}`)}</span>
+        <span>{t(`subagent.status.${status}` as I18nKey)}</span>
         <span>·</span>
-        <span>{tp('transcript.toolCalls', block.toolCallCount)}</span>
-        {block.thinkingEffort !== undefined ? (
+        <span>{tp('transcript.toolCalls', toolCallCount)}</span>
+        {childCount > 0 ? (
           <>
             <span>·</span>
-            <span>{t('transcript.thinkingSuffix', { effort: block.thinkingEffort })}</span>
+            <span>{tp('subagent.children', childCount)}</span>
+          </>
+        ) : null}
+        {thinkingEffort !== undefined ? (
+          <>
+            <span>·</span>
+            <span>{t('transcript.thinkingSuffix', { effort: thinkingEffort })}</span>
           </>
         ) : null}
       </div>
-      {block.description !== undefined || block.error !== undefined ? (
-        <p className={`mt-1 truncate pl-5 text-[11.5px] ${block.error !== undefined ? 'text-danger' : 'text-ink-soft'}`}>
-          {block.error ?? block.description}
+      {description !== undefined || error !== undefined ? (
+        <p className={`mt-1 truncate pl-5 text-[11.5px] ${error !== undefined ? 'text-danger' : 'text-ink-soft'}`}>
+          {error ?? description}
         </p>
       ) : null}
-    </Link>
+    </>
+  );
+}
+
+const SubagentCard = memo(function SubagentCard({
+  block,
+  forest,
+  depth = 0,
+  childBlocks,
+  onOpenAgent,
+  displayStatus,
+}: {
+  block: SubagentBlock;
+  forest?: AgentForest;
+  depth?: number;
+  childBlocks?: ReadonlyMap<string, SubagentBlock>;
+  onOpenAgent?: (agentId: string) => void;
+  displayStatus?: AgentTreeNode['status'];
+}) {
+  const { t } = useI18n();
+  const elapsed = useSubagentElapsed(block);
+  const node = forest?.byId[block.subagentId];
+  const children = forest === undefined ? [] : agentChildren(forest, block.subagentId);
+  const hasActiveChild = children.some(
+    (child) => child.status === 'running' || child.status === 'suspended' || child.status === 'background',
+  );
+  const status = displayStatus ?? node?.status ?? block.status;
+  const [expanded, setExpanded] = useState(
+    () => status === 'running' || status === 'suspended' || status === 'background' || hasActiveChild,
+  );
+  useEffect(() => {
+    if (status === 'running' || status === 'suspended' || status === 'background' || hasActiveChild) {
+      setExpanded(true);
+    }
+  }, [status, hasActiveChild]);
+  const childCount = node?.childIds.length ?? children.length;
+  const cardClass =
+    'anim-enter group block w-full rounded-xl border border-hairline bg-panel/80 px-3 py-2.5 text-left transition-all hover:-translate-y-px hover:border-accent/50 hover:shadow-[0_8px_24px_-16px_rgba(28,25,23,0.35)]';
+  const body = (
+    <SubagentCardBody
+      name={block.name}
+      model={block.model}
+      status={status}
+      toolCallCount={block.toolCallCount}
+      childCount={childCount}
+      thinkingEffort={block.thinkingEffort}
+      description={block.description}
+      error={block.error}
+      elapsed={elapsed}
+    />
+  );
+  return (
+    <div
+      data-subagent-id={block.subagentId}
+      data-agent-depth={depth}
+      className={depth === 0 ? 'ml-6' : 'ml-4'}
+    >
+      <div className="flex items-stretch gap-1">
+        {depth > 0 ? <span aria-hidden className="w-px shrink-0 bg-hairline" /> : null}
+        <div className="min-w-0 flex-1">
+          <button
+            type="button"
+            onClick={() => { onOpenAgent?.(block.subagentId); }}
+            data-agent-open={block.subagentId}
+            className={cardClass}
+          >
+            {body}
+          </button>
+          {childCount > 0 ? (
+            <button
+              type="button"
+              aria-expanded={expanded}
+              onClick={() => {
+                setExpanded((value) => !value);
+              }}
+              className="mt-1 rounded px-1.5 py-0.5 text-[10.5px] text-ink-faint transition-colors hover:text-accent"
+            >
+              {expanded ? t('subagent.collapseChildren') : t('subagent.expandChildren')}
+            </button>
+          ) : null}
+          {expanded && children.length > 0 ? (
+            <div className="mt-1 space-y-1">
+              {children.map((child) => {
+                const nested = childBlocks?.get(child.agentId) ?? syntheticChildBlock(child);
+                return (
+                  <SubagentCard
+                    key={child.agentId}
+                    block={nested}
+                    forest={forest}
+                    depth={depth + 1}
+                    childBlocks={childBlocks}
+                    onOpenAgent={onOpenAgent}
+                    displayStatus={child.status}
+                  />
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
   );
 });
+
+function syntheticChildBlock(node: AgentTreeNode): SubagentBlock {
+  const status: SubagentBlock['status'] =
+    node.status === 'cancelled' || node.status === 'background' ? 'completed' : node.status;
+  return {
+    kind: 'subagent',
+    id: `subagent-${node.agentId}`,
+    subagentId: node.agentId,
+    parentAgentId: node.parentAgentId,
+    parentToolCallId: node.parentToolCallId,
+    name: node.label,
+    description: node.summary,
+    model: node.model,
+    thinkingEffort: node.thinkingEffort,
+    status,
+    summary: node.summary,
+    error: node.error,
+    startedAt: node.startedAt ?? '',
+    endedAt: node.endedAt,
+    toolCallCount: node.toolCallCount,
+    transcript: [],
+  };
+}
 
 const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
   const { t } = useI18n();
@@ -324,7 +572,13 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
  * default, spinner while any tool runs, auto-expands on error only.
  */
 const ToolGroupRow = memo(
-  function ToolGroupRow({ group }: { group: ToolGroup }) {
+  function ToolGroupRow({
+    group,
+    onOpenAgent,
+  }: {
+    group: ToolGroup;
+    onOpenAgent?: (agentId: string) => void;
+  }) {
   const { t } = useI18n();
   const running = groupHasRunning(group);
   const hasError = groupHasError(group);
@@ -368,7 +622,7 @@ const ToolGroupRow = memo(
       {expanded ? (
         <div className="space-y-2 border-t border-hairline px-3 py-2.5">
           {group.tools.map((tool) => (
-            <ToolCard key={tool.id} block={tool} />
+            <ToolCard key={tool.id} block={tool} onOpenAgent={onOpenAgent} />
           ))}
         </div>
       ) : null}
@@ -379,6 +633,7 @@ const ToolGroupRow = memo(
   // keep identity, so element-wise comparison preserves the memo.
   (prev, next) =>
     prev.group.tools.length === next.group.tools.length &&
+    prev.onOpenAgent === next.onOpenAgent &&
     prev.group.tools.every((tool, index) => tool === next.group.tools[index]),
 );
 
@@ -391,6 +646,9 @@ const BlockView = memo(function BlockView({
   agentNames,
   approvalShortcutHints,
   readOnly,
+  forest,
+  childBlocks,
+  onOpenAgent,
 }: {
   block: Exclude<Block, ToolBlock>;
   readOnly: boolean;
@@ -406,17 +664,33 @@ const BlockView = memo(function BlockView({
   agentNames?: ReadonlyMap<string, string>;
   /** y/n shortcut hints show on every pending approval card. */
   approvalShortcutHints?: boolean;
+  forest?: AgentForest;
+  childBlocks?: ReadonlyMap<string, SubagentBlock>;
+  onOpenAgent?: (agentId: string) => void;
 }) {
   const { t } = useI18n();
+  const originUnknown =
+    (block.kind === 'approval' || block.kind === 'question') && block.originUnknown === true;
   const originAgentName =
-    (block.kind === 'approval' || block.kind === 'question') && block.originAgentId !== undefined
+    !originUnknown &&
+    (block.kind === 'approval' || block.kind === 'question') &&
+    block.originAgentId !== undefined
       ? (agentNames?.get(block.originAgentId) ?? block.originAgentId)
       : undefined;
+  const originFallback = originUnknown
+    ? t(readOnly ? 'ia.originCurrentContext' : 'ia.originUnknown')
+    : undefined;
   switch (block.kind) {
     case 'user':
       return <UserMessage block={block} onCancelQueued={readOnly ? undefined : onCancelQueued} />;
     case 'system-reminder':
       return <SystemReminderMessage block={block} />;
+    case 'system':
+      return <SystemMessage block={block} />;
+    case 'skill':
+      return <SkillMessage block={block} />;
+    case 'steer':
+      return <SteerMessage block={block} />;
     case 'assistant':
       return <AssistantMessage block={block} />;
     case 'thinking':
@@ -424,7 +698,7 @@ const BlockView = memo(function BlockView({
     case 'shell':
       return <ShellMessage block={block} />;
     case 'subagent':
-      return <SubagentCard block={block} />;
+      return <SubagentCard block={block} forest={forest} childBlocks={childBlocks} onOpenAgent={onOpenAgent} />;
     case 'notice':
       return <Notice block={block} />;
     case 'approval':
@@ -440,7 +714,7 @@ const BlockView = memo(function BlockView({
       ) : (
         <ApprovalCard
           block={block}
-          originAgentName={originAgentName}
+          originAgentName={originAgentName ?? originFallback}
           showShortcutHints={approvalShortcutHints === true}
           onResolve={(decision, scope) => onResolveApproval(block.request.approval_id, decision, scope)}
         />
@@ -458,7 +732,7 @@ const BlockView = memo(function BlockView({
       ) : (
         <QuestionCard
           block={block}
-          originAgentName={originAgentName}
+          originAgentName={originAgentName ?? originFallback}
           onAnswer={(answers) => onAnswerQuestion(block.request.question_id, answers)}
           onDismiss={() => onDismissQuestion(block.request.question_id)}
         />
@@ -510,6 +784,7 @@ function TopEdge({ state, onLoadOlder }: {
       if (
         inflightRef.current ||
         state.loadingOlder ||
+        state.olderError !== undefined ||
         !state.hasMoreHistory ||
         element.scrollTop > 48
       ) {
@@ -530,13 +805,28 @@ function TopEdge({ state, onLoadOlder }: {
     };
     element.addEventListener('scroll', onScroll, { passive: true });
     return () => { element.removeEventListener('scroll', onScroll); };
-  }, [scrollRef, state.loadingOlder, state.hasMoreHistory, onLoadOlder]);
+  }, [scrollRef, state.loadingOlder, state.hasMoreHistory, state.olderError, onLoadOlder]);
 
   if (state.loadingOlder) {
     return (
       <div className="flex items-center justify-center gap-2 pb-2 text-[11.5px] text-ink-faint">
         <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
         {t('transcript.loadingEarlier')}
+      </div>
+    );
+  }
+  if (state.olderError !== undefined) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-1.5 pb-2 text-center">
+        <p className="text-[11.5px] text-danger">{t('transcript.olderFailed')}</p>
+        <p className="max-w-[360px] font-mono text-[10.5px] text-danger/80">{state.olderError}</p>
+        <button
+          type="button"
+          onClick={() => { void onLoadOlder(); }}
+          className="rounded-full border border-hairline px-2 py-0.5 text-[10.5px] font-medium text-ink-soft transition-colors hover:border-accent hover:text-accent"
+        >
+          {t('transcript.retryEarlier')}
+        </button>
       </div>
     );
   }
@@ -561,6 +851,8 @@ export function Transcript({
   onCancelQueued,
   onRetryLoad,
   readOnly = false,
+  forest,
+  onOpenAgent,
 }: {
   state: SessionViewState;
   onLoadOlder: () => Promise<boolean>;
@@ -574,17 +866,31 @@ export function Transcript({
   onCancelQueued?: (promptId: string) => void;
   onRetryLoad?: () => void;
   readOnly?: boolean;
+  forest?: AgentForest;
+  onOpenAgent?: (agentId: string) => void;
 }) {
   const { t } = useI18n();
   const { blocks, loaded, loadError } = state;
   const nodes = useMemo(() => groupBlocks(blocks), [blocks]);
+  const childBlocks = useMemo(() => {
+    const map = new Map<string, SubagentBlock>();
+    for (const block of blocks) {
+      if (block.kind === 'subagent') map.set(block.subagentId, block);
+    }
+    return map;
+  }, [blocks]);
   const agentNames = useMemo(() => {
     const map = new Map<string, string>();
     for (const block of blocks) {
       if (block.kind === 'subagent') map.set(block.subagentId, block.name);
     }
+    if (forest !== undefined) {
+      for (const node of Object.values(forest.byId)) {
+        if (!map.has(node.agentId)) map.set(node.agentId, node.label);
+      }
+    }
     return map;
-  }, [blocks]);
+  }, [blocks, forest]);
   // y/n acts on the focused card, else the topmost visible pending card
   // (SessionView's resolver); every pending card advertises that shortcut.
   const hasUnresolvedApproval = useMemo(
@@ -642,9 +948,9 @@ export function Transcript({
         {nodes.map((node) => (
           <div key={nodeKey(node)} data-block-id={nodeKey(node)}>
             {node.kind === 'tool-group' ? (
-              <ToolGroupRow group={node} />
+              <ToolGroupRow group={node} onOpenAgent={onOpenAgent} />
             ) : node.kind === 'tool' ? (
-              <ToolCard block={node} />
+              <ToolCard block={node} onOpenAgent={onOpenAgent} />
             ) : (
               <BlockView
                 block={node}
@@ -655,6 +961,9 @@ export function Transcript({
                 agentNames={agentNames}
                 approvalShortcutHints={hasUnresolvedApproval}
                 readOnly={readOnly}
+                forest={forest}
+                childBlocks={childBlocks}
+                onOpenAgent={onOpenAgent}
               />
             )}
           </div>

@@ -53,6 +53,7 @@ import type {
   QuestionRequest,
   QuestionResolveRequest,
   QuestionResolveResult,
+  RefreshProviderModelsResponse,
   RestartMcpServerResult,
   RestoreSessionResponse,
   Session,
@@ -180,6 +181,8 @@ export type AgentTranscriptFrame =
       error?: string;
       inputText?: string;
       progress?: { text?: string };
+      /** Agents spawned by this call (Agent / AgentSwarm). */
+      agentRefs?: readonly { readonly agentId: string; readonly role?: 'child' | 'member' }[];
     }
   | { kind: 'notice'; frameId: string; level: 'error' | 'warning' | 'info'; message: string };
 
@@ -198,6 +201,144 @@ export interface AgentTranscriptTurn {
   }[];
 }
 
+/**
+ * Session-global interaction entity (approval/question).
+ *
+ * Gap: the wire entity has no origin / parent-agent field. Origin is implied
+ * by the requested `agent_id` (and the unpaginated `agents` roster), not
+ * shipped per interaction. Do not invent one client-side.
+ */
+export interface AgentTranscriptInteraction {
+  readonly interactionId: string;
+  readonly interactionKind: 'approval' | 'question';
+  readonly toolCallId?: string;
+  readonly state: 'pending' | 'approved' | 'rejected' | 'cancelled' | 'answered' | 'dismissed';
+  readonly request?: unknown;
+  readonly response?: unknown;
+}
+
+/**
+ * One entry of the unpaginated `agents` roster on a transcript page.
+ * Local mirror of the transcript-package `AgentDescriptor` (that package is
+ * not a GUI dependency).
+ */
+export interface AgentTranscriptAgent {
+  readonly agentId: string;
+  readonly type?: 'main' | 'sub' | 'independent';
+  readonly parentAgentId?: string;
+  readonly delegator?:
+    | { readonly kind: 'agent'; readonly agentId: string }
+    | { readonly kind: 'external'; readonly delegationId: string };
+  readonly label?: string;
+  readonly createdAt?: string;
+  readonly disposedAt?: string;
+}
+
+/**
+ * Engine `TokenUsage` wire shape (`stepUsageSchema`), copied through opaquely
+ * on task and agent-status usage slices.
+ */
+export interface AgentTranscriptStepUsage {
+  readonly inputOther: number;
+  readonly output: number;
+  readonly inputCacheRead: number;
+  readonly inputCacheCreation: number;
+}
+
+/** Unpaginated task entity (`tasks[]` on every transcript page). */
+export interface AgentTranscriptTask {
+  readonly taskId: string;
+  readonly kind: 'shell' | 'subagent' | 'tool' | 'other';
+  readonly state: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost';
+  readonly detached: boolean;
+  readonly description?: string;
+  readonly agentId?: string;
+  readonly outputTail: string;
+  readonly startedAt?: string;
+  readonly endedAt?: string;
+  readonly resultSummary?: string;
+  readonly error?: string;
+  readonly stateReason?: string;
+  /** Token usage of the finished run (`subagent.completed`). */
+  readonly usage?: AgentTranscriptStepUsage;
+}
+
+/** Unpaginated attachment metadata (`attachments[]`; bytes never ride this API). */
+export interface AgentTranscriptAttachment {
+  readonly attachmentId: string;
+  readonly mediaType: string;
+  readonly name?: string;
+  readonly size?: number;
+  readonly source?:
+    | { readonly kind: 'url'; readonly url: string }
+    | { readonly kind: 'file'; readonly fileId: string };
+  readonly placeholder?: string;
+}
+
+/** Unpaginated todo document (`todos[]`). */
+export interface AgentTranscriptTodo {
+  readonly todoId: string;
+  readonly items: readonly {
+    readonly title: string;
+    readonly status: 'pending' | 'in_progress' | 'done';
+  }[];
+  readonly updatedAt?: string;
+}
+
+/** Unpaginated prompt-queue entity (`prompts[]`). */
+export interface AgentTranscriptPrompt {
+  readonly promptId: string;
+  readonly status: 'running' | 'queued' | 'blocked' | 'completed' | 'failed' | 'aborted';
+  readonly userMessageId?: string;
+  readonly content?: unknown;
+  readonly createdAt: string;
+  readonly finishedAt?: string;
+  readonly steeredAt?: string;
+}
+
+/** Unpaginated floating meta (`meta`). */
+export interface AgentTranscriptMeta {
+  readonly goal?: {
+    readonly objective: string;
+    readonly status: 'active' | 'paused' | 'blocked' | 'complete';
+    readonly completionCriterion?: string;
+    readonly budgetUsed?: number;
+    readonly budgetLimit?: number;
+  };
+  readonly modes?: {
+    readonly plan?: { readonly reviewPath?: string; readonly version?: number };
+    readonly swarm?: { readonly trigger?: string };
+  };
+  readonly activity?: 'idle' | 'turn' | 'disposing' | 'unknown';
+  readonly agent?: {
+    readonly model?: string;
+    readonly thinkingEffort?: string;
+    readonly usage?: {
+      readonly byModel?: Readonly<Record<string, AgentTranscriptStepUsage>>;
+      readonly currentTurn?: AgentTranscriptStepUsage;
+      readonly total?: AgentTranscriptStepUsage;
+    };
+    readonly contextTokens?: number;
+    readonly maxContextTokens?: number;
+    readonly contextUsage?: number;
+    readonly permission?: 'manual' | 'yolo' | 'auto';
+    /**
+     * Wire-owned `agentPhaseSchema` (idle / running / streaming / tool_call /
+     * retrying / awaiting_approval / interrupted / ended). The full
+     * discriminated union lives in `@moonshot-ai/transcript`; GUI only
+     * pass-throughs it.
+     */
+    readonly phase?: { readonly kind: string; readonly [key: string]: unknown };
+  };
+}
+
+/**
+ * `GET /sessions/{id}/transcript` page. `items` / `has_more` are the turn
+ * window; `agents`, `tasks`, `interactions`, `attachments`, `todos`,
+ * `prompts`, `meta`, and `pending_interactions` are session-global and ship
+ * with every page. Newer fields stay optional so a compact legacy body still
+ * type-checks.
+ */
 export interface AgentTranscriptResponse {
   readonly agent_id: string;
   readonly items: readonly (
@@ -210,15 +351,25 @@ export interface AgentTranscriptResponse {
    * unpaginated with every transcript response. `request`/`response` carry
    * the engine payloads (v2 field names: toolName/action/display/questions). */
   readonly interactions?: readonly AgentTranscriptInteraction[];
+  readonly agents?: readonly AgentTranscriptAgent[];
+  readonly tasks?: readonly AgentTranscriptTask[];
+  readonly todos?: readonly AgentTranscriptTodo[];
+  readonly prompts?: readonly AgentTranscriptPrompt[];
+  readonly meta?: AgentTranscriptMeta;
+  readonly pending_interactions?: readonly string[];
+  /** Op-batch watermark: this state includes every batch with seq <= N. */
+  readonly seq?: number;
+  readonly attachments?: readonly AgentTranscriptAttachment[];
 }
 
-export interface AgentTranscriptInteraction {
-  readonly interactionId: string;
-  readonly interactionKind: 'approval' | 'question';
-  readonly toolCallId?: string;
-  readonly state: 'pending' | 'approved' | 'rejected' | 'cancelled' | 'answered' | 'dismissed';
-  readonly request?: unknown;
-  readonly response?: unknown;
+/** Cursor / page options for {@link KikiClient.getAgentTranscript}. */
+export interface GetAgentTranscriptOptions {
+  /** Page toward older turns (`before_turn`). Mutually exclusive with `afterTurn`. */
+  readonly beforeTurn?: string;
+  /** Page toward newer turns (`after_turn`). Mutually exclusive with `beforeTurn`. */
+  readonly afterTurn?: string;
+  /** Turns per page (`page_size`). Defaults to 100, matching the historical client. */
+  readonly pageSize?: number;
 }
 
 function joinUrl(baseUrl: string, path: string): string {
@@ -397,11 +548,24 @@ export class KikiClient {
   getAgentTranscript(
     sessionId: string,
     agentId: string,
+    options?: GetAgentTranscriptOptions,
   ): Promise<AgentTranscriptResponse> {
+    if (options?.beforeTurn !== undefined && options?.afterTurn !== undefined) {
+      return Promise.reject(
+        new Error('beforeTurn and afterTurn are mutually exclusive'),
+      );
+    }
     return this.request<AgentTranscriptResponse>(
       'GET',
       `/sessions/${encodeURIComponent(sessionId)}/transcript`,
-      { query: { agent_id: agentId, page_size: 100 } },
+      {
+        query: {
+          agent_id: agentId,
+          before_turn: options?.beforeTurn,
+          after_turn: options?.afterTurn,
+          page_size: options?.pageSize ?? 100,
+        },
+      },
     );
   }
 
@@ -574,6 +738,17 @@ export class KikiClient {
 
   listProviders(): Promise<ListProvidersResponse> {
     return this.request<ListProvidersResponse>('GET', '/providers');
+  }
+
+  /**
+   * `POST /providers/{id}:refresh` — server-side model probe. Uses the stored
+   * key and avoids a browser-direct `/models` fetch (CORS / missing secret).
+   */
+  refreshProvider(providerId: string): Promise<RefreshProviderModelsResponse> {
+    return this.request<RefreshProviderModelsResponse>(
+      'POST',
+      `/providers/${encodeURIComponent(providerId)}:refresh`,
+    );
   }
 
   setDefaultModel(modelId: string): Promise<SetDefaultModelResponse> {

@@ -6,9 +6,17 @@
  * in the desktop runtime.
  */
 
+import { useSyncExternalStore } from 'react';
+
 import { useI18n } from '../i18n';
 import type { I18nKey } from '../i18n/locale';
 import { isDesktopRuntime } from '../lib/desktop';
+import {
+  settingsServerSnapshot,
+  settingsSnapshot,
+  subscribeSettings,
+  type SendShortcut,
+} from '../lib/settings';
 import { Dialog } from './Dialog';
 
 interface ShortcutRow {
@@ -21,7 +29,15 @@ interface ShortcutGroup {
   readonly rows: readonly ShortcutRow[];
 }
 
-function groups(): readonly ShortcutGroup[] {
+function sendKeys(shortcut: SendShortcut): readonly string[] {
+  return shortcut === 'cmd-enter' ? ['⌘/Ctrl', 'Enter'] : ['Enter'];
+}
+
+function newlineKeys(shortcut: SendShortcut): readonly string[] {
+  return shortcut === 'cmd-enter' ? ['Enter'] : ['Shift', 'Enter'];
+}
+
+function groups(shortcut: SendShortcut): readonly ShortcutGroup[] {
   const globalRows: ShortcutRow[] = [
     { keys: ['Ctrl', 'N'], labelKey: 'shortcuts.newSession' },
     { keys: ['Ctrl', 'K'], labelKey: 'shortcuts.switcher' },
@@ -38,8 +54,8 @@ function groups(): readonly ShortcutGroup[] {
     {
       titleKey: 'shortcuts.group.session',
       rows: [
-        { keys: ['Enter'], labelKey: 'shortcuts.send' },
-        { keys: ['Shift', 'Enter'], labelKey: 'shortcuts.newline' },
+        { keys: sendKeys(shortcut), labelKey: 'shortcuts.send' },
+        { keys: newlineKeys(shortcut), labelKey: 'shortcuts.newline' },
         { keys: ['Esc'], labelKey: 'shortcuts.abortOrClose' },
         { keys: ['/'], labelKey: 'shortcuts.slashMenu' },
         { keys: ['@'], labelKey: 'shortcuts.fileMention' },
@@ -57,6 +73,7 @@ function groups(): readonly ShortcutGroup[] {
       rows: [
         { keys: ['Ctrl', 'Shift', 'C'], labelKey: 'shortcuts.termCopy' },
         { keys: ['Ctrl', 'Shift', 'V'], labelKey: 'shortcuts.termPaste' },
+        { keys: ['Esc'], labelKey: 'shortcuts.termEsc' },
         { keys: ['Esc'], labelKey: 'shortcuts.termClose' },
       ],
     },
@@ -73,6 +90,11 @@ function Kbd({ label }: { label: string }) {
 
 export function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
   const { t } = useI18n();
+  const sendShortcut = useSyncExternalStore(
+    subscribeSettings,
+    settingsSnapshot,
+    settingsServerSnapshot,
+  ).sendShortcut;
   return (
     <Dialog
       onClose={onClose}
@@ -82,7 +104,7 @@ export function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
     >
       <h2 className="font-display text-[16px] font-semibold text-ink">{t('shortcuts.title')}</h2>
       <div className="mt-3 max-h-[60vh] space-y-4 overflow-y-auto pr-1">
-        {groups().map((group) => (
+        {groups(sendShortcut).map((group) => (
           <section key={group.titleKey}>
             <h3 className="mb-1.5 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
               {t(group.titleKey)}

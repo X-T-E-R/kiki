@@ -5,8 +5,8 @@ import type { Session, SessionSnapshotResponse } from '@moonshot-ai/protocol';
 import type { KikiClient } from '../lib/client';
 import type { SessionEventFrame } from '../lib/types';
 import type { KikiSocket } from '../lib/ws';
-import { SessionController } from './sessionController';
-import type { SubagentBlock, ToolBlock, UserBlock } from './transcript';
+import { assertSessionWritable, RESYNC_PAUSED_ERROR, SessionController } from './sessionController';
+import type { SteerBlock, SubagentBlock, ToolBlock, UserBlock } from './transcript';
 
 const session: Session = {
   id: 'session_test',
@@ -107,6 +107,7 @@ interface Harness {
   client: {
     snapshot: ReturnType<typeof vi.fn>;
     listPrompts: ReturnType<typeof vi.fn>;
+    listMessages: ReturnType<typeof vi.fn>;
     submitPrompt: ReturnType<typeof vi.fn>;
     abortPrompt: ReturnType<typeof vi.fn>;
     steerPrompt: ReturnType<typeof vi.fn>;
@@ -155,6 +156,18 @@ async function openController(): Promise<Harness> {
     mainPublishes: () => publishes - opened,
   };
 }
+
+describe('assertSessionWritable', () => {
+  it('throws the shared paused error while resyncing or after a failed resync', () => {
+    expect(() => assertSessionWritable({ resyncing: true, resyncFailed: false })).toThrow(
+      RESYNC_PAUSED_ERROR,
+    );
+    expect(() => assertSessionWritable({ resyncing: false, resyncFailed: true })).toThrow(
+      RESYNC_PAUSED_ERROR,
+    );
+    expect(() => assertSessionWritable({ resyncing: false, resyncFailed: false })).not.toThrow();
+  });
+});
 
 describe('SessionController pipeline', () => {
   it('publishes at most once per flush no matter how many frames arrived', async () => {
@@ -321,7 +334,7 @@ describe('SessionController pipeline', () => {
   });
 
   it('steers a queued prompt into the running turn, then clears the rest', async () => {
-    const { controller, client } = await openController();
+    const { controller, client, flushAll } = await openController();
     const item = (
       promptId: string,
       text: string,
@@ -357,6 +370,25 @@ describe('SessionController pipeline', () => {
       controller.getState().blocks.find((b): b is UserBlock => b.kind === 'user' && b.promptId === 'p2')
         ?.promptStatus,
     ).toBeUndefined();
+    controller.handleFrame(
+      frame(
+        {
+          type: 'prompt.steered',
+          activePromptId: 'p1',
+          promptIds: ['p2'],
+          content: [{ type: 'text', text: 'B' }],
+          steeredAt: '2026-01-01T00:00:05.000Z',
+        } as never,
+        { seq: 11 },
+      ),
+    );
+    flushAll();
+    expect(
+      controller.getState().blocks.find((b): b is UserBlock => b.kind === 'user' && b.promptId === 'p2'),
+    ).toBeUndefined();
+    expect(
+      controller.getState().blocks.find((b): b is SteerBlock => b.kind === 'steer' && b.promptId === 'p2'),
+    ).toMatchObject({ text: 'B', activePromptId: 'p1' });
 
     // Clear all: one abort per parked prompt, then the queue drains empty.
     client.listPrompts.mockResolvedValue({ active: item('p1', 'A', 'running', 2), queued: [] });
@@ -364,6 +396,167 @@ describe('SessionController pipeline', () => {
     expect(client.abortPrompt).toHaveBeenCalledTimes(1);
     expect(client.abortPrompt).toHaveBeenCalledWith('session_test', 'p3');
     expect(controller.getState().queuedPromptIds).toEqual([]);
+    controller.close();
+  });
+
+  it('reports partial clearQueue failures and keeps the failed prompt queued', async () => {
+    const { controller, client } = await openController();
+    const item = (
+      promptId: string,
+      text: string,
+      status: 'running' | 'queued',
+      second: number,
+    ) => ({
+      prompt_id: promptId,
+      user_message_id: `m-${promptId}`,
+      status,
+      content: [{ type: 'text' as const, text }],
+      created_at: `2026-01-01T00:00:0${second}.000Z`,
+    });
+    client.submitPrompt
+      .mockResolvedValueOnce(item('p1', 'A', 'running', 2))
+      .mockResolvedValueOnce(item('p2', 'B', 'queued', 3))
+      .mockResolvedValueOnce(item('p3', 'C', 'queued', 4));
+    await controller.sendPrompt({ text: 'A', permissionMode: 'manual' });
+    await controller.sendPrompt({ text: 'B', permissionMode: 'manual' });
+    await controller.sendPrompt({ text: 'C', permissionMode: 'manual' });
+
+    client.abortPrompt.mockImplementation(async (_sid: string, promptId: string) => {
+      if (promptId === 'p3') throw new Error('abort failed');
+      return { aborted: true, at_seq: 1 };
+    });
+    client.listPrompts.mockResolvedValue({
+      active: item('p1', 'A', 'running', 2),
+      queued: [item('p3', 'C', 'queued', 4)],
+    });
+    await expect(controller.clearQueue()).resolves.toEqual({ total: 2, failed: 1 });
+    expect(controller.getState().queuedPromptIds).toEqual(['p3']);
+    controller.close();
+  });
+
+  it('refuses sendPrompt during resync without REST or local echo', async () => {
+    const { controller, client } = await openController();
+    const held = deferred<SessionSnapshotResponse>();
+    client.snapshot.mockReturnValue(held.promise);
+    void controller.resync();
+    await waitFor(() => controller.getState().resyncing);
+    await expect(controller.sendPrompt({ text: 'nope', permissionMode: 'manual' })).rejects.toThrow(
+      /resync/i,
+    );
+    expect(client.submitPrompt).not.toHaveBeenCalled();
+    expect(controller.getState().blocks.some((block) => block.kind === 'user')).toBe(false);
+    held.reject(new Error('snapshot down'));
+    await waitFor(() => controller.getState().resyncFailed);
+    await expect(controller.sendPrompt({ text: 'still nope', permissionMode: 'manual' })).rejects.toThrow(
+      /resync/i,
+    );
+    expect(client.submitPrompt).not.toHaveBeenCalled();
+    await expect(controller.steerQueued('p9')).rejects.toThrow(/resync/i);
+    expect(client.steerPrompt).not.toHaveBeenCalled();
+    controller.close();
+  });
+
+  it('refuses steerQueued during an in-flight resync without REST', async () => {
+    const { controller, client } = await openController();
+    const held = deferred<SessionSnapshotResponse>();
+    client.snapshot.mockReturnValue(held.promise);
+    void controller.resync();
+    await waitFor(() => controller.getState().resyncing);
+    await expect(controller.steerQueued('p2')).rejects.toThrow(/resync/i);
+    expect(client.steerPrompt).not.toHaveBeenCalled();
+    held.resolve(snapshot());
+    await waitFor(() => !controller.getState().resyncing && !controller.getState().resyncFailed);
+    controller.close();
+  });
+
+  it('merges a list-poll record without flattening live busy or pending fields', async () => {
+    const { controller, client, flushAll } = await openController();
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: 'p1',
+      user_message_id: 'm1',
+      status: 'running',
+      content: [{ type: 'text', text: 'A' }],
+      created_at: '2026-01-01T00:00:02.000Z',
+    });
+    await controller.sendPrompt({ text: 'A', permissionMode: 'manual' });
+    controller.handleFrame(
+      frame({
+        type: 'event.approval.requested',
+        agentId: 'main',
+        sessionId: 'session_test',
+        approval_id: 'a1',
+        session_id: 'session_test',
+        tool_call_id: 'tc1',
+        tool_name: 'Bash',
+        action: 'Run echo',
+        tool_input_display: { kind: 'command', command: 'echo hi' },
+        created_at: '2026-01-01T00:00:00.000Z',
+        expires_at: '2026-01-01T00:05:00.000Z',
+      } as never, { seq: 11 }),
+    );
+    flushAll();
+    expect(controller.getState().busy).toBe(true);
+    expect(controller.getState().pendingInteraction).toBe('approval');
+    expect(controller.getState().activePromptId).toBe('p1');
+
+    controller.handleSessionRecord({
+      ...session,
+      title: 'Polled title',
+      updated_at: '2026-01-01T00:05:00.000Z',
+      busy: false,
+      pending_interaction: 'none',
+    });
+    const state = controller.getState();
+    expect(state.session?.title).toBe('Polled title');
+    expect(state.busy).toBe(true);
+    expect(state.pendingInteraction).toBe('approval');
+    expect(state.activePromptId).toBe('p1');
+    controller.close();
+  });
+
+  it('records an older-history error without treating it as the beginning', async () => {
+    const { controller, client } = await openController();
+    client.snapshot.mockResolvedValue(
+      snapshot({
+        messages: {
+          items: [
+            {
+              id: 'm3',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: 'three' }],
+              created_at: '2026-01-01T00:00:02.000Z',
+            },
+          ],
+          has_more: true,
+        },
+      }),
+    );
+    await controller.retryOpen();
+    expect(controller.getState().hasMoreHistory).toBe(true);
+    client.listMessages.mockRejectedValueOnce(new Error('history down'));
+    await expect(controller.loadOlderMessages()).resolves.toBe(false);
+    const failed = controller.getState();
+    expect(failed.olderError).toBe('history down');
+    expect(failed.hasMoreHistory).toBe(true);
+    expect(failed.fetchedOlder).toBe(false);
+    expect(failed.loadingOlder).toBe(false);
+
+    client.listMessages.mockResolvedValueOnce({
+      items: [
+        {
+          id: 'm2',
+          session_id: 'session_test',
+          role: 'user',
+          content: [{ type: 'text', text: 'two' }],
+          created_at: '2026-01-01T00:00:01.500Z',
+        },
+      ],
+      has_more: false,
+    });
+    await expect(controller.loadOlderMessages()).resolves.toBe(true);
+    expect(controller.getState().olderError).toBeUndefined();
+    expect(controller.getState().fetchedOlder).toBe(true);
     controller.close();
   });
 

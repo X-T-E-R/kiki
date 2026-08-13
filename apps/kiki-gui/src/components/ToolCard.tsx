@@ -218,7 +218,13 @@ function truncateJson(value: unknown, truncatedNote: string, limit = 6000): stri
   }
 }
 
-export const ToolCard = memo(function ToolCard({ block }: { block: ToolBlock }) {
+export const ToolCard = memo(function ToolCard({
+  block,
+  onOpenAgent,
+}: {
+  block: ToolBlock;
+  onOpenAgent?: (agentId: string) => void;
+}) {
   const { t, tp, time } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const summary = toolSummary(block, t, tp);
@@ -319,6 +325,25 @@ export const ToolCard = memo(function ToolCard({ block }: { block: ToolBlock }) 
                     {t('tc.output')}{block.isError === true ? t('tc.outputError') : ''}
                   </p>
                   <OutputView output={block.output} />
+                </div>
+              ) : null}
+              {block.agentRefs !== undefined && block.agentRefs.length > 0 && onOpenAgent !== undefined ? (
+                <div>
+                  <p className="mb-1 text-[10.5px] font-semibold tracking-wide text-ink-faint uppercase">
+                    {t('tc.spawnedAgents')}
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {block.agentRefs.map((ref) => (
+                      <button
+                        key={ref.agentId}
+                        type="button"
+                        onClick={() => { onOpenAgent(ref.agentId); }}
+                        className="rounded-full border border-hairline bg-paper px-2 py-0.5 text-[11px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
+                      >
+                        {t('tc.openSpawnedAgent', { name: ref.agentId })}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               ) : null}
             </>

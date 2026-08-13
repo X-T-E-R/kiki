@@ -6,7 +6,7 @@
  * the same draft and sending behaves identically.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
@@ -16,7 +16,15 @@ import { Composer } from './Composer';
 import { useI18n } from '../i18n';
 import { buildPromptContent, type ComposerAttachment } from '../lib/attachments';
 import { readDraft, writeDraft } from '../lib/drafts';
-import { readSettings } from '../lib/settings';
+import {
+  readSettings,
+  resolveEffectiveModel,
+  resolveModelSource,
+  resolveSessionModelOverride,
+  settingsServerSnapshot,
+  settingsSnapshot,
+  subscribeSettings,
+} from '../lib/settings';
 import { useConnection } from '../state/connection';
 
 const DRAFT_KEY = 'new';
@@ -31,6 +39,11 @@ export function useNewSessionDraft({
 } = {}) {
   const { client } = useConnection();
   const navigate = useNavigate();
+  const liveSettings = useSyncExternalStore(
+    subscribeSettings,
+    settingsSnapshot,
+    settingsServerSnapshot,
+  );
   const settings = useMemo(() => readSettings(), []);
 
   const [draft, setDraft] = useState('');
@@ -44,7 +57,9 @@ export function useNewSessionDraft({
   const [planMode, setPlanMode] = useState(settings.defaultPlanMode);
   const [swarmMode, setSwarmMode] = useState(false);
   const [goalObjective, setGoalObjective] = useState('');
-  const [modelOverride, setModelOverride] = useState(settings.defaultModel);
+  const [modelOverride, setModelOverride] = useState(() =>
+    resolveSessionModelOverride(undefined),
+  );
   const [effortOverride, setEffortOverride] = useState(settings.defaultEffort);
 
   const workspacesQuery = useQuery({
@@ -70,7 +85,14 @@ export function useNewSessionDraft({
     queryFn: () => client.listModels(),
     staleTime: 60_000,
   });
-  const effectiveModel = modelOverride ?? serverDefaultModel;
+  const inheritedDefault = liveSettings.defaultModel ?? serverDefaultModel;
+  const effectiveModel = resolveEffectiveModel(modelOverride, undefined, inheritedDefault);
+  const modelSource = resolveModelSource(
+    modelOverride,
+    undefined,
+    liveSettings.defaultModel,
+    serverDefaultModel,
+  );
   const catalogItem = (modelsQuery.data?.items ?? []).find((item) => item.model === effectiveModel);
   const supportedEfforts = catalogItem?.support_efforts;
   const effectiveEffort =
@@ -109,7 +131,7 @@ export function useNewSessionDraft({
           state: {
             initialPrompt: text.trim(),
             initialAttachments: composerAttachments,
-            model: effectiveModel,
+            model: modelOverride,
             thinking: effectiveEffort,
             permissionMode,
             planMode,
@@ -147,6 +169,8 @@ export function useNewSessionDraft({
     workspacesLoading: workspacesQuery.isLoading,
     effectiveWorkspace,
     serverDefaultModel,
+    inheritedDefault,
+    modelSource,
     supportedEfforts,
     effectiveEffort,
     updateDraft,
@@ -229,8 +253,8 @@ export function NewSessionDraftPanel({
         onChange={state.updateDraft}
         model={state.modelOverride}
         defaultModel={undefined}
-        serverDefaultModel={state.serverDefaultModel}
-        modelSource={state.modelOverride !== undefined ? 'override' : 'server-default'}
+        serverDefaultModel={state.inheritedDefault}
+        modelSource={state.modelSource}
         permissionMode={state.permissionMode}
         planMode={state.planMode}
         swarmMode={state.swarmMode}

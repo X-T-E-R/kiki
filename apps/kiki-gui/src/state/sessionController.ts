@@ -28,11 +28,13 @@ import {
   markApprovalResolved,
   markQuestionOutcome,
   prependOlderMessages,
+  preserveCapturedSteers,
   preserveCapturedSubagents,
   reconcilePromptList,
   setGoal,
   setLoadError,
   setLoadingOlder,
+  setOlderError,
   setResyncFailed,
   setResyncing,
   setSessionRecord,
@@ -41,6 +43,14 @@ import {
 } from './transcript';
 
 export type Listener = () => void;
+
+export const RESYNC_PAUSED_ERROR = 'Session is resyncing; sending is paused';
+
+export function assertSessionWritable(state: Pick<SessionViewState, 'resyncing' | 'resyncFailed'>): void {
+  if (state.resyncing || state.resyncFailed) {
+    throw new Error(RESYNC_PAUSED_ERROR);
+  }
+}
 
 const RESYNC_BACKOFF_MS = [250, 500, 1000, 2000, 4000];
 const QUARANTINE_MAX_FRAMES = 1000;
@@ -124,7 +134,7 @@ export class SessionController {
     this.scheduler = options.scheduler ?? browserScheduler;
     this.state = createViewState(sessionId);
     this.publishedState = this.state;
-    this.emptyAgentState = { ...createViewState(sessionId), loaded: true };
+    this.emptyAgentState = createViewState(sessionId);
   }
 
   getState = (): SessionViewState => this.publishedState;
@@ -323,7 +333,10 @@ export class SessionController {
     try {
       const snapshot = await this.client.snapshot(this.sessionId);
       if (this.closed) return;
-      const rebuilt = preserveCapturedSubagents(applySnapshot(this.sessionId, snapshot), this.state);
+      const rebuilt = preserveCapturedSteers(
+        preserveCapturedSubagents(applySnapshot(this.sessionId, snapshot), this.state),
+        this.state,
+      );
       this.setState(setResyncing(rebuilt, false));
       this.socket.subscribe(this.sessionId, { seq: snapshot.as_of_seq, epoch: snapshot.epoch });
       if (this.quarantineOverflowed) {
@@ -437,8 +450,10 @@ export class SessionController {
       if (this.closed) return false;
       this.setState(prependOlderMessages(this.state, page.items, page.has_more));
       return page.items.length > 0;
-    } catch {
-      if (!this.closed) this.setState(setLoadingOlder(this.state, false));
+    } catch (error) {
+      if (!this.closed) {
+        this.setState(setOlderError(this.state, errorMessage(error, 'Could not load earlier messages')));
+      }
       return false;
     }
   }
@@ -458,6 +473,7 @@ export class SessionController {
     goalObjective?: string;
     goalControl?: 'pause' | 'resume' | 'cancel';
   }): Promise<void> {
+    assertSessionWritable(this.state);
     const result = await this.client.submitPrompt(this.sessionId, {
       content: input.content ?? [{ type: 'text', text: input.text }],
       model: input.model,
@@ -503,19 +519,25 @@ export class SessionController {
    * action error; the next reconcile repaints the strip).
    */
   async steerQueued(promptId: string): Promise<void> {
+    assertSessionWritable(this.state);
     await this.client.steerPrompt(this.sessionId, promptId);
     await this.refreshPrompts();
   }
 
   /** Clear the whole queue: the wire has no bulk-remove route, so abort each
-   * parked prompt; one reconcile at the end repaints the strip. */
-  async clearQueue(): Promise<void> {
+   * parked prompt; one reconcile at the end repaints the strip. Failed ids stay
+   * queued so the user can retry. */
+  async clearQueue(): Promise<{ total: number; failed: number }> {
     const ids = this.state.queuedPromptIds;
-    if (ids.length === 0) return;
-    await Promise.allSettled(
+    if (ids.length === 0) return { total: 0, failed: 0 };
+    const results = await Promise.allSettled(
       ids.map((promptId) => this.client.abortPrompt(this.sessionId, promptId)),
     );
     await this.refreshPrompts();
+    return {
+      total: ids.length,
+      failed: results.filter((result) => result.status === 'rejected').length,
+    };
   }
 
   async resolveApproval(

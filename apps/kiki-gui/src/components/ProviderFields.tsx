@@ -12,6 +12,7 @@ import type { ModelCatalogItem, ProviderCatalogItem } from '@moonshot-ai/protoco
 
 import { useI18n } from '../i18n';
 import { errorText, issueText } from '../i18n/locale';
+import { useConnection } from '../state/connection';
 import {
   createProvider,
   deleteProvider,
@@ -327,12 +328,21 @@ export function ProviderFields({
   draft,
   onChange,
   hasStoredKey,
+  managed = false,
+  refreshProviderId,
+  onRefreshed,
 }: {
   draft: ProviderDraft;
   onChange: (draft: ProviderDraft) => void;
   hasStoredKey: boolean;
+  /** OAuth-managed providers have no usable API-key save/clear/delete surface. */
+  managed?: boolean;
+  /** When set, Test connection uses `POST /providers/{id}:refresh` instead of a browser-direct probe. */
+  refreshProviderId?: string;
+  onRefreshed?: () => Promise<void>;
 }) {
   const { t, locale } = useI18n();
+  const { client } = useConnection();
   const [probing, setProbing] = useState(false);
   const [probeFeedback, setProbeFeedback] = useState<Feedback>(null);
 
@@ -347,6 +357,25 @@ export function ProviderFields({
     setProbing(true);
     setProbeFeedback(null);
     try {
+      if (refreshProviderId !== undefined) {
+        const result = await client.refreshProvider(refreshProviderId);
+        const failure = result.failed.find((entry) => entry.provider === refreshProviderId) ?? result.failed[0];
+        if (failure !== undefined && result.changed.length === 0 && result.unchanged.length === 0) {
+          throw new Error(failure.reason);
+        }
+        if (failure !== undefined && failure.provider === refreshProviderId) {
+          throw new Error(failure.reason);
+        }
+        await onRefreshed?.();
+        const added = result.changed.reduce((sum, change) => sum + change.added, 0);
+        setProbeFeedback({
+          tone: 'success',
+          text: added > 0
+            ? t('st.fetchModels.serverSuccess', { count: added })
+            : t('st.fetchModels.serverUnchanged'),
+        });
+        return;
+      }
       const models = await fetchRemoteModels({ type: draft.type, baseUrl: draft.baseUrl, apiKey: draft.apiKey });
       onChange({
         ...draft,
@@ -378,20 +407,24 @@ export function ProviderFields({
       <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.baseUrl')}
         <input className={`${INPUT} mt-1`} value={draft.baseUrl} onChange={(event) => { onChange({ ...draft, baseUrl: event.target.value }); }} placeholder="https://api.example.com/v1" />
       </label>
-      <div>
-        <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.apiKey')}
-          <input
-            type="password"
-            autoComplete="new-password"
-            className={`${INPUT} mt-1`}
-            value={draft.apiKey}
-            disabled={draft.clearApiKey}
-            onChange={(event) => { onChange({ ...draft, apiKey: event.target.value }); }}
-            placeholder={hasStoredKey ? t('st.providers.keyStored') : t('st.providers.keyNew')}
-          />
-        </label>
-        <Hint>{t('st.providers.keyHint')}</Hint>
-      </div>
+      {managed ? (
+        <Hint>{t('st.providers.managedHint')}</Hint>
+      ) : (
+        <div>
+          <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.apiKey')}
+            <input
+              type="password"
+              autoComplete="new-password"
+              className={`${INPUT} mt-1`}
+              value={draft.apiKey}
+              disabled={draft.clearApiKey}
+              onChange={(event) => { onChange({ ...draft, apiKey: event.target.value }); }}
+              placeholder={hasStoredKey ? t('st.providers.keyStored') : t('st.providers.keyNew')}
+            />
+          </label>
+          <Hint>{t('st.providers.keyHint')}</Hint>
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-3">
         <button type="button" className={SECONDARY_BUTTON} disabled={probing} onClick={() => void probe()}>
           {probing ? t('st.fetchModels.working') : t('st.fetchModels.button')}
@@ -433,11 +466,13 @@ export function ProviderEditor({
   provider,
   models,
   connection,
+  managed = false,
   onSaved,
 }: {
   provider: ProviderCatalogItem;
   models: readonly ModelCatalogItem[];
   connection: ServerConnection;
+  managed?: boolean;
   onSaved: () => Promise<void>;
 }) {
   const { t, locale } = useI18n();
@@ -516,34 +551,45 @@ export function ProviderEditor({
         ) : null}
       </summary>
       <div className="mt-4 space-y-4">
-        <ProviderFields draft={draft} onChange={setDraft} hasStoredKey={provider.has_api_key} />
-        <div className="flex flex-wrap items-center gap-2">
-          <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
-            {saving ? t('common.saving') : t('st.providers.save')}
-          </button>
-          {dirty ? <span className="text-[10.5px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
-        </div>
-        <div className="rounded-lg border border-danger/25 bg-danger/[0.03] p-3">
-          <p className="mb-2 text-[10.5px] font-semibold uppercase tracking-wide text-danger">{t('st.danger.title')}</p>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              className={DANGER_GHOST_BUTTON}
-              disabled={saving || !provider.has_api_key}
-              onClick={() => { setConfirming('clearKey'); }}
-            >
-              {t('st.danger.clearKey')}
-            </button>
-            <button
-              type="button"
-              className={DANGER_GHOST_BUTTON}
-              disabled={saving}
-              onClick={() => { setConfirming('remove'); }}
-            >
-              {t('st.danger.removeProvider')}
-            </button>
-          </div>
-        </div>
+        <ProviderFields
+          draft={draft}
+          onChange={setDraft}
+          hasStoredKey={provider.has_api_key}
+          managed={managed}
+          refreshProviderId={provider.id}
+          onRefreshed={onSaved}
+        />
+        {managed ? null : (
+          <>
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
+                {saving ? t('common.saving') : t('st.providers.save')}
+              </button>
+              {dirty ? <span className="text-[10.5px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
+            </div>
+            <div className="rounded-lg border border-danger/25 bg-danger/[0.03] p-3">
+              <p className="mb-2 text-[10.5px] font-semibold uppercase tracking-wide text-danger">{t('st.danger.title')}</p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className={DANGER_GHOST_BUTTON}
+                  disabled={saving || !provider.has_api_key}
+                  onClick={() => { setConfirming('clearKey'); }}
+                >
+                  {t('st.danger.clearKey')}
+                </button>
+                <button
+                  type="button"
+                  className={DANGER_GHOST_BUTTON}
+                  disabled={saving}
+                  onClick={() => { setConfirming('remove'); }}
+                >
+                  {t('st.danger.removeProvider')}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
         <FeedbackLine feedback={feedback} />
       </div>
       <ConfirmDialog

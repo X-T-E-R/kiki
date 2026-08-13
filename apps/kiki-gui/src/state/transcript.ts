@@ -32,9 +32,26 @@ import type {
   UsageStatus,
 } from '@moonshot-ai/protocol';
 
-import type { AgentTranscriptInteraction, AgentTranscriptResponse } from '../lib/client';
+import type {
+  AgentTranscriptAgent,
+  AgentTranscriptInteraction,
+  AgentTranscriptResponse,
+  AgentTranscriptTask,
+} from '../lib/client';
 import { isInteractionEvent, type SessionEventFrame } from '../lib/types';
 import type { I18nKey, I18nParams } from '../i18n/locale';
+import {
+  MAIN_AGENT_ID,
+  buildAgentForest,
+  countToolBlocks,
+  type AgentForest,
+  type AgentLiveSource,
+  type AgentRosterDescriptor,
+  type AgentTaskItem,
+  type AgentTimelineBlock,
+  type AgentTranscriptPage,
+  type AgentTreeNode,
+} from './agentTree';
 
 // ---------------------------------------------------------------------------
 
@@ -43,6 +60,7 @@ export interface UserBlock {
   readonly id: string;
   readonly text: string;
   readonly createdAt: string;
+  readonly turnId?: string;
   /** Stable daemon identities when known. `turn.started.prompt` placeholders
    * have neither until the REST result or a future prompt.submitted arrives. */
   readonly promptId?: string;
@@ -58,12 +76,57 @@ export interface SystemReminderBlock {
   readonly createdAt: string | undefined;
 }
 
+/** Left-lane fold for internal/system origins that must never render as You. */
+export type SystemVariant =
+  | 'injection'
+  | 'system_trigger'
+  | 'compaction_summary'
+  | 'hook_result'
+  | 'cron_job'
+  | 'cron_missed'
+  | 'task'
+  | 'retry'
+  | 'agent_message'
+  | 'system';
+
+export interface SystemBlock {
+  readonly kind: 'system';
+  readonly id: string;
+  readonly variant: SystemVariant;
+  readonly text: string;
+  readonly createdAt: string | undefined;
+  readonly turnId?: string;
+}
+
+/** User-slash skill / plugin activation: summary card, body folded. */
+export interface SkillBlock {
+  readonly kind: 'skill';
+  readonly id: string;
+  readonly source: 'skill' | 'plugin';
+  readonly name: string;
+  readonly args: string | undefined;
+  readonly text: string;
+  readonly createdAt: string | undefined;
+}
+
+/** Queued prompt injected into the running turn — stays anchored, never a tail You. */
+export interface SteerBlock {
+  readonly kind: 'steer';
+  readonly id: string;
+  readonly text: string;
+  readonly createdAt: string;
+  readonly promptId?: string;
+  readonly userMessageId?: string;
+  readonly activePromptId?: string;
+}
+
 export interface AssistantBlock {
   readonly kind: 'assistant';
   readonly id: string;
   readonly text: string;
   readonly streaming: boolean;
   readonly createdAt: string | undefined;
+  readonly turnId?: string;
 }
 
 export interface ThinkingBlock {
@@ -72,9 +135,15 @@ export interface ThinkingBlock {
   readonly text: string;
   readonly streaming: boolean;
   readonly createdAt: string | undefined;
+  readonly turnId?: string;
 }
 
 export type ToolStatus = 'running' | 'done' | 'error';
+
+export interface ToolAgentRef {
+  readonly agentId: string;
+  readonly role?: 'child' | 'member';
+}
 
 export interface ToolBlock {
   readonly kind: 'tool';
@@ -92,6 +161,8 @@ export interface ToolBlock {
   readonly startedAt: number;
   readonly durationMs: number | undefined;
   readonly progressText: string | undefined;
+  /** Agents spawned by Agent / AgentSwarm; omitted on ordinary tools. */
+  readonly agentRefs?: readonly ToolAgentRef[];
 }
 
 export interface ShellBlock {
@@ -107,6 +178,7 @@ export interface SubagentBlock {
   readonly kind: 'subagent';
   readonly id: string;
   readonly subagentId: string;
+  readonly parentAgentId: string | undefined;
   readonly parentToolCallId: string | undefined;
   readonly name: string;
   readonly description: string | undefined;
@@ -146,8 +218,14 @@ export interface ApprovalBlock {
   readonly id: string;
   readonly request: ApprovalRequest;
   readonly resolution: ApprovalResolution | undefined;
-  /** Set when the request originated from a subagent (card shows its name). */
+  /** Set when a live event proves the originating agent. */
   readonly originAgentId?: string;
+  /**
+   * Cold REST interactions have no origin_agent_id on the wire. True when the
+   * card was projected from a transcript page and must not be labeled as the
+   * requested agent.
+   */
+  readonly originUnknown?: boolean;
 }
 
 export type QuestionOutcome =
@@ -160,13 +238,22 @@ export interface QuestionBlock {
   readonly id: string;
   readonly request: QuestionRequest;
   readonly outcome: QuestionOutcome | undefined;
-  /** Set when the request originated from a subagent (card shows its name). */
+  /** Set when a live event proves the originating agent. */
   readonly originAgentId?: string;
+  /**
+   * Cold REST interactions have no origin_agent_id on the wire. True when the
+   * card was projected from a transcript page and must not be labeled as the
+   * requested agent.
+   */
+  readonly originUnknown?: boolean;
 }
 
 export type Block =
   | UserBlock
   | SystemReminderBlock
+  | SystemBlock
+  | SkillBlock
+  | SteerBlock
   | AssistantBlock
   | ThinkingBlock
   | ToolBlock
@@ -226,6 +313,8 @@ export interface SessionViewState {
   readonly loadingOlder: boolean;
   /** At least one older page has been fetched (drives the history-start cap). */
   readonly fetchedOlder: boolean;
+  /** Last older-page fetch error; empty when healthy. Not the history-start cap. */
+  readonly olderError: string | undefined;
 }
 
 export function createViewState(sessionId: string): SessionViewState {
@@ -259,6 +348,7 @@ export function createViewState(sessionId: string): SessionViewState {
     oldestMessageId: undefined,
     loadingOlder: false,
     fetchedOlder: false,
+    olderError: undefined,
   };
 }
 
@@ -297,6 +387,337 @@ export function splitSystemReminders(text: string): SplitSystemRemindersResult {
   };
 }
 
+/** Wire / REST origin payload. Protocol stores this as `metadata.origin`. */
+export interface PromptOriginLike {
+  readonly kind?: string;
+  readonly trigger?: string;
+  readonly skillName?: string;
+  readonly commandName?: string;
+  readonly skillArgs?: string;
+  readonly commandArgs?: string;
+  readonly pluginId?: string;
+  readonly name?: string;
+  readonly variant?: string;
+  readonly phase?: string;
+  readonly isError?: boolean;
+  readonly payload?: unknown;
+  readonly taskId?: string;
+}
+
+/** Transcript TurnOrigin wrappers (`kind: 'other'`) carry the engine origin in `payload`. */
+export function unwrapOrigin(origin: PromptOriginLike | undefined): PromptOriginLike | undefined {
+  if (origin === undefined) return undefined;
+  if (typeof origin.payload === 'object' && origin.payload !== null) {
+    const nested = origin.payload as PromptOriginLike;
+    if (typeof nested.kind === 'string') return unwrapOrigin(nested);
+  }
+  return origin;
+}
+
+export function originFromMetadata(metadata: unknown): PromptOriginLike | undefined {
+  if (typeof metadata !== 'object' || metadata === null) return undefined;
+  const origin = (metadata as { origin?: unknown }).origin;
+  if (typeof origin !== 'object' || origin === null) return undefined;
+  return unwrapOrigin(origin as PromptOriginLike);
+}
+
+function originFromRecord(value: unknown): PromptOriginLike | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const origin = (value as { origin?: unknown }).origin;
+  if (typeof origin !== 'object' || origin === null) return undefined;
+  return unwrapOrigin(origin as PromptOriginLike);
+}
+
+/**
+ * Display lane for a text payload. Origin wins, then role, then envelope
+ * fallback (`<system-reminder>` / `<bash-*>` / `<cron-fire>`).
+ */
+export type TextLane = 'you' | 'peer' | 'skill' | 'shell' | 'system' | 'reminder';
+
+export interface ClassifiedText {
+  readonly lane: TextLane;
+  readonly origin: PromptOriginLike | undefined;
+  readonly text: string;
+  readonly reminders: readonly string[];
+  readonly skill?: { readonly source: 'skill' | 'plugin'; readonly name: string; readonly args: string | undefined };
+  readonly systemVariant?: SystemVariant;
+  readonly shell?: { readonly commandId: string; readonly output: string; readonly isError: boolean | undefined };
+}
+
+const INTERNAL_ORIGIN_KINDS = new Set<string>([
+  'injection',
+  'system_trigger',
+  'compaction_summary',
+  'hook_result',
+  'cron_job',
+  'cron_missed',
+  'task',
+  'background_task',
+  'retry',
+  'agent_message',
+]);
+
+const SYSTEM_VARIANTS = new Set<SystemVariant>([
+  'injection',
+  'system_trigger',
+  'compaction_summary',
+  'hook_result',
+  'cron_job',
+  'cron_missed',
+  'task',
+  'retry',
+  'agent_message',
+  'system',
+]);
+
+function asSystemVariant(kind: string | undefined): SystemVariant {
+  if (kind === 'background_task') return 'task';
+  if (kind !== undefined && SYSTEM_VARIANTS.has(kind as SystemVariant)) return kind as SystemVariant;
+  return 'system';
+}
+
+const BASH_INPUT_RE = /<bash-input>([\s\S]*?)<\/bash-input>/i;
+const BASH_STDOUT_RE = /<bash-stdout>([\s\S]*?)<\/bash-stdout>/i;
+const BASH_STDERR_RE = /<bash-stderr>([\s\S]*?)<\/bash-stderr>/i;
+const CRON_FIRE_RE = /<cron-fire\b[\s\S]*?<\/cron-fire>/i;
+
+function unescapeXml(text: string): string {
+  return text
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&amp;', '&');
+}
+
+function parseHistoricalShell(
+  text: string,
+  identity?: string,
+): { commandId: string; output: string; isError: boolean | undefined } | undefined {
+  const input = BASH_INPUT_RE.exec(text);
+  const stdout = BASH_STDOUT_RE.exec(text);
+  const stderr = BASH_STDERR_RE.exec(text);
+  if (input === null && stdout === null && stderr === null) return undefined;
+  const command = input?.[1] === undefined ? '' : unescapeXml(input[1]).trim();
+  const out = stdout?.[1] === undefined ? '' : unescapeXml(stdout[1]);
+  const err = stderr?.[1] === undefined ? '' : unescapeXml(stderr[1]);
+  const combined = [command === '' ? undefined : `$ ${command}`, out === '' ? undefined : out, err === '' ? undefined : err]
+    .filter((part): part is string => part !== undefined)
+    .join('\n');
+  const slug = command.slice(0, 40) || 'shell';
+  return {
+    commandId: identity !== undefined && identity !== '' ? `history-${identity}-${slug}` : `history-${slug}`,
+    output: combined,
+    isError: err !== '' ? true : undefined,
+  };
+}
+
+function skillFromOrigin(origin: PromptOriginLike | undefined): ClassifiedText['skill'] | undefined {
+  if (origin?.kind === 'skill_activation') {
+    return {
+      source: 'skill',
+      name: origin.skillName ?? 'skill',
+      args: origin.skillArgs,
+    };
+  }
+  if (origin?.kind === 'plugin_command') {
+    return {
+      source: 'plugin',
+      name: origin.commandName ?? origin.pluginId ?? 'plugin',
+      args: origin.commandArgs,
+    };
+  }
+  return undefined;
+}
+
+/**
+ * Unified classifier: origin first, then role, then envelope fallback.
+ * Only real user origins (`user`, and `peer_thread` as a peer lane) may
+ * become a right-side You bubble. An unrecognized but present origin is
+ * always system — never You.
+ */
+export function classifyTranscriptText(input: {
+  text: string;
+  role?: string;
+  origin?: PromptOriginLike;
+  id?: string;
+}): ClassifiedText {
+  const origin = unwrapOrigin(input.origin);
+  const split = splitSystemReminders(input.text);
+  const kind = origin?.kind;
+
+  if (kind === 'user') {
+    return { lane: 'you', origin, text: split.text, reminders: split.reminders };
+  }
+  if (kind === 'peer_thread') {
+    return { lane: 'peer', origin, text: split.text, reminders: split.reminders };
+  }
+  if (kind === 'skill_activation' || kind === 'plugin_command') {
+    if (origin?.trigger === 'user-slash') {
+      return {
+        lane: 'skill',
+        origin,
+        text: split.text,
+        reminders: split.reminders,
+        skill: skillFromOrigin(origin),
+      };
+    }
+    return {
+      lane: 'system',
+      origin,
+      text: split.text,
+      reminders: split.reminders,
+      systemVariant: 'system',
+    };
+  }
+  if (kind === 'shell_command') {
+    const shell = parseHistoricalShell(input.text, input.id) ?? {
+      commandId: `shell-${input.id ?? origin?.phase ?? 'cmd'}`,
+      output: split.text,
+      isError: origin?.isError === true ? true : undefined,
+    };
+    return { lane: 'shell', origin, text: split.text, reminders: split.reminders, shell };
+  }
+  if (kind !== undefined && INTERNAL_ORIGIN_KINDS.has(kind)) {
+    return {
+      lane: 'system',
+      origin,
+      text: split.text,
+      reminders: split.reminders,
+      systemVariant: asSystemVariant(kind),
+    };
+  }
+  if (kind !== undefined) {
+    return {
+      lane: 'system',
+      origin,
+      text: split.text,
+      reminders: split.reminders,
+      systemVariant: 'system',
+    };
+  }
+
+  if (input.role === 'system') {
+    return {
+      lane: 'system',
+      origin,
+      text: split.text,
+      reminders: split.reminders,
+      systemVariant: 'system',
+    };
+  }
+
+  const shell = parseHistoricalShell(input.text, input.id);
+  if (shell !== undefined) {
+    return { lane: 'shell', origin, text: split.text, reminders: split.reminders, shell };
+  }
+  if (CRON_FIRE_RE.test(input.text)) {
+    return {
+      lane: 'system',
+      origin,
+      text: split.text,
+      reminders: split.reminders,
+      systemVariant: 'cron_job',
+    };
+  }
+  if (split.text === '' && split.reminders.length > 0) {
+    return { lane: 'reminder', origin, text: '', reminders: split.reminders };
+  }
+  if (input.role === 'user' || input.role === undefined) {
+    return { lane: 'you', origin, text: split.text, reminders: split.reminders };
+  }
+  return {
+    lane: 'system',
+    origin,
+    text: split.text,
+    reminders: split.reminders,
+    systemVariant: 'system',
+  };
+}
+
+function reminderBlocks(id: string, createdAt: string | undefined, reminders: readonly string[]): SystemReminderBlock[] {
+  return reminders.map((reminder, index) => ({
+    kind: 'system-reminder',
+    id: `reminder-${id}-${index}`,
+    text: reminder,
+    createdAt,
+  }));
+}
+
+function classifiedTextToBlocks(input: {
+  id: string;
+  classified: ClassifiedText;
+  createdAt: string;
+  promptId?: string;
+  userMessageId?: string;
+  promptStatus?: PromptStatus;
+  turnId?: string;
+}): Block[] {
+  const { classified } = input;
+  const blocks: Block[] = [];
+  switch (classified.lane) {
+    case 'you':
+    case 'peer':
+      if (classified.text !== '') {
+        blocks.push({
+          kind: 'user',
+          id: `user-${input.id}`,
+          text: classified.text,
+          createdAt: input.createdAt,
+          promptId: input.promptId,
+          userMessageId: input.userMessageId,
+          promptStatus: input.promptStatus,
+          turnId: input.turnId,
+        });
+      }
+      break;
+    case 'skill': {
+      const skill = classified.skill ?? { source: 'skill' as const, name: 'skill', args: undefined };
+      blocks.push({
+        kind: 'skill',
+        id: `skill-${input.id}`,
+        source: skill.source,
+        name: skill.name,
+        args: skill.args,
+        text: classified.text,
+        createdAt: input.createdAt,
+      });
+      break;
+    }
+    case 'shell': {
+      const shell = classified.shell ?? {
+        commandId: input.id,
+        output: classified.text,
+        isError: undefined,
+      };
+      blocks.push({
+        kind: 'shell',
+        id: `shell-${shell.commandId}`,
+        commandId: shell.commandId,
+        output: shell.output,
+        done: true,
+        isError: shell.isError,
+      });
+      break;
+    }
+    case 'system':
+      if (classified.text !== '') {
+        blocks.push({
+          kind: 'system',
+          id: `system-${input.id}`,
+          variant: classified.systemVariant ?? 'system',
+          text: classified.text,
+          createdAt: input.createdAt,
+          turnId: input.turnId,
+        });
+      }
+      break;
+    case 'reminder':
+      break;
+  }
+  blocks.push(...reminderBlocks(input.id, input.createdAt, classified.reminders));
+  return blocks;
+}
+
 function userAndReminderBlocks(input: {
   id: string;
   text: string;
@@ -304,29 +725,22 @@ function userAndReminderBlocks(input: {
   promptId?: string;
   userMessageId?: string;
   promptStatus?: PromptStatus;
+  origin?: PromptOriginLike;
+  role?: string;
 }): Block[] {
-  const split = splitSystemReminders(input.text);
-  const blocks: Block[] = [];
-  if (split.text !== '') {
-    blocks.push({
-      kind: 'user',
-      id: `user-${input.id}`,
-      text: split.text,
-      createdAt: input.createdAt,
-      promptId: input.promptId,
-      userMessageId: input.userMessageId,
-      promptStatus: input.promptStatus,
-    });
-  }
-  split.reminders.forEach((reminder, index) => {
-    blocks.push({
-      kind: 'system-reminder',
-      id: `reminder-${input.id}-${index}`,
-      text: reminder,
-      createdAt: input.createdAt,
-    });
+  return classifiedTextToBlocks({
+    id: input.id,
+    classified: classifyTranscriptText({
+      text: input.text,
+      role: input.role ?? 'user',
+      origin: input.origin,
+      id: input.id,
+    }),
+    createdAt: input.createdAt,
+    promptId: input.promptId,
+    userMessageId: input.userMessageId,
+    promptStatus: input.promptStatus,
   });
-  return blocks;
 }
 
 function messagesToBlocks(messages: readonly Message[]): Block[] {
@@ -377,6 +791,8 @@ function messagesToBlocks(messages: readonly Message[]): Block[] {
             createdAt: message.created_at,
             promptId: message.prompt_id ?? message.id,
             userMessageId: message.id,
+            origin: originFromMetadata(message.metadata),
+            role: 'user',
           }),
         );
         break;
@@ -434,27 +850,15 @@ function messagesToBlocks(messages: readonly Message[]): Block[] {
         break;
       }
       case 'system': {
-        const text = textOfContent(message.content);
-        const split = splitSystemReminders(text);
-        if (split.reminders.length > 0) {
-          split.reminders.forEach((reminder, index) => {
-            blocks.push({
-              kind: 'system-reminder',
-              id: `reminder-${message.id}-${index}`,
-              text: reminder,
-              createdAt: message.created_at,
-            });
-          });
-        }
-        if (split.text !== '') {
-          const preview = split.text.length > 160 ? `${split.text.slice(0, 160)}…` : split.text;
-          blocks.push({
-            kind: 'notice',
-            id: `system-${message.id}`,
-            text: preview,
-            tone: 'neutral',
-          });
-        }
+        blocks.push(
+          ...userAndReminderBlocks({
+            id: message.id,
+            text: textOfContent(message.content),
+            createdAt: message.created_at,
+            origin: originFromMetadata(message.metadata),
+            role: 'system',
+          }),
+        );
         break;
       }
     }
@@ -503,9 +907,10 @@ function engineQuestionItems(raw: unknown): QuestionItem[] {
 /** Transcript-response interaction entity → an actionable card block. */
 function interactionToBlock(
   interaction: AgentTranscriptInteraction,
-  agentId: string,
+  _agentId: string,
 ): Block | undefined {
-  const originAgentId = agentId !== 'main' ? agentId : undefined;
+  // Gap: the wire entity has no origin_agent_id. Do not invent one from the
+  // requested agent_id — the page is session-global and ships every page.
   if (interaction.interactionKind === 'approval') {
     const request = (interaction.request ?? {}) as {
       turnId?: number;
@@ -539,7 +944,7 @@ function interactionToBlock(
                   : 'resolved_elsewhere',
               resolvedAt: '',
             },
-      originAgentId,
+      originUnknown: true,
     } satisfies ApprovalBlock;
   }
   if (interaction.interactionKind === 'question') {
@@ -566,60 +971,134 @@ function interactionToBlock(
             : interaction.state === 'dismissed'
               ? { kind: 'dismissed', at: '' }
               : { kind: 'expired' },
-      originAgentId,
+      originUnknown: true,
     } satisfies QuestionBlock;
   }
   return undefined;
+}
+
+const HIDDEN_SPLICE_MARKERS = new Set(['undo', 'clear']);
+
+function originFromTurnItem(item: unknown): PromptOriginLike | undefined {
+  return originFromRecord(item);
+}
+
+function isUserVisibleOrigin(origin: PromptOriginLike | undefined): boolean {
+  const kind = unwrapOrigin(origin)?.kind;
+  return kind === 'user' || kind === 'peer_thread';
+}
+
+function originFromFrame(frame: unknown): PromptOriginLike | undefined {
+  return originFromRecord(frame);
+}
+
+const MARKER_SUMMARY_KEYS = {
+  compaction: 'transcript.marker.compaction',
+  hook: 'transcript.marker.hook',
+  skill: 'transcript.marker.skill',
+  notice: 'transcript.marker.notice',
+  cron: 'transcript.marker.cron',
+  goal: 'transcript.marker.goal',
+} as const satisfies Record<string, I18nKey>;
+
+function markerToBlock(item: {
+  markerId: string;
+  marker: string;
+  at?: string;
+  payload?: unknown;
+}): Block | undefined {
+  if (HIDDEN_SPLICE_MARKERS.has(item.marker)) return undefined;
+  const payload = item.payload;
+  const text =
+    typeof payload === 'string'
+      ? payload
+      : typeof payload === 'object' && payload !== null
+        ? typeof (payload as { text?: unknown }).text === 'string'
+          ? (payload as { text: string }).text
+          : typeof (payload as { message?: unknown }).message === 'string'
+            ? (payload as { message: string }).message
+            : undefined
+        : undefined;
+  if (text !== undefined && text.trim() !== '') {
+    return {
+      kind: 'notice',
+      id: `agent-marker-${item.markerId}`,
+      text,
+      tone: 'neutral',
+    };
+  }
+  const summaryKey = MARKER_SUMMARY_KEYS[item.marker as keyof typeof MARKER_SUMMARY_KEYS];
+  if (summaryKey === undefined) return undefined;
+  return {
+    kind: 'notice',
+    id: `agent-marker-${item.markerId}`,
+    text: item.marker,
+    tone: 'neutral',
+    i18n: { key: summaryKey },
+  };
 }
 
 export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Block[] {
   const blocks: Block[] = [];
   for (const item of response.items) {
     if (item.kind === 'marker') {
-      blocks.push({
-        kind: 'notice',
-        id: `agent-marker-${item.markerId}`,
-        text: item.marker,
-        tone: 'neutral',
-      });
+      const marker = markerToBlock(item);
+      if (marker !== undefined) blocks.push(marker);
       continue;
     }
     if (item.kind !== 'turn') continue;
     if (item.prompt !== undefined && item.prompt.trim() !== '') {
-      blocks.push({
-        kind: 'user',
-        id: `agent-turn-${item.turnId}-prompt`,
-        text: item.prompt,
-        createdAt: item.startedAt ?? '',
-      });
+      const origin = originFromTurnItem(item) ?? { kind: 'task', taskId: response.agent_id };
+      blocks.push(
+        ...classifiedTextToBlocks({
+          id: `agent-turn-${item.turnId}-prompt`,
+          classified: classifyTranscriptText({
+            text: item.prompt,
+            role: 'user',
+            origin,
+          }),
+          createdAt: item.startedAt ?? '',
+          turnId: item.turnId,
+        }),
+      );
     }
+    const openingText = splitSystemReminders(item.prompt ?? '').text;
     for (const step of item.steps) {
       for (const frame of step.frames) {
         switch (frame.kind) {
           case 'text':
-            if (
-              frame.role === 'user' &&
-              item.prompt !== undefined &&
-              frame.text === item.prompt
-            ) {
+            if (frame.role === 'user' && openingText !== '' && frame.text === item.prompt) {
               break;
             }
-            blocks.push(
-              frame.role === 'user'
-                ? {
-                    kind: 'user',
-                    id: `agent-frame-${frame.frameId}`,
+            if (frame.role === 'user') {
+              const frameOrigin = originFromFrame(frame);
+              const turnOrigin = originFromTurnItem(item);
+              const origin =
+                frameOrigin ??
+                (isUserVisibleOrigin(turnOrigin) ? turnOrigin : undefined);
+              blocks.push(
+                ...classifiedTextToBlocks({
+                  id: `agent-frame-${frame.frameId}`,
+                  classified: classifyTranscriptText({
                     text: frame.text,
-                    createdAt: step.startedAt ?? item.startedAt ?? '',
-                  }
-                : {
-                    kind: 'assistant',
-                    id: `agent-frame-${frame.frameId}`,
-                    text: frame.text,
-                    streaming: false,
-                    createdAt: step.endedAt ?? item.endedAt,
-                  },
-            );
+                    role: 'user',
+                    origin,
+                    id: frame.frameId,
+                  }),
+                  createdAt: step.startedAt ?? item.startedAt ?? '',
+                  turnId: item.turnId,
+                }),
+              );
+              break;
+            }
+            blocks.push({
+              kind: 'assistant',
+              id: `agent-frame-${frame.frameId}`,
+              text: frame.text,
+              streaming: false,
+              createdAt: step.endedAt ?? item.endedAt,
+              turnId: item.turnId,
+            });
             break;
           case 'thinking':
             blocks.push({
@@ -628,6 +1107,7 @@ export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Bloc
               text: frame.text,
               streaming: false,
               createdAt: step.endedAt ?? item.endedAt,
+              turnId: item.turnId,
             });
             break;
           case 'tool': {
@@ -651,6 +1131,7 @@ export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Bloc
                   ? item.durationMs
                   : Math.max(0, endedAt - startedAt),
               progressText: frame.progress?.text,
+              agentRefs: frame.agentRefs,
             });
             break;
           }
@@ -734,6 +1215,7 @@ export function applySnapshot(
       kind: 'subagent',
       id: `subagent-${subagent.id}`,
       subagentId: subagent.id,
+      parentAgentId: undefined,
       parentToolCallId: subagent.parent_tool_call_id,
       name: subagent.subagent_type ?? subagent.description,
       description: subagent.description,
@@ -817,6 +1299,7 @@ export function prependOlderMessages(
       loadingOlder: false,
       fetchedOlder: true,
       hasMoreHistory: false,
+      olderError: undefined,
     };
   }
   const oldestFirst = messages.toReversed();
@@ -829,12 +1312,14 @@ export function prependOlderMessages(
     hasMoreHistory: hasMore,
     loadingOlder: false,
     fetchedOlder: true,
+    olderError: undefined,
   };
 }
 
 export function setLoadingOlder(state: SessionViewState, loading: boolean): SessionViewState {
-  if (state.loadingOlder === loading) return state;
-  return { ...state, version: state.version + 1, loadingOlder: loading };
+  const olderError = loading ? undefined : state.olderError;
+  if (state.loadingOlder === loading && state.olderError === olderError) return state;
+  return { ...state, version: state.version + 1, loadingOlder: loading, olderError };
 }
 
 /** Todo extraction from a TodoWrite-style tool input ({todos:[...]}). */
@@ -981,6 +1466,7 @@ function createUnknownSubagent(agentId: string, timestamp: string): SubagentBloc
     kind: 'subagent',
     id: `subagent-${agentId}`,
     subagentId: agentId,
+    parentAgentId: undefined,
     parentToolCallId: undefined,
     name: agentId,
     description: undefined,
@@ -996,11 +1482,169 @@ function createUnknownSubagent(agentId: string, timestamp: string): SubagentBloc
   };
 }
 
+function isPromptIdentity(block: Block, promptId: string, userMessageId?: string): boolean {
+  if (block.kind === 'user' || block.kind === 'steer') {
+    return block.promptId === promptId || (userMessageId !== undefined && block.userMessageId === userMessageId);
+  }
+  return false;
+}
+
+function userBlockToSteer(
+  block: UserBlock,
+  input: { activePromptId: string; steeredAt: string },
+): SteerBlock {
+  return {
+    kind: 'steer',
+    id: `steer-${block.promptId ?? block.userMessageId ?? block.id}`,
+    text: block.text,
+    createdAt: input.steeredAt || block.createdAt,
+    promptId: block.promptId,
+    userMessageId: block.userMessageId,
+    activePromptId: input.activePromptId,
+  };
+}
+
+function insertSteersAtTurnAnchor(
+  blocks: readonly Block[],
+  steers: readonly SteerBlock[],
+  activePromptId: string | undefined,
+): Block[] {
+  if (steers.length === 0) return blocks as Block[];
+  const activeIndex =
+    activePromptId === undefined
+      ? -1
+      : blocks.findIndex((block) => block.kind === 'user' && block.promptId === activePromptId);
+  let insertAt = activeIndex >= 0 ? activeIndex + 1 : blocks.length;
+  while (
+    insertAt < blocks.length &&
+    (blocks[insertAt]!.kind === 'system-reminder' ||
+      blocks[insertAt]!.kind === 'system' ||
+      blocks[insertAt]!.kind === 'skill' ||
+      blocks[insertAt]!.kind === 'steer')
+  ) {
+    insertAt += 1;
+  }
+  if (activeIndex < 0) {
+    while (
+      insertAt > 0 &&
+      blocks[insertAt - 1]!.kind === 'user' &&
+      (blocks[insertAt - 1] as UserBlock).promptStatus === 'queued'
+    ) {
+      insertAt -= 1;
+    }
+  }
+  return [...blocks.slice(0, insertAt), ...steers, ...blocks.slice(insertAt)];
+}
+
+function applySteerToBlocks(
+  blocks: readonly Block[],
+  input: {
+    promptIds: readonly string[];
+    activePromptId: string;
+    content: string;
+    steeredAt: string;
+  },
+): readonly Block[] {
+  const remaining = new Set(input.promptIds);
+  const converted: SteerBlock[] = [];
+  const kept: Block[] = [];
+  for (const block of blocks) {
+    if (block.kind === 'steer' && block.promptId !== undefined && remaining.has(block.promptId)) {
+      converted.push({
+        ...block,
+        activePromptId: input.activePromptId,
+        createdAt: input.steeredAt || block.createdAt,
+      });
+      remaining.delete(block.promptId);
+      continue;
+    }
+    if (block.kind === 'user' && block.promptId !== undefined && remaining.has(block.promptId)) {
+      converted.push(userBlockToSteer(block, input));
+      remaining.delete(block.promptId);
+      continue;
+    }
+    kept.push(block);
+  }
+  if (remaining.size > 0) {
+    const classified = classifyTranscriptText({
+      text: input.content,
+      role: 'user',
+      origin: { kind: 'user' },
+    });
+    for (const promptId of remaining) {
+      converted.push({
+        kind: 'steer',
+        id: `steer-${promptId}`,
+        text: classified.text,
+        createdAt: input.steeredAt,
+        promptId,
+        activePromptId: input.activePromptId,
+      });
+    }
+  }
+  return insertSteersAtTurnAnchor(kept, converted, input.activePromptId);
+}
+
+/** Snapshot/resync rebuilds steered prompts as ordinary user messages. Keep the
+ * in-turn steer identity so they do not jump back to a tail You bubble. */
+export function preserveCapturedSteers(
+  rebuilt: SessionViewState,
+  previous: SessionViewState,
+): SessionViewState {
+  const prior = previous.blocks.filter((block): block is SteerBlock => block.kind === 'steer');
+  if (prior.length === 0) return rebuilt;
+  const byPromptId = new Map<string, SteerBlock>();
+  const byUserMessageId = new Map<string, SteerBlock>();
+  for (const block of prior) {
+    if (block.promptId !== undefined) byPromptId.set(block.promptId, block);
+    if (block.userMessageId !== undefined) byUserMessageId.set(block.userMessageId, block);
+  }
+  const used = new Set<SteerBlock>();
+  const converted: SteerBlock[] = [];
+  const kept: Block[] = [];
+  for (const block of rebuilt.blocks) {
+    if (block.kind !== 'user') {
+      kept.push(block);
+      continue;
+    }
+    const match =
+      (block.promptId !== undefined ? byPromptId.get(block.promptId) : undefined) ??
+      (block.userMessageId !== undefined ? byUserMessageId.get(block.userMessageId) : undefined);
+    if (match === undefined || used.has(match)) {
+      kept.push(block);
+      continue;
+    }
+    used.add(match);
+    converted.push({
+      kind: 'steer',
+      id: match.id,
+      text: block.text,
+      createdAt: match.createdAt,
+      promptId: block.promptId ?? match.promptId,
+      userMessageId: block.userMessageId ?? match.userMessageId,
+      activePromptId: match.activePromptId,
+    });
+  }
+  if (converted.length === 0) return rebuilt;
+  const activePromptId =
+    converted.find((block) => block.activePromptId !== undefined)?.activePromptId ??
+    previous.activePromptId ??
+    rebuilt.activePromptId;
+  return {
+    ...rebuilt,
+    version: rebuilt.version + 1,
+    blocks: insertSteersAtTurnAnchor(kept, converted, activePromptId),
+  };
+}
+
 function upsertPromptItemBlocks(
   blocks: readonly Block[],
   item: PromptItem,
 ): readonly Block[] {
   const text = textOfContent(item.content);
+  if (blocks.some((block) => block.kind === 'steer' && isPromptIdentity(block, item.prompt_id, item.user_message_id))) {
+    return blocks;
+  }
   const stableIndex = blocks.findIndex(
     (block): block is UserBlock =>
       block.kind === 'user' &&
@@ -1134,6 +1778,7 @@ function applyFrameInternal(
         text: result.text,
         streaming: true,
         createdAt: existing?.createdAt ?? frame.timestamp,
+        turnId: String(payload.turnId),
       };
       evolve({ blocks: replaceBlock(next.blocks, block) });
       break;
@@ -1152,6 +1797,7 @@ function applyFrameInternal(
         text: result.text,
         streaming: true,
         createdAt: existing?.createdAt ?? frame.timestamp,
+        turnId: String(payload.turnId),
       };
       evolve({ blocks: replaceBlock(next.blocks, block) });
       break;
@@ -1166,30 +1812,31 @@ function applyFrameInternal(
       // block suppressing the placeholder is harmless — the REST echo (or the
       // next reconcile) still appends/updates the identified block.
       if (typeof payload.prompt === 'string' && payload.prompt.trim() !== '') {
-        const key = `user-turn-${payload.turnId}-prompt`;
-        const exists = next.blocks.some((block) => block.id === key);
+        const origin = payload.origin as PromptOriginLike | undefined;
+        const classified = classifyTranscriptText({
+          text: payload.prompt,
+          role: 'user',
+          origin,
+        });
+        const additions = classifiedTextToBlocks({
+          id: `turn-${payload.turnId}-prompt`,
+          classified,
+          createdAt: frame.timestamp,
+          turnId: String(payload.turnId),
+        });
+        const exists = additions.some((block) => next.blocks.some((existing) => existing.id === block.id));
         const associatedByPromptId =
           next.activePromptId !== undefined &&
           next.blocks.some(
             (block): block is UserBlock =>
               block.kind === 'user' && block.promptId === next.activePromptId,
           );
-        const promptText = splitSystemReminders(payload.prompt).text;
+        const promptText = classified.text;
         const echoedAlready = next.blocks.some(
           (block): block is UserBlock => block.kind === 'user' && block.text === promptText,
         );
-        if (!exists && !associatedByPromptId && !echoedAlready) {
-          evolve({
-            blocks: [
-              ...next.blocks,
-              {
-                kind: 'user',
-                id: key,
-                text: payload.prompt,
-                createdAt: frame.timestamp,
-              } satisfies UserBlock,
-            ],
-          });
+        if (!exists && !associatedByPromptId && !echoedAlready && additions.length > 0) {
+          evolve({ blocks: [...next.blocks, ...additions] });
         }
       }
       evolve({ busy: true });
@@ -1348,6 +1995,7 @@ function applyFrameInternal(
         kind: 'subagent',
         id: key,
         subagentId: payload.subagentId,
+        parentAgentId: payload.parentAgentId ?? existing?.parentAgentId,
         parentToolCallId: payload.parentToolCallId,
         name: payload.subagentName,
         description: payload.description,
@@ -1497,6 +2145,19 @@ function applyFrameInternal(
         activePromptId:
           next.activePromptId === payload.promptId ? undefined : next.activePromptId,
         queuedPromptIds: next.queuedPromptIds.filter((id) => id !== payload.promptId),
+      });
+      break;
+    }
+    case 'prompt.steered': {
+      const steered = applySteerToBlocks(next.blocks, {
+        promptIds: payload.promptIds,
+        activePromptId: payload.activePromptId,
+        content: textOfContent(payload.content as Message['content']),
+        steeredAt: payload.steeredAt,
+      });
+      evolve({
+        blocks: steered,
+        queuedPromptIds: next.queuedPromptIds.filter((id) => !payload.promptIds.includes(id)),
       });
       break;
     }
@@ -1885,6 +2546,8 @@ export function preserveCapturedSubagents(
     return {
       ...prior,
       ...block,
+      parentAgentId: block.parentAgentId ?? prior.parentAgentId,
+      parentToolCallId: block.parentToolCallId ?? prior.parentToolCallId,
       model: block.model ?? prior.model,
       thinkingEffort: block.thinkingEffort ?? prior.thinkingEffort,
       toolCallCount: Math.max(block.toolCallCount, prior.toolCallCount),
@@ -1912,13 +2575,30 @@ export function setGoal(
   };
 }
 
+/**
+ * Merge a polled/list session record into view state. Title, usage, and other
+ * metadata update; live busy / pendingInteraction / activePromptId stay with
+ * the snapshot + WS + prompt-list truth so a stale list row cannot flatten a
+ * running turn or hide an unresolved card.
+ */
 export function setSessionRecord(state: SessionViewState, session: Session): SessionViewState {
   return {
     ...state,
     version: state.version + 1,
     session,
-    busy: session.busy,
-    pendingInteraction: session.pending_interaction ?? 'none',
+  };
+}
+
+export function setOlderError(
+  state: SessionViewState,
+  error: string | undefined,
+): SessionViewState {
+  if (state.olderError === error && !state.loadingOlder) return state;
+  return {
+    ...state,
+    version: state.version + 1,
+    olderError: error,
+    loadingOlder: false,
   };
 }
 
@@ -1968,3 +2648,181 @@ export function derivePendingInteraction(state: SessionViewState): SessionPendin
   if (pendingQuestionCount(state) > 0) return 'question';
   return 'none';
 }
+
+export function subagentBlocksFromState(state: SessionViewState): readonly SubagentBlock[] {
+  return state.blocks.filter((block): block is SubagentBlock => block.kind === 'subagent');
+}
+
+export function rosterFromTranscriptAgents(
+  agents: readonly AgentTranscriptAgent[] | undefined,
+): readonly AgentRosterDescriptor[] {
+  if (agents === undefined) return [];
+  return agents.map((agent) => {
+    const parentFromDelegator =
+      agent.delegator?.kind === 'agent' ? agent.delegator.agentId : undefined;
+    return {
+      agentId: agent.agentId,
+      parentAgentId: agent.parentAgentId ?? parentFromDelegator,
+      name: agent.label ?? agent.agentId,
+      label: agent.label,
+      status: agent.disposedAt !== undefined ? 'completed' : undefined,
+      startedAt: agent.createdAt,
+      endedAt: agent.disposedAt,
+    };
+  });
+}
+
+export function taskItemsFromTranscriptTasks(
+  tasks: readonly AgentTranscriptTask[] | undefined,
+): readonly AgentTaskItem[] {
+  if (tasks === undefined) return [];
+  return tasks.flatMap((task) => {
+    if (task.agentId === undefined || task.agentId === '') return [];
+    return [
+      {
+        id: task.taskId,
+        agentId: task.agentId,
+        kind: task.kind,
+        description: task.description,
+        status: task.state,
+        startedAt: task.startedAt,
+        endedAt: task.endedAt,
+        summary: task.resultSummary,
+        output_preview: task.outputTail,
+        detached: task.detached,
+      } satisfies AgentTaskItem,
+    ];
+  });
+}
+
+export function taskItemsFromSessionTasks(tasks: readonly Task[]): readonly AgentTaskItem[] {
+  return tasks.flatMap((task) => {
+    if (task.kind !== 'subagent') return [];
+    // Protocol `/tasks` has no agentId. Do not invent one from task.id.
+    return [
+      {
+        id: task.id,
+        kind: task.kind,
+        description: task.description,
+        status: task.status,
+        model: task.model,
+        thinking_effort: task.thinking_effort,
+        started_at: task.started_at,
+        completed_at: task.completed_at,
+        output_preview: task.output_preview,
+      } satisfies AgentTaskItem,
+    ];
+  });
+}
+
+export function liveSourcesFromSubagentBlocks(
+  blocks: readonly SubagentBlock[],
+): readonly AgentLiveSource[] {
+  return blocks.map((block) => ({
+    subagentId: block.subagentId,
+    parentAgentId: block.parentAgentId,
+    parentToolCallId: block.parentToolCallId,
+    name: block.name,
+    model: block.model,
+    thinkingEffort: block.thinkingEffort,
+    status: block.status,
+    summary: block.summary,
+    error: block.error,
+    startedAt: block.startedAt,
+    endedAt: block.endedAt,
+    toolCallCount: block.toolCallCount,
+  }));
+}
+
+/**
+ * One session forest from live subagent cards + optional roster/task sources.
+ * Callers (main transcript, RightRail, agent detail) must share this.
+ */
+export function sessionAgentForest(
+  state: SessionViewState,
+  roster?: readonly AgentRosterDescriptor[],
+  extraTasks?: readonly AgentTaskItem[],
+): AgentForest {
+  return buildAgentForest(
+    liveSourcesFromSubagentBlocks(subagentBlocksFromState(state)),
+    roster,
+    [...taskItemsFromSessionTasks(state.tasks), ...(extraTasks ?? [])],
+  );
+}
+
+export function sessionAgentForestFromTranscript(
+  state: SessionViewState,
+  response: AgentTranscriptResponse | undefined,
+): AgentForest {
+  return sessionAgentForest(
+    state,
+    rosterFromTranscriptAgents(response?.agents),
+    taskItemsFromTranscriptTasks(response?.tasks),
+  );
+}
+
+export function agentTranscriptPageFromResponse(
+  response: AgentTranscriptResponse,
+  blocks: readonly Block[],
+): AgentTranscriptPage {
+  const firstTurn = response.items.find((item) => item.kind === 'turn');
+  return {
+    blocks: blocks as readonly AgentTimelineBlock[],
+    hasMore: response.has_more,
+    oldestTurnId: firstTurn?.kind === 'turn' ? firstTurn.turnId : undefined,
+    seq: response.seq,
+    busy: agentBusyFromMeta(response),
+    toolCallCount: countToolBlocks(blocks),
+  };
+}
+
+export function oldestTurnIdFromResponse(
+  response: AgentTranscriptResponse | undefined,
+): string | undefined {
+  if (response === undefined) return undefined;
+  const firstTurn = response.items.find((item) => item.kind === 'turn');
+  return firstTurn?.kind === 'turn' ? firstTurn.turnId : undefined;
+}
+
+export { countToolBlocks };
+
+export function agentBusyFromMeta(response: AgentTranscriptResponse | undefined): boolean | undefined {
+  const kind = response?.meta?.agent?.phase?.kind;
+  if (kind === undefined) return undefined;
+  return (
+    kind === 'running' ||
+    kind === 'streaming' ||
+    kind === 'tool_call' ||
+    kind === 'retrying' ||
+    kind === 'awaiting_approval'
+  );
+}
+
+export function visibleSubagentIdsForParent(
+  forest: AgentForest,
+  parentAgentId: string,
+): ReadonlySet<string> {
+  return new Set(forest.byId[parentAgentId]?.childIds ?? []);
+}
+
+export function filterBlocksToDirectChildren(
+  blocks: readonly Block[],
+  forest: AgentForest,
+  parentAgentId: string,
+): Block[] {
+  const parent = forest.byId[parentAgentId];
+  const visible = parent === undefined ? undefined : new Set(parent.childIds);
+  return blocks.filter((block) => {
+    if (block.kind !== 'subagent') return true;
+    if (visible !== undefined) return visible.has(block.subagentId);
+    const hinted = forest.byId[block.subagentId]?.parentAgentId ?? block.parentAgentId;
+    return hinted === undefined || hinted === parentAgentId;
+  });
+}
+
+export function nodeForAgent(forest: AgentForest, agentId: string): AgentTreeNode | undefined {
+  return forest.byId[agentId];
+}
+
+export { MAIN_AGENT_ID };
+export type { AgentForest, AgentTreeNode };

@@ -16,12 +16,21 @@ import {
   markQuestionOutcome,
   pendingApprovalCount,
   prependOlderMessages,
+  classifyTranscriptText,
+  filterBlocksToDirectChildren,
+  preserveCapturedSteers,
   preserveCapturedSubagents,
   queuedPromptPreviews,
   reconcilePromptList,
+  sessionAgentForestFromTranscript,
+  setOlderError,
+  setSessionRecord,
   splitSystemReminders,
   type AssistantBlock,
   type ApprovalBlock,
+  type SkillBlock,
+  type SteerBlock,
+  type SystemBlock,
   type SystemReminderBlock,
   type ToolBlock,
   type UserBlock,
@@ -201,11 +210,92 @@ describe('agentTranscriptToBlocks', () => {
       ],
     });
     expect(blocks.map((block) => block.kind)).toEqual([
-      'user',
+      'system',
       'thinking',
       'tool',
       'assistant',
     ]);
+    expect((blocks[0] as SystemBlock).variant).toBe('task');
+  });
+
+  it('does not render splice undo/clear markers as notice copy', () => {
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'child-1',
+      has_more: false,
+      items: [
+        { kind: 'marker', markerId: 'm-undo', marker: 'undo' },
+        { kind: 'marker', markerId: 'm-clear', marker: 'clear' },
+        { kind: 'marker', markerId: 'm-note', marker: 'notice', payload: { text: 'Hook ran' } } as never,
+        {
+          kind: 'turn',
+          turnId: 'turn-1',
+          prompt: 'Inspect the wire.',
+          steps: [],
+        },
+      ],
+    });
+    expect(blocks.map((block) => block.kind)).toEqual(['notice', 'system']);
+    expect(blocks.find((block) => block.kind === 'notice')?.text).toBe('Hook ran');
+    expect(blocks.some((block) => block.kind === 'notice' && block.text === 'undo')).toBe(false);
+  });
+
+  it('classifies a user-origin child prompt as You when origin is present', () => {
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'child-1',
+      has_more: false,
+      items: [
+        {
+          kind: 'turn',
+          turnId: 'turn-1',
+          prompt: 'User asked this.',
+          origin: { kind: 'user' },
+          steps: [],
+        } as never,
+      ],
+    });
+    expect(blocks.map((block) => block.kind)).toEqual(['user']);
+  });
+
+  it('does not inherit a task/system-trigger turn origin onto later user frames', () => {
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'child-1',
+      has_more: false,
+      items: [
+        {
+          kind: 'turn',
+          turnId: 'turn-1',
+          prompt: 'Continue the child task.',
+          origin: { kind: 'system_trigger', name: 'subagent' },
+          steps: [
+            {
+              stepId: 'step-1',
+              frames: [
+                { kind: 'text', frameId: 'steer-1', role: 'user', text: 'inject now' },
+                { kind: 'text', frameId: 'asst-1', role: 'assistant', text: 'ok' },
+              ],
+            },
+          ],
+        } as never,
+      ],
+    });
+    expect(blocks.map((block) => block.kind)).toEqual(['system', 'user', 'assistant']);
+    expect((blocks[0] as SystemBlock).text).toBe('Continue the child task.');
+    expect((blocks[1] as UserBlock).text).toBe('inject now');
+  });
+
+  it('renders hook/compaction markers without payload as localized notices, not undo copy', () => {
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'child-1',
+      has_more: false,
+      items: [
+        { kind: 'marker', markerId: 'm-hook', marker: 'hook' },
+        { kind: 'marker', markerId: 'm-compact', marker: 'compaction' },
+        { kind: 'marker', markerId: 'm-undo', marker: 'undo' },
+      ],
+    });
+    expect(blocks.map((block) => block.kind)).toEqual(['notice', 'notice']);
+    expect(blocks[0]).toMatchObject({ i18n: { key: 'transcript.marker.hook' } });
+    expect(blocks[1]).toMatchObject({ i18n: { key: 'transcript.marker.compaction' } });
   });
 });
 
@@ -611,6 +701,69 @@ describe('prependOlderMessages', () => {
       .map((b) => b.text);
     expect(texts).toEqual(['one', 'two', 'three']);
     expect(state.oldestMessageId).toBe('m1');
+    expect(state.olderError).toBeUndefined();
+  });
+
+  it('clears an older-page error when a later page lands', () => {
+    let state = applySnapshot(
+      'session_test',
+      snapshot({
+        messages: {
+          items: [
+            { id: 'm3', session_id: 'session_test', role: 'user', content: [{ type: 'text', text: 'three' }], created_at: '2026-01-01T00:00:02.000Z' },
+          ],
+          has_more: true,
+        },
+      }),
+    );
+    state = setOlderError(state, 'Could not load earlier messages');
+    expect(state.olderError).toBe('Could not load earlier messages');
+    expect(state.hasMoreHistory).toBe(true);
+    expect(state.fetchedOlder).toBe(false);
+
+    state = prependOlderMessages(
+      state,
+      [{ id: 'm2', session_id: 'session_test', role: 'user', content: [{ type: 'text', text: 'two' }], created_at: '2026-01-01T00:00:01.500Z' }],
+      false,
+    );
+    expect(state.olderError).toBeUndefined();
+    expect(state.fetchedOlder).toBe(true);
+  });
+});
+
+describe('setSessionRecord', () => {
+  it('merges list-poll metadata without overwriting live busy/pending/activePromptId', () => {
+    let state = applySnapshot(
+      'session_test',
+      snapshot({
+        session: { ...session, title: 'Live', busy: true, pending_interaction: 'approval' },
+        in_flight_turn: {
+          turn_id: 4,
+          current_prompt_id: 'p-live',
+          assistant_text: 'working',
+          thinking_text: '',
+          running_tools: [],
+        },
+      }),
+    );
+    expect(state.busy).toBe(true);
+    expect(state.pendingInteraction).toBe('approval');
+    expect(state.activePromptId).toBe('p-live');
+
+    const polled: Session = {
+      ...session,
+      title: 'Polled title',
+      updated_at: '2026-01-01T00:05:00.000Z',
+      busy: false,
+      pending_interaction: 'none',
+      usage: { ...session.usage, context_tokens: 42 },
+    };
+    state = setSessionRecord(state, polled);
+    expect(state.session?.title).toBe('Polled title');
+    expect(state.session?.usage.context_tokens).toBe(42);
+    expect(state.busy).toBe(true);
+    expect(state.pendingInteraction).toBe('approval');
+    expect(state.activePromptId).toBe('p-live');
   });
 });
 
@@ -967,9 +1120,10 @@ describe('child-origin interactions', () => {
     const pending = blocks.find((b) => b.id === 'approval-a-pending');
     expect(pending).toMatchObject({
       kind: 'approval',
-      originAgentId: 'agent-x',
+      originUnknown: true,
       resolution: undefined,
     });
+    expect((pending as ApprovalBlock).originAgentId).toBeUndefined();
     expect((pending as ApprovalBlock).request.approval_id).toBe('a-pending');
     expect((pending as ApprovalBlock).request.tool_name).toBe('Bash');
     const done = blocks.find((b) => b.id === 'approval-a-done') as ApprovalBlock;
@@ -977,5 +1131,544 @@ describe('child-origin interactions', () => {
     const question = blocks.find((b) => b.id === 'question-q-1');
     expect(question).toMatchObject({ kind: 'question', outcome: undefined });
     expect((question as { request: { questions: { id: string; options: { id: string }[] }[] } }).request.questions[0]?.options).toHaveLength(2);
+  });
+});
+
+describe('classifyTranscriptText', () => {
+  it('prefers origin over role so internal user-role records are not You', () => {
+    const classified = classifyTranscriptText({
+      text: 'goal continuation',
+      role: 'user',
+      origin: { kind: 'system_trigger', name: 'goal_continuation' },
+    });
+    expect(classified.lane).toBe('system');
+    expect(classified.systemVariant).toBe('system_trigger');
+  });
+
+  it('keeps user-slash skill activations on the skill lane', () => {
+    const classified = classifyTranscriptText({
+      text: 'SKILL.md body',
+      role: 'user',
+      origin: { kind: 'skill_activation', skillName: 'review', trigger: 'user-slash', skillArgs: 'src' },
+    });
+    expect(classified.lane).toBe('skill');
+    expect(classified.skill).toEqual({ source: 'skill', name: 'review', args: 'src' });
+  });
+
+  it('falls back to shell envelopes when origin is missing', () => {
+    const classified = classifyTranscriptText({
+      text: '<bash-input>ls</bash-input>\n<bash-stdout>a.txt</bash-stdout>',
+      role: 'user',
+    });
+    expect(classified.lane).toBe('shell');
+    expect(classified.shell?.output).toContain('$ ls');
+    expect(classified.shell?.output).toContain('a.txt');
+  });
+
+  it('treats background_task as internal, not You', () => {
+    const classified = classifyTranscriptText({
+      text: 'bg agent finished',
+      role: 'user',
+      origin: { kind: 'background_task', taskId: 't-1' },
+    });
+    expect(classified.lane).toBe('system');
+    expect(classified.systemVariant).toBe('task');
+  });
+
+  it('drops unknown origin kinds onto the system lane', () => {
+    const classified = classifyTranscriptText({
+      text: 'mystery payload',
+      role: 'user',
+      origin: { kind: 'future_kind' },
+    });
+    expect(classified.lane).toBe('system');
+    expect(classified.systemVariant).toBe('system');
+  });
+
+  it('unwraps other/payload and still refuses unknown nested kinds as You', () => {
+    const classified = classifyTranscriptText({
+      text: 'wrapped unknown',
+      role: 'user',
+      origin: { kind: 'other', payload: { kind: 'mystery' } },
+    });
+    expect(classified.lane).toBe('system');
+  });
+
+  it('keeps a missing-origin role=user message as You', () => {
+    const classified = classifyTranscriptText({
+      text: 'plain user words',
+      role: 'user',
+    });
+    expect(classified.lane).toBe('you');
+  });
+});
+
+describe('origin-aware snapshot', () => {
+  it('renders injection and cron origins as left-lane system, not You', () => {
+    const state = applySnapshot(
+      'session_test',
+      snapshot({
+        messages: {
+          items: [
+            {
+              id: 'm-user',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: 'hello' }],
+              created_at: '2026-01-01T00:00:00.000Z',
+              metadata: { origin: { kind: 'user' } },
+            },
+            {
+              id: 'm-inject',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: 'injected date context' }],
+              created_at: '2026-01-01T00:00:01.000Z',
+              metadata: { origin: { kind: 'injection', variant: 'date' } },
+            },
+            {
+              id: 'm-cron',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: '<cron-fire job="nightly">run</cron-fire>' }],
+              created_at: '2026-01-01T00:00:02.000Z',
+              metadata: { origin: { kind: 'cron_job', jobId: 'nightly' } },
+            },
+            {
+              id: 'm-skill',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: 'full skill body' }],
+              created_at: '2026-01-01T00:00:03.000Z',
+              metadata: {
+                origin: {
+                  kind: 'skill_activation',
+                  skillName: 'review',
+                  trigger: 'user-slash',
+                },
+              },
+            },
+            {
+              id: 'm-shell',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: '<bash-input>pwd</bash-input><bash-stdout>/tmp</bash-stdout>' }],
+              created_at: '2026-01-01T00:00:04.000Z',
+              metadata: { origin: { kind: 'shell_command', phase: 'output' } },
+            },
+          ],
+          has_more: false,
+        },
+      }),
+    );
+    expect(state.blocks.map((block) => block.kind)).toEqual([
+      'user',
+      'system',
+      'system',
+      'skill',
+      'shell',
+    ]);
+    expect((state.blocks[1] as SystemBlock).variant).toBe('injection');
+    expect((state.blocks[2] as SystemBlock).variant).toBe('cron_job');
+    expect((state.blocks[3] as SkillBlock).name).toBe('review');
+    expect((state.blocks[4] as { output: string }).output).toContain('$ pwd');
+  });
+});
+
+describe('turn.started classification', () => {
+  it('peels reminders instead of writing the raw prompt as You', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = applyFrame(
+      state,
+      frame(
+        {
+          type: 'turn.started',
+          turnId: 3,
+          origin: { kind: 'user' },
+          prompt: 'Do the thing.\n\n<system-reminder>\nDaemon note.\n</system-reminder>',
+        },
+        { seq: 11 },
+      ),
+    ).state;
+    const users = state.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]!.text).toBe('Do the thing.');
+    const reminders = state.blocks.filter(
+      (block): block is SystemReminderBlock => block.kind === 'system-reminder',
+    );
+    expect(reminders.map((block) => block.text)).toEqual(['Daemon note.']);
+  });
+
+  it('does not mint a You bubble for a system-trigger turn prompt', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = applyFrame(
+      state,
+      frame(
+        {
+          type: 'turn.started',
+          turnId: 4,
+          origin: { kind: 'system_trigger', name: 'subagent' },
+          prompt: 'Continue the child task.',
+        },
+        { seq: 11 },
+      ),
+    ).state;
+    expect(state.blocks.filter((block) => block.kind === 'user')).toHaveLength(0);
+    expect(state.blocks.filter((block) => block.kind === 'system')).toHaveLength(1);
+  });
+});
+
+describe('prompt.steered', () => {
+  it('converts a queued user block into an in-turn steer, not a tail You', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = appendLocalUserMessage(state, {
+      userMessageId: 'm1',
+      promptId: 'p1',
+      text: 'first',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      status: 'running',
+    });
+    state = appendLocalUserMessage(state, {
+      userMessageId: 'm2',
+      promptId: 'p2',
+      text: 'inject now',
+      createdAt: '2026-01-01T00:00:01.000Z',
+      status: 'queued',
+    });
+    state = applyFrame(
+      state,
+      frame({ type: 'assistant.delta', turnId: 1, delta: 'working' }, { volatile: true, offset: 0 }),
+    ).state;
+    state = applyFrame(
+      state,
+      frame(
+        {
+          type: 'prompt.steered',
+          activePromptId: 'p1',
+          promptIds: ['p2'],
+          content: [{ type: 'text', text: 'inject now' }],
+          steeredAt: '2026-01-01T00:00:02.000Z',
+        },
+        { seq: 11 },
+      ),
+    ).state;
+    expect(state.queuedPromptIds).toEqual([]);
+    const users = state.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(users.map((block) => block.promptId)).toEqual(['p1']);
+    const steers = state.blocks.filter((block): block is SteerBlock => block.kind === 'steer');
+    expect(steers).toHaveLength(1);
+    expect(steers[0]).toMatchObject({ promptId: 'p2', text: 'inject now', activePromptId: 'p1' });
+    const kinds = state.blocks.map((block) => block.kind);
+    expect(kinds.indexOf('steer')).toBeLessThan(kinds.indexOf('assistant'));
+    expect(kinds.lastIndexOf('steer')).toBeLessThan(kinds.indexOf('assistant'));
+
+    const rebuilt = applySnapshot(
+      'session_test',
+      snapshot({
+        messages: {
+          items: [
+            {
+              id: 'm1',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: 'first' }],
+              created_at: '2026-01-01T00:00:00.000Z',
+              prompt_id: 'p1',
+              metadata: { origin: { kind: 'user' } },
+            },
+            {
+              id: 'm2',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: 'inject now' }],
+              created_at: '2026-01-01T00:00:01.000Z',
+              prompt_id: 'p2',
+              metadata: { origin: { kind: 'user' } },
+            },
+          ],
+          has_more: false,
+        },
+      }),
+    );
+    const preserved = preserveCapturedSteers(rebuilt, state);
+    expect(preserved.blocks.filter((block) => block.kind === 'user')).toHaveLength(1);
+    expect(preserved.blocks.filter((block) => block.kind === 'steer')).toHaveLength(1);
+    expect(preserved.blocks.find((block) => block.kind === 'steer')).toMatchObject({
+      promptId: 'p2',
+      text: 'inject now',
+    });
+  });
+
+  it('re-anchors a steered prompt before later assistant text after resync', () => {
+    const previous = {
+      ...createViewState('session_test'),
+      loaded: true,
+      activePromptId: 'p1',
+      blocks: [
+        {
+          kind: 'user',
+          id: 'user-m1',
+          text: 'first',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          promptId: 'p1',
+          userMessageId: 'm1',
+        },
+        {
+          kind: 'steer',
+          id: 'steer-p2',
+          text: 'inject now',
+          createdAt: '2026-01-01T00:00:02.000Z',
+          promptId: 'p2',
+          userMessageId: 'm2',
+          activePromptId: 'p1',
+        },
+        {
+          kind: 'assistant',
+          id: 'assistant-live-1',
+          text: 'working',
+          streaming: false,
+          createdAt: '2026-01-01T00:00:03.000Z',
+        },
+      ] as const,
+    };
+    const rebuilt = applySnapshot(
+      'session_test',
+      snapshot({
+        messages: {
+          items: [
+            {
+              id: 'm1',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: 'first' }],
+              created_at: '2026-01-01T00:00:00.000Z',
+              prompt_id: 'p1',
+              metadata: { origin: { kind: 'user' } },
+            },
+            {
+              id: 'm-asst',
+              session_id: 'session_test',
+              role: 'assistant',
+              content: [{ type: 'text', text: 'working' }],
+              created_at: '2026-01-01T00:00:03.000Z',
+            },
+            {
+              id: 'm2',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: 'inject now' }],
+              created_at: '2026-01-01T00:00:01.000Z',
+              prompt_id: 'p2',
+              metadata: { origin: { kind: 'user' } },
+            },
+          ],
+          has_more: false,
+        },
+      }),
+    );
+    expect(rebuilt.blocks.map((block) => block.kind)).toEqual(['user', 'assistant', 'user']);
+    const preserved = preserveCapturedSteers(rebuilt, previous);
+    expect(preserved.blocks.map((block) => block.kind)).toEqual(['user', 'steer', 'assistant']);
+    expect(preserved.blocks.find((block) => block.kind === 'steer')).toMatchObject({
+      promptId: 'p2',
+      text: 'inject now',
+    });
+  });
+
+  it('does not convert a same-text user without matching prompt identity', () => {
+    const previous = {
+      ...createViewState('session_test'),
+      loaded: true,
+      activePromptId: 'p1',
+      blocks: [
+        {
+          kind: 'user',
+          id: 'user-m1',
+          text: 'same words',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          promptId: 'p1',
+          userMessageId: 'm1',
+        },
+        {
+          kind: 'steer',
+          id: 'steer-p2',
+          text: 'same words',
+          createdAt: '2026-01-01T00:00:02.000Z',
+          promptId: 'p2',
+          userMessageId: 'm2',
+          activePromptId: 'p1',
+        },
+      ] as const,
+    };
+    const rebuilt = applySnapshot(
+      'session_test',
+      snapshot({
+        messages: {
+          items: [
+            {
+              id: 'm1',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: 'same words' }],
+              created_at: '2026-01-01T00:00:00.000Z',
+              prompt_id: 'p1',
+              metadata: { origin: { kind: 'user' } },
+            },
+            {
+              id: 'm2',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: 'same words' }],
+              created_at: '2026-01-01T00:00:01.000Z',
+              prompt_id: 'p2',
+              metadata: { origin: { kind: 'user' } },
+            },
+            {
+              id: 'm3',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: 'same words' }],
+              created_at: '2026-01-01T00:00:04.000Z',
+              prompt_id: 'p3',
+              metadata: { origin: { kind: 'user' } },
+            },
+          ],
+          has_more: false,
+        },
+      }),
+    );
+    const preserved = preserveCapturedSteers(rebuilt, previous);
+    const users = preserved.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    const steers = preserved.blocks.filter((block): block is SteerBlock => block.kind === 'steer');
+    expect(users.map((block) => block.promptId)).toEqual(['p1', 'p3']);
+    expect(steers).toHaveLength(1);
+    expect(steers[0]!.promptId).toBe('p2');
+  });
+});
+
+describe('agent tree projections', () => {
+  it('keeps parentAgentId from subagent.spawned on the live card', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = applyFrame(
+      state,
+      frame(
+        {
+          type: 'subagent.spawned',
+          subagentId: 'agent-1',
+          subagentName: 'Child',
+          parentToolCallId: 'call-1',
+          parentAgentId: 'main',
+          runInBackground: false,
+        },
+        { seq: 11 },
+      ),
+    ).state;
+    const card = state.blocks.find((block) => block.kind === 'subagent');
+    expect(card).toMatchObject({
+      subagentId: 'agent-1',
+      parentAgentId: 'main',
+      parentToolCallId: 'call-1',
+    });
+  });
+
+  it('keeps agentRefs on REST tool frames so Agent/AgentSwarm stay navigable', () => {
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'main',
+      has_more: false,
+      items: [
+        {
+          kind: 'turn',
+          turnId: 'turn-1',
+          steps: [
+            {
+              stepId: 'step-1',
+              frames: [
+                {
+                  kind: 'tool',
+                  frameId: 'f-agent',
+                  toolCallId: 'call-agent',
+                  name: 'Agent',
+                  state: 'done',
+                  agentRefs: [{ agentId: 'agent-1', role: 'child' }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const tool = blocks.find((block) => block.kind === 'tool') as ToolBlock;
+    expect(tool.agentRefs).toEqual([{ agentId: 'agent-1', role: 'child' }]);
+  });
+
+  it('does not invent an origin agent for cold REST interactions', () => {
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'agent-x',
+      has_more: false,
+      items: [],
+      interactions: [
+        { interactionId: 'a1', interactionKind: 'approval', state: 'pending' },
+      ],
+    });
+    expect(blocks[0]).toMatchObject({ kind: 'approval', originUnknown: true });
+    expect((blocks[0] as ApprovalBlock).originAgentId).toBeUndefined();
+  });
+
+  it('builds one forest from live cards plus the transcript roster', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = applyFrame(
+      state,
+      frame(
+        {
+          type: 'subagent.spawned',
+          subagentId: 'agent-1',
+          subagentName: 'Child',
+          parentToolCallId: 'call-1',
+          parentAgentId: 'main',
+          runInBackground: false,
+        },
+        { seq: 11 },
+      ),
+    ).state;
+    const forest = sessionAgentForestFromTranscript(state, {
+      agent_id: 'main',
+      has_more: false,
+      items: [],
+      agents: [
+        { agentId: 'main', type: 'main' },
+        { agentId: 'agent-1', type: 'sub', parentAgentId: 'main', label: 'Child' },
+        { agentId: 'agent-2', type: 'sub', parentAgentId: 'agent-1', label: 'Grandchild' },
+      ],
+    });
+    expect(forest.byId['main']!.childIds).toEqual(['agent-1']);
+    expect(forest.byId['agent-1']!.childIds).toEqual(['agent-2']);
+    const visible = filterBlocksToDirectChildren(
+      [
+        ...state.blocks,
+        {
+          kind: 'subagent',
+          id: 'subagent-agent-2',
+          subagentId: 'agent-2',
+          parentAgentId: 'agent-1',
+          parentToolCallId: 'call-2',
+          name: 'Grandchild',
+          description: undefined,
+          model: undefined,
+          thinkingEffort: undefined,
+          status: 'completed',
+          summary: undefined,
+          error: undefined,
+          startedAt: '2026-01-01T00:00:00.000Z',
+          endedAt: '2026-01-01T00:00:01.000Z',
+          toolCallCount: 0,
+          transcript: [],
+        },
+      ],
+      forest,
+      'main',
+    );
+    expect(visible.filter((block) => block.kind === 'subagent').map((block) => block.subagentId)).toEqual([
+      'agent-1',
+    ]);
   });
 });

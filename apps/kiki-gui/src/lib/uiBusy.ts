@@ -13,6 +13,11 @@ export function registerOverlay(id: string): () => void {
   };
 }
 
-export function anyOverlayOpen(): boolean {
-  return open.size > 0;
+export function anyOverlayOpen(except: readonly string[] = []): boolean {
+  if (open.size === 0) return false;
+  if (except.length === 0) return true;
+  for (const id of open) {
+    if (!except.includes(id)) return true;
+  }
+  return false;
 }
