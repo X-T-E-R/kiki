@@ -8,6 +8,7 @@
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 
 export interface KikiMcpConfig {
@@ -15,6 +16,7 @@ export interface KikiMcpConfig {
   readonly token: string;
   readonly delegationToken: string;
   readonly sessionId: string;
+  readonly workspacePath: string;
 }
 
 export interface KikiMcpServerOptions {
@@ -49,13 +51,19 @@ const resultInput = lookupInput.extend({ cursor: z.number().int().nonnegative().
 const emptyInput = z.object({}).strict();
 
 export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServerOptions = {}): McpServer {
-  const client = new ExternalDelegationRestClient(config, options.fetch ?? globalThis.fetch);
+  const pinnedConfig = Object.freeze({ ...config });
+  const client = new ExternalDelegationRestClient(pinnedConfig, options.fetch ?? globalThis.fetch);
+  const binding = Object.freeze({
+    version: 1,
+    workspacePath: pinnedConfig.workspacePath,
+    sessionId: pinnedConfig.sessionId,
+  });
   const server = new McpServer({ name: 'kiki-external-delegation', version: '0.1.0' });
 
   server.registerTool(
     'kiki_list',
     { description: 'List admitted main/named dispatchables and owned continuations.', inputSchema: emptyInput },
-    async () => toolResult(client.call('list', {})),
+    async () => toolResult(client.call('list', {}).then((root) => bindRoot(root, binding))),
   );
   server.registerTool(
     'kiki_dispatch',
@@ -114,6 +122,7 @@ export function kikiMcpConfigFromEnv(env: NodeJS.ProcessEnv): KikiMcpConfig {
       KIKI_KAP_TOKEN: z.string().min(1),
       KIKI_DELEGATION_TOKEN: z.string().min(1),
       KIKI_SESSION_ID: z.string().min(1),
+      KIKI_WORKSPACE_PATH: z.string().min(1).refine(isAbsolute),
     })
     .parse(env);
   return {
@@ -121,12 +130,13 @@ export function kikiMcpConfigFromEnv(env: NodeJS.ProcessEnv): KikiMcpConfig {
     token: parsed.KIKI_KAP_TOKEN,
     delegationToken: parsed.KIKI_DELEGATION_TOKEN,
     sessionId: parsed.KIKI_SESSION_ID,
+    workspacePath: parsed.KIKI_WORKSPACE_PATH,
   };
 }
 
 class ExternalDelegationRestClient {
   constructor(
-    private readonly config: KikiMcpConfig,
+    private readonly config: Readonly<KikiMcpConfig>,
     private readonly fetchImpl: typeof globalThis.fetch,
   ) {}
 
@@ -163,6 +173,19 @@ class ExternalDelegationRestClient {
     if (parsed.code !== 0) throw new KikiMcpEdgeError('request_rejected', safeRemoteMessage(parsed.msg));
     return parsed.data as T;
   }
+}
+
+function bindRoot(
+  root: unknown,
+  binding: Readonly<{ version: 1; workspacePath: string; sessionId: string }>,
+): Record<string, unknown> {
+  if (root === null || typeof root !== 'object' || Array.isArray(root)) {
+    throw new KikiMcpEdgeError(
+      'invalid_response',
+      'Kiki delegation endpoint returned an invalid response.',
+    );
+  }
+  return { ...(root as Record<string, unknown>), binding };
 }
 
 function result(data: unknown) {

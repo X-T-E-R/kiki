@@ -3,7 +3,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { IConfigService } from '@moonshot-ai/agent-core-v2';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createKikiMcpServer } from '../src/mcp/server';
+import { createKikiMcpServer, kikiMcpConfigFromEnv } from '../src/mcp/server';
 import { registerApiV2Routes } from '../src/routes/registerApiV2Routes';
 import { descriptorFromMeta } from '../src/services/transcript/coreBinding';
 
@@ -27,7 +27,13 @@ describe('Kiki external delegation MCP server', () => {
       );
     });
     const server = createKikiMcpServer(
-      { endpoint: 'http://127.0.0.1:58627', token: 'SECRET_TOKEN', delegationToken: 'DELEGATION_SECRET', sessionId: 'session-operator' },
+      {
+        endpoint: 'http://127.0.0.1:58627',
+        token: 'SECRET_TOKEN',
+        delegationToken: 'DELEGATION_SECRET',
+        sessionId: 'session-operator',
+        workspacePath: '/example/workspace',
+      },
       { fetch: fetchMock },
     );
     const client = new Client({ name: 'test-client', version: '1.0.0' });
@@ -47,8 +53,65 @@ describe('Kiki external delegation MCP server', () => {
       'kiki_transcript',
     ]);
     const called = await client.callTool({ name: 'kiki_list', arguments: {} });
-    expect(called.structuredContent).toEqual({ delegationId: 'delegation_1', dispatchables: [{ kind: 'main' }] });
+    expect(called.structuredContent).toEqual({
+      delegationId: 'delegation_1',
+      dispatchables: [{ kind: 'main' }],
+      binding: {
+        version: 1,
+        workspacePath: '/example/workspace',
+        sessionId: 'session-operator',
+      },
+    });
     expect(JSON.parse(((called as { content: Array<{ text: string }> }).content[0]!).text)).toEqual(called.structuredContent);
+  });
+
+  it('pins the workspace and Session binding when the MCP server is created', async () => {
+    const config = {
+      endpoint: 'http://127.0.0.1:58627',
+      token: 'TOKEN',
+      delegationToken: 'DELEGATION_SECRET',
+      sessionId: 'session-original',
+      workspacePath: '/example/original',
+    };
+    const fetchMock = vi.fn<typeof fetch>(async (url) => {
+      expect(String(url)).toContain('/sessions/session-original/external-delegation/list');
+      return new Response(
+        JSON.stringify({ code: 0, msg: 'ok', data: { delegationId: 'delegation_1' } }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    const server = createKikiMcpServer(config, { fetch: fetchMock });
+    config.sessionId = 'session-mutated';
+    config.workspacePath = '/example/mutated';
+
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    close.push(() => client.close(), () => server.close());
+
+    const called = await client.callTool({ name: 'kiki_list', arguments: {} });
+    expect(called.structuredContent).toMatchObject({
+      binding: {
+        version: 1,
+        workspacePath: '/example/original',
+        sessionId: 'session-original',
+      },
+    });
+  });
+
+  it('requires an absolute workspace binding in the stdio environment', () => {
+    const env = {
+      KIKI_KAP_ENDPOINT: 'http://127.0.0.1:58627',
+      KIKI_KAP_TOKEN: 'TOKEN',
+      KIKI_DELEGATION_TOKEN: 'DELEGATION_SECRET',
+      KIKI_SESSION_ID: 'session-operator',
+      KIKI_WORKSPACE_PATH: '/example/workspace',
+    };
+    expect(kikiMcpConfigFromEnv(env)).toMatchObject({
+      sessionId: 'session-operator',
+      workspacePath: '/example/workspace',
+    });
+    expect(() => kikiMcpConfigFromEnv({ ...env, KIKI_WORKSPACE_PATH: 'relative' })).toThrow();
   });
 
   it('pages result text on a UTF-8 byte boundary without leaking operator configuration', async () => {
@@ -59,7 +122,13 @@ describe('Kiki external delegation MCP server', () => {
       }),
     );
     const server = createKikiMcpServer(
-      { endpoint: 'http://127.0.0.1:58627', token: 'DO_NOT_EXPOSE', delegationToken: 'DELEGATION_SECRET', sessionId: 'session-operator' },
+      {
+        endpoint: 'http://127.0.0.1:58627',
+        token: 'DO_NOT_EXPOSE',
+        delegationToken: 'DELEGATION_SECRET',
+        sessionId: 'session-operator',
+        workspacePath: '/example/workspace',
+      },
       { fetch: fetchMock },
     );
     const client = new Client({ name: 'test-client', version: '1.0.0' });
@@ -98,7 +167,13 @@ describe('Kiki external delegation MCP server', () => {
       );
     });
     const server = createKikiMcpServer(
-      { endpoint: 'http://127.0.0.1:58627', token: 'TOKEN', delegationToken: 'DELEGATION_SECRET', sessionId: 'session-operator' },
+      {
+        endpoint: 'http://127.0.0.1:58627',
+        token: 'TOKEN',
+        delegationToken: 'DELEGATION_SECRET',
+        sessionId: 'session-operator',
+        workspacePath: '/example/workspace',
+      },
       { fetch: fetchMock },
     );
     const client = new Client({ name: 'test-client', version: '1.0.0' });
@@ -166,7 +241,13 @@ describe('Kiki external delegation MCP server', () => {
       );
     });
     const server = createKikiMcpServer(
-      { endpoint: 'http://127.0.0.1:58627', token: 'TOKEN', delegationToken: 'DELEGATION_SECRET', sessionId: 'session-operator' },
+      {
+        endpoint: 'http://127.0.0.1:58627',
+        token: 'TOKEN',
+        delegationToken: 'DELEGATION_SECRET',
+        sessionId: 'session-operator',
+        workspacePath: '/example/workspace',
+      },
       { fetch: fetchMock },
     );
     const client = new Client({ name: 'test-client', version: '1.0.0' });
@@ -200,7 +281,13 @@ describe('Kiki external delegation MCP server', () => {
       }),
     );
     const server = createKikiMcpServer(
-      { endpoint: 'http://127.0.0.1:58627', token: 'SECRET_TOKEN', delegationToken: 'DELEGATION_SECRET', sessionId: 'session-operator' },
+      {
+        endpoint: 'http://127.0.0.1:58627',
+        token: 'SECRET_TOKEN',
+        delegationToken: 'DELEGATION_SECRET',
+        sessionId: 'session-operator',
+        workspacePath: '/example/workspace',
+      },
       { fetch: fetchMock },
     );
     const client = new Client({ name: 'test-client', version: '1.0.0' });

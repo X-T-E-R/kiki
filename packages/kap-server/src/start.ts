@@ -86,6 +86,11 @@ import {
 import { createCredentialValidator } from './services/auth/credentials';
 import { resolvePasswordHash } from './services/auth/password';
 import { createTokenStore } from './services/auth/tokenStore';
+import {
+  ensureExternalDelegationSession,
+  externalDelegationAuthorityFromEnv,
+  type ExternalDelegationAuthorityConfig,
+} from './mcp/externalDelegationAuthority';
 
 // Temporary feature: global message search. Importing this module registers
 // `IGlobalSearchService` (App scope) into the DI registry as a side effect, so
@@ -133,11 +138,7 @@ export interface ServerStartOptions {
    */
   readonly rpcToken?: string;
   /** Operator-owned authority for the experimental external-delegation edge. */
-  readonly externalDelegation?: {
-    readonly principalId: string;
-    readonly sessionId: string;
-    readonly token: string;
-  };
+  readonly externalDelegation?: ExternalDelegationAuthorityConfig;
   /** Extra scope seeds applied at bootstrap (e.g. a host-provided `ISessionModelResolver`). */
   readonly seeds?: ScopeSeed;
   /**
@@ -179,18 +180,6 @@ export interface ServerStartOptions {
   readonly telemetry?: boolean;
 }
 
-function externalDelegationAuthorityFromEnv(
-  env: NodeJS.ProcessEnv,
-): ServerStartOptions['externalDelegation'] {
-  const principalId = env['KIKI_EXTERNAL_PRINCIPAL_ID']?.trim();
-  const sessionId = env['KIKI_EXTERNAL_SESSION_ID']?.trim();
-  const token = env['KIKI_EXTERNAL_DELEGATION_TOKEN']?.trim();
-  if (principalId === undefined || principalId.length === 0) return undefined;
-  if (sessionId === undefined || sessionId.length === 0) return undefined;
-  if (token === undefined || token.length === 0) return undefined;
-  return { principalId, sessionId, token };
-}
-
 export interface RunningServer {
   readonly app: FastifyInstance;
   readonly core: Scope;
@@ -208,6 +197,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const host = opts.host ?? DEFAULT_HOST;
   const port = opts.port ?? DEFAULT_PORT;
   const homeDir = resolveKimiHome(opts.homeDir);
+  const externalDelegation =
+    opts.externalDelegation ?? externalDelegationAuthorityFromEnv(process.env);
   // Instance discovery: every server registers itself under
   // `<home>/server/instances/<serverId>.json`, so multiple servers can share
   // one homeDir and consumers (the CLI's `server ps/kill`, `kimi web`, dev
@@ -348,6 +339,25 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       { err: error instanceof Error ? error.message : String(error) },
       'session index prepare failed; falling back to on-demand reads',
     );
+  }
+
+  try {
+    await ensureExternalDelegationSession(core, externalDelegation);
+  } catch (error) {
+    modelCatalogRefreshScheduler.dispose();
+    authFailureLimiter?.dispose();
+    try {
+      await drainSessionMetadataWrites();
+      await core.accessor.get(ISessionIndexMirror).drain();
+      core.dispose();
+      await drainSessionIndexMirror();
+      await drainGlobalSearchDisposals();
+      await drainQueryStoreDisposals();
+      await shutdownServerTelemetry(telemetry);
+    } finally {
+      await registration.release();
+    }
+    throw error;
   }
 
   const app = Fastify({
@@ -539,8 +549,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   // `/api/v2` — same envelope conventions as v1, domain-grouped payloads.
   // Mounted after v1; the root auth/host/origin hooks cover it identically.
   await registerApiV2Routes(app, core, {
-    externalDelegation:
-      opts.externalDelegation ?? externalDelegationAuthorityFromEnv(process.env),
+    externalDelegation,
   });
 
   const wssV1 = registerWsV1(core, {
