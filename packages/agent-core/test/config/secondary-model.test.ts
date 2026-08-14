@@ -13,7 +13,11 @@ import {
 import { parseConfigString } from '../../src/config/toml';
 import type { KimiConfig, ModelAlias } from '../../src/config/schema';
 import { FLAG_DEFINITIONS, FlagResolver } from '../../src/flags';
-import { resolveAgentCollaborationBinding, resolveSubagentBinding } from '../../src/session/subagent-binding';
+import {
+  resolveAgentCollaborationBinding,
+  resolveSubagentBinding,
+  subagentModelSource,
+} from '../../src/session/subagent-binding';
 
 const baseAlias: ModelAlias = {
   provider: 'p1',
@@ -159,18 +163,19 @@ describe('subagent binding resolution', () => {
         { modelAlias: 'call', thinkingEffort: 'call-effort' },
         { modelAlias: 'profile', thinkingEffort: 'profile-effort' },
       ),
-    ).toEqual({ modelAlias: 'call', thinkingEffort: 'call-effort' });
+    ).toEqual({ modelAlias: 'call', thinkingEffort: 'call-effort', source: 'tool' });
 
     expect(
       resolveSubagentBinding(config, flags, own, {}, {
         modelAlias: 'profile',
         thinkingEffort: 'profile-effort',
       }),
-    ).toEqual({ modelAlias: 'profile', thinkingEffort: 'profile-effort' });
+    ).toEqual({ modelAlias: 'profile', thinkingEffort: 'profile-effort', source: 'profile' });
 
     expect(resolveSubagentBinding(config, flags, own)).toEqual({
       modelAlias: 'default',
       thinkingEffort: 'default-effort',
+      source: 'default',
     });
   });
 
@@ -182,10 +187,11 @@ describe('subagent binding resolution', () => {
         own,
         { modelAlias: 'call' },
       ),
-    ).toEqual({ modelAlias: 'call', thinkingEffort: undefined });
+    ).toEqual({ modelAlias: 'call', thinkingEffort: undefined, source: 'tool' });
     expect(resolveSubagentBinding(config, flags, own, { modelPreference: 'primary' })).toEqual({
       modelAlias: 'caller',
       thinkingEffort: 'default-effort',
+      source: 'tool',
     });
     expect(
       resolveSubagentBinding(
@@ -194,7 +200,7 @@ describe('subagent binding resolution', () => {
         own,
         { modelPreference: 'primary' },
       ),
-    ).toEqual({ modelAlias: 'caller', thinkingEffort: 'caller-effort' });
+    ).toEqual({ modelAlias: 'caller', thinkingEffort: 'caller-effort', source: 'tool' });
   });
 
   it('treats exact primary/secondary aliases literally and rejects the internal alias', () => {
@@ -216,7 +222,19 @@ describe('subagent binding resolution', () => {
         modelAlias: 'call',
         thinkingEffort: 'call-effort',
       }),
-    ).toEqual({ modelAlias: 'caller', thinkingEffort: 'caller-effort' });
+    ).toEqual({ modelAlias: 'caller', thinkingEffort: 'caller-effort', source: 'caller' });
+  });
+
+  it('carries the binding source on the object so copies keep it', () => {
+    const binding = resolveSubagentBinding(config, flags, own, { modelAlias: 'call' });
+    expect(subagentModelSource(binding)).toBe('tool');
+    // Copies (spread / structured clone / JSON round-trip) keep the source —
+    // the side-table approach lost it the moment the object was copied.
+    expect(subagentModelSource({ ...binding })).toBe('tool');
+    expect(subagentModelSource(structuredClone(binding))).toBe('tool');
+    expect(subagentModelSource(JSON.parse(JSON.stringify(binding)) as typeof binding)).toBe('tool');
+    // A plain binding built outside the resolvers degrades to 'caller'.
+    expect(subagentModelSource({ modelAlias: 'caller' } as never)).toBe('caller');
   });
 });
 
@@ -235,24 +253,39 @@ describe('agent collaboration binding resolution', () => {
   it('uses exact aliases and resolves model and effort independently', () => {
     expect(resolveAgentCollaborationBinding(config, disabled, own,
       { modelAlias: 'primary' }, { modelAlias: 'profile', thinkingEffort: 'profile-effort' }))
-      .toEqual({ modelAlias: 'primary', thinkingEffort: 'profile-effort' });
+      .toEqual({ modelAlias: 'primary', thinkingEffort: 'profile-effort', source: 'tool' });
     expect(resolveAgentCollaborationBinding(config, disabled, own, {}, { modelAlias: 'profile' }))
-      .toEqual({ modelAlias: 'profile', thinkingEffort: 'configured-effort' });
+      .toEqual({ modelAlias: 'profile', thinkingEffort: 'configured-effort', source: 'profile' });
     expect(resolveAgentCollaborationBinding(config, disabled, own, {}, {}))
-      .toEqual({ modelAlias: 'configured', thinkingEffort: 'configured-effort' });
+      .toEqual({ modelAlias: 'configured', thinkingEffort: 'configured-effort', source: 'default' });
   });
 
   it('uses legacy fallback sources only when secondary-model is enabled', () => {
     const withoutAgents = { ...config, agents: undefined };
     expect(resolveAgentCollaborationBinding(withoutAgents, disabled, own, {}, {}))
-      .toEqual({ modelAlias: 'caller', thinkingEffort: 'caller-effort' });
+      .toEqual({ modelAlias: 'caller', thinkingEffort: 'caller-effort', source: 'caller' });
     expect(resolveAgentCollaborationBinding(withoutAgents, enabled, own, {}, {}))
-      .toEqual({ modelAlias: 'legacy', thinkingEffort: 'legacy-effort' });
+      .toEqual({ modelAlias: 'legacy', thinkingEffort: 'legacy-effort', source: 'default' });
+    // Legacy secondary recipe (no explicit default_model) tags the derived
+    // secondary binding so downstream error wrapping can attribute it.
+    const withoutDefaults = { ...config, agents: undefined, subagent: undefined };
+    expect(resolveAgentCollaborationBinding(withoutDefaults, enabled, own, {}, {}))
+      .toEqual({
+        modelAlias: SECONDARY_DERIVED_MODEL_ALIAS,
+        thinkingEffort: 'secondary-effort',
+        source: 'default',
+      });
+    // With the experiment on and nothing explicit anywhere, the caller
+    // fallback owns the model (and inherits the caller effort).
+    expect(resolveAgentCollaborationBinding({
+      ...config, agents: undefined, subagent: undefined, secondaryModel: undefined,
+    }, enabled, own, {}, {}))
+      .toEqual({ modelAlias: 'caller', thinkingEffort: 'caller-effort', source: 'caller' });
   });
 
   it('does not carry stale caller effort to a concrete model', () => {
     expect(resolveAgentCollaborationBinding({ ...config, agents: undefined, subagent: undefined, secondaryModel: undefined }, disabled, own,
-      { modelAlias: 'secondary' }, {})).toEqual({ modelAlias: 'secondary', thinkingEffort: undefined });
+      { modelAlias: 'secondary' }, {})).toEqual({ modelAlias: 'secondary', thinkingEffort: undefined, source: 'tool' });
   });
 });
 

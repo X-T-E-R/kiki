@@ -1165,17 +1165,19 @@ describe('SessionSubagentHost', () => {
     expect(userTextMessages(histories[1] ?? [])).toEqual(['Implement the retry-safe change']);
   });
 
-  it('keeps a resumed subagent binding immutable when the experiment is off', async () => {
+  it('re-inherits the parent model on resume for an inherited binding (restart-style, experiment off)', async () => {
     const parent = testAgent();
     parent.configure();
     parent.agent.permission.setMode('yolo');
 
-    const child = testAgent();
+    const child = testAgent({ initialConfig: resumeFollowModels() });
     child.configure({ tools: ['Read'] });
     const originalChildModel = child.agent.config.modelAlias;
-    // The parent switches after the child was originally bound. The parent
-    // does not run another turn in this test, so its synthetic alias need not
-    // resolve through the provider manager.
+    expect(originalChildModel).toBe(parent.agent.config.modelAlias);
+    // The parent switches after the child was originally bound. The child was
+    // never spawned through this host instance, so its binding source is
+    // unknown (session-restart conditions) and the implicit binding is
+    // re-derived: no explicit tool/profile/default input → caller inheritance.
     parent.agent.config.update({ modelAlias: 'parent-model-after-switch' });
     child.agent.useProfile(
       profile({ name: 'explore', tools: ['Read'], systemPrompt: 'explore prompt' }),
@@ -1204,8 +1206,123 @@ describe('SessionSubagentHost', () => {
     });
 
     await handle.completion;
-    expect(child.agent.config.modelAlias).toBe(originalChildModel);
+    // Inherited bindings follow the parent's current model on resume — the
+    // upstream mid-session `/model` follow behavior, restored.
+    expect(child.agent.config.modelAlias).toBe('parent-model-after-switch');
+    expect(handle.model).toBe('parent-model-after-switch');
+  });
+
+  it('keeps an explicitly bound subagent frozen on resume (restart-style profile exact)', async () => {
+    const parent = testAgent();
+    parent.configure();
+    parent.agent.permission.setMode('yolo');
+
+    const child = testAgent({ initialConfig: resumeFollowModels() });
+    child.configure({ tools: ['Read'] });
+    child.agent.config.update({ modelAlias: 'profile-model' });
+    parent.agent.config.update({ modelAlias: 'parent-model-after-switch' });
+    child.agent.useProfile(
+      profile({ name: 'explore', tools: ['Read'], systemPrompt: 'explore prompt', modelAlias: 'profile-model' }),
+    );
+    child.agent.context.appendUserMessage([{ type: 'text', text: 'Earlier context' }]);
+    child.mockNextResponse({
+      type: 'text',
+      text: 'Resumed the explicitly bound subagent from its earlier context and finished the remaining work, reporting a complete technical summary so the parent agent can continue without redoing the completed steps.',
+    });
+
+    const session = fakeSession(parent.agent, child.agent, {
+      'agent-0': {
+        homedir: '/tmp/kimi-session/agents/agent-0',
+        type: 'sub',
+        parentAgentId: 'main',
+      },
+    }, {
+      // A profile's exact model_alias is only a binding when the
+      // secondary-model experiment is on; without it every spawn inherits the
+      // caller, so there is no explicit profile binding to freeze.
+      experimentalFlags: new FlagResolver({ KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL: '1' }),
+    });
+    const host = new SessionSubagentHost(session, 'main');
+    vi.spyOn(
+      host as unknown as { resolveProfile: (parent: Agent, name: string) => ResolvedAgentProfile },
+      'resolveProfile',
+    ).mockReturnValue(
+      profile({ name: 'explore', tools: ['Read'], systemPrompt: 'explore prompt', modelAlias: 'profile-model' }),
+    );
+
+    const handle = await host.resume('agent-0', {
+      parentToolCallId: 'call_agent',
+      prompt: 'Continue from context',
+      description: 'Continue work',
+      runInBackground: false,
+      signal,
+    });
+
+    await handle.completion;
+    // The re-derived implicit binding resolves the profile's exact alias, so
+    // the child is classified as explicitly bound and stays frozen.
+    expect(child.agent.config.modelAlias).toBe('profile-model');
     expect(child.agent.config.modelAlias).not.toBe(parent.agent.config.modelAlias);
+  });
+
+  it.each([
+    {
+      title: 'follows the parent model on resume',
+      modelAlias: undefined,
+      expected: 'parent-model-after-switch',
+    },
+    {
+      title: 'keeps an explicit tool alias frozen on resume',
+      modelAlias: 'fast-model',
+      expected: 'fast-model',
+    },
+  ])('a live collaboration spawn $title', async ({ modelAlias, expected }) => {
+    const parent = testAgent();
+    parent.configure();
+    parent.agent.permission.setMode('yolo');
+    const child = testAgent({ initialConfig: resumeFollowModels() });
+    // The initial collaboration spawn inherits the parent's model ('mock-model'
+    // from the harness), so the child must be able to resolve it.
+    child.configure({ tools: ['Read'] });
+    const summary =
+      'Carried the named collaboration task through to completion and reported a technically complete summary with implementation details, verification evidence, and handoff context so the parent agent can continue without repeating the work.';
+    child.mockNextResponse({ type: 'text', text: summary });
+    child.mockNextResponse({ type: 'text', text: summary });
+
+    const session = fakeSession(parent.agent, child.agent);
+    const host = new SessionSubagentHost(session, 'main');
+
+    const spawned = await host.spawn({
+      profileName: 'coder',
+      parentToolCallId: 'call_spawn',
+      prompt: 'Do named work',
+      description: 'named work',
+      runInBackground: false,
+      signal,
+      modelAlias,
+      collaborationTaskName: 'named',
+      collaborationTaskId: 'agent-task0000',
+    });
+    await spawned.completion;
+    if (modelAlias === undefined) {
+      expect(child.agent.config.modelAlias).toBe(parent.agent.config.modelAlias);
+    } else {
+      expect(child.agent.config.modelAlias).toBe(modelAlias);
+    }
+    // Mid-session `/model` switch on the parent after the child was bound.
+    parent.agent.config.update({ modelAlias: 'parent-model-after-switch' });
+
+    const handle = await host.resume('agent-0', {
+      parentToolCallId: 'call_followup',
+      prompt: 'Continue the named work',
+      description: 'named work',
+      runInBackground: false,
+      signal,
+    });
+    await handle.completion;
+
+    expect(child.agent.config.modelAlias).toBe(expected);
+    expect(handle.model).toBe(expected);
   });
 
   describe('secondary model binding', () => {
@@ -1953,6 +2070,24 @@ function testAgentCatalog(): SessionAgentProfileCatalog {
   });
 }
 
+// Model registry entries for the synthetic aliases the resume-follow tests
+// re-bind children to; without them the child turn fails provider validation.
+function resumeFollowModels(): KimiConfig {
+  const model = (alias: string) => ({
+    provider: 'test-provider',
+    model: alias,
+    maxContextSize: 1_000_000,
+  });
+  return {
+    providers: { 'test-provider': { type: 'kimi', apiKey: 'test-key' } },
+    models: {
+      'fast-model': model('fast-model'),
+      'parent-model-after-switch': model('parent-model-after-switch'),
+      'profile-model': model('profile-model'),
+    },
+  };
+}
+
 function fakeSession(
   parent: Agent,
   child: Agent,
@@ -2010,6 +2145,7 @@ function fakeSession(
             type: config.type ?? 'main',
             parentAgentId,
             swarmItem: options.swarmItem,
+            collaboration: options.collaboration,
           };
         }
         if (options.profile !== undefined) {
