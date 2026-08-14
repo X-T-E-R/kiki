@@ -19,7 +19,10 @@ export const SpawnAgentInputSchema = z.object({
   agent_type: z.string().trim().min(1).optional(),
   model: z.string().trim().min(1).optional(),
   reasoning_effort: z.string().trim().min(1).optional(),
-  fork_turns: z.string().regex(FORK_NONE).optional(),
+  // Accept any nonblank value at the schema layer so a non-"none" choice is
+  // rejected by the controller with an actionable message instead of an opaque
+  // zod/AJV pattern failure the parent model cannot act on.
+  fork_turns: z.string().regex(NONBLANK).optional(),
 }).strict();
 
 export const ListAgentsInputSchema = z.object({}).strict();
@@ -45,7 +48,7 @@ export const WAIT_AGENT_PARAMETERS = toInputJsonSchema(WaitAgentInputSchema);
 export const FOLLOWUP_TASK_PARAMETERS = toInputJsonSchema(FollowupTaskInputSchema);
 export const INTERRUPT_AGENT_PARAMETERS = toInputJsonSchema(InterruptAgentInputSchema);
 
-type NamedStatus = 'running' | 'completed' | 'interrupted' | 'errored';
+type NamedStatus = 'running' | 'completed' | 'interrupted' | 'errored' | 'unknown';
 
 interface NamedAgentView {
   readonly task_name: string;
@@ -261,7 +264,11 @@ function statusOf(status: string | undefined): NamedStatus {
   if (status === 'running') return 'running';
   if (status === 'completed') return 'completed';
   if (status === 'killed' || status === 'timed_out') return 'interrupted';
-  return 'errored';
+  if (status === 'failed') return 'errored';
+  // No task yet (`latestTaskId` undefined), a `lost` task whose prior CLI
+  // process died without a terminal state, or an unrecognized settlement is
+  // not a failure — report it as unknown rather than mislabeling it errored.
+  return 'unknown';
 }
 function success(value: unknown): ExecutableToolResult { return { output: JSON.stringify(value) }; }
 function failure(message: string): ExecutableToolResult { return { output: message, isError: true }; }

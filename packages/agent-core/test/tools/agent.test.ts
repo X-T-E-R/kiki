@@ -29,12 +29,16 @@ describe('agent collaboration production schemas', () => {
   it('strictly validates every adapter input with the runtime AJV path', () => {
     const spawn = compileToolArgsValidator(SPAWN_AGENT_PARAMETERS);
     expect(validateToolArgs(spawn, { task_name: 'build_api', message: 'Keep whitespace\n', fork_turns: 'NONE' })).toBeNull();
+    // fork_turns accepts any nonblank value at the schema layer; a non-"none"
+    // choice is turned into an actionable error by the controller instead of
+    // an opaque AJV pattern failure.
+    expect(validateToolArgs(spawn, { task_name: 'ok', message: 'x', fork_turns: 'all' })).toBeNull();
+    expect(validateToolArgs(spawn, { task_name: 'ok', message: 'x', fork_turns: '   ' })).not.toBeNull();
     const invalidInputs: Array<Record<string, string | boolean>> = [
       { task_name: 'root', message: 'x' },
       { task_name: 'Bad', message: 'x' },
       { task_name: 'a/b', message: 'x' },
       { task_name: 'ok', message: '   ' },
-      { task_name: 'ok', message: 'x', fork_turns: 'all' },
       { task_name: 'ok', message: 'x', fork_context: true },
       { task_name: 'ok', message: 'x', run_in_background: true },
     ];
@@ -200,6 +204,44 @@ describe('agent collaboration lifecycle adapter', () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toMatch(/^spawned:/);
     expect(visibleAtPublish).toEqual([true]);
+  });
+});
+
+describe('agent collaboration fork_turns validation', () => {
+  it('rejects a non-"none" fork_turns with a clear validation error', async () => {
+    const controller = new AgentCollaborationController({} as never, {} as never, 1_000);
+    const result = await controller.spawn(
+      { task_name: 'coder', message: 'do work', fork_turns: 'all' },
+      context({}, 'call_named') as never,
+    );
+    expect(result).toEqual({
+      output: 'fork_turns supports only "none" in this experiment.',
+      isError: true,
+    });
+  });
+});
+
+describe('agent collaboration named status mapping', () => {
+  it('reports unknown (not errored) for no-task and lost agents, errored for failed', () => {
+    const host = {
+      namedAgents: () => [
+        { taskName: 'coder', agentId: 'agent-0', agentType: 'coder' },
+        { taskName: 'explorer', agentId: 'agent-1', agentType: 'explorer', latestTaskId: 'task-lost' },
+        { taskName: 'reviewer', agentId: 'agent-2', agentType: 'reviewer', latestTaskId: 'task-fail' },
+      ],
+    };
+    const tasks = new Map<string, { status: string }>([
+      ['task-lost', { status: 'lost' }],
+      ['task-fail', { status: 'failed' }],
+    ]);
+    const background = { getTask: (id: string) => tasks.get(id) };
+    const controller = new AgentCollaborationController(host as never, background as never, 1_000);
+
+    expect(resultJson(controller.list()).agents).toEqual([
+      { task_name: 'coder', agent_id: 'agent-0', agent_type: 'coder', status: 'unknown' },
+      { task_name: 'explorer', agent_id: 'agent-1', agent_type: 'explorer', task_id: 'task-lost', status: 'unknown' },
+      { task_name: 'reviewer', agent_id: 'agent-2', agent_type: 'reviewer', task_id: 'task-fail', status: 'errored' },
+    ]);
   });
 });
 

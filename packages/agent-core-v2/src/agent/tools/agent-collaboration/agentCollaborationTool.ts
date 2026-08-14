@@ -158,6 +158,12 @@ abstract class AgentCollaborationToolBase<T> implements AgentTool<T> {
   protected async materialize(record: NamedRecord): Promise<IAgentScopeHandle> {
     return this.lifecycle.get(record.agentId) ?? this.lifecycle.create({
       agentId: record.agentId,
+      // A cold materialize (agent not in the live registry, e.g. after a
+      // server restart) re-creates the scope handle from durable metadata and
+      // must re-seed the structured provenance it otherwise drops: the
+      // delegator ref and fork provenance.
+      delegator: record.meta.delegator,
+      forkedFrom: record.meta.forkedFrom,
       labels: labelsFromAgentMeta(record.meta),
     });
   }

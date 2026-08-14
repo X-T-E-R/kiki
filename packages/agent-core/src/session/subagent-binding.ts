@@ -34,6 +34,12 @@ export type SubagentModelSource = 'tool' | 'profile' | 'default' | 'secondary' |
 export interface SubagentModelBinding {
   readonly modelAlias: string | undefined;
   readonly thinkingEffort?: string;
+  /**
+   * Which stage of the precedence chain supplied `modelAlias`. Carried on the
+   * binding itself (not a side table) so it survives object copies and stays
+   * readable at resume time to tell inherited bindings from explicit ones.
+   */
+  readonly source: SubagentModelSource;
 }
 
 /**
@@ -48,7 +54,9 @@ export function resolveAgentCollaborationBinding(
   request: Pick<SubagentBindingRequest, 'modelAlias' | 'thinkingEffort'>,
   profile: SubagentBindingRequest,
 ): SubagentModelBinding {
-  const exactModel = normalizeExact(request.modelAlias) ?? normalizeExact(profile.modelAlias);
+  const requestModel = normalizeExact(request.modelAlias);
+  const profileModel = normalizeExact(profile.modelAlias);
+  const exactModel = requestModel ?? profileModel;
   if (exactModel !== undefined) assertSelectableAlias(exactModel, 'agent collaboration binding');
   const legacyProfileModel = flags.enabled('secondary-model')
     ? legacyPreferenceModel(profile.modelPreference, config, own.modelAlias)
@@ -56,9 +64,18 @@ export function resolveAgentCollaborationBinding(
   const configuredDefault = normalizeExact(config?.agents?.defaultSubagentModel);
   if (configuredDefault !== undefined) assertSelectableAlias(configuredDefault, '[agents].default_subagent_model');
   const legacyDefault = flags.enabled('secondary-model')
-    ? legacyDefaultModel(config, own.modelAlias)
+    ? legacyDefaultModel(config)
     : undefined;
   const modelAlias = exactModel ?? legacyProfileModel ?? configuredDefault ?? legacyDefault ?? own.modelAlias;
+  const source: SubagentModelSource = exactModel !== undefined
+    ? (requestModel !== undefined ? 'tool' : 'profile')
+    : legacyProfileModel !== undefined
+      ? 'profile'
+      : configuredDefault !== undefined
+        ? 'default'
+        : legacyDefault !== undefined
+          ? 'default'
+          : 'caller';
   const inheritsCaller = modelAlias === own.modelAlias && (
     (exactModel === undefined && legacyProfileModel === undefined && configuredDefault === undefined && legacyDefault === undefined) ||
     (flags.enabled('secondary-model') && profile.modelPreference === 'primary')
@@ -69,7 +86,7 @@ export function resolveAgentCollaborationBinding(
     normalizeExact(config?.agents?.defaultSubagentReasoningEffort) ??
     (flags.enabled('secondary-model') ? legacyDefaultEffort(config, modelAlias) : undefined) ??
     (inheritsCaller ? own.thinkingEffort : undefined);
-  return { modelAlias, thinkingEffort };
+  return { modelAlias, thinkingEffort, source };
 }
 
 function legacyPreferenceModel(
@@ -85,12 +102,14 @@ function legacyPreferenceModel(
 
 function legacyDefaultModel(
   config: KimiConfig | undefined,
-  callerModel: string | undefined,
 ): string | undefined {
   const subagentDefault = normalizeExact(config?.subagent?.defaultModel);
   if (subagentDefault !== undefined) return subagentDefault;
   const secondary = config?.secondaryModel;
-  return secondary?.model === undefined ? callerModel : secondaryBindingAlias(secondary);
+  // Nothing explicitly configured: return undefined so the caller-inheritance
+  // fallback (not this stage) owns the model and the binding source.
+  if (secondary?.model === undefined) return undefined;
+  return secondaryBindingAlias(secondary);
 }
 
 function legacyDefaultEffort(
@@ -111,18 +130,9 @@ function normalizeExact(value: string | undefined): string | undefined {
   return trimmed.length === 0 ? undefined : trimmed;
 }
 
-const bindingSources = new WeakMap<SubagentModelBinding, SubagentModelSource>();
-
 export function subagentModelSource(binding: SubagentModelBinding): SubagentModelSource {
-  return bindingSources.get(binding) ?? 'caller';
-}
-
-function recordBindingSource(
-  binding: SubagentModelBinding,
-  source: SubagentModelSource,
-): SubagentModelBinding {
-  bindingSources.set(binding, source);
-  return binding;
+  // Defensive fallback for plain bindings built outside the resolvers.
+  return binding.source ?? 'caller';
 }
 
 export function resolveSecondaryModel(
@@ -146,10 +156,11 @@ export function resolveSubagentBinding(
   profileRequest?: SubagentBindingRequest,
 ): SubagentModelBinding {
   if (!flags.enabled('secondary-model')) {
-    return recordBindingSource({
+    return {
       modelAlias: own.modelAlias,
       thinkingEffort: own.thinkingEffort,
-    }, 'caller');
+      source: 'caller',
+    };
   }
 
   const tool = normalizeRequest(requested);
@@ -203,10 +214,11 @@ export function resolveSubagentBinding(
     (modelSource === 'secondary' ? secondary?.defaultEffort : undefined) ??
     (inheritedCallerBinding ? own.thinkingEffort : undefined);
 
-  return recordBindingSource({
+  return {
     modelAlias,
     thinkingEffort,
-  }, modelSource);
+    source: modelSource,
+  };
 }
 
 function normalizeRequest(

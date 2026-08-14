@@ -28,6 +28,7 @@ import {
   wrapSubagentModelError,
   type SubagentModelBinding,
   type SubagentModelChoice,
+  type SubagentModelSource,
   type SubagentBindingRequest,
 } from './subagent-binding';
 import {
@@ -43,6 +44,15 @@ export const DEFAULT_SUBAGENT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 export const DEFAULT_SUBAGENT_TIMEOUT_DESCRIPTION = '2 hours';
 
 const SUBAGENT_TIMEOUT_ENV = 'KIMI_SUBAGENT_TIMEOUT_MS';
+
+/**
+ * Spawn-time model-binding sources for live child agents. Keyed by Agent
+ * identity on purpose (agents are stateful instances, never copied): resume
+ * and retry use it to tell inherited bindings from explicit ones exactly. A
+ * session restart loses the marker, and the resume path then re-derives the
+ * implicit binding from the profile and config instead.
+ */
+const spawnBindingSources = new WeakMap<Agent, SubagentModelSource>();
 
 /**
  * Resolve the effective subagent per-task timeout. Precedence:
@@ -208,6 +218,7 @@ export class SessionSubagentHost {
       await this.session.discardAgent(id);
       throw error;
     }
+    spawnBindingSources.set(agent, subagentModelSource(binding));
     const effective = this.effectiveChildBinding(
       agent,
       subagentDisplayModel(this.session.kimiConfig, binding.modelAlias),
@@ -263,6 +274,7 @@ export class SessionSubagentHost {
   async resume(agentId: string, options: RunSubagentOptions): Promise<SubagentHandle> {
     options.signal.throwIfAborted();
     const { parent, child, profileName } = await this.ensureIdleSubagent(agentId);
+    this.reInheritParentModel(parent, child, agentId, profileName);
     const effective = this.effectiveChildBinding(child);
     const completion = this.runWithActiveChild(agentId, options, async (runOptions) => {
       this.emitSubagentSpawned(parent, agentId, profileName, runOptions, effective);
@@ -286,6 +298,7 @@ export class SessionSubagentHost {
   async retry(agentId: string, options: RunSubagentOptions): Promise<SubagentHandle> {
     options.signal.throwIfAborted();
     const { parent, child, profileName } = await this.ensureIdleSubagent(agentId);
+    this.reInheritParentModel(parent, child, agentId, profileName);
     const effective = this.effectiveChildBinding(child);
     const completion = this.runWithActiveChild(agentId, options, async (runOptions) => {
       try {
@@ -649,6 +662,91 @@ export class SessionSubagentHost {
       model: displayModel ?? subagentDisplayModel(this.session.kimiConfig, child.config.modelAlias),
       thinkingEffort: child.config.thinkingEffort,
     };
+  }
+
+  /**
+   * Resume/retry compromise for model bindings: a spawn that fell through to
+   * caller inheritance follows the parent's current model again — restoring
+   * the upstream "subagents follow mid-session `/model` switches" behavior —
+   * while explicit bindings (tool alias/preference, profile exact, or a
+   * configured default) stay frozen at the alias resolved at spawn. The
+   * spawn-time source is known exactly for live children; after a session
+   * restart the marker is gone, and the implicit binding is re-derived from
+   * the profile and config instead (unknown history errs toward following,
+   * matching the upstream default path).
+   */
+  private reInheritParentModel(
+    parent: Agent,
+    child: Agent,
+    agentId: string,
+    profileName: string,
+  ): void {
+    const recorded = spawnBindingSources.get(child);
+    if (recorded !== undefined) {
+      if (recorded === 'caller' && parent.config.modelAlias !== undefined) {
+        child.config.update({
+          modelAlias: parent.config.modelAlias,
+          thinkingEffort: parent.config.thinkingEffort,
+        });
+      }
+      return;
+    }
+    const binding = this.resolveImplicitResumeBinding(parent, agentId, profileName);
+    if (binding?.modelAlias === undefined) return;
+    if (subagentModelSource(binding) !== 'caller') return;
+    child.config.update({ modelAlias: binding.modelAlias, thinkingEffort: binding.thinkingEffort });
+  }
+
+  /**
+   * Re-resolve the binding a spawn with no explicit model arguments would get
+   * now, to classify a child whose spawn-time source is unknown (session
+   * restart). Resolution failures degrade to `undefined` (treated as
+   * explicitly bound) rather than failing the resume itself.
+   */
+  private resolveImplicitResumeBinding(
+    parent: Agent,
+    agentId: string,
+    profileName: string,
+  ): SubagentModelBinding | undefined {
+    const own = {
+      modelAlias: parent.config.modelAlias,
+      thinkingEffort: parent.config.thinkingEffort,
+    };
+    const profileRequest = this.resumeProfileRequest(parent, profileName);
+    try {
+      return this.session.metadata.agents[agentId]?.collaboration !== undefined
+        ? resolveAgentCollaborationBinding(
+            this.session.kimiConfig,
+            this.session.experimentalFlags,
+            own,
+            {},
+            profileRequest,
+          )
+        : resolveSubagentBinding(
+            this.session.kimiConfig,
+            this.session.experimentalFlags,
+            own,
+            undefined,
+            profileRequest,
+          );
+    } catch {
+      return undefined;
+    }
+  }
+
+  private resumeProfileRequest(parent: Agent, profileName: string): SubagentBindingRequest {
+    try {
+      const profile = this.resolveProfile(parent, profileName);
+      return {
+        modelPreference: profile.modelPreference,
+        modelAlias: profile.modelAlias,
+        thinkingEffort: profile.thinkingEffort,
+      };
+    } catch {
+      // The profile may have been removed since spawn; resume still works off
+      // the child's persisted configuration, so classify via an empty request.
+      return {};
+    }
   }
 
   /**
