@@ -12,7 +12,6 @@ export interface DesktopSettings {
   draftPersistence: boolean;
   defaultModel: string | undefined;
   defaultEffort: string | undefined;
-  desktopNotifications: boolean;
   closeToTray: boolean;
 }
 
@@ -81,7 +80,6 @@ const DEFAULTS: DesktopSettings = {
   draftPersistence: true,
   defaultModel: undefined,
   defaultEffort: undefined,
-  desktopNotifications: true,
   closeToTray: true,
 };
 
@@ -227,10 +225,13 @@ export function resolveModelSource(
   override: string | undefined,
   sessionModel: string | undefined,
   localDefault?: string,
-  _serverDefault?: string,
+  serverDefault?: string,
 ): ComposerModelSource {
   if (presentModel(override) !== undefined) return 'override';
   if (presentModel(sessionModel) !== undefined) return 'session';
+  // Server default outranks the local mirror (which is itself an echo of the
+  // server field); the local value only shows when the server has none.
+  if (presentModel(serverDefault) !== undefined) return 'server-default';
   if (presentModel(localDefault) !== undefined) return 'local-default';
   return 'server-default';
 }
@@ -346,6 +347,22 @@ export function clearRestartRequirement(): RestartRequirement {
     // ignore
   }
   return publishRestartRequirement(next);
+}
+
+// Browser users get a session-scoped acknowledgement instead of the permanent
+// clear: hiding the reminder must not erase the pending requirement, which a
+// later desktop restart (or reload) still needs to see. Memory-only, so a
+// fresh app run shows the banner again until a real restart lands.
+let restartAcknowledgedAt: string | undefined;
+
+export function acknowledgeRestartRequirement(): void {
+  restartAcknowledgedAt = restartRequirementSnapshot().changedAt;
+  for (const listener of restartListeners) listener();
+}
+
+/** True when this app run already acknowledged the requirement's latest change. */
+export function isRestartRequirementAcknowledged(requirement: RestartRequirement): boolean {
+  return requirement.changedAt !== undefined && restartAcknowledgedAt === requirement.changedAt;
 }
 
 export function validateServerDefaults(permissionMode: string): ValidationIssue | null {

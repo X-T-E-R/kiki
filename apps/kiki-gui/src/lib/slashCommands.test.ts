@@ -4,6 +4,7 @@ import type { SkillDescriptor } from '@moonshot-ai/protocol';
 
 import {
   buildSlashItems,
+  classifySlashSubmission,
   filterSlashItems,
   isSkillActivatable,
   parseSlashDraft,
@@ -113,5 +114,44 @@ describe('resolveSlashCommand', () => {
 
   it('returns null for plain text', () => {
     expect(resolveSlashCommand(items, 'hello /review')).toBeNull();
+  });
+});
+
+describe('classifySlashSubmission', () => {
+  const items = buildSlashItems([skill('review'), skill('glossary', { type: 'reference' })], {
+    hasSession: true,
+  });
+
+  it('classifies a runnable skill with its args', () => {
+    expect(classifySlashSubmission(items, '/review fix it')).toEqual({
+      kind: 'resolved',
+      item: items[0],
+      args: 'fix it',
+    });
+  });
+
+  it('classifies a runnable client shortcut', () => {
+    const classified = classifySlashSubmission(items, '/PLAN');
+    expect(classified?.kind).toBe('resolved');
+    if (classified?.kind === 'resolved') expect(classified.item.action).toBe('plan');
+  });
+
+  it('tells an unknown command name apart from a disabled entry', () => {
+    const unknown = classifySlashSubmission(items, '/revie stuff');
+    expect(unknown).toMatchObject({ kind: 'unknown', name: 'revie', args: 'stuff' });
+
+    const disabled = classifySlashSubmission(items, '/glossary notes');
+    expect(disabled?.kind).toBe('disabled');
+    if (disabled?.kind === 'disabled') {
+      expect(disabled.item.name).toBe('glossary');
+      expect(disabled.args).toBe('notes');
+    }
+  });
+
+  it('ignores non-slash drafts and a bare slash', () => {
+    expect(classifySlashSubmission(items, 'plain text')).toBeNull();
+    expect(classifySlashSubmission(items, 'look /review')).toBeNull();
+    expect(classifySlashSubmission(items, '/')).toBeNull();
+    expect(classifySlashSubmission(items, '')).toBeNull();
   });
 });
