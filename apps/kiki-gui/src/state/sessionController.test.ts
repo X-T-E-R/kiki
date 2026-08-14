@@ -684,4 +684,41 @@ describe('SessionController pipeline', () => {
     expect(client.snapshot.mock.calls.length).toBeGreaterThanOrEqual(3);
     controller.close();
   });
+
+  it('drops an overflowing hidden-tab buffer and resyncs instead of growing it', async () => {
+    const { controller, client, flushAll } = await openController();
+    const snapshotCalls = () => client.snapshot.mock.calls.length;
+    const before = snapshotCalls(); // open()
+    // 1001 durable frames exceed the inbound buffer's 1000-frame bound while
+    // the flush scheduler never runs (document hidden).
+    for (let i = 0; i < 1001; i += 1) {
+      controller.handleFrame(
+        frame({ type: 'session.meta.updated', title: `t${i}` } as never, { seq: 11 + i }),
+      );
+    }
+    flushAll();
+    // The overflow discarded the buffer and demanded a snapshot resync.
+    await waitFor(() => snapshotCalls() > before);
+    await waitFor(() => !controller.getState().resyncing && !controller.getState().resyncFailed);
+    controller.close();
+  });
+
+  it('applies a large intake in bounded chunks, publishing once per tick', async () => {
+    const { controller, mainPublishes } = await openController();
+    // 250 durable frames land while hidden (all below the overflow bound).
+    for (let i = 0; i < 250; i += 1) {
+      controller.handleFrame(
+        frame({ type: 'session.meta.updated', title: `t${i}` } as never, { seq: 11 + i }),
+      );
+    }
+    // One flush applies at most FLUSH_CHUNK_FRAMES (200) frames; the rest are
+    // re-queued for the next tick (flushFrames is the public scheduler seam).
+    const publishesBeforeChunk = mainPublishes();
+    controller.flushFrames();
+    expect(controller.getState().session?.title).toBe('t199');
+    expect(mainPublishes()).toBe(publishesBeforeChunk + 1);
+    controller.flushFrames();
+    expect(controller.getState().session?.title).toBe('t249');
+    controller.close();
+  });
 });
