@@ -17,7 +17,7 @@
 | Kimi Code CLI、TUI（终端用户界面）和 `kimi` 命令 | 继承 | 安装、登录、会话、配置和常规命令行为继续使用现有的 Kimi Code CLI 文档。 |
 | `kap-server`、`@moonshot-ai/protocol`，以及它们提供的会话、配置和认证契约 | 继承 | Kiki 客户端使用这些契约，不另行定义一套服务端或协议。 |
 | `agent-core` 和 `agent-core-v2` 中的模型绑定区域 | 改造 | Kiki 扩展了选定的上游 Agent 引擎路径，同时保留原有的会话和任务生命周期。 |
-| 为新派生子 Agent 显式绑定模型 alias 和 thinking effort | Kiki 独有 | 绑定行为是下游新增功能，在两条 Agent 引擎路径中实现，默认关闭。 |
+| 为新派生子 Agent 显式绑定模型 alias 和 thinking effort | Kiki 独有 | 绑定行为是下游新增功能，在两条 Agent 引擎路径中实现；只有其中的旧版符号选择器路径默认关闭，显式绑定本身是稳定能力，始终可用。 |
 | 由 6 个工具组成的 Codex 风格协作适配器 | Kiki 独有 | 适配器新增 `spawn_agent`、`list_agents`、`wait_agent`、`followup_task`、`interrupt_agent` 和 `send_message`，但不表示完整兼容 Codex。 |
 | 本地 peer thread 通信 | Kiki 独有 | 主 Agent 可以跨本地工作区列出、读取、发送消息并等待现有会话；REST 和 Klient 只允许外部客户端指定目标，发送结果不带 peer 归属。 |
 | 独立的 `@kiki/gui` package | Kiki 独有 | GUI 是继承服务端和协议表面的下游客户端。部分组件改造自已单独标注来源的其他开源项目，因此这些组件在 Kiki 独有 package 内归类为改造。 |
@@ -39,7 +39,7 @@
 
 ## 启用 Kiki 独有的 Agent 功能
 
-下面的模型绑定与具名 Agent 功能仍属于实验功能，默认关闭。只需要一种行为时，优先使用对应功能的独立开关。
+下面的旧版模型选择器与具名 Agent 功能仍属于实验功能，默认关闭。只需要一种行为时，优先使用对应功能的独立开关。
 
 | 功能 | 启用方式 | 额外边界 |
 | --- | --- | --- |
@@ -52,6 +52,8 @@
 ## 集成 peer thread 通信
 
 Peer thread 通信通过 [`[thread_communication] enabled`](../configuration/config-files.md#thread-communication) 默认开启。它协调本机上的现有会话，也可以跨工作区；每条 thread 引用都包含主机、工作区和会话身份，跨主机发送会被拒绝。只有主 Agent 能使用 4 个内置 thread 工具，本地客户端也可以直接调用同一套契约。
+
+Peer thread 通信只存在于 `agent-core-v2` 引擎。`kimi web` 始终运行 v2 服务端；`KIMI_CODE_LEGACY_FLAG=1` 选择的旧版 CLI/TUI 路径没有 thread 工具，下方的 REST/Klient 接口也只由 v2 服务端提供。
 
 Kimi 服务运行后，以下 REST 接口位于 `/api/v1` 下：
 

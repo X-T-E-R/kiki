@@ -22,6 +22,32 @@ interface WritableLike {
 
 type MaybePromise<T> = T | Promise<T>;
 
+type AgentCoreModule = typeof import('@moonshot-ai/agent-core-v2');
+type AgentRootsModule = typeof import(
+  '@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/agentRoots'
+);
+type AgentPathsModule = typeof import(
+  '@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/paths'
+);
+type FrontmatterModule = typeof import('@moonshot-ai/agent-core-v2/_base/text/frontmatter');
+
+interface DoctorAgentModules {
+  readonly core: AgentCoreModule;
+  readonly agentRoots: AgentRootsModule;
+  readonly agentPaths: AgentPathsModule;
+  readonly frontmatter: FrontmatterModule;
+}
+
+async function loadAgentProfileModules(): Promise<DoctorAgentModules> {
+  const [core, agentRoots, agentPaths, frontmatter] = await Promise.all([
+    import('@moonshot-ai/agent-core-v2'),
+    import('@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/agentRoots'),
+    import('@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/paths'),
+    import('@moonshot-ai/agent-core-v2/_base/text/frontmatter'),
+  ]);
+  return { core, agentRoots, agentPaths, frontmatter };
+}
+
 export interface DoctorDeps {
   readonly cwd: () => string;
   readonly defaultConfigPath: () => MaybePromise<string>;
@@ -36,6 +62,7 @@ export interface DoctorDeps {
   readonly kimiHomeDir?: () => string;
   readonly osHomeDir?: () => string;
   readonly getEnv?: (name: string) => string | undefined;
+  readonly loadAgentProfileModules?: () => Promise<DoctorAgentModules>;
 }
 
 export interface DoctorOptions {
@@ -77,6 +104,7 @@ interface ResolvedDoctorDeps {
   readonly kimiHomeDir: () => string;
   readonly osHomeDir: () => string;
   readonly getEnv: (name: string) => string | undefined;
+  readonly loadAgentProfileModules: () => Promise<DoctorAgentModules>;
 }
 
 export async function handleDoctor(deps: DoctorDeps, options: DoctorOptions): Promise<number> {
@@ -168,6 +196,7 @@ function resolveDeps(deps: Partial<DoctorDeps> | DoctorDeps | undefined): Resolv
     kimiHomeDir: deps?.kimiHomeDir ?? getDataDir,
     osHomeDir: deps?.osHomeDir ?? homedir,
     getEnv: deps?.getEnv ?? ((name) => process.env[name]),
+    loadAgentProfileModules: deps?.loadAgentProfileModules ?? loadAgentProfileModules,
   };
 }
 
@@ -273,6 +302,15 @@ const KNOWN_AGENT_FRONTMATTER_KEYS = new Set([
 ]);
 const MAX_AGENT_SCAN_DEPTH = 8;
 
+/**
+ * Frontmatter fields the v2 agent grammar accepts but the legacy
+ * `agent-core` (v1) parser silently drops at runtime.
+ */
+const V2_ONLY_AGENT_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
+  'service_tier',
+  'request_params',
+]);
+
 interface ParsedAgentFile {
   readonly path: string;
   readonly name: string;
@@ -281,6 +319,8 @@ interface ParsedAgentFile {
   readonly modelPreference?: 'primary' | 'secondary';
   readonly modelAlias?: string;
   readonly unknownKeys: readonly string[];
+  readonly legacyIgnoredKeys: readonly string[];
+  readonly parserWarnings: readonly string[];
 }
 
 function createDoctorConfigContext(deps: ResolvedDoctorDeps): DoctorConfigContext {
@@ -346,14 +386,26 @@ async function checkAgentProfiles(
   cwd: string,
   context: DoctorConfigContext,
 ): Promise<CheckResult[]> {
-  const [core, agentRoots, agentPaths, frontmatter] = await Promise.all([
-    import('@moonshot-ai/agent-core-v2'),
-    import(
-      '@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/agentRoots'
-    ),
-    import('@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/paths'),
-    import('@moonshot-ai/agent-core-v2/_base/text/frontmatter'),
-  ]);
+  let modules: DoctorAgentModules;
+  try {
+    modules = await deps.loadAgentProfileModules();
+  } catch (error) {
+    // Upstream refactors of the agent-core-v2 internal module layout must not
+    // take the whole doctor command down; degrade to a non-fatal warning so
+    // the config/tui results still render and the exit code stays 0.
+    return [
+      {
+        label: 'agents',
+        path: cwd,
+        status: 'WARN',
+        message: `agent profile check unavailable: ${errorMessage(error)}`,
+      },
+    ];
+  }
+  const { core, agentRoots, agentPaths, frontmatter } = modules;
+  // The scan always parses profiles with the v2 grammar; under the legacy
+  // engine the v2-only fields would be silently dropped at runtime.
+  const legacyEngine = !isKimiV2Enabled();
   const fs = new core.HostFileSystem();
   const discoveryWarnings: string[] = [];
   const warn = (message: string): void => {
@@ -417,12 +469,22 @@ async function checkAgentProfiles(
         if (!entry.name.endsWith('.md') || !(await agentPaths.isFilePath(fs, entryPath))) continue;
         const text = await fs.readText(entryPath);
         try {
-          const agent = core.parseAgentFileText({ path: entryPath, source, text });
+          const parserWarnings: string[] = [];
+          const agent = core.parseAgentFileText({
+            path: entryPath,
+            source,
+            text,
+            warn: (message) => parserWarnings.push(message),
+          });
           const parsedFrontmatter = frontmatter.parseFrontmatter(text);
-          const unknownKeys = isRecord(parsedFrontmatter.data)
-            ? Object.keys(parsedFrontmatter.data).filter(
-                (key) => !KNOWN_AGENT_FRONTMATTER_KEYS.has(key),
-              )
+          const presentKeys = isRecord(parsedFrontmatter.data)
+            ? Object.keys(parsedFrontmatter.data)
+            : [];
+          const unknownKeys = presentKeys.filter(
+            (key) => !KNOWN_AGENT_FRONTMATTER_KEYS.has(key),
+          );
+          const legacyIgnoredKeys = legacyEngine
+            ? presentKeys.filter((key) => V2_ONLY_AGENT_FRONTMATTER_KEYS.has(key))
             : [];
           parsedFiles.push({
             path: entryPath,
@@ -432,6 +494,8 @@ async function checkAgentProfiles(
             modelPreference: agent.modelPreference,
             modelAlias: agent.modelAlias,
             unknownKeys,
+            legacyIgnoredKeys,
+            parserWarnings,
           });
         } catch (error) {
           results.push({
@@ -480,6 +544,14 @@ async function checkAgentProfiles(
         `Unknown frontmatter ${file.unknownKeys.length === 1 ? 'key' : 'keys'} ignored by the engine: ${file.unknownKeys.join(', ')}.`,
       );
     }
+    if (file.legacyIgnoredKeys.length > 0) {
+      const keys = file.legacyIgnoredKeys.join(', ');
+      const singular = file.legacyIgnoredKeys.length === 1;
+      warnings.push(
+        `${keys} ${singular ? 'is' : 'are'} ignored by the legacy agent engine; ${singular ? 'it' : 'they'} only take${singular ? 's' : ''} effect under agent-core-v2.`,
+      );
+    }
+    warnings.push(...file.parserWarnings);
     if (builtinNames.has(file.name) && !file.override) {
       warnings.push(
         `Agent profile "${file.name}" conflicts with a builtin profile; set override: true to replace it.`,
@@ -556,12 +628,17 @@ function resolveInputPath(input: string, cwd: string): string {
 }
 
 function formatSuccess(results: readonly CheckResult[]): string {
+  const warningCount = results.filter((result) => result.status === 'WARN').length;
+  const summary =
+    warningCount === 0
+      ? 'All checked config files are valid.'
+      : `All checked config files are valid, ${String(warningCount)} ${warningCount === 1 ? 'warning' : 'warnings'}.`;
   return [
     'Kimi doctor',
     '',
     ...formatResults(results),
     '',
-    'All checked config files are valid.',
+    summary,
     '',
   ].join('\n');
 }

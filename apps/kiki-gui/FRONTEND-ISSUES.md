@@ -35,13 +35,14 @@
 
 ### KG-001 · WebSocket 订阅未限定主 agent
 
-- **状态 / 严重度**：已修复 · P2 · 主视图 subscribe 现在带 agent_filter: { [sid]: ['main'] }
+- **状态 / 严重度**：已解决（客户端分流方案）· P2 · 订阅有意不带 `agent_filter`，由客户端按帧 agentId 分流主 / 子视图
 - **可见故障**：同一 session 存在子 agent 活动时，主会话视图没有明确保证只接收主 agent 的 session/agent 事件。
-- **事实**：`KikiSocket.sendSubscribe()` 只发送 `session_ids` 和 `cursors`。协议允许 `subscribe.payload.agent_filter`，并明确说明省略该字段会回退到接收 session 内所有 agent 的旧行为。
+- **现实现**：`KikiSocket.sendSubscribe()` 有意省略 `agent_filter`，订阅 session 的完整 agent 流，以保持现有 session cursor/resync 契约；`sessionController` 的 `childAgentId()` 把带非 `main` agentId 的帧（`subagent.*` 生命周期帧除外）分流到子代理视图，主视图只呈现主 agent 事件。
 - **影响判断**：子 agent 的工具、状态或生命周期事件可能与主 agent 的 transcript 状态混合，造成错误的卡片、busy 状态或任务归属。是否已在每类事件上实际发生，需要用多 agent 会话复现确认。
-- **证据**：`apps/kiki-gui/src/lib/ws.ts:262-272`；`packages/protocol/src/ws-control.ts:100-105,151-156`。
+- **证据**：`apps/kiki-gui/src/lib/ws.ts`（`sendSubscribe` 内注释）；`apps/kiki-gui/src/state/sessionController.ts:78-83`。
 - **期望行为**：主会话视图的订阅范围清晰且可验证；默认只呈现主 agent 的事件，除非产品明确提供切换或聚合视图。
 - **定向证明**：创建一个主 agent 与至少一个子 agent 同时产生事件的 session，确认主视图只出现允许范围内的事件，并检查实际发出的 `subscribe` frame。
+- **台账状态**：本台账为归档快照，活清单以仓库根 `ISSUES.md` 为准。
 
 ### KG-002 · 历史分页顺序与前端假设相反
 

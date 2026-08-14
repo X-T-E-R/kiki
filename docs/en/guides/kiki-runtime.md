@@ -17,7 +17,7 @@ The classification describes the origin and maintenance boundary of a surface, n
 | Kimi Code CLI, TUI (terminal user interface), and the `kimi` command | Inherited | Installation, login, sessions, configuration, and ordinary command behavior continue to use the existing Kimi Code CLI docs. |
 | `kap-server`, `@moonshot-ai/protocol`, and the session, configuration, and authentication contracts they expose | Inherited | Kiki clients consume these contracts instead of defining a separate server or protocol family. |
 | Model-binding areas in `agent-core` and `agent-core-v2` | Adapted | Kiki extends selected upstream agent-engine paths while preserving their existing session and task lifecycles. |
-| Explicit model-alias and thinking-effort binding for newly spawned subagents | Kiki-only | The binding behavior is a downstream addition implemented in both agent-engine paths and disabled by default. |
+| Explicit model-alias and thinking-effort binding for newly spawned subagents | Kiki-only | The binding behavior is a downstream addition implemented in both agent-engine paths; only the legacy symbolic-selector path is disabled by default, while the explicit binding itself is stable and always available. |
 | Six-tool Codex-style collaboration adapter | Kiki-only | The adapter adds `spawn_agent`, `list_agents`, `wait_agent`, `followup_task`, `interrupt_agent`, and `send_message`; it does not claim complete Codex compatibility. |
 | Local peer-thread communication | Kiki-only | Main Agents can list, read, message, and wait on existing sessions across local workspaces; REST and Klient provide target-only external-client sends without peer attribution. |
 | Standalone `@kiki/gui` package | Kiki-only | The GUI is a downstream client of the inherited server and protocol surfaces. Some components adapt separately attributed donor material, so those components are classified as adapted within the Kiki-only package. |
@@ -39,7 +39,7 @@ The executable name and the agent engine are separate choices. Start with `kimi`
 
 ## Enable Kiki-only agent features
 
-The model-binding and named-agent features below remain experimental and off by default. Prefer the feature-specific gate when you need only one behavior.
+The legacy model-selector and named-agent features below remain experimental and off by default. Prefer the feature-specific gate when you need only one behavior.
 
 | Feature | Enable with | Additional boundary |
 | --- | --- | --- |
@@ -52,6 +52,8 @@ The model-binding and named-agent features below remain experimental and off by 
 ## Integrate peer-thread communication
 
 Peer-thread communication is enabled by default through [`[thread_communication] enabled`](../configuration/config-files.md#thread-communication). It coordinates existing sessions on this host, including sessions in different workspaces; every thread reference includes the host, workspace, and session identity, and cross-host sends are rejected. Only main Agents receive the four built-in thread tools, but local clients can use the same contract directly.
+
+Peer-thread communication exists only on the `agent-core-v2` engine. `kimi web` always runs the v2 server, but the legacy CLI/TUI path selected with `KIMI_CODE_LEGACY_FLAG=1` has no thread tools, and the REST/Klient surface below is served only by the v2-backed server.
 
 The REST surface is available under `/api/v1` when the Kimi server is running:
 
