@@ -225,6 +225,41 @@ describe('Kiki external delegation MCP server', () => {
     expect(requests).toHaveLength(2);
   });
 
+  it('reports invalid tool input as invalid_input instead of an internal error', async () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    const server = createKikiMcpServer(
+      {
+        endpoint: 'http://127.0.0.1:58627',
+        token: 'TOKEN',
+        delegationToken: 'DELEGATION_SECRET',
+        sessionId: 'session-operator',
+        workspacePath: '/example/workspace',
+      },
+      { fetch: fetchMock },
+    );
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    close.push(() => client.close(), () => server.close());
+
+    const invalidTaskName = await client.callTool({
+      name: 'kiki_dispatch',
+      arguments: { target: 'named', task_name: 'Mixed-Case', profile_name: 'explore', message: 'x' },
+    });
+    expect(invalidTaskName.isError).toBe(true);
+    expect(invalidTaskName.structuredContent).toMatchObject({ error: { code: 'invalid_input' } });
+    expect(JSON.stringify(invalidTaskName)).toContain('task_name');
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const missingMessage = await client.callTool({
+      name: 'kiki_dispatch',
+      arguments: { target: 'main' },
+    });
+    expect(missingMessage.isError).toBe(true);
+    expect(missingMessage.structuredContent).toMatchObject({ error: { code: 'invalid_input' } });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('pages astral and mixed text without splitting Unicode or losing code units', async () => {
     const source = 'A😀你B🧪终';
     const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
