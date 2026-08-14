@@ -3,6 +3,8 @@
  * restart-gated setting changes. Restart rides the desktop sidecar bridge,
  * then the shared socket reconnects and queries refetch; no page reload.
  * "Later" dismisses for this app run only (a new change re-arms the banner).
+ * In the browser, "Acknowledge" also hides for this app run — but keeps the
+ * pending requirement intact, since only a desktop restart satisfies it.
  */
 
 import { useState, useSyncExternalStore } from 'react';
@@ -12,7 +14,9 @@ import { useI18n } from '../i18n';
 import { errorText } from '../i18n/locale';
 import { isDesktopRuntime, restartNativeServer } from '../lib/desktop';
 import {
+  acknowledgeRestartRequirement,
   clearRestartRequirement,
+  isRestartRequirementAcknowledged,
   restartRequirementSnapshot,
   subscribeRestartRequirement,
   type RestartRequirement,
@@ -34,7 +38,9 @@ export function RestartBanner() {
   const [error, setError] = useState<string | null>(null);
   const isDesktop = isDesktopRuntime();
 
-  if (!restart.required || dismissedAt === restart.changedAt) return null;
+  if (!restart.required || dismissedAt === restart.changedAt || isRestartRequirementAcknowledged(restart)) {
+    return null;
+  }
 
   const applyRestart = async () => {
     setWorking(true);
@@ -74,7 +80,7 @@ export function RestartBanner() {
             className={SECONDARY_BUTTON}
             disabled={working}
             title={t('st.restart.desktopOnly')}
-            onClick={() => { clearRestartRequirement(); }}
+            onClick={() => { acknowledgeRestartRequirement(); }}
           >
             {t('st.sidecar.acknowledge')}
           </button>

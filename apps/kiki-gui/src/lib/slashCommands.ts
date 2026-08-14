@@ -7,8 +7,9 @@
  *   - `action` — a client-side shortcut that maps to a real GUI action
  *     (toggle plan mode, open the goal popover, fork/undo/compact, /new).
  *
- * A draft that starts with `/` but matches no entry is sent as plain prompt
- * text — the server never sees an invented command.
+ * A draft that starts with `/` but matches no entry is still just text — the
+ * server never sees an invented command. The composer intercepts such sends
+ * (`classifySlashSubmission`) so a typo asks before shipping as prompt text.
  */
 
 import type { SkillDescriptor } from '@moonshot-ai/protocol';
@@ -103,15 +104,38 @@ export function filterSlashItems(items: readonly SlashItem[], query: string): Sl
     .map((entry) => entry.item);
 }
 
+/**
+ * Submit-time classification of a slash-looking draft: a runnable entry, an
+ * unknown name (typo — currently degrades to plain prompt text), or a known
+ * but disabled entry (`reference` skills are model-only). The composer uses
+ * the two failure kinds to intercept the send and ask before a typo ships to
+ * the model as prompt text.
+ */
+export type SlashSubmission =
+  | { kind: 'resolved'; item: SlashItem; args: string }
+  | { kind: 'unknown'; name: string; args: string }
+  | { kind: 'disabled'; item: SlashItem; args: string };
+
+export function classifySlashSubmission(
+  items: readonly SlashItem[],
+  text: string,
+): SlashSubmission | null {
+  const parsed = parseSlashDraft(text);
+  if (parsed === null || parsed.query === '') return null;
+  const name = parsed.query.toLowerCase();
+  const item = items.find((candidate) => candidate.name.toLowerCase() === name);
+  if (item === undefined) return { kind: 'unknown', name: parsed.query, args: parsed.args };
+  if (item.disabled === true) return { kind: 'disabled', item, args: parsed.args };
+  return { kind: 'resolved', item, args: parsed.args };
+}
+
 /** Exact command resolution for submit-time: `/name args…` → the item. */
 export function resolveSlashCommand(
   items: readonly SlashItem[],
   text: string,
 ): { item: SlashItem; args: string } | null {
-  const parsed = parseSlashDraft(text);
-  if (parsed === null || parsed.query === '') return null;
-  const name = parsed.query.toLowerCase();
-  const item = items.find((candidate) => candidate.name.toLowerCase() === name);
-  if (item === undefined || item.disabled === true) return null;
-  return { item, args: parsed.args };
+  const classified = classifySlashSubmission(items, text);
+  return classified !== null && classified.kind === 'resolved'
+    ? { item: classified.item, args: classified.args }
+    : null;
 }

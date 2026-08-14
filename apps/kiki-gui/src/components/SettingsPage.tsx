@@ -34,6 +34,8 @@ import {
   validateExtraSkillDirs,
   writeDesktopPrefs,
   writeSettings,
+  acknowledgeRestartRequirement,
+  isRestartRequirementAcknowledged,
   type SendShortcut,
   type SettingsSearchEntry,
 } from '../lib/settings';
@@ -110,6 +112,22 @@ function useSavedTick(): [boolean, () => void] {
     timer.current = setTimeout(() => { setNonce(0); }, 2500);
   }, []);
   return [nonce > 0, ping];
+}
+
+/**
+ * Busy-session count for restart confirm dialogs. A dedicated first-page
+ * query (short stale window) — restart kills the server process, so the
+ * confirm names exactly how many running turns it would terminate.
+ */
+function useBusySessionCount(): number | undefined {
+  const { client } = useConnection();
+  const query = useQuery({
+    queryKey: ['sessions', 'restart-confirm'],
+    queryFn: () => client.listSessions({ page_size: 100 }),
+    staleTime: 10_000,
+    select: (page) => page.items.filter((session) => session.busy).length,
+  });
+  return query.data;
 }
 
 function GeneralSection() {
@@ -576,6 +594,8 @@ function ConnectionSection() {
   const isDesktop = isDesktopRuntime();
   const [restarting, setRestarting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [confirmRestart, setConfirmRestart] = useState(false);
+  const busySessions = useBusySessionCount();
 
   const restart = async () => {
     setRestarting(true);
@@ -599,10 +619,10 @@ function ConnectionSection() {
     <div className="space-y-5">
       <SectionCard id="st-card-conn-server" title={t('st.conn.connectedTitle')}>
         <div className="space-y-2 text-[12.5px] text-ink-soft">
-          <p>URL: <span className="font-mono text-ink">{config.url}</span></p>
+          <p>{t('st.conn.urlLabel')}: <span className="font-mono text-ink">{config.url}</span></p>
           <p>{t('st.conn.version')}: <span className="font-mono text-ink">{meta.server_version}</span></p>
           <p>{t('st.conn.backend')}: <span className="font-mono text-ink">{meta.backend ?? 'v1'}</span></p>
-          <p>WebSocket: <span className={wsStatus === 'open' ? 'font-medium text-success' : 'font-medium text-amber-ink'}>{wsStatus}</span></p>
+          <p>{t('st.conn.wsLabel')}: <span className={wsStatus === 'open' ? 'font-medium text-success' : 'font-medium text-amber-ink'}>{t(`st.conn.ws.${wsStatus}`)}</span></p>
           <button type="button" onClick={() => { socket?.nudge(); }} className={SECONDARY_BUTTON}>{t('st.conn.reconnect')}</button>
         </div>
       </SectionCard>
@@ -612,13 +632,28 @@ function ConnectionSection() {
           <p className="text-[12.5px] text-ink-soft">
             {t('st.conn.ownedBody')}
           </p>
-          <button type="button" className={PRIMARY_BUTTON} disabled={!isDesktop || restarting} onClick={() => void restart()}>
+          <button type="button" className={PRIMARY_BUTTON} disabled={!isDesktop || restarting} onClick={() => { setConfirmRestart(true); }}>
             {restarting ? t('st.conn.restarting') : t('st.conn.restart')}
           </button>
           {!isDesktop ? <Hint>{t('st.conn.browserHint')}</Hint> : null}
           <FeedbackLine feedback={feedback} />
         </div>
       </SectionCard>
+
+      <ConfirmDialog
+        open={confirmRestart}
+        overlayId="confirm-conn-restart"
+        title={t('st.restart.confirmTitle')}
+        body={
+          busySessions !== undefined && busySessions > 0
+            ? t('st.restart.confirmBodyActive', { count: busySessions })
+            : t('st.restart.confirmBodyIdle')
+        }
+        confirmLabel={t('st.conn.restart')}
+        tone="danger"
+        onConfirm={() => { setConfirmRestart(false); void restart(); }}
+        onCancel={() => { setConfirmRestart(false); }}
+      />
     </div>
   );
 }
@@ -920,7 +955,7 @@ function CapabilitiesSection() {
             <Hint>{t('st.caps.telemetryHint')}</Hint>
           </div>
           <label className="block text-[11px] font-medium text-ink-soft">{t('st.caps.extraDirs')}
-            <textarea className={`${INPUT} mt-1 min-h-24 font-mono`} value={extraDirs} onChange={(event) => { setExtraDirs(event.target.value); }} placeholder={'C:/skills/shared\nC:/skills/team'} />
+            <textarea className={`${INPUT} mt-1 min-h-24 font-mono`} value={extraDirs} onChange={(event) => { setExtraDirs(event.target.value); }} placeholder={t('st.caps.extraDirsPlaceholder')} />
           </label>
           <label className="block text-[11px] font-medium text-ink-soft">{t('st.caps.experimental')}
             <textarea className={`${INPUT} mt-1 min-h-32 font-mono`} value={experimental} onChange={(event) => { setExperimental(event.target.value); }} aria-label={t('st.caps.experimentalAria')} />
@@ -1003,6 +1038,8 @@ function DesktopServerFileCard() {
   const [saving, setSaving] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [confirmRestart, setConfirmRestart] = useState(false);
+  const busySessions = useBusySessionCount();
 
   useEffect(() => {
     if (!isDesktop) return;
@@ -1126,12 +1163,28 @@ function DesktopServerFileCard() {
         ) : null}
         <div className="flex flex-wrap gap-2">
           <button type="button" className={PRIMARY_BUTTON} disabled={!isDesktop || loading || saving} onClick={() => void save()}>{saving ? t('st.sidecar.saving') : t('st.sidecar.save')}</button>
-          <button type="button" className={SECONDARY_BUTTON} disabled={!isDesktop || !restart.required || restarting} onClick={() => void applyRestart()}>{restarting ? t('st.sidecar.restarting') : t('st.sidecar.applyRestart')}</button>
-          {!isDesktop && restart.required ? <button type="button" className={SECONDARY_BUTTON} onClick={() => { clearRestartRequirement(); }}>{t('st.sidecar.acknowledge')}</button> : null}
+          <button type="button" className={SECONDARY_BUTTON} disabled={!isDesktop || !restart.required || restarting} onClick={() => { setConfirmRestart(true); }}>{restarting ? t('st.sidecar.restarting') : t('st.sidecar.applyRestart')}</button>
+          {!isDesktop && restart.required && !isRestartRequirementAcknowledged(restart) ? (
+            <button type="button" className={SECONDARY_BUTTON} onClick={() => { acknowledgeRestartRequirement(); }}>{t('st.sidecar.acknowledge')}</button>
+          ) : null}
         </div>
         {restart.required ? <Hint>{t('st.sidecar.pendingFields', { fields: restart.fields.join(', ') })}</Hint> : null}
         <FeedbackLine feedback={feedback} />
       </div>
+      <ConfirmDialog
+        open={confirmRestart}
+        overlayId="confirm-sidecar-restart"
+        title={t('st.restart.confirmTitle')}
+        body={
+          busySessions !== undefined && busySessions > 0
+            ? t('st.restart.confirmBodyActive', { count: busySessions })
+            : t('st.restart.confirmBodyIdle')
+        }
+        confirmLabel={t('st.sidecar.applyRestart')}
+        tone="danger"
+        onConfirm={() => { setConfirmRestart(false); void applyRestart(); }}
+        onCancel={() => { setConfirmRestart(false); }}
+      />
     </SectionCard>
   );
 }

@@ -887,4 +887,31 @@ export const en = {
   'shortcuts.escAbort': 'Otherwise: abort the running turn / exit the current mode',
   'shortcuts.desktopOnly': 'Desktop only',
   'term.closeFailed': 'Could not close the terminal: {detail}',
+
+  // ---- Batch A (GUI session/composer fixes) ----
+  'composer.slash.unknownPrompt': 'No command /{name} — send it as a plain message?',
+  'composer.slash.disabledPrompt':
+    '/{name} cannot be activated here — reference skills are for the model, not the composer.',
+  'composer.slash.sendAnyway': 'Send anyway',
+  'composer.slash.cancelSend': 'Keep editing',
+  'composer.attachmentReading': 'Reading image…',
+  'sv.approvalAmbiguous':
+    'Several approval cards are visible — click one of them before answering with y / n.',
+  'st.restart.confirmTitle': 'Restart the server?',
+  'st.restart.confirmBodyActive':
+    'Restarting terminates {count} running session task(s). Running turns are interrupted; the sessions themselves are kept.',
+  'st.restart.confirmBodyIdle':
+    'No sessions are currently running. The connection drops briefly while the server restarts.',
+  'st.conn.urlLabel': 'URL',
+  'st.conn.wsLabel': 'WebSocket',
+  'st.conn.ws.open': 'open',
+  'st.conn.ws.connecting': 'connecting',
+  'st.conn.ws.closed': 'closed',
+  'st.caps.extraDirsPlaceholder': '/opt/skills/shared\n/home/you/skills/team',
+  'sidebar.connTitle': 'kap-server {version} · WebSocket {status}',
+  'sidebar.ws.open': 'connected',
+  'new.cwdAria': 'Working directory (absolute path)',
+  'new.cwdPlaceholder': 'Absolute path to the project folder',
+  'new.cwdInvalid':
+    'Enter an absolute path for the working directory (for example C:/work/project or /home/you/project).',
 } as const;

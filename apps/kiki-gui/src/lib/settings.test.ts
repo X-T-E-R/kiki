@@ -5,7 +5,9 @@ import {
   clearRestartRequirement,
   fetchRemoteModels,
   humanizeMs,
+  acknowledgeRestartRequirement,
   isProviderDraftDirty,
+  isRestartRequirementAcknowledged,
   markRestartRequired,
   msUnitFor,
   normalizeTags,
@@ -107,6 +109,22 @@ describe('settings persistence and validation', () => {
     expect(readRestartRequirement().changedAt).toBeTypeOf('string');
     clearRestartRequirement();
     expect(readRestartRequirement()).toEqual({ required: false, changedAt: undefined, fields: [] });
+  });
+
+  it('acknowledges the restart banner for this run without erasing the requirement', () => {
+    clearRestartRequirement();
+    const first = markRestartRequired(['subagent']);
+    expect(isRestartRequirementAcknowledged(first)).toBe(false);
+    acknowledgeRestartRequirement();
+    expect(isRestartRequirementAcknowledged(restartRequirementSnapshot())).toBe(true);
+    // The pending requirement itself survives for a later desktop restart.
+    expect(readRestartRequirement().required).toBe(true);
+    expect(readRestartRequirement().fields).toEqual(['subagent']);
+    // A new change re-arms the banner even within this acknowledged run.
+    let second = markRestartRequired(['telemetry']);
+    if (second.changedAt === first.changedAt) second = markRestartRequired(['mcp']);
+    expect(isRestartRequirementAcknowledged(second)).toBe(false);
+    clearRestartRequirement();
   });
 
   it('rejects invalid server, desktop, provider, and experiment values before writes', () => {
@@ -435,7 +453,10 @@ describe('default model inheritance', () => {
     expect(resolveModelSource(undefined, undefined)).toBe('server-default');
     expect(resolveModelSource(undefined, 'session/bound')).toBe('session');
     expect(resolveModelSource('picked/model', 'session/bound')).toBe('override');
-    expect(resolveModelSource(undefined, undefined, 'local/k2', 'server/default')).toBe('local-default');
+    // Server default outranks the local mirror — the mirror is an echo of the
+    // same server field and must not shadow the fresher value.
+    expect(resolveModelSource(undefined, undefined, 'local/k2', 'server/default')).toBe('server-default');
+    expect(resolveModelSource(undefined, undefined, 'local/k2', undefined)).toBe('local-default');
     expect(resolveModelSource(undefined, undefined, undefined, 'server/default')).toBe('server-default');
   });
 });
