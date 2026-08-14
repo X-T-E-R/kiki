@@ -4,8 +4,12 @@
  * source, and the discovery result carrying per-file skip diagnostics.
  * Pure data.
  *
- * Ported from the v2 engine (`packages/agent-core-v2/src/app/agentFileCatalog/types.ts`)
- * — keep the two in sync.
+ * Legacy port of the v2 agent-file model (see
+ * `packages/agent-core-v2/src/workspace/workspaceAgentProfileLoader/internal/types.ts`).
+ * This field set is frozen for the legacy engine: v2-only fields
+ * (`serviceTier`, `requestParams`, and the discovery `routes` output) are
+ * intentionally omitted rather than kept in sync, so the two files are
+ * expected to diverge.
  */
 
 import type { AgentModelPreference } from '../types';
