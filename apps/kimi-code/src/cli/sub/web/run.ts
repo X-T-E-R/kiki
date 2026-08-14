@@ -366,7 +366,7 @@ export function externalCatalogSourceFromEnv(
   if (problems.length > 0) {
     throw new Error(`Kiki MCP catalog source is misconfigured: ${problems.join(' ')}`);
   }
-  return { configPath, configReadOnly: true, userAgentProfileHomeDir };
+  return { configPath: configPath!, configReadOnly: true, userAgentProfileHomeDir: userAgentProfileHomeDir! };
 }
 
 /**
