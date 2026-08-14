@@ -4,8 +4,6 @@ outline: 2
 
 # Changelog
 
-- Add an experimental Codex-style named-agent collaboration adapter with asynchronous spawn, list, wait, follow-up, and interrupt tools; existing `Agent` and `AgentSwarm` behavior is unchanged.
-
 This page documents the changes in each Kimi Code CLI release.
 
 ## 0.34.0 (2026-08-06)
