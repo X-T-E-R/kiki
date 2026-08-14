@@ -4,6 +4,8 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
+import { Error2 } from '#/_base/errors/errors';
+import type { ErrorCode } from '#/errors';
 import { ILogService } from '#/_base/log/log';
 import { IFlagService } from '#/app/flag/flag';
 import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
@@ -58,6 +60,7 @@ describe('SessionExternalDelegationService', () => {
   let runAgentIds: string[];
   let createdWith: unknown[];
   let lifecycleHooks: Hooks<SessionLifecycleHookSlots>;
+  let logCalls: Array<{ msg: string; payload: unknown }>;
 
   beforeEach(() => {
     disposables = new DisposableStore();
@@ -69,6 +72,7 @@ describe('SessionExternalDelegationService', () => {
     runSignals = [];
     runAgentIds = [];
     createdWith = [];
+    logCalls = [];
 
     ix.stub(IFlagService, { enabled: () => true });
     ix.stub(IAtomicDocumentStore, {
@@ -97,7 +101,17 @@ describe('SessionExternalDelegationService', () => {
     });
     ix.stub(ISessionWorkspaceContext, { _serviceBrand: undefined, workDir: '/workspace', additionalDirs: [] });
     ix.stub(ISessionProcessRunner, {});
-    ix.stub(ILogService, { level: 'off', child: () => ix.get(ILogService) });
+    ix.stub(ILogService, {
+      _serviceBrand: undefined,
+      level: 'off',
+      error: (msg: string, payload: unknown) => { logCalls.push({ msg, payload }); },
+      warn: () => {},
+      info: () => {},
+      debug: () => {},
+      setLevel: () => {},
+      flush: async () => {},
+      child: () => ix.get(ILogService),
+    });
     ix.stub(ISessionAgentProfileCatalog, {
       _serviceBrand: undefined,
       ready: Promise.resolve(),
@@ -399,6 +413,58 @@ describe('SessionExternalDelegationService', () => {
       expect(projection).not.toContain('SEEDED_API_KEY');
       expect(projection).not.toContain(path);
       expect(projection).not.toContain(url);
+    }
+  });
+
+  it('classifies provider auth failures: category crosses the edge, raw text stays in the log', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
+    const raw = '401 Unauthorized: Bearer sk-live-SEEDED at C:\\Users\\secret-user\\credentials.json';
+    completions[0]!.reject(new Error2('provider.auth_error', raw));
+
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('failed');
+    });
+    const status = await service.status({ authority, dispatchId: dispatch.dispatchId });
+    const result = await service.result({ authority, dispatchId: dispatch.dispatchId });
+    const persisted = JSON.stringify(documents.get('root'));
+
+    expect(status.errorCode).toBe('auth_expired');
+    expect(result.text).toBe(
+      'External agent authentication expired or was rejected; re-authenticate the provider and retry.',
+    );
+    expect(persisted).not.toContain('sk-live-SEEDED');
+    expect(persisted).not.toContain('secret-user');
+    expect(persisted).not.toContain(raw);
+
+    const failure = logCalls.find((entry) => entry.msg === 'External dispatch failed.');
+    expect(failure?.payload).toMatchObject({
+      dispatchId: dispatch.dispatchId,
+      sessionId: 'session_test',
+      code: 'provider.auth_error',
+      category: 'auth_expired',
+      raw,
+    });
+  });
+
+  it('classifies quota, model, network, and validation failures onto the stable taxonomy', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const cases: Array<{ code: ErrorCode; category: string }> = [
+      { code: 'provider.rate_limit', category: 'quota_exceeded' },
+      { code: 'model.not_found', category: 'model_not_supported' },
+      { code: 'provider.connection_error', category: 'network' },
+      { code: 'validation.failed', category: 'invalid_input' },
+    ];
+    for (const [index, { code, category }] of cases.entries()) {
+      const dispatch = await service.dispatch({ authority, target: 'main', message: `work ${index}` });
+      completions.at(-1)!.reject(new Error2(code, `raw detail ${code}`));
+      await vi.waitFor(async () => {
+        expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('failed');
+      });
+      const status = await service.status({ authority, dispatchId: dispatch.dispatchId });
+      expect(status.errorCode, code).toBe(category);
+      const persisted = JSON.stringify(documents.get('root'));
+      expect(persisted, code).not.toContain(`raw detail ${code}`);
     }
   });
 

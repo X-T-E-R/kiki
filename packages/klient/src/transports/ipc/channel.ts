@@ -24,12 +24,12 @@ import {
   type IpcFrame,
 } from './codec.js';
 
-const DEFAULT_CALL_TIMEOUT_MS = 65_000;
+const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 
 export interface IpcChannelOptions {
   readonly socketPath: string;
   readonly token?: string;
-  /** Per-call deadline (ms). Default `65000`; `0` disables. */
+  /** Per-call deadline (ms). Default `30000`; `0` disables. */
   readonly callTimeoutMs?: number;
 }
 
@@ -105,17 +105,18 @@ export class IpcChannel implements KlientChannel {
     });
   }
 
-  async call(scope: ScopeRef, service: string, method: string, args: unknown[]): Promise<unknown> {
+  async call(scope: ScopeRef, service: string, method: string, args: unknown[], timeoutMs?: number): Promise<unknown> {
     await this.ready;
     if (this.closed) throw new Error('ipc closed');
     const id = this.nextId();
+    const deadlineMs = timeoutMs ?? this.callTimeoutMs;
     const promise = new Promise<unknown>((resolve, reject) => {
       const timer =
-        this.callTimeoutMs > 0
+        deadlineMs > 0
           ? setTimeout(() => {
               this.pending.delete(id);
-              reject(new RPCError(50001, `call timed out after ${this.callTimeoutMs}ms`));
-            }, this.callTimeoutMs)
+              reject(new RPCError(50001, `call timed out after ${deadlineMs}ms`));
+            }, deadlineMs)
           : undefined;
       this.pending.set(id, { resolve, reject, timer });
     });

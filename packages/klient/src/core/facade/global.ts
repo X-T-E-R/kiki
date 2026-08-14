@@ -57,7 +57,12 @@ import type {
 } from '@moonshot-ai/agent-core-v2/app/threadCommunication/threadCommunication';
 
 /** Low-level caller the klient factory builds: routes + validates one service call. */
-export type Caller = (service: string, method: string, args: unknown[]) => Promise<unknown>;
+export type Caller = (
+  service: string,
+  method: string,
+  args: unknown[],
+  timeoutMs?: number,
+) => Promise<unknown>;
 
 /** Scoped variant — the factory's real signature; global methods bind the core scope. */
 export type ScopedCaller = (
@@ -65,6 +70,7 @@ export type ScopedCaller = (
   service: string,
   method: string,
   args: unknown[],
+  timeoutMs?: number,
 ) => Promise<unknown>;
 
 /** Streaming variant of `ScopedCaller` — returns a validated `AsyncIterable`. */
@@ -279,6 +285,13 @@ export interface GlobalFacade {
 // tie every contract schema to its engine type.
 // ---------------------------------------------------------------------------
 
+/**
+ * The engine caps a `threads.wait` at 60s (its `MAX_WAIT_TIMEOUT_MS`), so the
+ * IPC RPC deadline for that one call must exceed the worst case with headroom.
+ * Ordinary calls keep the transport's 30s default so failures surface promptly.
+ */
+const WAIT_THREADS_CALL_TIMEOUT_MS = 70_000;
+
 const ENV_SCALAR_PROPERTIES = [
   'platform',
   'arch',
@@ -294,7 +307,7 @@ const ENV_SCALAR_PROPERTIES = [
 ] as const;
 
 export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStreamCaller): GlobalFacade {
-  const call: Caller = (service, method, args) => scoped({}, service, method, args);
+  const call: Caller = (service, method, args, timeoutMs) => scoped({}, service, method, args, timeoutMs);
   const streamCall = (service: string, method: string, args: unknown[]) =>
     scopedStream({}, service, method, args);
   // The bootstrap snapshot is frozen at process start, so the aggregated
@@ -502,7 +515,7 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
       send: (input) =>
         call('threadCommunicationService', 'sendMessage', [input]) as Promise<SendThreadMessageResult>,
       wait: (input) =>
-        call('threadCommunicationService', 'waitThreads', [input]) as Promise<WaitThreadsResult>,
+        call('threadCommunicationService', 'waitThreads', [input], WAIT_THREADS_CALL_TIMEOUT_MS) as Promise<WaitThreadsResult>,
       getWorkspaceOverride: (workspaceId) =>
         call('threadCommunicationService', 'getWorkspaceOverride', [workspaceId]) as Promise<
           boolean | undefined

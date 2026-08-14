@@ -33,6 +33,8 @@ export interface RegisterWsV1Options {
   readonly flushIntervalMs?: number;
   readonly maxBatchSize?: number;
   readonly highWaterMarkBytes?: number;
+  /** Heartbeat interval forwarded to {@link WsConnectionV1}; `0` disables. */
+  readonly heartbeatMs?: number;
 }
 
 export function registerWsV1(core: Scope, opts: RegisterWsV1Options): WebSocketServer {
@@ -55,6 +57,7 @@ export function registerWsV1(core: Scope, opts: RegisterWsV1Options): WebSocketS
       flushIntervalMs: opts.flushIntervalMs,
       maxBatchSize: opts.maxBatchSize,
       highWaterMarkBytes: opts.highWaterMarkBytes,
+      heartbeatMs: opts.heartbeatMs,
     });
     socket.on('close', () => registry.remove(conn.id));
   });

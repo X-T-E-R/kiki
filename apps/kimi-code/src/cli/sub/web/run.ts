@@ -345,16 +345,28 @@ export function externalCatalogSourceFromEnv(
   if (configPath === undefined && userAgentProfileHomeDir === undefined && readOnly === undefined) {
     return undefined;
   }
-  if (
-    configPath === undefined ||
-    userAgentProfileHomeDir === undefined ||
-    readOnly !== '1' ||
-    !isAbsolute(configPath) ||
-    !isAbsolute(userAgentProfileHomeDir)
-  ) {
-    throw new Error('Kiki MCP catalog source configuration is incomplete or unsafe.');
+
+  // Name each misconfigured variable instead of collapsing to a generic
+  // "incomplete or unsafe" — READ_ONLY=0 in particular must read as "must be
+  // '1'", not as a vague security refusal.
+  const problems: string[] = [];
+  if (configPath === undefined) {
+    problems.push('KIKI_MCP_CONFIG_PATH is required.');
+  } else if (!isAbsolute(configPath)) {
+    problems.push('KIKI_MCP_CONFIG_PATH must be an absolute path.');
   }
-  return { configPath, configReadOnly: true, userAgentProfileHomeDir };
+  if (userAgentProfileHomeDir === undefined) {
+    problems.push('KIKI_MCP_AGENT_PROFILE_HOME is required.');
+  } else if (!isAbsolute(userAgentProfileHomeDir)) {
+    problems.push('KIKI_MCP_AGENT_PROFILE_HOME must be an absolute path.');
+  }
+  if (readOnly !== '1') {
+    problems.push("KIKI_MCP_CONFIG_READ_ONLY must be '1' to use a read-only catalog source.");
+  }
+  if (problems.length > 0) {
+    throw new Error(`Kiki MCP catalog source is misconfigured: ${problems.join(' ')}`);
+  }
+  return { configPath: configPath!, configReadOnly: true, userAgentProfileHomeDir: userAgentProfileHomeDir! };
 }
 
 /**

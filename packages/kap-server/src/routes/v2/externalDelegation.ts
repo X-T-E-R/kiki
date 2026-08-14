@@ -12,6 +12,8 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import {
   ErrorCodes,
   ISessionExternalDelegationService,
+  classifyExternalFailureCode,
+  externalFailureDescription,
   isError2,
   resumeSessionById,
   type ExternalAuthority,
@@ -142,8 +144,8 @@ function command<T extends z.ZodTypeAny>(
       );
       reply.send(okEnvelope(data, req.id));
     } catch (error) {
-      const message = redactedMessage(error);
-      reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, message, req.id));
+      const redacted = redactedMessage(error);
+      reply.send({ ...errEnvelope(ErrorCode.VALIDATION_FAILED, redacted.message, req.id), details: redacted.details });
     }
   });
 }
@@ -177,11 +179,27 @@ function dedicatedTokenMatches(candidate: string | undefined, expected: string):
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-function redactedMessage(error: unknown): string {
-  if (error instanceof z.ZodError) return 'Invalid external delegation request.';
+interface RedactedFailure {
+  readonly message: string;
+  /** Present only when the failure carries a stable classification. */
+  readonly details?: { readonly failure_code: string };
+}
+
+function redactedMessage(error: unknown): RedactedFailure {
+  if (error instanceof z.ZodError) return { message: 'Invalid external delegation request.' };
   if (isError2(error)) {
-    if (error.code === ErrorCodes.REQUEST_INVALID) return error.message;
-    return 'External delegation request failed.';
+    if (error.code === ErrorCodes.REQUEST_INVALID) return { message: error.message };
+    // Already-classified failures pass their category code and the
+    // domain-owned description through — never the raw provider text; only
+    // unclassified internal failures stay collapsed.
+    const category = classifyExternalFailureCode(error.code);
+    if (category !== undefined) {
+      return {
+        message: externalFailureDescription(category),
+        details: { failure_code: category },
+      };
+    }
+    return { message: 'External delegation request failed.' };
   }
-  return 'External delegation request failed.';
+  return { message: 'External delegation request failed.' };
 }

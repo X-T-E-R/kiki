@@ -26,7 +26,10 @@ export interface KikiMcpServerOptions {
 const dispatchInput = z
   .object({
     target: z.enum(['main', 'named']),
-    task_name: z.string().regex(/^(?!root$)[a-z0-9_]+$/).optional(),
+    task_name: z
+      .string()
+      .regex(/^(?!root$)[a-z0-9_]+$/, 'task_name must be lowercase [a-z0-9_] and must not be "root"')
+      .optional(),
     profile_name: z.string().trim().min(1).optional(),
     model_alias: z.string().trim().min(1).optional(),
     thinking_effort: z.string().trim().min(1).optional(),
@@ -50,6 +53,22 @@ const pageInput = lookupInput.extend({ cursor: z.number().int().nonnegative().op
 const resultInput = lookupInput.extend({ cursor: z.number().int().nonnegative().optional(), max_bytes: z.number().int().min(4).max(65_536).optional() }).strict();
 const emptyInput = z.object({}).strict();
 
+/**
+ * Stable external failure taxonomy mirrored from
+ * `agent-core-v2/src/session/externalDelegation/externalDelegation.ts`
+ * (`ExternalFailureCategory`). The stdio edge stays dependency-light instead of
+ * importing the core barrel, so keep the two lists in sync — an unknown code
+ * degrades to the generic `request_rejected` edge error, never to a leak.
+ */
+const EXTERNAL_FAILURE_CATEGORIES = new Set([
+  'auth_expired',
+  'quota_exceeded',
+  'model_not_supported',
+  'network',
+  'invalid_input',
+  'internal',
+]);
+
 export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServerOptions = {}): McpServer {
   const pinnedConfig = Object.freeze({ ...config });
   const client = new ExternalDelegationRestClient(pinnedConfig, options.fetch ?? globalThis.fetch);
@@ -60,56 +79,79 @@ export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServe
   });
   const server = new McpServer({ name: 'kiki-external-delegation', version: '0.1.0' });
 
+  // The SDK validates tool input against `inputSchema` before invoking the
+  // handler and reports a failure as a bare `{ isError: true, content }` with
+  // no classification. Re-shape that path onto the edge's structured
+  // `{ error: { code, message } }` contract so an invalid tool call reads as
+  // `invalid_input` (carrying the schema hint, e.g. the task_name rule) rather
+  // than an opaque MCP protocol error.
+  (server as unknown as { createToolError(message: string): unknown }).createToolError = (message) => {
+    const payload = { error: { code: 'invalid_input', message: validationErrorMessage(message) } };
+    return { ...result(payload), isError: true };
+  };
+
   server.registerTool(
     'kiki_list',
     { description: 'List admitted main/named dispatchables and owned continuations.', inputSchema: emptyInput },
-    async () => toolResult(client.call('list', {}).then((root) => bindRoot(root, binding))),
+    async () => toolResult(() => client.call('list', {}).then((root) => bindRoot(root, binding))),
   );
   server.registerTool(
     'kiki_dispatch',
-    { description: 'Dispatch main-agent work or one stable named child asynchronously. Exact model_alias and thinking_effort bindings apply only when the named child is first created.', inputSchema: dispatchInput },
-    async (input) => toolResult(client.call('dispatch', dispatchInput.parse(input))),
+    {
+      description:
+        'Dispatch main-agent work or one stable named child asynchronously. '
+        + 'task_name (named children only) must be lowercase [a-z0-9_] and must not be "root" '
+        + '(uppercase letters, hyphens, and other scripts are rejected). '
+        + 'Exact model_alias and thinking_effort bindings apply only when the named child is first created.',
+      inputSchema: dispatchInput,
+    },
+    async (input) => toolResult(() => client.call('dispatch', dispatchInput.parse(input))),
   );
   server.registerTool(
     'kiki_continue',
     { description: 'Continue an owned terminal main or named-child dispatch.', inputSchema: continueInput },
-    async (input) => toolResult(client.call('continue', continueInput.parse(input))),
+    async (input) => toolResult(() => client.call('continue', continueInput.parse(input))),
   );
   server.registerTool(
     'kiki_status',
     { description: 'Read status for an owned dispatch handle.', inputSchema: lookupInput },
-    async (input) => toolResult(client.call('status', lookupInput.parse(input))),
+    async (input) => toolResult(() => client.call('status', lookupInput.parse(input))),
   );
   server.registerTool(
     'kiki_result',
     { description: 'Read a UTF-8-bounded result page for an owned dispatch.', inputSchema: resultInput },
-    async (input) => {
-      const parsed = resultInput.parse(input);
-      return toolResult(
-        client
+    async (input) =>
+      toolResult(() => {
+        const parsed = resultInput.parse(input);
+        // Forward the caller's byte budget (schema-clamped to [4, 65_536]) as
+        // the backend page limit instead of a fixed 16_384. The backend limit
+        // is in characters, which never under-fills the byte budget (one UTF-8
+        // character is at least one byte); the local byte-bound trim below
+        // still enforces the exact boundary.
+        const maxBytes = parsed.max_bytes ?? 65_536;
+        return client
           .call<Record<string, unknown> & { text?: unknown; nextCursor?: unknown }>('result', {
             dispatch_id: parsed.dispatch_id,
             cursor: parsed.cursor,
-            limit: 16_384,
+            limit: maxBytes,
           })
-          .then((page) => boundUtf8Page(page, parsed.cursor ?? 0, parsed.max_bytes ?? 65_536)),
-      );
-    },
+          .then((page) => boundUtf8Page(page, parsed.cursor ?? 0, maxBytes));
+      }),
   );
   server.registerTool(
     'kiki_events',
     { description: 'Read a bounded event page for an owned dispatch.', inputSchema: pageInput },
-    async (input) => toolResult(client.call('events', pageInput.parse(input))),
+    async (input) => toolResult(() => client.call('events', pageInput.parse(input))),
   );
   server.registerTool(
     'kiki_transcript',
     { description: 'Read a bounded transcript page for an owned dispatch.', inputSchema: pageInput },
-    async (input) => toolResult(client.call('transcript', pageInput.parse(input))),
+    async (input) => toolResult(() => client.call('transcript', pageInput.parse(input))),
   );
   server.registerTool(
     'kiki_cancel',
     { description: 'Idempotently cancel an owned active dispatch.', inputSchema: lookupInput },
-    async (input) => toolResult(client.call('cancel', lookupInput.parse(input))),
+    async (input) => toolResult(() => client.call('cancel', lookupInput.parse(input))),
   );
 
   return server;
@@ -167,10 +209,24 @@ class ExternalDelegationRestClient {
       throw new KikiMcpEdgeError('invalid_response', 'Kiki delegation endpoint returned an invalid response.');
     }
     const parsed = z
-      .object({ code: z.number(), msg: z.string(), data: z.unknown().optional() })
+      .object({
+        code: z.number(),
+        msg: z.string(),
+        data: z.unknown().optional(),
+        details: z.unknown().optional(),
+      })
       .passthrough()
       .parse(envelope);
-    if (parsed.code !== 0) throw new KikiMcpEdgeError('request_rejected', safeRemoteMessage(parsed.msg));
+    if (parsed.code !== 0) {
+      // A server-side classification travels in `details.failure_code`; the
+      // message itself is the domain-owned category description, so it can be
+      // surfaced verbatim (safeRemoteMessage stays as belt-and-braces).
+      const failureCode = readFailureCode(parsed.details);
+      throw new KikiMcpEdgeError(
+        failureCode ?? 'request_rejected',
+        safeRemoteMessage(parsed.msg),
+      );
+    }
     return parsed.data as T;
   }
 }
@@ -196,18 +252,30 @@ function result(data: unknown) {
   return { content: [{ type: 'text' as const, text }], structuredContent: data as Record<string, unknown> };
 }
 
-async function toolResult(promise: Promise<unknown>) {
+async function toolResult(produce: () => Promise<unknown>) {
   try {
-    return result(await promise);
+    return result(await produce());
   } catch (error) {
     const payload = {
-      error: {
-        code: error instanceof KikiMcpEdgeError ? error.code : 'internal',
-        message: error instanceof KikiMcpEdgeError ? error.message : 'Kiki delegation request failed.',
-      },
+      error:
+        error instanceof KikiMcpEdgeError
+          ? { code: error.code, message: error.message }
+          : error instanceof z.ZodError
+            ? { code: 'invalid_input', message: zodErrorMessage(error) }
+            : { code: 'internal', message: 'Kiki delegation request failed.' },
     };
     return { ...result(payload), isError: true };
   }
+}
+
+/** Render the Zod issues as a single hint so an invalid tool call reads as validation feedback, not an internal failure. */
+function zodErrorMessage(error: z.ZodError): string {
+  return error.issues.map((issue) => issue.message).join('; ');
+}
+
+/** Sanitize a schema-validation message surfaced to the MCP client. */
+function validationErrorMessage(message: string): string {
+  return message.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 500);
 }
 
 class KikiMcpEdgeError extends Error {
@@ -264,4 +332,11 @@ function utf8PagePrefix(
 function safeRemoteMessage(message: string): string {
   if (/token|authorization|bearer|\\|\/\//i.test(message)) return 'Kiki delegation request failed.';
   return message.slice(0, 500);
+}
+
+/** Read a trusted failure classification off a REST error envelope, if any. */
+function readFailureCode(details: unknown): string | undefined {
+  if (details === null || typeof details !== 'object' || Array.isArray(details)) return undefined;
+  const code = (details as { readonly failure_code?: unknown }).failure_code;
+  return typeof code === 'string' && EXTERNAL_FAILURE_CATEGORIES.has(code) ? code : undefined;
 }

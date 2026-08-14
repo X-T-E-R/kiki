@@ -39,6 +39,8 @@ import type { Hooks } from '#/hooks';
 
 import { EXTERNAL_DELEGATION_FLAG_ID } from './flag';
 import {
+  classifyExternalFailureCode,
+  externalFailureDescription,
   type ExternalAuthority,
   type ExternalChildView,
   type ExternalContinueRequest,
@@ -48,6 +50,7 @@ import {
   type ExternalDispatchView,
   type ExternalEventPage,
   type ExternalEventView,
+  type ExternalFailureCategory,
   type ExternalPageLookup,
   type ExternalResultPage,
   type ExternalRootView,
@@ -71,7 +74,7 @@ interface StoredDispatch extends Omit<ExternalDispatchView, 'status' | 'startedA
   transcriptStart: number;
   result?: string;
   error?: string;
-  errorCode?: string;
+  errorCode?: ExternalFailureCategory;
 }
 
 interface ExternalDelegationDocument {
@@ -94,7 +97,6 @@ const STORE_KEY = 'root';
 const TASK_NAME = /^(?!root$)[a-z0-9_]+$/;
 const ACTIVE = new Set<ExternalDispatchStatus>(['queued', 'running']);
 const EXTERNAL_FAILURE_MESSAGE_MAX_BYTES = 512;
-const GENERIC_EXTERNAL_FAILURE_MESSAGE = 'External agent run failed.';
 
 export class SessionExternalDelegationService
   extends Disposable
@@ -102,6 +104,7 @@ export class SessionExternalDelegationService
 {
   declare readonly _serviceBrand: undefined;
   private readonly scope: string;
+  private readonly sessionId: string;
   private readonly controllers = new Map<string, AbortController>();
   private document: ExternalDelegationDocument | undefined;
   private writeQueue: Promise<void> = Promise.resolve();
@@ -124,6 +127,7 @@ export class SessionExternalDelegationService
   ) {
     super();
     this.scope = session.scope('external-delegation');
+    this.sessionId = session.sessionId;
     this._register(this.store.acquire(this.scope, STORE_KEY));
     this.ready = this.load();
     this._register(
@@ -446,18 +450,37 @@ export class SessionExternalDelegationService
         (result) => this.finish(dispatchId, 'completed', result.summary),
         (error) => {
           if (controller.signal.aborted) return this.finish(dispatchId, 'cancelled', undefined, 'Cancelled');
-          const failure = safeExternalFailure(error);
-          return this.finish(dispatchId, 'failed', undefined, failure.message, failure.code);
+          return this.failDispatch(dispatchId, error);
         },
       );
     } catch (error) {
       if (controller.signal.aborted) {
         await this.finish(dispatchId, 'cancelled', undefined, 'Cancelled');
       } else {
-        const failure = safeExternalFailure(error);
-        await this.finish(dispatchId, 'failed', undefined, failure.message, failure.code);
+        await this.failDispatch(dispatchId, error);
       }
     }
+  }
+
+  /**
+   * Terminal failure path: classify the raw error onto the stable external
+   * taxonomy, keep the untrusted original in the server log (with dispatch /
+   * session identity), and persist only the category code plus its
+   * domain-owned description.
+   */
+  private async failDispatch(dispatchId: string, error: unknown): Promise<void> {
+    const payload = toKimiErrorPayload(error);
+    const category: ExternalFailureCategory = classifyExternalFailureCode(payload.code) ?? 'internal';
+    this.log.error('External dispatch failed.', {
+      dispatchId,
+      sessionId: this.sessionId,
+      delegationId: this.document?.delegationId,
+      code: payload.code,
+      category,
+      raw: payload.message,
+      stack: error instanceof Error ? error.stack : undefined,
+    });
+    await this.finish(dispatchId, 'failed', undefined, externalFailureDescription(category), category);
   }
 
   private async finish(
@@ -465,7 +488,7 @@ export class SessionExternalDelegationService
     status: Extract<ExternalDispatchStatus, 'completed' | 'failed' | 'cancelled' | 'interrupted'>,
     result?: string,
     error?: string,
-    errorCode?: string,
+    errorCode?: ExternalFailureCategory,
   ): Promise<void> {
     const doc = this.document;
     const dispatch = doc?.dispatches[dispatchId];
@@ -557,15 +580,6 @@ function dispatchView(dispatch: StoredDispatch): ExternalDispatchView {
   };
 }
 
-function safeExternalFailure(error: unknown): { code: string; message: string } {
-  const payload = toKimiErrorPayload(error);
-  // Provider/process errors are untrusted wholesale: even apparently benign
-  // prose can embed a relative path, opaque credential, URL, or stack fragment
-  // that no finite pattern list can classify safely. Preserve only the stable
-  // registered code and publish a useful domain-owned message.
-  return { code: payload.code, message: GENERIC_EXTERNAL_FAILURE_MESSAGE };
-}
-
 function safeFailureText(message: string): string {
   const normalized = message.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
   if (
@@ -573,7 +587,7 @@ function safeFailureText(message: string): string {
     /(?:https?:\/\/|bearer\s+|authorization|api[-_ ]?key|access[-_ ]?token|password|credential|secret)/i.test(normalized) ||
     /(?:[a-z]:\\|\\\\|\/(?:users|home|tmp|var|etc)\/)/i.test(normalized)
   ) {
-    return GENERIC_EXTERNAL_FAILURE_MESSAGE;
+    return externalFailureDescription('internal');
   }
   return utf8Prefix(normalized, EXTERNAL_FAILURE_MESSAGE_MAX_BYTES);
 }
