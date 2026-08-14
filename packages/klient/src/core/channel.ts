@@ -33,8 +33,12 @@ export type EventSourceRef =
   | { readonly kind: 'emitter'; readonly service: string; readonly event: string };
 
 export interface KlientChannel {
-  /** Invoke `service.method(...args)` in the given scope; resolves with the raw wire result. */
-  call(scope: ScopeRef, service: string, method: string, args: unknown[]): Promise<unknown>;
+  /**
+   * Invoke `service.method(...args)` in the given scope; resolves with the raw
+   * wire result. `timeoutMs` overrides the transport's default per-call
+   * deadline (e.g. a long `wait`); omit to use the transport default.
+   */
+  call(scope: ScopeRef, service: string, method: string, args: unknown[], timeoutMs?: number): Promise<unknown>;
   /**
    * Invoke `service.method(...args)` in the given scope and return a streaming
    * result. The callee must return an `AsyncIterable`; each yielded chunk is
