@@ -74,7 +74,7 @@ interface StoredDispatch extends Omit<ExternalDispatchView, 'status' | 'startedA
   transcriptStart: number;
   result?: string;
   error?: string;
-  errorCode?: string;
+  errorCode?: ExternalFailureCategory;
 }
 
 interface ExternalDelegationDocument {
