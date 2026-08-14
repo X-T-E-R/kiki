@@ -3,7 +3,8 @@
  * Dialog primitive. Rows reflect the bindings actually wired in code:
  * App.tsx global keys, Composer's textarea keys, SessionView's Esc/y/n, and
  * TerminalPanel's Ctrl+Shift+C/V; the desktop show/hide hotkey only appears
- * in the desktop runtime.
+ * in the desktop runtime, and browser-reserved combos (Ctrl+N, Ctrl+Tab —
+ * App.tsx never registers them there) carry a "desktop only" badge.
  */
 
 import { useSyncExternalStore } from 'react';
@@ -22,6 +23,9 @@ import { Dialog } from './Dialog';
 interface ShortcutRow {
   readonly keys: readonly string[];
   readonly labelKey: I18nKey;
+  /** The combo is browser-reserved (preventDefault cannot intercept it), so
+   * the binding exists only in the desktop runtime; browsers show the badge. */
+  readonly desktopOnly?: boolean;
 }
 
 interface ShortcutGroup {
@@ -37,11 +41,12 @@ function newlineKeys(shortcut: SendShortcut): readonly string[] {
   return shortcut === 'cmd-enter' ? ['Enter'] : ['Shift', 'Enter'];
 }
 
-function groups(shortcut: SendShortcut): readonly ShortcutGroup[] {
+/** Exported for tests: the runtime- and preference-aware keyboard map. */
+export function shortcutsGroups(shortcut: SendShortcut): readonly ShortcutGroup[] {
   const globalRows: ShortcutRow[] = [
-    { keys: ['Ctrl', 'N'], labelKey: 'shortcuts.newSession' },
+    { keys: ['Ctrl', 'N'], labelKey: 'shortcuts.newSession', desktopOnly: true },
     { keys: ['Ctrl', 'K'], labelKey: 'shortcuts.switcher' },
-    { keys: ['Ctrl', 'Tab'], labelKey: 'shortcuts.nextSession' },
+    { keys: ['Ctrl', 'Tab'], labelKey: 'shortcuts.nextSession', desktopOnly: true },
     { keys: ['Ctrl', ','], labelKey: 'shortcuts.settings' },
     { keys: ['Ctrl', '/'], labelKey: 'shortcuts.thisPanel' },
     { keys: ['?'], labelKey: 'shortcuts.thisPanel' },
@@ -56,7 +61,12 @@ function groups(shortcut: SendShortcut): readonly ShortcutGroup[] {
       rows: [
         { keys: sendKeys(shortcut), labelKey: 'shortcuts.send' },
         { keys: newlineKeys(shortcut), labelKey: 'shortcuts.newline' },
-        { keys: ['Esc'], labelKey: 'shortcuts.abortOrClose' },
+        // Esc is layered, highest priority first: an open dialog or menu
+        // swallows it, an open terminal panel is next, and only otherwise
+        // does it abort the running turn (SessionView wires that order).
+        { keys: ['Esc'], labelKey: 'shortcuts.escOverlay' },
+        { keys: ['Esc'], labelKey: 'shortcuts.escTerminal' },
+        { keys: ['Esc'], labelKey: 'shortcuts.escAbort' },
         { keys: ['/'], labelKey: 'shortcuts.slashMenu' },
         { keys: ['@'], labelKey: 'shortcuts.fileMention' },
       ],
@@ -90,6 +100,7 @@ function Kbd({ label }: { label: string }) {
 
 export function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
   const { t } = useI18n();
+  const desktop = isDesktopRuntime();
   const sendShortcut = useSyncExternalStore(
     subscribeSettings,
     settingsSnapshot,
@@ -104,7 +115,7 @@ export function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
     >
       <h2 className="font-display text-[16px] font-semibold text-ink">{t('shortcuts.title')}</h2>
       <div className="mt-3 max-h-[60vh] space-y-4 overflow-y-auto pr-1">
-        {groups(sendShortcut).map((group) => (
+        {shortcutsGroups(sendShortcut).map((group) => (
           <section key={group.titleKey}>
             <h3 className="mb-1.5 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
               {t(group.titleKey)}
@@ -115,7 +126,14 @@ export function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
                   key={`${row.labelKey}-${row.keys.join('+')}`}
                   className="flex items-center justify-between gap-3 rounded-lg px-2 py-1"
                 >
-                  <span className="text-[12.5px] text-ink">{t(row.labelKey)}</span>
+                  <span className="flex items-center gap-1.5 text-[12.5px] text-ink">
+                    {t(row.labelKey)}
+                    {row.desktopOnly === true && !desktop ? (
+                      <span className="rounded-sm border border-hairline bg-paper px-1 py-px text-[9.5px] font-medium tracking-wide text-ink-faint uppercase">
+                        {t('shortcuts.desktopOnly')}
+                      </span>
+                    ) : null}
+                  </span>
                   <span className="flex shrink-0 items-center gap-1">
                     {row.keys.map((key) => (
                       <Kbd key={key} label={key} />

@@ -125,7 +125,6 @@ export const en = {
   'shortcuts.showHide': 'Show or hide the Kiki window',
   'shortcuts.send': 'Send the prompt',
   'shortcuts.newline': 'New line in the composer',
-  'shortcuts.abortOrClose': 'Interrupt the turn / close panels and menus (dialogs first)',
   'shortcuts.slashMenu': 'Skills and shortcuts menu',
   'shortcuts.fileMention': 'Mention a workspace file',
   'shortcuts.approve': 'Approve the focused pending card, or the only visible one',
@@ -876,4 +875,16 @@ export const en = {
   'connect.desktopCancelled': 'Desktop backend startup was cancelled.',
   'st.fetchModels.networkError':
     'Could not reach that address (network unreachable, wrong URL, or blocked by the desktop security policy).',
+
+  // Batch B (fix/gui-connection-ux): disconnect-banner actions, runtime-aware
+  // shortcut rows (browser-reserved combos marked desktop-only), layered Esc
+  // copy, terminal close failures.
+  'app.reconnectNow': 'Reconnect now',
+  'app.disconnectedSendHint':
+    'You can still send, but messages may not arrive and live replies will not show until reconnect.',
+  'shortcuts.escOverlay': 'Dialog or menu open: Esc closes it first (highest priority)',
+  'shortcuts.escTerminal': 'Terminal panel open: Esc closes the panel next',
+  'shortcuts.escAbort': 'Otherwise: abort the running turn / exit the current mode',
+  'shortcuts.desktopOnly': 'Desktop only',
+  'term.closeFailed': 'Could not close the terminal: {detail}',
 } as const;

@@ -9,7 +9,8 @@
  *
  * Global overlays: Ctrl+N / the sidebar button open the NewSessionDialog from
  * any route, Ctrl+K opens the QuickSwitcher, Ctrl+Tab jumps to the most recent
- * other session, and Ctrl+/ (or a bare `?`) opens the shortcuts panel.
+ * other session, and Ctrl+/ (or a bare `?`) opens the shortcuts panel. Ctrl+N
+ * and Ctrl+Tab are browser-reserved and register only in the desktop runtime.
  * `document.title` follows the active route; toasts mount at the root.
  */
 
@@ -52,10 +53,26 @@ function RootRedirect() {
   return <Navigate to={lastSessionId !== undefined ? `/s/${lastSessionId}` : '/new'} replace />;
 }
 
+/**
+ * True while focus sits in a text input surface. Global navigation shortcuts
+ * that would yank focus away (Ctrl+Tab session hopping) must yield to it;
+ * deliberate app shortcuts (Ctrl+K, Ctrl+, …) stay active by design.
+ */
+export function isEditableTarget(target: EventTarget | null): boolean {
+  if (typeof HTMLInputElement === 'undefined') return false;
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    (target instanceof HTMLElement && target.isContentEditable)
+  );
+}
+
 export function App() {
-  const { client, wsStatus } = useConnection();
+  const { client, socket, wsStatus } = useConnection();
   const { t, locale } = useI18n();
   const navigate = useNavigate();
+  const desktop = isDesktopRuntime();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
@@ -143,6 +160,9 @@ export function App() {
       if (!(event.metaKey || event.ctrlKey)) return;
       const key = event.key.toLowerCase();
       if (key === 'n' && !event.shiftKey && !event.altKey) {
+        // Browsers reserve Ctrl+N (new window) — preventDefault cannot stop
+        // it, so the binding stays desktop-only instead of half-firing.
+        if (!desktop) return;
         event.preventDefault();
         setQuickSwitcherOpen(false);
         setNewSessionOpen(true);
@@ -162,7 +182,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [navigate]);
+  }, [navigate, desktop]);
 
   // A bare `?` (outside editable targets and other overlays) also opens the
   // shortcuts panel — the discoverability path for keyboard-first users.
@@ -170,15 +190,7 @@ export function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== '?' || event.ctrlKey || event.metaKey || event.altKey) return;
       if (anyOverlayOpen()) return;
-      const target = event.target;
-      if (
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLSelectElement ||
-        (target instanceof HTMLElement && target.isContentEditable)
-      ) {
-        return;
-      }
+      if (isEditableTarget(event.target)) return;
       event.preventDefault();
       setShortcutsOpen(true);
     };
@@ -198,9 +210,7 @@ export function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
       if (!isSettingsRoute || sidebarOpen || newSessionOpen || quickSwitcherOpen || shortcutsOpen) return;
-      const target = event.target;
-      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
-      if (target instanceof HTMLElement && target.isContentEditable) return;
+      if (isEditableTarget(event.target)) return;
       event.preventDefault();
       void navigate(lastNonSettingsRef.current);
     };
@@ -208,9 +218,16 @@ export function App() {
     return () => { window.removeEventListener('keydown', onKeyDown); };
   }, [isSettingsRoute, sidebarOpen, newSessionOpen, quickSwitcherOpen, shortcutsOpen, navigate]);
 
+  // Ctrl+Tab jumps to the most recent other session. Browser tab switching
+  // owns Ctrl+Tab (preventDefault cannot intercept it), so the binding only
+  // registers in the desktop runtime — the shortcuts panel marks it
+  // desktop-only. While focus sits in an editable surface the keystroke stays
+  // with it: hopping sessions here would silently rip focus from the draft.
   useEffect(() => {
+    if (!desktop) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (!event.ctrlKey || event.key !== 'Tab') return;
+      if (isEditableTarget(event.target)) return;
       event.preventDefault();
       const next = sessions.find((session) => session.id !== activeSessionId);
       if (next !== undefined) {
@@ -220,7 +237,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [sessions, activeSessionId, navigate]);
+  }, [sessions, activeSessionId, navigate, desktop]);
 
   // Close mobile sidebar on route change.
   useEffect(() => {
@@ -253,7 +270,21 @@ export function App() {
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {wsStatus !== 'open' && !isSettingsRoute ? (
           <div className="shrink-0 border-b border-amber-rule/40 bg-amber-card px-4 py-1.5 text-center text-[12px] font-medium text-amber-ink">
-            {wsStatus === 'connecting' ? t('app.reconnecting') : t('app.disconnected')}
+            <span>{wsStatus === 'connecting' ? t('app.reconnecting') : t('app.disconnected')}</span>
+            {wsStatus === 'closed' ? (
+              <>
+                {' · '}
+                <button
+                  type="button"
+                  onClick={() => { socket.nudge(); }}
+                  className="rounded-sm border border-amber-ink/40 px-1.5 py-px font-semibold transition-colors hover:bg-amber-ink/10"
+                >
+                  {t('app.reconnectNow')}
+                </button>
+                {' · '}
+                <span className="font-normal">{t('app.disconnectedSendHint')}</span>
+              </>
+            ) : null}
           </div>
         ) : null}
         <RestartBanner />

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { Terminal } from '@moonshot-ai/protocol';
 
+import { ApiError } from '../lib/client';
 import type { TerminalSignal } from '../lib/ws';
 import {
   activeTerminalManager,
@@ -107,6 +108,7 @@ class FakeRest implements TerminalRestClient {
   readonly closed: string[] = [];
   listError: Error | undefined;
   createError: Error | undefined;
+  closeError: Error | undefined;
   nextCreated: Terminal | undefined;
 
   listTerminals(): Promise<{ items: Terminal[] }> {
@@ -129,6 +131,7 @@ class FakeRest implements TerminalRestClient {
 
   closeTerminal(_sessionId: string, terminalId: string): Promise<unknown> {
     this.closed.push(terminalId);
+    if (this.closeError !== undefined) return Promise.reject(this.closeError);
     return Promise.resolve({ closed: true });
   }
 }
@@ -259,6 +262,45 @@ describe('TerminalManager.create / kill', () => {
     manager.activate('term_b');
     await manager.kill('term_b');
     expect(manager.getState().activeId).toBe('term_a');
+  });
+
+  it('keeps the tab and surfaces an error when the REST close fails', async () => {
+    const rest = new FakeRest();
+    const transport = new FakeTransport();
+    rest.terminals = [fakeTerminal({ id: 'term_a' })];
+    const manager = makeManager(rest, transport);
+    await manager.open();
+
+    rest.closeError = new Error('fetch failed');
+    await expect(manager.kill('term_a')).resolves.toBe(false);
+    // The PTY may still be alive server-side: the tab (and its attach) stays
+    // so the close can be retried from the panel.
+    expect(manager.getState().tabs.map((tab) => tab.id)).toEqual(['term_a']);
+    expect(manager.getState().error).toBe('fetch failed');
+    expect(manager.getState().errorKey).toBe('term.closeFailed');
+    expect(transport.detached).toEqual([]);
+
+    // Retry once the server is reachable again — the tab then goes away.
+    rest.closeError = undefined;
+    await expect(manager.kill('term_a')).resolves.toBe(true);
+    expect(manager.getState().tabs).toHaveLength(0);
+    expect(manager.getState().error).toBeUndefined();
+    expect(transport.detached).toEqual(['term_a']);
+    expect(rest.closed).toEqual(['term_a', 'term_a']);
+  });
+
+  it('treats a terminal-not-found close as success and removes the tab', async () => {
+    const rest = new FakeRest();
+    const transport = new FakeTransport();
+    rest.terminals = [fakeTerminal({ id: 'term_a' })];
+    const manager = makeManager(rest, transport);
+    await manager.open();
+
+    rest.closeError = new ApiError({ code: 40414, msg: 'terminal.not_found', data: null });
+    await expect(manager.kill('term_a')).resolves.toBe(true);
+    expect(manager.getState().tabs).toHaveLength(0);
+    expect(manager.getState().error).toBeUndefined();
+    expect(transport.detached).toEqual(['term_a']);
   });
 });
 

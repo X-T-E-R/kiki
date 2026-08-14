@@ -121,7 +121,6 @@ export const zh: Record<I18nKey, string> = {
   'shortcuts.showHide': '显示或隐藏 Kiki 窗口',
   'shortcuts.send': '发送消息',
   'shortcuts.newline': '输入框内换行',
-  'shortcuts.abortOrClose': '中断当前回合 / 关闭面板与菜单（对话框优先）',
   'shortcuts.slashMenu': '技能与快捷指令菜单',
   'shortcuts.fileMention': '引用工作区文件',
   'shortcuts.approve': '批准聚焦的待决卡片，或唯一可见的一张',
@@ -856,4 +855,14 @@ export const zh: Record<I18nKey, string> = {
   'connect.desktopCopied': '已复制',
   'connect.desktopCancelled': '已取消桌面后端启动。',
   'st.fetchModels.networkError': '无法连接到该地址（网络不可达、地址错误或被桌面安全策略拦截）。',
+
+  // Batch B (fix/gui-connection-ux)：断线横幅动作、按运行时展示的快捷键
+  // （浏览器保留键标注桌面端专用）、Esc 分层说明、终端关闭失败。
+  'app.reconnectNow': '立即重连',
+  'app.disconnectedSendHint': '仍可发送，但消息可能无法送达，重连前也看不到实时回复。',
+  'shortcuts.escOverlay': '弹层或菜单打开时：Esc 先关闭它（优先级最高）',
+  'shortcuts.escTerminal': '终端面板打开时：Esc 其次关闭面板',
+  'shortcuts.escAbort': '其他情况：中止正在运行的回合 / 退出当前模式',
+  'shortcuts.desktopOnly': '桌面端专用',
+  'term.closeFailed': '无法关闭终端：{detail}',
 };

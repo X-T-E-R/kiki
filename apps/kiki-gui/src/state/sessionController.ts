@@ -55,6 +55,9 @@ export function assertSessionWritable(state: Pick<SessionViewState, 'resyncing' 
 const RESYNC_BACKOFF_MS = [250, 500, 1000, 2000, 4000];
 const QUARANTINE_MAX_FRAMES = 1000;
 const QUARANTINE_MAX_BYTES = 2 * 1024 * 1024;
+/** Frames applied per flush tick. Restoring a hidden tab can hold the full
+ * inbound bound; applying it in one synchronous pass would freeze the frame. */
+const FLUSH_CHUNK_FRAMES = 200;
 
 export interface PublicationScheduler {
   schedule(callback: () => void): unknown;
@@ -100,7 +103,13 @@ export class SessionController {
   private readonly listeners = new Set<Listener>();
   private readonly scheduler: PublicationScheduler;
   private frameHandle: unknown = null;
-  private readonly inboundFrames = new FrameBuffer();
+  /** Hidden-tab intake: while the document is hidden rAF never fires, so this
+   * buffer carries the whole blackout. Bounded by the quarantine limits —
+   * overflow drops the buffer and resyncs instead of growing without cap. */
+  private readonly inboundFrames = new FrameBuffer({
+    maxFrames: QUARANTINE_MAX_FRAMES,
+    maxBytes: QUARANTINE_MAX_BYTES,
+  });
   private readonly pendingFrames = new FrameBuffer({
     maxFrames: QUARANTINE_MAX_FRAMES,
     maxBytes: QUARANTINE_MAX_BYTES,
@@ -191,10 +200,18 @@ export class SessionController {
     if (this.closed) return;
     const frames = this.inboundFrames.drain();
     if (frames.length === 0) return;
+    const batch =
+      frames.length > FLUSH_CHUNK_FRAMES ? frames.slice(0, FLUSH_CHUNK_FRAMES) : frames;
     const before = this.state;
-    for (const frame of frames) this.applyIncomingFrame(frame);
+    for (const frame of batch) this.applyIncomingFrame(frame);
     if (this.state !== before) this.notifyMain();
     this.publishAgents();
+    if (batch.length < frames.length) {
+      // Keep the remainder in wire order and keep flushing on the next tick —
+      // the publication cadence stays at most one per tick.
+      for (const frame of frames.slice(FLUSH_CHUNK_FRAMES)) this.inboundFrames.push(frame);
+      this.scheduleFrameFlush();
+    }
   };
 
   /** Initial sync: snapshot → subscribe watermark → queue/tasks/goal hydration. */
@@ -243,7 +260,13 @@ export class SessionController {
       }
       return;
     }
-    this.inboundFrames.push(frame);
+    if (this.inboundFrames.push(frame).overflowed) {
+      // The hidden blackout exceeded the inbound bound (push already dropped
+      // the buffer): resync from a snapshot rather than apply a stream with
+      // guaranteed holes.
+      void this.resync();
+      return;
+    }
     this.scheduleFrameFlush();
   }
 

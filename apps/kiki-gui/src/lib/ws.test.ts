@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   terminalAttachMessageSchema,
@@ -7,7 +7,7 @@ import {
   terminalResizeMessageSchema,
 } from '@moonshot-ai/protocol';
 
-import { KikiSocket, type TerminalSignal, type WsEvents } from './ws';
+import { KikiSocket, type TerminalSignal, type WsEvents, type WsStatus } from './ws';
 
 interface SentFrame {
   readonly type: string;
@@ -70,6 +70,106 @@ function hello(wire: FakeWebSocket): void {
   wire.open();
   wire.receive({ type: 'server_hello', payload: {} });
 }
+
+describe('KikiSocket fatal recovery', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances.length = 0;
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: FakeWebSocket,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    Reflect.deleteProperty(globalThis, 'WebSocket');
+  });
+
+  function statusSocket(): { socket: KikiSocket; statuses: WsStatus[] } {
+    const statuses: WsStatus[] = [];
+    const events: WsEvents = {
+      onStatus: (status) => { statuses.push(status); },
+      onFrame: () => {},
+      onResyncRequired: () => {},
+      onSubscribeAck: () => {},
+    };
+    const socket = new KikiSocket({ baseUrl: 'http://example.test', events });
+    socket.connect();
+    return { socket, statuses };
+  }
+
+  /** Burn the pending reconnect timer (jitter keeps the delay under step*1.25). */
+  const fireReconnect = () => vi.advanceTimersByTime(11_000);
+
+  it('auto-reconnects a bounded number of times after a fatal frame, then waits for a manual nudge', () => {
+    vi.useFakeTimers();
+    const { socket, statuses } = statusSocket();
+    const wire = FakeWebSocket.instances.at(-1)!;
+    hello(wire);
+    expect(statuses.at(-1)).toBe('open');
+
+    wire.receive({ type: 'error', payload: { fatal: true, msg: 'protocol too old' } });
+    expect(wire.readyState).toBe(FakeWebSocket.CLOSED);
+    expect(statuses.at(-1)).toBe('closed');
+    // The detached transport's own close must not double-schedule a reconnect.
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    // Four bounded attempts, each failing at the transport layer.
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      fireReconnect();
+      const retry = FakeWebSocket.instances.at(-1)!;
+      expect(statuses.at(-1)).toBe('connecting');
+      retry.close(1006);
+      expect(statuses.at(-1)).toBe('closed');
+    }
+    expect(FakeWebSocket.instances).toHaveLength(5);
+    expect(socket.ready).toBe(false);
+
+    // Budget spent: further closes (or time) must not spawn a fifth retry.
+    fireReconnect();
+    vi.advanceTimersByTime(60_000);
+    expect(FakeWebSocket.instances).toHaveLength(5);
+
+    // Manual reconnect (the banner's button) gets a fresh bounded cycle.
+    socket.nudge();
+    expect(FakeWebSocket.instances).toHaveLength(6);
+    expect(statuses.at(-1)).toBe('connecting');
+    socket.close();
+  });
+
+  it('clears fatal mode once a retry hello lands, restoring unbounded backoff', () => {
+    vi.useFakeTimers();
+    const { socket } = statusSocket();
+    const wire = FakeWebSocket.instances.at(-1)!;
+    hello(wire);
+    wire.receive({ type: 'error', payload: { fatal: true, msg: 'restart required' } });
+
+    fireReconnect();
+    const retry = FakeWebSocket.instances.at(-1)!;
+    hello(retry);
+    expect(socket.ready).toBe(true);
+
+    // A normal drop after recovery reconnects on the usual ladder (not the
+    // fatal budget): closing and burning one timer opens a fresh transport.
+    retry.close(1006);
+    fireReconnect();
+    expect(FakeWebSocket.instances.at(-1)).not.toBe(retry);
+    socket.close();
+  });
+
+  it('stays down after a manual close even when nudged', () => {
+    vi.useFakeTimers();
+    const { socket } = statusSocket();
+    const wire = FakeWebSocket.instances.at(-1)!;
+    hello(wire);
+
+    socket.close();
+    fireReconnect();
+    vi.advanceTimersByTime(60_000);
+    socket.nudge();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+});
 
 describe('KikiSocket terminal channel', () => {
   beforeEach(() => {
