@@ -125,7 +125,6 @@ export const en = {
   'shortcuts.showHide': 'Show or hide the Kiki window',
   'shortcuts.send': 'Send the prompt',
   'shortcuts.newline': 'New line in the composer',
-  'shortcuts.abortOrClose': 'Interrupt the turn / close panels and menus (dialogs first)',
   'shortcuts.slashMenu': 'Skills and shortcuts menu',
   'shortcuts.fileMention': 'Mention a workspace file',
   'shortcuts.approve': 'Approve the focused pending card, or the only visible one',

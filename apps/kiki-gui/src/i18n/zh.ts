@@ -121,7 +121,6 @@ export const zh: Record<I18nKey, string> = {
   'shortcuts.showHide': '显示或隐藏 Kiki 窗口',
   'shortcuts.send': '发送消息',
   'shortcuts.newline': '输入框内换行',
-  'shortcuts.abortOrClose': '中断当前回合 / 关闭面板与菜单（对话框优先）',
   'shortcuts.slashMenu': '技能与快捷指令菜单',
   'shortcuts.fileMention': '引用工作区文件',
   'shortcuts.approve': '批准聚焦的待决卡片，或唯一可见的一张',
