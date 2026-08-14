@@ -12,6 +12,10 @@
  *     reference chips that ride the prompt text as `@path` tokens.
  *   - Pasted/dropped images become preview chips and send as real base64
  *     image content parts (the server format-gates and compresses them).
+ *     Placeholder chips cover the async reads; sending blocks until they land.
+ *   - A slash-looking draft that resolves to no entry is intercepted at send
+ *     time with an inline confirm, so a typo never silently ships as prompt
+ *     text (disabled `reference` skills explain themselves instead).
  */
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
@@ -32,8 +36,8 @@ import {
 } from '../lib/attachments';
 import {
   buildSlashItems,
+  classifySlashSubmission,
   filterSlashItems,
-  resolveSlashCommand,
   type SlashActionId,
   type SlashItem,
 } from '../lib/slashCommands';
@@ -147,7 +151,16 @@ export function Composer({
   mentionScopeKey?: string;
   /** Controlled attachment chips (parent owns them beside the draft). */
   attachments: readonly ComposerAttachment[];
-  onChangeAttachments: (next: readonly ComposerAttachment[]) => void;
+  /**
+   * Setter accepting a next array or an updater over the previous one. The
+   * updater form is what back-to-back image pastes use — render closures go
+   * stale while file reads are in flight.
+   */
+  onChangeAttachments: (
+    next:
+      | readonly ComposerAttachment[]
+      | ((previous: readonly ComposerAttachment[]) => readonly ComposerAttachment[]),
+  ) => void;
   /** Skill activation — the wire path for slash commands (POST :activate). */
   onActivateSkill?: (name: string, args: string, attachments: readonly ComposerAttachment[]) => void;
   /** Session-scoped shortcuts (/fork, /undo, /compact). */
@@ -182,6 +195,12 @@ export function Composer({
   const [activeIndex, setActiveIndex] = useState(0);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [mentionQuery, setMentionQuery] = useState('');
+  // A slash-looking draft that resolved to nothing: send is held until the
+  // user confirms plain-text shipping (typo guard) or edits the draft.
+  const [slashConfirm, setSlashConfirm] = useState<{
+    name: string;
+    reason: 'unknown' | 'disabled';
+  } | null>(null);
 
   const modelsQuery = useQuery({
     queryKey: ['models'],
@@ -246,7 +265,14 @@ export function Composer({
     node.style.height = `${Math.min(node.scrollHeight, 190)}px`;
   }, [text]);
 
-  const canSend = (text.trim() !== '' || attachments.length > 0) && !disabled;
+  // Placeholder image chips (base64 still being read) block sending so a
+  // quick Enter cannot silently drop a just-pasted image.
+  const readingAttachments = attachments.some(
+    (attachment) => attachment.kind === 'image' && attachment.data === '',
+  );
+
+  const canSend =
+    (text.trim() !== '' || attachments.length > 0) && !disabled && !readingAttachments;
 
   const runAction = (action: SlashActionId) => {
     switch (action) {
@@ -331,9 +357,32 @@ export function Composer({
     }
     if (accepted.length === 0) return;
     setAttachmentError(null);
+    // Loading stubs land immediately (chips render + caps reserve); the async
+    // reads replace them by identity through updater writes, so back-to-back
+    // pastes cannot drop each other's images the way stale render closures did.
+    const stubs: readonly ComposerAttachment[] = accepted.map((file) => ({
+      kind: 'image' as const,
+      name: file.name,
+      mediaType: file.type,
+      data: '',
+      size: file.size,
+      previewUrl: '',
+    }));
+    onChangeAttachments((current) => [...current, ...stubs]);
     void Promise.all(accepted.map((file) => fileToImageAttachment(file)))
-      .then((images) => { onChangeAttachments([...attachments, ...images]); })
+      .then((images) => {
+        onChangeAttachments((current) =>
+          current.flatMap((item) => {
+            const stubIndex = stubs.indexOf(item);
+            if (stubIndex === -1) return [item];
+            const image = images[stubIndex];
+            return image !== undefined ? [image] : [];
+          }),
+        );
+      })
       .catch((error: unknown) => {
+        // Reads failed wholesale: drop this batch's stubs, keep the rest.
+        onChangeAttachments((current) => current.filter((item) => !stubs.includes(item)));
         setAttachmentError(errorText(locale, error));
       });
   };
@@ -354,19 +403,35 @@ export function Composer({
     // Every hand-off below consumes the draft, so close any stale menu.
     setMenu(null);
     // Submit-time command resolution: `/name args…` for a known entry runs the
-    // command; anything else is plain prompt text (no invented commands).
-    const resolved = resolveSlashCommand(slashItems, text.trim());
-    if (resolved !== null) {
-      if (resolved.item.kind === 'skill' && onActivateSkill !== undefined) {
-        onActivateSkill(resolved.item.name, resolved.args, attachments);
+    // command; a slash-looking draft that resolves to nothing is intercepted
+    // for an explicit confirm — a typo never silently ships as prompt text.
+    const classified = classifySlashSubmission(slashItems, text.trim());
+    if (classified !== null) {
+      if (classified.kind === 'unknown' || classified.kind === 'disabled') {
+        setSlashConfirm({
+          name: classified.kind === 'unknown' ? classified.name : classified.item.name,
+          reason: classified.kind,
+        });
         return;
       }
-      if (resolved.item.kind === 'action' && resolved.item.action !== undefined) {
+      if (classified.item.kind === 'skill' && onActivateSkill !== undefined) {
+        onActivateSkill(classified.item.name, classified.args, attachments);
+        return;
+      }
+      if (classified.item.kind === 'action' && classified.item.action !== undefined) {
         onChange('');
-        runAction(resolved.item.action);
+        runAction(classified.item.action);
         return;
       }
     }
+    onSend(text.trim(), attachments);
+  };
+
+  /** "Send anyway" from the typo guard: plain prompt, no command resolution. */
+  const confirmSendPlain = () => {
+    if (!canSend) return;
+    setSlashConfirm(null);
+    setMenu(null);
     onSend(text.trim(), attachments);
   };
 
@@ -615,6 +680,38 @@ export function Composer({
                       ×
                     </button>
                   </span>
+                ) : attachment.data === '' ? (
+                  // Read-in-flight placeholder: a pulsing dot instead of a
+                  // preview, and sending stays blocked until data lands.
+                  <span
+                    key={`image-${attachment.name}-${attachment.size}`}
+                    title={t('composer.attachmentReading')}
+                    aria-label={t('composer.attachmentReading')}
+                    data-attachment-reading
+                    className="flex items-center gap-1.5 rounded-full border border-hairline bg-paper py-0.5 pr-1 pl-2 text-[11px] text-ink-soft"
+                  >
+                    <span className="status-dot-busy flex h-4 w-4 items-center justify-center">
+                      <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                    </span>
+                    <span className="max-w-32 truncate">
+                      {attachment.name === '' ? t('attach.pastedImage') : attachment.name}
+                    </span>
+                    <span className="font-mono text-[9.5px] text-ink-faint">
+                      {formatBytes(attachment.size)}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={t('composer.removeAttachment', {
+                        name: attachment.name === '' ? t('attach.pastedImage') : attachment.name,
+                      })}
+                      onClick={() => {
+                        onChangeAttachments(attachments.filter((_, i) => i !== index));
+                      }}
+                      className="flex h-4 w-4 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
+                    >
+                      ×
+                    </button>
+                  </span>
                 ) : (
                   <span
                     key={`image-${attachment.name}-${attachment.size}`}
@@ -651,6 +748,36 @@ export function Composer({
           ) : null}
           {attachmentError !== null ? (
             <p className="px-3.5 pt-1.5 font-mono text-[10.5px] text-danger">{attachmentError}</p>
+          ) : null}
+          {slashConfirm !== null ? (
+            <div
+              role="alert"
+              data-slash-confirm
+              className="mx-3.5 mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-amber-rule/40 bg-amber-card px-2.5 py-1.5 text-[11px] font-medium text-amber-ink"
+            >
+              <span>
+                {slashConfirm.reason === 'unknown'
+                  ? t('composer.slash.unknownPrompt', { name: slashConfirm.name })
+                  : t('composer.slash.disabledPrompt', { name: slashConfirm.name })}
+              </span>
+              <span className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={confirmSendPlain}
+                  disabled={!canSend}
+                  className="rounded-full border border-amber-ink/30 px-2 py-0.5 text-[10.5px] transition-colors hover:bg-amber-ink/10 disabled:opacity-50"
+                >
+                  {t('composer.slash.sendAnyway')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setSlashConfirm(null); }}
+                  className="rounded-full border border-transparent px-2 py-0.5 text-[10.5px] text-amber-ink/80 underline transition-colors hover:bg-amber-ink/10"
+                >
+                  {t('composer.slash.cancelSend')}
+                </button>
+              </span>
+            </div>
           ) : null}
 
           <div className="relative flex items-end gap-2 px-3.5 pt-1.5 pb-3">
@@ -692,6 +819,7 @@ export function Composer({
               disabled={disabled}
               onChange={(event) => {
                 onChange(event.target.value);
+                setSlashConfirm(null);
                 refreshMenu(event.target.value, event.target.selectionStart);
               }}
               onKeyDown={onKeyDown}

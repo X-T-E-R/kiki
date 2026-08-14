@@ -24,7 +24,7 @@ import {
   type ComposerAttachment,
 } from '../lib/attachments';
 import { API_CODES, ApiError, isSessionNotFoundMessage } from '../lib/client';
-import { readDraft, writeDraft } from '../lib/drafts';
+import { readComposerState, readDraft, writeComposerState, writeDraft } from '../lib/drafts';
 import { isMainWindowVisibleAndFocused, showDesktopNotification } from '../lib/desktop';
 import { useI18n } from '../i18n';
 import type { I18nKey } from '../i18n/locale';
@@ -593,6 +593,18 @@ export function resolveApprovalShortcutTarget(
   return visiblePending.length === 1 ? visiblePending[0]!.id : undefined;
 }
 
+/**
+ * True when a y/n press cannot pick a target but pending cards are on screen
+ * (several visible, none focused): the press is a silent no-op, so the caller
+ * surfaces a hint instead of leaving the shortcut looking broken.
+ */
+export function isApprovalShortcutAmbiguous(
+  cards: readonly ApprovalShortcutCard[],
+): boolean {
+  if (cards.some((card) => card.focused && card.pending)) return false;
+  return cards.filter((card) => card.pending && card.visible).length > 1;
+}
+
 /** y/n must not fire while a dialog, overlay, or popover owns the keyboard. */
 export function shouldHandleApprovalShortcut(input: {
   key: string;
@@ -814,6 +826,8 @@ export function SessionView({
   selectedAgentIdRef.current = selectedAgentId;
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
+  // Throttle for the ambiguous y/n hint (epoch ms of the last toast).
+  const lastAmbiguityToastRef = useRef(0);
   const initialPromptRef = useRef(
     (location.state as { initialPrompt?: string } | null)?.initialPrompt,
   );
@@ -834,6 +848,10 @@ export function SessionView({
     settingsServerSnapshot,
   );
   const defaults = useMemo(() => readSettings(), []);
+  // Composer chrome captured the last time this session was open (memory
+  // only): attachment chips and pill overrides restore instead of vanishing
+  // on every session switch. The /new hand-off state wins on first mount.
+  const restoredComposer = useMemo(() => readComposerState(sessionId), [sessionId]);
   // Below lg the rail is a fixed overlay drawer (see .app-rail in index.css):
   // start it closed there so no backdrop sits over the transcript uninvited.
   const railIsOverlay = useMediaQuery('(max-width: 1023px)');
@@ -843,23 +861,27 @@ export function SessionView({
   // Permission/plan/swarm are store-controlled (see resolveControlledValue):
   // local state is only the optimistic echo of an uncommitted pill click.
   const [permissionOverride, setPermissionOverride] = useState<PermissionMode | undefined>(
-    initialOptionsRef.current.permissionMode,
+    restoredComposer.permissionMode ?? initialOptionsRef.current.permissionMode,
   );
   const [planOverride, setPlanOverride] = useState(
-    initialOptionsRef.current.planMode,
+    restoredComposer.planMode ?? initialOptionsRef.current.planMode,
   );
   const [swarmOverride, setSwarmOverride] = useState(
-    initialOptionsRef.current.swarmMode,
+    restoredComposer.swarmMode ?? initialOptionsRef.current.swarmMode,
   );
   const [goalObjective, setGoalObjective] = useState(
-    initialOptionsRef.current.goalObjective ?? '',
+    restoredComposer.goalObjective ?? initialOptionsRef.current.goalObjective ?? '',
   );
   const [goalControl, setGoalControl] = useState<'pause' | 'resume' | 'cancel' | undefined>();
   const [modelOverride, setModelOverride] = useState(() =>
+    restoredComposer.modelOverride ??
     resolveSessionModelOverride(initialOptionsRef.current.model),
   );
+  // Effort is an explicit user choice only: no local-default seeding and no
+  // payload value until the user picks one, so the server's thinking config
+  // stays the single default source (matches the /new draft page).
   const [effortOverride, setEffortOverride] = useState(
-    initialOptionsRef.current.thinking ?? defaults.defaultEffort,
+    restoredComposer.effortOverride ?? initialOptionsRef.current.thinking,
   );
   const [confirmUndo, setConfirmUndo] = useState(false);
   const [batchConfirm, setBatchConfirm] = useState<
@@ -868,7 +890,7 @@ export function SessionView({
   const [confirmClearQueue, setConfirmClearQueue] = useState(false);
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>(
-    () => initialOptionsRef.current.initialAttachments ?? [],
+    () => initialOptionsRef.current.initialAttachments ?? restoredComposer.attachments ?? [],
   );
 
   const controller = useActiveController(sessionId);
@@ -965,15 +987,41 @@ export function SessionView({
     return () => { window.removeEventListener('keydown', onKeyDown); };
   }, [railOpen, terminalOpen, toggleTerminalPanel]);
 
-  // Per-session composer drafts.
+  // Per-session composer drafts + chrome. Attachments and pill overrides are
+  // seeded by the initializers on first mount (the /new hand-off wins, then
+  // memory); only the draft text needs this effect because it has no
+  // initializer. The route keys this component by session id, so this runs
+  // once per session mount.
   useEffect(() => {
     setDraft(readDraft(sessionId));
-    setAttachments([]);
   }, [sessionId]);
   const updateDraft = (text: string) => {
     setDraft(text);
     writeDraft(sessionId, text);
   };
+
+  // Capture the composer chrome that should survive a session switch:
+  // attachment chips and pill overrides, memory-only (see lib/drafts.ts).
+  useEffect(() => {
+    writeComposerState(sessionId, {
+      attachments,
+      permissionMode: permissionOverride,
+      planMode: planOverride,
+      swarmMode: swarmOverride,
+      goalObjective,
+      modelOverride,
+      effortOverride,
+    });
+  }, [
+    sessionId,
+    attachments,
+    permissionOverride,
+    planOverride,
+    swarmOverride,
+    goalObjective,
+    modelOverride,
+    effortOverride,
+  ]);
 
   // A sidebar-initiated undo rewrites this session's history; resync the open
   // controller so the transcript matches the server.
@@ -1098,13 +1146,20 @@ export function SessionView({
   });
 
   const sessionModel = state.model;
-  const inheritedDefault = liveSettings.defaultModel ?? serverDefaultModel;
+  // Server default first: the local mirror is a stale-prone echo of the same
+  // server field, so it only fills in when the server has not reported one.
+  const inheritedDefault = serverDefaultModel ?? liveSettings.defaultModel;
   const effectiveModel = resolveEffectiveModel(modelOverride, sessionModel, inheritedDefault);
   const catalogItem = (modelsQuery.data?.items ?? []).find((item) => item.model === effectiveModel);
   const supportedEfforts = catalogItem?.support_efforts;
+  // Retire an explicit effort override only when the effective model's catalog
+  // no longer lists it — never on mere model resolution, so a user pick (or a
+  // /new hand-off) survives the snapshot landing.
   useEffect(() => {
-    setEffortOverride(undefined);
-  }, [effectiveModel]);
+    if (effortOverride === undefined) return;
+    if (supportedEfforts === undefined || supportedEfforts.length === 0) return;
+    if (!supportedEfforts.includes(effortOverride)) setEffortOverride(undefined);
+  }, [effortOverride, supportedEfforts]);
   const effectiveEffort =
     supportedEfforts !== undefined && supportedEfforts.length > 0
       ? (effortOverride ?? catalogItem?.default_effort ?? supportedEfforts[0])
@@ -1158,8 +1213,18 @@ export function SessionView({
       ) {
         return;
       }
-      const approvalId = resolveApprovalShortcutTarget(collectApprovalShortcutCards());
-      if (approvalId === undefined) return;
+      const cards = collectApprovalShortcutCards();
+      const approvalId = resolveApprovalShortcutTarget(cards);
+      if (approvalId === undefined) {
+        // Ambiguous press (several visible cards, nothing focused): a plain
+        // no-op reads as a broken shortcut — point at the cards instead.
+        // Throttled so holding the key does not flood the toast stack.
+        if (isApprovalShortcutAmbiguous(cards) && Date.now() - lastAmbiguityToastRef.current > 1500) {
+          lastAmbiguityToastRef.current = Date.now();
+          pushToast({ tone: 'info', text: t('sv.approvalAmbiguous') });
+        }
+        return;
+      }
       event.preventDefault();
       void controller
         .resolveApproval(approvalId, event.key === 'y' ? 'approved' : 'rejected')
@@ -1192,7 +1257,10 @@ export function SessionView({
             text: echoText,
             content,
             model: effectiveModel,
-            thinking: effectiveEffort,
+            // Only an explicit effort pick rides the wire; without one the
+            // payload omits `thinking` so the server's thinking config (the
+            // settings page) stays the single default source.
+            thinking: effortOverride,
             permissionMode,
             planMode,
             swarmMode,
@@ -1309,7 +1377,7 @@ export function SessionView({
     controller,
     client,
     effectiveModel,
-    effectiveEffort,
+    effortOverride,
     permissionMode,
     planMode,
     swarmMode,

@@ -213,7 +213,10 @@ export function Sidebar({
                 ? 'border-amber-rule/40 text-amber-ink'
                 : 'border-danger/30 text-danger'
           }`}
-          title={`kap-server ${meta.server_version} · ws ${wsStatus}`}
+          title={t('sidebar.connTitle', {
+            version: meta.server_version,
+            status: t(`sidebar.ws.${wsStatus}`),
+          })}
         >
           <span
             className={`h-1.5 w-1.5 rounded-full ${

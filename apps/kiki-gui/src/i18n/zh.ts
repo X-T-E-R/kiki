@@ -842,4 +842,27 @@ export const zh: Record<I18nKey, string> = {
   'attach.tooMany': '每条消息最多 {max} 个附件。',
   'attach.readFailed': '无法读取 {name}',
   'attach.pastedImage': '粘贴的图片',
+
+  // ---- Batch A（GUI 会话/composer 修复）----
+  'composer.slash.unknownPrompt': '未找到命令 /{name}，将作为普通消息发送？',
+  'composer.slash.disabledPrompt': '命令 /{name} 不可激活 — reference 技能仅供模型使用。',
+  'composer.slash.sendAnyway': '仍要发送',
+  'composer.slash.cancelSend': '继续编辑',
+  'composer.attachmentReading': '正在读取图片…',
+  'sv.approvalAmbiguous': '当前有多张审批卡可见，请先点击其中一张再用 y / n 回答。',
+  'st.restart.confirmTitle': '重启服务器？',
+  'st.restart.confirmBodyActive':
+    '重启将终止 {count} 个运行中的会话任务。进行中的回合会被中断，会话记录本身保留。',
+  'st.restart.confirmBodyIdle': '当前没有运行中的会话。服务器重启期间连接会短暂中断。',
+  'st.conn.urlLabel': 'URL',
+  'st.conn.wsLabel': 'WebSocket',
+  'st.conn.ws.open': '已连接',
+  'st.conn.ws.connecting': '连接中',
+  'st.conn.ws.closed': '已断开',
+  'st.caps.extraDirsPlaceholder': '/opt/skills/shared\n/home/you/skills/team',
+  'sidebar.connTitle': 'kap-server {version} · WebSocket {status}',
+  'sidebar.ws.open': '已连接',
+  'new.cwdAria': '工作目录（绝对路径）',
+  'new.cwdPlaceholder': '项目文件夹的绝对路径',
+  'new.cwdInvalid': '请输入工作目录的绝对路径（例如 C:/work/project 或 /home/you/project）。',
 };

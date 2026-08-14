@@ -29,6 +29,16 @@ import { useConnection } from '../state/connection';
 
 const DRAFT_KEY = 'new';
 
+/**
+ * Basic absolute-path check for the free-text cwd field, across platforms:
+ * POSIX `/…`, Windows drive `C:\…` / `C:/…`, or UNC `\\server\…`. Relative
+ * paths are rejected — the server would resolve them against its own cwd,
+ * which is never what the user meant.
+ */
+export function isAbsoluteCwdPath(value: string): boolean {
+  return /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(value);
+}
+
 export function useNewSessionDraft({
   initialWorkspaceId,
   onSent,
@@ -39,6 +49,7 @@ export function useNewSessionDraft({
 } = {}) {
   const { client } = useConnection();
   const navigate = useNavigate();
+  const { t } = useI18n();
   const liveSettings = useSyncExternalStore(
     subscribeSettings,
     settingsSnapshot,
@@ -60,7 +71,9 @@ export function useNewSessionDraft({
   const [modelOverride, setModelOverride] = useState(() =>
     resolveSessionModelOverride(undefined),
   );
-  const [effortOverride, setEffortOverride] = useState(settings.defaultEffort);
+  // Same rule as the session page: effort rides the wire only when the user
+  // picks one; otherwise the server's thinking config is the default.
+  const [effortOverride, setEffortOverride] = useState<string | undefined>(undefined);
 
   const workspacesQuery = useQuery({
     queryKey: ['workspaces'],
@@ -85,7 +98,9 @@ export function useNewSessionDraft({
     queryFn: () => client.listModels(),
     staleTime: 60_000,
   });
-  const inheritedDefault = liveSettings.defaultModel ?? serverDefaultModel;
+  // Server default first — the local mirror only fills in when the server
+  // has not reported one (matches the session page).
+  const inheritedDefault = serverDefaultModel ?? liveSettings.defaultModel;
   const effectiveModel = resolveEffectiveModel(modelOverride, undefined, inheritedDefault);
   const modelSource = resolveModelSource(
     modelOverride,
@@ -112,10 +127,16 @@ export function useNewSessionDraft({
   const send = (text: string, composerAttachments: readonly ComposerAttachment[]) => {
     if (busy) return;
     if (buildPromptContent(text, composerAttachments) === null) return;
+    const trimmedCwd = cwd.trim();
+    // A free-text cwd must be an absolute path — a relative one would be
+    // resolved against the server's own cwd and silently land elsewhere.
+    if (trimmedCwd !== '' && !isAbsoluteCwdPath(trimmedCwd)) {
+      setError(t('new.cwdInvalid'));
+      return;
+    }
     setBusy(true);
     setError(null);
 
-    const trimmedCwd = cwd.trim();
     const body =
       trimmedCwd !== ''
         ? { metadata: { cwd: trimmedCwd } }
@@ -132,7 +153,9 @@ export function useNewSessionDraft({
             initialPrompt: text.trim(),
             initialAttachments: composerAttachments,
             model: modelOverride,
-            thinking: effectiveEffort,
+            // Explicit pick only: undefined omits `thinking` so the new
+            // session follows the server's thinking default.
+            thinking: effortOverride,
             permissionMode,
             planMode,
             swarmMode,
@@ -204,7 +227,10 @@ export function NewSessionDraftPanel({
   const { client } = useConnection();
   const { t } = useI18n();
   const rootRef = useRef<HTMLDivElement>(null);
+  const [cwdBlurred, setCwdBlurred] = useState(false);
   const composerDisabled = state.busy || state.workspacesLoading || state.effectiveWorkspace === undefined;
+  const trimmedCwd = state.cwd.trim();
+  const cwdInvalid = trimmedCwd !== '' && !isAbsoluteCwdPath(trimmedCwd);
 
   // The dialog's initial `[data-autofocus]` focus lands while the Composer is
   // still disabled (workspaces query in flight), which silently fails. Once
@@ -236,13 +262,25 @@ export function NewSessionDraftPanel({
             ))}
           </select>
           <span className="text-[11px] text-ink-faint">{t('new.or')}</span>
-          <input
-            type="text"
-            value={state.cwd}
-            onChange={(event) => { state.setCwd(event.target.value); }}
-            placeholder="C:/path/to/project"
-            className="min-w-0 flex-1 rounded-md border border-hairline bg-paper px-2 py-1 font-mono text-[11.5px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
-          />
+          <div className="min-w-0 flex-1">
+            <input
+              type="text"
+              value={state.cwd}
+              onChange={(event) => { state.setCwd(event.target.value); }}
+              onBlur={() => { setCwdBlurred(true); }}
+              aria-label={t('new.cwdAria')}
+              aria-invalid={cwdBlurred && cwdInvalid ? true : undefined}
+              placeholder={t('new.cwdPlaceholder')}
+              className={`min-w-0 flex-1 rounded-md border bg-paper px-2 py-1 font-mono text-[11.5px] text-ink outline-none placeholder:text-ink-faint focus:border-accent ${
+                cwdBlurred && cwdInvalid ? 'border-danger' : 'border-hairline'
+              }`}
+            />
+            {cwdBlurred && cwdInvalid ? (
+              <p role="alert" className="mt-1 text-[10.5px] text-danger">
+                {t('new.cwdInvalid')}
+              </p>
+            ) : null}
+          </div>
         </div>
       </div>
 

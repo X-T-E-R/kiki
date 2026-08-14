@@ -21,6 +21,7 @@ import {
   beginAgentOlderFetch,
   finishAgentOlderFetch,
   INITIAL_AGENT_OLDER_FETCH_GATE,
+  isApprovalShortcutAmbiguous,
   resetAgentOlderFetchGate,
   settleAgentOlderFetch,
   isTerminalEscapeTarget,
@@ -201,6 +202,47 @@ describe('resolveApprovalShortcutTarget', () => {
         card('a2', { visible: true }),
       ]),
     ).toBeUndefined();
+  });
+});
+
+describe('isApprovalShortcutAmbiguous', () => {
+  const card = (
+    id: string,
+    flags: Partial<{ pending: boolean; visible: boolean; focused: boolean }> = {},
+  ) => ({
+    id,
+    pending: flags.pending ?? true,
+    visible: flags.visible ?? true,
+    focused: flags.focused ?? false,
+  });
+
+  it('flags several visible pending cards with nothing focused', () => {
+    expect(
+      isApprovalShortcutAmbiguous([
+        card('a1', { visible: true }),
+        card('a2', { visible: true }),
+      ]),
+    ).toBe(true);
+  });
+
+  it('is not ambiguous once a pending card has focus', () => {
+    expect(
+      isApprovalShortcutAmbiguous([
+        card('a1', { visible: true }),
+        card('a2', { visible: true, focused: true }),
+      ]),
+    ).toBe(false);
+  });
+
+  it('is not ambiguous for a single visible card or off-screen extras', () => {
+    expect(isApprovalShortcutAmbiguous([card('a1')])).toBe(false);
+    expect(
+      isApprovalShortcutAmbiguous([
+        card('a1', { visible: true }),
+        card('a2', { visible: false }),
+      ]),
+    ).toBe(false);
+    expect(isApprovalShortcutAmbiguous([])).toBe(false);
   });
 });
 
