@@ -1,3 +1,10 @@
+param(
+  [string]$RuntimeDir,
+  [switch]$ListWorkspaces,
+  [string]$StopWorkspace,
+  [switch]$StopAllKap
+)
+
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 Add-Type -AssemblyName System.Security
@@ -294,6 +301,21 @@ function Get-ListenerPids {
   )
 }
 
+function Get-PortOccupantDescription {
+  param([int]$Port)
+  $occupants = @(Get-ListenerPids $Port)
+  if ($occupants.Count -eq 0) { return 'no listener' }
+  $parts = foreach ($owner in $occupants) {
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId=$owner" -ErrorAction SilentlyContinue
+    $name = 'unknown process'
+    if ($null -ne $process -and -not [string]::IsNullOrWhiteSpace([string]$process.Name)) {
+      $name = [string]$process.Name
+    }
+    "pid $owner ($name)"
+  }
+  return $parts -join ', '
+}
+
 function New-NamedMutex {
   param([string]$Name)
   return [Threading.Mutex]::new($false, "Local\$Name")
@@ -420,6 +442,111 @@ function Select-WorkspacePort {
   Stop-KikiMcp 'the dedicated Kiki workspace port range is exhausted'
 }
 
+function New-BindingDriftItem {
+  param(
+    [string]$Field,
+    [string]$Expected,
+    [AllowEmptyString()][string]$Actual
+  )
+  return [pscustomobject]@{ field = $Field; expected = $Expected; actual = $Actual }
+}
+
+function Format-BindingDrift {
+  param([object[]]$Drift)
+  $parts = foreach ($item in @($Drift)) {
+    $actual = [string]$item.actual
+    if ([string]::IsNullOrWhiteSpace($actual)) {
+      $actual = '<empty>'
+    } else {
+      $actual = "'$actual'"
+    }
+    "$($item.field): expected $($item.expected) (actual $actual)"
+  }
+  return $parts -join '; '
+}
+
+function Get-WorkspaceBindingDrift {
+  param(
+    [object]$Binding,
+    [string]$ExpectedHome,
+    [string]$ExpectedSecret,
+    [string]$Workspace,
+    [string]$WorkspaceKey,
+    [object]$Install
+  )
+  $drift = @()
+  if ([int]$Binding.schemaVersion -ne 1) {
+    $drift += New-BindingDriftItem 'schemaVersion' "'1'" ([string]$Binding.schemaVersion)
+  }
+  if ([string]$Binding.workspaceKey -cne $WorkspaceKey) {
+    $drift += New-BindingDriftItem 'workspaceKey' "'$WorkspaceKey'" ([string]$Binding.workspaceKey)
+  }
+  if (-not (Test-SamePath ([string]$Binding.workspacePath) $Workspace)) {
+    $drift += New-BindingDriftItem 'workspacePath' "'$Workspace'" ([string]$Binding.workspacePath)
+  }
+  if ([string]$Binding.sessionId -notmatch '^session_[A-Za-z0-9_-]+$') {
+    $drift += New-BindingDriftItem 'sessionId' `
+      "matching '^session_[A-Za-z0-9_-]+$'" ([string]$Binding.sessionId)
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$Binding.principalId)) {
+    $drift += New-BindingDriftItem 'principalId' 'non-empty' ([string]$Binding.principalId)
+  }
+  $port = 0
+  if (-not [int]::TryParse([string]$Binding.port, [ref]$port)) { $port = -1 }
+  if ($port -lt [int]$Install.portRangeStart -or $port -gt [int]$Install.portRangeEnd) {
+    $drift += New-BindingDriftItem 'port' `
+      "$([int]$Install.portRangeStart)-$([int]$Install.portRangeEnd)" ([string]$Binding.port)
+  }
+  if ([string]$Binding.endpoint -cne "http://127.0.0.1:$port") {
+    $drift += New-BindingDriftItem 'endpoint' `
+      "'http://127.0.0.1:$port'" ([string]$Binding.endpoint)
+  }
+  if (-not (Test-SamePath ([IO.Path]::GetFullPath([string]$Binding.homeDir)) $ExpectedHome)) {
+    $drift += New-BindingDriftItem 'homeDir' "'$ExpectedHome'" ([string]$Binding.homeDir)
+  }
+  if (
+    -not (Test-SamePath ([IO.Path]::GetFullPath([string]$Binding.delegationSecretPath)) $ExpectedSecret)
+  ) {
+    $drift += New-BindingDriftItem 'delegationSecretPath' `
+      "'$ExpectedSecret'" ([string]$Binding.delegationSecretPath)
+  }
+  if (-not (Test-SamePath ([string]$Binding.configPath) ([string]$Install.configPath))) {
+    $drift += New-BindingDriftItem 'configPath' `
+      "'$([string]$Install.configPath)'" ([string]$Binding.configPath)
+  }
+  if (-not (Test-SamePath ([string]$Binding.agentProfileHomeDir) ([string]$Install.agentProfileHomeDir))) {
+    $drift += New-BindingDriftItem 'agentProfileHomeDir' `
+      "'$([string]$Install.agentProfileHomeDir)'" ([string]$Binding.agentProfileHomeDir)
+  }
+  if ($Binding.configReadOnly -ne $true) {
+    $drift += New-BindingDriftItem 'configReadOnly' "'True'" ([string]$Binding.configReadOnly)
+  }
+  if ([string]$Binding.model -cne [string]$Install.defaultModel) {
+    $drift += New-BindingDriftItem 'model' `
+      "'$([string]$Install.defaultModel)'" ([string]$Binding.model)
+  }
+  if ([string]$Binding.thinkingEffort -cne [string]$Install.defaultThinkingEffort) {
+    $drift += New-BindingDriftItem 'thinkingEffort' `
+      "'$([string]$Install.defaultThinkingEffort)'" ([string]$Binding.thinkingEffort)
+  }
+  if (
+    -not [string]::IsNullOrWhiteSpace([string]$Binding.delegationId) -and
+    [string]$Binding.delegationId -notmatch '^delegation_'
+  ) {
+    $drift += New-BindingDriftItem 'delegationId' `
+      "unset or matching '^delegation_'" ([string]$Binding.delegationId)
+  }
+  return $drift
+}
+
+function Assert-WorkspaceBindingSignature {
+  param([object]$Binding, [string]$Secret)
+  $expectedMac = Get-HmacBase64 $Secret (Get-BindingPayload $Binding)
+  if (-not (Test-FixedTimeEqual ([string]$Binding.bindingMac) $expectedMac)) {
+    Stop-KikiMcp 'workspace binding signature does not match'
+  }
+}
+
 function Assert-WorkspaceBinding {
   param(
     [object]$Binding,
@@ -437,35 +564,20 @@ function Assert-WorkspaceBinding {
   ) 'workspace binding'
   $expectedHome = [IO.Path]::GetFullPath((Join-Path $BindingDir 'kap-home'))
   $expectedSecret = [IO.Path]::GetFullPath((Join-Path $BindingDir 'delegation-token.dpapi'))
-  $configuredHome = [IO.Path]::GetFullPath([string]$Binding.homeDir)
-  $configuredSecret = [IO.Path]::GetFullPath([string]$Binding.delegationSecretPath)
-  if (
-    [int]$Binding.schemaVersion -ne 1 -or
-    [string]$Binding.workspaceKey -cne $WorkspaceKey -or
-    -not (Test-SamePath ([string]$Binding.workspacePath) $Workspace) -or
-    [string]$Binding.sessionId -notmatch '^session_[A-Za-z0-9_-]+$' -or
-    [string]::IsNullOrWhiteSpace([string]$Binding.principalId) -or
-    [int]$Binding.port -lt [int]$Install.portRangeStart -or
-    [int]$Binding.port -gt [int]$Install.portRangeEnd -or
-    [string]$Binding.endpoint -cne "http://127.0.0.1:$([int]$Binding.port)" -or
-    -not (Test-SamePath $configuredHome $expectedHome) -or
-    -not (Test-SamePath $configuredSecret $expectedSecret) -or
-    -not (Test-SamePath ([string]$Binding.configPath) ([string]$Install.configPath)) -or
-    -not (Test-SamePath ([string]$Binding.agentProfileHomeDir) ([string]$Install.agentProfileHomeDir)) -or
-    $Binding.configReadOnly -ne $true -or
-    [string]$Binding.model -cne [string]$Install.defaultModel -or
-    [string]$Binding.thinkingEffort -cne [string]$Install.defaultThinkingEffort -or
-    (
-      -not [string]::IsNullOrWhiteSpace([string]$Binding.delegationId) -and
-      [string]$Binding.delegationId -notmatch '^delegation_'
+  $drift = @(Get-WorkspaceBindingDrift `
+    $Binding $expectedHome $expectedSecret $Workspace $WorkspaceKey $Install)
+  if ($drift.Count -gt 0) {
+    Stop-KikiMcp (
+      'workspace binding violates the isolated authority contract; drifted fields: ' +
+      "$(Format-BindingDrift $drift). " +
+      'The runtime installation metadata is generated by the external install orchestration; ' +
+      're-run that install step so the recorded installation matches this binding again, or ' +
+      "stop the workspace with -StopWorkspace $WorkspaceKey and remove '$BindingDir' to " +
+      're-provision it (this abandons the recorded delegated Session; bindings are never ' +
+      're-signed automatically).'
     )
-  ) {
-    Stop-KikiMcp 'workspace binding violates the isolated authority contract'
   }
-  $expectedMac = Get-HmacBase64 $Secret (Get-BindingPayload $Binding)
-  if (-not (Test-FixedTimeEqual ([string]$Binding.bindingMac) $expectedMac)) {
-    Stop-KikiMcp 'workspace binding signature does not match'
-  }
+  Assert-WorkspaceBindingSignature $Binding $Secret
   if (
     -not (Test-Path -LiteralPath $expectedHome -PathType Container) -or
     -not (Test-Path -LiteralPath $expectedSecret -PathType Leaf)
@@ -687,7 +799,13 @@ function Start-WorkspaceKap {
   } while ($listenerPids.Count -eq 0 -and [DateTime]::UtcNow -lt $deadline)
   if ($listenerPids.Count -ne 1 -or [int]$listenerPids[0] -ne [int]$started.Id) {
     if (-not $started.HasExited) { Stop-Process -Id $started.Id -Force -ErrorAction SilentlyContinue }
-    Stop-KikiMcp 'the new workspace KAP did not exclusively acquire its recorded port'
+    Stop-KikiMcp (
+      'the new workspace KAP did not exclusively acquire its recorded port ' +
+      "$([int]$Binding.port) (port listeners now: $(Get-PortOccupantDescription ([int]$Binding.port))); " +
+      'another process owns the port - stop that process yourself (or a recorded Kiki KAP ' +
+      "with -StopWorkspace $($Binding.workspaceKey)) and retry the launcher; the recorded port " +
+      'cannot be reassigned without re-running the external install orchestration'
+    )
   }
   $identity = Get-ProcessIdentity $started.Id
   if ($null -eq $identity -or -not (Test-SamePath $identity.executablePath ([string]$Install.nodePath))) {
@@ -727,12 +845,26 @@ function Resolve-WorkspaceKap {
   $statePath = Join-Path $BindingDir 'runtime-state.json'
   $listenerPids = @(Get-ListenerPids ([int]$Binding.port))
   if ($listenerPids.Count -gt 1) {
-    Stop-KikiMcp 'multiple processes own the workspace KAP port'
+    Stop-KikiMcp (
+      "multiple processes own the workspace KAP port $([int]$Binding.port) " +
+      "($(Get-PortOccupantDescription ([int]$Binding.port))); stop the processes that should not " +
+      'own the port and retry the launcher'
+    )
   }
   $started = $null
   if ($listenerPids.Count -eq 1) {
     if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) {
-      Stop-KikiMcp 'the workspace KAP port is occupied by an unrecorded process'
+      $stopHint = ''
+      if (-not [string]::IsNullOrWhiteSpace([string]$Binding.workspaceKey)) {
+        $stopHint = " or stop the recorded Kiki KAP with -StopWorkspace $($Binding.workspaceKey)"
+      }
+      Stop-KikiMcp (
+        "the workspace KAP port $([int]$Binding.port) is occupied by an unrecorded process " +
+        "($(Get-PortOccupantDescription ([int]$Binding.port))); this launcher never stops unrecorded " +
+        "processes - free the port yourself$stopHint, then retry the launcher. The recorded port is " +
+        'pinned by the signed workspace binding and can only change by re-running the external ' +
+        'install orchestration'
+      )
     }
     $state = Read-JsonFile $statePath 'workspace runtime state'
     Assert-RuntimeState $state $Binding $Install $Secret
@@ -793,6 +925,278 @@ function Resolve-WorkspaceKap {
     Assert-DedicatedInstance $state $started.identity $Binding
   }
   return [pscustomobject]@{ state = $state; started = $started }
+}
+
+function Read-KapServerToken {
+  param([object]$Binding)
+  $tokenPath = Join-Path ([string]$Binding.homeDir) 'server.token'
+  if (-not (Test-Path -LiteralPath $tokenPath -PathType Leaf)) { return '' }
+  return ((Get-Content -LiteralPath $tokenPath -Raw).Trim())
+}
+
+function Invoke-KapShutdownEndpoint {
+  param([string]$Endpoint, [string]$Token)
+  if ([string]::IsNullOrWhiteSpace($Token)) { return $false }
+  try {
+    $response = Invoke-RestMethod -Uri "$Endpoint/api/v1/shutdown" -Method Post `
+      -Headers @{ Authorization = "Bearer $Token" } -TimeoutSec 5
+    return ($null -ne $response -and [int]$response.code -eq 0)
+  } catch {
+    return $false
+  }
+}
+
+function Wait-WorkspacePortReleased {
+  param([int]$Port, [int]$TimeoutSeconds)
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  while ($true) {
+    Start-Sleep -Milliseconds 200
+    if (@(Get-ListenerPids $Port).Count -eq 0) { return $true }
+    if ([DateTime]::UtcNow -ge $deadline) { return $false }
+  }
+}
+
+function Wait-ProcessIdentityExited {
+  param([int]$PidValue, [long]$CreationTicks, [int]$TimeoutSeconds)
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  while ($true) {
+    Start-Sleep -Milliseconds 200
+    $identity = Get-ProcessIdentity $PidValue
+    if ($null -eq $identity -or [long]$identity.creationTicks -ne $CreationTicks) { return $true }
+    if ([DateTime]::UtcNow -ge $deadline) { return $false }
+  }
+}
+
+function Stop-RecordedOwnerProcess {
+  param([object]$State)
+  $identity = Get-ProcessIdentity ([int]$State.pid)
+  if ($null -ne $identity -and [long]$identity.creationTicks -eq [long]$State.creationTicks) {
+    Stop-Process -Id ([int]$State.pid) -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Remove-WorkspaceStateIfStillRecorded {
+  param([string]$StatePath, [object]$State)
+  if (-not (Test-Path -LiteralPath $StatePath -PathType Leaf)) { return }
+  try {
+    $current = Get-Content -LiteralPath $StatePath -Raw | ConvertFrom-Json
+    if ([int]$current.pid -eq [int]$State.pid) {
+      Remove-Item -LiteralPath $StatePath -Force -ErrorAction SilentlyContinue
+    }
+  } catch {
+    Stop-KikiMcp 'the workspace runtime state is unreadable during stop cleanup'
+  }
+}
+
+function Assert-RuntimeStateSignature {
+  param([object]$State, [object]$Binding, [string]$Secret)
+  Assert-PropertySet $State @(
+    'schemaVersion', 'pid', 'executablePath', 'creationTicks', 'endpoint', 'port',
+    'homeDir', 'sessionId', 'workspacePath', 'configPath', 'agentProfileHomeDir',
+    'configReadOnly', 'serverId', 'instanceId', 'startedAt', 'stateMac'
+  ) 'workspace runtime state'
+  if (
+    [int]$State.schemaVersion -ne 1 -or
+    [int]$State.pid -le 0 -or
+    [long]$State.creationTicks -le 0
+  ) {
+    Stop-KikiMcp 'workspace runtime state violates the recorded owner contract'
+  }
+  $expectedMac = Get-HmacBase64 $Secret (Get-StatePayload $State)
+  if (-not (Test-FixedTimeEqual ([string]$State.stateMac) $expectedMac)) {
+    Stop-KikiMcp 'workspace runtime state signature does not match'
+  }
+  if (
+    [int]$State.port -ne [int]$Binding.port -or
+    -not (Test-SamePath ([string]$State.homeDir) ([string]$Binding.homeDir)) -or
+    [string]$State.sessionId -cne [string]$Binding.sessionId
+  ) {
+    Stop-KikiMcp 'workspace runtime state does not match the workspace binding'
+  }
+}
+
+function Stop-VerifiedWorkspaceKap {
+  param([object]$Binding, [object]$State, [string]$StatePath)
+  $port = [int]$Binding.port
+  if (@(Get-ListenerPids $port).Count -eq 0) {
+    if (-not (Wait-ProcessIdentityExited ([int]$State.pid) ([long]$State.creationTicks) 5)) {
+      return 'failed'
+    }
+    Remove-WorkspaceStateIfStillRecorded $StatePath $State
+    return 'already-stopped'
+  }
+  $graceful = Invoke-KapShutdownEndpoint ([string]$Binding.endpoint) (Read-KapServerToken $Binding)
+  $method = 'graceful'
+  if (-not (Wait-WorkspacePortReleased $port 10)) {
+    Stop-RecordedOwnerProcess $State
+    $method = 'force'
+    if (-not (Wait-WorkspacePortReleased $port 10)) { return 'failed' }
+  }
+  if (-not (Wait-ProcessIdentityExited ([int]$State.pid) ([long]$State.creationTicks) 5)) {
+    return 'failed'
+  }
+  Remove-WorkspaceStateIfStillRecorded $StatePath $State
+  if ($graceful -and $method -eq 'graceful') { return 'stopped-graceful' }
+  return 'stopped-force'
+}
+
+function Invoke-WorkspaceKapRecycle {
+  param([object]$Binding, [object]$State, [string]$StatePath)
+  $key = [string]$Binding.workspaceKey
+  $mutex = $null
+  try {
+    $mutex = New-NamedMutex "KikiMcpWorkspace-$key"
+    Enter-NamedMutex $mutex 10 'the workspace KAP recycle lock'
+  } catch {
+    if ($null -ne $mutex) { $mutex.Dispose() }
+    [Console]::Error.WriteLine(
+      'kiki-mcp: skipped workspace KAP recycle because another launcher holds the workspace lock'
+    )
+    return
+  }
+  try {
+    $status = Stop-VerifiedWorkspaceKap $Binding $State $StatePath
+    if ($status -eq 'failed') {
+      [Console]::Error.WriteLine(
+        "kiki-mcp: the workspace KAP could not be reclaimed; stop it with -StopWorkspace $key"
+      )
+    }
+  } catch {
+    [Console]::Error.WriteLine("kiki-mcp: workspace KAP recycle failed: $($_.Exception.Message)")
+  } finally {
+    Exit-NamedMutex $mutex
+  }
+}
+
+function Stop-WorkspaceKapByRecord {
+  param([string]$WorkspaceKey, [object]$Install)
+  $result = [pscustomobject][ordered]@{
+    key = $WorkspaceKey
+    workspacePath = $null
+    port = $null
+    status = 'error'
+    detail = ''
+  }
+  try {
+    if ($WorkspaceKey -notmatch '^[0-9a-f]{64}$') {
+      $result.status = 'invalid-key'
+      $result.detail = 'the workspace key must be a 64-character lowercase hex string'
+      return $result
+    }
+    $bindingDir = Join-Path ([string]$Install.workspacesDir) $WorkspaceKey
+    $bindingPath = Join-Path $bindingDir 'binding.json'
+    if (-not (Test-Path -LiteralPath $bindingPath -PathType Leaf)) {
+      $result.status = 'missing'
+      $result.detail = "no workspace binding exists under '$bindingDir'"
+      return $result
+    }
+    $binding = Read-JsonFile $bindingPath 'workspace binding'
+    $result.workspacePath = [string]$binding.workspacePath
+    $result.port = [int]$binding.port
+    $secret = Read-DpapiSecret (Join-Path $bindingDir 'delegation-token.dpapi') `
+      'workspace delegation credential'
+    Assert-WorkspaceBindingSignature $binding $secret
+    $statePath = Join-Path $bindingDir 'runtime-state.json'
+    $listenerPids = @(Get-ListenerPids ([int]$binding.port))
+    if ($listenerPids.Count -gt 1) {
+      $result.status = 'refused-multiple-listeners'
+      $result.detail = "port $([int]$binding.port) is owned by " +
+        "$(Get-PortOccupantDescription ([int]$binding.port))"
+      return $result
+    }
+    if ($listenerPids.Count -eq 1) {
+      if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) {
+        $result.status = 'refused-unrecorded-listener'
+        $result.detail = "port $([int]$binding.port) is occupied by " +
+          "$(Get-PortOccupantDescription ([int]$binding.port)), which has no signed runtime state; " +
+          'unrecorded processes are never stopped'
+        return $result
+      }
+      $state = Read-JsonFile $statePath 'workspace runtime state'
+      Assert-RuntimeStateSignature $state $binding $secret
+      $identity = Get-ProcessIdentity ([int]$listenerPids[0])
+      if (
+        $null -eq $identity -or
+        [int]$state.pid -ne [int]$identity.pid -or
+        [long]$state.creationTicks -ne [long]$identity.creationTicks
+      ) {
+        $result.status = 'refused-listener-mismatch'
+        $result.detail = 'the port listener does not match the signed runtime state owner'
+        return $result
+      }
+      $result.status = Stop-VerifiedWorkspaceKap $binding $state $statePath
+      return $result
+    }
+    if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+      $state = Read-JsonFile $statePath 'workspace runtime state'
+      Assert-RuntimeStateSignature $state $binding $secret
+      $identity = Get-ProcessIdentity ([int]$state.pid)
+      if ($null -ne $identity -and [long]$state.creationTicks -eq [long]$identity.creationTicks) {
+        Stop-RecordedOwnerProcess $state
+        if (-not (Wait-ProcessIdentityExited ([int]$state.pid) ([long]$state.creationTicks) 10)) {
+          $result.status = 'failed'
+          $result.detail = "the recorded owner pid $([int]$state.pid) did not exit"
+          return $result
+        }
+        Remove-WorkspaceStateIfStillRecorded $statePath $state
+        $result.status = 'stopped-force'
+        return $result
+      }
+      Remove-WorkspaceStateIfStillRecorded $statePath $state
+    }
+    $result.status = 'already-stopped'
+    return $result
+  } catch {
+    $result.status = 'refused-invalid-records'
+    $result.detail = [string]$_.Exception.Message
+    return $result
+  }
+}
+
+function Get-KikiWorkspaceListing {
+  param([object]$Install)
+  $records = @()
+  foreach ($dir in @(
+    Get-ChildItem -LiteralPath ([string]$Install.workspacesDir) -Directory -ErrorAction SilentlyContinue
+  )) {
+    $record = [pscustomobject][ordered]@{
+      key = $dir.Name
+      workspacePath = $null
+      port = $null
+      endpoint = $null
+      recordedPid = $null
+      processAlive = $false
+      listening = $false
+      status = 'ok'
+    }
+    try {
+      $bindingPath = Join-Path $dir.FullName 'binding.json'
+      if (-not (Test-Path -LiteralPath $bindingPath -PathType Leaf)) {
+        $record.status = 'no-binding'
+        $records += $record
+        continue
+      }
+      $binding = Read-JsonFile $bindingPath 'workspace binding'
+      $record.workspacePath = [string]$binding.workspacePath
+      $record.port = [int]$binding.port
+      $record.endpoint = [string]$binding.endpoint
+      $statePath = Join-Path $dir.FullName 'runtime-state.json'
+      if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+        $state = Read-JsonFile $statePath 'workspace runtime state'
+        $record.recordedPid = [int]$state.pid
+        $identity = Get-ProcessIdentity ([int]$state.pid)
+        $record.processAlive = (
+          $null -ne $identity -and
+          [long]$identity.creationTicks -eq [long]$state.creationTicks
+        )
+      }
+      $record.listening = (@(Get-ListenerPids ([int]$binding.port)).Count -gt 0)
+    } catch {
+      $record.status = 'invalid-records'
+    }
+    $records += $record
+  }
+  return $records
 }
 
 function Assert-WorkspaceAuthority {
@@ -879,7 +1283,13 @@ function Initialize-KikiWorkspaceConnection {
     $bindingRecord = Get-OrCreateWorkspaceBinding $workspace $workspaceKey $install
     $runtime = Resolve-WorkspaceKap `
       $bindingRecord.binding $install $bindingRecord.secret $bindingRecord.bindingDir
-    return Assert-WorkspaceAuthority $bindingRecord $install $workspace $workspaceKey $runtime
+    $connection = Assert-WorkspaceAuthority $bindingRecord $install $workspace $workspaceKey $runtime
+    return [pscustomobject]@{
+      install = $install
+      bindingRecord = $bindingRecord
+      runtime = $runtime
+      connection = $connection
+    }
   } finally {
     Exit-NamedMutex $workspaceMutex
   }
@@ -887,9 +1297,9 @@ function Initialize-KikiWorkspaceConnection {
 
 function Invoke-KikiMcpLauncher {
   param([string]$RuntimeDir)
-  $runtimeDir = $RuntimeDir
-  $connection = Initialize-KikiWorkspaceConnection $runtimeDir
-  $install = (Read-InstallationMetadata $runtimeDir).meta
+  $initialized = Initialize-KikiWorkspaceConnection $RuntimeDir
+  $install = $initialized.install
+  $connection = $initialized.connection
   [Environment]::SetEnvironmentVariable('KIKI_KAP_ENDPOINT', [string]$connection.endpoint, 'Process')
   [Environment]::SetEnvironmentVariable('KIKI_KAP_TOKEN', [string]$connection.kapToken, 'Process')
   [Environment]::SetEnvironmentVariable(
@@ -903,6 +1313,96 @@ function Invoke-KikiMcpLauncher {
     [string]$connection.workspacePath,
     'Process'
   )
-  & ([string]$install.nodePath) ([string]$install.mcpPath)
-  return $LASTEXITCODE
+  $exitCode = 1
+  try {
+    & ([string]$install.nodePath) ([string]$install.mcpPath)
+    $exitCode = $LASTEXITCODE
+  } finally {
+    if ($null -ne $initialized.runtime -and $null -ne $initialized.runtime.started) {
+      Invoke-WorkspaceKapRecycle `
+        $initialized.bindingRecord.binding `
+        $initialized.runtime.state `
+        (Join-Path $initialized.bindingRecord.bindingDir 'runtime-state.json')
+    }
+  }
+  return $exitCode
+}
+
+function Get-KikiMcpUsageText {
+  return @(
+    'usage: kiki-mcp.ps1 -RuntimeDir <dir>                      run the Codex MCP launcher (default MCP stdio mode)',
+    '       kiki-mcp.ps1 -RuntimeDir <dir> -ListWorkspaces     list recorded workspaces as JSON (key, cwd, port, pid, alive)',
+    '       kiki-mcp.ps1 -RuntimeDir <dir> -StopWorkspace <key>  stop one workspace KAP (graceful, then recorded-PID kill)',
+    '       kiki-mcp.ps1 -RuntimeDir <dir> -StopAllKap          stop every workspace KAP recorded under the runtime'
+  ) -join [Environment]::NewLine
+}
+
+function Invoke-KikiMcpCli {
+  param(
+    [string]$CliRuntimeDir,
+    [switch]$CliListWorkspaces,
+    [string]$CliStopWorkspace,
+    [switch]$CliStopAllKap
+  )
+  $modeCount = @(
+    $CliListWorkspaces.IsPresent,
+    -not [string]::IsNullOrWhiteSpace($CliStopWorkspace),
+    $CliStopAllKap.IsPresent
+  ) | Where-Object { $_ }
+  if (@($modeCount).Count -gt 1) {
+    [Console]::Error.WriteLine("kiki-mcp: choose one management mode.$([Environment]::NewLine)$(Get-KikiMcpUsageText)")
+    return 2
+  }
+  if ([string]::IsNullOrWhiteSpace($CliRuntimeDir)) {
+    [Console]::Error.WriteLine("kiki-mcp: -RuntimeDir is required.$([Environment]::NewLine)$(Get-KikiMcpUsageText)")
+    return 2
+  }
+  try {
+    if ($CliListWorkspaces) {
+      $install = (Read-InstallationMetadata $CliRuntimeDir).meta
+      $listing = @(Get-KikiWorkspaceListing $install)
+      [Console]::Out.WriteLine((ConvertTo-Json -InputObject $listing -Depth 6))
+      return 0
+    }
+    if ($CliStopAllKap) {
+      $install = (Read-InstallationMetadata $CliRuntimeDir).meta
+      $results = @(
+        foreach ($dir in @(
+          Get-ChildItem -LiteralPath ([string]$install.workspacesDir) -Directory -ErrorAction SilentlyContinue
+        )) {
+          if (-not (Test-Path -LiteralPath (Join-Path $dir.FullName 'binding.json') -PathType Leaf)) {
+            continue
+          }
+          Stop-WorkspaceKapByRecord $dir.Name $install
+        }
+      )
+      [Console]::Out.WriteLine((ConvertTo-Json -InputObject @($results) -Depth 6))
+      $failed = @($results | Where-Object {
+        $_.status -notin @('stopped-graceful', 'stopped-force', 'already-stopped', 'missing')
+      })
+      if ($failed.Count -gt 0) { return 1 }
+      return 0
+    }
+    if (-not [string]::IsNullOrWhiteSpace($CliStopWorkspace)) {
+      $install = (Read-InstallationMetadata $CliRuntimeDir).meta
+      $result = Stop-WorkspaceKapByRecord $CliStopWorkspace $install
+      [Console]::Out.WriteLine((ConvertTo-Json -InputObject $result -Depth 6))
+      if ($result.status -in @('stopped-graceful', 'stopped-force', 'already-stopped')) { return 0 }
+      return 1
+    }
+    return Invoke-KikiMcpLauncher $CliRuntimeDir
+  } catch {
+    [Console]::Error.WriteLine("kiki-mcp: $($_.Exception.Message)")
+    return 1
+  }
+}
+
+# Main entry: skipped when the script is dot-sourced (`. kiki-mcp.ps1`), so the
+# function library can be imported by tooling and tests without side effects.
+if ($MyInvocation.InvocationName -ne '.') {
+  exit (Invoke-KikiMcpCli `
+    -CliRuntimeDir $RuntimeDir `
+    -CliListWorkspaces:$ListWorkspaces.IsPresent `
+    -CliStopWorkspace $StopWorkspace `
+    -CliStopAllKap:$StopAllKap.IsPresent)
 }
