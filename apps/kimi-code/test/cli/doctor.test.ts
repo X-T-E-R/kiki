@@ -331,6 +331,7 @@ subagents:
     expect(stderr.join('')).toBe('');
     expect(stdout.join('')).toContain(`OK agents       ${agentPath}`);
     expect(stdout.join('')).not.toContain('Unknown frontmatter');
+    expect(stdout.join('')).not.toContain('legacy agent engine');
   });
 
   it('accepts a mixed wildcard subagent list as unrestricted', async () => {
@@ -463,6 +464,83 @@ model_preference: secondary
     expect(out).toContain(`WARN agents       ${agentPath}`);
     expect(out).toContain(
       'model_preference is ignored while the secondary-model experimental feature is disabled.',
+    );
+  });
+
+  it('degrades to a warning when the agent profile modules cannot load', async () => {
+    await writeValidConfig();
+    const { deps, stdout, stderr } = makeDeps();
+
+    const code = await handleDoctor(
+      {
+        ...deps,
+        loadAgentProfileModules: () =>
+          Promise.reject(
+            new Error(
+              "Cannot find module '@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/agentRoots'",
+            ),
+          ),
+      },
+      {},
+    );
+
+    expect(code).toBe(0);
+    expect(stderr.join('')).toBe('');
+    const out = stdout.join('');
+    expect(out).toContain('OK config.toml');
+    expect(out).toContain('WARN agents');
+    expect(out).toContain('agent profile check unavailable');
+    expect(out).toContain('All checked config files are valid, 1 warning.');
+  });
+
+  it('surfaces parser conflict warnings and counts them in the summary', async () => {
+    await writeValidConfig();
+    const agentPath = await writeAgentFile(
+      'reviewer.md',
+      `
+name: reviewer
+description: Reviews changes
+service_tier: priority
+request_params:
+  service_tier: flex
+`,
+    );
+    const { deps, stdout, stderr } = makeDeps();
+
+    const code = await handleDoctor(deps, {});
+
+    expect(code).toBe(0);
+    expect(stderr.join('')).toBe('');
+    const out = stdout.join('');
+    expect(out).toContain(`WARN agents       ${agentPath}`);
+    expect(out).toContain(
+      'overrides request_params.service_tier; ignoring the nested value',
+    );
+    expect(out).toContain('All checked config files are valid, 1 warning.');
+  });
+
+  it('warns about v2-only frontmatter fields under the legacy engine', async () => {
+    vi.stubEnv('KIMI_CODE_LEGACY_FLAG', '1');
+    const agentPath = await writeAgentFile(
+      'reviewer.md',
+      `
+name: reviewer
+description: Reviews changes
+service_tier: priority
+request_params:
+  seed: 42
+`,
+    );
+    const { deps, stdout, stderr } = makeDeps();
+
+    const code = await handleDoctor(deps, {});
+
+    expect(code).toBe(0);
+    expect(stderr.join('')).toBe('');
+    const out = stdout.join('');
+    expect(out).toContain(`WARN agents       ${agentPath}`);
+    expect(out).toContain(
+      'service_tier, request_params are ignored by the legacy agent engine; they only take effect under agent-core-v2.',
     );
   });
 });

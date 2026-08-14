@@ -212,10 +212,10 @@ kimi doctor
 Agent profile 诊断分为三个级别：
 
 - **ERROR**：文件解析失败、解析后的 `name` 非法、`model_alias` 不存在于 `[models]`，或 `subagents` 白名单引用了不存在的角色。
-- **WARN**：Frontmatter 包含未知键、文件与内置 profile 同名但没有 `override: true`，或次主力模型实验功能关闭时仍存在 `model_preference`。
+- **WARN**：Frontmatter 包含未知键、文件与内置 profile 同名但没有 `override: true`、次主力模型实验功能关闭时仍存在 `model_preference`、`service_tier` 字段与 `request_params.service_tier` 冲突（嵌套值被忽略），或选择旧版引擎（`KIMI_CODE_LEGACY_FLAG=1`）时存在只有 v2 引擎支持的 `service_tier` / `request_params` 字段。
 - **SKIP**：没有发现任何 Agent 文件，不视为失败。
 
-显式传入配置路径时，文件必须存在。所有检查结果均为有效、警告或跳过时，退出码为 `0`；指定配置文件缺失或无效，或任何 Agent profile 产生 ERROR 时，退出码为 `1`。
+显式传入配置路径时，文件必须存在。所有检查结果均为有效、警告或跳过时，退出码为 `0`；指定配置文件缺失或无效，或任何 Agent profile 产生 ERROR 时，退出码为 `1`。其余检查全部有效但存在警告时，总结行会给出警告计数（例如“All checked config files are valid, 1 warning.”）。
 
 ```sh
 # 检查默认配置文件
