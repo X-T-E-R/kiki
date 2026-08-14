@@ -9,6 +9,11 @@
 export interface ServerHelloPayload {
   ws_connection_id: string;
   protocol_version: number;
+  /**
+   * Application-level heartbeat interval the server will ping at. Absent on
+   * servers without a heartbeat; clients must treat it as advisory.
+   */
+  heartbeat_ms?: number;
   max_event_buffer_size: number;
   capabilities: {
     event_batching: boolean;
@@ -24,6 +29,21 @@ export interface ServerHelloFrame {
 
 export function buildServerHello(payload: ServerHelloPayload): ServerHelloFrame {
   return { type: 'server_hello', timestamp: new Date().toISOString(), payload };
+}
+
+export interface PingFrame {
+  type: 'ping';
+  timestamp: string;
+  payload: { nonce: string };
+}
+
+/**
+ * Server-initiated heartbeat (`ws-control` `pingMessageSchema`). Clients answer
+ * with a `pong` carrying the same nonce; inbound silence beyond
+ * `max(45s, 3×heartbeat_ms)` means the transport is half-open.
+ */
+export function buildPing(nonce: string): PingFrame {
+  return { type: 'ping', timestamp: new Date().toISOString(), payload: { nonce } };
 }
 
 export interface AckFrame<P = unknown> {
