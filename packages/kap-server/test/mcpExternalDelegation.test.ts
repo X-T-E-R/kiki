@@ -141,6 +141,34 @@ describe('Kiki external delegation MCP server', () => {
     expect(JSON.stringify(called)).not.toContain('DO_NOT_EXPOSE');
   });
 
+  it('forwards the caller max_bytes as the backend result page limit', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(
+        JSON.stringify({ code: 0, msg: 'ok', data: { text: 'hello', dispatch: { dispatchId: 'dispatch_1' } } }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    const server = createKikiMcpServer(
+      {
+        endpoint: 'http://127.0.0.1:58627',
+        token: 'TOKEN',
+        delegationToken: 'DELEGATION_SECRET',
+        sessionId: 'session-operator',
+        workspacePath: '/example/workspace',
+      },
+      { fetch: fetchMock },
+    );
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    close.push(() => client.close(), () => server.close());
+
+    await client.callTool({ name: 'kiki_result', arguments: { dispatch_id: 'dispatch_1', max_bytes: 2048 } });
+    expect(bodies[0]).toMatchObject({ dispatch_id: 'dispatch_1', limit: 2048 });
+  });
+
   it('forwards exact new-child bindings and keeps continuation binding-free', async () => {
     const requests: Array<{ action: string; body: Record<string, unknown> }> = [];
     const fetchMock = vi.fn<typeof fetch>(async (url, init) => {

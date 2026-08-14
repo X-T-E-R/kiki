@@ -123,13 +123,19 @@ export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServe
     async (input) =>
       toolResult(() => {
         const parsed = resultInput.parse(input);
+        // Forward the caller's byte budget (schema-clamped to [4, 65_536]) as
+        // the backend page limit instead of a fixed 16_384. The backend limit
+        // is in characters, which never under-fills the byte budget (one UTF-8
+        // character is at least one byte); the local byte-bound trim below
+        // still enforces the exact boundary.
+        const maxBytes = parsed.max_bytes ?? 65_536;
         return client
           .call<Record<string, unknown> & { text?: unknown; nextCursor?: unknown }>('result', {
             dispatch_id: parsed.dispatch_id,
             cursor: parsed.cursor,
-            limit: 16_384,
+            limit: maxBytes,
           })
-          .then((page) => boundUtf8Page(page, parsed.cursor ?? 0, parsed.max_bytes ?? 65_536));
+          .then((page) => boundUtf8Page(page, parsed.cursor ?? 0, maxBytes));
       }),
   );
   server.registerTool(
