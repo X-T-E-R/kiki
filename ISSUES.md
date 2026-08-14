@@ -7,6 +7,10 @@
 状态图例：`fixing(X)` = 修复批次 X 进行中；`fixed(X)` = 已随批次 X 合入；`backlog` = 已登记未排期；
 `decided` = 已裁决（不改 / 待产品决策 / 上游处理）。
 
+> **合入状态（2026-08-14）**：Batch A/B/C/D1/D2/E/F 七个分支已全部合入 `kiki`，集成校验通过
+> （GUI 30 文件/383 测试全绿 + typecheck；agent-core / agent-core-v2 / kap-server typecheck 全绿）。
+> 各表项的 `fixed` 即代表已随对应批次合入。批次实施过程中新增的跟进项见文末「Follow-ups」。
+
 ## Batch A — GUI 会话/composer 交互（fix/gui-composer-ux）
 
 | ID | 级别 | 问题 | 证据 |
@@ -118,3 +122,35 @@
 4. **外部#22 台账 KG-001**：与本地审计一致（记录过时、实现为有意演进），E8 更新台账而非删除。
 5. **外部#2/#3（会话互斥/handler 回收）**：属实，但分别需要跨进程锁与上游生命周期架构级设计 → BK3/BK2。
 6. 其余外部条目与本地审计结论一致或互补，未见本地审计被推翻的结论。
+
+## 修复批次合入记录（2026-08-14）
+
+| 批次 | 分支 | 内容 | 提交数 |
+|------|------|------|--------|
+| A | fix/gui-composer-ux | GUI 会话/composer（A1-A10） | 2 |
+| B | fix/gui-connection-ux | GUI 连接/WS/终端（B1-B7） | 5 |
+| C | fix/desktop-startup | 桌面壳启动/CSP（C1-C7） | 3 |
+| D1 | fix/server-delegation-robustness | 服务端心跳/委派健壮性（D1-1..8） | 13 |
+| D2 | fix/codex-mcp-launcher | Codex MCP 启动器（D2-1..3） | 4 |
+| E | fix/docs-governance | doctor 加固/文档治理/仓库卫生（E1-E8） | 4 |
+| F | fix/collab-semantics | 协作语义（F1-F5） | 5 |
+
+合入方式：顺序 `--no-ff` 合并；唯一人工解冲突为 `apps/kiki-gui/src/i18n/{zh,en}.ts` 三块批次键追加（Batch C/B/A 合并保留）。
+
+## Follow-ups（批次实施中新增，未排期）
+
+| ID | 级别 | 问题 | 来源批次 |
+|----|------|------|----------|
+| FU1 | P2 | agent-core 既有快照漂移：`test/profile/agent-profile-loader.test.ts` 的 `DEFAULT_AGENT_PROFILES['coder'].tools` 快照未含协作工具，基线即失败、非本批引入 | F |
+| FU2 | P2 | v2 侧同款死参数未收敛：`agentCollaborationTool.ts` 的 fork_turns / statusOf('errored') 与 v1 对称，F3 按证据范围只改了 v1 | F |
+| FU3 | P2 | F1 语义裁决：继承型 resume 跟随父模型已恢复；但 session 重启后 spawn 期 source 标记丢失，显式 tool alias 可能被误判为继承型——需产品确认是否要持久化 source | F |
+| FU4 | P2 | kap-server pino 日志走 stdout，`--log-level warn` 落盘的是 stderr；服务端日志进 desktop-backend.log 需改 logger destination 或加 `--log-file` | C |
+| FU5 | P2 | desktop 侧 `tauri build`/NSIS 打包与真机冷启动 smoke 未实跑（仅 cargo check/test + TS 测试） | C |
+| FU6 | P3 | A3 容量校验基准用渲染期 attachments 起步，跨两次极快粘贴可能略微超出 8 附件/20MB 上限（功能更新正确，仅校验基准偏旧） | A |
+| FU7 | P3 | A4 展示/发送语义：effort 下拉"看似选中"实则未发送、由 server 决定——需产品确认 | A |
+| FU8 | P3 | A8 桌面原生目录选择对话框未实现（defer，仅做校验+placeholder） | A |
+| FU9 | P3 | A9 extraDirs placeholder 用了 POSIX 路径，Windows 桌面用户用 Windows 示例更直观 | A |
+| FU10 | P3 | D1-3 `createToolError` 覆写依赖 MCP SDK 私有方法，SDK 升级可能静默回落 | D1 |
+| FU11 | P3 | D1 委派失败分类未迁移已持久化旧文档的 errorCode（数据迁移边界） | D1 |
+| FU12 | P3 | klient `ipc.test.ts` 有 1 例时序敏感偶发超时（非本批引入），建议显式放宽 testTimeout | D1 |
+| FU13 | P3 | D2 优雅关闭端点 `POST /api/v1/shutdown` 只做了静态核对，HTTP 成功路径未在真实服务验证（fallback 强杀路径已测） | D2 |
