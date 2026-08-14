@@ -16,6 +16,30 @@ function Assert-ThrowsLike {
   throw [InvalidOperationException]::new($Message)
 }
 
+function Test-PortBindable {
+  param([int]$Port)
+  try {
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
+    try { return $true } finally { $listener.Stop() }
+  } catch {
+    return $false
+  }
+}
+
+function Find-BindablePortWindow {
+  param([int]$Size)
+  # Windows reserves excluded port ranges (Hyper-V/WinNAT) that never show up
+  # as listeners; probe for a contiguous window the fixtures can really bind.
+  for ($start = 24000; $start + $Size -le 64000; $start += $Size) {
+    $allBindable = $true
+    for ($port = $start; $port -lt $start + $Size; $port++) {
+      if (-not (Test-PortBindable $port)) { $allBindable = $false; break }
+    }
+    if ($allBindable) { return @{ start = $start; end = $start + $Size - 1 } }
+  }
+  throw [InvalidOperationException]::new('no bindable loopback port window was found for the fixture')
+}
+
 $launcher = Join-Path $PSScriptRoot 'codex-kiki-mcp.ps1'
 . $launcher
 
@@ -31,14 +55,15 @@ try {
   New-Item -ItemType Directory -Path $runtimeDir, $workspacesDir, $agentHome, $workspaceA, $workspaceB | Out-Null
   [IO.File]::WriteAllText($configPath, '', [Text.UTF8Encoding]::new($false))
   $nodePath = (Get-Command node -ErrorAction Stop).Source
+  $portWindow = Find-BindablePortWindow 20
   $install = [pscustomobject]@{
     workspacesDir = $workspacesDir
     configPath = $configPath
     agentProfileHomeDir = $agentHome
     defaultModel = 'model-test'
     defaultThinkingEffort = 'high'
-    portRangeStart = 62000
-    portRangeEnd = 62050
+    portRangeStart = [int]$portWindow.start
+    portRangeEnd = [int]$portWindow.end
     nodePath = $nodePath
   }
 
@@ -112,6 +137,15 @@ try {
   Assert-ThrowsLike {
     Get-OrCreateWorkspaceBinding $canonicalA $keyA $install | Out-Null
   } 'signature does not match' 'mutated workspace metadata was accepted'
+  [IO.File]::WriteAllText($bindingPath, $originalBindingText, [Text.UTF8Encoding]::new($false))
+
+  $driftedBinding = $originalBindingText | ConvertFrom-Json
+  $driftedBinding.model = 'model-drifted'
+  $driftedBinding.thinkingEffort = 'low'
+  Write-JsonFile $bindingPath $driftedBinding
+  Assert-ThrowsLike {
+    Get-OrCreateWorkspaceBinding $canonicalA $keyA $install | Out-Null
+  } "drifted fields: .*model: expected 'model-test' \(actual 'model-drifted'\).*thinkingEffort: expected 'high' \(actual 'low'\).*re-run that install step" 'drifted workspace metadata did not name the drifted fields'
   [IO.File]::WriteAllText($bindingPath, $originalBindingText, [Text.UTF8Encoding]::new($false))
 
   $bindingRecord = Get-OrCreateWorkspaceBinding $canonicalA $keyA $install
@@ -206,7 +240,7 @@ try {
     ) 'the unowned-listener fixture unexpectedly contained runtime state'
     Assert-ThrowsLike {
       Resolve-WorkspaceKap $unownedBinding $install 'unused-secret' $unownedBindingDir | Out-Null
-    } 'occupied by an unrecorded process' 'an unowned loopback listener without signed runtime state was accepted'
+    } "occupied by an unrecorded process \(pid $listenerPid \([^)]+\)\)" 'an unowned loopback listener without signed runtime state was accepted without naming the occupying process'
   } finally {
     try {
       if ($null -ne $listenerJob) {
@@ -240,16 +274,314 @@ try {
   $secretB = Read-DpapiSecret $bindingB.binding.delegationSecretPath 'workspace B credential'
   Assert-True (-not (Test-FixedTimeEqual $secretA $secretB)) 'different workspaces reused one authority credential'
 
+  $workspaceC = Join-Path $testRoot 'workspace-c'
+  New-Item -ItemType Directory -Path $workspaceC | Out-Null
+  $canonicalC = Get-CanonicalDirectory $workspaceC $nodePath 'workspace C'
+  $keyC = Get-WorkspaceKey $canonicalC
+  $bindingRecordC = Get-OrCreateWorkspaceBinding $canonicalC $keyC $install
+  $portC = [int]$bindingRecordC.binding.port
+  $stopStatePath = Join-Path $bindingRecordC.bindingDir 'runtime-state.json'
+  $stopReadyPath = Join-Path $testRoot 'stop-listener-ready.json'
+  $stopListenerJob = $null
+  try {
+    $stopListenerJob = Start-Job -ArgumentList $portC, $stopReadyPath -ScriptBlock {
+      param($port, $readyPath)
+      $ErrorActionPreference = 'Stop'
+      $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $port)
+      try {
+        $listener.Start()
+        [IO.File]::WriteAllText(
+          $readyPath,
+          ([pscustomobject]@{ port = $port; pid = $PID } | ConvertTo-Json -Compress),
+          [Text.UTF8Encoding]::new($false)
+        )
+        $listenerDeadline = [DateTime]::UtcNow.AddSeconds(90)
+        while ([DateTime]::UtcNow -lt $listenerDeadline) {
+          if ($listener.Pending()) {
+            $client = $listener.AcceptTcpClient()
+            $client.Close()
+            continue
+          }
+          Start-Sleep -Milliseconds 50
+        }
+      } finally {
+        $listener.Stop()
+      }
+    }
+    $stopReadyDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+      if (Test-Path -LiteralPath $stopReadyPath -PathType Leaf) { break }
+      Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $stopReadyDeadline)
+    Assert-True (Test-Path -LiteralPath $stopReadyPath -PathType Leaf) 'the stop-path listener did not become ready'
+    $stopListenerPid = [int]((Get-Content -LiteralPath $stopReadyPath -Raw | ConvertFrom-Json).pid)
+    $stopOwnerDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+      $stopListenerPids = @(Get-ListenerPids $portC)
+      if ($stopListenerPids.Count -eq 1 -and [int]$stopListenerPids[0] -eq $stopListenerPid) { break }
+      Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $stopOwnerDeadline)
+    Assert-True (
+      $stopListenerPids.Count -eq 1 -and [int]$stopListenerPids[0] -eq $stopListenerPid
+    ) 'the stop-path listener did not exclusively own the recorded port'
+
+    $stopIdentity = Get-ProcessIdentity $stopListenerPid
+    $stopState = [ordered]@{
+      schemaVersion = 1
+      pid = $stopListenerPid
+      executablePath = $nodePath
+      creationTicks = [long]$stopIdentity.creationTicks
+      endpoint = [string]$bindingRecordC.binding.endpoint
+      port = $portC
+      homeDir = [string]$bindingRecordC.binding.homeDir
+      sessionId = [string]$bindingRecordC.binding.sessionId
+      workspacePath = [string]$bindingRecordC.binding.workspacePath
+      configPath = [string]$bindingRecordC.binding.configPath
+      agentProfileHomeDir = [string]$bindingRecordC.binding.agentProfileHomeDir
+      configReadOnly = $true
+      serverId = 'server-stop-test'
+      instanceId = 'instance-stop-test'
+      startedAt = [DateTime]::UtcNow.ToString('o')
+      stateMac = ''
+    }
+    $stopState.stateMac = Get-HmacBase64 $bindingRecordC.secret (Get-StatePayload $stopState)
+    Write-JsonFile $stopStatePath $stopState
+
+    $listingC = @(@(Get-KikiWorkspaceListing $install) | Where-Object { $_.key -ceq $keyC })
+    Assert-True ($listingC.Count -eq 1) 'the workspace listing did not include the stop fixture workspace'
+    Assert-True ([int]$listingC[0].port -eq $portC) 'the workspace listing recorded the wrong port'
+    Assert-True ([string]$listingC[0].workspacePath -ceq $canonicalC) 'the workspace listing recorded the wrong workspace'
+    Assert-True ([int]$listingC[0].recordedPid -eq $stopListenerPid) 'the workspace listing recorded the wrong pid'
+    Assert-True ($listingC[0].processAlive -eq $true) 'the workspace listing marked the live owner dead'
+    Assert-True ($listingC[0].listening -eq $true) 'the workspace listing marked the live listener absent'
+
+    $stopResult = Stop-WorkspaceKapByRecord $keyC $install
+    Assert-True (
+      $stopResult.status -eq 'stopped-force'
+    ) "the recorded workspace KAP stop did not stop the owner: $($stopResult.status) $($stopResult.detail)"
+    $stopReleaseDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+      if (@(Get-ListenerPids $portC).Count -eq 0) { break }
+      Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $stopReleaseDeadline)
+    Assert-True (@(Get-ListenerPids $portC).Count -eq 0) 'the recorded port stayed busy after the stop'
+    Assert-True (-not (Test-Path -LiteralPath $stopStatePath -PathType Leaf)) 'the runtime state survived the stop'
+    $stoppedIdentity = Get-ProcessIdentity $stopListenerPid
+    Assert-True (
+      $null -eq $stoppedIdentity -or
+      [long]$stoppedIdentity.creationTicks -ne [long]$stopIdentity.creationTicks
+    ) 'the recorded owner process survived the stop'
+    $stopAgain = Stop-WorkspaceKapByRecord $keyC $install
+    Assert-True ($stopAgain.status -eq 'already-stopped') 'stopping a stopped workspace did not report already-stopped'
+  } finally {
+    if ($null -ne $stopListenerJob) {
+      Stop-Job -Job $stopListenerJob -ErrorAction SilentlyContinue
+      Wait-Job -Job $stopListenerJob -Timeout 5 | Out-Null
+      Remove-Job -Job $stopListenerJob -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item -LiteralPath $stopReadyPath -Force -ErrorAction SilentlyContinue
+  }
+
+  $mcpStubPath = Join-Path $testRoot 'mcp-stub.js'
+  [IO.File]::WriteAllText($mcpStubPath, 'process.exit(7)', [Text.UTF8Encoding]::new($false))
+  $recycleJob = Start-Job -ArgumentList $launcher, $mcpStubPath -ScriptBlock {
+    param($launcherPath, $stubPath)
+    $ErrorActionPreference = 'Stop'
+    . $launcherPath
+    $script:fakeStarted = 'started-here'
+    $script:fakeNodePath = (Get-Command node -ErrorAction Stop).Source
+    $script:recycleCalls = @()
+    function Invoke-WorkspaceKapRecycle {
+      param([object]$RecycleBinding, [object]$RecycleState, [string]$RecycleStatePath)
+      $script:recycleCalls += [pscustomobject]@{
+        key = [string]$RecycleBinding.workspaceKey
+        statePid = [int]$RecycleState.pid
+        statePath = $RecycleStatePath
+      }
+    }
+    function Initialize-KikiWorkspaceConnection {
+      param([string]$IgnoredRuntimeDir)
+      [pscustomobject]@{
+        install = [pscustomobject]@{ nodePath = $script:fakeNodePath; mcpPath = $stubPath }
+        bindingRecord = [pscustomobject]@{
+          binding = [pscustomobject]@{ workspaceKey = 'job-owner-key' }
+          bindingDir = 'C:\job-binding-dir'
+        }
+        runtime = [pscustomobject]@{
+          started = $script:fakeStarted
+          state = [pscustomobject]@{ pid = 4242 }
+        }
+        connection = [pscustomobject]@{
+          endpoint = 'http://127.0.0.1:1'
+          kapToken = 'token'
+          delegationToken = 'delegation'
+          sessionId = 'session_job'
+          workspacePath = 'C:\job-workspace'
+        }
+      }
+    }
+    $ownerExit = Invoke-KikiMcpLauncher 'C:\ignored'
+    $ownerCalls = @($script:recycleCalls)
+    $script:recycleCalls = @()
+    $script:fakeStarted = $null
+    $attachedExit = Invoke-KikiMcpLauncher 'C:\ignored'
+    $attachedCalls = @($script:recycleCalls)
+    $script:recycleCalls = @()
+    $script:fakeStarted = 'started-here'
+    $script:fakeNodePath = 'C:\definitely-missing-node.exe'
+    $launcherThrew = $false
+    try {
+      Invoke-KikiMcpLauncher 'C:\ignored' | Out-Null
+    } catch {
+      $launcherThrew = $true
+    }
+    $failureCalls = @($script:recycleCalls)
+    [pscustomobject]@{
+      ownerExit = [int]$ownerExit
+      ownerRecycleCount = $ownerCalls.Count
+      ownerKey = [string]$ownerCalls[0].key
+      ownerStatePid = [int]$ownerCalls[0].statePid
+      ownerStatePath = [string]$ownerCalls[0].statePath
+      attachedExit = [int]$attachedExit
+      attachedRecycleCount = $attachedCalls.Count
+      launcherThrew = $launcherThrew
+      failureRecycleCount = $failureCalls.Count
+    }
+  }
+  $recycleJob | Wait-Job | Out-Null
+  $recycle = $recycleJob | Receive-Job -ErrorAction Stop
+  $recycleJob | Remove-Job -Force
+  Assert-True ($recycle.ownerExit -eq 7) 'the owner launcher did not propagate the MCP process exit code'
+  Assert-True ($recycle.ownerRecycleCount -eq 1) 'the owner launcher did not recycle its workspace KAP'
+  Assert-True ($recycle.ownerKey -ceq 'job-owner-key') 'the recycle call did not receive the workspace binding'
+  Assert-True ($recycle.ownerStatePid -eq 4242) 'the recycle call did not receive the recorded runtime state'
+  Assert-True ($recycle.ownerStatePath -like '*runtime-state.json') 'the recycle call did not receive the state path'
+  Assert-True ($recycle.attachedExit -eq 7) 'the attached launcher did not propagate the MCP process exit code'
+  Assert-True ($recycle.attachedRecycleCount -eq 0) 'an attached launcher recycled a KAP it did not start'
+  Assert-True ($recycle.launcherThrew -eq $true) 'a broken Node invocation did not surface its failure'
+  Assert-True ($recycle.failureRecycleCount -eq 1) 'the owner launcher did not recycle its KAP on failure'
+
+  $pwshExe = (Get-Process -Id $PID).Path
+  $cliRoot = Join-Path $testRoot 'cli-runtime'
+  $cliWorkspaces = Join-Path $cliRoot 'workspaces'
+  New-Item -ItemType Directory -Path $cliRoot, $cliWorkspaces | Out-Null
+  $cliLauncherPath = Join-Path $cliRoot 'kiki-mcp.ps1'
+  Copy-Item -LiteralPath $launcher -Destination $cliLauncherPath
+  $cliBundlePath = Join-Path $cliRoot 'kiki-cli.js'
+  $cliMcpBundlePath = Join-Path $cliRoot 'kiki-mcp-bundle.js'
+  [IO.File]::WriteAllText($cliBundlePath, '// cli fixture', [Text.UTF8Encoding]::new($false))
+  [IO.File]::WriteAllText($cliMcpBundlePath, '// mcp fixture', [Text.UTF8Encoding]::new($false))
+  $cliKey = New-AuthoritySecret
+  Write-DpapiSecret (Join-Path $cliRoot 'installation-key.dpapi') $cliKey
+  $cliMeta = [ordered]@{
+    schemaVersion = 3
+    repoPath = $testRoot
+    nodePath = $nodePath
+    nodeVersion = (& $nodePath --version).Trim()
+    kikiCliPath = $cliBundlePath
+    kikiCliSha256 = (Get-FileSha256Hex $cliBundlePath)
+    mcpPath = $cliMcpBundlePath
+    mcpSha256 = (Get-FileSha256Hex $cliMcpBundlePath)
+    launcherSha256 = (Get-FileSha256Hex $cliLauncherPath)
+    configPath = $configPath
+    agentProfileHomeDir = $agentHome
+    configReadOnly = $true
+    workspacesDir = $cliWorkspaces
+    defaultModel = 'model-test'
+    defaultThinkingEffort = 'high'
+    portRangeStart = [int]$portWindow.start
+    portRangeEnd = [int]$portWindow.end
+    createdAt = [DateTime]::UtcNow.ToString('o')
+    installationMac = ''
+  }
+  $cliMeta.installationMac = Get-HmacBase64 $cliKey (Get-InstallationPayload $cliMeta)
+  Write-JsonFile (Join-Path $cliRoot 'runtime.json') ([pscustomobject]$cliMeta)
+
+  $cliEmptyOutput = (& $pwshExe -NoProfile -File $cliLauncherPath -RuntimeDir $cliRoot -ListWorkspaces)
+  Assert-True ($LASTEXITCODE -eq 0) 'the management CLI failed on an empty workspaces directory'
+  Assert-True ((@($cliEmptyOutput) -join '').Trim() -eq '[]') 'the empty workspace listing was not empty JSON'
+
+  $workspaceCli = Join-Path $testRoot 'workspace-cli'
+  New-Item -ItemType Directory -Path $workspaceCli | Out-Null
+  $canonicalCli = Get-CanonicalDirectory $workspaceCli $nodePath 'workspace cli'
+  $keyCli = Get-WorkspaceKey $canonicalCli
+  $cliInstall = [pscustomobject]@{
+    workspacesDir = $cliWorkspaces
+    configPath = $configPath
+    agentProfileHomeDir = $agentHome
+    defaultModel = 'model-test'
+    defaultThinkingEffort = 'high'
+    portRangeStart = [int]$portWindow.start
+    portRangeEnd = [int]$portWindow.end
+  }
+  $bindingRecordCli = Get-OrCreateWorkspaceBinding $canonicalCli $keyCli $cliInstall
+  $cliIdentity = Get-ProcessIdentity $PID
+  $cliState = [ordered]@{
+    schemaVersion = 1
+    pid = $PID
+    executablePath = $nodePath
+    creationTicks = [long]$cliIdentity.creationTicks
+    endpoint = [string]$bindingRecordCli.binding.endpoint
+    port = [int]$bindingRecordCli.binding.port
+    homeDir = [string]$bindingRecordCli.binding.homeDir
+    sessionId = [string]$bindingRecordCli.binding.sessionId
+    workspacePath = [string]$bindingRecordCli.binding.workspacePath
+    configPath = [string]$bindingRecordCli.binding.configPath
+    agentProfileHomeDir = [string]$bindingRecordCli.binding.agentProfileHomeDir
+    configReadOnly = $true
+    serverId = 'server-cli-test'
+    instanceId = 'instance-cli-test'
+    startedAt = [DateTime]::UtcNow.ToString('o')
+    stateMac = ''
+  }
+  $cliState.stateMac = Get-HmacBase64 $bindingRecordCli.secret (Get-StatePayload $cliState)
+  Write-JsonFile (Join-Path $bindingRecordCli.bindingDir 'runtime-state.json') $cliState
+
+  $cliListOutput = (& $pwshExe -NoProfile -File $cliLauncherPath -RuntimeDir $cliRoot -ListWorkspaces)
+  Assert-True ($LASTEXITCODE -eq 0) 'the management CLI failed to list workspaces'
+  $cliListing = ((@($cliListOutput) -join "`n") | ConvertFrom-Json)
+  $cliEntry = @($cliListing | Where-Object { $_.key -ceq $keyCli })
+  Assert-True ($cliEntry.Count -eq 1) 'the CLI listing did not include the seeded workspace'
+  Assert-True ([int]$cliEntry[0].port -eq [int]$bindingRecordCli.binding.port) 'the CLI listing recorded the wrong port'
+  Assert-True ([string]$cliEntry[0].workspacePath -ceq $canonicalCli) 'the CLI listing recorded the wrong workspace'
+  Assert-True ([int]$cliEntry[0].recordedPid -eq $PID) 'the CLI listing recorded the wrong pid'
+  Assert-True ($cliEntry[0].processAlive -eq $true) 'the CLI listing marked the live test process dead'
+
+  $cliStopUnknownOutput = (& $pwshExe -NoProfile -File $cliLauncherPath -RuntimeDir $cliRoot -StopWorkspace ('0' * 64))
+  Assert-True ($LASTEXITCODE -eq 1) 'stopping an unknown workspace key did not fail'
+  $cliStopUnknown = ((@($cliStopUnknownOutput) -join "`n") | ConvertFrom-Json)
+  Assert-True ([string]$cliStopUnknown.status -eq 'missing') 'stopping an unknown workspace key did not report missing'
+
+  $cliStopBadKeyOutput = (& $pwshExe -NoProfile -File $cliLauncherPath -RuntimeDir $cliRoot -StopWorkspace 'not-a-hex-key')
+  Assert-True ($LASTEXITCODE -eq 1) 'stopping a malformed workspace key did not fail'
+  $cliStopBadKey = ((@($cliStopBadKeyOutput) -join "`n") | ConvertFrom-Json)
+  Assert-True ([string]$cliStopBadKey.status -eq 'invalid-key') 'a malformed workspace key was not reported as invalid-key'
+
+  & $pwshExe -NoProfile -File $cliLauncherPath -RuntimeDir $cliRoot -ListWorkspaces -StopWorkspace ('0' * 64) 2>&1 | Out-Null
+  Assert-True ($LASTEXITCODE -eq 2) 'combining management modes did not fail with the usage exit code'
+
+  & $pwshExe -NoProfile -File $cliLauncherPath -ListWorkspaces 2>&1 | Out-Null
+  Assert-True ($LASTEXITCODE -eq 2) 'omitting -RuntimeDir did not fail with the usage exit code'
+
   [pscustomobject]@{
     canonicalAlias = 'passed'
     windowsCaseFoldKey = 'passed'
     concurrentDifferentWorkspaces = 'passed'
     deterministicSameWorkspaceReuse = 'passed'
     mutatedBindingRejected = 'passed'
+    bindingDriftFieldsListed = 'passed'
     liveStaleOwnerRejected = 'passed'
     unownedListenerRejected = 'passed'
+    unownedListenerNamesOccupant = 'passed'
     unownedListenerCleanup = 'passed'
     authorityCredentialsIsolated = 'passed'
+    workspaceListingFields = 'passed'
+    recordedStopEndToEnd = 'passed'
+    recycleOwnerSemantics = 'passed'
+    managementCliListAndStop = 'passed'
+    managementCliInvalidKey = 'passed'
+    managementCliModeExclusive = 'passed'
+    managementCliMissingRuntime = 'passed'
   } | ConvertTo-Json
 } finally {
   $resolvedTestRoot = [IO.Path]::GetFullPath($testRoot)
