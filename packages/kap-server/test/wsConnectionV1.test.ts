@@ -899,7 +899,7 @@ describe('WsConnectionV1 heartbeat', () => {
       expect(ping.payload.nonce.length).toBeGreaterThan(0);
       expect(Number.isNaN(Date.parse(ping.timestamp))).toBe(false);
     }
-    expect(pings[0].payload.nonce).not.toBe(pings[1].payload.nonce);
+    expect(pings[0]!.payload.nonce).not.toBe(pings[1]!.payload.nonce);
     conn.close();
   });
 
