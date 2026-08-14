@@ -302,6 +302,75 @@ describe('Kiki external delegation MCP server', () => {
     });
     expect(JSON.stringify(called)).not.toContain('SECRET_TOKEN');
   });
+
+  it('passes an already-classified failure code and description through untouched', async () => {
+    const description =
+      'External agent authentication expired or was rejected; re-authenticate the provider and retry.';
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      new Response(
+        JSON.stringify({
+          code: 40001,
+          msg: description,
+          details: { failure_code: 'auth_expired' },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const server = createKikiMcpServer(
+      {
+        endpoint: 'http://127.0.0.1:58627',
+        token: 'SECRET_TOKEN',
+        delegationToken: 'DELEGATION_SECRET',
+        sessionId: 'session-operator',
+        workspacePath: '/example/workspace',
+      },
+      { fetch: fetchMock },
+    );
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    close.push(() => client.close(), () => server.close());
+
+    const called = await client.callTool({ name: 'kiki_status', arguments: { dispatch_id: 'dispatch_1' } });
+    expect(called.isError).toBe(true);
+    expect(called.structuredContent).toEqual({
+      error: { code: 'auth_expired', message: description },
+    });
+  });
+
+  it('collapses an untrusted failure_code instead of trusting the envelope', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      new Response(
+        JSON.stringify({
+          code: 40001,
+          msg: 'Bearer SECRET_TOKEN was rejected',
+          details: { failure_code: 'not_a_category' },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    const server = createKikiMcpServer(
+      {
+        endpoint: 'http://127.0.0.1:58627',
+        token: 'SECRET_TOKEN',
+        delegationToken: 'DELEGATION_SECRET',
+        sessionId: 'session-operator',
+        workspacePath: '/example/workspace',
+      },
+      { fetch: fetchMock },
+    );
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    close.push(() => client.close(), () => server.close());
+
+    const called = await client.callTool({ name: 'kiki_status', arguments: { dispatch_id: 'dispatch_1' } });
+    expect(called.isError).toBe(true);
+    expect(called.structuredContent).toEqual({
+      error: { code: 'request_rejected', message: 'Kiki delegation request failed.' },
+    });
+    expect(JSON.stringify(called)).not.toContain('SECRET_TOKEN');
+  });
 });
 
 describe('external delegation route exposure', () => {

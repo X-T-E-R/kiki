@@ -6,6 +6,7 @@
  */
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+import { ErrorCodes } from '#/errors';
 
 export type ExternalDispatchStatus =
   | 'queued'
@@ -14,6 +15,69 @@ export type ExternalDispatchStatus =
   | 'failed'
   | 'cancelled'
   | 'interrupted';
+
+/**
+ * Stable external failure taxonomy. The raw provider/process error text is
+ * untrusted (it can embed paths, credentials, URLs, or stack fragments), so
+ * the external surface carries only a category code plus this module's
+ * domain-owned one-sentence description; the raw text stays in server logs.
+ */
+export type ExternalFailureCategory =
+  | 'auth_expired'
+  | 'quota_exceeded'
+  | 'model_not_supported'
+  | 'network'
+  | 'invalid_input'
+  | 'internal';
+
+const EXTERNAL_FAILURE_DESCRIPTIONS: Readonly<Record<ExternalFailureCategory, string>> = {
+  auth_expired: 'External agent authentication expired or was rejected; re-authenticate the provider and retry.',
+  quota_exceeded: 'External agent hit a provider quota or rate limit; retry after the limit resets.',
+  model_not_supported: 'The requested model is not available for external delegation.',
+  network: 'External agent could not reach the provider (network failure or timeout); retry.',
+  invalid_input: 'External agent rejected the request input.',
+  internal: 'External agent run failed.',
+};
+
+/** Known internal error codes mapped onto the external failure taxonomy. */
+const CODE_TO_EXTERNAL_FAILURE: Readonly<Record<string, ExternalFailureCategory>> = {
+  [ErrorCodes.PROVIDER_AUTH_ERROR]: 'auth_expired',
+  [ErrorCodes.AUTH_TOKEN_UNAUTHORIZED]: 'auth_expired',
+  [ErrorCodes.AUTH_TOKEN_MISSING]: 'auth_expired',
+  [ErrorCodes.AUTH_LOGIN_REQUIRED]: 'auth_expired',
+  [ErrorCodes.AUTH_PROVISIONING_REQUIRED]: 'auth_expired',
+  [ErrorCodes.PROVIDER_RATE_LIMIT]: 'quota_exceeded',
+  [ErrorCodes.MODEL_NOT_FOUND]: 'model_not_supported',
+  [ErrorCodes.PROVIDER_NOT_FOUND]: 'model_not_supported',
+  [ErrorCodes.AUTH_MODEL_NOT_RESOLVED]: 'model_not_supported',
+  [ErrorCodes.PROVIDER_CONNECTION_ERROR]: 'network',
+  [ErrorCodes.PROVIDER_OVERLOADED]: 'network',
+  [ErrorCodes.VALIDATION_FAILED]: 'invalid_input',
+  [ErrorCodes.REQUEST_INVALID]: 'invalid_input',
+  [ErrorCodes.CONTEXT_OVERFLOW]: 'invalid_input',
+};
+
+/**
+ * Classify an internal error code onto the external failure taxonomy.
+ * Returns `undefined` for codes without a trusted mapping — callers must then
+ * fall back to `internal` and keep the generic redaction.
+ */
+export function classifyExternalFailureCode(code: string): ExternalFailureCategory | undefined {
+  return CODE_TO_EXTERNAL_FAILURE[code];
+}
+
+/** Domain-owned one-sentence description for a failure category. */
+export function externalFailureDescription(category: ExternalFailureCategory): string {
+  return EXTERNAL_FAILURE_DESCRIPTIONS[category];
+}
+
+/** Type guard for values crossing back over an external edge. */
+export function isExternalFailureCategory(value: unknown): value is ExternalFailureCategory {
+  return (
+    typeof value === 'string' &&
+    Object.prototype.hasOwnProperty.call(EXTERNAL_FAILURE_DESCRIPTIONS, value)
+  );
+}
 
 export interface ExternalAuthority {
   readonly principalFingerprint: string;
@@ -45,8 +109,12 @@ export interface ExternalDispatchView {
   readonly startedAt?: number;
   readonly endedAt?: number;
   readonly continuationOf?: string;
-  /** Stable typed failure code; the untrusted provider message is never exposed. */
-  readonly errorCode?: string;
+  /**
+   * Stable failure category (`ExternalFailureCategory`); the untrusted
+   * provider/process message is never exposed — `result()` pages carry only
+   * the category's domain-owned description.
+   */
+  readonly errorCode?: ExternalFailureCategory;
 }
 
 export interface ExternalRootView {

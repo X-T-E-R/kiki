@@ -50,6 +50,22 @@ const pageInput = lookupInput.extend({ cursor: z.number().int().nonnegative().op
 const resultInput = lookupInput.extend({ cursor: z.number().int().nonnegative().optional(), max_bytes: z.number().int().min(4).max(65_536).optional() }).strict();
 const emptyInput = z.object({}).strict();
 
+/**
+ * Stable external failure taxonomy mirrored from
+ * `agent-core-v2/src/session/externalDelegation/externalDelegation.ts`
+ * (`ExternalFailureCategory`). The stdio edge stays dependency-light instead of
+ * importing the core barrel, so keep the two lists in sync — an unknown code
+ * degrades to the generic `request_rejected` edge error, never to a leak.
+ */
+const EXTERNAL_FAILURE_CATEGORIES = new Set([
+  'auth_expired',
+  'quota_exceeded',
+  'model_not_supported',
+  'network',
+  'invalid_input',
+  'internal',
+]);
+
 export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServerOptions = {}): McpServer {
   const pinnedConfig = Object.freeze({ ...config });
   const client = new ExternalDelegationRestClient(pinnedConfig, options.fetch ?? globalThis.fetch);
@@ -167,10 +183,24 @@ class ExternalDelegationRestClient {
       throw new KikiMcpEdgeError('invalid_response', 'Kiki delegation endpoint returned an invalid response.');
     }
     const parsed = z
-      .object({ code: z.number(), msg: z.string(), data: z.unknown().optional() })
+      .object({
+        code: z.number(),
+        msg: z.string(),
+        data: z.unknown().optional(),
+        details: z.unknown().optional(),
+      })
       .passthrough()
       .parse(envelope);
-    if (parsed.code !== 0) throw new KikiMcpEdgeError('request_rejected', safeRemoteMessage(parsed.msg));
+    if (parsed.code !== 0) {
+      // A server-side classification travels in `details.failure_code`; the
+      // message itself is the domain-owned category description, so it can be
+      // surfaced verbatim (safeRemoteMessage stays as belt-and-braces).
+      const failureCode = readFailureCode(parsed.details);
+      throw new KikiMcpEdgeError(
+        failureCode ?? 'request_rejected',
+        safeRemoteMessage(parsed.msg),
+      );
+    }
     return parsed.data as T;
   }
 }
@@ -264,4 +294,11 @@ function utf8PagePrefix(
 function safeRemoteMessage(message: string): string {
   if (/token|authorization|bearer|\\|\/\//i.test(message)) return 'Kiki delegation request failed.';
   return message.slice(0, 500);
+}
+
+/** Read a trusted failure classification off a REST error envelope, if any. */
+function readFailureCode(details: unknown): string | undefined {
+  if (details === null || typeof details !== 'object' || Array.isArray(details)) return undefined;
+  const code = (details as { readonly failure_code?: unknown }).failure_code;
+  return typeof code === 'string' && EXTERNAL_FAILURE_CATEGORIES.has(code) ? code : undefined;
 }
