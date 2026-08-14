@@ -8,7 +8,7 @@
  * on kap-server's own registry, token, and authenticated shutdown contracts.
  */
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     env, fs,
     fs::OpenOptions,
     io::{Read, Write},
@@ -26,14 +26,25 @@ use tauri::{
     AppHandle, Emitter, Manager, RunEvent, State, WindowEvent, Wry,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
-use tauri_plugin_shell::{process::CommandChild, ShellExt};
+use tauri_plugin_shell::{
+    process::{CommandEvent, CommandChild, TerminatedPayload},
+    ShellExt,
+};
 use toml_edit::{table, value, DocumentMut, Item};
+
+use tauri::async_runtime::Receiver;
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const MAX_HTTP_STATUS_LINE_BYTES: usize = 256;
 const TRAY_ID: &str = "main-tray";
+/// Filename (under the kimi home) the desktop backend's stderr is appended to.
+const DESKTOP_BACKEND_LOG_FILE: &str = "desktop-backend.log";
+/// In-memory stderr lines kept for startup-failure diagnostics.
+const STDERR_TAIL_LINES: usize = 100;
+/// Frontend event carrying the boot phase ("waiting" once the sidecar exists).
+const BACKEND_STAGE_EVENT: &str = "kiki://desktop-backend-stage";
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,11 +61,193 @@ struct InstanceRecord {
     started_at: u64,
 }
 
+/// Structured startup failure for the frontend's desktop failure card.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopStartupFailure {
+    message: String,
+    stderr_tail: Vec<String>,
+    log_path: Option<String>,
+}
+
+impl DesktopStartupFailure {
+    fn plain(message: String) -> Self {
+        Self {
+            message,
+            stderr_tail: Vec::new(),
+            log_path: None,
+        }
+    }
+}
+
+impl From<String> for DesktopStartupFailure {
+    fn from(message: String) -> Self {
+        Self::plain(message)
+    }
+}
+
+/// Human phrasing of a sidecar exit status.
+fn describe_exit(payload: &TerminatedPayload) -> String {
+    match (payload.code, payload.signal) {
+        (Some(code), _) => format!("exit code {code}"),
+        (None, Some(signal)) => format!("terminated by signal {signal}"),
+        (None, None) => "no exit status reported".to_string(),
+    }
+}
+
+/// Per-backend runtime diagnostics shared by the output pump and waiters:
+/// the stderr tail, its on-disk log, and the sidecar's exit status.
+struct BackendMonitor {
+    /// Append target for stderr lines; `None` once writing is impossible.
+    log: Mutex<Option<fs::File>>,
+    log_path: Option<PathBuf>,
+    /// Bounded rolling tail of the backend's stderr.
+    stderr_tail: Mutex<VecDeque<String>>,
+    /// Set once the sidecar reports Terminated (or its event stream closes).
+    exit: Mutex<Option<TerminatedPayload>>,
+}
+
+impl BackendMonitor {
+    /// Open the append log under `home`; diagnostics stay in memory on failure.
+    fn open(home: &Path) -> Self {
+        let path = home.join(DESKTOP_BACKEND_LOG_FILE);
+        let file = fs::create_dir_all(home).ok().and_then(|_| {
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .ok()
+        });
+        let log_path = file.as_ref().map(|_| path);
+        Self {
+            log: Mutex::new(file),
+            log_path,
+            stderr_tail: Mutex::new(VecDeque::new()),
+            exit: Mutex::new(None),
+        }
+    }
+    /// Record one stderr line: rolling memory tail plus best-effort disk append.
+    fn record_stderr_line(&self, line: &str) {
+        if line.is_empty() {
+            return;
+        }
+        if let Ok(mut tail) = self.stderr_tail.lock() {
+            tail.push_back(line.to_string());
+            while tail.len() > STDERR_TAIL_LINES {
+                tail.pop_front();
+            }
+        }
+        if let Ok(mut guard) = self.log.lock() {
+            if let Some(file) = guard.as_mut() {
+                if writeln!(file, "{line}").is_err() {
+                    // Disk logging is a convenience, not a health dependency:
+                    // stop retrying and keep the in-memory tail only.
+                    *guard = None;
+                }
+            }
+        }
+    }
+
+    fn set_exit(&self, payload: TerminatedPayload) {
+        if let Ok(mut exit) = self.exit.lock() {
+            *exit = Some(payload);
+        }
+    }
+
+    /// The pump ended without a Terminated event; fail waiters fast regardless.
+    fn ensure_exit(&self) {
+        if let Ok(mut exit) = self.exit.lock() {
+            if exit.is_none() {
+                *exit = Some(TerminatedPayload {
+                    code: None,
+                    signal: None,
+                });
+            }
+        }
+    }
+
+    fn exit(&self) -> Option<TerminatedPayload> {
+        self.exit.lock().ok().and_then(|exit| exit.clone())
+    }
+
+    fn stderr_tail_lines(&self) -> Vec<String> {
+        self.stderr_tail
+            .lock()
+            .map(|tail| tail.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn log_path_string(&self) -> Option<String> {
+        self.log_path.as_ref().map(|path| path.display().to_string())
+    }
+
+    /// A startup failure carrying the summary plus stderr tail and log path.
+    fn startup_failure(&self, pid: u32, summary: String) -> DesktopStartupFailure {
+        let stderr_tail = self.stderr_tail_lines();
+        let mut message = format!("Kiki backend (pid {pid}) {summary}");
+        if !stderr_tail.is_empty() {
+            message.push_str(&format!(
+                "\nstderr (last {} lines):\n{}",
+                stderr_tail.len(),
+                stderr_tail.join("\n")
+            ));
+        }
+        if let Some(path) = &self.log_path_string() {
+            message.push_str(&format!("\nlog file: {path}"));
+        }
+        DesktopStartupFailure {
+            message,
+            stderr_tail,
+            log_path: self.log_path_string(),
+        }
+    }
+}
+
+/// Consume the sidecar's event stream for the lifetime of the process:
+/// stderr is logged (warn+ via `--log-level warn` and runtime errors),
+/// stdout is dropped (the ready line carries the bearer token), and a
+/// Terminated event is recorded so startup waiters fail immediately.
+fn spawn_backend_event_pump(mut events: Receiver<CommandEvent>, monitor: Arc<BackendMonitor>) {
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = events.recv().await {
+            match event {
+                CommandEvent::Stdout(_) => {}
+                CommandEvent::Stderr(bytes) => {
+                    let line = String::from_utf8_lossy(&bytes);
+                    monitor.record_stderr_line(line.trim_end_matches(['\n', '\r']));
+                }
+                CommandEvent::Error(message) => {
+                    monitor.record_stderr_line(&format!("sidecar error: {message}"));
+                }
+                CommandEvent::Terminated(payload) => monitor.set_exit(payload),
+                // CommandEvent is #[non_exhaustive]; future event kinds are
+                // intentionally ignored by this diagnostics pump.
+                _ => {}
+            }
+        }
+        monitor.ensure_exit();
+    });
+}
+
+fn emit_backend_stage(app: &AppHandle, stage: &'static str) {
+    let _ = app.emit(BACKEND_STAGE_EVENT, stage);
+}
+
 struct OwnedBackend {
     child: CommandChild,
     pid: u32,
     launched_at_ms: u64,
     connection: Option<DesktopConnection>,
+    monitor: Arc<BackendMonitor>,
+}
+
+/// A spawned backend being waited on, cloned out of the manager's lock so the
+/// readiness wait can run without holding it.
+struct PendingBackend {
+    pid: u32,
+    launched_at_ms: u64,
+    monitor: Arc<BackendMonitor>,
+    home: PathBuf,
 }
 
 #[derive(Clone, Default)]
@@ -63,87 +256,156 @@ struct BackendManager {
 }
 
 impl BackendManager {
-    fn connection(&self, app: &AppHandle) -> Result<DesktopConnection, String> {
-        let mut slot = self
-            .inner
-            .lock()
-            .map_err(|_| "Kiki backend lifecycle lock was poisoned".to_string())?;
+    fn connection(&self, app: &AppHandle) -> Result<DesktopConnection, DesktopStartupFailure> {
+        // Locked phase — spawn decision and slot writes only. The readiness
+        // wait below runs outside the lock so a slow cold start cannot block
+        // restart or a concurrent reconnect for up to STARTUP_TIMEOUT.
+        let pending = {
+            let mut slot = self.inner.lock().map_err(|_| {
+                DesktopStartupFailure::plain(
+                    "Kiki backend lifecycle lock was poisoned".to_string(),
+                )
+            })?;
 
-        if let Some(connection) = slot
-            .as_ref()
-            .and_then(|backend| backend.connection.as_ref())
-        {
-            return Ok(connection.clone());
-        }
+            if let Some(connection) = slot
+                .as_ref()
+                .and_then(|backend| backend.connection.as_ref())
+            {
+                return Ok(connection.clone());
+            }
 
-        if slot.is_none() {
-            // Capture the epoch before spawn. A reused PID can make an old
-            // registry record look live, so PID alone is not sufficient to
-            // identify the child we just created.
-            let launched_at_ms = unix_epoch_millis()?;
-            let command = app
-                .shell()
-                .sidecar("kiki-server")
-                .map_err(|error| format!("Cannot resolve the packaged Kiki backend: {error}"))?
-                .args(["web", "--no-open", "--port", "0"]);
-            let (mut events, child) = command
-                .spawn()
-                .map_err(|error| format!("Cannot start the packaged Kiki backend: {error}"))?;
-            let pid = child.pid();
+            match slot.as_ref() {
+                Some(backend) => PendingBackend {
+                    pid: backend.pid,
+                    launched_at_ms: backend.launched_at_ms,
+                    monitor: backend.monitor.clone(),
+                    home: kimi_home_dir()?,
+                },
+                None => {
+                    // Capture the epoch before spawn. A reused PID can make an
+                    // old registry record look live, so PID alone is not
+                    // sufficient to identify the child we just created.
+                    let launched_at_ms = unix_epoch_millis()?;
+                    let home = kimi_home_dir()?;
+                    let command = app
+                        .shell()
+                        .sidecar("kiki-server")
+                        .map_err(|error| DesktopStartupFailure::plain(format!(
+                            "Cannot resolve the packaged Kiki backend: {error}"
+                        )))?
+                        // `warn` keeps the default silent behavior off so
+                        // startup failures reach stderr (the token-bearing
+                        // ready line stays on stdout, which is never logged).
+                        .args(["web", "--no-open", "--port", "0", "--log-level", "warn"]);
+                    let (events, child) = command
+                        .spawn()
+                        .map_err(|error| DesktopStartupFailure::plain(format!(
+                            "Cannot start the packaged Kiki backend: {error}"
+                        )))?;
+                    let pid = child.pid();
+                    let monitor = Arc::new(BackendMonitor::open(&home));
+                    spawn_backend_event_pump(events, monitor.clone());
+                    emit_backend_stage(app, "waiting");
 
-            // Drain sidecar output so its pipes cannot fill. The CLI's ready
-            // line can contain the bearer token, so desktop never forwards or
-            // logs stdout/stderr from this channel.
-            tauri::async_runtime::spawn(async move { while events.recv().await.is_some() {} });
+                    let monitor_handle = monitor.clone();
+                    *slot = Some(OwnedBackend {
+                        child,
+                        pid,
+                        launched_at_ms,
+                        connection: None,
+                        monitor: monitor_handle,
+                    });
+                    PendingBackend {
+                        pid,
+                        launched_at_ms,
+                        monitor,
+                        home,
+                    }
+                }
+            }
+        };
 
-            *slot = Some(OwnedBackend {
-                child,
-                pid,
-                launched_at_ms,
-                connection: None,
-            });
-        }
-
-        let backend = slot.as_ref().expect("backend was inserted");
-        let pid = backend.pid;
-        let launched_at_ms = backend.launched_at_ms;
-        let home = kimi_home_dir()?;
+        // Unlocked phase — wait for readiness or early exit.
         let deadline = Instant::now() + STARTUP_TIMEOUT;
-        let ready = loop {
-            if let Some(record) = find_instance_for_pid(&home, pid, launched_at_ms)? {
-                if let Some(token) = read_token(&home)? {
+        loop {
+            if let Some(record) =
+                find_instance_for_pid(&pending.home, pending.pid, pending.launched_at_ms)?
+            {
+                if let Some(token) = read_token(&pending.home)? {
                     let connection = DesktopConnection {
                         url: format!("http://127.0.0.1:{}", record.port),
                         token,
                     };
                     if authenticated_probe(record.port, &connection.token) {
-                        break Ok(connection);
+                        self.publish_connection(&pending, &connection);
+                        return Ok(connection);
                     }
                 }
             }
+            if let Some(exit) = pending.monitor.exit() {
+                self.discard_backend(&pending);
+                return Err(pending.monitor.startup_failure(
+                    pending.pid,
+                    format!("exited during startup ({})", describe_exit(&exit)),
+                ));
+            }
             if Instant::now() >= deadline {
-                break Err(format!(
-                    "Kiki backend (pid {pid}) did not become ready within {} seconds",
-                    STARTUP_TIMEOUT.as_secs()
+                self.discard_backend(&pending);
+                return Err(pending.monitor.startup_failure(
+                    pending.pid,
+                    format!(
+                        "did not become ready within {} seconds",
+                        STARTUP_TIMEOUT.as_secs()
+                    ),
                 ));
             }
             thread::sleep(STARTUP_POLL_INTERVAL);
-        };
+        }
+    }
 
-        match ready {
-            Ok(connection) => {
-                if let Some(backend) = slot.as_mut() {
-                    backend.connection = Some(connection.clone());
-                }
-                Ok(connection)
-            }
-            Err(error) => {
-                if let Some(backend) = slot.take() {
-                    force_stop(backend);
-                }
-                Err(error)
+    /// Cache the resolved connection iff the slot still holds this launch.
+    fn publish_connection(&self, pending: &PendingBackend, connection: &DesktopConnection) {
+        let Ok(mut slot) = self.inner.lock() else {
+            return;
+        };
+        if let Some(backend) = slot.as_mut() {
+            if backend.pid == pending.pid
+                && backend.launched_at_ms == pending.launched_at_ms
+                && backend.connection.is_none()
+            {
+                backend.connection = Some(connection.clone());
             }
         }
+    }
+
+    /// Kill the spawned backend iff the slot still holds this exact,
+    /// not-yet-ready launch (another caller may have already discarded,
+    /// cancelled, or replaced it).
+    fn discard_backend(&self, pending: &PendingBackend) {
+        if let Some(backend) = self.take_backend_if(|candidate| {
+            candidate.pid == pending.pid
+                && candidate.launched_at_ms == pending.launched_at_ms
+                && candidate.connection.is_none()
+        }) {
+            force_stop(backend);
+        }
+    }
+
+    /// Kill a spawned-but-not-ready backend — the user cancelled the wait.
+    fn cancel_startup(&self) {
+        if let Some(backend) = self.take_backend_if(|candidate| candidate.connection.is_none()) {
+            force_stop(backend);
+        }
+    }
+
+    fn take_backend_if(&self, matches: impl Fn(&OwnedBackend) -> bool) -> Option<OwnedBackend> {
+        self.inner.lock().ok().and_then(|mut slot| {
+            if slot.as_ref().is_some_and(matches) {
+                slot.take()
+            } else {
+                None
+            }
+        })
     }
 
     fn shutdown(&self) {
@@ -174,7 +436,7 @@ impl BackendManager {
         force_stop(backend);
     }
 
-    fn restart(&self, app: &AppHandle) -> Result<DesktopConnection, String> {
+    fn restart(&self, app: &AppHandle) -> Result<DesktopConnection, DesktopStartupFailure> {
         self.shutdown();
         self.connection(app)
     }
@@ -507,11 +769,19 @@ fn write_desktop_prefs_file(prefs: &DesktopPrefs) -> Result<(), String> {
 async fn desktop_connection(
     app: AppHandle,
     manager: State<'_, BackendManager>,
-) -> Result<DesktopConnection, String> {
+) -> Result<DesktopConnection, DesktopStartupFailure> {
     let manager = manager.inner().clone();
     tauri::async_runtime::spawn_blocking(move || manager.connection(&app))
         .await
-        .map_err(|error| format!("Kiki backend startup task failed: {error}"))?
+        .map_err(|error| {
+            DesktopStartupFailure::plain(format!("Kiki backend startup task failed: {error}"))
+        })?
+}
+
+/// Kill a spawned-but-not-ready backend: the user cancelled the boot wait.
+#[tauri::command]
+fn cancel_desktop_startup(manager: State<'_, BackendManager>) {
+    manager.cancel_startup();
 }
 
 #[tauri::command]
@@ -563,11 +833,13 @@ fn write_server_config(patch: DesktopServerConfigPatch) -> Result<DesktopServerC
 async fn restart_server(
     app: AppHandle,
     manager: State<'_, BackendManager>,
-) -> Result<DesktopConnection, String> {
+) -> Result<DesktopConnection, DesktopStartupFailure> {
     let manager = manager.inner().clone();
     tauri::async_runtime::spawn_blocking(move || manager.restart(&app))
         .await
-        .map_err(|error| format!("Kiki backend restart task failed: {error}"))?
+        .map_err(|error| {
+            DesktopStartupFailure::plain(format!("Kiki backend restart task failed: {error}"))
+        })?
 }
 
 fn kimi_home_dir() -> Result<PathBuf, String> {
@@ -910,6 +1182,7 @@ pub fn run() {
         .manage(manager)
         .invoke_handler(tauri::generate_handler![
             desktop_connection,
+            cancel_desktop_startup,
             show_main_window,
             read_desktop_prefs,
             write_desktop_prefs,
@@ -1145,5 +1418,80 @@ api_key = "secret-kept"
             parse_http_status_line(&vec![b'x'; MAX_HTTP_STATUS_LINE_BYTES + 1]),
             StatusLineParse::Invalid
         );
+    }
+
+    #[test]
+    fn exit_status_description_covers_code_signal_and_unknown() {
+        assert_eq!(
+            describe_exit(&TerminatedPayload {
+                code: Some(1),
+                signal: None
+            }),
+            "exit code 1"
+        );
+        assert_eq!(
+            describe_exit(&TerminatedPayload {
+                code: None,
+                signal: Some(9)
+            }),
+            "terminated by signal 9"
+        );
+        assert_eq!(
+            describe_exit(&TerminatedPayload {
+                code: None,
+                signal: None
+            }),
+            "no exit status reported"
+        );
+    }
+
+    #[test]
+    fn backend_monitor_tails_appends_and_reports_startup_failure() {
+        let root = env::temp_dir().join(format!(
+            "kiki-monitor-test-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let monitor = BackendMonitor::open(&root);
+
+        // Empty lines are noise, not diagnostics.
+        monitor.record_stderr_line("");
+        for index in 0..(STDERR_TAIL_LINES + 20) {
+            monitor.record_stderr_line(&format!("line-{index}"));
+        }
+
+        let failure =
+            monitor.startup_failure(4242, "exited during startup (exit code 3)".to_string());
+        assert_eq!(failure.stderr_tail.len(), STDERR_TAIL_LINES);
+        assert_eq!(failure.stderr_tail.first().unwrap(), "line-20");
+        assert_eq!(
+            failure.stderr_tail.last().unwrap(),
+            &format!("line-{}", STDERR_TAIL_LINES + 19)
+        );
+        assert!(failure.message.contains("pid 4242"));
+        assert!(failure.message.contains("exit code 3"));
+        assert!(failure
+            .message
+            .contains(&format!("stderr (last {STDERR_TAIL_LINES} lines)")));
+
+        // Every stderr line was appended to the on-disk log as well.
+        let log_path = failure.log_path.expect("log path should be reported");
+        assert!(log_path.ends_with(DESKTOP_BACKEND_LOG_FILE));
+        let logged = fs::read_to_string(&log_path).unwrap();
+        assert_eq!(logged.lines().count(), STDERR_TAIL_LINES + 20);
+        assert!(logged.ends_with(&format!("line-{}\n", STDERR_TAIL_LINES + 19)));
+
+        // Exit status starts unknown and becomes observable once.
+        assert!(monitor.exit().is_none());
+        monitor.set_exit(TerminatedPayload {
+            code: Some(1),
+            signal: None,
+        });
+        assert_eq!(
+            monitor.exit().map(|payload| payload.code),
+            Some(Some(1))
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }

@@ -842,4 +842,18 @@ export const zh: Record<I18nKey, string> = {
   'attach.tooMany': '每条消息最多 {max} 个附件。',
   'attach.readFailed': '无法读取 {name}',
   'attach.pastedImage': '粘贴的图片',
+
+  // Batch C
+  // ---- desktop boot / failure cards & provider network fallback ----
+  'connect.desktopBootingSpawning': '正在启动 Kiki 桌面后端…',
+  'connect.desktopBootingWaiting': '后端已启动，正在等待就绪（冷启动最长约 2 分钟）…',
+  'connect.desktopElapsed': '已等待 {seconds} 秒',
+  'connect.desktopCancel': '取消启动',
+  'connect.desktopFailedTitle': 'Kiki 桌面后端启动失败',
+  'connect.desktopLogPathLabel': '后端日志：',
+  'connect.desktopRetry': '重试启动',
+  'connect.desktopCopyDiagnostics': '复制诊断',
+  'connect.desktopCopied': '已复制',
+  'connect.desktopCancelled': '已取消桌面后端启动。',
+  'st.fetchModels.networkError': '无法连接到该地址（网络不可达、地址错误或被桌面安全策略拦截）。',
 };

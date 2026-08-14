@@ -860,4 +860,20 @@ export const en = {
   'attach.tooMany': 'At most {max} attachments per message.',
   'attach.readFailed': 'Could not read {name}',
   'attach.pastedImage': 'pasted image',
+
+  // Batch C
+  // ---- desktop boot / failure cards & provider network fallback ----
+  'connect.desktopBootingSpawning': 'Starting the Kiki desktop backend…',
+  'connect.desktopBootingWaiting':
+    'Backend started; waiting for it to become ready (a cold start can take up to ~2 minutes)…',
+  'connect.desktopElapsed': '{seconds}s elapsed',
+  'connect.desktopCancel': 'Cancel startup',
+  'connect.desktopFailedTitle': 'Kiki desktop backend failed to start',
+  'connect.desktopLogPathLabel': 'Backend log:',
+  'connect.desktopRetry': 'Retry startup',
+  'connect.desktopCopyDiagnostics': 'Copy diagnostics',
+  'connect.desktopCopied': 'Copied',
+  'connect.desktopCancelled': 'Desktop backend startup was cancelled.',
+  'st.fetchModels.networkError':
+    'Could not reach that address (network unreachable, wrong URL, or blocked by the desktop security policy).',
 } as const;

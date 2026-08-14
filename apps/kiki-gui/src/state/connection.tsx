@@ -27,6 +27,8 @@ import {
 } from 'react';
 
 import type { MetaResponse } from '@moonshot-ai/protocol';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 import { ConnectScreen } from '../components/ConnectScreen';
 import { translate, type I18nKey, type I18nParams } from '../i18n/locale';
@@ -46,6 +48,43 @@ import type { SessionController } from './sessionController';
 export type { ConnectionConfig } from './connectionConfig';
 
 const STORAGE_KEY = 'kiki.connection';
+const DESKTOP_STAGE_EVENT = 'kiki://desktop-backend-stage';
+
+/** Boot phase of the desktop-owned backend, for the boot card's copy. */
+export type DesktopBootStage = 'spawning' | 'waiting';
+
+export interface DesktopBootStatus {
+  readonly stage: DesktopBootStage;
+  readonly startedAtMs: number;
+}
+
+/** Structured failure from the Rust shell (`DesktopStartupFailure`). */
+export interface DesktopFailureInfo {
+  readonly message: string;
+  readonly stderrTail: readonly string[];
+  readonly logPath: string | null;
+}
+
+/** Shape the desktop backend rejection into the failure card's input. */
+export function normalizeDesktopFailure(error: unknown): DesktopFailureInfo {
+  if (error !== null && typeof error === 'object' && 'message' in error) {
+    const raw = error as { message?: unknown; stderrTail?: unknown; logPath?: unknown };
+    if (typeof raw.message === 'string') {
+      return {
+        message: raw.message,
+        stderrTail: Array.isArray(raw.stderrTail)
+          ? raw.stderrTail.filter((line): line is string => typeof line === 'string')
+          : [],
+        logPath: typeof raw.logPath === 'string' ? raw.logPath : null,
+      };
+    }
+  }
+  return {
+    message: error instanceof Error ? error.message : String(error),
+    stderrTail: [],
+    logPath: null,
+  };
+}
 
 /**
  * Connect-screen error: client-authored text carries a dictionary key so it
@@ -75,7 +114,7 @@ const ConnectionContext = createContext<ConnectionValue | null>(null);
 
 export function ConnectionProvider({ children }: { children: ReactNode }) {
   const desktopRuntime = isDesktopRuntime();
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const [selection, setSelection] = useState<ConnectionSelection | null>(() =>
     desktopRuntime
       ? null
@@ -87,7 +126,14 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const config = selection?.config ?? null;
   const [meta, setMeta] = useState<MetaResponse | null>(null);
   const [connectError, setConnectError] = useState<ConnectError | null>(null);
-  const [desktopBooting, setDesktopBooting] = useState(desktopRuntime);
+  const [desktopBoot, setDesktopBoot] = useState<DesktopBootStatus | null>(() =>
+    desktopRuntime ? { stage: 'spawning', startedAtMs: Date.now() } : null,
+  );
+  const [desktopFailure, setDesktopFailure] = useState<DesktopFailureInfo | null>(null);
+  /** Bumped by [重试启动] to re-run the desktop boot effect. */
+  const [desktopAttempt, setDesktopAttempt] = useState(0);
+  /** Set when the user cancels; keeps the kill's rejection from overwriting the card. */
+  const desktopCancelledRef = useRef(false);
   const [wsStatus, setWsStatus] = useState<WsStatus>('closed');
   const controllersRef = useRef(new Set<SessionController>());
 
@@ -97,10 +143,24 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!desktopRuntime) return;
     let cancelled = false;
+    desktopCancelledRef.current = false;
+    let unlisten: (() => void) | undefined;
+
+    // The shell reports when the sidecar exists and readiness polling began.
+    void listen<string>(DESKTOP_STAGE_EVENT, (event) => {
+      if (event.payload !== 'waiting') return;
+      setDesktopBoot((boot) => (boot === null ? boot : { ...boot, stage: 'waiting' }));
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    }, () => {
+      // Listening is cosmetic; the boot still proceeds without stage updates.
+    });
+
     void detectLocalConnection().then(
       (connection) => {
         if (cancelled) return;
-        setDesktopBooting(false);
+        setDesktopBoot(null);
         if (connection === null) {
           setConnectError({ kind: 'key', key: 'conn.desktopNoServer' });
           return;
@@ -113,18 +173,30 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       },
       (error: unknown) => {
         if (cancelled) return;
-        setDesktopBooting(false);
-        setConnectError({
-          kind: 'key',
-          key: 'conn.desktopStartFailed',
-          params: { detail: error instanceof Error ? error.message : String(error) },
-        });
+        setDesktopBoot(null);
+        if (desktopCancelledRef.current) return;
+        setDesktopFailure(normalizeDesktopFailure(error));
       },
     );
     return () => {
       cancelled = true;
+      unlisten?.();
     };
-  }, [desktopRuntime]);
+  }, [desktopRuntime, desktopAttempt]);
+
+  const retryDesktopBoot = useCallback(() => {
+    setDesktopFailure(null);
+    setConnectError(null);
+    setDesktopBoot({ stage: 'spawning', startedAtMs: Date.now() });
+    setDesktopAttempt((attempt) => attempt + 1);
+  }, []);
+
+  const cancelDesktopBoot = useCallback(() => {
+    desktopCancelledRef.current = true;
+    setDesktopBoot(null);
+    setDesktopFailure({ message: t('connect.desktopCancelled'), stderrTail: [], logPath: null });
+    void invoke('cancel_desktop_startup').catch(() => undefined);
+  }, [t]);
 
   const client = useMemo(
     () =>
@@ -163,6 +235,9 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
                 ? error.message
                 : String(error),
         });
+        // A failed deep link still carried a token; it must not sit in the
+        // address bar (retry happens from the form, not the URL).
+        scrubUrl();
       },
     );
     return () => {
@@ -252,6 +327,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     setMeta(null);
     setSelection(null);
     setConnectError(null);
+    // Abandoning the screen counts as giving up on the credential handoff.
+    scrubUrl();
   }, []);
 
   const connect = useCallback((next: ConnectionConfig, persist = true) => {
@@ -269,6 +346,21 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     return { config, client, socket, meta, wsStatus, disconnect };
   }, [config, client, socket, meta, wsStatus, disconnect]);
 
+  const connectErrorText =
+    connectError === null
+      ? null
+      : connectError.kind === 'key'
+        ? translate(locale, connectError.key, connectError.params)
+        : connectError.text;
+  // In desktop mode every failure (spawn, early exit, timeout, /meta) goes to
+  // the dedicated failure card; the browser URL/token form is meaningless
+  // there (the port is random and the token is process-owned).
+  const desktopFailureView =
+    desktopFailure ??
+    (desktopRuntime && connectErrorText !== null
+      ? { message: connectErrorText, stderrTail: [] as string[], logPath: null }
+      : null);
+
   return (
     <ConnectionContext.Provider value={value}>
       {value !== null ? (
@@ -278,16 +370,14 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       ) : (
         <ConnectScreen
           initial={config ?? { url: '', token: '' }}
-          connecting={desktopBooting || (config !== null && connectError === null)}
-          error={
-            connectError === null
-              ? null
-              : connectError.kind === 'key'
-                ? translate(locale, connectError.key, connectError.params)
-                : connectError.text
-          }
+          connecting={desktopBoot !== null || (config !== null && connectError === null)}
+          error={desktopRuntime ? null : connectErrorText}
           onConnect={connect}
-          onBack={config !== null ? disconnect : undefined}
+          onBack={desktopRuntime ? undefined : config !== null ? disconnect : undefined}
+          desktopBoot={desktopBoot}
+          desktopFailure={desktopFailureView}
+          onRetryDesktop={retryDesktopBoot}
+          onCancelDesktopBoot={cancelDesktopBoot}
         />
       )}
     </ConnectionContext.Provider>

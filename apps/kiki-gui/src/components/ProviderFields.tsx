@@ -386,7 +386,15 @@ export function ProviderFields({
       });
       setProbeFeedback({ tone: 'success', text: t('st.fetchModels.success', { count: models.length }) });
     } catch (error) {
-      setProbeFeedback({ tone: 'error', text: errorText(locale, error) });
+      // A failed fetch surfaces as a bare TypeError ("Failed to fetch") —
+      // unreachable host or a desktop CSP block; give it readable copy.
+      setProbeFeedback({
+        tone: 'error',
+        text:
+          error instanceof TypeError
+            ? t('st.fetchModels.networkError')
+            : errorText(locale, error),
+      });
     } finally {
       setProbing(false);
     }
