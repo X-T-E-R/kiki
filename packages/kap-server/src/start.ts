@@ -197,8 +197,6 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const host = opts.host ?? DEFAULT_HOST;
   const port = opts.port ?? DEFAULT_PORT;
   const homeDir = resolveKimiHome(opts.homeDir);
-  const externalDelegation =
-    opts.externalDelegation ?? externalDelegationAuthorityFromEnv(process.env);
   // Instance discovery: every server registers itself under
   // `<home>/server/instances/<serverId>.json`, so multiple servers can share
   // one homeDir and consumers (the CLI's `server ps/kill`, `kimi web`, dev
@@ -227,6 +225,18 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const enableTerminals = exposureClass === 'loopback' || opts.allowRemoteTerminals === true;
   const debugEndpoints = exposureClass === 'loopback' && opts.debugEndpoints === true;
   const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
+  // External delegation is an opt-in narrow edge: a missing, incomplete, or
+  // invalid authority configuration must not take the whole server down.
+  // Resolve it best-effort and warn instead of refusing to boot.
+  let externalDelegation: ExternalDelegationAuthorityConfig | undefined;
+  try {
+    externalDelegation = opts.externalDelegation ?? externalDelegationAuthorityFromEnv(process.env);
+  } catch (error) {
+    logger.warn(
+      { err: error instanceof Error ? error.message : String(error) },
+      'external delegation configuration is invalid; starting without the external delegation edge',
+    );
+  }
   const authFailureLimiter =
     exposureClass === 'loopback' ? undefined : createAuthFailureLimiter({ logger });
 
@@ -344,20 +354,14 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   try {
     await ensureExternalDelegationSession(core, externalDelegation);
   } catch (error) {
-    modelCatalogRefreshScheduler.dispose();
-    authFailureLimiter?.dispose();
-    try {
-      await drainSessionMetadataWrites();
-      await core.accessor.get(ISessionIndexMirror).drain();
-      core.dispose();
-      await drainSessionIndexMirror();
-      await drainGlobalSearchDisposals();
-      await drainQueryStoreDisposals();
-      await shutdownServerTelemetry(telemetry);
-    } finally {
-      await registration.release();
-    }
-    throw error;
+    // Fail-open: a delegation Session bootstrap failure (workspace/model
+    // binding drift, non-absolute path, etc.) is a narrow-edge problem, not a
+    // reason to refuse the whole server. Log it and start without the edge.
+    logger.warn(
+      { err: error instanceof Error ? error.message : String(error) },
+      'external delegation Session bootstrap failed; starting without the external delegation edge',
+    );
+    externalDelegation = undefined;
   }
 
   const app = Fastify({

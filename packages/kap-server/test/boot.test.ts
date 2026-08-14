@@ -249,6 +249,72 @@ describe('server-v2 boot', () => {
   });
 });
 
+describe('server-v2 boot — external delegation fail-open', () => {
+  let server: RunningServer | undefined;
+  let home: string | undefined;
+
+  const originalPrincipal = process.env['KIKI_EXTERNAL_PRINCIPAL_ID'];
+  const originalSession = process.env['KIKI_EXTERNAL_SESSION_ID'];
+  const originalToken = process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'];
+
+  afterEach(async () => {
+    if (server !== undefined) {
+      await server.close();
+      server = undefined;
+    }
+    if (home !== undefined) {
+      await rm(home, { recursive: true, force: true });
+      home = undefined;
+    }
+    if (originalPrincipal === undefined) delete process.env['KIKI_EXTERNAL_PRINCIPAL_ID'];
+    else process.env['KIKI_EXTERNAL_PRINCIPAL_ID'] = originalPrincipal;
+    if (originalSession === undefined) delete process.env['KIKI_EXTERNAL_SESSION_ID'];
+    else process.env['KIKI_EXTERNAL_SESSION_ID'] = originalSession;
+    if (originalToken === undefined) delete process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'];
+    else process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'] = originalToken;
+  });
+
+  it('starts without the delegation edge when the env authority is incomplete', async () => {
+    process.env['KIKI_EXTERNAL_PRINCIPAL_ID'] = 'example-principal';
+    // SESSION_ID and TOKEN stay unset → the env authority is incomplete.
+    home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-delegation-env-'));
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+    });
+
+    const healthz = await fetch(`http://127.0.0.1:${server.port}/api/v1/healthz`);
+    expect(healthz.status).toBe(200);
+  });
+
+  it('starts without the delegation edge when the Session bootstrap fails', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-delegation-bootstrap-'));
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      externalDelegation: {
+        principalId: 'example-principal',
+        sessionId: 'session-operator',
+        token: 'DELEGATION_SECRET',
+        sessionBootstrap: {
+          workspacePath: 'relative/workspace', // non-absolute → bootstrap throws
+          modelAlias: 'grok-4.6',
+          thinkingEffort: 'high',
+        },
+      },
+    });
+
+    const healthz = await fetch(`http://127.0.0.1:${server.port}/api/v1/healthz`);
+    expect(healthz.status).toBe(200);
+  });
+});
+
 function silentLogger() {
   return pino({ level: 'silent' });
 }
