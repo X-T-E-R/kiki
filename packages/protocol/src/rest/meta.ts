@@ -19,7 +19,8 @@ export const metaCapabilitiesSchema = z.object({
   mcp: z.literal(true),
   tasks: z.literal(true),
   terminal: z.literal(true).optional(),
-  thread_communication: z.literal(true),
+  /** Present only on servers that expose peer-thread communication (v2). */
+  thread_communication: z.literal(true).optional(),
 });
 
 export type MetaCapabilities = z.infer<typeof metaCapabilitiesSchema>;

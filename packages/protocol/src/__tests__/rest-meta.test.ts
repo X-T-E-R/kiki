@@ -44,6 +44,21 @@ describe('metaResponseSchema', () => {
     expect(metaResponseSchema.safeParse(bad).success).toBe(false);
   });
 
+  it('accepts an omitted thread_communication capability (old server) but rejects false', () => {
+    const { thread_communication: _omit, ...capabilitiesWithoutThreadComm } = sample.capabilities;
+    const parsed = metaResponseSchema.parse({
+      ...sample,
+      capabilities: capabilitiesWithoutThreadComm,
+    });
+    expect(parsed.capabilities.thread_communication).toBeUndefined();
+
+    const bad = {
+      ...sample,
+      capabilities: { ...sample.capabilities, thread_communication: false },
+    };
+    expect(metaResponseSchema.safeParse(bad).success).toBe(false);
+  });
+
   it('normalizes started_at to UTC Z with millisecond precision', () => {
     const offsetForm = {
       ...sample,
