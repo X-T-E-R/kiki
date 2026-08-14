@@ -5,6 +5,7 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';
+import type { ErrorCode } from '#/errors';
 import { ILogService } from '#/_base/log/log';
 import { IFlagService } from '#/app/flag/flag';
 import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
@@ -448,7 +449,7 @@ describe('SessionExternalDelegationService', () => {
 
   it('classifies quota, model, network, and validation failures onto the stable taxonomy', async () => {
     const service = ix.get(ISessionExternalDelegationService);
-    const cases: Array<{ code: string; category: string }> = [
+    const cases: Array<{ code: ErrorCode; category: string }> = [
       { code: 'provider.rate_limit', category: 'quota_exceeded' },
       { code: 'model.not_found', category: 'model_not_supported' },
       { code: 'provider.connection_error', category: 'network' },
