@@ -842,4 +842,14 @@ export const zh: Record<I18nKey, string> = {
   'attach.tooMany': '每条消息最多 {max} 个附件。',
   'attach.readFailed': '无法读取 {name}',
   'attach.pastedImage': '粘贴的图片',
+
+  // Batch B (fix/gui-connection-ux)：断线横幅动作、按运行时展示的快捷键
+  // （浏览器保留键标注桌面端专用）、Esc 分层说明、终端关闭失败。
+  'app.reconnectNow': '立即重连',
+  'app.disconnectedSendHint': '仍可发送，但消息可能无法送达，重连前也看不到实时回复。',
+  'shortcuts.escOverlay': '弹层或菜单打开时：Esc 先关闭它（优先级最高）',
+  'shortcuts.escTerminal': '终端面板打开时：Esc 其次关闭面板',
+  'shortcuts.escAbort': '其他情况：中止正在运行的回合 / 退出当前模式',
+  'shortcuts.desktopOnly': '桌面端专用',
+  'term.closeFailed': '无法关闭终端：{detail}',
 };

@@ -15,7 +15,9 @@
  *   - a shell that exits on its own leaves its tab behind as a dead state
  *     with the exit code and a restart affordance (`restart` spawns a
  *     replacement PTY with the same shell/cwd and swaps the tab's binding);
- *   - `kill` (user-confirmed in the UI) closes over REST and removes the tab;
+ *   - `kill` (user-confirmed in the UI) closes over REST and only then removes
+ *     the tab; a failed close keeps the tab with an error so it can be retried
+ *     (no server-side PTY left running with no UI to reach it);
  *   - an attach the server never answers flips the tab to `unavailable`
  *     instead of hanging, with a retry path.
  *
@@ -31,6 +33,7 @@ import type {
 } from '@moonshot-ai/protocol';
 
 import { appendPlainTail } from '../lib/ansi';
+import { API_CODES, ApiError } from '../lib/client';
 import type { TerminalSignal } from '../lib/ws';
 
 /** The socket surface the manager needs (KikiSocket satisfies it). */
@@ -78,7 +81,7 @@ export interface TerminalManagerState {
   /** Panel-level failure detail (list/create/restart threw). */
   readonly error: string | undefined;
   /** Which i18n key renders `error` — the panel looks it up. */
-  readonly errorKey: 'term.loadFailed' | 'term.createFailed';
+  readonly errorKey: 'term.loadFailed' | 'term.createFailed' | 'term.closeFailed';
 }
 
 interface TabRecord {
@@ -245,19 +248,36 @@ export class TerminalManager {
     this.attach(terminal.id);
   }
 
-  /** Kill the PTY over REST and drop its tab. */
-  async kill(id: string): Promise<void> {
+  /**
+   * Kill the PTY over REST. The tab is only dropped once the server confirms
+   * the close — removing it first and swallowing a network failure left the
+   * PTY running server-side with no UI left to reach it. A failed close keeps
+   * the tab, surfaces the error, and lets the user retry this same call.
+   * Resolves false when the close failed (the tab stays).
+   */
+  async kill(id: string): Promise<boolean> {
     const record = this.records.get(id);
-    if (record === undefined) return;
-    this.transport.terminalDetach(this.sessionId, id);
-    this.records.delete(id);
-    this.publishTabs();
+    if (record === undefined) return true;
     try {
       await this.client.closeTerminal(this.sessionId, id);
-    } catch {
-      // already gone server-side — the tab is removed either way
+    } catch (error) {
+      if (error instanceof ApiError && error.code === API_CODES.TERMINAL_NOT_FOUND) {
+        // Already gone server-side — removing the tab is safe.
+      } else {
+        this.publish({
+          error: error instanceof Error ? error.message : String(error),
+          errorKey: 'term.closeFailed',
+        });
+        return false;
+      }
     }
+    if (this.disposed) return true;
+    this.transport.terminalDetach(this.sessionId, id);
+    this.records.delete(id);
     record.outputListener = undefined;
+    this.publish({ error: undefined });
+    this.publishTabs();
+    return true;
   }
 
   /** Replace a dead tab's PTY with a fresh one (same shell + cwd). */

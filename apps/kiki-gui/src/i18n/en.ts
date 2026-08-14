@@ -860,4 +860,16 @@ export const en = {
   'attach.tooMany': 'At most {max} attachments per message.',
   'attach.readFailed': 'Could not read {name}',
   'attach.pastedImage': 'pasted image',
+
+  // Batch B (fix/gui-connection-ux): disconnect-banner actions, runtime-aware
+  // shortcut rows (browser-reserved combos marked desktop-only), layered Esc
+  // copy, terminal close failures.
+  'app.reconnectNow': 'Reconnect now',
+  'app.disconnectedSendHint':
+    'You can still send, but messages may not arrive and live replies will not show until reconnect.',
+  'shortcuts.escOverlay': 'Dialog or menu open: Esc closes it first (highest priority)',
+  'shortcuts.escTerminal': 'Terminal panel open: Esc closes the panel next',
+  'shortcuts.escAbort': 'Otherwise: abort the running turn / exit the current mode',
+  'shortcuts.desktopOnly': 'Desktop only',
+  'term.closeFailed': 'Could not close the terminal: {detail}',
 } as const;
