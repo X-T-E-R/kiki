@@ -552,14 +552,21 @@ describe('Kiki MCP catalog source', () => {
         KIKI_MCP_CONFIG_PATH: '/active/config.toml',
         KIKI_MCP_AGENT_PROFILE_HOME: '/active',
       }),
-    ).toThrow(/incomplete or unsafe/);
+    ).toThrow(/KIKI_MCP_CONFIG_READ_ONLY must be '1'/);
     expect(() =>
       externalCatalogSourceFromEnv({
         KIKI_MCP_CONFIG_PATH: 'config.toml',
         KIKI_MCP_AGENT_PROFILE_HOME: 'agents',
         KIKI_MCP_CONFIG_READ_ONLY: '1',
       }),
-    ).toThrow(/incomplete or unsafe/);
+    ).toThrow(/must be an absolute path/);
+    expect(() =>
+      externalCatalogSourceFromEnv({
+        KIKI_MCP_CONFIG_PATH: '/active/config.toml',
+        KIKI_MCP_AGENT_PROFILE_HOME: '/active',
+        KIKI_MCP_CONFIG_READ_ONLY: '0',
+      }),
+    ).toThrow(/KIKI_MCP_CONFIG_READ_ONLY must be '1'/);
   });
 });
 
