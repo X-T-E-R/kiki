@@ -9,7 +9,9 @@
  * Reconnect: exponential backoff with jitter; on every (re)open the socket
  * re-hello's and resubscribes the desired session set with the latest cursors.
  * Sessions the server flags `resync_required` are reported so the caller can
- * refetch a snapshot and adopt the fresh cursor.
+ * refetch a snapshot and adopt the fresh cursor. A server-sent fatal frame
+ * switches to a bounded auto-reconnect budget; once spent, only an explicit
+ * `nudge()` reconnects.
  */
 
 import type { SessionCursor } from '@moonshot-ai/protocol';
@@ -70,6 +72,13 @@ interface WireMessage {
 
 const BACKOFF_STEPS_MS = [500, 1000, 2000, 4000, 8000] as const;
 const STALE_INBOUND_MS = 45_000;
+/**
+ * Auto-reconnect attempts after a server-sent fatal frame. Normal drops retry
+ * on the backoff ladder indefinitely; a fatal (protocol-level) verdict gets a
+ * bounded budget, and once it is spent the socket stays closed until an
+ * explicit `nudge()` — the disconnect banner's "reconnect now" button.
+ */
+const FATAL_RECONNECT_ATTEMPTS = 4;
 /** Deadline for a terminal control ack (attach is the only awaited verb). */
 const TERMINAL_CONTROL_TIMEOUT_MS = 8_000;
 
@@ -104,6 +113,12 @@ export class KikiSocket {
   private readonly desired = new Map<string, SessionCursor>();
   private manuallyClosed = false;
   private reconnectAttempts = 0;
+  /**
+   * Remaining fatal-mode auto-reconnect attempts. `null` = normal mode
+   * (unlimited backoff retries); a positive number = a fatal frame was
+   * received and reconnects stop once the budget reaches zero.
+   */
+  private fatalRetriesLeft: number | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private helloReceived = false;
   private idCounter = 0;
@@ -136,14 +151,22 @@ export class KikiSocket {
   connect(): void {
     this.manuallyClosed = false;
     this.reconnectAttempts = 0;
+    this.fatalRetriesLeft = null;
     this.openSocket();
   }
 
   close(): void {
     this.manuallyClosed = true;
     this.clearReconnectTimer();
+    this.detachTransport();
+    this.events.onStatus('closed');
+  }
+
+  /** Tear the current transport down without touching the reconnect policy. */
+  private detachTransport(): void {
     const ws = this.ws;
     this.ws = null;
+    this.helloReceived = false;
     if (ws !== null && ws.readyState !== WebSocket.CLOSED) {
       try {
         ws.close();
@@ -151,7 +174,6 @@ export class KikiSocket {
         // already closing
       }
     }
-    this.events.onStatus('closed');
   }
 
   /** Upsert a subscription. Takes effect immediately when open, else on reconnect. */
@@ -204,6 +226,9 @@ export class KikiSocket {
     if (this.ws !== null && this.ws.readyState === WebSocket.CONNECTING) return;
     this.clearReconnectTimer();
     this.reconnectAttempts = 0;
+    // A manual reconnect after an exhausted fatal budget restarts that
+    // bounded cycle; a healthy stream (fatalRetriesLeft === null) is untouched.
+    if (this.fatalRetriesLeft !== null) this.fatalRetriesLeft = FATAL_RECONNECT_ATTEMPTS;
     if (this.ws === null) this.openSocket();
   }
 
@@ -367,10 +392,14 @@ export class KikiSocket {
       this.handleMessage(typeof event.data === 'string' ? event.data : '');
     };
     ws.onclose = (event) => {
-      if (this.ws === ws) this.ws = null;
+      const wasCurrent = this.ws === ws;
+      if (wasCurrent) this.ws = null;
       this.helloReceived = false;
       // Attach waiters must not hang until their timeout when the socket dies.
       this.failPendingTerminalControls('socket closed before the attach ack arrived');
+      // A transport that was already replaced or detached (fatal frame,
+      // manual close) has its own reconnect decision — never double-schedule.
+      if (!wasCurrent) return;
       this.events.onStatus('closed', `code ${event.code}`);
       this.scheduleReconnect();
     };
@@ -397,6 +426,9 @@ export class KikiSocket {
       case 'server_hello': {
         this.helloReceived = true;
         this.reconnectAttempts = 0;
+        // A live hello ends fatal-retry mode: drops from here on retry on the
+        // normal (unbounded) backoff ladder.
+        this.fatalRetriesLeft = null;
         this.helloCount += 1;
         // Accept the server's schema name (heartbeat_ms, ws-control.ts) and
         // the interval variant this client documented first.
@@ -459,7 +491,14 @@ export class KikiSocket {
         const payload = message.payload as { msg?: string; fatal?: boolean } | undefined;
         if (payload?.fatal === true) {
           this.events.onStatus('closed', payload.msg ?? 'fatal ws error');
-          this.close();
+          // A fatal frame used to park the socket as manually closed — no
+          // auto recovery and no way back in. Instead: retry on the normal
+          // backoff but only a bounded number of times (scheduleReconnect
+          // consumes fatalRetriesLeft); after that the socket stays closed
+          // until an explicit nudge() reopens it.
+          this.fatalRetriesLeft = FATAL_RECONNECT_ATTEMPTS;
+          this.detachTransport();
+          this.scheduleReconnect();
         }
         return;
       }
@@ -600,6 +639,12 @@ export class KikiSocket {
 
   private scheduleReconnect(): void {
     if (this.manuallyClosed) return;
+    if (this.fatalRetriesLeft !== null) {
+      // Fatal mode: stop once the bounded budget is spent; only nudge()
+      // (manual reconnect) restarts the cycle.
+      if (this.fatalRetriesLeft <= 0) return;
+      this.fatalRetriesLeft -= 1;
+    }
     this.clearReconnectTimer();
     const step = BACKOFF_STEPS_MS[Math.min(this.reconnectAttempts, BACKOFF_STEPS_MS.length - 1)]!;
     const jitter = Math.floor(Math.random() * step * 0.25);
