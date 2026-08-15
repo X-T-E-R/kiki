@@ -1,17 +1,83 @@
 /**
- * NewSessionPage — /new is the full-page draft conversation and the landing
- * route when no session exists. The workspace picker + Composer core is
- * shared with the Ctrl+N NewSessionDialog via `useNewSessionDraft`; the page
- * adds the wordmark header and the recent-sessions chips.
+ * NewSessionPage — the /new hero: wordmark headline + tagline, the workspace
+ * chip row, and recent-sessions chips. The composer itself is NOT rendered
+ * here — this route publishes it into the conversation shell's seat (same DOM
+ * node that docks at the bottom once the first send lands on /s/:id).
+ *
+ * The workspace picker + send path stay shared with the Ctrl+N
+ * NewSessionDialog via `useNewSessionDraft`; the dialog's panel layout is
+ * untouched.
  */
 
+import { useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
-import { NewSessionDraftPanel, useNewSessionDraft } from './NewSessionDraft';
+import { Composer } from './Composer';
+import { useConversationShell, useRegisterSeat, type ConversationSeat } from './ConversationShell';
+import { WorkspacePickerFields, useNewSessionDraft, type NewSessionDraftState } from './NewSessionDraft';
 import { Wordmark } from './Wordmark';
 import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
+
+/** Basename label for the workspace chip; separator-only paths echo raw. */
+function workspaceChipLabel(state: NewSessionDraftState): string | undefined {
+  const cwd = state.cwd.trim();
+  if (cwd !== '') {
+    const base = cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
+    return base !== '' ? base : cwd;
+  }
+  return state.effectiveWorkspace?.name;
+}
+
+/**
+ * The hero workspace chip (folder + label + chevron), transparent at rest and
+ * filled on hover/open. Opens a popover carrying the same workspace/cwd
+ * fields the dialog panel uses — the workspace stays switchable until the
+ * first message creates the session.
+ */
+function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const label = workspaceChipLabel(state);
+
+  return (
+    <div className="relative" data-hero-workspace>
+      <button
+        type="button"
+        onClick={() => { setOpen((value) => !value); }}
+        aria-label={t('hero.workspaceAria')}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        className="hero-workspace-chip flex max-w-[min(100%,360px)] items-center gap-1.5 rounded-full border border-transparent px-2.5 py-1 text-[12.5px] font-medium text-ink transition-colors"
+      >
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden className="shrink-0 text-ink-soft">
+          <path
+            d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.6a1.5 1.5 0 0 1 1.2.6l1 1.33a1.5 1.5 0 0 0 1.2.6h3A1.5 1.5 0 0 1 14 7v4.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-7Z"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span className="min-w-0 truncate">
+          {label ?? (state.workspacesLoading ? t('hero.workspaceLoading') : t('hero.chooseWorkspace'))}
+        </span>
+        <svg
+          width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden
+          className={`shrink-0 text-ink-faint transition-transform ${open ? 'rotate-180' : ''}`}
+        >
+          <path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {open ? (
+        <div className="anim-enter absolute bottom-8 left-1/2 z-30 w-[26rem] max-w-[calc(100vw-48px)] -translate-x-1/2 rounded-xl border border-hairline bg-panel p-3 text-left shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]">
+          <WorkspacePickerFields state={state} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => void }) {
   const { client } = useConnection();
@@ -19,6 +85,7 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const workspaceParam = searchParams.get('workspace') ?? undefined;
+  const { slots } = useConversationShell();
 
   const state = useNewSessionDraft({ initialWorkspaceId: workspaceParam });
 
@@ -27,54 +94,168 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
     queryFn: () => client.listSessions({ page_size: 5 }),
     staleTime: 5000,
   });
-  const recentSessions = recentQuery.data?.items ?? [];
+  const recentSessions = useMemo(() => recentQuery.data?.items ?? [], [recentQuery.data]);
+
+  const composerDisabled =
+    state.busy || state.workspacesLoading || state.effectiveWorkspace === undefined;
+  const cwd = state.cwd.trim();
+  const mentionScopeKey = cwd !== '' ? `cwd:${cwd}` : `ws:${state.effectiveWorkspace?.id ?? ''}`;
+
+  const fsSearch = useMemo(
+    () =>
+      // The session-less `@` picker searches the workspace directly
+      // (kap-server `POST /workspace/fs:search`); a custom cwd rides
+      // the same `workspace` slot as an absolute root.
+      cwd !== '' || state.effectiveWorkspace !== undefined
+        ? (query: string) =>
+            client
+              .workspaceFsSearch(cwd !== '' ? cwd : state.effectiveWorkspace!.id, {
+                query,
+                limit: 30,
+              })
+              .then((result) => result.items)
+        : undefined,
+    [client, cwd, state.effectiveWorkspace],
+  );
+
+  // The seat is the hero's composer card plus the phase flag. MEMOIZED: the
+  // shell re-publishes on identity change, so a fresh object per render would
+  // loop. Every reactive value the element reads is a dep.
+  const seat: ConversationSeat = useMemo(
+    () => ({
+      phase: 'hero',
+      composer: (
+        <Composer
+          busy={state.busy}
+          disabled={composerDisabled}
+          value={state.draft}
+          onChange={state.updateDraft}
+          model={state.modelOverride}
+          defaultModel={undefined}
+          serverDefaultModel={state.inheritedDefault}
+          modelSource={state.modelSource}
+          permissionMode={state.permissionMode}
+          planMode={state.planMode}
+          swarmMode={state.swarmMode}
+          goalObjective={state.goalObjective}
+          goalStatus={undefined}
+          goalControl={undefined}
+          efforts={state.supportedEfforts}
+          effort={state.effectiveEffort}
+          busyPlaceholder={t('new.creating')}
+          fsSearch={fsSearch}
+          attachments={state.attachments}
+          onChangeAttachments={state.setAttachments}
+          mentionScopeKey={mentionScopeKey}
+          onChangeModel={state.setModelOverride}
+          onChangePermissionMode={state.setPermissionMode}
+          onChangePlanMode={state.setPlanMode}
+          onChangeSwarmMode={state.setSwarmMode}
+          onChangeGoalObjective={state.setGoalObjective}
+          onChangeGoalControl={() => {}}
+          onChangeEffort={state.setEffortOverride}
+          onSend={state.send}
+        />
+      ),
+    }),
+    [
+      state.busy,
+      composerDisabled,
+      state.draft,
+      state.updateDraft,
+      state.modelOverride,
+      state.inheritedDefault,
+      state.modelSource,
+      state.permissionMode,
+      state.planMode,
+      state.swarmMode,
+      state.goalObjective,
+      state.supportedEfforts,
+      state.effectiveEffort,
+      fsSearch,
+      state.attachments,
+      state.setAttachments,
+      mentionScopeKey,
+      state.setModelOverride,
+      state.setPermissionMode,
+      state.setPlanMode,
+      state.setSwarmMode,
+      state.setGoalObjective,
+      state.setEffortOverride,
+      state.send,
+      t,
+    ],
+  );
+  useRegisterSeat(seat);
 
   return (
     <>
-      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
-        <button
-          type="button"
-          onClick={onToggleSidebar}
-          aria-label={t('sv.openMenuAria')}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden"
-        >
-          <span aria-hidden>☰</span>
-        </button>
-        <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
-          {t('new.title')}
-        </h1>
-      </header>
+      {slots.header !== null
+        ? createPortal(
+            <header className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
+              <button
+                type="button"
+                onClick={onToggleSidebar}
+                aria-label={t('sv.openMenuAria')}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden"
+              >
+                <span aria-hidden>☰</span>
+              </button>
+              <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
+                {t('new.title')}
+              </h1>
+            </header>,
+            slots.header,
+          )
+        : null}
 
-      <main className="flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-6 py-10">
-        <div className="w-full max-w-[760px]">
-          <div className="mb-8 text-center">
-            <Wordmark size="lg" />
-            <p className="mt-3 text-[13px] text-ink-soft">
-              {t('new.tagline')}
-            </p>
-          </div>
-
-          <NewSessionDraftPanel state={state} />
-
-          {recentSessions.length > 0 ? (
-            <div className="mt-6">
-              <p className="mb-2 text-[11px] font-medium text-ink-soft">{t('new.recent')}</p>
-              <div className="flex flex-wrap gap-2">
-                {recentSessions.map((session) => (
-                  <button
-                    key={session.id}
-                    type="button"
-                    onClick={() => void navigate(`/s/${session.id}`)}
-                    className="max-w-[200px] truncate rounded-full border border-hairline bg-panel px-3 py-1 text-[11.5px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
-                  >
-                    {session.title !== '' ? session.title : session.last_prompt ?? session.id}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : null}
+      {/* Hero chrome — centered with the shell-owned composer card as one
+          stack (see .conversation-shell[data-phase='hero'] in index.css). */}
+      <div className="flex w-full flex-col items-center px-6 pb-2 text-center">
+        <span className="hero-wordmark inline-flex cursor-default">
+          <Wordmark size="lg" />
+        </span>
+        <p className="mt-3 text-[13px] text-ink-soft">{t('new.tagline')}</p>
+        <div className="mt-4 flex min-w-0 items-center justify-center self-stretch">
+          <HeroWorkspaceChip state={state} />
         </div>
-      </main>
+      </div>
+
+      {state.error !== null && slots.dock !== null
+        ? createPortal(
+            <div className="px-6 pb-1.5">
+              <div className="mx-auto max-w-[var(--kiki-chat-content-width,760px)] rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-left font-mono text-[11.5px] text-danger">
+                {state.error}
+              </div>
+            </div>,
+            slots.dock,
+          )
+        : null}
+
+      {recentSessions.length > 0 && slots.heroFooter !== null
+        ? createPortal(
+            <div className="px-6 pt-4">
+              <div className="mx-auto max-w-[var(--kiki-chat-content-width,760px)]">
+                <p className="mb-2 text-center text-[11px] font-medium text-ink-soft">
+                  {t('new.recent')}
+                </p>
+                <div className="flex flex-wrap justify-center gap-2">
+                  {recentSessions.map((session) => (
+                    <button
+                      key={session.id}
+                      type="button"
+                      onClick={() => void navigate(`/s/${session.id}`)}
+                      className="max-w-[200px] truncate rounded-full border border-hairline bg-panel px-3 py-1 text-[11.5px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+                    >
+                      {session.title !== '' ? session.title : session.last_prompt ?? session.id}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>,
+            slots.heroFooter,
+          )
+        : null}
     </>
   );
 }

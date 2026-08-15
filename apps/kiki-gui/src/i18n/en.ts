@@ -471,6 +471,11 @@ export const en = {
   'new.recent': 'Recent sessions',
   'new.creating': 'Creating the session…',
 
+  // ---- hero (/new conversation shell) ----
+  'hero.chooseWorkspace': 'Choose workspace',
+  'hero.workspaceLoading': 'Loading workspaces…',
+  'hero.workspaceAria': 'Choose the workspace for this session',
+
   // ---- right rail ----
   'rail.goal': 'Goal',
   'rail.subagents': 'Subagents',

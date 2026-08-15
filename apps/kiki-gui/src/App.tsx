@@ -27,6 +27,7 @@ import {
 
 import { NewSessionDialog } from './components/NewSessionDialog';
 import { NewSessionPage } from './components/NewSessionPage';
+import { ConversationShell } from './components/ConversationShell';
 import { QuickSwitcher } from './components/QuickSwitcher';
 import { RestartBanner } from './components/RestartBanner';
 import { SessionRouteView } from './components/SessionView';
@@ -290,20 +291,24 @@ export function App() {
         <RestartBanner />
         <Routes>
           <Route path="/" element={<RootRedirect />} />
-          <Route
-            path="/new"
-            element={<NewSessionPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
-          />
-          <Route
-            path="/s/:id/*"
-            element={
-              <SessionRouteView
-                sessionId={activeSessionId}
-                onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
-                sessions={sessions}
-              />
-            }
-          />
+          {/* The conversation shell owns the composer mount across /new and
+              /s/:id/*, so sending the hero draft never remounts the textarea. */}
+          <Route element={<ConversationShell />}>
+            <Route
+              path="/new"
+              element={<NewSessionPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
+            />
+            <Route
+              path="/s/:id/*"
+              element={
+                <SessionRouteView
+                  sessionId={activeSessionId}
+                  onToggleSidebar={() => { setSidebarOpen((value) => !value); }}
+                  sessions={sessions}
+                />
+              }
+            />
+          </Route>
           <Route
             path="/settings/:section?"
             element={<SettingsPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}

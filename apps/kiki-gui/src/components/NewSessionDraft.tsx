@@ -4,9 +4,14 @@
  * owns draft persistence (`lib/drafts.ts` key "new"), model/permission state,
  * and the create-then-navigate send path, so opening either surface resumes
  * the same draft and sending behaves identically.
+ *
+ * The /new page no longer renders the Composer here: it registers this
+ * state into the conversation shell's composer seat (see NewSessionPage), so
+ * the textarea survives the hero → session transition. The dialog keeps
+ * rendering `NewSessionDraftPanel` itself (modal lifetime, remount is fine).
  */
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
@@ -81,10 +86,14 @@ export function useNewSessionDraft({
     staleTime: 30_000,
   });
   const workspaces = workspacesQuery.data?.items ?? [];
+  const workspacesLoading = workspacesQuery.isLoading;
 
-  const effectiveWorkspace: Workspace | undefined =
-    workspaces.find((w) => w.id === workspaceId) ??
-    workspaces.toSorted((a, b) => b.last_opened_at.localeCompare(a.last_opened_at))[0];
+  const effectiveWorkspace: Workspace | undefined = useMemo(
+    () =>
+      workspaces.find((w) => w.id === workspaceId) ??
+      workspaces.toSorted((a, b) => b.last_opened_at.localeCompare(a.last_opened_at))[0],
+    [workspaces, workspaceId],
+  );
 
   const configQuery = useQuery({
     queryKey: ['config'],
@@ -119,15 +128,44 @@ export function useNewSessionDraft({
     setDraft(readDraft(DRAFT_KEY));
   }, []);
 
-  const updateDraft = (text: string) => {
+  const updateDraft = useCallback((text: string) => {
     setDraft(text);
     writeDraft(DRAFT_KEY, text);
+  }, []);
+
+  // Refs keep the send path stable across renders: the /new page publishes a
+  // memoized composer element into the conversation shell, and a send that
+  // changes identity on every keystroke would defeat the memo.
+  const sendContextRef = useRef({
+    busy,
+    cwd,
+    effectiveWorkspace,
+    modelOverride,
+    effortOverride,
+    permissionMode,
+    planMode,
+    swarmMode,
+    goalObjective,
+    onSent,
+  });
+  sendContextRef.current = {
+    busy,
+    cwd,
+    effectiveWorkspace,
+    modelOverride,
+    effortOverride,
+    permissionMode,
+    planMode,
+    swarmMode,
+    goalObjective,
+    onSent,
   };
 
-  const send = (text: string, composerAttachments: readonly ComposerAttachment[]) => {
-    if (busy) return;
+  const send = useCallback((text: string, composerAttachments: readonly ComposerAttachment[]) => {
+    const context = sendContextRef.current;
+    if (context.busy) return;
     if (buildPromptContent(text, composerAttachments) === null) return;
-    const trimmedCwd = cwd.trim();
+    const trimmedCwd = context.cwd.trim();
     // A free-text cwd must be an absolute path — a relative one would be
     // resolved against the server's own cwd and silently land elsewhere.
     if (trimmedCwd !== '' && !isAbsoluteCwdPath(trimmedCwd)) {
@@ -140,7 +178,7 @@ export function useNewSessionDraft({
     const body =
       trimmedCwd !== ''
         ? { metadata: { cwd: trimmedCwd } }
-        : { workspace_id: effectiveWorkspace?.id };
+        : { workspace_id: context.effectiveWorkspace?.id };
 
     client
       .createSession(body)
@@ -152,29 +190,29 @@ export function useNewSessionDraft({
           state: {
             initialPrompt: text.trim(),
             initialAttachments: composerAttachments,
-            model: modelOverride,
+            model: context.modelOverride,
             // Explicit pick only: undefined omits `thinking` so the new
             // session follows the server's thinking default.
-            thinking: effortOverride,
-            permissionMode,
-            planMode,
-            swarmMode,
-            goalObjective,
+            thinking: context.effortOverride,
+            permissionMode: context.permissionMode,
+            planMode: context.planMode,
+            swarmMode: context.swarmMode,
+            goalObjective: context.goalObjective,
           },
           replace: false,
         });
-        onSent?.();
+        context.onSent?.();
       })
       .catch((error: unknown) => {
         setBusy(false);
         setError(error instanceof Error ? error.message : String(error));
       });
-  };
+  }, [client, navigate, t]);
 
-  const selectWorkspace = (nextId: string) => {
+  const selectWorkspace = useCallback((nextId: string) => {
     setWorkspaceId(nextId);
     if (nextId !== '') setCwd('');
-  };
+  }, []);
 
   return {
     draft,
@@ -189,7 +227,7 @@ export function useNewSessionDraft({
     goalObjective,
     modelOverride,
     workspaces,
-    workspacesLoading: workspacesQuery.isLoading,
+    workspacesLoading,
     effectiveWorkspace,
     serverDefaultModel,
     inheritedDefault,
@@ -213,9 +251,60 @@ export function useNewSessionDraft({
 export type NewSessionDraftState = ReturnType<typeof useNewSessionDraft>;
 
 /**
- * The workspace/cwd row plus Composer plus the inline error. `autoFocus`
- * focuses the Composer textarea on mount — used by the dialog so Ctrl+N lands
- * ready to type; the page keeps its historical unfocused first paint.
+ * The workspace select + free-text cwd pair, shared verbatim between the
+ * dialog's panel layout and the /new hero chip's popover.
+ */
+export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }) {
+  const { t } = useI18n();
+  const [cwdBlurred, setCwdBlurred] = useState(false);
+  const trimmedCwd = state.cwd.trim();
+  const cwdInvalid = trimmedCwd !== '' && !isAbsoluteCwdPath(trimmedCwd);
+
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <label className="text-[11px] font-medium text-ink-soft">{t('new.workspace')}</label>
+      <select
+        className="max-w-xs truncate rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink outline-none focus:border-accent"
+        value={state.workspaceId !== '' ? state.workspaceId : (state.effectiveWorkspace?.id ?? '')}
+        onChange={(event) => { state.selectWorkspace(event.target.value); }}
+        disabled={state.workspacesLoading}
+      >
+        {state.workspaces.length === 0 ? <option value="">{t('new.noWorkspaces')}</option> : null}
+        {state.workspaces.map((workspace) => (
+          <option key={workspace.id} value={workspace.id}>
+            {workspace.name}
+          </option>
+        ))}
+      </select>
+      <span className="text-[11px] text-ink-faint">{t('new.or')}</span>
+      <div className="min-w-0 flex-1">
+        <input
+          type="text"
+          value={state.cwd}
+          onChange={(event) => { state.setCwd(event.target.value); }}
+          onBlur={() => { setCwdBlurred(true); }}
+          aria-label={t('new.cwdAria')}
+          aria-invalid={cwdBlurred && cwdInvalid ? true : undefined}
+          placeholder={t('new.cwdPlaceholder')}
+          className={`min-w-0 flex-1 rounded-md border bg-paper px-2 py-1 font-mono text-[11.5px] text-ink outline-none placeholder:text-ink-faint focus:border-accent ${
+            cwdBlurred && cwdInvalid ? 'border-danger' : 'border-hairline'
+          }`}
+        />
+        {cwdBlurred && cwdInvalid ? (
+          <p role="alert" className="mt-1 text-[10.5px] text-danger">
+            {t('new.cwdInvalid')}
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The workspace/cwd row plus Composer plus the inline error — the modal form.
+ * `autoFocus` focuses the Composer textarea on mount — used by the dialog so
+ * Ctrl+N lands ready to type; the page keeps its historical unfocused first
+ * paint.
  */
 export function NewSessionDraftPanel({
   state,
@@ -227,10 +316,7 @@ export function NewSessionDraftPanel({
   const { client } = useConnection();
   const { t } = useI18n();
   const rootRef = useRef<HTMLDivElement>(null);
-  const [cwdBlurred, setCwdBlurred] = useState(false);
   const composerDisabled = state.busy || state.workspacesLoading || state.effectiveWorkspace === undefined;
-  const trimmedCwd = state.cwd.trim();
-  const cwdInvalid = trimmedCwd !== '' && !isAbsoluteCwdPath(trimmedCwd);
 
   // The dialog's initial `[data-autofocus]` focus lands while the Composer is
   // still disabled (workspaces query in flight), which silently fails. Once
@@ -246,42 +332,7 @@ export function NewSessionDraftPanel({
   return (
     <div ref={rootRef}>
       <div className="mb-6 space-y-3 rounded-2xl border border-hairline bg-panel p-4 shadow-[0_2px_4px_rgba(28,25,23,0.03),0_16px_40px_-20px_rgba(28,25,23,0.18)]">
-        <div className="flex flex-wrap items-center gap-3">
-          <label className="text-[11px] font-medium text-ink-soft">{t('new.workspace')}</label>
-          <select
-            className="max-w-xs truncate rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink outline-none focus:border-accent"
-            value={state.workspaceId !== '' ? state.workspaceId : (state.effectiveWorkspace?.id ?? '')}
-            onChange={(event) => { state.selectWorkspace(event.target.value); }}
-            disabled={state.workspacesLoading}
-          >
-            {state.workspaces.length === 0 ? <option value="">{t('new.noWorkspaces')}</option> : null}
-            {state.workspaces.map((workspace) => (
-              <option key={workspace.id} value={workspace.id}>
-                {workspace.name}
-              </option>
-            ))}
-          </select>
-          <span className="text-[11px] text-ink-faint">{t('new.or')}</span>
-          <div className="min-w-0 flex-1">
-            <input
-              type="text"
-              value={state.cwd}
-              onChange={(event) => { state.setCwd(event.target.value); }}
-              onBlur={() => { setCwdBlurred(true); }}
-              aria-label={t('new.cwdAria')}
-              aria-invalid={cwdBlurred && cwdInvalid ? true : undefined}
-              placeholder={t('new.cwdPlaceholder')}
-              className={`min-w-0 flex-1 rounded-md border bg-paper px-2 py-1 font-mono text-[11.5px] text-ink outline-none placeholder:text-ink-faint focus:border-accent ${
-                cwdBlurred && cwdInvalid ? 'border-danger' : 'border-hairline'
-              }`}
-            />
-            {cwdBlurred && cwdInvalid ? (
-              <p role="alert" className="mt-1 text-[10.5px] text-danger">
-                {t('new.cwdInvalid')}
-              </p>
-            ) : null}
-          </div>
-        </div>
+        <WorkspacePickerFields state={state} />
       </div>
 
       <Composer

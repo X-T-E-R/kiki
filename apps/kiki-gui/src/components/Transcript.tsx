@@ -943,7 +943,11 @@ export function Transcript({
       resize="smooth"
       role="log"
     >
-      <StickToBottom.Content className="mx-auto flex max-w-[760px] flex-col gap-4 px-6 py-6">
+      {/* Bottom clearance is 24px of breathing room + the 36px fade band the
+          shell's active composer seat overlaps (see index.css), so the last
+          block always rests fully above the fade. The column cap rides the
+          shell's shared width axis. */}
+      <StickToBottom.Content className="mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6 pt-6 pb-[60px]">
         <TopEdge state={state} onLoadOlder={onLoadOlder} />
         {nodes.map((node) => (
           <div key={nodeKey(node)} data-block-id={nodeKey(node)}>

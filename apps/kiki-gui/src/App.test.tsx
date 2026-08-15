@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { isEditableTarget } from './App';
+import { resolveFallbackPhase } from './components/ConversationShell';
 
 // App pulls the whole route tree; only the SessionView branch needs xterm
 // (no `self` under node) and none of it is under test here.
@@ -58,5 +59,12 @@ describe('isEditableTarget', () => {
     expect(isEditableTarget(new FakePlainDiv())).toBe(false);
     expect(isEditableTarget(null)).toBe(false);
     expect(isEditableTarget({ ...eventTargetStub })).toBe(false);
+  });
+});
+
+describe('conversation shell fallback phase', () => {
+  it('opens /new as the hero and a session route as settling until its seat registers', () => {
+    expect(resolveFallbackPhase(true)).toBe('hero');
+    expect(resolveFallbackPhase(false)).toBe('settling');
   });
 });

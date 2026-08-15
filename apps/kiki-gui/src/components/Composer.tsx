@@ -209,6 +209,17 @@ export function Composer({
   });
   const models = modelsQuery.data?.items ?? [];
 
+  // The composer mount now survives route changes (the conversation shell owns
+  // it), so session-scoped transient UI must reset when the session under it
+  // changes: an open menu would otherwise filter A's catalog with B's draft.
+  const previousSessionIdRef = useRef(sessionId);
+  useEffect(() => {
+    if (previousSessionIdRef.current === sessionId) return;
+    previousSessionIdRef.current = sessionId;
+    setMenu(null);
+    setSlashConfirm(null);
+  }, [sessionId]);
+
   // Skill catalog for the slash menu — session-scoped on the wire (the
   // catalog depends on the session cwd); /new gets client shortcuts only.
   const skillsQuery = useQuery({
@@ -493,9 +504,38 @@ export function Composer({
 
   const effectiveModel = model ?? defaultModel ?? serverDefaultModel;
 
+  // Focus continuity across a busy flip: becoming `disabled` force-blurs the
+  // textarea (platform behavior), which used to be invisible because the
+  // composer remounted on route changes anyway. With the resident shell seat
+  // the node survives — so a blur CAUSED by the disable (element already
+  // disabled at blur time) arms a one-shot refocus when the composer
+  // re-enables. A deliberate click-away while enabled never arms it, and a
+  // cold session open (never focused) has nothing to restore.
+  //
+  // The arming listener is NATIVE: Chromium fires `blur` but not `focusout`
+  // when disabling a focused element, and React's onBlur is focusout-based —
+  // it never sees this blur (verified via .tmp/focus-probe.mjs).
+  const refocusOnEnableRef = useRef(false);
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (textarea === null) return;
+    const armOnDisableBlur = () => {
+      if (textarea.disabled) refocusOnEnableRef.current = true;
+    };
+    textarea.addEventListener('blur', armOnDisableBlur);
+    return () => textarea.removeEventListener('blur', armOnDisableBlur);
+  }, []);
+  useEffect(() => {
+    if (disabled || !refocusOnEnableRef.current) return;
+    refocusOnEnableRef.current = false;
+    textareaRef.current?.focus();
+  }, [disabled]);
+
   return (
     <div className="px-6 pb-5">
-      <div className="mx-auto max-w-[760px]">
+      {/* One width axis with the transcript: the conversation shell declares
+          --kiki-chat-content-width; 760px fallback covers the Ctrl+N dialog. */}
+      <div className="mx-auto max-w-[var(--kiki-chat-content-width,760px)]">
         <div
           className="rounded-2xl border border-hairline bg-panel shadow-[0_2px_4px_rgba(28,25,23,0.03),0_16px_40px_-20px_rgba(28,25,23,0.18)]"
           onDragOver={(event) => {
@@ -830,7 +870,12 @@ export function Composer({
                 }
               }}
               onClick={(event) => { refreshMenu(text, event.currentTarget.selectionStart); }}
-              onBlur={() => { setMenu(null); }}
+              onBlur={(event) => {
+                setMenu(null);
+                // Redundant arming path for engines that DO fire focusout on
+                // disable; the native listener above covers Chromium.
+                if (event.currentTarget.disabled) refocusOnEnableRef.current = true;
+              }}
               onPaste={(event) => {
                 const files = [...event.clipboardData.files];
                 if (files.length === 0) return;
