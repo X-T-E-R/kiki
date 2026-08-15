@@ -122,7 +122,7 @@ describe('settings persistence and validation', () => {
     expect(readRestartRequirement().fields).toEqual(['subagent']);
     // A new change re-arms the banner even within this acknowledged run.
     let second = markRestartRequired(['telemetry']);
-    if (second.changedAt === first.changedAt) second = markRestartRequired(['mcp']);
+    while (second.changedAt === first.changedAt) second = markRestartRequired(['mcp']);
     expect(isRestartRequirementAcknowledged(second)).toBe(false);
     clearRestartRequirement();
   });
