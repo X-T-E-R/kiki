@@ -18,6 +18,9 @@ export default defineConfig({
     __KIKI_PROXY_TARGET__: JSON.stringify(serverTarget),
   },
   server: {
+    // Pin IPv4: a bare 'localhost' bind can land on ::1 only on dual-stack
+    // Windows, and Chromium then hangs resolving localhost to 127.0.0.1.
+    host: '127.0.0.1',
     port: webPort,
     // An explicitly demanded port (the proof sets KIKI_GUI_PORT) must bind or
     // fail loudly — never slide to a neighbouring port while a zombie serves

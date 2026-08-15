@@ -18,6 +18,7 @@
  */
 
 import { spawn, execSync } from 'node:child_process';
+import { createServer } from 'node:net';
 import { mkdirSync, rmSync } from 'node:fs';
 import net from 'node:net';
 import { dirname, join } from 'node:path';
@@ -30,10 +31,27 @@ import { selectProofOutput } from './visual-proof-options.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-const FIXTURE_PORT = Number(process.env.KIKI_PROOF_FIXTURE_PORT ?? 58901);
-const WEB_PORT = Number(process.env.KIKI_PROOF_WEB_PORT ?? 5179);
-const FIXTURE_URL = `http://127.0.0.1:${FIXTURE_PORT}`;
-const WEB_URL = `http://localhost:${WEB_PORT}`;
+// Ports are OS-assigned at run start unless pinned by env: Windows
+// Hyper-V/WSL keeps shifting its excluded port ranges (today 51695–51794),
+// and a hardcoded port inside one accepts the bind yet black-holes Chromium's
+// loopback connects. An OS-assigned port dodges the exclusions by
+// construction.
+let FIXTURE_PORT = Number(process.env.KIKI_PROOF_FIXTURE_PORT ?? 0);
+let WEB_PORT = Number(process.env.KIKI_PROOF_WEB_PORT ?? 0);
+let FIXTURE_URL = '';
+let WEB_URL = '';
+
+/** Ask the OS for a free loopback port (skipped by exclusion ranges). */
+async function freePort() {
+  const probe = createServer();
+  await new Promise((resolve, reject) => {
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', resolve);
+  });
+  const { port } = probe.address();
+  await new Promise((resolve) => { probe.close(() => resolve()); });
+  return port;
+}
 
 /** UI language for the run; the app defaults to English when unset. */
 const LOCALE = process.env.KIKI_PROOF_LOCALE === 'zh' ? 'zh' : 'en';
@@ -728,7 +746,9 @@ async function scenarioSettings() {
   await page.waitForTimeout(300);
   await shot('settings-providers-wizard');
 
-  await page.click(`text=${S.capabilities}`);
+  // Scope to the settings section nav: the app sidebar also has a top-level
+  // "Capabilities" entry, and a bare text= click hits that one first.
+  await page.locator('nav').getByText(S.capabilities, { exact: true }).click();
   // The unsaved wizard draft arms the dirty guard: confirm the discard so the
   // navigation proceeds (the dialog itself is proof the guard fired).
   await page.waitForSelector(`text=${S.dirtyDiscard}`, { timeout: 5000 });
@@ -1727,6 +1747,10 @@ rmSync(SHOTS, { recursive: true, force: true });
 mkdirSync(SHOTS, { recursive: true });
 
 async function main() {
+  if (FIXTURE_PORT === 0) FIXTURE_PORT = await freePort();
+  if (WEB_PORT === 0) WEB_PORT = await freePort();
+  FIXTURE_URL = `http://127.0.0.1:${FIXTURE_PORT}`;
+  WEB_URL = `http://127.0.0.1:${WEB_PORT}`;
   killPort(FIXTURE_PORT);
   killPort(WEB_PORT);
   await waitForPortFree(FIXTURE_PORT);
@@ -1767,13 +1791,18 @@ async function main() {
   process.on('exit', () => vite.kill());
 
   try {
-    await waitForServer(WEB_URL);
+    // Cold vite on this monorepo can take ~20s+ to open its listener after
+    // the "ready" banner (plugin/transform warmup) — give it real headroom.
+    await waitForServer(WEB_URL, 90_000);
     if (viteExited !== null) {
       throw new Error(`vite dev server exited early (code ${viteExited}) — refusing to run against a stale listener on ${WEB_URL}`);
     }
     console.log(`[proof] web up at ${WEB_URL}`);
 
-    const browser = await chromium.launch();
+    // Bypass any system proxy: the proof only ever talks to loopback, and a
+    // machine-level proxy (or TUN-mode tool) can otherwise hijack Chromium's
+    // loopback navigation between runs.
+    const browser = await chromium.launch({ args: ['--no-proxy-server'] });
     const bootPage = async () => {
       const next = await browser.newPage({ viewport: { width: 1440, height: 900 } });
       next.on('pageerror', (error) => console.error(`[pageerror] ${error}`));
@@ -1798,6 +1827,13 @@ async function main() {
     console.log(`[proof] locale: ${LOCALE}`);
 
     const deepLink = `${WEB_URL}/?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+    // Warm vite's transform pipeline before Chromium's first load: a cold dev
+    // server on a loaded machine can spend tens of seconds in dep
+    // re-optimization, and the 30s/45s navigation budgets wedge on it (the
+    // listener answers waitForServer long before the first document finishes
+    // transforming).
+    await fetch(WEB_URL).catch(() => undefined);
+    await fetch(`${WEB_URL}/src/main.tsx`).catch(() => undefined);
     // domcontentloaded + an explicit app-ready selector: the app opens a WS
     // and polls sessions on a 5s cadence, so 'networkidle' is never a
     // reliable condition (30s startup flake under cold vite transforms).
@@ -1805,14 +1841,14 @@ async function main() {
     // entirely (a half-recycled port answers waitForServer's plain fetch but
     // never serves the document): retry once with a fresh page before failing.
     try {
-      await page.goto(deepLink, { waitUntil: 'domcontentloaded' });
+      await page.goto(deepLink, { waitUntil: 'domcontentloaded', timeout: 120_000 });
     } catch (error) {
       console.log(`[proof] first navigation failed (${error.message}) — retrying on a fresh page`);
       await page.close().catch(() => undefined);
       page = await bootPage();
-      await page.goto(deepLink, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+      await page.goto(deepLink, { waitUntil: 'domcontentloaded', timeout: 150_000 });
     }
-    await page.waitForSelector(`text=${S.newSession}`, { timeout: 30_000 });
+    await page.waitForSelector(`text=${S.newSession}`, { timeout: 60_000 });
     console.log('[proof] connected to fixture');
 
     for (const [name, run] of SCENARIOS) {
