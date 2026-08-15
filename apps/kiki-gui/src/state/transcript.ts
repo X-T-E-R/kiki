@@ -480,6 +480,7 @@ const BASH_INPUT_RE = /<bash-input>([\s\S]*?)<\/bash-input>/i;
 const BASH_STDOUT_RE = /<bash-stdout>([\s\S]*?)<\/bash-stdout>/i;
 const BASH_STDERR_RE = /<bash-stderr>([\s\S]*?)<\/bash-stderr>/i;
 const CRON_FIRE_RE = /<cron-fire\b[\s\S]*?<\/cron-fire>/i;
+const TASK_NOTIFICATION_RE = /<notification\b[^>]*>([\s\S]*?)<\/notification>/i;
 
 function unescapeXml(text: string): string {
   return text
@@ -487,6 +488,20 @@ function unescapeXml(text: string): string {
     .replaceAll('&gt;', '>')
     .replaceAll('&quot;', '"')
     .replaceAll('&amp;', '&');
+}
+
+/**
+ * Peel a `<notification …>…</notification>` injection envelope (the engine's
+ * model-visible task-notification wrapper), keeping the human-readable inner
+ * lines plus any surrounding prose. undefined when no envelope is present.
+ */
+function splitTaskNotification(text: string): string | undefined {
+  const match = TASK_NOTIFICATION_RE.exec(text);
+  if (match === null) return undefined;
+  const inner = (match[1] ?? '').trim();
+  const rest = `${text.slice(0, match.index)}${text.slice(match.index + match[0].length)}`.trim();
+  if (inner === '') return rest === '' ? undefined : rest;
+  return rest === '' ? inner : `${rest}\n\n${inner}`;
 }
 
 function parseHistoricalShell(
@@ -617,6 +632,18 @@ export function classifyTranscriptText(input: {
       text: split.text,
       reminders: split.reminders,
       systemVariant: 'cron_job',
+    };
+  }
+  // Origin-less `<notification>` envelopes are injected task notifications —
+  // never a typed user prompt, so never the You lane.
+  const notification = splitTaskNotification(split.text);
+  if (notification !== undefined) {
+    return {
+      lane: 'system',
+      origin,
+      text: notification,
+      reminders: split.reminders,
+      systemVariant: 'task',
     };
   }
   if (split.text === '' && split.reminders.length > 0) {
@@ -1073,8 +1100,16 @@ export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Bloc
             if (frame.role === 'user') {
               const frameOrigin = originFromFrame(frame);
               const turnOrigin = originFromTurnItem(item);
+              // A task-linked user frame without its own origin is an injected
+              // task notification (pre-patch servers ship exactly this shape):
+              // never let it inherit the enclosing turn's user origin.
+              const taskOrigin =
+                frame.taskId !== undefined
+                  ? { kind: 'task', taskId: frame.taskId }
+                  : undefined;
               const origin =
                 frameOrigin ??
+                taskOrigin ??
                 (isUserVisibleOrigin(turnOrigin) ? turnOrigin : undefined);
               blocks.push(
                 ...classifiedTextToBlocks({

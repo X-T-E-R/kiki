@@ -1151,6 +1151,64 @@ async function scenarioReminder() {
   await shot('reminder-expanded');
 }
 
+async function scenarioTaskNotifiedMidturn() {
+  await selectSession('Fixture: task notified mid-turn');
+  await waitForText('Suite is green — 42 passed.');
+  // Positive control: the typed prompt is the only You bubble.
+  const bubbles = page.locator('[role="log"] [data-block-id^="user-"]');
+  if ((await bubbles.count()) !== 1) {
+    throw new Error(`expected exactly one user bubble, saw ${await bubbles.count()}`);
+  }
+  const bubbleText = await bubbles.first().innerText();
+  if (!bubbleText.includes('Run the fixture suite in the background.')) {
+    throw new Error('user text missing from the bubble');
+  }
+  if (bubbleText.includes('Background process completed') || bubbleText.includes('<notification')) {
+    throw new Error('task notification leaked into the user bubble');
+  }
+  // Both notification shapes (origin-carried + bare envelope) land collapsed
+  // on the left system/task lane.
+  const systemRows = page.locator('[role="log"] [data-block-id^="system-"]');
+  if ((await systemRows.count()) !== 2) {
+    throw new Error(`expected 2 system rows, saw ${await systemRows.count()}`);
+  }
+  if ((await page.locator('text=pnpm test — 42 passed').count()) !== 0) {
+    throw new Error('collapsed notification body rendered before expansion');
+  }
+  await shot('task-notified-collapsed');
+  await systemRows.first().locator('button').first().click();
+  await waitForText('pnpm test — 42 passed');
+  await page.waitForTimeout(300);
+  await shot('task-notified-expanded');
+}
+
+async function scenarioInjectionLanes() {
+  await selectSession('Fixture: injection lanes');
+  await waitForText('Nightly job fired on schedule');
+  // Positive control: only the typed prompt is a You bubble.
+  const bubbles = page.locator('[role="log"] [data-block-id^="user-"]');
+  if ((await bubbles.count()) !== 1) {
+    throw new Error(`expected exactly one user bubble, saw ${await bubbles.count()}`);
+  }
+  const bubbleText = await bubbles.first().innerText();
+  if (!bubbleText.includes('Keep an eye on the nightly job.')) {
+    throw new Error('user text missing from the bubble');
+  }
+  for (const leaked of ['cron-fire', 'SKILL.md', 'Continue toward the goal', 'Earlier context summarized']) {
+    if (bubbleText.includes(leaked)) throw new Error(`injection leaked into the user bubble: ${leaked}`);
+  }
+  // cron + compaction + non-slash skill + goal continuation: four left-lane
+  // system rows, all collapsed (bodies hidden until expanded).
+  const systemRows = page.locator('[role="log"] [data-block-id^="system-"]');
+  if ((await systemRows.count()) !== 4) {
+    throw new Error(`expected 4 system rows, saw ${await systemRows.count()}`);
+  }
+  if ((await page.locator('text=Continue toward the goal').count()) !== 0) {
+    throw new Error('collapsed injection body rendered before expansion');
+  }
+  await shot('injection-lanes');
+}
+
 async function scenarioSubagentApproval() {
   await selectSession('Fixture: subagent approval');
   await sendPrompt('Clean the build output.');
@@ -1707,6 +1765,8 @@ const SCENARIOS = [
   ['burst', scenarioBurst],
   ['long-transcript', scenarioLongTranscript],
   ['reminder', scenarioReminder],
+  ['task-notified-midturn', scenarioTaskNotifiedMidturn],
+  ['injection-lanes', scenarioInjectionLanes],
   ['error-abort', scenarioErrorAbort],
   ['approvals-gallery', scenarioApprovalsGallery],
   ['reconnect', scenarioReconnect],

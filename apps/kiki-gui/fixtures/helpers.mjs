@@ -28,6 +28,11 @@ export function userMsg(sessionId, text, minutesAgo = 0) {
   };
 }
 
+/** User-role message carrying an engine prompt origin (`metadata.origin`). */
+export function originMsg(sessionId, text, origin, minutesAgo = 0) {
+  return { ...userMsg(sessionId, text, minutesAgo), metadata: { origin } };
+}
+
 /** Assistant message; parts: string (text) | {thinking} | {toolUse:{id,name,input}} */
 export function assistantMsg(sessionId, parts, minutesAgo = 0) {
   const content = parts.map((part) => {

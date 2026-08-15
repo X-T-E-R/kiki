@@ -835,6 +835,10 @@ export class AgentTranscriptProjector {
       role: 'user',
       text: `${event.title}\n${event.body}`.trim(),
       taskId: event.sourceId,
+      // Provenance for view-layer lane classification: without an origin the
+      // client falls back to the enclosing turn's origin (usually the user's)
+      // and mis-renders the notification as a right-side user bubble.
+      origin: { kind: 'task', taskId: event.sourceId },
     };
     return [{ op: 'frame.upsert', turnId: turn.turnId, stepId: step.stepId, frame }];
   }

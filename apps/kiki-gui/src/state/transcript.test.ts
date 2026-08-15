@@ -218,6 +218,61 @@ describe('agentTranscriptToBlocks', () => {
     expect((blocks[0] as SystemBlock).variant).toBe('task');
   });
 
+  it('renders a mid-turn task notification frame as left-lane system, never You', () => {
+    const steps = [
+      {
+        stepId: 'step-1',
+        frames: [
+          { kind: 'text', frameId: 'asst-1', role: 'assistant', text: 'Working on it.' },
+          // Patched server shape: origin rides the frame.
+          {
+            kind: 'text',
+            frameId: 'note-1',
+            role: 'user',
+            text: 'Background process completed\npnpm test — 42 passed',
+            taskId: 'task_1',
+            origin: { kind: 'task', taskId: 'task_1' },
+          },
+          // Pre-patch shape: taskId only, no origin — still not You.
+          {
+            kind: 'text',
+            frameId: 'note-2',
+            role: 'user',
+            text: 'Background agent completed\nreview finished',
+            taskId: 'task_2',
+          },
+          // Positive control: a plain user frame in the user turn stays You.
+          { kind: 'text', frameId: 'steer-1', role: 'user', text: 'also update the docs' },
+        ],
+      },
+    ];
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'main',
+      has_more: false,
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't1',
+          prompt: 'Fix the flaky test.',
+          origin: { kind: 'user' },
+          steps,
+        } as never,
+      ],
+    });
+    expect(blocks.map((block) => block.kind)).toEqual([
+      'user',
+      'assistant',
+      'system',
+      'system',
+      'user',
+    ]);
+    const systemBlocks = blocks.filter((block): block is SystemBlock => block.kind === 'system');
+    expect(systemBlocks.map((block) => block.variant)).toEqual(['task', 'task']);
+    expect(systemBlocks[0]?.text).toContain('Background process completed');
+    expect(systemBlocks[1]?.text).toContain('review finished');
+    expect((blocks[4] as UserBlock).text).toBe('also update the docs');
+  });
+
   it('does not render splice undo/clear markers as notice copy', () => {
     const blocks = agentTranscriptToBlocks({
       agent_id: 'child-1',
@@ -1197,6 +1252,25 @@ describe('classifyTranscriptText', () => {
   it('keeps a missing-origin role=user message as You', () => {
     const classified = classifyTranscriptText({
       text: 'plain user words',
+      role: 'user',
+    });
+    expect(classified.lane).toBe('you');
+  });
+
+  it('reclassifies an origin-less <notification> envelope as system/task, never You', () => {
+    const classified = classifyTranscriptText({
+      text: '<notification id="n1" category="task" type="task.completed" source_kind="background_task" source_id="task_1">\nTitle: Background process completed\npnpm test — 42 passed\n</notification>',
+      role: 'user',
+    });
+    expect(classified.lane).toBe('system');
+    expect(classified.systemVariant).toBe('task');
+    expect(classified.text).not.toContain('<notification');
+    expect(classified.text).toContain('pnpm test — 42 passed');
+  });
+
+  it('keeps prose merely mentioning notifications on the You lane', () => {
+    const classified = classifyTranscriptText({
+      text: 'please add a <notification> element to the settings page',
       role: 'user',
     });
     expect(classified.lane).toBe('you');
