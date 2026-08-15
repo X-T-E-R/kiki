@@ -27,6 +27,7 @@ import {
 
 import { NewSessionDialog } from './components/NewSessionDialog';
 import { NewSessionPage } from './components/NewSessionPage';
+import { CapabilitiesPage } from './components/capabilities/CapabilitiesPage';
 import { QuickSwitcher } from './components/QuickSwitcher';
 import { RestartBanner } from './components/RestartBanner';
 import { SessionRouteView } from './components/SessionView';
@@ -99,6 +100,7 @@ export function App() {
   const isNewRoute = useMatch('/new') !== null;
   const isSettingsRoute = useMatch('/settings/*') !== null;
   const isUsageRoute = useMatch('/usage') !== null;
+  const isCapabilitiesRoute = useMatch('/capabilities') !== null;
 
   const sessionsQuery = useInfiniteQuery({
     queryKey: ['sessions', showArchived],
@@ -142,14 +144,17 @@ export function App() {
             ? { kind: 'settings' }
             : isUsageRoute
               ? { kind: 'usage' }
-              : { kind: 'other' };
+              : isCapabilitiesRoute
+                ? { kind: 'capabilities' }
+                : { kind: 'other' };
     document.title = resolveWindowTitle(route, sessions, {
       untitled: t('sidebar.untitled'),
       newSession: t('new.title'),
       settings: t('st.title'),
       usage: t('usage.title'),
+      capabilities: t('cap.title'),
     });
-  }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute, sessions, t]);
+  }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute, isCapabilitiesRoute, sessions, t]);
 
   // ⌘N / Ctrl+N opens the new-session dialog from any route; ⌘K / Ctrl+K
   // toggles the quick switcher; Ctrl+Tab jumps to the most recent other
@@ -242,7 +247,7 @@ export function App() {
   // Close mobile sidebar on route change.
   useEffect(() => {
     setSidebarOpen(false);
-  }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute]);
+  }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute, isCapabilitiesRoute]);
 
   // Escape closes the mobile sidebar drawer (the backdrop swallows pointer
   // events, so the key must be handled globally while it is open).
@@ -311,6 +316,10 @@ export function App() {
           <Route
             path="/usage"
             element={<UsagePage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
+          />
+          <Route
+            path="/capabilities"
+            element={<CapabilitiesPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
           />
           <Route path="*" element={<RootRedirect />} />
         </Routes>

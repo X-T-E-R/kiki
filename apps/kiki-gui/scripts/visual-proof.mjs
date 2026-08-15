@@ -113,6 +113,13 @@ const STRINGS = {
     terminalEmpty: 'No terminals yet',
     terminalKillConfirm: 'sure?',
     terminalExited: 'Process exited (code 0)',
+    capPlugin: 'Plugin skills',
+    capBuiltin: 'Built-in skills',
+    capFilterAria: 'Filter capabilities',
+    capEmptyFilter: 'No capabilities match',
+    capNoWorkspace: 'No workspace is registered',
+    capLoadFailed: 'Could not load capabilities',
+    capRestartRequested: 'Restart requested.',
   },
   zh: {
     newSession: '新会话',
@@ -182,6 +189,13 @@ const STRINGS = {
     terminalEmpty: '还没有终端',
     terminalKillConfirm: '确认？',
     terminalExited: '进程已退出（代码 0）',
+    capPlugin: '插件技能',
+    capBuiltin: '内置技能',
+    capFilterAria: '过滤能力',
+    capEmptyFilter: '没有匹配',
+    capNoWorkspace: '没有已注册的工作区',
+    capLoadFailed: '能力加载失败',
+    capRestartRequested: '已请求重启。',
   },
 };
 const S = STRINGS[LOCALE];
@@ -1473,6 +1487,72 @@ async function scenarioI18n() {
 
 // ---------------------------------------------------------------------------
 
+/**
+ * /capabilities page walk: grouped skill catalog + MCP rows, a restart
+ * round-trip, the collapsed builtin group, the no-match filter state, then
+ * route-intercepted no-workspace and load-failure states.
+ */
+async function scenarioCapabilities() {
+  const url = `${WEB_URL}/capabilities?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+  await page.goto(url, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector(`text=${S.capPlugin}`, { timeout: 10_000 });
+  await page.waitForSelector('text=fixture-web', { timeout: 10_000 });
+  await page.waitForTimeout(400);
+  await shot('capabilities-default');
+
+  // MCP restart round-trip (scoped to the server row — "Restart" is generic).
+  const mcpGroup = page.locator('[data-capability-group="mcp"]');
+  await mcpGroup.locator('div.rounded-lg', { hasText: 'fixture-fs' }).locator('button').click();
+  await page.waitForSelector(`text=${S.capRestartRequested}`, { timeout: 5000 });
+  await shot('capabilities-mcp-restart');
+
+  // The builtin group starts collapsed; expand it for the density check.
+  await page.locator('[data-capability-group="builtin"] > button').click();
+  await page.waitForSelector('text=write-goal', { timeout: 5000 });
+  await page.waitForTimeout(300);
+  await shot('capabilities-builtin-expanded');
+
+  // Client-side filter with no matches → page-level empty state.
+  await page.fill(`input[aria-label="${S.capFilterAria}"]`, 'zzz-no-match');
+  await page.waitForSelector(`text=${S.capEmptyFilter}`, { timeout: 5000 });
+  await shot('capabilities-filter-empty');
+
+  // Mobile width: hamburger header, single-column cards.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector(`text=${S.capPlugin}`, { timeout: 10_000 });
+  await page.waitForTimeout(400);
+  await shot('capabilities-mobile');
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  // No workspace registered → quiet hint; the MCP group still renders.
+  await page.route('**/api/v1/workspaces', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ code: 0, msg: 'success', data: { items: [] }, request_id: 'req_fixture' }),
+    }),
+  );
+  await page.goto(url, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector(`text=${S.capNoWorkspace}`, { timeout: 10_000 });
+  await page.waitForSelector('text=fixture-web', { timeout: 10_000 });
+  await shot('capabilities-no-workspace');
+  await page.unroute('**/api/v1/workspaces');
+
+  // Workspace listing failure → error card with retry.
+  await page.route('**/api/v1/workspaces', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ code: 50001, msg: 'fixture boom', data: null, request_id: 'req_fixture' }),
+    }),
+  );
+  await page.goto(url, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector(`text=${S.capLoadFailed}`, { timeout: 10_000 });
+  await shot('capabilities-load-failed');
+  await page.unroute('**/api/v1/workspaces');
+}
+
+// ---------------------------------------------------------------------------
+
 const SCENARIOS = [
   ['basic-stream', scenarioBasicStream],
   ['prompt-dedupe', scenarioPromptDedupe],
@@ -1504,6 +1584,7 @@ const SCENARIOS = [
   ['search', scenarioSearch],
   ['session-actions', scenarioSessionActions],
   ['terminal', scenarioTerminal],
+  ['capabilities', scenarioCapabilities],
   ['i18n', scenarioI18n],
   // responsive stays last: it shrinks the viewport to 320px and nothing
   // afterward may assume a desktop layout.

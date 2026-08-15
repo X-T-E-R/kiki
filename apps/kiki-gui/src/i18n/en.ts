@@ -914,4 +914,31 @@ export const en = {
   'new.cwdPlaceholder': 'Absolute path to the project folder',
   'new.cwdInvalid':
     'Enter an absolute path for the working directory (for example C:/work/project or /home/you/project).',
+
+  // ---- capabilities page (/capabilities) ----
+  'cap.title': 'Capabilities',
+  'cap.nav': 'Capabilities',
+  'cap.navAria': 'Open the capabilities panel',
+  'cap.workspaceEcho': 'Workspace · {name}',
+  'cap.noWorkspace':
+    'No workspace is registered on this server, so workspace skills cannot be listed.',
+  'cap.filterPlaceholder': 'Filter by name, description, or path…',
+  'cap.filterAria': 'Filter capabilities',
+  'cap.loadingSkills': 'Loading skills…',
+  'cap.loadingMcp': 'Loading MCP servers…',
+  'cap.loadFailed': 'Could not load capabilities',
+  'cap.emptyGroup': 'Nothing here yet.',
+  'cap.emptyFilter': 'No capabilities match "{query}".',
+  'cap.group.plugin': 'Plugin skills',
+  'cap.group.project': 'Project skills',
+  'cap.group.user': 'User skills',
+  'cap.group.extra': 'Extra skills',
+  'cap.group.builtin': 'Built-in skills',
+  'cap.group.other': 'Other skills',
+  'cap.group.mcp': 'MCP servers',
+  'cap.source.plugin': 'Plugin',
+  'cap.source.project': 'Project',
+  'cap.source.user': 'User',
+  'cap.source.extra': 'Extra',
+  'cap.source.builtin': 'Built-in',
 } as const;
