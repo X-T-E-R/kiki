@@ -93,6 +93,7 @@ const STRINGS = {
     notActivatable: 'not activatable',
     shortcuts: 'Shortcuts',
     planPill: 'plan',
+    sendAnyway: 'Send anyway',
     swarmTitlePrefix: 'Swarm mode',
     goalActive: 'goal · active',
     objectivePlaceholder: 'Objective (optional)',
@@ -162,6 +163,7 @@ const STRINGS = {
     notActivatable: '不可激活',
     shortcuts: '快捷指令',
     planPill: '计划',
+    sendAnyway: '仍要发送',
     swarmTitlePrefix: '集群模式',
     goalActive: '目标 · 进行中',
     objectivePlaceholder: '目标（可选）',
@@ -1407,9 +1409,14 @@ async function scenarioSlashCommands() {
     throw new Error(`/plan did not toggle the plan pill (before=${planBefore}, after=${planAfter})`);
   }
   await shot('slash-commands-plan');
-  // Unknown slash text degrades honestly: it goes out as a plain prompt.
+  // Unknown slash text degrades honestly — but since a8b237bfa the typo guard
+  // holds the send behind an explicit confirm; the proof walks through the
+  // gate, then still asserts the draft ships verbatim as a plain prompt.
   await page.fill('textarea', '/notarealcommand hello');
   await page.press('textarea', 'Enter');
+  await page.waitForSelector('[data-slash-confirm]', { timeout: 5000 });
+  await shot('slash-commands-unknown-confirm');
+  await page.locator('[data-slash-confirm] button', { hasText: S.sendAnyway }).click();
   await waitForText('Plain prompt received by the fixture.');
   const after = await control({ action: 'session', session_id: 'session_fixture_slash' });
   const plainText = (after.data?.last_prompt_submission?.content ?? [])
