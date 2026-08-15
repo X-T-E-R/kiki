@@ -13,6 +13,8 @@ import { Transcript } from './Transcript';
 import { ContextMeter } from './ContextMeter';
 import { PendingBadge } from './PendingBadge';
 import { QueueStrip } from './QueueStrip';
+import { toolErrorSummary } from './ToolCard';
+import { projectUserText } from './Transcript';
 import {
   NOT_FOUND_FALLBACK_MS,
   agentDetailPath,
@@ -119,6 +121,122 @@ describe('QueueStrip', () => {
       </I18nProvider>,
     );
     expect(html).toBe('');
+  });
+
+  it('collapses a multi-prompt list behind an aria-wired count header', () => {
+    const html = renderToStaticMarkup(
+      <I18nProvider>
+        <QueueStrip
+          items={[
+            { promptId: 'p1', text: 'first parked prompt' },
+            { promptId: 'p2', text: 'second parked prompt' },
+          ]}
+          onSendNow={noop}
+          onRemove={noop}
+          onClearAll={noop}
+        />
+      </I18nProvider>,
+    );
+    expect(html).toMatch(/aria-expanded="false" aria-controls="[^"]+" aria-label="Show or hide the queued prompts"/);
+    // The list stays in the tree (so reconcile keeps row identity) but hidden.
+    expect(html).toMatch(/<ol id="[^"]+" hidden=""/);
+  });
+
+  it('shows a single queued prompt without a collapse toggle', () => {
+    const html = renderToStaticMarkup(
+      <I18nProvider>
+        <QueueStrip
+          items={[{ promptId: 'p1', text: 'only parked prompt' }]}
+          onSendNow={noop}
+          onRemove={noop}
+          onClearAll={noop}
+        />
+      </I18nProvider>,
+    );
+    expect(html).not.toContain('aria-label="Show or hide the queued prompts"');
+    expect(html).not.toContain('hidden=""');
+    expect(html).toContain('only parked prompt');
+  });
+
+  it('hides the Edit affordance until the parent wires onEdit', () => {
+    const withoutHandler = renderToStaticMarkup(
+      <I18nProvider>
+        <QueueStrip
+          items={[{ promptId: 'p1', text: 'parked' }]}
+          onSendNow={noop}
+          onRemove={noop}
+          onClearAll={noop}
+        />
+      </I18nProvider>,
+    );
+    expect(withoutHandler).not.toContain('aria-label="Edit queued prompt"');
+    const withHandler = renderToStaticMarkup(
+      <I18nProvider>
+        <QueueStrip
+          items={[{ promptId: 'p1', text: 'parked' }]}
+          onSendNow={noop}
+          onRemove={noop}
+          onClearAll={noop}
+          onEdit={noop}
+        />
+      </I18nProvider>,
+    );
+    expect(withHandler).toContain('aria-label="Edit queued prompt"');
+  });
+});
+
+describe('toolErrorSummary', () => {
+  const baseBlock = {
+    kind: 'tool' as const,
+    id: 'b1',
+    toolCallId: 'tc1',
+    name: 'Bash',
+    argsText: '',
+    args: undefined,
+    display: undefined,
+    description: undefined,
+    status: 'error' as const,
+    output: undefined,
+    isError: true,
+    startedAt: 0,
+    durationMs: undefined,
+    progressText: undefined,
+  };
+
+  it('surfaces the first line of a string error output', () => {
+    expect(
+      toolErrorSummary({ ...baseBlock, output: 'boom: permission denied\nstack line two' }),
+    ).toBe('boom: permission denied');
+  });
+
+  it('reads { message } outputs and rejects blank or missing text', () => {
+    expect(toolErrorSummary({ ...baseBlock, output: { message: 'disk full' } })).toBe('disk full');
+    expect(toolErrorSummary({ ...baseBlock, output: { message: '   \n  ' } })).toBeUndefined();
+    expect(toolErrorSummary({ ...baseBlock, output: 42 })).toBeUndefined();
+  });
+
+  it('returns undefined for non-error statuses', () => {
+    expect(toolErrorSummary({ ...baseBlock, status: 'done', output: 'fine' })).toBeUndefined();
+  });
+});
+
+describe('projectUserText', () => {
+  const render = (text: string) => renderToStaticMarkup(<I18nProvider>{projectUserText(text)}</I18nProvider>);
+
+  it('chips @subagent and /skill tokens while keeping the verbatim text', () => {
+    const html = render('ask @reviewer to run /lint please');
+    expect(html).toContain('data-ref-chip="subagent"');
+    expect(html).toContain('data-ref-chip="skill"');
+    expect(html).toContain('@reviewer');
+    expect(html).toContain('/lint');
+    expect(html).toContain('ask ');
+    expect(html).toContain(' to run ');
+    expect(html).toContain(' please');
+  });
+
+  it('leaves emails, mid-word slashes, and plain prose untouched', () => {
+    expect(render('mail a@b.com or path src/index.ts')).not.toContain('data-ref-chip');
+    expect(render('no tokens here')).toBe('no tokens here');
   });
 });
 

@@ -96,6 +96,8 @@ export interface SystemBlock {
   readonly text: string;
   readonly createdAt: string | undefined;
   readonly turnId?: string;
+  /** Producer detail from the origin (variant / trigger name / skill id). */
+  readonly source?: string;
 }
 
 /** User-slash skill / plugin activation: summary card, body folded. */
@@ -127,6 +129,8 @@ export interface AssistantBlock {
   readonly streaming: boolean;
   readonly createdAt: string | undefined;
   readonly turnId?: string;
+  /** The turn was cancelled while this message was its latest output. */
+  readonly stopped?: boolean;
 }
 
 export interface ThinkingBlock {
@@ -138,7 +142,7 @@ export interface ThinkingBlock {
   readonly turnId?: string;
 }
 
-export type ToolStatus = 'running' | 'done' | 'error';
+export type ToolStatus = 'running' | 'done' | 'error' | 'stopped';
 
 export interface ToolAgentRef {
   readonly agentId: string;
@@ -273,6 +277,15 @@ export interface SessionCursorState {
   readonly epoch: string | undefined;
 }
 
+/** End-of-turn readout facts (drives the transcript's turn-tail line). */
+export interface TurnTailInfo {
+  readonly turnId: string;
+  readonly endedAt: string;
+  readonly durationMs: number | undefined;
+  /** Turn start → first streamed token, derived from frame timestamps. */
+  readonly ttftMs: number | undefined;
+}
+
 export interface SessionViewState {
   readonly version: number;
   readonly sessionId: string;
@@ -281,6 +294,12 @@ export interface SessionViewState {
   readonly blocks: readonly Block[];
   readonly cursor: SessionCursorState;
   readonly busy: boolean;
+  /** Live-turn timing anchors (epoch ms from frame timestamps; undefined when
+   * the turn predates this client's attach — e.g. resumed from a snapshot). */
+  readonly turnStartedAt: number | undefined;
+  readonly turnFirstTokenAt: number | undefined;
+  /** The most recently ended turn's readout; cleared when a new turn starts. */
+  readonly turnTail: TurnTailInfo | undefined;
   readonly pendingInteraction: SessionPendingInteraction;
   readonly activePromptId: string | undefined;
   readonly queuedPromptIds: readonly string[];
@@ -325,6 +344,9 @@ export function createViewState(sessionId: string): SessionViewState {
     blocks: [],
     cursor: { seq: 0, epoch: undefined },
     busy: false,
+    turnStartedAt: undefined,
+    turnFirstTokenAt: undefined,
+    turnTail: undefined,
     pendingInteraction: 'none',
     activePromptId: undefined,
     queuedPromptIds: [],
@@ -474,6 +496,13 @@ function asSystemVariant(kind: string | undefined): SystemVariant {
   if (kind === 'background_task') return 'task';
   if (kind !== undefined && SYSTEM_VARIANTS.has(kind as SystemVariant)) return kind as SystemVariant;
   return 'system';
+}
+
+/** Small producer label for a system/injection row header — whatever detail
+ * the origin carries (variant / trigger name / skill or plugin id). */
+function producerFromOrigin(origin: PromptOriginLike | undefined): string | undefined {
+  if (origin === undefined) return undefined;
+  return origin.variant ?? origin.name ?? origin.skillName ?? origin.commandName ?? origin.pluginId;
 }
 
 const BASH_INPUT_RE = /<bash-input>([\s\S]*?)<\/bash-input>/i;
@@ -735,6 +764,7 @@ function classifiedTextToBlocks(input: {
           text: classified.text,
           createdAt: input.createdAt,
           turnId: input.turnId,
+          source: producerFromOrigin(classified.origin),
         });
       }
       break;
@@ -1206,6 +1236,7 @@ export function applySnapshot(
         text: inFlight.thinking_text,
         streaming: true,
         createdAt: undefined,
+        turnId: String(inFlight.turn_id),
       });
     }
     if (inFlight.assistant_text !== '') {
@@ -1215,6 +1246,7 @@ export function applySnapshot(
         text: inFlight.assistant_text,
         streaming: true,
         createdAt: undefined,
+        turnId: String(inFlight.turn_id),
       });
     }
     for (const tool of inFlight.running_tools) {
@@ -1738,6 +1770,12 @@ function applyFrameInternal(
     next = { ...next, ...partial, version: next.version + 1 };
   };
 
+  /** Frame wall-clock in epoch ms (NaN-safe fallback to the local clock). */
+  const frameMs = (): number => {
+    const ms = Date.parse(frame.timestamp);
+    return Number.isNaN(ms) ? Date.now() : ms;
+  };
+
   // Durable frames advance the cursor; duplicates (replay overlap) are dropped.
   const durable = frame.volatile !== true;
   if (durable) {
@@ -1815,7 +1853,10 @@ function applyFrameInternal(
         createdAt: existing?.createdAt ?? frame.timestamp,
         turnId: String(payload.turnId),
       };
-      evolve({ blocks: replaceBlock(next.blocks, block) });
+      evolve({
+        blocks: replaceBlock(next.blocks, block),
+        turnFirstTokenAt: next.turnFirstTokenAt ?? frameMs(),
+      });
       break;
     }
     case 'thinking.delta': {
@@ -1834,7 +1875,10 @@ function applyFrameInternal(
         createdAt: existing?.createdAt ?? frame.timestamp,
         turnId: String(payload.turnId),
       };
-      evolve({ blocks: replaceBlock(next.blocks, block) });
+      evolve({
+        blocks: replaceBlock(next.blocks, block),
+        turnFirstTokenAt: next.turnFirstTokenAt ?? frameMs(),
+      });
       break;
     }
     case 'turn.started': {
@@ -1874,7 +1918,12 @@ function applyFrameInternal(
           evolve({ blocks: [...next.blocks, ...additions] });
         }
       }
-      evolve({ busy: true });
+      evolve({
+        busy: true,
+        turnStartedAt: frameMs(),
+        turnFirstTokenAt: undefined,
+        turnTail: undefined,
+      });
       break;
     }
     case 'turn.step.started':
@@ -1884,6 +1933,27 @@ function applyFrameInternal(
         payload.type === 'turn.step.started' ? `s${payload.step}@${frame.seq}` : `end@${frame.seq}`,
       );
       if (payload.type === 'turn.ended') {
+        if (payload.reason === 'cancelled') {
+          // Interrupted turn: the LAST assistant message of the turn carries
+          // the stopped marker; still-running tools flip to the stopped state.
+          const cancelledTurnId = String(payload.turnId);
+          let lastAssistant = -1;
+          blocks.forEach((block, index) => {
+            if (
+              block.kind === 'assistant' &&
+              (block.turnId === cancelledTurnId || block.id === `assistant-live-${payload.turnId}`)
+            ) {
+              lastAssistant = index;
+            }
+          });
+          blocks = blocks.map((block, index) => {
+            if (index === lastAssistant) return { ...block, stopped: true } as typeof block;
+            if (block.kind === 'tool' && block.status === 'running') {
+              return { ...block, status: 'stopped' as const };
+            }
+            return block;
+          });
+        }
         if (payload.reason === 'failed') {
           blocks = [
             ...blocks,
@@ -1898,10 +1968,26 @@ function applyFrameInternal(
             },
           ];
         }
+        const endedAt = frameMs();
         evolve({
           blocks,
           busy: false,
           activePromptId: undefined,
+          turnTail: {
+            turnId: String(payload.turnId),
+            endedAt: frame.timestamp,
+            durationMs:
+              payload.durationMs ??
+              (next.turnStartedAt !== undefined
+                ? Math.max(0, endedAt - next.turnStartedAt)
+                : undefined),
+            ttftMs:
+              next.turnStartedAt !== undefined && next.turnFirstTokenAt !== undefined
+                ? Math.max(0, next.turnFirstTokenAt - next.turnStartedAt)
+                : undefined,
+          },
+          turnStartedAt: undefined,
+          turnFirstTokenAt: undefined,
         });
       } else {
         evolve({ blocks });

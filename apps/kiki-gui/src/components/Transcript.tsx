@@ -12,7 +12,7 @@
  * Apache-2.0; kiki auto-expands on error only, not while running).
  */
 
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { StickToBottom, useStickToBottomContext } from 'use-stick-to-bottom';
 
 import type { ApprovalDecision, QuestionAnswer } from '@moonshot-ai/protocol';
@@ -45,6 +45,7 @@ import type {
   SystemReminderBlock,
   ThinkingBlock,
   ToolBlock,
+  TurnTailInfo,
   UserBlock,
 } from '../state/transcript';
 import { ApprovalCard, QuestionCard } from './Interactions';
@@ -73,6 +74,35 @@ function splitStreamingText(text: string): { prefix: string; tail: string } {
   return { prefix: '', tail: text };
 }
 
+/**
+ * Decorate `@subagent` / `/skill` tokens in user prose as accent chips
+ * (deepseek-harness's projectUserText, Apache-2.0 — token shape only, no
+ * lexicon). Presentation-only: every slice comes from the original string at
+ * exact offsets, so selection/copy keeps the verbatim text.
+ */
+export function projectUserText(text: string): ReactNode {
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  for (const match of text.matchAll(/(^|\s)([/@][\w-]+)(?=\s|$)/g)) {
+    const tokenStart = match.index + (match[1]?.length ?? 0);
+    const label = match[2] ?? '';
+    if (tokenStart > cursor) parts.push(text.slice(cursor, tokenStart));
+    parts.push(
+      <span
+        key={tokenStart}
+        data-ref-chip={label.startsWith('@') ? 'subagent' : 'skill'}
+        className="rounded-md border border-accent/30 bg-accent-soft px-1 py-px font-mono text-[11.5px] text-accent"
+      >
+        {label}
+      </span>,
+    );
+    cursor = tokenStart + label.length;
+  }
+  if (parts.length === 0) return text;
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return <>{parts}</>;
+}
+
 const UserMessage = memo(function UserMessage({
   block,
   onCancelQueued,
@@ -90,7 +120,7 @@ const UserMessage = memo(function UserMessage({
         <span className="text-xs text-ink-faint">{time.relativeTime(block.createdAt)}</span>
       </span>
       <div className="max-w-[85%] rounded-2xl rounded-br-md border border-hairline bg-[#f3ede1] px-3.5 py-2 text-[13.5px] leading-relaxed whitespace-pre-wrap text-ink">
-        {block.text}
+        {projectUserText(block.text)}
       </div>
       {block.promptStatus === 'queued' || block.promptStatus === 'blocked' ? (
         <span
@@ -146,6 +176,12 @@ const AssistantMessage = memo(function AssistantMessage({ block }: { block: Assi
             {block.streaming ? <span className="stream-caret font-mono">▍</span> : null}
           </>
         )}
+        {block.stopped === true ? (
+          <span className="mt-1 inline-flex items-center gap-1 rounded-md border border-hairline bg-paper px-1.5 py-px text-[10.5px] font-medium text-ink-faint">
+            <span aria-hidden className="text-[9px]">■</span>
+            {t('transcript.stopped')}
+          </span>
+        ) : null}
       </div>
       {!block.streaming && block.text !== '' ? (
         <button
@@ -171,21 +207,42 @@ const AssistantMessage = memo(function AssistantMessage({ block }: { block: Assi
   );
 });
 
+function firstLineOf(text: string): string {
+  const newline = text.indexOf('\n');
+  return newline === -1 ? text : text.slice(0, newline);
+}
+
+function latestLineOf(text: string): string {
+  const visible = text.trimEnd();
+  const newline = visible.lastIndexOf('\n');
+  return newline === -1 ? visible : visible.slice(newline + 1);
+}
+
 const ThinkingMessage = memo(function ThinkingMessage({ block }: { block: ThinkingBlock }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  // deepseek-harness's ReasoningRow summary rule: while tokens are streaming
+  // the collapsed line tracks the LATEST line; once settled it pins the first.
+  const summary = block.streaming ? latestLineOf(block.text) : firstLineOf(block.text);
   return (
-    <div className="anim-enter border-l-2 border-hairline-strong pl-3">
+    <div
+      className="thinking-row anim-enter border-l-2 border-hairline-strong pl-3"
+      data-streaming={block.streaming || undefined}
+    >
       <button
         type="button"
         onClick={() => { setOpen((value) => !value); }}
-        className="flex items-center gap-1.5 text-[11.5px] font-medium text-ink-faint transition-colors hover:text-ink-soft"
+        aria-expanded={open}
+        className="flex w-full items-center gap-1.5 text-left text-[11.5px] font-medium text-ink-faint transition-colors hover:text-ink-soft"
       >
-        <span aria-hidden className={`inline-block transition-transform duration-150 ${open ? 'rotate-90' : ''}`}>
+        <span aria-hidden className={`inline-block shrink-0 transition-transform duration-150 ${open ? 'rotate-90' : ''}`}>
           ▶
         </span>
-        {t('transcript.thinking')}{block.streaming ? '…' : ''}
-        {block.streaming ? <span className="stream-caret">▍</span> : null}
+        <span className="shrink-0">{t('transcript.thinking')}{block.streaming ? '…' : ''}</span>
+        {block.streaming ? <span className="stream-caret shrink-0">▍</span> : null}
+        {summary !== '' ? (
+          <span className="min-w-0 flex-1 truncate font-normal text-ink-faint/70 italic">{summary}</span>
+        ) : null}
       </button>
       {open ? (
         <div className="mt-1.5 text-[12.5px] leading-relaxed whitespace-pre-wrap text-ink-soft italic">
@@ -219,7 +276,7 @@ const SystemReminderMessage = memo(function SystemReminderMessage({
         {t('transcript.systemReminder')}
       </button>
       {open ? (
-        <div className="mt-1.5 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-faint">
+        <div className="mt-1.5 max-h-[140px] overflow-auto pr-2 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-faint">
           {block.text}
         </div>
       ) : null}
@@ -251,13 +308,16 @@ const SystemMessage = memo(function SystemMessage({ block }: { block: SystemBloc
         aria-expanded={open}
         className="flex items-center gap-1.5 text-[11px] font-medium text-ink-faint/80 transition-colors hover:text-ink-soft"
       >
-        <span aria-hidden className={`inline-block transition-transform duration-150 ${open ? 'rotate-90' : ''}`}>
+        <span aria-hidden className={`inline-block shrink-0 transition-transform duration-150 ${open ? 'rotate-90' : ''}`}>
           ▶
         </span>
-        {t(SYSTEM_VARIANT_KEYS[block.variant])}
+        <span className="shrink-0">{t(SYSTEM_VARIANT_KEYS[block.variant])}</span>
+        {block.source !== undefined ? (
+          <span className="min-w-0 truncate font-normal text-ink-faint/60">· {block.source}</span>
+        ) : null}
       </button>
       {open ? (
-        <div className="mt-1.5 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-faint">
+        <div className="mt-1.5 max-h-[140px] overflow-auto pr-2 text-[12px] leading-relaxed whitespace-pre-wrap text-ink-faint">
           {block.text}
         </div>
       ) : null}
@@ -842,6 +902,74 @@ function TopEdge({ state, onLoadOlder }: {
   return null;
 }
 
+/** The running clock appears only once the wait is visibly long. */
+const TURN_CLOCK_AFTER_MS = 15_000;
+
+/**
+ * Turn-level running signal (deepseek-harness's TurnStatus, Apache-2.0): a
+ * status line for the gaps where no token is streaming (first-token wait,
+ * tool execution between steps), with a cumulative clock once the turn has
+ * run ≥15s. Anchored to the live `turn.started` frame; a mid-turn reload
+ * (snapshot attach) falls back to mount time.
+ */
+const TurnStatusLine = memo(function TurnStatusLine({ startedAt }: { startedAt: number | undefined }) {
+  const { t, time } = useI18n();
+  const [mountedAt] = useState(() => Date.now());
+  const anchor = startedAt ?? mountedAt;
+  const [elapsedMs, setElapsedMs] = useState(() => Math.max(0, Date.now() - anchor));
+  useEffect(() => {
+    const tick = () => { setElapsedMs(Math.max(0, Date.now() - anchor)); };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => { clearInterval(timer); };
+  }, [anchor]);
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      data-turn-status
+      className="anim-enter flex items-center gap-2 pl-1 text-[11.5px] font-medium text-ink-faint"
+    >
+      <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+      <span>{t('transcript.turnWorking')}</span>
+      {elapsedMs >= TURN_CLOCK_AFTER_MS ? (
+        <span aria-hidden className="font-mono text-[10.5px] tabular-nums text-ink-faint/80">
+          {time.formatDuration(elapsedMs)}
+        </span>
+      ) : null}
+    </div>
+  );
+});
+
+/** Latency readout: one decimal under 10s, whole seconds beyond. */
+function formatLatencySeconds(ms: number): string {
+  const s = Math.max(0, ms) / 1000;
+  return s < 10 ? String(Math.round(s * 10) / 10) : String(Math.round(s));
+}
+
+/**
+ * End-of-turn readout (deepseek-harness's turn tail, Apache-2.0): end clock ·
+ * Ran for … · TTFT …, from the turn.ended frame and live frame timestamps.
+ * tok/s is skipped — the wire carries no per-turn token counts.
+ */
+const TurnTailLine = memo(function TurnTailLine({ tail }: { tail: TurnTailInfo }) {
+  const { t, time } = useI18n();
+  const facts: string[] = [time.relativeTime(tail.endedAt)];
+  if (tail.durationMs !== undefined) {
+    facts.push(t('transcript.ranFor', { duration: time.formatDuration(tail.durationMs) }));
+  }
+  if (tail.ttftMs !== undefined) {
+    facts.push(t('transcript.ttft', { seconds: formatLatencySeconds(tail.ttftMs) }));
+  }
+  return (
+    <div data-turn-tail className="anim-enter flex items-center gap-3 py-0.5">
+      <span className="h-px flex-1 bg-hairline" />
+      <span className="font-mono text-[10.5px] text-ink-faint">{facts.join(' · ')}</span>
+      <span className="h-px flex-1 bg-hairline" />
+    </div>
+  );
+});
+
 export function Transcript({
   state,
   onLoadOlder,
@@ -897,6 +1025,12 @@ export function Transcript({
     () => blocks.some((b) => b.kind === 'approval' && b.resolution === undefined),
     [blocks],
   );
+  // The turn-level status line fills the no-token gaps (first-token wait,
+  // tool execution); while text streams the stream-caret is the signal.
+  const streamingNow = blocks.some(
+    (b) => (b.kind === 'assistant' || b.kind === 'thinking') && b.streaming,
+  );
+  const showTurnStatus = state.busy && !streamingNow;
 
   if (loadError !== undefined) {
     return (
@@ -972,6 +1106,8 @@ export function Transcript({
             )}
           </div>
         ))}
+        {showTurnStatus ? <TurnStatusLine startedAt={state.turnStartedAt} /> : null}
+        {!state.busy && state.turnTail !== undefined ? <TurnTailLine tail={state.turnTail} /> : null}
       </StickToBottom.Content>
       <JumpToBottom />
     </StickToBottom>

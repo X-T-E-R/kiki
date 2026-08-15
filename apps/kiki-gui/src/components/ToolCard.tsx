@@ -74,6 +74,25 @@ export function toolSummary(block: ToolBlock, t: Translate, tp: TranslatePlural)
   return block.description ?? '';
 }
 
+/**
+ * A failed call's collapsed summary IS the failure (deepseek-harness's
+ * errorSummary, Apache-2.0): the first line of the error output, shown in the
+ * danger color without requiring expansion. undefined when no text is usable.
+ */
+export function toolErrorSummary(block: ToolBlock): string | undefined {
+  if (block.status !== 'error') return undefined;
+  const output = block.output;
+  const text =
+    typeof output === 'string'
+      ? output
+      : typeof output === 'object' && output !== null
+        ? ((output as { message?: unknown }).message as string | undefined)
+        : undefined;
+  if (typeof text !== 'string') return undefined;
+  const line = (text.split('\n', 1)[0] ?? '').trim();
+  return line === '' ? undefined : line;
+}
+
 function displaySummary(display: ToolInputDisplay, t: Translate, tp: TranslatePlural): string {
   switch (display.kind) {
     case 'command':
@@ -131,6 +150,13 @@ function StatusIcon({ block }: { block: ToolBlock }) {
     return (
       <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-danger/10 text-[10px] font-bold text-danger" aria-label={t('transcript.failedAria')}>
         ×
+      </span>
+    );
+  }
+  if (block.status === 'stopped') {
+    return (
+      <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-amber-rule/15 text-[9px] font-bold text-amber-ink" aria-label={t('transcript.stoppedAria')}>
+        ■
       </span>
     );
   }
@@ -227,6 +253,7 @@ export const ToolCard = memo(function ToolCard({
 }) {
   const { t, tp, time } = useI18n();
   const [expanded, setExpanded] = useState(false);
+  const errorSummary = toolErrorSummary(block);
   const summary = toolSummary(block, t, tp);
   const isCommand = block.display?.kind === 'command';
   // Edit-style calls (Edit/MultiEdit/Write): hunks from display or args —
@@ -248,7 +275,11 @@ export const ToolCard = memo(function ToolCard({
           {toolGlyph(block)}
         </span>
         <span className="shrink-0 text-[12.5px] font-semibold text-ink">{block.name}</span>
-        {summary !== '' ? (
+        {errorSummary !== undefined ? (
+          <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-danger">
+            {errorSummary}
+          </span>
+        ) : summary !== '' ? (
           <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink-soft">
             {summary}
           </span>
