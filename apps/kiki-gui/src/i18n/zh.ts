@@ -463,6 +463,11 @@ export const zh: Record<I18nKey, string> = {
   'new.recent': '最近的会话',
   'new.creating': '正在创建会话…',
 
+  // ---- hero (/new conversation shell) ----
+  'hero.chooseWorkspace': '选择工作区',
+  'hero.workspaceLoading': '正在加载工作区…',
+  'hero.workspaceAria': '选择本会话的工作区',
+
   // ---- right rail ----
   'rail.goal': '目标',
   'rail.subagents': '子代理',

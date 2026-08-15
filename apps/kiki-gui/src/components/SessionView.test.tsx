@@ -29,6 +29,7 @@ import {
   resolveApprovalShortcutTarget,
   resolveControlledFlag,
   resolveControlledValue,
+  resolveSessionSeatPhase,
   SessionRouteView,
   shouldClearModeOverride,
   shouldCloseSessionChromeOnEscape,
@@ -130,6 +131,19 @@ describe('SessionView route ownership', () => {
     expect(sessionA.key).toBe('session-a');
     expect(sessionB.key).toBe('session-b');
     expect(sessionB.key).not.toBe(sessionA.key);
+  });
+});
+
+describe('conversation shell phase (session side)', () => {
+  it('settles a cold open and flips to active once the transcript loads', () => {
+    expect(resolveSessionSeatPhase({ loaded: false, hasInitialPrompt: false })).toBe('settling');
+    expect(resolveSessionSeatPhase({ loaded: true, hasInitialPrompt: false })).toBe('active');
+  });
+
+  it('docks straight into active when the /new hand-off carries a first prompt', () => {
+    // The session is known blank-about-to-run: no hidden-seat settle beat.
+    expect(resolveSessionSeatPhase({ loaded: false, hasInitialPrompt: true })).toBe('active');
+    expect(resolveSessionSeatPhase({ loaded: true, hasInitialPrompt: true })).toBe('active');
   });
 });
 

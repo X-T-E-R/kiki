@@ -263,6 +263,172 @@ body {
   background-color: rgba(28, 25, 23, 0.25);
 }
 
+/* ---- conversation shell (/new + /s/:id layout route) ---- */
+/* One width axis for the whole conversation column: the transcript content
+ * column, the composer card, and the dock cards (queue strip) all read
+ * --kiki-chat-content-width (the historical 760px shared cap). Declared on
+ * the shell root because the transcript and the composer seat are sibling
+ * subtrees; every consumer carries a `760px` fallback for surfaces outside
+ * the shell (the Ctrl+N dialog). */
+.conversation-shell {
+  --kiki-chat-content-width: 760px;
+
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: var(--color-paper);
+}
+
+.conversation-row {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.conversation-center {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.conversation-header-slot:empty,
+.conversation-dock-slot:empty,
+.conversation-herofooter-slot:empty,
+.conversation-footer-slot:empty,
+.conversation-rail-slot:empty {
+  display: none;
+}
+
+.conversation-middle {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Active: the outlet (transcript with its own stick-to-bottom scroller) fills
+ * the middle; the seat docks below it. */
+.conversation-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.conversation-seat {
+  position: relative;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+}
+
+/* Active phase: the seat overlaps the transcript's bottom edge by a FIXED
+ * 36px fade band (dsh's input mask — px stops, not %, so a growing draft only
+ * widens the solid region and the fade never stretches). The 0px stop is
+ * paper at zero alpha so the transcript fades into the page's own base.
+ * Transcript content carries 60px of bottom clearance (24 + this 36) so the
+ * last block always rests above the fade. */
+.conversation-shell[data-phase='active'] .conversation-seat,
+.conversation-shell[data-phase='settling'] .conversation-seat {
+  z-index: 7;
+  margin-top: -36px;
+  padding-top: 36px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-paper) 0%, transparent) 0px,
+    var(--color-paper) 36px
+  );
+}
+
+/* Settling (cold /s/:id load, transcript still opening): keep the seat
+ * mounted but invisible so neither the hero nor the docked layout flashes
+ * before the phase lands. */
+.conversation-shell[data-phase='settling'] .conversation-seat {
+  visibility: hidden;
+}
+
+/* Hero phase (/new): the hero chrome + composer card are flex-centered as one
+ * stack inside the middle region, floated slightly above true center by the
+ * seat's bottom foot. Flex, NOT absolute+transform: a transform would make
+ * this box the containing block for position:fixed descendants (menus,
+ * dialogs), shrinking them. The middle region is the scroller here (short
+ * content never scrolls); overflow-x is stated `hidden` rather than left
+ * `visible` because a single-axis scroller computes the other axis to `auto`,
+ * and .hero-glow bleeds past the card by construction — that would put a
+ * horizontal scrollbar under every column narrower than the glow. The
+ * scrollbar gutter is reserved so toggling scrollability never nudges the
+ * card sideways. */
+.conversation-shell[data-phase='hero'] .conversation-middle {
+  justify-content: center;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+}
+
+.conversation-shell[data-phase='hero'] .conversation-body {
+  flex: none;
+}
+
+.conversation-shell[data-phase='hero'] .conversation-seat {
+  /* Foot inside the centered box floats the stack a bit above true center. */
+  padding-bottom: 32px;
+}
+
+/* Warm glow centered on the hero input card: the card's resting center sits
+ * ~92px above the seat's content bottom (32px foot + half of the ~120px
+ * two-row card); width tracks the card (glow asset 1051 vs card 760) so the
+ * blur scales with it. z-index -1 keeps it behind the in-flow hero content
+ * inside the seat's stacking context. */
+.hero-glow {
+  position: absolute;
+  left: 50%;
+  bottom: 92px;
+  z-index: -1;
+  width: min(calc(100% * 1051 / 760), 1051px);
+  aspect-ratio: 1051 / 468;
+  transform: translate(-50%, 50%);
+  pointer-events: none;
+}
+
+/* Wordmark hover: the dot drifts inside a stationary hitbox (dsh's fish
+ * pattern — hover detection never moves with the mark). The dot's resting
+ * -1px lift rides Tailwind's `translate` property, so the keyframes animate
+ * `transform` only (the two compose). */
+@keyframes kiki-hero-dot-drift {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+  35% {
+    transform: translate(-2px, -2px) scale(1.15);
+  }
+  70% {
+    transform: translate(2px, 1px) scale(0.95);
+  }
+}
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .hero-wordmark:hover > span > span:last-child {
+    animation: kiki-hero-dot-drift 900ms ease-in-out;
+  }
+}
+
+/* Hero workspace chip: transparent at rest; fill only on hover / open. */
+.hero-workspace-chip {
+  background: transparent;
+}
+
+.hero-workspace-chip:hover,
+.hero-workspace-chip[aria-expanded='true'] {
+  background: var(--color-panel);
+  border-color: var(--color-hairline);
+}
+
 /* ---- assistant markdown typography ---- */
 .kiki-md {
   font-size: 14px;

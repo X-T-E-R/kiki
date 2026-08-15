@@ -93,6 +93,7 @@ const STRINGS = {
     notActivatable: 'not activatable',
     shortcuts: 'Shortcuts',
     planPill: 'plan',
+    sendAnyway: 'Send anyway',
     swarmTitlePrefix: 'Swarm mode',
     goalActive: 'goal · active',
     objectivePlaceholder: 'Objective (optional)',
@@ -169,6 +170,7 @@ const STRINGS = {
     notActivatable: '不可激活',
     shortcuts: '快捷指令',
     planPill: '计划',
+    sendAnyway: '仍要发送',
     swarmTitlePrefix: '集群模式',
     goalActive: '目标 · 进行中',
     objectivePlaceholder: '目标（可选）',
@@ -577,6 +579,119 @@ async function scenarioDraftFlow() {
   await page.waitForSelector('text=Here is the fixture answer', { timeout: 20_000 });
   await page.waitForTimeout(600);
   await shot('draft-flow');
+}
+
+/**
+ * hero-shell — the conversation-shell proof: hero phase on /new (centered
+ * composer + chrome + warm glow), the single-tree flip into /s/:id (the
+ * composer textarea must stay the SAME DOM node, focus kept), the docked
+ * active phase with its 36px fade mask, and hero/active geometry at tablet
+ * and mobile widths. Restores the desktop viewport for later scenarios.
+ */
+async function scenarioHeroShell() {
+  const deepLink = (path) =>
+    `${WEB_URL}${path}?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`;
+
+  await page.goto(deepLink('/new'), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-phase="hero"]', { timeout: 15_000 });
+  await page.waitForSelector('textarea:not([disabled])', { timeout: 15_000 });
+  await page.waitForTimeout(600);
+  await shot('hero-desktop');
+
+  // The workspace chip opens the shared workspace/cwd fields as a popover.
+  await page.click('[data-hero-workspace] > button');
+  await page.waitForTimeout(400);
+  await shot('hero-workspace-chip');
+  await page.click('[data-hero-workspace] > button');
+
+  // Mark the composer node, send, and prove identity across the flip.
+  await page.click('textarea');
+  await page.fill('textarea', 'Run the fixture hero shell flow.');
+  await shot('hero-filled');
+  await page.evaluate(() => {
+    window.__heroTextarea = document.querySelector('textarea');
+  });
+  await page.press('textarea', 'Enter');
+  await page.waitForURL(/\/s\//, { timeout: 10_000 });
+  await page.waitForSelector('[data-phase="active"]', { timeout: 10_000 });
+  const identity = await page.evaluate(() => ({
+    same: document.querySelector('textarea') === window.__heroTextarea,
+    focused: document.activeElement === window.__heroTextarea,
+  }));
+  console.log(
+    `[check] composer node across hero→active flip: same=${identity.same} focused=${identity.focused}`,
+  );
+  if (!identity.same) {
+    throw new Error('composer textarea was remounted across the /new → /s/:id flip');
+  }
+  // Focus returns once the composer re-enables: the send's busy flip
+  // (disabled textarea) force-blurs, and the session is still loading here —
+  // the one-shot refocus lands when the transcript has loaded and the answer
+  // streams.
+  await page.waitForSelector('text=Here is the fixture answer from the hero shell flow.', {
+    timeout: 20_000,
+  });
+  const focusedAfter = await page.evaluate(
+    () => document.activeElement === window.__heroTextarea,
+  );
+  console.log(`[check] composer focus restored after the flip: ${focusedAfter}`);
+  if (!focusedAfter) {
+    throw new Error('composer textarea never regained focus after the /new → /s/:id flip');
+  }
+  await page
+    .waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 })
+    .catch(() => undefined);
+  await page.waitForTimeout(700);
+  await shot('hero-flip-active');
+
+  // The docked composer's fade mask, up close (transcript tail → card top).
+  const seatBox = await page.locator('[data-composer-seat]').boundingBox();
+  if (seatBox === null) throw new Error('composer seat missing after the flip');
+  const clipTop = Math.max(0, seatBox.y - 140);
+  await page.screenshot({
+    path: join(SHOTS, 'hero-active-mask.png'),
+    clip: { x: 0, y: clipTop, width: 1440, height: seatBox.y + seatBox.height - clipTop },
+  });
+  console.log('[shot] hero-active-mask.png');
+  const sessionPath = new URL(page.url()).pathname;
+
+  // Back on /new the hero returns, now with the recent-sessions chips.
+  await page.goto(deepLink('/new'), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-phase="hero"]', { timeout: 15_000 });
+  await page.waitForSelector('text=hero shell flow', { timeout: 10_000 });
+  await page.waitForTimeout(500);
+  await shot('hero-recents');
+
+  // Tablet (768–1023): hero.
+  await resizeViewport(900);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-phase="hero"]', { timeout: 15_000 });
+  await page.waitForTimeout(500);
+  await shot('hero-tablet-900');
+
+  // Mobile (≤767): hero, the sidebar drawer from the hero header, then the
+  // cold-loaded session (settling → active) with the docked composer.
+  await resizeViewport(390);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-phase="hero"]', { timeout: 15_000 });
+  await page.waitForTimeout(500);
+  await shot('hero-mobile-390');
+  await page.click(`button[aria-label="${S.openMenuAria}"]`);
+  await page.waitForTimeout(400);
+  await shot('hero-mobile-drawer');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+
+  await page.goto(deepLink(sessionPath), { waitUntil: 'domcontentloaded' });
+  const coldPhase = await page.waitForSelector('[data-phase]', { timeout: 15_000 });
+  console.log(`[check] cold session load opens in phase: ${await coldPhase.getAttribute('data-phase')}`);
+  await page.waitForSelector('[data-phase="active"]', { timeout: 15_000 });
+  await page.waitForSelector('text=hero shell flow', { timeout: 15_000 });
+  await page.waitForTimeout(600);
+  await shot('hero-active-mobile-390');
+
+  // Leave the desktop layout for the scenarios that follow.
+  await resizeViewport(1440);
 }
 
 async function scenarioSettings() {
@@ -1308,9 +1423,14 @@ async function scenarioSlashCommands() {
     throw new Error(`/plan did not toggle the plan pill (before=${planBefore}, after=${planAfter})`);
   }
   await shot('slash-commands-plan');
-  // Unknown slash text degrades honestly: it goes out as a plain prompt.
+  // Unknown slash text degrades honestly — but since a8b237bfa the typo guard
+  // holds the send behind an explicit confirm; the proof walks through the
+  // gate, then still asserts the draft ships verbatim as a plain prompt.
   await page.fill('textarea', '/notarealcommand hello');
   await page.press('textarea', 'Enter');
+  await page.waitForSelector('[data-slash-confirm]', { timeout: 5000 });
+  await shot('slash-commands-unknown-confirm');
+  await page.locator('[data-slash-confirm] button', { hasText: S.sendAnyway }).click();
   await waitForText('Plain prompt received by the fixture.');
   const after = await control({ action: 'session', session_id: 'session_fixture_slash' });
   const plainText = (after.data?.last_prompt_submission?.content ?? [])
@@ -1575,6 +1695,7 @@ const SCENARIOS = [
   ['session-pages', scenarioSessionPages],
   ['empty-states', scenarioEmptyStates],
   ['draft-flow', scenarioDraftFlow],
+  ['hero-shell', scenarioHeroShell],
   ['settings', scenarioSettings],
   ['settings-write', scenarioSettingsWrite],
   ['settings-invalid', scenarioSettingsInvalid],

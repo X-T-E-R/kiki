@@ -5,6 +5,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 
@@ -13,6 +14,12 @@ import type { PermissionMode, Session } from '@moonshot-ai/protocol';
 import { AgentBreadcrumb } from './AgentBreadcrumb';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Composer } from './Composer';
+import {
+  useConversationShell,
+  useRegisterSeat,
+  type ConversationPhase,
+  type ConversationSeat,
+} from './ConversationShell';
 import { QueueStrip } from './QueueStrip';
 import { RightRail } from './RightRail';
 import { TerminalPanel } from './TerminalPanel';
@@ -522,6 +529,22 @@ export function resolveControlledValue<T>(
   return override ?? storeValue ?? fallback;
 }
 
+/**
+ * The session route's seat phase for the conversation shell: a cold open
+ * (transcript still loading, no first-prompt hand-off in the nav state)
+ * settles — the seat stays mounted but hidden so no wrong layout flashes.
+ * The /new hand-off knows the session is blank-about-to-run, so it docks
+ * straight into active. A loaded-but-empty session is also active: the blank
+ * transcript keeps its in-column wordmark empty state with the composer
+ * docked, the long-standing geometry.
+ */
+export function resolveSessionSeatPhase(input: {
+  loaded: boolean;
+  hasInitialPrompt: boolean;
+}): ConversationPhase {
+  return !input.loaded && !input.hasInitialPrompt ? 'settling' : 'active';
+}
+
 export function resolveControlledFlag(
   override: boolean | undefined,
   storeValue: boolean,
@@ -816,6 +839,7 @@ export function SessionView({
   const { id } = useParams<{ id: string }>();
   const sessionId = id!;
   const { client, socket, meta, wsStatus } = useConnection();
+  const { slots } = useConversationShell();
   const terminalAvailable = terminalCapabilityAvailable(meta.capabilities);
   const { t, tp, locale } = useI18n();
   const navigate = useNavigate();
@@ -995,10 +1019,12 @@ export function SessionView({
   useEffect(() => {
     setDraft(readDraft(sessionId));
   }, [sessionId]);
-  const updateDraft = (text: string) => {
+  // Stable identity: the shell-seat memo depends on it (a fresh function per
+  // render would re-publish the composer on every keystroke's render).
+  const updateDraft = useCallback((text: string) => {
     setDraft(text);
     writeDraft(sessionId, text);
-  };
+  }, [sessionId]);
 
   // Capture the composer chrome that should survive a session switch:
   // attachment chips and pill overrides, memory-only (see lib/drafts.ts).
@@ -1645,6 +1671,122 @@ export function SessionView({
     state.maxContextTokens ??
     (usage !== undefined && usage.context_limit > 0 ? usage.context_limit : undefined);
 
+  // ---- conversation shell seat ----
+  // The composer element is published into ConversationShell's seat (stable
+  // tree position) instead of rendering here, so the textarea DOM node
+  // survives the /new → /s/:id transition. The seat object MUST stay memoized
+  // — the registration effect keys on identity — so every reactive value the
+  // composer element reads is a dep below, and every handler is stabilized.
+  const handleFsSearch = useCallback(
+    (query: string) =>
+      client.fsSearch(sessionId, { query, limit: 30 }).then((result) => result.items),
+    [client, sessionId],
+  );
+  const handleActivateSkill = useCallback(
+    (name: string, args: string, skillAttachments: readonly ComposerAttachment[]) =>
+      actions?.activateSkill(name, args, skillAttachments),
+    [actions],
+  );
+  const handleCompactContext = useCallback(() => { runSessionAction('compact'); }, [runSessionAction]);
+  const handleComposerSend = useCallback(
+    (text: string, composerAttachments: readonly ComposerAttachment[]) =>
+      actions?.send(text, composerAttachments),
+    [actions],
+  );
+  const handleComposerAbort = useCallback(() => void actions?.abort(), [actions]);
+
+  const composerBusy = state.busy && state.activePromptId !== undefined;
+  // The subagent page is read-only chrome over the same session: active
+  // geometry, no composer (as before this change).
+  const seat = useMemo<ConversationSeat>(() => ({
+    phase:
+      selectedAgentId === undefined
+        ? // initialPromptRef is a mount-time constant until the auto-send
+          // consumes it post-load — safe to read here, and `state.loaded`
+          // covers the reactive edge.
+          resolveSessionSeatPhase({
+            loaded: state.loaded,
+            hasInitialPrompt: initialPromptRef.current !== undefined,
+          })
+        : 'active',
+    composer:
+      selectedAgentId !== undefined ? null : (
+        <Composer
+          busy={composerBusy}
+          disabled={composerDisabled}
+          busyPlaceholder={state.resyncing || state.resyncFailed ? t('sv.sendPaused') : undefined}
+          value={draft}
+          onChange={updateDraft}
+          model={modelOverride}
+          defaultModel={sessionModel}
+          serverDefaultModel={inheritedDefault}
+          modelSource={modelSource}
+          permissionMode={permissionMode}
+          planMode={planMode}
+          swarmMode={swarmMode}
+          goalObjective={goalObjective}
+          goalStatus={state.goal?.status}
+          goalControl={goalControl}
+          efforts={supportedEfforts}
+          effort={effectiveEffort}
+          contextUsage={
+            contextUsed !== undefined && contextLimit !== undefined
+              ? { used: contextUsed, limit: contextLimit }
+              : undefined
+          }
+          sessionId={sessionId}
+          fsSearch={handleFsSearch}
+          attachments={attachments}
+          onChangeAttachments={setAttachments}
+          onActivateSkill={handleActivateSkill}
+          onSessionAction={runSessionAction}
+          onCompactContext={handleCompactContext}
+          onChangeModel={setModelOverride}
+          onChangePermissionMode={setPermissionOverride}
+          onChangePlanMode={setPlanOverride}
+          onChangeSwarmMode={setSwarmOverride}
+          onChangeGoalObjective={setGoalObjective}
+          onChangeGoalControl={setGoalControl}
+          onChangeEffort={setEffortOverride}
+          onSend={handleComposerSend}
+          onAbort={handleComposerAbort}
+        />
+      ),
+  }), [
+    selectedAgentId,
+    state.loaded,
+    state.resyncing,
+    state.resyncFailed,
+    state.goal?.status,
+    composerBusy,
+    composerDisabled,
+    draft,
+    updateDraft,
+    modelOverride,
+    sessionModel,
+    inheritedDefault,
+    modelSource,
+    permissionMode,
+    planMode,
+    swarmMode,
+    goalObjective,
+    goalControl,
+    supportedEfforts,
+    effectiveEffort,
+    contextUsed,
+    contextLimit,
+    sessionId,
+    handleFsSearch,
+    attachments,
+    handleActivateSkill,
+    runSessionAction,
+    handleCompactContext,
+    handleComposerSend,
+    handleComposerAbort,
+    t,
+  ]);
+  useRegisterSeat(seat);
+
   // The backdrop exists only while a drawer actually overlays the transcript:
   // below lg the rail becomes a fixed overlay (see .app-rail in index.css).
   // The app-level sidebar renders its own backdrop from App.
@@ -1756,124 +1898,128 @@ export function SessionView({
       olderError: agentOlderError,
     };
     return (
-      <div className="flex min-h-0 min-w-0 flex-1">
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
-          <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-3 border-b border-hairline bg-panel px-4 py-2">
-            <button
-              type="button"
-              onClick={() => void navigate(`/s/${sessionId}`)}
-              className="rounded-lg border border-hairline px-2 py-1 text-[11.5px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
-            >
-              {t('sv.backToSession')}
-            </button>
-            <div className="min-w-0 flex-1">
-              <AgentBreadcrumb
-                crumbs={crumbs}
-                onOpenSession={() => void navigate(`/s/${sessionId}`)}
-                onOpenAgent={openAgent}
-              />
-              <h1 className="truncate font-display text-[15px] font-semibold text-ink">
-                {displayName}
-              </h1>
-              <p className="truncate text-[10.5px] text-ink-faint">
-                {t('sv.subagentNote')}
-                {' · '}
-                {t('sv.agentReadOnly')}
-              </p>
-            </div>
-            {displayModel !== undefined ? (
-              <span className="rounded-full border border-hairline bg-paper px-2 py-0.5 font-mono text-[10.5px] text-ink-soft">
-                {displayModel}
-              </span>
-            ) : null}
-            <span
-              className={`rounded-full border px-2 py-0.5 text-[10.5px] ${
-                headerBusy ? 'border-accent/50 text-accent' : 'border-hairline text-ink-soft'
-              }`}
-            >
-              {headerBusy ? t('sv.working') : statusLabel}
-            </span>
-            <button
-              type="button"
-              onClick={() => { setRailOpen((value) => !value); }}
-              title={railOpen ? t('sv.hidePanel') : t('sv.showPanel')}
-              aria-label={t('sv.togglePanelAria')}
-              aria-expanded={railOpen}
-              data-agent-rail-toggle
-              className={`shrink-0 rounded-lg border px-2 py-1 text-[11px] transition-colors ${
-                railOpen
-                  ? 'border-accent bg-accent-soft text-accent'
-                  : 'border-hairline text-ink-soft hover:border-hairline-strong'
-              }`}
-            >
-              {t('sv.panel')}
-            </button>
-          </header>
-          <div className="flex flex-wrap gap-3 border-b border-hairline px-4 py-2 text-[11px]">
-            {parentNode !== undefined && parentNode.agentId !== MAIN_AGENT_ID ? (
-              <button
-                type="button"
-                onClick={() => { openAgent(parentNode.agentId); }}
-                className="rounded-full border border-hairline px-2 py-0.5 text-ink-soft transition-colors hover:border-accent hover:text-accent"
-              >
-                {t('sv.parentAgents')}: {parentNode.label}
-              </button>
-            ) : null}
-            {siblingNodes.map((sibling) => (
-              <button
-                key={sibling.agentId}
-                type="button"
-                onClick={() => { openAgent(sibling.agentId); }}
-                className="rounded-full border border-hairline px-2 py-0.5 text-ink-soft transition-colors hover:border-accent hover:text-accent"
-              >
-                {t('sv.siblingAgents')}: {sibling.label}
-              </button>
-            ))}
-            {childNodes.map((child) => (
-              <button
-                key={child.agentId}
-                type="button"
-                onClick={() => { openAgent(child.agentId); }}
-                className="rounded-full border border-hairline px-2 py-0.5 text-ink-soft transition-colors hover:border-accent hover:text-accent"
-              >
-                {t('sv.childAgents')}: {child.label}
-              </button>
-            ))}
-          </div>
-          <Transcript
-            state={agentState}
-            onLoadOlder={handleLoadOlderAgent}
-            onResolveApproval={handleResolveApproval}
-            onAnswerQuestion={handleAnswerQuestion}
-            onDismissQuestion={handleDismissQuestion}
-            forest={forest}
-            onOpenAgent={openAgent}
-          />
-          <ResyncStatusBanner
-            resyncing={state.resyncing}
-            resyncFailed={state.resyncFailed}
-            onRetry={controller === null ? undefined : () => { void controller.resync(); }}
-          />
-          <div aria-live="polite" aria-atomic="true" className="sr-only">
-            {state.pendingInteraction === 'approval'
-              ? t('sv.ariaAwaitingApproval')
-              : state.pendingInteraction === 'question'
-                ? t('sv.ariaAwaitingAnswer')
-                : state.busy
-                  ? t('sv.ariaWorking')
-                  : ''}
-          </div>
-        </main>
-        {railOpen ? (
-          <RightRail
-            className={`app-rail ${railOpen ? 'open' : ''}`}
-            state={state}
-            forest={forest}
-            selectedAgentId={selectedAgentId}
-            onCancelTask={(taskId) => actions?.cancelTask(taskId)}
-            onOpenSubagent={openAgent}
-          />
-        ) : null}
+      <>
+        {slots.header !== null
+          ? createPortal(
+              <>
+                <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-3 border-b border-hairline bg-panel px-4 py-2">
+                  <button
+                    type="button"
+                    onClick={() => void navigate(`/s/${sessionId}`)}
+                    className="rounded-lg border border-hairline px-2 py-1 text-[11.5px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
+                  >
+                    {t('sv.backToSession')}
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <AgentBreadcrumb
+                      crumbs={crumbs}
+                      onOpenSession={() => void navigate(`/s/${sessionId}`)}
+                      onOpenAgent={openAgent}
+                    />
+                    <h1 className="truncate font-display text-[15px] font-semibold text-ink">
+                      {displayName}
+                    </h1>
+                    <p className="truncate text-[10.5px] text-ink-faint">
+                      {t('sv.subagentNote')}
+                      {' · '}
+                      {t('sv.agentReadOnly')}
+                    </p>
+                  </div>
+                  {displayModel !== undefined ? (
+                    <span className="rounded-full border border-hairline bg-paper px-2 py-0.5 font-mono text-[10.5px] text-ink-soft">
+                      {displayModel}
+                    </span>
+                  ) : null}
+                  <span
+                    className={`rounded-full border px-2 py-0.5 text-[10.5px] ${
+                      headerBusy ? 'border-accent/50 text-accent' : 'border-hairline text-ink-soft'
+                    }`}
+                  >
+                    {headerBusy ? t('sv.working') : statusLabel}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { setRailOpen((value) => !value); }}
+                    title={railOpen ? t('sv.hidePanel') : t('sv.showPanel')}
+                    aria-label={t('sv.togglePanelAria')}
+                    aria-expanded={railOpen}
+                    data-agent-rail-toggle
+                    className={`shrink-0 rounded-lg border px-2 py-1 text-[11px] transition-colors ${
+                      railOpen
+                        ? 'border-accent bg-accent-soft text-accent'
+                        : 'border-hairline text-ink-soft hover:border-hairline-strong'
+                    }`}
+                  >
+                    {t('sv.panel')}
+                  </button>
+                </header>
+                <div className="flex shrink-0 flex-wrap gap-3 border-b border-hairline px-4 py-2 text-[11px]">
+                  {parentNode !== undefined && parentNode.agentId !== MAIN_AGENT_ID ? (
+                    <button
+                      type="button"
+                      onClick={() => { openAgent(parentNode.agentId); }}
+                      className="rounded-full border border-hairline px-2 py-0.5 text-ink-soft transition-colors hover:border-accent hover:text-accent"
+                    >
+                      {t('sv.parentAgents')}: {parentNode.label}
+                    </button>
+                  ) : null}
+                  {siblingNodes.map((sibling) => (
+                    <button
+                      key={sibling.agentId}
+                      type="button"
+                      onClick={() => { openAgent(sibling.agentId); }}
+                      className="rounded-full border border-hairline px-2 py-0.5 text-ink-soft transition-colors hover:border-accent hover:text-accent"
+                    >
+                      {t('sv.siblingAgents')}: {sibling.label}
+                    </button>
+                  ))}
+                  {childNodes.map((child) => (
+                    <button
+                      key={child.agentId}
+                      type="button"
+                      onClick={() => { openAgent(child.agentId); }}
+                      className="rounded-full border border-hairline px-2 py-0.5 text-ink-soft transition-colors hover:border-accent hover:text-accent"
+                    >
+                      {t('sv.childAgents')}: {child.label}
+                    </button>
+                  ))}
+                </div>
+              </>,
+              slots.header,
+            )
+          : null}
+        <Transcript
+          state={agentState}
+          onLoadOlder={handleLoadOlderAgent}
+          onResolveApproval={handleResolveApproval}
+          onAnswerQuestion={handleAnswerQuestion}
+          onDismissQuestion={handleDismissQuestion}
+          forest={forest}
+          onOpenAgent={openAgent}
+        />
+        {slots.dock !== null
+          ? createPortal(
+              <ResyncStatusBanner
+                resyncing={state.resyncing}
+                resyncFailed={state.resyncFailed}
+                onRetry={controller === null ? undefined : () => { void controller.resync(); }}
+              />,
+              slots.dock,
+            )
+          : null}
+        {slots.rail !== null && railOpen
+          ? createPortal(
+              <RightRail
+                className={`app-rail ${railOpen ? 'open' : ''}`}
+                state={state}
+                forest={forest}
+                selectedAgentId={selectedAgentId}
+                onCancelTask={(taskId) => actions?.cancelTask(taskId)}
+                onOpenSubagent={openAgent}
+              />,
+              slots.rail,
+            )
+          : null}
         {showBackdrop ? (
           <div
             role="button"
@@ -1890,6 +2036,15 @@ export function SessionView({
             }}
           />
         ) : null}
+        <div aria-live="polite" aria-atomic="true" className="sr-only">
+          {state.pendingInteraction === 'approval'
+            ? t('sv.ariaAwaitingApproval')
+            : state.pendingInteraction === 'question'
+              ? t('sv.ariaAwaitingAnswer')
+              : state.busy
+                ? t('sv.ariaWorking')
+                : ''}
+        </div>
         <ConfirmDialog
           open={confirmUndo}
           overlayId="confirm-undo"
@@ -1926,125 +2081,97 @@ export function SessionView({
           onConfirm={confirmClearQueueRun}
           onCancel={() => { setConfirmClearQueue(false); }}
         />
-      </div>
+      </>
     );
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1">
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <Header
-          controller={controller}
-          railOpen={railOpen}
-          terminalAvailable={terminalAvailable}
-          terminalOpen={terminalOpen}
-          effectiveModel={effectiveModel}
-          modelSource={modelSource}
-          onToggleRail={() => { setRailOpen((value) => !value); }}
-          onToggleTerminal={toggleTerminalPanel}
-          onToggleSidebar={onToggleSidebar}
-          onJumpTurn={(blockId) => {
-            document
-              .querySelector(`[data-block-id="${blockId}"]`)
-              ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }}
-          onSessionAction={runSessionAction}
-          onRequestBatchResolve={handleBatchResolve}
-        />
+    <>
+      {slots.header !== null
+        ? createPortal(
+            <Header
+              controller={controller}
+              railOpen={railOpen}
+              terminalAvailable={terminalAvailable}
+              terminalOpen={terminalOpen}
+              effectiveModel={effectiveModel}
+              modelSource={modelSource}
+              onToggleRail={() => { setRailOpen((value) => !value); }}
+              onToggleTerminal={toggleTerminalPanel}
+              onToggleSidebar={onToggleSidebar}
+              onJumpTurn={(blockId) => {
+                document
+                  .querySelector(`[data-block-id="${blockId}"]`)
+                  ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }}
+              onSessionAction={runSessionAction}
+              onRequestBatchResolve={handleBatchResolve}
+            />,
+            slots.header,
+          )
+        : null}
 
-        <Transcript
-          state={{
-            ...state,
-            blocks: filterBlocksToDirectChildren(state.blocks, forest, MAIN_AGENT_ID),
-          }}
-          onLoadOlder={handleLoadOlder}
-          onResolveApproval={handleResolveApproval}
-          onAnswerQuestion={handleAnswerQuestion}
-          onDismissQuestion={handleDismissQuestion}
-          onCancelQueued={handleCancelQueuedChips}
-          onRetryLoad={handleRetryLoad}
-          forest={forest}
-          onOpenAgent={openAgent}
-        />
-        <ResyncStatusBanner
-          resyncing={state.resyncing}
-          resyncFailed={state.resyncFailed}
-          onRetry={controller === null ? undefined : () => { void controller.resync(); }}
-        />
-        {queuedItems.length > 0 ? (
-          <QueueStrip
-            items={queuedItems}
-            onSendNow={handleSendNowQueued}
-            onRemove={handleCancelQueued}
-            onClearAll={handleClearQueue}
-            sendNowDisabled={state.resyncing || state.resyncFailed}
-          />
-        ) : null}
-        <Composer
-          busy={state.busy && state.activePromptId !== undefined}
-          disabled={composerDisabled}
-          busyPlaceholder={state.resyncing || state.resyncFailed ? t('sv.sendPaused') : undefined}
-          value={draft}
-          onChange={updateDraft}
-          model={modelOverride}
-          defaultModel={sessionModel}
-          serverDefaultModel={inheritedDefault}
-          modelSource={modelSource}
-          permissionMode={permissionMode}
-          planMode={planMode}
-          swarmMode={swarmMode}
-          goalObjective={goalObjective}
-          goalStatus={state.goal?.status}
-          goalControl={goalControl}
-          efforts={supportedEfforts}
-          effort={effectiveEffort}
-          contextUsage={
-            contextUsed !== undefined && contextLimit !== undefined
-              ? { used: contextUsed, limit: contextLimit }
-              : undefined
-          }
-          sessionId={sessionId}
-          fsSearch={(query) =>
-            client.fsSearch(sessionId, { query, limit: 30 }).then((result) => result.items)
-          }
-          attachments={attachments}
-          onChangeAttachments={setAttachments}
-          onActivateSkill={(name, args, skillAttachments) =>
-            actions?.activateSkill(name, args, skillAttachments)
-          }
-          onSessionAction={runSessionAction}
-          onCompactContext={() => { runSessionAction('compact'); }}
-          onChangeModel={setModelOverride}
-          onChangePermissionMode={setPermissionOverride}
-          onChangePlanMode={setPlanOverride}
-          onChangeSwarmMode={setSwarmOverride}
-          onChangeGoalObjective={setGoalObjective}
-          onChangeGoalControl={setGoalControl}
-          onChangeEffort={setEffortOverride}
-          onSend={(text, composerAttachments) => actions?.send(text, composerAttachments)}
-          onAbort={() => void actions?.abort()}
-        />
-        {terminalOpen && currentTerminalManager !== null ? (
-          <TerminalPanel
-            manager={currentTerminalManager}
-            height={terminalHeight}
-            wsStatus={wsStatus}
-            onHeightChange={handleTerminalHeightChange}
-            onClose={toggleTerminalPanel}
-          />
-        ) : null}
-      </main>
+      <Transcript
+        state={{
+          ...state,
+          blocks: filterBlocksToDirectChildren(state.blocks, forest, MAIN_AGENT_ID),
+        }}
+        onLoadOlder={handleLoadOlder}
+        onResolveApproval={handleResolveApproval}
+        onAnswerQuestion={handleAnswerQuestion}
+        onDismissQuestion={handleDismissQuestion}
+        onCancelQueued={handleCancelQueuedChips}
+        onRetryLoad={handleRetryLoad}
+        forest={forest}
+        onOpenAgent={openAgent}
+      />
+      {slots.dock !== null
+        ? createPortal(
+            <>
+              <ResyncStatusBanner
+                resyncing={state.resyncing}
+                resyncFailed={state.resyncFailed}
+                onRetry={controller === null ? undefined : () => { void controller.resync(); }}
+              />
+              {queuedItems.length > 0 ? (
+                <QueueStrip
+                  items={queuedItems}
+                  onSendNow={handleSendNowQueued}
+                  onRemove={handleCancelQueued}
+                  onClearAll={handleClearQueue}
+                  sendNowDisabled={state.resyncing || state.resyncFailed}
+                />
+              ) : null}
+            </>,
+            slots.dock,
+          )
+        : null}
+      {slots.footer !== null && terminalOpen && currentTerminalManager !== null
+        ? createPortal(
+            <TerminalPanel
+              manager={currentTerminalManager}
+              height={terminalHeight}
+              wsStatus={wsStatus}
+              onHeightChange={handleTerminalHeightChange}
+              onClose={toggleTerminalPanel}
+            />,
+            slots.footer,
+          )
+        : null}
 
-      {railOpen ? (
-        <RightRail
-          className={`app-rail ${railOpen ? 'open' : ''}`}
-          state={state}
-          forest={forest}
-          selectedAgentId={selectedAgentId}
-          onCancelTask={(taskId) => actions?.cancelTask(taskId)}
-          onOpenSubagent={openAgent}
-        />
-      ) : null}
+      {slots.rail !== null && railOpen
+        ? createPortal(
+            <RightRail
+              className={`app-rail ${railOpen ? 'open' : ''}`}
+              state={state}
+              forest={forest}
+              selectedAgentId={selectedAgentId}
+              onCancelTask={(taskId) => actions?.cancelTask(taskId)}
+              onOpenSubagent={openAgent}
+            />,
+            slots.rail,
+          )
+        : null}
 
       {showBackdrop ? (
         <div
@@ -2109,6 +2236,6 @@ export function SessionView({
         onConfirm={confirmClearQueueRun}
         onCancel={() => { setConfirmClearQueue(false); }}
       />
-    </div>
+    </>
   );
 }
