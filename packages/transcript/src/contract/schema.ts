@@ -93,6 +93,9 @@ export const textFrameSchema = z.object({
   text: z.string(),
   attachmentIds: z.array(z.string()).optional(),
   taskId: taskIdSchema.optional(),
+  // Open content, like tool payloads: the engine's prompt origin for
+  // user-role inputs that are not typed prompts (see TextFrame.origin).
+  origin: z.unknown().optional(),
 });
 
 export const thinkingFrameSchema = z.object({

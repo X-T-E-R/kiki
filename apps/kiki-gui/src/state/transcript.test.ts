@@ -75,7 +75,7 @@ function snapshot(overrides: Partial<SessionSnapshotResponse> = {}): SessionSnap
 
 function frame(
   payload: SessionEventFrame['payload'],
-  options: { seq?: number; volatile?: boolean; offset?: number } = {},
+  options: { seq?: number; volatile?: boolean; offset?: number; timestamp?: string } = {},
 ): SessionEventFrame {
   return {
     type: payload.type,
@@ -84,7 +84,7 @@ function frame(
     volatile: options.volatile,
     offset: options.offset,
     session_id: 'session_test',
-    timestamp: '2026-01-01T00:00:01.000Z',
+    timestamp: options.timestamp ?? '2026-01-01T00:00:01.000Z',
     payload,
   };
 }
@@ -216,6 +216,61 @@ describe('agentTranscriptToBlocks', () => {
       'assistant',
     ]);
     expect((blocks[0] as SystemBlock).variant).toBe('task');
+  });
+
+  it('renders a mid-turn task notification frame as left-lane system, never You', () => {
+    const steps = [
+      {
+        stepId: 'step-1',
+        frames: [
+          { kind: 'text', frameId: 'asst-1', role: 'assistant', text: 'Working on it.' },
+          // Patched server shape: origin rides the frame.
+          {
+            kind: 'text',
+            frameId: 'note-1',
+            role: 'user',
+            text: 'Background process completed\npnpm test — 42 passed',
+            taskId: 'task_1',
+            origin: { kind: 'task', taskId: 'task_1' },
+          },
+          // Pre-patch shape: taskId only, no origin — still not You.
+          {
+            kind: 'text',
+            frameId: 'note-2',
+            role: 'user',
+            text: 'Background agent completed\nreview finished',
+            taskId: 'task_2',
+          },
+          // Positive control: a plain user frame in the user turn stays You.
+          { kind: 'text', frameId: 'steer-1', role: 'user', text: 'also update the docs' },
+        ],
+      },
+    ];
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'main',
+      has_more: false,
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't1',
+          prompt: 'Fix the flaky test.',
+          origin: { kind: 'user' },
+          steps,
+        } as never,
+      ],
+    });
+    expect(blocks.map((block) => block.kind)).toEqual([
+      'user',
+      'assistant',
+      'system',
+      'system',
+      'user',
+    ]);
+    const systemBlocks = blocks.filter((block): block is SystemBlock => block.kind === 'system');
+    expect(systemBlocks.map((block) => block.variant)).toEqual(['task', 'task']);
+    expect(systemBlocks[0]?.text).toContain('Background process completed');
+    expect(systemBlocks[1]?.text).toContain('review finished');
+    expect((blocks[4] as UserBlock).text).toBe('also update the docs');
   });
 
   it('does not render splice undo/clear markers as notice copy', () => {
@@ -1201,6 +1256,25 @@ describe('classifyTranscriptText', () => {
     });
     expect(classified.lane).toBe('you');
   });
+
+  it('reclassifies an origin-less <notification> envelope as system/task, never You', () => {
+    const classified = classifyTranscriptText({
+      text: '<notification id="n1" category="task" type="task.completed" source_kind="background_task" source_id="task_1">\nTitle: Background process completed\npnpm test — 42 passed\n</notification>',
+      role: 'user',
+    });
+    expect(classified.lane).toBe('system');
+    expect(classified.systemVariant).toBe('task');
+    expect(classified.text).not.toContain('<notification');
+    expect(classified.text).toContain('pnpm test — 42 passed');
+  });
+
+  it('keeps prose merely mentioning notifications on the You lane', () => {
+    const classified = classifyTranscriptText({
+      text: 'please add a <notification> element to the settings page',
+      role: 'user',
+    });
+    expect(classified.lane).toBe('you');
+  });
 });
 
 describe('origin-aware snapshot', () => {
@@ -1670,5 +1744,177 @@ describe('agent tree projections', () => {
     expect(visible.filter((block) => block.kind === 'subagent').map((block) => block.subagentId)).toEqual([
       'agent-1',
     ]);
+  });
+});
+
+describe('turn timing and interruption', () => {
+  it('tracks turn timing anchors and records the turn tail on end', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = applyFrame(
+      state,
+      frame(
+        { type: 'turn.started', turnId: 1, origin: { kind: 'user' } },
+        { seq: 11, timestamp: '2026-01-01T00:00:10.000Z' },
+      ),
+    ).state;
+    expect(state.busy).toBe(true);
+    expect(state.turnStartedAt).toBe(Date.parse('2026-01-01T00:00:10.000Z'));
+    expect(state.turnFirstTokenAt).toBeUndefined();
+    expect(state.turnTail).toBeUndefined();
+
+    state = applyFrame(
+      state,
+      frame(
+        { type: 'assistant.delta', turnId: 1, delta: 'Hi' },
+        { volatile: true, offset: 0, timestamp: '2026-01-01T00:00:11.500Z' },
+      ),
+    ).state;
+    expect(state.turnFirstTokenAt).toBe(Date.parse('2026-01-01T00:00:11.500Z'));
+
+    // A second delta does not move the first-token anchor.
+    state = applyFrame(
+      state,
+      frame(
+        { type: 'assistant.delta', turnId: 1, delta: ' there' },
+        { volatile: true, offset: 2, timestamp: '2026-01-01T00:00:12.000Z' },
+      ),
+    ).state;
+    expect(state.turnFirstTokenAt).toBe(Date.parse('2026-01-01T00:00:11.500Z'));
+
+    state = applyFrame(
+      state,
+      frame(
+        { type: 'turn.ended', turnId: 1, reason: 'completed', durationMs: 4200 },
+        { seq: 12, timestamp: '2026-01-01T00:00:14.200Z' },
+      ),
+    ).state;
+    expect(state.busy).toBe(false);
+    expect(state.turnStartedAt).toBeUndefined();
+    expect(state.turnFirstTokenAt).toBeUndefined();
+    expect(state.turnTail).toEqual({
+      turnId: '1',
+      endedAt: '2026-01-01T00:00:14.200Z',
+      durationMs: 4200,
+      ttftMs: 1500,
+    });
+  });
+
+  it('derives the run duration from frame timestamps when the wire omits durationMs', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = applyFrame(
+      state,
+      frame(
+        { type: 'turn.started', turnId: 1, origin: { kind: 'user' } },
+        { seq: 11, timestamp: '2026-01-01T00:00:10.000Z' },
+      ),
+    ).state;
+    state = applyFrame(
+      state,
+      frame(
+        { type: 'turn.ended', turnId: 1, reason: 'completed' },
+        { seq: 12, timestamp: '2026-01-01T00:00:16.800Z' },
+      ),
+    ).state;
+    expect(state.turnTail?.durationMs).toBe(6800);
+    expect(state.turnTail?.ttftMs).toBeUndefined();
+  });
+
+  it('marks the cancelled turn’s last assistant message stopped and running tools stopped', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = applyFrame(
+      state,
+      frame({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } }, { seq: 11 }),
+    ).state;
+    state = applyFrame(
+      state,
+      frame(
+        { type: 'tool.call.started', turnId: 1, toolCallId: 'tc1', name: 'Bash', args: { command: 'sleep 60' } },
+        { seq: 12 },
+      ),
+    ).state;
+    state = applyFrame(
+      state,
+      frame({ type: 'assistant.delta', turnId: 1, delta: 'partial answer' }, { volatile: true, offset: 0 }),
+    ).state;
+    state = applyFrame(
+      state,
+      frame({ type: 'turn.ended', turnId: 1, reason: 'cancelled' }, { seq: 13 }),
+    ).state;
+
+    const tool = state.blocks.find((b) => b.kind === 'tool') as ToolBlock;
+    expect(tool.status).toBe('stopped');
+    const assistant = state.blocks.find((b) => b.kind === 'assistant') as AssistantBlock;
+    expect(assistant.stopped).toBe(true);
+    expect(assistant.streaming).toBe(false);
+    expect(assistant.text).toBe('partial answer');
+  });
+
+  it('leaves no stopped markers on a completed turn', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = applyFrame(
+      state,
+      frame({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } }, { seq: 11 }),
+    ).state;
+    state = applyFrame(
+      state,
+      frame({ type: 'assistant.delta', turnId: 1, delta: 'done' }, { volatile: true, offset: 0 }),
+    ).state;
+    state = applyFrame(
+      state,
+      frame({ type: 'turn.ended', turnId: 1, reason: 'completed' }, { seq: 12 }),
+    ).state;
+    const assistant = state.blocks.find((b) => b.kind === 'assistant') as AssistantBlock;
+    expect(assistant.stopped).toBeUndefined();
+  });
+});
+
+describe('system row producer label', () => {
+  it('carries the origin detail onto the system block as source', () => {
+    const state = applySnapshot(
+      'session_test',
+      snapshot({
+        messages: {
+          items: [
+            {
+              id: 'm-inject',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: 'injected date context' }],
+              created_at: '2026-01-01T00:00:01.000Z',
+              metadata: { origin: { kind: 'injection', variant: 'date' } },
+            },
+          ],
+          has_more: false,
+        },
+      }),
+    );
+    const sys = state.blocks[0] as SystemBlock;
+    expect(sys.kind).toBe('system');
+    expect(sys.variant).toBe('injection');
+    expect(sys.source).toBe('date');
+  });
+
+  it('omits the source when the origin carries no usable detail', () => {
+    const state = applySnapshot(
+      'session_test',
+      snapshot({
+        messages: {
+          items: [
+            {
+              id: 'm-compact',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: 'summary of earlier context' }],
+              created_at: '2026-01-01T00:00:01.000Z',
+              metadata: { origin: { kind: 'compaction_summary' } },
+            },
+          ],
+          has_more: false,
+        },
+      }),
+    );
+    const sys = state.blocks[0] as SystemBlock;
+    expect(sys.kind).toBe('system');
+    expect(sys.source).toBeUndefined();
   });
 });

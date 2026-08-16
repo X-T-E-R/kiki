@@ -38,6 +38,14 @@ export interface TextFrame {
    * live task.
    */
   readonly taskId?: TaskId;
+  /**
+   * Engine prompt origin for user-role inputs that are not typed user prompts
+   * (e.g. `{ kind: 'task', taskId }` on a mid-turn task notification). Open
+   * content — the server copies the engine value through and only the view
+   * layer interprets it. Without it a client can only fall back to the
+   * enclosing turn's origin and may mis-render an injection as a user bubble.
+   */
+  readonly origin?: unknown;
 }
 
 /** Model thinking chain. Same full-text invariant as TextFrame. */

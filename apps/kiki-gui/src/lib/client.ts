@@ -167,7 +167,16 @@ export interface KikiClientOptions {
 }
 
 export type AgentTranscriptFrame =
-  | { kind: 'text'; frameId: string; role: 'assistant' | 'user'; text: string }
+  | {
+      kind: 'text';
+      frameId: string;
+      role: 'assistant' | 'user';
+      text: string;
+      /** Linked task entity for user-role inputs about a task. */
+      taskId?: string;
+      /** Engine prompt origin for non-typed user inputs (e.g. {kind:'task'}). */
+      origin?: unknown;
+    }
   | { kind: 'thinking'; frameId: string; text: string }
   | {
       kind: 'tool';

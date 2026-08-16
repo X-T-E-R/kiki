@@ -266,6 +266,11 @@ export const en = {
   'transcript.toolCalls.one': '{count} tool call',
   'transcript.toolCalls.other': '{count} tool calls',
   'transcript.thinkingSuffix': '{effort} thinking',
+  'transcript.turnWorking': 'Working',
+  'transcript.stopped': 'Stopped',
+  'transcript.stoppedAria': 'stopped',
+  'transcript.ranFor': 'Ran for {duration}',
+  'transcript.ttft': 'TTFT {seconds}s',
 
   // ---- subagent cards ----
   'subagent.status.running': 'running',
@@ -423,6 +428,11 @@ export const en = {
   'sv.queueClearBody': 'Each queued prompt will be removed. Failed items stay in the queue so you can retry.',
   'sv.queueClearFailed': '{failed} of {total} queued prompts could not be cleared — they remain in the queue.',
   'sv.queueNoText': '(attachment only)',
+  'sv.queueEdit': 'Edit',
+  'sv.queueEditAria': 'Edit queued prompt',
+  'sv.queueEditTitle': 'Edit this queued prompt (Enter saves, Esc cancels)',
+  'sv.queueEditHint': 'Enter to save · Esc to cancel',
+  'sv.queueExpandAria': 'Show or hide the queued prompts',
   'sv.steerQueuedFailed': 'Could not send the queued prompt now: {detail}',
   'sv.sessionGone': 'This session no longer exists — returning to the start page.',
   'sv.approveAll': 'Approve all',

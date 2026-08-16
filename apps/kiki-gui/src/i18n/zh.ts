@@ -262,6 +262,11 @@ export const zh: Record<I18nKey, string> = {
   'transcript.toolCalls.one': '{count} 次工具调用',
   'transcript.toolCalls.other': '{count} 次工具调用',
   'transcript.thinkingSuffix': '思考强度 {effort}',
+  'transcript.turnWorking': '正在工作',
+  'transcript.stopped': '已停止',
+  'transcript.stoppedAria': '已停止',
+  'transcript.ranFor': '用时 {duration}',
+  'transcript.ttft': '首 token {seconds} 秒',
 
   // ---- subagent cards ----
   'subagent.status.running': '运行中',
@@ -416,6 +421,11 @@ export const zh: Record<I18nKey, string> = {
   'sv.queueClearBody': '每条排队消息都会被移除。失败的项会留在队列中，方便重试。',
   'sv.queueClearFailed': '{total} 条中有 {failed} 条未能清除 — 它们仍留在队列中。',
   'sv.queueNoText': '（仅附件）',
+  'sv.queueEdit': '编辑',
+  'sv.queueEditAria': '编辑排队的消息',
+  'sv.queueEditTitle': '编辑这条排队消息（Enter 保存，Esc 取消）',
+  'sv.queueEditHint': 'Enter 保存 · Esc 取消',
+  'sv.queueExpandAria': '展开或收起排队消息',
   'sv.steerQueuedFailed': '无法立即追加排队消息：{detail}',
   'sv.sessionGone': '会话已不存在 — 正在返回起始页。',
   'sv.approveAll': '全部批准',

@@ -139,6 +139,11 @@ const STRINGS = {
     capNoWorkspace: 'No workspace is registered',
     capLoadFailed: 'Could not load capabilities',
     capRestartRequested: 'Restart requested.',
+    turnWorking: 'Working',
+    stopped: 'Stopped',
+    ranForPattern: /Ran for/,
+    ttftPattern: /TTFT/,
+    queueExpandAria: 'Show or hide the queued prompts',
   },
   zh: {
     newSession: '新会话',
@@ -216,6 +221,11 @@ const STRINGS = {
     capNoWorkspace: '没有已注册的工作区',
     capLoadFailed: '能力加载失败',
     capRestartRequested: '已请求重启。',
+    turnWorking: '正在工作',
+    stopped: '已停止',
+    ranForPattern: /用时/,
+    ttftPattern: /首 token/,
+    queueExpandAria: '展开或收起排队消息',
   },
 };
 const S = STRINGS[LOCALE];
@@ -908,6 +918,22 @@ async function scenarioQueue() {
   if ((await strip.locator('li').count()) !== 2) {
     throw new Error(`expected 2 queue-strip rows, saw ${await strip.locator('li').count()}`);
   }
+  // Multi-prompt default: the list collapses behind the count header…
+  const collapseToggle = strip.locator(`button[aria-label="${S.queueExpandAria}"]`);
+  if ((await collapseToggle.getAttribute('aria-expanded')) !== 'false') {
+    throw new Error('queue strip did not default to collapsed with 2 prompts');
+  }
+  if ((await strip.locator('li:visible').count()) !== 0) {
+    throw new Error('collapsed queue strip still shows rows');
+  }
+  await shot('queue-collapsed');
+  // …and the header expands it again for row actions.
+  await collapseToggle.click();
+  if ((await strip.locator('li:visible').count()) !== 2) {
+    throw new Error('queue strip toggle did not expand the rows');
+  }
+  // Let the rows' anim-enter fade finish before the shot.
+  await page.waitForTimeout(600);
   await shot('queue-two-rows');
 
   // Send now (wire steer): B leaves the queue immediately while A keeps
@@ -1149,6 +1175,103 @@ async function scenarioReminder() {
   await waitForText('The same tool call has been repeated');
   await page.waitForTimeout(300);
   await shot('reminder-expanded');
+}
+
+async function scenarioTaskNotifiedMidturn() {
+  await selectSession('Fixture: task notified mid-turn');
+  await waitForText('Suite is green — 42 passed.');
+  // Positive control: the typed prompt is the only You bubble.
+  const bubbles = page.locator('[role="log"] [data-block-id^="user-"]');
+  if ((await bubbles.count()) !== 1) {
+    throw new Error(`expected exactly one user bubble, saw ${await bubbles.count()}`);
+  }
+  const bubbleText = await bubbles.first().innerText();
+  if (!bubbleText.includes('Run the fixture suite in the background.')) {
+    throw new Error('user text missing from the bubble');
+  }
+  if (bubbleText.includes('Background process completed') || bubbleText.includes('<notification')) {
+    throw new Error('task notification leaked into the user bubble');
+  }
+  // Both notification shapes (origin-carried + bare envelope) land collapsed
+  // on the left system/task lane.
+  const systemRows = page.locator('[role="log"] [data-block-id^="system-"]');
+  if ((await systemRows.count()) !== 2) {
+    throw new Error(`expected 2 system rows, saw ${await systemRows.count()}`);
+  }
+  if ((await page.locator('text=pnpm test — 42 passed').count()) !== 0) {
+    throw new Error('collapsed notification body rendered before expansion');
+  }
+  await shot('task-notified-collapsed');
+  await systemRows.first().locator('button').first().click();
+  await waitForText('pnpm test — 42 passed');
+  await page.waitForTimeout(300);
+  await shot('task-notified-expanded');
+}
+
+async function scenarioInjectionLanes() {
+  await selectSession('Fixture: injection lanes');
+  await waitForText('Nightly job fired on schedule');
+  // Positive control: only the typed prompt is a You bubble.
+  const bubbles = page.locator('[role="log"] [data-block-id^="user-"]');
+  if ((await bubbles.count()) !== 1) {
+    throw new Error(`expected exactly one user bubble, saw ${await bubbles.count()}`);
+  }
+  const bubbleText = await bubbles.first().innerText();
+  if (!bubbleText.includes('Keep an eye on the nightly job.')) {
+    throw new Error('user text missing from the bubble');
+  }
+  for (const leaked of ['cron-fire', 'SKILL.md', 'Continue toward the goal', 'Earlier context summarized']) {
+    if (bubbleText.includes(leaked)) throw new Error(`injection leaked into the user bubble: ${leaked}`);
+  }
+  // cron + compaction + non-slash skill + goal continuation: four left-lane
+  // system rows, all collapsed (bodies hidden until expanded).
+  const systemRows = page.locator('[role="log"] [data-block-id^="system-"]');
+  if ((await systemRows.count()) !== 4) {
+    throw new Error(`expected 4 system rows, saw ${await systemRows.count()}`);
+  }
+  if ((await page.locator('text=Continue toward the goal').count()) !== 0) {
+    throw new Error('collapsed injection body rendered before expansion');
+  }
+  await shot('injection-lanes');
+}
+
+async function scenarioTurnPolish() {
+  await selectSession('Fixture: turn polish');
+  // 1) Abort mid-stream: the assistant message gains a Stopped marker and
+  // the orphaned running tool flips to its amber stopped square.
+  await sendPrompt('Abort me mid-stream.');
+  await waitForText('half-finished sentence', 20_000);
+  await page.mouse.click(720, 300); // non-editable focus
+  await page.keyboard.press('Escape'); // abort mid-stream
+  await page.waitForSelector(`text=${S.promptAborted}`, { timeout: 10_000 });
+  const stoppedMark = page.locator('[data-block-id^="assistant-"]', { hasText: S.stopped });
+  if ((await stoppedMark.count()) !== 1) {
+    throw new Error(`expected 1 Stopped assistant marker, saw ${await stoppedMark.count()}`);
+  }
+  await page.waitForTimeout(400);
+  await shot('turn-stopped');
+  // 2) Slow first token: the status line shows during the gap, its cumulative
+  // clock once the wait passes 15s (the fixture pauses 16.5s), then the turn
+  // tail reports "Ran for … · TTFT …".
+  await sendPrompt('Think slowly before answering.');
+  const status = page.locator('[data-turn-status]');
+  await status.waitFor({ timeout: 10_000 });
+  if (!(await status.innerText()).includes(S.turnWorking)) {
+    throw new Error('turn status line missing the Working label');
+  }
+  await page.waitForFunction(
+    () => /\d/.test(document.querySelector('[data-turn-status] [aria-hidden="true"]')?.textContent ?? ''),
+    undefined,
+    { timeout: 20_000 },
+  );
+  await shot('turn-status-clock');
+  await page.waitForSelector('[data-turn-tail]', { timeout: 20_000 });
+  const tail = await page.locator('[data-turn-tail]').innerText();
+  if (!S.ranForPattern.test(tail) || !S.ttftPattern.test(tail)) {
+    throw new Error(`turn tail missing Ran for / TTFT facts: ${tail}`);
+  }
+  await page.waitForTimeout(300);
+  await shot('turn-tail');
 }
 
 async function scenarioSubagentApproval() {
@@ -1707,6 +1830,9 @@ const SCENARIOS = [
   ['burst', scenarioBurst],
   ['long-transcript', scenarioLongTranscript],
   ['reminder', scenarioReminder],
+  ['task-notified-midturn', scenarioTaskNotifiedMidturn],
+  ['injection-lanes', scenarioInjectionLanes],
+  ['turn-polish', scenarioTurnPolish],
   ['error-abort', scenarioErrorAbort],
   ['approvals-gallery', scenarioApprovalsGallery],
   ['reconnect', scenarioReconnect],

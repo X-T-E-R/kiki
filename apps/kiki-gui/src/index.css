@@ -574,3 +574,40 @@ body {
 .kiki-cb .shiki span {
   background-color: transparent !important;
 }
+
+/* ---- message display: streaming thinking-row sweep ----
+ * deepseek-harness's ReasoningRow scan (Apache-2.0), re-skinned to kiki's
+ * warm accent wash; gated off under prefers-reduced-motion. */
+.thinking-row {
+  position: relative;
+  overflow: hidden;
+}
+.thinking-row[data-streaming='true']::after {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 300px;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--color-accent-soft) 70%, transparent) 55%,
+    transparent 100%
+  );
+  animation: kiki-thinking-sweep 2.6s ease-out infinite;
+}
+@keyframes kiki-thinking-sweep {
+  0% {
+    left: -300px;
+  }
+  90%,
+  100% {
+    left: 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .thinking-row[data-streaming='true']::after {
+    animation: none;
+  }
+}

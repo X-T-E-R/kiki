@@ -1313,6 +1313,9 @@ describe('AgentTranscriptProjector', () => {
     const frames = turnOps('t1', tx.getItems()).steps[0]!.frames;
     const frame = frames.find((f) => f.kind === 'text' && f.role === 'user');
     expect(frame).toMatchObject({ kind: 'text', role: 'user', taskId: 'task_1' });
+    // The origin rides the frame so view-layer lane classification cannot
+    // mistake the injection for a typed user prompt (You bubble).
+    expect(frame?.kind === 'text' && frame.origin).toEqual({ kind: 'task', taskId: 'task_1' });
     expect(frame?.kind === 'text' && frame.text).toContain('Background process completed');
   });
 
