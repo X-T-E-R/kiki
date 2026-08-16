@@ -76,7 +76,7 @@ function splitStreamingText(text: string): { prefix: string; tail: string } {
 
 /**
  * Decorate `@subagent` / `/skill` tokens in user prose as accent chips
- * (deepseek-harness's projectUserText, Apache-2.0 — token shape only, no
+ * (deepseek-harness's projectUserText, MIT — token shape only, no
  * lexicon). Presentation-only: every slice comes from the original string at
  * exact offsets, so selection/copy keeps the verbatim text.
  */
@@ -906,7 +906,7 @@ function TopEdge({ state, onLoadOlder }: {
 const TURN_CLOCK_AFTER_MS = 15_000;
 
 /**
- * Turn-level running signal (deepseek-harness's TurnStatus, Apache-2.0): a
+ * Turn-level running signal (deepseek-harness's TurnStatus, MIT): a
  * status line for the gaps where no token is streaming (first-token wait,
  * tool execution between steps), with a cumulative clock once the turn has
  * run ≥15s. Anchored to the live `turn.started` frame; a mid-turn reload
@@ -948,7 +948,7 @@ function formatLatencySeconds(ms: number): string {
 }
 
 /**
- * End-of-turn readout (deepseek-harness's turn tail, Apache-2.0): end clock ·
+ * End-of-turn readout (deepseek-harness's turn tail, MIT): end clock ·
  * Ran for … · TTFT …, from the turn.ended frame and live frame timestamps.
  * tok/s is skipped — the wire carries no per-turn token counts.
  */

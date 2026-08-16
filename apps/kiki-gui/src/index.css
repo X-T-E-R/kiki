@@ -576,7 +576,7 @@ body {
 }
 
 /* ---- message display: streaming thinking-row sweep ----
- * deepseek-harness's ReasoningRow scan (Apache-2.0), re-skinned to kiki's
+ * deepseek-harness's ReasoningRow scan (MIT), re-skinned to kiki's
  * warm accent wash; gated off under prefers-reduced-motion. */
 .thinking-row {
   position: relative;

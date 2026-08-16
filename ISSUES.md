@@ -154,3 +154,6 @@
 | FU11 | P3 | D1 委派失败分类未迁移已持久化旧文档的 errorCode（数据迁移边界） | D1 |
 | FU12 | P3 | klient `ipc.test.ts` 有 1 例时序敏感偶发超时（非本批引入），建议显式放宽 testTimeout | D1 |
 | FU13 | P3 | D2 优雅关闭端点 `POST /api/v1/shutdown` 只做了静态核对，HTTP 成功路径未在真实服务验证（fallback 强杀路径已测） | D2 |
+| FU14 | P2 | 设置页 providers 草稿的 dirty-guard 只拦设置页内部区块切换；经应用侧栏导航离开（如 Capabilities）时不弹确认，未保存草稿静默丢失（dsh 设计吸纳批次合并验证期发现） | G |
+| FU15 | P3 | QueueStrip 行内编辑已实现 `onEdit` 但未接线：kap-server 无原位编辑端点（保存=移除+重发会落队尾，位置语义需产品确认）；接线只需 SessionView 传一行 handler | G |
+| FU16 | P3 | turn tail 的 tok/s 与 ContextMeter 的 system/tools/messages breakdown 未做：wire 无 per-turn token 计数与上下文分段数据，需服务端补数据后再上 | G |

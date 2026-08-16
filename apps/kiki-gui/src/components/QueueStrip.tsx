@@ -13,7 +13,7 @@
  *                    tail;
  *       Remove   — abort the queued prompt; its transcript block stays.
  *   - with more than one parked prompt the list defaults to a collapsed count
- *     header (deepseek-harness's QueueDock, Apache-2.0); the header toggles
+ *     header (deepseek-harness's QueueDock, MIT); the header toggles
  *     the list, an in-flight edit force-expands it, and a single prompt always
  *     shows without a toggle;
  *   - a strip header carrying the drain explanation ("…starts when the current
