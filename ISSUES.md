@@ -99,7 +99,7 @@
 | ID | 级别 | 问题 | 备注 |
 |----|------|------|------|
 | BK1 | P1 | 设置双通道收敛单一写者（桌面域并入 server API），根除整文件互覆 | 需设计；C 批先做备份滚动与重启确认缓解 |
-| BK2 | P1 | workspace handler 只创建不回收（watcher/loader/订阅线性积累） | 上游 App 生命周期架构，需引用计数/逐出设计 |
+| BK2 | P1 | workspace handler 只创建不回收（watcher/loader/订阅线性积累） | **部分缓解（2026-08-17 同步）**：上游 workspaceInstanceManager 重写带来真实 close/dispose 级联，但仍无引用计数/逐出；DELETE /workspaces 仍不关 live instance |
 | BK3 | P1 | CLI(TUI) 与桌面后端共用 home 无会话级跨进程互斥，可同时恢复写同一会话 | storage.locked 已定义未用于激活路径；需跨进程锁设计 |
 | BK4 | P1 | runtime.json 无安装器/重签工具；Codex 侧模型安装时冻结（换模型=HMAC 死结） | 产品决策：installer 子命令 vs 文档化手工 |
 | BK5 | P1 | GUI 会话与 Codex 委派会话互不可见（独立 homeDir）；thread 通信跨 host 不可能 | 产品裁决：声明边界 vs 受控跨 host 桥 |
@@ -107,12 +107,12 @@
 | BK7 | P2 | TUI 不显示 peer-thread 消息来源（像用户自己的输入） | pi-tui 本地零改动原则，需设计 |
 | BK8 | P2 | sidecar 二进制新鲜度零校验（旧后端+新前端症状零散） | build.rs 清单 + meta.server_version 比对 |
 | BK9 | P2 | 协作能力 v1/v2 双写 + v2 内两套 durable mailbox 后端重复 | 随 legacy 退役计划处理；F4 先冻结声明 |
-| BK10 | P2 | 子代理模型绑定 7 入口 5 层解析链收敛 | F/E 批先做文档与 doctor 裁决层 |
+| BK10 | P2 | 子代理模型绑定 7 入口 5 层解析链收敛 | **部分缓解（2026-08-17 同步）**：解析核心收敛进 v2 单模块、运行态收敛为 inherit\|fixed 二态并持久化；入口面仍约 7 个（tool/swarm/collaboration/agentfile/route/两 config section），v1 链独立 |
 | BK11 | P2 | thread 通信默认全局开启且可唤醒冷会话消耗额度 | 双方审计均建议 opt-in；属产品默认值翻转，待裁决 |
-| BK12 | P3 | terminal_input.data 无大小上限；TERMINAL_NOT_FOUND 无法区分"能力未开放" | ws-control.ts:369; wsConnectionV1.ts:464 |
+| BK12 | P3 | terminal_input.data 无大小上限；TERMINAL_NOT_FOUND 无法区分"能力未开放" | **部分缓解（perf 批）**：registerWsV1 新增 8MiB 帧上限（超限 1009 关闭）；schema 级 `data` 上限与错误码语义仍缺 |
 | BK13 | P3 | /threads::wait 客户端断开不取消服务侧 wait（≤60s 资源浪费） | routes/threads.ts:380 |
 | BK14 | P3 | vite localServer 探测只查 PID 存活不防复用；暴露 0.0.0.0 时返回 bearer token | vite/localServer.ts:46,1 |
-| BK15 | P3 | 三套模型词汇（model/model_alias/model_preference）全量统一 | F 批做文档/校验层，API 破坏性收敛待排期 |
+| BK15 | P3 | 三套模型词汇（model/model_alias/model_preference）全量统一 | 上游 0.36.1 已在 v2 删光 model_preference；本轮合并为保 kiki agentfile 特性在 v2 保留了它——三套词汇当前仍在（v1: model_preference/model_alias；v2: model/model_alias + agentfile model_preference），收敛路线需重议 |
 
 ## 裁决记录（外部文档 vs 本地审计，取证后）
 
@@ -149,13 +149,23 @@
 - 主要修复（对 kiki 直接受益）：#2911 自托管 OpenAI 兼容端点 tool_call id 重编号挂起修复、#2876 Windows file-watcher（盘符根/UNC）、#2899 MCP OAuth 取消悬挂、TUI 启动冻结修复、subagent 活动查看器、step-retry 等。
 - 验证证据：15 包 typecheck 全绿；kiki-gui 31 文件 418 测试全绿；v2 合并触及区定向 555+ 测试全绿；klient 线程契约/错误码 66/66（单 worker）；protocol 529/529；reviewer 独立审查（diff-of-diffs 保全、F1 抽查、双轨 grep）通过。全量套件在本机存在环境性红测，归因见 FU17-FU20，均非本轮合并引入。
 
+## 上游同步记录（2026-08-17：upstream 0.36.1）
+
+### 合入收尾（2026-08-17 当日完成）
+
+- `sync/upstream-0.36.1`（merge commit `4d3a76b60`）已 fast-forward 合入 `kiki` 主支。
+- perf 冻结审计批 `perf/freeze-fixes-20260816`（`ff952dae3`）随后合入，merge commit `f79c53b53`：8 个冲突按「新架构 + perf 硬化叠加」解决；`sessionEventBroadcaster` 从已删的 `followWorkspaceHandlers` 迁到 `ISessionManager` close/archive 事件；`perf-exp5` 测试迁移后断言修复后的驱逐契约；`threadCommunicationService.test.ts` 断言更新为新门面序列。
+- 本机 Node 升级 24.19.0（仓库 engines >=24.15 满足）；三个 gen-manifest 在新 Node 下重生成功（FU19 关闭）。
+- 合入后验证：GUI 33 文件 426 测试全绿（含 perf-exp6）；kap-server sessions 64/64、threads 15/15、wsConnectionV1 39/39、perf-exp5 2/2；v2 threadCommunication 24/24；pi-tui 89/89；受影响包 typecheck 全绿。
+- BK/FU 全面复核（2026-08-17 两路审计）：多数 backlog 仍成立（kiki 特有或产品裁决项）；BK2/BK10/BK12 部分缓解已标注；FU3 核心诉求以二态标签形式完成；FU19 关闭；其余维持原状。
+
 ## Follow-ups（批次实施中新增，未排期）
 
 | ID | 级别 | 问题 | 来源批次 |
 |----|------|------|----------|
 | FU1 | P2 | agent-core 既有快照漂移：`test/profile/agent-profile-loader.test.ts` 的 `DEFAULT_AGENT_PROFILES['coder'].tools` 快照未含协作工具，基线即失败、非本批引入 | F |
 | FU2 | P2 | v2 侧同款死参数未收敛：`agentCollaborationTool.ts` 的 fork_turns / statusOf('errored') 与 v1 对称，F3 按证据范围只改了 v1 | F |
-| FU3 | P2 | F1 语义裁决：继承型 resume 跟随父模型已恢复；但 session 重启后 spawn 期 source 标记丢失，显式 tool alias 可能被误判为继承型——需产品确认是否要持久化 source | F |
+| FU3 | P3 | **核心诉求已以二态形式完成（2026-08-17 同步批）**：spawn 三入口（Agent/Swarm/collaboration）均持久化 `inherit|fixed` 标签（`AgentMeta.labels['subagentBindingMode']`），重启后显式 alias 误判为继承的风险已消解；完整五态 source（tool/profile/default/secondary/caller）持久化属产品增强项，仍待拍板 | F/同步 |
 | FU4 | P2 | kap-server pino 日志走 stdout，`--log-level warn` 落盘的是 stderr；服务端日志进 desktop-backend.log 需改 logger destination 或加 `--log-file` | C |
 | FU5 | P2 | desktop 侧 `tauri build`/NSIS 打包与真机冷启动 smoke 未实跑（仅 cargo check/test + TS 测试） | C |
 | FU6 | P3 | A3 容量校验基准用渲染期 attachments 起步，跨两次极快粘贴可能略微超出 8 附件/20MB 上限（功能更新正确，仅校验基准偏旧） | A |
@@ -165,12 +175,12 @@
 | FU10 | P3 | D1-3 `createToolError` 覆写依赖 MCP SDK 私有方法，SDK 升级可能静默回落 | D1 |
 | FU11 | P3 | D1 委派失败分类未迁移已持久化旧文档的 errorCode（数据迁移边界） | D1 |
 | FU12 | P3 | klient `ipc.test.ts` 有 1 例时序敏感偶发超时（非本批引入），建议显式放宽 testTimeout | D1 |
-| FU13 | P3 | D2 优雅关闭端点 `POST /api/v1/shutdown` 只做了静态核对，HTTP 成功路径未在真实服务验证（fallback 强杀路径已测） | D2 |
+| FU13 | P3 | D2 优雅关闭端点 `POST /api/v1/shutdown` 只静态核对，HTTP 成功路径未在真实服务验证（fallback 强杀路径已测）。2026-08-17 perf 批次已给 `IThreadCommunicationService.shutdown()` 接线并覆盖 close 路径；HTTP 200 成功路径仍未验证 | D2 |
 | FU14 | P2 | 设置页 providers 草稿的 dirty-guard 只拦设置页内部区块切换；经应用侧栏导航离开（如 Capabilities）时不弹确认，未保存草稿静默丢失（dsh 设计吸纳批次合并验证期发现） | G |
 | FU15 | P3 | QueueStrip 行内编辑已实现 `onEdit` 但未接线：kap-server 无原位编辑端点（保存=移除+重发会落队尾，位置语义需产品确认）；接线只需 SessionView 传一行 handler | G |
 | FU16 | P3 | turn tail 的 tok/s 与 ContextMeter 的 system/tools/messages breakdown 未做：wire 无 per-turn token 计数与上下文分段数据，需服务端补数据后再上 | G |
-| FU17 | P2 | `externalDelegationRoute.test.ts`「workspace 绑定漂移拒启动」用例在合并前基线即红：`start.ts` fail-open 吞掉绑定校验错误继续启动 vs 测试期望 fail-closed——属产品语义裁决（fail-closed 还是「edge 禁用但服务继续」），未翻转 | 同步 |
-| FU18 | P2 | 上游 0.36.1 自带测试在本机 Windows 环境成片失败（v2 约 157 例：nvm4w shim `spawn C:\nvmNw\nodejs\node.exe ENOENT`、posix 路径断言、5s 超时为主）；涉败文件与上游逐字节一致，非合并回归；待对照上游 CI 或修本机环境 | 同步 |
-| FU19 | P3 | `config-manifest.toml` / `wire-manifest.d.ts` 未用 gen 脚本重生（本机 Node 24.12 下 gen 脚本因 tsx `#/` 内部导入解析失败，基线亦然）；Node ≥24.15 环境重跑 `gen:config-manifest` / `gen:wire-manifest` 核对（`state-manifest.d.ts` 已重生） | 同步 |
+| FU17 | P2 | `externalDelegationRoute.test.ts`「workspace 绑定漂移拒启动」用例在合并前基线即红：`start.ts` fail-open 吞掉绑定校验错误继续启动 vs 测试期望 fail-closed——属产品语义裁决（fail-closed 还是「edge 禁用但服务继续」），未翻转。注意：perf 批次在 `boot.test.ts` 新增了 fail-open 的正向固化测试，两个用例直接矛盾，裁决更显紧迫 | 同步 |
+| FU18 | P2 | 上游 0.36.1 自带测试在本机 Windows 成片失败（posix 路径断言、5s 超时簇为主）；涉败文件与上游逐字节一致，非合并回归。2026-08-17 本机 Node 升 24.19 后原 nvm4w shim spawn ENOENT 簇预计消失（execPath 已修通），待一次全量复跑确认剩余面 | 同步 |
+| FU19 | P3 | ~~manifest 未重生~~ **已关闭（2026-08-17）**：Node 升 24.19 后 `gen:config-manifest` / `gen:state-manifest` / `gen:wire-manifest` 全部重生成功；`config-manifest.toml` 相对手合版校正 7+/11-（池语义真值：secondaryModel owner 归位、overlay 条目删除） | 同步 |
 | FU20 | P3 | 生产源码旧术语注释残留（`IWorkspaceLifecycleService`、`ISessionProcessRunner` 等仅注释，无 live 引用）清理，避免后续维护误判 | 同步 |
 | FU21 | P3 | v1 `test/harness/coder-subagent-tools.test.ts` 4 例与 `test/profile/agent-profile-loader.test.ts` 快照（FU1）在基线即红；本轮保持原样未修 | 同步 |
