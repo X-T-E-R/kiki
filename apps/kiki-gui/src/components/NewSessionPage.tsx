@@ -15,6 +15,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { Composer } from './Composer';
+import { ContextBreakdownProvider } from './ContextMeter';
 import { useConversationShell, useRegisterSeat, type ConversationSeat } from './ConversationShell';
 import { WorkspacePickerFields, useNewSessionDraft, type NewSessionDraftState } from './NewSessionDraft';
 import { Wordmark } from './Wordmark';
@@ -125,7 +126,12 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
     () => ({
       phase: 'hero',
       composer: (
-        <Composer
+        // Keep the seat's top-level element type identical to the session
+        // view's (ContextBreakdownProvider > Composer): a type change here
+        // remounts the subtree and destroys the textarea DOM node across the
+        // /new → /s/:id flip, which the hero-shell proof forbids.
+        <ContextBreakdownProvider value={undefined}>
+          <Composer
           busy={state.busy}
           disabled={composerDisabled}
           value={state.draft}
@@ -155,7 +161,8 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
           onChangeGoalControl={() => {}}
           onChangeEffort={state.setEffortOverride}
           onSend={state.send}
-        />
+          />
+        </ContextBreakdownProvider>
       ),
     }),
     [

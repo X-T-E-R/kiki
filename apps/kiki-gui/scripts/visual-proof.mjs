@@ -803,16 +803,22 @@ async function scenarioSettingsInvalid() {
   await shot('settings-invalid-inline-error');
 }
 
-async function scenarioSettingsDesktopGate() {
+async function scenarioSettingsBrowserEditable() {
+  // BK1 single-writer convergence: the browser build now edits server settings
+  // through the kap-server config API — there is no desktop-only gate anymore.
+  // The proof asserts the fieldset leaves its loading-disabled state (server
+  // echo landed) instead of the retired desktop-config-disabled-hint.
   await page.goto(`${WEB_URL}/settings/agents?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
-  await page.waitForSelector('[data-testid="desktop-config-disabled-hint"]', { timeout: 10_000 });
-  const disabled = await page.locator('[data-testid="desktop-config-fields"]').evaluate((node) => node.disabled === true);
-  if (!disabled) throw new Error('desktop-only config fieldset is enabled in the browser build');
-  await page.locator('[data-testid="desktop-config-disabled-hint"]').scrollIntoViewIfNeeded();
+  await page.waitForSelector('[data-testid="desktop-config-fields"]', { timeout: 10_000 });
+  await page.waitForFunction(
+    () => document.querySelector('[data-testid="desktop-config-fields"]')?.disabled === false,
+    { timeout: 10_000 },
+  );
+  await page.locator('[data-testid="desktop-config-fields"]').scrollIntoViewIfNeeded();
   await page.waitForTimeout(300);
-  await shot('settings-desktop-disabled');
+  await shot('settings-browser-editable');
 }
 
 async function scenarioResponsive() {
@@ -1845,7 +1851,7 @@ const SCENARIOS = [
   ['settings', scenarioSettings],
   ['settings-write', scenarioSettingsWrite],
   ['settings-invalid', scenarioSettingsInvalid],
-  ['settings-desktop-gate', scenarioSettingsDesktopGate],
+  ['settings-browser-editable', scenarioSettingsBrowserEditable],
   ['slash-commands', scenarioSlashCommands],
   ['attachments', scenarioAttachments],
   ['search', scenarioSearch],
