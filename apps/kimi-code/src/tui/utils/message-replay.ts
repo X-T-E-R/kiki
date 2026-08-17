@@ -173,7 +173,7 @@ export function replayEntry(
   kind: TranscriptEntry['kind'],
   content: string,
   renderMode: TranscriptEntry['renderMode'],
-  extras: { detail?: string; bullet?: string } = {},
+  extras: { detail?: string; bullet?: string; userSourceLabel?: string } = {},
 ): TranscriptEntry {
   return {
     id: nextTranscriptId(),
@@ -183,6 +183,7 @@ export function replayEntry(
     content,
     detail: extras.detail,
     bullet: extras.bullet,
+    userSourceLabel: extras.userSourceLabel,
   };
 }
 
@@ -253,6 +254,22 @@ export function backgroundOrigin(
 ): BackgroundTaskNotificationOrigin | undefined {
   const origin = message.origin as BackgroundTaskNotificationOrigin | undefined;
   return origin?.kind === 'background_task' || origin?.kind === 'task' ? origin : undefined;
+}
+
+/**
+ * The v2 engine's peer-thread origin reaches the SDK event/replay payload at
+ * runtime, but the SDK's public origin union is still declared by v1. Read the
+ * source session structurally until that compatibility surface is widened.
+ */
+export function peerThreadSourceLabel(origin: unknown): string | undefined {
+  const candidate = origin as
+    | { readonly kind?: string; readonly source?: { readonly sessionId?: unknown } }
+    | undefined;
+  const sessionId = candidate?.source?.sessionId;
+  if (candidate?.kind !== 'peer_thread' || typeof sessionId !== 'string' || sessionId.length === 0) {
+    return undefined;
+  }
+  return `Peer thread · ${sessionId}`;
 }
 
 export function skillActivationFromOrigin(

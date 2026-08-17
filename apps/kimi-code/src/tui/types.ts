@@ -226,6 +226,8 @@ export interface TranscriptEntry {
   detail?: string;
   /** Optional override for the leading bullet of a 'user' message entry. An empty string suppresses the bullet entirely (used by shell-command echoes so `$` replaces the sparkles marker). */
   bullet?: string;
+  /** Visible provenance shown above a user message that came from outside the local editor. */
+  userSourceLabel?: string;
   toolCallData?: ToolCallBlockData;
   backgroundAgentStatus?: BackgroundAgentStatusData;
   compactionData?: CompactionTranscriptData;

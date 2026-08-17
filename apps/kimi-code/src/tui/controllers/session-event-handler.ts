@@ -61,6 +61,7 @@ import {
 } from '../goal-queue-store';
 import { formatBackgroundTaskTranscript } from '../utils/background-task-status';
 import { formatHookResultMarkdown } from '../utils/hook-result-format';
+import { peerThreadSourceLabel } from '../utils/message-replay';
 import { McpOAuthAuthorizationUrlOpener } from '../utils/mcp-oauth';
 import {
   formatMcpStartupStatusSummary,
@@ -322,6 +323,18 @@ export class SessionEventHandler {
     this.currentTurnHasAssistantText = false;
     if (event.origin?.kind === 'plugin_command') {
       this.pluginCommandTurns.set(String(event.turnId), event.origin.pluginId);
+    }
+    const userSourceLabel = peerThreadSourceLabel(event.origin);
+    if (userSourceLabel !== undefined && event.prompt !== undefined) {
+      this.host.streamingUI.flushNow();
+      this.host.appendTranscriptEntry({
+        id: nextTranscriptId(),
+        kind: 'user',
+        turnId: String(event.turnId),
+        renderMode: 'plain',
+        content: event.prompt,
+        userSourceLabel,
+      });
     }
     this.clearAgentSwarmProgress();
     this.host.streamingUI.resetToolUi();

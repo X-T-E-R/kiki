@@ -1060,6 +1060,105 @@ describe('KimiTUI message flow', () => {
     expect(turns[2]!.entries[1]!.content).toBe('please /commit');
   });
 
+  it('shows peer-thread provenance for replayed user messages', async () => {
+    const session = makeSession({ id: 'ses-target' });
+    const { driver } = await makeDriver(session);
+    (session.getResumeState as ReturnType<typeof vi.fn>).mockReturnValue({
+      sessionMetadata: {},
+      agents: {
+        main: {
+          config: { modelCapabilities: { max_context_tokens: 100 }, modelAlias: 'k2' },
+          plan: null,
+          permission: { mode: 'manual' },
+          swarmMode: false,
+          context: { history: [], tokenCount: 0 },
+          background: [],
+          toolStore: {},
+          replay: [
+            {
+              type: 'message',
+              time: 1,
+              message: {
+                role: 'user',
+                content: [{ type: 'text', text: 'continue from the peer thread' }],
+                toolCalls: [],
+                origin: {
+                  kind: 'peer_thread',
+                  source: {
+                    hostId: 'local-host',
+                    workspaceId: 'workspace-1',
+                    sessionId: 'source-session',
+                  },
+                  messageId: 'peer-message-1',
+                  acceptedAt: 1,
+                },
+              },
+            },
+          ],
+        },
+      },
+    });
+
+    const replayed = await driver.sessionReplay.hydrateFromReplay(session as unknown as Session);
+    expect(replayed).toBe(true);
+
+    const userEntry = driver.state.transcriptEntries.find(
+      (entry) => entry.kind === 'user' && entry.content === 'continue from the peer thread',
+    );
+    expect(userEntry?.userSourceLabel).toBe('Peer thread · source-session');
+    const transcript = stripSgr(renderTranscript(driver));
+    expect(transcript).toContain('Peer thread · source-session');
+    expect(transcript).toContain('continue from the peer thread');
+  });
+
+  it('shows peer-thread provenance from the live turn event without duplicating local turns', async () => {
+    const { driver } = await makeDriver(makeSession({ id: 'ses-target' }));
+
+    driver.sessionEventHandler.handleEvent(
+      {
+        type: 'turn.started',
+        agentId: 'main',
+        sessionId: 'ses-target',
+        turnId: 1,
+        prompt: 'live peer handoff',
+        origin: {
+          kind: 'peer_thread',
+          source: {
+            hostId: 'local-host',
+            workspaceId: 'workspace-1',
+            sessionId: 'source-session',
+          },
+          messageId: 'peer-message-1',
+          acceptedAt: 1,
+        },
+      } as unknown as Event,
+      () => {},
+    );
+
+    const peerEntries = driver.state.transcriptEntries.filter((entry) => entry.kind === 'user');
+    expect(peerEntries).toHaveLength(1);
+    expect(peerEntries[0]).toMatchObject({
+      content: 'live peer handoff',
+      turnId: '1',
+      userSourceLabel: 'Peer thread · source-session',
+    });
+    expect(stripSgr(renderTranscript(driver))).toContain('Peer thread · source-session');
+
+    driver.sessionEventHandler.handleEvent(
+      {
+        type: 'turn.started',
+        agentId: 'main',
+        sessionId: 'ses-target',
+        turnId: 2,
+        prompt: 'already echoed local input',
+        origin: { kind: 'user' },
+      } as Event,
+      () => {},
+    );
+
+    expect(driver.state.transcriptEntries.filter((entry) => entry.kind === 'user')).toHaveLength(1);
+  });
+
   it('keeps hook results recorded before the oldest retained bundle within the replay limit', async () => {
     const session = makeSession({ id: 'ses-lazy' });
     const startupInput: KimiTUIStartupInput = {

@@ -30,14 +30,43 @@ describe('UserMessageComponent', () => {
     expect(out).not.toContain('\u001B]1337;File=');
   });
 
+  it('renders an external source label above the message body', () => {
+    setCapabilities({ images: null, trueColor: true, hyperlinks: true });
+
+    const lines = new UserMessageComponent(
+      'please review this handoff',
+      [],
+      undefined,
+      'Peer thread · source-session',
+    )
+      .render(80)
+      .map(stripAnsi);
+
+    const sourceIndex = lines.findIndex((line) => line.includes('Peer thread · source-session'));
+    expect(sourceIndex).toBeGreaterThanOrEqual(0);
+    expect(lines[sourceIndex]).toContain('✨');
+    expect(lines[sourceIndex + 1]?.trim()).toBe('please review this handoff');
+    expect(lines[sourceIndex + 1]).not.toContain('✨');
+  });
+
   it('keeps user lines within very narrow widths', () => {
     setCapabilities({ images: null, trueColor: true, hyperlinks: true });
 
-    const component = new UserMessageComponent('please inspect the attached output', []);
+    const components = [
+      new UserMessageComponent('please inspect the attached output', []),
+      new UserMessageComponent(
+        'please inspect the attached output',
+        [],
+        undefined,
+        'Peer thread · source-session',
+      ),
+    ];
 
-    for (const width of [1, 2, 4, 10, 39]) {
-      for (const line of component.render(width)) {
-        expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+    for (const component of components) {
+      for (const width of [1, 2, 4, 10, 39]) {
+        for (const line of component.render(width)) {
+          expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+        }
       }
     }
   });

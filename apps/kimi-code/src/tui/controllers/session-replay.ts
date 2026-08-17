@@ -42,6 +42,7 @@ import {
   skillActivationFromOrigin,
   stripBundledSkillParts,
   pluginCommandFromOrigin,
+  peerThreadSourceLabel,
   toolCallFromReplayMessage,
   toolResultOutput,
   type BackgroundTaskNotificationOrigin,
@@ -409,7 +410,9 @@ export class SessionReplayRenderer {
     }
     this.advanceTurn(context);
     this.host.appendTranscriptEntry(
-      replayEntry(context, 'user', contentPartsToText(message.content), 'plain'),
+      replayEntry(context, 'user', contentPartsToText(message.content), 'plain', {
+        userSourceLabel: peerThreadSourceLabel(message.origin),
+      }),
     );
   }
 

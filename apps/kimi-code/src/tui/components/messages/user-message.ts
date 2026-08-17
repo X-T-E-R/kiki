@@ -14,14 +14,16 @@ import { isRenderCacheEnabled } from '#/tui/utils/render-cache';
 export class UserMessageComponent implements Component {
   private text: string;
   private readonly bullet?: string;
+  private readonly sourceLabel?: string;
   private spacerComponent: Spacer;
   private imageThumbnails: ImageThumbnail[];
 
   private renderCache: { width: number; lines: string[] } | undefined;
 
-  constructor(text: string, images?: ImageAttachment[], bullet?: string) {
+  constructor(text: string, images?: ImageAttachment[], bullet?: string, sourceLabel?: string) {
     this.text = text;
     this.bullet = bullet;
+    this.sourceLabel = sourceLabel;
     this.spacerComponent = new Spacer(1);
     this.imageThumbnails = images?.map((img) => new ImageThumbnail(img)) ?? [];
   }
@@ -63,10 +65,20 @@ export class UserMessageComponent implements Component {
 
     // Text is re-dyed from the current theme; invalidate() (theme change) clears
     // the render cache so the new colours are picked up on the next render.
+    const indent = ' '.repeat(bulletWidth);
+    if (this.sourceLabel !== undefined) {
+      const sourceLines = new Text(currentTheme.fg('textDim', this.sourceLabel), 0, 0).render(
+        contentWidth,
+      );
+      for (let i = 0; i < sourceLines.length; i++) {
+        lines.push((i === 0 ? bullet : indent) + sourceLines[i]);
+      }
+    }
+
     const coloredText = currentTheme.boldFg('roleUser', this.text);
     const textLines = new Text(coloredText, 0, 0).render(contentWidth);
     for (let i = 0; i < textLines.length; i++) {
-      const prefix = i === 0 ? bullet : ' '.repeat(bulletWidth);
+      const prefix = this.sourceLabel === undefined && i === 0 ? bullet : indent;
       lines.push(prefix + textLines[i]);
     }
 
