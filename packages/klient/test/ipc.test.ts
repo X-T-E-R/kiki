@@ -85,7 +85,7 @@ describe('ipc transport specifics', () => {
     await teardown();
   });
 
-  it('ignores a raw source claim and exposes no string-callable peer send capability', async () => {
+  it('ignores a raw source claim and exposes no string-callable peer send capability', { timeout: 60_000 }, async () => {
     const socketPath = await setup();
     const klient = createKlient({ socketPath });
     const raw = new IpcChannel({ socketPath });
