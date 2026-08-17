@@ -101,14 +101,14 @@
 | BK1 | P1 | 设置双通道收敛单一写者（桌面域并入 server API），根除整文件互覆 | 需设计；C 批先做备份滚动与重启确认缓解 |
 | BK2 | P1 | workspace handler 只创建不回收（watcher/loader/订阅线性积累） | **部分缓解（2026-08-17 同步）**：上游 workspaceInstanceManager 重写带来真实 close/dispose 级联，但仍无引用计数/逐出；DELETE /workspaces 仍不关 live instance |
 | BK3 | P1 | CLI(TUI) 与桌面后端共用 home 无会话级跨进程互斥，可同时恢复写同一会话 | storage.locked 已定义未用于激活路径；需跨进程锁设计 |
-| BK4 | P1 | runtime.json 无安装器/重签工具；Codex 侧模型安装时冻结（换模型=HMAC 死结） | 产品决策：installer 子命令 vs 文档化手工 |
-| BK5 | P1 | GUI 会话与 Codex 委派会话互不可见（独立 homeDir）；thread 通信跨 host 不可能 | 产品裁决：声明边界 vs 受控跨 host 桥 |
+| BK4 | P1 | runtime.json 无安装器/重签工具；Codex 侧模型安装时冻结（换模型=HMAC 死结） | **已裁决（#9）**：做重签工具；待排期设计 |
+| BK5 | P1 | GUI 会话与 Codex 委派会话互不可见（独立 homeDir）；thread 通信跨 host 不可能 | 维持现状（见裁决 #8）；受控跨 host 桥接另立设计项 |
 | BK6 | P2 | 委派进行中无进度流（仅生命周期事件），Codex 只能轮询 | MCP progress notification |
 | BK7 | P2 | TUI 不显示 peer-thread 消息来源（像用户自己的输入） | pi-tui 本地零改动原则，需设计 |
 | BK8 | P2 | sidecar 二进制新鲜度零校验（旧后端+新前端症状零散） | build.rs 清单 + meta.server_version 比对 |
 | BK9 | P2 | 协作能力 v1/v2 双写 + v2 内两套 durable mailbox 后端重复 | 随 legacy 退役计划处理；F4 先冻结声明 |
 | BK10 | P2 | 子代理模型绑定 7 入口 5 层解析链收敛 | **部分缓解（2026-08-17 同步）**：解析核心收敛进 v2 单模块、运行态收敛为 inherit\|fixed 二态并持久化；入口面仍约 7 个（tool/swarm/collaboration/agentfile/route/两 config section），v1 链独立 |
-| BK11 | P2 | thread 通信默认全局开启且可唤醒冷会话消耗额度 | 双方审计均建议 opt-in；属产品默认值翻转，待裁决 |
+| BK11 | P2 | thread 通信默认全局开启且可唤醒冷会话消耗额度 | **已裁决（#8）**：默认关（opt-in）；待实施默认值翻转 + 文档/测试 |
 | BK12 | P3 | terminal_input.data 无大小上限；TERMINAL_NOT_FOUND 无法区分"能力未开放" | **部分缓解（perf 批）**：registerWsV1 新增 8MiB 帧上限（超限 1009 关闭）；schema 级 `data` 上限与错误码语义仍缺 |
 | BK13 | P3 | /threads::wait 客户端断开不取消服务侧 wait（≤60s 资源浪费） | routes/threads.ts:380 |
 | BK14 | P3 | vite localServer 探测只查 PID 存活不防复用；暴露 0.0.0.0 时返回 bearer token | vite/localServer.ts:46,1 |
@@ -122,6 +122,10 @@
 4. **外部#22 台账 KG-001**：与本地审计一致（记录过时、实现为有意演进），E8 更新台账而非删除。
 5. **外部#2/#3（会话互斥/handler 回收）**：属实，但分别需要跨进程锁与上游生命周期架构级设计 → BK3/BK2。
 6. 其余外部条目与本地审计结论一致或互补，未见本地审计被推翻的结论。
+7. **FU17 裁决（2026-08-17 用户拍板）**：按「更好用更易用优先、校验严格性让步」设计——外部委派 workspace 漂移时 **fail-open**（edge 禁用、主服务继续启动、错误显式呈现）；该设计原则同样适用于后续其他设计。待实施：`externalDelegationRoute.test.ts:189-214` 的 fail-closed 期望改写为 fail-open 契约（与 `boot.test.ts` 正向固化对齐）。
+8. **BK11 裁决（2026-08-17 用户拍板）**：thread 通信**默认关（opt-in）**；冷唤醒耗额度问题随默认关消解。BK5（GUI/委派会话互不可见）维持现状，受控跨 host 桥接另立设计项。待实施：`[thread_communication] enabled` 默认翻转为 false + 文档/测试跟进。
+9. **BK4 裁决（2026-08-17 用户拍板）**：做 runtime.json 重签工具（installer/doctor 子命令方向），让普通用户可自助换模型。待排期设计。
+10. **FU7 裁决（2026-08-17 用户拍板）**：effort 下拉**选中即发送**，消除「看似选中实则未发」。待实施（GUI 小改）。
 
 ## 修复批次合入记录（2026-08-14）
 
@@ -169,7 +173,7 @@
 | FU4 | P2 | kap-server pino 日志走 stdout，`--log-level warn` 落盘的是 stderr；服务端日志进 desktop-backend.log 需改 logger destination 或加 `--log-file` | C |
 | FU5 | P2 | desktop 侧 `tauri build`/NSIS 打包与真机冷启动 smoke 未实跑（仅 cargo check/test + TS 测试） | C |
 | FU6 | P3 | A3 容量校验基准用渲染期 attachments 起步，跨两次极快粘贴可能略微超出 8 附件/20MB 上限（功能更新正确，仅校验基准偏旧） | A |
-| FU7 | P3 | A4 展示/发送语义：effort 下拉"看似选中"实则未发送、由 server 决定——需产品确认 | A |
+| FU7 | P3 | A4 展示/发送语义：effort 下拉"看似选中"实则未发送、由 server 决定 | **已裁决（#10）**：选中即发送；待实施 | A |
 | FU8 | P3 | A8 桌面原生目录选择对话框未实现（defer，仅做校验+placeholder） | A |
 | FU9 | P3 | A9 extraDirs placeholder 用了 POSIX 路径，Windows 桌面用户用 Windows 示例更直观 | A |
 | FU10 | P3 | D1-3 `createToolError` 覆写依赖 MCP SDK 私有方法，SDK 升级可能静默回落 | D1 |
@@ -179,7 +183,7 @@
 | FU14 | P2 | 设置页 providers 草稿的 dirty-guard 只拦设置页内部区块切换；经应用侧栏导航离开（如 Capabilities）时不弹确认，未保存草稿静默丢失（dsh 设计吸纳批次合并验证期发现） | G |
 | FU15 | P3 | QueueStrip 行内编辑已实现 `onEdit` 但未接线：kap-server 无原位编辑端点（保存=移除+重发会落队尾，位置语义需产品确认）；接线只需 SessionView 传一行 handler | G |
 | FU16 | P3 | turn tail 的 tok/s 与 ContextMeter 的 system/tools/messages breakdown 未做：wire 无 per-turn token 计数与上下文分段数据，需服务端补数据后再上 | G |
-| FU17 | P2 | `externalDelegationRoute.test.ts`「workspace 绑定漂移拒启动」用例在合并前基线即红：`start.ts` fail-open 吞掉绑定校验错误继续启动 vs 测试期望 fail-closed——属产品语义裁决（fail-closed 还是「edge 禁用但服务继续」），未翻转。注意：perf 批次在 `boot.test.ts` 新增了 fail-open 的正向固化测试，两个用例直接矛盾，裁决更显紧迫 | 同步 |
+| FU17 | P2 | `externalDelegationRoute.test.ts`「workspace 绑定漂移拒启动」用例在合并前基线即红，与 `start.ts` fail-open 矛盾 | **已裁决（#7）**：fail-open 为既定行为（可用性优先原则）；待实施：改写该用例为 fail-open 契约 | 同步 |
 | FU18 | P2 | 上游 0.36.1 自带测试在本机 Windows 成片失败（posix 路径断言、5s 超时簇为主）；涉败文件与上游逐字节一致，非合并回归。2026-08-17 本机 Node 升 24.19 后原 nvm4w shim spawn ENOENT 簇预计消失（execPath 已修通），待一次全量复跑确认剩余面 | 同步 |
 | FU19 | P3 | ~~manifest 未重生~~ **已关闭（2026-08-17）**：Node 升 24.19 后 `gen:config-manifest` / `gen:state-manifest` / `gen:wire-manifest` 全部重生成功；`config-manifest.toml` 相对手合版校正 7+/11-（池语义真值：secondaryModel owner 归位、overlay 条目删除） | 同步 |
 | FU20 | P3 | 生产源码旧术语注释残留（`IWorkspaceLifecycleService`、`ISessionProcessRunner` 等仅注释，无 live 引用）清理，避免后续维护误判 | 同步 |
