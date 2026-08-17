@@ -16,39 +16,6 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import type { DesktopNativePrefs } from './settings';
 
-export interface DesktopServerConfig {
-  configPath: string;
-  backupPath: string;
-  subagent: {
-    defaultModel: string;
-    defaultEffort: string;
-    timeoutMs: number;
-  };
-  agents: {
-    enabled: boolean;
-    defaultSubagentModel: string;
-    defaultSubagentReasoningEffort: string;
-  };
-  builtinProductSkills: boolean;
-  modelCatalog: {
-    refreshIntervalMs: number;
-    refreshOnStart: boolean;
-  };
-  experimentalEnv: Record<string, string>;
-}
-
-export interface DesktopServerConfigPatch {
-  subagentDefaultModel: string;
-  subagentDefaultEffort: string;
-  subagentTimeoutMs: number;
-  agentsEnabled: boolean;
-  defaultSubagentModel: string;
-  defaultSubagentReasoningEffort: string;
-  builtinProductSkills: boolean;
-  modelCatalogRefreshIntervalMs: number;
-  modelCatalogRefreshOnStart: boolean;
-}
-
 export function isDesktopRuntime(): boolean {
   return isTauri();
 }
@@ -133,18 +100,6 @@ export async function readNativeDesktopPrefs(): Promise<DesktopNativePrefs | nul
   } catch {
     return null;
   }
-}
-
-export async function readNativeServerConfig(): Promise<DesktopServerConfig> {
-  if (!isTauri()) throw new Error('Server-file settings require the Kiki desktop app.');
-  return invoke<DesktopServerConfig>('read_server_config');
-}
-
-export async function writeNativeServerConfig(
-  patch: DesktopServerConfigPatch,
-): Promise<DesktopServerConfig> {
-  if (!isTauri()) throw new Error('Server-file settings require the Kiki desktop app.');
-  return invoke<DesktopServerConfig>('write_server_config', { patch });
 }
 
 export async function restartNativeServer(): Promise<void> {

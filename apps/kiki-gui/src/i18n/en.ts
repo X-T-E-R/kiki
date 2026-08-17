@@ -779,10 +779,10 @@ export const en = {
   'st.advanced.save': 'Save advanced domains',
   'st.advanced.saved': 'Server validated, saved, and echoed the advanced engine domains.',
   'st.agents.webHint':
-    'Agent defaults live in the desktop sidecar config (~/.kimi-code/config.toml). They apply after a verified server restart and are read-only in the browser build.',
-  'st.sidecar.title': 'Sidecar-only defaults',
+    'Agent defaults are loaded and saved through the connected kap-server. Restart the owned desktop server to apply restart-bound fields.',
+  'st.sidecar.title': 'Server defaults',
   'st.sidecar.disabledHint':
-    'These controls edit ~/.kimi-code/config.toml and are disabled in the browser build. Open Kiki desktop to change them.',
+    'These controls use the connected kap-server configuration API.',
   'st.sidecar.subagentModel': 'Subagent default model',
   'st.sidecar.subagentEffort': 'Subagent default effort',
   'st.sidecar.subagentTimeout': 'Subagent timeout',
@@ -793,8 +793,8 @@ export const en = {
   'st.sidecar.builtinSkills': 'Include built-in product skills',
   'st.sidecar.refreshOnStart': 'Refresh model catalog when the server starts',
   'st.sidecar.hint':
-    'Writes are validated against the documented config sections, backed up first, and atomically replace {path}. Applies after server restart.',
-  'st.sidecar.savedEcho': 'Saved atomically. Backup: {path}',
+    'Writes go through kap-server’s validated configuration API and are serialized by its config service. Restart-bound fields apply after server restart.',
+  'st.sidecar.savedEcho': 'Server validated, saved, and echoed these defaults.',
   'st.sidecar.envTitle': 'Environment overrides in effect',
   'st.sidecar.envHint':
     'Environment gates override the matching [experimental] value until the sidecar environment changes.',

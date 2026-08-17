@@ -12,12 +12,9 @@ import type {
 
 import {
   isDesktopRuntime,
-  readNativeServerConfig,
   restartNativeServer,
   selectDirectoriesNative,
   writeNativeDesktopPrefs,
-  writeNativeServerConfig,
-  type DesktopServerConfig,
 } from '../lib/desktop';
 import { useI18n } from '../i18n';
 import { errorText, issueText, type I18nKey, type Locale } from '../i18n/locale';
@@ -32,6 +29,8 @@ import {
   readDesktopPrefs,
   readSettings,
   searchSettings,
+  serverFileSettingsFromConfig,
+  serverFileSettingsPatch,
   validateDesktopConfigDraft,
   validateExtraSkillDirs,
   writeDesktopPrefs,
@@ -1047,49 +1046,32 @@ function AgentsSection() {
   );
 }
 
-const EMPTY_DESKTOP_CONFIG: DesktopServerConfig = {
-  configPath: '~/.kimi-code/config.toml',
-  backupPath: '~/.kimi-code/config.toml.kiki-backup',
-  subagent: { defaultModel: '', defaultEffort: '', timeoutMs: 7_200_000 },
-  agents: { enabled: true, defaultSubagentModel: '', defaultSubagentReasoningEffort: '' },
-  builtinProductSkills: true,
-  modelCatalog: { refreshIntervalMs: 0, refreshOnStart: false },
-  experimentalEnv: {},
-};
-
 function DesktopServerFileCard() {
   const isDesktop = isDesktopRuntime();
   const { t, locale } = useI18n();
-  const { socket } = useConnection();
+  const { client, socket } = useConnection();
   const queryClient = useQueryClient();
-  const [config, setConfig] = useState(EMPTY_DESKTOP_CONFIG);
+  const [config, setConfig] = useState(() => serverFileSettingsFromConfig({ providers: {} }));
+  const [savedConfig, setSavedConfig] = useState(config);
   const restart = useRestartRequirement();
-  const [loading, setLoading] = useState(isDesktop);
   const [saving, setSaving] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [confirmRestart, setConfirmRestart] = useState(false);
   const busySessions = useBusySessionCount();
+  const configQuery = useQuery({
+    queryKey: ['config'],
+    queryFn: () => client.getConfig(),
+    staleTime: 60_000,
+  });
 
   useEffect(() => {
-    if (!isDesktop) return;
-    let cancelled = false;
-    void readNativeServerConfig().then(
-      (value) => {
-        if (!cancelled) {
-          setConfig(value);
-          setLoading(false);
-        }
-      },
-      (error: unknown) => {
-        if (!cancelled) {
-          setFeedback({ tone: 'error', text: errorText(locale, error) });
-          setLoading(false);
-        }
-      },
-    );
-    return () => { cancelled = true; };
-  }, [isDesktop, locale]);
+    if (configQuery.data !== undefined) {
+      const next = serverFileSettingsFromConfig(configQuery.data);
+      setConfig(next);
+      setSavedConfig(next);
+    }
+  }, [configQuery.data]);
 
   const save = async () => {
     const validation = validateDesktopConfigDraft({
@@ -1107,20 +1089,13 @@ function DesktopServerFileCard() {
     setSaving(true);
     setFeedback(null);
     try {
-      const echoed = await writeNativeServerConfig({
-        subagentDefaultModel: config.subagent.defaultModel,
-        subagentDefaultEffort: config.subagent.defaultEffort,
-        subagentTimeoutMs: config.subagent.timeoutMs,
-        agentsEnabled: config.agents.enabled,
-        defaultSubagentModel: config.agents.defaultSubagentModel,
-        defaultSubagentReasoningEffort: config.agents.defaultSubagentReasoningEffort,
-        builtinProductSkills: config.builtinProductSkills,
-        modelCatalogRefreshIntervalMs: config.modelCatalog.refreshIntervalMs,
-        modelCatalogRefreshOnStart: config.modelCatalog.refreshOnStart,
-      });
-      setConfig(echoed);
+      const echoed = await client.patchConfig(serverFileSettingsPatch(config, savedConfig));
+      queryClient.setQueryData(['config'], echoed);
+      const next = serverFileSettingsFromConfig(echoed);
+      setConfig(next);
+      setSavedConfig(next);
       markRestartRequired(['subagent', 'agents', 'builtin_product_skills', 'model_catalog']);
-      setFeedback({ tone: 'success', text: t('st.sidecar.savedEcho', { path: echoed.backupPath }) });
+      setFeedback({ tone: 'success', text: t('st.sidecar.savedEcho') });
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
@@ -1138,19 +1113,15 @@ function DesktopServerFileCard() {
       await queryClient.invalidateQueries();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
       setRestarting(false);
     }
   };
 
   return (
-    <SectionCard id="st-card-sidecar" title={t('st.sidecar.title')} badge={restart.required ? 'restart' : 'desktop'}>
+    <SectionCard id="st-card-sidecar" title={t('st.sidecar.title')} badge={restart.required ? 'restart' : undefined}>
       <div className="space-y-4">
-        {!isDesktop ? (
-          <p data-testid="desktop-config-disabled-hint" className="rounded-lg border border-amber-ink/25 bg-amber-ink/5 px-3 py-2 text-[11.5px] text-amber-ink">
-            {t('st.sidecar.disabledHint')}
-          </p>
-        ) : null}
-        <fieldset disabled={!isDesktop || loading || saving} data-testid="desktop-config-fields" className="space-y-4 disabled:opacity-60">
+        <fieldset disabled={configQuery.isLoading || saving} data-testid="desktop-config-fields" className="space-y-4 disabled:opacity-60">
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.subagentModel')}
               <input className={`${INPUT} mt-1`} value={config.subagent.defaultModel} onChange={(event) => { setConfig({ ...config, subagent: { ...config.subagent, defaultModel: event.target.value } }); }} placeholder="provider/model" />
@@ -1179,26 +1150,20 @@ function DesktopServerFileCard() {
               />
             </label>
           </div>
-          <Toggle label={t('st.sidecar.enableCollab')} checked={config.agents.enabled} disabled={!isDesktop} onChange={(checked) => { setConfig({ ...config, agents: { ...config.agents, enabled: checked } }); }} />
-          <Toggle label={t('st.sidecar.builtinSkills')} checked={config.builtinProductSkills} disabled={!isDesktop} onChange={(checked) => { setConfig({ ...config, builtinProductSkills: checked }); }} />
-          <Toggle label={t('st.sidecar.refreshOnStart')} checked={config.modelCatalog.refreshOnStart} disabled={!isDesktop} onChange={(checked) => { setConfig({ ...config, modelCatalog: { ...config.modelCatalog, refreshOnStart: checked } }); }} />
+          <Toggle label={t('st.sidecar.enableCollab')} checked={config.agents.enabled} onChange={(checked) => { setConfig({ ...config, agents: { ...config.agents, enabled: checked } }); }} />
+          <Toggle label={t('st.sidecar.builtinSkills')} checked={config.builtinProductSkills} onChange={(checked) => { setConfig({ ...config, builtinProductSkills: checked }); }} />
+          <Toggle label={t('st.sidecar.refreshOnStart')} checked={config.modelCatalog.refreshOnStart} onChange={(checked) => { setConfig({ ...config, modelCatalog: { ...config.modelCatalog, refreshOnStart: checked } }); }} />
         </fieldset>
-        <Hint>{t('st.sidecar.hint', { path: config.configPath })}</Hint>
-        {Object.keys(config.experimentalEnv).length > 0 ? (
-          <div className="rounded-lg border border-hairline bg-paper p-3">
-            <p className="mb-2 text-[11px] font-semibold text-ink">{t('st.sidecar.envTitle')}</p>
-            {Object.entries(config.experimentalEnv).map(([name, value]) => <p key={name} className="font-mono text-[10px] text-ink-faint">{name}={value}</p>)}
-            <Hint>{t('st.sidecar.envHint')}</Hint>
-          </div>
-        ) : null}
+        <Hint>{t('st.sidecar.hint')}</Hint>
         <div className="flex flex-wrap gap-2">
-          <button type="button" className={PRIMARY_BUTTON} disabled={!isDesktop || loading || saving} onClick={() => void save()}>{saving ? t('st.sidecar.saving') : t('st.sidecar.save')}</button>
+          <button type="button" className={PRIMARY_BUTTON} disabled={configQuery.isLoading || saving} onClick={() => void save()}>{saving ? t('st.sidecar.saving') : t('st.sidecar.save')}</button>
           <button type="button" className={SECONDARY_BUTTON} disabled={!isDesktop || !restart.required || restarting} onClick={() => { setConfirmRestart(true); }}>{restarting ? t('st.sidecar.restarting') : t('st.sidecar.applyRestart')}</button>
           {!isDesktop && restart.required && !isRestartRequirementAcknowledged(restart) ? (
             <button type="button" className={SECONDARY_BUTTON} onClick={() => { acknowledgeRestartRequirement(); }}>{t('st.sidecar.acknowledge')}</button>
           ) : null}
         </div>
         {restart.required ? <Hint>{t('st.sidecar.pendingFields', { fields: restart.fields.join(', ') })}</Hint> : null}
+        {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />
       </div>
       <ConfirmDialog

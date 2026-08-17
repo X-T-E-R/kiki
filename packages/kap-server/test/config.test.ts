@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -98,6 +98,63 @@ describe('server-v2 /api/v1/config', () => {
     const after = await getConfig();
     expect(after.default_permission_mode).toBe('auto');
     expect(after.yolo).toBe(false);
+  });
+
+  it('POST persists GUI server settings through the config service without dropping other domains', async () => {
+    await boot([
+      'telemetry = true',
+      '',
+      '[providers.example]',
+      'type = "openai"',
+      'api_key = "secret-kept"',
+      '',
+    ].join('\n'));
+
+    const cfg = await patchConfig({
+      subagent: { default_model: 'example/worker', default_effort: 'high', timeout_ms: 60_000 },
+      agents: {
+        enabled: false,
+        default_subagent_model: 'example/collaborator',
+        default_subagent_reasoning_effort: 'medium',
+      },
+      builtin_product_skills: false,
+      model_catalog: { refresh_interval_ms: 300_000, refresh_on_start: true },
+    });
+
+    expect(cfg.subagent).toEqual({
+      defaultModel: 'example/worker',
+      defaultEffort: 'high',
+      timeoutMs: 60_000,
+    });
+    expect(cfg.agents).toEqual({
+      enabled: false,
+      defaultSubagentModel: 'example/collaborator',
+      defaultSubagentReasoningEffort: 'medium',
+    });
+    expect(cfg.builtin_product_skills).toBe(false);
+    expect(cfg.model_catalog).toEqual({ refreshIntervalMs: 300_000, refreshOnStart: true });
+
+    const persisted = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(persisted).toContain('api_key = "secret-kept"');
+    expect(persisted).toContain('default_model = "example/worker"');
+    expect(persisted).toContain('refresh_interval_ms = 300000');
+  });
+
+  it('serializes concurrent config patches so disjoint fields do not overwrite each other', async () => {
+    await boot('[agents]\nenabled = true\n');
+
+    await Promise.all([
+      patchConfig({ agents: { enabled: false } }),
+      patchConfig({ agents: { default_subagent_model: 'example/collaborator' } }),
+      patchConfig({ model_catalog: { refresh_on_start: true } }),
+    ]);
+
+    const after = await getConfig();
+    expect(after.agents).toEqual({
+      enabled: false,
+      defaultSubagentModel: 'example/collaborator',
+    });
+    expect(after.model_catalog?.refreshOnStart).toBe(true);
   });
 
   it('POST { secondary_model } persists the subagent model pool and GET echoes it', async () => {

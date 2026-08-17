@@ -47,6 +47,39 @@ describe('KikiClient.refreshProvider', () => {
   });
 });
 
+describe('KikiClient.patchConfig', () => {
+  it('sends server-file settings through the kap-server config API', async () => {
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      expect(String(url)).toBe('http://127.0.0.1:8080/api/v1/config');
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(init?.body as string)).toEqual({
+        agents: { enabled: false },
+        model_catalog: { refresh_on_start: true },
+      });
+      return new Response(JSON.stringify({
+        code: 0,
+        msg: 'success',
+        data: {
+          providers: {},
+          agents: { enabled: false },
+          model_catalog: { refreshOnStart: true },
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+
+    const result = await client.patchConfig({
+      agents: { enabled: false },
+      model_catalog: { refresh_on_start: true },
+    });
+
+    expect(result.agents?.enabled).toBe(false);
+    expect(result.model_catalog?.refreshOnStart).toBe(true);
+    vi.unstubAllGlobals();
+  });
+});
+
 function envelope(data: unknown): Response {
   return {
     json: async () => ({ code: 0, msg: 'ok', data, request_id: 'req_test' }),

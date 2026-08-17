@@ -8,6 +8,23 @@ export const providerConfigResponseSchema = z.object({
 });
 export type ProviderConfigResponse = z.infer<typeof providerConfigResponseSchema>;
 
+export const subagentConfigResponseSchema = z.object({
+  defaultModel: z.string().optional(),
+  defaultEffort: z.string().optional(),
+  timeoutMs: z.number().optional(),
+});
+
+export const agentsConfigResponseSchema = z.object({
+  enabled: z.boolean().optional(),
+  defaultSubagentModel: z.string().optional(),
+  defaultSubagentReasoningEffort: z.string().optional(),
+});
+
+export const modelCatalogConfigResponseSchema = z.object({
+  refreshIntervalMs: z.number().optional(),
+  refreshOnStart: z.boolean().optional(),
+});
+
 export const configResponseSchema = z.object({
   providers: z.record(z.string(), providerConfigResponseSchema).default({}),
   default_provider: z.string().optional(),
@@ -25,7 +42,10 @@ export const configResponseSchema = z.object({
   extra_skill_dirs: z.array(z.string()).optional(),
   loop_control: z.unknown().optional(),
   background: z.unknown().optional(),
-  subagent: z.unknown().optional(),
+  subagent: subagentConfigResponseSchema.optional(),
+  agents: agentsConfigResponseSchema.optional(),
+  builtin_product_skills: z.boolean().optional(),
+  model_catalog: modelCatalogConfigResponseSchema.optional(),
   secondary_model: z.unknown().optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
   telemetry: z.boolean().optional(),
@@ -50,7 +70,21 @@ export const patchConfigRequestSchema = z.object({
   extra_skill_dirs: z.array(z.string()).optional(),
   loop_control: z.unknown().optional(),
   background: z.unknown().optional(),
-  subagent: z.unknown().optional(),
+  subagent: z.object({
+    default_model: z.string().optional(),
+    default_effort: z.string().optional(),
+    timeout_ms: z.number().optional(),
+  }).optional(),
+  agents: z.object({
+    enabled: z.boolean().optional(),
+    default_subagent_model: z.string().optional(),
+    default_subagent_reasoning_effort: z.string().optional(),
+  }).optional(),
+  builtin_product_skills: z.boolean().optional(),
+  model_catalog: z.object({
+    refresh_interval_ms: z.number().optional(),
+    refresh_on_start: z.boolean().optional(),
+  }).optional(),
   secondary_model: z.unknown().optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
   telemetry: z.boolean().optional(),

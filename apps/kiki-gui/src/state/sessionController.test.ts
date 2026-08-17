@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { Session, SessionSnapshotResponse } from '@moonshot-ai/protocol';
 
+import { resolveSelectedEffort } from '../components/Composer';
 import type { KikiClient } from '../lib/client';
 import type { SessionEventFrame } from '../lib/types';
 import type { KikiSocket } from '../lib/ws';
@@ -452,6 +453,30 @@ describe('SessionController pipeline', () => {
       promptId: 'p-new',
       text: 'new question',
     });
+    controller.close();
+  });
+
+  it('forwards the effort selected in Composer with the next prompt request', async () => {
+    const { controller, client } = await openController();
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: 'p-effort',
+      user_message_id: 'm-effort',
+      status: 'running',
+      content: [{ type: 'text', text: 'use more reasoning' }],
+      created_at: '2026-01-01T00:00:02.000Z',
+    });
+    const selectedEffort = resolveSelectedEffort(['low', 'high'], 'high', 'low');
+
+    await controller.sendPrompt({
+      text: 'use more reasoning',
+      thinking: selectedEffort,
+      permissionMode: 'manual',
+    });
+
+    expect(client.submitPrompt).toHaveBeenCalledWith(
+      'session_test',
+      expect.objectContaining({ thinking: 'high' }),
+    );
     controller.close();
   });
 

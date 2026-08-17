@@ -29,6 +29,8 @@ import {
   resolveSessionModelOverride,
   restartRequirementSnapshot,
   searchSettings,
+  serverFileSettingsFromConfig,
+  serverFileSettingsPatch,
   settingsServerSnapshot,
   settingsSnapshot,
   subscribeRestartRequirement,
@@ -159,6 +161,66 @@ describe('settings persistence and validation', () => {
       services: undefined,
       loop_control: undefined,
       background: { max: 2 },
+    });
+  });
+
+  it('maps server-file settings to and from the kap-server config API shape', () => {
+    const settings = serverFileSettingsFromConfig({
+      providers: {},
+      subagent: { defaultModel: 'example/worker', defaultEffort: 'high', timeoutMs: 60_000 },
+      agents: {
+        enabled: false,
+        defaultSubagentModel: 'example/collaborator',
+        defaultSubagentReasoningEffort: 'medium',
+      },
+      builtin_product_skills: false,
+      model_catalog: { refreshIntervalMs: 300_000, refreshOnStart: true },
+    });
+
+    expect(serverFileSettingsPatch(settings)).toEqual({
+      subagent: {
+        default_model: 'example/worker',
+        default_effort: 'high',
+        timeout_ms: 60_000,
+      },
+      agents: {
+        enabled: false,
+        default_subagent_model: 'example/collaborator',
+        default_subagent_reasoning_effort: 'medium',
+      },
+      builtin_product_skills: false,
+      model_catalog: { refresh_interval_ms: 300_000, refresh_on_start: true },
+    });
+  });
+
+  it('emits only fields changed from the last server echo', () => {
+    const baseline = serverFileSettingsFromConfig({
+      providers: {},
+      subagent: { timeoutMs: 60_000 },
+      agents: { enabled: true },
+      builtin_product_skills: true,
+      model_catalog: { refreshIntervalMs: 0, refreshOnStart: false },
+    });
+    const first = structuredClone(baseline);
+    first.agents.enabled = false;
+    const second = structuredClone(baseline);
+    second.modelCatalog.refreshOnStart = true;
+
+    expect(serverFileSettingsPatch(first, baseline)).toEqual({
+      subagent: undefined,
+      agents: {
+        enabled: false,
+        default_subagent_model: undefined,
+        default_subagent_reasoning_effort: undefined,
+      },
+      builtin_product_skills: undefined,
+      model_catalog: undefined,
+    });
+    expect(serverFileSettingsPatch(second, baseline)).toEqual({
+      subagent: undefined,
+      agents: undefined,
+      builtin_product_skills: undefined,
+      model_catalog: { refresh_interval_ms: undefined, refresh_on_start: true },
     });
   });
 

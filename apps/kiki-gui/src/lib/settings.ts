@@ -1,4 +1,9 @@
-import type { ModelCatalogItem, ProviderCatalogItem } from '@moonshot-ai/protocol';
+import type {
+  ConfigResponse,
+  ModelCatalogItem,
+  PatchConfigRequest,
+  ProviderCatalogItem,
+} from '@moonshot-ai/protocol';
 
 import { LocalizedError, type I18nKey, type ValidationIssue } from '../i18n/locale';
 
@@ -31,6 +36,103 @@ export interface RestartRequirement {
 export interface ServerConnection {
   url: string;
   token: string;
+}
+
+export interface ServerFileSettings {
+  subagent: {
+    defaultModel: string;
+    defaultEffort: string;
+    timeoutMs: number;
+  };
+  agents: {
+    enabled: boolean;
+    defaultSubagentModel: string;
+    defaultSubagentReasoningEffort: string;
+  };
+  builtinProductSkills: boolean;
+  modelCatalog: {
+    refreshIntervalMs: number;
+    refreshOnStart: boolean;
+  };
+}
+
+export function serverFileSettingsFromConfig(config: ConfigResponse): ServerFileSettings {
+  return {
+    subagent: {
+      defaultModel: config.subagent?.defaultModel ?? '',
+      defaultEffort: config.subagent?.defaultEffort ?? '',
+      timeoutMs: config.subagent?.timeoutMs ?? 7_200_000,
+    },
+    agents: {
+      enabled: config.agents?.enabled !== false,
+      defaultSubagentModel: config.agents?.defaultSubagentModel ?? '',
+      defaultSubagentReasoningEffort: config.agents?.defaultSubagentReasoningEffort ?? '',
+    },
+    builtinProductSkills: config.builtin_product_skills !== false,
+    modelCatalog: {
+      refreshIntervalMs: config.model_catalog?.refreshIntervalMs ?? 0,
+      refreshOnStart: config.model_catalog?.refreshOnStart === true,
+    },
+  };
+}
+
+export function serverFileSettingsPatch(
+  settings: ServerFileSettings,
+  baseline?: ServerFileSettings,
+): PatchConfigRequest {
+  const subagent = {
+    default_model:
+      baseline === undefined || settings.subagent.defaultModel !== baseline.subagent.defaultModel
+        ? settings.subagent.defaultModel
+        : undefined,
+    default_effort:
+      baseline === undefined || settings.subagent.defaultEffort !== baseline.subagent.defaultEffort
+        ? settings.subagent.defaultEffort
+        : undefined,
+    timeout_ms:
+      baseline === undefined || settings.subagent.timeoutMs !== baseline.subagent.timeoutMs
+        ? settings.subagent.timeoutMs
+        : undefined,
+  };
+  const agents = {
+    enabled:
+      baseline === undefined || settings.agents.enabled !== baseline.agents.enabled
+        ? settings.agents.enabled
+        : undefined,
+    default_subagent_model:
+      baseline === undefined
+      || settings.agents.defaultSubagentModel !== baseline.agents.defaultSubagentModel
+        ? settings.agents.defaultSubagentModel
+        : undefined,
+    default_subagent_reasoning_effort:
+      baseline === undefined
+      || settings.agents.defaultSubagentReasoningEffort
+        !== baseline.agents.defaultSubagentReasoningEffort
+        ? settings.agents.defaultSubagentReasoningEffort
+        : undefined,
+  };
+  const modelCatalog = {
+    refresh_interval_ms:
+      baseline === undefined
+      || settings.modelCatalog.refreshIntervalMs !== baseline.modelCatalog.refreshIntervalMs
+        ? settings.modelCatalog.refreshIntervalMs
+        : undefined,
+    refresh_on_start:
+      baseline === undefined
+      || settings.modelCatalog.refreshOnStart !== baseline.modelCatalog.refreshOnStart
+        ? settings.modelCatalog.refreshOnStart
+        : undefined,
+  };
+  return {
+    subagent: Object.values(subagent).some((value) => value !== undefined) ? subagent : undefined,
+    agents: Object.values(agents).some((value) => value !== undefined) ? agents : undefined,
+    builtin_product_skills:
+      baseline === undefined || settings.builtinProductSkills !== baseline.builtinProductSkills
+        ? settings.builtinProductSkills
+        : undefined,
+    model_catalog:
+      Object.values(modelCatalog).some((value) => value !== undefined) ? modelCatalog : undefined,
+  };
 }
 
 export type ProviderWireType =

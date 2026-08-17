@@ -8,7 +8,7 @@
  * on kap-server's own registry, token, and authenticated shutdown contracts.
  */
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::VecDeque,
     env, fs,
     fs::OpenOptions,
     io::{Read, Write},
@@ -30,8 +30,6 @@ use tauri_plugin_shell::{
     process::{CommandEvent, CommandChild, TerminatedPayload},
     ShellExt,
 };
-use toml_edit::{table, value, DocumentMut, Item};
-
 use tauri::async_runtime::Receiver;
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
@@ -499,274 +497,6 @@ struct DesktopPrefsPatch {
     locale: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DesktopServerConfig {
-    config_path: String,
-    backup_path: String,
-    subagent: DesktopSubagentConfig,
-    agents: DesktopAgentsConfig,
-    builtin_product_skills: bool,
-    model_catalog: DesktopModelCatalogConfig,
-    experimental_env: BTreeMap<String, String>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DesktopSubagentConfig {
-    default_model: String,
-    default_effort: String,
-    timeout_ms: u64,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DesktopAgentsConfig {
-    enabled: bool,
-    default_subagent_model: String,
-    default_subagent_reasoning_effort: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DesktopModelCatalogConfig {
-    refresh_interval_ms: u64,
-    refresh_on_start: bool,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DesktopServerConfigPatch {
-    subagent_default_model: String,
-    subagent_default_effort: String,
-    subagent_timeout_ms: u64,
-    agents_enabled: bool,
-    default_subagent_model: String,
-    default_subagent_reasoning_effort: String,
-    builtin_product_skills: bool,
-    model_catalog_refresh_interval_ms: u64,
-    model_catalog_refresh_on_start: bool,
-}
-
-fn server_config_path() -> Result<PathBuf, String> {
-    Ok(kimi_home_dir()?.join("config.toml"))
-}
-
-fn server_config_backup_path(path: &Path) -> PathBuf {
-    path.with_extension("toml.kiki-backup")
-}
-
-fn read_server_config_file(path: &Path) -> Result<DesktopServerConfig, String> {
-    let doc = read_config_document(path)?;
-    let experimental_env = env::vars()
-        .filter(|(name, _)| name.starts_with("KIMI_CODE_EXPERIMENTAL_"))
-        .collect::<BTreeMap<_, _>>();
-    Ok(DesktopServerConfig {
-        config_path: path.display().to_string(),
-        backup_path: server_config_backup_path(path).display().to_string(),
-        subagent: DesktopSubagentConfig {
-            default_model: table_string(&doc, "subagent", "default_model"),
-            default_effort: table_string(&doc, "subagent", "default_effort"),
-            timeout_ms: table_u64(&doc, "subagent", "timeout_ms").unwrap_or(7_200_000),
-        },
-        agents: DesktopAgentsConfig {
-            enabled: table_bool(&doc, "agents", "enabled").unwrap_or(true),
-            default_subagent_model: table_string(&doc, "agents", "default_subagent_model"),
-            default_subagent_reasoning_effort: table_string(
-                &doc,
-                "agents",
-                "default_subagent_reasoning_effort",
-            ),
-        },
-        builtin_product_skills: doc
-            .get("builtin_product_skills")
-            .and_then(Item::as_bool)
-            .unwrap_or(true),
-        model_catalog: DesktopModelCatalogConfig {
-            refresh_interval_ms: table_u64(&doc, "model_catalog", "refresh_interval_ms")
-                .unwrap_or(0),
-            refresh_on_start: table_bool(&doc, "model_catalog", "refresh_on_start")
-                .unwrap_or(false),
-        },
-        experimental_env,
-    })
-}
-
-fn read_config_document(path: &Path) -> Result<DocumentMut, String> {
-    let raw = match fs::read_to_string(path) {
-        Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(format!("Cannot read {}: {error}", path.display())),
-    };
-    raw.parse::<DocumentMut>()
-        .map_err(|error| format!("Invalid TOML in {}: {error}", path.display()))
-}
-
-fn table_string(doc: &DocumentMut, section: &str, key: &str) -> String {
-    doc.get(section)
-        .and_then(Item::as_table)
-        .and_then(|table| table.get(key))
-        .and_then(Item::as_str)
-        .unwrap_or_default()
-        .to_string()
-}
-
-fn table_bool(doc: &DocumentMut, section: &str, key: &str) -> Option<bool> {
-    doc.get(section)
-        .and_then(Item::as_table)
-        .and_then(|table| table.get(key))
-        .and_then(Item::as_bool)
-}
-
-fn table_u64(doc: &DocumentMut, section: &str, key: &str) -> Option<u64> {
-    doc.get(section)
-        .and_then(Item::as_table)
-        .and_then(|table| table.get(key))
-        .and_then(Item::as_integer)
-        .and_then(|number| u64::try_from(number).ok())
-}
-
-fn write_server_config_file(
-    path: &Path,
-    patch: DesktopServerConfigPatch,
-) -> Result<DesktopServerConfig, String> {
-    if patch.subagent_timeout_ms > 86_400_000 {
-        return Err("Subagent timeout cannot exceed 24 hours".to_string());
-    }
-    let mut doc = read_config_document(path)?;
-    set_table_string(
-        &mut doc,
-        "subagent",
-        "default_model",
-        &patch.subagent_default_model,
-    );
-    set_table_string(
-        &mut doc,
-        "subagent",
-        "default_effort",
-        &patch.subagent_default_effort,
-    );
-    set_table_integer(
-        &mut doc,
-        "subagent",
-        "timeout_ms",
-        patch.subagent_timeout_ms,
-    )?;
-    set_table_bool(&mut doc, "agents", "enabled", patch.agents_enabled);
-    set_table_string(
-        &mut doc,
-        "agents",
-        "default_subagent_model",
-        &patch.default_subagent_model,
-    );
-    set_table_string(
-        &mut doc,
-        "agents",
-        "default_subagent_reasoning_effort",
-        &patch.default_subagent_reasoning_effort,
-    );
-    doc["builtin_product_skills"] = value(patch.builtin_product_skills);
-    set_table_integer(
-        &mut doc,
-        "model_catalog",
-        "refresh_interval_ms",
-        patch.model_catalog_refresh_interval_ms,
-    )?;
-    set_table_bool(
-        &mut doc,
-        "model_catalog",
-        "refresh_on_start",
-        patch.model_catalog_refresh_on_start,
-    );
-    atomic_write_config(path, &doc.to_string())?;
-    read_server_config_file(path)
-}
-
-fn ensure_table(doc: &mut DocumentMut, section: &str) {
-    if !doc.get(section).is_some_and(Item::is_table) {
-        doc[section] = table();
-    }
-}
-
-fn set_table_string(doc: &mut DocumentMut, section: &str, key: &str, next: &str) {
-    ensure_table(doc, section);
-    if next.is_empty() {
-        if let Some(table) = doc.get_mut(section).and_then(Item::as_table_mut) {
-            table.remove(key);
-        }
-    } else {
-        doc[section][key] = value(next);
-    }
-}
-
-fn set_table_bool(doc: &mut DocumentMut, section: &str, key: &str, next: bool) {
-    ensure_table(doc, section);
-    doc[section][key] = value(next);
-}
-
-fn set_table_integer(
-    doc: &mut DocumentMut,
-    section: &str,
-    key: &str,
-    next: u64,
-) -> Result<(), String> {
-    let next = i64::try_from(next).map_err(|_| format!("{section}.{key} is too large"))?;
-    ensure_table(doc, section);
-    doc[section][key] = value(next);
-    Ok(())
-}
-
-fn atomic_write_config(path: &Path, raw: &str) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("Config path has no parent: {}", path.display()))?;
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("Cannot create {}: {error}", parent.display()))?;
-    if path.exists() {
-        let backup = server_config_backup_path(path);
-        fs::copy(path, &backup).map_err(|error| {
-            format!(
-                "Cannot back up {} to {}: {error}",
-                path.display(),
-                backup.display()
-            )
-        })?;
-    }
-    let temp = parent.join(format!(
-        ".config.toml.{}.{}.tmp",
-        std::process::id(),
-        unix_epoch_millis()?
-    ));
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp)
-            .map_err(|error| format!("Cannot create {}: {error}", temp.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(fs::Permissions::from_mode(0o600))
-                .map_err(|error| format!("Cannot secure {}: {error}", temp.display()))?;
-        }
-        file.write_all(raw.as_bytes())
-            .map_err(|error| format!("Cannot write {}: {error}", temp.display()))?;
-        file.sync_all()
-            .map_err(|error| format!("Cannot flush {}: {error}", temp.display()))?;
-        fs::rename(&temp, path).map_err(|error| {
-            format!(
-                "Cannot atomically replace {} with {}: {error}",
-                path.display(),
-                temp.display()
-            )
-        })
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
-}
-
 fn desktop_prefs_path() -> Result<PathBuf, String> {
     Ok(kimi_home_dir()?.join("kiki").join("desktop.json"))
 }
@@ -843,16 +573,6 @@ fn write_desktop_prefs(app: AppHandle, prefs: DesktopPrefsPatch) -> Result<(), S
         }
     }
     Ok(())
-}
-
-#[tauri::command]
-fn read_server_config() -> Result<DesktopServerConfig, String> {
-    read_server_config_file(&server_config_path()?)
-}
-
-#[tauri::command]
-fn write_server_config(patch: DesktopServerConfigPatch) -> Result<DesktopServerConfig, String> {
-    write_server_config_file(&server_config_path()?, patch)
 }
 
 #[tauri::command]
@@ -1268,8 +988,6 @@ pub fn run() {
             show_main_window,
             read_desktop_prefs,
             write_desktop_prefs,
-            read_server_config,
-            write_server_config,
             restart_server
         ])
         .on_window_event(move |window, event| {
@@ -1405,65 +1123,6 @@ mod tests {
         assert!(is_loopback_host("::1"));
         assert!(!is_loopback_host("0.0.0.0"));
         assert!(!is_loopback_host("example.test"));
-    }
-
-    #[test]
-    fn server_config_write_preserves_unknown_data_and_creates_backup() {
-        let root = env::temp_dir().join(format!(
-            "kiki-config-test-{}-{}",
-            std::process::id(),
-            unix_epoch_millis().unwrap()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("config.toml");
-        let original = r#"telemetry = true
-[providers.example]
-type = "openai"
-api_key = "secret-kept"
-"#;
-        fs::write(&path, original).unwrap();
-
-        let saved = write_server_config_file(
-            &path,
-            DesktopServerConfigPatch {
-                subagent_default_model: "example/worker".to_string(),
-                subagent_default_effort: "high".to_string(),
-                subagent_timeout_ms: 60_000,
-                agents_enabled: true,
-                default_subagent_model: "example/worker".to_string(),
-                default_subagent_reasoning_effort: "medium".to_string(),
-                builtin_product_skills: false,
-                model_catalog_refresh_interval_ms: 300_000,
-                model_catalog_refresh_on_start: true,
-            },
-        )
-        .unwrap();
-
-        let written = fs::read_to_string(&path).unwrap();
-        assert!(written.contains("api_key = \"secret-kept\""));
-        assert!(written.contains("default_model = \"example/worker\""));
-        assert!(written.contains("builtin_product_skills = false"));
-        assert_eq!(saved.subagent.timeout_ms, 60_000);
-        assert_eq!(
-            fs::read_to_string(server_config_backup_path(&path)).unwrap(),
-            original
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn invalid_server_config_is_rejected_before_write() {
-        let root = env::temp_dir().join(format!(
-            "kiki-config-invalid-test-{}-{}",
-            std::process::id(),
-            unix_epoch_millis().unwrap()
-        ));
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join("config.toml");
-        fs::write(&path, "[broken\n").unwrap();
-        assert!(read_server_config_file(&path).is_err());
-        assert_eq!(fs::read_to_string(&path).unwrap(), "[broken\n");
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
