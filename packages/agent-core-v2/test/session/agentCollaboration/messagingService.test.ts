@@ -1,25 +1,37 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Event, Emitter } from '#/_base/event';
+import type { ILogService } from '#/_base/log/log';
 import { LifecycleScope } from '#/app/scopes';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
+import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { createHooks } from '#/hooks';
 import { IAgentContextMemoryService, type IAgentContextMemoryService as AgentContextMemory } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentLoopService, type IAgentLoopService as AgentLoop } from '#/agent/loop/loop';
+import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { IAgentLifecycleService, type IAgentLifecycleService as AgentLifecycle } from '#/session/agentLifecycle/agentLifecycle';
 import { AgentCollaborationMessagingService } from '#/session/agentCollaboration/messagingService';
 import {
   AGENT_MESSAGE_BACKLOG_LIMIT,
+  AgentMessageMailboxFullError,
   type IAgentCollaborationMessageStore,
 } from '#/session/agentCollaboration/messageMailbox';
-import { MiniDbAgentCollaborationMessageBackend } from '#/session/agentCollaboration/miniDbMessageStore';
+import { AgentCollaborationMessageStoreAdapter } from '#/session/agentCollaboration/threadMailboxAdapter';
 import type { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IWireService, type IWireService as Wire } from '#/wire/wire';
+import { stubLog } from '../../_base/log/stubs';
 
 const signal = new AbortController().signal;
 const tempDirs: string[] = [];
@@ -28,10 +40,10 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-describe('MiniDb agent collaboration message store', () => {
+describe('thread mailbox agent collaboration adapter', () => {
   it('keeps FIFO, idempotency, payload conflicts, and consumption across reopen', async () => {
-    const dir = tempDir();
-    const first = new MiniDbAgentCollaborationMessageBackend(dir);
+    const homeDir = tempDir();
+    const first = mailboxStore(homeDir);
     const one = await first.accept(messageInput('one', 'idem-one'));
     const two = await first.accept(messageInput('two', 'idem-two'));
 
@@ -50,7 +62,7 @@ describe('MiniDb agent collaboration message store', () => {
     expect((await first.nextQueued('session-1', 'agent-target'))?.messageId).toBe(one.message.messageId);
     expect(await first.markDelivered(one.message.messageId)).toBe(true);
 
-    const reopened = new MiniDbAgentCollaborationMessageBackend(dir);
+    const reopened = mailboxStore(homeDir);
     expect((await reopened.nextQueued('session-1', 'agent-target'))?.messageId).toBe(two.message.messageId);
     expect(await reopened.markDelivered(two.message.messageId)).toBe(true);
     expect(await reopened.nextQueued('session-1', 'agent-target')).toBeUndefined();
@@ -61,20 +73,51 @@ describe('MiniDb agent collaboration message store', () => {
     });
   });
 
-  it('rejects acceptance beyond the per-target queued backlog limit', async () => {
-    const store = new MiniDbAgentCollaborationMessageBackend(tempDir());
-    for (let index = 0; index < AGENT_MESSAGE_BACKLOG_LIMIT; index++) {
+  it('atomically rejects acceptance beyond the per-target queued backlog limit', async () => {
+    const store = mailboxStore(tempDir());
+    for (let index = 0; index < AGENT_MESSAGE_BACKLOG_LIMIT - 1; index++) {
       await store.accept(messageInput(`message-${index}`, `idem-${index}`));
     }
-    await expect(store.accept(messageInput('overflow', 'overflow'))).rejects.toThrow(
-      `backlog is full (${AGENT_MESSAGE_BACKLOG_LIMIT} queued messages)`,
-    );
-  }, 15_000);
+
+    const results = await Promise.allSettled([
+      store.accept(messageInput('last-a', 'last-a')),
+      store.accept(messageInput('last-b', 'last-b')),
+    ]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const rejected = results.find((result) => result.status === 'rejected');
+    expect(rejected).toMatchObject({
+      status: 'rejected',
+      reason: expect.any(AgentMessageMailboxFullError),
+    });
+  }, 20_000);
+
+  it('warns about a non-empty legacy mailbox without reading or changing it', async () => {
+    const homeDir = tempDir();
+    const legacyDir = join(homeDir, 'store', 'agent-collaboration-mailbox-v1');
+    const sentinel = join(legacyDir, 'legacy-data.json');
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(sentinel, '{"legacy":true}', 'utf8');
+    const warnings: WarningCall[] = [];
+    const store = mailboxStore(homeDir, warnings);
+
+    await vi.waitFor(() => expect(warnings).toEqual([
+      {
+        message: 'Legacy named-agent mailbox data is no longer used and can be deleted manually.',
+        payload: { path: legacyDir.replaceAll('\\', '/') },
+      },
+    ]));
+    const accepted = await store.accept(messageInput('new mailbox', 'new-mailbox'));
+
+    expect(accepted.message.targetSeq).toBe(1);
+    expect(readFileSync(sentinel, 'utf8')).toBe('{"legacy":true}');
+    expect(existsSync(join(homeDir, 'store', 'agent-collaboration-mailbox-v2'))).toBe(true);
+  });
 });
 
 describe('agent collaboration safe-boundary delivery', () => {
   it('does not wake an idle target and delivers FIFO only at its next step boundary', async () => {
-    const store = new MiniDbAgentCollaborationMessageBackend(tempDir());
+    const store = mailboxStore(tempDir());
     const lifecycle = lifecycleHarness([]);
     const service = new AgentCollaborationMessagingService(store, lifecycle.service, sessionContext());
     const target = agentHandle('agent-target');
@@ -101,8 +144,9 @@ describe('agent collaboration safe-boundary delivery', () => {
     service.dispose();
   });
 
-  it('replays an unacknowledged durable receipt without double-applying its origin', async () => {
-    const backend = new MiniDbAgentCollaborationMessageBackend(tempDir());
+  it('recovers a crash after wire flush without double-applying the message origin', async () => {
+    const homeDir = tempDir();
+    const backend = mailboxStore(homeDir);
     const target = agentHandle('agent-target');
     const lifecycle = lifecycleHarness([target.handle]);
     let failAcknowledgement = true;
@@ -126,11 +170,12 @@ describe('agent collaboration safe-boundary delivery', () => {
     expect(target.messages).toHaveLength(1);
     first.dispose();
 
-    const reopened = new AgentCollaborationMessagingService(backend, lifecycle.service, sessionContext());
+    const reopenedBackend = mailboxStore(homeDir);
+    const reopened = new AgentCollaborationMessagingService(reopenedBackend, lifecycle.service, sessionContext());
     await target.loop.hooks.onWillBeginStep.run({ turnId: 2, step: 1, firstStepOfTurn: true, signal });
     expect(target.messages).toHaveLength(1);
     expect(target.operations).toEqual(['append', 'flush', 'flush']);
-    expect(await backend.accept(messageInput('once', 'call-once'))).toMatchObject({
+    expect(await reopenedBackend.accept(messageInput('once', 'call-once'))).toMatchObject({
       message: { messageId: accepted.message.messageId },
       deduplicated: true,
       delivery: 'delivered',
@@ -139,10 +184,41 @@ describe('agent collaboration safe-boundary delivery', () => {
   });
 });
 
+interface WarningCall {
+  readonly message: string;
+  readonly payload: unknown;
+}
+
 function tempDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'agent-message-mailbox-'));
   tempDirs.push(dir);
   return dir;
+}
+
+function mailboxStore(
+  homeDir: string,
+  warnings: WarningCall[] = [],
+): AgentCollaborationMessageStoreAdapter {
+  return new AgentCollaborationMessageStoreAdapter(
+    bootstrap(homeDir),
+    new HostFileSystem(),
+    capturingLog(warnings),
+  );
+}
+
+function bootstrap(homeDir: string): IBootstrapService {
+  return {
+    _serviceBrand: undefined,
+    homeDir,
+    storeDir: join(homeDir, 'store'),
+  } as IBootstrapService;
+}
+
+function capturingLog(warnings: WarningCall[]): ILogService {
+  return {
+    ...stubLog(),
+    warn: (message, payload) => warnings.push({ message, payload }),
+  };
 }
 
 function messageInput(content: string, idempotencyKey: string) {
