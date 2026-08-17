@@ -35,8 +35,18 @@ import type { RuntimeProviderFactory } from '#/runtime/runtimeProvider';
 import { SharedRuntimeUnitHostFactory, type RuntimeUnitHandle, type RuntimeUnitHostFactory } from '#/runtime/runtimeUnitHost';
 import { SessionLifecycleService } from '#/workspace/sessionLifecycle/sessionLifecycleService';
 
+import {
+  DEFAULT_WORKSPACE_IDLE_TTL_MS,
+  WORKSPACE_INSTANCE_SECTION,
+  type WorkspaceInstanceConfig,
+} from './configSection';
 import { WorkspaceInstance } from './workspaceInstance';
-import { IRuntimeResolver, IWorkspaceInstanceManager, type WorkspaceInstanceRef } from './workspaceInstanceManager';
+import {
+  IRuntimeResolver,
+  IWorkspaceInstanceManager,
+  type WorkspaceInstanceLease,
+  type WorkspaceInstanceRef,
+} from './workspaceInstanceManager';
 
 export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
   declare readonly _serviceBrand: undefined;
@@ -45,6 +55,10 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
   private readonly inflight = new Map<string, Promise<WorkspaceInstance>>();
   private readonly providers = new Map<string, RuntimeProviderFactory>();
   private readonly attachments = new Map<string, Map<string, RuntimeUnitHandle>>();
+  private readonly references = new Map<string, number>();
+  private readonly evictionTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly closing = new Map<string, Promise<void>>();
+  private disposed = false;
   private readonly changeEmitter = new Emitter<{ workspaceId: string; instance?: WorkspaceInstance }>();
   readonly onDidChange = this.changeEmitter.event;
 
@@ -77,6 +91,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
     @IAtomicDocumentStore private readonly docs: IAtomicDocumentStore,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     private readonly unitHostFactory: RuntimeUnitHostFactory = new SharedRuntimeUnitHostFactory(),
+    private readonly idleTtlMsOverride: number | undefined = undefined,
   ) {
     this.providers.set('local', new LocalRuntimeProviderFactory());
   }
@@ -94,11 +109,21 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
     return [...this.instances.values()];
   }
 
+  referenceCount(workspaceId: string): number {
+    return this.references.get(workspaceId) ?? 0;
+  }
+
   snapshot(): { readonly workspaces: readonly ReturnType<WorkspaceInstance['snapshot']>[] } {
     return { workspaces: this.list().map((instance) => instance.snapshot()) };
   }
 
   async getOrCreate(ref: WorkspaceInstanceRef): Promise<WorkspaceInstance> {
+    if (this.disposed) throw new Error('workspace instance manager is disposed');
+    if ('workspaceId' in ref) {
+      const closing = this.closing.get(ref.workspaceId);
+      if (closing !== undefined) await closing;
+      if (this.disposed) throw new Error('workspace instance manager is disposed');
+    }
     const key = 'workspaceId' in ref
       ? `id:${ref.workspaceId}`
       : `root:${ref.root.replace(/[\\/]$/, '')}`;
@@ -114,7 +139,10 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
       }
       if (workspace === undefined) throw new Error2(ErrorCodes.WORKSPACE_NOT_FOUND, `workspace ${'workspaceId' in ref ? ref.workspaceId : ref.root} does not exist`);
       const existing = this.instances.get(workspace.id);
-      if (existing !== undefined) return existing;
+      if (existing !== undefined) {
+        this.scheduleEviction(workspace.id);
+        return existing;
+      }
       const pending = this.inflight.get(workspace.id);
       if (pending !== undefined) return pending;
       const materialization = this.materialize(workspace).finally(() => this.inflight.delete(workspace.id));
@@ -125,23 +153,22 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
     return promise;
   }
 
-  async close(workspaceId: string): Promise<void> {
-    const pending = this.requests.get(`id:${workspaceId}`) ?? this.inflight.get(workspaceId);
-    if (pending !== undefined) {
-      try {
-        await pending;
-      } catch {
-        return;
-      }
+  async acquire(ref: WorkspaceInstanceRef): Promise<WorkspaceInstanceLease> {
+    while (true) {
+      const instance = await this.getOrCreate(ref);
+      const lease = this.retain(instance);
+      if (lease !== undefined) return lease;
+      const closing = this.closing.get(instance.id);
+      if (closing !== undefined) await closing;
     }
-    const instance = this.instances.get(workspaceId);
-    if (instance === undefined) return;
-    this.instances.delete(workspaceId);
-    const attachments = this.attachments.get(workspaceId);
-    this.attachments.delete(workspaceId);
-    if (attachments !== undefined) for (const attachment of [...attachments.values()].reverse()) await attachment.dispose();
-    await instance.dispose();
-    this.changeEmitter.fire({ workspaceId });
+  }
+
+  close(workspaceId: string): Promise<void> {
+    const existing = this.closing.get(workspaceId);
+    if (existing !== undefined) return existing;
+    const promise = this.doClose(workspaceId).finally(() => this.closing.delete(workspaceId));
+    this.closing.set(workspaceId, promise);
+    return promise;
   }
 
   async addProvider(factory: RuntimeProviderFactory): Promise<{ dispose(): Promise<void> }> {
@@ -166,8 +193,91 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
   }
 
   async dispose(): Promise<void> {
+    if (this.disposed) return;
+    this.disposed = true;
+    for (const timer of this.evictionTimers.values()) clearTimeout(timer);
+    this.evictionTimers.clear();
     for (const workspaceId of [...this.instances.keys()].reverse()) await this.close(workspaceId);
     this.changeEmitter.dispose();
+  }
+
+  private retain(instance: WorkspaceInstance): WorkspaceInstanceLease | undefined {
+    if (
+      this.disposed ||
+      this.closing.has(instance.id) ||
+      this.instances.get(instance.id) !== instance
+    ) {
+      return undefined;
+    }
+    this.cancelEviction(instance.id);
+    this.references.set(instance.id, this.referenceCount(instance.id) + 1);
+    let active = true;
+    return {
+      instance,
+      dispose: () => {
+        if (!active) return;
+        active = false;
+        const count = this.referenceCount(instance.id);
+        if (count <= 1) {
+          this.references.delete(instance.id);
+          this.scheduleEviction(instance.id);
+        } else {
+          this.references.set(instance.id, count - 1);
+        }
+      },
+    };
+  }
+
+  private scheduleEviction(workspaceId: string): void {
+    if (
+      this.disposed ||
+      this.referenceCount(workspaceId) !== 0 ||
+      !this.instances.has(workspaceId) ||
+      this.closing.has(workspaceId)
+    ) {
+      return;
+    }
+    this.cancelEviction(workspaceId);
+    const timer = setTimeout(() => {
+      this.evictionTimers.delete(workspaceId);
+      if (this.referenceCount(workspaceId) !== 0) return;
+      void this.close(workspaceId).catch((error: unknown) => {
+        this.log.warn(`workspace ${workspaceId} idle eviction failed: ${String(error)}`);
+      });
+    }, this.idleTtlMs());
+    (timer as { unref?(): void }).unref?.();
+    this.evictionTimers.set(workspaceId, timer);
+  }
+
+  private cancelEviction(workspaceId: string): void {
+    const timer = this.evictionTimers.get(workspaceId);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    this.evictionTimers.delete(workspaceId);
+  }
+
+  private idleTtlMs(): number {
+    if (this.idleTtlMsOverride !== undefined) return this.idleTtlMsOverride;
+    return this.config.get<WorkspaceInstanceConfig>(WORKSPACE_INSTANCE_SECTION).idleTtlMs ??
+      DEFAULT_WORKSPACE_IDLE_TTL_MS;
+  }
+
+  private async doClose(workspaceId: string): Promise<void> {
+    this.cancelEviction(workspaceId);
+    const pending = this.requests.get(`id:${workspaceId}`) ?? this.inflight.get(workspaceId);
+    if (pending !== undefined) await pending.catch(() => undefined);
+    const instance = this.instances.get(workspaceId);
+    if (instance === undefined) return;
+    await this.sessionManager.current?.closeWorkspace?.(workspaceId);
+    this.references.delete(workspaceId);
+    this.instances.delete(workspaceId);
+    const attachments = this.attachments.get(workspaceId);
+    this.attachments.delete(workspaceId);
+    if (attachments !== undefined) {
+      for (const attachment of [...attachments.values()].reverse()) await attachment.dispose();
+    }
+    await instance.dispose();
+    this.changeEmitter.fire({ workspaceId });
   }
 
   private async materialize(workspace: Workspace): Promise<WorkspaceInstance> {
@@ -202,6 +312,12 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
         telemetry: this.telemetry,
         docs: this.docs,
         flags: this.flags,
+        acquireWorkspaceReference: () => {
+          const live = this.instances.get(workspace.id);
+          const lease = live === undefined ? undefined : this.retain(live);
+          if (lease === undefined) throw new Error(`workspace ${workspace.id} is closing`);
+          return lease;
+        },
         createSessionController: (input) => new SessionLifecycleService(
           this.instantiation,
           input.context,
@@ -229,6 +345,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
           this.models,
           this.modelProviders,
           this.flags,
+          input.acquireWorkspaceReference,
           input.onDispose,
         ),
       },
@@ -238,6 +355,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
       if (instance.runtimes.current('local') === undefined) throw new Error(`workspace ${workspace.id} has no local runtime`);
       instance.activate();
       this.instances.set(workspace.id, instance);
+      this.scheduleEviction(workspace.id);
       this.changeEmitter.fire({ workspaceId: workspace.id, instance });
       return instance;
     } catch (error) {

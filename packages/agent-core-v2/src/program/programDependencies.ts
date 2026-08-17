@@ -1,4 +1,5 @@
 import type { LiveRef } from '#/_base/di/instantiation';
+import type { IDisposable } from '#/_base/di/lifecycle';
 import type { ILogService } from '#/_base/log/log';
 import type { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import type { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
@@ -39,6 +40,7 @@ export interface ProgramSessionControllerInput {
   readonly skills: IWorkspaceSkillCatalog;
   readonly instructions: IWorkspaceInstructionsService;
   readonly mcp: IWorkspaceMcpService;
+  readonly acquireWorkspaceReference: () => IDisposable;
   readonly onDispose: () => void;
 }
 
@@ -58,5 +60,6 @@ export interface ProgramDependencies {
   readonly telemetry: ITelemetryService;
   readonly docs: IAtomicDocumentStore;
   readonly flags: IFlagService;
+  readonly acquireWorkspaceReference: () => IDisposable;
   createSessionController(input: ProgramSessionControllerInput): SessionLifecycleService;
 }

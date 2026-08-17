@@ -110,7 +110,7 @@ import { join } from 'pathe';
 import { ulid } from 'ulid';
 
 import type { IInstantiationService } from '#/_base/di/instantiation';
-import { Disposable } from '#/_base/di/lifecycle';
+import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
 import {
   createScopedChildHandle,
   type ISessionScopeHandle,
@@ -279,6 +279,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     @IModelService private readonly models: IModelService,
     @IProviderService private readonly providers: IProviderService,
     @IFlagService private readonly flags: IFlagService,
+    private readonly acquireWorkspaceReference: () => IDisposable,
     onDispose?: () => void,
   ) {
     super();
@@ -288,6 +289,14 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         for (const sessionId of this.sessionLocks.keys()) void this.releaseSessionLock(sessionId);
       },
     });
+  }
+
+  override dispose(): void {
+    for (const [sessionId, handle] of [...this.sessions].reverse()) {
+      this.sessions.delete(sessionId);
+      handle.dispose();
+    }
+    super.dispose();
   }
 
   private get workspaceId(): string {
@@ -360,7 +369,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
 
   private async assertSubagentModelPoolPreFlight(): Promise<void> {
     await Promise.all([this.config.ready, this.models.ready, this.providers.ready]);
-    assertValidSubagentModelConfig(this.config, this.flags, this.modelCatalog);
+    assertValidSubagentModelConfig(this.config, this.flags, this.modelCatalog, this.models);
   }
 
   private async materializeSession(opts: MaterializeSessionOptions): Promise<ISessionScopeHandle> {
@@ -371,7 +380,6 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     await this.assertSubagentModelPoolPreFlight();
     await this.workspaceDirs.ready;
     await this.workspaceDirs.mergeAdditionalDirs(opts.workDir, opts.additionalDirs ?? []);
-    await this.acquireSessionLock(opts.sessionId);
     const ctx: ISessionContext = {
       _serviceBrand: undefined,
       sessionId: opts.sessionId,
@@ -382,8 +390,11 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       scope: (subKey?: string): string =>
         subKey === undefined || subKey === '' ? sessionScope : `${sessionScope}/${subKey}`,
     };
+    let workspaceReference: IDisposable | undefined;
     let handle: ISessionScopeHandle;
     try {
+      await this.acquireSessionLock(opts.sessionId);
+      workspaceReference = this.acquireWorkspaceReference();
       handle = createScopedChildHandle(
         this.instantiation,
         LifecycleScope.Session,
@@ -407,6 +418,10 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
               () => void this.releaseSessionLock(opts.sessionId),
               'sessionLifecycle:sessionLock',
             );
+            container.anchorKernelEntry(
+              () => workspaceReference?.dispose(),
+              'sessionLifecycle:workspaceReference',
+            );
             this._onWillCreateSession.fire({
               sessionId: opts.sessionId,
               readSeed: (id) => container.invokeFunction((accessor) => accessor.get(id)),
@@ -421,6 +436,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         },
       ) as ISessionScopeHandle;
     } catch (error) {
+      workspaceReference?.dispose();
       await this.releaseSessionLock(opts.sessionId);
       throw error;
     }

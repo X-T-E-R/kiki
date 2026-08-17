@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (28 sections · 2 overlay(s))
+# Index (29 sections · 2 overlay(s))
 #   agents                   src/session/agentCollaboration/configSection.ts
 #   background               src/agent/task/configSection.ts
 #   builtinProductSkills     src/app/skillCatalog/configSection.ts
@@ -37,6 +37,7 @@
 #   threadCommunication      src/app/threadCommunication/configSection.ts
 #   tokenCounting            src/agent/tokenCounting/configSection.ts
 #   tools                    src/agent/toolPolicy/configSection.ts
+#   workspaceInstance        src/workspace/workspaceInstance/configSection.ts
 #   (overlay) servicesCredentialEnvOverlay  src/app/auth/configSection.ts
 #   (overlay) kimiModelEnvOverlay  src/app/kosongConfig/envOverlay.ts
 
@@ -401,6 +402,8 @@ merge_all_available_skills = true
 # ##########################################################################
 
 [subagent]
+# default_model: string
+# default_effort: string
 timeout_ms = 7200000
 
 # ##########################################################################
@@ -468,3 +471,15 @@ strategy = "measured+estimated"
 [tools]
 # enabled: string[]
 # disabled: string[]
+
+# ##########################################################################
+# workspaceInstance (config.toml: workspace_instance)
+#   owner: src/workspace/workspaceInstance/configSection.ts
+#   scope: core
+#   hooks: stripEnv
+#   env:
+#     idle_ttl_ms <- KIMI_CODE_WORKSPACE_IDLE_TTL_MS (custom parse)
+# ##########################################################################
+
+[workspace_instance]
+idle_ttl_ms = 300000

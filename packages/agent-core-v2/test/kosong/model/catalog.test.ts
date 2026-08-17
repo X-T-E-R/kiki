@@ -495,6 +495,7 @@ describe('Model assembly (pure data)', () => {
             models: { 'deepseek-v4-flash': 'fast' },
           },
           catalog,
+          models,
         );
       }).not.toThrow();
 

@@ -7,6 +7,7 @@ import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { ErrorCodes, Error2, isError2 } from '#/errors';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
+import { IModelService } from '#/kosong/model/model';
 import {
   SECONDARY_MODEL_SECTION,
   SUBAGENT_SECTION,
@@ -35,6 +36,14 @@ describe('SessionSubagentModelsValidationService', () => {
   function setup(configValues: Record<string, unknown>, flagEnabled = true): void {
     ix.stub(IConfigService, new StubConfigService(configValues));
     ix.stub(IFlagService, stubFlag((id) => flagEnabled && id === SECONDARY_MODEL_FLAG_ID));
+    ix.stub(IModelService, {
+      _serviceBrand: undefined,
+      resolveId: (id: string) => {
+        if (modelIds.has(id)) return id;
+        const matches = [...modelIds].filter((candidate) => candidate.endsWith(`/${id}`));
+        return matches.length === 1 ? matches[0] : undefined;
+      },
+    } as unknown as IModelService);
     ix.stub(IModelCatalog, {
       _serviceBrand: undefined,
       get: (id: string) => {
@@ -81,6 +90,12 @@ describe('SessionSubagentModelsValidationService', () => {
   it('constructs fine when default_model alone forms an implicit single-entry pool', () => {
     modelIds.add('provider/fast');
     setup({ [SECONDARY_MODEL_SECTION]: { defaultModel: 'provider/fast' } });
+    expect(resolve()).toBeUndefined();
+  });
+
+  it('validates a bare pool key through ModelService.resolveId', () => {
+    modelIds.add('provider/fast');
+    setup({ [SECONDARY_MODEL_SECTION]: { defaultModel: 'fast' } });
     expect(resolve()).toBeUndefined();
   });
 

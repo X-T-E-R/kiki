@@ -31,6 +31,7 @@ export interface ISessionManager {
   get(sessionId: string): ISessionScopeHandle | undefined;
   list(): readonly ISessionScopeHandle[];
   close(sessionId: string): Promise<void>;
+  closeWorkspace?(workspaceId: string): Promise<void>;
   archive(sessionId: string): Promise<void>;
   restore(sessionId: string, options?: ResumeSessionOptions): Promise<ISessionScopeHandle | undefined>;
   delete(sessionId: string): Promise<void>;

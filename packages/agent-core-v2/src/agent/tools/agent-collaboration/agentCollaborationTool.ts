@@ -29,12 +29,14 @@ import { ILogService } from '#/_base/log/log';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { IModelCatalog } from '#/kosong/model/catalog';
+import { IModelService } from '#/kosong/model/model';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import { modelSupportsThinkingEffort, requiresStrictThinkingValidation } from '#/kosong/model/thinking';
 import { AGENTS_SECTION, type AgentsConfig } from '#/session/agentCollaboration/configSection';
 import { AGENT_COLLABORATION_FLAG_ID } from '#/session/agentCollaboration/flag';
 import {
+  canonicalizeSubagentBinding,
   resolveAgentCollaborationBinding,
   resolveSubagentTimeoutMs,
   subagentBindingMode,
@@ -122,6 +124,7 @@ abstract class AgentCollaborationToolBase<T> implements AgentTool<T> {
     @IConfigService protected readonly config: IConfigService,
     @IFlagService protected readonly flags: IFlagService,
     @IModelCatalog protected readonly modelCatalog: IModelCatalog,
+    @IModelService protected readonly models: IModelService,
     @IProtocolAdapterRegistry protected readonly protocolAdapters: IProtocolAdapterRegistry,
     @IAgentCollaborationRegistry protected readonly collaborationRegistry: IAgentCollaborationRegistry,
     @IAgentCollaborationMessagingService protected readonly messaging: IAgentCollaborationMessagingService,
@@ -280,6 +283,7 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
           );
         }
       }
+      binding = canonicalizeSubagentBinding(binding, this.models);
       const model = this.modelCatalog.get(binding.model);
       const strictEffort = requiresStrictThinkingValidation(this.protocolAdapters, model.protocol, model.providerType) ||
         (model.supportEfforts?.length ?? 0) > 0;

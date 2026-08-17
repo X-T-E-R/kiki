@@ -22,6 +22,7 @@ import { Error2, ErrorCodes } from '#/errors';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
+import { IModelService } from '#/kosong/model/model';
 import type { AgentProfileRouteCatalogEntry } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { ISessionSwarmService, type SessionSwarmTask } from '#/features/swarm/session/sessionSwarm';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
@@ -35,6 +36,7 @@ import { IAgentSwarmService } from '#/features/swarm/agent/swarm';
 import {
   addSubagentBindingSchemaConstraints,
   buildSubagentModelDescriptions,
+  canonicalizeSubagentBinding,
   exposesSubagentModelChoice,
   normalizeSubagentBindingValue,
   resolveSubagentBinding,
@@ -108,6 +110,7 @@ export class AgentSwarmTool implements IAgentSwarmTool {
     @IFlagService private readonly flags: IFlagService,
     @ISessionAgentProfileCatalog private readonly catalog: ISessionAgentProfileCatalog,
     @IAgentProfileService private readonly profile: IAgentProfileService,
+    @IModelService private readonly models: IModelService,
   ) {
     this.callerAgentId = scopeContext.agentId;
     void this.catalog.ready.then(() => {
@@ -119,6 +122,7 @@ export class AgentSwarmTool implements IAgentSwarmTool {
     const modelLines = buildSubagentModelDescriptions(
       this.config,
       this.flags,
+      this.models,
       this.profile.data().modelAlias,
     );
     let description = modelLines === undefined
@@ -228,26 +232,33 @@ export class AgentSwarmTool implements IAgentSwarmTool {
       const targetProfile = selection.profile;
       const symbolicModel =
         args.model === 'primary' || args.model === 'secondary' ? args.model : undefined;
-      assertProfileRouteBinding(selection.route, {
-        modelAlias: modelAlias ?? (symbolicModel === undefined ? args.model : undefined),
-        thinkingEffort,
-        modelPreference: symbolicModel,
-      });
+      assertProfileRouteBinding(
+        selection.route,
+        {
+          modelAlias: modelAlias ?? (symbolicModel === undefined ? args.model : undefined),
+          thinkingEffort,
+          modelPreference: symbolicModel,
+        },
+        this.models,
+      );
       if (own.modelAlias !== undefined) {
-        const resolved = resolveSubagentBinding(
-          this.config,
-          this.flags,
-          { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
-          {
-            modelPreference: args.model,
-            modelAlias,
-            thinkingEffort,
-          },
-          {
-            modelPreference: targetProfile.modelPreference,
-            modelAlias: targetProfile.modelAlias,
-            thinkingEffort: targetProfile.thinkingEffort,
-          },
+        const resolved = canonicalizeSubagentBinding(
+          resolveSubagentBinding(
+            this.config,
+            this.flags,
+            { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
+            {
+              modelPreference: args.model,
+              modelAlias,
+              thinkingEffort,
+            },
+            {
+              modelPreference: targetProfile.modelPreference,
+              modelAlias: targetProfile.modelAlias,
+              thinkingEffort: targetProfile.thinkingEffort,
+            },
+          ),
+          this.models,
         );
         const modelSource = subagentModelSource(resolved);
         binding = { model: resolved.model, thinking: resolved.thinking };

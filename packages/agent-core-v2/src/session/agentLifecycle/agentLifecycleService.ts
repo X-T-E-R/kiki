@@ -60,6 +60,7 @@ import { IWireService } from '#/wire/wire';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
+import { IModelService } from '#/kosong/model/model';
 import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import {
   normalizeRequestedThinkingEffort,
@@ -141,6 +142,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @ISessionAgentProfileCatalog private readonly profileCatalog: ISessionAgentProfileCatalog,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
+    @IModelService private readonly models: IModelService,
     @IProtocolAdapterRegistry private readonly protocolAdapters: IProtocolAdapterRegistry,
   ) {
     super();
@@ -170,6 +172,10 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     this.interactionBusDisposables.set(handle.id, d);
   }
 
+  private resolveModelId(alias: string): string {
+    return this.models.resolveId(alias) ?? alias;
+  }
+
   async create(opts: CreateAgentOptions = {}): Promise<IAgentScopeHandle> {
     if (opts.agentId !== undefined) {
       const inflight = this.creating.get(opts.agentId);
@@ -186,7 +192,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         if (
           persisted.lockedModelAlias !== undefined &&
           opts.binding?.model !== undefined &&
-          opts.binding.model !== persisted.lockedModelAlias
+          this.resolveModelId(opts.binding.model) !== persisted.lockedModelAlias
         ) {
           throw new Error2(
             ErrorCodes.ROUTE_BINDING_CONFLICT,
@@ -227,10 +233,12 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       route: binding.route,
     });
     const route = selection.route!;
+    const canonicalRouteModelAlias =
+      route.lockedModelAlias === undefined ? undefined : this.resolveModelId(route.lockedModelAlias);
     if (
       route.lockedModelAlias !== undefined &&
       binding.model !== undefined &&
-      binding.model !== route.lockedModelAlias
+      this.resolveModelId(binding.model) !== canonicalRouteModelAlias
     ) {
       throw new Error2(
         ErrorCodes.ROUTE_BINDING_CONFLICT,
@@ -247,8 +255,10 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         `Agent profile route "${route.id}" locks thinking_effort to "${route.lockedThinkingEffort}"`,
       );
     }
-    const alias = route.lockedModelAlias ?? binding.model ?? this.config.get<string>('defaultModel');
-    if (alias === undefined || alias === '') return;
+    const requestedAlias =
+      route.lockedModelAlias ?? binding.model ?? this.config.get<string>('defaultModel');
+    if (requestedAlias === undefined || requestedAlias === '') return;
+    const alias = this.resolveModelId(requestedAlias);
     let model: Model;
     try {
       model = this.modelCatalog.get(alias);

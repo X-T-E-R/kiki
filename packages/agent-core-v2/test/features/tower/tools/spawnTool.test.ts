@@ -34,6 +34,7 @@ import { IEventBus } from '#/app/event/eventBus';
 import { EventBusService } from '#/app/event/eventBusService';
 import { IFlagService } from '#/app/flag/flag';
 import { IModelCatalog } from '#/kosong/model/catalog';
+import { IModelService } from '#/kosong/model/model';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import {
@@ -174,6 +175,9 @@ describe('TowerSpawnTool', () => {
       enabled: (id: string) => id === SECONDARY_MODEL_FLAG_ID && secondaryFlagOn,
     } as unknown as IFlagService);
     ix.stub(IModelCatalog, { get: () => ({}) } as unknown as IModelCatalog);
+    ix.stub(IModelService, {
+      resolveId: (id: string) => (id === 'fast' ? 'cheap/fast' : id),
+    } as unknown as IModelService);
     ix.set(ITowerSpawnTool, new SyncDescriptor(TowerSpawnTool));
   });
 
@@ -290,9 +294,9 @@ describe('TowerSpawnTool', () => {
     expect(createdSetMode).toHaveBeenCalledWith('auto');
   });
 
-  it('binds the configured secondary model and reports it in the output and activity log', async () => {
+  it('canonicalizes the configured secondary model before reporting and creation', async () => {
     secondaryFlagOn = true;
-    secondaryModel = { model: 'cheap/fast' };
+    secondaryModel = { model: 'fast' };
 
     const result = await execute(WORKER_ARGS);
 

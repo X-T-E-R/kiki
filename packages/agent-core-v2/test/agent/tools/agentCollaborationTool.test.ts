@@ -39,6 +39,7 @@ function followupTool(lifecycle: IAgentLifecycleService): FollowupTaskTool {
     undefined as never, // config
     undefined as never, // flags
     undefined as never, // modelCatalog
+    undefined as never, // models
     undefined as never, // protocolAdapters
     undefined as never, // collaborationRegistry
     undefined as never, // messaging
@@ -60,6 +61,7 @@ function listTool(
     undefined as never,
     undefined as never,
     metadata as never,
+    undefined as never,
     undefined as never,
     undefined as never,
     undefined as never,

@@ -217,8 +217,9 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope): 
         );
         return;
       }
+      await core.accessor.get(IWorkspaceInstanceManager).close(workspace_id);
       await registry.delete(workspace_id);
-      requestLog(req)?.info({ workspace_id }, 'workspace deleted');
+      requestLog(req)?.info({ workspace_id, live_sessions_closed: true }, 'workspace deleted');
       reply.send(okEnvelope({ deleted: true as const }, req.id));
     },
   );

@@ -19,6 +19,7 @@ import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCat
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { APIProviderRateLimitError } from '#/kosong/contract/errors';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
+import { IModelService } from '#/kosong/model/model';
 import { ITelemetryService, noopTelemetryService } from '#/app/telemetry/telemetry';
 import {
   IAgentLifecycleService,
@@ -955,6 +956,10 @@ describe('SessionSwarmService metadata compatibility', () => {
     ix.stub(ILogService, stubLog());
     ix.stub(IConfigService, new StubConfigService({}));
     ix.stub(IFlagService, stubFlag(() => false));
+    ix.stub(IModelService, {
+      _serviceBrand: undefined,
+      resolveId: (id: string) => id,
+    } as unknown as IModelService);
     ix.stub(IModelCatalog, {
       _serviceBrand: undefined,
       get: (alias: string) => {

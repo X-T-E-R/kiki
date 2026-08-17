@@ -4,6 +4,10 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import {
+  ISessionManager,
+  IWorkspaceInstanceManager,
+} from '@moonshot-ai/agent-core-v2';
 import { encodeWorkDirKey } from '@moonshot-ai/agent-core-v2/_base/utils/workdir-slug';
 
 import { type RunningServer, startServer } from '../src/start';
@@ -181,6 +185,51 @@ describe('server-v2 /api/v1/workspaces', () => {
 
     const again = await deleteJson<null>(`/api/v1/workspaces/${id}`);
     expect(again.body.code).toBe(40410);
+  });
+
+  it('force-closes live sessions and disposes the workspace instance on delete', async () => {
+    const root = home as string;
+    const created = await postJson<WorkspaceWire>('/api/v1/workspaces', { root });
+    const workspaceId = created.body.data.id;
+    const session = await postJson<{ id: string }>('/api/v1/sessions', {
+      metadata: { cwd: root },
+    });
+    const sessionId = session.body.data.id;
+    const core = (server as RunningServer).core;
+    const instances = core.accessor.get(IWorkspaceInstanceManager);
+    const sessions = core.accessor.get(ISessionManager);
+
+    expect(instances.referenceCount(workspaceId)).toBe(1);
+    expect(instances.get(workspaceId)).toBeDefined();
+    expect(sessions.get(sessionId)).toBeDefined();
+
+    const deleted = await deleteJson<{ deleted: boolean }>(`/api/v1/workspaces/${workspaceId}`);
+    expect(deleted.body.code).toBe(0);
+    expect(instances.referenceCount(workspaceId)).toBe(0);
+    expect(instances.get(workspaceId)).toBeUndefined();
+    expect(sessions.get(sessionId)).toBeUndefined();
+  });
+
+  it('releases the workspace reference when a live session closes', async () => {
+    const root = home as string;
+    const created = await postJson<WorkspaceWire>('/api/v1/workspaces', { root });
+    const workspaceId = created.body.data.id;
+    const first = await postJson<{ id: string }>('/api/v1/sessions', {
+      metadata: { cwd: root },
+    });
+    const second = await postJson<{ id: string }>('/api/v1/sessions', {
+      metadata: { cwd: root },
+    });
+    const core = (server as RunningServer).core;
+    const instances = core.accessor.get(IWorkspaceInstanceManager);
+    const sessions = core.accessor.get(ISessionManager);
+
+    expect(instances.referenceCount(workspaceId)).toBe(2);
+    await sessions.close(first.body.data.id);
+    expect(instances.referenceCount(workspaceId)).toBe(1);
+    await sessions.close(second.body.data.id);
+    expect(instances.referenceCount(workspaceId)).toBe(0);
+    expect(instances.get(workspaceId)).toBeDefined();
   });
 
   it('reflects session_count for sessions created in the workspace', async () => {

@@ -176,6 +176,7 @@ export class Program {
         skills: generation.skills,
         instructions: generation.instructions,
         mcp: generation.mcp,
+        acquireWorkspaceReference: this.dependencies.acquireWorkspaceReference,
         onDispose: release,
       });
     } catch (error) {

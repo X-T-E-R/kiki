@@ -6,8 +6,8 @@ export const AGENTS_SECTION = 'agents';
 
 export const AgentsConfigSchema = z.object({
   enabled: z.boolean().optional(),
-  defaultSubagentModel: z.string().trim().min(1).optional(),
-  defaultSubagentReasoningEffort: z.string().trim().min(1).optional(),
+  defaultSubagentModel: z.string().optional(),
+  defaultSubagentReasoningEffort: z.string().optional(),
 }).strict();
 
 export type AgentsConfig = z.infer<typeof AgentsConfigSchema>;

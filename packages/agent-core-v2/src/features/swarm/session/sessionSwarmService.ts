@@ -20,6 +20,7 @@
 
 import type { TokenUsage } from '#/kosong/contract/usage';
 import { IModelCatalog } from '#/kosong/model/catalog';
+import { IModelService } from '#/kosong/model/model';
 import {
   assertProfileRouteBinding,
   assertProfileRouteModelAvailable,
@@ -102,6 +103,7 @@ export class SessionSwarmService implements ISessionSwarmService {
     @IRuntimeResolver private readonly runtimeResolver: IRuntimeResolver,
     @ILogService private readonly log: ILogService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
+    @IModelService private readonly models: IModelService,
   ) {}
 
   async getSwarmItem(args: {
@@ -214,11 +216,19 @@ export class SessionSwarmService implements ISessionSwarmService {
         };
       }
     }
-    assertProfileRouteBinding(selection.route, {
-      modelAlias: binding.model,
-      thinkingEffort: binding.thinking,
-    });
-    assertProfileRouteModelAvailable(selection.route, this.modelCatalog);
+    binding = {
+      ...binding,
+      model: this.models.resolveId(binding.model) ?? binding.model,
+    };
+    assertProfileRouteBinding(
+      selection.route,
+      {
+        modelAlias: binding.model,
+        thinkingEffort: binding.thinking,
+      },
+      this.models,
+    );
+    assertProfileRouteModelAvailable(selection.route, this.modelCatalog, this.models);
     const modelSource = binding.modelSource ?? 'secondary';
     try {
       this.modelCatalog.get(binding.model);

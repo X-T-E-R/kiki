@@ -65,6 +65,7 @@ import { ITowerRateLimitService } from '#/features/tower/towerRateLimit';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { IModelCatalog } from '#/kosong/model/catalog';
+import { IModelService } from '#/kosong/model/model';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import {
   type ExecutableToolContext,
@@ -75,6 +76,7 @@ import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle'
 import { subagentLabels } from '#/session/agentLifecycle/subagentMetadata';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import {
+  canonicalizeSubagentBinding,
   DEFAULT_SUBAGENT_TIMEOUT_MS,
   resolveSubagentBinding,
   wrapSubagentModelError,
@@ -109,6 +111,7 @@ export class TowerSpawnTool implements ITowerSpawnTool {
     @IConfigService private readonly config: IConfigService,
     @IFlagService private readonly flags: IFlagService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
+    @IModelService private readonly models: IModelService,
   ) {
     this.callerAgentId = scopeContext.agentId;
   }
@@ -206,11 +209,14 @@ export class TowerSpawnTool implements ITowerSpawnTool {
         const binding =
           own.modelAlias === undefined
             ? undefined
-            : resolveSubagentBinding(
-                this.config,
-                this.flags,
-                { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
-                args.kind === 'reviewer' ? 'primary' : undefined,
+            : canonicalizeSubagentBinding(
+                resolveSubagentBinding(
+                  this.config,
+                  this.flags,
+                  { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
+                  args.kind === 'reviewer' ? 'primary' : undefined,
+                ),
+                this.models,
               );
         let handle: SubagentHandle;
         try {

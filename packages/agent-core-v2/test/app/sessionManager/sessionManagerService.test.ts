@@ -22,8 +22,10 @@ import type { IWorkspaceInstanceManager } from '#/workspace/workspaceInstance/wo
 function controller(sessionId = 'session-1'): {
   readonly service: SessionLifecycleService;
   readonly handle: ISessionScopeHandle;
+  readonly dispose: ReturnType<typeof vi.fn>;
 } {
   const handle = { id: sessionId } as unknown as ISessionScopeHandle;
+  const dispose = vi.fn();
   const willCreate = new Emitter<SessionWillCreateEvent>();
   const didCreate = new Emitter<SessionCreatedEvent>();
   const didClose = new Emitter<SessionClosedEvent>();
@@ -47,9 +49,9 @@ function controller(sessionId = 'session-1'): {
     delete: async () => {},
     fork: async () => handle,
     createChild: async () => handle,
-    dispose: () => {},
+    dispose,
   } as unknown as SessionLifecycleService;
-  return { service, handle };
+  return { service, handle, dispose };
 }
 
 describe('SessionManager', () => {
@@ -60,7 +62,7 @@ describe('SessionManager', () => {
       program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service },
     } as unknown as WorkspaceInstance;
     const workspaces = {
-      getOrCreate: async () => workspace,
+      acquire: async () => ({ instance: workspace, dispose: () => {} }),
       get: (workspaceId: string) => workspaceId === workspace.id ? workspace : undefined,
     } as unknown as IWorkspaceInstanceManager;
     const index = { get: async () => undefined } as unknown as ISessionIndex;
@@ -73,6 +75,30 @@ describe('SessionManager', () => {
     expect(manager.get('session-1')).toBeUndefined();
     expect(manager.list()).toEqual([]);
     manager.dispose();
+  });
+
+  it('closes every live session and retires its controller for a forced workspace close', async () => {
+    const fake = controller();
+    const workspace = {
+      id: 'workspace-1',
+      program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service },
+    } as unknown as WorkspaceInstance;
+    const workspaces = {
+      acquire: async () => ({ instance: workspace, dispose: () => {} }),
+      get: () => workspace,
+    } as unknown as IWorkspaceInstanceManager;
+    const manager = new SessionManager(
+      workspaces,
+      { get: async () => undefined } as unknown as ISessionIndex,
+    );
+
+    await manager.create({ workDir: '/workspace' });
+    await manager.closeWorkspace(workspace.id);
+
+    expect(manager.get(fake.handle.id)).toBeUndefined();
+    expect(fake.dispose).toHaveBeenCalledTimes(1);
+    manager.dispose();
+    expect(fake.dispose).toHaveBeenCalledTimes(1);
   });
 
   it('coalesces concurrent same-process resumes before the workspace controller resolves', async () => {
@@ -91,7 +117,7 @@ describe('SessionManager', () => {
       program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service },
     } as unknown as WorkspaceInstance;
     const workspaces = {
-      getOrCreate: async () => workspace,
+      acquire: async () => ({ instance: workspace, dispose: () => {} }),
       get: () => workspace,
     } as unknown as IWorkspaceInstanceManager;
     const index = {
@@ -120,7 +146,7 @@ describe('SessionManager', () => {
       },
     } as unknown as WorkspaceInstance;
     const workspaces = {
-      getOrCreate: async () => workspace,
+      acquire: async () => ({ instance: workspace, dispose: () => {} }),
       get: () => workspace,
     } as unknown as IWorkspaceInstanceManager;
     const manager = new SessionManager(
@@ -156,7 +182,7 @@ describe('SessionManager', () => {
       },
     } as unknown as WorkspaceInstance;
     const workspaces = {
-      getOrCreate: async () => workspace,
+      acquire: async () => ({ instance: workspace, dispose: () => {} }),
       get: () => workspace,
     } as unknown as IWorkspaceInstanceManager;
     const manager = new SessionManager(
@@ -191,7 +217,7 @@ describe('SessionManager', () => {
       },
     } as unknown as WorkspaceInstance;
     const workspaces = {
-      getOrCreate: async () => workspace,
+      acquire: async () => ({ instance: workspace, dispose: () => {} }),
       get: (workspaceId: string) => workspaceId === workspace.id ? workspace : undefined,
     } as unknown as IWorkspaceInstanceManager;
     const index = {
@@ -356,7 +382,7 @@ describe('SessionManager controller retirement', () => {
   function managerFor(program: Program): SessionManager {
     const workspace = { id: 'workspace', program } as unknown as WorkspaceInstance;
     const workspaces = {
-      getOrCreate: async () => workspace,
+      acquire: async () => ({ instance: workspace, dispose: () => {} }),
       get: (workspaceId: string) => workspaceId === workspace.id ? workspace : undefined,
     } as unknown as IWorkspaceInstanceManager;
     return new SessionManager(

@@ -45,6 +45,10 @@ import { ConfigRegistry, ConfigService } from '#/app/config/configService';
 import { ConfigSectionContribution } from '#/app/config/configSectionContributions';
 import '#/app/cron/configSection';
 import type { CronConfig } from '#/app/cron/configSection';
+import {
+  THREAD_COMMUNICATION_SECTION,
+  type ThreadCommunicationConfig,
+} from '#/app/threadCommunication/configSection';
 import '#/app/skillCatalog/configSection';
 import { BUILTIN_PRODUCT_SKILLS_SECTION } from '#/app/skillCatalog/configSection';
 import {
@@ -75,6 +79,7 @@ import {
   PROVIDERS_SECTION,
   THINKING_SECTION,
 } from '#/app/kosongConfig/configSection';
+import type { IModelService } from '#/kosong/model/model';
 import { type ThinkingConfig } from '#/kosong/model/thinking';
 import {
   KEEP_ALIVE_ON_EXIT_ENV,
@@ -86,6 +91,7 @@ import {
 import { applyPrintModeConfigDefaults } from '#/agent/task/printDefaults';
 import '#/session/subagent/configSection';
 import {
+  canonicalizeSubagentBinding,
   DEFAULT_SUBAGENT_TIMEOUT_MS,
   resolveAgentCollaborationBinding,
   resolveSubagentBinding,
@@ -744,6 +750,19 @@ describe('skill config sections', () => {
 
     expect(registry.getSection(EXTRA_SKILL_DIRS_SECTION)?.defaultValue).toEqual([]);
     expect(registry.getSection(MERGE_ALL_AVAILABLE_SKILLS_SECTION)?.defaultValue).toBe(true);
+  });
+});
+
+describe('threadCommunication config section', () => {
+  it('is globally disabled until an operator opts in', () => {
+    const registry = new ConfigRegistry();
+
+    expect(registry.getSection(THREAD_COMMUNICATION_SECTION)?.defaultValue).toEqual({
+      enabled: false,
+    });
+    expect(
+      registry.validate<ThreadCommunicationConfig>(THREAD_COMMUNICATION_SECTION, {}),
+    ).toEqual({ enabled: false });
   });
 });
 
@@ -1876,6 +1895,30 @@ describe('subagent config section', () => {
     expect(poolDefault).toEqual({ model: 'provider/fast', thinking: undefined });
     expect(subagentBindingMode(poolDefault)).toBe('fixed');
     pool.disposables.dispose();
+  });
+
+  it('canonicalizes the collaboration config default through ModelService.resolveId', async () => {
+    const { config, disposables } = await createConfig(
+      {},
+      '[agents]\ndefault_subagent_model = "fast"\n',
+    );
+    const resolveId = vi.fn((id: string) => (id === 'fast' ? 'provider/fast' : undefined));
+    const models = { resolveId } as unknown as IModelService;
+
+    const binding = canonicalizeSubagentBinding(
+      resolveAgentCollaborationBinding(
+        config,
+        secondaryModelFlags(false),
+        { modelAlias: 'provider/main', thinkingLevel: 'medium' },
+        {},
+        {},
+      ),
+      models,
+    );
+
+    expect(binding).toEqual({ model: 'provider/fast', thinking: undefined });
+    expect(resolveId).toHaveBeenCalledWith('fast');
+    disposables.dispose();
   });
 
   it('keeps the pool inert while the secondary-model experiment is off', async () => {

@@ -100,6 +100,7 @@ import {
   type ThinkingEffort,
 } from '#/kosong/contract/provider';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
+import { IModelService } from '#/kosong/model/model';
 import { type ModelOverrides } from '#/kosong/model/model.types';
 import { type ModelRequestParams } from '#/kosong/model/modelRequester';
 import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
@@ -254,6 +255,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @IAgentTelemetryContextService private readonly telemetryContext: IAgentTelemetryContextService,
     @IConfigService private readonly config: IConfigService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
+    @IModelService private readonly models: IModelService,
     @IProtocolAdapterRegistry private readonly protocolAdapters: IProtocolAdapterRegistry,
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @IHostClock private readonly clock: IHostClock,
@@ -419,14 +421,17 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         : this.catalog.resolveSelection({ profile: input.profile, route: input.route });
     const profile = selection.profile;
     this.assertBindable(selection.baseProfile.name, selection.route?.id);
+    const routeModelAlias = selection.route?.lockedModelAlias;
+    const canonicalRouteModelAlias =
+      routeModelAlias === undefined ? undefined : this.resolveModelId(routeModelAlias);
     if (
-      selection.route?.lockedModelAlias !== undefined &&
+      routeModelAlias !== undefined &&
       input.model !== undefined &&
-      input.model !== selection.route.lockedModelAlias
+      this.resolveModelId(input.model) !== canonicalRouteModelAlias
     ) {
       throw new Error2(
         ErrorCodes.ROUTE_BINDING_CONFLICT,
-        `Agent profile route "${selection.route.id}" locks model_alias to "${selection.route.lockedModelAlias}"`,
+        `Agent profile route "${selection.route!.id}" locks model_alias to "${routeModelAlias}"`,
       );
     }
     if (
@@ -439,25 +444,23 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         `Agent profile route "${selection.route.id}" locks thinking_effort to "${selection.route.lockedThinkingEffort}"`,
       );
     }
-    const alias =
-      input.model ??
-      selection.route?.lockedModelAlias ??
-      this.config.get<string>('defaultModel');
-    if (alias === undefined || alias === '') {
+    const requestedAlias = input.model ?? routeModelAlias ?? this.config.get<string>('defaultModel');
+    if (requestedAlias === undefined || requestedAlias === '') {
       throw new ProfileError(
         ProfileErrors.codes.MODEL_NOT_CONFIGURED,
         `model is required to bind profile "${selection.baseProfile.name}" (no default model configured)`,
       );
     }
+    const alias = this.resolveModelId(requestedAlias);
     let model: Model;
     try {
       model = this.modelCatalog.get(alias);
     } catch (error) {
-      if (selection.route?.lockedModelAlias !== alias) throw error;
+      if (routeModelAlias !== requestedAlias) throw error;
       throw new Error2(
         ErrorCodes.ROUTE_MODEL_ALIAS_MISSING,
-        `Agent profile route "${selection.route.id}" requires unavailable model alias "${alias}"`,
-        { details: { route: selection.route.id, modelAlias: alias }, cause: error },
+        `Agent profile route "${selection.route!.id}" requires unavailable model alias "${routeModelAlias}"`,
+        { details: { route: selection.route!.id, modelAlias: routeModelAlias }, cause: error },
       );
     }
 
@@ -507,7 +510,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       modelAlias: alias,
       profileName: selection.baseProfile.name,
       routeId: selection.route?.id,
-      lockedModelAlias: selection.route?.lockedModelAlias,
+      lockedModelAlias: canonicalRouteModelAlias,
       lockedThinkingEffort: selection.route?.lockedThinkingEffort,
       thinkingEffort: thinkingLevel,
       serviceTier: profile.serviceTier,
@@ -535,25 +538,26 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   async setModel(alias: string): Promise<ProfileSetModelResult> {
+    const canonicalAlias = this.resolveModelId(alias);
     if (
       this.profileState.lockedModelAlias !== undefined &&
-      alias !== this.profileState.lockedModelAlias
+      canonicalAlias !== this.profileState.lockedModelAlias
     ) {
       throw new Error2(
         ErrorCodes.ROUTE_BINDING_CONFLICT,
         `Agent profile route "${this.routeId}" locks model_alias to "${this.profileState.lockedModelAlias}"`,
       );
     }
-    const model = this.modelCatalog.get(alias);
+    const model = this.modelCatalog.get(canonicalAlias);
     if (this.profileName === undefined) {
-      await this.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: alias });
-      this.telemetry.track2('model_switch', { model: alias });
-    } else if (this.modelAlias !== alias) {
-      this.update({ modelAlias: alias });
-      this.telemetry.track2('model_switch', { model: alias });
+      await this.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: canonicalAlias });
+      this.telemetry.track2('model_switch', { model: canonicalAlias });
+    } else if (this.modelAlias !== canonicalAlias) {
+      this.update({ modelAlias: canonicalAlias });
+      this.telemetry.track2('model_switch', { model: canonicalAlias });
     }
     return {
-      model: alias,
+      model: canonicalAlias,
       providerName: model.providerName,
     };
   }
@@ -969,6 +973,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   private get alwaysThinkingModel(): boolean {
     return this.tryResolveRawModel()?.alwaysThinking === true;
+  }
+
+  private resolveModelId(alias: string): string {
+    return this.models.resolveId(alias) ?? alias;
   }
 
   private tryResolveRawModel(): Model | undefined {

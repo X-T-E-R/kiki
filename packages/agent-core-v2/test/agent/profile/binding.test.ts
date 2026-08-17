@@ -202,7 +202,7 @@ describe('AgentProfileService.bind', () => {
 
     await svc.bind({ profile: DEFAULT_AGENT_PROFILE_NAME });
 
-    expect(svc.data().modelAlias).toBe(MOCK_MODEL);
+    expect(svc.data().modelAlias).toBe(canonicalId);
     expect(ctx.get(IModelCatalog).get(svc.data().modelAlias!).id).toBe(canonicalId);
   });
 
@@ -224,10 +224,11 @@ describe('AgentProfileService.bind', () => {
     await svc.bind({ route: 'reviewer.ui-k3' });
 
     expect(svc.data()).toMatchObject({
-      modelAlias: MOCK_MODEL,
-      lockedModelAlias: MOCK_MODEL,
+      modelAlias: canonicalId,
+      lockedModelAlias: canonicalId,
     });
     expect(ctx.get(IModelCatalog).get(svc.data().modelAlias!).id).toBe(canonicalId);
+    await expect(svc.setModel(MOCK_MODEL)).resolves.toMatchObject({ model: canonicalId });
   });
 
   it('admits all six collaboration tools only in the intended builtin profile policies', () => {
@@ -519,6 +520,22 @@ describe('AgentProfileService.bind', () => {
     expect(svc.data().profileName).toBe(DEFAULT_AGENT_PROFILE_NAME);
     expect(svc.data().modelAlias).toBe(MOCK_MODEL);
     expect(svc.isRunnable()).toBe(true);
+  });
+
+  it('setModel persists the canonical id for a bare alias', async () => {
+    const { profile: svc } = buildContext();
+    const canonicalId = `test-provider/${MOCK_MODEL}`;
+    await ctx.get(IModelService).replaceAll({
+      [canonicalId]: {
+        provider: 'test-provider',
+        model: MOCK_MODEL,
+        maxContextSize: 1_000_000,
+      },
+    });
+
+    await svc.setModel(MOCK_MODEL);
+
+    expect(svc.data().modelAlias).toBe(canonicalId);
   });
 
   it('setModel keeps the existing profile when one is already bound', async () => {

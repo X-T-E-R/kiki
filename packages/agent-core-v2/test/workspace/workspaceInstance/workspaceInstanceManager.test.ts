@@ -120,6 +120,7 @@ function manager(
   values: readonly Workspace[],
   ready: Promise<void> = Promise.resolve(),
   events: string[] = [],
+  idleTtlMs = 5 * 60 * 1000,
 ): WorkspaceInstanceManager {
   const byId = new Map(values.map((value) => [value.id, value]));
   const workspaces: IWorkspaceService = {
@@ -139,9 +140,11 @@ function manager(
     { scope: () => 'sessions' },
     workspaces,
     { ready },
-    ...Array.from({ length: 22 }, () => undefined),
+    ...Array.from({ length: 23 }, () => undefined),
     new TestRuntimeUnitHostFactory(),
+    idleTtlMs,
   ];
+  args[19] = { current: undefined };
   args[20] = { entries: () => [] };
   const value = Reflect.construct(WorkspaceInstanceManager, args) as WorkspaceInstanceManager;
   const providers = (value as unknown as { providers: Map<string, RuntimeProviderFactory> }).providers;
@@ -167,6 +170,58 @@ describe('WorkspaceInstanceManager', () => {
     await closing;
     expect(value.get('one')).toBeUndefined();
     expect(events).toEqual(['attach:local:one', 'detach:local:one']);
+  });
+
+  it('counts concurrent leases without materializing the workspace twice', async () => {
+    const events: string[] = [];
+    const value = manager([workspace('one')], Promise.resolve(), events);
+    const [first, second] = await Promise.all([
+      value.acquire({ workspaceId: 'one' }),
+      value.acquire({ workspaceId: 'one' }),
+    ]);
+
+    expect(first.instance).toBe(second.instance);
+    expect(value.referenceCount('one')).toBe(2);
+    expect(events.filter((event) => event === 'attach:local:one')).toHaveLength(1);
+
+    first.dispose();
+    expect(value.referenceCount('one')).toBe(1);
+    second.dispose();
+    expect(value.referenceCount('one')).toBe(0);
+    await value.dispose();
+  });
+
+  it('evicts an idle workspace after its final lease reaches the configured TTL', async () => {
+    vi.useFakeTimers();
+    try {
+      const events: string[] = [];
+      const value = manager([workspace('one')], Promise.resolve(), events, 50);
+      const lease = await value.acquire({ workspaceId: 'one' });
+      lease.dispose();
+
+      await vi.advanceTimersByTimeAsync(49);
+      expect(value.get('one')).toBe(lease.instance);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(value.get('one')).toBeUndefined();
+      expect(events).toEqual(['attach:local:one', 'detach:local:one']);
+      await value.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('force-evicts referenced workspaces during manager disposal', async () => {
+    const events: string[] = [];
+    const value = manager([workspace('one')], Promise.resolve(), events);
+    const lease = await value.acquire({ workspaceId: 'one' });
+
+    await value.dispose();
+
+    expect(value.get('one')).toBeUndefined();
+    expect(value.referenceCount('one')).toBe(0);
+    expect(events).toEqual(['attach:local:one', 'detach:local:one']);
+    lease.dispose();
+    expect(value.referenceCount('one')).toBe(0);
   });
 
   it('keeps runtime registries and provider attachments isolated across workspaces', async () => {

@@ -1261,6 +1261,33 @@ describe('Agent tool execution contract', () => {
     );
   });
 
+  it('canonicalizes a bare pool alias through ModelService before lifecycle creation', async () => {
+    const lifecycle = createAgentLifecycleStub({ createAgentIds: ['agent-child'] });
+    const context = createAgentToolContext(lifecycle, secondaryModelFlags(), {
+      initialConfig: {
+        models: POOL_MODEL_ENTRIES,
+        secondaryModel: {
+          defaultModel: 'fast',
+          models: { fast: 'fast and cheap' },
+        },
+      },
+    });
+
+    await executeAgentTool(context, {
+      prompt: 'Investigate',
+      description: 'Find cause',
+    });
+
+    expect(lifecycle.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        binding: expect.objectContaining({ model: 'provider/fast' }),
+      }),
+    );
+    expect(lifecycle.publishedEvents).toContainEqual(
+      expect.objectContaining({ type: 'subagent.spawned', model: 'fast' }),
+    );
+  });
+
   it('spawns on the caller model when the tool call opts into "primary"', async () => {
     const lifecycle = createAgentLifecycleStub({ createAgentIds: ['agent-child'] });
     const context = createAgentToolContext(lifecycle, secondaryModelFlags(), {

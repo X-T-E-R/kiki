@@ -1,10 +1,14 @@
 /**
  * `subagent` domain — named profile-route binding guards shared by Agent tools.
+ *
+ * Route model pins keep their conflict semantics, while identity comparison and
+ * availability checks use the app model registry's canonical resolver.
  */
 
 import { Error2, ErrorCodes } from '#/errors';
 import type { ResolvedAgentProfileRoute } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { IModelCatalog } from '#/kosong/model/catalog';
+import type { IModelService } from '#/kosong/model/model';
 
 export function assertProfileRouteBinding(
   route: ResolvedAgentProfileRoute | undefined,
@@ -13,12 +17,14 @@ export function assertProfileRouteBinding(
     readonly thinkingEffort?: string;
     readonly modelPreference?: 'primary' | 'secondary';
   },
+  models: IModelService,
 ): void {
   if (route === undefined) return;
   if (
     route.lockedModelAlias !== undefined &&
     (input.modelPreference !== undefined ||
-      (input.modelAlias !== undefined && input.modelAlias !== route.lockedModelAlias))
+      (input.modelAlias !== undefined &&
+        resolveModelId(models, input.modelAlias) !== resolveModelId(models, route.lockedModelAlias)))
   ) {
     throw new Error2(
       ErrorCodes.ROUTE_BINDING_CONFLICT,
@@ -42,10 +48,11 @@ export function assertProfileRouteBinding(
 export function assertProfileRouteModelAvailable(
   route: ResolvedAgentProfileRoute | undefined,
   catalog: IModelCatalog,
+  models: IModelService,
 ): void {
   if (route?.lockedModelAlias === undefined) return;
   try {
-    catalog.get(route.lockedModelAlias);
+    catalog.get(resolveModelId(models, route.lockedModelAlias));
   } catch (error) {
     throw new Error2(
       ErrorCodes.ROUTE_MODEL_ALIAS_MISSING,
@@ -53,4 +60,8 @@ export function assertProfileRouteModelAvailable(
       { details: { route: route.id, modelAlias: route.lockedModelAlias }, cause: error },
     );
   }
+}
+
+function resolveModelId(models: IModelService, modelId: string): string {
+  return models.resolveId(modelId) ?? modelId;
 }

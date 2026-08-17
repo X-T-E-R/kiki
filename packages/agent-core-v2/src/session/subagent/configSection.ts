@@ -19,8 +19,8 @@ import {
   type IConfigService,
 } from '#/app/config/config';
 import { registerConfigSection } from '#/app/config/configSectionContributions';
-import { MODELS_SECTION } from '#/app/kosongConfig/configSection';
 import type { IModelCatalog } from '#/kosong/model/catalog';
+import type { IModelService } from '#/kosong/model/model';
 import { AGENTS_SECTION, type AgentsConfig } from '#/session/agentCollaboration/configSection';
 
 import { SECONDARY_MODEL_FLAG_ID } from './flag';
@@ -29,6 +29,8 @@ export const SUBAGENT_SECTION = 'subagent';
 export const SECONDARY_MODEL_SECTION = 'secondaryModel';
 
 export const SubagentConfigSchema = z.object({
+  defaultModel: z.string().optional(),
+  defaultEffort: z.string().optional(),
   timeoutMs: z.number().int().min(0).optional(),
 });
 
@@ -140,6 +142,25 @@ function recordBindingMetadata(
   return binding;
 }
 
+export function canonicalizeSubagentBinding(
+  binding: SubagentModelBinding,
+  models: IModelService,
+): SubagentModelBinding {
+  const canonicalModel = models.resolveId(binding.model) ?? binding.model;
+  if (canonicalModel === binding.model) return binding;
+  return recordBindingMetadata(
+    {
+      model: canonicalModel,
+      thinking: binding.thinking,
+      displayModel: binding.displayModel,
+    },
+    {
+      source: subagentModelSource(binding),
+      mode: subagentBindingMode(binding),
+    },
+  );
+}
+
 export function resolveSubagentModelPool(config: IConfigService): SubagentModelPool | undefined {
   const section = config.get<SecondaryModelConfig | undefined>(SECONDARY_MODEL_SECTION);
   if (section?.models !== undefined) {
@@ -178,6 +199,7 @@ export const SECONDARY_MODEL_PRIMARY_MODEL_RESERVED_MESSAGE = `[secondary_model.
 export function assertValidSubagentModelPool(
   pool: SubagentModelPool,
   modelCatalog: IModelCatalog,
+  models: IModelService,
 ): void {
   if (Object.hasOwn(pool.models, PRIMARY_SUBAGENT_MODEL_CHOICE)) {
     throw new Error2(ErrorCodes.CONFIG_INVALID, SECONDARY_MODEL_PRIMARY_MODEL_RESERVED_MESSAGE, {
@@ -203,7 +225,7 @@ export function assertValidSubagentModelPool(
   }
   for (const alias of aliases) {
     try {
-      modelCatalog.get(alias);
+      modelCatalog.get(models.resolveId(alias) ?? alias);
     } catch (error) {
       throw new Error2(
         ErrorCodes.CONFIG_INVALID,
@@ -218,6 +240,7 @@ export function assertValidSubagentModelConfig(
   config: IConfigService,
   flags: IFlagService,
   modelCatalog: IModelCatalog,
+  models: IModelService,
 ): void {
   if (!flags.enabled(SECONDARY_MODEL_FLAG_ID)) return;
   const section = config.get<SecondaryModelConfig | undefined>(SECONDARY_MODEL_SECTION);
@@ -234,7 +257,7 @@ export function assertValidSubagentModelConfig(
     }
   }
   const pool = resolveSubagentModelPool(config);
-  if (pool !== undefined) assertValidSubagentModelPool(pool, modelCatalog);
+  if (pool !== undefined) assertValidSubagentModelPool(pool, modelCatalog, models);
 }
 
 export function cascadeSubagentModelPool(
@@ -504,6 +527,7 @@ export function subagentDisplayModel(
 export function buildSubagentModelDescriptions(
   config: IConfigService,
   flags: IFlagService,
+  models: IModelService,
   callerModelAlias: string | undefined,
 ): string | undefined {
   const lines: string[] = [];
@@ -532,7 +556,7 @@ export function buildSubagentModelDescriptions(
       `- ${PRIMARY_SUBAGENT_MODEL_CHOICE}${callerInPool ? ` (${callerModelAlias})` : ''}: freeze the main model and its current thinking level for this subagent`,
     );
   }
-  const aliases = Object.keys(config.get<Record<string, unknown> | undefined>(MODELS_SECTION) ?? {});
+  const aliases = Object.keys(models.list());
   if (aliases.length > 0) {
     lines.push(`Configured model aliases (pass an exact value via model_alias): ${aliases.join(', ')}`);
   }

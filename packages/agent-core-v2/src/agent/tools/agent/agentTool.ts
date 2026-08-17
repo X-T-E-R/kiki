@@ -81,6 +81,7 @@ import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
 import { IFlagService } from '#/app/flag/flag';
 import { IModelCatalog } from '#/kosong/model/catalog';
+import { IModelService } from '#/kosong/model/model';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import {
   refreshInheritedSubagentBinding,
@@ -103,6 +104,7 @@ import { ISessionSubagentService } from '#/session/subagent/subagent';
 import {
   addSubagentBindingSchemaConstraints,
   buildSubagentModelDescriptions,
+  canonicalizeSubagentBinding,
   exposesSubagentModelChoice,
   formatSubagentTimeoutDescription,
   normalizeSubagentBindingValue,
@@ -182,6 +184,7 @@ export class SubagentTool implements ISubagentTool {
     @IConfigService private readonly config: IConfigService,
     @IFlagService private readonly flags: IFlagService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
+    @IModelService private readonly models: IModelService,
     @AgentToolContribution private readonly contributions: CollectionView<AgentToolContribution>,
   ) {
     this.callerAgentId = scopeContext.agentId;
@@ -227,6 +230,7 @@ export class SubagentTool implements ISubagentTool {
     const modelLines = buildSubagentModelDescriptions(
       this.config,
       this.flags,
+      this.models,
       this.profile.data().modelAlias,
     );
     if (modelLines !== undefined) {
@@ -431,12 +435,16 @@ export class SubagentTool implements ISubagentTool {
       }
       const symbolicModel =
         args.model === 'primary' || args.model === 'secondary' ? args.model : undefined;
-      assertProfileRouteBinding(selection.route, {
-        modelAlias: modelAlias ?? (symbolicModel === undefined ? args.model : undefined),
-        thinkingEffort,
-        modelPreference: symbolicModel,
-      });
-      assertProfileRouteModelAvailable(selection.route, this.modelCatalog);
+      assertProfileRouteBinding(
+        selection.route,
+        {
+          modelAlias: modelAlias ?? (symbolicModel === undefined ? args.model : undefined),
+          thinkingEffort,
+          modelPreference: symbolicModel,
+        },
+        this.models,
+      );
+      assertProfileRouteModelAvailable(selection.route, this.modelCatalog, this.models);
       const toolBindingRequest = {
         modelPreference: args.model,
         modelAlias,
@@ -467,6 +475,7 @@ export class SubagentTool implements ISubagentTool {
           );
         }
       }
+      binding = canonicalizeSubagentBinding(binding, this.models);
       const bindingSource = subagentModelSource(binding);
       try {
         this.modelCatalog.get(binding.model);
