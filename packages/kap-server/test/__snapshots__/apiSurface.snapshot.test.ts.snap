@@ -46,6 +46,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/v1/capabilities",
+    ],
+    [
+      "GET",
+      "/api/v1/capabilities/{capability_id}",
+    ],
+    [
+      "GET",
       "/api/v1/catalog/providers",
     ],
     [
@@ -78,7 +86,19 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
-      "/api/v1/debug/workspace/{workspace_id}/{service}/{method}",
+      "/api/v1/debug/session/{session_id}/agent/{agent_id}/runtime-binding",
+    ],
+    [
+      "GET",
+      "/api/v1/debug/session/{session_id}/association",
+    ],
+    [
+      "GET",
+      "/api/v1/debug/workspace/{workspace_id}/snapshot",
+    ],
+    [
+      "GET",
+      "/api/v1/debug/workspaces",
     ],
     [
       "GET",
@@ -134,6 +154,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/v1/plugins",
+    ],
+    [
+      "GET",
+      "/api/v1/plugins/marketplace",
+    ],
+    [
+      "GET",
       "/api/v1/providers",
     ],
     [
@@ -183,6 +211,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/v1/sessions/{session_id}/questions",
+    ],
+    [
+      "GET",
+      "/api/v1/sessions/{session_id}/runtime",
     ],
     [
       "GET",
@@ -274,6 +306,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/v1/capabilities/{tail}",
+    ],
+    [
+      "POST",
       "/api/v1/config",
     ],
     [
@@ -287,10 +323,6 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/v1/debug/session/{session_id}/agent/{agent_id}/{service}/{method}",
-    ],
-    [
-      "POST",
-      "/api/v1/debug/workspace/{workspace_id}/{service}/{method}",
     ],
     [
       "POST",
@@ -327,6 +359,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/v1/oauth/logout",
+    ],
+    [
+      "POST",
+      "/api/v1/plugins",
+    ],
+    [
+      "POST",
+      "/api/v1/plugins/{tail}",
     ],
     [
       "POST",
@@ -390,6 +430,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/v1/sessions/{session_id}/runtime",
+    ],
+    [
+      "POST",
       "/api/v1/sessions/{session_id}/skills/{tail}",
     ],
     [
@@ -403,6 +447,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/v1/sessions/{session_id}/terminals/{tail}",
+    ],
+    [
+      "POST",
+      "/api/v1/sessions/{session_id}/title/generate",
     ],
     [
       "POST",

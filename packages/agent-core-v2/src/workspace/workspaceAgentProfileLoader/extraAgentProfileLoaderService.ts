@@ -8,9 +8,7 @@
  * debounced on filesystem changes. Bound at Workspace scope.
  */
 
-import { LifecycleScope } from '#/app/scopes';
 
-import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { ILogService } from '#/_base/log/log';
 import { subtreeWatchFilter } from '#/_base/utils/paths';
@@ -21,6 +19,7 @@ import {
   AGENT_PROFILE_SOURCE_PRIORITY,
   type AgentProfileContribution,
 } from '#/app/agentProfileCatalog/agentProfileContribution';
+import type { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
 import { profilesFromDiscovery } from './internal/agentProfileFromFile';
 import {
   configuredAgentRoots,
@@ -66,8 +65,9 @@ export class ExtraAgentProfileLoaderService
     @IUserAgentProfileLoader private readonly user: IUserAgentProfileLoader,
     @IHostFsWatchService private readonly fsWatch: IHostFsWatchService,
     @IFlagService private readonly flags: IFlagService,
+    registry?: IAgentProfileRegistry,
   ) {
-    super(log);
+    super(log, registry);
     this._register(
       this.configService.onDidSectionChange((event) => {
         if (event.domain === EXTRA_AGENT_DIRS_SECTION) {
@@ -153,11 +153,3 @@ export class ExtraAgentProfileLoaderService
     if (previous !== undefined) this.watchResources.delete(previous);
   }
 }
-
-registerScopedService(
-  LifecycleScope.Workspace,
-  IExtraAgentProfileLoader,
-  ExtraAgentProfileLoaderService,
-  ScopeActivation.OnScopeCreated,
-  'workspaceAgentProfileLoader',
-);

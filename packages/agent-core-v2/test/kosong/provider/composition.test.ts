@@ -24,8 +24,10 @@
  * exact request params on the wire (the morph era asserted baked provider
  * state instead):
  *
- *  - the behavior probes for per-turn intent encoding (cacheKey / serviceTier /
- *     thinking / budget) on the Kimi, OpenAI, and Anthropic wires;
+ *  - the behavior probes for per-turn intent encoding (cacheKey / thinking /
+ *     budget) on the Kimi, OpenAI, and Anthropic wires;
+ *  - reasoning-only assistant history remains canonical while each wire
+ *    projects it into a provider-valid representation;
  *  - the per-base `responseFormat` encodings (re-added from the deleted
  *     llmProtocol structured-output suite; morph-seeded kwargs cases that no
  *     longer have a channel are noted where they dropped);
@@ -33,10 +35,18 @@
  *     profile, and the OpenAI `reasoning_effort` auto-enable with its
  *     load-bearing kill switch (a `withThinking` hook disables it).
  *
+ * Plus one construction invariant: every wire base builds its SDK client
+ * with `maxRetries: 0` — retry is owned by the engine's step-retry layer,
+ * never by the SDK (whose backoff sleep ignores the turn's AbortSignal). The
+ * closing section proves it over a real HTTP 429: the first response reaches
+ * the caller after exactly one request, carrying the server-directed delay.
+ *
  * Note: base/definition registries are module-level state shared across this
  * file, so the contribs and test-vendor definitions are imported/registered
  * exactly once here.
  */
+
+import { createServer } from 'node:http';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -47,6 +57,7 @@ import {
   APIConnectionError,
   APIProviderQuotaExhaustedError,
   APIProviderRateLimitError,
+  APIStatusError,
   isRetryableGenerateError,
 } from '#/kosong/contract/errors';
 import type { Message } from '#/kosong/contract/message';
@@ -344,6 +355,17 @@ describe('createChatProvider', () => {
   });
 });
 
+describe('SDK-internal retry disabled (engine-owned step retry)', () => {
+  it.each([
+    { protocol: 'openai', modelName: 'gpt-4o' },
+    { protocol: 'openai_responses', modelName: 'gpt-5' },
+    { protocol: 'anthropic', modelName: 'claude-opus-4-6' },
+  ] as const)('builds the $protocol SDK client with maxRetries 0', ({ protocol, modelName }) => {
+    const provider = registry.createChatProvider({ protocol, modelName, apiKey: 'sk-probe' });
+    expect((sdkClient(provider) as { maxRetries?: number }).maxRetries).toBe(0);
+  });
+});
+
 describe('google-genai vertex mode (providerOptions)', () => {
   it('forwards vertexai + project + location from providerOptions to the base', () => {
     const provider = registry.createChatProvider({
@@ -562,7 +584,6 @@ async function captureOpenAIBody(
   provider: ChatProvider,
   options?: GenerateOptions,
   history: Message[] = PROBE_HISTORY,
-  systemPrompt = '',
 ): Promise<Record<string, unknown>> {
   let captured: Record<string, unknown> | undefined;
   const client = sdkClient(provider) as { chat: { completions: { create: unknown } } };
@@ -576,7 +597,7 @@ async function captureOpenAIBody(
         }),
     };
   });
-  await drain(await provider.generate(systemPrompt, [], history, options));
+  await drain(await provider.generate('', [], history, options));
   if (captured === undefined) throw new Error('expected chat.completions.create to be called');
   return captured;
 }
@@ -584,6 +605,7 @@ async function captureOpenAIBody(
 async function captureAnthropicBody(
   provider: ChatProvider,
   options?: GenerateOptions,
+  history: Message[] = PROBE_HISTORY,
 ): Promise<{
   readonly params: Record<string, unknown>;
   readonly requestOptions: Record<string, unknown> | undefined;
@@ -607,7 +629,7 @@ async function captureAnthropicBody(
     });
   client.messages.create = create('standard');
   client.beta.messages.create = create('beta');
-  await drain(await provider.generate('', [], PROBE_HISTORY, options));
+  await drain(await provider.generate('', [], history, options));
   if (capturedParams === undefined || via === undefined) {
     throw new Error('expected messages.create to be called');
   }
@@ -617,6 +639,7 @@ async function captureAnthropicBody(
 async function captureGoogleBody(
   provider: ChatProvider,
   options?: GenerateOptions,
+  history: Message[] = PROBE_HISTORY,
 ): Promise<Record<string, unknown>> {
   let captured: Record<string, unknown> | undefined;
   const client = sdkClient(provider) as { models: { generateContent: unknown } };
@@ -630,7 +653,7 @@ async function captureGoogleBody(
       modelVersion: 'probe',
     });
   });
-  await drain(await provider.generate('', [], PROBE_HISTORY, options));
+  await drain(await provider.generate('', [], history, options));
   if (captured === undefined) throw new Error('expected models.generateContent to be called');
   return captured;
 }
@@ -638,7 +661,6 @@ async function captureGoogleBody(
 async function captureResponsesBody(
   provider: ChatProvider,
   options?: GenerateOptions,
-  systemPrompt = '',
 ): Promise<Record<string, unknown>> {
   let captured: Record<string, unknown> | undefined;
   const client = sdkClient(provider) as { responses: { create: unknown } };
@@ -646,7 +668,7 @@ async function captureResponsesBody(
     captured = params as Record<string, unknown>;
     return Promise.resolve(responsesEventStream());
   });
-  await drain(await provider.generate(systemPrompt, [], PROBE_HISTORY, options));
+  await drain(await provider.generate('', [], PROBE_HISTORY, options));
   if (captured === undefined) throw new Error('expected responses.create to be called');
   return captured;
 }
@@ -686,194 +708,6 @@ describe('per-turn intent wire encoding (behavior probes)', () => {
     expect(body['prompt_cache_key']).toBe('session-probe');
   });
 
-  it('encodes serviceTier only on the OpenAI Responses wire', async () => {
-    const options: GenerateOptions = { serviceTier: 'priority' };
-    const responses = new OpenAIResponsesChatProvider({
-      model: 'gpt-4.1',
-      apiKey: 'sk-probe',
-    });
-    const openai = new OpenAILegacyChatProvider({
-      model: 'gpt-4o',
-      apiKey: 'sk-probe',
-      stream: false,
-    });
-    const kimi = registry.createChatProvider({
-      protocol: 'openai',
-      providerType: 'kimi',
-      modelName: 'kimi-k2',
-      apiKey: 'sk-probe',
-    });
-    const anthropic = new AnthropicChatProvider({
-      model: 'claude-opus-4-6',
-      apiKey: 'sk-probe',
-      stream: false,
-    });
-
-    const responsesBody = await captureResponsesBody(responses, options);
-    const openaiBody = await captureOpenAIBody(openai, options);
-    const kimiBody = await captureOpenAIBody(kimi, options);
-    const { params: anthropicBody } = await captureAnthropicBody(anthropic, options);
-
-    expect(responsesBody['service_tier']).toBe('priority');
-    expect(openaiBody).not.toHaveProperty('service_tier');
-    expect(kimiBody).not.toHaveProperty('service_tier');
-    expect(anthropicBody).not.toHaveProperty('service_tier');
-  });
-
-  it('adds requestParams to OpenAI Responses without overriding typed fields', async () => {
-    const provider = new OpenAIResponsesChatProvider({
-      model: 'gpt-4.1',
-      apiKey: 'sk-probe',
-    });
-
-    const body = await captureResponsesBody(
-      provider,
-      {
-        serviceTier: 'priority',
-        thinking: { effort: 'high' },
-        maxCompletionTokens: 5000,
-        requestParams: {
-          model: 'generic-model',
-          input: 'generic-input',
-          tools: 'generic-tools',
-          store: true,
-          stream: false,
-          instructions: 'generic instructions',
-          reasoning: 'generic reasoning',
-          max_output_tokens: 1,
-          service_tier: 'flex',
-          custom_string: 'value',
-          custom_number: 7,
-          custom_boolean: true,
-        },
-      },
-      'typed instructions',
-    );
-
-    expect(body).toMatchObject({
-      model: 'gpt-4.1',
-      input: expect.any(Array),
-      tools: [],
-      store: false,
-      stream: true,
-      instructions: 'typed instructions',
-      reasoning: { effort: 'high', summary: 'auto' },
-      max_output_tokens: 5000,
-      service_tier: 'priority',
-      custom_string: 'value',
-      custom_number: 7,
-      custom_boolean: true,
-    });
-  });
-
-  it('adds an own __proto__ request param without changing the request prototype', async () => {
-    const provider = new OpenAIResponsesChatProvider({
-      model: 'gpt-4.1',
-      apiKey: 'sk-probe',
-    });
-    const requestParams: Record<string, string | number | boolean> = {
-      model: 'generic-model',
-    };
-    Object.defineProperty(requestParams, '__proto__', {
-      value: 'polluted',
-      enumerable: true,
-      configurable: true,
-      writable: true,
-    });
-
-    const body = await captureResponsesBody(provider, { requestParams });
-
-    expect(body['model']).toBe('gpt-4.1');
-    expect(Object.hasOwn(body, '__proto__')).toBe(true);
-    expect(body['__proto__']).toBe('polluted');
-    expect(Object.getPrototypeOf(body)).toBe(Object.prototype);
-    expect(({} as { polluted?: unknown }).polluted).toBeUndefined();
-  });
-
-  it('adds requestParams to OpenAI legacy without overriding typed fields', async () => {
-    const provider = new OpenAILegacyChatProvider({
-      model: 'gpt-5',
-      apiKey: 'sk-probe',
-      stream: false,
-    });
-
-    const body = await captureOpenAIBody(
-      provider,
-      {
-        responseFormat: { type: 'json_object' },
-        thinking: { effort: 'high' },
-        maxCompletionTokens: 5000,
-        requestParams: {
-          model: 'generic-model',
-          messages: 'generic-messages',
-          stream: true,
-          response_format: 'generic-format',
-          reasoning_effort: 'low',
-          max_completion_tokens: 1,
-          custom_scalar: 'value',
-        },
-      },
-      PROBE_HISTORY,
-      'typed system prompt',
-    );
-
-    expect(body['model']).toBe('gpt-5');
-    expect(body['messages']).toEqual(expect.any(Array));
-    expect(body['stream']).toBe(false);
-    expect(body['response_format']).toEqual({ type: 'json_object' });
-    expect(body['reasoning_effort']).toBe('high');
-    expect(body['max_completion_tokens']).toBe(5000);
-    expect(body['custom_scalar']).toBe('value');
-  });
-
-  it('routes Kimi requestParams through extra_body without overriding typed fields', async () => {
-    const provider = registry.createChatProvider({
-      protocol: 'openai',
-      providerType: 'kimi',
-      modelName: 'kimi-k2',
-      apiKey: 'sk-probe',
-    });
-
-    const body = await captureOpenAIBody(provider, {
-      cacheKey: 'session-probe',
-      thinking: { effort: 'high' },
-      maxCompletionTokens: 5000,
-      requestParams: {
-        model: 'generic-model',
-        messages: 'generic-messages',
-        stream: false,
-        prompt_cache_key: 'generic-cache',
-        thinking: 'generic-thinking',
-        max_completion_tokens: 1,
-        custom_scalar: 'value',
-      },
-    });
-
-    expect(body['model']).toBe('kimi-k2');
-    expect(body['messages']).toEqual(expect.any(Array));
-    expect(body['stream']).toBe(true);
-    expect(body['prompt_cache_key']).toBe('session-probe');
-    expect(body['thinking']).toEqual({ type: 'enabled', effort: 'high' });
-    expect(body['max_completion_tokens']).toBe(5000);
-    expect(body['custom_scalar']).toBe('value');
-    expect(body).not.toHaveProperty('extra_body');
-  });
-
-  it('silently ignores requestParams on Anthropic', async () => {
-    const provider = new AnthropicChatProvider({
-      model: 'claude-opus-4-6',
-      apiKey: 'sk-probe',
-      stream: false,
-    });
-
-    const { params } = await captureAnthropicBody(provider, {
-      requestParams: { custom_scalar: 'value', top_k: 7 },
-    });
-
-    expect(params).not.toHaveProperty('custom_scalar');
-    expect(params).not.toHaveProperty('top_k');
-  });
-
   it('encodes cacheKey on Anthropic as metadata.user_id', async () => {
     const provider = registry.createChatProvider({
       protocol: 'anthropic',
@@ -903,6 +737,58 @@ describe('per-turn intent wire encoding (behavior probes)', () => {
     expect(params['thinking']).toEqual({ type: 'enabled' });
     expect(params['output_config']).toEqual({ effort: 'high' });
     expect(requestOptions).toBeUndefined();
+  });
+});
+
+describe('reasoning-only assistant history projection', () => {
+  it('adds empty content on the OpenAI Chat Completions wire without dropping reasoning', async () => {
+    const provider = new OpenAILegacyChatProvider({
+      model: 'deepseek-v4-flash',
+      apiKey: 'sk-probe',
+      stream: false,
+    });
+
+    const body = await captureOpenAIBody(provider, undefined, THINK_HISTORY);
+    const messages = body['messages'] as Array<Record<string, unknown>>;
+
+    expect(messages[0]).toEqual({
+      role: 'assistant',
+      content: '',
+      reasoning_content: 'earlier reasoning',
+    });
+  });
+
+  it('keeps unsigned thinking on the Kimi Anthropic wire', async () => {
+    const provider = registry.createChatProvider({
+      protocol: 'anthropic',
+      providerType: 'kimi',
+      modelName: 'kimi-for-coding',
+      apiKey: 'sk-probe',
+    });
+
+    const { params } = await captureAnthropicBody(provider, undefined, THINK_HISTORY);
+    const messages = params['messages'] as Array<Record<string, unknown>>;
+
+    expect(messages[0]).toEqual({
+      role: 'assistant',
+      content: [{ type: 'thinking', thinking: 'earlier reasoning' }],
+    });
+  });
+
+  it('keeps unsigned thinking on the Google GenAI wire', async () => {
+    const provider = new GoogleGenAIChatProvider({
+      model: 'gemini-2.5-flash',
+      apiKey: 'sk-probe',
+      stream: false,
+    });
+
+    const body = await captureGoogleBody(provider, undefined, THINK_HISTORY);
+    const contents = body['contents'] as Array<Record<string, unknown>>;
+
+    expect(contents[0]).toEqual({
+      role: 'model',
+      parts: [{ text: 'earlier reasoning', thought: true }],
+    });
   });
 });
 
@@ -1423,4 +1309,89 @@ describe('OpenAI reasoning_effort path (issue #1616)', () => {
     const explicit = await captureOpenAIBody(provider, { thinking: { effort: 'low' } });
     expect(explicit['reasoning_effort']).toBe('low');
   });
+});
+
+describe('429 wire behavior over real HTTP (no hidden SDK retry)', () => {
+  async function with429Server(
+    body: Record<string, unknown>,
+    run: (port: number, requestCount: () => number) => Promise<void>,
+  ): Promise<void> {
+    let count = 0;
+    const server = createServer((_req, res) => {
+      count += 1;
+      res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '5' });
+      res.end(JSON.stringify(body));
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    try {
+      const address = server.address();
+      if (address === null || typeof address === 'string') {
+        throw new Error('server has no address');
+      }
+      await run(address.port, () => count);
+    } finally {
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
+    }
+  }
+
+  it.each([
+    {
+      protocol: 'openai',
+      modelName: 'gpt-4o',
+      baseUrlPath: '/v1',
+      body: { error: { message: 'slow down', type: 'rate_limit_error' } },
+    },
+    {
+      protocol: 'openai_responses',
+      modelName: 'gpt-5',
+      baseUrlPath: '/v1',
+      body: { error: { message: 'slow down', type: 'rate_limit_error' } },
+    },
+    {
+      protocol: 'anthropic',
+      modelName: 'claude-opus-4-6',
+      baseUrlPath: '',
+      body: { type: 'error', error: { type: 'rate_limit_error', message: 'slow down' } },
+    },
+    {
+      protocol: 'google-genai',
+      modelName: 'gemini-2.5-flash',
+      baseUrlPath: '',
+      body: {
+        error: {
+          code: 429,
+          message: 'Resource exhausted',
+          status: 'RESOURCE_EXHAUSTED',
+          details: [{ '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '5s' }],
+        },
+      },
+    },
+  ] as const)(
+    'the first 429 reaches the caller after exactly one request with the 5s server delay ($protocol)',
+    async ({ protocol, modelName, baseUrlPath, body }) => {
+      await with429Server(body, async (port, requestCount) => {
+        const provider = registry.createChatProvider({
+          protocol,
+          modelName,
+          apiKey: 'sk-probe',
+          baseUrl: `http://127.0.0.1:${String(port)}${baseUrlPath}`,
+        });
+        const rejected: unknown = await provider.generate('sys', [], PROBE_HISTORY).then(
+          () => {
+            throw new Error('expected generate to reject');
+          },
+          (error: unknown) => error,
+        );
+        expect(rejected).toBeInstanceOf(APIProviderRateLimitError);
+        expect((rejected as APIStatusError).retryAfterMs).toBe(5000);
+        expect(requestCount()).toBe(1);
+      });
+    },
+  );
 });

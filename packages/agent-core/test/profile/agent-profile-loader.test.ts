@@ -196,8 +196,6 @@ describe('default agent profiles', () => {
       ]),
     );
     expect(DEFAULT_AGENT_PROFILES['coder']?.tools).toEqual([
-      'Agent',
-      'AgentSwarm',
       'Bash',
       'CronCreate',
       'CronDelete',

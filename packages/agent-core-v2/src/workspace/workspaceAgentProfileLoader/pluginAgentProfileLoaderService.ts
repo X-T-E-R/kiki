@@ -9,9 +9,7 @@
  * the workspace layer alongside every other source.
  */
 
-import { LifecycleScope } from '#/app/scopes';
 
-import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -25,6 +23,7 @@ import {
   AGENT_PROFILE_SOURCE_PRIORITY,
   type AgentProfileContribution,
 } from '#/app/agentProfileCatalog/agentProfileContribution';
+import type { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
 import { profilesFromDiscovery } from './internal/agentProfileFromFile';
 import { IUserAgentProfileLoader } from './userAgentProfileLoader';
 import { IPluginAgentProfileLoader } from './pluginAgentProfileLoader';
@@ -45,8 +44,9 @@ export class PluginAgentProfileLoaderService
     @IUserAgentProfileLoader private readonly user: IUserAgentProfileLoader,
     @IWorkspaceContext private readonly workspace: IWorkspaceContext,
     @IFlagService private readonly flags: IFlagService,
+    registry?: IAgentProfileRegistry,
   ) {
-    super(log);
+    super(log, registry);
     this._register(
       this.plugins.onDidReload(() => {
         void this.reload().catch((error) => {
@@ -64,20 +64,15 @@ export class PluginAgentProfileLoaderService
   protected async load(): Promise<AgentProfileContribution> {
     const roots = await this.plugins.pluginAgentRoots();
     return profilesFromDiscovery(
-      await discoverAgentFiles(this.fs, roots, (message) => {
-        this.log.warn(message);
-      }, {
-        includeRoutes: this.flags.enabled(AGENT_PROFILE_ROUTES_FLAG_ID),
-      }),
+      await discoverAgentFiles(
+        this.fs,
+        roots,
+        (message) => {
+          this.log.warn(message);
+        },
+        { includeRoutes: this.flags.enabled(AGENT_PROFILE_ROUTES_FLAG_ID) },
+      ),
       (context) => this.user.getDefaultProfile().renderSystemPrompt(context),
     );
   }
 }
-
-registerScopedService(
-  LifecycleScope.Workspace,
-  IPluginAgentProfileLoader,
-  PluginAgentProfileLoaderService,
-  ScopeActivation.OnScopeCreated,
-  'workspaceAgentProfileLoader',
-);

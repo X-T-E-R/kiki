@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
+import { Emitter, type IWaitUntil } from '#/_base/event';
 import { TestInstantiationService } from '#/_base/di/test';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';
@@ -15,7 +16,10 @@ import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
+import { FakeRuntime } from '#/runtime/fakeRuntime';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { IAgentCollaborationRegistry } from '#/session/agentCollaboration/registry';
 import {
@@ -26,15 +30,9 @@ import { SessionExternalDelegationService } from '#/session/externalDelegation/e
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
-import { ISessionProcessRunner } from '#/session/process/processRunner';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
-import {
-  ISessionLifecycleHooks,
-  type SessionLifecycleHookSlots,
-} from '#/session/sessionLifecycleHooks/sessionLifecycleHooks';
-import type { Hooks } from '#/hooks';
-import { createHooks } from '#/hooks';
+import type { SessionWillCloseEvent } from '#/workspace/sessionLifecycle/sessionLifecycle';
 
 const authority: ExternalAuthority = {
   principalFingerprint: 'a'.repeat(64),
@@ -59,7 +57,7 @@ describe('SessionExternalDelegationService', () => {
   let runSignals: AbortSignal[];
   let runAgentIds: string[];
   let createdWith: unknown[];
-  let lifecycleHooks: Hooks<SessionLifecycleHookSlots>;
+  let willClose: Emitter<SessionWillCloseEvent & IWaitUntil>;
   let logCalls: Array<{ msg: string; payload: unknown }>;
 
   beforeEach(() => {
@@ -100,7 +98,12 @@ describe('SessionExternalDelegationService', () => {
       read: async () => ({ id: 'session_test', createdAt: 0, updatedAt: 0, archived: false, agents: {} }),
     });
     ix.stub(ISessionWorkspaceContext, { _serviceBrand: undefined, workDir: '/workspace', additionalDirs: [] });
-    ix.stub(ISessionProcessRunner, {});
+    willClose = new Emitter<SessionWillCloseEvent & IWaitUntil>();
+    disposables.add(willClose);
+    ix.set(ISessionManager, {
+      _serviceBrand: undefined,
+      onWillCloseSession: willClose.event,
+    } as unknown as ISessionManager);
     ix.stub(ILogService, {
       _serviceBrand: undefined,
       level: 'off',
@@ -134,6 +137,17 @@ describe('SessionExternalDelegationService', () => {
       });
       agent.stub(IAgentPermissionModeService, { mode: 'auto', setMode: () => {} });
       agent.stub(IAgentUserToolService, { inheritUserTools: () => {} });
+      const runtime = new FakeRuntime(
+        { workspaceId: 'workspace_test', runtimeId: 'local', generation: 'test' },
+        { capabilities: ['process'] },
+      );
+      agent.set(IAgentRuntimeService, {
+        _serviceBrand: undefined,
+        onDidChange: () => ({ dispose: () => {} }),
+        inspect: () => runtime,
+        isAvailable: () => true,
+        acquire: () => ({ runtime, dispose: () => {}, track: () => {} }),
+      } as unknown as IAgentRuntimeService);
       agent.stub(IAgentContextMemoryService, { get: () => [] });
       agent.stub(IAgentLoopService, { status: () => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false }) });
       return { id, accessor: agent } as unknown as IAgentScopeHandle;
@@ -175,11 +189,6 @@ describe('SessionExternalDelegationService', () => {
       commit: () => {},
       release: () => {},
     });
-    lifecycleHooks = createHooks<SessionLifecycleHookSlots, keyof SessionLifecycleHookSlots>([
-      'onDidCreateSession',
-      'onWillCloseSession',
-    ]);
-    ix.set(ISessionLifecycleHooks, lifecycleHooks);
     ix.set(ISessionExternalDelegationService, new SyncDescriptor(SessionExternalDelegationService));
   });
 
@@ -192,6 +201,7 @@ describe('SessionExternalDelegationService', () => {
     const first = await service.dispatch({ authority, target: 'named', taskName: 'reviewer', profileName: 'coder', message: 'review' });
     expect(first.status).toBe('queued');
     expect(createdWith[0]).toMatchObject({
+      runtimeId: 'local',
       delegator: { kind: 'external', delegationId: expect.stringMatching(/^delegation_/) },
       labels: { externalDelegationTaskName: 'reviewer' },
     });
@@ -472,7 +482,17 @@ describe('SessionExternalDelegationService', () => {
     const service = ix.get(ISessionExternalDelegationService);
     const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
 
-    await lifecycleHooks.onWillCloseSession.run({ reason: 'exit' });
+    const waits: Promise<unknown>[] = [];
+    willClose.fire({
+      sessionId: 'session_test',
+      handle: {} as never,
+      reason: 'exit',
+      signal: new AbortController().signal,
+      waitUntil: (promise) => {
+        waits.push(Promise.resolve(promise));
+      },
+    });
+    await Promise.all(waits);
 
     expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('interrupted');
     expect(documents.get('root')).toMatchObject({ lastCloseReason: 'exit' });

@@ -86,7 +86,7 @@ describe('agent collaboration safe-boundary delivery', () => {
 
     lifecycle.add(target.handle);
     expect(target.messages).toEqual([]);
-    await target.loop.hooks.onWillBeginStep.run({ turnId: 7, step: 1, signal });
+    await target.loop.hooks.onWillBeginStep.run({ turnId: 7, step: 1, firstStepOfTurn: true, signal });
 
     expect(target.messages.map((message) => message.content[0])).toEqual([
       { type: 'text', text: 'Message from named agent "root" (main):\n\nfirst' },
@@ -120,14 +120,14 @@ describe('agent collaboration safe-boundary delivery', () => {
     };
     const first = new AgentCollaborationMessagingService(faultedStore, lifecycle.service, sessionContext());
     const accepted = await first.send(sendInput('once', 'call-once'));
-    await expect(target.loop.hooks.onWillBeginStep.run({ turnId: 1, step: 2, signal })).rejects.toThrow(
+    await expect(target.loop.hooks.onWillBeginStep.run({ turnId: 1, step: 2, firstStepOfTurn: true, signal })).rejects.toThrow(
       'simulated crash after wire flush',
     );
     expect(target.messages).toHaveLength(1);
     first.dispose();
 
     const reopened = new AgentCollaborationMessagingService(backend, lifecycle.service, sessionContext());
-    await target.loop.hooks.onWillBeginStep.run({ turnId: 2, step: 1, signal });
+    await target.loop.hooks.onWillBeginStep.run({ turnId: 2, step: 1, firstStepOfTurn: true, signal });
     expect(target.messages).toHaveLength(1);
     expect(target.operations).toEqual(['append', 'flush', 'flush']);
     expect(await backend.accept(messageInput('once', 'call-once'))).toMatchObject({
@@ -211,6 +211,7 @@ function agentHandle(agentId: string) {
     get: () => messages,
     append: (...added) => { operations.push('append'); messages.push(...added); },
     appendLoopEvent: () => {},
+    publishTrailingRemoval: () => false,
     clear: () => {},
     undo: () => { throw new Error('unexpected undo'); },
     applyCompaction: () => { throw new Error('unexpected compaction'); },

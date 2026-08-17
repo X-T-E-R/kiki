@@ -10,19 +10,18 @@
  * under TaskList/TaskOutput/TaskStop when `run_in_background=true` or after
  * detach), and terminal text formatting.
  *
- * Spawn bindings resolve exact alias and effort pins independently across tool,
- * profile, `[subagent]` defaults, and caller fallback; the experimental legacy
- * selector may additionally choose the secondary recipe. Dead tool aliases
- * fail loudly, while dead profile aliases publish a warning and fall back to
- * the caller model and effort before lifecycle allocation. A resumed agent
- * keeps the binding recorded in its own wire journal.
+ * Spawn bindings combine the declarative model pool with exact model and
+ * thinking pins. Their persisted binding mode controls resume: inherited
+ * children refresh from the caller, while pool, profile, route, force, and
+ * explicit selections remain fixed.
  *
  * Registered via the module-level `registerAgentToolService(ISubagentTool,
  * SubagentTool)` at the bottom of this file — the same "import = register"
  * pattern used by every agent tool. The per-profile tool listings in the
- * description read the full contribution table (not the runtime registry,
- * which only holds tools the caller's own Profile activated), plus any
- * dynamically registered tools. The description's catalog profile list is
+ * description read the full `AgentToolContribution` collection — static
+ * registrations and feature-contributed tools alike — not the runtime
+ * registry, which only holds tools the caller's own Profile activated,
+ * plus any dynamically registered tools. The description's catalog profile list is
  * snapshotted once the session catalog has loaded and frozen for the agent's
  * lifetime: plugin install / enable / disable / remove re-contributes
  * profiles mid-session, and a live read would rewrite the tools payload of
@@ -31,6 +30,7 @@
  * Bound at Agent scope.
  */
 
+import { type CollectionView } from '#/_base/di/collection';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import {
   isAbortError,
@@ -62,7 +62,7 @@ import {
   type ToolExecution,
 } from '#/tool/toolContract';
 import {
-  getAgentToolContributions,
+  AgentToolContribution,
   registerAgentToolService,
 } from '#/agent/toolRegistry/toolContribution';
 import { IAgentToolRegistryService, type ToolReference } from '#/agent/toolRegistry/toolRegistry';
@@ -83,14 +83,19 @@ import { IFlagService } from '#/app/flag/flag';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import {
+  refreshInheritedSubagentBinding,
+  withSubagentBindingMode,
+} from '#/session/agentLifecycle/agentLifecycleService';
+import {
   delegatorRef,
   isSubagentMeta,
   labelsFromAgentMeta,
   subagentLabels,
   subagentParentAgentId,
 } from '#/session/agentLifecycle/subagentMetadata';
-import { ISessionProcessRunner } from '#/session/process/processRunner';
-import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import type { Runtime } from '#/runtime/runtime';
+import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 
 import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
@@ -98,25 +103,21 @@ import { ISessionSubagentService } from '#/session/subagent/subagent';
 import {
   addSubagentBindingSchemaConstraints,
   buildSubagentModelDescriptions,
+  exposesSubagentModelChoice,
   formatSubagentTimeoutDescription,
-  isMissingSubagentModelAlias,
   normalizeSubagentBindingValue,
   resolveSubagentBinding,
+  subagentBindingMode,
+  subagentDisplayModel,
   subagentModelSource,
   resolveSubagentTimeoutMs,
   stripSubagentModelParameter,
-  subagentDisplayModel,
   wrapSubagentModelError,
 } from '#/session/subagent/configSection';
-import { SECONDARY_MODEL_FLAG_ID } from '#/session/subagent/flag';
 import {
   assertProfileRouteBinding,
   assertProfileRouteModelAvailable,
 } from '#/session/subagent/profileRouteBinding';
-import {
-  publishIgnoredProfileModelPreferenceWarning,
-  publishInvalidProfileModelAliasWarning,
-} from '#/session/subagent/secondaryModelWarning';
 import {
   BACKGROUND_AGENT_UNAVAILABLE,
   DEFAULT_PROFILE_NAME,
@@ -152,7 +153,7 @@ export class SubagentTool implements ISubagentTool {
   readonly name: string = 'Agent';
 
   get parameters(): Record<string, unknown> {
-    return this.flags.enabled(SECONDARY_MODEL_FLAG_ID)
+    return exposesSubagentModelChoice(this.config, this.flags)
       ? SUBAGENT_TOOL_PARAMETERS
       : SUBAGENT_TOOL_PARAMETERS_NO_MODEL;
   }
@@ -173,13 +174,14 @@ export class SubagentTool implements ISubagentTool {
     @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
     @IAgentToolRegistryService private readonly toolRegistry: IAgentToolRegistryService,
     @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
-    @ISessionProcessRunner private readonly processRunner: ISessionProcessRunner,
+    @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @ISessionMetadata private readonly sessionMetadata: ISessionMetadata,
     @ILogService private readonly log: ILogService,
     @IAgentPermissionModeService private readonly permissionMode: IAgentPermissionModeService,
     @IConfigService private readonly config: IConfigService,
     @IFlagService private readonly flags: IFlagService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
+    @AgentToolContribution private readonly contributions: CollectionView<AgentToolContribution>,
   ) {
     this.callerAgentId = scopeContext.agentId;
     this.canRunInBackground = () =>
@@ -207,7 +209,7 @@ export class SubagentTool implements ISubagentTool {
       this.knownToolReferences(),
       (profile, name, source) =>
         this.toolPolicy.isToolActiveForProfile(profile, name, source),
-      this.flags.enabled(SECONDARY_MODEL_FLAG_ID),
+      true,
       this.collaborationEnabled() ? undefined : COLLABORATION_TOOL_NAMES,
     );
     if (typeLines) {
@@ -225,7 +227,6 @@ export class SubagentTool implements ISubagentTool {
       this.config,
       this.flags,
       this.profile.data().modelAlias,
-      this.modelCatalog,
     );
     if (modelLines !== undefined) {
       description += `\n\n${modelLines}`;
@@ -252,7 +253,7 @@ export class SubagentTool implements ISubagentTool {
   private knownToolReferences(): ToolReference[] {
     const refs = new Map<string, ToolReference>();
     const collaborationEnabled = this.collaborationEnabled();
-    for (const contribution of getAgentToolContributions()) {
+    for (const contribution of this.contributions.items) {
       if (!collaborationEnabled && COLLABORATION_TOOL_NAMES.has(contribution.options.name)) continue;
       refs.set(contribution.options.name, {
         name: contribution.options.name,
@@ -328,6 +329,7 @@ export class SubagentTool implements ISubagentTool {
     args: SubagentToolInput,
     toolCallId: string,
     controller: AbortController,
+    runtime: Runtime,
   ): Promise<SubagentHandle> {
     const modelAlias = normalizeSubagentBindingValue(args.model_alias, 'model_alias');
     const thinkingEffort = normalizeSubagentBindingValue(
@@ -382,7 +384,8 @@ export class SubagentTool implements ISubagentTool {
           details: { agentId: resumeAgentId },
         });
       }
-      await this.ensureOwnedIdleSubagent(resumeAgentId, target);
+      const persisted = await this.ensureOwnedIdleSubagent(resumeAgentId, target);
+      await refreshInheritedSubagentBinding(requester, target, persisted);
       agentId = target.id;
       const resumed = target.accessor.get(IAgentProfileService).data();
       profileName = resumed.routeId ?? resumed.profileName ?? RESUMED_LABEL;
@@ -425,14 +428,15 @@ export class SubagentTool implements ISubagentTool {
           details: { agentId: this.callerAgentId },
         });
       }
-      const eventBus = requester.accessor.get(IEventBus);
+      const symbolicModel =
+        args.model === 'primary' || args.model === 'secondary' ? args.model : undefined;
       assertProfileRouteBinding(selection.route, {
-        modelAlias,
+        modelAlias: modelAlias ?? (symbolicModel === undefined ? args.model : undefined),
         thinkingEffort,
-        modelPreference: args.model,
+        modelPreference: symbolicModel,
       });
       assertProfileRouteModelAvailable(selection.route, this.modelCatalog);
-      let binding = resolveSubagentBinding(
+      const binding = resolveSubagentBinding(
         this.config,
         this.flags,
         { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
@@ -447,31 +451,11 @@ export class SubagentTool implements ISubagentTool {
           thinkingEffort: profile.thinkingEffort,
         },
       );
-      if (
-        !this.flags.enabled(SECONDARY_MODEL_FLAG_ID) &&
-        profile.modelPreference !== undefined
-      ) {
-        publishIgnoredProfileModelPreferenceWarning(
-          eventBus,
-          profile.name,
-          profile.modelPreference,
-        );
-      }
-      let bindingSource = subagentModelSource(binding);
+      const bindingSource = subagentModelSource(binding);
       try {
         this.modelCatalog.get(binding.model);
       } catch (error) {
-        if (bindingSource !== 'profile' || !isMissingSubagentModelAlias(error, binding.model)) {
-          throw wrapSubagentModelError(error, binding.model, own.modelAlias, bindingSource);
-        }
-        publishInvalidProfileModelAliasWarning(eventBus, profile.name, binding.model, error);
-        binding = {
-          model: own.modelAlias,
-          thinking: own.thinkingLevel,
-          displayModel: subagentDisplayModel(this.config, own.modelAlias),
-        };
-        bindingSource = 'caller';
-        this.modelCatalog.get(binding.model);
+        throw wrapSubagentModelError(error, binding.model, own.modelAlias, bindingSource);
       }
       let created: IAgentScopeHandle;
       try {
@@ -482,8 +466,12 @@ export class SubagentTool implements ISubagentTool {
             model: binding.model,
             thinking: binding.thinking,
           },
-          labels: subagentLabels(this.callerAgentId),
+          labels: withSubagentBindingMode(
+            subagentLabels(this.callerAgentId),
+            subagentBindingMode(binding),
+          ),
           delegator: { kind: 'agent', agentId: this.callerAgentId },
+          runtimeId: runtime.identity.runtimeId,
         });
       } catch (error) {
         throw wrapSubagentModelError(error, binding.model, own.modelAlias, bindingSource);
@@ -497,7 +485,7 @@ export class SubagentTool implements ISubagentTool {
       displayModel = binding.displayModel;
       promptText = await applyProfilePromptPrefix(profile, args.prompt, {
         cwd: this.workspace.workDir,
-        runner: this.processRunner,
+        process: runtime.process!,
         log: this.log,
       });
     }
@@ -527,6 +515,7 @@ export class SubagentTool implements ISubagentTool {
     return {
       agentId,
       profileName,
+      parentToolCallId: toolCallId,
       model: displayModel,
       thinkingEffort: this.lifecycle
         .get(agentId)
@@ -539,7 +528,7 @@ export class SubagentTool implements ISubagentTool {
   private async ensureOwnedIdleSubagent(
     agentId: string,
     target: IAgentScopeHandle,
-  ): Promise<void> {
+  ): Promise<AgentMeta> {
     const meta = (await this.sessionMetadata.read()).agents?.[agentId];
     if (!isSubagentMeta(meta)) {
       throw new Error2(ErrorCodes.AGENT_NOT_A_SUBAGENT, `Agent instance "${agentId}" is not a subagent`, {
@@ -560,6 +549,7 @@ export class SubagentTool implements ISubagentTool {
         { details: { agentId } },
       );
     }
+    return meta!;
   }
 
   private async execution(
@@ -586,6 +576,7 @@ export class SubagentTool implements ISubagentTool {
         return { output: BACKGROUND_AGENT_UNAVAILABLE, isError: true };
       }
       const timeoutMs = resolveSubagentTimeoutMs(this.config);
+      const runtimeLease = this.runtime.acquire(['process']);
 
       const controller = new AbortController();
       const abortBeforeRegister = (): void => {
@@ -597,7 +588,7 @@ export class SubagentTool implements ISubagentTool {
 
       let handle: SubagentHandle;
       try {
-        handle = await this.launch(args, toolCallId, controller);
+        handle = await this.launch(args, toolCallId, controller, runtimeLease.runtime);
       } catch (error) {
         signal.removeEventListener('abort', abortBeforeRegister);
         this.log.warn('subagent launch failed', {
@@ -609,6 +600,8 @@ export class SubagentTool implements ISubagentTool {
           error,
         });
         throw error;
+      } finally {
+        runtimeLease.dispose();
       }
 
       let taskId: string;
@@ -683,7 +676,11 @@ export class SubagentTool implements ISubagentTool {
   }
 }
 
-registerAgentToolService(ISubagentTool, SubagentTool, { name: 'Agent', domain: 'subagent' });
+registerAgentToolService(ISubagentTool, SubagentTool, {
+  name: 'Agent',
+  domain: 'subagent',
+  requiredRuntimeCapabilities: ['process'],
+});
 
 function buildRouteDescriptions(routes: readonly AgentProfileRouteCatalogEntry[]): string {
   return routes

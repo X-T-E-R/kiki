@@ -244,7 +244,7 @@ describe('kimiOpenAITrait request params', () => {
     });
   });
 
-  it('buildParams keeps an explicit max_completion_tokens and lets extra_body win', () => {
+  it('buildParams keeps explicit top-level values over extra_body defaults', () => {
     const out = call(
       kimiOpenAITrait.buildParams,
       {
@@ -255,7 +255,7 @@ describe('kimiOpenAITrait request params', () => {
       },
       context,
     );
-    expect(out).toEqual({ max_completion_tokens: 2048, temperature: 0.9 });
+    expect(out).toEqual({ max_completion_tokens: 2048, temperature: 0.5 });
   });
 });
 
@@ -303,6 +303,7 @@ describe('trait objects are plain declarations', () => {
       'strictThinkingValidation',
       'uploadVideo',
       'withMaxCompletionTokens',
+      'withRequestParams',
       'withThinking',
     ]);
     expect(hookNames(kimiAnthropicTrait).toSorted()).toEqual(['convertError', 'withThinking']);

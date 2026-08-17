@@ -21,8 +21,15 @@
  * overlays (`sessionOverlay`): a session-owned manager for a session's
  * ephemeral (caller-injected, never persisted) servers — baseline members
  * by construction — presented through a
- * `MergedMcpConnectionView` over the shared manager and shut down by the
- * session lifecycle when the session scope tears down. An overlay handle's
+ * `MergedMcpConnectionView` over the shared manager. Overlay activation is
+ * event-driven: this service subscribes to the session lifecycle's
+ * `onWillCreateSession`, and a session created with an
+ * `ISessionEphemeralMcpServers` seed gets its overlay created there — the
+ * merged handle contributed as the session's `ISessionMcpHandle` (replacing
+ * the seed adapter's workspace projection), the overlay's shutdown attached
+ * to the session's teardown, so the session lifecycle never depends on MCP.
+ * The overlay's stdio cwd is read from the session's own `ISessionContext`.
+ * An overlay handle's
  * baseline still freezes on the workspace manager's initial load — never on
  * the overlay's own connect — so a slow ephemeral connect cannot reopen the
  * window for mid-session workspace additions.
@@ -41,9 +48,8 @@
  * name.
  */
 
-import { Service } from '#/_base/di/service';
-import { LifecycleScope } from '#/app/scopes';
-import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { Disposable } from '#/_base/di/lifecycle';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { ILogService } from '#/_base/log/log';
 
 import { McpConnectionManager, type McpConnectionView } from '#/mcpCore/connection-manager';
@@ -52,9 +58,13 @@ import { McpOAuthService } from '#/mcpCore/oauth/service';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { IMcpOAuthStore } from '#/app/mcpConfig/oauthStore';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { ISessionEphemeralMcpServers } from '#/session/mcp/ephemeralMcpServers';
 import { MergedMcpConnectionView } from '#/session/mcp/mergedConnectionView';
-import type { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
+import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
+import { IRuntimeResolver } from '#/workspace/workspaceInstance/workspaceInstanceManager';
 import {
   IWorkspaceMcpConfigService,
   type McpServersChange,
@@ -66,26 +76,33 @@ import {
   type SessionMcpOverlayOptions,
 } from './workspaceMcp';
 
-export class WorkspaceMcpService extends Service implements IWorkspaceMcpService {
+export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpService {
   declare readonly _serviceBrand: undefined;
 
   private readonly manager: McpConnectionManager;
   private readonly oauthService: McpOAuthService;
   private readonly stdioCwd: string;
+  private readonly workspaceId: string;
   readonly ready: Promise<void>;
   private mutationTail: Promise<void> = Promise.resolve();
   private readonly resolveClientName = (): string | undefined => this.identity.current().slug;
+  private readonly sessionLifecycle: LiveRef<ISessionManager>;
+  private sessionLifecycleAttached = false;
 
   constructor(
     @IWorkspaceContext workspace: IWorkspaceContext,
+    @IRuntimeResolver private readonly runtimeResolver: IRuntimeResolver,
     @IWorkspaceMcpConfigService private readonly mcpConfig: IWorkspaceMcpConfigService,
     @IMcpOAuthStore oauthStore: IMcpOAuthStore,
     @ILogService private readonly log: ILogService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IAgentIdentity private readonly identity: IAgentIdentity,
+    @ref(ISessionManager) sessionLifecycle: LiveRef<ISessionManager>,
   ) {
     super();
+    this.sessionLifecycle = sessionLifecycle;
     this.stdioCwd = workspace.cwd;
+    this.workspaceId = workspace.workspaceId;
     this.oauthService = new McpOAuthService({
       store: oauthStore,
       resolveClientName: this.resolveClientName,
@@ -94,6 +111,9 @@ export class WorkspaceMcpService extends Service implements IWorkspaceMcpService
       log: this.log,
       oauthService: this.oauthService,
       stdioCwd: this.stdioCwd,
+      runtimeResolver: this.runtimeResolver,
+      workspaceId: workspace.workspaceId,
+      runtimeId: 'local',
       resolveDefaultTimeouts: () => this.mcpConfig.tunables(),
       resolveClientName: this.resolveClientName,
     });
@@ -103,9 +123,32 @@ export class WorkspaceMcpService extends Service implements IWorkspaceMcpService
         this.scheduleApply(change);
       }),
     );
+    this.attachSessionLifecycle();
+    this._register(sessionLifecycle.onDidChange(() => this.attachSessionLifecycle()));
     this.ready = this.initialize().catch((error: unknown) => {
       this.log.error('mcp initial load failed', { error });
     });
+  }
+
+  private attachSessionLifecycle(): void {
+    if (this.sessionLifecycleAttached) return;
+    const lifecycle = this.sessionLifecycle.current;
+    if (lifecycle?.onWillCreateSession === undefined) return;
+    this.sessionLifecycleAttached = true;
+    this._register(
+      lifecycle.onWillCreateSession((event) => {
+        if (event.readSeed(ISessionContext).workspaceId !== this.workspaceId) return;
+        const servers = event.readSeed(ISessionEphemeralMcpServers);
+        if (Object.keys(servers).length === 0) return;
+        const overlay = this.sessionOverlay(servers, {
+          stdioCwd: event.readSeed(ISessionContext).cwd,
+        });
+        event.contributeSeed(ISessionMcpHandle, overlay.handle);
+        event.onSessionDispose(() => {
+          void overlay.shutdown();
+        });
+      }),
+    );
   }
 
   connectionManager(): McpConnectionManager {
@@ -129,6 +172,10 @@ export class WorkspaceMcpService extends Service implements IWorkspaceMcpService
       log: this.log,
       oauthService: this.oauthService,
       stdioCwd: opts?.stdioCwd ?? this.stdioCwd,
+      runtimeResolver: this.runtimeResolver,
+      workspaceId: this.workspaceId,
+      runtimeId: 'local',
+      requireStdioRuntimeId: true,
       resolveDefaultTimeouts: () => this.mcpConfig.tunables(),
       resolveClientName: this.resolveClientName,
     });
@@ -242,10 +289,3 @@ export class WorkspaceMcpService extends Service implements IWorkspaceMcpService
   }
 }
 
-registerScopedService(
-  LifecycleScope.Workspace,
-  IWorkspaceMcpService,
-  WorkspaceMcpService,
-  ScopeActivation.OnScopeCreated,
-  'workspaceMcp',
-);

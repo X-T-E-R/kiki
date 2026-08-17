@@ -10,7 +10,10 @@
  * envelope while non-empty unversioned logs are rejected. Removal awaits the
  * agent task manager's graceful exit policy before draining turns and full
  * compaction, then disposing the child scope. Fans session-level
- * permission-mode switches out to every live agent. Bound at Session scope.
+ * permission-mode switches out to every live agent — except
+ * `tower-worker`-profile agents, which TowerSpawn pins to `auto` (they run
+ * detached and unattended); the broadcast leaves them on `auto`. Bound at
+ * Session scope.
  *
  * No agent id is special here: the main agent is simply the agent created
  * with the conventional `MAIN_AGENT_ID`, and `fork` requires its source to
@@ -37,6 +40,8 @@ import { IEventBus } from '#/app/event/eventBus';
 import { DEFAULT_PERMISSION_MODE_SECTION } from '#/agent/permissionMode/configSection';
 import { PermissionModeConfiguredModel } from '#/agent/permissionMode/permissionModeOps';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
+import { ProfileModel } from '#/agent/profile/profileOps';
+import { TOWER_WORKER_PROFILE } from '#/features/tower/tower';
 import { IAgentTaskService } from '#/agent/task/task';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
@@ -46,6 +51,8 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { abortError } from '#/_base/utils/abort';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentRuntimeBindingSeed, IAgentRuntimeBindingService } from '#/agent/runtimeBinding/runtimeBinding';
+import '#/agent/runtimeBinding/runtimeBindingService';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivation';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
@@ -69,6 +76,43 @@ import {
 } from './agentLifecycle';
 
 let nextAgentId = 0;
+
+export const SUBAGENT_BINDING_MODE_LABEL = 'subagentBindingMode';
+export type PersistedSubagentBindingMode = 'inherit' | 'fixed';
+
+export function withSubagentBindingMode(
+  labels: Readonly<Record<string, string>>,
+  mode: PersistedSubagentBindingMode,
+): Readonly<Record<string, string>> {
+  return { ...labels, [SUBAGENT_BINDING_MODE_LABEL]: mode };
+}
+
+export function persistedSubagentBindingMode(
+  meta: AgentMeta | undefined,
+): PersistedSubagentBindingMode {
+  return meta?.labels?.[SUBAGENT_BINDING_MODE_LABEL] === 'inherit' ? 'inherit' : 'fixed';
+}
+
+export async function refreshInheritedSubagentBinding(
+  caller: IAgentScopeHandle,
+  target: IAgentScopeHandle,
+  meta: AgentMeta | undefined,
+): Promise<void> {
+  if (persistedSubagentBindingMode(meta) !== 'inherit') return;
+  const callerData = caller.accessor.get(IAgentProfileService).data();
+  if (callerData.modelAlias === undefined) {
+    throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'Caller agent has no model bound', {
+      details: { agentId: caller.id },
+    });
+  }
+  const targetProfile = target.accessor.get(IAgentProfileService);
+  if (targetProfile.data().modelAlias !== callerData.modelAlias) {
+    await targetProfile.setModel(callerData.modelAlias);
+  }
+  if (targetProfile.data().thinkingLevel !== callerData.thinkingLevel) {
+    targetProfile.setThinking(callerData.thinkingLevel);
+  }
+}
 
 // NOTE: stays Disposable — its own 'get' and 'config' collide with the Fiber
 export class AgentLifecycleService extends Disposable implements IAgentLifecycleService {
@@ -279,9 +323,13 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       LifecycleScope.Agent,
       agentId,
       {
-        extra: [
+        seeds: [
           [IAgentScopeContext, makeAgentScopeContext({ agentId, agentScope })],
           [ITelemetryService, this.telemetry.withContext({ agent_id: agentId })],
+          [IAgentRuntimeBindingSeed, {
+            _serviceBrand: undefined,
+            binding: { workspaceId: this.ctx.workspaceId, runtimeId: opts.runtimeId ?? 'local' },
+          }],
         ],
       },
     ) as IAgentScopeHandle;
@@ -379,6 +427,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         : undefined;
     const child = await this.create({
       agentId: opts?.agentId,
+      runtimeId: source.accessor.get(IAgentRuntimeBindingService).current.runtimeId,
       forkedFrom: source.id,
       binding: overrideBinding,
     });
@@ -409,6 +458,15 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
 
   broadcastPermissionMode(mode: PermissionMode): void {
     for (const handle of this.handles.values()) {
+      // Tower workers/reviewers stay pinned to auto (see the file header) —
+      // the profile name is read off the wire model, not the profile service,
+      // so the broadcast never has to materialize one.
+      if (
+        handle.accessor.get(IWireService).getModel(ProfileModel).profileName ===
+        TOWER_WORKER_PROFILE
+      ) {
+        continue;
+      }
       handle.accessor.get(IAgentPermissionModeService).setMode(mode);
     }
   }

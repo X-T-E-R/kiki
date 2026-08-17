@@ -60,7 +60,7 @@ export const ErrorCode = {
   /** tool_call_id 不存在，或该调用没有对应的 plan（非 ExitPlanMode） */
   TOOL_CALL_NOT_FOUND: 40416,
   /** peer thread reference does not resolve to an existing session */
-  THREAD_NOT_FOUND: 40418,
+  THREAD_NOT_FOUND: 40421,
 
   /** session 有正在进行的 prompt，拒绝新请求 */
   SESSION_BUSY: 40901,
@@ -104,17 +104,17 @@ export const ErrorCode = {
   /** goal 只允许主 agent 使用 */
   GOAL_UNSUPPORTED_AGENT: 40920,
   /** target thread is archived */
-  THREAD_ARCHIVED: 40923,
+  THREAD_ARCHIVED: 40927,
   /** peer-thread communication is disabled for the workspace */
-  THREAD_DISABLED: 40924,
+  THREAD_DISABLED: 40928,
   /** the reference points at another host */
-  THREAD_CROSS_HOST: 40925,
+  THREAD_CROSS_HOST: 40929,
   /** source and target identify the same thread */
-  THREAD_SELF_SEND: 40926,
+  THREAD_SELF_SEND: 40930,
   /** thread cursor is malformed, stale, or belongs to another query */
-  THREAD_CURSOR_INVALID: 40927,
+  THREAD_CURSOR_INVALID: 40931,
   /** an idempotency key was reused with a different payload */
-  THREAD_IDEMPOTENCY_CONFLICT: 40928,
+  THREAD_IDEMPOTENCY_CONFLICT: 40932,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,

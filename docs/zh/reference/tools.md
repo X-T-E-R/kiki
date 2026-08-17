@@ -99,8 +99,8 @@ Peer thread 通信只能在同一台主机内进行，可以跨工作区，并�
 
 | 工具 | 默认审批 | 说明 |
 | --- | --- | --- |
-| `Agent` | 自动放行 | 派生子 Agent 执行子任务 |
-| `AgentSwarm` | swarm mode 中自动放行，否则需审批 | 启动基于 item 的子 Agent，或恢复已有子 Agent |
+| `Agent` | 自动放行 | 派生 subagent 执行子任务 |
+| `AgentSwarm` | swarm mode 中自动放行，否则需审批 | 启动基于 item 的 subagent，或恢复已有 subagent |
 | `AskUserQuestion` | 自动放行 | 向用户提问以获取结构化输入 |
 | `Skill` | 自动放行 | 调用已注册的 inline Skill |
 
@@ -148,6 +148,6 @@ Peer thread 通信只能在同一台主机内进行，可以跨工作区，并�
 
 ## 下一步
 
-- [Agent 与子 Agent](../customization/agents.md) — `Agent` 工具的调度机制与上下文隔离
+- [Agent 与 subagent](../customization/agents.md) — `Agent` 工具的调度机制与上下文隔离
 - [Hooks](../customization/hooks.md) — 在工具调用前后触发本地脚本
 - [斜杠命令](./slash-commands.md) — TUI 内置控制命令速查

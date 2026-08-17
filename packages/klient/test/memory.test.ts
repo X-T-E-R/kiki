@@ -25,13 +25,13 @@ defineKlientConformance('memory', async () => {
 
 describe('memory dispatcher specifics', () => {
   it.each([
-    [ErrorCodes.THREAD_NOT_FOUND, 40418],
-    [ErrorCodes.THREAD_ARCHIVED, 40923],
-    [ErrorCodes.THREAD_DISABLED, 40924],
-    [ErrorCodes.THREAD_CROSS_HOST, 40925],
-    [ErrorCodes.THREAD_SELF_SEND, 40926],
-    [ErrorCodes.THREAD_CURSOR_INVALID, 40927],
-    [ErrorCodes.THREAD_IDEMPOTENCY_CONFLICT, 40928],
+    [ErrorCodes.THREAD_NOT_FOUND, 40421],
+    [ErrorCodes.THREAD_ARCHIVED, 40927],
+    [ErrorCodes.THREAD_DISABLED, 40928],
+    [ErrorCodes.THREAD_CROSS_HOST, 40929],
+    [ErrorCodes.THREAD_SELF_SEND, 40930],
+    [ErrorCodes.THREAD_CURSOR_INVALID, 40931],
+    [ErrorCodes.THREAD_IDEMPOTENCY_CONFLICT, 40932],
     [ErrorCodes.THREAD_LIMIT_EXCEEDED, 42903],
     [ErrorCodes.THREAD_DELIVERY_FAILED, 50005],
   ])('maps engine error %s to RPC code %i', (reason, code) => {

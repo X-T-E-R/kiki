@@ -213,17 +213,6 @@ In the interactive TUI, the [`/secondary_model`](../reference/slash-commands.md)
 
 Every field besides `model` forms a patch: when at least one patch field is set, the runtime synthesizes a derived model entry in memory (a copy of the pointed entry with the patch merged into its overrides, patch winning conflicts) and subagents bind that derived entry; with no patch fields, subagents bind the pointed entry directly. The derived entry lives only in memory (never written back to `config.toml`) and is hidden from model-selection lists.
 
-```toml
-[secondary_model]
-model = "kimi-code/kimi-k2.5"
-default_effort = "low"
-max_output_size = 8192
-```
-
-`model` / `default_effort` can be overridden by the `KIMI_SECONDARY_MODEL` / `KIMI_SECONDARY_EFFORT` environment variables, which take higher priority than `config.toml`.
-
-When the experiment is enabled, the configuration is validated as the session starts: an unresolvable `model`, or a `default_effort` not listed by the (patched) model, produces a startup warning (also returned by the session-warnings API). The check is advisory — a broken secondary model still fails at spawn time, with the same source hint attached to the spawn error.
-
 ## `thinking`
 
 `thinking` sets the global default behavior for Thinking mode.
@@ -288,11 +277,15 @@ In print mode (`kimi -p "<prompt>"`), Kimi Code stays alive after the main agent
 
 ## `subagent`
 
+`subagent` controls how spawned subagents (`Agent` / `AgentSwarm`) run.
+
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `default_model` | `string` | — | Fill-only exact `[models]` alias for new subagents, after tool and profile bindings and before caller inheritance |
 | `default_effort` | `string` | — | Fill-only thinking effort for new subagents, after tool and profile effort and before caller inheritance |
 | `timeout_ms` | `integer` | `7200000` (2 hours) | Maximum wall-clock time (milliseconds) a single subagent (`Agent` / `AgentSwarm`) is allowed to run before it is settled as `timed_out`. `0` means no timeout — the subagent runs until it finishes or the model stops it. This is the background-task manager's per-task timeout for each subagent task, so it applies to both foreground and background subagents. In print mode (`kimi -p`) the default is `0` unless explicitly set. Note: any value above `2147483647` (about 24.8 days) is clamped to roughly 24.8 days by the runtime |
+
+`timeout_ms` can be overridden by the `KIMI_SUBAGENT_TIMEOUT_MS` environment variable, which takes higher priority than `config.toml`. There are no environment variables for `default_model` or `default_effort`.
 
 ## `agents`
 
@@ -303,8 +296,6 @@ This strict section configures the experimental [Codex-style collaboration adapt
 | `enabled` | `boolean` | `true` | Enables the adapter when the `agent-collaboration` experiment is also enabled |
 | `default_subagent_model` | `string` | — | Exact configured `[models]` alias used when a spawn and its selected profile do not choose a model |
 | `default_subagent_reasoning_effort` | `string` | — | Nonblank reasoning effort used when a spawn and its selected profile do not choose one |
-
-Only `timeout_ms` has an environment override: `KIMI_SUBAGENT_TIMEOUT_MS` takes higher priority than `config.toml`. There are no environment variables for `default_model` or `default_effort`.
 
 ## `thread_communication`
 
@@ -454,6 +445,7 @@ Alongside `config.toml`, the CLI keeps terminal-UI and client preferences in a c
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `theme` | `string` | `auto` | Color theme: `auto` (follow the terminal), `dark`, `light`, or the name of a [custom theme](../customization/themes.md) |
+| `render_latex` | `boolean` | `true` | Render LaTeX math expressions (`$…$`, `$$…$$`) in Markdown messages as Unicode text; `false` keeps the raw source |
 | `disable_paste_burst` | `boolean` | `false` | Disable the non-bracketed paste-burst fallback that keeps rapid multi-line pastes from submitting line by line |
 | `cache_expiry_hint` | `boolean` | `true` | Show a dialog when resuming a long-idle session or submitting after a long idle stretch, warning that the context cache has likely expired and offering to compact or start a new session (v2 engine only) |
 | `[editor].command` | `string` | `""` | External editor command for composing long input; empty falls back to `$VISUAL` / `$EDITOR` |
@@ -466,6 +458,7 @@ Alongside `config.toml`, the CLI keeps terminal-UI and client preferences in a c
 ```toml
 # ~/.kimi-code/tui.toml
 theme = "auto" # "auto" | "dark" | "light" | custom theme name
+render_latex = true # false keeps LaTeX math in messages as raw source
 disable_paste_burst = false # true disables non-bracketed paste-burst fallback
 cache_expiry_hint = true # false disables the "cache expired" dialog on resume / idle submit
 

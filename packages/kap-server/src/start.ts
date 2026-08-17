@@ -17,7 +17,10 @@ import {
   IProviderDiscoveryService,
   ISessionIndex,
   ISessionIndexMirror,
+  ICapabilityService,
+  IPluginService,
   IWorkspaceService,
+  KIMI_CODE_PLUGIN_MARKETPLACE_URL,
   logSeed,
   resolveConfigPath,
   resolveKimiHome,
@@ -109,6 +112,12 @@ export interface ServerStartOptions {
   readonly host?: string;
   readonly port?: number;
   readonly homeDir?: string;
+  /**
+   * Plugin marketplace catalog URL for `GET /api/v1/plugins/marketplace`.
+   * Defaults to the `KIMI_CODE_PLUGIN_MARKETPLACE_URL` env var, then the
+   * production catalog.
+   */
+  readonly pluginMarketplaceUrl?: string;
   readonly configPath?: string;
   readonly configReadOnly?: boolean;
   readonly userAgentProfileHomeDir?: string;
@@ -410,6 +419,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const close = async (): Promise<void> => {
     await app.close();
     configWarningSubscription.dispose();
+    pluginChangeSubscription.dispose();
+    capabilityInstallSubscription.dispose();
     authFailureLimiter?.dispose();
     modelCatalogRefreshScheduler.dispose();
     // Telemetry is best-effort and must never prevent core or instance cleanup.
@@ -430,6 +441,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       // requests have stopped, so no new summaries arrive and the queue just
       // needs its final flush to land in the read model.
       await core.accessor.get(ISessionIndexMirror).drain();
+      fsWatchBridge.dispose();
       core.dispose();
       // `core.dispose()` runs the mirror's, the search service's and the query
       // store's synchronous `dispose()`, whose drains/closes are asynchronous —
@@ -479,6 +491,22 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     });
   };
   const configWarningSubscription = configService.onDidChangeDiagnostics(publishConfigWarnings);
+
+  // Fan plugin/capability lifecycle facts out as global WS events so every
+  // client (desktop settings, web, CLI) converges without polling: plugin
+  // mutations end in onDidReload; capability installs report every progress
+  // transition through onDidChangeInstall.
+  const pluginService = core.accessor.get(IPluginService);
+  const pluginChangeSubscription = pluginService.onDidReload(() => {
+    core.accessor.get(IEventService).publish({ type: 'event.plugin.changed', payload: {} });
+  });
+  const capabilityService = core.accessor.get(ICapabilityService);
+  const capabilityInstallSubscription = capabilityService.onDidChangeInstall((change) => {
+    core.accessor.get(IEventService).publish({
+      type: 'event.capability.changed',
+      payload: { capability_id: change.id, install: change.install },
+    });
+  });
   void configService.ready
     .then(() => {
       if (configService.diagnostics().some((diagnostic) => diagnostic.severity === 'warning')) {
@@ -541,6 +569,16 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     enableShutdown,
     enableTerminals,
     guiStore,
+    pluginMarketplaceUrl:
+      opts.pluginMarketplaceUrl ??
+      process.env['KIMI_CODE_PLUGIN_MARKETPLACE_URL'] ??
+      KIMI_CODE_PLUGIN_MARKETPLACE_URL,
+    pluginMarketplaceIsDefault:
+      opts.pluginMarketplaceUrl === undefined &&
+      (process.env['KIMI_CODE_PLUGIN_MARKETPLACE_URL'] === undefined ||
+        // The dev marketplace server (scripts/dev.mjs) serves this repo's own
+        // catalog and marks itself — it still counts as the default.
+        process.env['KIMI_CODE_PLUGIN_MARKETPLACE_FROM_DEV_SERVER'] === '1'),
     onShutdown: () => {
       void close().catch((err: unknown) => logger.error({ err }, 'server close failed'));
     },

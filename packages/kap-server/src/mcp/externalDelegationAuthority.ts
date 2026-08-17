@@ -2,9 +2,8 @@ import {
   DEFAULT_AGENT_PROFILE_NAME,
   ISessionIndex,
   ISessionLegacyService,
+  ISessionManager,
   ISessionMetadata,
-  ISessionLifecycleService,
-  IWorkspaceLifecycleService,
   IWorkspaceService,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
@@ -91,15 +90,13 @@ export async function ensureExternalDelegationSession(
   }
 
   const expectedWorkspace = await canonicalPath(bootstrap.workspacePath);
+  const registry = core.accessor.get(IWorkspaceService);
   const index = core.accessor.get(ISessionIndex);
   const existing = await index.get(authority.sessionId);
   if (existing === undefined) {
-    const registry = core.accessor.get(IWorkspaceService);
-    await registry.createOrTouch(expectedWorkspace);
-    const handler = await core.accessor.get(IWorkspaceLifecycleService).handlerFor({
-      root: expectedWorkspace,
-    });
-    const session = await handler.accessor.get(ISessionLifecycleService).create({
+    const workspace = await registry.createOrTouch(expectedWorkspace);
+    const session = await core.accessor.get(ISessionManager).create({
+      workspaceId: workspace.id,
       sessionId: authority.sessionId,
       workDir: expectedWorkspace,
       mainAgentBinding: {
@@ -113,7 +110,6 @@ export async function ensureExternalDelegationSession(
       await session.accessor.get(ISessionMetadata).setTitle(bootstrap.title);
     }
   } else {
-    const registry = core.accessor.get(IWorkspaceService);
     const persistedWorkspace =
       existing.cwd ?? (await registry.get(existing.workspaceId))?.root;
     if (

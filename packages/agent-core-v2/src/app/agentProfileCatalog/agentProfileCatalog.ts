@@ -14,9 +14,7 @@
  * `systemPrompt(context)` is the same render's text only — it is derived from
  * `renderSystemPrompt` at registration, so the two can never drift apart.
  * Profiles stay
- * independent of concrete model aliases, but may declare
- * a symbolic primary/secondary preference used as the default when spawned as
- * a subagent. The builtin {@link DEFAULT_AGENT_PROFILE_NAME} (`agent`) is the
+ * independent of concrete model aliases. The builtin {@link DEFAULT_AGENT_PROFILE_NAME} (`agent`) is the
  * default profile used when an Agent is bound to a Model without naming a
  * profile.
  *
@@ -40,7 +38,7 @@
 
 import type { ILogger } from '#/_base/log/log';
 import type { RequestParams, ServiceTier } from '#/kosong/contract/provider';
-import type { ISessionProcessRunner } from '#/session/process/processRunner';
+import type { IHostProcessService } from '#/os/interface/hostProcess';
 
 export const DEFAULT_AGENT_PROFILE_NAME = 'agent';
 
@@ -48,7 +46,7 @@ export type AgentModelPreference = 'primary' | 'secondary';
 
 export interface AgentProfilePromptPrefixContext {
   readonly cwd: string;
-  readonly runner: ISessionProcessRunner;
+  readonly process: IHostProcessService;
   readonly log?: ILogger;
 }
 

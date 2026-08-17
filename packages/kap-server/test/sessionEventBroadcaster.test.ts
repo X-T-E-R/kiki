@@ -30,9 +30,9 @@ import {
   ISessionInteractionService,
   ISessionMetadata,
   ISessionLifecycleService,
-  IWorkspaceLifecycleService,
+  ISessionManager,
+  IWorkspaceInstanceManager,
   MAIN_AGENT_ID,
-  SECONDARY_DERIVED_MODEL_ID,
   SessionInteractionService,
   StateRegistry,
 } from '@moonshot-ai/agent-core-v2';
@@ -374,7 +374,7 @@ function makeCore(
   };
   const handler = {
     id: 'wd',
-    kind: LifecycleScope.Workspace,
+    kind: 'program',
     accessor: {
       get: (t: unknown) => (t === ISessionLifecycleService ? sessionLifecycle : undefined),
     },
@@ -383,11 +383,16 @@ function makeCore(
   const accessor = {
     get(token: unknown): unknown {
       if (token === IEventService) return eventBus;
-      if (token === IWorkspaceLifecycleService) {
+      if (token === ISessionManager) {
         return {
-          handlers: { list: () => [handler] },
-          sessions: { list: () => [] },
-          onDidMaterializeHandler: () => ({ dispose: () => {} }),
+          get: sessionFor,
+          list: () => [...sessions.keys()].map((sessionId) => sessionFor(sessionId)),
+        };
+      }
+      if (token === IWorkspaceInstanceManager) {
+        return {
+          list: () => [{ program: { accessor: handler.accessor } }],
+          onDidChange: () => ({ dispose: () => {} }),
         };
       }
       return undefined;
@@ -595,49 +600,6 @@ describe('SessionEventBroadcaster', () => {
       maxContextTokens: 128_000,
       model: 'sub-model',
     });
-  });
-
-  it('resolves the secondary derived model id to a display string in status events', async () => {
-    const lc = new FakeLifecycle();
-    const main = lc.addAgent('main');
-    main.set(IAgentTokenCountingService, { statusSize: () => 10 });
-    main.set(IAgentProfileService, {
-      getModel: () => SECONDARY_DERIVED_MODEL_ID,
-      getModelCapabilities: () => ({ max_context_tokens: 128_000 }),
-    });
-    main.set(IAgentUsageService, { status: () => ({}) });
-    main.set(IModelCatalog, {
-      get: (id: string) => {
-        expect(id).toBe(SECONDARY_DERIVED_MODEL_ID);
-        return { id, name: 'kimi-k2-wire', displayName: 'Kimi K2' };
-      },
-    });
-    sessions.set('s1', lc);
-    const { target, envelopes } = collectingTarget();
-    await bc.subscribe('s1', target);
-
-    main.bus.emit(agentEvent('agent.status.updated', {}));
-    // Without a displayName the pointed entry's wire name is shown.
-    main.set(IModelCatalog, {
-      get: (id: string) => ({ id, name: 'kimi-k2-wire' }),
-    });
-    main.bus.emit(agentEvent('agent.status.updated', {}));
-    // A resolution failure falls back to the raw alias.
-    main.set(IModelCatalog, {
-      get: () => {
-        throw new Error('unknown model');
-      },
-    });
-    main.bus.emit(agentEvent('agent.status.updated', {}));
-    await bc.getCursor('s1');
-
-    const statuses = envelopes.filter((envelope) => envelope.type === 'agent.status.updated');
-    expect(statuses).toHaveLength(3);
-    expect(statuses.map((envelope) => envelope.payload)).toMatchObject([
-      { model: 'Kimi K2' },
-      { model: 'kimi-k2-wire' },
-      { model: SECONDARY_DERIVED_MODEL_ID },
-    ]);
   });
 
   it('publishes the input cap as the status context limit when declared', async () => {
@@ -1236,6 +1198,64 @@ describe('SessionEventBroadcaster', () => {
         payload: { warnings },
       });
       expect(globalView.deliveries).toEqual(['immediate']);
+    });
+
+    it('fans out event.plugin.changed and event.capability.changed to global targets', async () => {
+      const globalView = collectingTarget();
+      bc.addGlobalTarget(globalView.target);
+
+      eventBus.emit({ type: 'event.plugin.changed', payload: {} });
+      eventBus.emit({
+        type: 'event.capability.changed',
+        payload: {
+          capability_id: 'kimi-webbridge',
+          install: { running: true, step: 'download', percent: 42 },
+        },
+      });
+
+      await vi.waitFor(() => expect(globalView.envelopes).toHaveLength(2));
+      expect(globalView.envelopes[0]).toMatchObject({
+        type: 'event.plugin.changed',
+        session_id: '__global__',
+      });
+      expect(globalView.envelopes[1]).toMatchObject({
+        type: 'event.capability.changed',
+        session_id: '__global__',
+        payload: {
+          capability_id: 'kimi-webbridge',
+          install: { running: true, step: 'download', percent: 42 },
+        },
+      });
+      // Progress ticks are live-only (volatile, not journaled); the plugin
+      // change signal stays durable so a reconnecting client can replay it.
+      expect(globalView.envelopes[0]!.volatile).toBeUndefined();
+      expect(globalView.envelopes[1]!.volatile).toBe(true);
+    });
+
+    it('drops malformed event.capability.changed payloads', async () => {
+      const globalView = collectingTarget();
+      bc.addGlobalTarget(globalView.target);
+
+      eventBus.emit({ type: 'event.capability.changed', payload: null });
+      eventBus.emit({
+        type: 'event.capability.changed',
+        payload: { capability_id: 7, install: { running: true } },
+      });
+      eventBus.emit({
+        type: 'event.capability.changed',
+        payload: { capability_id: 'kimi-cu' }, // no install object
+      });
+
+      eventBus.emit({
+        type: 'event.capability.changed',
+        payload: { capability_id: 'kimi-cu', install: { running: false } },
+      });
+
+      await vi.waitFor(() => expect(globalView.envelopes).toHaveLength(1));
+      expect(globalView.envelopes[0]).toMatchObject({
+        type: 'event.capability.changed',
+        payload: { capability_id: 'kimi-cu', install: { running: false } },
+      });
     });
 
     it('drops malformed event.config.warning payloads', async () => {

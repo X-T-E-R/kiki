@@ -15,11 +15,11 @@ import { Event, Emitter } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
 import { TestInstantiationService } from '#/_base/di/test';
 import { LifecycleScope } from '#/app/scopes';
-import type { IAgentScopeHandle, ISessionScopeHandle, IWorkspaceScopeHandle } from '#/_base/di/scope';
+import type { IAgentScopeHandle, ISessionScopeHandle } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
-import { IWorkspaceLifecycleService } from '#/app/workspaceLifecycle/workspaceLifecycle';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import {
   IThreadCommunicationService,
   type ThreadRef,
@@ -42,11 +42,10 @@ import {
   type SessionActivityChangedEvent,
 } from '#/session/sessionActivity/sessionActivity';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import {
-  ISessionLifecycleService,
-  type SessionArchivedEvent,
-  type SessionClosedEvent,
-  type SessionCreatedEvent,
+import type {
+  SessionArchivedEvent,
+  SessionClosedEvent,
+  SessionCreatedEvent,
 } from '#/workspace/sessionLifecycle/sessionLifecycle';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import type { WireRecord } from '#/wire/record';
@@ -83,7 +82,7 @@ describe('ThreadCommunicationService', () => {
   let promptState: PromptHandle['state'];
   let promptEnqueue: ReturnType<typeof vi.fn>;
   let promptInject: ReturnType<typeof vi.fn>;
-  let handlerFor: ReturnType<typeof vi.fn>;
+  let resume: ReturnType<typeof vi.fn>;
   let activityEvents: Array<{
     seq: number;
     epoch: string;
@@ -140,27 +139,9 @@ describe('ThreadCommunicationService', () => {
       accessor: accessor([[IAgentLifecycleService, agents]]),
       dispose: () => {},
     };
-    const lifecycle = {
-      resume: async () => {
-        events.push('resume');
-        return session;
-      },
-      get: () => undefined,
-      list: () => [],
-      onDidCreateSession: Event.None,
-      onDidForkSession: Event.None,
-      onDidArchiveSession: Event.None,
-      onDidCloseSession: Event.None,
-    } as unknown as ISessionLifecycleService;
-    const handler: IWorkspaceScopeHandle = {
-      id: 'workspace-b',
-      kind: LifecycleScope.Workspace,
-      accessor: accessor([[ISessionLifecycleService, lifecycle]]),
-      dispose: () => {},
-    };
-    handlerFor = vi.fn(async () => {
-      events.push('handler');
-      return handler;
+    resume = vi.fn(async () => {
+      events.push('resume');
+      return session;
     });
 
     ix.stub(IBootstrapService, {
@@ -176,13 +157,16 @@ describe('ThreadCommunicationService', () => {
       get: async (id: string) => summaries[id],
       listRecent: async () => ({ items: Object.values(summaries) }),
     });
-    ix.set(IWorkspaceLifecycleService, {
+    ix.set(ISessionManager, {
       _serviceBrand: undefined,
-      handlerFor: handlerFor as IWorkspaceLifecycleService['handlerFor'],
-      handlers: { list: () => [] },
-      sessions: { list: () => [] },
-      onDidMaterializeHandler: Event.None as IWorkspaceLifecycleService['onDidMaterializeHandler'],
-    } satisfies IWorkspaceLifecycleService);
+      resume,
+      get: () => undefined,
+      list: () => [],
+      onDidCreateSession: Event.None,
+      onDidForkSession: Event.None,
+      onDidArchiveSession: Event.None,
+      onDidCloseSession: Event.None,
+    } as unknown as ISessionManager);
     ix.stub(IAppendLogStore, {
       read: <R>() =>
         (async function* (): AsyncGenerator<R> {
@@ -261,7 +245,7 @@ describe('ThreadCommunicationService', () => {
       idempotencyKey: 'stable-key',
     });
 
-    expect(events).toEqual(['persist', 'handler', 'resume', 'enqueue', 'ack']);
+    expect(events).toEqual(['persist', 'resume', 'enqueue', 'ack']);
     expect(result.delivery).toBe('delivered');
     expect(deliveredMessage?.producer).toEqual({ kind: 'peer_thread', source });
     expect(promptInject).not.toHaveBeenCalled();
@@ -277,7 +261,7 @@ describe('ThreadCommunicationService', () => {
         },
       }),
     });
-    expect(handlerFor).toHaveBeenCalledWith({ workspaceId: 'workspace-b', root: '/workspace-b' });
+    expect(resume).toHaveBeenCalledWith('target');
   });
 
   it('leaves an active target message queued and never injects it', async () => {
@@ -291,7 +275,7 @@ describe('ThreadCommunicationService', () => {
     });
 
     expect(result.delivery).toBe('pending');
-    expect(events).toEqual(['persist', 'handler', 'resume', 'enqueue']);
+    expect(events).toEqual(['persist', 'resume', 'enqueue']);
     expect(promptInject).not.toHaveBeenCalled();
   });
 
@@ -343,7 +327,7 @@ describe('ThreadCommunicationService', () => {
       code: ErrorCodes.THREAD_LIMIT_EXCEEDED,
       details: { limit: 2 },
     });
-    expect(handlerFor).not.toHaveBeenCalled();
+    expect(resume).not.toHaveBeenCalled();
   });
 
   it('applies global-off before workspace overrides and excludes disabled workspaces', async () => {
@@ -436,7 +420,7 @@ describe('ThreadCommunicationService', () => {
         peer: { source: peerSource, messageId: 'peer-1' },
       }),
     ]);
-    expect(handlerFor).not.toHaveBeenCalled();
+    expect(resume).not.toHaveBeenCalled();
   });
 
   it('reconstructs queued cancellation holes with the authoritative turn clock', async () => {
@@ -558,27 +542,16 @@ describe('ThreadCommunicationService', () => {
     const firstHandle = observedSessionHandle('observed', 'workspace-b', firstActivity);
     const resumedHandle = observedSessionHandle('observed', 'workspace-b', resumedActivity);
     const live = new Map<string, ISessionScopeHandle>([['observed', firstHandle]]);
-    const lifecycle = {
+    ix.stub(ISessionManager, {
+      _serviceBrand: undefined,
+      resume,
       list: () => [...live.values()],
       get: (sessionId: string) => live.get(sessionId),
       onDidCreateSession: created.event,
       onDidForkSession: Event.None,
       onDidArchiveSession: archived.event,
       onDidCloseSession: closed.event,
-    } as unknown as ISessionLifecycleService;
-    const handler = {
-      id: 'workspace-b',
-      kind: LifecycleScope.Workspace,
-      accessor: accessor([[ISessionLifecycleService, lifecycle]]),
-      dispose: () => {},
-    } as IWorkspaceScopeHandle;
-    ix.stub(IWorkspaceLifecycleService, {
-      _serviceBrand: undefined,
-      handlerFor: handlerFor as IWorkspaceLifecycleService['handlerFor'],
-      handlers: { list: () => [handler] },
-      sessions: { list: () => [] },
-      onDidMaterializeHandler: Event.None as IWorkspaceLifecycleService['onDidMaterializeHandler'],
-    });
+    } as unknown as ISessionManager);
     const service = ix.get(IThreadCommunicationService);
 
     live.delete('observed');

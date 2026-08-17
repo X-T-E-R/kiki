@@ -12,6 +12,7 @@ import type {
   AddAdditionalDirOptions,
   AddAdditionalDirResult,
   AgentCommandInfo,
+  AgentRuntimeBinding,
   BackgroundTaskInfo,
   CapabilityStatus,
   CompactOptions,
@@ -26,6 +27,7 @@ import type {
   PluginInfo,
   PluginSummary,
   PromptInput,
+  PromptSkillActivation,
   ReloadSessionOptions,
   ReloadSummary,
   ResumedSessionState,
@@ -94,6 +96,11 @@ export class Session {
     this.onClose = options.onClose;
   }
 
+  /** True once {@link close} began — the session may still be closing in the engine. */
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
   getResumeState(): ResumedSessionState | undefined {
     this.ensureOpen();
     return this.resumeState;
@@ -134,6 +141,25 @@ export class Session {
     await this.rpc.prompt({
       sessionId: this.id,
       input: normalizePromptInput(input),
+    });
+  }
+
+  /**
+   * Submit one prompt with one or more skill activations bundled into the
+   * same user message: the skills are validated up front (an unknown name
+   * rejects the whole submission), rendered ahead of the prompt in the same
+   * turn, and the bundle undoes as a single anchor. Requires the
+   * agent-core-v2 engine.
+   */
+  async promptWithSkills(
+    input: string | PromptInput,
+    skills: readonly PromptSkillActivation[],
+  ): Promise<void> {
+    this.ensureOpen();
+    await this.rpc.promptWithSkills({
+      sessionId: this.id,
+      input: normalizePromptInput(input),
+      skills,
     });
   }
 
@@ -223,6 +249,21 @@ export class Session {
     await this.rpc.setModel({ sessionId: this.id, model: normalized });
   }
 
+  async getRuntime(): Promise<AgentRuntimeBinding> {
+    this.ensureOpen();
+    return this.rpc.getRuntime({ sessionId: this.id });
+  }
+
+  async switchRuntime(runtimeId: string): Promise<AgentRuntimeBinding> {
+    this.ensureOpen();
+    const normalized = normalizeRequiredString(
+      runtimeId,
+      'Session runtime cannot be empty',
+      ErrorCodes.REQUEST_INVALID,
+    );
+    return this.rpc.switchRuntime({ sessionId: this.id, runtimeId: normalized });
+  }
+
   async setThinking(effort: ThinkingEffort): Promise<void> {
     this.ensureOpen();
     const normalized = normalizeRequiredString(
@@ -231,18 +272,6 @@ export class Session {
       ErrorCodes.SESSION_THINKING_EMPTY,
     );
     await this.rpc.setThinking({ sessionId: this.id, effort: normalized });
-  }
-
-  /**
-   * Live-apply the persisted `[secondary_model]` recipe to this session
-   * (subagent model binding). Persist the recipe via `KimiHarness.setConfig`
-   * first; this reloads the complete recipe and its synthesized derived entry
-   * before updating the session snapshot — mirroring the `/secondary_model`
-   * flow.
-   */
-  async applyPersistedSecondaryModel(): Promise<void> {
-    this.ensureOpen();
-    await this.rpc.applyPersistedSecondaryModel({ sessionId: this.id });
   }
 
   async setPermission(mode: PermissionMode): Promise<void> {
@@ -672,7 +701,7 @@ export class Session {
   }
 
   /** @internal */
-  emitMetaUpdated(patch: { readonly title?: string | undefined }): void {
+  emitMetaUpdated(patch: { readonly title?: string; readonly isCustomTitle?: boolean }): void {
     this.emit({
       type: 'session.meta.updated',
       sessionId: this.id,

@@ -766,6 +766,141 @@ describe('WsConnectionV1 outbound buffer', () => {
 });
 
 // ---------------------------------------------------------------------------
+// WsConnectionV1 — heartbeat
+// ---------------------------------------------------------------------------
+
+describe('WsConnectionV1 heartbeat', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function sentTypes(socket: FakeSocket): string[] {
+    return socket.frames().map((f) => (f as { type: string }).type);
+  }
+
+  function sentPings(
+    socket: FakeSocket,
+  ): Array<{ type: string; timestamp: string; payload: { nonce: string } }> {
+    return socket.frames() as Array<{
+      type: string;
+      timestamp: string;
+      payload: { nonce: string };
+    }>;
+  }
+
+  it('advertises the heartbeat interval in server_hello', () => {
+    const socket = new FakeSocket();
+    const conn = makeConn(socket, { heartbeatIntervalMs: 10 });
+    const hello = socket.frames()[0] as { type: string; payload: { heartbeat_ms?: number } };
+    expect(hello.type).toBe('server_hello');
+    expect(hello.payload.heartbeat_ms).toBe(10);
+    conn.close();
+  });
+
+  it('defaults to a 10s heartbeat interval', () => {
+    const socket = new FakeSocket();
+    const conn = makeConn(socket);
+    const hello = socket.frames()[0] as { payload: { heartbeat_ms?: number } };
+    expect(hello.payload.heartbeat_ms).toBe(10_000);
+    conn.close();
+  });
+
+  it('supports the legacy heartbeatMs option and zero disables the heartbeat', () => {
+    const socket = new FakeSocket();
+    const conn = makeConn(socket, { heartbeatMs: 25 });
+    const hello = socket.frames()[0] as { payload: { heartbeat_ms?: number } };
+    expect(hello.payload.heartbeat_ms).toBe(25);
+    conn.close();
+
+    const disabledSocket = new FakeSocket();
+    const disabled = makeConn(disabledSocket, { heartbeatMs: 0 });
+    const disabledHello = disabledSocket.frames()[0] as { payload: { heartbeat_ms?: number } };
+    expect(disabledHello.payload.heartbeat_ms).toBeUndefined();
+    disabledSocket.sent = [];
+    vi.advanceTimersByTime(100);
+    expect(disabledSocket.sent).toHaveLength(0);
+    expect(disabledSocket.closeCalls).toHaveLength(0);
+    disabled.close();
+  });
+
+  it('sends a ping every interval while the peer keeps answering', () => {
+    const socket = new FakeSocket();
+    const conn = makeConn(socket, { heartbeatIntervalMs: 10 });
+    socket.sent = [];
+
+    for (let i = 0; i < 3; i++) {
+      vi.advanceTimersByTime(10);
+      expect(sentTypes(socket)).toHaveLength(i + 1);
+      socket.emit('message', JSON.stringify({ type: 'pong', payload: { nonce: 'n' } }));
+    }
+
+    const pings = sentPings(socket);
+    expect(pings.every((f) => f.type === 'ping')).toBe(true);
+    expect(pings.every((f) => !Number.isNaN(Date.parse(f.timestamp)))).toBe(true);
+    expect(typeof pings[0]!.payload.nonce).toBe('string');
+    expect(new Set(pings.map((f) => f.payload.nonce)).size).toBe(3);
+    expect(socket.closeCalls).toHaveLength(0);
+    conn.close();
+  });
+
+  it('reaps the connection after two silent cycles', () => {
+    const socket = new FakeSocket();
+    const conn = makeConn(socket, { heartbeatIntervalMs: 10 });
+    socket.sent = [];
+
+    vi.advanceTimersByTime(10);
+    expect(sentTypes(socket)).toEqual(['ping']);
+    expect(socket.closeCalls).toHaveLength(0);
+
+    // Second silent cycle: the tick closes instead of pinging again.
+    vi.advanceTimersByTime(10);
+    expect(socket.closeCalls).toEqual([{ code: 1001, reason: 'heartbeat timeout' }]);
+    expect(sentTypes(socket)).toEqual(['ping']);
+
+    // The heartbeat stops with the connection.
+    vi.advanceTimersByTime(100);
+    expect(sentTypes(socket)).toEqual(['ping']);
+    expect(socket.closeCalls).toHaveLength(1);
+  });
+
+  it('treats any inbound frame — not just pong — as proof of life', () => {
+    const socket = new FakeSocket();
+    const conn = makeConn(socket, { heartbeatIntervalMs: 10 });
+    socket.sent = [];
+
+    // t=10: ping. t=15: an unknown control frame still resets the window.
+    vi.advanceTimersByTime(15);
+    socket.emit('message', JSON.stringify({ type: 'some_future_frame', payload: {} }));
+
+    // t=20 (silence 5) and t=30 (silence 15): pings, no reap.
+    vi.advanceTimersByTime(20);
+    expect(sentTypes(socket)).toEqual(['ping', 'ping', 'ping']);
+    expect(socket.closeCalls).toHaveLength(0);
+
+    // t=40: silence 25 ≥ 2 cycles — reaped.
+    vi.advanceTimersByTime(5);
+    expect(socket.closeCalls).toEqual([{ code: 1001, reason: 'heartbeat timeout' }]);
+  });
+
+  it('stops heartbeating once the socket closes on its own', () => {
+    const socket = new FakeSocket();
+    makeConn(socket, { heartbeatIntervalMs: 10 });
+    socket.sent = [];
+
+    vi.advanceTimersByTime(10);
+    expect(sentTypes(socket)).toEqual(['ping']);
+
+    socket.terminate();
+    vi.advanceTimersByTime(100);
+    expect(sentTypes(socket)).toEqual(['ping']);
+    expect(socket.closeCalls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // WsConnectionV1 — global-event registration lifecycle
 // ---------------------------------------------------------------------------
 
@@ -835,100 +970,6 @@ describe('WsConnectionV1 global target registration', () => {
       }),
     );
     await vi.waitFor(() => expect(diOptIns).toEqual([conn]));
-    conn.close();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// WsConnectionV1 — application-level heartbeat
-// ---------------------------------------------------------------------------
-
-describe('WsConnectionV1 heartbeat', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it('advertises the default heartbeat interval in server_hello', () => {
-    const socket = new FakeSocket();
-    const conn = makeConn(socket);
-    const hello = socket.frames()[0] as {
-      type: string;
-      payload: { heartbeat_ms?: number };
-    };
-    expect(hello.type).toBe('server_hello');
-    expect(hello.payload.heartbeat_ms).toBe(20_000);
-    conn.close();
-  });
-
-  it('honors a custom heartbeat interval and omits the field when disabled', () => {
-    const socket = new FakeSocket();
-    const conn = makeConn(socket, { heartbeatMs: 5_000 });
-    const hello = socket.frames()[0] as { payload: { heartbeat_ms?: number } };
-    expect(hello.payload.heartbeat_ms).toBe(5_000);
-    conn.close();
-
-    const off = new FakeSocket();
-    const offConn = makeConn(off, { heartbeatMs: 0 });
-    const offHello = off.frames()[0] as { payload: { heartbeat_ms?: number } };
-    expect(offHello.payload.heartbeat_ms).toBeUndefined();
-    expect('heartbeat_ms' in offHello.payload).toBe(false);
-    offConn.close();
-  });
-
-  it('sends ping frames at the advertised interval', async () => {
-    const socket = new FakeSocket();
-    const conn = makeConn(socket, { heartbeatMs: 1_000 });
-    socket.sent = [];
-
-    await vi.advanceTimersByTimeAsync(999);
-    expect(socket.sent).toHaveLength(0);
-    await vi.advanceTimersByTimeAsync(1);
-    await vi.advanceTimersByTimeAsync(1_000);
-
-    const pings = socket.frames() as Array<{
-      type: string;
-      timestamp: string;
-      payload: { nonce: string };
-    }>;
-    expect(pings.map((p) => p.type)).toEqual(['ping', 'ping']);
-    for (const ping of pings) {
-      expect(typeof ping.payload.nonce).toBe('string');
-      expect(ping.payload.nonce.length).toBeGreaterThan(0);
-      expect(Number.isNaN(Date.parse(ping.timestamp))).toBe(false);
-    }
-    expect(pings[0]!.payload.nonce).not.toBe(pings[1]!.payload.nonce);
-    conn.close();
-  });
-
-  it('stops the heartbeat timer when the connection closes', async () => {
-    const socket = new FakeSocket();
-    const conn = makeConn(socket, { heartbeatMs: 1_000 });
-    socket.sent = [];
-    conn.close();
-    socket.sent = [];
-
-    await vi.advanceTimersByTimeAsync(5_000);
-    expect(socket.sent).toHaveLength(0);
-
-    // Peer-side close also clears the timer.
-    const socket2 = new FakeSocket();
-    const conn2 = makeConn(socket2, { heartbeatMs: 1_000 });
-    socket2.emit('close');
-    socket2.sent = [];
-    await vi.advanceTimersByTimeAsync(5_000);
-    expect(socket2.sent).toHaveLength(0);
-  });
-
-  it('ignores inbound pong replies without side effects', async () => {
-    const socket = new FakeSocket();
-    const conn = makeConn(socket);
-    socket.sent = [];
-    socket.emit('message', JSON.stringify({ type: 'pong', payload: { nonce: 'n1' } }));
-    await vi.advanceTimersByTimeAsync(0);
-    expect(socket.sent).toHaveLength(0);
     conn.close();
   });
 });

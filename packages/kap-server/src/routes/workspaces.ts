@@ -14,10 +14,10 @@
  *   POST   /workspaces/{workspace_id}/trust    mark the workspace trusted
  *   POST   /workspaces/{workspace_id}/untrust  revoke trust
  *
- * The trust routes resolve the workspace's live handler
- * (`IWorkspaceLifecycleService.handlerFor`, materializing it on demand) and
- * read/flip the Workspace-scope `IWorkspaceTrust`; while untrusted, the
- * handler's project-level MCP config files are not loaded.
+ * The trust routes materialize the workspace through
+ * `IWorkspaceInstanceManager.getOrCreate` and read/flip its Workspace-scope
+ * `IWorkspaceTrust`; while untrusted, the workspace's project-level MCP
+ * config files are not loaded.
  *
  * **Wire fidelity**: the v1 `workspaceSchema` carries more fields than v2's
  * `Workspace` (`{ id, root, name, createdAt, lastOpenedAt }`). The handler
@@ -32,7 +32,7 @@
 
 import {
   IHostFileSystem,
-  IWorkspaceLifecycleService,
+  IWorkspaceInstanceManager,
   IWorkspaceService,
   IWorkspaceSessions,
   IWorkspaceTrust,
@@ -318,10 +318,10 @@ async function resolveTrust(
     );
     return undefined;
   }
-  const handle = await core
-    .accessor.get(IWorkspaceLifecycleService)
-    .handlerFor({ workspaceId, root: ws.root });
-  return handle.accessor.get(IWorkspaceTrust);
+  const workspace = await core
+    .accessor.get(IWorkspaceInstanceManager)
+    .getOrCreate({ workspaceId, root: ws.root });
+  return workspace.program.trust;
 }
 
 // ---------------------------------------------------------------------------

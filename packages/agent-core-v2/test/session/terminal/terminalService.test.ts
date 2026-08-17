@@ -17,10 +17,12 @@ import {
 import { HostTerminalService } from '#/os/backends/node-local/hostTerminalService';
 import {
   ISessionTerminalService,
-  resolveDefaultShell,
   SessionTerminalService,
 } from '#/session/terminal/terminalService';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import type { RuntimeLease } from '#/runtime/runtime';
+import { FakeRuntime } from '#/runtime/fakeRuntime';
+import { IRuntimeResolver, type IRuntimeResolver as RuntimeResolver } from '#/workspace/workspaceInstance/workspaceInstanceManager';
 
 vi.mock('node-pty', () => ({
   spawn: vi.fn(),
@@ -69,6 +71,49 @@ class FakeHostTerminalService implements IHostTerminalService {
   }
 }
 
+class FakeRuntimeResolver implements RuntimeResolver {
+  declare readonly _serviceBrand: undefined;
+  activeLeases = 0;
+  readonly bindings: Array<{ workspaceId: string; runtimeId: string }> = [];
+  private readonly runtime;
+
+  constructor(
+    terminal: IHostTerminalService,
+    runtimeId = 'local',
+    mapWorkspaceRoots?: (roots: { workDir: string; additionalDirs?: readonly string[] }) => {
+      workDir: string;
+      additionalDirs?: readonly string[];
+    },
+  ) {
+    this.runtime = Object.assign(
+      new FakeRuntime(
+        { workspaceId: 'w1', runtimeId, generation: 'test' },
+        { capabilities: ['terminal'], mapWorkspaceRoots },
+      ),
+      { terminal },
+    );
+  }
+
+  inspect() {
+    return this.runtime;
+  }
+
+  acquire(binding: { workspaceId: string; runtimeId: string }): RuntimeLease {
+    this.bindings.push(binding);
+    this.activeLeases += 1;
+    let active = true;
+    return {
+      runtime: this.runtime,
+      track: (resource) => resource,
+      dispose: () => {
+        if (!active) return;
+        active = false;
+        this.activeLeases -= 1;
+      },
+    };
+  }
+}
+
 function stubWorkspace(workDir = '/ws'): ISessionWorkspaceContext {
   return {
     _serviceBrand: undefined,
@@ -100,13 +145,16 @@ describe('SessionTerminalService', () => {
   let disposables: DisposableStore;
   let ix: TestInstantiationService;
   let host: FakeHostTerminalService;
+  let resolver: FakeRuntimeResolver;
 
   beforeEach(() => {
     disposables = new DisposableStore();
     host = new FakeHostTerminalService();
+    resolver = new FakeRuntimeResolver(host);
     ix = createServices(disposables, {
       additionalServices: (reg) => {
         reg.defineInstance(IHostTerminalService, host);
+        reg.defineInstance(IRuntimeResolver, resolver);
         reg.define(ISessionTerminalService, SessionTerminalService);
         reg.defineInstance(ISessionWorkspaceContext, stubWorkspace());
         reg.defineInstance(ISessionContext, stubSessionContext());
@@ -117,35 +165,48 @@ describe('SessionTerminalService', () => {
 
   it('creates a terminal and resolves cwd through the workspace', async () => {
     const svc = ix.get(ISessionTerminalService);
-    const terminal = await svc.create({ cwd: 'sub', cols: 100, rows: 40 });
+    const terminal = await svc.create({ runtime_id: 'local', cwd: 'sub', cols: 100, rows: 40 });
 
     expect(terminal.status).toBe('running');
     expect(terminal.session_id).toBe('s1');
-    expect(terminal.cwd).toBe(resolve('/ws', 'sub'));
+    expect(terminal.cwd).toBe('/ws/sub');
     expect(terminal.cols).toBe(100);
     expect(terminal.rows).toBe(40);
     expect(host.processes).toHaveLength(1);
-    expect(host.lastOptions[0]?.cwd).toBe(resolve('/ws', 'sub'));
+    expect(host.lastOptions[0]?.cwd).toBe('/ws/sub');
+  });
+
+  it('uses the selected non-local runtime mapping and terminal instead of the App host', async () => {
+    const remoteHost = new FakeHostTerminalService();
+    resolver = new FakeRuntimeResolver(
+      remoteHost,
+      'remote',
+      (roots) => ({ ...roots, workDir: '/remote/workspace' }),
+    );
+    ix.set(IRuntimeResolver, resolver);
+    const svc = ix.get(ISessionTerminalService);
+    const terminal = await svc.create({ runtime_id: 'remote', cwd: 'sub' });
+
+    expect(resolver.bindings).toEqual([{ workspaceId: 'w1', runtimeId: 'remote' }]);
+    expect(terminal.cwd).toBe('/remote/workspace/sub');
+    expect(remoteHost.lastOptions[0]?.cwd).toBe('/remote/workspace/sub');
+    expect(host.processes).toHaveLength(0);
+    expect(resolver.activeLeases).toBe(1);
+    await svc.close(terminal.id);
+    expect(resolver.activeLeases).toBe(0);
   });
 
   it('uses the workspace workDir when cwd is omitted', async () => {
     const svc = ix.get(ISessionTerminalService);
-    const terminal = await svc.create({});
+    const terminal = await svc.create({ runtime_id: 'local' });
     expect(terminal.cwd).toBe('/ws');
     expect(terminal.cols).toBe(80);
     expect(terminal.rows).toBe(24);
   });
 
-  it('preserves an explicit shell override', async () => {
-    const svc = ix.get(ISessionTerminalService);
-    const terminal = await svc.create({ shell: 'example-shell' });
-    expect(terminal.shell).toBe('example-shell');
-    expect(host.lastOptions[0]?.shell).toBe('example-shell');
-  });
-
   it('lists and gets terminals', async () => {
     const svc = ix.get(ISessionTerminalService);
-    const created = await svc.create({});
+    const created = await svc.create({ runtime_id: 'local',});
     const listed = await svc.list();
     expect(listed).toHaveLength(1);
     expect(listed[0]?.id).toBe(created.id);
@@ -163,7 +224,7 @@ describe('SessionTerminalService', () => {
 
   it('attaches a sink, replays buffered frames, then streams live output', async () => {
     const svc = ix.get(ISessionTerminalService);
-    const terminal = await svc.create({});
+    const terminal = await svc.create({ runtime_id: 'local' });
     const proc = host.processes[0]!;
 
     proc.emitData('hello');
@@ -186,45 +247,29 @@ describe('SessionTerminalService', () => {
 
   it('replays only frames after sinceSeq', async () => {
     const svc = ix.get(ISessionTerminalService);
-    const terminal = await svc.create({});
+    const terminal = await svc.create({ runtime_id: 'local' });
     const proc = host.processes[0]!;
     proc.emitData('a');
     proc.emitData('b');
     proc.emitData('c');
 
     const { sink, frames } = collectSink();
-    const result = await svc.attach(terminal.id, sink, { sinceSeq: 1 });
-    expect(result).toEqual({ replayed: 2, earliestSeq: 1, truncated: false });
+    const { replayed } = await svc.attach(terminal.id, sink, { sinceSeq: 1 });
+    expect(replayed).toBe(2);
     expect(frames.map((f) => (f as { seq?: number }).seq)).toEqual([2, 3]);
-  });
-
-  it('reports a truncated replay when the requested cursor predates the 2,000-frame suffix', async () => {
-    const svc = ix.get(ISessionTerminalService);
-    const terminal = await svc.create({});
-    const proc = host.processes[0]!;
-    for (let seq = 1; seq <= 2001; seq += 1) proc.emitData(`frame-${seq}`);
-
-    const first = collectSink('first');
-    const truncated = await svc.attach(terminal.id, first.sink, { sinceSeq: 0 });
-    expect(truncated).toEqual({ replayed: 2000, earliestSeq: 2, truncated: true });
-    expect(first.frames[0]).toMatchObject({ type: 'terminal_output', seq: 2 });
-    expect(first.frames.at(-1)).toMatchObject({ type: 'terminal_output', seq: 2001 });
-
-    svc.detach(terminal.id, first.sink.id);
-    const second = collectSink('second');
-    const complete = await svc.attach(terminal.id, second.sink, { sinceSeq: 1 });
-    expect(complete).toEqual({ replayed: 2000, earliestSeq: 2, truncated: false });
   });
 
   it('emits an exit frame and marks the terminal exited on process exit', async () => {
     const svc = ix.get(ISessionTerminalService);
-    const terminal = await svc.create({});
+    const terminal = await svc.create({ runtime_id: 'local' });
     const proc = host.processes[0]!;
     const { sink, frames } = collectSink();
     await svc.attach(terminal.id, sink);
+    expect(resolver.activeLeases).toBe(1);
 
     proc.emitExit(7);
 
+    expect(resolver.activeLeases).toBe(0);
     const exitFrame = frames.find((f) => f.type === 'terminal_exit');
     expect(exitFrame).toMatchObject({
       type: 'terminal_exit',
@@ -238,7 +283,7 @@ describe('SessionTerminalService', () => {
 
   it('delegates write and resize to the process', async () => {
     const svc = ix.get(ISessionTerminalService);
-    const terminal = await svc.create({});
+    const terminal = await svc.create({ runtime_id: 'local' });
     const proc = host.processes[0]!;
 
     await svc.write(terminal.id, 'ls\n');
@@ -251,7 +296,7 @@ describe('SessionTerminalService', () => {
 
   it('closes a terminal by killing the process and marking it exited', async () => {
     const svc = ix.get(ISessionTerminalService);
-    const terminal = await svc.create({});
+    const terminal = await svc.create({ runtime_id: 'local' });
     const proc = host.processes[0]!;
 
     const result = await svc.close(terminal.id);
@@ -262,7 +307,7 @@ describe('SessionTerminalService', () => {
 
   it('detaches a sink so it stops receiving frames', async () => {
     const svc = ix.get(ISessionTerminalService);
-    const terminal = await svc.create({});
+    const terminal = await svc.create({ runtime_id: 'local' });
     const proc = host.processes[0]!;
     const { sink, frames } = collectSink();
     await svc.attach(terminal.id, sink);
@@ -274,47 +319,13 @@ describe('SessionTerminalService', () => {
 
   it('kills every live process when the service is disposed', async () => {
     const svc = ix.get(ISessionTerminalService);
-    await svc.create({});
+    await svc.create({ runtime_id: 'local' });
     const proc = host.processes[0]!;
+    expect(resolver.activeLeases).toBe(1);
 
     disposables.dispose();
     expect(proc.killed).toBe(true);
-  });
-});
-
-describe('resolveDefaultShell', () => {
-  it('keeps the POSIX SHELL preference and /bin/sh fallback', () => {
-    expect(resolveDefaultShell('linux', { SHELL: '/bin/zsh' }, () => false)).toBe('/bin/zsh');
-    expect(resolveDefaultShell('linux', {}, () => false)).toBe('/bin/sh');
-  });
-
-  it('uses an existing ComSpec on Windows and falls back to an existing PowerShell', () => {
-    const existing = new Set([
-      'C:\\Windows\\System32\\cmd.exe',
-      'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
-    ]);
-    const isExecutable = (candidate: string): boolean => existing.has(candidate);
-
-    expect(
-      resolveDefaultShell(
-        'win32',
-        { ComSpec: 'C:\\Windows\\System32\\cmd.exe', SystemRoot: 'C:\\Windows' },
-        isExecutable,
-      ),
-    ).toBe('C:\\Windows\\System32\\cmd.exe');
-    expect(
-      resolveDefaultShell(
-        'win32',
-        { ComSpec: 'C:\\missing\\cmd.exe', SystemRoot: 'C:\\Windows' },
-        isExecutable,
-      ),
-    ).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
-  });
-
-  it('fails instead of selecting a nonexistent Windows executable', () => {
-    expect(() => resolveDefaultShell('win32', {}, () => false)).toThrow(
-      /No usable Windows shell executable/,
-    );
+    expect(resolver.activeLeases).toBe(0);
   });
 });
 

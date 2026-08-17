@@ -3,8 +3,8 @@
  *
  * Lists persisted Sessions through `sessionIndex`, reads the main Agent's
  * durable wire without resuming cold Sessions, persists peer messages through
- * `threadMailboxStore` before resolving the target via `workspaceLifecycle`,
- * and enqueues them through the target `prompt` scheduler. Follows live
+ * `threadMailboxStore` before resolving the target via `sessionManager`, and
+ * enqueues them through the target `prompt` scheduler. Follows the App-level
  * session lifecycle and activity projections for durable wait notifications.
  * Bound at App scope.
  */
@@ -19,7 +19,7 @@ import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
-import { IWorkspaceLifecycleService } from '#/app/workspaceLifecycle/workspaceLifecycle';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import type { ContentPart } from '#/kosong/contract/message';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService, type PromptHandle } from '#/agent/prompt/prompt';
@@ -34,7 +34,6 @@ import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
 import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import { ISessionLifecycleService } from '#/workspace/sessionLifecycle/sessionLifecycle';
 import {
   agentScopeOf,
   sessionScopeOf,
@@ -127,7 +126,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IConfigService private readonly config: IConfigService,
     @ISessionIndex private readonly sessions: ISessionIndex,
-    @IWorkspaceLifecycleService private readonly workspaces: IWorkspaceLifecycleService,
+    @ISessionManager private readonly sessionManager: ISessionManager,
     @IThreadMailboxStore private readonly mailbox: IThreadMailboxStore,
     @IAppendLogStore private readonly appendLog: IAppendLogStore,
     @ILogService private readonly log: ILogService,
@@ -138,7 +137,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       for (const store of this.observedSessions.values()) store.dispose();
       this.observedSessions.clear();
     }));
-    this._register(this.followWorkspaceLifecycle());
+    this._register(this.followLifecycle(this.sessionManager));
     this.recovery = this.recoverPendingDeliveries();
     void this.recovery.catch(() => {});
   }
@@ -418,14 +417,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     const attempt = await this.mailbox.beginDelivery(message.messageId);
     if (attempt === undefined) return 'pending';
     try {
-      const summary = await this.requireThread(message.target);
-      const handler = await this.workspaces.handlerFor({
-        workspaceId: summary.workspaceId,
-        root: summary.cwd,
-      });
-      const session = await handler.accessor
-        .get(ISessionLifecycleService)
-        .resume(message.target.sessionId);
+      await this.requireThread(message.target);
+      const session = await this.sessionManager.resume(message.target.sessionId);
       if (session === undefined) {
         throw new Error2(ErrorCodes.THREAD_NOT_FOUND, `Thread "${message.target.sessionId}" does not exist.`);
       }
@@ -580,49 +573,38 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     return completed.toSorted((left, right) => left.turnId - right.turnId);
   }
 
-  private followLifecycle(lifecycle: ISessionLifecycleService): DisposableStore {
+  private followLifecycle(lifecycle: ISessionManager): DisposableStore {
     const store = new DisposableStore();
     for (const session of lifecycle.list()) this.observeSession(session);
-    store.add(lifecycle.onDidCreateSession((event) => this.observeSession(event.handle)));
-    store.add(lifecycle.onDidForkSession((event) => this.observeSession(event.handle)));
-    store.add(
-      lifecycle.onDidArchiveSession((event) => {
-        const ref = this.refForLifecycleSession(lifecycle, event.sessionId);
-        this.detachObservedSession(event.sessionId);
-        if (ref !== undefined) this.detach(this.appendLifecycle(ref, 'archived'));
-      }),
-    );
-    store.add(
-      lifecycle.onDidCloseSession((event) => {
-        const ref = this.detachObservedSession(event.sessionId);
-        if (ref === undefined) return;
-        this.detach(this.appendLifecycle(ref, 'closed'));
-      }),
-    );
-    return store;
-  }
-
-  private followWorkspaceLifecycle(): DisposableStore {
-    const store = new DisposableStore();
-    for (const handler of this.workspaces.handlers.list()) {
-      store.add(this.followLifecycle(handler.accessor.get(ISessionLifecycleService)));
+    if (lifecycle.onDidCreateSession !== undefined) {
+      store.add(lifecycle.onDidCreateSession((event) => this.observeSession(event.handle)));
     }
-    store.add(
-      this.workspaces.onDidMaterializeHandler((handler) => {
-        if (!store.isDisposed) {
-          store.add(this.followLifecycle(handler.accessor.get(ISessionLifecycleService)));
-        }
-      }),
-    );
+    if (lifecycle.onDidForkSession !== undefined) {
+      store.add(lifecycle.onDidForkSession((event) => this.observeSession(event.handle)));
+    }
+    if (lifecycle.onDidArchiveSession !== undefined) {
+      store.add(
+        lifecycle.onDidArchiveSession((event) => {
+          const ref = this.refForLifecycleSession(lifecycle, event.sessionId);
+          this.detachObservedSession(event.sessionId);
+          if (ref !== undefined) this.detach(this.appendLifecycle(ref, 'archived'));
+        }),
+      );
+    }
+    if (lifecycle.onDidCloseSession !== undefined) {
+      store.add(
+        lifecycle.onDidCloseSession((event) => {
+          const ref = this.detachObservedSession(event.sessionId);
+          if (ref === undefined) return;
+          this.detach(this.appendLifecycle(ref, 'closed'));
+        }),
+      );
+    }
     return store;
   }
 
   private liveSession(sessionId: string): ISessionScopeHandle | undefined {
-    for (const handler of this.workspaces.handlers.list()) {
-      const session = handler.accessor.get(ISessionLifecycleService).get(sessionId);
-      if (session !== undefined) return session;
-    }
-    return undefined;
+    return this.sessionManager.get(sessionId);
   }
 
   private observeSession(handle: ISessionScopeHandle): void {
@@ -658,7 +640,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   private refForLifecycleSession(
-    lifecycle: ISessionLifecycleService,
+    lifecycle: ISessionManager,
     sessionId: string,
   ): ThreadRef | undefined {
     const session = lifecycle.get(sessionId);

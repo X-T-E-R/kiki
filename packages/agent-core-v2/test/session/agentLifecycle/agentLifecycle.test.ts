@@ -12,26 +12,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { Disposable, DisposableStore } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
-import { type ISessionScopeHandle } from '#/_base/di/scope';
+import { type IAgentScopeHandle, type ISessionScopeHandle } from '#/_base/di/scope';
 import { TestInstantiationService } from '#/_base/di/test';
 import { Event } from '#/_base/event';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import '#/agent/profile/profileService';
-import {
-  normalizeAgentProfile,
-  type ResolvedAgentProfileRoute,
-} from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { profileBind } from '#/agent/profile/profileOps';
+import { TOWER_WORKER_PROFILE } from '#/features/tower/tower';
 import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
 import { IAgentMcpService } from '#/agent/mcp/mcp';
 import { McpConnectionManager } from '#/mcpCore/connection-manager';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import '#/agent/permissionMode/permissionModeOps';
+import { IAgentRuntimeBindingService } from '#/agent/runtimeBinding/runtimeBinding';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { ISessionStateService } from '#/session/state/sessionState';
 import { SessionStateService } from '#/session/state/sessionStateService';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
-import { AgentLifecycleService } from '#/session/agentLifecycle/agentLifecycleService';
+import {
+  AgentLifecycleService,
+  refreshInheritedSubagentBinding,
+  withSubagentBindingMode,
+} from '#/session/agentLifecycle/agentLifecycleService';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionInstructionsProvider } from '#/session/sessionInstructions/instructionsProvider';
@@ -40,6 +44,7 @@ import { createMcpOAuthStore } from '#/app/mcpConfig/oauthStore';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { SessionSubagentService } from '#/session/subagent/subagentService';
 import '#/agent/mcp/mcpService';
+import { IWireService } from '#/wire/wire';
 import '#/wire/wireService';
 import { IAgentTaskService } from '#/agent/task/task';
 import { ISessionCronService } from '#/session/cron/sessionCronService';
@@ -72,8 +77,11 @@ import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import '#/agent/toolActivation/toolActivationService';
 import { IAgentMediaToolsRegistrar } from '#/agent/media/mediaTools';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
-import { Error2, ErrorCodes } from '#/errors';
-import { IModelCatalog, type Model } from '#/kosong/model/catalog';
+import { FakeRuntime } from '#/runtime/fakeRuntime';
+import {
+  IRuntimeResolver,
+  IWorkspaceInstanceManager,
+} from '#/workspace/workspaceInstance/workspaceInstanceManager';
 import type { OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
 
@@ -158,75 +166,10 @@ function stubBlobPassThrough(ix: TestInstantiationService): void {
   } satisfies IAgentBlobService);
 }
 
-function lifecycleRouteCatalog(options?: {
-  readonly resolveError?: Error2;
-  readonly modelAlias?: string;
-  readonly thinkingEffort?: string;
-}): ISessionAgentProfileCatalog {
-  const base = normalizeAgentProfile({
-    name: 'reviewer',
-    description: 'Reviewer',
-    systemPrompt: () => 'base reviewer',
-  });
-  const modelAlias = options?.modelAlias ?? 'route-model';
-  const thinkingEffort = options?.thinkingEffort ?? 'high';
-  const effective = normalizeAgentProfile({
-    ...base,
-    routeId: 'reviewer.ui-k3',
-    modelAlias,
-    thinkingEffort,
-    systemPrompt: () => 'routed reviewer',
-  });
-  const route: ResolvedAgentProfileRoute = {
-    id: 'reviewer.ui-k3',
-    profile: base.name,
-    description: 'UI review route',
-    modelAlias,
-    thinkingEffort,
-    overriddenFields: ['model_alias', 'thinking_effort'],
-    effectiveProfile: effective,
-    lockedModelAlias: modelAlias,
-    lockedThinkingEffort: thinkingEffort,
-  };
-  return {
-    _serviceBrand: undefined,
-    ready: Promise.resolve(),
-    onDidChange: Event.None as ISessionAgentProfileCatalog['onDidChange'],
-    get: (name) => (name === base.name ? base : undefined),
-    getDefault: () => base,
-    list: () => [base],
-    listRoutes: () => [route],
-    routeDiagnostics: () => [],
-    resolveSelection: ({ profile, route: routeId }) => {
-      if (options?.resolveError !== undefined) throw options.resolveError;
-      if (routeId !== route.id || (profile !== undefined && profile !== base.name)) {
-        throw new Error2(ErrorCodes.ROUTE_UNKNOWN, `Unknown route "${routeId ?? ''}"`);
-      }
-      return { profile: effective, baseProfile: base, route };
-    },
-    inspect: () => undefined,
-    load: async () => {},
-    reload: async () => {},
-  };
-}
-
-function modelCatalogResolvingForLifecycle(...aliases: readonly string[]): IModelCatalog {
-  return {
-    _serviceBrand: undefined,
-    get: (alias: string) => {
-      if (!aliases.includes(alias)) {
-        throw new Error2(ErrorCodes.CONFIG_INVALID, `Model "${alias}" is not configured.`);
-      }
-      return { id: alias, supportEfforts: ['high'] } as unknown as Model;
-    },
-  } as unknown as IModelCatalog;
-}
-
 describe('AgentLifecycleService', () => {
   let disposables: DisposableStore;
   let ix: TestInstantiationService;
   let registerAgent: ReturnType<typeof vi.fn<ISessionMetadata['registerAgent']>>;
-  let unregisterAgent: ReturnType<typeof vi.fn<NonNullable<ISessionMetadata['unregisterAgent']>>>;
   let atomicDocs: Map<string, unknown>;
   let permissionModeSetMode: ReturnType<typeof vi.fn>;
   let stopAllOnExit: ReturnType<typeof vi.fn>;
@@ -246,7 +189,6 @@ describe('AgentLifecycleService', () => {
     ix.stub(IAppendLogStore, recordingAppendLog().store);
     stubBlobPassThrough(ix);
     registerAgent = vi.fn<ISessionMetadata['registerAgent']>().mockResolvedValue(undefined);
-    unregisterAgent = vi.fn<NonNullable<ISessionMetadata['unregisterAgent']>>().mockResolvedValue(undefined);
     atomicDocs = new Map();
     ix.stub(ISessionContext, {
       _serviceBrand: undefined,
@@ -259,6 +201,20 @@ describe('AgentLifecycleService', () => {
           ? 'sessions/ws_test/sess_test'
           : `sessions/ws_test/sess_test/${subKey}`,
     } as unknown as ISessionContext);
+    ix.stub(IRuntimeResolver, {
+      _serviceBrand: undefined,
+      inspect: (binding) => new FakeRuntime({ ...binding, generation: `${binding.runtimeId}-one` }),
+      acquire: (binding) => ({
+        runtime: new FakeRuntime({ ...binding, generation: `${binding.runtimeId}-one` }),
+        track: (resource) => resource,
+        dispose: () => {},
+      }),
+    });
+    ix.stub(IWorkspaceInstanceManager, {
+      _serviceBrand: undefined,
+      onDidChange: () => ({ dispose: () => {} }),
+      get: () => undefined,
+    });
     ix.stub(ISessionMetadata, {
       _serviceBrand: undefined,
       ready: Promise.resolve(),
@@ -268,7 +224,6 @@ describe('AgentLifecycleService', () => {
       setTitle: () => Promise.resolve(),
       setArchived: () => Promise.resolve(),
       registerAgent,
-      unregisterAgent,
     });
     ix.stub(IBootstrapService, {
       _serviceBrand: undefined,
@@ -307,6 +262,7 @@ describe('AgentLifecycleService', () => {
     ix.stub(ILogService, noopLog);
     ix.stub(IAgentPluginService, {
       _serviceBrand: undefined,
+      refreshSessionStart: async () => {},
     });
     ix.stub(IAgentToolRegistryService, {
       _serviceBrand: undefined,
@@ -592,138 +548,6 @@ describe('AgentLifecycleService', () => {
     expect(a.id).not.toBe(b.id);
   });
 
-  it.each([
-    {
-      name: 'feature-disabled route',
-      catalog: lifecycleRouteCatalog({
-        resolveError: new Error2(
-          ErrorCodes.ROUTE_FEATURE_DISABLED,
-          'Agent profile routes are disabled.',
-        ),
-      }),
-      binding: { route: 'reviewer.ui-k3' },
-      code: ErrorCodes.ROUTE_FEATURE_DISABLED,
-    },
-    {
-      name: 'missing route',
-      catalog: lifecycleRouteCatalog({
-        resolveError: new Error2(ErrorCodes.ROUTE_UNKNOWN, 'Unknown route.'),
-      }),
-      binding: { route: 'reviewer.missing' },
-      code: ErrorCodes.ROUTE_UNKNOWN,
-    },
-    {
-      name: 'conflicting locked model',
-      catalog: lifecycleRouteCatalog(),
-      binding: { route: 'reviewer.ui-k3', model: 'other-model' },
-      code: ErrorCodes.ROUTE_BINDING_CONFLICT,
-    },
-    {
-      name: 'conflicting locked effort',
-      catalog: lifecycleRouteCatalog(),
-      binding: { route: 'reviewer.ui-k3', thinking: 'low' },
-      code: ErrorCodes.ROUTE_BINDING_CONFLICT,
-    },
-    {
-      name: 'unavailable locked model',
-      catalog: lifecycleRouteCatalog(),
-      binding: { route: 'reviewer.ui-k3' },
-      code: ErrorCodes.ROUTE_MODEL_ALIAS_MISSING,
-    },
-  ])('rejects a $name before allocating an Agent scope', async ({ catalog, binding, code }) => {
-    ix.stub(ISessionAgentProfileCatalog, catalog);
-    ix.stub(IModelCatalog, modelCatalogResolvingForLifecycle());
-    const svc = ix.get(IAgentLifecycleService);
-
-    await expect(svc.create({ agentId: 'route-child', binding })).rejects.toMatchObject({ code });
-
-    expect(svc.get('route-child')).toBeUndefined();
-    expect(svc.list()).toEqual([]);
-    expect(registerAgent).not.toHaveBeenCalled();
-  });
-
-  it('rejects a locked effort the selected model cannot honor before allocation', async () => {
-    ix.stub(
-      ISessionAgentProfileCatalog,
-      lifecycleRouteCatalog({ modelAlias: 'always-model', thinkingEffort: 'off' }),
-    );
-    ix.stub(IModelCatalog, {
-      _serviceBrand: undefined,
-      get: () => ({
-        id: 'always-model',
-        alwaysThinking: true,
-        supportEfforts: ['high'],
-      }) as unknown as Model,
-    } as unknown as IModelCatalog);
-    const svc = ix.get(IAgentLifecycleService);
-
-    await expect(
-      svc.create({ agentId: 'route-child', binding: { route: 'reviewer.ui-k3' } }),
-    ).rejects.toMatchObject({ code: ErrorCodes.ROUTE_BINDING_CONFLICT });
-
-    expect(svc.get('route-child')).toBeUndefined();
-    expect(registerAgent).not.toHaveBeenCalled();
-  });
-
-  it('restores a persisted route snapshot after the flag is off and the sidecar is gone', async () => {
-    const resolveSelection = vi.fn(() => {
-      throw new Error2(ErrorCodes.ROUTE_FEATURE_DISABLED, 'Agent profile routes are disabled.');
-    });
-    const emptyCatalog = lifecycleRouteCatalog({
-      resolveError: new Error2(
-        ErrorCodes.ROUTE_FEATURE_DISABLED,
-        'Agent profile routes are disabled.',
-      ),
-    });
-    ix.stub(ISessionAgentProfileCatalog, {
-      ...emptyCatalog,
-      listRoutes: () => [],
-      resolveSelection,
-    });
-    ix.stub(IModelCatalog, modelCatalogResolvingForLifecycle('removed-route-model'));
-    ix.stub(
-      IAppendLogStore,
-      recordingAppendLog([
-        createWireMetadataRecord(1),
-        {
-          type: 'profile.bind',
-          modelAlias: 'removed-route-model',
-          profileName: 'reviewer',
-          routeId: 'reviewer.ui-k3',
-          lockedModelAlias: 'removed-route-model',
-          lockedThinkingEffort: 'high',
-          thinkingEffort: 'high',
-          serviceTier: 'priority',
-          requestParams: { route: true },
-          systemPrompt: 'persisted routed prompt',
-          activeToolNames: ['Read', 'Bash'],
-          toolAllowPolicies: [['Read', 'Bash'], ['Read']],
-          disallowedTools: ['Write', 'Bash'],
-          subagents: ['explore'],
-          time: 2,
-        } as WireRecord,
-      ]).store,
-    );
-
-    const handle = await ix.get(IAgentLifecycleService).create({ agentId: 'resumed-route' });
-
-    expect(handle.accessor.get(IAgentProfileService).data()).toMatchObject({
-      profileName: 'reviewer',
-      routeId: 'reviewer.ui-k3',
-      lockedModelAlias: 'removed-route-model',
-      lockedThinkingEffort: 'high',
-      thinkingLevel: 'high',
-      serviceTier: 'priority',
-      requestParams: { route: true },
-      systemPrompt: 'persisted routed prompt',
-      activeToolNames: ['Read', 'Bash'],
-      toolAllowPolicies: [['Read', 'Bash'], ['Read']],
-      disallowedTools: ['Write', 'Bash'],
-      subagents: ['explore'],
-    });
-    expect(resolveSelection).not.toHaveBeenCalled();
-  });
-
   it('persists complete agent metadata when creating a child', async () => {
     const svc = ix.get(IAgentLifecycleService);
 
@@ -740,25 +564,6 @@ describe('AgentLifecycleService', () => {
       parentAgentId: 'main',
       forkedFrom: 'main',
       labels: { swarmItem: 'swarm-item-1' },
-    });
-  });
-
-  it('persists an external delegator without fabricating main ownership', async () => {
-    const svc = ix.get(IAgentLifecycleService);
-
-    await svc.create({
-      agentId: 'external-child',
-      delegator: { kind: 'external', delegationId: 'delegation_test' },
-      labels: { externalDelegationTaskName: 'reviewer' },
-    });
-
-    expect(registerAgent).toHaveBeenCalledWith('external-child', {
-      homedir: '/tmp/kimi-agentLifecycle-home/sessions/ws_test/sess_test/agents/external-child',
-      type: 'independent',
-      parentAgentId: undefined,
-      delegator: { kind: 'external', delegationId: 'delegation_test' },
-      forkedFrom: undefined,
-      labels: { externalDelegationTaskName: 'reviewer' },
     });
   });
 
@@ -826,6 +631,21 @@ describe('AgentLifecycleService', () => {
     expect(permissionModeSetMode).not.toHaveBeenCalled();
   });
 
+  it('restores the runtime binding without persisting a generation', async () => {
+    ix.stub(IAppendLogStore, recordingAppendLog([
+      createWireMetadataRecord(1),
+      { type: 'runtime.set_binding', workspaceId: 'ws_test', runtimeId: 'remote', time: 2 },
+    ]).store);
+
+    const agent = await ix.get(IAgentLifecycleService).create({ agentId: 'main' });
+
+    expect(agent.accessor.get(IAgentRuntimeBindingService).current).toEqual({
+      workspaceId: 'ws_test',
+      runtimeId: 'remote',
+    });
+    expect(agent.accessor.get(IAgentRuntimeService).inspect().identity.generation).toBe('remote-one');
+  });
+
   it('broadcastPermissionMode sets the mode on every live agent', async () => {
     const svc = ix.get(IAgentLifecycleService);
     await svc.create({ agentId: 'main' });
@@ -845,6 +665,24 @@ describe('AgentLifecycleService', () => {
     svc.broadcastPermissionMode('auto');
 
     expect(permissionModeSetMode.mock.calls).toEqual([['auto']]);
+  });
+
+  it('broadcastPermissionMode leaves tower-worker agents pinned to their spawned mode', async () => {
+    const svc = ix.get(IAgentLifecycleService);
+    await svc.create({ agentId: 'main' });
+    const worker = await svc.create({ agentId: 'worker-1' });
+    worker.accessor.get(IWireService).dispatch(
+      profileBind({
+        profileName: TOWER_WORKER_PROFILE,
+        thinkingEffort: 'off',
+        systemPrompt: '',
+        disallowedTools: [],
+      }),
+    );
+
+    svc.broadcastPermissionMode('manual');
+
+    expect(permissionModeSetMode.mock.calls).toEqual([['manual']]);
   });
 
   it('wires MCP OAuth credentials through the session atomic document store', async () => {
@@ -942,7 +780,6 @@ describe('AgentLifecycleService', () => {
 
     await expect(svc.create({ agentId: 'main' })).rejects.toThrow('bootstrap boom');
     expect(svc.get('main')).toBeUndefined();
-    expect(unregisterAgent).toHaveBeenCalledWith('main');
 
     const main = await svc.create({ agentId: 'main' });
     expect(main.id).toBe('main');
@@ -977,99 +814,20 @@ describe('AgentLifecycleService', () => {
     });
   });
 
-  it.each([
-    {
-      name: 'disabled route',
-      catalog: lifecycleRouteCatalog({
-        resolveError: new Error2(
-          ErrorCodes.ROUTE_FEATURE_DISABLED,
-          'Agent profile routes are disabled.',
-        ),
-      }),
-      modelCatalog: modelCatalogResolvingForLifecycle('route-model'),
-      binding: { route: 'reviewer.ui-k3', model: 'route-model', thinking: 'high' },
-      code: ErrorCodes.ROUTE_FEATURE_DISABLED,
-    },
-    {
-      name: 'unknown route',
-      catalog: lifecycleRouteCatalog({
-        resolveError: new Error2(ErrorCodes.ROUTE_UNKNOWN, 'Unknown route.'),
-      }),
-      modelCatalog: modelCatalogResolvingForLifecycle('route-model'),
-      binding: { route: 'reviewer.missing', model: 'route-model', thinking: 'high' },
-      code: ErrorCodes.ROUTE_UNKNOWN,
-    },
-    {
-      name: 'missing locked model',
-      catalog: lifecycleRouteCatalog(),
-      modelCatalog: modelCatalogResolvingForLifecycle(),
-      binding: { route: 'reviewer.ui-k3', model: 'route-model', thinking: 'high' },
-      code: ErrorCodes.ROUTE_MODEL_ALIAS_MISSING,
-    },
-    {
-      name: 'conflicting locked model',
-      catalog: lifecycleRouteCatalog(),
-      modelCatalog: modelCatalogResolvingForLifecycle('route-model', 'other-model'),
-      binding: { route: 'reviewer.ui-k3', model: 'other-model', thinking: 'high' },
-      code: ErrorCodes.ROUTE_BINDING_CONFLICT,
-    },
-    {
-      name: 'conflicting locked effort',
-      catalog: lifecycleRouteCatalog(),
-      modelCatalog: modelCatalogResolvingForLifecycle('route-model'),
-      binding: { route: 'reviewer.ui-k3', model: 'route-model', thinking: 'low' },
-      code: ErrorCodes.ROUTE_BINDING_CONFLICT,
-    },
-  ])('fork rejects a $name without allocating or persisting a child', async ({
-    catalog,
-    modelCatalog,
-    binding,
-    code,
-  }) => {
-    ix.stub(ISessionAgentProfileCatalog, catalog);
-    ix.stub(IModelCatalog, modelCatalog);
+  it('fork snapshots the source runtime and remains independent', async () => {
     const svc = ix.get(IAgentLifecycleService);
     const source = await svc.create({ agentId: 'main' });
-    const beforeHandles = svc.list();
-    registerAgent.mockClear();
+    const sourceRuntime = source.accessor.get(IAgentRuntimeBindingService);
+    sourceRuntime.switch('remote');
 
-    await expect(
-      svc.fork(source.id, { agentId: 'forked-route', binding }),
-    ).rejects.toMatchObject({ code });
+    const child = await svc.fork('main', { agentId: 'forked-runtime' });
+    const childRuntime = child.accessor.get(IAgentRuntimeBindingService);
+    expect(childRuntime.current.runtimeId).toBe('remote');
 
-    expect(svc.get('forked-route')).toBeUndefined();
-    expect(svc.list()).toEqual(beforeHandles);
-    expect(registerAgent).not.toHaveBeenCalled();
-  });
-
-  it('fork rejects an unsupported locked effort without allocating or persisting a child', async () => {
-    ix.stub(
-      ISessionAgentProfileCatalog,
-      lifecycleRouteCatalog({ modelAlias: 'always-model', thinkingEffort: 'off' }),
-    );
-    ix.stub(IModelCatalog, {
-      _serviceBrand: undefined,
-      get: () => ({
-        id: 'always-model',
-        alwaysThinking: true,
-        supportEfforts: ['high'],
-      }) as unknown as Model,
-    } as unknown as IModelCatalog);
-    const svc = ix.get(IAgentLifecycleService);
-    const source = await svc.create({ agentId: 'main' });
-    const beforeHandles = svc.list();
-    registerAgent.mockClear();
-
-    await expect(
-      svc.fork(source.id, {
-        agentId: 'forked-route',
-        binding: { route: 'reviewer.ui-k3', model: 'always-model', thinking: 'off' },
-      }),
-    ).rejects.toMatchObject({ code: ErrorCodes.ROUTE_BINDING_CONFLICT });
-
-    expect(svc.get('forked-route')).toBeUndefined();
-    expect(svc.list()).toEqual(beforeHandles);
-    expect(registerAgent).not.toHaveBeenCalled();
+    sourceRuntime.switch('local');
+    expect(childRuntime.current.runtimeId).toBe('remote');
+    childRuntime.switch('local');
+    expect(sourceRuntime.current.runtimeId).toBe('local');
   });
 
   it('run throws when the agent does not exist', () => {
@@ -1092,23 +850,6 @@ describe('AgentLifecycleService', () => {
 
     await svc.remove(a.id);
     expect(disposed).toEqual([a.id]);
-  });
-
-  it('defers the create event until commit and discards incomplete metadata on rollback', async () => {
-    const svc = ix.get(IAgentLifecycleService);
-    const created: string[] = [];
-    disposables.add(svc.onDidCreate((handle) => created.push(handle.id)));
-
-    const committed = await svc.create({ agentId: 'committed', deferCreateEvent: true });
-    expect(created).toEqual([]);
-    svc.commitCreate?.(committed.id);
-    expect(created).toEqual(['committed']);
-
-    const rolledBack = await svc.create({ agentId: 'rolled-back', deferCreateEvent: true });
-    await svc.discard?.(rolledBack.id);
-    expect(created).toEqual(['committed']);
-    expect(svc.get('rolled-back')).toBeUndefined();
-    expect(unregisterAgent).toHaveBeenCalledWith('rolled-back');
   });
 
   it('de-dupes concurrent create calls for the same agent id', async () => {
@@ -1136,5 +877,73 @@ describe('AgentLifecycleService', () => {
 
     expect(second).toBe(first);
     expect(registerAgent).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe('subagent resume binding mode', () => {
+  function profileHandle(
+    id: string,
+    initial: { modelAlias: string; thinkingLevel: string },
+  ): {
+    handle: IAgentScopeHandle;
+    setModel: ReturnType<typeof vi.fn>;
+    setThinking: ReturnType<typeof vi.fn>;
+  } {
+    const data = {
+      modelAlias: initial.modelAlias,
+      thinkingLevel: initial.thinkingLevel,
+      modelCapabilities: {},
+      systemPrompt: '',
+    };
+    const setModel = vi.fn(async (model: string) => {
+      data.modelAlias = model;
+      return { model };
+    });
+    const setThinking = vi.fn((thinking: string) => {
+      data.thinkingLevel = thinking;
+    });
+    const profile = {
+      _serviceBrand: undefined,
+      data: () => data,
+      setModel,
+      setThinking,
+    } as unknown as IAgentProfileService;
+    return {
+      handle: {
+        id,
+        accessor: { get: () => profile },
+      } as unknown as IAgentScopeHandle,
+      setModel,
+      setThinking,
+    };
+  }
+
+  it('refreshes inherited children and leaves fixed children frozen', async () => {
+    const caller = profileHandle('main', { modelAlias: 'provider/new', thinkingLevel: 'high' });
+    const inherited = profileHandle('agent-inherit', {
+      modelAlias: 'provider/old',
+      thinkingLevel: 'low',
+    });
+    const fixed = profileHandle('agent-fixed', {
+      modelAlias: 'provider/old',
+      thinkingLevel: 'low',
+    });
+
+    await refreshInheritedSubagentBinding(caller.handle, inherited.handle, {
+      homedir: '',
+      type: 'sub',
+      labels: withSubagentBindingMode({ parentAgentId: 'main' }, 'inherit'),
+    });
+    await refreshInheritedSubagentBinding(caller.handle, fixed.handle, {
+      homedir: '',
+      type: 'sub',
+      labels: withSubagentBindingMode({ parentAgentId: 'main' }, 'fixed'),
+    });
+
+    expect(inherited.setModel).toHaveBeenCalledWith('provider/new');
+    expect(inherited.setThinking).toHaveBeenCalledWith('high');
+    expect(fixed.setModel).not.toHaveBeenCalled();
+    expect(fixed.setThinking).not.toHaveBeenCalled();
   });
 });

@@ -7,12 +7,14 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
 import { IHostTerminalService } from '#/os/interface/terminal';
 import { HostTerminalService } from '#/os/backends/node-local/hostTerminalService';
+import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import {
   ISessionTerminalService,
   SessionTerminalService,
 } from '#/session/terminal/terminalService';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import { IRuntimeResolver } from '#/workspace/workspaceInstance/workspaceInstanceManager';
 
 describe('native Windows terminal lifecycle', () => {
   let disposables: DisposableStore | undefined;
@@ -30,6 +32,43 @@ describe('native Windows terminal lifecycle', () => {
         additionalServices: (reg) => {
           reg.define(IHostTerminalService, HostTerminalService);
           reg.define(ISessionTerminalService, SessionTerminalService);
+          reg.defineInstance(IRuntimeResolver, {
+            _serviceBrand: undefined,
+            inspect: () => {
+              throw new Error('inspect is not used by this smoke test');
+            },
+            acquire: () => {
+              const base = new FakeRuntime(
+                {
+                  workspaceId: 'native-terminal-workspace',
+                  runtimeId: 'local',
+                  generation: 'native-smoke',
+                },
+                {
+                  capabilities: ['terminal'],
+                  pathClass: process.platform === 'win32' ? 'win32' : 'posix',
+                },
+              );
+              const runtime = Object.assign(base, {
+                terminal: new HostTerminalService(),
+                environment: {
+                  ...base.environment,
+                  // The smoke test asserts the spawned shell is a real file and
+                  // drives it with cmd-style input; pin the shell to ComSpec.
+                  shellPath: process.env['ComSpec'] ?? 'C:\\Windows\\System32\\cmd.exe',
+                },
+              });
+              let active = true;
+              return {
+                runtime,
+                track: <T extends { dispose(): void | Promise<void> }>(resource: T): T => resource,
+                dispose: () => {
+                  if (!active) return;
+                  active = false;
+                },
+              };
+            },
+          } satisfies IRuntimeResolver);
           reg.defineInstance(ISessionWorkspaceContext, {
             _serviceBrand: undefined,
             workDir: cwd,
@@ -53,7 +92,7 @@ describe('native Windows terminal lifecycle', () => {
       });
 
       const service = ix.get(ISessionTerminalService);
-      const terminal = await service.create({ cols: 90, rows: 28 });
+      const terminal = await service.create({ runtime_id: 'local', cols: 90, rows: 28 });
       expect((await stat(terminal.shell)).isFile()).toBe(true);
 
       let output = '';

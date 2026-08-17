@@ -33,7 +33,9 @@ export interface RegisterWsV1Options {
   readonly flushIntervalMs?: number;
   readonly maxBatchSize?: number;
   readonly highWaterMarkBytes?: number;
-  /** Heartbeat interval forwarded to {@link WsConnectionV1}; `0` disables. */
+  /** Heartbeat ping cadence override; `0` disables the heartbeat. */
+  readonly heartbeatIntervalMs?: number;
+  /** @deprecated Use `heartbeatIntervalMs`; retained for kiki host compatibility. */
   readonly heartbeatMs?: number;
 }
 
@@ -57,6 +59,7 @@ export function registerWsV1(core: Scope, opts: RegisterWsV1Options): WebSocketS
       flushIntervalMs: opts.flushIntervalMs,
       maxBatchSize: opts.maxBatchSize,
       highWaterMarkBytes: opts.highWaterMarkBytes,
+      heartbeatIntervalMs: opts.heartbeatIntervalMs,
       heartbeatMs: opts.heartbeatMs,
     });
     socket.on('close', () => registry.remove(conn.id));

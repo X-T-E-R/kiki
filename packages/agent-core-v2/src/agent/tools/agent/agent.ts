@@ -65,10 +65,10 @@ export const SubagentToolInputSchema = z.preprocess(
         'If true, return immediately without waiting for completion. Prefer false unless the task can run independently and there is a clear benefit to not waiting.',
       ),
     model: z
-      .enum(['secondary', 'primary'])
+      .string()
       .optional()
       .describe(
-        'Legacy symbolic model selector for a new subagent: "secondary" uses the configured secondary model, while "primary" inherits your current model binding. Rejected with resume.',
+        'Which model to run the new subagent on: one of the pool aliases listed under "Available models", or "primary" to freeze the caller model and thinking binding at spawn time. When omitted, the configured pool default is used; without an enabled pool the child inherits the caller binding. Rejected with resume.',
       ),
     model_alias: z
       .string()

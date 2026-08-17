@@ -7,8 +7,10 @@
  * Pure data; no scoped state.
  */
 
-import type { AgentModelPreference } from '#/app/agentProfileCatalog/agentProfileCatalog';
-import type { AgentProfileRouteDefinition } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import type {
+  AgentModelPreference,
+  AgentProfileRouteDefinition,
+} from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { SkippedAgentFile } from '#/app/agentProfileCatalog/agentProfileContribution';
 import type { RequestParams, ServiceTier } from '#/kosong/contract/provider';
 

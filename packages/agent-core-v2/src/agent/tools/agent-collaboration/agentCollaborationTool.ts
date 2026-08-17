@@ -22,7 +22,9 @@ import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sess
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
 import { subagentAllowlistFor, subagentTypeNotAllowedMessage } from '#/app/agentProfileCatalog/profile-shared';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
-import { ISessionProcessRunner } from '#/session/process/processRunner';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import type { RuntimeLease } from '#/runtime/runtime';
+import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { ILogService } from '#/_base/log/log';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
@@ -32,7 +34,12 @@ import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import { modelSupportsThinkingEffort, requiresStrictThinkingValidation } from '#/kosong/model/thinking';
 import { AGENTS_SECTION, type AgentsConfig } from '#/session/agentCollaboration/configSection';
 import { AGENT_COLLABORATION_FLAG_ID } from '#/session/agentCollaboration/flag';
-import { resolveAgentCollaborationBinding, resolveSubagentTimeoutMs } from '#/session/subagent/configSection';
+import {
+  resolveAgentCollaborationBinding,
+  resolveSubagentTimeoutMs,
+  subagentBindingMode,
+} from '#/session/subagent/configSection';
+import { withSubagentBindingMode } from '#/session/agentLifecycle/agentLifecycleService';
 import { SubagentTask, type SubagentHandle } from '#/agent/tools/agent/subagent-task';
 import { resolveAgentTaskConfig } from '#/agent/task/configSection';
 import {
@@ -108,7 +115,7 @@ abstract class AgentCollaborationToolBase<T> implements AgentTool<T> {
     @IAgentUserToolService protected readonly userTools: IAgentUserToolService,
     @ISessionMetadata protected readonly metadata: ISessionMetadata,
     @ISessionWorkspaceContext protected readonly workspace: ISessionWorkspaceContext,
-    @ISessionProcessRunner protected readonly processRunner: ISessionProcessRunner,
+    @IAgentRuntimeService protected readonly runtime: IAgentRuntimeService,
     @ILogService protected readonly log: ILogService,
     @IConfigService protected readonly config: IConfigService,
     @IFlagService protected readonly flags: IFlagService,
@@ -231,6 +238,7 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
     let controller: AbortController | undefined;
     let taskId: string | undefined;
     let bridge: DeferredRunBridge | undefined;
+    let runtimeLease: RuntimeLease | undefined;
     try {
       taskName = canonicalTaskName(args.task_name);
       const message = nonblank(args.message, 'message');
@@ -254,7 +262,13 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
       if (binding.thinking !== undefined && !modelSupportsThinkingEffort(binding.thinking, model, strictEffort)) {
         throw new Error(`Thinking effort "${binding.thinking}" is not supported by model "${binding.model}".`);
       }
-      const prompt = await applyProfilePromptPrefix(selectedProfile, message, { cwd: this.workspace.workDir, runner: this.processRunner, log: this.log });
+      runtimeLease = this.runtime.acquire(['process']);
+      const view = new RuntimeWorkspaceView(runtimeLease.runtime, this.workspace);
+      const prompt = await applyProfilePromptPrefix(selectedProfile, message, {
+        cwd: view.workDir,
+        process: runtimeLease.runtime.process!,
+        log: this.log,
+      });
       const delegator = { kind: 'agent' as const, agentId: this.callerAgentId };
       if (!(await this.collaborationRegistry.reserve(taskName, delegator))) return failure(`Named agent "${taskName}" already exists in this session.`);
 
@@ -262,9 +276,13 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
       if (taskId === undefined) throw new Error('Agent task service cannot allocate a transactional task id.');
       created = await this.lifecycle.create({ binding: { profile: selectedProfile.name, model: binding.model,
         thinking: binding.thinking, strictThinking: binding.thinking !== undefined }, deferCreateEvent: true,
+        runtimeId: runtimeLease.runtime.identity.runtimeId,
         delegator: { kind: 'agent', agentId: this.callerAgentId },
-        labels: { ...subagentLabels(this.callerAgentId), [COLLABORATION_TASK_NAME_LABEL]: taskName,
-          [COLLABORATION_AGENT_TYPE_LABEL]: selectedProfile.name, [COLLABORATION_LATEST_TASK_LABEL]: taskId } });
+        labels: withSubagentBindingMode(
+          { ...subagentLabels(this.callerAgentId), [COLLABORATION_TASK_NAME_LABEL]: taskName,
+            [COLLABORATION_AGENT_TYPE_LABEL]: selectedProfile.name, [COLLABORATION_LATEST_TASK_LABEL]: taskId },
+          subagentBindingMode(binding),
+        ) });
       created.accessor.get(IAgentPermissionModeService).setMode(this.permissionMode.mode);
       created.accessor.get(IAgentUserToolService).inheritUserTools(this.userTools);
       controller = new AbortController();
@@ -287,6 +305,8 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
       if (created !== undefined) await this.lifecycle.discard?.(created.id).catch(() => {});
       if (taskName !== undefined) this.collaborationRegistry.release(taskName, { kind: 'agent', agentId: this.callerAgentId });
       return failure(errorMessage(error));
+    } finally {
+      runtimeLease?.dispose();
     }
   }
 }
@@ -415,7 +435,12 @@ export class SendMessageTool extends AgentCollaborationToolBase<SendMessageInput
 function collaborationEnabled(accessor: ServicesAccessor): boolean {
   return accessor.get(IFlagService).enabled(AGENT_COLLABORATION_FLAG_ID) && accessor.get(IConfigService).get<AgentsConfig | undefined>(AGENTS_SECTION)?.enabled !== false;
 }
-registerAgentToolService(ISpawnAgentTool, SpawnAgentTool, { name: 'spawn_agent', domain: 'agentCollaboration', when: collaborationEnabled });
+registerAgentToolService(ISpawnAgentTool, SpawnAgentTool, {
+  name: 'spawn_agent',
+  domain: 'agentCollaboration',
+  when: collaborationEnabled,
+  requiredRuntimeCapabilities: ['process'],
+});
 registerAgentToolService(IListAgentsTool, ListAgentsTool, { name: 'list_agents', domain: 'agentCollaboration', when: collaborationEnabled });
 registerAgentToolService(IWaitAgentTool, WaitAgentTool, { name: 'wait_agent', domain: 'agentCollaboration', when: collaborationEnabled });
 registerAgentToolService(IFollowupTaskTool, FollowupTaskTool, { name: 'followup_task', domain: 'agentCollaboration', when: collaborationEnabled });

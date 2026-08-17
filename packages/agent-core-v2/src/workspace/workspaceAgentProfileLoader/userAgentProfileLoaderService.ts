@@ -12,9 +12,7 @@
  * scope.
  */
 
-import { LifecycleScope } from '#/app/scopes';
 
-import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
 import { subtreeWatchFilter } from '#/_base/utils/paths';
 import { TimeoutTimer } from '#/_base/utils/timer';
@@ -33,6 +31,7 @@ import {
   AGENT_PROFILE_SOURCE_PRIORITY,
   type AgentProfileContribution,
 } from '#/app/agentProfileCatalog/agentProfileContribution';
+import type { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
 import { profilesFromDiscovery } from './internal/agentProfileFromFile';
 import { userAgentRoots, userAgentRootWatchPlans } from './internal/agentRoots';
 import { loadSystemMdProfile } from './internal/systemFile';
@@ -61,8 +60,9 @@ export class UserAgentProfileLoaderService
     @IWorkspaceContext private readonly workspace: IWorkspaceContext,
     @IHostFsWatchService private readonly fsWatch: IHostFsWatchService,
     @IFlagService private readonly flags: IFlagService,
+    registry?: IAgentProfileRegistry,
   ) {
-    super(log);
+    super(log, registry);
     this.defaultProfile = builtin.getDefault();
     this.watchReady = this.watchUserAgentRoots();
     this.start();
@@ -125,11 +125,3 @@ export class UserAgentProfileLoaderService
     }
   }
 }
-
-registerScopedService(
-  LifecycleScope.Workspace,
-  IUserAgentProfileLoader,
-  UserAgentProfileLoaderService,
-  ScopeActivation.OnScopeCreated,
-  'workspaceAgentProfileLoader',
-);

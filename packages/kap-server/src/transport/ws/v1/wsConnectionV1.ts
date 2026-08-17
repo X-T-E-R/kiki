@@ -13,15 +13,13 @@
  * them to the same shared attach path (`attachSession`). Transcript grade
  * subscriptions are a separate concern carried ONLY by `subscribe_v2`.
  *
- * The server keeps the connection alive with an application-level heartbeat:
- * `server_hello` advertises `heartbeat_ms` and a per-connection timer sends
- * `ping` frames at that interval (clients answer with `pong`, which is
- * consumed as a no-op). TCP keepalive alone cannot surface half-open
- * connections before the OS timeout, so clients arm their own stale-inbound
- * detection from the advertised interval (see docs/server-heartbeat.md).
- * Apart from the heartbeat, the server never initiates a disconnect: a
- * connection stays open until the client closes it or the process shuts
- * down.
+ * Heartbeat: the server sends an application-level `ping` frame every
+ * {@link DEFAULT_HEARTBEAT_INTERVAL_MS} (advertised as `heartbeat_ms` in
+ * `server_hello`). Protocol-level WS ping/pong is not used because browser
+ * clients cannot observe it from JS. Any inbound frame proves the peer is
+ * alive; after two silent cycles the connection is closed with 1001. The
+ * heartbeat can be disabled explicitly for legacy hosts by configuring a
+ * zero interval, in which case `server_hello` omits `heartbeat_ms`.
  */
 
 import {
@@ -77,11 +75,13 @@ import { ErrorCode } from '../../../protocol/error-codes';
 const DEFAULT_MAX_BUFFER_SIZE = 1000;
 
 /**
- * Application-level heartbeat interval advertised in `server_hello` and used
- * for the per-connection `ping` timer. Clients arm stale-inbound detection at
- * `max(45s, 3×interval)`, so 20s yields a ~60s half-open detection window.
+ * Application-level heartbeat cadence. 10s keeps connections alive through
+ * intermediaries with ~30s idle timeouts (3x headroom) and bounds how long a
+ * half-open connection goes unnoticed.
  */
-const DEFAULT_HEARTBEAT_INTERVAL_MS = 20_000;
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000;
+/** Close the connection once no inbound frame has arrived for this many cycles. */
+const HEARTBEAT_MISS_LIMIT = 2;
 
 /** Per-session subscription state held by the connection (see `TargetSubscription`). */
 type SessionSubscription = TargetSubscription;
@@ -129,11 +129,9 @@ export interface WsConnectionV1Options {
   readonly maxBatchSize?: number;
   /** `socket.bufferedAmount` above which flushing is deferred (backpressure). */
   readonly highWaterMarkBytes?: number;
-  /**
-   * Application-level heartbeat interval advertised in `server_hello`
-   * (milliseconds). Defaults to {@link DEFAULT_HEARTBEAT_INTERVAL_MS};
-   * `0` disables the heartbeat entirely (legacy behavior).
-   */
+  /** Heartbeat ping cadence; `0` disables it and omits `heartbeat_ms`. */
+  readonly heartbeatIntervalMs?: number;
+  /** @deprecated Use `heartbeatIntervalMs`; retained for kiki host compatibility. */
   readonly heartbeatMs?: number;
 }
 
@@ -153,11 +151,8 @@ export class WsConnectionV1 implements BroadcastTarget {
   private readonly flushIntervalMs: number;
   private readonly maxBatchSize: number;
   private readonly highWaterMarkBytes: number;
+  private readonly heartbeatIntervalMs: number;
   private readonly logger?: JournalLogger;
-  /** Heartbeat interval in ms; `0` disables the per-connection ping timer. */
-  private readonly heartbeatMs: number;
-  /** Periodic `ping` frame timer (see `sendHeartbeat`). */
-  private heartbeatTimer?: ReturnType<typeof setInterval>;
 
   private closed = false;
   private gotClientHello = false;
@@ -180,6 +175,10 @@ export class WsConnectionV1 implements BroadcastTarget {
   private backpressureSince?: number;
   private readonly terminalAttachments = new Map<string, ISessionTerminalService>();
 
+  private heartbeatTimer?: ReturnType<typeof setInterval>;
+  /** Epoch ms of the most recent inbound frame — any frame proves the peer is alive. */
+  private lastInboundAt = Date.now();
+
   constructor(opts: WsConnectionV1Options) {
     this.id = `conn_${ulid()}`;
     this.connectedAt = new Date().toISOString();
@@ -196,7 +195,8 @@ export class WsConnectionV1 implements BroadcastTarget {
     this.flushIntervalMs = opts.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS;
     this.maxBatchSize = opts.maxBatchSize ?? DEFAULT_MAX_BATCH_SIZE;
     this.highWaterMarkBytes = opts.highWaterMarkBytes ?? DEFAULT_HIGH_WATER_MARK_BYTES;
-    this.heartbeatMs = opts.heartbeatMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+    this.heartbeatIntervalMs =
+      opts.heartbeatIntervalMs ?? opts.heartbeatMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
 
     this.socket.on('message', (data: RawData) => this.onMessage(data));
     this.socket.on('close', () => this.onClose());
@@ -211,7 +211,8 @@ export class WsConnectionV1 implements BroadcastTarget {
       buildServerHello({
         ws_connection_id: this.id,
         protocol_version: WS_PROTOCOL_VERSION,
-        ...(this.heartbeatMs > 0 ? { heartbeat_ms: this.heartbeatMs } : {}),
+        heartbeat_ms:
+          this.heartbeatIntervalMs > 0 ? this.heartbeatIntervalMs : undefined,
         max_event_buffer_size: this.maxBufferSize,
         capabilities: { event_batching: false, compression: false },
       }),
@@ -219,18 +220,11 @@ export class WsConnectionV1 implements BroadcastTarget {
     this.startHeartbeat();
   }
 
-  /**
-   * Ping the client at the advertised interval. The `pong` reply is consumed
-   * as a no-op — the point is that a live client produces inbound traffic, so
-   * the client's own stale-inbound detection (armed by `heartbeat_ms`) can
-   * flag a half-open transport.
-   */
   private startHeartbeat(): void {
-    if (this.heartbeatMs <= 0 || this.heartbeatTimer !== undefined) return;
+    if (this.heartbeatIntervalMs <= 0 || this.heartbeatTimer !== undefined) return;
     this.heartbeatTimer = setInterval(() => {
-      if (this.closed) return;
-      this.sendImmediateFrame(buildPing(ulid()));
-    }, this.heartbeatMs);
+      this.onHeartbeat();
+    }, this.heartbeatIntervalMs);
     this.heartbeatTimer.unref?.();
   }
 
@@ -263,8 +257,13 @@ export class WsConnectionV1 implements BroadcastTarget {
       return; // non-JSON frame — drop
     }
     if (typeof frame?.type !== 'string') return;
+    // Any well-formed inbound frame — pongs included — proves the peer is alive.
+    this.lastInboundAt = Date.now();
 
     switch (frame.type) {
+      case 'pong':
+        // Heartbeat reply; the liveness timestamp above is all it needs to do.
+        return;
       case 'client_hello':
         this.enqueueControl(() => this.onClientHello(frame));
         return;
@@ -293,9 +292,6 @@ export class WsConnectionV1 implements BroadcastTarget {
       case 'terminal_close':
         this.enqueueControl(() => this.onTerminalControl(frame));
         return;
-      case 'pong':
-        // Heartbeat reply — consumed as a no-op (see `startHeartbeat`).
-        return;
       default:
         // Unknown / not-yet-implemented control frame (e.g. abort) — ignore.
         return;
@@ -306,6 +302,19 @@ export class WsConnectionV1 implements BroadcastTarget {
     this.controlQueue = this.controlQueue.then(task).catch(() => {
       // A failed control frame must not wedge the queue behind it.
     });
+  }
+
+  /**
+   * Heartbeat tick: reap first, ping second. A peer silent for two full cycles
+   * (no pong, no control traffic at all) is half-open — close it rather than
+   * ping a dead pipe. The close also fires the client's reconnect path.
+   */
+  private onHeartbeat(): void {
+    if (Date.now() - this.lastInboundAt >= this.heartbeatIntervalMs * HEARTBEAT_MISS_LIMIT) {
+      this.close(1001, 'heartbeat timeout');
+      return;
+    }
+    this.sendImmediateFrame(buildPing(ulid()));
   }
 
   private async onClientHello(frame: InboundFrame): Promise<void> {
@@ -481,6 +490,10 @@ export class WsConnectionV1 implements BroadcastTarget {
   private async onWatchFs(frame: InboundFrame, isAdd: boolean): Promise<void> {
     const payload = frame.payload ?? {};
     const sessionId = typeof payload['session_id'] === 'string' ? payload['session_id'] : '';
+    const runtimeId =
+      typeof payload['runtime_id'] === 'string' && payload['runtime_id'].length > 0
+        ? payload['runtime_id']
+        : 'local';
     const paths = asStringArray(payload['paths']);
     const bridge = this.fsWatchBridge;
     if (bridge === undefined) {
@@ -490,8 +503,8 @@ export class WsConnectionV1 implements BroadcastTarget {
     let result;
     try {
       result = isAdd
-        ? await bridge.addWatch(this, sessionId, paths)
-        : await bridge.removeWatch(this, sessionId, paths);
+        ? await bridge.addWatch(this, sessionId, paths, runtimeId)
+        : await bridge.removeWatch(this, sessionId, paths, runtimeId);
     } catch (error) {
       this.sendImmediateFrame(
         buildAck(frame.id ?? '', 1, 'internal error', {

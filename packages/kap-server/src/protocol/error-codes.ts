@@ -72,8 +72,13 @@ export const ErrorCode = {
   TOOL_CALL_NOT_FOUND: 40416,
   /** 目录（models.dev catalog）中不存在该条目 */
   CATALOG_ENTRY_NOT_FOUND: 40417,
+  /** capability_id 不存在 */
+  CAPABILITY_NOT_FOUND: 40418,
+  /** plugin_id 不存在 */
+  PLUGIN_NOT_FOUND: 40419,
+  RUNTIME_NOT_FOUND: 40420,
   /** peer thread reference does not resolve to an existing session */
-  THREAD_NOT_FOUND: 40418,
+  THREAD_NOT_FOUND: 40421,
 
   /** session 有正在进行的 prompt，拒绝新请求 */
   SESSION_BUSY: 40901,
@@ -120,18 +125,25 @@ export const ErrorCode = {
   PROVIDER_ALREADY_EXISTS: 40921,
   /** page_token 损坏 / 版本不符 / 与当前查询条件不匹配，需从首页重新拉取 */
   PAGE_TOKEN_MISMATCH: 40922,
+  /** 会话标题生成不可用（flag 未开 / 无 managed OAuth 登录 / 还没有 prompt / 后端失败） */
+  SESSION_TITLE_UNAVAILABLE: 40923,
+  /** capability 正在安装中，拒绝并发安装 */
+  CAPABILITY_INSTALL_IN_PROGRESS: 40924,
+  /** 当前平台/架构不支持该 capability */
+  CAPABILITY_UNSUPPORTED: 40925,
+  RUNTIME_UNAVAILABLE: 40926,
   /** target thread is archived */
-  THREAD_ARCHIVED: 40923,
+  THREAD_ARCHIVED: 40927,
   /** peer-thread communication is disabled for the workspace */
-  THREAD_DISABLED: 40924,
+  THREAD_DISABLED: 40928,
   /** the reference points at another host */
-  THREAD_CROSS_HOST: 40925,
+  THREAD_CROSS_HOST: 40929,
   /** source and target identify the same thread */
-  THREAD_SELF_SEND: 40926,
+  THREAD_SELF_SEND: 40930,
   /** thread cursor is malformed, stale, or belongs to another query */
-  THREAD_CURSOR_INVALID: 40927,
+  THREAD_CURSOR_INVALID: 40931,
   /** an idempotency key was reused with a different payload */
-  THREAD_IDEMPOTENCY_CONFLICT: 40928,
+  THREAD_IDEMPOTENCY_CONFLICT: 40932,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,

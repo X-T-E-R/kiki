@@ -118,7 +118,7 @@
 
 1. **外部#1 心跳**：属实，本仓库 `docs/server-heartbeat.md` 自证；客户端已前向兼容，修复在服务端（→ D1-1）。本地审计此前未覆盖此点，无冲突。
 2. **外部#7 v1 resume 继承**：属实（diff 取证确认 fork 删除再继承逻辑且未隔离）。F1 实现折中：显式绑定保留、继承型绑定 resume 时重新继承父模型。**合入后需用户确认是否符合预期产品语义。**
-3. **外部#19 上游重复修复**：属实，`upstream/main` 领先 1 提交 `01c74e9`（session profile catalog 隔离）与 fork 同名 changeset 重叠。下次同步上游时采用上游版本并去重，本批不改。
+3. **外部#19 上游重复修复**：属实，`upstream/main` 领先 1 提交 `01c74e9`（session profile catalog 隔离）与 fork 同名 changeset 重叠。下次同步上游时采用上游版本并去重，本批不改。**（2026-08-17 已执行：采用上游版本，fork 重复 changeset 已删；见上游同步记录。）**
 4. **外部#22 台账 KG-001**：与本地审计一致（记录过时、实现为有意演进），E8 更新台账而非删除。
 5. **外部#2/#3（会话互斥/handler 回收）**：属实，但分别需要跨进程锁与上游生命周期架构级设计 → BK3/BK2。
 6. 其余外部条目与本地审计结论一致或互补，未见本地审计被推翻的结论。
@@ -136,6 +136,18 @@
 | F | fix/collab-semantics | 协作语义（F1-F5） | 5 |
 
 合入方式：顺序 `--no-ff` 合并；唯一人工解冲突为 `apps/kiki-gui/src/i18n/{zh,en}.ts` 三块批次键追加（Batch C/B/A 合并保留）。
+
+## 上游同步记录（2026-08-17：upstream 0.36.1）
+
+- 范围：`sync/upstream-0.36.1` worktree 合并 `upstream/main` `437a1b8b` → `44a6c70e`（69 commits，`@moonshot-ai/kimi-code` 0.36.1）。49 个冲突路径（44 内容 + 5 modify/delete），外加 4 处 kiki 独有代码对上游已删 API 的语义迁移。
+- 关键裁决：
+  1. v2 核心全面采用上游新架构：`ISessionManager` App 级会话门面（取代 `IWorkspaceLifecycleService.handlerFor` 组合）、声明式 subagent model pool（上游 #2700）、`features/` 重组、`runtimeBinding` 进程能力模型。不保留 workspaceLifecycle 双轨兼容层。
+  2. F1 语义在模型池上重表达：spawn 时分类 `inherit | fixed` 并经 `AgentMeta.labels['subagentBindingMode']` 持久化；resume/retry 时 inherit 跟随父当前 model/thinking、fixed 冻结（显式 `primary` 按 spawn 时父绑定冻结）；无标签旧 agent 安全按 fixed；fork 经 `labelsFromAgentMeta` 复制。**FU3 仍未决**（仅持久化 mode 二态，完整 spawn-source 持久化待产品拍板）。
+  3. thread wire 错误码避开上游新增码段重新编号，并跨 `packages/protocol` / `kap-server` / `klient` 三包同步：40421、40927–40932。属协议变更，GUI 与服务端同仓发布保持一致。
+  4. 按裁决记录 #3 删除重复 changeset（`isolate-session-profile-catalogs`）；`configure-subagent-bindings` changeset 改写为 pool 语义；`coder.yaml` 保留 kiki 的 `Agent`/`AgentSwarm` 工具条目（不采用上游删除）。
+  5. 「委派 root 禁止 fork」断言移植到新架构测试（`test/app/sessionManager/sessionManagerService.test.ts`）。
+- 主要修复（对 kiki 直接受益）：#2911 自托管 OpenAI 兼容端点 tool_call id 重编号挂起修复、#2876 Windows file-watcher（盘符根/UNC）、#2899 MCP OAuth 取消悬挂、TUI 启动冻结修复、subagent 活动查看器、step-retry 等。
+- 验证证据：15 包 typecheck 全绿；kiki-gui 31 文件 418 测试全绿；v2 合并触及区定向 555+ 测试全绿；klient 线程契约/错误码 66/66（单 worker）；protocol 529/529；reviewer 独立审查（diff-of-diffs 保全、F1 抽查、双轨 grep）通过。全量套件在本机存在环境性红测，归因见 FU17-FU20，均非本轮合并引入。
 
 ## Follow-ups（批次实施中新增，未排期）
 
@@ -157,3 +169,8 @@
 | FU14 | P2 | 设置页 providers 草稿的 dirty-guard 只拦设置页内部区块切换；经应用侧栏导航离开（如 Capabilities）时不弹确认，未保存草稿静默丢失（dsh 设计吸纳批次合并验证期发现） | G |
 | FU15 | P3 | QueueStrip 行内编辑已实现 `onEdit` 但未接线：kap-server 无原位编辑端点（保存=移除+重发会落队尾，位置语义需产品确认）；接线只需 SessionView 传一行 handler | G |
 | FU16 | P3 | turn tail 的 tok/s 与 ContextMeter 的 system/tools/messages breakdown 未做：wire 无 per-turn token 计数与上下文分段数据，需服务端补数据后再上 | G |
+| FU17 | P2 | `externalDelegationRoute.test.ts`「workspace 绑定漂移拒启动」用例在合并前基线即红：`start.ts` fail-open 吞掉绑定校验错误继续启动 vs 测试期望 fail-closed——属产品语义裁决（fail-closed 还是「edge 禁用但服务继续」），未翻转 | 同步 |
+| FU18 | P2 | 上游 0.36.1 自带测试在本机 Windows 环境成片失败（v2 约 157 例：nvm4w shim `spawn C:\nvmNw\nodejs\node.exe ENOENT`、posix 路径断言、5s 超时为主）；涉败文件与上游逐字节一致，非合并回归；待对照上游 CI 或修本机环境 | 同步 |
+| FU19 | P3 | `config-manifest.toml` / `wire-manifest.d.ts` 未用 gen 脚本重生（本机 Node 24.12 下 gen 脚本因 tsx `#/` 内部导入解析失败，基线亦然）；Node ≥24.15 环境重跑 `gen:config-manifest` / `gen:wire-manifest` 核对（`state-manifest.d.ts` 已重生） | 同步 |
+| FU20 | P3 | 生产源码旧术语注释残留（`IWorkspaceLifecycleService`、`ISessionProcessRunner` 等仅注释，无 live 引用）清理，避免后续维护误判 | 同步 |
+| FU21 | P3 | v1 `test/harness/coder-subagent-tools.test.ts` 4 例与 `test/profile/agent-profile-loader.test.ts` 快照（FU1）在基线即红；本轮保持原样未修 | 同步 |

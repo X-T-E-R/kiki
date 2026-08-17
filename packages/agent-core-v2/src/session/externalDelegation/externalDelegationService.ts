@@ -15,6 +15,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { Error2, ErrorCodes, toKimiErrorPayload } from '#/errors';
 import { IFlagService } from '#/app/flag/flag';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
@@ -30,12 +31,10 @@ import { IAgentLoopService } from '#/agent/loop/loop';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
 import { subagentAllowlistFor } from '#/app/agentProfileCatalog/profile-shared';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
-import { ISessionProcessRunner } from '#/session/process/processRunner';
+import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { ILogService } from '#/_base/log/log';
 import { IAgentCollaborationRegistry } from '#/session/agentCollaboration/registry';
-import { ISessionLifecycleHooks } from '#/session/sessionLifecycleHooks/sessionLifecycleHooks';
-import type { SessionLifecycleHookSlots } from '#/session/sessionLifecycleHooks/sessionLifecycleHooks';
-import type { Hooks } from '#/hooks';
 
 import { EXTERNAL_DELEGATION_FLAG_ID } from './flag';
 import {
@@ -120,31 +119,23 @@ export class SessionExternalDelegationService
     @ISessionSubagentService private readonly runs: ISessionSubagentService,
     @ISessionAgentProfileCatalog private readonly profiles: ISessionAgentProfileCatalog,
     @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
-    @ISessionProcessRunner private readonly processRunner: ISessionProcessRunner,
     @ILogService private readonly log: ILogService,
     @IAgentCollaborationRegistry private readonly names: IAgentCollaborationRegistry,
-    @ISessionLifecycleHooks lifecycleHooks: Hooks<SessionLifecycleHookSlots>,
+    @ISessionManager lifecycle: ISessionManager,
   ) {
     super();
     this.scope = session.scope('external-delegation');
     this.sessionId = session.sessionId;
     this._register(this.store.acquire(this.scope, STORE_KEY));
     this.ready = this.load();
-    this._register(
-      lifecycleHooks.onWillCloseSession.register('externalDelegation', async (event, next) => {
-        for (const controller of this.controllers.values()) {
-          controller.abort(new Error('Session closed'));
-        }
-        this.controllers.clear();
-        await this.interruptActive('Session closed');
-        if (this.document !== undefined) {
-          this.document.lastClosedAt = Date.now();
-          this.document.lastCloseReason = event.reason;
-          await this.persist();
-        }
-        await next();
-      }),
-    );
+    if (lifecycle.onWillCloseSession !== undefined) {
+      this._register(
+        lifecycle.onWillCloseSession((event) => {
+          if (event.sessionId !== this.sessionId) return;
+          event.waitUntil(this.closeForSession(event.reason));
+        }),
+      );
+    }
     this._register({
       dispose: () => {
         for (const controller of this.controllers.values()) controller.abort(new Error('Session closed'));
@@ -152,6 +143,19 @@ export class SessionExternalDelegationService
         void this.interruptActive('Session closed');
       },
     });
+  }
+
+  private async closeForSession(reason: 'exit' | 'archive'): Promise<void> {
+    for (const controller of this.controllers.values()) {
+      controller.abort(new Error('Session closed'));
+    }
+    this.controllers.clear();
+    await this.interruptActive('Session closed');
+    if (this.document !== undefined) {
+      this.document.lastClosedAt = Date.now();
+      this.document.lastCloseReason = reason;
+      await this.persist();
+    }
   }
 
   async list(authority: ExternalAuthority): Promise<ExternalRootView> {
@@ -338,6 +342,7 @@ export class SessionExternalDelegationService
     if (allowlist !== undefined && !allowlist.includes(profileName)) throw invalid('Named-agent profile is not admitted.');
     const delegator = { kind: 'external' as const, delegationId: doc.delegationId };
     if (!(await this.names.reserve(taskName, delegator))) throw invalid('Named child task_name is already reserved.');
+    const lease = main.accessor.get(IAgentRuntimeService).acquire(['process']);
     try {
       const child = await this.agents.create({
         binding: {
@@ -346,6 +351,7 @@ export class SessionExternalDelegationService
           thinking: thinkingEffort ?? profile.thinkingEffort ?? mainData.thinkingLevel,
           strictThinking: thinkingEffort !== undefined || profile.thinkingEffort !== undefined,
         },
+        runtimeId: lease.runtime.identity.runtimeId,
         delegator,
         labels: { externalDelegationTaskName: taskName, externalDelegationProfile: profile.name },
       });
@@ -358,6 +364,8 @@ export class SessionExternalDelegationService
     } catch (error) {
       this.names.release(taskName, delegator);
       throw error;
+    } finally {
+      lease.dispose();
     }
   }
 
@@ -394,14 +402,24 @@ export class SessionExternalDelegationService
     if (loop.state !== 'idle' || loop.pendingTurnIds.length > 0 || loop.hasPendingRequests) {
       throw invalid('The target is already running work.');
     }
-    const message =
-      target.profileName === undefined
-        ? rawMessage
-        : await applyProfilePromptPrefix(this.profiles.get(target.profileName)!, rawMessage, {
-            cwd: this.workspace.workDir,
-            runner: this.processRunner,
+    let message = rawMessage;
+    if (target.profileName !== undefined) {
+      const lease = target.agent.accessor.get(IAgentRuntimeService).acquire(['process']);
+      try {
+        const view = new RuntimeWorkspaceView(lease.runtime, this.workspace);
+        message = await applyProfilePromptPrefix(
+          this.profiles.get(target.profileName)!,
+          rawMessage,
+          {
+            cwd: view.workDir,
+            process: lease.runtime.process!,
             log: this.log,
-          });
+          },
+        );
+      } finally {
+        lease.dispose();
+      }
+    }
     const dispatchId = `dispatch_${ulid()}`;
     const dispatch: StoredDispatch = {
       dispatchId,

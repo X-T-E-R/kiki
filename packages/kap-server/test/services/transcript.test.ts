@@ -18,7 +18,8 @@ import {
   ISessionInteractionService,
   ISessionMetadata,
   ISessionLifecycleService,
-  IWorkspaceLifecycleService,
+  ISessionManager,
+  IWorkspaceInstanceManager,
   LifecycleScope,
   SessionInteractionService,
   StateRegistry,
@@ -1500,12 +1501,11 @@ describe('AgentTranscriptProjector', () => {
       core: {
         accessor: {
           get: (token: unknown) => {
-            if (token === IWorkspaceLifecycleService) {
-              return {
-                handlers: { list: () => [] },
-                sessions: { list: () => [] },
-                onDidMaterializeHandler: () => ({ dispose: () => undefined }),
-              };
+            if (token === ISessionManager) {
+              return { get: () => undefined, list: () => [] };
+            }
+            if (token === IWorkspaceInstanceManager) {
+              return { list: () => [], onDidChange: () => ({ dispose: () => undefined }) };
             }
             if (token === ISessionIndex) return { get: async () => ({ workspaceId: 'ws' }) };
             return undefined;
@@ -1599,13 +1599,10 @@ describe('AgentTranscriptProjector', () => {
         core: {
           accessor: {
             get: (token: unknown) => {
-              if (token === IWorkspaceLifecycleService) {
-                return {
-                  handlers: { list: () => [] },
-                  sessions: { list: () => [] },
-                  onDidMaterializeHandler: () => ({ dispose: () => undefined }),
-                };
-              }
+              if (token === ISessionManager) return { get: () => undefined, list: () => [] };
+              if (token === IWorkspaceInstanceManager) {
+              return { list: () => [], onDidChange: () => ({ dispose: () => undefined }) };
+            }
               if (token === ISessionIndex) return { get: async () => ({ workspaceId: 'ws' }) };
               return undefined;
             },
@@ -1919,7 +1916,7 @@ describe('bindSessionTranscript', () => {
     };
     const handler = {
       id: 'ws',
-      kind: LifecycleScope.Workspace,
+      kind: 'program',
       accessor: {
         get: (t: unknown) => (t === ISessionLifecycleService ? sessionLifecycle : undefined),
       },
@@ -1928,11 +1925,13 @@ describe('bindSessionTranscript', () => {
     return {
       accessor: {
         get: (token: unknown) => {
-          if (token === IWorkspaceLifecycleService) {
+          if (token === ISessionManager) {
+            return { get: sessionLifecycle.get, list: () => [sessionLifecycle.get('s1')] };
+          }
+          if (token === IWorkspaceInstanceManager) {
             return {
-              handlers: { list: () => [handler] },
-              sessions: { list: () => [] },
-              onDidMaterializeHandler: () => ({ dispose: () => undefined }),
+              list: () => [{ program: { accessor: handler.accessor } }],
+              onDidChange: () => ({ dispose: () => undefined }),
             };
           }
           if (token === ISessionIndex) return { get: async () => ({ workspaceId: 'ws' }) };
