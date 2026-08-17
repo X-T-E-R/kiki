@@ -215,6 +215,8 @@ export class TowerSpawnTool implements ITowerSpawnTool {
                   this.flags,
                   { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
                   args.kind === 'reviewer' ? 'primary' : undefined,
+                  {},
+                  this.models,
                 ),
                 this.models,
               );

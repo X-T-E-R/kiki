@@ -203,11 +203,17 @@ Thinking effort resolves independently: tool `thinking_effort` → profile `thin
 
 Only the legacy `model` tool selector (`"secondary"` / `"primary"`), the profile `model_preference` field, and this secondary recipe require `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` or the master `KIMI_CODE_EXPERIMENTAL_FLAG=1`. With the experiment enabled, this recipe is inserted between the `[subagent]` defaults and the caller binding; its `default_effort` is used only when the recipe supplied the model. The legacy `model` parameter and `model_alias` are mutually exclusive. With the experiment disabled, profile `model_preference` is ignored with a warning and an explicit `model` tool parameter is rejected with a clear error. The internal alias `__secondary__` is reserved and cannot be configured or selected directly. Resumed and retried subagents never re-resolve the current profile or defaults; their persisted binding is immutable.
 
+A configured `[secondary_model.models]` table is a soft allowlist by default: the legacy `model` preference must use a pool key, but an exact `model_alias` may select another configured model. Set `enforce_pool = true` to make exact aliases obey the pool as well; the caller's `primary` model remains allowed. `enforce_pool` requires a non-empty explicit pool and cannot be combined with `force`. All pool keys and `default_model` must also stay outside `[subagent] deny_models`; comparisons use canonical model identities after alias resolution.
+
 In the interactive TUI, the [`/secondary_model`](../reference/slash-commands.md) command opens a model picker that writes this section and live-applies it to the current session, so newly spawned subagents bind the new secondary model right away.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `model` | `string` | — | The alias of a configured [`[models]`](#models) entry, e.g. `kimi-code/kimi-k2.5` (any provider, not limited to Kimi models) |
+| `default_model` | `string` | — | Default key from `[secondary_model.models]`. Without an explicit pool, it forms a legacy single-entry soft pool |
+| `models` | `table` | — | Model-key-to-description pool shown to the main agent for the legacy `model` selector. The key `primary` is reserved |
+| `force` | `boolean` | `false` | Pin every subagent to `default_model` (or legacy `model`) and reject explicit model choices. Cannot be combined with `models` or `enforce_pool` |
+| `enforce_pool` | `boolean` | `false` | Turn the explicit `models` pool into a hard allowlist for exact `model_alias` selections; `primary` remains allowed |
+| `model` | `string` | — | Legacy alias of a configured [`[models]`](#models) entry, e.g. `kimi-code/kimi-k2.5` (any provider, not limited to Kimi models) |
 | `default_effort` | `string` | — | Thinking effort applied when subagents bind to the secondary model. Unset, the effort resolves naturally (global `[thinking]` config → the bound model's default effort) instead of inheriting the main agent's effort. Follows the main model's thinking-effort semantics: models with strict effort validation (e.g. Kimi models) fall back to their default effort for unsupported values; other providers receive the value as-is |
 | Other fields | — | — | Accepts every field of [`[models."<alias>".overrides]`](#models) (`max_context_size`, `max_output_size`, `support_efforts`, …) as a model patch applied only to subagents |
 
@@ -283,9 +289,10 @@ In print mode (`kimi -p "<prompt>"`), Kimi Code stays alive after the main agent
 | --- | --- | --- | --- |
 | `default_model` | `string` | — | Fill-only exact `[models]` alias for new subagents, after tool and profile bindings and before caller inheritance |
 | `default_effort` | `string` | — | Fill-only thinking effort for new subagents, after tool and profile effort and before caller inheritance |
+| `deny_models` | `string[]` | — | Denylist applied to explicit subagent model choices after alias resolution. Pool keys and `default_model` may not resolve to a denied identity |
 | `timeout_ms` | `integer` | `7200000` (2 hours) | Maximum wall-clock time (milliseconds) a single subagent (`Agent` / `AgentSwarm`) is allowed to run before it is settled as `timed_out`. `0` means no timeout — the subagent runs until it finishes or the model stops it. This is the background-task manager's per-task timeout for each subagent task, so it applies to both foreground and background subagents. In print mode (`kimi -p`) the default is `0` unless explicitly set. Note: any value above `2147483647` (about 24.8 days) is clamped to roughly 24.8 days by the runtime |
 
-`timeout_ms` can be overridden by the `KIMI_SUBAGENT_TIMEOUT_MS` environment variable, which takes higher priority than `config.toml`. There are no environment variables for `default_model` or `default_effort`.
+`timeout_ms` can be overridden by the `KIMI_SUBAGENT_TIMEOUT_MS` environment variable, which takes higher priority than `config.toml`. There are no environment variables for `default_model`, `default_effort`, or `deny_models`.
 
 ## `agents`
 

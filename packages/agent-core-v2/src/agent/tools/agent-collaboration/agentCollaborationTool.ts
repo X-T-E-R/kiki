@@ -266,10 +266,14 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
         modelAlias: selectedProfile.modelAlias,
         thinkingEffort: selectedProfile.thinkingEffort,
       };
-      let binding = resolveAgentCollaborationBinding(this.config, this.flags,
+      let binding = resolveAgentCollaborationBinding(
+        this.config,
+        this.flags,
         { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
         bindingRequest,
-        profileBinding);
+        profileBinding,
+        this.models,
+      );
       if (subagentModelSource(binding) === 'caller') {
         const callerMeta = (await this.metadata.read()).agents?.[this.callerAgentId];
         const nestedDefault = resolveNestedSubagentDefaultContext(this.lifecycle, callerMeta);
@@ -280,6 +284,7 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
             nestedDefault,
             bindingRequest,
             profileBinding,
+            this.models,
           );
         }
       }

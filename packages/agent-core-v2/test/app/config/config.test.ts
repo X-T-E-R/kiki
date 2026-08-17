@@ -97,6 +97,7 @@ import {
   resolveSubagentBinding,
   resolveSubagentModelPool,
   subagentBindingMode,
+  subagentBindingOffPool,
   resolveSubagentTimeoutMs,
   SECONDARY_MODEL_SECTION,
   SUBAGENT_SECTION,
@@ -1693,6 +1694,23 @@ describe('subagent config section', () => {
     return { config, disposables };
   }
 
+  function modelService(aliases: Record<string, string> = {}): IModelService {
+    return {
+      resolveId: (id: string) => aliases[id],
+    } as unknown as IModelService;
+  }
+
+  function configError(run: () => unknown): Error2 {
+    try {
+      run();
+    } catch (error) {
+      expect(isError2(error)).toBe(true);
+      expect((error as Error2).code).toBe(ErrorCodes.CONFIG_INVALID);
+      return error as Error2;
+    }
+    throw new Error('Expected CONFIG_INVALID');
+  }
+
   it('defaults to two hours and honours the env override', async () => {
     const env: Record<string, string> = {};
     const { config, disposables } = await createConfig(env);
@@ -1750,14 +1768,18 @@ describe('subagent config section', () => {
     disposables.dispose();
   });
 
-  it('reads default_model and [secondary_model.models] from config.toml', async () => {
+  it('reads subagent model-governance fields from config.toml', async () => {
     const { config, disposables } = await createConfig(
       {},
-      '[secondary_model]\ndefault_model = "provider/fast"\n\n[secondary_model.models]\n"provider/fast" = "fast and cheap"\n"provider/smart" = ""\n',
+      '[subagent]\ndeny_models = ["provider/blocked"]\n\n[secondary_model]\ndefault_model = "provider/fast"\nenforce_pool = true\n\n[secondary_model.models]\n"provider/fast" = "fast and cheap"\n"provider/smart" = ""\n',
     );
 
+    expect(config.get<SubagentConfig>(SUBAGENT_SECTION)).toMatchObject({
+      denyModels: ['provider/blocked'],
+    });
     expect(config.get<SecondaryModelConfig>(SECONDARY_MODEL_SECTION)).toEqual({
       defaultModel: 'provider/fast',
+      enforcePool: true,
       models: { 'provider/fast': 'fast and cheap', 'provider/smart': '' },
     });
 
@@ -2139,6 +2161,156 @@ describe('subagent config section', () => {
       /Invalid model "provider\/fast": no \[secondary_model\.models\] pool is configured/,
     );
 
+    disposables.dispose();
+  });
+
+  it('rejects a tool model_alias denied by canonical model identity', async () => {
+    const { config, disposables } = await createConfig(
+      {},
+      '[subagent]\ndeny_models = ["provider/blocked"]\n',
+    );
+    const error = configError(() =>
+      resolveSubagentBinding(
+        config,
+        secondaryModelFlags(false),
+        { modelAlias: 'provider/main', thinkingLevel: 'medium' },
+        { modelAlias: 'blocked' },
+        {},
+        modelService({ blocked: 'provider/blocked' }),
+      ),
+    );
+
+    expect(error.message).toContain('provider/blocked');
+    expect(error.details?.['deniedModels']).toEqual(['provider/blocked']);
+    disposables.dispose();
+  });
+
+  it('rejects a profile model_alias listed in deny_models', async () => {
+    const { config, disposables } = await createConfig(
+      {},
+      '[subagent]\ndeny_models = ["provider/blocked"]\n',
+    );
+    const error = configError(() =>
+      resolveSubagentBinding(
+        config,
+        secondaryModelFlags(false),
+        { modelAlias: 'provider/main', thinkingLevel: 'medium' },
+        undefined,
+        { modelAlias: 'provider/blocked' },
+        modelService(),
+      ),
+    );
+
+    expect(error.message).toContain('provider/blocked');
+    disposables.dispose();
+  });
+
+  it('rejects a collaboration binding listed in deny_models', async () => {
+    const { config, disposables } = await createConfig(
+      {},
+      '[subagent]\ndeny_models = ["provider/blocked"]\n',
+    );
+    const error = configError(() =>
+      resolveAgentCollaborationBinding(
+        config,
+        secondaryModelFlags(false),
+        { modelAlias: 'provider/main', thinkingLevel: 'medium' },
+        { modelAlias: 'blocked' },
+        {},
+        modelService({ blocked: 'provider/blocked' }),
+      ),
+    );
+
+    expect(error.message).toContain('provider/blocked');
+    disposables.dispose();
+  });
+
+  it('enforces the secondary model pool for exact aliases while always allowing primary', async () => {
+    const { config, disposables } = await createConfig(
+      {},
+      '[secondary_model]\ndefault_model = "fast"\nenforce_pool = true\n\n[secondary_model.models]\nfast = "fast"\n',
+    );
+    const own = { modelAlias: 'provider/main', thinkingLevel: 'medium' };
+    const models = modelService({
+      fast: 'provider/fast',
+      outside: 'provider/outside',
+    });
+
+    const error = configError(() =>
+      resolveSubagentBinding(
+        config,
+        secondaryModelFlags(),
+        own,
+        { modelAlias: 'outside' },
+        {},
+        models,
+      ),
+    );
+    expect(error.message).toBe('Invalid model "outside". Available models: fast, primary.');
+    expect(resolveSubagentBinding(config, secondaryModelFlags(), own, 'primary', {}, models)).toEqual({
+      model: 'provider/main',
+      thinking: 'medium',
+    });
+
+    const collaborationError = configError(() =>
+      resolveAgentCollaborationBinding(
+        config,
+        secondaryModelFlags(),
+        own,
+        { modelAlias: 'outside' },
+        {},
+        models,
+      ),
+    );
+    expect(collaborationError.message).toContain('Available models: fast, primary');
+    disposables.dispose();
+  });
+
+  it('keeps the default soft-pool escape hatch and records off-pool metadata', async () => {
+    const { config, disposables } = await createConfig(
+      {},
+      '[secondary_model]\ndefault_model = "fast"\n\n[secondary_model.models]\nfast = "fast"\n',
+    );
+    const own = { modelAlias: 'provider/main', thinkingLevel: 'medium' };
+    const models = modelService({
+      fast: 'provider/fast',
+      outside: 'provider/outside',
+    });
+
+    const outside = canonicalizeSubagentBinding(
+      resolveSubagentBinding(
+        config,
+        secondaryModelFlags(),
+        own,
+        { modelAlias: 'outside' },
+        {},
+        models,
+      ),
+      models,
+    );
+    expect(outside).toEqual({ model: 'provider/outside', thinking: undefined });
+    expect(subagentBindingOffPool(outside)).toBe(true);
+
+    const inPool = resolveSubagentBinding(
+      config,
+      secondaryModelFlags(),
+      own,
+      { modelAlias: 'fast' },
+      {},
+      models,
+    );
+    expect(inPool).toEqual({ model: 'fast', thinking: undefined });
+    expect(subagentBindingOffPool(inPool)).toBe(false);
+
+    const callerModel = resolveSubagentBinding(
+      config,
+      secondaryModelFlags(),
+      own,
+      { modelAlias: 'provider/main' },
+      {},
+      models,
+    );
+    expect(subagentBindingOffPool(callerModel)).toBe(false);
     disposables.dispose();
   });
 

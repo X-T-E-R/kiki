@@ -253,6 +253,64 @@ describe('SessionSubagentModelsValidationService', () => {
     );
   });
 
+  it('fails session creation when enforce_pool has no explicit models pool', () => {
+    modelIds.add('provider/fast');
+    setup({
+      [SECONDARY_MODEL_SECTION]: { defaultModel: 'provider/fast', enforcePool: true },
+    });
+    const error = resolve();
+    expect(isError2(error)).toBe(true);
+    expect((error as Error2).code).toBe(ErrorCodes.CONFIG_INVALID);
+    expect((error as Error2).message).toContain(
+      '[secondary_model].enforce_pool requires a non-empty [secondary_model.models] pool',
+    );
+  });
+
+  it('fails session creation when enforce_pool is combined with force', () => {
+    modelIds.add('provider/fast');
+    setup({
+      [SECONDARY_MODEL_SECTION]: {
+        defaultModel: 'provider/fast',
+        enforcePool: true,
+        force: true,
+      },
+    });
+    const error = resolve();
+    expect(isError2(error)).toBe(true);
+    expect((error as Error2).code).toBe(ErrorCodes.CONFIG_INVALID);
+    expect((error as Error2).message).toContain(
+      '[secondary_model].enforce_pool cannot be combined with [secondary_model].force',
+    );
+  });
+
+  it('fails session creation when the pool default is denied by canonical identity', () => {
+    modelIds.add('provider/fast');
+    setup({
+      [SUBAGENT_SECTION]: { denyModels: ['provider/fast'] },
+      [SECONDARY_MODEL_SECTION]: {
+        defaultModel: 'fast',
+        models: { fast: 'fast and cheap' },
+      },
+    });
+    const error = resolve();
+    expect(isError2(error)).toBe(true);
+    expect((error as Error2).code).toBe(ErrorCodes.CONFIG_INVALID);
+    expect((error as Error2).message).toContain('provider/fast');
+    expect((error as Error2).details?.['deniedModels']).toEqual(['provider/fast']);
+  });
+
+  it('ignores deny_models entries that do not resolve or match configured pool models', () => {
+    modelIds.add('provider/fast');
+    setup({
+      [SUBAGENT_SECTION]: { denyModels: ['missing-alias'] },
+      [SECONDARY_MODEL_SECTION]: {
+        defaultModel: 'provider/fast',
+        models: { 'provider/fast': 'fast and cheap' },
+      },
+    });
+    expect(resolve()).toBeUndefined();
+  });
+
   it('fails session creation when the forced default_model does not resolve', () => {
     setup({ [SECONDARY_MODEL_SECTION]: { defaultModel: 'provider/typo', force: true } });
     const error = resolve();

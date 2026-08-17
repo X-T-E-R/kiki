@@ -32,6 +32,7 @@ export const SubagentConfigSchema = z.object({
   defaultModel: z.string().optional(),
   defaultEffort: z.string().optional(),
   timeoutMs: z.number().int().min(0).optional(),
+  denyModels: z.array(z.string()).optional(),
 });
 
 export type SubagentConfig = z.infer<typeof SubagentConfigSchema>;
@@ -40,6 +41,7 @@ export const SecondaryModelConfigSchema = z.object({
   defaultModel: z.string().min(1).optional(),
   models: z.record(z.string(), z.string()).optional(),
   force: z.boolean().optional(),
+  enforcePool: z.boolean().optional(),
   model: z.string().min(1).optional(),
   maxContextSize: z.number().int().min(1).optional(),
   maxInputSize: z.number().int().min(1).optional(),
@@ -118,6 +120,7 @@ export interface SubagentModelBinding {
 interface SubagentBindingMetadata {
   readonly source: SubagentModelSource;
   readonly mode: SubagentBindingMode;
+  readonly offPool?: boolean;
 }
 
 const bindingMetadata = new WeakMap<SubagentModelBinding, SubagentBindingMetadata>();
@@ -128,6 +131,10 @@ export function subagentModelSource(binding: SubagentModelBinding): SubagentMode
 
 export function subagentBindingMode(binding: SubagentModelBinding): SubagentBindingMode {
   return bindingMetadata.get(binding)?.mode ?? 'fixed';
+}
+
+export function subagentBindingOffPool(binding: SubagentModelBinding): boolean {
+  return bindingMetadata.get(binding)?.offPool ?? false;
 }
 
 function recordBindingMetadata(
@@ -157,6 +164,7 @@ export function canonicalizeSubagentBinding(
     {
       source: subagentModelSource(binding),
       mode: subagentBindingMode(binding),
+      offPool: subagentBindingOffPool(binding),
     },
   );
 }
@@ -180,6 +188,12 @@ export const SECONDARY_MODEL_FORCE_REQUIRES_DEFAULT_MESSAGE =
 
 export const SECONDARY_MODEL_FORCE_EXCLUDES_MODELS_MESSAGE =
   '[secondary_model].force cannot be combined with [secondary_model.models]: the pool table only exists to offer the main agent a choice, and force removes that choice';
+
+export const SECONDARY_MODEL_ENFORCE_POOL_REQUIRES_MODELS_MESSAGE =
+  '[secondary_model].enforce_pool requires a non-empty [secondary_model.models] pool';
+
+export const SECONDARY_MODEL_ENFORCE_POOL_EXCLUDES_FORCE_MESSAGE =
+  '[secondary_model].enforce_pool cannot be combined with [secondary_model].force';
 
 export function isSubagentModelForced(config: IConfigService): boolean {
   return config.get<SecondaryModelConfig | undefined>(SECONDARY_MODEL_SECTION)?.force === true;
@@ -225,7 +239,7 @@ export function assertValidSubagentModelPool(
   }
   for (const alias of aliases) {
     try {
-      modelCatalog.get(models.resolveId(alias) ?? alias);
+      modelCatalog.get(resolveModelIdentity(alias, models));
     } catch (error) {
       throw new Error2(
         ErrorCodes.CONFIG_INVALID,
@@ -244,6 +258,13 @@ export function assertValidSubagentModelConfig(
 ): void {
   if (!flags.enabled(SECONDARY_MODEL_FLAG_ID)) return;
   const section = config.get<SecondaryModelConfig | undefined>(SECONDARY_MODEL_SECTION);
+  if (section?.enforcePool === true && section.force === true) {
+    throw new Error2(
+      ErrorCodes.CONFIG_INVALID,
+      SECONDARY_MODEL_ENFORCE_POOL_EXCLUDES_FORCE_MESSAGE,
+      { details: { section: SECONDARY_MODEL_SECTION, field: 'enforcePool' } },
+    );
+  }
   if (section?.force === true) {
     if (section.models !== undefined) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, SECONDARY_MODEL_FORCE_EXCLUDES_MODELS_MESSAGE, {
@@ -256,8 +277,90 @@ export function assertValidSubagentModelConfig(
       });
     }
   }
+  if (section?.enforcePool === true && Object.keys(section.models ?? {}).length === 0) {
+    throw new Error2(
+      ErrorCodes.CONFIG_INVALID,
+      SECONDARY_MODEL_ENFORCE_POOL_REQUIRES_MODELS_MESSAGE,
+      { details: { section: SECONDARY_MODEL_SECTION, field: 'enforcePool' } },
+    );
+  }
   const pool = resolveSubagentModelPool(config);
-  if (pool !== undefined) assertValidSubagentModelPool(pool, modelCatalog, models);
+  if (pool !== undefined) {
+    assertValidSubagentModelPool(pool, modelCatalog, models);
+    assertPoolDoesNotUseDeniedModels(config, pool, models);
+  }
+}
+
+function resolveModelIdentity(model: string, models?: IModelService): string {
+  return models?.resolveId(model) ?? model;
+}
+
+function deniedModelIdentities(config: IConfigService, models?: IModelService): Set<string> {
+  const denyModels = config.get<SubagentConfig | undefined>(SUBAGENT_SECTION)?.denyModels ?? [];
+  return new Set(denyModels.map((model) => resolveModelIdentity(model, models)));
+}
+
+function assertModelNotDenied(
+  config: IConfigService,
+  model: string,
+  models?: IModelService,
+): void {
+  const canonicalModel = resolveModelIdentity(model, models);
+  if (!deniedModelIdentities(config, models).has(canonicalModel)) return;
+  throw new Error2(
+    ErrorCodes.CONFIG_INVALID,
+    `Subagent model "${canonicalModel}" is denied by [subagent].deny_models.`,
+    { details: { model: canonicalModel, deniedModels: [canonicalModel] } },
+  );
+}
+
+function assertPoolDoesNotUseDeniedModels(
+  config: IConfigService,
+  pool: SubagentModelPool,
+  models: IModelService,
+): void {
+  const denied = deniedModelIdentities(config, models);
+  const configured = new Set(
+    [...Object.keys(pool.models), pool.defaultModel].filter((model) => model !== undefined),
+  );
+  const matches = [...configured]
+    .map((model) => resolveModelIdentity(model, models))
+    .filter((model) => denied.has(model));
+  const deniedMatches = [...new Set(matches)];
+  if (deniedMatches.length === 0) return;
+  throw new Error2(
+    ErrorCodes.CONFIG_INVALID,
+    `Subagent model config includes models denied by [subagent].deny_models: ${deniedMatches.join(', ')}.`,
+    { details: { deniedModels: deniedMatches } },
+  );
+}
+
+function poolAllowsModel(
+  pool: SubagentModelPool,
+  model: string,
+  ownModel: string,
+  models?: IModelService,
+): boolean {
+  const canonicalModel = resolveModelIdentity(model, models);
+  if (canonicalModel === resolveModelIdentity(ownModel, models)) return true;
+  return Object.keys(pool.models).some(
+    (alias) => resolveModelIdentity(alias, models) === canonicalModel,
+  );
+}
+
+function assertModelAllowedByEnforcedPool(
+  pool: SubagentModelPool,
+  model: string,
+  ownModel: string,
+  models?: IModelService,
+): void {
+  if (poolAllowsModel(pool, model, ownModel, models)) return;
+  const availableModels = [...Object.keys(pool.models), PRIMARY_SUBAGENT_MODEL_CHOICE];
+  throw new Error2(
+    ErrorCodes.CONFIG_INVALID,
+    `Invalid model "${model}". Available models: ${availableModels.join(', ')}.`,
+    { details: { model, availableModels } },
+  );
 }
 
 export function cascadeSubagentModelPool(
@@ -300,6 +403,7 @@ export function resolveSubagentBinding(
   own: SubagentBindingOwner,
   requested?: string | SubagentBindingRequest,
   profileRequest: SubagentBindingRequest = {},
+  models?: IModelService,
 ): SubagentModelBinding {
   const tool = normalizeRequest(requested);
   const profile = normalizeRequest(profileRequest);
@@ -308,10 +412,18 @@ export function resolveSubagentBinding(
 
   const enabled = flags.enabled(SECONDARY_MODEL_FLAG_ID);
   const section = config.get<SecondaryModelConfig | undefined>(SECONDARY_MODEL_SECTION);
+  const pool = enabled ? resolveSubagentModelPool(config) : undefined;
   const selected = selectModelRequest(tool, profile);
   const explicitThinking = normalized(tool.thinkingEffort) ?? normalized(profile.thinkingEffort);
 
   if (enabled && section?.force === true) {
+    if (section.enforcePool === true) {
+      throw new Error2(
+        ErrorCodes.CONFIG_INVALID,
+        SECONDARY_MODEL_ENFORCE_POOL_EXCLUDES_FORCE_MESSAGE,
+        { details: { section: SECONDARY_MODEL_SECTION, field: 'enforcePool' } },
+      );
+    }
     if (section.models !== undefined) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, SECONDARY_MODEL_FORCE_EXCLUDES_MODELS_MESSAGE, {
         details: { section: SECONDARY_MODEL_SECTION, field: 'force' },
@@ -331,17 +443,44 @@ export function resolveSubagentBinding(
         { details: { model: choice } },
       );
     }
+    assertModelNotDenied(config, forcedModel, models);
     return recordBindingMetadata(
       { model: forcedModel, thinking: explicitThinking, displayModel: forcedModel },
       { source: 'secondary', mode: 'fixed' },
     );
   }
 
+  const selectedModel =
+    selected?.modelAlias ??
+    (selected?.modelPreference === PRIMARY_SUBAGENT_MODEL_CHOICE
+      ? own.modelAlias
+      : selected?.modelPreference === 'secondary' && selected.source === 'profile'
+        ? pool?.defaultModel
+        : selected?.modelPreference);
+  if (selectedModel !== undefined) assertModelNotDenied(config, selectedModel, models);
+
+  if (enabled && section?.enforcePool === true) {
+    if (pool === undefined || Object.keys(section.models ?? {}).length === 0) {
+      throw new Error2(
+        ErrorCodes.CONFIG_INVALID,
+        SECONDARY_MODEL_ENFORCE_POOL_REQUIRES_MODELS_MESSAGE,
+        { details: { section: SECONDARY_MODEL_SECTION, field: 'enforcePool' } },
+      );
+    }
+    if (selected?.modelAlias !== undefined) {
+      assertModelAllowedByEnforcedPool(pool, selected.modelAlias, own.modelAlias, models);
+    }
+  }
+
   if (selected?.modelAlias !== undefined) {
     const model = selected.modelAlias;
+    const offPool =
+      pool !== undefined &&
+      section?.enforcePool !== true &&
+      !poolAllowsModel(pool, model, own.modelAlias, models);
     return recordBindingMetadata(
       { model, thinking: explicitThinking, displayModel: model },
-      { source: selected.source, mode: 'fixed' },
+      { source: selected.source, mode: 'fixed', offPool },
     );
   }
 
@@ -356,7 +495,6 @@ export function resolveSubagentBinding(
     );
   }
 
-  const pool = enabled ? resolveSubagentModelPool(config) : undefined;
   if (selected?.modelPreference === 'secondary' && selected.source === 'profile') {
     const choice = pool?.defaultModel;
     if (choice === undefined) {
@@ -427,12 +565,27 @@ export function resolveAgentCollaborationBinding(
   own: SubagentBindingOwner,
   request: Pick<SubagentBindingRequest, 'modelAlias' | 'thinkingEffort'>,
   profile: SubagentBindingRequest,
+  models?: IModelService,
 ): SubagentModelBinding {
   const agents = config.get<AgentsConfig | undefined>(AGENTS_SECTION);
   const requestModel = normalized(request.modelAlias);
   const profileModel = normalized(profile.modelAlias);
   const exactModel = requestModel ?? profileModel;
-  const pool = flags.enabled(SECONDARY_MODEL_FLAG_ID) ? resolveSubagentModelPool(config) : undefined;
+  const enabled = flags.enabled(SECONDARY_MODEL_FLAG_ID);
+  const section = config.get<SecondaryModelConfig | undefined>(SECONDARY_MODEL_SECTION);
+  const pool = enabled ? resolveSubagentModelPool(config) : undefined;
+  if (enabled && section?.enforcePool === true) {
+    if (pool === undefined || Object.keys(section.models ?? {}).length === 0) {
+      throw new Error2(
+        ErrorCodes.CONFIG_INVALID,
+        SECONDARY_MODEL_ENFORCE_POOL_REQUIRES_MODELS_MESSAGE,
+        { details: { section: SECONDARY_MODEL_SECTION, field: 'enforcePool' } },
+      );
+    }
+    if (exactModel !== undefined) {
+      assertModelAllowedByEnforcedPool(pool, exactModel, own.modelAlias, models);
+    }
+  }
   const profilePreference = normalized(profile.modelPreference);
   const preferredModel =
     profilePreference === PRIMARY_SUBAGENT_MODEL_CHOICE
@@ -450,6 +603,7 @@ export function resolveAgentCollaborationBinding(
   const configuredDefault = normalized(agents?.defaultSubagentModel);
   const poolDefault = pool?.defaultModel;
   const model = exactModel ?? preferredModel ?? configuredDefault ?? poolDefault ?? own.modelAlias;
+  assertModelNotDenied(config, model, models);
   const source: SubagentModelSource =
     requestModel !== undefined
       ? 'tool'
@@ -473,9 +627,14 @@ export function resolveAgentCollaborationBinding(
     normalized(agents?.defaultSubagentReasoningEffort) === undefined
       ? 'inherit'
       : 'fixed';
+  const offPool =
+    exactModel !== undefined &&
+    pool !== undefined &&
+    section?.enforcePool !== true &&
+    !poolAllowsModel(pool, exactModel, own.modelAlias, models);
   return recordBindingMetadata(
     { model, thinking, displayModel: model },
-    { source, mode },
+    { source, mode, offPool },
   );
 }
 

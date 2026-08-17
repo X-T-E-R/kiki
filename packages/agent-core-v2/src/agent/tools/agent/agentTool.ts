@@ -461,6 +461,7 @@ export class SubagentTool implements ISubagentTool {
         { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
         toolBindingRequest,
         profileBindingRequest,
+        this.models,
       );
       if (subagentModelSource(binding) === 'caller') {
         const callerMeta = (await this.sessionMetadata.read()).agents?.[this.callerAgentId];
@@ -472,6 +473,7 @@ export class SubagentTool implements ISubagentTool {
             nestedDefault,
             toolBindingRequest,
             profileBindingRequest,
+            this.models,
           );
         }
       }

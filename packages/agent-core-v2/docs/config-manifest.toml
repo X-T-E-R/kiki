@@ -348,6 +348,7 @@ merge_all_available_skills = true
 # default_model: string
 # models: record<string, string>
 # force: boolean
+# enforce_pool: boolean
 # model: string
 # max_context_size: integer
 # max_input_size: integer
@@ -405,6 +406,7 @@ merge_all_available_skills = true
 # default_model: string
 # default_effort: string
 timeout_ms = 7200000
+# deny_models: string[]
 
 # ##########################################################################
 # task

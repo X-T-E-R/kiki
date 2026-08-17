@@ -188,6 +188,8 @@ Resume never reselects or switches a route. The journal stores the canonical bas
 
 Only the legacy tool parameter `model` (`primary` / `secondary`), the profile field `model_preference`, and the secondary recipe remain behind the secondary-model experiment. When enabled, the secondary recipe is inserted between the `[subagent]` defaults and the caller binding. When disabled, a profile's `model_preference` is ignored with a warning, while explicitly passing the `model` tool parameter returns a clear error. Resumed and retried subagents keep their persisted model and effort; passing binding fields on an `Agent` resume is rejected. A mixed `AgentSwarm` call applies them only to item-based new spawns.
 
+Subagent model governance compares canonical model identities after resolving `[models]` aliases. It has three levels: `[subagent] deny_models` rejects explicit selections of listed models at every dispatch entry; `[secondary_model] enforce_pool = true` turns the configured pool into a hard allowlist while always retaining `primary`; and the default soft-pool mode keeps exact off-pool `model_alias` values working as an escape hatch. `[secondary_model] force = true` remains the strongest pin, binding every spawn to one model, and cannot be combined with `enforce_pool`. See the [configuration reference](../configuration/config-files.md#secondary-model) for fields and validation rules.
+
 A file with invalid content discovered in a directory is skipped with a warning and does not affect other files. A file passed explicitly via `--agent-file` must be valid — otherwise the CLI reports the error and exits.
 
 ::: warning Note

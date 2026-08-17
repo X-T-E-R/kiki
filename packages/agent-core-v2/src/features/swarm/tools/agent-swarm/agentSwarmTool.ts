@@ -257,6 +257,7 @@ export class AgentSwarmTool implements IAgentSwarmTool {
               modelAlias: targetProfile.modelAlias,
               thinkingEffort: targetProfile.thinkingEffort,
             },
+            this.models,
           ),
           this.models,
         );

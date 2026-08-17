@@ -188,6 +188,8 @@ Route 只能收紧权限。Route 的 `tools` 是额外 allow 层（基础与 rou
 
 只有旧版工具参数 `model`（`primary` / `secondary`）、profile 字段 `model_preference` 和次主力 recipe 仍受次主力模型实验功能控制。启用后，次主力 recipe 会插在 `[subagent]` 默认值与调用方绑定之间。关闭时，profile 中的 `model_preference` 会被忽略并告警；显式传入 `model` 工具参数则会返回清晰错误。恢复或重试的子 Agent 保持已持久化的模型与 effort；`Agent` resume 传入绑定字段会被拒绝。`AgentSwarm` 混合调用只把这些字段应用到基于 item 的新派生项。
 
+subagent 模型治理会先解析 `[models]` alias，再按规范模型身份比较，共有三档：`[subagent] deny_models` 在所有派发入口拒绝对名单内模型的显式选择；`[secondary_model] enforce_pool = true` 把已配置池变成硬白名单，同时始终保留 `primary`；默认软白名单模式则继续允许精确的池外 `model_alias` 作为逃生通道。`[secondary_model] force = true` 仍是最强的单模型钉死策略，会把所有派生绑定到同一模型，且不能与 `enforce_pool` 同设。字段与校验规则见[配置参考](../configuration/config-files.md#secondary-model)。
+
 目录中发现的非法文件会被跳过并告警，不影响其他文件。通过 `--agent-file` 显式传入的文件必须合法 —— 否则 CLI 会报错并退出。
 
 ::: warning 注意

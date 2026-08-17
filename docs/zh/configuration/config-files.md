@@ -203,11 +203,17 @@ Thinking effort 独立解析，优先级为：工具 `thinking_effort` → profi
 
 只有旧版 `model` 工具选择器（`"secondary"` / `"primary"`）、profile 的 `model_preference` 字段和本节次主力 recipe 需要启用 `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`，或使用 master `KIMI_CODE_EXPERIMENTAL_FLAG=1`。实验功能启用时，本节 recipe 插在 `[subagent]` 默认值与调用方绑定之间；只有模型由该 recipe 提供时，才使用本节的 `default_effort`。旧版 `model` 参数与 `model_alias` 互斥。实验功能关闭时，profile 中的 `model_preference` 会被忽略并告警，显式传入 `model` 工具参数则会被拒绝并返回清晰错误。内部 alias `__secondary__` 为保留值，不能直接配置或选择。恢复或重试的子 Agent 不会重新解析当前 profile 或默认值，其已持久化绑定保持不变。
 
+已配置的 `[secondary_model.models]` 默认是软白名单：旧版 `model` preference 必须使用池 key，但精确 `model_alias` 仍可选择其他已配置模型。设置 `enforce_pool = true` 后，精确 alias 也必须服从模型池，同时继续允许调用方的 `primary` 模型。`enforce_pool` 要求显式配置非空模型池，且不能与 `force` 同设。所有池 key 与 `default_model` 也必须避开 `[subagent] deny_models`；比较前会先解析 alias，以规范模型身份为准。
+
 在交互式 TUI 中，可以使用 [`/secondary_model`](../reference/slash-commands.md) 命令打开模型选择器来设置该配置：选择后会写入本小节配置，并在当前会话立即生效——之后派生的子 Agent 会直接绑定新的次主力模型。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `model` | `string` | — | [`[models]`](#models) 中已配置条目的别名，如 `kimi-code/kimi-k2.5`（不限 kimi 模型，可用任意供应商） |
+| `default_model` | `string` | — | `[secondary_model.models]` 中的默认 key。未显式配置模型池时，它会形成兼容用的单条目软白名单 |
+| `models` | `table` | — | 向 main agent 展示的模型 key 与描述表，供旧版 `model` selector 使用。`primary` 是保留 key |
+| `force` | `boolean` | `false` | 把所有 subagent 钉死到 `default_model`（或旧版 `model`），并拒绝显式模型选择。不能与 `models` 或 `enforce_pool` 同设 |
+| `enforce_pool` | `boolean` | `false` | 把显式 `models` 池变成精确 `model_alias` 选择的硬白名单；`primary` 始终允许 |
+| `model` | `string` | — | 旧版 [`[models]`](#models) 条目 alias，如 `kimi-code/kimi-k2.5`（不限 kimi 模型，可用任意供应商） |
 | `default_effort` | `string` | — | 子 Agent 绑定次主力模型时使用的 thinking effort。未设置时按"全局 `[thinking]` 配置 → 模型默认 effort"的链路解析，不再继承主 Agent 的 effort。与主模型的 thinking effort 语义一致：严格校验 effort 的模型（如 kimi 模型）在不支持该取值时回退到模型默认 effort，其他供应商的模型按原样发送给后端 |
 | 其他字段 | — | — | 接受 [`[models."<alias>".overrides]`](#models) 的全部字段（`max_context_size`、`max_output_size`、`support_efforts` 等），作为仅对子 Agent 生效的模型补丁 |
 
@@ -283,9 +289,10 @@ Thinking effort 独立解析，优先级为：工具 `thinking_effort` → profi
 | --- | --- | --- | --- |
 | `default_model` | `string` | — | 新子 Agent 的 fill-only 精确 `[models]` alias，优先级低于工具与 profile 绑定，高于调用方继承 |
 | `default_effort` | `string` | — | 新子 Agent 的 fill-only thinking effort，优先级低于工具与 profile effort，高于调用方继承 |
+| `deny_models` | `string[]` | — | alias 解析后应用于显式 subagent 模型选择的黑名单。模型池 key 与 `default_model` 不能解析到被禁止的模型身份 |
 | `timeout_ms` | `integer` | `7200000`（2 小时） | 单个 subagent（`Agent` / `AgentSwarm`）允许运行的最长时间（毫秒）。超时后 subagent 以 `timed_out` 收尾。`0` 表示无超时——subagent 一直运行到自行结束或被模型手动停止。该值是后台任务管理器对每个 subagent 任务的 per-task timeout，因此对前台与后台 subagent 同时生效。在 print 模式（`kimi -p`）下未显式设置时默认为 `0`。注意：超过 `2147483647`（约 24.8 天）的值会被运行时钳到约 24.8 天 |
 
-`timeout_ms` 可被环境变量 `KIMI_SUBAGENT_TIMEOUT_MS` 覆盖，优先级高于配置文件。`default_model` 与 `default_effort` 没有对应的环境变量。
+`timeout_ms` 可被环境变量 `KIMI_SUBAGENT_TIMEOUT_MS` 覆盖，优先级高于配置文件。`default_model`、`default_effort` 与 `deny_models` 没有对应的环境变量。
 
 ## `agents`
 
