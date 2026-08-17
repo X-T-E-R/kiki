@@ -98,21 +98,21 @@
 
 | ID | 级别 | 问题 | 备注 |
 |----|------|------|------|
-| BK1 | P1 | 设置双通道收敛单一写者（桌面域并入 server API），根除整文件互覆 | 需设计；C 批先做备份滚动与重启确认缓解 |
-| BK2 | P1 | workspace handler 只创建不回收（watcher/loader/订阅线性积累） | **部分缓解（2026-08-17 同步）**：上游 workspaceInstanceManager 重写带来真实 close/dispose 级联，但仍无引用计数/逐出；DELETE /workspaces 仍不关 live instance |
+| BK1 | P1 | 设置双通道收敛单一写者（桌面域并入 server API），根除整文件互覆 | **已关闭（2026-08-18）**：Tauri 直写通道整段删除（read/write_server_config IPC + toml_edit 依赖），GUI 统一走 `GET/POST /api/v1/config` 且仅发送增量 patch 防多客户端互覆；`IConfigService` 保持进程内串行写者；4 包 tsc + cargo test + GUI 461/461 全绿；残余：多 kap-server 进程共享 home 仍属跨进程竞争边界 |
+| BK2 | P1 | workspace handler 只创建不回收（watcher/loader/订阅线性积累） | **已关闭（2026-08-18）**：`WorkspaceInstanceLease` 引用计数（session 激活持引用、close/archive 释放）+ 空闲 TTL 逐出（`[workspace_instance].idle_ttl_ms`，默认 5min）+ DELETE /workspaces 强制级联（等 in-flight、拒新操作、正常 close 生命周期、dispose 级联）；真实服务集成测试覆盖引用 2→1→0 与 DELETE 归零 |
 | BK3 | P1 | CLI(TUI) 与桌面后端共用 home 无会话级跨进程互斥，可同时恢复写同一会话 | **已关闭（2026-08-18）**：v2 文件锁（hard link 原子创建 + 120s lease/15s 续租 + tokenized stale takeover），锁定覆盖 create/resume/restore/fork 全活动期；App 层 resume single-flight；kap-server 新增 `SESSION_LOCKED=40933` 线码区分报错；已知残余：lease 锁无 fencing token、legacy v1 引擎不参与协议 |
 | BK4 | P1 | runtime.json 无安装器/重签工具；Codex 侧模型安装时冻结（换模型=HMAC 死结） | **已关闭（2026-08-17）**：launcher 新增 `-ListBindings`/`-ResignBinding`/`-ResignAllBindings`，按裁决 #9 落地；仅 model/thinkingEffort 作为每 workspace 独立已签名参数，其余 authority 契约不变；含端到端测试与文档 |
-| BK5 | P1 | GUI 会话与 Codex 委派会话互不可见（独立 homeDir）；thread 通信跨 host 不可能 | 维持现状（见裁决 #8）；受控跨 host 桥接另立设计项 |
+| BK5 | P1 | GUI 会话与 Codex 委派会话互不可见（独立 homeDir）；thread 通信跨 host 不可能 | 维持现状（见裁决 #8）；**边界已文档化（2026-08-18）**：`docs/*/guides/cross-host-session-boundaries.md`——host=home-scoped 身份域、隔离裁决依据、禁止绕过方式、受控桥接设计约束（双端启用/可撤销凭证/幂等/fail closed） |
 | BK6 | P2 | 委派进行中无进度流（仅生命周期事件），Codex 只能轮询 | **已关闭（2026-08-18）**：`kiki_dispatch`/`kiki_continue` 支持 MCP `progressToken`——有 token 时请求保持打开并推送标准 `notifications/progress`（轮次开始 + 已完成工具计数，终态覆盖 completed/failed/cancelled/interrupted）；无 token 保持原异步语义，REST/事件/持久化协议零新增；14 例新测试全过 |
 | BK7 | P2 | TUI 不显示 peer-thread 消息来源（像用户自己的输入） | **已关闭（2026-08-18）**：live/replay 双路径渲染 `Peer thread · <source-session>` 来源行（textDim，正文上方），pi-tui 零改动；新增 8 断言全过，15 个 TUI 失败均为既有 Windows 环境簇 |
 | BK8 | P2 | sidecar 二进制新鲜度零校验（旧后端+新前端症状零散） | **已关闭（2026-08-17）**：构建期清单（target/大小/SHA-256/版本）+ 启动期 `/api/v1/meta` 版本握手，不匹配拒绝连接并给诊断 |
-| BK9 | P2 | 协作能力 v1/v2 双写 + v2 内两套 durable mailbox 后端重复 | 随 legacy 退役计划处理；F4 先冻结声明 |
-| BK10 | P2 | 子代理模型绑定 7 入口 5 层解析链收敛 | **部分缓解（2026-08-17 同步）**：解析核心收敛进 v2 单模块、运行态收敛为 inherit\|fixed 二态并持久化；入口面仍约 7 个（tool/swarm/collaboration/agentfile/route/两 config section），v1 链独立 |
-| BK11 | P2 | thread 通信默认全局开启且可唤醒冷会话消耗额度 | **已裁决（#8）**：默认关（opt-in）；待实施默认值翻转 + 文档/测试 |
+| BK9 | P2 | 协作能力 v1/v2 双写 + v2 内两套 durable mailbox 后端重复 | **待裁决（2026-08-18 勘察完成）**：保留 thread mailbox 后端（fencing/恢复/测试全），移除 agent collaboration 后端需迁移用户磁盘旧格式（两阶段方案：可重入兼容迁移 → 下周期删旧实现）；硬停止于数据迁移边界，待拍板 |
+| BK10 | P2 | 子代理模型绑定 7 入口 5 层解析链收敛 | **已关闭（2026-08-18）**：全部入口（Agent/AgentSwarm/collaboration/TowerSpawn/agentfile bind/route pin/secondary pool/default_subagent_model/profile setModel）统一经 `IModelService.resolveId` + `canonicalizeSubagentBinding`，写路径持久化 canonical id、展示层保留原 pool label；`subagent/configSection` 不再私读 models config；grep 旁路检查 0 命中；v1 链冻结未动 |
+| BK11 | P2 | thread 通信默认全局开启且可唤醒冷会话消耗额度 | **已关闭（2026-08-18）**：默认值源码/manifest 本就为 `enabled: false`，本批补齐默认值断言测试 + 修正仍声称"默认开启"的双语文档（docs/*/customization/agents.md、guides/kiki-runtime.md），明确 opt-in 与额度消耗提示 |
 | BK12 | P3 | terminal_input.data 无大小上限；TERMINAL_NOT_FOUND 无法区分"能力未开放" | **部分缓解（perf 批）**：registerWsV1 新增 8MiB 帧上限（超限 1009 关闭）；schema 级 `data` 上限与错误码语义仍缺 |
 | BK13 | P3 | /threads::wait 客户端断开不取消服务侧 wait（≤60s 资源浪费） | **已关闭（2026-08-17）**：路由改 200ms 可取消轮询 + AbortSignal（req aborted/reply close/shutdown），顺带消除 shutdown 时长轮询卡关闭的死锁 |
 | BK14 | P3 | vite localServer 探测只查 PID 存活不防复用；暴露 0.0.0.0 时返回 bearer token | **已关闭（2026-08-17）**：候选实例经 `/api/v1/meta` 校验 server_id 身份；非 loopback 绑定不再回吐 token |
-| BK15 | P3 | 三套模型词汇（model/model_alias/model_preference）全量统一 | 上游 0.36.1 已在 v2 删光 model_preference；本轮合并为保 kiki agentfile 特性在 v2 保留了它——三套词汇当前仍在（v1: model_preference/model_alias；v2: model/model_alias + agentfile model_preference），收敛路线需重议 |
+| BK15 | P3 | 三套模型词汇（model/model_alias/model_preference）全量统一 | **路线已文档化（2026-08-18）**：`docs/*/guides/model-vocabulary-convergence.md`——v2 委派契约统一 model/model_alias，agentfile model_preference 保留为 schema 兼容词汇，阶段 0–5 路线；勘察补正：v2 `model` 支持模型池 key、bare ID 后缀匹配为解析便利能力 |
 
 ## 裁决记录（外部文档 vs 本地审计，取证后）
 
@@ -206,17 +206,17 @@
 | FU4 | P2 | kap-server pino 日志走 stdout，`--log-level warn` 落盘的是 stderr；服务端日志进 desktop-backend.log 需改 logger destination 或加 `--log-file` | **已关闭（2026-08-17）**：pino destination 改 stderr，与桌面 stderr 捕获约定直接兼容，无需 `--log-file` | C |
 | FU5 | P3 | desktop 侧打包/冷启动验证 | **已关闭（2026-08-18）**：`pnpm desktop:build` 全链路成功（Vite 41s + cargo release 6m23s + makensis），产出 `Kiki_0.1.0_x64-setup.exe`（45.8MB）；此前 promote/冷启动冒烟已过 | C |
 | FU6 | P3 | A3 容量校验基准用渲染期 attachments 起步，跨两次极快粘贴可能略微超出 8 附件/20MB 上限（功能更新正确，仅校验基准偏旧） | **已关闭（2026-08-18）**：`attachmentBaselineRef` 同步基准 + FileReader 启动前预留 loading stub，同 tick 连续粘贴按累计数量/字节校验 | A |
-| FU7 | P3 | A4 展示/发送语义：effort 下拉"看似选中"实则未发送、由 server 决定 | **已裁决（#10）**：选中即发送；待实施 | A |
+| FU7 | P3 | A4 展示/发送语义：effort 下拉"看似选中"实则未发送、由 server 决定 | **已关闭（2026-08-18）**：勘察确认生产接线已满足裁决（setEffortOverride 即时生效、`thinking: effectiveEffort` 随请求发送）；补"选择值进入下一次请求"回归契约测试 | A |
 | FU8 | P3 | A8 桌面原生目录选择对话框未实现（defer，仅做校验+placeholder） | **已关闭（2026-08-18）**：`selectDirectoriesNative()`（tauri plugin-dialog，directory+multiple），设置页桌面环境显示"选择文件夹…"，Web 降级手工输入 | A |
 | FU9 | P3 | A9 extraDirs placeholder 用了 POSIX 路径，Windows 桌面用户用 Windows 示例更直观 | **已关闭（2026-08-18）**：中英文 placeholder 均改 Windows 示例 | A |
 | FU10 | P3 | D1-3 `createToolError` 覆写依赖 MCP SDK 私有方法，SDK 升级可能静默回落 | **已核查（2026-08-18）**：SDK 1.29.0 下未断裂（13/13 过）；止血=锁精确版本 `1.29.0`（去 `^`）+ 契约测试作升级门禁，待执行 | D1 |
 | FU11 | P3 | D1 委派失败分类未迁移已持久化旧文档的 errorCode（数据迁移边界） | D1 |
-| FU12 | P3 | klient `ipc.test.ts` 有 1 例时序敏感偶发超时（非本批引入），建议显式放宽 testTimeout | D1 |
+| FU12 | P3 | klient `ipc.test.ts` 有 1 例时序敏感偶发超时（非本批引入），建议显式放宽 testTimeout | **已关闭（2026-08-18）**：该例局部 `timeout: 60_000`，连跑两遍 19/19 过 | D1 |
 | FU13 | P3 | D2 优雅关闭端点 `POST /api/v1/shutdown` 只静态核对，HTTP 成功路径未在真实服务验证（fallback 强杀路径已测）。2026-08-17 perf 批次已给 `IThreadCommunicationService.shutdown()` 接线并覆盖 close 路径 | **已关闭（2026-08-17）**：新增真实服务集成测试，覆盖 200 响应 + listener 关闭 + thread shutdown 调用 + 注册释放 | D2 |
 | FU14 | P2 | 设置页 providers 草稿的 dirty-guard 只拦设置页内部区块切换；经应用侧栏导航离开（如 Capabilities）时不弹确认，未保存草稿静默丢失（dsh 设计吸纳批次合并验证期发现） | **已关闭（2026-08-18）**：dirty 所有权提升到 App，应用级 guarded navigator + 统一确认对话框，覆盖 Sidebar/Quick Switcher/快捷键/托盘/新会话导航全部出口 | G |
 | FU15 | P3 | QueueStrip 行内编辑已实现 `onEdit` 但未接线：kap-server 无原位编辑端点（保存=移除+重发会落队尾，位置语义需产品确认）；接线只需 SessionView 传一行 handler | **已关闭（2026-08-18）**：SessionView 接线 `onEdit`，保存=abort 原 prompt + 同配置重发（接受落队尾语义，不改服务端）；负向路径有双语 toast | G |
 | FU16 | P3 | turn tail 的 tok/s 与 ContextMeter 的 system/tools/messages breakdown 未做：wire 无 per-turn token 计数与上下文分段数据，需服务端补数据后再上 | **已关闭（2026-08-18）**：`turn.ended` 增四段 usage + tok/s（流时长优先）；`contextBreakdown` 三段估算归一到权威总数并标 `estimated:true`；WS/REST/snapshot 三通道可选扩展向后兼容；GUI turn tail + ContextMeter 详情双语落地 | G |
-| FU17 | P2 | `externalDelegationRoute.test.ts`「workspace 绑定漂移拒启动」用例在合并前基线即红，与 `start.ts` fail-open 矛盾 | **已裁决（#7）**：fail-open 为既定行为（可用性优先原则）；待实施：改写该用例为 fail-open 契约 | 同步 |
+| FU17 | P2 | `externalDelegationRoute.test.ts`「workspace 绑定漂移拒启动」用例在合并前基线即红，与 `start.ts` fail-open 矛盾 | **已关闭（2026-08-18）**：用例改写为 fail-open 契约——healthz 200、delegation edge 关闭、warn 级（pino level 40）诊断含 drift 信息 | 同步 |
 | FU18 | P2 | 上游 0.36.1 自带测试在本机 Windows 成片失败（posix 路径断言、5s 超时簇为主）；涉败文件与上游逐字节一致，非合并回归。2026-08-17 本机 Node 升 24.19 后原 nvm4w shim spawn ENOENT 簇预计消失（execPath 已修通），待一次全量复跑确认剩余面 | 同步 |
 | FU19 | P3 | ~~manifest 未重生~~ **已关闭（2026-08-17）**：Node 升 24.19 后 `gen:config-manifest` / `gen:state-manifest` / `gen:wire-manifest` 全部重生成功；`config-manifest.toml` 相对手合版校正 7+/11-（池语义真值：secondaryModel owner 归位、overlay 条目删除） | 同步 |
 | FU20 | P3 | 生产源码旧术语注释残留 | **基本清完（2026-08-17 Z 批）**：sessionLookup/fsProcess/fsService/fs/runRg/acpConnection/sdk-rpc-client-v2/WorkspaceServicesView 已清理；残余 bashTool.ts 一处（当时属他批范围） | 同步 |

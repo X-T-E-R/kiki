@@ -51,6 +51,8 @@ const config = withMermaid(defineConfig({
               items: [
                 { text: '开始使用', link: '/zh/guides/getting-started' },
                 { text: 'Kiki 运行时边界', link: '/zh/guides/kiki-runtime' },
+                { text: '模型词汇收敛路线', link: '/zh/guides/model-vocabulary-convergence' },
+                { text: '跨 host 会话边界', link: '/zh/guides/cross-host-session-boundaries' },
                 { text: '从 kimi-cli 迁移', link: '/zh/guides/migration' },
                 { text: '常见使用案例', link: '/zh/guides/use-cases' },
                 { text: '交互与输入', link: '/zh/guides/interaction' },
@@ -131,6 +133,8 @@ const config = withMermaid(defineConfig({
               items: [
                 { text: 'Getting Started', link: '/en/guides/getting-started' },
                 { text: 'Kiki runtime boundary', link: '/en/guides/kiki-runtime' },
+                { text: 'Model vocabulary convergence', link: '/en/guides/model-vocabulary-convergence' },
+                { text: 'Cross-host session boundaries', link: '/en/guides/cross-host-session-boundaries' },
                 { text: 'Migrating from kimi-cli', link: '/en/guides/migration' },
                 { text: 'Common Use Cases', link: '/en/guides/use-cases' },
                 { text: 'Interaction and Input', link: '/en/guides/interaction' },

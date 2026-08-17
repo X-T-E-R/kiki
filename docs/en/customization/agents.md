@@ -42,13 +42,13 @@ The existing `Agent` and `AgentSwarm` tools are unchanged.
 
 ## Peer-thread communication
 
-Peer-thread communication lets the main Agent coordinate existing Kimi Code sessions on the same local host, including sessions in other workspaces. It is separate from the experimental named-agent adapter above: the four tools `list_threads`, `read_thread`, `send_message_to_thread`, and `wait_threads` are available by default and appear only on a session's main Agent, not its sub-agents.
+Peer-thread communication lets the main Agent coordinate existing Kimi Code sessions on the same local host, including sessions in other workspaces. It is separate from the experimental named-agent adapter above and is disabled by default. After opting in, the four tools `list_threads`, `read_thread`, `send_message_to_thread`, and `wait_threads` appear only on a session's main Agent, not its sub-agents.
 
 A thread reference identifies a host, workspace, and session. `list_threads` returns the references needed for later calls; `read_thread` reads completed main-Agent turns without resuming a cold session; `send_message_to_thread` derives the source from the current main-Agent session and durably accepts a peer-attributed message for another thread; and `wait_threads` waits for activity from up to eight threads for at most 60 seconds. Messages cannot cross hosts.
 
 True peer attribution requires the source thread's main Agent to call `send_message_to_thread`. REST and the `global.threads` Klient facade accept only target-addressed input and record it as user-origin, so an external client cannot claim a source thread.
 
-Set `[thread_communication] enabled = false` in `config.toml` to turn the feature off globally. Integrators can also persist an enable or disable override for an individual workspace; a workspace override cannot turn the feature on while the global switch is off. See the [Kiki runtime boundary](../guides/kiki-runtime.md#integrate-peer-thread-communication) for those interfaces.
+Set `[thread_communication] enabled = true` in `config.toml` to opt in globally. Sending a message can resume a cold target session and consume model quota. Integrators can also persist an enable or disable override for an individual workspace; a workspace override cannot turn the feature on while the global switch is off. See the [Kiki runtime boundary](../guides/kiki-runtime.md#integrate-peer-thread-communication) for those interfaces.
 
 ## Context Isolation and Resource Cost
 

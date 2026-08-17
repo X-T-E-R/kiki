@@ -51,7 +51,7 @@ The legacy model-selector and named-agent features below remain experimental and
 
 ## Integrate peer-thread communication
 
-Peer-thread communication is enabled by default through [`[thread_communication] enabled`](../configuration/config-files.md#thread-communication). It coordinates existing sessions on this host, including sessions in different workspaces; every thread reference includes the host, workspace, and session identity, and cross-host sends are rejected. Only main Agents receive the four built-in thread tools, but local clients can use the same contract directly.
+Peer-thread communication is disabled by default. Set [`[thread_communication] enabled = true`](../configuration/config-files.md#thread-communication) to opt in. Once enabled, it coordinates existing sessions on this host, including sessions in different workspaces; every thread reference includes the host, workspace, and session identity, and cross-host sends are rejected. Only main Agents receive the four built-in thread tools, but local clients can use the same contract directly. Sending to a cold target can resume that session and consume model quota.
 
 Peer-thread communication exists only on the `agent-core-v2` engine. `kimi web` always runs the v2 server, but the legacy CLI/TUI path selected with `KIMI_CODE_LEGACY_FLAG=1` has no thread tools, and the REST/Klient surface below is served only by the v2-backed server.
 

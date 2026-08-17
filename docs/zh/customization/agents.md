@@ -42,13 +42,13 @@ subagent 支持在后台运行：完成后结果自动回到 main agent，无需
 
 ## Peer thread 通信
 
-Peer thread 通信让主 Agent 协调同一台本地主机上的现有 Kimi Code 会话，也可以跨工作区通信。它与上面的实验性具名 Agent 适配器相互独立：`list_threads`、`read_thread`、`send_message_to_thread` 和 `wait_threads` 这 4 个工具默认可用，并且只提供给会话的主 Agent，不提供给子 Agent。
+Peer thread 通信让主 Agent 协调同一台本地主机上的现有 Kimi Code 会话，也可以跨工作区通信。它与上面的实验性具名 Agent 适配器相互独立，并且默认关闭。选择启用后，`list_threads`、`read_thread`、`send_message_to_thread` 和 `wait_threads` 这 4 个工具只提供给会话的主 Agent，不提供给子 Agent。
 
 Thread 引用标识主机、工作区和会话。`list_threads` 返回后续调用所需的引用；`read_thread` 读取已完成的主 Agent turn，不会恢复冷会话；`send_message_to_thread` 从当前主 Agent 会话派生来源，并持久接收发往另一条 thread、带 peer 归属的消息；`wait_threads` 最多等待 8 条 thread 的活动，最长等待 60 秒。消息不能跨主机发送。
 
 如需保留真实的 peer 归属，必须由来源 thread 的主 Agent 调用 `send_message_to_thread`。REST 或 Klient 的 `global.threads` facade 只接受目标 thread，提交的消息会记为 user 来源，外部客户端不能自行声明来源 thread。
 
-如需全局关闭，在 `config.toml` 中设置 `[thread_communication] enabled = false`。集成方还可以为单个工作区持久设置启用或禁用覆盖值；全局开关关闭时，工作区覆盖值不能重新启用该功能。接口说明见 [Kiki 运行时边界](../guides/kiki-runtime.md#集成-peer-thread-通信)。
+在 `config.toml` 中设置 `[thread_communication] enabled = true` 可全局启用。发送消息可能会恢复冷会话并消耗模型额度。集成方还可以为单个工作区持久设置启用或禁用覆盖值；全局开关关闭时，工作区覆盖值不能重新启用该功能。接口说明见 [Kiki 运行时边界](../guides/kiki-runtime.md#集成-peer-thread-通信)。
 
 ## 上下文隔离与资源开销
 

@@ -51,7 +51,7 @@
 
 ## 集成 peer thread 通信
 
-Peer thread 通信通过 [`[thread_communication] enabled`](../configuration/config-files.md#thread-communication) 默认开启。它协调本机上的现有会话，也可以跨工作区；每条 thread 引用都包含主机、工作区和会话身份，跨主机发送会被拒绝。只有主 Agent 能使用 4 个内置 thread 工具，本地客户端也可以直接调用同一套契约。
+Peer thread 通信默认关闭。设置 [`[thread_communication] enabled = true`](../configuration/config-files.md#thread-communication) 后才会启用。启用后，它可以协调本机上的现有会话，也可以跨工作区；每条 thread 引用都包含主机、工作区和会话身份，跨主机发送会被拒绝。只有主 Agent 能使用 4 个内置 thread 工具，本地客户端也可以直接调用同一套契约。向冷会话发送消息可能会恢复该会话并消耗模型额度。
 
 Peer thread 通信只存在于 `agent-core-v2` 引擎。`kimi web` 始终运行 v2 服务端；`KIMI_CODE_LEGACY_FLAG=1` 选择的旧版 CLI/TUI 路径没有 thread 工具，下方的 REST/Klient 接口也只由 v2 服务端提供。
 
