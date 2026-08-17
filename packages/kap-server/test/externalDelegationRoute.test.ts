@@ -260,10 +260,14 @@ describe('external delegation Session bootstrap', () => {
     expect((await fetch(`${base}/api/v1/healthz`)).status).toBe(200);
     const edge = await listRoot(server, base, 'session_workspace_a');
     expect(edge.code).not.toBe(0);
-    expect(logs.join('')).toMatch(/workspace binding does not match/i);
-    expect(logs.join('')).toContain(
-      'external delegation Session bootstrap failed; starting without the external delegation edge',
-    );
+    const warning = logs
+      .map((line) => JSON.parse(line) as { level: number; msg: string; err?: string })
+      .find((record) => record.msg ===
+        'external delegation Session bootstrap failed; starting without the external delegation edge');
+    expect(warning).toMatchObject({
+      level: 40,
+      err: expect.stringMatching(/workspace binding does not match/i),
+    });
   });
 
   it('initializes different workspace authorities concurrently without cross-admission', async () => {
