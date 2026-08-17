@@ -1,6 +1,7 @@
 import { rm } from 'node:fs/promises';
 
 import { describe, expect, it } from 'vitest';
+import { ConfigTarget, IConfigService } from '@moonshot-ai/agent-core-v2';
 import { Error2, ErrorCodes } from '@moonshot-ai/agent-core-v2/errors';
 
 import { defineKlientConformance } from './helpers/conformance.js';
@@ -11,6 +12,11 @@ import { makeEngine } from './helpers/engine.js';
 
 defineKlientConformance('memory', async () => {
   const { homeDir, app } = await makeEngine();
+  // Thread communication is opt-in (BK11); the conformance suite exercises it,
+  // so enable it explicitly for this engine.
+  await app.accessor
+    .get(IConfigService)
+    .replace('threadCommunication', { enabled: true }, ConfigTarget.Memory);
   const klient = createKlient({ scope: app });
   return {
     klient,

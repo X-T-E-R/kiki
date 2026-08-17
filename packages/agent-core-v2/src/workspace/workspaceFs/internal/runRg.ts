@@ -3,9 +3,8 @@
  *
  * Timeout / abort handling, capped stdout / stderr draining, two-phase kill
  * with process disposal, and the EAGAIN retry predicate for spawning `rg`
- * through the handler-shared `ISessionProcessRunner`. Ported from v1. This
- * helper is the reusable module for callers that want the simpler buffered
- * shape.
+ * through `IHostProcessService`. This helper is the reusable module for
+ * callers that want the simpler buffered shape.
  */
 
 import type { Readable } from 'node:stream';

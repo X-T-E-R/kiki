@@ -112,7 +112,7 @@ timeout = 5
 | `loop_control` | `table` | — | Agent 循环控制参数 → [`loop_control`](#loop-control) |
 | `background` | `table` | — | 后台任务运行参数 → [`background`](#background) |
 | `agents` | `table` | — | Codex 风格协作适配器默认值 → [`agents`](#agents) |
-| `thread_communication` | `table` | `{ enabled = true }` | 本地 peer thread 通信 → [`thread_communication`](#thread-communication) |
+| `thread_communication` | `table` | `{ enabled = false }` | 本地 peer thread 通信 → [`thread_communication`](#thread-communication) |
 | `tools` | `table` | — | 全局工具开关 → [`tools`](#tools) |
 | `image` | `table` | — | 图片压缩参数 → [`image`](#image) |
 | `services` | `table` | — | 内置外部服务配置 → [`services`](#services) |
@@ -299,11 +299,11 @@ Thinking effort 独立解析，优先级为：工具 `thinking_effort` → profi
 
 ## `thread_communication`
 
-这个严格配置节控制[本地 peer thread 通信](../customization/agents.md#peer-thread-通信)。功能默认开启，没有对应的环境变量覆盖。
+这个严格配置节控制[本地 peer thread 通信](../customization/agents.md#peer-thread-通信)。功能默认关闭，没有对应的环境变量覆盖。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `enabled` | `boolean` | `true` | 允许 4 个主 Agent peer thread 工具以及本地 REST 与 Klient thread 操作；设为 `false` 可全局关闭这些操作 |
+| `enabled` | `boolean` | `false` | 允许 4 个主 Agent peer thread 工具以及本地 REST 与 Klient thread 操作；设为 `true` 可全局启用这些操作 |
 
 单个工作区的覆盖值单独持久化，通过本地 REST API 或 Klient 管理。全局开关开启时，覆盖值可以关闭某个工作区；全局开关关闭时，覆盖值不能重新启用通信。
 

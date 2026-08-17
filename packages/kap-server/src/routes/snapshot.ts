@@ -13,12 +13,14 @@
 
 import {
   ensureMainAgent,
+  IAgentProfileService,
   IAgentPromptService,
   ISessionContext,
   ISessionInteractionService,
   ISessionMetadata,
   IWorkspaceService,
   resumeSessionById,
+  type AgentMeta,
   type IAgentScopeHandle,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
@@ -31,6 +33,7 @@ import {
   sessionSnapshotResponseSchema,
   type InFlightTurn,
   type SessionSnapshotResponse,
+  type SnapshotSubagent,
 } from '../protocol/rest-snapshot';
 import { loadMessageHistory } from '../services/messages/messageHistory';
 import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
@@ -127,15 +130,23 @@ async function assembleSnapshot(
   const workspace = await core.accessor.get(IWorkspaceService).get(workspaceId);
   const cwd = workspace?.root ?? '';
   const meta = await handle.accessor.get(ISessionMetadata).read();
-  const session = toWireSession(
+
+  // Materializing the main agent restores its persisted ProfileModel before
+  // the snapshot is projected. Unlike the list placeholder, this single-session
+  // surface can therefore carry the authoritative session-bound model.
+  const main = await ensureMainAgent(handle);
+  const projected = toWireSession(
     { ...meta, workspaceId },
     cwd,
     resolveSessionFacts(core, sessionId),
   );
+  const model = readBoundModel(main);
+  const session =
+    model === undefined ? projected : { ...projected, agent_config: { ...projected.agent_config, model } };
+  const subagents = enrichSnapshotSubagents(snapState.subagents, meta.agents);
 
   // Messages — most recent page of the main agent's full history, from the
   // loader shared with the `messages` routes.
-  const main = await ensureMainAgent(handle);
   const all = await loadMessageHistory(core, main, sessionId, meta.createdAt);
   const hasMore = all.length > SNAPSHOT_MESSAGE_PAGE_SIZE;
   const items = all.slice(-SNAPSHOT_MESSAGE_PAGE_SIZE);
@@ -158,10 +169,43 @@ async function assembleSnapshot(
     session,
     messages: { items, has_more: hasMore },
     in_flight_turn: inFlightTurn,
-    subagents: snapState.subagents,
+    subagents,
     pending_approvals: pendingApprovals,
     pending_questions: pendingQuestions,
   };
+}
+
+function readBoundModel(main: IAgentScopeHandle): string | undefined {
+  try {
+    return main.accessor.get(IAgentProfileService).getModel();
+  } catch {
+    // Model recovery is best-effort for partially materialized legacy agents.
+    return undefined;
+  }
+}
+
+function enrichSnapshotSubagents(
+  subagents: readonly SnapshotSubagent[],
+  agents: Readonly<Record<string, AgentMeta>> | undefined,
+): SnapshotSubagent[] {
+  return subagents.map((subagent) => {
+    const meta = agents?.[subagent.id];
+    const parentFromDelegator = meta?.delegator?.kind === 'agent' ? meta.delegator.agentId : undefined;
+    return {
+      ...subagent,
+      parent_agent_id: firstNonEmpty(
+        subagent.parent_agent_id,
+        parentFromDelegator,
+        meta?.labels?.['parentAgentId'],
+        meta?.parentAgentId ?? undefined,
+      ),
+      label: firstNonEmpty(meta?.labels?.['swarmItem'], meta?.swarmItem, subagent.label),
+    };
+  });
+}
+
+function firstNonEmpty(...values: readonly (string | undefined)[]): string | undefined {
+  return values.find((value) => value !== undefined && value.length > 0);
 }
 
 function readCurrentPromptId(main: IAgentScopeHandle | undefined): string | undefined {

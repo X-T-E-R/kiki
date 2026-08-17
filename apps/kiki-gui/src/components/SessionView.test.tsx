@@ -7,10 +7,16 @@ import type { Session } from '@moonshot-ai/protocol';
 import { I18nProvider } from '../i18n';
 import { buildAgentForest } from '../state/agentTree';
 import { createViewState, type SubagentBlock } from '../state/transcript';
-import { AgentBreadcrumb } from './AgentBreadcrumb';
+import {
+  AgentBreadcrumb,
+  AgentRelations,
+  RELATED_AGENT_PREVIEW_LIMIT,
+  relatedAgentNodes,
+} from './AgentBreadcrumb';
 import { AgentTreeView } from './AgentTreeView';
 import { Transcript } from './Transcript';
 import { ContextMeter } from './ContextMeter';
+import { RightRail } from './RightRail';
 import { PendingBadge } from './PendingBadge';
 import { QueueStrip } from './QueueStrip';
 import { toolErrorSummary } from './ToolCard';
@@ -662,24 +668,24 @@ describe('ContextMeter', () => {
     );
   }
 
-  it('shows the rounded percentage without a compact hint below 80%', () => {
+  it('shows the rounded percentage without a warning below 80%', () => {
     const html = renderMeter(50_000, 100_000);
     expect(html).toContain('50%');
-    expect(html).not.toContain('compact?');
+    expect(html).not.toContain('details</span>');
     expect(html).not.toContain('amber-card');
   });
 
-  it('turns amber and suggests compaction at exactly 80%', () => {
+  it('turns amber and points to details at exactly 80%', () => {
     const html = renderMeter(80_000, 100_000);
     expect(html).toContain('80%');
-    expect(html).toContain('compact?');
+    expect(html).toContain('details</span>');
     expect(html).toContain('amber-card');
   });
 
   it('clamps the display at 100% when usage overruns the limit', () => {
     const html = renderMeter(120_000, 100_000);
     expect(html).toContain('100%');
-    expect(html).toContain('compact?');
+    expect(html).toContain('details</span>');
   });
 });
 
@@ -795,6 +801,7 @@ describe('agent tree chrome', () => {
       parentAgentId: 'agent-1',
       parentToolCallId: 'call-2',
       name: 'Grandchild',
+      label: 'Grandchild',
       description: undefined,
       model: undefined,
       thinkingEffort: undefined,
@@ -840,5 +847,60 @@ describe('agent tree chrome', () => {
     expect(html).toContain('Child');
     expect(html).toContain('Grandchild');
     expect(html).toContain('2 tools');
+  });
+
+  it('bounds sibling and child chips to the current parent while keeping a more entry', () => {
+    const crowded = buildAgentForest(
+      [],
+      [
+        { agentId: 'main', name: 'Main' },
+        { agentId: 'agent-1', parentAgentId: 'main', name: 'Current' },
+        ...Array.from({ length: 6 }, (_, index) => ({
+          agentId: `agent-${index + 2}`,
+          parentAgentId: 'main',
+          name: `Peer ${index + 2}`,
+        })),
+        ...Array.from({ length: 6 }, (_, index) => ({
+          agentId: `child-${index + 1}`,
+          parentAgentId: 'agent-1',
+          name: `Child ${index + 1}`,
+        })),
+      ],
+    );
+    const related = relatedAgentNodes(crowded, 'agent-1');
+    expect(related.siblings).toHaveLength(6);
+    expect(related.siblings.every((node) => node.parentAgentId === 'main')).toBe(true);
+    expect(new Set(related.siblings.map((node) => node.agentId)).size).toBe(6);
+    expect(RELATED_AGENT_PREVIEW_LIMIT).toBe(4);
+
+    const html = renderToStaticMarkup(
+      <I18nProvider>
+        <AgentRelations forest={crowded} currentAgentId="agent-1" onOpen={() => {}} />
+      </I18nProvider>,
+    );
+    expect(html).toContain('Peer 5');
+    expect(html).not.toContain('Peer 6');
+    expect(html).toContain('Show 2 more siblings');
+    expect(html).toContain('Child 4');
+    expect(html).not.toContain('Child 5');
+    expect(html).toContain('Show 2 more children');
+  });
+
+  it('keeps the RightRail subagent section in a bounded scroll region', () => {
+    const html = renderToStaticMarkup(
+      <MemoryRouter>
+        <I18nProvider>
+          <RightRail
+            state={createViewState('sess-1')}
+            forest={forest}
+            onCancelTask={() => {}}
+            onOpenSubagent={() => {}}
+          />
+        </I18nProvider>
+      </MemoryRouter>,
+    );
+    expect(html).toContain('data-subagent-scroll');
+    expect(html).toContain('max-h-80');
+    expect(html).toContain('overflow-y-auto');
   });
 });

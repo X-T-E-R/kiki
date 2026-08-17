@@ -51,6 +51,7 @@ import {
 import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { wrapSubagentModelError } from '#/session/subagent/configSection';
+import { resolveNestedSubagentDefaultContext } from '#/session/subagent/bindingContext';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentRuntimeBindingService } from '#/agent/runtimeBinding/runtimeBinding';
@@ -186,7 +187,7 @@ export class SessionSwarmService implements ISessionSwarmService {
       profile.modelAlias !== undefined ||
       profile.thinkingEffort !== undefined ||
       profile.modelPreference !== undefined;
-    const binding = suppliedBinding ?? {
+    let binding = suppliedBinding ?? {
       model: selection.route?.lockedModelAlias ?? profile.modelAlias ?? callerData.modelAlias,
       thinking:
         selection.route?.lockedThinkingEffort ??
@@ -198,6 +199,21 @@ export class SessionSwarmService implements ISessionSwarmService {
           : ('caller' as const),
       bindingMode: profilePinned ? ('fixed' as const) : ('inherit' as const),
     };
+    if (binding.modelSource === 'caller') {
+      const nestedDefault = resolveNestedSubagentDefaultContext(
+        this.lifecycle,
+        await this.agentMeta(callerAgentId),
+      );
+      if (nestedDefault !== undefined) {
+        binding = {
+          model: nestedDefault.modelAlias,
+          thinking:
+            binding.bindingMode === 'inherit' ? nestedDefault.thinkingLevel : binding.thinking,
+          modelSource: 'caller',
+          bindingMode: 'fixed',
+        };
+      }
+    }
     assertProfileRouteBinding(selection.route, {
       modelAlias: binding.model,
       thinkingEffort: binding.thinking,

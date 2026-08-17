@@ -11,9 +11,9 @@ import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom'
 
 import type { PermissionMode, Session } from '@moonshot-ai/protocol';
 
-import { AgentBreadcrumb } from './AgentBreadcrumb';
+import { AgentBreadcrumb, AgentRelations } from './AgentBreadcrumb';
 import { ConfirmDialog } from './ConfirmDialog';
-import { Composer } from './Composer';
+import { Composer, resolveSelectedEffort } from './Composer';
 import {
   useConversationShell,
   useRegisterSeat,
@@ -71,9 +71,7 @@ import {
   TerminalManager,
 } from '../state/terminalManager';
 import {
-  agentChildren,
   agentPath,
-  agentSiblings,
   applyNewestAgentPage,
   mergeAgentTranscript,
   prependOlderAgentPage,
@@ -901,9 +899,8 @@ export function SessionView({
     restoredComposer.modelOverride ??
     resolveSessionModelOverride(initialOptionsRef.current.model),
   );
-  // Effort is an explicit user choice only: no local-default seeding and no
-  // payload value until the user picks one, so the server's thinking config
-  // stays the single default source (matches the /new draft page).
+  // The effort visible in Composer is the value sent with the next prompt.
+  // A restored or /new hand-off choice still wins over the catalog default.
   const [effortOverride, setEffortOverride] = useState(
     restoredComposer.effortOverride ?? initialOptionsRef.current.thinking,
   );
@@ -1186,10 +1183,11 @@ export function SessionView({
     if (supportedEfforts === undefined || supportedEfforts.length === 0) return;
     if (!supportedEfforts.includes(effortOverride)) setEffortOverride(undefined);
   }, [effortOverride, supportedEfforts]);
-  const effectiveEffort =
-    supportedEfforts !== undefined && supportedEfforts.length > 0
-      ? (effortOverride ?? catalogItem?.default_effort ?? supportedEfforts[0])
-      : undefined;
+  const effectiveEffort = resolveSelectedEffort(
+    supportedEfforts,
+    effortOverride,
+    catalogItem?.default_effort,
+  );
 
   // Global y / n shortcut for the focused-or-unambiguous visible approval.
   useEffect(() => {
@@ -1283,10 +1281,9 @@ export function SessionView({
             text: echoText,
             content,
             model: effectiveModel,
-            // Only an explicit effort pick rides the wire; without one the
-            // payload omits `thinking` so the server's thinking config (the
-            // settings page) stays the single default source.
-            thinking: effortOverride,
+            // FU7: the select's visible value is the prompt's wire value,
+            // including the catalog default when the user leaves it untouched.
+            thinking: effectiveEffort,
             permissionMode,
             planMode,
             swarmMode,
@@ -1403,7 +1400,7 @@ export function SessionView({
     controller,
     client,
     effectiveModel,
-    effortOverride,
+    effectiveEffort,
     permissionMode,
     planMode,
     swarmMode,
@@ -1819,9 +1816,6 @@ export function SessionView({
     () => (selectedAgentId === undefined ? [] : agentPath(forest, selectedAgentId)),
     [forest, selectedAgentId],
   );
-  const parentNode = crumbs.length > 1 ? crumbs[crumbs.length - 2] : undefined;
-  const siblingNodes = selectedAgentId === undefined ? [] : agentSiblings(forest, selectedAgentId);
-  const childNodes = selectedAgentId === undefined ? [] : agentChildren(forest, selectedAgentId);
 
   if (selectedAgentId !== undefined) {
     const historyForAgent = agentHistory?.agentId === selectedAgentId ? agentHistory : null;
@@ -1965,36 +1959,13 @@ export function SessionView({
                     {t('sv.panel')}
                   </button>
                 </header>
-                <div className="flex shrink-0 flex-wrap gap-3 border-b border-hairline px-4 py-2 text-[11px]">
-                  {parentNode !== undefined && parentNode.agentId !== MAIN_AGENT_ID ? (
-                    <button
-                      type="button"
-                      onClick={() => { openAgent(parentNode.agentId); }}
-                      className="rounded-full border border-hairline px-2 py-0.5 text-ink-soft transition-colors hover:border-accent hover:text-accent"
-                    >
-                      {t('sv.parentAgents')}: {parentNode.label}
-                    </button>
-                  ) : null}
-                  {siblingNodes.map((sibling) => (
-                    <button
-                      key={sibling.agentId}
-                      type="button"
-                      onClick={() => { openAgent(sibling.agentId); }}
-                      className="rounded-full border border-hairline px-2 py-0.5 text-ink-soft transition-colors hover:border-accent hover:text-accent"
-                    >
-                      {t('sv.siblingAgents')}: {sibling.label}
-                    </button>
-                  ))}
-                  {childNodes.map((child) => (
-                    <button
-                      key={child.agentId}
-                      type="button"
-                      onClick={() => { openAgent(child.agentId); }}
-                      className="rounded-full border border-hairline px-2 py-0.5 text-ink-soft transition-colors hover:border-accent hover:text-accent"
-                    >
-                      {t('sv.childAgents')}: {child.label}
-                    </button>
-                  ))}
+                <div className="shrink-0 border-b border-hairline px-4 py-2 text-[11px]">
+                  <AgentRelations
+                    key={selectedAgentId}
+                    forest={forest}
+                    currentAgentId={selectedAgentId}
+                    onOpen={openAgent}
+                  />
                 </div>
               </>,
               slots.header,

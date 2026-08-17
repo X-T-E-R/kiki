@@ -136,7 +136,11 @@ const SubagentsSection = memo(function SubagentsSection({
   selectedAgentId?: string;
   onOpen: (agentId: string) => void;
 }) {
-  return <AgentTreeView forest={forest} selectedAgentId={selectedAgentId} onOpen={onOpen} />;
+  return (
+    <div data-subagent-scroll className="max-h-80 overflow-y-auto pr-1">
+      <AgentTreeView forest={forest} selectedAgentId={selectedAgentId} onOpen={onOpen} />
+    </div>
+  );
 });
 
 const GoalSection = memo(function GoalSection({

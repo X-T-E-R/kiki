@@ -1,10 +1,10 @@
 /**
- * `workspaceFs` domain — `runCommand` helper over `ISessionProcessRunner`.
+ * `workspaceFs` domain — `runCommand` helper over `IHostProcessService`.
  *
  * Collects a child process's full stdout/stderr and exit code through the
- * Agent's backend-pluggable `ISessionProcessRunner`, with optional `AbortSignal`
- * support (the caller decides timeout semantics). Kept as a standalone
- * helper so it can be unit-tested with a fake runner.
+ * host process abstraction, with optional `AbortSignal` support (the caller
+ * decides timeout semantics). Kept as a standalone helper so it can be
+ * unit-tested with a fake process service.
  */
 
 import { type Readable } from 'node:stream';

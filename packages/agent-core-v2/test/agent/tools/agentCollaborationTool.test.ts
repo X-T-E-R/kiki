@@ -11,8 +11,16 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { IAgentScopeHandle } from '#/_base/di/scope';
-import { FollowupTaskTool } from '#/agent/tools/agent-collaboration/agentCollaborationTool';
+import {
+  FollowupTaskTool,
+  ListAgentsTool,
+  SpawnAgentInputSchema,
+} from '#/agent/tools/agent-collaboration/agentCollaborationTool';
 import type { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import {
+  COLLABORATION_AGENT_TYPE_LABEL,
+  COLLABORATION_TASK_NAME_LABEL,
+} from '#/session/agentCollaboration/registry';
 
 function followupTool(lifecycle: IAgentLifecycleService): FollowupTaskTool {
   return new FollowupTaskTool(
@@ -34,6 +42,33 @@ function followupTool(lifecycle: IAgentLifecycleService): FollowupTaskTool {
     undefined as never, // protocolAdapters
     undefined as never, // collaborationRegistry
     undefined as never, // messaging
+  );
+}
+
+function listTool(
+  lifecycle: IAgentLifecycleService,
+  tasks: { getTask(taskId: string): { status: string } | undefined },
+  metadata: { read(): Promise<unknown> },
+): ListAgentsTool {
+  return new ListAgentsTool(
+    lifecycle,
+    undefined as never,
+    undefined as never,
+    { agentId: 'main' } as never,
+    tasks as never,
+    undefined as never,
+    undefined as never,
+    undefined as never,
+    metadata as never,
+    undefined as never,
+    undefined as never,
+    undefined as never,
+    undefined as never,
+    undefined as never,
+    undefined as never,
+    undefined as never,
+    undefined as never,
+    undefined as never,
   );
 }
 
@@ -117,5 +152,61 @@ describe('agent collaboration tool materialize', () => {
 
     expect(result).toBe(live);
     expect(create).not.toHaveBeenCalled();
+  });
+});
+
+describe('agent collaboration compatibility fixes', () => {
+  it('accepts nonblank fork_turns at the schema layer for actionable runtime rejection', () => {
+    expect(
+      SpawnAgentInputSchema.safeParse({
+        task_name: 'worker',
+        message: 'Investigate',
+        fork_turns: 'all',
+      }).success,
+    ).toBe(true);
+    expect(
+      SpawnAgentInputSchema.safeParse({
+        task_name: 'worker',
+        message: 'Investigate',
+        fork_turns: '   ',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('reports a missing latest task as unknown instead of errored', async () => {
+    const lifecycle = { _serviceBrand: undefined } as IAgentLifecycleService;
+    const tool = listTool(
+      lifecycle,
+      { getTask: () => undefined },
+      {
+        read: async () => ({
+          agents: {
+            'agent-7': {
+              type: 'sub',
+              labels: {
+                parentAgentId: 'main',
+                [COLLABORATION_TASK_NAME_LABEL]: 'worker',
+                [COLLABORATION_AGENT_TYPE_LABEL]: 'coder',
+              },
+            },
+          },
+        }),
+      },
+    );
+
+    const result = await tool.run();
+
+    expect(typeof result.output).toBe('string');
+    if (typeof result.output !== 'string') throw new Error('expected JSON text output');
+    expect(JSON.parse(result.output)).toEqual({
+      agents: [
+        {
+          task_name: 'worker',
+          agent_id: 'agent-7',
+          agent_type: 'coder',
+          status: 'unknown',
+        },
+      ],
+    });
   });
 });

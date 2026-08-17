@@ -38,7 +38,9 @@ import {
   resolveAgentCollaborationBinding,
   resolveSubagentTimeoutMs,
   subagentBindingMode,
+  subagentModelSource,
 } from '#/session/subagent/configSection';
+import { resolveNestedSubagentDefaultContext } from '#/session/subagent/bindingContext';
 import { withSubagentBindingMode } from '#/session/agentLifecycle/agentLifecycleService';
 import { SubagentTask, type SubagentHandle } from '#/agent/tools/agent/subagent-task';
 import { resolveAgentTaskConfig } from '#/agent/task/configSection';
@@ -60,7 +62,7 @@ export const SpawnAgentInputSchema = z.object({
   agent_type: z.string().trim().min(1).optional(),
   model: z.string().trim().min(1).optional(),
   reasoning_effort: z.string().trim().min(1).optional(),
-  fork_turns: z.string().regex(FORK_NONE).optional(),
+  fork_turns: z.string().regex(NONBLANK).optional(),
 }).strict();
 export const ListAgentsInputSchema = z.object({}).strict();
 export const WaitAgentInputSchema = z.object({ timeout_ms: z.number().int().min(10_000).max(3_600_000).optional() }).strict();
@@ -79,7 +81,7 @@ export const WAIT_AGENT_PARAMETERS = toInputJsonSchema(WaitAgentInputSchema);
 export const FOLLOWUP_TASK_PARAMETERS = toInputJsonSchema(FollowupTaskInputSchema);
 export const INTERRUPT_AGENT_PARAMETERS = toInputJsonSchema(InterruptAgentInputSchema);
 export const SEND_MESSAGE_PARAMETERS = toInputJsonSchema(SendMessageInputSchema);
-type NamedStatus = 'running' | 'completed' | 'interrupted' | 'errored';
+type NamedStatus = 'running' | 'completed' | 'interrupted' | 'errored' | 'unknown';
 
 interface NamedRecord {
   readonly taskName: string;
@@ -252,10 +254,32 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
       const selectedProfile = this.catalog.get(profileName);
       if (selectedProfile === undefined) throw new Error2(ErrorCodes.PROFILE_UNKNOWN, `Unknown agent type: "${profileName}"`);
       if (own.modelAlias === undefined) throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'Caller agent has no model bound');
-      const binding = resolveAgentCollaborationBinding(this.config, this.flags,
+      const bindingRequest = {
+        modelAlias: optionalNonblank(args.model, 'model'),
+        thinkingEffort: optionalNonblank(args.reasoning_effort, 'reasoning_effort'),
+      };
+      const profileBinding = {
+        modelPreference: selectedProfile.modelPreference,
+        modelAlias: selectedProfile.modelAlias,
+        thinkingEffort: selectedProfile.thinkingEffort,
+      };
+      let binding = resolveAgentCollaborationBinding(this.config, this.flags,
         { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
-        { modelAlias: optionalNonblank(args.model, 'model'), thinkingEffort: optionalNonblank(args.reasoning_effort, 'reasoning_effort') },
-        { modelPreference: selectedProfile.modelPreference, modelAlias: selectedProfile.modelAlias, thinkingEffort: selectedProfile.thinkingEffort });
+        bindingRequest,
+        profileBinding);
+      if (subagentModelSource(binding) === 'caller') {
+        const callerMeta = (await this.metadata.read()).agents?.[this.callerAgentId];
+        const nestedDefault = resolveNestedSubagentDefaultContext(this.lifecycle, callerMeta);
+        if (nestedDefault !== undefined) {
+          binding = resolveAgentCollaborationBinding(
+            this.config,
+            this.flags,
+            nestedDefault,
+            bindingRequest,
+            profileBinding,
+          );
+        }
+      }
       const model = this.modelCatalog.get(binding.model);
       const strictEffort = requiresStrictThinkingValidation(this.protocolAdapters, model.protocol, model.providerType) ||
         (model.supportEfforts?.length ?? 0) > 0;
@@ -450,7 +474,7 @@ registerAgentToolService(ISendMessageTool, SendMessageTool, { name: 'send_messag
 function canonicalTaskName(value: string): string { if (!TASK_NAME.test(value) || value === 'root') throw new Error('task_name must match ^[a-z0-9_]+$ and must not be "root".'); return value; }
 function nonblank(value: string, field: string): string { if (value.trim().length === 0) throw new Error(`${field} must be nonblank.`); return value; }
 function optionalNonblank(value: string | undefined, field: string): string | undefined { return value === undefined ? undefined : nonblank(value, field).trim(); }
-function statusOf(status: string | undefined): NamedStatus { if (status === 'running') return 'running'; if (status === 'completed') return 'completed'; if (status === 'killed' || status === 'timed_out') return 'interrupted'; return 'errored'; }
+function statusOf(status: string | undefined): NamedStatus { if (status === 'running') return 'running'; if (status === 'completed') return 'completed'; if (status === 'killed' || status === 'timed_out') return 'interrupted'; if (status === 'failed') return 'errored'; return 'unknown'; }
 function success(value: unknown): ExecutableToolResult { return { output: JSON.stringify(value) }; }
 function failure(message: string): ExecutableToolResult { return { output: message, isError: true }; }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }

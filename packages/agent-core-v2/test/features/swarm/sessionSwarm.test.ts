@@ -1073,6 +1073,47 @@ describe('SessionSwarmService metadata compatibility', () => {
     );
   });
 
+  it('rebases an inherited nested swarm spawn to the main agent and freezes it', async () => {
+    agents['agent-parent'] = {
+      type: 'sub',
+      labels: { parentAgentId: 'main' },
+    };
+    handles.set(
+      'agent-parent',
+      agentHandle('agent-parent', lifecycle, eventBus, {
+        modelAlias: 'provider/child',
+        thinkingLevel: 'low',
+      }),
+    );
+    const inheritedBinding = { model: 'provider/child', thinking: 'low' };
+    Object.defineProperties(inheritedBinding, {
+      modelSource: { value: 'caller', enumerable: false },
+      bindingMode: { value: 'inherit', enumerable: false },
+    });
+    const service = ix.get(ISessionSwarmService);
+
+    await service.run({
+      callerAgentId: 'agent-parent',
+      tasks: [{ ...spawnSessionTask('src/a.ts'), binding: inheritedBinding }],
+    });
+
+    expect(createAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        binding: {
+          profile: 'coder',
+          route: undefined,
+          model: 'kimi-test',
+          thinking: 'medium',
+        },
+        labels: {
+          parentAgentId: 'agent-parent',
+          swarmItem: 'src/a.ts',
+          subagentBindingMode: 'fixed',
+        },
+      }),
+    );
+  });
+
   it('inherits the caller runtime binding on spawned children', async () => {
     handles.set(
       'main',

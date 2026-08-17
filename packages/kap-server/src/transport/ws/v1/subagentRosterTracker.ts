@@ -45,6 +45,7 @@ const MAIN_AGENT_ID = 'main';
 
 export class SubagentRosterTracker {
   private readonly bySession = new Map<string, Map<string, SnapshotSubagent>>();
+  private readonly toolCallsBySession = new Map<string, Map<string, Set<string>>>();
 
   apply(sessionId: string, event: Event): void {
     switch (event.type) {
@@ -68,13 +69,21 @@ export class SubagentRosterTracker {
           status: 'running',
           subagent_phase: 'queued',
           subagent_type: event.subagentName,
+          parent_agent_id: event.parentAgentId,
           parent_tool_call_id: event.parentToolCallId === '' ? undefined : event.parentToolCallId,
+          tool_call_count: 0,
           swarm_index: event.swarmIndex,
           run_in_background: event.runInBackground,
           model: event.model,
           thinking_effort: event.thinkingEffort,
           created_at: new Date().toISOString(),
         });
+        let toolCalls = this.toolCallsBySession.get(sessionId);
+        if (!toolCalls) {
+          toolCalls = new Map();
+          this.toolCallsBySession.set(sessionId, toolCalls);
+        }
+        toolCalls.set(event.subagentId, new Set());
         return;
       }
       case 'subagent.started': {
@@ -112,6 +121,23 @@ export class SubagentRosterTracker {
         entry.output_preview = event.error;
         return;
       }
+      case 'tool.call.started': {
+        const entry = this.bySession.get(sessionId)?.get(event.agentId);
+        if (!entry) return;
+        let toolCalls = this.toolCallsBySession.get(sessionId)?.get(event.agentId);
+        if (!toolCalls) {
+          toolCalls = new Set();
+          let byAgent = this.toolCallsBySession.get(sessionId);
+          if (!byAgent) {
+            byAgent = new Map();
+            this.toolCallsBySession.set(sessionId, byAgent);
+          }
+          byAgent.set(event.agentId, toolCalls);
+        }
+        toolCalls.add(event.toolCallId);
+        entry.tool_call_count = toolCalls.size;
+        return;
+      }
       case 'task.started': {
         // A foreground subagent that detaches (Ctrl+B / timeout) re-enters as
         // a detached background task served by REST `/tasks` under a new task
@@ -122,6 +148,7 @@ export class SubagentRosterTracker {
         const info = event.info;
         if (info.kind === 'agent' && info.detached === true && info.agentId !== undefined) {
           this.bySession.get(sessionId)?.delete(info.agentId);
+          this.toolCallsBySession.get(sessionId)?.delete(info.agentId);
         }
         return;
       }
@@ -155,6 +182,7 @@ export class SubagentRosterTracker {
         // own turn boundaries must never drop the roster mid-swarm.
         if (event.agentId === MAIN_AGENT_ID) {
           this.bySession.delete(sessionId);
+          this.toolCallsBySession.delete(sessionId);
         }
         return;
       }
@@ -172,5 +200,6 @@ export class SubagentRosterTracker {
 
   clear(sessionId: string): void {
     this.bySession.delete(sessionId);
+    this.toolCallsBySession.delete(sessionId);
   }
 }

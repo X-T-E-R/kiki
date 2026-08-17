@@ -97,7 +97,7 @@ describe('filterSessionsByRange', () => {
 });
 
 describe('aggregateUsage', () => {
-  it('sums every counter and derives the cache hit rate from reads', () => {
+  it('sums every counter and derives cache hits from the full input volume', () => {
     const totals = aggregateUsage([
       session('a', {
         usage: usage({
@@ -130,13 +130,18 @@ describe('aggregateUsage', () => {
       cacheCreationTokens: 500,
       totalTokens: 7500,
     });
-    // 4000 / (4000 + 2000) — cache writes stay out of the denominator.
-    expect(totals.cacheHitRate).toBeCloseTo(2 / 3, 10);
+    // 4000 / (2000 other + 4000 cache read + 500 cache creation).
+    expect(totals.cacheHitRate).toBeCloseTo(8 / 13, 10);
   });
 
-  it('reports a null hit rate when nothing was read yet', () => {
+  it('distinguishes cache writes from no input usage', () => {
     expect(aggregateUsage([]).cacheHitRate).toBeNull();
     expect(aggregateUsage([session('a')]).cacheHitRate).toBeNull();
+    expect(
+      aggregateUsage([
+        session('cache-write', { usage: usage({ cache_creation_tokens: 250 }) }),
+      ]).cacheHitRate,
+    ).toBe(0);
   });
 });
 

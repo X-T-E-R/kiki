@@ -87,6 +87,7 @@ import { applyPrintModeConfigDefaults } from '#/agent/task/printDefaults';
 import '#/session/subagent/configSection';
 import {
   DEFAULT_SUBAGENT_TIMEOUT_MS,
+  resolveAgentCollaborationBinding,
   resolveSubagentBinding,
   resolveSubagentModelPool,
   subagentBindingMode,
@@ -1765,13 +1766,45 @@ describe('subagent config section', () => {
       thinking: 'medium',
     });
     expect(subagentBindingMode(explicitPrimary)).toBe('fixed');
+    const nestedDefaultOwner = {
+      modelAlias: 'provider/root',
+      thinkingLevel: 'high',
+      inheritByDefault: false,
+    };
+    const nestedDefault = resolveSubagentBinding(
+      noPool.config,
+      secondaryModelFlags(),
+      nestedDefaultOwner,
+    );
+    expect(nestedDefault).toEqual({ model: 'provider/root', thinking: 'high' });
+    expect(subagentBindingMode(nestedDefault)).toBe('fixed');
+    const nestedExplicitAlias = resolveSubagentBinding(
+      noPool.config,
+      secondaryModelFlags(),
+      nestedDefaultOwner,
+      { modelAlias: 'provider/exact' },
+    );
+    expect(nestedExplicitAlias).toEqual({ model: 'provider/exact', thinking: undefined });
+    expect(subagentBindingMode(nestedExplicitAlias)).toBe('fixed');
+    const nestedThinkingOverride = resolveSubagentBinding(
+      noPool.config,
+      secondaryModelFlags(),
+      nestedDefaultOwner,
+      { thinkingEffort: 'low' },
+    );
+    expect(nestedThinkingOverride).toEqual({ model: 'provider/root', thinking: 'low' });
+    expect(subagentBindingMode(nestedThinkingOverride)).toBe('fixed');
     noPool.disposables.dispose();
 
     const pool = await createConfig(
       {},
       '[secondary_model]\ndefault_model = "provider/fast"\n\n[secondary_model.models]\n"provider/fast" = "fast and cheap"\n"provider/smart" = "hard tasks"\n',
     );
-    const poolDefault = resolveSubagentBinding(pool.config, secondaryModelFlags(), own);
+    const poolDefault = resolveSubagentBinding(
+      pool.config,
+      secondaryModelFlags(),
+      nestedDefaultOwner,
+    );
     expect(poolDefault).toEqual({
       model: 'provider/fast',
       thinking: undefined,
@@ -1799,6 +1832,49 @@ describe('subagent config section', () => {
       thinking: 'medium',
     });
     expect(subagentBindingMode(poolPrimary)).toBe('fixed');
+    pool.disposables.dispose();
+  });
+
+  it('aligns collaboration defaults with nested main and pool bindings', async () => {
+    const nestedDefaultOwner = {
+      modelAlias: 'provider/root',
+      thinkingLevel: 'high',
+      inheritByDefault: false,
+    };
+    const noPool = await createConfig({});
+    const mainDefault = resolveAgentCollaborationBinding(
+      noPool.config,
+      secondaryModelFlags(),
+      nestedDefaultOwner,
+      {},
+      {},
+    );
+    expect(mainDefault).toEqual({ model: 'provider/root', thinking: 'high' });
+    expect(subagentBindingMode(mainDefault)).toBe('fixed');
+    const explicitAlias = resolveAgentCollaborationBinding(
+      noPool.config,
+      secondaryModelFlags(),
+      nestedDefaultOwner,
+      { modelAlias: 'provider/exact' },
+      {},
+    );
+    expect(explicitAlias).toEqual({ model: 'provider/exact', thinking: undefined });
+    expect(subagentBindingMode(explicitAlias)).toBe('fixed');
+    noPool.disposables.dispose();
+
+    const pool = await createConfig(
+      {},
+      '[secondary_model]\ndefault_model = "provider/fast"\n\n[secondary_model.models]\n"provider/fast" = "fast and cheap"\n"provider/smart" = "hard tasks"\n',
+    );
+    const poolDefault = resolveAgentCollaborationBinding(
+      pool.config,
+      secondaryModelFlags(),
+      nestedDefaultOwner,
+      {},
+      {},
+    );
+    expect(poolDefault).toEqual({ model: 'provider/fast', thinking: undefined });
+    expect(subagentBindingMode(poolDefault)).toBe('fixed');
     pool.disposables.dispose();
   });
 

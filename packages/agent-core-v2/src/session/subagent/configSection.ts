@@ -98,6 +98,12 @@ export interface SubagentBindingRequest {
   readonly thinkingEffort?: string;
 }
 
+export interface SubagentBindingOwner {
+  readonly modelAlias: string;
+  readonly thinkingLevel: string;
+  readonly inheritByDefault?: boolean;
+}
+
 export type SubagentModelSource = 'tool' | 'profile' | 'default' | 'secondary' | 'caller';
 export type SubagentBindingMode = 'inherit' | 'fixed';
 
@@ -268,7 +274,7 @@ export function cascadeSubagentModelPool(
 export function resolveSubagentBinding(
   config: IConfigService,
   flags: IFlagService,
-  own: { modelAlias: string; thinkingLevel: string },
+  own: SubagentBindingOwner,
   requested?: string | SubagentBindingRequest,
   profileRequest: SubagentBindingRequest = {},
 ): SubagentModelBinding {
@@ -351,7 +357,8 @@ export function resolveSubagentBinding(
         { details: { model: selected.modelPreference } },
       );
     }
-    const mode: SubagentBindingMode = explicitThinking === undefined ? 'inherit' : 'fixed';
+    const mode: SubagentBindingMode =
+      explicitThinking === undefined && own.inheritByDefault !== false ? 'inherit' : 'fixed';
     return recordBindingMetadata(
       {
         model: own.modelAlias,
@@ -394,12 +401,14 @@ export function resolveSubagentBinding(
 export function resolveAgentCollaborationBinding(
   config: IConfigService,
   flags: IFlagService,
-  own: { modelAlias: string; thinkingLevel: string },
+  own: SubagentBindingOwner,
   request: Pick<SubagentBindingRequest, 'modelAlias' | 'thinkingEffort'>,
   profile: SubagentBindingRequest,
 ): SubagentModelBinding {
   const agents = config.get<AgentsConfig | undefined>(AGENTS_SECTION);
-  const exactModel = normalized(request.modelAlias) ?? normalized(profile.modelAlias);
+  const requestModel = normalized(request.modelAlias);
+  const profileModel = normalized(profile.modelAlias);
+  const exactModel = requestModel ?? profileModel;
   const pool = flags.enabled(SECONDARY_MODEL_FLAG_ID) ? resolveSubagentModelPool(config) : undefined;
   const profilePreference = normalized(profile.modelPreference);
   const preferredModel =
@@ -416,22 +425,26 @@ export function resolveAgentCollaborationBinding(
     );
   }
   const configuredDefault = normalized(agents?.defaultSubagentModel);
-  const model = exactModel ?? preferredModel ?? configuredDefault ?? own.modelAlias;
+  const poolDefault = pool?.defaultModel;
+  const model = exactModel ?? preferredModel ?? configuredDefault ?? poolDefault ?? own.modelAlias;
+  const source: SubagentModelSource =
+    requestModel !== undefined
+      ? 'tool'
+      : profileModel !== undefined || preferredModel !== undefined
+        ? 'profile'
+        : configuredDefault !== undefined
+          ? 'default'
+          : poolDefault !== undefined
+            ? 'secondary'
+            : 'caller';
   const thinking =
     normalized(request.thinkingEffort) ??
     normalized(profile.thinkingEffort) ??
     normalized(agents?.defaultSubagentReasoningEffort) ??
-    (model === own.modelAlias ? own.thinkingLevel : undefined);
-  const source: SubagentModelSource =
-    normalized(request.modelAlias) !== undefined
-      ? 'tool'
-      : normalized(profile.modelAlias) !== undefined || preferredModel !== undefined
-        ? 'profile'
-        : configuredDefault !== undefined
-          ? 'default'
-          : 'caller';
+    (source !== 'secondary' && model === own.modelAlias ? own.thinkingLevel : undefined);
   const mode: SubagentBindingMode =
     source === 'caller' &&
+    own.inheritByDefault !== false &&
     normalized(request.thinkingEffort) === undefined &&
     normalized(profile.thinkingEffort) === undefined &&
     normalized(agents?.defaultSubagentReasoningEffort) === undefined

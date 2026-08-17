@@ -132,9 +132,14 @@ export const zh: Record<I18nKey, string> = {
 
   // ---- context meter ----
   'context.meter': '{percent}%',
-  'context.meterTitle': '上下文用量：{used} / {limit}',
-  'context.meterWarnTitle': '上下文 {used} / {limit} — 点击压缩较早上下文',
-  'context.compactHint': '压缩？',
+  'context.meterTitle': '上下文用量：{used} / {limit} — 点击查看详情',
+  'context.meterWarnTitle': '上下文 {used} / {limit} — 查看用量并按需压缩',
+  'context.detailsHint': '详情',
+  'context.detailsTitle': '上下文详情',
+  'context.used': '已使用',
+  'context.available': '可用',
+  'context.limit': '上限',
+  'context.compactAction': '压缩较早上下文',
 
   // ---- pending badge (sidebar) ----
   'pending.count.one': '{count} 个会话等你处理',
@@ -380,6 +385,9 @@ export const zh: Record<I18nKey, string> = {
   'sv.parentAgents': '父代理',
   'sv.siblingAgents': '兄弟代理',
   'sv.childAgents': '子代理',
+  'sv.moreSiblingAgents': '再显示 {count} 个兄弟代理',
+  'sv.moreChildAgents': '再显示 {count} 个子代理',
+  'sv.showFewerAgents': '收起',
   'sv.noRelatedAgents': '没有相关代理。',
   'sv.openParent': '打开父代理',
   'sv.subagentNote': '子代理会话记录 — 交互卡片在整个会话范围内生效',

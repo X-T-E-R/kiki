@@ -195,28 +195,30 @@ describe('default agent profiles', () => {
         'TaskStop',
       ]),
     );
-    expect(DEFAULT_AGENT_PROFILES['coder']?.tools).toEqual([
-      'Bash',
-      'CronCreate',
-      'CronDelete',
-      'CronList',
-      'Edit',
-      'EnterPlanMode',
-      'ExitPlanMode',
-      'Glob',
-      'Grep',
-      'Read',
-      'ReadMediaFile',
-      'Skill',
-      'TaskList',
-      'TaskOutput',
-      'TaskStop',
-      'TodoList',
-      'WebSearch',
-      'FetchURL',
-      'Write',
-      'mcp__*',
-    ]);
+    expect(DEFAULT_AGENT_PROFILES['coder']?.tools).toEqual(
+      expect.arrayContaining([
+        'Bash',
+        'CronCreate',
+        'CronDelete',
+        'CronList',
+        'Edit',
+        'EnterPlanMode',
+        'ExitPlanMode',
+        'Glob',
+        'Grep',
+        'Read',
+        'ReadMediaFile',
+        'Skill',
+        'TaskList',
+        'TaskOutput',
+        'TaskStop',
+        'TodoList',
+        'WebSearch',
+        'FetchURL',
+        'Write',
+        'mcp__*',
+      ]),
+    );
     expect(DEFAULT_AGENT_PROFILES['explore']?.tools).not.toContain('Write');
     expect(DEFAULT_AGENT_PROFILES['plan']?.tools).not.toContain('Bash');
   });

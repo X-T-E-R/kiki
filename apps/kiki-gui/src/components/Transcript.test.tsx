@@ -24,6 +24,7 @@
 import { act, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
+import { MemoryRouter } from 'react-router-dom';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
@@ -59,7 +60,11 @@ function makeRoot(): { root: Root; container: HTMLDivElement } {
 async function renderSettled(root: Root, node: ReactNode): Promise<void> {
   await act(async () => {
     flushSync(() => {
-      root.render(<I18nProvider>{node}</I18nProvider>);
+      root.render(
+        <MemoryRouter>
+          <I18nProvider>{node}</I18nProvider>
+        </MemoryRouter>,
+      );
     });
   });
 }
@@ -231,6 +236,19 @@ describe('splitPrefixSegments streaming differential', () => {
       '> a short quote\n\n';
     const text = repeatTo(section, 2600);
     await expectStreamingEquivalence(text);
+  });
+
+  it('keeps app-page links in the current router while external links open separately', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <Markdown text={'[Usage](/usage) · [Docs](https://example.test/docs)'} />,
+    );
+    const usage = probe.container.querySelector<HTMLAnchorElement>('a[href="/usage"]');
+    const docs = probe.container.querySelector<HTMLAnchorElement>('a[href="https://example.test/docs"]');
+    expect(usage?.getAttribute('target')).toBeNull();
+    expect(docs?.getAttribute('target')).toBe('_blank');
+    expect(docs?.getAttribute('rel')).toContain('noopener');
   });
 
   it('chunks join back to the exact source and respect the size target', () => {

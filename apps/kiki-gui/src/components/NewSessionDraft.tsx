@@ -17,7 +17,7 @@ import { useNavigate } from 'react-router-dom';
 
 import type { PermissionMode, Workspace } from '@moonshot-ai/protocol';
 
-import { Composer } from './Composer';
+import { Composer, resolveSelectedEffort } from './Composer';
 import { useI18n } from '../i18n';
 import { buildPromptContent, type ComposerAttachment } from '../lib/attachments';
 import { readDraft, writeDraft } from '../lib/drafts';
@@ -76,8 +76,8 @@ export function useNewSessionDraft({
   const [modelOverride, setModelOverride] = useState(() =>
     resolveSessionModelOverride(undefined),
   );
-  // Same rule as the session page: effort rides the wire only when the user
-  // picks one; otherwise the server's thinking config is the default.
+  // The selected effort is the wire value. When the model catalog supplies a
+  // visible default, sending without touching the select still submits it.
   const [effortOverride, setEffortOverride] = useState<string | undefined>(undefined);
 
   const workspacesQuery = useQuery({
@@ -119,10 +119,11 @@ export function useNewSessionDraft({
   );
   const catalogItem = (modelsQuery.data?.items ?? []).find((item) => item.model === effectiveModel);
   const supportedEfforts = catalogItem?.support_efforts;
-  const effectiveEffort =
-    supportedEfforts !== undefined && supportedEfforts.length > 0
-      ? (effortOverride ?? catalogItem?.default_effort ?? supportedEfforts[0])
-      : undefined;
+  const effectiveEffort = resolveSelectedEffort(
+    supportedEfforts,
+    effortOverride,
+    catalogItem?.default_effort,
+  );
 
   useEffect(() => {
     setDraft(readDraft(DRAFT_KEY));
@@ -141,7 +142,7 @@ export function useNewSessionDraft({
     cwd,
     effectiveWorkspace,
     modelOverride,
-    effortOverride,
+    effectiveEffort,
     permissionMode,
     planMode,
     swarmMode,
@@ -153,7 +154,7 @@ export function useNewSessionDraft({
     cwd,
     effectiveWorkspace,
     modelOverride,
-    effortOverride,
+    effectiveEffort,
     permissionMode,
     planMode,
     swarmMode,
@@ -191,9 +192,7 @@ export function useNewSessionDraft({
             initialPrompt: text.trim(),
             initialAttachments: composerAttachments,
             model: context.modelOverride,
-            // Explicit pick only: undefined omits `thinking` so the new
-            // session follows the server's thinking default.
-            thinking: context.effortOverride,
+            thinking: context.effectiveEffort,
             permissionMode: context.permissionMode,
             planMode: context.planMode,
             swarmMode: context.swarmMode,

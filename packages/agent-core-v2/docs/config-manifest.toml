@@ -445,7 +445,7 @@ timeout_ms = 7200000
 # ##########################################################################
 
 [thread_communication]
-enabled = true
+enabled = false
 
 # ##########################################################################
 # tokenCounting (config.toml: token_counting)

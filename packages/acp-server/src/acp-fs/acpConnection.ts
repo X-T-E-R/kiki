@@ -2,15 +2,14 @@
  * ACP client connection bridge — App-scope holder for the process-wide ACP
  * client connection used by the ACP-backed `IHostFileSystem` to reverse-RPC
  * file text reads/writes to the editor (ACP `fs.readTextFile` /
- * `fs.writeTextFile`) and by the ACP-backed `ISessionProcessRunner` to
+ * `fs.writeTextFile`) and by the ACP-backed `IHostProcessService` to
  * reverse-RPC command execution (`terminal/create` … `terminal/release`).
  *
  * One ACP client connection exists per `acp-server` process (a single stdio
  * connection, multiplexed by `sessionId`); it is established after
  * `bootstrap()`, so it is bound here lazily via {@link IAcpConnection.bind}
- * rather than seeded at composition time. The ACP-backed `IHostFileSystem`
- * (Session scope) and the ACP-backed process runner (Agent scope) read it on
- * first use through {@link IAcpConnection.get}.
+ * rather than seeded at composition time. The ACP runtime's file and process
+ * capabilities read it on first use through {@link IAcpConnection.get}.
  */
 
 import {

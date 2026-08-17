@@ -112,7 +112,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `loop_control` | `table` | — | Agent loop control parameters → [`loop_control`](#loop-control) |
 | `background` | `table` | — | Background task runtime parameters → [`background`](#background) |
 | `agents` | `table` | — | Codex-style collaboration adapter defaults → [`agents`](#agents) |
-| `thread_communication` | `table` | `{ enabled = true }` | Local peer-thread communication → [`thread_communication`](#thread-communication) |
+| `thread_communication` | `table` | `{ enabled = false }` | Local peer-thread communication → [`thread_communication`](#thread-communication) |
 | `tools` | `table` | — | Global tool switch → [`tools`](#tools) |
 | `image` | `table` | — | Image compression parameters → [`image`](#image) |
 | `services` | `table` | — | Built-in external service configuration → [`services`](#services) |
@@ -299,11 +299,11 @@ This strict section configures the experimental [Codex-style collaboration adapt
 
 ## `thread_communication`
 
-This strict section controls [local peer-thread communication](../customization/agents.md#peer-thread-communication). It is enabled by default and has no environment-variable override.
+This strict section controls [local peer-thread communication](../customization/agents.md#peer-thread-communication). It is disabled by default and has no environment-variable override.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `enabled` | `boolean` | `true` | Permits the four main-Agent peer-thread tools and local REST and Klient thread operations. Set to `false` to disable those operations globally |
+| `enabled` | `boolean` | `false` | Permits the four main-Agent peer-thread tools and local REST and Klient thread operations. Set to `true` to enable those operations globally |
 
 Per-workspace overrides are persisted separately and managed through the local REST API or Klient. An override can disable one workspace while the global switch remains on, but cannot enable communication while this global switch is off.
 

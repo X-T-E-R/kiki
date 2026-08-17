@@ -7,9 +7,9 @@
  *     those sessions' lifetime figures — the page labels them as such;
  *   - deleted sessions are invisible to the REST surface and never counted.
  *
- * Cache hit rate is defined as cache_read / (cache_read + input): of the
- * prompt tokens that were reads, how many came back from the provider's
- * cache. Cache-creation (write) tokens are excluded from the denominator.
+ * Cache hit rate is defined as cache_read / total_input, where total_input is
+ * input + cache_read + cache_creation. All four engine usage components are
+ * disjoint, so cache writes must stay in both the input denominator and total.
  */
 
 import type { Session } from '@moonshot-ai/protocol';
@@ -75,8 +75,18 @@ export interface UsageTotals {
   readonly cacheCreationTokens: number;
   /** input + output + cache read + cache write. */
   readonly totalTokens: number;
-  /** cache_read / (cache_read + input); null when nothing was read yet. */
+  /** cache_read / (input + cache_read + cache_creation); null with no input. */
   readonly cacheHitRate: number | null;
+}
+
+function sessionTotalTokens(session: Session): number {
+  const usage = session.usage;
+  return (
+    usage.input_tokens +
+    usage.output_tokens +
+    usage.cache_read_tokens +
+    usage.cache_creation_tokens
+  );
 }
 
 export function aggregateUsage(sessions: readonly Session[]): UsageTotals {
@@ -95,7 +105,7 @@ export function aggregateUsage(sessions: readonly Session[]): UsageTotals {
     cacheReadTokens += usage.cache_read_tokens;
     cacheCreationTokens += usage.cache_creation_tokens;
   }
-  const readDenom = cacheReadTokens + inputTokens;
+  const totalInputTokens = inputTokens + cacheReadTokens + cacheCreationTokens;
   return {
     sessions: sessions.length,
     turns,
@@ -104,8 +114,8 @@ export function aggregateUsage(sessions: readonly Session[]): UsageTotals {
     outputTokens,
     cacheReadTokens,
     cacheCreationTokens,
-    totalTokens: inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens,
-    cacheHitRate: readDenom > 0 ? cacheReadTokens / readDenom : null,
+    totalTokens: totalInputTokens + outputTokens,
+    cacheHitRate: totalInputTokens > 0 ? cacheReadTokens / totalInputTokens : null,
   };
 }
 
@@ -127,11 +137,7 @@ export function groupUsageByModel(sessions: readonly Session[]): ModelUsage[] {
     entry.sessions += 1;
     entry.turns += session.usage.turn_count;
     entry.costUsd += session.usage.total_cost_usd;
-    entry.totalTokens +=
-      session.usage.input_tokens +
-      session.usage.output_tokens +
-      session.usage.cache_read_tokens +
-      session.usage.cache_creation_tokens;
+    entry.totalTokens += sessionTotalTokens(session);
     byModel.set(model, entry);
   }
   return [...byModel.entries()]
@@ -175,11 +181,7 @@ export function bucketSessionsByDay(
     if (bucket === undefined) continue;
     bucket.sessions += 1;
     bucket.costUsd += session.usage.total_cost_usd;
-    bucket.totalTokens +=
-      session.usage.input_tokens +
-      session.usage.output_tokens +
-      session.usage.cache_read_tokens +
-      session.usage.cache_creation_tokens;
+    bucket.totalTokens += sessionTotalTokens(session);
   }
   return buckets;
 }

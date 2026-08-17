@@ -142,6 +142,48 @@ describe('applySnapshot', () => {
     expect(tool.output).toBe('file.txt');
   });
 
+  it('restores the session model and subagent roster metadata from a snapshot', () => {
+    const state = applySnapshot(
+      'session_test',
+      snapshot({
+        session: { ...session, agent_config: { model: 'provider/session-model' } },
+        subagents: [
+          {
+            id: 'agent-1',
+            session_id: 'session_test',
+            kind: 'subagent',
+            description: 'Inspect API limits',
+            status: 'completed',
+            subagent_phase: 'completed',
+            subagent_type: 'explore',
+            parent_agent_id: 'main',
+            parent_tool_call_id: 'tool-parent',
+            label: 'API researcher',
+            tool_call_count: 4,
+            created_at: '2026-01-01T00:00:00.000Z',
+            completed_at: '2026-01-01T00:00:05.000Z',
+          },
+        ] as never,
+      }),
+    );
+
+    expect(state.model).toBe('provider/session-model');
+    const card = state.blocks.find(
+      (block): block is import('./transcript').SubagentBlock => block.kind === 'subagent',
+    );
+    expect(card).toMatchObject({
+      subagentId: 'agent-1',
+      parentAgentId: 'main',
+      label: 'API researcher',
+      toolCallCount: 4,
+    });
+    expect(sessionAgentForestFromTranscript(state, undefined).byId['agent-1']).toMatchObject({
+      parentAgentId: 'main',
+      label: 'API researcher',
+      toolCallCount: 4,
+    });
+  });
+
   it('renders the in-flight turn as streaming blocks and pending approvals', () => {
     const state = applySnapshot(
       'session_test',

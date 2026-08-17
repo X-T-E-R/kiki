@@ -15,6 +15,7 @@ import {
   IAppendLogStore,
   IEventBus,
   IAgentLifecycleService,
+  IAgentProfileService,
   IAgentPromptService,
   ISessionInteractionService,
   ISessionContext,
@@ -57,6 +58,7 @@ describe('server-v2 snapshot route enrichment', () => {
     const main = {
       accessor: fakeAccessor([
         [IAgentContextMemoryService, { get: () => [] }],
+        [IAgentProfileService, { getModel: () => 'provider/session-model' }],
         [
           IAgentPromptService,
           { list: () => ({ active: { id: promptId }, pending: [] }) },
@@ -78,6 +80,13 @@ describe('server-v2 snapshot route enrichment', () => {
               createdAt: now,
               updatedAt: now,
               archived: false,
+              agents: {
+                'agent-1': {
+                  type: 'sub',
+                  parentAgentId: 'main',
+                  labels: { parentAgentId: 'main', swarmItem: 'Research API limits' },
+                },
+              },
             }),
           },
         ],
@@ -146,6 +155,7 @@ describe('server-v2 snapshot route enrichment', () => {
             status: 'running',
             subagent_phase: 'working',
             parent_tool_call_id: 'tc_swarm_1',
+            tool_call_count: 3,
             swarm_index: 0,
             run_in_background: false,
             created_at: new Date(now).toISOString(),
@@ -190,12 +200,16 @@ describe('server-v2 snapshot route enrichment', () => {
       assistant_text: 'Hello',
       current_prompt_id: promptId,
     });
+    expect(snap.session.agent_config.model).toBe('provider/session-model');
     expect(snap.subagents).toEqual([
       expect.objectContaining({
         id: 'agent-1',
         kind: 'subagent',
         subagent_phase: 'working',
+        parent_agent_id: 'main',
         parent_tool_call_id: 'tc_swarm_1',
+        label: 'Research API limits',
+        tool_call_count: 3,
         swarm_index: 0,
         run_in_background: false,
       }),

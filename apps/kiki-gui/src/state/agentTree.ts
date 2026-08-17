@@ -28,6 +28,7 @@ export interface AgentLiveSource {
   readonly parentAgentId?: string;
   readonly parentToolCallId?: string;
   readonly name: string;
+  readonly label?: string;
   readonly model?: string;
   readonly thinkingEffort?: string;
   readonly status: string;
@@ -562,6 +563,7 @@ function applyLiveBlock(draft: DraftNode, block: AgentLiveSource): void {
   draft.parentAgentId = draft.parentAgentId ?? cleanId(block.parentAgentId);
   draft.parentToolCallId = firstPresent(block.parentToolCallId) ?? draft.parentToolCallId;
   draft.name = firstPresent(block.name) ?? draft.name;
+  draft.label = firstPresent(block.label) ?? draft.label;
   draft.model = firstPresent(block.model) ?? draft.model;
   draft.thinkingEffort = firstPresent(block.thinkingEffort) ?? draft.thinkingEffort;
   const status = normalizeStatus(block.status);

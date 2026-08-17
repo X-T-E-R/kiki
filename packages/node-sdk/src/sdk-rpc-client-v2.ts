@@ -29,8 +29,8 @@
  *   `closeSession` / `resumeSession` / `reloadSession` / `deleteSession` /
  *   `updateSessionMetadata` / `addAdditionalDir` → the session lifecycle
  *   batch: `klient.global.sessions.list` plus the `klient.session(id)`
- *   metadata mutations where the facade reaches, and the
- *   `IWorkspaceLifecycleService` / handler chain / session-scope services through
+ *   metadata mutations where the facade reaches, and `ISessionManager` /
+ *   `IWorkspaceInstanceManager` / session-scope services through
  *   {@link engineAccessor} where it does not (explicit session ids, resume,
  *   fork ids, delete, the workspace-level add-dir surface). The v1 `SessionSummary` / `SessionMeta`
  *   shapes are restored by the pure mapping layer in
@@ -809,9 +809,8 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
   //
   // The v2 engine splits what v1's SessionStore + in-memory session map did
   // across the app-scope `ISessionIndex` (persisted read model),
-  // `IWorkspaceLifecycleService` (live workspace handlers and, under them, the
-  // live session scopes), and the session-scope
-  // metadata/workspace services. The klient facade covers listing and the
+  // `ISessionManager` (live session scopes), `IWorkspaceInstanceManager`, and
+  // the session-scope metadata/workspace services. The klient facade covers listing and the
   // metadata mutations of a LIVE session; everything that needs an explicit
   // session id, a resume, or a workspace command goes through the
   // `engineAccessor` escape hatch (named per method below).

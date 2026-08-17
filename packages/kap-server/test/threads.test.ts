@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -237,6 +237,7 @@ describe('peer-thread routes', () => {
 
   it('wakes a real 60s thread wait before listener close settles', { timeout: 15_000 }, async () => {
     const home = await mkdtemp(join(tmpdir(), 'kap-thread-close-wait-'));
+    await writeFile(join(home, 'config.toml'), '[thread_communication]\nenabled = true\n', 'utf8');
     let server: RunningServer | undefined;
     let waitRequest: Promise<void> | undefined;
     try {
@@ -340,6 +341,7 @@ describe('peer-thread routes', () => {
 
   it('accepts target-only REST sends and rejects the legacy source field with 40001', async () => {
     const home = await mkdtemp(join(tmpdir(), 'kap-thread-send-'));
+    await writeFile(join(home, 'config.toml'), '[thread_communication]\nenabled = true\n', 'utf8');
     let server: RunningServer | undefined;
     try {
       server = await startServer({

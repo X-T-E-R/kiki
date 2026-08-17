@@ -136,9 +136,14 @@ export const en = {
 
   // ---- context meter ----
   'context.meter': '{percent}%',
-  'context.meterTitle': 'Context in use: {used} of {limit}',
-  'context.meterWarnTitle': 'Context {used} of {limit} — click to compact older context',
-  'context.compactHint': 'compact?',
+  'context.meterTitle': 'Context in use: {used} of {limit} — click for details',
+  'context.meterWarnTitle': 'Context {used} of {limit} — review usage and compact if needed',
+  'context.detailsHint': 'details',
+  'context.detailsTitle': 'Context details',
+  'context.used': 'Used',
+  'context.available': 'Available',
+  'context.limit': 'Limit',
+  'context.compactAction': 'Compact older context',
 
   // ---- pending badge (sidebar) ----
   'pending.count.one': '{count} session waiting on you',
@@ -384,6 +389,9 @@ export const en = {
   'sv.parentAgents': 'Parent',
   'sv.siblingAgents': 'Siblings',
   'sv.childAgents': 'Children',
+  'sv.moreSiblingAgents': 'Show {count} more siblings',
+  'sv.moreChildAgents': 'Show {count} more children',
+  'sv.showFewerAgents': 'Show fewer',
   'sv.noRelatedAgents': 'No related agents.',
   'sv.openParent': 'Open parent agent',
   'sv.subagentNote': 'Subagent transcript — interaction cards resolve for the whole session',

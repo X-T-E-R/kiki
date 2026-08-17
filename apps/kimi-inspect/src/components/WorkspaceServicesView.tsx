@@ -6,9 +6,8 @@
  * over the App-scope `IHostFolderBrowser`) that marks already-registered
  * workspaces and registers a picked folder on demand. The proxies resolve on
  * the `/workspace/:id` route, so a workspace must be selected before any
- * Service is callable. Picking one materializes its handler on demand
- * server-side (`IWorkspaceLifecycleService.handlerFor` is create-or-get), no
- * manual join needed.
+ * Service is callable. Picking one materializes its workspace instance on
+ * demand server-side; no manual join is needed.
  */
 
 import { IWorkspaceService } from '@moonshot-ai/agent-core-v2/app/workspace/workspace';

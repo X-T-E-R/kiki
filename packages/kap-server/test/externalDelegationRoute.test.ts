@@ -1,7 +1,9 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Writable } from 'node:stream';
 
+import { pino } from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
@@ -186,13 +188,13 @@ describe('external delegation Session bootstrap', () => {
     expect(second.data.delegationId).toBe(first.data.delegationId);
   });
 
-  it('rejects a persisted Session rebound to another workspace', async () => {
+  it('starts without the delegation edge when a persisted Session workspace drifts', async () => {
     const home = join(root!, 'home');
     const workspaceA = join(root!, 'workspace-a');
     const workspaceB = join(root!, 'workspace-b');
     await Promise.all([mkdir(home), mkdir(workspaceA), mkdir(workspaceB)]);
     await writeStubConfig(home);
-    const server = await startServer({
+    const initial = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
       port: 0,
@@ -200,18 +202,33 @@ describe('external delegation Session bootstrap', () => {
       logLevel: 'silent',
       externalDelegation: authority('session_workspace_a', workspaceA),
     });
-    await server.close();
+    await initial.close();
 
-    await expect(
-      startServer({
-        hostIdentity: TEST_HOST_IDENTITY,
-        host: '127.0.0.1',
-        port: 0,
-        homeDir: home,
-        logLevel: 'silent',
-        externalDelegation: authority('session_workspace_a', workspaceB),
-      }),
-    ).rejects.toThrow(/workspace binding does not match/i);
+    const logs: string[] = [];
+    const logger = pino({ level: 'warn' }, new Writable({
+      write(chunk, _encoding, callback) {
+        logs.push(String(chunk));
+        callback();
+      },
+    }));
+    const server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logger,
+      externalDelegation: authority('session_workspace_a', workspaceB),
+    });
+    servers.push(server);
+    const base = `http://127.0.0.1:${server.port}`;
+
+    expect((await fetch(`${base}/api/v1/healthz`)).status).toBe(200);
+    const edge = await listRoot(server, base, 'session_workspace_a');
+    expect(edge.code).not.toBe(0);
+    expect(logs.join('')).toMatch(/workspace binding does not match/i);
+    expect(logs.join('')).toContain(
+      'external delegation Session bootstrap failed; starting without the external delegation edge',
+    );
   });
 
   it('initializes different workspace authorities concurrently without cross-admission', async () => {

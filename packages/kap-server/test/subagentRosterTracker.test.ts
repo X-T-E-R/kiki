@@ -18,6 +18,7 @@ function spawn(subagentId: string, extra: Record<string, unknown> = {}): Event {
     type: 'subagent.spawned',
     subagentId,
     subagentName: 'kimi-subagent',
+    parentAgentId: 'main',
     parentToolCallId: 'tc_swarm_1',
     description: `task ${subagentId}`,
     swarmIndex: 0,
@@ -40,7 +41,9 @@ describe('SubagentRosterTracker', () => {
         status: 'running',
         subagent_phase: 'queued',
         subagent_type: 'kimi-subagent',
+        parent_agent_id: 'main',
         parent_tool_call_id: 'tc_swarm_1',
+        tool_call_count: 0,
         swarm_index: 2,
         run_in_background: false,
         model: 'provider/secondary',
@@ -53,6 +56,19 @@ describe('SubagentRosterTracker', () => {
     const t = new SubagentRosterTracker();
     t.apply(SID, spawn('agent-1', { parentToolCallId: '' }));
     expect(t.get(SID)[0]?.parent_tool_call_id).toBeUndefined();
+  });
+
+  it('counts distinct child tool calls in the reconnect roster', () => {
+    const t = new SubagentRosterTracker();
+    t.apply(SID, spawn('agent-1'));
+    const started = (toolCallId: string): Event =>
+      ev({ type: 'tool.call.started', agentId: 'agent-1', turnId: 1, toolCallId, name: 'Bash', args: {} });
+
+    t.apply(SID, started('tool-1'));
+    t.apply(SID, started('tool-1'));
+    t.apply(SID, started('tool-2'));
+
+    expect(t.get(SID)[0]?.tool_call_count).toBe(2);
   });
 
   it('skips background subagents — REST /tasks already serves them after a refresh', () => {

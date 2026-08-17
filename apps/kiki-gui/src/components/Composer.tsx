@@ -71,6 +71,18 @@ const SLASH_ACTION_DESCRIPTIONS: Record<SlashActionId, I18nKey> = {
 const MENTION_DEBOUNCE_MS = 250;
 const MENTION_ROW_LIMIT = 8;
 
+/** The effort visible in the select is also the value submitted on send. */
+export function resolveSelectedEffort(
+  efforts: readonly string[] | undefined,
+  effortOverride: string | undefined,
+  defaultEffort: string | undefined,
+): string | undefined {
+  if (efforts === undefined || efforts.length === 0) return undefined;
+  if (effortOverride !== undefined && efforts.includes(effortOverride)) return effortOverride;
+  if (defaultEffort !== undefined && efforts.includes(defaultEffort)) return defaultEffort;
+  return efforts[0];
+}
+
 type ComposerMenu =
   | { kind: 'slash'; query: string }
   | { kind: 'mention'; start: number; query: string };

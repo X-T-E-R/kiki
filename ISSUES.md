@@ -163,6 +163,26 @@
 - 合入后验证：GUI 33 文件 426 测试全绿（含 perf-exp6）；kap-server sessions 64/64、threads 15/15、wsConnectionV1 39/39、perf-exp5 2/2；v2 threadCommunication 24/24；pi-tui 89/89；受影响包 typecheck 全绿。
 - BK/FU 全面复核（2026-08-17 两路审计）：多数 backlog 仍成立（kiki 特有或产品裁决项）；BK2/BK10/BK12 部分缓解已标注；FU3 核心诉求以二态标签形式完成；FU19 关闭；其余维持原状。
 
+## 体验反馈批次（2026-08-17，0.36.1 构建体验后）
+
+用户实机体验首轮 0.36.1 构建后反馈 9 项问题，按四个互斥批次并行修复（W 组件交互 / X 数据面 / Y 模型绑定 / Z 台账小项）：
+
+| 反馈 | 根因 | 修复 |
+| --- | --- | --- |
+| 新页面开新窗口而非应用内页面 | Markdown 链接无差别 `target="_blank"` | 内部路径改 React Router Link 应用内导航；外部 scheme 保留新窗口 |
+| 子代理重开对话丢名字/0 工具调用 | 快照 roster 缺 `parent_agent_id`/`label`/`tool_call_count`，GUI 硬编码 0 | kap-server 快照补齐三字段并合入持久化 metadata，GUI 消费 |
+| 子代理面板上方无限兄弟代理 | 组件对全部兄弟/子节点无界 map | 去重+各限量 4 个+「更多」展开入口 |
+| 用量统计口径错 | cache 命中率分母漏 cache_creation；总量口径不统一 | 四段互斥口径统一（lib/usage.ts） |
+| 上下文面板点击=压缩 | ContextMeter onClick 直接绑 onCompact | 点击开详情面板，压缩按钮移入面板内 |
+| 右栏子代理数量无限 | AgentTreeView 递归无界渲染 | 有界滚动区（max-h-80） |
+| 重开旧对话模型选择不恢复 | snapshot `agent_config.model` 输出占位空串 | snapshot 恢复 main agent 后读持久化 `ProfileModel` 覆盖 |
+| 嵌套子代理模型不走默认 | 三入口取「直接 caller」profile，嵌套时 caller=子代理 | 嵌套 spawn 重定向主代理上下文：pool default→fixed，否则主代理当前模型 fixed；顶层 inherit 不变 |
+| FU2 死参数 | fork_turns/statusOf 与 v1 不对称 | 对齐 v1（任意非空+运行时可操作错误；未知状态返回 unknown） |
+
+同批落地的已裁决台账项：FU17（fail-open 契约测试）、BK11（thread 通信默认关 opt-in，含文档/测试跟进）、FU7（effort 选中即发送，新会话+已有会话两侧）、FU1（快照改 arrayContaining 根治）、FU20（旧术语注释清理）、FU12（klient ipc 超时放宽）。
+
+另：`config-manifest.toml` 已在 Node 24.19 下按最终源码重生（thread_communication 默认 false 等）。
+
 ## Follow-ups（批次实施中新增，未排期）
 
 | ID | 级别 | 问题 | 来源批次 |

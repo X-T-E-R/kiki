@@ -2,15 +2,26 @@ import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { describe, expect, it } from 'vitest';
+import { ConfigTarget, IConfigService } from '@moonshot-ai/agent-core-v2';
+import { describe, expect, it, vi } from 'vitest';
 
 import { defineKlientConformance } from './helpers/conformance.js';
 import { createKlient, serveKlientIpc, type KlientIpcHost } from '../src/transports/ipc/index.js';
 import { IpcChannel } from '../src/transports/ipc/channel.js';
 import { makeEngine, type TestEngine } from './helpers/engine.js';
 
+vi.setConfig({ testTimeout: 20_000 });
+
+async function makeThreadEnabledEngine(): Promise<TestEngine> {
+  const engine = await makeEngine();
+  await engine.app.accessor
+    .get(IConfigService)
+    .replace('threadCommunication', { enabled: true }, ConfigTarget.Memory);
+  return engine;
+}
+
 defineKlientConformance('ipc', async () => {
-  const { homeDir, app } = await makeEngine();
+  const { homeDir, app } = await makeThreadEnabledEngine();
   const socketPath = join(homeDir, 'klient.sock');
   const host = await serveKlientIpc({ scope: app, socketPath });
   const klient = createKlient({ socketPath });
@@ -32,7 +43,7 @@ describe('ipc transport specifics', () => {
   let host: KlientIpcHost | undefined;
 
   async function setup(opts: { token?: string } = {}): Promise<string> {
-    ({ homeDir, app } = await makeEngine());
+    ({ homeDir, app } = await makeThreadEnabledEngine());
     const socketPath = join(homeDir, 'klient.sock');
     host = await serveKlientIpc({ scope: app, socketPath, token: opts.token });
     return socketPath;

@@ -3,7 +3,7 @@
  *
  * Implements the fs operations (search / grep / git status / git diff) by
  * orchestrating the os `IHostFileSystem` (file IO, resolved against the
- * workspace root), the handler-shared `ISessionProcessRunner` (`rg`), and
+ * workspace root), the workspace runtime's process capability (`rg`), and
  * `IWorkspaceGitService` (git status/diff bound to the handler root; this
  * service only confines paths and computes repo-relative paths before
  * calling it).

@@ -7,6 +7,7 @@
  */
 
 import { memo } from 'react';
+import { Link } from 'react-router-dom';
 import { Streamdown, type Components } from 'streamdown';
 
 import { KikiCodeBlock } from './markdown/KikiCodeBlock';
@@ -31,13 +32,22 @@ export function isPlainProse(text: string): boolean {
   return text !== '' && !MARKDOWN_REACTIVE.test(text);
 }
 
+const EXTERNAL_HREF = /^(?:[a-z][a-z\d+.-]*:|\/\/)/i;
+
+export function isInAppHref(href: string | undefined): href is string {
+  return href !== undefined && !EXTERNAL_HREF.test(href);
+}
+
 const components: Components = {
   pre: KikiCodeBlock as Components['pre'],
-  a: ({ href, children }) => (
-    <a href={href} target="_blank" rel="noreferrer noopener">
-      {children}
-    </a>
-  ),
+  a: ({ href, children }) =>
+    isInAppHref(href) ? (
+      <Link to={href}>{children}</Link>
+    ) : (
+      <a href={href} target="_blank" rel="noreferrer noopener">
+        {children}
+      </a>
+    ),
 };
 
 export const Markdown = memo(function Markdown({

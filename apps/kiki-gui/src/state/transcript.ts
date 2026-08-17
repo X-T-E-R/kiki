@@ -185,6 +185,7 @@ export interface SubagentBlock {
   readonly parentAgentId: string | undefined;
   readonly parentToolCallId: string | undefined;
   readonly name: string;
+  readonly label?: string;
   readonly description: string | undefined;
   readonly model: string | undefined;
   readonly thinkingEffort: string | undefined;
@@ -1221,6 +1222,12 @@ export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Bloc
   return blocks;
 }
 
+type RestoredSnapshotSubagent = NonNullable<SessionSnapshotResponse['subagents']>[number] & {
+  readonly parent_agent_id?: string;
+  readonly label?: string;
+  readonly tool_call_count?: number;
+};
+
 export function applySnapshot(
   sessionId: string,
   snapshot: SessionSnapshotResponse,
@@ -1269,7 +1276,8 @@ export function applySnapshot(
     }
   }
 
-  for (const subagent of snapshot.subagents ?? []) {
+  const restoredSubagents = (snapshot.subagents ?? []) as readonly RestoredSnapshotSubagent[];
+  for (const subagent of restoredSubagents) {
     const status =
       subagent.subagent_phase === 'failed' || subagent.status === 'failed'
         ? 'failed'
@@ -1282,9 +1290,10 @@ export function applySnapshot(
       kind: 'subagent',
       id: `subagent-${subagent.id}`,
       subagentId: subagent.id,
-      parentAgentId: undefined,
+      parentAgentId: subagent.parent_agent_id,
       parentToolCallId: subagent.parent_tool_call_id,
       name: subagent.subagent_type ?? subagent.description,
+      label: subagent.label,
       description: subagent.description,
       model: subagent.model,
       thinkingEffort: subagent.thinking_effort,
@@ -1293,7 +1302,7 @@ export function applySnapshot(
       error: subagent.suspended_reason,
       startedAt: subagent.started_at ?? subagent.created_at,
       endedAt: subagent.completed_at,
-      toolCallCount: 0,
+      toolCallCount: subagent.tool_call_count ?? 0,
       transcript: [],
     });
   }
@@ -1536,6 +1545,7 @@ function createUnknownSubagent(agentId: string, timestamp: string): SubagentBloc
     parentAgentId: undefined,
     parentToolCallId: undefined,
     name: agentId,
+    label: undefined,
     description: undefined,
     model: undefined,
     thinkingEffort: undefined,
@@ -2119,6 +2129,7 @@ function applyFrameInternal(
         parentAgentId: payload.parentAgentId ?? existing?.parentAgentId,
         parentToolCallId: payload.parentToolCallId,
         name: payload.subagentName,
+        label: existing?.label,
         description: payload.description,
         model: payload.model,
         thinkingEffort: payload.thinkingEffort,
@@ -2669,6 +2680,7 @@ export function preserveCapturedSubagents(
       ...block,
       parentAgentId: block.parentAgentId ?? prior.parentAgentId,
       parentToolCallId: block.parentToolCallId ?? prior.parentToolCallId,
+      label: block.label ?? prior.label,
       model: block.model ?? prior.model,
       thinkingEffort: block.thinkingEffort ?? prior.thinkingEffort,
       toolCallCount: Math.max(block.toolCallCount, prior.toolCallCount),
@@ -2844,6 +2856,7 @@ export function liveSourcesFromSubagentBlocks(
     parentAgentId: block.parentAgentId,
     parentToolCallId: block.parentToolCallId,
     name: block.name,
+    label: block.label,
     model: block.model,
     thinkingEffort: block.thinkingEffort,
     status: block.status,

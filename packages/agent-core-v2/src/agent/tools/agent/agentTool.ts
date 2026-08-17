@@ -118,6 +118,7 @@ import {
   assertProfileRouteBinding,
   assertProfileRouteModelAvailable,
 } from '#/session/subagent/profileRouteBinding';
+import { resolveNestedSubagentDefaultContext } from '#/session/subagent/bindingContext';
 import {
   BACKGROUND_AGENT_UNAVAILABLE,
   DEFAULT_PROFILE_NAME,
@@ -436,21 +437,36 @@ export class SubagentTool implements ISubagentTool {
         modelPreference: symbolicModel,
       });
       assertProfileRouteModelAvailable(selection.route, this.modelCatalog);
-      const binding = resolveSubagentBinding(
+      const toolBindingRequest = {
+        modelPreference: args.model,
+        modelAlias,
+        thinkingEffort,
+      };
+      const profileBindingRequest = {
+        modelPreference: profile.modelPreference,
+        modelAlias: profile.modelAlias,
+        thinkingEffort: profile.thinkingEffort,
+      };
+      let binding = resolveSubagentBinding(
         this.config,
         this.flags,
         { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
-        {
-          modelPreference: args.model,
-          modelAlias,
-          thinkingEffort,
-        },
-        {
-          modelPreference: profile.modelPreference,
-          modelAlias: profile.modelAlias,
-          thinkingEffort: profile.thinkingEffort,
-        },
+        toolBindingRequest,
+        profileBindingRequest,
       );
+      if (subagentModelSource(binding) === 'caller') {
+        const callerMeta = (await this.sessionMetadata.read()).agents?.[this.callerAgentId];
+        const nestedDefault = resolveNestedSubagentDefaultContext(this.lifecycle, callerMeta);
+        if (nestedDefault !== undefined) {
+          binding = resolveSubagentBinding(
+            this.config,
+            this.flags,
+            nestedDefault,
+            toolBindingRequest,
+            profileBindingRequest,
+          );
+        }
+      }
       const bindingSource = subagentModelSource(binding);
       try {
         this.modelCatalog.get(binding.model);
