@@ -93,6 +93,9 @@ describe('ThreadCommunicationService', () => {
   }>;
   let wireRecords: WireRecord[];
   let acceptError: Error | undefined;
+  let listPendingDeliveries: ReturnType<
+    typeof vi.fn<IThreadMailboxStore['listPendingDeliveries']>
+  >;
 
   beforeEach(async () => {
     homeDir = await mkdtemp(join(tmpdir(), 'thread-service-'));
@@ -104,6 +107,9 @@ describe('ThreadCommunicationService', () => {
     activityEvents = [];
     wireRecords = [];
     acceptError = undefined;
+    listPendingDeliveries = vi
+      .fn<IThreadMailboxStore['listPendingDeliveries']>()
+      .mockResolvedValue([]);
     promptState = 'running';
     promptInject = vi.fn();
     promptEnqueue = vi.fn(async (input) => {
@@ -217,7 +223,7 @@ describe('ThreadCommunicationService', () => {
         return true;
       },
       markUndeliverable: async () => true,
-      listPendingDeliveries: async () => [],
+      listPendingDeliveries,
       appendActivity: async (input) => {
         const activity = {
           seq: activityEvents.length + 1,
@@ -248,6 +254,36 @@ describe('ThreadCommunicationService', () => {
   afterEach(async () => {
     disposables.dispose();
     await rm(homeDir, { recursive: true, force: true });
+  });
+
+  it('waits for startup mailbox recovery during shutdown', async () => {
+    let markRecoveryStarted!: () => void;
+    const recoveryStarted = new Promise<void>((resolve) => {
+      markRecoveryStarted = resolve;
+    });
+    let releaseRecovery!: () => void;
+    const recoveryGate = new Promise<void>((resolve) => {
+      releaseRecovery = resolve;
+    });
+    listPendingDeliveries.mockImplementation(async () => {
+      markRecoveryStarted();
+      await recoveryGate;
+      return [];
+    });
+    const service = ix.get(IThreadCommunicationService);
+    await recoveryStarted;
+
+    let shutdownSettled = false;
+    const shutdown = service.shutdown().then(() => {
+      shutdownSettled = true;
+    });
+    await Promise.resolve();
+    expect(shutdownSettled).toBe(false);
+
+    releaseRecovery();
+    await shutdown;
+    expect(shutdownSettled).toBe(true);
+    await expect(service.shutdown()).resolves.toBeUndefined();
   });
 
   it('persists before cross-workspace resume and enqueue without injection', async () => {
@@ -293,6 +329,8 @@ describe('ThreadCommunicationService', () => {
     expect(result.delivery).toBe('pending');
     expect(events).toEqual(['persist', 'handler', 'resume', 'enqueue']);
     expect(promptInject).not.toHaveBeenCalled();
+    await expect(service.shutdown()).resolves.toBeUndefined();
+    expect(events).toEqual(['persist', 'handler', 'resume', 'enqueue']);
   });
 
   it('treats a raw external source claim as data outside the accepted authority shape', async () => {

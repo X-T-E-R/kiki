@@ -10,6 +10,15 @@ import type { ContextMessage } from '../../../src/agent/context';
 import { testAgent } from '../harness/agent';
 
 describe('AgentRecords persistence metadata', () => {
+  it('closes the owned persistence', async () => {
+    const persistence = new CloseRecordingInMemoryAgentRecordPersistence();
+    const records = testAgent({ persistence }).agent.records;
+
+    await records.close();
+
+    expect(persistence.closeCalls).toBe(1);
+  });
+
   it('writes metadata before the first persisted record', async () => {
     const persistence = new InMemoryAgentRecordPersistence();
     const records = testAgent({ persistence }).agent.records;
@@ -664,6 +673,15 @@ describe('agent replay range build', () => {
     ]);
   });
 });
+
+class CloseRecordingInMemoryAgentRecordPersistence extends InMemoryAgentRecordPersistence {
+  closeCalls = 0;
+
+  override async close(): Promise<void> {
+    this.closeCalls++;
+    await super.close();
+  }
+}
 
 class RecordingInMemoryAgentRecordPersistence extends InMemoryAgentRecordPersistence {
   readonly rewrites: AgentRecord[][] = [];

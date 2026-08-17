@@ -198,6 +198,51 @@ function emptyForest(): AgentForest {
   };
 }
 
+/**
+ * Content-level forest equality for identity stabilization: consumers that
+ * rebuild the forest on every publish (SessionView's useMemo over the whole
+ * session state) can keep returning the PREVIOUS forest object while nothing
+ * material changed, so memoized transcript rows keyed on `forest` identity
+ * are not broken by unrelated streaming deltas.
+ */
+export function agentTreeNodesEqual(a: AgentTreeNode, b: AgentTreeNode): boolean {
+  if (a === b) return true;
+  return (
+    a.agentId === b.agentId &&
+    a.parentAgentId === b.parentAgentId &&
+    a.parentToolCallId === b.parentToolCallId &&
+    a.name === b.name &&
+    a.label === b.label &&
+    a.model === b.model &&
+    a.thinkingEffort === b.thinkingEffort &&
+    a.status === b.status &&
+    a.busy === b.busy &&
+    a.toolCallCount === b.toolCallCount &&
+    a.startedAt === b.startedAt &&
+    a.endedAt === b.endedAt &&
+    a.summary === b.summary &&
+    a.error === b.error &&
+    a.childIds.length === b.childIds.length &&
+    a.childIds.every((id, index) => id === b.childIds[index])
+  );
+}
+
+export function agentForestsEqual(a: AgentForest, b: AgentForest): boolean {
+  if (a === b) return true;
+  if (a.roots.length !== b.roots.length) return false;
+  const aIds = Object.keys(a.byId);
+  const bIds = Object.keys(b.byId);
+  if (aIds.length !== bIds.length) return false;
+  for (const id of aIds) {
+    const aNode = a.byId[id];
+    const bNode = b.byId[id];
+    if (aNode === undefined || bNode === undefined || !agentTreeNodesEqual(aNode, bNode)) {
+      return false;
+    }
+  }
+  return a.roots.every((root, index) => root.agentId === b.roots[index]?.agentId);
+}
+
 export function buildAgentForest(
   subagentBlocks: readonly AgentLiveSource[],
   roster?: readonly AgentRosterDescriptor[],

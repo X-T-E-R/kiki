@@ -274,16 +274,43 @@ export class BackgroundManager {
 
   private readonly scheduledNotificationKeys = new Set<string>();
   private readonly deliveredNotificationKeys = new Set<string>();
+  private readonly pendingTaskLifecycles = new Set<Promise<void>>();
+  private readonly pendingTerminalEffects = new Set<Promise<void>>();
 
   constructor(
     private readonly agent: Agent,
     private readonly persistence?: BackgroundTaskPersistence,
   ) { }
 
+  get hasPendingTaskLifecycles(): boolean {
+    return this.pendingTaskLifecycles.size > 0;
+  }
+
+  get hasPendingTerminalEffects(): boolean {
+    return this.pendingTerminalEffects.size > 0;
+  }
+
+  async waitForTaskLifecycles(): Promise<void> {
+    while (this.pendingTaskLifecycles.size > 0) {
+      await Promise.allSettled([...this.pendingTaskLifecycles]);
+    }
+  }
+
+  async waitForTerminalEffects(): Promise<void> {
+    while (this.pendingTerminalEffects.size > 0) {
+      await Promise.allSettled([...this.pendingTerminalEffects]);
+    }
+  }
+
   private fireTerminalEffects(entry: ManagedTask): void {
     if (!this.isDetached(entry)) return;
     const info = this.toInfo(entry);
-    void this.notifyBackgroundTask(info).catch(() => { });
+    const promise = this.notifyBackgroundTask(info)
+      .catch(() => {})
+      .finally(() => {
+        this.pendingTerminalEffects.delete(promise);
+      });
+    this.pendingTerminalEffects.add(promise);
     this.emitTaskTerminated(info);
   }
 
@@ -380,7 +407,16 @@ export class BackgroundManager {
       outputPersistStarted: detached && options.deferVisibility !== true,
     };
     this.tasks.set(taskId, entry);
-    void this.runTaskLifecycle(entry);
+    const lifecycle = this.runTaskLifecycle(entry);
+    this.pendingTaskLifecycles.add(lifecycle);
+    void lifecycle.then(
+      () => {
+        this.pendingTaskLifecycles.delete(lifecycle);
+      },
+      () => {
+        this.pendingTaskLifecycles.delete(lifecycle);
+      },
+    );
 
     // Initial persistence (snapshot at start). Foreground tasks defer all
     // persistence until they detach (or spill) — see appendOutput / detach /
@@ -837,6 +873,7 @@ export class BackgroundManager {
     if (context === undefined) return;
     this.agent.turn.steer(context.content, context.origin);
     this.fireNotificationHook(context.notification);
+    await this.agent.turn.waitForIdle();
   }
 
   private async restoreBackgroundTaskNotification(info: BackgroundTaskInfo): Promise<void> {

@@ -458,6 +458,7 @@ export class Session {
       additionalDirs,
     );
     await this.setBaseAdditionalDirs(this.additionalDirs);
+    await this.closeAgents(false);
     this.agents.clear();
     // Only the main agent is needed to reopen the session; subagents replay
     // lazily when an RPC or Agent(resume=...) call asks for their state.
@@ -489,19 +490,24 @@ export class Session {
   }
 
   async close(): Promise<void> {
+    const keepBackgroundTasksAlive = this.keepBackgroundTasksAliveOnExit();
     try {
       await Promise.allSettled(
         Array.from(this.readyAgents(), async (agent) => agent.cron?.stop()),
       );
       await this.cancelActiveTurnsOnClose();
-      await this.stopBackgroundTasksOnExit();
+      await this.stopBackgroundTasksOnExit(keepBackgroundTasksAlive);
       await this.flushMetadata();
       await this.triggerSessionEnd('exit');
     } finally {
       try {
-        await this.mcp.shutdown();
+        await this.closeAgents(keepBackgroundTasksAlive);
       } finally {
-        await this.logHandle?.close();
+        try {
+          await this.mcp.shutdown();
+        } finally {
+          await this.logHandle?.close();
+        }
       }
     }
   }
@@ -514,11 +520,41 @@ export class Session {
       await this.flushMetadata();
     } finally {
       try {
-        await this.mcp.shutdown();
+        await this.closeAgents(true);
       } finally {
-        await this.logHandle?.close();
+        try {
+          await this.mcp.shutdown();
+        } finally {
+          await this.logHandle?.close();
+        }
       }
     }
+  }
+
+  private async closeAgents(deferActive: boolean): Promise<void> {
+    const entries = Array.from(this.agents.values());
+    const settled = await Promise.allSettled(
+      entries.map((entry) => this.resolveAgentEntry(entry)),
+    );
+    const immediate: Promise<void>[] = [];
+    for (const result of settled) {
+      if (result.status !== 'fulfilled') continue;
+      const agent = result.value.agent;
+      const shouldDefer = deferActive && agent.hasPendingLifecycleWork;
+      const promise = agent.close();
+      if (shouldDefer) {
+        void promise.catch((error) => {
+          this.log.error('failed to close agent after deferred background work', {
+            agentType: agent.type,
+            agentHomedir: agent.homedir,
+            error,
+          });
+        });
+      } else {
+        immediate.push(promise);
+      }
+    }
+    await Promise.all(immediate);
   }
 
   private async cancelActiveTurnsOnClose(): Promise<void> {
@@ -569,14 +605,17 @@ export class Session {
     }
   }
 
-  private async stopBackgroundTasksOnExit(): Promise<void> {
-    const keepAliveOnExit = resolveConfigValue({
+  private keepBackgroundTasksAliveOnExit(): boolean {
+    return resolveConfigValue({
       env: process.env,
       envKey: BACKGROUND_KEEP_ALIVE_ON_EXIT_ENV,
       configValue: this.options.background?.keepAliveOnExit,
       defaultValue: false,
       parseEnv: parseBooleanEnv,
     });
+  }
+
+  private async stopBackgroundTasksOnExit(keepAliveOnExit: boolean): Promise<void> {
     if (keepAliveOnExit) return;
     await Promise.all(
       Array.from(this.readyAgents(), async (agent) => {
@@ -744,8 +783,13 @@ export class Session {
     const homedir = config.homedir ?? join(this.options.homedir, 'agents', id);
     const parentAgentId = options.parentAgentId ?? null;
     const agent = this.instantiateAgent(id, homedir, type, config, parentAgentId);
-    if (options.profile) {
-      await this.bootstrapAgentProfile(agent, options.profile);
+    try {
+      if (options.profile) {
+        await this.bootstrapAgentProfile(agent, options.profile);
+      }
+    } catch (error) {
+      await agent.close().catch(() => {});
+      throw error;
     }
 
     this.agents.set(id, agent);
@@ -797,8 +841,12 @@ export class Session {
   async discardAgent(agentId: string): Promise<void> {
     const entry = this.agents.get(agentId);
     if (entry instanceof Agent) {
-      if (entry.turn.hasActiveTurn) entry.turn.cancel(undefined, abortError('Agent allocation rolled back'));
-      await entry.background.stopAll('Agent allocation rolled back');
+      try {
+        if (entry.turn.hasActiveTurn) entry.turn.cancel(undefined, abortError('Agent allocation rolled back'));
+        await entry.background.stopAll('Agent allocation rolled back');
+      } finally {
+        await entry.close();
+      }
     }
     this.agents.delete(agentId);
     if (this.metadata.agents[agentId] !== undefined) {
@@ -1341,8 +1389,9 @@ export class Session {
         ? undefined
         : await this.resumeAgent(parentAgentId, [...stack, id]);
 
+    let agent: Agent | undefined;
     try {
-      const agent = this.instantiateAgent(
+      agent = this.instantiateAgent(
         id,
         join(this.options.homedir, 'agents', id),
         meta.type,
@@ -1354,6 +1403,7 @@ export class Session {
       this.agents.set(id, agent);
       return { agent, warning: parent?.warning ?? result.warning };
     } catch (error) {
+      await agent?.close().catch(() => {});
       const entry = this.agents.get(id);
       if (entry instanceof Promise) {
         this.agents.delete(id);

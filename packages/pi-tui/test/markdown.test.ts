@@ -1397,6 +1397,73 @@ bar`,
 		});
 	});
 
+	describe("Incremental rendering", () => {
+		it("matches a fresh full render while streaming across block boundaries", () => {
+			const style = {
+				color: (text: string) => chalk.gray(text),
+				italic: true,
+			};
+			const incremental = new Markdown("", 1, 1, defaultMarkdownTheme, style);
+			const chunks = [
+				"Stable **head** with `code`.",
+				"\n\n- first item",
+				"\n\n- second item",
+				"\n\n| Name | Value |",
+				"\n| --- | --- |",
+				"\n| alpha | one |",
+				"\n\n```ts",
+				"\nconst x = 1;",
+				"\n``",
+				"`",
+				"\n\n> quoted",
+				"\nlazy continuation",
+				"\n\nSetext title",
+				"\n---",
+			];
+			let text = "";
+
+			for (let i = 0; i < chunks.length; i++) {
+				text += chunks[i];
+				incremental.setText(text);
+				const width = i >= 6 && i < 10 ? 36 : 52;
+				const actual = incremental.render(width);
+				const expected = new Markdown(text, 1, 1, defaultMarkdownTheme, style).render(width);
+				assert.deepStrictEqual(actual, expected, `Incremental mismatch after chunk ${i}: ${JSON.stringify(chunks[i])}`);
+			}
+		});
+
+		it("falls back safely for reference definitions, width changes, invalidation, and non-append edits", () => {
+			const style = { color: (text: string) => `styled:${text}` };
+			const incremental = new Markdown("See [docs] for details.\n\nStable tail.", 1, 0, defaultMarkdownTheme, style);
+
+			incremental.render(48);
+			const withDefinition = "See [docs] for details.\n\nStable tail.\n\n[docs]: https://example.com";
+			incremental.setText(withDefinition);
+			assert.deepStrictEqual(
+				incremental.render(48),
+				new Markdown(withDefinition, 1, 0, defaultMarkdownTheme, style).render(48),
+			);
+
+			assert.deepStrictEqual(
+				incremental.render(31),
+				new Markdown(withDefinition, 1, 0, defaultMarkdownTheme, style).render(31),
+			);
+
+			incremental.invalidate();
+			assert.deepStrictEqual(
+				incremental.render(31),
+				new Markdown(withDefinition, 1, 0, defaultMarkdownTheme, style).render(31),
+			);
+
+			const replacement = "Replaced head.\n\n- new tail";
+			incremental.setText(replacement);
+			assert.deepStrictEqual(
+				incremental.render(31),
+				new Markdown(replacement, 1, 0, defaultMarkdownTheme, style).render(31),
+			);
+		});
+	});
+
 	describe("Streaming code fences", () => {
 		it("stabilizes partial closing fence rendering", () => {
 			const cases = [

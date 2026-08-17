@@ -116,6 +116,13 @@ export class FullCompaction {
     return this.compacting !== null;
   }
 
+  async waitForIdle(): Promise<void> {
+    while (this.compacting !== null) {
+      const promise = this.compacting.promise;
+      await promise.catch(() => {});
+    }
+  }
+
   /** Trace id (`x-trace-id`, Kimi/KFC only) of the latest summarizer request. */
   get lastTraceId(): string | undefined {
     return this.activeSummarizerTrace !== undefined

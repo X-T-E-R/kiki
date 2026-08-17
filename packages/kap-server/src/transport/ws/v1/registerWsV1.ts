@@ -20,6 +20,8 @@ import { WsConnectionV1 } from './wsConnectionV1';
 import { selectWsBearerProtocol } from '../bearerProtocol';
 
 export const WS_PATH = '/api/v1/ws';
+/** Bound parse work and memory for one inbound message; `ws` closes excess with 1009. */
+export const WS_V1_MAX_PAYLOAD_BYTES = 8 << 20; // 8 MiB
 
 export interface RegisterWsV1Options {
   /** Present-only credential validator forwarded to {@link WsConnectionV1}. */
@@ -33,12 +35,18 @@ export interface RegisterWsV1Options {
   readonly flushIntervalMs?: number;
   readonly maxBatchSize?: number;
   readonly highWaterMarkBytes?: number;
+  readonly maxOutboundBufferBytes?: number;
+  readonly maxBackpressureRounds?: number;
   /** Heartbeat interval forwarded to {@link WsConnectionV1}; `0` disables. */
   readonly heartbeatMs?: number;
 }
 
 export function registerWsV1(core: Scope, opts: RegisterWsV1Options): WebSocketServer {
-  const wss = new WebSocketServer({ noServer: true, handleProtocols: selectWsBearerProtocol });
+  const wss = new WebSocketServer({
+    noServer: true,
+    handleProtocols: selectWsBearerProtocol,
+    maxPayload: WS_V1_MAX_PAYLOAD_BYTES,
+  });
   const { registry, broadcaster } = opts;
 
   wss.on('connection', (socket, req) => {
@@ -57,6 +65,8 @@ export function registerWsV1(core: Scope, opts: RegisterWsV1Options): WebSocketS
       flushIntervalMs: opts.flushIntervalMs,
       maxBatchSize: opts.maxBatchSize,
       highWaterMarkBytes: opts.highWaterMarkBytes,
+      maxOutboundBufferBytes: opts.maxOutboundBufferBytes,
+      maxBackpressureRounds: opts.maxBackpressureRounds,
       heartbeatMs: opts.heartbeatMs,
     });
     socket.on('close', () => registry.remove(conn.id));

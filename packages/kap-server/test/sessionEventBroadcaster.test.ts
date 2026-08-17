@@ -112,6 +112,25 @@ class FakeEventBus {
   }
 }
 
+class FakeSessionLifecycleEvents {
+  private readonly closeHandlers = new Set<(event: { sessionId: string }) => void>();
+  private readonly archiveHandlers = new Set<(event: { sessionId: string }) => void>();
+
+  onDidCloseSession(handler: (event: { sessionId: string }) => void): { dispose(): void } {
+    this.closeHandlers.add(handler);
+    return { dispose: () => this.closeHandlers.delete(handler) };
+  }
+
+  onDidArchiveSession(handler: (event: { sessionId: string }) => void): { dispose(): void } {
+    this.archiveHandlers.add(handler);
+    return { dispose: () => this.archiveHandlers.delete(handler) };
+  }
+
+  close(sessionId: string): void {
+    for (const handler of [...this.closeHandlers]) handler({ sessionId });
+  }
+}
+
 class FakeAgentHandle {
   readonly kind = LifecycleScope.Agent;
   readonly bus = new FakeAgentBus();
@@ -350,6 +369,7 @@ function makeCore(
   sessions: Map<string, FakeLifecycle>,
   eventBus = new FakeEventBus(),
   metaAgents: Record<string, { type?: string; parentAgentId?: string }> = {},
+  lifecycleEvents = new FakeSessionLifecycleEvents(),
 ): Scope {
   const sessionFor = (sid: string) => {
     const lifecycle = sessions.get(sid);
@@ -367,9 +387,10 @@ function makeCore(
     return { id: sid, kind: LifecycleScope.Session, accessor: sessionAccessor, dispose: () => {} };
   };
   const sessionLifecycle = {
-    // Inert lifecycle events (TranscriptService subscribes on construction).
-    onDidCloseSession: () => ({ dispose: () => {} }),
-    onDidArchiveSession: () => ({ dispose: () => {} }),
+    onDidCloseSession: (handler: (event: { sessionId: string }) => void) =>
+      lifecycleEvents.onDidCloseSession(handler),
+    onDidArchiveSession: (handler: (event: { sessionId: string }) => void) =>
+      lifecycleEvents.onDidArchiveSession(handler),
     get: sessionFor,
   };
   const handler = {
@@ -434,15 +455,17 @@ describe('SessionEventBroadcaster', () => {
   let dir: string;
   let sessions: Map<string, FakeLifecycle>;
   let eventBus: FakeEventBus;
+  let lifecycleEvents: FakeSessionLifecycleEvents;
   let bc: SessionEventBroadcaster;
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'kimi-broadcaster-test-'));
     sessions = new Map();
     eventBus = new FakeEventBus();
+    lifecycleEvents = new FakeSessionLifecycleEvents();
     bc = new SessionEventBroadcaster({
       eventsDir: dir,
-      core: makeCore(sessions, eventBus),
+      core: makeCore(sessions, eventBus, {}, lifecycleEvents),
       maxBufferSize: 3,
     });
   });
@@ -807,6 +830,44 @@ describe('SessionEventBroadcaster', () => {
     // outcome) (4) emitted on turn end.
     expect(result.events.map((e) => e.seq)).toEqual([2, 3, 4]);
     expect(result.currentSeq).toBe(4);
+  });
+
+  it('evicts closed session state and rebuilds replay from the journal after resume', async () => {
+    const first = new FakeLifecycle();
+    const main = first.addAgent('main');
+    sessions.set('s1', first);
+    const original = collectingTarget();
+    expect(await bc.subscribe('s1', original.target)).toBe(true);
+
+    main.bus.emit(agentEvent('turn.started', { turnId: 1 }));
+    const beforeClose = await bc.getCursor('s1');
+    const states = (
+      bc as unknown as {
+        sessions: Map<string, { targets: Map<BroadcastTarget, unknown> }>;
+      }
+    ).sessions;
+    expect(states.get('s1')?.targets.has(original.target)).toBe(true);
+
+    sessions.delete('s1');
+    lifecycleEvents.close('s1');
+    await vi.waitFor(() => expect(states.has('s1')).toBe(false));
+    expect(states.size).toBe(0);
+
+    const resumed = new FakeLifecycle();
+    resumed.addAgent('main');
+    sessions.set('s1', resumed);
+    const replay = await bc.getBufferedSince('s1', { seq: 0, epoch: beforeClose.epoch });
+    expect(replay.resyncRequired).toBe(false);
+    expect(replay.currentSeq).toBe(beforeClose.seq);
+    expect(replay.events.map(({ envelope }) => envelope.type)).toEqual([
+      'turn.started',
+      'event.session.work_changed',
+    ]);
+
+    const reconnected = collectingTarget();
+    expect(await bc.subscribe('s1', reconnected.target)).toBe(true);
+    expect(states.get('s1')?.targets.has(original.target)).toBe(false);
+    expect(states.get('s1')?.targets.has(reconnected.target)).toBe(true);
   });
 
   it('returns buffer_overflow when the gap exceeds the cap', async () => {

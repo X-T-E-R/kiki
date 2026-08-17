@@ -18,14 +18,74 @@ import {
   IHostRequestHeaders,
   InMemoryStorageService,
   IOAuthToolkit,
+  ISessionIndex,
+  IThreadCommunicationService,
   ITelemetryService,
+  IWorkspaceService,
   noopTelemetryService,
+  type SessionIndexStatus,
 } from '@moonshot-ai/agent-core-v2';
 
 import { listLiveServerInstances } from '../src/instanceRegistry';
 import { listenWithPortRetry, type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authedFetch } from './helpers/auth';
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+  reject(reason: unknown): void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function stubSessionIndex(prepare: ISessionIndex['prepare']): ISessionIndex {
+  return {
+    _serviceBrand: undefined,
+    prepare,
+    status: () => ({ state: 'uninitialized', degradedCount: 0 }),
+    get: async () => undefined,
+    listRecent: async () => ({ items: [] }),
+    count: async () => 0,
+    remove: async () => {},
+  };
+}
+
+function stubWorkspaceService(list: IWorkspaceService['list']): IWorkspaceService {
+  return {
+    _serviceBrand: undefined,
+    list,
+    get: async () => undefined,
+    createOrTouch: async () => {
+      throw new Error('not used by boot test');
+    },
+    update: async () => undefined,
+    delete: async () => {},
+  };
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`server did not listen within ${String(timeoutMs)}ms`)),
+      timeoutMs,
+    );
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 describe('server-v2 boot', () => {
   let server: RunningServer | undefined;
@@ -37,7 +97,7 @@ describe('server-v2 boot', () => {
       server = undefined;
     }
     if (home !== undefined) {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       home = undefined;
     }
   });
@@ -93,6 +153,95 @@ describe('server-v2 boot', () => {
     const oauthBody = await oauthPoll.json() as { code: number; data: null };
     expect(oauthBody.code).toBe(0);
     expect(oauthBody.data).toBeNull();
+  });
+
+  it('serves meta while workspace sync and session-index prepare warm in the background', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-background-warmup-'));
+    const workspaceSync = deferred<readonly []>();
+    const prepareGate = deferred<SessionIndexStatus>();
+    const workspaceList = vi.fn(() => workspaceSync.promise);
+    const prepare = vi.fn(() => prepareGate.promise);
+    let prepareSettled = false;
+    void prepareGate.promise.then(
+      () => {
+        prepareSettled = true;
+      },
+      () => {
+        prepareSettled = true;
+      },
+    );
+
+    try {
+      server = await withTimeout(
+        startServer({
+          hostIdentity: TEST_HOST_IDENTITY,
+          host: '127.0.0.1',
+          port: 0,
+          homeDir: home,
+          logLevel: 'silent',
+          seeds: [
+            [IWorkspaceService, stubWorkspaceService(workspaceList)],
+            [ISessionIndex, stubSessionIndex(prepare)],
+          ],
+        }),
+        2_000,
+      );
+
+      const base = `http://127.0.0.1:${server.port}`;
+      expect(workspaceList).toHaveBeenCalledOnce();
+      expect(prepare).not.toHaveBeenCalled();
+      expect((await authedFetch(server, base, '/api/v1/meta')).status).toBe(200);
+
+      workspaceSync.resolve([]);
+      await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+      expect(prepareSettled).toBe(false);
+      expect((await authedFetch(server, base, '/api/v1/meta')).status).toBe(200);
+    } finally {
+      workspaceSync.resolve([]);
+      prepareGate.resolve({ state: 'ready', generation: 1, degradedCount: 0 });
+    }
+  });
+
+  it('keeps the listener available when background session-index prepare fails', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-background-prepare-failure-'));
+    const prepareFailure = deferred<SessionIndexStatus>();
+    const prepare = vi.fn(() => prepareFailure.promise);
+    let prepareSettled = false;
+    void prepareFailure.promise.then(
+      () => {
+        prepareSettled = true;
+      },
+      () => {
+        prepareSettled = true;
+      },
+    );
+
+    try {
+      server = await withTimeout(
+        startServer({
+          hostIdentity: TEST_HOST_IDENTITY,
+          host: '127.0.0.1',
+          port: 0,
+          homeDir: home,
+          logLevel: 'silent',
+          seeds: [
+            [IWorkspaceService, stubWorkspaceService(async () => [])],
+            [ISessionIndex, stubSessionIndex(prepare)],
+          ],
+        }),
+        2_000,
+      );
+
+      const base = `http://127.0.0.1:${server.port}`;
+      await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+      expect((await authedFetch(server, base, '/api/v1/meta')).status).toBe(200);
+
+      prepareFailure.reject(new Error('injected prepare failure'));
+      await vi.waitFor(() => expect(prepareSettled).toBe(true));
+      expect((await fetch(`${base}/api/v1/healthz`)).status).toBe(200);
+    } finally {
+      prepareFailure.resolve({ state: 'degraded', reason: 'injected failure', degradedCount: 1 });
+    }
   });
 
   it('reports opts.serverVersion as server_version instead of the package version', async () => {
@@ -247,6 +396,43 @@ describe('server-v2 boot', () => {
     expect(() => core.accessor.get(IBootstrapService)).toThrow();
     expect(await listLiveServerInstances(home)).toEqual([]);
   });
+
+  it.each(['listener', 'thread'] as const)(
+    'rejects close after cleanup when %s shutdown fails',
+    async (failure) => {
+      home = await mkdtemp(join(tmpdir(), `kimi-server-v2-${failure}-close-failure-`));
+      server = await startServer({
+        hostIdentity: TEST_HOST_IDENTITY,
+        host: '127.0.0.1',
+        port: 0,
+        homeDir: home,
+        logLevel: 'silent',
+      });
+      const running = server;
+      const core = running.core;
+      const boom = new Error(`injected ${failure} close failure`);
+      if (failure === 'listener') {
+        const closeApp = running.app.close.bind(running.app);
+        vi.spyOn(running.app, 'close').mockImplementation((async () => {
+          await closeApp();
+          throw boom;
+        }) as never);
+      } else {
+        const service = core.accessor.get(IThreadCommunicationService);
+        const shutdown = service.shutdown.bind(service);
+        vi.spyOn(service, 'shutdown').mockImplementation(async () => {
+          await shutdown();
+          throw boom;
+        });
+      }
+
+      const closing = running.close();
+      server = undefined;
+      await expect(closing).rejects.toBe(boom);
+      expect(() => core.accessor.get(IBootstrapService)).toThrow();
+      expect(await listLiveServerInstances(home)).toEqual([]);
+    },
+  );
 });
 
 describe('server-v2 boot — external delegation fail-open', () => {
@@ -263,7 +449,7 @@ describe('server-v2 boot — external delegation fail-open', () => {
       server = undefined;
     }
     if (home !== undefined) {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       home = undefined;
     }
     if (originalPrincipal === undefined) delete process.env['KIKI_EXTERNAL_PRINCIPAL_ID'];
@@ -452,7 +638,7 @@ describe('server-v2 boot — port retry', () => {
       server = undefined;
     }
     if (home !== undefined) {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       home = undefined;
     }
   });

@@ -113,7 +113,7 @@ describe('BackgroundTaskPersistence legacy compatibility', () => {
       emitEvent: vi.fn(),
       telemetry: { track: vi.fn() },
       context: { appendUserMessage: vi.fn() },
-      turn: { steer: vi.fn() },
+      turn: { steer: vi.fn(), waitForIdle: vi.fn().mockResolvedValue(undefined) },
       hooks: undefined,
     };
     const manager = new BackgroundManager(agent as never, persistence);

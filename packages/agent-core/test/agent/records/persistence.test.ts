@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 
@@ -77,6 +77,49 @@ describe('FileSystemAgentRecordPersistence', () => {
     ]);
   });
 
+  it('matches open-close bytes across multiple flushes and remains readable', async () => {
+    const wirePath = await makeWirePath();
+    const referencePath = `${wirePath}.reference`;
+    const persistence = new FileSystemAgentRecordPersistence(wirePath);
+    const records: AgentRecord[] = [
+      {
+        type: 'metadata',
+        protocol_version: AGENT_WIRE_PROTOCOL_VERSION,
+        created_at: 1,
+      },
+      {
+        type: 'turn.prompt',
+        input: [{ type: 'text', text: 'one' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'turn.prompt',
+        input: [{ type: 'text', text: 'two' }],
+        origin: { kind: 'user' },
+      },
+    ];
+
+    for (const record of records) {
+      persistence.append(record);
+      await persistence.flush();
+
+      const referenceHandle = await open(referencePath, 'a');
+      try {
+        await referenceHandle.writeFile(`${JSON.stringify(record)}\n`, 'utf8');
+        await referenceHandle.sync();
+      } finally {
+        await referenceHandle.close();
+      }
+    }
+
+    expect(await readFile(wirePath)).toEqual(await readFile(referencePath));
+
+    const readBack: AgentRecord[] = [];
+    for await (const record of persistence.read()) readBack.push(record);
+    await persistence.close();
+    expect(readBack).toEqual(records);
+  });
+
   it('returns appended metadata records from read() output', async () => {
     const wirePath = await makeWirePath();
     const persistence = new FileSystemAgentRecordPersistence(wirePath);
@@ -138,11 +181,23 @@ describe('FileSystemAgentRecordPersistence', () => {
     ]);
     expect(JSON.parse(lines[1]!)['input'][0]['text']).toBe('new');
     expect(JSON.parse(lines[2]!)['input'][0]['text']).toBe('later');
+    await persistence.close();
   });
 
-  it('rewrites already flushed records from the beginning', async () => {
+  it('closes the append handle before clearing and keeps later appends', async () => {
     const wirePath = await makeWirePath();
     const persistence = new FileSystemAgentRecordPersistence(wirePath);
+    const replacement: AgentRecord = {
+      type: 'turn.prompt',
+      input: [{ type: 'text', text: 'new' }],
+      origin: { kind: 'user' },
+    };
+    const later: AgentRecord = {
+      type: 'turn.prompt',
+      input: [{ type: 'text', text: 'later' }],
+      origin: { kind: 'user' },
+    };
+
     persistence.append({
       type: 'turn.prompt',
       input: [{ type: 'text', text: 'old' }],
@@ -150,29 +205,18 @@ describe('FileSystemAgentRecordPersistence', () => {
     });
     await persistence.flush();
 
-    persistence.rewrite([
-      {
-        type: 'metadata',
-        protocol_version: AGENT_WIRE_PROTOCOL_VERSION,
-        created_at: 1,
-      },
-      {
-        type: 'turn.prompt',
-        input: [{ type: 'text', text: 'new' }],
-        origin: { kind: 'user' },
-      },
-    ]);
+    persistence.rewrite([replacement]);
+    await persistence.flush();
+    persistence.append(later);
     await persistence.flush();
 
-    const lines = await readLines(wirePath);
-    expect(lines.map((line) => JSON.parse(line)['type'])).toEqual([
-      'metadata',
-      'turn.prompt',
-    ]);
-    expect(JSON.parse(lines[1]!)['input'][0]['text']).toBe('new');
+    expect(await readFile(wirePath, 'utf8')).toBe(
+      `${JSON.stringify(replacement)}\n${JSON.stringify(later)}\n`,
+    );
+    await persistence.close();
   });
 
-  it('flushes pending records on close', async () => {
+  it('flushes pending records and closes idempotently', async () => {
     const wirePath = await makeWirePath();
     const persistence = new FileSystemAgentRecordPersistence(wirePath);
 
@@ -181,6 +225,7 @@ describe('FileSystemAgentRecordPersistence', () => {
       input: [{ type: 'text', text: 'late' }],
       origin: { kind: 'user' },
     });
+    await Promise.all([persistence.close(), persistence.close()]);
     await persistence.close();
 
     const lines = await readLines(wirePath);

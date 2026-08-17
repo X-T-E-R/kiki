@@ -39,9 +39,11 @@ describe('Session lifecycle hooks', () => {
       ],
     });
 
-    await session.createMain();
+    const agent = await session.createMain();
+    const recordsCloseSpy = vi.spyOn(agent.records, 'close');
     await session.close();
 
+    expect(recordsCloseSpy).toHaveBeenCalledOnce();
     expect(await readHookPayloads(logPath)).toMatchObject([
       {
         hook_event_name: 'SessionStart',
@@ -176,6 +178,18 @@ describe('Session lifecycle hooks', () => {
 
     expect(killSpy).not.toHaveBeenCalled();
     expect(agent.background.getTask(taskId)?.status).toBe('running');
+
+    await proc.kill('SIGTERM');
+    await agent.close();
+
+    const records = await readWireRecords(join(sessionDir, 'agents', 'main', 'wire.jsonl'));
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        type: 'turn.steer',
+        origin: expect.objectContaining({ kind: 'background_task', taskId }),
+      }),
+    );
+    expect(() => agent.records.logRecord({ type: 'forked' })).toThrow(/closed/);
   });
 
   it('keeps background agent turns alive on close when keepAliveOnExit is true', async () => {
@@ -200,11 +214,12 @@ describe('Session lifecycle hooks', () => {
     const cancelSpy = vi.spyOn(child.turn, 'cancel').mockImplementation(() => {
       turnSettled.resolve();
     });
-    vi.spyOn(child.turn, 'hasActiveTurn', 'get').mockReturnValue(true);
+    const activeTurnSpy = vi.spyOn(child.turn, 'hasActiveTurn', 'get').mockReturnValue(true);
     const abortController = new AbortController();
     const abort = vi.spyOn(abortController, 'abort');
+    const taskCompletion = createDeferred<{ result: string }>();
     const taskId = main.background.registerTask(
-      agentTask(new Promise(() => {}), 'keep background agent alive', {
+      agentTask(taskCompletion.promise, 'keep background agent alive', {
         abortController,
         agentId: childId,
         subagentType: 'coder',
@@ -214,9 +229,14 @@ describe('Session lifecycle hooks', () => {
     await session.close();
 
     expect(cancelSpy).not.toHaveBeenCalled();
-    expect(waitSpy).not.toHaveBeenCalled();
+    expect(waitSpy).toHaveBeenCalledOnce();
     expect(abort).not.toHaveBeenCalled();
     expect(main.background.getTask(taskId)?.status).toBe('running');
+
+    activeTurnSpy.mockRestore();
+    turnSettled.resolve();
+    taskCompletion.resolve({ result: 'done' });
+    await Promise.all([main.close(), child.close()]);
   });
 
   it('waitForBackgroundTasksOnPrint returns immediately when keepAliveOnExit is false', async () => {
@@ -595,10 +615,11 @@ describe('Session lifecycle hooks', () => {
     const waitSpy = vi
       .spyOn(agent.turn, 'waitForCurrentTurn')
       .mockImplementation(() => turnSettled.promise as never);
+    const activeTurnSpy = vi.spyOn(agent.turn, 'hasActiveTurn', 'get').mockReturnValue(true);
     const cancelSpy = vi.spyOn(agent.turn, 'cancel').mockImplementation(() => {
+      activeTurnSpy.mockRestore();
       turnSettled.resolve();
     });
-    vi.spyOn(agent.turn, 'hasActiveTurn', 'get').mockReturnValue(true);
 
     await session.close();
 
@@ -656,7 +677,28 @@ describe('Session lifecycle hooks', () => {
     );
   });
 
-  it('keeps background tasks alive and skips SessionEnd hooks when closing for reload', async () => {
+  it('closes agent records when discarding an agent', async () => {
+    const { sessionDir, workDir } = await hookFixture();
+    const session = new Session({
+      kaos: testKaos.withCwd(workDir),
+      id: 'session-discard-agent',
+      homedir: sessionDir,
+      rpc: createSessionRpc(),
+      skills: { explicitDirs: [join(workDir, 'missing-skills')] },
+    });
+    const { id, agent } = await session.createAgent(
+      { type: 'sub' },
+      { persistMetadata: false },
+    );
+    const recordsCloseSpy = vi.spyOn(agent.records, 'close');
+
+    await session.discardAgent(id);
+    await session.closeForReload();
+
+    expect(recordsCloseSpy).toHaveBeenCalledOnce();
+  });
+
+  it('keeps background tasks and their records alive when closing for reload', async () => {
     const { command, logPath, sessionDir, workDir } = await hookFixture();
     const session = new Session({
       kaos: testKaos.withCwd(workDir),
@@ -672,6 +714,7 @@ describe('Session lifecycle hooks', () => {
     });
     const agent = await session.createMain();
     const stopSpy = vi.spyOn(agent.cron!, 'stop');
+    const recordsCloseSpy = vi.spyOn(agent.records, 'close');
     const { proc, killSpy } = pendingProcess();
     const taskId = agent.background.registerTask(
       new ProcessBackgroundTask(proc, 'sleep 60', 'reload keeps alive'),
@@ -680,6 +723,7 @@ describe('Session lifecycle hooks', () => {
     await session.closeForReload();
 
     expect(stopSpy).toHaveBeenCalledOnce();
+    expect(recordsCloseSpy).not.toHaveBeenCalled();
     expect(killSpy).not.toHaveBeenCalled();
     expect(agent.background.getTask(taskId)?.status).toBe('running');
     expect(await readHookPayloads(logPath)).toMatchObject([
@@ -690,6 +734,19 @@ describe('Session lifecycle hooks', () => {
         source: 'startup',
       },
     ]);
+
+    await proc.kill('SIGTERM');
+    await agent.close();
+
+    expect(recordsCloseSpy).toHaveBeenCalledOnce();
+    const records = await readWireRecords(join(sessionDir, 'agents', 'main', 'wire.jsonl'));
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        type: 'turn.steer',
+        origin: expect.objectContaining({ kind: 'background_task', taskId }),
+      }),
+    );
+    expect(() => agent.records.logRecord({ type: 'forked' })).toThrow(/closed/);
   });
 });
 
@@ -735,6 +792,14 @@ async function readHookPayloads(path: string): Promise<readonly Record<string, u
   const text = await readFile(path, 'utf-8');
   return text
     .trim()
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+async function readWireRecords(path: string): Promise<readonly Record<string, unknown>[]> {
+  const text = await readFile(path, 'utf-8');
+  return text
     .split('\n')
     .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line) as Record<string, unknown>);

@@ -323,6 +323,10 @@ export class CronManager {
     await Promise.allSettled(inFlight);
   }
 
+  get isRunning(): boolean {
+    return this.started;
+  }
+
   /**
    * Begin the scheduler's auto-tick loop and bind the SIGUSR1 manual-tick
    * hook (P1.8). Idempotent: a second call is a no-op so the boot

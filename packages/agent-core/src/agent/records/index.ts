@@ -347,4 +347,8 @@ export class AgentRecords {
   async flush(): Promise<void> {
     await this.persistence?.flush();
   }
+
+  async close(): Promise<void> {
+    await this.persistence?.close();
+  }
 }
