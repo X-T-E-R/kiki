@@ -13,10 +13,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket, type RawData } from 'ws';
 
 import { type RunningServer, startServer } from '../src/start';
+import { WS_V1_MAX_PAYLOAD_BYTES } from '../src/transport/ws/v1/registerWsV1';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { fixedTokenAuth } from './helpers/fixedAuth';
 
@@ -130,6 +131,24 @@ describe('WS upgrade auth', () => {
       });
       sockets.push(ws);
       expect(firstFrame).toMatchObject({ type: firstType });
+    });
+
+    it('closes an oversized message with 1009 and runs connection cleanup', async () => {
+      const { ws } = await openConn(url(), {
+        protocols: [`kimi-code.bearer.${TOKEN}`],
+      });
+      sockets.push(ws);
+      expect((server as RunningServer).connectionRegistry.size()).toBe(1);
+      const closed = new Promise<number>((resolve) => {
+        ws.once('close', (code) => resolve(code));
+      });
+
+      ws.send(Buffer.alloc(WS_V1_MAX_PAYLOAD_BYTES + 1));
+
+      await expect(closed).resolves.toBe(1009);
+      await vi.waitFor(() =>
+        expect((server as RunningServer).connectionRegistry.size()).toBe(0),
+      );
     });
 
     it('rejects a wrong bearer token', async () => {

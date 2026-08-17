@@ -17,7 +17,10 @@ export interface FakeBackgroundAgent {
   kimiConfig?: { background?: { maxRunningTasks?: number } };
   telemetry: { track: ReturnType<typeof vi.fn> };
   context: { appendUserMessage: ReturnType<typeof vi.fn> };
-  turn: { steer: ReturnType<typeof vi.fn> };
+  turn: {
+    steer: ReturnType<typeof vi.fn>;
+    waitForIdle: ReturnType<typeof vi.fn>;
+  };
   hooks?: { fireAndForgetTrigger: ReturnType<typeof vi.fn> };
 }
 
@@ -44,7 +47,10 @@ export function createBackgroundManager(options: {
         : { background: { maxRunningTasks: options.maxRunningTasks } },
     telemetry: { track: vi.fn() },
     context: { appendUserMessage: vi.fn() },
-    turn: { steer: vi.fn() },
+    turn: {
+      steer: vi.fn(),
+      waitForIdle: vi.fn().mockResolvedValue(undefined),
+    },
     hooks: options.hooks,
   };
   const persistence =

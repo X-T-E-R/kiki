@@ -325,6 +325,23 @@ interface InlineStyleContext {
 	stylePrefix: string;
 }
 
+interface RenderedMarkdownBlock {
+	text: string;
+	type: string;
+	nextTokenType?: string;
+	start: number;
+	lineStart: number;
+	lines: string[];
+}
+
+interface RenderedMarkdownBlocks {
+	blocks: RenderedMarkdownBlock[];
+	contentLines: string[];
+	sourceMatches: boolean;
+}
+
+const REFERENCE_DEFINITION_REGEX = /^ {0,3}\[[^\n]*\]:/m;
+
 export class Markdown implements Component {
 	private text: string;
 	private paddingX: number; // Left/right padding
@@ -338,6 +355,14 @@ export class Markdown implements Component {
 	private cachedText?: string;
 	private cachedWidth?: number;
 	private cachedLines?: string[];
+
+	// Top-level token blocks cache rendered ANSI lines. Theme, default style, padding,
+	// and options are constructor-scoped; width and block text are stored explicitly.
+	private cachedNormalizedText?: string;
+	private cachedBlockWidth?: number;
+	private cachedBlocks?: RenderedMarkdownBlock[];
+	private cachedContentLines?: string[];
+	private cachedHasReferenceDefinitions = false;
 
 	constructor(
 		text: string,
@@ -356,14 +381,34 @@ export class Markdown implements Component {
 	}
 
 	setText(text: string): void {
+		if (text === this.text) {
+			return;
+		}
+
+		const isAppend = text.startsWith(this.text);
 		this.text = text;
-		this.invalidate();
+		this.cachedText = undefined;
+		this.cachedWidth = undefined;
+		this.cachedLines = undefined;
+
+		if (!isAppend) {
+			this.clearBlockCache();
+		}
 	}
 
 	invalidate(): void {
 		this.cachedText = undefined;
 		this.cachedWidth = undefined;
 		this.cachedLines = undefined;
+		this.clearBlockCache();
+	}
+
+	private clearBlockCache(): void {
+		this.cachedNormalizedText = undefined;
+		this.cachedBlockWidth = undefined;
+		this.cachedBlocks = undefined;
+		this.cachedContentLines = undefined;
+		this.cachedHasReferenceDefinitions = false;
 	}
 
 	render(width: number): string[] {
@@ -379,69 +424,21 @@ export class Markdown implements Component {
 		// Don't render anything if there's no actual text
 		if (!text || text.trim() === "") {
 			const result: string[] = [];
-			// Update cache
 			this.cachedText = this.text;
 			this.cachedWidth = width;
 			this.cachedLines = result;
+			this.clearBlockCache();
 			return result;
 		}
 
 		// Replace tabs with 3 spaces for consistent rendering
 		const normalizedText = text.replace(/\t/g, "   ");
-
-		// Parse markdown to HTML-like tokens
-		const tokens = markdownParser.lexer(normalizedText);
-		trimPartialClosingFences(tokens);
-
-		// Convert tokens to styled terminal output
-		const renderedLines: string[] = [];
-
-		for (let i = 0; i < tokens.length; i++) {
-			const token = tokens[i]!;
-			const nextToken = tokens[i + 1];
-			const tokenLines = this.renderToken(token, contentWidth, nextToken?.type);
-			for (const tokenLine of tokenLines) {
-				renderedLines.push(tokenLine);
-			}
-		}
-
-		// Wrap lines (NO padding, NO background yet)
-		const wrappedLines: string[] = [];
-		for (const line of renderedLines) {
-			if (isImageLine(line)) {
-				wrappedLines.push(line);
-			} else {
-				for (const wrappedLine of wrapTextWithAnsi(line, contentWidth)) {
-					wrappedLines.push(wrappedLine);
-				}
-			}
-		}
-
-		// Add margins and background to each wrapped line
-		const leftMargin = " ".repeat(this.paddingX);
-		const rightMargin = " ".repeat(this.paddingX);
-		const bgFn = this.defaultTextStyle?.bgColor;
-		const contentLines: string[] = [];
-
-		for (const line of wrappedLines) {
-			if (isImageLine(line)) {
-				contentLines.push(line);
-				continue;
-			}
-
-			const lineWithMargins = leftMargin + line + rightMargin;
-
-			if (bgFn) {
-				contentLines.push(applyBackgroundToLine(lineWithMargins, width, bgFn));
-			} else {
-				// No background - just pad to width
-				const visibleLen = visibleWidth(lineWithMargins);
-				const paddingNeeded = Math.max(0, width - visibleLen);
-				contentLines.push(lineWithMargins + " ".repeat(paddingNeeded));
-			}
-		}
+		const renderedBlocks =
+			this.renderIncrementalBlocks(normalizedText, contentWidth, width) ??
+			this.renderAllBlocks(normalizedText, contentWidth, width);
 
 		// Add top/bottom padding (empty lines)
+		const bgFn = this.defaultTextStyle?.bgColor;
 		const emptyLine = " ".repeat(Math.max(0, width));
 		const emptyLines: string[] = [];
 		for (let i = 0; i < this.paddingY; i++) {
@@ -450,14 +447,168 @@ export class Markdown implements Component {
 		}
 
 		// Combine top padding, content, and bottom padding
-		const result = emptyLines.concat(contentLines, emptyLines);
+		const result = emptyLines.concat(renderedBlocks.contentLines, emptyLines);
 
 		// Update cache
 		this.cachedText = this.text;
 		this.cachedWidth = width;
 		this.cachedLines = result;
+		this.cachedNormalizedText = normalizedText;
+		this.cachedBlockWidth = width;
+		this.cachedBlocks = renderedBlocks.sourceMatches ? renderedBlocks.blocks : undefined;
+		this.cachedContentLines = renderedBlocks.sourceMatches ? renderedBlocks.contentLines : undefined;
+		this.cachedHasReferenceDefinitions = REFERENCE_DEFINITION_REGEX.test(normalizedText);
 
 		return result.length > 0 ? result : [""];
+	}
+
+	private renderIncrementalBlocks(
+		normalizedText: string,
+		contentWidth: number,
+		width: number,
+	): RenderedMarkdownBlocks | undefined {
+		const previousText = this.cachedNormalizedText;
+		const previousBlocks = this.cachedBlocks;
+		const previousContentLines = this.cachedContentLines;
+		if (
+			previousText === undefined ||
+			previousBlocks === undefined ||
+			previousContentLines === undefined ||
+			this.cachedBlockWidth !== width ||
+			this.cachedHasReferenceDefinitions ||
+			!normalizedText.startsWith(previousText)
+		) {
+			return undefined;
+		}
+
+		// A newly completed reference definition can change inline tokens anywhere in
+		// the document, so fall back to a full parse when the changed final line can
+		// now be interpreted as one.
+		const changedLineStart = previousText.lastIndexOf("\n") + 1;
+		if (REFERENCE_DEFINITION_REGEX.test(normalizedText.slice(changedLineStart))) {
+			return undefined;
+		}
+
+		let lastContentBlock = previousBlocks.length - 1;
+		while (lastContentBlock >= 0 && previousBlocks[lastContentBlock]!.type === "space") {
+			lastContentBlock--;
+		}
+
+		// Re-lex from the blank-line token before the changing final block. Keeping
+		// that separator in the tail prevents lists, tables, blockquotes, fenced or
+		// indented code, and setext headings from crossing the cache boundary.
+		let tailStartBlock = lastContentBlock - 1;
+		while (tailStartBlock >= 0 && previousBlocks[tailStartBlock]!.type !== "space") {
+			tailStartBlock--;
+		}
+		if (tailStartBlock < 0) {
+			return undefined;
+		}
+
+		const tailStartBlockCache = previousBlocks[tailStartBlock]!;
+		const tailStart = tailStartBlockCache.start;
+		const tailLineStart = tailStartBlockCache.lineStart;
+		const tailText = normalizedText.slice(tailStart);
+		const tailTokens = markdownParser.lexer(tailText);
+		trimPartialClosingFences(tailTokens);
+		if (tailTokens[0]?.type !== "space") {
+			return undefined;
+		}
+
+		const renderedTail = this.renderParsedBlocks(
+			tailTokens,
+			tailText,
+			contentWidth,
+			width,
+			tailStart,
+			tailLineStart,
+		);
+		if (!renderedTail.sourceMatches) {
+			return undefined;
+		}
+
+		const blocks = previousBlocks.slice(0, tailStartBlock).concat(renderedTail.blocks);
+		const contentLines = previousContentLines.slice(0, tailLineStart).concat(renderedTail.contentLines);
+		return { blocks, contentLines, sourceMatches: true };
+	}
+
+	private renderAllBlocks(normalizedText: string, contentWidth: number, width: number): RenderedMarkdownBlocks {
+		const tokens = markdownParser.lexer(normalizedText);
+		trimPartialClosingFences(tokens);
+		return this.renderParsedBlocks(tokens, normalizedText, contentWidth, width, 0, 0);
+	}
+
+	private renderParsedBlocks(
+		tokens: readonly Token[],
+		sourceText: string,
+		contentWidth: number,
+		width: number,
+		startOffset: number,
+		startLine: number,
+	): RenderedMarkdownBlocks {
+		const blocks: RenderedMarkdownBlock[] = [];
+		const contentLines: string[] = [];
+		let sourceOffset = 0;
+		let sourceMatches = true;
+
+		for (let i = 0; i < tokens.length; i++) {
+			const token = tokens[i]!;
+			const nextTokenType = tokens[i + 1]?.type;
+			const blockText = sourceText.slice(sourceOffset, sourceOffset + token.raw.length);
+			if (blockText !== token.raw) {
+				sourceMatches = false;
+			}
+
+			const lines = this.renderAndPadToken(token, contentWidth, width, nextTokenType);
+			blocks.push({
+				text: blockText,
+				type: token.type,
+				nextTokenType,
+				start: startOffset + sourceOffset,
+				lineStart: startLine + contentLines.length,
+				lines,
+			});
+			contentLines.push(...lines);
+			sourceOffset += token.raw.length;
+		}
+
+		if (sourceOffset !== sourceText.length) {
+			sourceMatches = false;
+		}
+		return { blocks, contentLines, sourceMatches };
+	}
+
+	private renderAndPadToken(token: Token, contentWidth: number, width: number, nextTokenType?: string): string[] {
+		const renderedLines = this.renderToken(token, contentWidth, nextTokenType);
+		const wrappedLines: string[] = [];
+		for (const line of renderedLines) {
+			if (isImageLine(line)) {
+				wrappedLines.push(line);
+			} else {
+				wrappedLines.push(...wrapTextWithAnsi(line, contentWidth));
+			}
+		}
+
+		const leftMargin = " ".repeat(this.paddingX);
+		const rightMargin = " ".repeat(this.paddingX);
+		const bgFn = this.defaultTextStyle?.bgColor;
+		const contentLines: string[] = [];
+		for (const line of wrappedLines) {
+			if (isImageLine(line)) {
+				contentLines.push(line);
+				continue;
+			}
+
+			const lineWithMargins = leftMargin + line + rightMargin;
+			if (bgFn) {
+				contentLines.push(applyBackgroundToLine(lineWithMargins, width, bgFn));
+			} else {
+				const visibleLen = visibleWidth(lineWithMargins);
+				const paddingNeeded = Math.max(0, width - visibleLen);
+				contentLines.push(lineWithMargins + " ".repeat(paddingNeeded));
+			}
+		}
+		return contentLines;
 	}
 
 	/**

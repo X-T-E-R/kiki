@@ -23,7 +23,7 @@ import {
 import { QueueStrip } from './QueueStrip';
 import { RightRail } from './RightRail';
 import { TerminalPanel } from './TerminalPanel';
-import { Transcript } from './Transcript';
+import { Transcript, useStableForest } from './Transcript';
 import { KikiMark } from './Wordmark';
 import {
   buildPromptContent,
@@ -1791,9 +1791,21 @@ export function SessionView({
   // below lg the rail becomes a fixed overlay (see .app-rail in index.css).
   // The app-level sidebar renders its own backdrop from App.
   const showBackdrop = railIsOverlay && railOpen;
-  const forest = useMemo(
+  const forestRaw = useMemo(
     () => sessionAgentForestFromTranscript(state, agentTranscriptQuery.data),
     [state, agentTranscriptQuery.data],
+  );
+  // Content-stabilized forest: rebuilt per publish above, but identical in
+  // content across streaming deltas — keep the previous object so downstream
+  // derivations (mainTranscriptBlocks) and Transcript's row/page memos are
+  // not broken by unrelated state publishes.
+  const forest = useStableForest(forestRaw);
+  // Main-transcript projection, memoized so unrelated publishes don't rescan
+  // the full block list; per-delta publishes reuse it when blocks/forest are
+  // untouched.
+  const mainTranscriptBlocks = useMemo(
+    () => filterBlocksToDirectChildren(state.blocks, forest, MAIN_AGENT_ID),
+    [state.blocks, forest],
   );
   const selectedNode = selectedAgentId === undefined ? undefined : forest.byId[selectedAgentId];
   const selectedSubagent =
@@ -2114,7 +2126,7 @@ export function SessionView({
       <Transcript
         state={{
           ...state,
-          blocks: filterBlocksToDirectChildren(state.blocks, forest, MAIN_AGENT_ID),
+          blocks: mainTranscriptBlocks,
         }}
         onLoadOlder={handleLoadOlder}
         onResolveApproval={handleResolveApproval}

@@ -188,6 +188,7 @@ export class Agent {
     readonly knownEfforts: string | undefined;
   }> = [];
   private readonly systemPromptContextProvider?: (() => Promise<PreparedSystemPromptContext>) | undefined;
+  private closePromise: Promise<void> | undefined;
 
   constructor(options: AgentOptions) {
     this.type = options.type ?? 'main';
@@ -720,6 +721,44 @@ export class Agent {
       getTools: () => this.tools.data(),
       getBackground: (payload) => this.background.list(payload.activeOnly ?? false, payload.limit),
     };
+  }
+
+  get hasPendingLifecycleWork(): boolean {
+    return (
+      this.background.hasPendingTaskLifecycles ||
+      this.background.hasPendingTerminalEffects ||
+      this.turn.hasPendingWork
+    );
+  }
+
+  /**
+   * Wait for background work, terminal notifications, and any turns they launch
+   * to become quiescent before closing the record persistence. The promise is
+   * idempotent and also serves as the explicit disposal contract for standalone
+   * Agent instances.
+   */
+  close(): Promise<void> {
+    this.closePromise ??= this.closeWhenIdle();
+    return this.closePromise;
+  }
+
+  private async closeWhenIdle(): Promise<void> {
+    // Session-owned agents have already stopped cron before reaching here;
+    // standalone agents need the public close contract to stop future fires.
+    if (this.cron?.isRunning) await this.cron.stop();
+    while (true) {
+      // A task becomes terminal before its persistence and notification setup
+      // finish, so wait for the complete lifecycle rather than only inspecting
+      // the current status snapshot.
+      await this.background.waitForTaskLifecycles();
+      await this.background.waitForTerminalEffects();
+      await this.turn.waitForIdle();
+      if (!this.hasPendingLifecycleWork) break;
+    }
+    // A terminal-notification turn can create cron entries after the initial
+    // stop drained its queue; persist those final mutations before disposal.
+    await this.cron?.flushPersist();
+    await this.records.close();
   }
 
   emitEvent(event: AgentEvent): void {

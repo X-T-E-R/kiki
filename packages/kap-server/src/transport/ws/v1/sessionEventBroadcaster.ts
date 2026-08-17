@@ -28,8 +28,9 @@
  *      an atomic `getSnapshotState` for the snapshot route.
  *
  * A session is activated (journaling starts) on first `subscribe` /
- * `getSnapshotState` / `getCursor` and stays active for the process lifetime so
- * the journal is continuous from first activation onward.
+ * `getSnapshotState` / `getCursor`. Its live listeners, replay tail, and target
+ * slots are evicted when the core session closes; a later resume reopens the
+ * durable journal and reconstructs the live state on demand.
  *
  * Fan-out split: global events ({@link isGlobalEvent} — `session.meta.updated`
  * plus the `event.session.*` / `event.workspace.*` / `event.config.*`
@@ -72,6 +73,7 @@ import {
   ISessionActivityView,
   ISessionInteractionService,
   ISessionIndex,
+  ISessionManager,
   MAIN_AGENT_ID,
   getLiveSessionById,
 } from '@moonshot-ai/agent-core-v2';
@@ -247,8 +249,11 @@ export class SessionEventBroadcaster {
    * per-chunk `AABBCC` stream while every seq and offset still looks valid.
    */
   private readonly pendingStates = new Map<string, Promise<SessionState | undefined>>();
+  /** Session ids whose closing state is being drained and disposed. */
+  private readonly evictions = new Map<string, Promise<void>>();
   private readonly maxBufferSize: number;
   private readonly coreEventSubscription: IDisposable;
+  private readonly sessionLifecycleSubscription: IDisposable;
   private closed = false;
 
   constructor(
@@ -269,6 +274,19 @@ export class SessionEventBroadcaster {
     this.coreEventSubscription = opts.core.accessor
       .get(IEventService)
       .subscribe((event) => this.onCoreEvent(event));
+    const sessionManager = opts.core.accessor.get(ISessionManager);
+    const onClose = sessionManager.onDidCloseSession?.(({ sessionId }) => {
+      this.scheduleSessionEviction(sessionId);
+    });
+    const onArchive = sessionManager.onDidArchiveSession?.(({ sessionId }) => {
+      this.scheduleSessionEviction(sessionId);
+    });
+    this.sessionLifecycleSubscription = {
+      dispose: () => {
+        onClose?.dispose();
+        onArchive?.dispose();
+      },
+    };
   }
 
   /**
@@ -754,7 +772,10 @@ export class SessionEventBroadcaster {
     if (this.closed) return;
     this.closed = true;
     this.coreEventSubscription.dispose();
+    this.sessionLifecycleSubscription.dispose();
+    await Promise.allSettled([...this.evictions.values(), ...this.pendingStates.values()]);
     for (const [sessionId, state] of this.sessions) {
+      await state.queue;
       await disposeSessionState(state);
       // Transcript bindings die with the session stream (its store
       // subscriptions were disposed above; the producer binding goes here).
@@ -763,8 +784,39 @@ export class SessionEventBroadcaster {
     this.sessions.clear();
   }
 
+  private scheduleSessionEviction(sessionId: string): void {
+    if (sessionId === GLOBAL_SESSION_ID || this.evictions.has(sessionId)) return;
+    let tracked: Promise<void>;
+    tracked = this.evictSessionState(sessionId)
+      .catch((error: unknown) => {
+        this.opts.logger?.warn(
+          { sessionId, err: String(error) },
+          'failed to evict closed session event state',
+        );
+      })
+      .finally(() => {
+        if (this.evictions.get(sessionId) === tracked) this.evictions.delete(sessionId);
+      });
+    this.evictions.set(sessionId, tracked);
+  }
+
+  private async evictSessionState(sessionId: string): Promise<void> {
+    const pending = this.pendingStates.get(sessionId);
+    const state = this.sessions.get(sessionId) ?? (pending === undefined ? undefined : await pending);
+    if (state === undefined || this.sessions.get(sessionId) !== state) return;
+
+    // Remove the state before awaiting its queue so global fan-out immediately
+    // stops scanning the dead session and a later activation cannot reuse it.
+    this.sessions.delete(sessionId);
+    await state.queue;
+    await disposeSessionState(state);
+    this.opts.transcriptService?.dropSession(sessionId);
+  }
+
   private ensureState(sessionId: string): Promise<SessionState | undefined> {
     if (this.closed) return Promise.resolve(undefined);
+    const eviction = this.evictions.get(sessionId);
+    if (eviction !== undefined) return eviction.then(() => this.ensureState(sessionId));
     const existing = this.sessions.get(sessionId);
     if (existing !== undefined) return Promise.resolve(existing);
     let pending = this.pendingStates.get(sessionId);

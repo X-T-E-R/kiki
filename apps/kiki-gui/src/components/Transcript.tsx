@@ -13,6 +13,7 @@
  */
 
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { parseMarkdownIntoBlocks } from 'streamdown';
 import { StickToBottom, useStickToBottomContext } from 'use-stick-to-bottom';
 
 import type { ApprovalDecision, QuestionAnswer } from '@moonshot-ai/protocol';
@@ -21,6 +22,7 @@ import { useI18n } from '../i18n';
 import type { I18nKey } from '../i18n/locale';
 import {
   agentChildren,
+  agentForestsEqual,
   type AgentForest,
   type AgentTreeNode,
 } from '../state/agentTree';
@@ -62,7 +64,7 @@ import { KikiMark, Wordmark } from './Wordmark';
  * the O(full-text) re-parse path the lexer benchmarks showed dominating
  * long streams.
  */
-function splitStreamingText(text: string): { prefix: string; tail: string } {
+export function splitStreamingText(text: string): { prefix: string; tail: string } {
   let cut = text.lastIndexOf('\n\n');
   while (cut > 0) {
     const prefix = text.slice(0, cut);
@@ -72,6 +74,52 @@ function splitStreamingText(text: string): { prefix: string; tail: string } {
     cut = text.lastIndexOf('\n\n', cut - 1);
   }
   return { prefix: '', tail: text };
+}
+
+/**
+ * Reference/footnote definitions (`[label]: target`) register document-level
+ * symbols: a definition in one block rewrites inline links in every other
+ * block, so block-local parsing is unsafe when one is present. Same rule as
+ * pi-tui's markdown block cache (packages/pi-tui/src/components/markdown.ts).
+ * Rare in assistant output — the prefix then stays one document.
+ */
+const REFERENCE_DEFINITION_LINE = /^ {0,3}\[[^\n]*\]:/m;
+
+/** Chunks up to this size keep per-delta memo-skip reconciliation short. */
+const STREAMING_SEGMENT_TARGET = 2000;
+
+/**
+ * Split a settled streaming prefix into independently parseable chunks.
+ *
+ * Boundaries come from `parseMarkdownIntoBlocks` (marked's top-level token
+ * boundaries — the same splitter Streamdown itself uses), NOT from character
+ * scanning: a fence (``` or ~~~), a loose list, or a blockquote that spans
+ * blank lines is a single token and therefore never split. Blocks are exact
+ * source slices (they join back to the input verbatim), so small blocks are
+ * coalesced into chunks of up to ~2k chars by plain concatenation, and a
+ * growing stream only ever extends the final chunk — earlier chunk strings
+ * stay referentially stable, which is what makes the per-chunk Markdown
+ * memo effective.
+ *
+ * Reference definitions are the one cross-block construct tokenization
+ * cannot isolate; when present, the whole prefix stays a single chunk (the
+ * pre-segmentation behavior — correct, just slower for that rare stream).
+ */
+export function splitPrefixSegments(prefix: string): string[] {
+  if (REFERENCE_DEFINITION_LINE.test(prefix)) return [prefix];
+  const blocks = parseMarkdownIntoBlocks(prefix);
+  if (blocks.length <= 1) return blocks;
+  const chunks: string[] = [];
+  let chunk = '';
+  for (const block of blocks) {
+    if (chunk !== '' && chunk.length + block.length > STREAMING_SEGMENT_TARGET) {
+      chunks.push(chunk);
+      chunk = '';
+    }
+    chunk += block;
+  }
+  if (chunk !== '') chunks.push(chunk);
+  return chunks;
 }
 
 /**
@@ -158,13 +206,23 @@ const AssistantMessage = memo(function AssistantMessage({ block }: { block: Assi
     () => (streaming ? splitStreamingText(block.text) : { prefix: '', tail: '' }),
     [streaming, block.text],
   );
+  const segments = useMemo(
+    () => (streaming && prefix !== '' ? splitPrefixSegments(prefix) : []),
+    [streaming, prefix],
+  );
   return (
     <div className="anim-enter group/msg relative flex gap-3" title={time.absoluteTime(block.createdAt)}>
       <KikiMark className="mt-[7px] shrink-0" />
       <div className="min-w-0 flex-1">
         {streaming ? (
           <>
-            {prefix !== '' ? <Markdown text={prefix} /> : null}
+            {segments.length > 0 ? (
+              <div className="kiki-md-segments">
+                {segments.map((segment, index) => (
+                  <Markdown key={index} text={segment} preserveEdgeMargins />
+                ))}
+              </div>
+            ) : null}
             <div className="text-[14px] leading-[1.65] break-words whitespace-pre-wrap text-ink">
               {tail}
               <span className="stream-caret font-mono">▍</span>
@@ -805,6 +863,238 @@ function nodeKey(node: DisplayNode): string {
 }
 
 /**
+ * Derived-map identity stabilization: the maps Transcript passes to every
+ * row (childBlocks, agentNames) are rebuilt from a fresh scan each render —
+ * cheap, since the reducer structurally shares unchanged blocks — but the
+ * PREVIOUS map object is returned while every entry is identical, so
+ * memoized rows see referentially stable props across streaming deltas and
+ * only the touched block re-renders. (Render-phase identity cache — the
+ * "latest equal value" pattern; safe here because the transcript subtree is
+ * never rendered concurrently with a conflicting cache writer.)
+ */
+function useStableMap<K, V>(build: () => Map<K, V>): ReadonlyMap<K, V> {
+  const ref = useRef<ReadonlyMap<K, V> | null>(null);
+  const next = build();
+  const prev = ref.current;
+  if (prev !== null && prev.size === next.size) {
+    let identical = true;
+    for (const [key, value] of next) {
+      if (prev.get(key) !== value) {
+        identical = false;
+        break;
+      }
+    }
+    if (identical) return prev;
+  }
+  ref.current = next;
+  return next;
+}
+
+/**
+ * Content-level identity stabilization for the forest prop. SessionView
+ * rebuilds the agent forest from the whole session state on every publish,
+ * so each streaming delta arrives with a fresh — but usually identical —
+ * forest object; without this, the row/page memo comparators' `forest ===`
+ * check fails on every delta and the whole transcript re-renders. Forests
+ * are small (one node per agent), so the equality scan is cheap.
+ */
+export function useStableForest<T extends AgentForest | undefined>(forest: T): T {
+  const ref = useRef<AgentForest | undefined>(undefined);
+  const prev = ref.current;
+  if (
+    (prev === undefined && forest === undefined) ||
+    (prev !== undefined && forest !== undefined && agentForestsEqual(prev, forest))
+  ) {
+    return prev as T;
+  }
+  ref.current = forest;
+  return forest;
+}
+
+function displayNodesEqual(a: DisplayNode, b: DisplayNode): boolean {
+  if (a === b) return true;
+  // groupBlocks rebuilds the ToolGroup wrapper per publish while the tool
+  // blocks inside keep identity — compare element-wise (same rule as
+  // ToolGroupRow's own memo comparator).
+  if (a.kind === 'tool-group' && b.kind === 'tool-group') {
+    return (
+      a.id === b.id &&
+      a.tools.length === b.tools.length &&
+      a.tools.every((tool, index) => tool === b.tools[index])
+    );
+  }
+  return false;
+}
+
+/** Rows per memoized page — small enough that a delta re-renders a cheap
+ * tail slice, large enough that the page list itself stays short. */
+const TRANSCRIPT_PAGE_TARGET = 64;
+
+type TranscriptPageData = { key: string; nodes: DisplayNode[] };
+
+/**
+ * Partition display nodes into referentially stable pages, each keyed by its
+ * first node's id. Page assignment is incremental: appends grow the tail
+ * page up to the target size, prepends (loadOlder) form new front pages
+ * without shifting existing boundaries — so a row's parent page (and its
+ * local UI state, and its already-played enter animation) survives both
+ * streaming deltas and history prepends.
+ */
+function useStablePages(nodes: readonly DisplayNode[]): TranscriptPageData[] {
+  const sizesRef = useRef(new Map<string, number>());
+  const sizes = sizesRef.current;
+  const pages: TranscriptPageData[] = [];
+  let index = 0;
+  while (index < nodes.length) {
+    const startId = nodeKey(nodes[index]!);
+    let size = sizes.get(startId);
+    if (size === undefined) {
+      // New page: stop at the next known page start so prepended history
+      // never swallows an existing page's first node.
+      let nextStart = nodes.length;
+      for (let j = index + 1; j < nodes.length; j += 1) {
+        if (sizes.has(nodeKey(nodes[j]!))) {
+          nextStart = j;
+          break;
+        }
+      }
+      size = Math.min(TRANSCRIPT_PAGE_TARGET, nextStart - index);
+      sizes.set(startId, size);
+    } else {
+      if (index + size > nodes.length) size = nodes.length - index;
+      // Absorb following nodes that no known page claims, up to the target —
+      // this is what lets the tail page grow as blocks stream in.
+      while (
+        size < TRANSCRIPT_PAGE_TARGET &&
+        index + size < nodes.length &&
+        !sizes.has(nodeKey(nodes[index + size]!))
+      ) {
+        size += 1;
+      }
+      sizes.set(startId, size);
+    }
+    pages.push({ key: startId, nodes: nodes.slice(index, index + size) });
+    index += size;
+  }
+  return pages;
+}
+
+type TranscriptRowProps = {
+  node: DisplayNode;
+  readOnly: boolean;
+  approvalShortcutHints: boolean;
+  agentNames: ReadonlyMap<string, string>;
+  childBlocks: ReadonlyMap<string, SubagentBlock>;
+  forest?: AgentForest;
+  onResolveApproval: (
+    approvalId: string,
+    decision: ApprovalDecision,
+    scope?: 'session',
+  ) => Promise<void>;
+  onAnswerQuestion: (questionId: string, answers: Record<string, QuestionAnswer>) => Promise<void>;
+  onDismissQuestion: (questionId: string) => Promise<void>;
+  onCancelQueued?: (promptId: string) => void;
+  onOpenAgent?: (agentId: string) => void;
+};
+
+/**
+ * One transcript row. This memo boundary is what keeps a streaming delta
+ * from re-rendering the whole tree: the reducer preserves block identity
+ * for untouched blocks, so with stable map/callback props a delta re-renders
+ * only the row whose block actually changed.
+ */
+const TranscriptRow = memo(
+  function TranscriptRow({
+    node,
+    readOnly,
+    approvalShortcutHints,
+    agentNames,
+    childBlocks,
+    forest,
+    onResolveApproval,
+    onAnswerQuestion,
+    onDismissQuestion,
+    onCancelQueued,
+    onOpenAgent,
+  }: TranscriptRowProps) {
+    return (
+      <div data-block-id={nodeKey(node)}>
+        {node.kind === 'tool-group' ? (
+          <ToolGroupRow group={node} onOpenAgent={onOpenAgent} />
+        ) : node.kind === 'tool' ? (
+          <ToolCard block={node} onOpenAgent={onOpenAgent} />
+        ) : (
+          <BlockView
+            block={node}
+            onResolveApproval={onResolveApproval}
+            onAnswerQuestion={onAnswerQuestion}
+            onDismissQuestion={onDismissQuestion}
+            onCancelQueued={onCancelQueued}
+            agentNames={agentNames}
+            approvalShortcutHints={approvalShortcutHints}
+            readOnly={readOnly}
+            forest={forest}
+            childBlocks={childBlocks}
+            onOpenAgent={onOpenAgent}
+          />
+        )}
+      </div>
+    );
+  },
+  (prev, next) =>
+    displayNodesEqual(prev.node, next.node) &&
+    prev.readOnly === next.readOnly &&
+    prev.approvalShortcutHints === next.approvalShortcutHints &&
+    prev.agentNames === next.agentNames &&
+    prev.childBlocks === next.childBlocks &&
+    prev.forest === next.forest &&
+    prev.onResolveApproval === next.onResolveApproval &&
+    prev.onAnswerQuestion === next.onAnswerQuestion &&
+    prev.onDismissQuestion === next.onDismissQuestion &&
+    prev.onCancelQueued === next.onCancelQueued &&
+    prev.onOpenAgent === next.onOpenAgent,
+);
+
+type TranscriptPageProps = Omit<TranscriptRowProps, 'node'> & {
+  page: TranscriptPageData;
+};
+
+/**
+ * Memoized page of rows (fragment — no DOM wrapper, so the flex column's
+ * gap and the flat `[data-block-id]` contract are unchanged). This is the
+ * boundary that makes a streaming delta sub-linear: React reconciles ~N/64
+ * page elements whose comparator does pointer comparisons, instead of
+ * re-creating and re-comparing N row elements.
+ */
+const TranscriptPage = memo(
+  function TranscriptPage({ page, ...rowProps }: TranscriptPageProps) {
+    return (
+      <>
+        {page.nodes.map((node) => (
+          <TranscriptRow key={nodeKey(node)} node={node} {...rowProps} />
+        ))}
+      </>
+    );
+  },
+  (prev, next) =>
+    prev.page.key === next.page.key &&
+    prev.page.nodes.length === next.page.nodes.length &&
+    prev.page.nodes.every(
+      (node, index) => displayNodesEqual(node, next.page.nodes[index]!),
+    ) &&
+    prev.readOnly === next.readOnly &&
+    prev.approvalShortcutHints === next.approvalShortcutHints &&
+    prev.agentNames === next.agentNames &&
+    prev.childBlocks === next.childBlocks &&
+    prev.forest === next.forest &&
+    prev.onResolveApproval === next.onResolveApproval &&
+    prev.onAnswerQuestion === next.onAnswerQuestion &&
+    prev.onDismissQuestion === next.onDismissQuestion &&
+    prev.onCancelQueued === next.onCancelQueued &&
+    prev.onOpenAgent === next.onOpenAgent,
+);
+
+/**
  * Jump-to-bottom pill — shown only when the user has scrolled up (codeg's
  * conditional centered pill driven by useStickToBottomContext).
  */
@@ -1000,25 +1290,29 @@ export function Transcript({
   const { t } = useI18n();
   const { blocks, loaded, loadError } = state;
   const nodes = useMemo(() => groupBlocks(blocks), [blocks]);
-  const childBlocks = useMemo(() => {
+  const pages = useStablePages(nodes);
+  // The forest prop is rebuilt per publish upstream; stabilize it by content
+  // so page/row memos survive unrelated deltas (Finding: forest identity).
+  const stableForest = useStableForest(forest);
+  const childBlocks = useStableMap(() => {
     const map = new Map<string, SubagentBlock>();
     for (const block of blocks) {
       if (block.kind === 'subagent') map.set(block.subagentId, block);
     }
     return map;
-  }, [blocks]);
-  const agentNames = useMemo(() => {
+  });
+  const agentNames = useStableMap(() => {
     const map = new Map<string, string>();
     for (const block of blocks) {
       if (block.kind === 'subagent') map.set(block.subagentId, block.name);
     }
-    if (forest !== undefined) {
-      for (const node of Object.values(forest.byId)) {
+    if (stableForest !== undefined) {
+      for (const node of Object.values(stableForest.byId)) {
         if (!map.has(node.agentId)) map.set(node.agentId, node.label);
       }
     }
     return map;
-  }, [blocks, forest]);
+  });
   // y/n acts on the focused card, else the topmost visible pending card
   // (SessionView's resolver); every pending card advertises that shortcut.
   const hasUnresolvedApproval = useMemo(
@@ -1083,28 +1377,21 @@ export function Transcript({
           shell's shared width axis. */}
       <StickToBottom.Content className="mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6 pt-6 pb-[60px]">
         <TopEdge state={state} onLoadOlder={onLoadOlder} />
-        {nodes.map((node) => (
-          <div key={nodeKey(node)} data-block-id={nodeKey(node)}>
-            {node.kind === 'tool-group' ? (
-              <ToolGroupRow group={node} onOpenAgent={onOpenAgent} />
-            ) : node.kind === 'tool' ? (
-              <ToolCard block={node} onOpenAgent={onOpenAgent} />
-            ) : (
-              <BlockView
-                block={node}
-                onResolveApproval={onResolveApproval}
-                onAnswerQuestion={onAnswerQuestion}
-                onDismissQuestion={onDismissQuestion}
-                onCancelQueued={onCancelQueued}
-                agentNames={agentNames}
-                approvalShortcutHints={hasUnresolvedApproval}
-                readOnly={readOnly}
-                forest={forest}
-                childBlocks={childBlocks}
-                onOpenAgent={onOpenAgent}
-              />
-            )}
-          </div>
+        {pages.map((page) => (
+          <TranscriptPage
+            key={page.key}
+            page={page}
+            readOnly={readOnly}
+            approvalShortcutHints={hasUnresolvedApproval}
+            agentNames={agentNames}
+            childBlocks={childBlocks}
+            forest={stableForest}
+            onResolveApproval={onResolveApproval}
+            onAnswerQuestion={onAnswerQuestion}
+            onDismissQuestion={onDismissQuestion}
+            onCancelQueued={onCancelQueued}
+            onOpenAgent={onOpenAgent}
+          />
         ))}
         {showTurnStatus ? <TurnStatusLine startedAt={state.turnStartedAt} /> : null}
         {!state.busy && state.turnTail !== undefined ? <TurnTailLine tail={state.turnTail} /> : null}

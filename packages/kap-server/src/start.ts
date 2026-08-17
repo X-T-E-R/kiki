@@ -19,6 +19,7 @@ import {
   ISessionIndexMirror,
   ICapabilityService,
   IPluginService,
+  IThreadCommunicationService,
   IWorkspaceService,
   KIMI_CODE_PLUGIN_MARKETPLACE_URL,
   logSeed,
@@ -332,33 +333,30 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     logger,
   );
 
-  // Sync the workspace catalog from the legacy session index once at startup,
-  // so sessions created by the v1 TUI surface as workspaces on the very first
-  // /workspaces request. Awaited so the write completes before the server
-  // starts accepting traffic (and before embedding hosts tear the homeDir
-  // down); best-effort: a failure re-surfaces on first access.
-  try {
-    await core.accessor.get(IWorkspaceService).list();
-  } catch (error) {
-    logger.warn(
-      { err: error instanceof Error ? error.message : String(error) },
-      'workspace catalog startup sync failed',
-    );
-  }
+  // Disk-backed catalog/index warmup is deliberately outside the listener's
+  // readiness path. Reads remain authoritative while the session read model is
+  // preparing, and workspace operations join the catalog service's serialized
+  // first-use merge, so serving traffic before this finishes is fail-open.
+  let postListenWarmup: Promise<void> | undefined;
+  const runPostListenWarmup = async (): Promise<void> => {
+    try {
+      await core.accessor.get(IWorkspaceService).list();
+    } catch (error) {
+      logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        'workspace catalog startup sync failed',
+      );
+    }
 
-  // Prepare the session read model before serving traffic (flag-gated; a
-  // no-op when `persistence_minidb_readmodel` is off): opens the query store,
-  // restores the published generation — running the initial projection when
-  // none exists — and starts background reconciliation, so the first request
-  // never pays the open/rebuild cost.
-  try {
-    await core.accessor.get(ISessionIndex).prepare();
-  } catch (error) {
-    logger.warn(
-      { err: error instanceof Error ? error.message : String(error) },
-      'session index prepare failed; falling back to on-demand reads',
-    );
-  }
+    try {
+      await core.accessor.get(ISessionIndex).prepare();
+    } catch (error) {
+      logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        'session index prepare failed; falling back to on-demand reads',
+      );
+    }
+  };
 
   try {
     await ensureExternalDelegationSession(core, externalDelegation);
@@ -417,7 +415,25 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   }
 
   const close = async (): Promise<void> => {
-    await app.close();
+    const closeErrors: unknown[] = [];
+    let appClosing: Promise<void>;
+    try {
+      appClosing = app.close().catch((error) => {
+        closeErrors.push(error);
+        logger.warn({ err: error }, 'http listener close failed; continuing server cleanup');
+      });
+    } catch (error) {
+      closeErrors.push(error);
+      logger.warn({ err: error }, 'http listener close failed; continuing server cleanup');
+      appClosing = Promise.resolve();
+    }
+    try {
+      await core.accessor.get(IThreadCommunicationService).shutdown();
+    } catch (error) {
+      closeErrors.push(error);
+      logger.warn({ err: error }, 'thread communication shutdown failed; continuing server cleanup');
+    }
+    await appClosing;
     configWarningSubscription.dispose();
     pluginChangeSubscription.dispose();
     capabilityInstallSubscription.dispose();
@@ -433,6 +449,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       );
     }
     try {
+      // Warmup may still be projecting into the query store after listen. Let
+      // it settle before disposing Core so close never races an in-flight
+      // projection or workspace-catalog write.
+      await postListenWarmup;
       // Settle session metadata writes first: requests have stopped, and a
       // queued write must land before the mirror flushes its summary and the
       // scope disposal marks the service disposed.
@@ -451,9 +471,17 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       await drainGlobalSearchDisposals();
       await drainQueryStoreDisposals();
       await drainSessionMetadataWrites();
+    } catch (error) {
+      closeErrors.push(error);
     } finally {
-      await registration.release();
+      try {
+        await registration.release();
+      } catch (error) {
+        closeErrors.push(error);
+      }
     }
+    if (closeErrors.length === 1) throw closeErrors[0];
+    if (closeErrors.length > 1) throw new AggregateError(closeErrors, 'server close failed');
   };
 
   const connectionRegistry = new ConnectionRegistry();
@@ -751,6 +779,11 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
 
   const address = app.server.address();
   const boundPort = typeof address === 'object' && address !== null ? address.port : port;
+
+  // Listener readiness is already established. Preserve the historical
+  // workspace-before-index order, but keep both disk scans off the boot path.
+  postListenWarmup = runPostListenWarmup();
+
   // Advertise the actually-bound port (e.g. ephemeral when `port: 0`, or the
   // `port + 1` retry winner) so a status/kill lookup against the instance
   // registry finds the real listener.

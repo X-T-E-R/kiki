@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs';
-import { mkdir, open } from 'node:fs/promises';
+import { mkdir, open, type FileHandle } from 'node:fs/promises';
 import { dirname } from 'pathe';
 
 import { syncDir } from '../../utils/fs';
@@ -50,6 +50,9 @@ export class FileSystemAgentRecordPersistence implements AgentRecordPersistence 
   private shouldClear = false;
   private directorySynced = false;
   private flushPromise: Promise<void> | undefined;
+  private closePromise: Promise<void> | undefined;
+  private fileHandle: FileHandle | undefined;
+  private closed = false;
   private error: unknown;
 
   constructor(
@@ -97,12 +100,14 @@ export class FileSystemAgentRecordPersistence implements AgentRecordPersistence 
   }
 
   append(input: AgentRecord): void {
+    this.throwIfClosed();
     this.throwIfError();
     this.pendingRecords.push(input);
     this.scheduleFlush();
   }
 
   rewrite(records: readonly AgentRecord[]): void {
+    this.throwIfClosed();
     this.throwIfError();
     this.shouldClear = true;
     this.pendingRecords.splice(0, this.pendingRecords.length, ...records);
@@ -122,7 +127,18 @@ export class FileSystemAgentRecordPersistence implements AgentRecordPersistence 
   }
 
   async close(): Promise<void> {
-    await this.flush();
+    if (this.closePromise !== undefined) return this.closePromise;
+
+    this.closed = true;
+    const promise = (async () => {
+      try {
+        await this.flush();
+      } finally {
+        await this.closeFileHandle();
+      }
+    })();
+    this.closePromise = promise;
+    return promise;
   }
 
   private scheduleFlush(): void {
@@ -155,6 +171,10 @@ export class FileSystemAgentRecordPersistence implements AgentRecordPersistence 
     return promise;
   }
 
+  private throwIfClosed(): void {
+    if (this.closed) throw new Error('Agent record persistence is closed');
+  }
+
   private throwIfError(): void {
     // oxlint-disable-next-line typescript-eslint/only-throw-error
     if (this.error !== undefined) throw this.error;
@@ -179,22 +199,35 @@ export class FileSystemAgentRecordPersistence implements AgentRecordPersistence 
 
     const content = writable.map((e) => JSON.stringify(e) + '\n').join('');
     const directory = dirname(this.filePath);
-    await mkdir(directory, { recursive: true });
 
-    const fh = await open(this.filePath, shouldClear ? 'w' : 'a');
     try {
-      if (content.length > 0) {
-        await fh.writeFile(content, 'utf8');
+      await mkdir(directory, { recursive: true });
+      if (shouldClear) {
+        await this.closeFileHandle();
+        this.fileHandle = await open(this.filePath, 'w');
+      } else {
+        this.fileHandle ??= await open(this.filePath, 'a');
       }
-      await fh.sync();
-    } finally {
-      await fh.close();
-    }
 
-    if (!this.directorySynced) {
-      await syncDir(directory);
-      this.directorySynced = true;
+      if (content.length > 0) {
+        await this.fileHandle.writeFile(content, 'utf8');
+      }
+      await this.fileHandle.sync();
+
+      if (!this.directorySynced) {
+        await syncDir(directory);
+        this.directorySynced = true;
+      }
+    } catch (error) {
+      await this.closeFileHandle().catch(() => {});
+      throw error;
     }
+  }
+
+  private async closeFileHandle(): Promise<void> {
+    const fileHandle = this.fileHandle;
+    this.fileHandle = undefined;
+    await fileHandle?.close();
   }
 }
 

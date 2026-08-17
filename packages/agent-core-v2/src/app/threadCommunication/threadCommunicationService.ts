@@ -121,6 +121,10 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   private readonly observedSessions = new Map<string, DisposableStore>();
   private readonly recovery: Promise<void>;
   private readonly detached = new Set<Promise<void>>();
+  private readonly shutdownSignal: Promise<void>;
+  private resolveShutdown!: () => void;
+  private closing = false;
+  private shutdownFlight: Promise<void> | undefined;
 
   constructor(
     @IBootstrapService private readonly bootstrap: IBootstrapService,
@@ -133,6 +137,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   ) {
     super();
     this.hostId = createKimiDeviceId(bootstrap.homeDir);
+    this.shutdownSignal = new Promise((resolve) => {
+      this.resolveShutdown = resolve;
+    });
     this._register(toDisposable(() => {
       for (const store of this.observedSessions.values()) store.dispose();
       this.observedSessions.clear();
@@ -140,6 +147,21 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     this._register(this.followLifecycle(this.sessionManager));
     this.recovery = this.recoverPendingDeliveries();
     void this.recovery.catch(() => {});
+  }
+
+  shutdown(): Promise<void> {
+    this.shutdownFlight ??= this.doShutdown();
+    return this.shutdownFlight;
+  }
+
+  private async doShutdown(): Promise<void> {
+    this.closing = true;
+    this.resolveShutdown();
+    this.dispose();
+    await this.recovery.catch(() => {});
+    while (this.detached.size > 0) {
+      await Promise.all(this.detached);
+    }
   }
 
   async listThreads(input: ListThreadsInput = {}): Promise<ListThreadsResult> {
@@ -332,8 +354,11 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       if (results.some((result) => result.activities.length > 0)) {
         return { threads: results, timedOut: false };
       }
-      if (Date.now() >= deadline) return { threads: results, timedOut: true };
-      await sleep(Math.min(WAIT_POLL_MS, Math.max(0, deadline - Date.now())));
+      if (this.closing || Date.now() >= deadline) return { threads: results, timedOut: true };
+      await Promise.race([
+        sleep(Math.min(WAIT_POLL_MS, Math.max(0, deadline - Date.now()))),
+        this.shutdownSignal,
+      ]);
     }
   }
 
@@ -414,8 +439,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   private async deliverMessage(
     message: AcceptedThreadMessage,
   ): Promise<SendThreadMessageResult['delivery']> {
+    if (this.closing) return 'pending';
     const attempt = await this.mailbox.beginDelivery(message.messageId);
-    if (attempt === undefined) return 'pending';
+    if (attempt === undefined || this.closing) return 'pending';
     try {
       await this.requireThread(message.target);
       const session = await this.sessionManager.resume(message.target.sessionId);
@@ -442,12 +468,14 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         },
       });
       if (handle.state === 'running' || isTerminalPromptState(handle.state)) {
+        if (this.closing) return 'pending';
         const acknowledged = await this.mailbox.acknowledgeDelivery(message.messageId, attempt.attemptId);
         return acknowledged ? 'delivered' : 'pending';
       }
       this.detach(this.acknowledgeWhenLaunched(message, attempt.attemptId, handle));
       return 'pending';
     } catch (error) {
+      if (this.closing) return 'pending';
       await this.recordUndeliverable(message, attempt.attemptId, error);
       return 'undeliverable';
     }
@@ -459,9 +487,14 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     handle: PromptHandle,
   ): Promise<void> {
     try {
-      await Promise.race([handle.launched, handle.completion]);
+      const outcome = await Promise.race([
+        Promise.race([handle.launched, handle.completion]).then(() => 'launched' as const),
+        this.shutdownSignal.then(() => 'shutdown' as const),
+      ]);
+      if (outcome === 'shutdown' || this.closing) return;
       await this.mailbox.acknowledgeDelivery(message.messageId, attemptId);
     } catch (error) {
+      if (this.closing) return;
       await this.recordUndeliverable(message, attemptId, error);
     }
   }
@@ -471,9 +504,10 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     attemptId: string,
     error: unknown,
   ): Promise<void> {
+    if (this.closing) return;
     const reason = error instanceof Error ? error.message : String(error);
     const changed = await this.mailbox.markUndeliverable(message.messageId, attemptId, reason);
-    if (!changed) return;
+    if (!changed || this.closing) return;
     await this.mailbox.appendActivity({
       target: message.target,
       kind: 'message_undeliverable',
@@ -484,9 +518,11 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
 
   private async recoverPendingDeliveries(): Promise<void> {
     await this.config.ready;
+    if (this.closing) return;
     const pending = await this.mailbox.listPendingDeliveries();
+    if (this.closing) return;
     for (const message of pending) {
-      if (!(await this.globalEnabled())) return;
+      if (this.closing || !(await this.globalEnabled())) return;
       await this.deliverMessage(message);
     }
   }
@@ -587,7 +623,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         lifecycle.onDidArchiveSession((event) => {
           const ref = this.refForLifecycleSession(lifecycle, event.sessionId);
           this.detachObservedSession(event.sessionId);
-          if (ref !== undefined) this.detach(this.appendLifecycle(ref, 'archived'));
+          if (!this.closing && ref !== undefined) this.detach(this.appendLifecycle(ref, 'archived'));
         }),
       );
     }
@@ -595,7 +631,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       store.add(
         lifecycle.onDidCloseSession((event) => {
           const ref = this.detachObservedSession(event.sessionId);
-          if (ref === undefined) return;
+          if (this.closing || ref === undefined) return;
           this.detach(this.appendLifecycle(ref, 'closed'));
         }),
       );
@@ -620,6 +656,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     const activity = handle.accessor.get(ISessionActivityView);
     store.add(
       activity.onDidChange((event) => {
+        if (this.closing) return;
         if (event.cause === 'turn_ended') {
           this.detach(this.mailbox.appendActivity({
             target: ref,

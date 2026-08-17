@@ -435,12 +435,21 @@ body {
   line-height: 1.65;
   overflow-wrap: break-word;
 }
-.kiki-md > *:first-child {
+.kiki-md:not(.kiki-md--edges) > *:first-child {
   margin-top: 0;
 }
-.kiki-md > *:last-child {
+.kiki-md:not(.kiki-md--edges) > *:last-child {
   margin-bottom: 0;
 }
+/* Streaming-prefix chunks (splitPrefixSegments in Transcript.tsx) render as
+ * sibling plain-block `.kiki-md--edges` wrappers with their natural edge
+ * margins PRESERVED: the wrappers are unstyled block boxes (no padding,
+ * border, or BFC), so the margins of adjacent chunks' edge blocks collapse
+ * through them exactly as they would between blocks of a single parsed
+ * document (CSS 2.1 margin collapsing — no fixed-gap approximation to
+ * maintain). This works because these typography rules are unlayered and
+ * therefore win over Streamdown's structural utilities (space-y / first-
+ * last-child edge zeroing) wherever an element has a kiki margin. */
 .kiki-md p {
   margin: 0.55em 0;
 }

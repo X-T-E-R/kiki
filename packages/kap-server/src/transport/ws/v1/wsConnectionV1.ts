@@ -19,7 +19,9 @@
  * clients cannot observe it from JS. Any inbound frame proves the peer is
  * alive; after two silent cycles the connection is closed with 1001. The
  * heartbeat can be disabled explicitly for legacy hosts by configuring a
- * zero interval, in which case `server_hello` omits `heartbeat_ms`.
+ * zero interval, in which case `server_hello` omits `heartbeat_ms`. The
+ * outbound path separately terminates slow consumers before queued or
+ * socket-buffered bytes can grow without bound.
  */
 
 import {
@@ -93,6 +95,8 @@ type SessionSubscription = TargetSubscription;
 const DEFAULT_FLUSH_INTERVAL_MS = 16;
 const DEFAULT_MAX_BATCH_SIZE = 64;
 const DEFAULT_HIGH_WATER_MARK_BYTES = 1 << 20; // 1 MiB
+const DEFAULT_MAX_OUTBOUND_BUFFER_BYTES = 4 << 20; // 4 MiB hard cap
+const DEFAULT_MAX_BACKPRESSURE_ROUNDS = 3;
 const DEFAULT_BACKPRESSURE_RETRY_MS = 5;
 const DEFAULT_BACKPRESSURE_MAX_DELAY_MS = 100;
 
@@ -129,6 +133,10 @@ export interface WsConnectionV1Options {
   readonly maxBatchSize?: number;
   /** `socket.bufferedAmount` above which flushing is deferred (backpressure). */
   readonly highWaterMarkBytes?: number;
+  /** Hard cap for queued frames and sustained `socket.bufferedAmount`. */
+  readonly maxOutboundBufferBytes?: number;
+  /** Consecutive over-cap backpressure retries before terminating the peer. */
+  readonly maxBackpressureRounds?: number;
   /** Heartbeat ping cadence; `0` disables it and omits `heartbeat_ms`. */
   readonly heartbeatIntervalMs?: number;
   /** @deprecated Use `heartbeatIntervalMs`; retained for kiki host compatibility. */
@@ -151,6 +159,8 @@ export class WsConnectionV1 implements BroadcastTarget {
   private readonly flushIntervalMs: number;
   private readonly maxBatchSize: number;
   private readonly highWaterMarkBytes: number;
+  private readonly maxOutboundBufferBytes: number;
+  private readonly maxBackpressureRounds: number;
   private readonly heartbeatIntervalMs: number;
   private readonly logger?: JournalLogger;
 
@@ -169,10 +179,14 @@ export class WsConnectionV1 implements BroadcastTarget {
 
   /** Outbound frames awaiting the next flush. */
   private outbound: unknown[] = [];
+  /** Cached serialization for byte accounting and non-coalesced sends. */
+  private outboundSerialized: Array<string | undefined> = [];
+  private outboundBytes = 0;
   private flushTimer?: ReturnType<typeof setTimeout>;
   private backpressureRetryTimer?: ReturnType<typeof setTimeout>;
   /** Epoch ms when the current backpressure deferral started; caps the wait. */
   private backpressureSince?: number;
+  private overLimitBackpressureRounds = 0;
   private readonly terminalAttachments = new Map<string, ISessionTerminalService>();
 
   private heartbeatTimer?: ReturnType<typeof setInterval>;
@@ -195,8 +209,13 @@ export class WsConnectionV1 implements BroadcastTarget {
     this.flushIntervalMs = opts.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS;
     this.maxBatchSize = opts.maxBatchSize ?? DEFAULT_MAX_BATCH_SIZE;
     this.highWaterMarkBytes = opts.highWaterMarkBytes ?? DEFAULT_HIGH_WATER_MARK_BYTES;
+    this.maxOutboundBufferBytes =
+      opts.maxOutboundBufferBytes ?? DEFAULT_MAX_OUTBOUND_BUFFER_BYTES;
+    this.maxBackpressureRounds =
+      opts.maxBackpressureRounds ?? DEFAULT_MAX_BACKPRESSURE_ROUNDS;
     this.heartbeatIntervalMs =
       opts.heartbeatIntervalMs ?? opts.heartbeatMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+    this.lastInboundAt = Date.now();
 
     this.socket.on('message', (data: RawData) => this.onMessage(data));
     this.socket.on('close', () => this.onClose());
@@ -250,6 +269,8 @@ export class WsConnectionV1 implements BroadcastTarget {
 
   private onMessage(data: RawData): void {
     if (this.closed) return;
+    // Any inbound frame proves transport liveness, even if its payload is not understood.
+    this.lastInboundAt = Date.now();
     let frame: InboundFrame;
     try {
       frame = JSON.parse(rawDataToString(data)) as InboundFrame;
@@ -257,8 +278,6 @@ export class WsConnectionV1 implements BroadcastTarget {
       return; // non-JSON frame — drop
     }
     if (typeof frame?.type !== 'string') return;
-    // Any well-formed inbound frame — pongs included — proves the peer is alive.
-    this.lastInboundAt = Date.now();
 
     switch (frame.type) {
       case 'pong':
@@ -773,8 +792,7 @@ export class WsConnectionV1 implements BroadcastTarget {
 
   /** Queue an event delivered through `subscribe` / `subscribe_v2`. */
   private sendSubscribedFrame(msg: unknown): void {
-    if (this.closed) return;
-    this.outbound.push(msg);
+    if (!this.enqueueOutbound(msg)) return;
     if (this.outbound.length >= this.maxBatchSize) {
       // Batch is full — flush now rather than wait for the interval.
       this.flush();
@@ -788,9 +806,25 @@ export class WsConnectionV1 implements BroadcastTarget {
    * immediately, so no later frame can overtake earlier subscription traffic.
    */
   private sendImmediateFrame(msg: unknown): void {
-    if (this.closed) return;
-    this.outbound.push(msg);
+    if (!this.enqueueOutbound(msg)) return;
     this.flush();
+  }
+
+  private enqueueOutbound(msg: unknown): boolean {
+    if (this.closed) return false;
+    const serialized = serializeOutboundFrame(msg);
+    this.outbound.push(msg);
+    this.outboundSerialized.push(serialized.text);
+    this.outboundBytes += serialized.bytes;
+    if (this.outboundBytes > this.maxOutboundBufferBytes) {
+      this.terminateSlowOrSilent('slow_consumer', {
+        cause: 'queued_bytes',
+        queuedBytes: this.outboundBytes,
+        limitBytes: this.maxOutboundBufferBytes,
+      });
+      return false;
+    }
+    return true;
   }
 
   private scheduleFlush(): void {
@@ -807,7 +841,8 @@ export class WsConnectionV1 implements BroadcastTarget {
    * then write the surviving frames to the socket. When the peer is not
    * draining (`bufferedAmount` above the high-water mark) and `force` is not
    * set, defer and keep accumulating — later deltas merge into the queued
-   * ones, so the frame count does not grow while we wait.
+   * ones. Queued bytes have a hard cap, and a socket that remains above that
+   * cap for several retry rounds is terminated as a slow consumer.
    */
   private flush(force = false): void {
     if (this.flushTimer !== undefined) {
@@ -818,6 +853,8 @@ export class WsConnectionV1 implements BroadcastTarget {
     if (this.closed || this.socket.readyState !== this.socket.OPEN) {
       // Socket is gone — drop queued frames rather than send into a dead pipe.
       this.outbound = [];
+      this.outboundSerialized = [];
+      this.outboundBytes = 0;
       return;
     }
 
@@ -826,13 +863,22 @@ export class WsConnectionV1 implements BroadcastTarget {
       return;
     }
     this.backpressureSince = undefined;
+    this.overLimitBackpressureRounds = 0;
 
+    const serializedByFrame = new Map<unknown, string>();
+    for (let i = 0; i < this.outbound.length; i++) {
+      const text = this.outboundSerialized[i];
+      if (text !== undefined) serializedByFrame.set(this.outbound[i], text);
+    }
     const frames = coalesceFrames(this.outbound);
     this.outbound = [];
+    this.outboundSerialized = [];
+    this.outboundBytes = 0;
     for (const frame of frames) {
       if (this.closed || this.socket.readyState !== this.socket.OPEN) return;
       try {
-        this.socket.send(JSON.stringify(frame));
+        const text = serializedByFrame.get(frame) ?? JSON.stringify(frame);
+        if (text !== undefined) this.socket.send(text);
       } catch {
         // best-effort
       }
@@ -842,9 +888,23 @@ export class WsConnectionV1 implements BroadcastTarget {
   private deferForBackpressure(): void {
     const now = Date.now();
     if (this.backpressureSince === undefined) this.backpressureSince = now;
+    if (this.socket.bufferedAmount > this.maxOutboundBufferBytes) {
+      if (this.backpressureRetryTimer === undefined) this.overLimitBackpressureRounds += 1;
+      if (this.overLimitBackpressureRounds >= this.maxBackpressureRounds) {
+        this.terminateSlowOrSilent('slow_consumer', {
+          cause: 'socket_buffered_bytes',
+          socketBufferedBytes: this.socket.bufferedAmount,
+          limitBytes: this.maxOutboundBufferBytes,
+          rounds: this.overLimitBackpressureRounds,
+        });
+        return;
+      }
+    } else {
+      this.overLimitBackpressureRounds = 0;
+    }
     if (now - this.backpressureSince >= DEFAULT_BACKPRESSURE_MAX_DELAY_MS) {
-      // Peer stayed above the watermark too long — force-flush to avoid
-      // starving the stream; the socket layer will buffer or drop.
+      // Moderate pressure still gets a bounded-delay force flush. The hard cap
+      // above prevents that fallback from turning into unbounded socket memory.
       this.flush(true);
       return;
     }
@@ -854,6 +914,30 @@ export class WsConnectionV1 implements BroadcastTarget {
       this.flush();
     }, DEFAULT_BACKPRESSURE_RETRY_MS);
     this.backpressureRetryTimer.unref?.();
+  }
+
+  private terminateSlowOrSilent(
+    reason: 'inbound_silence' | 'slow_consumer',
+    details: Record<string, unknown>,
+  ): void {
+    if (this.closed) return;
+    this.logger?.warn(
+      {
+        connectionId: this.id,
+        remoteAddress: this.remoteAddress,
+        reason,
+        queuedBytes: this.outboundBytes,
+        socketBufferedBytes: this.socket.bufferedAmount,
+        ...details,
+      },
+      'terminating unhealthy websocket connection',
+    );
+    try {
+      this.socket.terminate();
+    } catch {
+      // Cleanup below is authoritative even if the socket implementation throws.
+    }
+    this.onClose();
   }
 
   close(code = 1000, reason?: string): void {
@@ -876,7 +960,13 @@ export class WsConnectionV1 implements BroadcastTarget {
     this.stopHeartbeat();
     if (this.flushTimer !== undefined) clearTimeout(this.flushTimer);
     if (this.backpressureRetryTimer !== undefined) clearTimeout(this.backpressureRetryTimer);
+    this.flushTimer = undefined;
+    this.backpressureRetryTimer = undefined;
     this.outbound = [];
+    this.outboundSerialized = [];
+    this.outboundBytes = 0;
+    this.backpressureSince = undefined;
+    this.overLimitBackpressureRounds = 0;
     this.broadcaster.removeGlobalTarget(this);
     for (const sid of this.subscriptions.keys()) this.broadcaster.unsubscribe(sid, this);
     this.fsWatchBridge?.detachConnection(this);
@@ -886,6 +976,15 @@ export class WsConnectionV1 implements BroadcastTarget {
     }
     this.terminalAttachments.clear();
     // registry removal is handled by registerWsV1 on the socket 'close' event.
+  }
+}
+
+function serializeOutboundFrame(value: unknown): { text?: string; bytes: number } {
+  try {
+    const text = JSON.stringify(value);
+    return { text, bytes: text === undefined ? 0 : Buffer.byteLength(text) };
+  } catch {
+    return { bytes: Number.POSITIVE_INFINITY };
   }
 }
 

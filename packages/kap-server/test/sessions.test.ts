@@ -1145,6 +1145,8 @@ describe('server-v2 /api/v1/sessions', () => {
   });
 
   it('lists the union of legacy split buckets for one workspace, in recency order', async () => {
+    await (server as RunningServer).close();
+    server = undefined;
     // Legacy pre-fold data: one physical directory registered under two
     // spelling variants, with sessions bucketed per minted id.
     const typedRoot = 'C:\\Users\\Foo\\Proj';
@@ -1183,6 +1185,15 @@ describe('server-v2 /api/v1/sessions', () => {
     };
     await seedBucket(typedId, 's-typed', 50);
     await seedBucket(lowerId, 's-lower', 60);
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      debugEndpoints: true,
+    });
+    base = `http://127.0.0.1:${server.port}`;
 
     // The registry merges the two entries; whichever id survives is the
     // representative the client lists by.
@@ -1632,20 +1643,20 @@ describe('server-v2 /api/v1/sessions (minidb read model)', () => {
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
 
-  it('prepares the read model at boot and serves immediate reads', async () => {
-    const status = await getJson<{ state: string; generation?: number }>(
+  it('serves immediate reads while the read model warms after listen', { timeout: 20_000 }, async () => {
+    const initialStatus = await getJson<{ state: string; generation?: number }>(
       '/api/v1/debug/sessionIndex/status',
     );
-    expect(status.body.code).toBe(0);
-    expect(status.body.data.state).toBe('ready');
+    expect(initialStatus.body.code).toBe(0);
+    expect(['uninitialized', 'preparing', 'ready']).toContain(initialStatus.body.data.state);
 
     // A freshly created session lists, counts, and pages without waiting for
-    // the read model — the mutation path never awaited the read model, the
-    // read path folds the mirror queue back in. That fold is best-effort
-    // while a mirror flush is in flight: the flush's batch is only per-shard
-    // atomic and its pending-queue cleanup is not linearized with reads, so a
-    // read landing exactly inside that window can transiently miss (or
-    // double-count) the session — poll instead of sampling once.
+    // warmup to leave the authoritative path or reach the read model. The read
+    // path folds the mirror queue back in, but that fold is best-effort while a
+    // mirror flush is in flight: the flush's batch is only per-shard atomic and
+    // its pending-queue cleanup is not linearized with reads, so a read landing
+    // exactly inside that window can transiently miss (or double-count) the
+    // session — poll instead of sampling once.
     const created = await postJson<SessionWire>('/api/v1/sessions', {
       metadata: { cwd: home as string },
     });

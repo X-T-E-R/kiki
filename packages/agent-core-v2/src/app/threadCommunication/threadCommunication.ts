@@ -115,6 +115,7 @@ export interface IThreadCommunicationService {
   readThread(input: ReadThreadInput): Promise<ReadThreadResult>;
   sendMessage(input: SendThreadMessageInput): Promise<SendThreadMessageResult>;
   waitThreads(input: WaitThreadsInput): Promise<WaitThreadsResult>;
+  shutdown(): Promise<void>;
 
   getWorkspaceOverride(workspaceId: string): Promise<boolean | undefined>;
   setWorkspaceOverride(workspaceId: string, enabled: boolean): Promise<void>;

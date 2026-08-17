@@ -587,10 +587,17 @@ async function truncateForkedSessionAtTurn(
   const mainPersistence = new FileSystemAgentRecordPersistence(
     join(mainAgentDir, 'wire.jsonl'),
   );
-  const mainRecords = await readAgentRecords(mainPersistence);
-  const mainSlice = sliceMainRecordsAtTurn(mainRecords, sourceSessionId, turnIndex);
-  mainPersistence.rewrite(mainSlice.records);
-  await mainPersistence.flush();
+  const mainSlice = await (async () => {
+    try {
+      const mainRecords = await readAgentRecords(mainPersistence);
+      const slice = sliceMainRecordsAtTurn(mainRecords, sourceSessionId, turnIndex);
+      mainPersistence.rewrite(slice.records);
+      await mainPersistence.flush();
+      return slice;
+    } finally {
+      await mainPersistence.close();
+    }
+  })();
 
   const retainedAgents: Record<string, unknown> = {
     main: withAgentHomedir(agents['main'], mainAgentDir),
@@ -686,20 +693,24 @@ async function truncateSubagentAtTime(
 ): Promise<boolean> {
   if (cutoffTime === undefined) return false;
   const persistence = new FileSystemAgentRecordPersistence(join(agentDir, 'wire.jsonl'));
-  const records = await readAgentRecords(persistence);
-  let end = records.length;
-  for (let index = 0; index < records.length; index += 1) {
-    const time = recordTime(records[index]!);
-    if (time !== undefined && time > cutoffTime) {
-      end = index;
-      break;
+  try {
+    const records = await readAgentRecords(persistence);
+    let end = records.length;
+    for (let index = 0; index < records.length; index += 1) {
+      const time = recordTime(records[index]!);
+      if (time !== undefined && time > cutoffTime) {
+        end = index;
+        break;
+      }
     }
+    const retained = records.slice(0, end);
+    if (retained.length === 0) return false;
+    persistence.rewrite(retained);
+    await persistence.flush();
+    return true;
+  } finally {
+    await persistence.close();
   }
-  const retained = records.slice(0, end);
-  if (retained.length === 0) return false;
-  persistence.rewrite(retained);
-  await persistence.flush();
-  return true;
 }
 
 function dropAgentsWithMissingParents(agents: Record<string, unknown>): void {
@@ -890,7 +901,7 @@ async function appendForkedMarkers(state: Record<string, unknown>): Promise<void
   await Promise.all([...paths].map(async (path) => {
     const persistence = new FileSystemAgentRecordPersistence(path);
     persistence.append(record);
-    await persistence.flush();
+    await persistence.close();
   }));
 }
 

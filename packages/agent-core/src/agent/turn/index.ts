@@ -140,6 +140,7 @@ export class TurnFlow {
   private steerBuffer: BufferedSteer[] = [];
   private turnId = -1;
   private activeTurn: 'resuming' | ActiveTurn | null = null;
+  private readonly inFlightTurns = new Set<Promise<TurnEndResult>>();
   private readonly toolCallStartedAt = new Map<
     string,
     { name: string; startedAt: number; traceId: string | undefined }
@@ -233,6 +234,15 @@ export class TurnFlow {
     const turnId = this.allocateTurnId();
     const controller = new AbortController();
     const promise = this.turnWorker(turnId, input, origin, controller.signal);
+    this.inFlightTurns.add(promise);
+    void promise.then(
+      () => {
+        this.inFlightTurns.delete(promise);
+      },
+      () => {
+        this.inFlightTurns.delete(promise);
+      },
+    );
     const firstRequest = createControlledPromise<void>();
     this.activeTurn = {
       turnId,
@@ -309,6 +319,37 @@ export class TurnFlow {
 
   get hasActiveTurn(): boolean {
     return this.activeTurn !== null && this.activeTurn !== 'resuming';
+  }
+
+  get hasPendingWork(): boolean {
+    return (
+      this.hasActiveTurn ||
+      this.inFlightTurns.size > 0 ||
+      this.agent.fullCompaction.isCompacting ||
+      (this.activeTurn !== 'resuming' && this.steerBuffer.length > 0)
+    );
+  }
+
+  async waitForIdle(): Promise<void> {
+    while (true) {
+      if (this.inFlightTurns.size > 0) {
+        await Promise.allSettled([...this.inFlightTurns]);
+        continue;
+      }
+      // `launch()` tracks every live turn above, but retain a defensive wait for
+      // adapters that expose an active turn through `waitForCurrentTurn()`
+      // without using the normal launch path.
+      if (this.hasActiveTurn) {
+        await this.waitForCurrentTurn().catch(() => {});
+        continue;
+      }
+      if (this.agent.fullCompaction.isCompacting) {
+        await this.agent.fullCompaction.waitForIdle();
+        continue;
+      }
+      if (this.activeTurn === 'resuming' || this.steerBuffer.length === 0) return;
+      this.onCompactionFinished();
+    }
   }
 
   private ensureActiveTurn(): ActiveTurn {

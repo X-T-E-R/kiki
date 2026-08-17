@@ -25,6 +25,7 @@ class FakeSocket {
   bufferedAmount = 0;
   sent: string[] = [];
   closeCalls: Array<{ code?: number; reason?: string }> = [];
+  terminateCalls = 0;
   private readonly handlers = new Map<string, Array<(...a: unknown[]) => void>>();
 
   on(event: string, cb: (...a: unknown[]) => void): this {
@@ -45,6 +46,7 @@ class FakeSocket {
   }
 
   terminate(): void {
+    this.terminateCalls += 1;
     this.readyState = this.CLOSED;
     this.emit('close');
   }
@@ -737,6 +739,64 @@ describe('WsConnectionV1 outbound buffer', () => {
     expect(frames).toHaveLength(1);
     expect((frames[0] as { payload: { delta: string } }).payload.delta).toBe('Hello world');
     conn.close();
+  });
+
+  it('terminates when queued outbound bytes exceed the hard cap', () => {
+    const socket = new FakeSocket();
+    const warn = vi.fn();
+    const broadcaster = makeBroadcaster();
+    const removeGlobalTarget = vi.spyOn(broadcaster, 'removeGlobalTarget');
+    const unsubscribe = vi.spyOn(broadcaster, 'unsubscribe');
+    const conn = makeConn(socket, {
+      broadcaster,
+      flushIntervalMs: 1000,
+      highWaterMarkBytes: 10,
+      maxOutboundBufferBytes: 300,
+      logger: { warn },
+    });
+    conn.subscriptions.set('s1', {});
+    socket.sent = [];
+    socket.bufferedAmount = 20;
+
+    conn.send(delta('s1', 'main', 1, 'x'.repeat(1000), 0));
+
+    expect(socket.terminateCalls).toBe(1);
+    expect(socket.readyState).toBe(socket.CLOSED);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'slow_consumer', cause: 'queued_bytes' }),
+      'terminating unhealthy websocket connection',
+    );
+    expect((conn as unknown as { outbound: unknown[] }).outbound).toEqual([]);
+    expect(removeGlobalTarget).toHaveBeenCalledWith(conn);
+    expect(unsubscribe).toHaveBeenCalledWith('s1', conn);
+  });
+
+  it('terminates after sustained socket backpressure above the hard cap', async () => {
+    const socket = new FakeSocket();
+    const warn = vi.fn();
+    const conn = makeConn(socket, {
+      flushIntervalMs: 1,
+      highWaterMarkBytes: 100,
+      maxOutboundBufferBytes: 1024,
+      maxBackpressureRounds: 3,
+      logger: { warn },
+    });
+    socket.sent = [];
+    socket.bufferedAmount = 2048;
+
+    conn.send(delta('s1', 'main', 1, 'slow', 0));
+    await vi.advanceTimersByTimeAsync(11);
+
+    expect(socket.terminateCalls).toBe(1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: 'slow_consumer',
+        cause: 'socket_buffered_bytes',
+        rounds: 3,
+      }),
+      'terminating unhealthy websocket connection',
+    );
+    expect((conn as unknown as { outbound: unknown[] }).outbound).toEqual([]);
   });
 
   it('force-flushes buffered subscription frames on close', () => {
