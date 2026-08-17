@@ -244,6 +244,63 @@ export function agentForestsEqual(a: AgentForest, b: AgentForest): boolean {
   return a.roots.every((root, index) => root.agentId === b.roots[index]?.agentId);
 }
 
+/**
+ * Structurally share an agent forest across roster/live rebuilds. Unchanged
+ * historical branches keep their node references; a changed descendant also
+ * refreshes each ancestor reference so a memoized row can compare only its
+ * node and still know whether any nested row needs new props.
+ */
+export function stabilizeAgentForest(
+  previous: AgentForest | undefined,
+  next: AgentForest,
+): AgentForest {
+  if (previous === undefined || previous === next) return next;
+
+  const byId = createById();
+  const visiting = new Set<string>();
+  const stabilizeNode = (agentId: string): AgentTreeNode | undefined => {
+    const cached = byId[agentId];
+    if (cached !== undefined) return cached;
+    const nextNode = next.byId[agentId];
+    if (nextNode === undefined) return undefined;
+    if (visiting.has(agentId)) {
+      byId[agentId] = nextNode;
+      return nextNode;
+    }
+    visiting.add(agentId);
+    const previousNode = previous.byId[agentId];
+    let descendantsStable = previousNode !== undefined;
+    for (const childId of nextNode.childIds) {
+      const child = stabilizeNode(childId);
+      if (child === undefined || child !== previous.byId[childId]) descendantsStable = false;
+    }
+    visiting.delete(agentId);
+    const stable =
+      previousNode !== undefined &&
+      descendantsStable &&
+      agentTreeNodesEqual(previousNode, nextNode)
+        ? previousNode
+        : nextNode;
+    byId[agentId] = stable;
+    return stable;
+  };
+
+  for (const root of next.roots) stabilizeNode(root.agentId);
+  for (const agentId of Object.keys(next.byId)) stabilizeNode(agentId);
+
+  const roots = next.roots.map((root) => byId[root.agentId]!);
+  const previousIds = Object.keys(previous.byId);
+  const nextIds = Object.keys(next.byId);
+  const allNodesStable =
+    previousIds.length === nextIds.length &&
+    nextIds.every((agentId) => byId[agentId] === previous.byId[agentId]);
+  const rootsStable =
+    roots.length === previous.roots.length &&
+    roots.every((root, index) => root === previous.roots[index]);
+  if (allNodesStable && rootsStable) return previous;
+  return { roots: rootsStable ? previous.roots : roots, byId };
+}
+
 export function buildAgentForest(
   subagentBlocks: readonly AgentLiveSource[],
   roster?: readonly AgentRosterDescriptor[],

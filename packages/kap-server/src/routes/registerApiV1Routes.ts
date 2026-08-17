@@ -77,6 +77,7 @@ export interface RegisterApiV1RoutesOptions {
   readonly enableTerminals?: boolean;
   readonly guiStore: IGuiStoreService;
   readonly onShutdown: () => void;
+  readonly shutdownSignal?: AbortSignal;
   readonly connectionRegistry: IConnectionRegistry;
   readonly broadcaster: SessionEventBroadcaster;
   readonly transcriptService: TranscriptService;
@@ -198,7 +199,11 @@ export async function registerApiV1Routes(
         core,
         transcriptService: opts.transcriptService,
       });
-      registerThreadsRoutes(apiV1 as unknown as Parameters<typeof registerThreadsRoutes>[0], core);
+      registerThreadsRoutes(
+        apiV1 as unknown as Parameters<typeof registerThreadsRoutes>[0],
+        core,
+        opts.shutdownSignal,
+      );
       if (opts.enableShutdown !== false) {
         registerShutdownRoutes(apiV1 as unknown as Parameters<typeof registerShutdownRoutes>[0], {
           onShutdown: opts.onShutdown,

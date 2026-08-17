@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { request as httpRequest } from 'node:http';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -233,6 +234,84 @@ describe('peer-thread routes', () => {
     raw.emit('close');
     await pending;
     expect(response.send).not.toHaveBeenCalled();
+  });
+
+  it('stops real server-side polling when the HTTP client disconnects', { timeout: 15_000 }, async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kap-thread-client-abort-'));
+    await writeFile(join(home, 'config.toml'), '[thread_communication]\nenabled = true\n', 'utf8');
+    let server: RunningServer | undefined;
+    try {
+      server = await startServer({
+        hostIdentity: TEST_HOST_IDENTITY,
+        host: '127.0.0.1',
+        port: 0,
+        homeDir: home,
+        logLevel: 'silent',
+      });
+      const base = `http://127.0.0.1:${server.port}`;
+      const createdResponse = await fetch(`${base}/api/v1/sessions`, {
+        method: 'POST',
+        headers: authHeaders(server, {
+          'content-type': 'application/json',
+          connection: 'close',
+        }),
+        body: JSON.stringify({ metadata: { cwd: home } }),
+      } as never);
+      const created = (await createdResponse.json()) as {
+        code: number;
+        data: { id: string; workspace_id: string };
+      };
+      expect(created.code).toBe(0);
+
+      const service = server.core.accessor.get(IThreadCommunicationService);
+      const realWaitThreads = service.waitThreads.bind(service);
+      let settledWaits = 0;
+      const waitThreads = vi.spyOn(service, 'waitThreads').mockImplementation(async (input) => {
+        try {
+          return await realWaitThreads(input);
+        } finally {
+          settledWaits++;
+        }
+      });
+      const payload = JSON.stringify({
+        threads: [{
+          thread: {
+            host_id: service.hostId,
+            workspace_id: created.data.workspace_id,
+            session_id: created.data.id,
+          },
+        }],
+        timeout_ms: 60_000,
+      });
+      const client = httpRequest(`${base}/api/v1/threads:wait`, {
+        method: 'POST',
+        headers: authHeaders(server, {
+          'content-type': 'application/json',
+          'content-length': String(Buffer.byteLength(payload)),
+          connection: 'close',
+        }),
+      });
+      client.on('error', () => {});
+      client.end(payload);
+
+      await vi.waitFor(
+        () => expect(waitThreads.mock.calls.length).toBeGreaterThanOrEqual(1),
+        { timeout: 5_000 },
+      );
+      expect(waitThreads.mock.calls.every(([input]) => input.timeoutMs === 0)).toBe(true);
+      const abortedAt = performance.now();
+      client.destroy();
+      await vi.waitFor(() => expect(settledWaits).toBeGreaterThanOrEqual(1), { timeout: 5_000 });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const settledCallCount = waitThreads.mock.calls.length;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      expect(performance.now() - abortedAt).toBeLessThan(6_000);
+      expect(waitThreads).toHaveBeenCalledTimes(settledCallCount);
+    } finally {
+      await server?.close();
+      await rm(home, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
+    }
   });
 
   it('wakes a real 60s thread wait before listener close settles', { timeout: 15_000 }, async () => {

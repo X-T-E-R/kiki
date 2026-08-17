@@ -17,6 +17,8 @@ import {
 import { BuiltinAgentProfileLoaderService } from '#/app/agentProfileCatalog/builtinAgentProfileLoaderService';
 import { registerAgentProfile } from '#/app/agentProfileCatalog/contribution';
 import type { ToolCall } from '#/kosong/contract/message';
+import { IModelCatalog } from '#/kosong/model/catalog';
+import { IModelService } from '#/kosong/model/model';
 import { IAgentProfileService, type ResolvedAgentProfile } from '#/agent/profile/profile';
 import { IHostClock } from '#/os/interface/hostClock';
 import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
@@ -184,6 +186,48 @@ describe('AgentProfileService.bind', () => {
     expect(svc.isRunnable()).toBe(true);
     expect(svc.getActiveToolNames()?.length).toBeGreaterThan(0);
     expect(svc.getSystemPrompt()).toContain('Kimi Code CLI');
+  });
+
+  it('resolves a bare default_model through the canonical model entry', async () => {
+    const { profile: svc } = buildContext();
+    const canonicalId = `test-provider/${MOCK_MODEL}`;
+    await ctx.get(IModelService).replaceAll({
+      [canonicalId]: {
+        provider: 'test-provider',
+        model: MOCK_MODEL,
+        maxContextSize: 1_000_000,
+      },
+    });
+    await ctx.get(IConfigService).set('defaultModel', MOCK_MODEL, ConfigTarget.Memory);
+
+    await svc.bind({ profile: DEFAULT_AGENT_PROFILE_NAME });
+
+    expect(svc.data().modelAlias).toBe(MOCK_MODEL);
+    expect(ctx.get(IModelCatalog).get(svc.data().modelAlias!).id).toBe(canonicalId);
+  });
+
+  it('resolves a bare subagent profile model pin through the canonical model entry', async () => {
+    ctx = createTestAgent(
+      sessionService(ISessionAgentProfileCatalog, routedCatalog(MOCK_MODEL)),
+      hostEnvironmentServices(homeDir),
+    );
+    const canonicalId = `test-provider/${MOCK_MODEL}`;
+    await ctx.get(IModelService).replaceAll({
+      [canonicalId]: {
+        provider: 'test-provider',
+        model: MOCK_MODEL,
+        maxContextSize: 1_000_000,
+      },
+    });
+    const svc = ctx.get(IAgentProfileService);
+
+    await svc.bind({ route: 'reviewer.ui-k3' });
+
+    expect(svc.data()).toMatchObject({
+      modelAlias: MOCK_MODEL,
+      lockedModelAlias: MOCK_MODEL,
+    });
+    expect(ctx.get(IModelCatalog).get(svc.data().modelAlias!).id).toBe(canonicalId);
   });
 
   it('admits all six collaboration tools only in the intended builtin profile policies', () => {

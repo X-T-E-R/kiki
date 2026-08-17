@@ -44,6 +44,28 @@ token 泄露时运行 `kimi web rotate-token` 轮换：新 token 立即写入 `s
 `--dangerous-bypass-auth` 会彻底关闭鉴权，任何能访问该端口的人都能控制你的会话、文件系统和 shell。仅在可信网络或自有鉴权代理之后使用，详见 [kimi 命令参考](../reference/kimi-command.md#kimi-web)。
 :::
 
+## 更换 Codex MCP binding 的模型
+
+Codex/Kiki 外部委派安装器会创建带签名的 runtime 目录。手动修改其中的模型设置后，HMAC（用于检测篡改的签名）将不再匹配。请使用已安装的 `kiki-mcp.ps1` launcher 检查并重签 runtime 与 workspace binding，无需删除已委派的会话。
+
+```powershell
+$runtime = '<runtime-dir>'
+$launcher = Join-Path $runtime 'kiki-mcp.ps1'
+
+# 显示 runtime 默认值，以及每个 workspace 的 key、模型、effort 和签名状态。
+& $launcher -RuntimeDir $runtime -ListBindings
+
+# 更改一个现有 workspace binding，并更新新 workspace 使用的默认值。
+& $launcher -RuntimeDir $runtime -ResignBinding '<workspace-key>' `
+  -Model 'kimi-code/kimi-for-coding' -ThinkingEffort 'high'
+
+# 同时把新模型参数应用到所有现有 binding。
+& $launcher -RuntimeDir $runtime -ResignAllBindings `
+  -Model 'kimi-code/kimi-for-coding' -ThinkingEffort 'high'
+```
+
+即使 `runtime.json` 的签名已经过期，`-ListBindings` 仍可运行，因此可以直接诊断手动修改模型造成的问题。重签会校验固定的安装字段与产物哈希，使用当前 Windows 用户受 DPAPI 保护的签名密钥，并在改写 binding 前停止受影响且已登记的 workspace KAP。下次启动 MCP 时，KAP 会把新签名的模型与 thinking effort 应用到持久化的委派会话。指定单个 binding 时，其他现有 workspace 会继续使用各自当前已签名的模型；`-ResignAllBindings` 则会更新全部 binding。
+
 ## 用 API 驱动一个会话
 
 下面用 curl 走一遍最小流程：确认服务状态 → 创建会话 → 订阅事件 → 提交提示词 → 回读历史。示例假设服务跑在默认地址，token 已存入 shell 变量 `TOKEN`。

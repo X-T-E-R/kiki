@@ -56,6 +56,7 @@ import { IHostRequestHeaders } from '#/kosong/model/hostRequestHeaders';
 import { IModelService, type ModelRecord, type ModelsSection } from '#/kosong/model/model';
 import '#/kosong/model/modelService';
 import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
+import { assertValidSubagentModelPool } from '#/session/subagent/configSection';
 
 import { HostRequestHeadersAdapter } from '#/app/kosongConfig/hostRequestHeadersAdapter';
 
@@ -463,6 +464,69 @@ describe('Model assembly (pure data)', () => {
       expect(model.providerType).toBe('my-vendor');
       expect(model.protocol).toBe('openai');
       expect(model.headers).toEqual({ 'User-Agent': 'kimi-test/1.0' });
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it('resolves bare default and secondary-model references to the canonical model id', async () => {
+    const canonicalId = 'axon-message/deepseek-v4-flash';
+    const { host, catalog, models } = createHost({
+      providers: {
+        gateway: { type: 'openai', apiKey: 'sk-test', baseUrl: 'https://example.test/v1' },
+      },
+      defaultModel: 'deepseek-v4-flash',
+      models: {
+        [canonicalId]: {
+          provider: 'gateway',
+          model: 'deepseek-v4-flash',
+          maxContextSize: 128000,
+        },
+      },
+    });
+    try {
+      const model = catalog.get(models.getDefaultModel()!);
+      expect(model.id).toBe(canonicalId);
+      expect(catalog.get(canonicalId)).toBe(model);
+      expect(() => {
+        assertValidSubagentModelPool(
+          {
+            defaultModel: 'deepseek-v4-flash',
+            models: { 'deepseek-v4-flash': 'fast' },
+          },
+          catalog,
+        );
+      }).not.toThrow();
+
+      await expect(catalog.setDefaultModel('deepseek-v4-flash')).resolves.toMatchObject({
+        default_model: canonicalId,
+      });
+      expect(models.getDefaultModel()).toBe(canonicalId);
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it('reports ambiguous bare ids and preserves not-configured errors otherwise', () => {
+    const { host, catalog } = createHost({
+      ...kimiSections,
+      models: {
+        'alpha/shared': { provider: 'kimi', model: 'shared', maxContextSize: 1 },
+        'beta/other': { provider: 'kimi', model: 'shared', maxContextSize: 1 },
+      },
+    });
+    try {
+      expect(() => catalog.get('shared')).toThrowError(
+        expect.objectContaining({
+          message: expect.stringMatching(/alpha\/shared.*beta\/other.*full model id/),
+        }),
+      );
+      expect(() => catalog.get('missing')).toThrow(
+        'Model "missing" is not configured in config.toml.',
+      );
+      expect(() => catalog.get('other/shared')).toThrow(
+        'Model "other/shared" is not configured in config.toml.',
+      );
     } finally {
       host.dispose();
     }

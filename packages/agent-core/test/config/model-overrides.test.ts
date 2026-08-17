@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { effectiveModelAlias } from '#/config/model';
+import { effectiveModelAlias, resolveModelAlias } from '#/config/model';
 import type { ModelAlias } from '#/config/schema';
+import { ProviderManager } from '#/session/provider-manager';
 
 function alias(overrides?: ModelAlias['overrides']): ModelAlias {
   return {
@@ -14,6 +15,54 @@ function alias(overrides?: ModelAlias['overrides']): ModelAlias {
     overrides,
   };
 }
+
+describe('resolveModelAlias', () => {
+  const configured = alias();
+
+  it('resolves an unambiguous bare id through ProviderManager', () => {
+    const manager = new ProviderManager({
+      config: {
+        providers: {
+          'managed:kimi-code': { type: 'kimi', apiKey: 'test-key' },
+        },
+        defaultModel: 'kimi-k2',
+        models: { 'kimi-code/kimi-k2': configured },
+      },
+    });
+
+    expect(manager.resolveProviderConfig('kimi-k2').provider.model).toBe('kimi-k2');
+  });
+
+  it('prefers an exact key over suffix matches', () => {
+    const exact = { ...configured, model: 'exact-wire-model' };
+    const models = {
+      'kimi-k2': exact,
+      'kimi-code/kimi-k2': configured,
+    };
+
+    expect(resolveModelAlias(models, 'kimi-k2')).toEqual({ id: 'kimi-k2', alias: exact });
+  });
+
+  it('rejects ambiguous bare ids with every canonical candidate', () => {
+    const models = {
+      'alpha/kimi-k2': configured,
+      'beta/other': configured,
+    };
+
+    expect(() => resolveModelAlias(models, 'kimi-k2')).toThrowError(
+      expect.objectContaining({
+        message: expect.stringMatching(/alpha\/kimi-k2.*beta\/other.*full model id/),
+      }),
+    );
+  });
+
+  it('does not suffix-match unknown or qualified ids', () => {
+    const models = { 'kimi-code/kimi-k2': configured };
+
+    expect(resolveModelAlias(models, 'missing')).toBeUndefined();
+    expect(resolveModelAlias(models, 'other/kimi-k2')).toBeUndefined();
+  });
+});
 
 describe('effectiveModelAlias', () => {
   it('clamps the input cap to the effective total window without mutating the source', () => {

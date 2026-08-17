@@ -13,6 +13,7 @@ import {
 import { parseConfigString } from '../../src/config/toml';
 import type { KimiConfig, ModelAlias } from '../../src/config/schema';
 import { FLAG_DEFINITIONS, FlagResolver } from '../../src/flags';
+import { ProviderManager } from '../../src/session/provider-manager';
 import {
   resolveAgentCollaborationBinding,
   resolveSubagentBinding,
@@ -130,6 +131,22 @@ describe('applySecondaryModelConfig', () => {
     base.secondaryModel = { model: 'missing', maxContextSize: 1024 };
     const config = applySecondaryModelConfig(base, {});
     expect(config.models?.[SECONDARY_DERIVED_MODEL_ALIAS]).toBeUndefined();
+  });
+
+  it('synthesizes a patched secondary model from a bare model reference', () => {
+    const config = applySecondaryModelConfig(
+      {
+        providers: { p1: { type: 'kimi', apiKey: 'sk-test' } },
+        models: { 'p1/cheap': baseAlias },
+        secondaryModel: { model: 'cheap', maxContextSize: 65536 },
+      },
+      {},
+    );
+
+    expect(config.models?.[SECONDARY_DERIVED_MODEL_ALIAS]).toMatchObject({
+      model: 'cheap-chat',
+      overrides: { maxContextSize: 65536 },
+    });
   });
 
   it('applies the env overrides without touching the on-disk section shape', () => {
@@ -277,6 +294,31 @@ describe('agent collaboration binding resolution', () => {
       .toEqual({ modelAlias: 'profile', thinkingEffort: 'configured-effort', source: 'profile' });
     expect(resolveAgentCollaborationBinding(config, disabled, own, {}, {}))
       .toEqual({ modelAlias: 'configured', thinkingEffort: 'configured-effort', source: 'default' });
+  });
+
+  it('resolves bare agents defaults and profile pins through ProviderManager', () => {
+    const runtimeConfig: KimiConfig = {
+      providers: { p1: { type: 'kimi', apiKey: 'sk-test' } },
+      models: { 'p1/cheap': baseAlias },
+      agents: { defaultSubagentModel: 'cheap' },
+    };
+    const manager = new ProviderManager({ config: runtimeConfig });
+
+    const fromDefault = resolveAgentCollaborationBinding(runtimeConfig, disabled, own, {}, {});
+    const fromProfile = resolveAgentCollaborationBinding(
+      runtimeConfig,
+      disabled,
+      own,
+      {},
+      { modelAlias: 'cheap' },
+    );
+
+    expect(manager.resolveProviderConfig(fromDefault.modelAlias!).provider.model).toBe(
+      'cheap-chat',
+    );
+    expect(manager.resolveProviderConfig(fromProfile.modelAlias!).provider.model).toBe(
+      'cheap-chat',
+    );
   });
 
   it('uses legacy fallback sources only when secondary-model is enabled', () => {

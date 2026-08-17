@@ -1,5 +1,11 @@
+import {
+  resolveModelAlias,
+  type KimiConfig,
+  type ModelAlias,
+  type ProviderConfig,
+  type ProviderType,
+} from '../../config';
 import { Disposable, InstantiationType, registerSingleton } from '../../di';
-import type { KimiConfig, ModelAlias, ProviderConfig, ProviderType } from '../../config';
 import type {
   ModelCatalogItem,
   ProviderCatalogItem,
@@ -85,17 +91,18 @@ export class ModelCatalogService
 
   async setDefaultModel(modelId: string): Promise<SetDefaultModelResponse> {
     const config = await this._readConfig();
-    const alias = config.models?.[modelId];
-    if (alias === undefined) {
+    const resolved = resolveModelAlias(config.models, modelId);
+    if (resolved === undefined) {
       throw new ModelNotFoundError(modelId);
     }
+    const { id: canonicalId, alias } = resolved;
 
-    const updated = await this.core.rpc.setKimiConfig({ defaultModel: modelId });
-    const updatedAlias = updated.models?.[modelId] ?? alias;
+    const updated = await this.core.rpc.setKimiConfig({ defaultModel: canonicalId });
+    const updatedAlias = resolveModelAlias(updated.models, canonicalId)?.alias ?? alias;
     return {
-      default_model: modelId,
+      default_model: canonicalId,
       model: toProtocolModel(
-        modelId,
+        canonicalId,
         updatedAlias,
         this._providerTypeOf(updated, updatedAlias),
       ),

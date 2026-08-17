@@ -20,6 +20,7 @@ import {
   PRINT_MAX_TURNS_DEFAULT,
   PRINT_WAIT_CEILING_S_DEFAULT,
   readWorkspaceAdditionalDirs,
+  resolveModelAlias,
   resolveWorkspaceAdditionalDirs,
   resolveConfigValue,
   type BackgroundConfig,
@@ -988,8 +989,8 @@ export class Session {
     }
     const models = { ...base.models };
     delete models[SECONDARY_DERIVED_MODEL_ALIAS];
-    const pointedModel = config.models?.[secondary.model];
-    if (pointedModel !== undefined) models[secondary.model] = pointedModel;
+    const pointedModel = resolveModelAlias(config.models, secondary.model);
+    if (pointedModel !== undefined) models[pointedModel.id] = pointedModel.alias;
     const derivedModel = config.models?.[SECONDARY_DERIVED_MODEL_ALIAS];
     if (derivedModel !== undefined) models[SECONDARY_DERIVED_MODEL_ALIAS] = derivedModel;
     const next = { ...base, models, secondaryModel: secondary };

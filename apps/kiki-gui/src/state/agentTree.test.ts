@@ -11,6 +11,7 @@ import {
   mergeAgentTranscript,
   prependOlderAgentPage,
   resetAgentHistoryCache,
+  stabilizeAgentForest,
   type AgentLiveSource,
   type AgentRosterDescriptor,
   type AgentTaskItem,
@@ -441,6 +442,49 @@ describe('buildAgentForest', () => {
     );
     expect(done.byId['agent-1']!.status).toBe('completed');
     expect(done.byId['agent-1']!.busy).toBe(false);
+  });
+});
+
+describe('stabilizeAgentForest', () => {
+  const rosterItems = (grandchildStatus: 'running' | 'completed') => [
+    roster({ agentId: 'main', name: 'Main' }),
+    roster({
+      agentId: 'agent-history',
+      parentAgentId: 'main',
+      name: 'Historical',
+      status: 'completed',
+    }),
+    roster({
+      agentId: 'agent-live',
+      parentAgentId: 'main',
+      name: 'Live branch',
+      status: 'running',
+    }),
+    roster({
+      agentId: 'agent-grandchild',
+      parentAgentId: 'agent-live',
+      name: 'Grandchild',
+      status: grandchildStatus,
+    }),
+  ];
+
+  it('returns the previous forest when a rebuild is semantically identical', () => {
+    const previous = buildAgentForest([], rosterItems('running'));
+    expect(stabilizeAgentForest(previous, buildAgentForest([], rosterItems('running')))).toBe(previous);
+  });
+
+  it('shares unaffected history while refreshing the changed branch and its ancestors', () => {
+    const previous = buildAgentForest([], rosterItems('running'));
+    const stable = stabilizeAgentForest(
+      previous,
+      buildAgentForest([], rosterItems('completed')),
+    );
+
+    expect(stable).not.toBe(previous);
+    expect(stable.byId['agent-history']).toBe(previous.byId['agent-history']);
+    expect(stable.byId['agent-grandchild']).not.toBe(previous.byId['agent-grandchild']);
+    expect(stable.byId['agent-live']).not.toBe(previous.byId['agent-live']);
+    expect(stable.byId['main']).not.toBe(previous.byId['main']);
   });
 });
 

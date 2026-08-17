@@ -5,9 +5,11 @@ import type { SkillDescriptor } from '@moonshot-ai/protocol';
 import {
   buildSlashItems,
   classifySlashSubmission,
+  completeSlashTrigger,
   filterSlashItems,
   isSkillActivatable,
   parseSlashDraft,
+  parseSlashTrigger,
   resolveSlashCommand,
 } from './slashCommands';
 
@@ -33,6 +35,51 @@ describe('parseSlashDraft', () => {
     expect(parseSlashDraft('/rev')).toEqual({ query: 'rev', args: '' });
     expect(parseSlashDraft('/review --fix')).toEqual({ query: 'review', args: '--fix' });
     expect(parseSlashDraft('/review   --fix  now ')).toEqual({ query: 'review', args: '--fix  now' });
+  });
+});
+
+describe('parseSlashTrigger / completeSlashTrigger', () => {
+  it('finds leading and whitespace-delimited inline triggers at the caret', () => {
+    expect(parseSlashTrigger('/rev', 4)).toEqual({
+      start: 0,
+      end: 4,
+      query: 'rev',
+      inline: false,
+    });
+    expect(parseSlashTrigger('please /rev the diff', 11)).toEqual({
+      start: 7,
+      end: 11,
+      query: 'rev',
+      inline: true,
+    });
+    expect(parseSlashTrigger('first line\n/rev', 15)).toEqual({
+      start: 11,
+      end: 15,
+      query: 'rev',
+      inline: true,
+    });
+  });
+
+  it('ignores prose slashes, paths, and a caret outside the slash token', () => {
+    expect(parseSlashTrigger('https://example.test', 20)).toBeNull();
+    expect(parseSlashTrigger('use src/lib/file.ts', 12)).toBeNull();
+    expect(parseSlashTrigger('please /review now', 6)).toBeNull();
+  });
+
+  it('replaces only the active inline token and preserves surrounding prose', () => {
+    const text = 'please /rev the diff';
+    const trigger = parseSlashTrigger(text, 11)!;
+    expect(completeSlashTrigger(text, trigger, 'review')).toEqual({
+      text: 'please /review the diff',
+      cursor: 14,
+    });
+
+    const partial = 'before /revTAIL after';
+    const middle = parseSlashTrigger(partial, 11)!;
+    expect(completeSlashTrigger(partial, middle, 'review')).toEqual({
+      text: 'before /review after',
+      cursor: 14,
+    });
   });
 });
 

@@ -12,8 +12,9 @@
 
 import { KimiChatProvider, type ChatProvider, type Message, type Tool } from '@moonshot-ai/kosong';
 
-import { parseFloatEnv } from '#/config/resolve';
 import { resolveThinkingKeep } from '#/config/kimi-env-params';
+import { resolveModelAlias } from '#/config/model';
+import { parseFloatEnv } from '#/config/resolve';
 
 import type { Agent } from '.';
 import type { LLMRequestLogFields } from '../loop';
@@ -95,7 +96,7 @@ export class LlmRequestRecorder {
       betaApi:
         modelAlias === undefined
           ? undefined
-          : this.agent.kimiConfig?.models?.[modelAlias]?.betaApi,
+          : resolveModelAlias(this.agent.kimiConfig?.models, modelAlias)?.alias.betaApi,
       toolSelect: this.agent.toolSelectEnabled,
       systemPromptHash: this.systemPromptHashFor(systemPrompt),
       systemPrompt:

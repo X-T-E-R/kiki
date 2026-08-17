@@ -431,6 +431,34 @@ describe('applyFrame', () => {
     expect(state.cursor.seq).toBe(11);
   });
 
+  it('applies each thinking delta as cumulative streaming text', () => {
+    let state = applySnapshot('session_test', snapshot());
+
+    state = applyFrame(
+      state,
+      frame(
+        { type: 'thinking.delta', turnId: 1, delta: 'think' },
+        { volatile: true, offset: 0 },
+      ),
+    ).state;
+    expect(state.blocks.find((block) => block.kind === 'thinking')).toMatchObject({
+      text: 'think',
+      streaming: true,
+    });
+
+    state = applyFrame(
+      state,
+      frame(
+        { type: 'thinking.delta', turnId: 1, delta: 'ing' },
+        { volatile: true, offset: 5 },
+      ),
+    ).state;
+    expect(state.blocks.find((block) => block.kind === 'thinking')).toMatchObject({
+      text: 'thinking',
+      streaming: true,
+    });
+  });
+
   it('flags a gap when a delta offset is ahead of the local text', () => {
     const state = applySnapshot('session_test', snapshot());
     const result = applyFrame(
@@ -990,6 +1018,45 @@ describe('prompt queue', () => {
     expect(state.busy).toBe(true);
   });
 
+  it('appends a same-text queued echo after the running turn instead of rewriting its prompt', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = applyFrame(
+      state,
+      frame(
+        { type: 'turn.started', turnId: 7, origin: { kind: 'user' }, prompt: 'repeat this' },
+        { seq: 11 },
+      ),
+    ).state;
+    state = applyFrame(
+      state,
+      frame(
+        { type: 'assistant.delta', turnId: 7, delta: 'working' },
+        { volatile: true, offset: 0 },
+      ),
+    ).state;
+
+    state = appendLocalUserMessage(state, {
+      userMessageId: 'm-next',
+      promptId: 'p-next',
+      text: 'repeat this',
+      createdAt: '2026-01-01T00:00:02.000Z',
+      status: 'queued',
+    });
+
+    expect(state.blocks.map((block) => block.kind)).toEqual(['user', 'assistant', 'user']);
+    const users = state.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(users[0]).toMatchObject({
+      id: 'user-turn-7-prompt',
+      promptId: undefined,
+      text: 'repeat this',
+    });
+    expect(users[1]).toMatchObject({
+      id: 'user-m-next',
+      promptId: 'p-next',
+      promptStatus: 'queued',
+    });
+  });
+
   it('does not mint a placeholder when a stale reconcile cleared the echo status', () => {
     // The queued prompt ran and finished before any refresh saw it active;
     // the empty list reconcile clears the chip — turn.started must still not
@@ -1132,6 +1199,63 @@ describe('incrementSubagentToolCount', () => {
     const cards = state.blocks.filter((b) => b.kind === 'subagent');
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({ subagentId: 'agent-x', toolCallCount: 2 });
+  });
+});
+
+describe('preserveCapturedSubagents', () => {
+  it('keeps an unchanged historical card reference and transcript anchor across resync', () => {
+    const snapshotWithAgent = snapshot({
+      messages: {
+        items: [
+          {
+            id: 'm-user',
+            session_id: 'session_test',
+            role: 'user',
+            content: [{ type: 'text', text: 'delegate this' }],
+            created_at: '2026-01-01T00:00:00.000Z',
+          },
+          {
+            id: 'm-assistant',
+            session_id: 'session_test',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'done' }],
+            created_at: '2026-01-01T00:00:02.000Z',
+          },
+        ],
+        has_more: false,
+      },
+      subagents: [
+        {
+          id: 'agent-1',
+          session_id: 'session_test',
+          kind: 'subagent',
+          description: 'Inspect the change',
+          status: 'completed',
+          subagent_phase: 'completed',
+          subagent_type: 'explore',
+          parent_agent_id: 'main',
+          parent_tool_call_id: 'call-1',
+          created_at: '2026-01-01T00:00:01.000Z',
+          completed_at: '2026-01-01T00:00:02.000Z',
+        },
+      ] as never,
+    });
+    const initial = applySnapshot('session_test', snapshotWithAgent);
+    const card = initial.blocks.find(
+      (block): block is import('./transcript').SubagentBlock => block.kind === 'subagent',
+    )!;
+    const previous = {
+      ...initial,
+      blocks: [initial.blocks[0]!, card, initial.blocks[1]!],
+    };
+
+    const preserved = preserveCapturedSubagents(
+      applySnapshot('session_test', snapshotWithAgent),
+      previous,
+    );
+
+    expect(preserved.blocks.map((block) => block.kind)).toEqual(['user', 'subagent', 'assistant']);
+    expect(preserved.blocks[1]).toBe(card);
   });
 });
 

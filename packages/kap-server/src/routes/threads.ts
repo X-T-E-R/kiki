@@ -14,6 +14,8 @@ import {
   type ThreadSummary,
   type ThreadTurn,
   type WaitThreadResult,
+  type WaitThreadsInput,
+  type WaitThreadsResult,
 } from '@moonshot-ai/agent-core-v2';
 
 import { okEnvelope } from '../envelope';
@@ -91,7 +93,11 @@ const threadErrors = {
   [ErrorCode.THREAD_DELIVERY_FAILED]: {},
 } as const;
 
-export function registerThreadsRoutes(app: ThreadsRouteHost, core: Scope): void {
+export function registerThreadsRoutes(
+  app: ThreadsRouteHost,
+  core: Scope,
+  shutdownSignal?: AbortSignal,
+): void {
   const service = core.accessor.get(IThreadCommunicationService);
 
   const list = defineRoute(
@@ -205,18 +211,26 @@ export function registerThreadsRoutes(app: ThreadsRouteHost, core: Scope): void 
       tags: ['threads'],
     },
     async (req, reply) => {
+      const abortableReq = req as typeof req & { readonly raw?: AbortEvents };
+      const abortableReply = reply as typeof reply & { readonly raw?: AbortEvents };
+      const requestAbort = createRequestAbort(
+        abortableReq.raw,
+        abortableReply.raw,
+        shutdownSignal,
+      );
       try {
-        const abortableReq = req as typeof req & { readonly raw?: AbortEvents };
-        const abortableReply = reply as typeof reply & { readonly raw?: AbortEvents };
         const body = req.body;
-        const pending = service.waitThreads({
-          threads: body.threads.map((item) => ({
-            thread: fromRefWire(item.thread),
-            cursor: item.cursor,
-          })),
-          timeoutMs: body.timeout_ms,
-        });
-        const result = await raceRequestAbort(pending, abortableReq.raw, abortableReply.raw);
+        const result = await waitThreadsUntilActivity(
+          service,
+          {
+            threads: body.threads.map((item) => ({
+              thread: fromRefWire(item.thread),
+              cursor: item.cursor,
+            })),
+            timeoutMs: body.timeout_ms,
+          },
+          requestAbort.signal,
+        );
         if (result === undefined) return;
         reply.send(
           okEnvelope(
@@ -228,10 +242,10 @@ export function registerThreadsRoutes(app: ThreadsRouteHost, core: Scope): void 
           ),
         );
       } catch (error) {
-        const abortableReq = req as typeof req & { readonly raw?: AbortEvents };
-        const abortableReply = reply as typeof reply & { readonly raw?: AbortEvents };
-        if (abortableReq.raw?.aborted === true || abortableReply.raw?.destroyed === true) return;
+        if (requestAbort.signal.aborted) return;
         reply.send(mapError(error, req.id));
+      } finally {
+        requestAbort.dispose();
       }
     },
   );
@@ -377,18 +391,66 @@ function toWaitResultWire(result: WaitThreadResult) {
   };
 }
 
-async function raceRequestAbort<T>(
-  pending: Promise<T>,
+const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
+const WAIT_POLL_MS = 200;
+
+function createRequestAbort(
   requestRaw?: AbortEvents,
   replyRaw?: AbortEvents,
+  shutdownSignal?: AbortSignal,
+): { readonly signal: AbortSignal; dispose(): void } {
+  const controller = new AbortController();
+  const abort = (): void => controller.abort();
+  if (
+    requestRaw?.aborted === true ||
+    replyRaw?.destroyed === true ||
+    shutdownSignal?.aborted === true
+  ) {
+    abort();
+  }
+  requestRaw?.once('aborted', abort);
+  replyRaw?.once('close', abort);
+  shutdownSignal?.addEventListener('abort', abort, { once: true });
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      requestRaw?.off('aborted', abort);
+      replyRaw?.off('close', abort);
+      shutdownSignal?.removeEventListener('abort', abort);
+    },
+  };
+}
+
+async function waitThreadsUntilActivity(
+  service: IThreadCommunicationService,
+  input: WaitThreadsInput,
+  signal: AbortSignal,
+): Promise<WaitThreadsResult | undefined> {
+  const deadline = Date.now() + (input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS);
+  let threads = input.threads;
+  for (;;) {
+    const result = await raceAbortSignal(
+      service.waitThreads({ threads, timeoutMs: 0 }),
+      signal,
+    );
+    if (result === undefined) return undefined;
+    if (!result.timedOut || Date.now() >= deadline) return result;
+    threads = result.threads.map((item) => ({ thread: item.thread, cursor: item.cursor }));
+    const remainingMs = deadline - Date.now();
+    if (!(await waitForPoll(Math.min(WAIT_POLL_MS, remainingMs), signal))) return undefined;
+  }
+}
+
+async function raceAbortSignal<T>(
+  pending: Promise<T>,
+  signal: AbortSignal,
 ): Promise<T | undefined> {
-  if (requestRaw?.aborted === true || replyRaw?.destroyed === true) return undefined;
+  if (signal.aborted) return undefined;
   let resolveAbort!: () => void;
   const aborted = new Promise<void>((resolve) => {
     resolveAbort = resolve;
   });
-  requestRaw?.once('aborted', resolveAbort);
-  replyRaw?.once('close', resolveAbort);
+  signal.addEventListener('abort', resolveAbort, { once: true });
   try {
     const result = await Promise.race([
       pending.then((value) => ({ kind: 'result' as const, value })),
@@ -396,7 +458,21 @@ async function raceRequestAbort<T>(
     ]);
     return result.kind === 'result' ? result.value : undefined;
   } finally {
-    requestRaw?.off('aborted', resolveAbort);
-    replyRaw?.off('close', resolveAbort);
+    signal.removeEventListener('abort', resolveAbort);
   }
+}
+
+function waitForPoll(timeoutMs: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve(true);
+    }, timeoutMs);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }

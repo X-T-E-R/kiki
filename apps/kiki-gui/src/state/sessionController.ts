@@ -1,7 +1,8 @@
 /**
  * SessionController — one session's REST snapshot, ordered WS intake, bounded
  * resync quarantine, and user actions. Wire frames are coalesced and reduced on
- * an animation-frame cadence; React sees at most one publication per flush.
+ * an animation-frame cadence, with a microtask fast path for visible thinking;
+ * React sees at most one publication per flush.
  */
 
 import type {
@@ -86,6 +87,11 @@ function childAgentId(frame: SessionEventFrame): string | undefined {
   return agentId;
 }
 
+function isVisibleThinkingDelta(frame: SessionEventFrame): boolean {
+  if (frame.payload.type !== 'thinking.delta') return false;
+  return typeof document === 'undefined' || document.visibilityState !== 'hidden';
+}
+
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof ApiError
     ? error.message
@@ -103,6 +109,9 @@ export class SessionController {
   private readonly listeners = new Set<Listener>();
   private readonly scheduler: PublicationScheduler;
   private frameHandle: unknown = null;
+  /** One microtask per JS turn keeps reasoning visibly incremental without
+   * publishing once per frame in a synchronous high-frequency burst. */
+  private thinkingFlushQueued = false;
   /** Hidden-tab intake: while the document is hidden rAF never fires, so this
    * buffer carries the whole blackout. Bounded by the quarantine limits —
    * overflow drops the buffer and resyncs instead of growing without cap. */
@@ -195,6 +204,20 @@ export class SessionController {
     });
   }
 
+  private scheduleThinkingFlush(): void {
+    if (this.thinkingFlushQueued || this.closed) return;
+    this.thinkingFlushQueued = true;
+    queueMicrotask(() => {
+      this.thinkingFlushQueued = false;
+      if (this.closed) return;
+      if (this.frameHandle !== null) {
+        this.scheduler.cancel(this.frameHandle);
+        this.frameHandle = null;
+      }
+      this.flushFrames();
+    });
+  }
+
   /** Public test seam and fallback for environments without an actual rAF. */
   flushFrames = (): void => {
     if (this.closed) return;
@@ -267,7 +290,8 @@ export class SessionController {
       void this.resync();
       return;
     }
-    this.scheduleFrameFlush();
+    if (isVisibleThinkingDelta(frame)) this.scheduleThinkingFlush();
+    else this.scheduleFrameFlush();
   }
 
   private applyIncomingFrame(frame: SessionEventFrame): void {

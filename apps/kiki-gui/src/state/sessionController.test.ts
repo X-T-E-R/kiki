@@ -189,6 +189,133 @@ describe('SessionController pipeline', () => {
     controller.close();
   });
 
+  it('publishes visible thinking deltas at microtask cadence instead of waiting for rAF', async () => {
+    const { controller, mainPublishes } = await openController();
+
+    controller.handleFrame(
+      frame(
+        { type: 'thinking.delta', turnId: 1, delta: 'one' } as never,
+        { volatile: true, offset: 0 },
+      ),
+    );
+    expect(mainPublishes()).toBe(0);
+    await Promise.resolve();
+    expect(mainPublishes()).toBe(1);
+    expect(
+      controller.getState().blocks.find((block) => block.kind === 'thinking'),
+    ).toMatchObject({ text: 'one', streaming: true });
+
+    controller.handleFrame(
+      frame(
+        { type: 'thinking.delta', turnId: 1, delta: ' two' } as never,
+        { volatile: true, offset: 3 },
+      ),
+    );
+    await Promise.resolve();
+    expect(mainPublishes()).toBe(2);
+    expect(
+      controller.getState().blocks.find((block) => block.kind === 'thinking'),
+    ).toMatchObject({ text: 'one two', streaming: true });
+
+    controller.close();
+  });
+
+  it('replaces an older rAF flush and leaves later frames schedulable', async () => {
+    const { controller, flushAll, mainPublishes } = await openController();
+
+    controller.handleFrame(
+      frame({ type: 'assistant.delta', turnId: 1, delta: 'before' } as never, {
+        volatile: true,
+        offset: 0,
+      }),
+    );
+    controller.handleFrame(
+      frame({ type: 'thinking.delta', turnId: 1, delta: 'fast' } as never, {
+        volatile: true,
+        offset: 0,
+      }),
+    );
+
+    await Promise.resolve();
+    expect(mainPublishes()).toBe(1);
+    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({
+      text: 'before',
+      streaming: true,
+    });
+
+    controller.handleFrame(
+      frame({ type: 'assistant.delta', turnId: 1, delta: ' after' } as never, {
+        volatile: true,
+        offset: 6,
+      }),
+    );
+    flushAll();
+    expect(mainPublishes()).toBe(2);
+    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({
+      text: 'before after',
+      streaming: true,
+    });
+    controller.close();
+  });
+
+  it('coalesces a synchronous thinking burst into one microtask publication', async () => {
+    const { controller, mainPublishes } = await openController();
+
+    controller.handleFrame(
+      frame({ type: 'thinking.delta', turnId: 1, delta: 'a' } as never, {
+        volatile: true,
+        offset: 0,
+      }),
+    );
+    controller.handleFrame(
+      frame({ type: 'thinking.delta', turnId: 1, delta: 'b' } as never, {
+        volatile: true,
+        offset: 1,
+      }),
+    );
+    controller.handleFrame(
+      frame({ type: 'thinking.delta', turnId: 1, delta: 'c' } as never, {
+        volatile: true,
+        offset: 2,
+      }),
+    );
+    expect(mainPublishes()).toBe(0);
+
+    await Promise.resolve();
+
+    expect(mainPublishes()).toBe(1);
+    expect(
+      controller.getState().blocks.find((block) => block.kind === 'thinking'),
+    ).toMatchObject({ text: 'abc', streaming: true });
+    controller.close();
+  });
+
+  it('keeps hidden-tab thinking deltas on the scheduled buffering path', async () => {
+    vi.stubGlobal('document', { visibilityState: 'hidden' });
+    let controller: SessionController | undefined;
+    try {
+      const harness = await openController();
+      controller = harness.controller;
+      controller.handleFrame(
+        frame(
+          { type: 'thinking.delta', turnId: 1, delta: 'hidden' } as never,
+          { volatile: true, offset: 0 },
+        ),
+      );
+
+      await Promise.resolve();
+      expect(harness.mainPublishes()).toBe(0);
+      harness.flushAll();
+      expect(harness.mainPublishes()).toBe(1);
+      expect(
+        controller.getState().blocks.find((block) => block.kind === 'thinking'),
+      ).toMatchObject({ text: 'hidden', streaming: true });
+    } finally {
+      controller?.close();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('coalesced frames preserve wire order across durable barriers', async () => {
     const { controller, flushAll } = await openController();
     controller.handleFrame(
@@ -279,6 +406,55 @@ describe('SessionController pipeline', () => {
     controller.close();
   });
 
+  it('keeps an immediately sent prompt at the tail of a freshly opened session', async () => {
+    const { controller, client } = await openController();
+    client.snapshot.mockResolvedValue(
+      snapshot({
+        messages: {
+          items: [
+            {
+              id: 'm-old-user',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: 'earlier question' }],
+              created_at: '2026-01-01T00:00:00.000Z',
+            },
+            {
+              id: 'm-old-assistant',
+              session_id: 'session_test',
+              role: 'assistant',
+              content: [{ type: 'text', text: 'earlier answer' }],
+              created_at: '2026-01-01T00:00:01.000Z',
+            },
+          ],
+          has_more: false,
+        },
+      }),
+    );
+    await controller.retryOpen();
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: 'p-new',
+      user_message_id: 'm-new',
+      status: 'running',
+      content: [{ type: 'text', text: 'new question' }],
+      created_at: '2026-01-01T00:00:02.000Z',
+    });
+
+    await controller.sendPrompt({ text: 'new question', permissionMode: 'manual' });
+
+    expect(controller.getState().blocks.map((block) => block.kind)).toEqual([
+      'user',
+      'assistant',
+      'user',
+    ]);
+    expect(controller.getState().blocks.at(-1)).toMatchObject({
+      kind: 'user',
+      promptId: 'p-new',
+      text: 'new question',
+    });
+    controller.close();
+  });
+
   it('queues a prompt behind a busy turn and promotes it from the server list', async () => {
     const { controller, client } = await openController();
     client.submitPrompt
@@ -354,7 +530,20 @@ describe('SessionController pipeline', () => {
     await controller.sendPrompt({ text: 'A', permissionMode: 'manual' });
     await controller.sendPrompt({ text: 'B', permissionMode: 'manual' });
     await controller.sendPrompt({ text: 'C', permissionMode: 'manual' });
+    controller.handleFrame(
+      frame(
+        { type: 'assistant.delta', turnId: 1, delta: 'working' } as never,
+        { volatile: true, offset: 0 },
+      ),
+    );
+    flushAll();
     expect(controller.getState().queuedPromptIds).toEqual(['p2', 'p3']);
+    expect(controller.getState().blocks.map((block) => block.kind)).toEqual([
+      'user',
+      'user',
+      'user',
+      'assistant',
+    ]);
 
     // Send now = wire steer: straight at the prompt id, then the follow-up
     // reconcile repaints the queue without the steered prompt.
@@ -389,6 +578,13 @@ describe('SessionController pipeline', () => {
     expect(
       controller.getState().blocks.find((b): b is SteerBlock => b.kind === 'steer' && b.promptId === 'p2'),
     ).toMatchObject({ text: 'B', activePromptId: 'p1' });
+    expect(
+      controller.getState().blocks.map((block) =>
+        block.kind === 'user' || block.kind === 'steer'
+          ? `${block.kind}:${block.promptId}`
+          : block.kind,
+      ),
+    ).toEqual(['user:p1', 'steer:p2', 'user:p3', 'assistant']);
 
     // Clear all: one abort per parked prompt, then the queue drains empty.
     client.listPrompts.mockResolvedValue({ active: item('p1', 'A', 'running', 2), queued: [] });

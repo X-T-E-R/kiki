@@ -56,3 +56,11 @@ failure, then points at the recovery path: re-run the install orchestration, or
 stop the workspace with `-StopWorkspace <key>` and remove the binding directory
 to re-provision it. Re-provisioning abandons the recorded delegated Session;
 bindings are never re-signed automatically.
+
+To change the model or thinking effort without re-provisioning, use the resign
+operations on the launcher script: `-ListBindings` (diagnose signature state,
+works even with a stale runtime HMAC), `-ResignBinding <key> -Model <alias>
+[-ThinkingEffort <value>]` (re-sign one workspace), or `-ResignAllBindings`
+(re-sign every workspace and update the runtime defaults). Resigning keeps the
+delegated Session and every other field of the authority contract intact; only
+the model and thinking effort are re-signed as per-workspace parameters.

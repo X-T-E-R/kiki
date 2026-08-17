@@ -628,17 +628,20 @@ export class AuthSummaryService implements IAuthSummaryService {
   async ensureReady(modelOverride?: string): Promise<void> {
     await this.config.reload();
     const providers = this.providerService.list();
-    const models = this.modelService.list();
-    const modelId = modelOverride ?? this.modelService.getDefaultModel();
-    const configured = modelId === undefined || modelId === '' ? undefined : models[modelId];
+    const requestedModelId = modelOverride ?? this.modelService.getDefaultModel();
+    const modelId =
+      requestedModelId === undefined || requestedModelId === ''
+        ? undefined
+        : this.modelService.resolveId(requestedModelId);
+    const configured = modelId === undefined ? undefined : this.modelService.get(modelId);
     if (Object.keys(providers).length === 0 && !isProviderlessModel(configured)) {
       throw new AuthProvisioningRequiredError();
     }
-    if (modelId === undefined || modelId === '') {
+    if (requestedModelId === undefined || requestedModelId === '') {
       throw new AuthModelNotResolvedError(undefined);
     }
-    if (configured === undefined) {
-      throw new AuthModelNotResolvedError(modelId);
+    if (configured === undefined || modelId === undefined) {
+      throw new AuthModelNotResolvedError(requestedModelId);
     }
 
     const model = effectiveModelConfig(configured);

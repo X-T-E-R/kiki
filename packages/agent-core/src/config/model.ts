@@ -4,7 +4,46 @@ import {
   matchUnknownClaudeProfile,
 } from '@moonshot-ai/kosong/providers/anthropic-profile';
 
+import { ErrorCodes, KimiError } from '../errors';
+
 import type { ModelAlias, ProviderType } from './schema';
+
+export interface ResolvedModelAlias {
+  readonly id: string;
+  readonly alias: ModelAlias;
+}
+
+export function resolveModelAlias(
+  models: Readonly<Record<string, ModelAlias>> | undefined,
+  id: string,
+): ResolvedModelAlias | undefined {
+  const exact = models?.[id];
+  if (exact !== undefined) return { id, alias: exact };
+  if (models === undefined || id.includes('/')) return undefined;
+
+  const candidates = Object.entries(models)
+    .filter(([candidateId, alias]) =>
+      matchesBareModelId(candidateId, id) || matchesBareModelId(alias.model, id),
+    )
+    .toSorted(([left], [right]) => left.localeCompare(right));
+  if (candidates.length === 0) return undefined;
+  if (candidates.length === 1) {
+    const [candidateId, alias] = candidates[0]!;
+    return { id: candidateId, alias };
+  }
+
+  const candidateIds = candidates.map(([candidateId]) => candidateId);
+  const quotedCandidates = candidateIds.map((candidate) => `"${candidate}"`).join(', ');
+  throw new KimiError(
+    ErrorCodes.CONFIG_INVALID,
+    `Model "${id}" matches multiple configured models: ${quotedCandidates}. Use a full model id to disambiguate.`,
+    { details: { model: id, candidates: candidateIds } },
+  );
+}
+
+function matchesBareModelId(value: string | undefined, id: string): boolean {
+  return value === id || value?.endsWith(`/${id}`) === true;
+}
 
 export function effectiveModelAlias(
   alias: ModelAlias,

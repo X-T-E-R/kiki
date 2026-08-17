@@ -414,7 +414,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     app.addHook('onSend', createSecurityHeadersHook({ tls: false }));
   }
 
+  const shutdownController = new AbortController();
   const close = async (): Promise<void> => {
+    shutdownController.abort();
     const closeErrors: unknown[] = [];
     let appClosing: Promise<void>;
     try {
@@ -610,6 +612,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     onShutdown: () => {
       void close().catch((err: unknown) => logger.error({ err }, 'server close failed'));
     },
+    shutdownSignal: shutdownController.signal,
     connectionRegistry,
     broadcaster,
     transcriptService,

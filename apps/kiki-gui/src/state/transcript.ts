@@ -1735,13 +1735,21 @@ function upsertPromptItemBlocks(
     return next;
   }
   const split = splitSystemReminders(text);
-  const placeholderIndex = blocks.findIndex(
-    (block): block is UserBlock =>
-      block.kind === 'user' &&
-      block.userMessageId === undefined &&
-      block.promptId === undefined &&
-      block.text === split.text,
-  );
+  // Only a running prompt can own a turn.started placeholder. A queued local
+  // echo has no turn yet and must append at the current tail; matching an old
+  // anonymous same-text turn would otherwise rewrite that historical block
+  // in place, making the just-sent message appear near the transcript start.
+  // Search from the tail so a current placeholder wins over any older repeat.
+  const placeholderIndex =
+    item.status === 'running'
+      ? blocks.findLastIndex(
+          (block): block is UserBlock =>
+            block.kind === 'user' &&
+            block.userMessageId === undefined &&
+            block.promptId === undefined &&
+            block.text === split.text,
+        )
+      : -1;
   const additions = userAndReminderBlocks({
     id: item.user_message_id,
     text,
@@ -2657,9 +2665,55 @@ export function setTasks(state: SessionViewState, tasks: readonly Task[]): Sessi
   return { ...state, version: state.version + 1, tasks };
 }
 
+function subagentBlocksEqual(a: SubagentBlock, b: SubagentBlock): boolean {
+  return (
+    a.id === b.id &&
+    a.subagentId === b.subagentId &&
+    a.parentAgentId === b.parentAgentId &&
+    a.parentToolCallId === b.parentToolCallId &&
+    a.name === b.name &&
+    a.label === b.label &&
+    a.description === b.description &&
+    a.model === b.model &&
+    a.thinkingEffort === b.thinkingEffort &&
+    a.status === b.status &&
+    a.summary === b.summary &&
+    a.error === b.error &&
+    a.startedAt === b.startedAt &&
+    a.endedAt === b.endedAt &&
+    a.toolCallCount === b.toolCallCount &&
+    a.transcript === b.transcript
+  );
+}
+
+function insertAtReferencePosition(
+  blocks: Block[],
+  reference: readonly Block[],
+  referenceIndex: number,
+  block: SubagentBlock,
+): void {
+  for (let index = referenceIndex + 1; index < reference.length; index += 1) {
+    const anchor = blocks.findIndex((candidate) => candidate.id === reference[index]!.id);
+    if (anchor >= 0) {
+      blocks.splice(anchor, 0, block);
+      return;
+    }
+  }
+  for (let index = referenceIndex - 1; index >= 0; index -= 1) {
+    const anchor = blocks.findIndex((candidate) => candidate.id === reference[index]!.id);
+    if (anchor >= 0) {
+      blocks.splice(anchor + 1, 0, block);
+      return;
+    }
+  }
+  blocks.push(block);
+}
+
 /** Snapshot/resync cannot reconstruct finished child history. Preserve events
  * this client already observed, while letting the fresh snapshot own live
- * status and roster metadata for agents it still reports. */
+ * status and roster metadata for agents it still reports. Historical cards
+ * keep both their object identity and their prior transcript anchor when the
+ * snapshot is semantically unchanged, avoiding resync reorder/remount flashes. */
 export function preserveCapturedSubagents(
   rebuilt: SessionViewState,
   previous: SessionViewState,
@@ -2669,13 +2723,17 @@ export function preserveCapturedSubagents(
   );
   if (captured.length === 0) return rebuilt;
   const capturedById = new Map(captured.map((block) => [block.subagentId, block]));
-  const seen = new Set<string>();
-  const blocks = rebuilt.blocks.map((block) => {
-    if (block.kind !== 'subagent') return block;
-    seen.add(block.subagentId);
+  const fresh = rebuilt.blocks.filter(
+    (block): block is SubagentBlock => block.kind === 'subagent',
+  );
+  const mergedById = new Map<string, SubagentBlock>();
+  for (const block of fresh) {
     const prior = capturedById.get(block.subagentId);
-    if (prior === undefined) return block;
-    return {
+    if (prior === undefined) {
+      mergedById.set(block.subagentId, block);
+      continue;
+    }
+    const merged = {
       ...prior,
       ...block,
       parentAgentId: block.parentAgentId ?? prior.parentAgentId,
@@ -2688,9 +2746,20 @@ export function preserveCapturedSubagents(
       summary: block.summary ?? prior.summary,
       error: block.error ?? prior.error,
     } satisfies SubagentBlock;
-  });
+    mergedById.set(block.subagentId, subagentBlocksEqual(prior, merged) ? prior : merged);
+  }
   for (const prior of captured) {
-    if (!seen.has(prior.subagentId)) blocks.push(prior);
+    if (!mergedById.has(prior.subagentId)) mergedById.set(prior.subagentId, prior);
+  }
+
+  const blocks = rebuilt.blocks.filter((block) => block.kind !== 'subagent') as Block[];
+  for (const prior of captured) {
+    const merged = mergedById.get(prior.subagentId)!;
+    insertAtReferencePosition(blocks, previous.blocks, previous.blocks.indexOf(prior), merged);
+  }
+  for (const block of fresh) {
+    if (capturedById.has(block.subagentId)) continue;
+    insertAtReferencePosition(blocks, rebuilt.blocks, rebuilt.blocks.indexOf(block), block);
   }
   return { ...rebuilt, version: rebuilt.version + 1, blocks };
 }

@@ -174,22 +174,23 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
   }
 
   private entry(id: string): CatalogEntry {
-    const cached = this.cache.get(id);
+    const canonicalId = this.models.resolveId(id) ?? id;
+    const cached = this.cache.get(canonicalId);
     if (cached !== undefined) return cached;
     const trace = new ResolutionTraceCollector();
-    const model = this.buildModel(id, trace);
+    const model = this.buildModel(canonicalId, trace);
     const entry: CatalogEntry = {
       model,
       requester: new ModelRequesterImpl(model, this.protocolRegistry),
       trace,
     };
-    this.cache.set(id, entry);
+    this.cache.set(canonicalId, entry);
     return entry;
   }
 
   inspect(id: string): ModelInspection {
     const { model, trace } = this.entry(id);
-    return assembleModelInspection({ id, model, trace });
+    return assembleModelInspection({ id: model.id, model, trace });
   }
 
   async ping(id: string): Promise<ModelPingResult> {
@@ -263,17 +264,24 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
   }
 
   async setDefaultModel(modelId: string): Promise<SetDefaultModelResponse> {
-    const record = this.models.get(modelId);
+    const canonicalId = this.models.resolveId(modelId);
+    if (canonicalId === undefined) {
+      throw new Error2(
+        ModelCatalogErrors.codes.MODEL_NOT_FOUND,
+        `model ${modelId} does not exist`,
+      );
+    }
+    const record = this.models.get(canonicalId);
     if (record === undefined) {
       throw new Error2(
         ModelCatalogErrors.codes.MODEL_NOT_FOUND,
         `model ${modelId} does not exist`,
       );
     }
-    const model = this.get(modelId);
-    await this.models.setDefaultModel(modelId);
+    const model = this.get(canonicalId);
+    await this.models.setDefaultModel(canonicalId);
     return {
-      default_model: modelId,
+      default_model: canonicalId,
       model: toProtocolModel(model, record, this.providerTypeOf(record)),
     };
   }

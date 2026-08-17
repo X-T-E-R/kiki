@@ -6,9 +6,11 @@
  * `ILogService` — `agent-core-v2` registers its own `ILogService` at Core scope,
  * so the HTTP-layer logger stays a plain pino instance.
  *
- * Output is always newline-delimited JSON (pino's default). The HTTP status is
- * not logged on the access line — every response is HTTP 200 by design, with
- * the business outcome carried in the envelope `code` (see `requestLogging.ts`).
+ * Output is newline-delimited JSON on stderr so desktop hosts that reserve
+ * stdout for process protocols can capture the server log without extra file
+ * coordination. The HTTP status is not logged on the access line — every
+ * response is HTTP 200 by design, with the business outcome carried in the
+ * envelope `code` (see `requestLogging.ts`).
  */
 
 import { pino, type Logger, type LoggerOptions } from 'pino';
@@ -27,5 +29,5 @@ export function createServerLogger(opts: CreateLoggerOptions): ServerLogger {
     base: { name: 'kimi-server-v2' },
     timestamp: pino.stdTimeFunctions.isoTime,
   };
-  return pino(base);
+  return pino(base, process.stderr);
 }

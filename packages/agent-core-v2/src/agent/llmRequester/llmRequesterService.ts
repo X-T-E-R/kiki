@@ -708,8 +708,9 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     const systemPromptHash = fingerprint(input.systemPrompt);
     const overrides = this.config.get<ModelOverrides>('modelOverrides');
     const thinkingConfig = this.config.get<ThinkingConfig>(THINKING_SECTION);
-    const modelConfig =
-      input.modelAlias === undefined ? undefined : this.modelService.get(input.modelAlias);
+    const modelId =
+      input.modelAlias === undefined ? undefined : this.modelService.resolveId(input.modelAlias);
+    const modelConfig = modelId === undefined ? undefined : this.modelService.get(modelId);
     const payload: PayloadOf<typeof llmRequest> = {
       kind: requestKindForRecord(fields),
       provider: input.protocol,

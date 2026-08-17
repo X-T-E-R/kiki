@@ -44,6 +44,28 @@ If you bind the server to a non-loopback address (`--host`), also set the `KIMI_
 `--dangerous-bypass-auth` disables authentication entirely — anyone who can reach the port can control your sessions, file system, and shell. Only use it on trusted networks or behind your own authenticating proxy. See the [kimi command reference](../reference/kimi-command.md#kimi-web).
 :::
 
+## Change a Codex MCP binding model
+
+The Codex/Kiki external-delegation installer creates a signed runtime directory. If you change its model settings by hand, the HMAC (a tamper-detection signature) no longer matches. Use the installed `kiki-mcp.ps1` launcher to inspect and re-sign the runtime and workspace bindings instead of deleting the delegated session.
+
+```powershell
+$runtime = '<runtime-dir>'
+$launcher = Join-Path $runtime 'kiki-mcp.ps1'
+
+# Show the runtime defaults, each workspace key, model, effort, and signature state.
+& $launcher -RuntimeDir $runtime -ListBindings
+
+# Change one existing workspace binding and the defaults used by new workspaces.
+& $launcher -RuntimeDir $runtime -ResignBinding '<workspace-key>' `
+  -Model 'kimi-code/kimi-for-coding' -ThinkingEffort 'high'
+
+# Apply the new model parameters to every existing binding too.
+& $launcher -RuntimeDir $runtime -ResignAllBindings `
+  -Model 'kimi-code/kimi-for-coding' -ThinkingEffort 'high'
+```
+
+`-ListBindings` still works when `runtime.json` has a stale signature, so it can diagnose a manual model edit. Re-signing validates the fixed installation fields and artifact hashes, uses the current Windows user's DPAPI-protected signing keys, and stops any affected recorded workspace KAP before rewriting its binding. On the next MCP launch, KAP applies the newly signed model and thinking effort to the persisted delegated session. A targeted re-sign leaves other existing workspace bindings on their current signed models; `-ResignAllBindings` updates all of them.
+
 ## Drive a session over the API
 
 The minimal flow with curl: check the server → create a session → subscribe to events → submit a prompt → read history back. The examples assume the server runs at the default address and the token is stored in the shell variable `TOKEN`.

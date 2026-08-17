@@ -1,5 +1,12 @@
+import {
+  effectiveModelAlias,
+  resolveModelAlias,
+  type KimiConfig,
+  type ModelAlias,
+  type ProviderConfig,
+  type ProviderType,
+} from '../../config';
 import { createDecorator } from '../../di';
-import { effectiveModelAlias, type KimiConfig, type ModelAlias, type ProviderConfig, type ProviderType } from '../../config';
 import type {
   ModelCatalogItem,
   ProviderCatalogItem,
@@ -111,8 +118,8 @@ function globalDefaultForProvider(
 ): string | undefined {
   const defaultModel = config.defaultModel;
   if (defaultModel === undefined) return undefined;
-  const alias = config.models?.[defaultModel];
-  return alias?.provider === providerId ? defaultModel : undefined;
+  const resolved = resolveModelAlias(config.models, defaultModel);
+  return resolved?.alias.provider === providerId ? resolved.id : undefined;
 }
 
 void IModelCatalogService;

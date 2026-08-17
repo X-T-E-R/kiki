@@ -38,6 +38,8 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const MAX_HTTP_STATUS_LINE_BYTES: usize = 256;
+const MAX_META_RESPONSE_BYTES: usize = 64 * 1024;
+const EXPECTED_SIDECAR_SERVER_VERSION: &str = env!("KIKI_SIDECAR_SERVER_VERSION");
 const TRAY_ID: &str = "main-tray";
 /// Filename (under the kimi home) the desktop backend's stderr is appended to.
 const DESKTOP_BACKEND_LOG_FILE: &str = "desktop-backend.log";
@@ -59,6 +61,16 @@ struct InstanceRecord {
     host: String,
     port: u16,
     started_at: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetaEnvelope {
+    data: MetaData,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetaData {
+    server_version: String,
 }
 
 /// Structured startup failure for the frontend's desktop failure card.
@@ -336,7 +348,21 @@ impl BackendManager {
                         url: format!("http://127.0.0.1:{}", record.port),
                         token,
                     };
-                    if authenticated_probe(record.port, &connection.token) {
+                    if let Ok(server_version) =
+                        authenticated_server_version(record.port, &connection.token)
+                    {
+                        if !sidecar_version_matches(
+                            EXPECTED_SIDECAR_SERVER_VERSION,
+                            &server_version,
+                        ) {
+                            self.discard_backend(&pending);
+                            return Err(pending.monitor.startup_failure(
+                                pending.pid,
+                                format!(
+                                    "reported server version {server_version}, but this desktop bundle expects {EXPECTED_SIDECAR_SERVER_VERSION}. The packaged backend is stale or belongs to a different build; run `pnpm desktop:prepare` and rebuild Kiki."
+                                ),
+                            ));
+                        }
                         self.publish_connection(&pending, &connection);
                         return Ok(connection);
                     }
@@ -943,8 +969,64 @@ fn read_token(home: &Path) -> Result<Option<String>, String> {
     }
 }
 
-fn authenticated_probe(port: u16, token: &str) -> bool {
-    http_request(port, "GET", "/api/v1/meta", token).is_ok()
+fn sidecar_version_matches(expected: &str, actual: &str) -> bool {
+    expected == actual
+}
+
+fn authenticated_server_version(port: u16, token: &str) -> Result<String, String> {
+    let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_millis(500))
+        .map_err(|error| format!("Cannot connect to Kiki backend on port {port}: {error}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .map_err(|error| format!("Cannot configure Kiki backend metadata probe: {error}"))?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(1)))
+        .map_err(|error| format!("Cannot configure Kiki backend metadata probe: {error}"))?;
+
+    let request = format!(
+        "GET /api/v1/meta HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("Cannot write Kiki backend metadata request: {error}"))?;
+
+    let mut response = Vec::new();
+    stream
+        .take((MAX_META_RESPONSE_BYTES + 1) as u64)
+        .read_to_end(&mut response)
+        .map_err(|error| format!("Cannot read Kiki backend metadata response: {error}"))?;
+    if response.len() > MAX_META_RESPONSE_BYTES {
+        return Err("Kiki backend metadata response is unexpectedly large".to_string());
+    }
+    parse_meta_server_version_response(&response)
+}
+
+fn parse_meta_server_version_response(response: &[u8]) -> Result<String, String> {
+    let status_end = response
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .ok_or_else(|| "Kiki backend returned an incomplete metadata status line".to_string())?;
+    match parse_http_status_line(&response[..=status_end]) {
+        StatusLineParse::Complete(200) => {}
+        StatusLineParse::Complete(_) => {
+            return Err("Kiki backend rejected the authenticated metadata request".to_string())
+        }
+        StatusLineParse::Incomplete | StatusLineParse::Invalid => {
+            return Err("Kiki backend returned an invalid metadata status line".to_string())
+        }
+    }
+
+    let header_end = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| "Kiki backend returned incomplete metadata headers".to_string())?;
+    let envelope: MetaEnvelope = serde_json::from_slice(&response[header_end + 4..])
+        .map_err(|error| format!("Kiki backend returned invalid metadata JSON: {error}"))?;
+    if envelope.data.server_version.is_empty() {
+        return Err("Kiki backend metadata omitted server_version".to_string());
+    }
+    Ok(envelope.data.server_version)
 }
 
 fn shutdown_request(connection: &DesktopConnection) -> Result<(), String> {
@@ -1418,6 +1500,22 @@ api_key = "secret-kept"
             parse_http_status_line(&vec![b'x'; MAX_HTTP_STATUS_LINE_BYTES + 1]),
             StatusLineParse::Invalid
         );
+    }
+
+    #[test]
+    fn metadata_probe_extracts_version_and_rejects_incompatible_payloads() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"data\":{\"server_version\":\"0.36.1\"}}";
+        assert_eq!(
+            parse_meta_server_version_response(response).unwrap(),
+            "0.36.1"
+        );
+        assert!(sidecar_version_matches("0.36.1", "0.36.1"));
+        assert!(!sidecar_version_matches("0.36.1", "0.35.0"));
+
+        let missing = b"HTTP/1.1 200 OK\r\n\r\n{\"data\":{}}";
+        assert!(parse_meta_server_version_response(missing).is_err());
+        let rejected = b"HTTP/1.1 401 Unauthorized\r\n\r\n{}";
+        assert!(parse_meta_server_version_response(rejected).is_err());
     }
 
     #[test]

@@ -156,13 +156,13 @@ describe('resolveRuntimeProvider model metadata', () => {
     });
   });
 
-  it('rejects provider model names that are not configured aliases', () => {
-    expect(() =>
+  it('resolves an unambiguous bare provider model name', () => {
+    expect(
       resolveRuntimeProvider({
         config: BASE_CONFIG,
         model: 'kimi-for-coding',
-      }),
-    ).toThrow(/not configured in config.toml/);
+      }).provider.model,
+    ).toBe('kimi-for-coding');
   });
 
   it('throws when no model is selected', () => {

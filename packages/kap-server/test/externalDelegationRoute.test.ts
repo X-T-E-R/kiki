@@ -188,6 +188,41 @@ describe('external delegation Session bootstrap', () => {
     expect(second.data.delegationId).toBe(first.data.delegationId);
   });
 
+  it('applies an operator-updated model binding to an existing delegated Session', async () => {
+    const home = join(root!, 'home-model-update');
+    const workspace = join(root!, 'workspace-model-update');
+    await Promise.all([mkdir(home), mkdir(workspace)]);
+    await writeStubConfig(home);
+    const sessionId = 'session_model_update';
+
+    const initial = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      externalDelegation: authority(sessionId, workspace),
+    });
+    await initial.close();
+
+    const server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      externalDelegation: authority(sessionId, workspace, 'stub-alt', 'low'),
+    });
+    servers.push(server);
+    const base = `http://127.0.0.1:${server.port}`;
+    const status = await getEnvelope<{ model?: string; thinking_level: string }>(
+      server,
+      `${base}/api/v1/sessions/${sessionId}/status`,
+    );
+    expect(status.data).toMatchObject({ model: 'stub-alt', thinking_level: 'low' });
+    expect((await listRoot(server, base, sessionId)).code).toBe(0);
+  });
+
   it('starts without the delegation edge when a persisted Session workspace drifts', async () => {
     const home = join(root!, 'home');
     const workspaceA = join(root!, 'workspace-a');
@@ -286,15 +321,20 @@ describe('external delegation Session bootstrap', () => {
   });
 });
 
-function authority(sessionId: string, workspacePath: string) {
+function authority(
+  sessionId: string,
+  workspacePath: string,
+  modelAlias = 'stub',
+  thinkingEffort = 'high',
+) {
   return {
     principalId: `principal-${sessionId}`,
     sessionId,
     token: `token-${sessionId}`,
     sessionBootstrap: {
       workspacePath,
-      modelAlias: 'stub',
-      thinkingEffort: 'high',
+      modelAlias,
+      thinkingEffort,
       title: `Codex ${sessionId}`,
     },
   };
@@ -343,6 +383,11 @@ async function writeStubConfig(home: string): Promise<void> {
       '[models.stub]',
       'provider = "stub"',
       'model = "stub"',
+      'max_context_size = 1000',
+      '',
+      '[models.stub-alt]',
+      'provider = "stub"',
+      'model = "stub-alt"',
       'max_context_size = 1000',
       '',
     ].join('\n'),

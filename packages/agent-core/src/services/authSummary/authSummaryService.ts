@@ -2,8 +2,8 @@
  * `AuthSummaryService` — implementation of `IAuthSummaryService`.
  */
 
+import { resolveModelAlias, type KimiConfig } from '../../config';
 import { Disposable, InstantiationType, registerSingleton } from '../../di';
-import type { KimiConfig } from '../../config';
 import type { AuthSummary } from '@moonshot-ai/protocol';
 import { createManagedAuthFacade, type ServicesAuthFacade } from '../auth/managedAuth';
 import { IEnvironmentService } from '../environment/environment';
@@ -63,15 +63,16 @@ export class AuthSummaryService
       throw new AuthProvisioningRequiredError();
     }
 
-    const modelId = modelOverride ?? config.defaultModel;
-    if (modelId === undefined || modelId === '') {
+    const requestedModelId = modelOverride ?? config.defaultModel;
+    if (requestedModelId === undefined || requestedModelId === '') {
       throw new AuthModelNotResolvedError(undefined);
     }
 
-    const alias = config.models?.[modelId];
-    if (alias === undefined) {
-      throw new AuthModelNotResolvedError(modelId);
+    const resolved = resolveModelAlias(config.models, requestedModelId);
+    if (resolved === undefined) {
+      throw new AuthModelNotResolvedError(requestedModelId);
     }
+    const { id: modelId, alias } = resolved;
 
     const providerName = alias.provider ?? config.defaultProvider;
     if (providerName === undefined || providerName === '') {

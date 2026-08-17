@@ -37,7 +37,9 @@ import {
 import {
   buildSlashItems,
   classifySlashSubmission,
+  completeSlashTrigger,
   filterSlashItems,
+  parseSlashTrigger,
   type SlashActionId,
   type SlashItem,
 } from '../lib/slashCommands';
@@ -84,7 +86,7 @@ export function resolveSelectedEffort(
 }
 
 type ComposerMenu =
-  | { kind: 'slash'; query: string }
+  | { kind: 'slash'; start: number; end: number; query: string; inline: boolean }
   | { kind: 'mention'; start: number; query: string };
 
 export function Composer({
@@ -246,10 +248,13 @@ export function Composer({
     () => buildSlashItems(skills, { hasSession: sessionId !== undefined }),
     [skills, sessionId],
   );
-  const filteredSlashItems = useMemo(
-    () => (menu?.kind === 'slash' ? filterSlashItems(slashItems, menu.query) : []),
-    [menu, slashItems],
-  );
+  const filteredSlashItems = useMemo(() => {
+    if (menu?.kind !== 'slash') return [];
+    const candidates = menu.inline
+      ? slashItems.filter((item) => item.kind === 'skill')
+      : slashItems;
+    return filterSlashItems(candidates, menu.query);
+  }, [menu, slashItems]);
 
   // Debounced file-picker query (fires only while the mention menu is open).
   useEffect(() => {
@@ -319,15 +324,18 @@ export function Composer({
   /** Accept the highlighted slash item: skills keep composing args, actions run. */
   const acceptSlashItem = (item: SlashItem) => {
     if (item.disabled === true) return;
+    const trigger = menu?.kind === 'slash' ? menu : null;
     setMenu(null);
     if (item.kind === 'skill') {
-      onChange(`/${item.name} `);
-      // Caret to end after the controlled value lands in the DOM.
+      if (trigger === null) return;
+      const completed = completeSlashTrigger(text, trigger, item.name);
+      onChange(completed.text);
+      // Caret to the end of the completed token after the controlled value lands.
       requestAnimationFrame(() => {
         const node = textareaRef.current;
         if (node !== null) {
           node.focus();
-          node.setSelectionRange(node.value.length, node.value.length);
+          node.setSelectionRange(completed.cursor, completed.cursor);
         }
       });
       return;
@@ -460,9 +468,9 @@ export function Composer({
 
   /** Recompute the trigger-driven menu after any text/caret change. */
   const refreshMenu = (nextText: string, cursor: number) => {
-    const slashMatch = /^\/(\S*)$/.exec(nextText);
-    if (slashMatch !== null) {
-      setMenu({ kind: 'slash', query: slashMatch[1] ?? '' });
+    const slashTrigger = parseSlashTrigger(nextText, cursor);
+    if (slashTrigger !== null) {
+      setMenu({ kind: 'slash', ...slashTrigger });
       return;
     }
     if (fsSearch !== undefined) {

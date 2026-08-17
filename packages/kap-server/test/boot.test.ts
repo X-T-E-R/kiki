@@ -27,6 +27,7 @@ import {
 } from '@moonshot-ai/agent-core-v2';
 
 import { listLiveServerInstances } from '../src/instanceRegistry';
+import { createServerLogger } from '../src/services/pinoLoggerService';
 import { listenWithPortRetry, type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authedFetch } from './helpers/auth';
@@ -86,6 +87,23 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
     if (timer !== undefined) clearTimeout(timer);
   }
 }
+
+describe('server logger', () => {
+  it('writes pino output to stderr for desktop log capture', () => {
+    const stderrWrite = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((() => true) as typeof process.stderr.write);
+    try {
+      createServerLogger({ level: 'info' }).info({ probe: true }, 'stderr probe');
+      const output = stderrWrite.mock.calls.map(([chunk]) => String(chunk)).join('');
+      expect(output).toContain('"name":"kimi-server-v2"');
+      expect(output).toContain('"probe":true');
+      expect(output).toContain('"msg":"stderr probe"');
+    } finally {
+      stderrWrite.mockRestore();
+    }
+  });
+});
 
 describe('server-v2 boot', () => {
   let server: RunningServer | undefined;

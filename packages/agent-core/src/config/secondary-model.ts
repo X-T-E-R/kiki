@@ -1,10 +1,12 @@
+import { ErrorCodes, KimiError } from '../errors';
+
+import { resolveModelAlias } from './model';
 import type {
   KimiConfig,
   ModelAlias,
   ModelAliasOverrides,
   SecondaryModelConfig,
 } from './schema';
-import { ErrorCodes, KimiError } from '../errors';
 
 /**
  * Secondary-model runtime overlay.
@@ -94,10 +96,10 @@ export function applySecondaryModelConfig(config: KimiConfig, env: Env = process
   if (patch === undefined || baseId === undefined || baseId === SECONDARY_DERIVED_MODEL_ALIAS) {
     return next;
   }
-  const base = next.models?.[baseId];
-  if (base === undefined) return next;
+  const resolvedBase = resolveModelAlias(next.models, baseId);
+  if (resolvedBase === undefined) return next;
 
-  const { overrides: baseOverrides, ...baseFields } = base;
+  const { overrides: baseOverrides, ...baseFields } = resolvedBase.alias;
   const derived: ModelAlias = {
     ...baseFields,
     overrides: { ...baseOverrides, ...patch },

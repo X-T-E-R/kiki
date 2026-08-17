@@ -43,19 +43,21 @@ function isActiveStatus(status: AgentStatus): boolean {
   return status === 'running' || status === 'suspended' || status === 'background';
 }
 
+interface AgentTreeRowProps {
+  forest: AgentForest;
+  node: AgentTreeNode;
+  depth: number;
+  selectedAgentId: string | undefined;
+  onOpen: (agentId: string) => void;
+}
+
 const AgentTreeRow = memo(function AgentTreeRow({
   forest,
   node,
   depth,
   selectedAgentId,
   onOpen,
-}: {
-  forest: AgentForest;
-  node: AgentTreeNode;
-  depth: number;
-  selectedAgentId: string | undefined;
-  onOpen: (agentId: string) => void;
-}) {
+}: AgentTreeRowProps) {
   const { t, tp } = useI18n();
   const children = agentChildren(forest, node.agentId);
   const hasActiveChild = children.some((child) => isActiveStatus(child.status));
@@ -145,7 +147,13 @@ const AgentTreeRow = memo(function AgentTreeRow({
       </div>
     </li>
   );
-});
+}, (previous, next) =>
+  previous.node === next.node &&
+  previous.depth === next.depth &&
+  (previous.selectedAgentId === previous.node.agentId) ===
+    (next.selectedAgentId === next.node.agentId) &&
+  previous.onOpen === next.onOpen,
+);
 
 export const AgentTreeView = memo(function AgentTreeView({
   forest,

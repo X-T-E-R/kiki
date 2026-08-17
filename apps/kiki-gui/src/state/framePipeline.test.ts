@@ -30,6 +30,16 @@ describe('FrameBuffer', () => {
     expect((frames[0]?.payload as { delta: string }).delta).toBe('hello');
   });
 
+  it('concatenates a cumulative thinking burst without losing the first offset', () => {
+    const buffer = new FrameBuffer();
+    buffer.push(frame({ type: 'thinking.delta', turnId: 1, delta: 'think' }, { volatile: true, offset: 0 }));
+    buffer.push(frame({ type: 'thinking.delta', turnId: 1, delta: 'ing' }, { volatile: true, offset: 5 }));
+    const frames = buffer.drain();
+    expect(frames).toHaveLength(1);
+    expect(frames[0]?.offset).toBe(0);
+    expect((frames[0]?.payload as { delta: string }).delta).toBe('thinking');
+  });
+
   it('keeps offset rewrites as a separate ordered frame', () => {
     const buffer = new FrameBuffer();
     buffer.push(frame({ type: 'assistant.delta', turnId: 1, delta: 'hello' }, { volatile: true, offset: 0 }));

@@ -22,7 +22,7 @@ import { useI18n } from '../i18n';
 import type { I18nKey } from '../i18n/locale';
 import {
   agentChildren,
-  agentForestsEqual,
+  stabilizeAgentForest,
   type AgentForest,
   type AgentTreeNode,
 } from '../state/agentTree';
@@ -892,23 +892,19 @@ function useStableMap<K, V>(build: () => Map<K, V>): ReadonlyMap<K, V> {
 
 /**
  * Content-level identity stabilization for the forest prop. SessionView
- * rebuilds the agent forest from the whole session state on every publish,
- * so each streaming delta arrives with a fresh — but usually identical —
- * forest object; without this, the row/page memo comparators' `forest ===`
- * check fails on every delta and the whole transcript re-renders. Forests
- * are small (one node per agent), so the equality scan is cheap.
+ * rebuilds the agent forest from the whole session state on every publish;
+ * structurally sharing unchanged branches keeps historical roster rows and
+ * transcript cards memo-stable even when a different agent changes.
  */
 export function useStableForest<T extends AgentForest | undefined>(forest: T): T {
   const ref = useRef<AgentForest | undefined>(undefined);
-  const prev = ref.current;
-  if (
-    (prev === undefined && forest === undefined) ||
-    (prev !== undefined && forest !== undefined && agentForestsEqual(prev, forest))
-  ) {
-    return prev as T;
+  if (forest === undefined) {
+    ref.current = undefined;
+    return forest;
   }
-  ref.current = forest;
-  return forest;
+  const stable = stabilizeAgentForest(ref.current, forest);
+  ref.current = stable;
+  return stable as T;
 }
 
 function displayNodesEqual(a: DisplayNode, b: DisplayNode): boolean {
@@ -997,6 +993,19 @@ type TranscriptRowProps = {
   onOpenAgent?: (agentId: string) => void;
 };
 
+function nodeUsesAgentNames(node: DisplayNode): boolean {
+  return node.kind === 'approval' || node.kind === 'question';
+}
+
+function subagentBranchEqual(
+  node: DisplayNode,
+  previousForest: AgentForest | undefined,
+  nextForest: AgentForest | undefined,
+): boolean {
+  if (node.kind !== 'subagent') return true;
+  return previousForest?.byId[node.subagentId] === nextForest?.byId[node.subagentId];
+}
+
 /**
  * One transcript row. This memo boundary is what keeps a streaming delta
  * from re-rendering the whole tree: the reducer preserves block identity
@@ -1045,9 +1054,8 @@ const TranscriptRow = memo(
     displayNodesEqual(prev.node, next.node) &&
     prev.readOnly === next.readOnly &&
     prev.approvalShortcutHints === next.approvalShortcutHints &&
-    prev.agentNames === next.agentNames &&
-    prev.childBlocks === next.childBlocks &&
-    prev.forest === next.forest &&
+    (!nodeUsesAgentNames(prev.node) || prev.agentNames === next.agentNames) &&
+    subagentBranchEqual(prev.node, prev.forest, next.forest) &&
     prev.onResolveApproval === next.onResolveApproval &&
     prev.onAnswerQuestion === next.onAnswerQuestion &&
     prev.onDismissQuestion === next.onDismissQuestion &&
@@ -1084,9 +1092,8 @@ const TranscriptPage = memo(
     ) &&
     prev.readOnly === next.readOnly &&
     prev.approvalShortcutHints === next.approvalShortcutHints &&
-    prev.agentNames === next.agentNames &&
-    prev.childBlocks === next.childBlocks &&
-    prev.forest === next.forest &&
+    (!prev.page.nodes.some(nodeUsesAgentNames) || prev.agentNames === next.agentNames) &&
+    prev.page.nodes.every((node) => subagentBranchEqual(node, prev.forest, next.forest)) &&
     prev.onResolveApproval === next.onResolveApproval &&
     prev.onAnswerQuestion === next.onAnswerQuestion &&
     prev.onDismissQuestion === next.onDismissQuestion &&

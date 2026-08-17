@@ -707,7 +707,7 @@ describe('Session agentfile wiring', () => {
         defaultProvider: 'test',
         defaultModel: MOCK_PROVIDER.model,
         models: {
-          [MOCK_PROVIDER.model]: {
+          [`test/${MOCK_PROVIDER.model}`]: {
             provider: 'test',
             model: MOCK_PROVIDER.model,
             maxContextSize: 1_000_000,

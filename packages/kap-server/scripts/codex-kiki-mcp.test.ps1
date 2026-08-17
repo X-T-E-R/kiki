@@ -140,12 +140,11 @@ try {
   [IO.File]::WriteAllText($bindingPath, $originalBindingText, [Text.UTF8Encoding]::new($false))
 
   $driftedBinding = $originalBindingText | ConvertFrom-Json
-  $driftedBinding.model = 'model-drifted'
-  $driftedBinding.thinkingEffort = 'low'
+  $driftedBinding.configPath = Join-Path $testRoot 'other-config.toml'
   Write-JsonFile $bindingPath $driftedBinding
   Assert-ThrowsLike {
     Get-OrCreateWorkspaceBinding $canonicalA $keyA $install | Out-Null
-  } "drifted fields: .*model: expected 'model-test' \(actual 'model-drifted'\).*thinkingEffort: expected 'high' \(actual 'low'\).*re-run that install step" 'drifted workspace metadata did not name the drifted fields'
+  } 'drifted fields: .*configPath: expected .*Run -ResignBinding .*For other fields, re-run' 'drifted workspace metadata did not name the drifted field and recovery path'
   [IO.File]::WriteAllText($bindingPath, $originalBindingText, [Text.UTF8Encoding]::new($false))
 
   $bindingRecord = Get-OrCreateWorkspaceBinding $canonicalA $keyA $install
@@ -515,6 +514,92 @@ try {
     portRangeEnd = [int]$portWindow.end
   }
   $bindingRecordCli = Get-OrCreateWorkspaceBinding $canonicalCli $keyCli $cliInstall
+  $workspaceCliOther = Join-Path $testRoot 'workspace-cli-other'
+  New-Item -ItemType Directory -Path $workspaceCliOther | Out-Null
+  $canonicalCliOther = Get-CanonicalDirectory $workspaceCliOther $nodePath 'workspace cli other'
+  $keyCliOther = Get-WorkspaceKey $canonicalCliOther
+  $bindingRecordCliOther = Get-OrCreateWorkspaceBinding `
+    $canonicalCliOther $keyCliOther $cliInstall
+
+  $bindingListOutput = (& $pwshExe -NoProfile -File $cliLauncherPath `
+    -RuntimeDir $cliRoot -ListBindings)
+  Assert-True ($LASTEXITCODE -eq 0) 'the binding listing failed for valid records'
+  $bindingList = ((@($bindingListOutput) -join "`n") | ConvertFrom-Json)
+  Assert-True ($bindingList.runtime.signatureValid -eq $true) 'the binding listing marked valid runtime metadata invalid'
+  Assert-True (@($bindingList.bindings).Count -eq 2) 'the binding listing did not include both bindings'
+  Assert-True (
+    @($bindingList.bindings | Where-Object { $_.signatureValid -ne $true }).Count -eq 0
+  ) 'the binding listing marked a valid binding signature invalid'
+
+  $staleRuntime = Get-Content -LiteralPath (Join-Path $cliRoot 'runtime.json') -Raw |
+    ConvertFrom-Json
+  $staleRuntime.defaultModel = 'model-manual-edit'
+  $staleRuntime.defaultThinkingEffort = 'medium'
+  Write-JsonFile (Join-Path $cliRoot 'runtime.json') $staleRuntime
+  Assert-ThrowsLike {
+    Read-InstallationMetadata $cliRoot | Out-Null
+  } 'signature does not match' 'the stale runtime signature was accepted before re-signing'
+
+  $staleListOutput = (& $pwshExe -NoProfile -File $cliLauncherPath `
+    -RuntimeDir $cliRoot -ListBindings)
+  Assert-True ($LASTEXITCODE -eq 0) 'the binding listing could not diagnose stale runtime metadata'
+  $staleList = ((@($staleListOutput) -join "`n") | ConvertFrom-Json)
+  Assert-True ($staleList.runtime.signatureValid -eq $false) 'the stale runtime signature was not reported'
+
+  $resignOneOutput = (& $pwshExe -NoProfile -File $cliLauncherPath `
+    -RuntimeDir $cliRoot -ResignBinding $keyCli `
+    -Model 'model-next' -ThinkingEffort 'medium')
+  Assert-True ($LASTEXITCODE -eq 0) 'targeted binding re-sign failed'
+  $resignOne = ((@($resignOneOutput) -join "`n") | ConvertFrom-Json)
+  Assert-True ($resignOne.runtime.signatureBefore -eq $false) 'targeted re-sign did not report the stale runtime signature'
+  Assert-True ($resignOne.runtime.signatureValid -eq $true) 'targeted re-sign did not restore the runtime signature'
+  Assert-True (@($resignOne.bindings).Count -eq 1) 'targeted re-sign changed the wrong binding count'
+  Assert-True ([string]$resignOne.bindings[0].key -ceq $keyCli) 'targeted re-sign changed another binding'
+
+  $verifiedCliInstallation = Read-InstallationMetadata $cliRoot
+  Assert-True (
+    [string]$verifiedCliInstallation.meta.defaultModel -ceq 'model-next'
+  ) 'targeted re-sign did not update the runtime default model'
+  $targetedBinding = Read-JsonFile $bindingRecordCli.bindingPath 'targeted binding'
+  $targetedSecret = Read-DpapiSecret $targetedBinding.delegationSecretPath 'targeted credential'
+  Assert-WorkspaceBinding $targetedBinding $bindingRecordCli.bindingDir `
+    $canonicalCli $keyCli $verifiedCliInstallation.meta $targetedSecret
+  Assert-True ([string]$targetedBinding.model -ceq 'model-next') 'targeted binding kept the old model'
+  Assert-True ([string]$targetedBinding.thinkingEffort -ceq 'medium') 'targeted binding kept the old effort'
+
+  $untouchedBinding = Read-JsonFile $bindingRecordCliOther.bindingPath 'untouched binding'
+  $untouchedSecret = Read-DpapiSecret $untouchedBinding.delegationSecretPath 'untouched credential'
+  Assert-WorkspaceBinding $untouchedBinding $bindingRecordCliOther.bindingDir `
+    $canonicalCliOther $keyCliOther $verifiedCliInstallation.meta $untouchedSecret
+  Assert-True ([string]$untouchedBinding.model -ceq 'model-test') 'targeted re-sign changed another binding model'
+  Assert-True ([string]$untouchedBinding.thinkingEffort -ceq 'high') 'targeted re-sign changed another binding effort'
+
+  $staleRuntimeAgain = Get-Content -LiteralPath (Join-Path $cliRoot 'runtime.json') -Raw |
+    ConvertFrom-Json
+  $staleRuntimeAgain.defaultModel = 'model-all-manual-edit'
+  Write-JsonFile (Join-Path $cliRoot 'runtime.json') $staleRuntimeAgain
+  $resignAllOutput = (& $pwshExe -NoProfile -File $cliLauncherPath `
+    -RuntimeDir $cliRoot -ResignAllBindings `
+    -Model 'model-all' -ThinkingEffort 'low')
+  Assert-True ($LASTEXITCODE -eq 0) 'all-binding re-sign failed'
+  $resignAll = ((@($resignAllOutput) -join "`n") | ConvertFrom-Json)
+  Assert-True (@($resignAll.bindings).Count -eq 2) 'all-binding re-sign did not update every binding'
+  Assert-True (
+    @($resignAll.bindings | Where-Object {
+      $_.model -cne 'model-all' -or $_.thinkingEffort -cne 'low' -or $_.signatureValid -ne $true
+    }).Count -eq 0
+  ) 'all-binding re-sign returned an incomplete update'
+  $verifiedAllInstallation = Read-InstallationMetadata $cliRoot
+  foreach ($bindingRecord in @($bindingRecordCli, $bindingRecordCliOther)) {
+    $updatedBinding = Read-JsonFile $bindingRecord.bindingPath 'updated binding'
+    $updatedSecret = Read-DpapiSecret $updatedBinding.delegationSecretPath 'updated credential'
+    Assert-WorkspaceBinding $updatedBinding $bindingRecord.bindingDir `
+      ([string]$updatedBinding.workspacePath) ([string]$updatedBinding.workspaceKey) `
+      $verifiedAllInstallation.meta $updatedSecret
+  }
+
+  $bindingRecordCli = Get-OrCreateWorkspaceBinding `
+    $canonicalCli $keyCli $verifiedAllInstallation.meta
   $cliIdentity = Get-ProcessIdentity $PID
   $cliState = [ordered]@{
     schemaVersion = 1
@@ -579,6 +664,10 @@ try {
     recordedStopEndToEnd = 'passed'
     recycleOwnerSemantics = 'passed'
     managementCliListAndStop = 'passed'
+    bindingSignatureListing = 'passed'
+    staleRuntimeResigned = 'passed'
+    targetedBindingResigned = 'passed'
+    allBindingsResigned = 'passed'
     managementCliInvalidKey = 'passed'
     managementCliModeExclusive = 'passed'
     managementCliMissingRuntime = 'passed'

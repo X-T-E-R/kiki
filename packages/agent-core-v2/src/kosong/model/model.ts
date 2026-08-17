@@ -95,6 +95,7 @@ export interface IModelService {
   readonly ready: Promise<void>;
   readonly onDidChangeModels: Event<ModelsChangedEvent & IWaitUntil>;
   readonly onDidChangeDefaultModel: Event<DefaultModelChangedEvent & IWaitUntil>;
+  resolveId(id: string): string | undefined;
   get(id: string): ModelRecord | undefined;
   list(): Readonly<Record<string, ModelRecord>>;
   getDefaultModel(): string | undefined;

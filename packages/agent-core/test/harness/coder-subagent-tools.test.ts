@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'pathe';
 
+import { LocalKaos } from '@moonshot-ai/kaos';
 import {
   isContentPart,
   isToolCall,
@@ -29,12 +30,15 @@ import type { SDKSessionRPC } from '../../src/rpc';
 import { Session } from '../../src/session';
 import { ProviderManager } from '../../src/session/provider-manager';
 import { createScriptedGenerate } from '../agent/harness/scripted-generate';
-import { testKaos } from '../fixtures/test-kaos';
 
 const MOCK_PROVIDER = { type: 'kimi', apiKey: 'test-key', model: 'mock-model' } as const satisfies ProviderConfig;
 
 const tempDirs: string[] = [];
 const openSessions: Session[] = [];
+
+async function hostKaosWithCwd(cwd: string): Promise<LocalKaos> {
+  return (await LocalKaos.create()).withCwd(cwd);
+}
 
 afterEach(async () => {
   await Promise.allSettled(openSessions.splice(0).map((s) => s.close()));
@@ -181,7 +185,7 @@ async function createCoderSession(
 
   const session = new Session({
     id: 'coder-tools-drain-e2e',
-    kaos: testKaos.withCwd(sessionDir),
+    kaos: await hostKaosWithCwd(sessionDir),
     homedir: sessionDir,
     rpc,
     skills: { explicitDirs: [join(sessionDir, 'no-such-skills-dir')] },
@@ -224,7 +228,7 @@ describe('coder subagent aligned tools (real Session e2e)', () => {
 
     const session = new Session({
       id: 'coder-tools-e2e',
-      kaos: testKaos.withCwd(sessionDir),
+      kaos: await hostKaosWithCwd(sessionDir),
       homedir: sessionDir,
       rpc,
       skills: { explicitDirs: [join(sessionDir, 'no-such-skills-dir')] },
@@ -280,6 +284,8 @@ describe('coder subagent aligned tools (real Session e2e)', () => {
     // The child's first request must carry the new tools on the wire.
     const firstCallTools = steps[0]?.wireTools ?? [];
     for (const expected of [
+      'Agent',
+      'AgentSwarm',
       'Bash',
       'Edit',
       'EnterPlanMode',
@@ -296,11 +302,8 @@ describe('coder subagent aligned tools (real Session e2e)', () => {
     ]) {
       expect(firstCallTools, `wire tools should include ${expected}`).toContain(expected);
     }
-    // Subagent delegation is opt-in now: the builtin coder profile no longer
-    // offers Agent / AgentSwarm. Cron tools stay declared-but-not-delivered
-    // for sub agents (v2 parity).
-    expect(firstCallTools).not.toContain('Agent');
-    expect(firstCallTools).not.toContain('AgentSwarm');
+    // The builtin coder profile supports nested delegation. Cron tools remain
+    // declared-but-not-delivered for sub agents (v2 parity).
     expect(firstCallTools).not.toContain('CronCreate');
     expect(firstCallTools).not.toContain('CreateGoal');
 

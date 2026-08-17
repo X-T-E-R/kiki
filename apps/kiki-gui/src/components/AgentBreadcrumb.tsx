@@ -90,15 +90,29 @@ const RelationGroup = memo(function RelationGroup({
   );
 });
 
+interface AgentBreadcrumbProps {
+  crumbs: readonly AgentTreeNode[];
+  onOpenSession: () => void;
+  onOpenAgent: (agentId: string) => void;
+}
+
+function visibleCrumbsEqual(
+  previous: readonly AgentTreeNode[],
+  next: readonly AgentTreeNode[],
+): boolean {
+  const previousVisible = previous.filter((crumb) => crumb.agentId !== MAIN_AGENT_ID);
+  const nextVisible = next.filter((crumb) => crumb.agentId !== MAIN_AGENT_ID);
+  return (
+    previousVisible.length === nextVisible.length &&
+    previousVisible.every((crumb, index) => crumb === nextVisible[index])
+  );
+}
+
 export const AgentBreadcrumb = memo(function AgentBreadcrumb({
   crumbs,
   onOpenSession,
   onOpenAgent,
-}: {
-  crumbs: readonly AgentTreeNode[];
-  onOpenSession: () => void;
-  onOpenAgent: (agentId: string) => void;
-}) {
+}: AgentBreadcrumbProps) {
   const { t } = useI18n();
   return (
     <nav data-agent-breadcrumb aria-label={t('sv.sessionCrumb')} className="min-w-0">
@@ -138,7 +152,11 @@ export const AgentBreadcrumb = memo(function AgentBreadcrumb({
       </ol>
     </nav>
   );
-});
+}, (previous, next) =>
+  visibleCrumbsEqual(previous.crumbs, next.crumbs) &&
+  previous.onOpenSession === next.onOpenSession &&
+  previous.onOpenAgent === next.onOpenAgent,
+);
 
 export const AgentRelations = memo(function AgentRelations({
   forest,

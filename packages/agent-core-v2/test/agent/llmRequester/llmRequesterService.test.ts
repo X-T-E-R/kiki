@@ -230,6 +230,7 @@ function createService(
     findByName: () => [],
   });
   ix.stub(IModelService, {
+    resolveId: () => undefined,
     get: () => undefined,
   });
   const records: WireRecord[] = [];

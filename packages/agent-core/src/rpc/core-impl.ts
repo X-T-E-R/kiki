@@ -22,6 +22,7 @@ import {
   readConfigFileForUpdate,
   normalizeAdditionalDirs,
   readWorkspaceAdditionalDirs,
+  resolveModelAlias,
   resolveWorkspaceAdditionalDirs,
   resolveConfigPath,
   resolveKimiHome,
@@ -317,7 +318,8 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     const sessionConfig = this.withPrintModeDefaults(config);
     const id = options.id ?? createSessionId();
     const modelAlias = options.model ?? config.defaultModel;
-    const model = modelAlias !== undefined ? config.models?.[modelAlias] : undefined;
+    const model =
+      modelAlias === undefined ? undefined : resolveModelAlias(config.models, modelAlias)?.alias;
     // Forward only an explicitly requested effort. With no explicit value the
     // initial effort is left to ConfigState.update(), which resolves it from
     // the resolved provider — that carries the provider-level protocol context
@@ -754,6 +756,10 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
 
     let removedDefault = false;
     const existingModels = config.models ?? {};
+    const defaultModelId =
+      config.defaultModel === undefined
+        ? undefined
+        : resolveModelAlias(existingModels, config.defaultModel)?.id;
     for (const [key, model] of Object.entries(existingModels)) {
       if (
         typeof model === 'object' &&
@@ -762,7 +768,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
         model['provider'] === input.providerId
       ) {
         delete existingModels[key];
-        if (config.defaultModel === key) removedDefault = true;
+        if (defaultModelId === key) removedDefault = true;
       }
     }
     config.models = existingModels;
@@ -1624,6 +1630,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     const fallback = config.defaultModel?.trim() ?? '';
     const candidates = [...new Set([requested, fallback].filter((model) => model.length > 0))];
     for (const model of candidates) {
+      const configuredModel = resolveModelAlias(config.models, model);
       try {
         await api.setModel({ agentId: 'main', model });
         await session.flushMetadata();
@@ -1634,9 +1641,8 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
         // case. A *configured* alias that fails to resolve (missing provider,
         // no credentials, bad max_context_size) is an actionable config error
         // the user must see; surface it instead of silently swapping models.
-        const aliasMissing = config.models?.[model] === undefined;
         if (
-          aliasMissing &&
+          configuredModel === undefined &&
           error instanceof KimiError &&
           error.code === ErrorCodes.CONFIG_INVALID
         ) {

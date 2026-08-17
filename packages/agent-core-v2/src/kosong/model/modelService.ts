@@ -7,9 +7,11 @@
  */
 
 import { Disposable } from '#/_base/di/lifecycle';
-import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { Error2 } from '#/_base/errors/errors';
 import { AsyncEmitter, type Event, type IWaitUntil } from '#/_base/event';
+import { LifecycleScope } from '#/app/scopes';
+import { CONFIG_INVALID_ERROR_CODE } from '#/kosong/contract/errors';
 
 import { deepEqual, diffRecords, isEmptyDiff } from '../recordDiff';
 
@@ -22,6 +24,10 @@ import {
 } from './model';
 
 const NO_ABORT = new AbortController().signal;
+
+function matchesBareModelId(value: string | undefined, id: string): boolean {
+  return value === id || value?.endsWith(`/${id}`) === true;
+}
 
 // NOTE: stays Disposable — its own 'get' collides with the Fiber
 export class ModelService extends Disposable implements IModelService {
@@ -45,6 +51,27 @@ export class ModelService extends Disposable implements IModelService {
   );
   readonly onDidChangeDefaultModel: Event<DefaultModelChangedEvent & IWaitUntil> =
     this._onDidChangeDefaultModel.event;
+
+  resolveId(id: string): string | undefined {
+    if (this.models[id] !== undefined) return id;
+    if (id.includes('/')) return undefined;
+
+    const candidates = Object.entries(this.models)
+      .filter(([candidateId, model]) =>
+        matchesBareModelId(candidateId, id) || matchesBareModelId(model.model, id),
+      )
+      .map(([candidateId]) => candidateId)
+      .toSorted();
+    if (candidates.length === 0) return undefined;
+    if (candidates.length === 1) return candidates[0];
+
+    const quotedCandidates = candidates.map((candidate) => `"${candidate}"`).join(', ');
+    throw new Error2(
+      CONFIG_INVALID_ERROR_CODE,
+      `Model "${id}" matches multiple configured models: ${quotedCandidates}. Use a full model id to disambiguate.`,
+      { details: { model: id, candidates } },
+    );
+  }
 
   get(id: string): ModelRecord | undefined {
     return this.models[id];

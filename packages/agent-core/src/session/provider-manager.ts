@@ -11,6 +11,7 @@ import {
   effectiveModelAlias,
   type KimiConfig,
   type ModelAlias,
+  resolveModelAlias,
   type OAuthRef,
   type ProviderConfig,
   type ProviderType,
@@ -94,28 +95,30 @@ export class ProviderManager implements ModelProvider {
   }
 
   resolveProviderConfig(model: string): ResolvedRuntimeProvider {
-    const alias = this.config.models?.[model];
-    if (alias === undefined) {
+    const config = this.config;
+    const resolved = resolveModelAlias(config.models, model);
+    if (resolved === undefined) {
       throw new KimiError(
         ErrorCodes.CONFIG_INVALID,
         `Model "${model}" is not configured in config.toml. Add a [models."${model}"] entry with max_context_size.`,
         { details: { model } },
       );
     }
+    const { id: modelId, alias } = resolved;
 
-    const providerName = alias.provider ?? this.config.defaultProvider;
+    const providerName = alias.provider ?? config.defaultProvider;
     if (providerName === undefined) {
       throw new KimiError(
         ErrorCodes.CONFIG_INVALID,
-        `Model "${model}" must define a provider in config.toml.`,
+        `Model "${modelId}" must define a provider in config.toml.`,
       );
     }
 
-    const providerConfig = this.config.providers[providerName];
+    const providerConfig = config.providers[providerName];
     if (providerConfig === undefined) {
       throw new KimiError(
         ErrorCodes.CONFIG_INVALID,
-        `Provider "${providerName}" for model "${model}" is not configured.`,
+        `Provider "${providerName}" for model "${modelId}" is not configured.`,
       );
     }
 
@@ -124,7 +127,7 @@ export class ProviderManager implements ModelProvider {
     if (!Number.isInteger(effectiveAlias.maxContextSize) || effectiveAlias.maxContextSize <= 0) {
       throw new KimiError(
         ErrorCodes.CONFIG_INVALID,
-        `Model "${model}" must define a positive max_context_size in config.toml.`,
+        `Model "${modelId}" must define a positive max_context_size in config.toml.`,
       );
     }
 

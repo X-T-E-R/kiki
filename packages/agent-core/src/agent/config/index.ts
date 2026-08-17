@@ -14,6 +14,7 @@ import {
 } from '#/config/kimi-env-params';
 
 import type { Agent } from '..';
+import { resolveModelAlias } from '../../config';
 import { ErrorCodes, KimiError } from '../../errors';
 import type { AgentConfigData, AgentConfigUpdateData } from './types';
 import {
@@ -263,7 +264,9 @@ export class ConfigState {
         defaultEffort: resolved.defaultEffort,
       };
     }
-    return alias === undefined ? undefined : this.agent.kimiConfig?.models?.[alias];
+    return alias === undefined
+      ? undefined
+      : resolveModelAlias(this.agent.kimiConfig?.models, alias)?.alias;
   }
 
   get profileName(): string | undefined {

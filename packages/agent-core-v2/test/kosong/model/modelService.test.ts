@@ -85,6 +85,50 @@ describe('ModelService', () => {
     expect(service.getDefaultModel()).toBe('k1');
   });
 
+  it('resolves an unambiguous bare id without changing exact get semantics', () => {
+    const service = createService({
+      'axon-message/deepseek-v4-flash': { model: 'vendor/deepseek-v4-flash' },
+    });
+
+    expect(service.resolveId('deepseek-v4-flash')).toBe(
+      'axon-message/deepseek-v4-flash',
+    );
+    expect(service.get('deepseek-v4-flash')).toBeUndefined();
+  });
+
+  it('prefers an exact configured key over bare-id matches', () => {
+    const service = createService({
+      'deepseek-v4-flash': { model: 'exact-wire-model' },
+      'axon-message/deepseek-v4-flash': { model: 'deepseek-v4-flash' },
+    });
+
+    expect(service.resolveId('deepseek-v4-flash')).toBe('deepseek-v4-flash');
+  });
+
+  it('rejects ambiguous bare ids with every canonical candidate', () => {
+    const service = createService({
+      'alpha/deepseek-v4-flash': { model: 'deepseek-v4-flash' },
+      'beta/other': { model: 'deepseek-v4-flash' },
+    });
+
+    expect(() => service.resolveId('deepseek-v4-flash')).toThrowError(
+      expect.objectContaining({
+        message: expect.stringMatching(
+          /alpha\/deepseek-v4-flash.*beta\/other.*full model id/,
+        ),
+      }),
+    );
+  });
+
+  it('does not suffix-match unknown or qualified ids', () => {
+    const service = createService({
+      'axon-message/deepseek-v4-flash': { model: 'deepseek-v4-flash' },
+    });
+
+    expect(service.resolveId('missing')).toBeUndefined();
+    expect(service.resolveId('other/deepseek-v4-flash')).toBeUndefined();
+  });
+
   it('supports CRUD and diffs state changes into onDidChangeModels', async () => {
     const service = createService();
     const events: Array<{

@@ -88,6 +88,52 @@ export function parseSlashDraft(text: string): { query: string; args: string } |
   return { query: body.slice(0, gap), args: body.slice(gap + 1).trim() };
 }
 
+export interface SlashTrigger {
+  /** Slash token bounds in the full composer text (`end` is exclusive). */
+  readonly start: number;
+  readonly end: number;
+  /** Token text between `/` and the caret. */
+  readonly query: string;
+  /** True for whitespace-delimited tokens away from message offset zero. */
+  readonly inline: boolean;
+}
+
+/**
+ * Find the slash token under the caret. Leading `/command` keeps the existing
+ * command menu; a `/token` after whitespace (including a later line) is an
+ * inline skill trigger. Paths/URLs are excluded because their token does not
+ * begin with `/`, and a second slash invalidates the token.
+ */
+export function parseSlashTrigger(text: string, cursor: number): SlashTrigger | null {
+  if (!Number.isInteger(cursor) || cursor < 0 || cursor > text.length) return null;
+  let start = cursor;
+  while (start > 0 && !/\s/.test(text[start - 1] ?? '')) start -= 1;
+  if (text[start] !== '/') return null;
+
+  let end = cursor;
+  while (end < text.length && !/\s/.test(text[end] ?? '')) end += 1;
+  const token = text.slice(start + 1, end);
+  const query = text.slice(start + 1, cursor);
+  if (token.includes('/') || query.includes('/')) return null;
+  return { start, end, query, inline: start > 0 };
+}
+
+/** Replace only the active slash token, preserving prose before and after it. */
+export function completeSlashTrigger(
+  text: string,
+  trigger: Pick<SlashTrigger, 'start' | 'end'>,
+  name: string,
+): { text: string; cursor: number } {
+  const before = text.slice(0, trigger.start);
+  const after = text.slice(trigger.end);
+  const separator = after === '' || !/^\s/.test(after) ? ' ' : '';
+  const replacement = `/${name}${separator}`;
+  return {
+    text: before + replacement + after,
+    cursor: before.length + replacement.length,
+  };
+}
+
 /** Case-insensitive filter: prefix matches rank above substring matches. */
 export function filterSlashItems(items: readonly SlashItem[], query: string): SlashItem[] {
   const q = query.trim().toLowerCase();

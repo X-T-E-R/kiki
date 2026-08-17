@@ -1219,6 +1219,14 @@ describe('AuthSummaryService', () => {
           list: (() => providers) as IProviderService['list'],
         });
         reg.definePartialInstance(IModelService, {
+          resolveId: ((id: string) => {
+            if (models[id] !== undefined) return id;
+            if (id.includes('/')) return undefined;
+            const matches = Object.keys(models).filter(
+              (candidate) => candidate.endsWith(`/${id}`) || models[candidate]?.model === id,
+            );
+            return matches.length === 1 ? matches[0] : undefined;
+          }) as IModelService['resolveId'],
           get: ((id: string) => models[id]) as IModelService['get'],
           list: (() => models) as IModelService['list'],
           getDefaultModel: (() => defaultModel) as IModelService['getDefaultModel'],
@@ -1336,6 +1344,18 @@ describe('AuthSummaryService', () => {
   it('ensureReady accepts cached oauth tokens', async () => {
     getCachedAccessToken.mockResolvedValue('access-token');
     await expect(createSummary().ensureReady('kimi')).resolves.toBeUndefined();
+    expect(getCachedAccessToken).toHaveBeenCalledWith(OAUTH_PROVIDER, {
+      storage: 'file',
+      key: 'oauth/kimi-code',
+    });
+  });
+
+  it('ensureReady resolves a bare default_model to its canonical entry', async () => {
+    models = { 'managed/kimi': models['kimi']! };
+    defaultModel = 'kimi';
+    getCachedAccessToken.mockResolvedValue('access-token');
+
+    await expect(createSummary().ensureReady()).resolves.toBeUndefined();
     expect(getCachedAccessToken).toHaveBeenCalledWith(OAUTH_PROVIDER, {
       storage: 'file',
       key: 'oauth/kimi-code',

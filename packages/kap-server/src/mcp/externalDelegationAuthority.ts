@@ -1,15 +1,19 @@
 import {
   DEFAULT_AGENT_PROFILE_NAME,
+  IAgentProfileService,
   ISessionIndex,
   ISessionLegacyService,
   ISessionManager,
   ISessionMetadata,
   IWorkspaceService,
+  resumeSessionById,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
 import { realpath } from 'node:fs/promises';
 import { platform } from 'node:os';
 import { isAbsolute, normalize } from 'node:path';
+
+import { ensureMainAgent } from '../transport/mainAgent';
 
 export interface ExternalDelegationSessionBootstrap {
   readonly workspacePath: string;
@@ -24,9 +28,9 @@ export interface ExternalDelegationAuthorityConfig {
   readonly token: string;
   /**
    * Operator-owned exact Session provisioning. The caller cannot select this
-   * value over REST: it is captured once from server composition and either
-   * creates the configured Session id in the configured workspace or verifies
-   * that the persisted Session still has the same workspace/model binding.
+   * value over REST: it is captured from server composition, creates the
+   * configured Session id in the configured workspace when absent, and applies
+   * an operator-updated signed model/thinking binding to an existing Session.
    */
   readonly sessionBootstrap?: ExternalDelegationSessionBootstrap;
 }
@@ -120,7 +124,25 @@ export async function ensureExternalDelegationSession(
     }
   }
 
-  const status = await core.accessor.get(ISessionLegacyService).status(authority.sessionId);
+  const legacy = core.accessor.get(ISessionLegacyService);
+  let status = await legacy.status(authority.sessionId);
+  if (
+    status.model !== bootstrap.modelAlias ||
+    status.thinking_level !== bootstrap.thinkingEffort
+  ) {
+    const session = await resumeSessionById(core.accessor, authority.sessionId);
+    if (session === undefined) {
+      throw new Error('External delegation Session is unavailable.');
+    }
+    const profile = (await ensureMainAgent(session)).accessor.get(IAgentProfileService);
+    if (status.model !== bootstrap.modelAlias) {
+      await profile.setModel(bootstrap.modelAlias);
+    }
+    if (status.thinking_level !== bootstrap.thinkingEffort) {
+      profile.setThinking(bootstrap.thinkingEffort);
+    }
+    status = await legacy.status(authority.sessionId);
+  }
   if (
     status.model !== bootstrap.modelAlias ||
     status.thinking_level !== bootstrap.thinkingEffort

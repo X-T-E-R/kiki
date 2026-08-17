@@ -8,7 +8,16 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, extname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -16,7 +25,9 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const GUI_ROOT = resolve(SCRIPT_DIR, '..');
 const KIKI_ROOT = resolve(GUI_ROOT, '..', '..');
 const BINARIES_DIR = resolve(GUI_ROOT, 'src-tauri', 'binaries');
+const KIMI_PACKAGE_JSON = resolve(KIKI_ROOT, 'apps', 'kimi-code', 'package.json');
 const SIDECAR_NAME = 'kiki-server';
+const SIDECAR_MANIFEST_VERSION = 1;
 
 const RUST_TO_SEA_TARGET = new Map([
   ['x86_64-pc-windows-msvc', 'win32-x64'],
@@ -58,6 +69,10 @@ export function sidecarFileName(target) {
   return `${SIDECAR_NAME}-${target}${target.includes('windows') ? '.exe' : ''}`;
 }
 
+export function sidecarManifestFileName(target) {
+  return `${sidecarFileName(target)}.manifest.json`;
+}
+
 export function defaultSeaSource(target) {
   const seaTarget = RUST_TO_SEA_TARGET.get(target);
   if (seaTarget === undefined) {
@@ -67,6 +82,26 @@ export function defaultSeaSource(target) {
   }
   const executable = target.includes('windows') ? 'kimi.exe' : 'kimi';
   return resolve(KIKI_ROOT, 'apps', 'kimi-code', 'dist-native', 'bin', seaTarget, executable);
+}
+
+export function readKimiServerVersion(packageJsonPath = KIMI_PACKAGE_JSON) {
+  const parsed = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
+  if (typeof parsed.version !== 'string' || parsed.version.trim() === '') {
+    throw new Error(`Kimi Code package version is missing from ${packageJsonPath}`);
+  }
+  return parsed.version;
+}
+
+export function createSidecarManifest(sidecarPath, target, serverVersion) {
+  const bytes = statSync(sidecarPath).size;
+  const sha256 = createHash('sha256').update(readFileSync(sidecarPath)).digest('hex');
+  return {
+    schemaVersion: SIDECAR_MANIFEST_VERSION,
+    target,
+    bytes,
+    sha256,
+    serverVersion,
+  };
 }
 
 function resolveHostTarget() {
@@ -83,6 +118,7 @@ export function stageSidecar({ argv = process.argv.slice(2), env = process.env }
   const target = parseTargetArg(argv) ?? env['TAURI_TARGET_TRIPLE'] ?? resolveHostTarget();
   const source = resolve(env['KIKI_SIDECAR_SOURCE'] ?? defaultSeaSource(target));
   const destination = resolve(BINARIES_DIR, sidecarFileName(target));
+  const manifestPath = resolve(BINARIES_DIR, sidecarManifestFileName(target));
 
   if (!existsSync(source)) {
     throw new Error(
@@ -106,7 +142,11 @@ export function stageSidecar({ argv = process.argv.slice(2), env = process.env }
   copyFileSync(source, destination);
   if (!target.includes('windows')) chmodSync(destination, 0o755);
 
-  return { target, source, destination, bytes: sourceStat.size };
+  const serverVersion = readKimiServerVersion();
+  const manifest = createSidecarManifest(destination, target, serverVersion);
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+  return { target, source, destination, manifestPath, ...manifest };
 }
 
 function main() {
