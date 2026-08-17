@@ -191,7 +191,7 @@
 | FU2 | P2 | v2 侧同款死参数未收敛：`agentCollaborationTool.ts` 的 fork_turns / statusOf('errored') 与 v1 对称，F3 按证据范围只改了 v1 | F |
 | FU3 | P3 | **核心诉求已以二态形式完成（2026-08-17 同步批）**：spawn 三入口（Agent/Swarm/collaboration）均持久化 `inherit|fixed` 标签（`AgentMeta.labels['subagentBindingMode']`），重启后显式 alias 误判为继承的风险已消解；完整五态 source（tool/profile/default/secondary/caller）持久化属产品增强项，仍待拍板 | F/同步 |
 | FU4 | P2 | kap-server pino 日志走 stdout，`--log-level warn` 落盘的是 stderr；服务端日志进 desktop-backend.log 需改 logger destination 或加 `--log-file` | C |
-| FU5 | P2 | desktop 侧 `tauri build`/NSIS 打包与真机冷启动 smoke 未实跑（仅 cargo check/test + TS 测试） | C |
+| FU5 | P3 | desktop 侧打包/冷启动验证 | **实质覆盖（2026-08-17）**：`tauri build --no-bundle` 成功（cargo release 3m11s）+ promote 流程跑通 + 冷启动冒烟（kiki.exe/kiki-server.exe 进程正常、--version 0.36.1）；残余仅 NSIS 安装包 bundle 与卸载路径未验 | C |
 | FU6 | P3 | A3 容量校验基准用渲染期 attachments 起步，跨两次极快粘贴可能略微超出 8 附件/20MB 上限（功能更新正确，仅校验基准偏旧） | A |
 | FU7 | P3 | A4 展示/发送语义：effort 下拉"看似选中"实则未发送、由 server 决定 | **已裁决（#10）**：选中即发送；待实施 | A |
 | FU8 | P3 | A8 桌面原生目录选择对话框未实现（defer，仅做校验+placeholder） | A |
@@ -206,5 +206,5 @@
 | FU17 | P2 | `externalDelegationRoute.test.ts`「workspace 绑定漂移拒启动」用例在合并前基线即红，与 `start.ts` fail-open 矛盾 | **已裁决（#7）**：fail-open 为既定行为（可用性优先原则）；待实施：改写该用例为 fail-open 契约 | 同步 |
 | FU18 | P2 | 上游 0.36.1 自带测试在本机 Windows 成片失败（posix 路径断言、5s 超时簇为主）；涉败文件与上游逐字节一致，非合并回归。2026-08-17 本机 Node 升 24.19 后原 nvm4w shim spawn ENOENT 簇预计消失（execPath 已修通），待一次全量复跑确认剩余面 | 同步 |
 | FU19 | P3 | ~~manifest 未重生~~ **已关闭（2026-08-17）**：Node 升 24.19 后 `gen:config-manifest` / `gen:state-manifest` / `gen:wire-manifest` 全部重生成功；`config-manifest.toml` 相对手合版校正 7+/11-（池语义真值：secondaryModel owner 归位、overlay 条目删除） | 同步 |
-| FU20 | P3 | 生产源码旧术语注释残留（`IWorkspaceLifecycleService`、`ISessionProcessRunner` 等仅注释，无 live 引用）清理，避免后续维护误判 | 同步 |
+| FU20 | P3 | 生产源码旧术语注释残留 | **基本清完（2026-08-17 Z 批）**：sessionLookup/fsProcess/fsService/fs/runRg/acpConnection/sdk-rpc-client-v2/WorkspaceServicesView 已清理；残余 bashTool.ts 一处（当时属他批范围） | 同步 |
 | FU21 | P3 | v1 `test/harness/coder-subagent-tools.test.ts` 4 例与 `test/profile/agent-profile-loader.test.ts` 快照（FU1）在基线即红；本轮保持原样未修 | 同步 |
