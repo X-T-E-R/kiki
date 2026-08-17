@@ -169,7 +169,7 @@ describe('Kiki external delegation MCP server', () => {
     expect(bodies[0]).toMatchObject({ dispatch_id: 'dispatch_1', limit: 2048 });
   });
 
-  it('forwards exact new-child bindings and keeps continuation binding-free', async () => {
+  it('forwards exact bindings without progress polling when no token is supplied', async () => {
     const requests: Array<{ action: string; body: Record<string, unknown> }> = [];
     const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
       const href = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
@@ -251,6 +251,77 @@ describe('Kiki external delegation MCP server', () => {
     });
     expect(rebound.isError).toBe(true);
     expect(requests).toHaveLength(2);
+  });
+
+  it('streams delegation progress from lifecycle and transcript polling until terminal status', async () => {
+    let eventPoll = 0;
+    let transcriptPoll = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
+      const action = String(url).split('/').at(-1);
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      let data: unknown;
+      if (action === 'dispatch') {
+        data = { dispatchId: 'dispatch_progress', target: 'main', status: 'queued', createdAt: 1 };
+      } else if (action === 'events') {
+        eventPoll += 1;
+        expect(body).toMatchObject({ dispatch_id: 'dispatch_progress', limit: 100 });
+        data = eventPoll === 1
+          ? {
+              items: [
+                { seq: 1, dispatchId: 'dispatch_progress', type: 'queued', at: 1 },
+                { seq: 2, dispatchId: 'dispatch_progress', type: 'started', at: 2 },
+              ],
+            }
+          : { items: [{ seq: 3, dispatchId: 'dispatch_progress', type: 'completed', at: 3 }] };
+      } else if (action === 'transcript') {
+        transcriptPoll += 1;
+        expect(body).toMatchObject({ dispatch_id: 'dispatch_progress', limit: 50 });
+        data = transcriptPoll === 1
+          ? { items: [{ index: 0, role: 'assistant', text: 'working' }] }
+          : { items: [{ index: 1, role: 'tool', text: 'done' }] };
+      } else if (action === 'status') {
+        data = { dispatchId: 'dispatch_progress', target: 'main', status: 'completed', createdAt: 1, endedAt: 3 };
+      } else {
+        throw new Error(`Unexpected action: ${action}`);
+      }
+      return new Response(JSON.stringify({ code: 0, msg: 'ok', data }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const server = createKikiMcpServer(
+      {
+        endpoint: 'http://127.0.0.1:58627',
+        token: 'TOKEN',
+        delegationToken: 'DELEGATION_SECRET',
+        sessionId: 'session-operator',
+        workspacePath: '/example/workspace',
+      },
+      { fetch: fetchMock, progressPollIntervalMs: 0 },
+    );
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    close.push(() => client.close(), () => server.close());
+    const progress: Array<{ progress: number; message?: string }> = [];
+
+    const called = await client.callTool(
+      { name: 'kiki_dispatch', arguments: { target: 'main', message: 'inspect' } },
+      undefined,
+      { onprogress: (update) => progress.push(update) },
+    );
+
+    expect(called.structuredContent).toMatchObject({
+      dispatchId: 'dispatch_progress',
+      status: 'completed',
+    });
+    expect(progress).toEqual([
+      { progress: 1, message: 'Delegation turn started (0 tool calls completed).' },
+      { progress: 2, message: 'Delegation running (1 tool call completed).' },
+      { progress: 3, message: 'Delegation completed (1 tool call completed).' },
+    ]);
+    expect(eventPoll).toBe(2);
+    expect(transcriptPoll).toBe(2);
   });
 
   it('reports invalid tool input as invalid_input instead of an internal error', async () => {

@@ -83,6 +83,7 @@ import {
   IAgentConversationUndoService,
   IAgentFullCompactionService,
   IAgentLoopService,
+  IAgentLifecycleService,
   IAuthSummaryService,
   ISessionActivityView,
   ISessionBtwService,
@@ -95,6 +96,7 @@ import {
   IWorkspaceAliases,
   ISessionManager,
   IWorkspaceService,
+  MAIN_AGENT_ID,
   getLiveSessionById,
   programForSession,
   resumeSessionById,
@@ -105,6 +107,7 @@ import {
   type Scope,
   type SessionSummary,
 } from '@moonshot-ai/agent-core-v2';
+import { toRestContextBreakdown } from '../protocol/context-usage';
 import { ErrorCode } from '../protocol/error-codes';
 import { pageResponseSchema } from '../protocol/pagination';
 import { toProtocolMessage } from '../services/messages/messageProjection';
@@ -137,6 +140,7 @@ import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
+import { readLegacyStatus } from '../services/legacyStatus/legacyStatus';
 import { ensureMainAgent } from '../transport/mainAgent';
 import { parseActionSuffix } from './action-suffix';
 import { applySessionAgentConfig } from './sessionAgentConfig';
@@ -736,6 +740,7 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
         [ErrorCode.SESSION_NOT_FOUND]: {},
         [ErrorCode.SESSION_BUSY]: {},
+        [ErrorCode.SESSION_LOCKED]: {},
         [ErrorCode.COMPACTION_UNABLE]: {},
         [ErrorCode.SESSION_UNDO_UNAVAILABLE]: {},
       },
@@ -994,6 +999,7 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
         [ErrorCode.SESSION_NOT_FOUND]: {},
         [ErrorCode.SESSION_BUSY]: {},
+        [ErrorCode.SESSION_LOCKED]: {},
       },
       description: 'Create a child session',
       tags: ['sessions'],
@@ -1054,7 +1060,22 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
       try {
         const { session_id } = req.params;
         const status = await core.accessor.get(ISessionLegacyService).status(session_id);
-        reply.send(okEnvelope(status, req.id));
+        const live = getLiveSessionById(core.accessor, session_id);
+        const main = live
+          ?.accessor.get(IAgentLifecycleService)
+          .list()
+          .find((agent) => agent.id === MAIN_AGENT_ID);
+        const breakdown = main === undefined ? undefined : readLegacyStatus(main)?.contextBreakdown;
+        reply.send(
+          okEnvelope(
+            {
+              ...status,
+              context_breakdown:
+                breakdown === undefined ? undefined : toRestContextBreakdown(breakdown),
+            },
+            req.id,
+          ),
+        );
       } catch (error) {
         sendMappedError(reply, req, error);
       }
@@ -1339,6 +1360,9 @@ function sendMappedError(
       case 'session.fork_active_turn':
       case ErrorCodes.SESSION_BUSY:
         reply.send(errEnvelope(ErrorCode.SESSION_BUSY, err.message, requestId, err.stack));
+        return;
+      case ErrorCodes.STORAGE_LOCKED:
+        reply.send(errEnvelope(ErrorCode.SESSION_LOCKED, err.message, requestId, err.stack));
         return;
       case 'compaction.unable':
         reply.send(errEnvelope(ErrorCode.COMPACTION_UNABLE, err.message, requestId, err.stack));

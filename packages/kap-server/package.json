@@ -28,7 +28,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@fastify/multipart": "^10.0.0",
     "@fastify/swagger": "^9.7.0",
     "@moonshot-ai/agent-core-v2": "workspace:^",

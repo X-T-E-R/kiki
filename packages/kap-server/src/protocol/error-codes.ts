@@ -144,6 +144,8 @@ export const ErrorCode = {
   THREAD_CURSOR_INVALID: 40931,
   /** an idempotency key was reused with a different payload */
   THREAD_IDEMPOTENCY_CONFLICT: 40932,
+  /** session is active in another process sharing the same home */
+  SESSION_LOCKED: 40933,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,

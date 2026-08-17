@@ -28,6 +28,7 @@ import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
+import { toRestContextBreakdown } from '../protocol/context-usage';
 import { ErrorCode } from '../protocol/error-codes';
 import {
   sessionSnapshotResponseSchema,
@@ -35,6 +36,7 @@ import {
   type SessionSnapshotResponse,
   type SnapshotSubagent,
 } from '../protocol/rest-snapshot';
+import { readLegacyStatus } from '../services/legacyStatus/legacyStatus';
 import { loadMessageHistory } from '../services/messages/messageHistory';
 import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
 import { toWireApproval } from './approvals';
@@ -144,6 +146,7 @@ async function assembleSnapshot(
   const session =
     model === undefined ? projected : { ...projected, agent_config: { ...projected.agent_config, model } };
   const subagents = enrichSnapshotSubagents(snapState.subagents, meta.agents);
+  const status = readSnapshotStatus(main);
 
   // Messages — most recent page of the main agent's full history, from the
   // loader shared with the `messages` routes.
@@ -170,6 +173,12 @@ async function assembleSnapshot(
     messages: { items, has_more: hasMore },
     in_flight_turn: inFlightTurn,
     subagents,
+    context_tokens: status?.contextTokens,
+    max_context_tokens: status?.maxContextTokens,
+    context_breakdown:
+      status?.contextBreakdown === undefined
+        ? undefined
+        : toRestContextBreakdown(status.contextBreakdown),
     pending_approvals: pendingApprovals,
     pending_questions: pendingQuestions,
   };
@@ -180,6 +189,15 @@ function readBoundModel(main: IAgentScopeHandle): string | undefined {
     return main.accessor.get(IAgentProfileService).getModel();
   } catch {
     // Model recovery is best-effort for partially materialized legacy agents.
+    return undefined;
+  }
+}
+
+function readSnapshotStatus(main: IAgentScopeHandle): ReturnType<typeof readLegacyStatus> {
+  try {
+    return readLegacyStatus(main);
+  } catch {
+    // Partially materialized legacy agents can still serve the base snapshot.
     return undefined;
   }
 }

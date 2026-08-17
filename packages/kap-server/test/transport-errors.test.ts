@@ -19,7 +19,7 @@ describe('/api/v1/debug transport mapError', () => {
     [ErrorCodes.OS_FS_ALREADY_EXISTS, ErrorCode.FS_ALREADY_EXISTS],
     [ErrorCodes.OS_FS_PERMISSION_DENIED, ErrorCode.FS_PERMISSION_DENIED],
     [ErrorCodes.STORAGE_IO_FAILED, ErrorCode.PERSISTENCE_FAILURE],
-    [ErrorCodes.STORAGE_LOCKED, ErrorCode.PERSISTENCE_FAILURE],
+    [ErrorCodes.STORAGE_LOCKED, ErrorCode.SESSION_LOCKED],
     [ErrorCodes.CONFIG_INVALID, ErrorCode.VALIDATION_FAILED],
     [ErrorCodes.GOAL_UNSUPPORTED_AGENT, ErrorCode.GOAL_UNSUPPORTED_AGENT],
   ])('maps domain code %s to its wire equivalent', (code, wire) => {
@@ -60,6 +60,12 @@ describe('installErrorHandler (catch-all)', () => {
     const env = run(new Error2(ErrorCodes.CONFIG_INVALID, 'broken pool'));
     expect(env.code).toBe(ErrorCode.VALIDATION_FAILED);
     expect(env.msg).toContain('broken pool');
+  });
+
+  it('maps an escaped storage.locked to SESSION_LOCKED', () => {
+    const env = run(new Error2(ErrorCodes.STORAGE_LOCKED, 'held by pid 1234'));
+    expect(env.code).toBe(ErrorCode.SESSION_LOCKED);
+    expect(env.msg).toContain('held by pid 1234');
   });
 
   it('keeps unknown exceptions at INTERNAL_ERROR', () => {

@@ -17,10 +17,12 @@ import type {
 } from '@moonshot-ai/agent-core-v2';
 import {
   IAgentActivityView,
+  IAgentContextMemoryService,
   LifecycleScope,
   IAgentLifecycleService,
   IAgentProfileService,
   IAgentTokenCountingService,
+  IAgentToolRegistryService,
   IAgentUsageService,
   IEventBus,
   IEventService,
@@ -36,9 +38,11 @@ import {
   SessionInteractionService,
   StateRegistry,
 } from '@moonshot-ai/agent-core-v2';
+import { IAgentToolSelectService } from '@moonshot-ai/agent-core-v2/agent/toolSelect/toolSelect';
 import type { AgentEvent } from '../src/transport/ws/v1/events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { agentStatusUpdatedEventSchema, turnEndedEventSchema } from '../src/protocol/events-zod';
 import {
   type BroadcastDelivery,
   type BroadcastTarget,
@@ -408,6 +412,10 @@ function makeCore(
         return {
           get: sessionFor,
           list: () => [...sessions.keys()].map((sessionId) => sessionFor(sessionId)),
+          onDidCloseSession: (handler: (event: { sessionId: string }) => void) =>
+            lifecycleEvents.onDidCloseSession(handler),
+          onDidArchiveSession: (handler: (event: { sessionId: string }) => void) =>
+            lifecycleEvents.onDidArchiveSession(handler),
         };
       }
       if (token === IWorkspaceInstanceManager) {
@@ -588,6 +596,49 @@ describe('SessionEventBroadcaster', () => {
         model: 'example-model',
       },
     ]);
+  });
+
+  it('adds a normalized system/tools/messages estimate to status wire events', async () => {
+    const lc = new FakeLifecycle();
+    const main = lc.addAgent('main');
+    main.set(IAgentTokenCountingService, {
+      statusSize: () => 1_000,
+      estimateText: () => 200,
+      estimateTools: () => 300,
+      estimateMessages: () => 500,
+    });
+    main.set(IAgentProfileService, {
+      getModel: () => 'example-model',
+      getModelCapabilities: () => ({ max_context_tokens: 128_000 }),
+      getSystemPrompt: () => 'system',
+    });
+    main.set(IAgentUsageService, { status: () => ({}) });
+    main.set(IAgentContextMemoryService, { get: () => [] });
+    main.set(IAgentToolRegistryService, {
+      list: () => [{ name: 'Read', description: 'read a file', parameters: {}, source: 'builtin' }],
+    });
+    main.set(IAgentToolSelectService, {
+      shapeTools: (tools: unknown) => tools,
+      shapeHistory: (messages: unknown) => messages,
+    });
+    sessions.set('s1', lc);
+    const { target, envelopes } = collectingTarget();
+    await bc.subscribe('s1', target);
+
+    main.bus.emit(agentEvent('agent.status.updated', {}));
+    await bc.getCursor('s1');
+
+    const status = envelopes.find((envelope) => envelope.type === 'agent.status.updated')?.payload;
+    expect(status).toMatchObject({
+      contextTokens: 1_000,
+      contextBreakdown: {
+        systemTokens: 200,
+        toolsTokens: 300,
+        messagesTokens: 500,
+        estimated: true,
+      },
+    });
+    expect(() => agentStatusUpdatedEventSchema.parse(status)).not.toThrow();
   });
 
   it('folds the legacy status snapshot into subagent status events too', async () => {
@@ -771,6 +822,48 @@ describe('SessionEventBroadcaster', () => {
       { phase: { kind: 'running', turnId: 1, step: 1 } },
       { phase: { kind: 'ended', turnId: 1, reason: 'completed' } },
     ]);
+  });
+
+  it('aggregates every step usage component onto turn.ended and derives tok/s', async () => {
+    const lc = new FakeLifecycle();
+    const main = lc.addAgent('main');
+    sessions.set('s1', lc);
+    const { target, envelopes } = collectingTarget();
+    await bc.subscribe('s1', target);
+
+    main.bus.emit(agentEvent('turn.started', { turnId: 1, origin: { kind: 'user' } }));
+    main.bus.emit(
+      agentEvent('turn.step.completed', {
+        turnId: 1,
+        step: 1,
+        usage: { inputOther: 100, output: 10, inputCacheRead: 20, inputCacheCreation: 30 },
+        llmStreamDurationMs: 500,
+      }),
+    );
+    main.bus.emit(
+      agentEvent('turn.step.completed', {
+        turnId: 1,
+        step: 2,
+        usage: { inputOther: 50, output: 20, inputCacheRead: 5, inputCacheCreation: 10 },
+        llmStreamDurationMs: 1_000,
+      }),
+    );
+    main.bus.emit(
+      agentEvent('turn.ended', { turnId: 1, reason: 'completed', durationMs: 4_200 }),
+    );
+    await bc.getCursor('s1');
+
+    const ended = envelopes.find((envelope) => envelope.type === 'turn.ended')?.payload;
+    expect(ended).toMatchObject({
+      usage: {
+        inputOther: 150,
+        output: 30,
+        inputCacheRead: 25,
+        inputCacheCreation: 40,
+      },
+      tokensPerSecond: 20,
+    });
+    expect(() => turnEndedEventSchema.parse(ended)).not.toThrow();
   });
 
   it('replays durable events since a cursor from the journal', async () => {

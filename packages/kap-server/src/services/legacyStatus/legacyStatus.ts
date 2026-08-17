@@ -16,8 +16,10 @@
  */
 
 import {
+  IAgentContextMemoryService,
   IAgentProfileService,
   IAgentTokenCountingService,
+  IAgentToolRegistryService,
   IAgentUsageService,
   IModelCatalog,
   IModelService,
@@ -26,6 +28,9 @@ import {
 } from '@moonshot-ai/agent-core-v2';
 import type { AgentActivityState } from '@moonshot-ai/agent-core-v2';
 import type { TurnEndReason } from '@moonshot-ai/agent-core-v2/agent/loop/turnEvents';
+import { IAgentToolSelectService } from '@moonshot-ai/agent-core-v2/agent/toolSelect/toolSelect';
+
+import type { ContextBreakdown } from '../../protocol/context-usage';
 
 /**
  * The v1 `phase` field of the combined `agent.status.updated` payload — a
@@ -100,6 +105,7 @@ export interface LegacyStatusSnapshot {
   readonly contextTokens: number;
   /** Omitted when the context limit is unknown — 0 is never pushed (0 is the engine's "unknown" marker, not a real limit). */
   readonly maxContextTokens?: number;
+  readonly contextBreakdown?: ContextBreakdown;
   readonly model: string;
 }
 
@@ -136,7 +142,81 @@ export function readLegacyStatus(agent: IAgentScopeHandle): LegacyStatusSnapshot
     usage,
     contextTokens,
     maxContextTokens: maxContextTokens > 0 ? maxContextTokens : undefined,
+    contextBreakdown: readContextBreakdown(agent, contextTokens),
     model,
+  };
+}
+
+/**
+ * Approximate the request's system / tool-schema / message shares with the
+ * engine's own token estimators, then normalize those shares to the
+ * authoritative externally reported context total. Providers report only a
+ * single input total, so this is attribution rather than billing telemetry.
+ */
+export function readContextBreakdown(
+  agent: IAgentScopeHandle,
+  contextTokens: number,
+): ContextBreakdown | undefined {
+  const profile = agent.accessor.get(IAgentProfileService) as IAgentProfileService | undefined;
+  const tokenCounting = agent.accessor.get(IAgentTokenCountingService) as
+    | IAgentTokenCountingService
+    | undefined;
+  const context = agent.accessor.get(IAgentContextMemoryService) as
+    | IAgentContextMemoryService
+    | undefined;
+  const registry = agent.accessor.get(IAgentToolRegistryService) as
+    | IAgentToolRegistryService
+    | undefined;
+  const toolSelect = agent.accessor.get(IAgentToolSelectService) as
+    | IAgentToolSelectService
+    | undefined;
+  if (
+    profile === undefined ||
+    tokenCounting === undefined ||
+    context === undefined ||
+    registry === undefined ||
+    toolSelect === undefined
+  ) {
+    return undefined;
+  }
+  try {
+    const tools = toolSelect
+      .shapeTools(registry.list())
+      .filter((tool) => tool.deferred !== true)
+      .map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters ?? {},
+      }));
+    return normalizeContextBreakdown(contextTokens, {
+      systemTokens: tokenCounting.estimateText(profile.getSystemPrompt()),
+      toolsTokens: tokenCounting.estimateTools(tools),
+      messagesTokens: tokenCounting.estimateMessages(toolSelect.shapeHistory(context.get())),
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+export function normalizeContextBreakdown(
+  total: number,
+  estimate: Omit<ContextBreakdown, 'estimated'>,
+): ContextBreakdown {
+  const contextTotal = Math.max(0, Math.round(total));
+  const systemWeight = Math.max(0, estimate.systemTokens);
+  const toolsWeight = Math.max(0, estimate.toolsTokens);
+  const messagesWeight = Math.max(0, estimate.messagesTokens);
+  const estimatedTotal = systemWeight + toolsWeight + messagesWeight;
+  if (estimatedTotal <= 0) {
+    return { systemTokens: 0, toolsTokens: 0, messagesTokens: contextTotal, estimated: true };
+  }
+  const systemTokens = Math.floor((contextTotal * systemWeight) / estimatedTotal);
+  const toolsTokens = Math.floor((contextTotal * toolsWeight) / estimatedTotal);
+  return {
+    systemTokens,
+    toolsTokens,
+    messagesTokens: contextTotal - systemTokens - toolsTokens,
+    estimated: true,
   };
 }
 

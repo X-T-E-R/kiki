@@ -18,6 +18,7 @@ import { z } from 'zod';
 import { messageSchema } from './message';
 
 import { approvalRequestSchema } from './approval';
+import { restContextBreakdownSchema } from './context-usage';
 import { questionRequestSchema } from './question';
 import { sessionSchema } from './session';
 import { taskSchema } from './task';
@@ -89,6 +90,9 @@ export const sessionSnapshotResponseSchema = z.object({
    * for cross-version tolerance: older servers do not send it.
    */
   subagents: z.array(snapshotSubagentSchema).optional(),
+  context_tokens: z.number().int().nonnegative().optional(),
+  max_context_tokens: z.number().int().positive().optional(),
+  context_breakdown: restContextBreakdownSchema.optional(),
   pending_approvals: z.array(approvalRequestSchema),
   pending_questions: z.array(questionRequestSchema),
 });

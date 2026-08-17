@@ -280,6 +280,14 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
     expect(snap.epoch).toMatch(/^ep_/);
     expect(snap.messages.items).toEqual([]);
     expect(snap.in_flight_turn).toBeNull();
+    expect(snap.context_tokens).toBe(0);
+    expect(snap.max_context_tokens).toBeUndefined();
+    expect(snap.context_breakdown).toEqual({
+      system_tokens: 0,
+      tools_tokens: 0,
+      messages_tokens: 0,
+      estimated: true,
+    });
     expect(snap.pending_approvals).toEqual([]);
     expect(snap.pending_questions).toEqual([]);
   });

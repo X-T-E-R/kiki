@@ -13,7 +13,8 @@
  * path, with one coded exception: an `Error2(config.invalid)` escaping a
  * route (e.g. a session resume that fails the subagent model-pool check
  * outside any route-level mapper) maps to 40001 as well — a broken user
- * config is a client error, not a server fault.
+ * config is a client error, not a server fault. A `storage.locked` session
+ * activation conflict maps to its dedicated retryable wire code as well.
  *
  * The handler logs `err` + the resolved `request_id` so operators can
  * correlate log lines with the envelope returned to the client. This is the
@@ -50,6 +51,10 @@ export function installErrorHandler(app: ErrorHandlerHost): void {
       reply
         .status(200)
         .send(errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack));
+      return;
+    }
+    if (isError2(err) && err.code === ErrorCodes.STORAGE_LOCKED) {
+      reply.status(200).send(errEnvelope(ErrorCode.SESSION_LOCKED, err.message, requestId, err.stack));
       return;
     }
     req.log.error({ err, request_id: requestId }, 'unhandled error');

@@ -15,6 +15,7 @@ import type { MessageContent } from '../../../protocol/message';
 import type { PermissionMode } from '@moonshot-ai/agent-core-v2/agent/permissionPolicy/types';
 import type { UsageStatus } from '@moonshot-ai/agent-core-v2/agent/usage/usage';
 import type { AgentPhase } from '../../../services/legacyStatus/legacyStatus';
+import type { ContextBreakdown } from '../../../protocol/context-usage';
 import type { ConfigResponse } from '../../../protocol/rest-config';
 import type { Session, SessionPendingInteraction } from '../../../protocol/session';
 import type { Workspace } from '../../../protocol/workspace';
@@ -26,6 +27,7 @@ export interface AgentStatusUpdatedEvent {
   readonly contextTokens?: number;
   readonly maxContextTokens?: number;
   readonly contextUsage?: number;
+  readonly contextBreakdown?: ContextBreakdown;
   readonly planMode?: boolean;
   readonly swarmMode?: boolean;
   readonly permission?: PermissionMode;

@@ -108,6 +108,7 @@ import { readLegacyStatus, toLegacyPhase } from '../../../services/legacyStatus/
 import type { TranscriptService } from '../../../services/transcript/transcriptService';
 import { InFlightTurnTracker } from './inFlightTurnTracker';
 import { SubagentRosterTracker } from './subagentRosterTracker';
+import { TurnUsageTracker } from './turnUsageTracker';
 import {
   type EventEnvelope,
   type JournalLogger,
@@ -1129,6 +1130,7 @@ export class SessionEventBroadcaster {
 
   private attachAgent(sessionId: string, handle: IAgentScopeHandle): IDisposable {
     const eventBus = handle.accessor.get(IEventBus);
+    const turnUsage = new TurnUsageTracker();
     let lastLegacyStatus: string | undefined;
     const emitLegacyStatus = (): void => {
       const snapshot = readLegacyStatus(handle);
@@ -1144,6 +1146,10 @@ export class SessionEventBroadcaster {
     const disposables: IDisposable[] = [
       eventBus.subscribe((event) => {
         let projected = event;
+        const turnSummary = turnUsage.apply(event);
+        if (event.type === 'turn.ended' && turnSummary !== undefined) {
+          projected = { ...event, ...turnSummary } as DomainEvent;
+        }
         if (event.type === 'agent.status.updated') {
           // v2 emits status in slices, and the model slice rides only the
           // bind-time emission — for a subagent that lands before the client

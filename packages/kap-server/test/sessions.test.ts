@@ -729,12 +729,24 @@ describe('server-v2 /api/v1/sessions', () => {
       thinking_level: string;
       plan_mode: boolean;
       context_tokens: number;
+      context_breakdown?: {
+        system_tokens: number;
+        tools_tokens: number;
+        messages_tokens: number;
+        estimated: true;
+      };
     }>(`/api/v1/sessions/${created.body.data.id}/status`);
     expect(body.code).toBe(0);
     expect(body.data.busy).toBe(false);
     expect(typeof body.data.thinking_level).toBe('string');
     expect(typeof body.data.plan_mode).toBe('boolean');
     expect(body.data.context_tokens).toBe(0);
+    expect(body.data.context_breakdown).toEqual({
+      system_tokens: 0,
+      tools_tokens: 0,
+      messages_tokens: 0,
+      estimated: true,
+    });
   });
 
   it('reflects plan/swarm/permission agent_config in GET /status', async () => {

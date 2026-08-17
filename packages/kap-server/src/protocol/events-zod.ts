@@ -89,6 +89,7 @@ import type {
 import type { SubagentSuspendedEvent } from '@moonshot-ai/agent-core-v2/features/swarm/session/sessionSwarmService';
 import type { ToolUpdate } from '@moonshot-ai/agent-core-v2/tool/toolContract';
 
+import { contextBreakdownSchema } from './context-usage';
 import { ToolInputDisplaySchema } from './display';
 import { configResponseSchema } from './rest-config';
 import { sessionPendingInteractionSchema, sessionSchema } from './session';
@@ -558,6 +559,7 @@ export const agentStatusUpdatedEventSchema = z.object({
   contextTokens: z.number().optional(),
   maxContextTokens: z.number().optional(),
   contextUsage: z.number().optional(),
+  contextBreakdown: contextBreakdownSchema.optional(),
   planMode: z.boolean().optional(),
   swarmMode: z.boolean().optional(),
   permission: permissionModeSchema.optional(),
@@ -711,6 +713,8 @@ export const turnEndedEventSchema = z.object({
   reason: turnEndReasonSchema,
   error: kimiErrorPayloadSchema.optional(),
   durationMs: z.number().optional(),
+  usage: tokenUsageSchema.optional(),
+  tokensPerSecond: z.number().nonnegative().optional(),
   interruptReason: z
     .enum(['user_cancelled', 'aborted', 'max_steps', 'error', 'filtered', 'blocked'])
     .optional(),

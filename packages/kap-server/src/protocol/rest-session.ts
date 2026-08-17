@@ -19,13 +19,14 @@ import { z } from 'zod';
 
 import { messageSchema } from './message';
 import {
-  sessionStatusResponseSchema,
+  sessionStatusResponseSchema as coreSessionStatusResponseSchema,
   sessionWarningSchema,
   sessionWarningsResponseSchema,
   updateSessionProfileRequestSchema,
   type UpdateSessionProfileRequest,
 } from '@moonshot-ai/agent-core-v2/app/sessionLegacy/sessionProtocol';
 
+import { restContextBreakdownSchema } from './context-usage';
 import { goalSnapshotSchema } from './goal';
 import { cursorQuerySchema, pageResponseSchema } from './pagination';
 import {
@@ -35,18 +36,17 @@ import {
   sessionSchema,
 } from './session';
 
-export {
-  sessionStatusResponseSchema,
-  sessionWarningSchema,
-  sessionWarningsResponseSchema,
-  updateSessionProfileRequestSchema,
-};
+export { sessionWarningSchema, sessionWarningsResponseSchema, updateSessionProfileRequestSchema };
 export type {
-  SessionStatusResponse,
   SessionWarning,
   SessionWarningsResponse,
   UpdateSessionProfileRequest,
 } from '@moonshot-ai/agent-core-v2/app/sessionLegacy/sessionProtocol';
+
+export const sessionStatusResponseSchema = coreSessionStatusResponseSchema.extend({
+  context_breakdown: restContextBreakdownSchema.optional(),
+});
+export type SessionStatusResponse = z.infer<typeof sessionStatusResponseSchema>;
 
 export const createSessionRequestSchema = sessionCreateSchema;
 export type CreateSessionRequest = z.infer<typeof createSessionRequestSchema>;

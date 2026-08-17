@@ -66,6 +66,8 @@ $launcher = Join-Path $runtime 'kiki-mcp.ps1'
 
 `-ListBindings` still works when `runtime.json` has a stale signature, so it can diagnose a manual model edit. Re-signing validates the fixed installation fields and artifact hashes, uses the current Windows user's DPAPI-protected signing keys, and stops any affected recorded workspace KAP before rewriting its binding. On the next MCP launch, KAP applies the newly signed model and thinking effort to the persisted delegated session. A targeted re-sign leaves other existing workspace bindings on their current signed models; `-ResignAllBindings` updates all of them.
 
+When a Codex MCP tool call supplies an MCP `progressToken`, delegation dispatch and continuation calls stay open and emit `notifications/progress` updates for turn start, completed tool-call count, and terminal status; clients without a token keep the existing `kiki_status` / `kiki_events` polling behavior.
+
 ## Drive a session over the API
 
 The minimal flow with curl: check the server → create a session → subscribe to events → submit a prompt → read history back. The examples assume the server runs at the default address and the token is stored in the shell variable `TOKEN`.

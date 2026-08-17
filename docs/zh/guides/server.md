@@ -66,6 +66,8 @@ $launcher = Join-Path $runtime 'kiki-mcp.ps1'
 
 即使 `runtime.json` 的签名已经过期，`-ListBindings` 仍可运行，因此可以直接诊断手动修改模型造成的问题。重签会校验固定的安装字段与产物哈希，使用当前 Windows 用户受 DPAPI 保护的签名密钥，并在改写 binding 前停止受影响且已登记的 workspace KAP。下次启动 MCP 时，KAP 会把新签名的模型与 thinking effort 应用到持久化的委派会话。指定单个 binding 时，其他现有 workspace 会继续使用各自当前已签名的模型；`-ResignAllBindings` 则会更新全部 binding。
 
+Codex MCP 工具调用携带 MCP `progressToken` 时，委派 dispatch 与 continuation 调用会保持打开，并通过 `notifications/progress` 推送轮次开始、已完成工具调用计数和终止状态；未携带 token 的客户端继续使用现有的 `kiki_status` / `kiki_events` 轮询行为。
+
 ## 用 API 驱动一个会话
 
 下面用 curl 走一遍最小流程：确认服务状态 → 创建会话 → 订阅事件 → 提交提示词 → 回读历史。示例假设服务跑在默认地址，token 已存入 shell 变量 `TOKEN`。
