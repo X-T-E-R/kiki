@@ -12,6 +12,7 @@
  *                values too large to buffer in memory.
  *   - `append` → `open('a')` + write + `fh.sync()` (when `durable`), plus a
  *                one-time directory fsync per scope.
+ *   - `acquireLock` → tokenized cross-process file ownership with stale recovery.
  *   - `watch`  → chokidar on the parent directory, filtered to the exact key and
  *                debounced, so it survives atomic-replace renames and observes a
  *                file that does not exist yet at subscription time.
@@ -33,11 +34,15 @@ import { atomicWrite, atomicWriteStream, syncDir } from '#/_base/utils/fs';
 
 import type {
   IFileSystemStorageService,
+  IStorageLock,
   StorageAppendOptions,
+  StorageLockOptions,
   StorageReadRange,
   StorageWriteOptions,
 } from '#/persistence/interface/storage';
 import { toStorageIoError } from '#/persistence/interface/storage';
+
+import { acquireFileLock } from './fileLock';
 
 const WATCH_DEBOUNCE_MS = 150;
 
@@ -144,6 +149,17 @@ export class FileStorageService implements IFileSystemStorageService {
     } catch (error) {
       throw toStorageIoError(error, { path: filePath, op: 'append' });
     }
+  }
+
+  acquireLock(
+    scope: string,
+    key: string,
+    options: StorageLockOptions = {},
+  ): Promise<IStorageLock> {
+    return acquireFileLock(this.path(scope, key), options, {
+      dirMode: this.dirMode,
+      fileMode: this.fileMode,
+    });
   }
 
   async list(scope: string, prefix?: string): Promise<readonly string[]> {

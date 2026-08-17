@@ -33,6 +33,7 @@ export class SessionManager implements ISessionManager {
   private readonly owners = new Map<string, SessionLifecycleService>();
   private readonly controllers = new Map<string, SessionControllerEntry>();
   private readonly controllerEntries = new Set<SessionControllerEntry>();
+  private readonly resuming = new Map<string, Promise<ISessionScopeHandle | undefined>>();
   private readonly willCreateEmitter = new Emitter<SessionWillCreateEvent>();
   readonly onWillCreateSession: Event<SessionWillCreateEvent> = this.willCreateEmitter.event;
   private readonly didCreateEmitter = new Emitter<SessionCreatedEvent & IWaitUntil>();
@@ -60,7 +61,20 @@ export class SessionManager implements ISessionManager {
     return this.controllerForWorkspace(workspace.id).create(options);
   }
 
-  async resume(sessionId: string, options?: ResumeSessionOptions): Promise<ISessionScopeHandle | undefined> {
+  resume(sessionId: string, options?: ResumeSessionOptions): Promise<ISessionScopeHandle | undefined> {
+    const inflight = this.resuming.get(sessionId);
+    if (inflight !== undefined) return inflight;
+    const live = this.sessions.get(sessionId);
+    if (live !== undefined) return Promise.resolve(live);
+    const promise = this.doResume(sessionId, options).finally(() => this.resuming.delete(sessionId));
+    this.resuming.set(sessionId, promise);
+    return promise;
+  }
+
+  private async doResume(
+    sessionId: string,
+    options?: ResumeSessionOptions,
+  ): Promise<ISessionScopeHandle | undefined> {
     return (await this.controllerForSession(sessionId))?.resume(sessionId, options);
   }
 
@@ -123,6 +137,7 @@ export class SessionManager implements ISessionManager {
     this.controllers.clear();
     this.sessions.clear();
     this.owners.clear();
+    this.resuming.clear();
     this.willCreateEmitter.dispose();
     this.didCreateEmitter.dispose();
     this.willCloseEmitter.dispose();

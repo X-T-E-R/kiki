@@ -75,6 +75,39 @@ describe('SessionManager', () => {
     manager.dispose();
   });
 
+  it('coalesces concurrent same-process resumes before the workspace controller resolves', async () => {
+    const fake = controller('session-1');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const resume = vi.fn(async () => {
+      await gate;
+      return fake.handle;
+    });
+    (fake.service as unknown as { resume: typeof resume }).resume = resume;
+    const workspace = {
+      id: 'workspace-1',
+      program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service },
+    } as unknown as WorkspaceInstance;
+    const workspaces = {
+      getOrCreate: async () => workspace,
+      get: () => workspace,
+    } as unknown as IWorkspaceInstanceManager;
+    const index = {
+      get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }),
+    } as unknown as ISessionIndex;
+    const manager = new SessionManager(workspaces, index);
+
+    const first = manager.resume('session-1');
+    const second = manager.resume('session-1');
+    expect(first).toBe(second);
+    release();
+    await expect(first).resolves.toBe(fake.handle);
+    expect(resume).toHaveBeenCalledTimes(1);
+    manager.dispose();
+  });
+
   it('uses the replacement Program generation for new sessions while retaining live owners', async () => {
     const first = controller('session-1');
     const second = controller('session-2');

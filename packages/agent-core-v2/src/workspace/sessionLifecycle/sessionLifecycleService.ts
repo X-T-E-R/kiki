@@ -15,7 +15,9 @@
  * `session_index.jsonl`, raising `session.not_found` for ids this handler
  * never persisted. Pending metadata writes and the index mirror are
  * drained before any teardown, so a listing right after close/archive/delete
- * never reads a stale outcome. Session start and
+ * never reads a stale outcome. Every materialized session holds a renewable
+ * storage lock for its full scope lifetime, preventing another process sharing
+ * the same home from activating and writing the same session. Session start and
  * resume failures are reported through telemetry. Each Session scope
  * receives a telemetry view bound to its session id, while failures before
  * a scope is available use an ephemeral context view. Closing a session
@@ -102,7 +104,7 @@
  * experiment off these validations are no-ops and the section stays inert.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { join } from 'pathe';
 import { ulid } from 'ulid';
@@ -135,6 +137,10 @@ import { ErrorCodes, Error2, isError2 } from '#/errors';
 import { IHostFileSystem, type HostDirEntry } from '#/os/interface/hostFileSystem';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import {
+  IFileSystemStorageService,
+  type IStorageLock,
+} from '#/persistence/interface/storage';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
 import { labelsFromAgentMeta } from '#/session/agentLifecycle/subagentMetadata';
@@ -203,6 +209,7 @@ type MaterializeSessionOptions = Omit<CreateSessionOptions, 'sessionId'> & {
 };
 
 const NO_ABORT = new AbortController().signal;
+const SESSION_LOCK_SCOPE = 'session-locks';
 
 const SESSION_CREATE_RELOAD_SKILL_SOURCES: readonly string[] = [
   'user',
@@ -237,6 +244,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   private readonly _onDidForkSession = this._register(new Emitter<SessionForkedEvent>());
   readonly onDidForkSession: Event<SessionForkedEvent> = this._onDidForkSession.event;
   private readonly resuming = new Map<string, Promise<ISessionScopeHandle | undefined>>();
+  private readonly sessionLocks = new Map<string, IStorageLock>();
+  private readonly lockReleases = new Map<string, Promise<void>>();
 
   constructor(
     private readonly instantiation: IInstantiationService,
@@ -247,6 +256,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     @ISessionIndexMirror private readonly indexMirror: ISessionIndexMirror,
     @IAppendLogStore private readonly appendLogStore: IAppendLogStore,
     @IAtomicDocumentStore private readonly docs: IAtomicDocumentStore,
+    @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IHostFileSystem private readonly hostFs: IHostFileSystem,
     @ICronTaskPersistence private readonly cronStore: ICronTaskPersistence,
     @IEventService private readonly event: IEventService,
@@ -273,6 +283,11 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   ) {
     super();
     if (onDispose !== undefined) this._register({ dispose: onDispose });
+    this._register({
+      dispose: () => {
+        for (const sessionId of this.sessionLocks.keys()) void this.releaseSessionLock(sessionId);
+      },
+    });
   }
 
   private get workspaceId(): string {
@@ -281,6 +296,34 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
 
   private get handlerScope(): string {
     return this.workspaceContext.persistenceScope;
+  }
+
+  private async acquireSessionLock(sessionId: string): Promise<void> {
+    if (this.sessionLocks.has(sessionId)) return;
+    const releasing = this.lockReleases.get(sessionId);
+    if (releasing !== undefined) await releasing;
+    const lockKey = `${createHash('sha256')
+      .update(sessionScopeOf(this.handlerScope, sessionId))
+      .digest('hex')}.lock`;
+    const lock = await this.storage.acquireLock(SESSION_LOCK_SCOPE, lockKey, {
+      owner: {
+        sessionId,
+        workspaceId: this.workspaceId,
+        scope: sessionScopeOf(this.handlerScope, sessionId),
+      },
+    });
+    this.sessionLocks.set(sessionId, lock);
+  }
+
+  private releaseSessionLock(sessionId: string): Promise<void> {
+    const releasing = this.lockReleases.get(sessionId);
+    if (releasing !== undefined) return releasing;
+    const lock = this.sessionLocks.get(sessionId);
+    if (lock === undefined) return Promise.resolve();
+    this.sessionLocks.delete(sessionId);
+    const promise = lock.release().finally(() => this.lockReleases.delete(sessionId));
+    this.lockReleases.set(sessionId, promise);
+    return promise;
   }
 
   async create(opts: CreateSessionOptions): Promise<ISessionScopeHandle> {
@@ -307,6 +350,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       this.sessions.delete(sessionId);
       await this.drainAgents(handle).catch(() => {});
       handle.dispose();
+      await this.releaseSessionLock(sessionId);
       await this.hostFs.remove(sessionDir).catch(() => {});
       throw error;
     }
@@ -327,6 +371,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     await this.assertSubagentModelPoolPreFlight();
     await this.workspaceDirs.ready;
     await this.workspaceDirs.mergeAdditionalDirs(opts.workDir, opts.additionalDirs ?? []);
+    await this.acquireSessionLock(opts.sessionId);
     const ctx: ISessionContext = {
       _serviceBrand: undefined,
       sessionId: opts.sessionId,
@@ -337,38 +382,48 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       scope: (subKey?: string): string =>
         subKey === undefined || subKey === '' ? sessionScope : `${sessionScope}/${subKey}`,
     };
-    const handle = createScopedChildHandle(
-      this.instantiation,
-      LifecycleScope.Session,
-      opts.sessionId,
-      {
-        seeds: [
-          ...sessionContextSeed(ctx),
-          [ITelemetryService, this.telemetry.withContext({ sessionId: opts.sessionId })],
-          ...sessionAgentProfileCatalogSeed({
-            _serviceBrand: undefined,
-            workspaceKey: workspaceId,
-          }),
-          [ISessionSkillCatalogData, this.workspaceSkillCatalog.sessionData()],
-          [ISessionInstructionsProvider, this.workspaceInstructions.sessionProvider()],
-          [ISessionMcpHandle, this.workspaceMcp.sessionHandle()],
-          [ISessionWorkspaceInfo, this.workspaceDirs.sessionInfo()],
-          ...sessionEphemeralMcpServersSeed(opts.mcpServers ?? {}),
-        ],
-        configureContainer: (container) => {
-          this._onWillCreateSession.fire({
-            sessionId: opts.sessionId,
-            readSeed: (id) => container.invokeFunction((accessor) => accessor.get(id)),
-            contributeSeed: (id, value) => {
-              container.provide(id, value);
-            },
-            onSessionDispose: (dispose) => {
-              container.anchorKernelEntry(dispose, 'sessionLifecycle:willCreateParticipant');
-            },
-          });
+    let handle: ISessionScopeHandle;
+    try {
+      handle = createScopedChildHandle(
+        this.instantiation,
+        LifecycleScope.Session,
+        opts.sessionId,
+        {
+          seeds: [
+            ...sessionContextSeed(ctx),
+            [ITelemetryService, this.telemetry.withContext({ sessionId: opts.sessionId })],
+            ...sessionAgentProfileCatalogSeed({
+              _serviceBrand: undefined,
+              workspaceKey: workspaceId,
+            }),
+            [ISessionSkillCatalogData, this.workspaceSkillCatalog.sessionData()],
+            [ISessionInstructionsProvider, this.workspaceInstructions.sessionProvider()],
+            [ISessionMcpHandle, this.workspaceMcp.sessionHandle()],
+            [ISessionWorkspaceInfo, this.workspaceDirs.sessionInfo()],
+            ...sessionEphemeralMcpServersSeed(opts.mcpServers ?? {}),
+          ],
+          configureContainer: (container) => {
+            container.anchorKernelEntry(
+              () => void this.releaseSessionLock(opts.sessionId),
+              'sessionLifecycle:sessionLock',
+            );
+            this._onWillCreateSession.fire({
+              sessionId: opts.sessionId,
+              readSeed: (id) => container.invokeFunction((accessor) => accessor.get(id)),
+              contributeSeed: (id, value) => {
+                container.provide(id, value);
+              },
+              onSessionDispose: (dispose) => {
+                container.anchorKernelEntry(dispose, 'sessionLifecycle:willCreateParticipant');
+              },
+            });
+          },
         },
-      },
-    ) as ISessionScopeHandle;
+      ) as ISessionScopeHandle;
+    } catch (error) {
+      await this.releaseSessionLock(opts.sessionId);
+      throw error;
+    }
     try {
       await handle.accessor.get(ISessionMetadata).ready;
       await handle.accessor.get(ISessionToolPolicy).ready;
@@ -381,6 +436,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       ]);
     } catch (error) {
       handle.dispose();
+      await this.releaseSessionLock(opts.sessionId);
       void this.explicitAgentProfileLoader.reload().catch(() => undefined);
       throw error;
     }
@@ -471,6 +527,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     await drainSessionMetadataWrites();
     await this.indexMirror.drain();
     handle.dispose();
+    await this.releaseSessionLock(sessionId);
     this._onDidCloseSession.fire({ sessionId });
   }
 
@@ -489,6 +546,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     await drainSessionMetadataWrites();
     await this.indexMirror.drain();
     handle.dispose();
+    await this.releaseSessionLock(sessionId);
     this._onDidArchiveSession.fire({ sessionId });
   }
 
@@ -695,6 +753,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         } catch {
         }
       }
+      if (targetId !== undefined) await this.releaseSessionLock(targetId);
       if (targetSessionDir !== undefined) {
         await this.hostFs.remove(targetSessionDir).catch(() => {});
       }

@@ -2,10 +2,11 @@
  * `storage` domain — the filesystem persistence backend.
  *
  * `IFileSystemStorageService` is the filesystem-specific byte store. It
- * exposes two irreducible durable primitives side by side:
+ * exposes three irreducible durable primitives side by side:
  *
- *   - `write`  — atomic whole-value replacement (the `Config` access pattern).
- *   - `append` — ordered, durable byte extension   (the `Record` access pattern).
+ *   - `write`       — atomic whole-value replacement (the `Config` access pattern).
+ *   - `append`      — ordered, durable byte extension (the `Record` access pattern).
+ *   - `acquireLock` — renewable exclusive ownership across local processes.
  *
  * They are not interchangeable: building `append` on top of `write` is O(n)
  * per append, and building `write` on top of `append` yields awkward "read
@@ -155,6 +156,16 @@ export interface StorageAppendOptions {
   readonly durable?: boolean;
 }
 
+export interface StorageLockOptions {
+  readonly leaseMs?: number;
+  readonly renewIntervalMs?: number;
+  readonly owner?: Readonly<Record<string, unknown>>;
+}
+
+export interface IStorageLock {
+  release(): Promise<void>;
+}
+
 export interface StorageReadRange {
   readonly start: number;
   readonly end: number;
@@ -173,6 +184,7 @@ export interface IFileSystemStorageService {
     options?: StorageWriteOptions,
   ): Promise<void>;
   append(scope: string, key: string, data: Uint8Array, options?: StorageAppendOptions): Promise<void>;
+  acquireLock(scope: string, key: string, options?: StorageLockOptions): Promise<IStorageLock>;
   list(scope: string, prefix?: string): Promise<readonly string[]>;
   delete(scope: string, key: string): Promise<void>;
   watch?(scope: string, key: string): Event<void>;

@@ -25,6 +25,7 @@ import { IModelService } from '#/kosong/model/model';
 import { IProviderService } from '#/kosong/provider/provider';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { Error2, ErrorCodes } from '#/errors';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { LocalRuntimeProviderFactory } from '#/runtime/localRuntime';
@@ -74,6 +75,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IAppendLogStore private readonly appendLogStore: IAppendLogStore,
     @IAtomicDocumentStore private readonly docs: IAtomicDocumentStore,
+    @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     private readonly unitHostFactory: RuntimeUnitHostFactory = new SharedRuntimeUnitHostFactory(),
   ) {
     this.providers.set('local', new LocalRuntimeProviderFactory());
@@ -209,6 +211,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
           this.indexMirror,
           this.appendLogStore,
           this.docs,
+          this.storage,
           input.fs,
           this.cronStore,
           this.event,

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
 import { join } from 'pathe';
@@ -85,6 +85,104 @@ describe('FileStorageService — error translation', () => {
       code: 'storage.io_failed',
       details: { op: 'write', errno: expect.any(String) },
     });
+  });
+});
+
+describe('FileStorageService — exclusive locks', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'fss-lock-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('rejects a second holder with storage.locked and releases ownership', async () => {
+    const first = new FileStorageService(dir);
+    const second = new FileStorageService(dir);
+    const held = await first.acquireLock('session-locks', 'session.lock', {
+      owner: { sessionId: 'session-1', workspaceId: 'workspace-1' },
+    });
+
+    await expect(
+      second.acquireLock('session-locks', 'session.lock', {
+        owner: { sessionId: 'session-1', workspaceId: 'workspace-1' },
+      }),
+    ).rejects.toMatchObject({
+      code: 'storage.locked',
+      details: {
+        owner: { sessionId: 'session-1', workspaceId: 'workspace-1' },
+        pid: process.pid,
+      },
+    });
+
+    await held.release();
+    const replacement = await second.acquireLock('session-locks', 'session.lock');
+    await replacement.release();
+  });
+
+  it('reclaims an expired lease even when the recorded pid is alive', async () => {
+    const lockDir = join(dir, 'session-locks');
+    const lockPath = join(lockDir, 'session.lock');
+    await mkdir(lockDir, { recursive: true });
+    await writeFile(
+      lockPath,
+      JSON.stringify({
+        version: 1,
+        pid: process.pid,
+        processStartedAt: Math.floor(Date.now() - process.uptime() * 1_000),
+        token: 'expired-owner',
+        acquiredAt: Date.now() - 10_000,
+        leaseMs: 1_000,
+        owner: { sessionId: 'session-stale' },
+      }),
+    );
+    const expiredAt = new Date(Date.now() - 5_000);
+    await utimes(lockPath, expiredAt, expiredAt);
+
+    const svc = new FileStorageService(dir);
+    const lock = await svc.acquireLock('session-locks', 'session.lock', {
+      leaseMs: 1_000,
+      renewIntervalMs: 250,
+      owner: { sessionId: 'session-stale' },
+    });
+    await lock.release();
+  });
+
+  it('allows exactly one contender to win a stale-lock takeover', async () => {
+    const lockDir = join(dir, 'session-locks');
+    const lockPath = join(lockDir, 'session.lock');
+    await mkdir(lockDir, { recursive: true });
+    await writeFile(
+      lockPath,
+      JSON.stringify({
+        version: 1,
+        pid: 2_147_483_647,
+        processStartedAt: 0,
+        token: 'dead-owner',
+        acquiredAt: Date.now() - 10_000,
+        leaseMs: 1_000,
+      }),
+    );
+
+    const contenders = [new FileStorageService(dir), new FileStorageService(dir)];
+    const results = await Promise.allSettled(
+      contenders.map((svc, index) =>
+        svc.acquireLock('session-locks', 'session.lock', {
+          leaseMs: 1_000,
+          renewIntervalMs: 250,
+          owner: { sessionId: `session-${index}` },
+        }),
+      ),
+    );
+    const winners = results.filter((result) => result.status === 'fulfilled');
+    const losers = results.filter((result) => result.status === 'rejected');
+    expect(winners).toHaveLength(1);
+    expect(losers).toHaveLength(1);
+    expect(losers[0]).toMatchObject({ reason: { code: 'storage.locked' } });
+    if (winners[0]?.status === 'fulfilled') await winners[0].value.release();
   });
 });
 

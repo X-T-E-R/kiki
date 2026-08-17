@@ -21,7 +21,11 @@ import { Emitter, type Event } from '#/_base/event';
 
 import {
   IFileSystemStorageService,
+  StorageError,
+  StorageErrors,
+  type IStorageLock,
   type StorageAppendOptions,
+  type StorageLockOptions,
   type StorageReadRange,
   type StorageWriteOptions,
 } from '#/persistence/interface/storage';
@@ -36,6 +40,7 @@ export class InMemoryStorageService implements IFileSystemStorageService {
 
   private readonly scopes = new Map<string, Map<string, Uint8Array>>();
   private readonly watchers = new Map<string, WatchEntry>();
+  private readonly locks = new Map<string, symbol>();
 
   async read(scope: string, key: string): Promise<Uint8Array | undefined> {
     return this.scopes.get(scope)?.get(key);
@@ -107,6 +112,30 @@ export class InMemoryStorageService implements IFileSystemStorageService {
     merged.set(data, existing.byteLength);
     bucket.set(key, merged);
     this.notifyWatchers(scope, key);
+  }
+
+  async acquireLock(
+    scope: string,
+    key: string,
+    options: StorageLockOptions = {},
+  ): Promise<IStorageLock> {
+    const id = this.watchKey(scope, key);
+    if (this.locks.has(id)) {
+      throw new StorageError(
+        StorageErrors.codes.STORAGE_LOCKED,
+        typeof options.owner?.['sessionId'] === 'string'
+          ? `Session "${options.owner['sessionId']}" is active in this process`
+          : 'Storage is locked',
+        { details: { scope, key, owner: options.owner } },
+      );
+    }
+    const token = Symbol(id);
+    this.locks.set(id, token);
+    return {
+      release: async () => {
+        if (this.locks.get(id) === token) this.locks.delete(id);
+      },
+    };
   }
 
   async list(scope: string, prefix?: string): Promise<readonly string[]> {
