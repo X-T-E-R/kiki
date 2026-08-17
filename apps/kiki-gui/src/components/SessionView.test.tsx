@@ -37,6 +37,7 @@ import {
   resolveApprovalShortcutTarget,
   resolveControlledFlag,
   resolveControlledValue,
+  replaceQueuedPrompt,
   resolveSessionSeatPhase,
   SessionRouteView,
   shouldClearModeOverride,
@@ -188,6 +189,32 @@ describe('QueueStrip', () => {
       </I18nProvider>,
     );
     expect(withHandler).toContain('aria-label="Edit queued prompt"');
+  });
+});
+
+describe('queued prompt editing', () => {
+  it('removes the old prompt before resubmitting the replacement at the tail', async () => {
+    const calls: string[] = [];
+    await replaceQueuedPrompt(
+      'p1',
+      'replacement',
+      async (id) => { calls.push(`abort:${id}`); },
+      async (text) => { calls.push(`send:${text}`); },
+    );
+    expect(calls).toEqual(['abort:p1', 'send:replacement']);
+  });
+
+  it('does not resubmit when removing the old queued prompt fails', async () => {
+    const resend = vi.fn();
+    await expect(
+      replaceQueuedPrompt(
+        'p1',
+        'replacement',
+        async () => { throw new Error('abort failed'); },
+        resend,
+      ),
+    ).rejects.toThrow('abort failed');
+    expect(resend).not.toHaveBeenCalled();
   });
 });
 

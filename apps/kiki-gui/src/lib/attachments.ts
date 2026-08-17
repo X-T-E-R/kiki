@@ -79,6 +79,45 @@ export function validateImageFile(
   return null;
 }
 
+/**
+ * Reserve image capacity synchronously before FileReader work begins. Callers
+ * can carry `next` into another same-tick reservation instead of validating
+ * against a stale rendered attachment array.
+ */
+export function reserveImageFiles<T extends { name: string; size: number; type: string }>(
+  files: readonly T[],
+  current: readonly ComposerAttachment[],
+): {
+  readonly accepted: readonly T[];
+  readonly stubs: readonly ImageAttachment[];
+  readonly next: readonly ComposerAttachment[];
+  readonly lastProblem: ValidationIssue | null;
+} {
+  let next = current;
+  const accepted: T[] = [];
+  const stubs: ImageAttachment[] = [];
+  let lastProblem: ValidationIssue | null = null;
+  for (const file of files) {
+    const problem = validateImageFile(file, next);
+    if (problem !== null) {
+      lastProblem = problem;
+      continue;
+    }
+    const stub: ImageAttachment = {
+      kind: 'image',
+      name: file.name,
+      mediaType: file.type,
+      data: '',
+      size: file.size,
+      previewUrl: '',
+    };
+    accepted.push(file);
+    stubs.push(stub);
+    next = [...next, stub];
+  }
+  return { accepted, stubs, next, lastProblem };
+}
+
 /** Reads a pasted/dropped image File into an attachment (base64 + preview). */
 export function fileToImageAttachment(file: File): Promise<ImageAttachment> {
   return new Promise((resolve, reject) => {

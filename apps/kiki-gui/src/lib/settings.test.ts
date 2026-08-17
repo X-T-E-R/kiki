@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  appendExtraSkillDirs,
   buildSettingsSearchIndex,
   clearRestartRequirement,
   fetchRemoteModels,
@@ -159,6 +160,15 @@ describe('settings persistence and validation', () => {
       loop_control: undefined,
       background: { max: 2 },
     });
+  });
+
+  it('appends native directory selections without dropping manual entries or duplicating paths', () => {
+    expect(
+      appendExtraSkillDirs(
+        'C:\\skills\\shared\nD:\\team\\skills',
+        ['D:\\team\\skills', 'E:\\personal\\skills', '  '],
+      ),
+    ).toBe('C:\\skills\\shared\nD:\\team\\skills\nE:\\personal\\skills');
   });
 
   it('builds an editable provider draft without ever reading an existing secret', () => {

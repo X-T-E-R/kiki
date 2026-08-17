@@ -29,7 +29,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
 import { Markdown } from './Markdown';
-import { splitPrefixSegments, splitStreamingText } from './Transcript';
+import { splitPrefixSegments, splitStreamingText, TurnTailLine } from './Transcript';
 
 vi.mock('./markdown/streamdown-plugins', async (importOriginal) => {
   const original = await importOriginal<typeof import('./markdown/streamdown-plugins')>();
@@ -259,5 +259,28 @@ describe('splitPrefixSegments streaming differential', () => {
     for (const chunk of chunks.slice(0, -1)) {
       expect(chunk.length).toBeLessThanOrEqual(2200); // target + one block
     }
+  });
+
+  it('shows per-turn decode throughput in the turn tail', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <TurnTailLine
+        tail={{
+          turnId: '1',
+          endedAt: new Date().toISOString(),
+          durationMs: 4_200,
+          ttftMs: 1_500,
+          usage: {
+            inputOther: 100,
+            output: 30,
+            inputCacheRead: 20,
+            inputCacheCreation: 10,
+          },
+          tokensPerSecond: 19.6,
+        }}
+      />,
+    );
+    expect(probe.container.querySelector('[data-turn-tail]')?.textContent).toContain('20 tok/s');
   });
 });

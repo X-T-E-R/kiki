@@ -14,7 +14,7 @@
  * `document.title` follows the active route; toasts mount at the root.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Navigate,
@@ -23,8 +23,12 @@ import {
   useLocation,
   useMatch,
   useNavigate,
+  type NavigateOptions,
+  type To,
 } from 'react-router-dom';
 
+import { ConfirmDialog } from './components/ConfirmDialog';
+import { DirtyGuardContext, shouldGuardNavigation } from './components/dirtyGuard';
 import { NewSessionDialog } from './components/NewSessionDialog';
 import { NewSessionPage } from './components/NewSessionPage';
 import { CapabilitiesPage } from './components/capabilities/CapabilitiesPage';
@@ -73,13 +77,44 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 export function App() {
   const { client, socket, wsStatus } = useConnection();
   const { t, locale } = useI18n();
-  const navigate = useNavigate();
+  const rawNavigate = useNavigate();
+  const location = useLocation();
   const desktop = isDesktopRuntime();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [dirtyIds, setDirtyIds] = useState<readonly string[]>([]);
+  const [pendingNavigation, setPendingNavigation] = useState<{
+    readonly target: To;
+    readonly options?: NavigateOptions;
+  } | null>(null);
+
+  const reportDirty = useCallback((id: string, dirty: boolean) => {
+    setDirtyIds((current) => {
+      const has = current.includes(id);
+      if (has === dirty) return current;
+      return dirty ? [...current, id] : current.filter((entry) => entry !== id);
+    });
+  }, []);
+  const navigate = useCallback((target: To, options?: NavigateOptions) => {
+    if (shouldGuardNavigation(location, target, dirtyIds.length > 0)) {
+      setPendingNavigation({ target, options });
+      return;
+    }
+    void rawNavigate(target, options);
+  }, [dirtyIds.length, location, rawNavigate]);
+  const dirtyGuardValue = useMemo(
+    () => ({ dirty: dirtyIds.length > 0, reportDirty, navigate }),
+    [dirtyIds.length, navigate, reportDirty],
+  );
+  const confirmNavigation = () => {
+    const pending = pendingNavigation;
+    setPendingNavigation(null);
+    setDirtyIds([]);
+    if (pending !== null) void rawNavigate(pending.target, pending.options);
+  };
 
   // Sync native desktop prefs into localStorage on boot; listen for tray
   // "New Session" events.
@@ -207,7 +242,6 @@ export function App() {
   // Esc on the settings route returns to the last non-settings page. Editable
   // targets, open dialogs, and the mobile sidebar consume their own Escape
   // first (dialogs stop propagation / the flags below short-circuit us).
-  const location = useLocation();
   const lastNonSettingsRef = useRef('/');
   useEffect(() => {
     if (!isSettingsRoute) lastNonSettingsRef.current = `${location.pathname}${location.search}`;
@@ -262,7 +296,8 @@ export function App() {
   }, [sidebarOpen]);
 
   return (
-    <div className="flex h-full overflow-hidden bg-paper">
+    <DirtyGuardContext.Provider value={dirtyGuardValue}>
+      <div className="flex h-full overflow-hidden bg-paper">
       <Sidebar
         className={`app-sidebar ${sidebarOpen ? 'open' : ''}`}
         activeSessionId={activeSessionId}
@@ -347,8 +382,18 @@ export function App() {
       {quickSwitcherOpen ? (
         <QuickSwitcher sessions={sessions} onClose={() => { setQuickSwitcherOpen(false); }} />
       ) : null}
-      {shortcutsOpen ? <ShortcutsOverlay onClose={() => { setShortcutsOpen(false); }} /> : null}
-      <Toasts />
-    </div>
+        {shortcutsOpen ? <ShortcutsOverlay onClose={() => { setShortcutsOpen(false); }} /> : null}
+        <Toasts />
+      </div>
+      <ConfirmDialog
+        open={pendingNavigation !== null}
+        title={t('st.dirty.leaveTitle')}
+        body={t('st.dirty.leaveBody')}
+        confirmLabel={t('st.dirty.leaveConfirm')}
+        cancelLabel={t('st.dirty.stay')}
+        onConfirm={confirmNavigation}
+        onCancel={() => { setPendingNavigation(null); }}
+      />
+    </DirtyGuardContext.Provider>
   );
 }

@@ -20,6 +20,7 @@ import type { ApprovalDecision, QuestionAnswer } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../i18n';
 import type { I18nKey } from '../i18n/locale';
+import { formatTokensPerSecond } from '../lib/usage';
 import {
   agentChildren,
   stabilizeAgentForest,
@@ -1246,10 +1247,9 @@ function formatLatencySeconds(ms: number): string {
 
 /**
  * End-of-turn readout (deepseek-harness's turn tail, MIT): end clock ·
- * Ran for … · TTFT …, from the turn.ended frame and live frame timestamps.
- * tok/s is skipped — the wire carries no per-turn token counts.
+ * Ran for … · TTFT … · output decode throughput.
  */
-const TurnTailLine = memo(function TurnTailLine({ tail }: { tail: TurnTailInfo }) {
+export const TurnTailLine = memo(function TurnTailLine({ tail }: { tail: TurnTailInfo }) {
   const { t, time } = useI18n();
   const facts: string[] = [time.relativeTime(tail.endedAt)];
   if (tail.durationMs !== undefined) {
@@ -1257,6 +1257,11 @@ const TurnTailLine = memo(function TurnTailLine({ tail }: { tail: TurnTailInfo }
   }
   if (tail.ttftMs !== undefined) {
     facts.push(t('transcript.ttft', { seconds: formatLatencySeconds(tail.ttftMs) }));
+  }
+  if (tail.tokensPerSecond !== undefined) {
+    facts.push(
+      t('transcript.tokensPerSecond', { rate: formatTokensPerSecond(tail.tokensPerSecond) }),
+    );
   }
   return (
     <div data-turn-tail className="anim-enter flex items-center gap-3 py-0.5">

@@ -71,8 +71,32 @@ export type InteractionEvent =
   | QuestionAnsweredEvent
   | QuestionDismissedEvent;
 
+export interface WireTokenUsage {
+  readonly inputOther: number;
+  readonly output: number;
+  readonly inputCacheRead: number;
+  readonly inputCacheCreation: number;
+}
+
+export interface ContextBreakdown {
+  readonly systemTokens: number;
+  readonly toolsTokens: number;
+  readonly messagesTokens: number;
+  readonly estimated: true;
+}
+
+type ExtendedAgentEvent =
+  | Exclude<AgentEvent, { type: 'turn.ended' | 'agent.status.updated' }>
+  | (Extract<AgentEvent, { type: 'turn.ended' }> & {
+      readonly usage?: WireTokenUsage;
+      readonly tokensPerSecond?: number;
+    })
+  | (Extract<AgentEvent, { type: 'agent.status.updated' }> & {
+      readonly contextBreakdown?: ContextBreakdown;
+    });
+
 /** Any payload that can ride a `session_event` frame. */
-export type SessionEventPayload = AgentEvent | InteractionEvent;
+export type SessionEventPayload = ExtendedAgentEvent | InteractionEvent;
 
 /**
  * The WS `session_event` envelope: frame `type` mirrors the payload event

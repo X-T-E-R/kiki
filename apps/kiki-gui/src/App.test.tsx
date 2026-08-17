@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { isEditableTarget } from './App';
 import { resolveFallbackPhase } from './components/ConversationShell';
+import { shouldGuardNavigation } from './components/dirtyGuard';
 
 // App pulls the whole route tree; only the SessionView branch needs xterm
 // (no `self` under node) and none of it is under test here.
@@ -59,6 +60,17 @@ describe('isEditableTarget', () => {
     expect(isEditableTarget(new FakePlainDiv())).toBe(false);
     expect(isEditableTarget(null)).toBe(false);
     expect(isEditableTarget({ ...eventTargetStub })).toBe(false);
+  });
+});
+
+describe('app navigation dirty guard', () => {
+  const current = { pathname: '/settings/providers', search: '', hash: '' };
+
+  it('guards application-level routes while allowing clean and no-op navigation', () => {
+    expect(shouldGuardNavigation(current, '/capabilities', true)).toBe(true);
+    expect(shouldGuardNavigation(current, '/s/example', true)).toBe(true);
+    expect(shouldGuardNavigation(current, '/settings/providers', true)).toBe(false);
+    expect(shouldGuardNavigation(current, '/capabilities', false)).toBe(false);
   });
 });
 

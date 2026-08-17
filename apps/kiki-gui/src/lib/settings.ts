@@ -375,6 +375,15 @@ export function validateExtraSkillDirs(value: string): ValidationIssue | null {
   return null;
 }
 
+/** Append native directory selections to the newline-delimited draft, deduped. */
+export function appendExtraSkillDirs(value: string, selected: readonly string[]): string {
+  const entries = value.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean);
+  for (const path of selected.map((entry) => entry.trim()).filter(Boolean)) {
+    if (!entries.includes(path)) entries.push(path);
+  }
+  return entries.join('\n');
+}
+
 export function parseExperimentalFlags(value: string): Record<string, boolean> {
   let parsed: unknown;
   try {

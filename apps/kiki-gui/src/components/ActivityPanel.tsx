@@ -15,13 +15,13 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueries } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
 
 import type { Session } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../i18n';
 import { buildActivityModel, formatElapsedClock, type ActivityEntry } from '../lib/activity';
 import { useConnection } from '../state/connection';
+import { useGuardedNavigate } from './dirtyGuard';
 
 const OPEN_STORAGE_KEY = 'kiki.activity.open';
 
@@ -126,7 +126,7 @@ function WaitingRow({ entry, onOpen }: { entry: ActivityEntry; onOpen: () => voi
 export function ActivityPanel({ sessions }: { sessions: readonly Session[] }) {
   const { client } = useConnection();
   const { t, tp } = useI18n();
-  const navigate = useNavigate();
+  const navigate = useGuardedNavigate();
   const untitled = t('sidebar.untitled');
 
   const busyIds = useMemo(

@@ -14,6 +14,7 @@ import type { PermissionMode, Session } from '@moonshot-ai/protocol';
 import { AgentBreadcrumb, AgentRelations } from './AgentBreadcrumb';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Composer, resolveSelectedEffort } from './Composer';
+import { ContextBreakdownProvider } from './ContextMeter';
 import {
   useConversationShell,
   useRegisterSeat,
@@ -97,6 +98,17 @@ import {
   type SubagentBlock,
   type UserBlock,
 } from '../state/transcript';
+
+/** Queue edit wire fallback: remove the old prompt, then resubmit at the tail. */
+export async function replaceQueuedPrompt(
+  promptId: string,
+  text: string,
+  abort: (id: string) => Promise<void>,
+  resend: (replacement: string) => Promise<void>,
+): Promise<void> {
+  await abort(promptId);
+  await resend(text);
+}
 
 function useActiveController(sessionId: string | undefined): SessionController | null {
   const { client, socket } = useConnection();
@@ -1375,6 +1387,30 @@ export function SessionView({
           });
         });
       },
+      editQueued: (promptId: string, text: string) =>
+        replaceQueuedPrompt(
+          promptId,
+          text,
+          (id) => controller.abortPrompt(id),
+          (replacement) => controller.sendPrompt({
+            text: replacement,
+            model: effectiveModel,
+            thinking: effectiveEffort,
+            permissionMode,
+            planMode,
+            swarmMode,
+            goalObjective,
+            goalControl,
+          }),
+        ).catch((error: unknown) => {
+          pushToast({
+            tone: 'error',
+            text: t('sv.editQueuedFailed', {
+              detail: error instanceof Error ? error.message : String(error),
+            }),
+          });
+          throw error;
+        }),
       sendNowQueued: (promptId: string) => {
         return controller.steerQueued(promptId).catch((error: unknown) => {
           pushToast({
@@ -1584,6 +1620,10 @@ export function SessionView({
     (promptId: string) => actions?.cancelQueued(promptId) ?? Promise.resolve(),
     [actions],
   );
+  const handleEditQueued = useCallback(
+    (promptId: string, text: string) => actions?.editQueued(promptId, text) ?? Promise.resolve(),
+    [actions],
+  );
   // Transcript's prop type predates the queue strip and wants a void return:
   // hand it a memoized fire-and-forget view of the same action.
   const handleCancelQueuedChips = useCallback(
@@ -1708,46 +1748,48 @@ export function SessionView({
         : 'active',
     composer:
       selectedAgentId !== undefined ? null : (
-        <Composer
-          busy={composerBusy}
-          disabled={composerDisabled}
-          busyPlaceholder={state.resyncing || state.resyncFailed ? t('sv.sendPaused') : undefined}
-          value={draft}
-          onChange={updateDraft}
-          model={modelOverride}
-          defaultModel={sessionModel}
-          serverDefaultModel={inheritedDefault}
-          modelSource={modelSource}
-          permissionMode={permissionMode}
-          planMode={planMode}
-          swarmMode={swarmMode}
-          goalObjective={goalObjective}
-          goalStatus={state.goal?.status}
-          goalControl={goalControl}
-          efforts={supportedEfforts}
-          effort={effectiveEffort}
-          contextUsage={
-            contextUsed !== undefined && contextLimit !== undefined
-              ? { used: contextUsed, limit: contextLimit }
-              : undefined
-          }
-          sessionId={sessionId}
-          fsSearch={handleFsSearch}
-          attachments={attachments}
-          onChangeAttachments={setAttachments}
-          onActivateSkill={handleActivateSkill}
-          onSessionAction={runSessionAction}
-          onCompactContext={handleCompactContext}
-          onChangeModel={setModelOverride}
-          onChangePermissionMode={setPermissionOverride}
-          onChangePlanMode={setPlanOverride}
-          onChangeSwarmMode={setSwarmOverride}
-          onChangeGoalObjective={setGoalObjective}
-          onChangeGoalControl={setGoalControl}
-          onChangeEffort={setEffortOverride}
-          onSend={handleComposerSend}
-          onAbort={handleComposerAbort}
-        />
+        <ContextBreakdownProvider value={state.contextBreakdown}>
+          <Composer
+            busy={composerBusy}
+            disabled={composerDisabled}
+            busyPlaceholder={state.resyncing || state.resyncFailed ? t('sv.sendPaused') : undefined}
+            value={draft}
+            onChange={updateDraft}
+            model={modelOverride}
+            defaultModel={sessionModel}
+            serverDefaultModel={inheritedDefault}
+            modelSource={modelSource}
+            permissionMode={permissionMode}
+            planMode={planMode}
+            swarmMode={swarmMode}
+            goalObjective={goalObjective}
+            goalStatus={state.goal?.status}
+            goalControl={goalControl}
+            efforts={supportedEfforts}
+            effort={effectiveEffort}
+            contextUsage={
+              contextUsed !== undefined && contextLimit !== undefined
+                ? { used: contextUsed, limit: contextLimit }
+                : undefined
+            }
+            sessionId={sessionId}
+            fsSearch={handleFsSearch}
+            attachments={attachments}
+            onChangeAttachments={setAttachments}
+            onActivateSkill={handleActivateSkill}
+            onSessionAction={runSessionAction}
+            onCompactContext={handleCompactContext}
+            onChangeModel={setModelOverride}
+            onChangePermissionMode={setPermissionOverride}
+            onChangePlanMode={setPlanOverride}
+            onChangeSwarmMode={setSwarmOverride}
+            onChangeGoalObjective={setGoalObjective}
+            onChangeGoalControl={setGoalControl}
+            onChangeEffort={setEffortOverride}
+            onSend={handleComposerSend}
+            onAbort={handleComposerAbort}
+          />
+        </ContextBreakdownProvider>
       ),
   }), [
     selectedAgentId,
@@ -1755,6 +1797,7 @@ export function SessionView({
     state.resyncing,
     state.resyncFailed,
     state.goal?.status,
+    state.contextBreakdown,
     composerBusy,
     composerDisabled,
     draft,
@@ -2121,6 +2164,7 @@ export function SessionView({
                   items={queuedItems}
                   onSendNow={handleSendNowQueued}
                   onRemove={handleCancelQueued}
+                  onEdit={handleEditQueued}
                   onClearAll={handleClearQueue}
                   sendNowDisabled={state.resyncing || state.resyncFailed}
                 />

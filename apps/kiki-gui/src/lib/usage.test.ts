@@ -9,6 +9,7 @@ import {
   filterSessionsByRange,
   formatCostUsd,
   formatGrouped,
+  formatTokensPerSecond,
   groupUsageByModel,
   localDayStart,
   rankSessionsByCost,
@@ -226,5 +227,14 @@ describe('formatGrouped', () => {
     expect(formatGrouped(0)).toBe('0');
     expect(formatGrouped(999)).toBe('999');
     expect(formatGrouped(12483201)).toBe('12,483,201');
+  });
+});
+
+describe('formatTokensPerSecond', () => {
+  it('keeps one decimal below ten and rounds larger rates', () => {
+    expect(formatTokensPerSecond(3.26)).toBe('3.3');
+    expect(formatTokensPerSecond(9.95)).toBe('10');
+    expect(formatTokensPerSecond(19.6)).toBe('20');
+    expect(formatTokensPerSecond(Number.NaN)).toBe('0');
   });
 });

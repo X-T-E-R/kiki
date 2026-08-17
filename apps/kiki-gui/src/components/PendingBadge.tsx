@@ -6,16 +6,16 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 
 import type { Session } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../i18n';
 import { registerOverlay } from '../lib/uiBusy';
+import { useGuardedNavigate } from './dirtyGuard';
 
 export function PendingBadge({ sessions }: { sessions: readonly Session[] }) {
   const { t, tp } = useI18n();
-  const navigate = useNavigate();
+  const navigate = useGuardedNavigate();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 

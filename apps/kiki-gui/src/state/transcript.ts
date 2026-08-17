@@ -38,7 +38,12 @@ import type {
   AgentTranscriptResponse,
   AgentTranscriptTask,
 } from '../lib/client';
-import { isInteractionEvent, type SessionEventFrame } from '../lib/types';
+import {
+  isInteractionEvent,
+  type ContextBreakdown,
+  type SessionEventFrame,
+  type WireTokenUsage,
+} from '../lib/types';
 import type { I18nKey, I18nParams } from '../i18n/locale';
 import {
   MAIN_AGENT_ID,
@@ -285,6 +290,8 @@ export interface TurnTailInfo {
   readonly durationMs: number | undefined;
   /** Turn start → first streamed token, derived from frame timestamps. */
   readonly ttftMs: number | undefined;
+  readonly usage: WireTokenUsage | undefined;
+  readonly tokensPerSecond: number | undefined;
 }
 
 export interface SessionViewState {
@@ -313,6 +320,7 @@ export interface SessionViewState {
   readonly goalUpdatedAt: string | undefined;
   readonly contextTokens: number | undefined;
   readonly maxContextTokens: number | undefined;
+  readonly contextBreakdown: ContextBreakdown | undefined;
   readonly usage: UsageStatus | undefined;
   readonly todos: readonly TodoItem[];
   readonly tasks: readonly Task[];
@@ -359,6 +367,7 @@ export function createViewState(sessionId: string): SessionViewState {
     goalUpdatedAt: undefined,
     contextTokens: undefined,
     maxContextTokens: undefined,
+    contextBreakdown: undefined,
     usage: undefined,
     todos: [],
     tasks: [],
@@ -1228,9 +1237,20 @@ type RestoredSnapshotSubagent = NonNullable<SessionSnapshotResponse['subagents']
   readonly tool_call_count?: number;
 };
 
+type KikiSessionSnapshot = SessionSnapshotResponse & {
+  readonly context_tokens?: number;
+  readonly max_context_tokens?: number;
+  readonly context_breakdown?: {
+    readonly system_tokens: number;
+    readonly tools_tokens: number;
+    readonly messages_tokens: number;
+    readonly estimated: true;
+  };
+};
+
 export function applySnapshot(
   sessionId: string,
-  snapshot: SessionSnapshotResponse,
+  snapshot: KikiSessionSnapshot,
 ): SessionViewState {
   const blocks = messagesToBlocks(snapshot.messages.items);
 
@@ -1346,6 +1366,17 @@ export function applySnapshot(
     permissionMode: snapshot.session.agent_config.permission_mode,
     planMode: snapshot.session.agent_config.plan_mode ?? false,
     swarmMode: snapshot.session.agent_config.swarm_mode ?? false,
+    contextTokens: snapshot.context_tokens,
+    maxContextTokens: snapshot.max_context_tokens,
+    contextBreakdown:
+      snapshot.context_breakdown === undefined
+        ? undefined
+        : {
+            systemTokens: snapshot.context_breakdown.system_tokens,
+            toolsTokens: snapshot.context_breakdown.tools_tokens,
+            messagesTokens: snapshot.context_breakdown.messages_tokens,
+            estimated: true,
+          },
     loaded: true,
     loadError: undefined,
     resyncFailed: false,
@@ -2003,6 +2034,8 @@ function applyFrameInternal(
               next.turnStartedAt !== undefined && next.turnFirstTokenAt !== undefined
                 ? Math.max(0, next.turnFirstTokenAt - next.turnStartedAt)
                 : undefined,
+            usage: payload.usage,
+            tokensPerSecond: payload.tokensPerSecond,
           },
           turnStartedAt: undefined,
           turnFirstTokenAt: undefined,
@@ -2333,6 +2366,7 @@ function applyFrameInternal(
         swarmMode: payload.swarmMode ?? next.swarmMode,
         contextTokens: payload.contextTokens ?? next.contextTokens,
         maxContextTokens: payload.maxContextTokens ?? next.maxContextTokens,
+        contextBreakdown: payload.contextBreakdown ?? next.contextBreakdown,
         usage: payload.usage ?? next.usage,
       });
       break;

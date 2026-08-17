@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useParams } from 'react-router-dom';
 
 import type {
   McpServer,
@@ -14,6 +14,7 @@ import {
   isDesktopRuntime,
   readNativeServerConfig,
   restartNativeServer,
+  selectDirectoriesNative,
   writeNativeDesktopPrefs,
   writeNativeServerConfig,
   type DesktopServerConfig,
@@ -22,6 +23,7 @@ import { useI18n } from '../i18n';
 import { errorText, issueText, type I18nKey, type Locale } from '../i18n/locale';
 import { clearStoredDrafts } from '../lib/drafts';
 import {
+  appendExtraSkillDirs,
   buildSettingsSearchIndex,
   clearRestartRequirement,
   markRestartRequired,
@@ -43,7 +45,7 @@ import { formatTokens } from '../lib/time';
 import { useConnection } from '../state/connection';
 import { ConfirmDialog } from './ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from './controls';
-import { DirtyGuardContext } from './dirtyGuard';
+import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
 import { OAuthDeviceCard } from './OAuthDeviceCard';
 import { MsUnitInput, NewProviderWizard, ProviderEditor } from './ProviderFields';
 import { useRestartRequirement } from './RestartBanner';
@@ -836,10 +838,12 @@ function CapabilitiesSection() {
   const [advanced, setAdvanced] = useState('{}');
   const [telemetry, setTelemetry] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [selectingDirs, setSelectingDirs] = useState(false);
   const [advancedSaving, setAdvancedSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [advancedFeedback, setAdvancedFeedback] = useState<Feedback>(null);
   const restart = useRestartRequirement();
+  const isDesktop = isDesktopRuntime();
 
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
@@ -871,6 +875,19 @@ function CapabilitiesSection() {
     }, null, 2));
     setTelemetry(config.telemetry !== false);
   }, [configQuery.data]);
+
+  const selectExtraDirs = async () => {
+    setSelectingDirs(true);
+    setFeedback(null);
+    try {
+      const selected = await selectDirectoriesNative();
+      if (selected !== null) setExtraDirs((current) => appendExtraSkillDirs(current, selected));
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSelectingDirs(false);
+    }
+  };
 
   const save = async () => {
     const pathError = validateExtraSkillDirs(extraDirs);
@@ -954,9 +971,22 @@ function CapabilitiesSection() {
             <Toggle label={t('st.caps.telemetry')} checked={telemetry} onChange={setTelemetry} />
             <Hint>{t('st.caps.telemetryHint')}</Hint>
           </div>
-          <label className="block text-[11px] font-medium text-ink-soft">{t('st.caps.extraDirs')}
-            <textarea className={`${INPUT} mt-1 min-h-24 font-mono`} value={extraDirs} onChange={(event) => { setExtraDirs(event.target.value); }} placeholder={t('st.caps.extraDirsPlaceholder')} />
-          </label>
+          <div>
+            <div className="flex items-center justify-between gap-3">
+              <label htmlFor="settings-extra-skill-dirs" className="text-[11px] font-medium text-ink-soft">{t('st.caps.extraDirs')}</label>
+              {isDesktop ? (
+                <button
+                  type="button"
+                  className={SECONDARY_BUTTON}
+                  disabled={selectingDirs}
+                  onClick={() => void selectExtraDirs()}
+                >
+                  {t('st.caps.selectDirs')}
+                </button>
+              ) : null}
+            </div>
+            <textarea id="settings-extra-skill-dirs" className={`${INPUT} mt-1 min-h-24 font-mono`} value={extraDirs} onChange={(event) => { setExtraDirs(event.target.value); }} placeholder={t('st.caps.extraDirsPlaceholder')} />
+          </div>
           <label className="block text-[11px] font-medium text-ink-soft">{t('st.caps.experimental')}
             <textarea className={`${INPUT} mt-1 min-h-32 font-mono`} value={experimental} onChange={(event) => { setExperimental(event.target.value); }} aria-label={t('st.caps.experimentalAria')} />
           </label>
@@ -1229,7 +1259,7 @@ function SkillRow({ skill }: { skill: SkillDescriptor }) {
 function WorkspacesSection() {
   const { client } = useConnection();
   const { t } = useI18n();
-  const navigate = useNavigate();
+  const navigate = useGuardedNavigate();
   const query = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
   return (
     <SectionCard id="st-card-workspaces" title={t('st.workspaces.title')}>
@@ -1335,35 +1365,13 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const { section } = useParams<{ section?: string }>();
   const { t } = useI18n();
   const active: SectionId = SECTIONS.find((candidate) => candidate.id === section)?.id ?? 'general';
-  const navigate = useNavigate();
-  const [dirtyIds, setDirtyIds] = useState<readonly string[]>([]);
-  const [pendingLeave, setPendingLeave] = useState<string | null>(null);
+  const navigate = useGuardedNavigate();
+  const dirty = useDirtyGuard()?.dirty === true;
   const [focusCard, setFocusCard] = useState<{ cardId: string; nonce: number } | null>(null);
 
-  const reportDirty = useCallback((id: string, dirty: boolean) => {
-    setDirtyIds((current) => {
-      const has = current.includes(id);
-      if (dirty === has) return current;
-      return dirty ? [...current, id] : current.filter((entry) => entry !== id);
-    });
-  }, []);
-  const guardValue = useMemo(() => ({ reportDirty }), [reportDirty]);
-
-  // Leaving a dirty providers section asks first; everything else navigates.
   const guardedNavigate = useCallback((target: string) => {
-    if (active === 'providers' && target !== 'providers' && dirtyIds.length > 0) {
-      setPendingLeave(target);
-      return;
-    }
-    void navigate(`/settings/${target}`);
-  }, [active, dirtyIds.length, navigate]);
-
-  const confirmLeave = () => {
-    const target = pendingLeave;
-    setPendingLeave(null);
-    setDirtyIds([]);
-    if (target !== null) void navigate(`/settings/${target}`);
-  };
+    navigate(`/settings/${target}`);
+  }, [navigate]);
 
   // Scroll + flash the card a search hit pointed at, then disarm.
   useEffect(() => {
@@ -1377,11 +1385,11 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
 
   // A dirty providers editor also guards closing the app itself.
   useEffect(() => {
-    if (dirtyIds.length === 0) return;
+    if (!dirty) return;
     const handler = (event: BeforeUnloadEvent) => { event.preventDefault(); };
     window.addEventListener('beforeunload', handler);
     return () => { window.removeEventListener('beforeunload', handler); };
-  }, [dirtyIds.length]);
+  }, [dirty]);
 
   const onSearchHit = (entry: SettingsSearchEntry) => {
     setFocusCard({ cardId: entry.cardId, nonce: Date.now() });
@@ -1391,34 +1399,23 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const pane = active === 'general' ? <GeneralSection /> : active === 'models' ? <ModelsSection /> : active === 'connection' ? <ConnectionSection /> : active === 'providers' ? <ProvidersSection /> : active === 'agents' ? <AgentsSection /> : active === 'capabilities' ? <CapabilitiesSection /> : active === 'workspaces' ? <WorkspacesSection /> : <AboutSection />;
 
   return (
-    <DirtyGuardContext.Provider value={guardValue}>
-      <SettingsFlashContext.Provider value={focusCard?.cardId ?? null}>
-        <header className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
-          <button type="button" onClick={onToggleSidebar} aria-label={t('sv.openMenuAria')} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden"><span aria-hidden>☰</span></button>
-          <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">{t('st.title')}</h1>
-        </header>
-        <main className="flex min-h-0 flex-1">
-          <div className="hidden lg:block"><SettingsNav active={active} onNavigate={guardedNavigate} onSearchHit={onSearchHit} /></div>
-          <div className="flex min-w-0 flex-1 flex-col">
-            <div className="border-b border-hairline bg-panel px-4 py-2 lg:hidden">
-              <select className="w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-[13px] text-ink outline-none focus:border-accent" value={active} onChange={(event) => { guardedNavigate(event.target.value); }}>
-                {SECTIONS.map((candidate) => <option key={candidate.id} value={candidate.id}>{t(candidate.labelKey)}</option>)}
-              </select>
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 lg:px-8"><div className="mx-auto max-w-[760px] space-y-5">{pane}</div></div>
+    <SettingsFlashContext.Provider value={focusCard?.cardId ?? null}>
+      <header className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
+        <button type="button" onClick={onToggleSidebar} aria-label={t('sv.openMenuAria')} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden"><span aria-hidden>☰</span></button>
+        <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">{t('st.title')}</h1>
+      </header>
+      <main className="flex min-h-0 flex-1">
+        <div className="hidden lg:block"><SettingsNav active={active} onNavigate={guardedNavigate} onSearchHit={onSearchHit} /></div>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div className="border-b border-hairline bg-panel px-4 py-2 lg:hidden">
+            <select className="w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-[13px] text-ink outline-none focus:border-accent" value={active} onChange={(event) => { guardedNavigate(event.target.value); }}>
+              {SECTIONS.map((candidate) => <option key={candidate.id} value={candidate.id}>{t(candidate.labelKey)}</option>)}
+            </select>
           </div>
-        </main>
-        <ConfirmDialog
-          open={pendingLeave !== null}
-          title={t('st.dirty.leaveTitle')}
-          body={t('st.dirty.leaveBody')}
-          confirmLabel={t('st.dirty.leaveConfirm')}
-          cancelLabel={t('st.dirty.stay')}
-          onConfirm={confirmLeave}
-          onCancel={() => { setPendingLeave(null); }}
-        />
-      </SettingsFlashContext.Provider>
-    </DirtyGuardContext.Provider>
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 lg:px-8"><div className="mx-auto max-w-[760px] space-y-5">{pane}</div></div>
+        </div>
+      </main>
+    </SettingsFlashContext.Provider>
   );
 }
 

@@ -142,6 +142,29 @@ describe('applySnapshot', () => {
     expect(tool.output).toBe('file.txt');
   });
 
+  it('restores context totals and the estimated breakdown from the snapshot extension', () => {
+    const state = applySnapshot('session_test', {
+      ...snapshot(),
+      context_tokens: 80_000,
+      max_context_tokens: 100_000,
+      context_breakdown: {
+        system_tokens: 12_000,
+        tools_tokens: 8_000,
+        messages_tokens: 60_000,
+        estimated: true,
+      },
+    });
+
+    expect(state.contextTokens).toBe(80_000);
+    expect(state.maxContextTokens).toBe(100_000);
+    expect(state.contextBreakdown).toEqual({
+      systemTokens: 12_000,
+      toolsTokens: 8_000,
+      messagesTokens: 60_000,
+      estimated: true,
+    });
+  });
+
   it('restores the session model and subagent roster metadata from a snapshot', () => {
     const state = applySnapshot(
       'session_test',
@@ -1950,7 +1973,19 @@ describe('turn timing and interruption', () => {
     state = applyFrame(
       state,
       frame(
-        { type: 'turn.ended', turnId: 1, reason: 'completed', durationMs: 4200 },
+        {
+          type: 'turn.ended',
+          turnId: 1,
+          reason: 'completed',
+          durationMs: 4200,
+          usage: {
+            inputOther: 100,
+            output: 30,
+            inputCacheRead: 20,
+            inputCacheCreation: 10,
+          },
+          tokensPerSecond: 20,
+        },
         { seq: 12, timestamp: '2026-01-01T00:00:14.200Z' },
       ),
     ).state;
@@ -1962,6 +1997,13 @@ describe('turn timing and interruption', () => {
       endedAt: '2026-01-01T00:00:14.200Z',
       durationMs: 4200,
       ttftMs: 1500,
+      usage: {
+        inputOther: 100,
+        output: 30,
+        inputCacheRead: 20,
+        inputCacheCreation: 10,
+      },
+      tokensPerSecond: 20,
     });
   });
 

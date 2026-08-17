@@ -4,9 +4,10 @@
  * that panel rather than the meter's click side effect.
  */
 
-import { useId, useState } from 'react';
+import { createContext, useContext, useId, useState, type ReactNode } from 'react';
 
 import { useI18n } from '../i18n';
+import type { ContextBreakdown } from '../lib/types';
 
 /** Usage fraction at which the meter warns and suggests compaction. */
 export const CONTEXT_WARN_RATIO = 0.8;
@@ -21,6 +22,18 @@ export function contextUsageWarns(used: number, limit: number): boolean {
   return limit > 0 && used / limit >= CONTEXT_WARN_RATIO;
 }
 
+const ContextBreakdownContext = createContext<ContextBreakdown | undefined>(undefined);
+
+export function ContextBreakdownProvider({
+  value,
+  children,
+}: {
+  value: ContextBreakdown | undefined;
+  children: ReactNode;
+}) {
+  return <ContextBreakdownContext.Provider value={value}>{children}</ContextBreakdownContext.Provider>;
+}
+
 export function ContextMeter({
   used,
   limit,
@@ -32,6 +45,7 @@ export function ContextMeter({
   onCompact?: () => void;
 }) {
   const { t, time } = useI18n();
+  const breakdown = useContext(ContextBreakdownContext);
   const detailsId = useId();
   const [open, setOpen] = useState(false);
   const percent = contextUsagePercent(used, limit);
@@ -85,6 +99,28 @@ export function ContextMeter({
               style={{ width: `${percent}%` }}
             />
           </div>
+          {breakdown !== undefined ? (
+            <div data-context-breakdown className="mt-3 border-t border-hairline pt-2.5">
+              <div className="flex items-baseline justify-between gap-3">
+                <p className="text-[10.5px] font-medium text-ink-soft">{t('context.breakdownTitle')}</p>
+                <span className="text-[9.5px] text-ink-faint">{t('context.breakdownEstimated')}</span>
+              </div>
+              <dl className="mt-2 space-y-1.5 text-[11px]">
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="text-ink-faint">{t('context.system')}</dt>
+                  <dd className="font-mono text-ink">{time.formatTokens(breakdown.systemTokens)}</dd>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="text-ink-faint">{t('context.tools')}</dt>
+                  <dd className="font-mono text-ink">{time.formatTokens(breakdown.toolsTokens)}</dd>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="text-ink-faint">{t('context.messages')}</dt>
+                  <dd className="font-mono text-ink">{time.formatTokens(breakdown.messagesTokens)}</dd>
+                </div>
+              </dl>
+            </div>
+          ) : null}
           <dl className="mt-3 space-y-1.5 text-[11px]">
             <div className="flex items-center justify-between gap-3">
               <dt className="text-ink-faint">{t('context.used')}</dt>

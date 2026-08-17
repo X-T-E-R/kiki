@@ -223,3 +223,10 @@ export function formatCostUsd(usd: number): string {
 export function formatGrouped(value: number): string {
   return Math.round(value).toString().replaceAll(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
+
+/** Compact, locale-independent decode throughput for the turn-tail readout. */
+export function formatTokensPerSecond(value: number): string {
+  const rate = Number.isFinite(value) ? Math.max(0, value) : 0;
+  if (rate < 10) return (Math.round(rate * 10) / 10).toString();
+  return Math.round(rate).toString();
+}

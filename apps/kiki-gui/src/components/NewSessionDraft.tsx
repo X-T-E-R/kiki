@@ -13,11 +13,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
-
 import type { PermissionMode, Workspace } from '@moonshot-ai/protocol';
 
 import { Composer, resolveSelectedEffort } from './Composer';
+import { useGuardedNavigate } from './dirtyGuard';
 import { useI18n } from '../i18n';
 import { buildPromptContent, type ComposerAttachment } from '../lib/attachments';
 import { readDraft, writeDraft } from '../lib/drafts';
@@ -53,7 +52,7 @@ export function useNewSessionDraft({
   onSent?: () => void;
 } = {}) {
   const { client } = useConnection();
-  const navigate = useNavigate();
+  const navigate = useGuardedNavigate();
   const { t } = useI18n();
   const liveSettings = useSyncExternalStore(
     subscribeSettings,

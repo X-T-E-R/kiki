@@ -97,6 +97,15 @@ export async function saveBlobNative(blob: Blob, filename: string): Promise<bool
   return true;
 }
 
+/** Select one or more directories through the native desktop dialog. */
+export async function selectDirectoriesNative(): Promise<readonly string[] | null> {
+  if (!isTauri()) throw new Error('Native directory selection requires the Kiki desktop app.');
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const selected = await open({ directory: true, multiple: true });
+  if (selected === null) return null;
+  return typeof selected === 'string' ? [selected] : selected;
+}
+
 export async function isMainWindowVisibleAndFocused(): Promise<boolean> {
   if (!isTauri()) return true;
   try {

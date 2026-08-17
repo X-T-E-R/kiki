@@ -13,7 +13,6 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
 
 import type { Session } from '@moonshot-ai/protocol';
 
@@ -32,6 +31,7 @@ import { registerOverlay } from '../lib/uiBusy';
 import { useConnection } from '../state/connection';
 import { ActivityPanel } from './ActivityPanel';
 import { Dialog } from './Dialog';
+import { useGuardedNavigate } from './dirtyGuard';
 import { PendingBadge } from './PendingBadge';
 import { Wordmark } from './Wordmark';
 
@@ -95,7 +95,7 @@ export function Sidebar({
   onNewSession: () => void;
   className?: string;
 }) {
-  const navigate = useNavigate();
+  const navigate = useGuardedNavigate();
   const { client, meta, wsStatus, disconnect } = useConnection();
   const { t, locale, time } = useI18n();
   const untitled = t('sidebar.untitled');

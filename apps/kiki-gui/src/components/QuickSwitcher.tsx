@@ -8,7 +8,6 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
 
 import type { Session } from '@moonshot-ai/protocol';
 
@@ -17,6 +16,7 @@ import { buildSwitcherItems, type SwitcherItem } from '../lib/quickSwitcher';
 import { isSearchable, SEARCH_DEBOUNCE_MS } from '../lib/search';
 import { useConnection } from '../state/connection';
 import { Dialog } from './Dialog';
+import { useGuardedNavigate } from './dirtyGuard';
 
 export function QuickSwitcher({
   sessions,
@@ -27,7 +27,7 @@ export function QuickSwitcher({
 }) {
   const { client } = useConnection();
   const { t, time } = useI18n();
-  const navigate = useNavigate();
+  const navigate = useGuardedNavigate();
   const [input, setInput] = useState('');
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);

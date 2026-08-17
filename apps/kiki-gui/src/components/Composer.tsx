@@ -31,7 +31,7 @@ import {
   formatBytes,
   hasMention,
   parseMentionTrigger,
-  validateImageFile,
+  reserveImageFiles,
   type ComposerAttachment,
 } from '../lib/attachments';
 import {
@@ -204,6 +204,27 @@ export function Composer({
   ).sendShortcut;
   const text = value;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Event handlers can run several times before a controlled prop rerender.
+  // Keep a synchronous attachment baseline alongside the rendered value so
+  // same-tick paste/drop batches reserve against one another.
+  const attachmentBaselineRef = useRef(attachments);
+  attachmentBaselineRef.current = attachments;
+  const updateAttachments = (
+    next:
+      | readonly ComposerAttachment[]
+      | ((previous: readonly ComposerAttachment[]) => readonly ComposerAttachment[]),
+  ) => {
+    if (typeof next === 'function') {
+      onChangeAttachments((current) => {
+        const updated = next(current);
+        attachmentBaselineRef.current = updated;
+        return updated;
+      });
+      return;
+    }
+    attachmentBaselineRef.current = next;
+    onChangeAttachments(next);
+  };
   const [goalOpen, setGoalOpen] = useState(false);
   const [menu, setMenu] = useState<ComposerMenu | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -353,9 +374,10 @@ export function Composer({
     const cursor = node?.selectionStart ?? text.length;
     const next = text.slice(0, trigger.start) + text.slice(cursor);
     onChange(next);
-    if (!hasMention(attachments, hit.path)) {
-      onChangeAttachments([
-        ...attachments,
+    const currentAttachments = attachmentBaselineRef.current;
+    if (!hasMention(currentAttachments, hit.path)) {
+      updateAttachments([
+        ...currentAttachments,
         { kind: 'file', path: hit.path, name: hit.name, isDir: hit.kind === 'directory' },
       ]);
     }
@@ -363,46 +385,27 @@ export function Composer({
   };
 
   const addImageFiles = (files: File[]) => {
-    // Validate the whole batch first (a size stub reserves capacity so the
-    // per-image and per-message caps hold within one paste/drop), then read.
-    let batch: readonly ComposerAttachment[] = attachments;
-    const accepted: File[] = [];
-    for (const file of files) {
-      const problem = validateImageFile(file, batch);
-      if (problem !== null) {
-        setAttachmentError(issueText(locale, problem));
-        continue;
+    // Reserve stubs against the synchronous baseline before starting reads.
+    // A second paste in this same tick therefore sees the first paste's count
+    // and byte total even though the controlled prop has not rerendered yet.
+    const reservation = reserveImageFiles(files, attachmentBaselineRef.current);
+    if (reservation.accepted.length === 0) {
+      if (reservation.lastProblem !== null) {
+        setAttachmentError(issueText(locale, reservation.lastProblem));
       }
-      accepted.push(file);
-      batch = [
-        ...batch,
-        {
-          kind: 'image',
-          name: file.name,
-          mediaType: file.type,
-          data: '',
-          size: file.size,
-          previewUrl: '',
-        },
-      ];
+      return;
     }
-    if (accepted.length === 0) return;
     setAttachmentError(null);
+    attachmentBaselineRef.current = reservation.next;
+    const { accepted } = reservation;
+    const stubs: readonly ComposerAttachment[] = reservation.stubs;
     // Loading stubs land immediately (chips render + caps reserve); the async
     // reads replace them by identity through updater writes, so back-to-back
     // pastes cannot drop each other's images the way stale render closures did.
-    const stubs: readonly ComposerAttachment[] = accepted.map((file) => ({
-      kind: 'image' as const,
-      name: file.name,
-      mediaType: file.type,
-      data: '',
-      size: file.size,
-      previewUrl: '',
-    }));
-    onChangeAttachments((current) => [...current, ...stubs]);
+    updateAttachments((current) => [...current, ...stubs]);
     void Promise.all(accepted.map((file) => fileToImageAttachment(file)))
       .then((images) => {
-        onChangeAttachments((current) =>
+        updateAttachments((current) =>
           current.flatMap((item) => {
             const stubIndex = stubs.indexOf(item);
             if (stubIndex === -1) return [item];
@@ -413,7 +416,7 @@ export function Composer({
       })
       .catch((error: unknown) => {
         // Reads failed wholesale: drop this batch's stubs, keep the rest.
-        onChangeAttachments((current) => current.filter((item) => !stubs.includes(item)));
+        updateAttachments((current) => current.filter((item) => !stubs.includes(item)));
         setAttachmentError(errorText(locale, error));
       });
   };
@@ -733,7 +736,7 @@ export function Composer({
                       type="button"
                       aria-label={t('composer.removeAttachment', { name: attachment.name })}
                       onClick={() => {
-                        onChangeAttachments(attachments.filter((_, i) => i !== index));
+                        updateAttachments(attachments.filter((_, i) => i !== index));
                       }}
                       className="flex h-4 w-4 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
                     >
@@ -765,7 +768,7 @@ export function Composer({
                         name: attachment.name === '' ? t('attach.pastedImage') : attachment.name,
                       })}
                       onClick={() => {
-                        onChangeAttachments(attachments.filter((_, i) => i !== index));
+                        updateAttachments(attachments.filter((_, i) => i !== index));
                       }}
                       className="flex h-4 w-4 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
                     >
@@ -795,7 +798,7 @@ export function Composer({
                         name: attachment.name === '' ? t('attach.pastedImage') : attachment.name,
                       })}
                       onClick={() => {
-                        onChangeAttachments(attachments.filter((_, i) => i !== index));
+                        updateAttachments(attachments.filter((_, i) => i !== index));
                       }}
                       className="flex h-4 w-4 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
                     >

@@ -9,6 +9,7 @@ import {
   MAX_IMAGE_BYTES,
   mentionToken,
   parseMentionTrigger,
+  reserveImageFiles,
   validateImageFile,
   type ComposerAttachment,
   type FileMention,
@@ -54,6 +55,39 @@ describe('validateImageFile', () => {
     expect(
       validateImageFile({ name: 'b.png', size: 6 * 1024 * 1024, type: 'image/png' }, current)?.key,
     ).toBe('attach.totalTooLarge');
+  });
+
+  it('carries synchronous reservations across rapid batches for count and byte caps', () => {
+    const seven = reserveImageFiles(
+      Array.from({ length: 7 }, (_, index) => ({
+        name: `${index}.png`, size: 1, type: 'image/png',
+      })),
+      [],
+    );
+    const countLimited = reserveImageFiles(
+      [
+        { name: '7.png', size: 1, type: 'image/png' },
+        { name: '8.png', size: 1, type: 'image/png' },
+      ],
+      seven.next,
+    );
+    expect(countLimited.accepted).toHaveLength(1);
+    expect(countLimited.next).toHaveLength(8);
+    expect(countLimited.lastProblem?.key).toBe('attach.tooMany');
+
+    const fullBytes = reserveImageFiles(
+      [
+        { name: 'a.png', size: 10 * 1024 * 1024, type: 'image/png' },
+        { name: 'b.png', size: 10 * 1024 * 1024, type: 'image/png' },
+      ],
+      [],
+    );
+    const byteLimited = reserveImageFiles(
+      [{ name: 'c.png', size: 1, type: 'image/png' }],
+      fullBytes.next,
+    );
+    expect(byteLimited.accepted).toHaveLength(0);
+    expect(byteLimited.lastProblem?.key).toBe('attach.totalTooLarge');
   });
 });
 

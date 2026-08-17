@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
-import { ContextMeter } from './ContextMeter';
+import { ContextBreakdownProvider, ContextMeter } from './ContextMeter';
 
 const containers: HTMLDivElement[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
@@ -59,6 +59,44 @@ describe('ContextMeter interaction', () => {
 
     expect(onCompact).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[data-context-details]')).toBeNull();
+    await act(async () => { root.unmount(); });
+  });
+
+  it('renders the estimated system/tools/messages breakdown from context', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <ContextBreakdownProvider
+            value={{
+              systemTokens: 12_000,
+              toolsTokens: 8_000,
+              messagesTokens: 60_000,
+              estimated: true,
+            }}
+          >
+            <ContextMeter used={80_000} limit={100_000} />
+          </ContextBreakdownProvider>
+        </I18nProvider>,
+      );
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click();
+    });
+
+    const breakdown = container.querySelector('[data-context-breakdown]');
+    expect(breakdown?.textContent).toContain('Breakdown');
+    expect(breakdown?.textContent).toContain('estimated');
+    expect(breakdown?.textContent).toContain('System');
+    expect(breakdown?.textContent).toContain('12.0k');
+    expect(breakdown?.textContent).toContain('Tools');
+    expect(breakdown?.textContent).toContain('8.0k');
+    expect(breakdown?.textContent).toContain('Messages');
+    expect(breakdown?.textContent).toContain('60.0k');
     await act(async () => { root.unmount(); });
   });
 });
