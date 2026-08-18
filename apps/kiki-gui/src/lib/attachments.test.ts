@@ -6,14 +6,18 @@ import {
   buildSkillActivation,
   formatBytes,
   hasMention,
+  MAX_FILE_BYTES,
   MAX_IMAGE_BYTES,
   mentionToken,
   parseMentionTrigger,
   reserveImageFiles,
+  reserveUploadFiles,
   validateImageFile,
+  validateUploadFile,
   type ComposerAttachment,
   type FileMention,
   type ImageAttachment,
+  type UploadAttachment,
 } from './attachments';
 
 function mention(path: string, isDir = false): FileMention {
@@ -30,6 +34,10 @@ function image(name: string, size: number, mediaType = 'image/png'): ImageAttach
     size,
     previewUrl: `data:${mediaType};base64,aGVsbG8=`,
   };
+}
+
+function upload(name: string, size: number, fileId?: string, mediaType = 'text/plain'): UploadAttachment {
+  return { kind: 'upload', name, mediaType, size, fileId };
 }
 
 describe('validateImageFile', () => {
@@ -172,5 +180,114 @@ describe('formatBytes', () => {
     expect(formatBytes(512)).toBe('512 B');
     expect(formatBytes(2048)).toBe('2.0 KB');
     expect(formatBytes(3 * 1024 * 1024)).toBe('3.0 MB');
+  });
+});
+
+describe('validateUploadFile', () => {
+  it('accepts any media type, including an empty one', () => {
+    expect(validateUploadFile({ name: 'a.pdf', size: 100 }, [])).toBeNull();
+    expect(validateUploadFile({ name: 'a.bin', size: 100 }, [])).toBeNull();
+    expect(validateUploadFile({ name: 'archive.zip', size: 100 }, [])).toBeNull();
+  });
+
+  it('rejects oversized files and enforces the shared count cap', () => {
+    expect(
+      validateUploadFile({ name: 'big.iso', size: MAX_FILE_BYTES + 1 }, [])?.key,
+    ).toBe('attach.fileTooLarge');
+    const full: ComposerAttachment[] = Array.from({ length: 8 }, (_, index) =>
+      upload(`${index}.txt`, 1, `f_${index}`),
+    );
+    expect(validateUploadFile({ name: 'one-more.txt', size: 1 }, full)?.key).toBe('attach.tooMany');
+  });
+});
+
+describe('reserveUploadFiles', () => {
+  it('creates fileId-less stubs and normalizes an empty MIME to octet-stream', () => {
+    const result = reserveUploadFiles(
+      [
+        { name: 'a.pdf', size: 10, type: 'application/pdf' },
+        { name: 'mystery', size: 5, type: '' },
+      ],
+      [],
+    );
+    expect(result.accepted).toHaveLength(2);
+    expect(result.stubs[0]).toEqual({
+      kind: 'upload',
+      name: 'a.pdf',
+      mediaType: 'application/pdf',
+      size: 10,
+    });
+    expect(result.stubs[1]?.mediaType).toBe('application/octet-stream');
+    expect(result.next).toHaveLength(2);
+  });
+
+  it('carries reservations across same-tick batches for the count cap', () => {
+    const seven = reserveUploadFiles(
+      Array.from({ length: 7 }, (_, index) => ({ name: `${index}.txt`, size: 1, type: 'text/plain' })),
+      [],
+    );
+    const limited = reserveUploadFiles(
+      [
+        { name: '7.txt', size: 1, type: 'text/plain' },
+        { name: '8.txt', size: 1, type: 'text/plain' },
+      ],
+      seven.next,
+    );
+    expect(limited.accepted).toHaveLength(1);
+    expect(limited.lastProblem?.key).toBe('attach.tooMany');
+  });
+
+  it('reports the localized size problem', () => {
+    const problem = validateUploadFile({ name: 'big.iso', size: MAX_FILE_BYTES + 1 }, []);
+    expect(issueText('en', problem!)).toContain('big.iso');
+    expect(issueText('zh', problem!)).toContain('上限');
+  });
+});
+
+describe('buildPromptContent with uploads', () => {
+  it('emits uploaded files as real file content parts', () => {
+    const content = buildPromptContent('check this', [upload('a.pdf', 10, 'f_1', 'application/pdf')]);
+    expect(content).toEqual([
+      { type: 'text', text: 'check this' },
+      { type: 'file', file_id: 'f_1', name: 'a.pdf', media_type: 'application/pdf', size: 10 },
+    ]);
+  });
+
+  it('sends a file-only message without an empty text part', () => {
+    const content = buildPromptContent('  ', [upload('a.pdf', 10, 'f_1')]);
+    expect(content).toEqual([
+      { type: 'file', file_id: 'f_1', name: 'a.pdf', media_type: 'text/plain', size: 10 },
+    ]);
+  });
+
+  it('skips stubs whose upload is still in flight', () => {
+    expect(buildPromptContent('hi', [upload('a.pdf', 10)])).toEqual([{ type: 'text', text: 'hi' }]);
+    expect(buildPromptContent('   ', [upload('a.pdf', 10)])).toBeNull();
+  });
+
+  it('orders text, then images, then files', () => {
+    const content = buildPromptContent('see', [
+      upload('a.pdf', 10, 'f_1'),
+      mention('src/server.ts'),
+      image('a.png', 10),
+    ]);
+    expect(content?.map((part) => part.type)).toEqual(['text', 'image', 'file']);
+    expect(content?.[0]).toEqual({ type: 'text', text: '@src/server.ts\n\nsee' });
+  });
+});
+
+describe('buildSkillActivation with uploads', () => {
+  it('carries uploaded files as wire attachments', () => {
+    const result = buildSkillActivation('--fix', [upload('a.pdf', 10, 'f_1', 'application/pdf')]);
+    expect(result.args).toBe('--fix');
+    expect(result.attachments).toEqual([
+      { type: 'file', file_id: 'f_1', name: 'a.pdf', media_type: 'application/pdf', size: 10 },
+    ]);
+  });
+
+  it('keeps images and files together, skipping in-flight uploads', () => {
+    const result = buildSkillActivation('go', [image('a.png', 10), upload('pending.pdf', 5)]);
+    expect(result.attachments).toHaveLength(1);
+    expect(result.attachments?.[0]?.type).toBe('image');
   });
 });

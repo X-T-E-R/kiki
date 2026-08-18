@@ -10,9 +10,14 @@
  *     parts. The server format-gates and compresses them
  *     (kap-server `lib/promptMedia.ts`); the client-side MIME whitelist below
  *     mirrors the server's `MODEL_ACCEPTED_IMAGE_MIMES` exactly.
+ *   - Any OTHER dropped/pasted file is uploaded eagerly (`POST /files`) and
+ *     sent as a real `{type:'file', file_id, …}` content part; the server
+ *     materializes it next to the session as a path-referenced attachment the
+ *     model opens with the Read tool. Chips carry the file id once the upload
+ *     lands; sending blocks while an upload is in flight.
  */
 
-import type { ImageContent, MessageContent } from '@moonshot-ai/protocol';
+import type { FileContent, ImageContent, MessageContent } from '@moonshot-ai/protocol';
 
 import { LocalizedError, type ValidationIssue } from '../i18n/locale';
 
@@ -36,7 +41,23 @@ export interface ImageAttachment {
   previewUrl: string;
 }
 
-export type ComposerAttachment = FileMention | ImageAttachment;
+export type ComposerAttachment = FileMention | ImageAttachment | UploadAttachment;
+
+/**
+ * A dropped/pasted non-image file, uploaded to the server's file store at
+ * attach time and sent as a `{type:'file'}` content part. `fileId` is absent
+ * only while the upload is in flight (the chip shows a busy placeholder and
+ * the composer blocks sending, exactly like reading image stubs).
+ */
+export interface UploadAttachment {
+  kind: 'upload';
+  name: string;
+  /** The browser-reported MIME; empty file types normalize to octet-stream. */
+  mediaType: string;
+  size: number;
+  /** Server file id from `POST /files`. */
+  fileId?: string;
+}
 
 /** Mirror of the server's MODEL_ACCEPTED_IMAGE_MIMES (image-format-policy.ts). */
 export const ACCEPTED_IMAGE_MIMES: readonly string[] = [
@@ -50,6 +71,12 @@ export const ACCEPTED_IMAGE_MIMES: readonly string[] = [
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024;
 export const MAX_ATTACHMENTS = 8;
+/**
+ * Uploaded files are streamed to disk server-side (no server cap — local
+ * single-user deployment), so the client cap only guards the browser-side
+ * fetch/multipart path against pathological picks.
+ */
+export const MAX_FILE_BYTES = 50 * 1024 * 1024;
 
 /** Returns a localized validation issue when the file cannot be attached, else null. */
 export function validateImageFile(
@@ -118,6 +145,63 @@ export function reserveImageFiles<T extends { name: string; size: number; type: 
   return { accepted, stubs, next, lastProblem };
 }
 
+/**
+ * Non-image files have no format whitelist: the wire contract accepts any
+ * `{type:'file'}` part and the server materializes the bytes for the Read
+ * tool. Only size and the shared count cap apply.
+ */
+export function validateUploadFile(
+  file: { name: string; size: number },
+  current: readonly ComposerAttachment[],
+): ValidationIssue | null {
+  if (file.size > MAX_FILE_BYTES) {
+    return {
+      key: 'attach.fileTooLarge',
+      params: { name: file.name, size: formatBytes(file.size), max: formatBytes(MAX_FILE_BYTES) },
+    };
+  }
+  if (current.length >= MAX_ATTACHMENTS) {
+    return { key: 'attach.tooMany', params: { max: MAX_ATTACHMENTS } };
+  }
+  return null;
+}
+
+/**
+ * Reserve upload slots synchronously before the `POST /files` calls begin —
+ * same same-tick batching contract as {@link reserveImageFiles}.
+ */
+export function reserveUploadFiles<T extends { name: string; size: number; type: string }>(
+  files: readonly T[],
+  current: readonly ComposerAttachment[],
+): {
+  readonly accepted: readonly T[];
+  readonly stubs: readonly UploadAttachment[];
+  readonly next: readonly ComposerAttachment[];
+  readonly lastProblem: ValidationIssue | null;
+} {
+  let next = current;
+  const accepted: T[] = [];
+  const stubs: UploadAttachment[] = [];
+  let lastProblem: ValidationIssue | null = null;
+  for (const file of files) {
+    const problem = validateUploadFile(file, next);
+    if (problem !== null) {
+      lastProblem = problem;
+      continue;
+    }
+    const stub: UploadAttachment = {
+      kind: 'upload',
+      name: file.name,
+      mediaType: file.type === '' ? 'application/octet-stream' : file.type,
+      size: file.size,
+    };
+    accepted.push(file);
+    stubs.push(stub);
+    next = [...next, stub];
+  }
+  return { accepted, stubs, next, lastProblem };
+}
+
 /** Reads a pasted/dropped image File into an attachment (base64 + preview). */
 export function fileToImageAttachment(file: File): Promise<ImageAttachment> {
   return new Promise((resolve, reject) => {
@@ -163,8 +247,11 @@ export function mentionToken(mention: FileMention): string {
 
 /**
  * Builds the wire content for a send: mention tokens fold into the text part,
- * images follow as real image parts. Returns null when there is nothing to
- * send (caller keeps the composer open).
+ * images follow as real image parts, uploaded files as `{type:'file'}` parts.
+ * Returns null when there is nothing to send (caller keeps the composer open).
+ * Upload stubs without a file id yet are skipped — the composer blocks sending
+ * while any upload is in flight, so a skipped stub means the caller bypassed
+ * that gate (defensive, never the intended path).
  */
 export function buildPromptContent(
   text: string,
@@ -172,6 +259,7 @@ export function buildPromptContent(
 ): MessageContent[] | null {
   const mentions = attachments.filter((item): item is FileMention => item.kind === 'file');
   const images = attachments.filter((item): item is ImageAttachment => item.kind === 'image');
+  const uploads = attachments.filter((item): item is UploadAttachment => item.kind === 'upload');
   const parts: string[] = [];
   if (mentions.length > 0) parts.push(mentions.map(mentionToken).join(' '));
   if (text.trim() !== '') parts.push(text.trim());
@@ -184,33 +272,50 @@ export function buildPromptContent(
     };
     content.push(part);
   }
+  for (const upload of uploads) {
+    if (upload.fileId === undefined) continue;
+    const part: FileContent = {
+      type: 'file',
+      file_id: upload.fileId,
+      name: upload.name,
+      media_type: upload.mediaType,
+      size: upload.size,
+    };
+    content.push(part);
+  }
   return content.length > 0 ? content : null;
 }
 
 /**
  * Attachments for skill activation: the wire accepts image/video/file parts
- * (text stays in `args`), so images carry over and file mentions fold into
- * the args string as `@path` tokens.
+ * (text stays in `args`), so images and uploaded files carry over and file
+ * mentions fold into the args string as `@path` tokens.
  */
 export function buildSkillActivation(
   args: string,
   attachments: readonly ComposerAttachment[],
-): { args: string; attachments?: ImageContent[] } {
+): { args: string; attachments?: (ImageContent | FileContent)[] } {
   const mentions = attachments.filter((item): item is FileMention => item.kind === 'file');
   const images = attachments.filter((item): item is ImageAttachment => item.kind === 'image');
+  const uploads = attachments.filter((item): item is UploadAttachment => item.kind === 'upload');
   const mergedArgs = [mentions.map(mentionToken).join(' '), args.trim()]
     .filter((part) => part !== '')
     .join(' ');
-  return {
-    args: mergedArgs,
-    attachments:
-      images.length > 0
-        ? images.map((image) => ({
-            type: 'image' as const,
-            source: { kind: 'base64' as const, media_type: image.mediaType, data: image.data },
-          }))
-        : undefined,
-  };
+  const media: (ImageContent | FileContent)[] = images.map((image) => ({
+    type: 'image' as const,
+    source: { kind: 'base64' as const, media_type: image.mediaType, data: image.data },
+  }));
+  for (const upload of uploads) {
+    if (upload.fileId === undefined) continue;
+    media.push({
+      type: 'file',
+      file_id: upload.fileId,
+      name: upload.name,
+      media_type: upload.mediaType,
+      size: upload.size,
+    });
+  }
+  return { args: mergedArgs, attachments: media.length > 0 ? media : undefined };
 }
 
 /**

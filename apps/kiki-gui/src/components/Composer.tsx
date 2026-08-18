@@ -18,7 +18,7 @@
  *     text (disabled `reference` skills explain themselves instead).
  */
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type KeyboardEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
@@ -27,11 +27,13 @@ import type { FsSearchHit, PermissionMode } from '@moonshot-ai/protocol';
 import { useI18n } from '../i18n';
 import { errorText, issueText, type I18nKey } from '../i18n/locale';
 import {
+  ACCEPTED_IMAGE_MIMES,
   fileToImageAttachment,
   formatBytes,
   hasMention,
   parseMentionTrigger,
   reserveImageFiles,
+  reserveUploadFiles,
   type ComposerAttachment,
 } from '../lib/attachments';
 import {
@@ -113,6 +115,8 @@ export function Composer({
   fsSearch,
   mentionScopeKey,
   attachments,
+  quote,
+  onRemoveQuote,
   onChangeAttachments,
   onActivateSkill,
   onSessionAction,
@@ -166,6 +170,9 @@ export function Composer({
   mentionScopeKey?: string;
   /** Controlled attachment chips (parent owns them beside the draft). */
   attachments: readonly ComposerAttachment[];
+  /** Selected transcript text quoted into this prompt; rendered as a chip. */
+  quote?: string | null;
+  onRemoveQuote?: () => void;
   /**
    * Setter accepting a next array or an updater over the previous one. The
    * updater form is what back-to-back image pastes use — render closures go
@@ -342,14 +349,16 @@ export function Composer({
     node.style.height = `${Math.min(node.scrollHeight, 190)}px`;
   }, [text]);
 
-  // Placeholder image chips (base64 still being read) block sending so a
-  // quick Enter cannot silently drop a just-pasted image.
-  const readingAttachments = attachments.some(
-    (attachment) => attachment.kind === 'image' && attachment.data === '',
+  // Placeholder chips (image base64 still reading, file upload still in
+  // flight) block sending so a quick Enter cannot silently drop content.
+  const pendingAttachments = attachments.some(
+    (attachment) =>
+      (attachment.kind === 'image' && attachment.data === '') ||
+      (attachment.kind === 'upload' && attachment.fileId === undefined),
   );
 
   const canSend =
-    (text.trim() !== '' || attachments.length > 0) && !disabled && !readingAttachments;
+    (text.trim() !== '' || attachments.length > 0) && !disabled && !pendingAttachments;
 
   const runAction = (action: SlashActionId) => {
     switch (action) {
@@ -448,6 +457,59 @@ export function Composer({
         setAttachmentError(errorText(locale, error));
       });
   };
+
+  const addUploadFiles = (files: File[]) => {
+    // Same synchronous-reservation contract as addImageFiles: stubs land
+    // immediately and are replaced by identity once `POST /files` answers.
+    const reservation = reserveUploadFiles(files, attachmentBaselineRef.current);
+    if (reservation.accepted.length === 0) {
+      if (reservation.lastProblem !== null) {
+        setAttachmentError(issueText(locale, reservation.lastProblem));
+      }
+      return;
+    }
+    setAttachmentError(null);
+    attachmentBaselineRef.current = reservation.next;
+    const { accepted } = reservation;
+    const stubs = reservation.stubs;
+    updateAttachments((current) => [...current, ...stubs]);
+    for (const [index, file] of accepted.entries()) {
+      const stub = stubs[index];
+      if (stub === undefined) continue;
+      client
+        .uploadFile(file)
+        .then((meta) => {
+          updateAttachments((current) =>
+            current.map((item) => (item === stub ? { ...stub, fileId: meta.id } : item)),
+          );
+        })
+        .catch((error: unknown) => {
+          updateAttachments((current) => current.filter((item) => item !== stub));
+          setAttachmentError(
+            `${issueText(locale, { key: 'attach.uploadFailed', params: { name: file.name } })} — ${errorText(locale, error)}`,
+          );
+        });
+    }
+  };
+
+  /** Drop/paste entry point: whitelisted images stay image parts; everything else uploads. */
+  const addFiles = (files: File[]) => {
+    const images: File[] = [];
+    const uploads: File[] = [];
+    for (const file of files) {
+      if (ACCEPTED_IMAGE_MIMES.includes(file.type)) images.push(file);
+      else uploads.push(file);
+    }
+    if (images.length > 0) addImageFiles(images);
+    if (uploads.length > 0) addUploadFiles(uploads);
+  };
+
+  // Drag-highlight depth counter: dragenter/dragleave fire on every child
+  // boundary crossing, so a boolean would flicker the overlay off mid-drag.
+  const dragDepthRef = useRef(0);
+  const [dragActive, setDragActive] = useState(false);
+  const dragHasFiles = (event: DragEvent) =>
+    [...event.dataTransfer.types].includes('Files');
 
   const send = () => {
     if (!canSend) return;
@@ -588,18 +650,38 @@ export function Composer({
           --kiki-chat-content-width; the 760px fallback is defensive. */}
       <div className="mx-auto max-w-[var(--kiki-chat-content-width,760px)]">
         <div
-          className="rounded-2xl border border-hairline bg-panel shadow-[0_2px_4px_rgba(28,25,23,0.03),0_16px_40px_-20px_rgba(28,25,23,0.18)]"
+          className={`relative rounded-2xl border bg-panel shadow-[0_2px_4px_rgba(28,25,23,0.03),0_16px_40px_-20px_rgba(28,25,23,0.18)] transition-[border-color,box-shadow] ${
+            dragActive ? 'border-accent ring-2 ring-accent/40' : 'border-hairline'
+          }`}
+          onDragEnter={(event) => {
+            if (!dragHasFiles(event)) return;
+            event.preventDefault();
+            dragDepthRef.current += 1;
+            setDragActive(true);
+          }}
           onDragOver={(event) => {
-            if ([...event.dataTransfer.types].includes('Files')) event.preventDefault();
+            if (dragHasFiles(event)) event.preventDefault();
+          }}
+          onDragLeave={(event) => {
+            if (!dragHasFiles(event)) return;
+            dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+            if (dragDepthRef.current === 0) setDragActive(false);
           }}
           onDrop={(event) => {
-            const files = [...event.dataTransfer.files].filter((file) => file.type !== '');
+            dragDepthRef.current = 0;
+            setDragActive(false);
+            const files = [...event.dataTransfer.files];
             if (files.length > 0) {
               event.preventDefault();
-              addImageFiles(files);
+              addFiles(files);
             }
           }}
         >
+          {dragActive ? (
+            <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center rounded-2xl border-2 border-dashed border-accent/60 bg-panel/85">
+              <span className="text-[12px] font-medium text-accent">{t('composer.dropFiles')}</span>
+            </div>
+          ) : null}
           <div className="flex flex-wrap items-center gap-1.5 px-3.5 pt-2.5">
             {MODES.map((mode) => (
               <button
@@ -737,6 +819,27 @@ export function Composer({
 
           </div>
 
+          {quote !== undefined && quote !== null ? (
+            <div
+              data-quote-chip
+              className="anim-enter mx-3.5 mt-2 flex items-start gap-2 rounded-lg border-l-2 border-accent/60 bg-paper px-2.5 py-1.5"
+            >
+              <p
+                title={quote}
+                className="max-h-8 min-w-0 flex-1 overflow-hidden text-[11.5px] leading-snug whitespace-pre-wrap text-ink-soft"
+              >
+                {quote}
+              </p>
+              <button
+                type="button"
+                aria-label={t('composer.removeQuote')}
+                onClick={onRemoveQuote}
+                className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
+              >
+                ×
+              </button>
+            </div>
+          ) : null}
           {attachments.length > 0 ? (
             <div className="flex flex-wrap items-center gap-1.5 px-3.5 pt-2" data-attachment-chips>
               {attachments.map((attachment, index) =>
@@ -751,6 +854,42 @@ export function Composer({
                     <button
                       type="button"
                       aria-label={t('composer.removeAttachment', { name: attachment.name })}
+                      onClick={() => {
+                        updateAttachments(attachments.filter((_, i) => i !== index));
+                      }}
+                      className="flex h-4 w-4 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-hairline hover:text-ink"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ) : attachment.kind === 'upload' ? (
+                  <span
+                    key={`upload-${attachment.name}-${attachment.size}`}
+                    title={`${attachment.name} · ${attachment.mediaType} · ${formatBytes(attachment.size)}`}
+                    aria-label={
+                      attachment.fileId === undefined ? t('composer.attachmentUploading') : undefined
+                    }
+                    data-attachment-uploading={attachment.fileId === undefined ? '' : undefined}
+                    className="flex items-center gap-1.5 rounded-full border border-hairline bg-paper py-0.5 pr-1 pl-2 text-[11px] text-ink-soft"
+                  >
+                    {attachment.fileId === undefined ? (
+                      <span className="status-dot-busy flex h-4 w-4 items-center justify-center">
+                        <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                      </span>
+                    ) : (
+                      <span aria-hidden>📎</span>
+                    )}
+                    <span className="max-w-32 truncate">
+                      {attachment.name === '' ? t('attach.pastedFile') : attachment.name}
+                    </span>
+                    <span className="font-mono text-[9.5px] text-ink-faint">
+                      {formatBytes(attachment.size)}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label={t('composer.removeAttachment', {
+                        name: attachment.name === '' ? t('attach.pastedFile') : attachment.name,
+                      })}
                       onClick={() => {
                         updateAttachments(attachments.filter((_, i) => i !== index));
                       }}
@@ -919,7 +1058,7 @@ export function Composer({
                 const files = [...event.clipboardData.files];
                 if (files.length === 0) return;
                 event.preventDefault();
-                addImageFiles(files);
+                addFiles(files);
               }}
               placeholder={
                 busy

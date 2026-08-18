@@ -23,6 +23,7 @@ import {
 } from './ConversationShell';
 import { QueueStrip } from './QueueStrip';
 import { RightRail } from './RightRail';
+import { SelectionQuoteButton } from './SelectionQuoteButton';
 import { TerminalPanel } from './TerminalPanel';
 import { Transcript, useStableForest } from './Transcript';
 import { KikiMark } from './Wordmark';
@@ -34,6 +35,7 @@ import {
 import { API_CODES, ApiError, isSessionNotFoundMessage } from '../lib/client';
 import { readComposerState, readDraft, writeComposerState, writeDraft } from '../lib/drafts';
 import { isMainWindowVisibleAndFocused, showDesktopNotification } from '../lib/desktop';
+import { buildQuotePrefix } from '../lib/selectionQuote';
 import { useI18n } from '../i18n';
 import type { I18nKey } from '../i18n/locale';
 import {
@@ -927,6 +929,17 @@ export function SessionView({
   const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>(
     () => initialOptionsRef.current.initialAttachments ?? restoredComposer.attachments ?? [],
   );
+  // Transcript text quoted into the composer via the floating selection
+  // button. The route keys this component by session id, so the quote resets
+  // with the session; send (and the chip's ×) clear it explicitly.
+  const [quote, setQuote] = useState<string | null>(null);
+  const transcriptQuoteRef = useRef<HTMLDivElement>(null);
+  const handleQuoteSelection = useCallback((text: string) => {
+    setQuote(text);
+    // Return focus to the composer so the user can type the follow-up at once.
+    document.querySelector<HTMLTextAreaElement>('[data-composer]')?.focus();
+  }, []);
+  const handleRemoveQuote = useCallback(() => { setQuote(null); }, []);
 
   const controller = useActiveController(sessionId);
   const queryClient = useQueryClient();
@@ -1283,13 +1296,20 @@ export function SessionView({
     if (controller === null) return null;
     return {
       send: (text: string, composerAttachments: readonly ComposerAttachment[]) => {
-        const content = buildPromptContent(text, composerAttachments);
+        // A quoted transcript selection rides the prompt text as a Markdown
+        // blockquote prefix — exactly what the transcript renders back.
+        const quotedText = quote !== null ? `${buildQuotePrefix(quote)}${text}` : text;
+        const content = buildPromptContent(quotedText, composerAttachments);
         if (content === null) return;
         const textPart = content.find((part) => part.type === 'text');
-        // Local echo shows the mention-folded text; an image-only message
-        // echoes the same placeholder the transcript uses for image parts.
+        // Local echo shows the mention-folded text; a media-only message
+        // echoes the same placeholder the transcript uses for those parts.
         const echoText =
-          textPart !== undefined && textPart.type === 'text' ? textPart.text : t('sv.imageEcho');
+          textPart !== undefined && textPart.type === 'text'
+            ? textPart.text
+            : composerAttachments.some((item) => item.kind === 'upload')
+              ? t('sv.fileEcho')
+              : t('sv.imageEcho');
         void controller
           .sendPrompt({
             text: echoText,
@@ -1308,6 +1328,7 @@ export function SessionView({
             writeDraft(sessionId, '');
             setDraft('');
             setAttachments([]);
+            setQuote(null);
             setGoalControl(undefined);
           })
           .catch((error: unknown) => {
@@ -1444,6 +1465,7 @@ export function SessionView({
     swarmMode,
     goalObjective,
     goalControl,
+    quote,
     sessionId,
     t,
   ]);
@@ -1778,6 +1800,8 @@ export function SessionView({
             fsSearch={handleFsSearch}
             attachments={attachments}
             onChangeAttachments={setAttachments}
+            quote={quote}
+            onRemoveQuote={handleRemoveQuote}
             onActivateSkill={handleActivateSkill}
             onSessionAction={runSessionAction}
             onCompactContext={handleCompactContext}
@@ -1820,6 +1844,8 @@ export function SessionView({
     sessionId,
     handleFsSearch,
     attachments,
+    quote,
+    handleRemoveQuote,
     handleActivateSkill,
     runSessionAction,
     handleCompactContext,
@@ -2224,20 +2250,25 @@ export function SessionView({
           )
         : null}
 
-      <Transcript
-        state={{
-          ...state,
-          blocks: mainTranscriptBlocks,
-        }}
-        onLoadOlder={handleLoadOlder}
-        onResolveApproval={handleResolveApproval}
-        onAnswerQuestion={handleAnswerQuestion}
-        onDismissQuestion={handleDismissQuestion}
-        onCancelQueued={handleCancelQueuedChips}
-        onRetryLoad={handleRetryLoad}
-        forest={forest}
-        onOpenAgent={openAgent}
-      />
+      {/* The contents wrapper keeps the transcript's flex geometry untouched
+          while giving the selection-quote button a containment root. */}
+      <div ref={transcriptQuoteRef} className="contents">
+        <Transcript
+          state={{
+            ...state,
+            blocks: mainTranscriptBlocks,
+          }}
+          onLoadOlder={handleLoadOlder}
+          onResolveApproval={handleResolveApproval}
+          onAnswerQuestion={handleAnswerQuestion}
+          onDismissQuestion={handleDismissQuestion}
+          onCancelQueued={handleCancelQueuedChips}
+          onRetryLoad={handleRetryLoad}
+          forest={forest}
+          onOpenAgent={openAgent}
+        />
+      </div>
+      <SelectionQuoteButton containerRef={transcriptQuoteRef} onQuote={handleQuoteSelection} />
       {slots.dock !== null
         ? createPortal(
             <>
