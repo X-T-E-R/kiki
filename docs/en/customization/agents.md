@@ -14,7 +14,7 @@ Kimi Code CLI includes three built-in sub-agents, ready to use out of the box, e
 
 A `coder` sub-agent shares most of the main Agent's tool set: it can run shell commands in the background, maintain todo lists, enter Plan mode, invoke Agent Skills, and dispatch its own nested sub-agents when a task decomposes naturally. If it finishes its turn while background tasks are still running, its run only reports completion after those tasks settle, so the parent receives the result after the underlying work has actually finished.
 
-The top-level [`disabled_builtin_profiles`](../configuration/config-files.md#top-level-fields) setting removes named built-in profiles (`agent`, `coder`, `explore`, or `plan`) from discovery and dispatch. Disabling the default `agent` profile is ignored with a warning; a file profile that shares a name with another disabled built-in no longer needs `override: true`.
+The top-level [`disabled_builtin_profiles`](../configuration/config-files.md#top-level-fields) setting removes named built-in profiles (`agent`, `coder`, `explore`, or `plan`) from subagent discovery and dispatch. Disabling `agent` does not prevent the main agent from starting with its default binding. A file profile that shares a name with a disabled built-in no longer needs `override: true`.
 
 ## How to Invoke
 

@@ -12,10 +12,11 @@
  * candidate wins, except that replacing a same-name `builtin` profile
  * requires `override: true` in the frontmatter — a non-override collision is
  * warned about and skipped to the next candidate. Builtins named by the
- * `disabledBuiltinProfiles` config section are omitted, except the required
- * default profile, whose disable request is warned and ignored. `ready` waits
- * for config loading so downstream tool descriptions see the effective
- * projection. Bound at Session scope.
+ * `disabledBuiltinProfiles` config section are omitted from discovery and
+ * dispatch. The builtin default is retained separately as a binding fallback
+ * so the main agent can still start when `agent` is disabled. `ready` waits for
+ * config loading so downstream tool descriptions see the effective projection.
+ * Bound at Session scope.
  */
 
 import { Disposable } from '#/_base/di/lifecycle';
@@ -69,10 +70,10 @@ export class SessionAgentProfileCatalogService
   declare readonly _serviceBrand: undefined;
 
   private merged = new Map<string, AgentProfile>();
+  private defaultBindingProfile: AgentProfile | undefined;
   private inspections = new Map<string, AgentProfileInspection>();
   private routes = new Map<string, ResolvedAgentProfileRoute>();
   private routeDiagnosticsValue: AgentProfileRouteDiagnostic[] = [];
-  private warnedDefaultDisable = false;
   private readonly readyPromise: Promise<void>;
   private readonly onDidChangeEmitter = this._register(new Emitter<string>());
   readonly onDidChange: Event<string> = this.onDidChangeEmitter.event;
@@ -114,7 +115,7 @@ export class SessionAgentProfileCatalogService
   }
 
   getDefault(): AgentProfile {
-    const profile = this.get(DEFAULT_AGENT_PROFILE_NAME);
+    const profile = this.get(DEFAULT_AGENT_PROFILE_NAME) ?? this.defaultBindingProfile;
     if (profile === undefined) {
       throw new BugIndicatingError(
         `Default agent profile "${DEFAULT_AGENT_PROFILE_NAME}" is not registered`,
@@ -152,9 +153,12 @@ export class SessionAgentProfileCatalogService
     if (input.route === undefined) {
       const profile = input.profile === undefined ? undefined : this.get(input.profile);
       if (profile === undefined) {
-        throw new Error2(ErrorCodes.PROFILE_UNKNOWN, `Unknown agent type: "${input.profile ?? ''}"`, {
-          details: { profileName: input.profile },
-        });
+        const available = this.list().map((item) => item.name).join(', ');
+        throw new Error2(
+          ErrorCodes.PROFILE_UNKNOWN,
+          `Unknown agent type: "${input.profile ?? ''}". Available agent types: ${available}`,
+          { details: { profileName: input.profile, available } },
+        );
       }
       return { profile, baseProfile: profile };
     }
@@ -217,24 +221,14 @@ export class SessionAgentProfileCatalogService
   }
 
   private disabledBuiltinProfileNames(): ReadonlySet<string> {
-    const configured =
-      this.config.get<DisabledBuiltinProfilesConfig>(DISABLED_BUILTIN_PROFILES_SECTION) ?? [];
-    const disabled = new Set(configured);
-    if (disabled.delete(DEFAULT_AGENT_PROFILE_NAME)) {
-      if (!this.warnedDefaultDisable) {
-        this.log.warn(
-          `builtin agent profile "${DEFAULT_AGENT_PROFILE_NAME}" cannot be disabled because it is the default profile; ignoring this entry`,
-        );
-        this.warnedDefaultDisable = true;
-      }
-    } else {
-      this.warnedDefaultDisable = false;
-    }
-    return disabled;
+    return new Set(
+      this.config.get<DisabledBuiltinProfilesConfig>(DISABLED_BUILTIN_PROFILES_SECTION) ?? [],
+    );
   }
 
   private reproject(): void {
     const merged = new Map<string, AgentProfile>();
+    let defaultBindingProfile: AgentProfile | undefined;
     const inspections = new Map<string, AgentProfileInspection>();
     const entries = this.relevantEntries();
     const disabledBuiltinProfiles = this.disabledBuiltinProfileNames();
@@ -242,6 +236,7 @@ export class SessionAgentProfileCatalogService
     const builtinEntry = entries.find((e) => e.sourceId === BUILTIN_AGENT_PROFILE_SOURCE_ID);
     if (builtinEntry !== undefined) {
       for (const profile of builtinEntry.contribution.profiles) {
+        if (profile.name === DEFAULT_AGENT_PROFILE_NAME) defaultBindingProfile = profile;
         if (disabledBuiltinProfiles.has(profile.name)) continue;
         merged.set(profile.name, profile);
         inspections.set(profile.name, {
@@ -317,6 +312,7 @@ export class SessionAgentProfileCatalogService
     }
 
     this.merged = merged;
+    this.defaultBindingProfile = defaultBindingProfile;
     this.inspections = inspections;
     this.reprojectRoutes(entries, merged);
   }

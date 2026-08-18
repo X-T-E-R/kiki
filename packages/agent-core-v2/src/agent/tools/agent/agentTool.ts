@@ -411,9 +411,12 @@ export class SubagentTool implements ISubagentTool {
           ? (() => {
               const base = this.catalog.get(requestedProfileName!);
               if (base === undefined) {
-                throw new Error2(ErrorCodes.PROFILE_UNKNOWN, `Unknown agent type: "${requestedProfileName}"`, {
-                  details: { profileName: requestedProfileName },
-                });
+                const available = this.catalog.list().map((item) => item.name).join(', ');
+                throw new Error2(
+                  ErrorCodes.PROFILE_UNKNOWN,
+                  `Unknown agent type: "${requestedProfileName}". Available agent types: ${available}`,
+                  { details: { profileName: requestedProfileName, available } },
+                );
               }
               return { profile: base, baseProfile: base, route: undefined };
             })()

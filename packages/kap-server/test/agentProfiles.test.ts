@@ -38,7 +38,23 @@ describe('GET /api/v1/agents', () => {
     const routePath = join(routeDir, 'fast.md');
     await writeFile(
       join(home as string, 'config.toml'),
-      'disabled_builtin_profiles = ["explore", "agent"]\n\n[experimental]\n"agent-profile-routes" = true\n',
+      [
+        'disabled_builtin_profiles = ["explore", "agent"]',
+        '',
+        '[providers.stub]',
+        'type = "openai"',
+        'base_url = "http://127.0.0.1:9999"',
+        'api_key = "stub"',
+        '',
+        '[models.stub]',
+        'provider = "stub"',
+        'model = "stub"',
+        'max_context_size = 1000',
+        '',
+        '[experimental]',
+        '"agent-profile-routes" = true',
+        '',
+      ].join('\n'),
       'utf-8',
     );
     await writeFile(
@@ -89,7 +105,7 @@ describe('GET /api/v1/agents', () => {
     const create = await authedFetch(server, base, '/api/v1/sessions', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ metadata: { cwd: home } }),
+      body: JSON.stringify({ metadata: { cwd: home }, agent_config: { model: 'stub' } }),
     });
     const created = (await create.json()) as Envelope<{ id: string }>;
     expect(created.code).toBe(0);
@@ -132,7 +148,7 @@ describe('GET /api/v1/agents', () => {
       profile.name === 'reviewer' && profile.source_file === profilePath.replaceAll('\\', '/')
     )).toHaveLength(1);
     expect(data.items.find((profile) => profile.name === 'explore' && profile.source === 'builtin')?.disabled).toBe(true);
-    expect(data.items.find((profile) => profile.name === 'agent' && profile.source === 'builtin')?.disabled).toBe(false);
+    expect(data.items.find((profile) => profile.name === 'agent' && profile.source === 'builtin')?.disabled).toBe(true);
 
     const patchedResponse = await authedFetch(server, base, '/api/v1/agents/reviewer', {
       method: 'PATCH',

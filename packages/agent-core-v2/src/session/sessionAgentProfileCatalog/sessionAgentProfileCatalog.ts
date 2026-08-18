@@ -8,9 +8,10 @@
  * workspace loaders tagged with this session's seeded workspace key
  * (workspace / extra / explicit). Name-level dedup happens HERE, in the
  * projection: higher-priority sources win name collisions, while builtin
- * names require an explicit `override: true` opt-in to be replaced.
- * `inspect(name)` exposes the projection's adjudication (winning source,
- * suppressed candidates) for debugging surfaces. Bound at Session scope.
+ * names require an explicit `override: true` opt-in to be replaced. Disabled
+ * builtins are absent from `get` / `list` / `resolveSelection` / `inspect`,
+ * while `getDefault` retains the default binding fallback needed by the main
+ * agent. Bound at Session scope.
  */
 
 import { createDecorator } from '#/_base/di/instantiation';

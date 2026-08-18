@@ -980,7 +980,7 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
-  it('warns and keeps the required default builtin profile when its disable is configured', async () => {
+  it('retains a disabled default builtin for binding but removes it from dispatch', async () => {
     await withFixture(async (fixture) => {
       await withStack(
         fixture,
@@ -989,12 +989,16 @@ describe('agent profile loaders + session catalog', () => {
           await stack.ready();
 
           expect(stack.catalog.getDefault().description).toBe('builtin default');
+          expect(stack.catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toBeUndefined();
+          expect(stack.catalog.list().map((profile) => profile.name)).not.toContain(
+            DEFAULT_AGENT_PROFILE_NAME,
+          );
           expect(
             stack.warnings.some(
               (warning) =>
                 warning.includes(DEFAULT_AGENT_PROFILE_NAME) && warning.includes('cannot be disabled'),
             ),
-          ).toBe(true);
+          ).toBe(false);
         },
       );
     });

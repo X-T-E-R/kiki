@@ -14,7 +14,7 @@ Kimi Code CLI 内置三种 subagent，开箱即用，分别面向不同任务形
 
 `coder` subagent 与 main agent 共享大部分工具集：可以在后台执行 Shell 命令、维护待办列表、进入 Plan 模式、调用 Agent Skills，也可以在任务自然拆解时继续派发自己的嵌套 subagent。如果它结束自己的轮次时仍有后台任务在运行，那么只有在这些后台任务全部落定后，这次运行才会回报完成——main agent 拿到结果时，背后的工作也已经真正完成。
 
-顶层配置 [`disabled_builtin_profiles`](../configuration/config-files.md#顶层字段) 会从发现与派发列表中移除指定的内置 profile（`agent`、`coder`、`explore` 或 `plan`）。禁用默认 `agent` profile 的设置会被忽略并告警；文件 profile 与其他已禁用内置 profile 同名时，不再需要 `override: true`。
+顶层配置 [`disabled_builtin_profiles`](../configuration/config-files.md#顶层字段) 会从 subagent 发现与派发列表中移除指定的内置 profile（`agent`、`coder`、`explore` 或 `plan`）。禁用 `agent` 不会影响 main agent 使用默认绑定启动；文件 profile 与已禁用内置 profile 同名时，不再需要 `override: true`。
 
 ## 调用方式
 

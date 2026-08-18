@@ -919,7 +919,7 @@ export const en = {
   'st.namedAgents.enabled': 'Enabled',
   'st.namedAgents.builtinToggleHint': 'Enable or disable this built-in profile through disabled_builtin_profiles.',
   'st.namedAgents.nonBuiltinToggleHint': 'Only built-in profiles can be enabled or disabled here.',
-  'st.namedAgents.defaultToggleHint': 'The default “agent” profile cannot be disabled.',
+  'st.namedAgents.defaultToggleHint': 'Disable “agent” for subagent discovery and dispatch; the main agent keeps its default binding.',
   'st.namedAgents.modelPin': 'pinned model alias',
   'st.namedAgents.whenToUse': 'When to use',
   'st.namedAgents.thinkingEffort': 'Thinking effort',

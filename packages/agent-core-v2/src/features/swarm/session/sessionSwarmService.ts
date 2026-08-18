@@ -163,9 +163,12 @@ export class SessionSwarmService implements ISessionSwarmService {
         ? (() => {
             const base = this.catalog.get(options.profileName);
             if (base === undefined) {
-              throw new Error2(ErrorCodes.PROFILE_UNKNOWN, `Unknown agent type: "${options.profileName}"`, {
-                details: { profileName: options.profileName },
-              });
+              const available = this.catalog.list().map((item) => item.name).join(', ');
+              throw new Error2(
+                ErrorCodes.PROFILE_UNKNOWN,
+                `Unknown agent type: "${options.profileName}". Available agent types: ${available}`,
+                { details: { profileName: options.profileName, available } },
+              );
             }
             return { profile: base, baseProfile: base, route: undefined };
           })()

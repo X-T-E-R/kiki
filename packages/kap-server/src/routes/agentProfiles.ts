@@ -8,7 +8,6 @@
 
 import {
   AgentProfileWriteErrors,
-  DEFAULT_AGENT_PROFILE_NAME,
   DISABLED_BUILTIN_PROFILES_SECTION,
   ErrorCodes,
   IAgentProfileRegistry,
@@ -72,7 +71,6 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
       const disabledBuiltins = new Set(
         config.get<DisabledBuiltinProfilesConfig>(DISABLED_BUILTIN_PROFILES_SECTION) ?? [],
       );
-      disabledBuiltins.delete(DEFAULT_AGENT_PROFILE_NAME);
       const deduped = new Map<
         string,
         { registration: AgentProfileRegistration; profile: AgentProfile }

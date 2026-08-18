@@ -256,14 +256,24 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
   });
 
   it('filters configured builtin profiles and reprojects when the config changes', () => {
-    const { container, catalog, config, contribute } = makeCatalog(WORKSPACE_KEY, ['coder']);
+    const { container, catalog, config, contribute } = makeCatalog(WORKSPACE_KEY, [
+      'coder',
+      'plan',
+    ]);
     const defaultProfile = profile(DEFAULT_AGENT_PROFILE_NAME);
     const coderProfile = profile('coder');
     const exploreProfile = profile('explore');
-    contribute(BUILTIN_AGENT_PROFILE_SOURCE_ID, [defaultProfile, coderProfile, exploreProfile]);
+    const planProfile = profile('plan');
+    contribute(BUILTIN_AGENT_PROFILE_SOURCE_ID, [
+      defaultProfile,
+      coderProfile,
+      exploreProfile,
+      planProfile,
+    ]);
 
     expect(catalog.getDefault()).toBe(defaultProfile);
     expect(catalog.get('coder')).toBeUndefined();
+    expect(catalog.get('plan')).toBeUndefined();
     expect(catalog.get('explore')).toBe(exploreProfile);
     expect(catalog.list()).toEqual([defaultProfile, exploreProfile]);
 
@@ -272,6 +282,7 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     config.setDisabled(['explore']);
 
     expect(catalog.get('coder')).toBe(coderProfile);
+    expect(catalog.get('plan')).toBe(planProfile);
     expect(catalog.get('explore')).toBeUndefined();
     expect(seen).toEqual(['catalog']);
     subscription.dispose();
@@ -279,19 +290,23 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     container.dispose();
   });
 
-  it('warns once and ignores attempts to disable the required default builtin profile', async () => {
+  it('keeps a disabled default builtin only on the main-agent binding surface', async () => {
     const { container, catalog, warnings, contribute } = makeCatalog(WORKSPACE_KEY, [
       DEFAULT_AGENT_PROFILE_NAME,
     ]);
     const defaultProfile = profile(DEFAULT_AGENT_PROFILE_NAME);
-    contribute(BUILTIN_AGENT_PROFILE_SOURCE_ID, [defaultProfile]);
-    contribute('user', [profile('other')]);
+    const coderProfile = profile('coder');
+    contribute(BUILTIN_AGENT_PROFILE_SOURCE_ID, [defaultProfile, coderProfile]);
     await catalog.ready;
 
     expect(catalog.getDefault()).toBe(defaultProfile);
-    expect(warnings).toEqual([
-      `builtin agent profile "${DEFAULT_AGENT_PROFILE_NAME}" cannot be disabled because it is the default profile; ignoring this entry`,
-    ]);
+    expect(catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toBeUndefined();
+    expect(catalog.list()).toEqual([coderProfile]);
+    expect(catalog.inspect(DEFAULT_AGENT_PROFILE_NAME)).toBeUndefined();
+    expect(() => catalog.resolveSelection({ profile: DEFAULT_AGENT_PROFILE_NAME })).toThrow(
+      `Unknown agent type: "${DEFAULT_AGENT_PROFILE_NAME}". Available agent types: coder`,
+    );
+    expect(warnings).toEqual([]);
     catalog.dispose();
     container.dispose();
   });

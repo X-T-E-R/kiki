@@ -1078,6 +1078,29 @@ describe('Agent tool execution contract', () => {
     expect(lifecycle.create).not.toHaveBeenCalled();
   });
 
+  it('rejects a disabled default profile and reports the available dispatch types', async () => {
+    const lifecycle = createAgentLifecycleStub();
+    const baseCatalog = allowlistCatalog(['explore']);
+    const context = createAgentToolContext(
+      lifecycle,
+      sessionService(ISessionAgentProfileCatalog, {
+        ...baseCatalog,
+        get: (name: string) => (name === 'agent' ? undefined : baseCatalog.get(name)),
+      }),
+    );
+
+    const result = await executeAgentTool(context, {
+      prompt: 'Investigate',
+      description: 'Find cause',
+      subagent_type: 'agent',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain('Unknown agent type: "agent"');
+    expect(result.output).toContain('Available agent types: coder, explore');
+    expect(lifecycle.create).not.toHaveBeenCalled();
+  });
+
   it('enforces the persisted subagent allowlist instead of the current catalog profile', async () => {
     const lifecycle = createAgentLifecycleStub();
     const context = createAgentToolContext(

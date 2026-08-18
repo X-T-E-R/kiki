@@ -81,6 +81,29 @@ function createAtomicDocumentStore(): AtomicDocumentStore {
   };
 }
 
+function disabledDefaultCatalog(): ISessionAgentProfileCatalog {
+  const defaultProfile = normalizeAgentProfile({
+    name: DEFAULT_AGENT_PROFILE_NAME,
+    systemPrompt: () => 'disabled default binding',
+  });
+  return {
+    _serviceBrand: undefined,
+    ready: Promise.resolve(),
+    onDidChange: Event.None as ISessionAgentProfileCatalog['onDidChange'],
+    get: () => undefined,
+    getDefault: () => defaultProfile,
+    list: () => [],
+    listRoutes: () => [],
+    routeDiagnostics: () => [],
+    resolveSelection: () => {
+      throw new Error('disabled default is not dispatchable');
+    },
+    inspect: () => undefined,
+    load: async () => {},
+    reload: async () => {},
+  };
+}
+
 function routedCatalog(
   modelAlias = MOCK_MODEL,
   thinkingEffort = 'off',
@@ -186,6 +209,19 @@ describe('AgentProfileService.bind', () => {
     expect(svc.isRunnable()).toBe(true);
     expect(svc.getActiveToolNames()?.length).toBeGreaterThan(0);
     expect(svc.getSystemPrompt()).toContain('Kimi Code CLI');
+  });
+
+  it('binds the default main-agent profile even when it is hidden from dispatch', async () => {
+    ctx = createTestAgent(
+      sessionService(ISessionAgentProfileCatalog, disabledDefaultCatalog()),
+      hostEnvironmentServices(homeDir),
+    );
+    const svc = ctx.get(IAgentProfileService);
+
+    await svc.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+
+    expect(svc.data().profileName).toBe(DEFAULT_AGENT_PROFILE_NAME);
+    expect(svc.getSystemPrompt()).toBe('disabled default binding');
   });
 
   it('resolves a bare default_model through the canonical model entry', async () => {

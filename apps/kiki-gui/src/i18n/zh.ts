@@ -901,7 +901,7 @@ export const zh: Record<I18nKey, string> = {
   'st.namedAgents.enabled': '已启用',
   'st.namedAgents.builtinToggleHint': '通过 disabled_builtin_profiles 启用或禁用这个内置 Profile。',
   'st.namedAgents.nonBuiltinToggleHint': '这里只能启用或禁用内置 Profile。',
-  'st.namedAgents.defaultToggleHint': '默认“agent”Profile 不能禁用。',
+  'st.namedAgents.defaultToggleHint': '禁用“agent”只会将其从 subagent 发现与派发面移除，main agent 的默认绑定仍然有效。',
   'st.namedAgents.modelPin': '固定模型别名',
   'st.namedAgents.whenToUse': '适用场景',
   'st.namedAgents.thinkingEffort': '思考强度',

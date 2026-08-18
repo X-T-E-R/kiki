@@ -407,7 +407,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const selection =
       input.route === undefined
         ? (() => {
-            const base = input.profile === undefined ? undefined : this.catalog.get(input.profile);
+            const base =
+              input.profile === DEFAULT_AGENT_PROFILE_NAME
+                ? this.catalog.getDefault()
+                : input.profile === undefined
+                  ? undefined
+                  : this.catalog.get(input.profile);
             if (base === undefined) {
               const available = this.catalog.list().map((item) => item.name).join(', ');
               throw new ProfileError(
@@ -1017,7 +1022,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const profileName = this.profileName;
     if (profileName === undefined) return undefined;
     if (this.routeId !== undefined) return undefined;
-    return this.catalog.get(profileName);
+    return profileName === DEFAULT_AGENT_PROFILE_NAME
+      ? this.catalog.getDefault()
+      : this.catalog.get(profileName);
   }
 
   private cacheAgentsMdWarning(context: Pick<SystemPromptContext, 'agentsMdWarning'>): void {

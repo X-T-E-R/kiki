@@ -1320,7 +1320,7 @@ function NamedAgentProfileRow({
     profile.workspace_id !== undefined &&
     profile.source_file !== undefined &&
     (profile.source === 'user' || profile.source === 'workspace' || profile.source === 'extra');
-  const toggleLocked = profile.source !== 'builtin' || profile.name === 'agent';
+  const toggleLocked = profile.source !== 'builtin';
   const toggleTitle = profile.source !== 'builtin'
     ? t('st.namedAgents.nonBuiltinToggleHint')
     : profile.name === 'agent'

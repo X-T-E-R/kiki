@@ -255,7 +255,14 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
       const allowlist = subagentAllowlistFor(this.catalog, own);
       if (allowlist !== undefined && !allowlist.includes(profileName)) throw new Error2(ErrorCodes.AGENT_TYPE_NOT_ALLOWED, subagentTypeNotAllowedMessage(profileName, allowlist));
       const selectedProfile = this.catalog.get(profileName);
-      if (selectedProfile === undefined) throw new Error2(ErrorCodes.PROFILE_UNKNOWN, `Unknown agent type: "${profileName}"`);
+      if (selectedProfile === undefined) {
+        const available = this.catalog.list().map((item) => item.name).join(', ');
+        throw new Error2(
+          ErrorCodes.PROFILE_UNKNOWN,
+          `Unknown agent type: "${profileName}". Available agent types: ${available}`,
+          { details: { profileName, available } },
+        );
+      }
       if (own.modelAlias === undefined) throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'Caller agent has no model bound');
       const bindingRequest = {
         modelAlias: optionalNonblank(args.model, 'model'),
