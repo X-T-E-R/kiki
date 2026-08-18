@@ -59,6 +59,8 @@ export const OAuthRefSchema = z.object({
 
 export const ModelSourceSchema = z.enum(['static', 'discover', 'oauth-catalog']);
 
+export const RequestAttributionSchema = z.enum(['codex', 'kimi', 'kiki', 'none']);
+
 const StringRecordSchema = z.record(z.string(), z.string());
 
 export const ProviderConfigSchema = z.object({
@@ -67,6 +69,8 @@ export const ProviderConfigSchema = z.object({
   baseUrl: z.string().optional(),
   customHeaders: StringRecordSchema.optional(),
   defaultModel: z.string().optional(),
+  requestAttribution: RequestAttributionSchema.optional(),
+  requestOriginator: z.string().optional(),
 
   type: ProviderTypeSchema.optional(),
   apiKey: z.string().optional(),

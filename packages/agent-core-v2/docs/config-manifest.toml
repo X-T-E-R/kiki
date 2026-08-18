@@ -329,6 +329,8 @@ merge_all_available_skills = true
   # base_url: string
   # custom_headers: record<string, string>
   # default_model: string
+  # request_attribution: "codex" | "kimi" | "kiki" | "none"
+  # request_originator: string
   # type: string
   # api_key: string
   # oauth: object

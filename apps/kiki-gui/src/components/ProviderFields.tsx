@@ -27,6 +27,7 @@ import {
   PROVIDER_WIRE_TYPES,
   providerDraftFromCatalog,
   replaceProvider,
+  REQUEST_ATTRIBUTION_CHOICES,
   validateProviderDraft,
   type MsUnit,
   type ProviderDraft,
@@ -49,6 +50,8 @@ export function blankProviderDraft(): ProviderDraft {
     defaultModel: '',
     apiKey: '',
     clearApiKey: false,
+    requestAttribution: 'auto',
+    requestOriginator: '',
     models: [{ model: '', maxContextSize: 128000, displayName: '', capabilities: [], supportEfforts: [] }],
   };
 }
@@ -415,6 +418,31 @@ export function ProviderFields({
       <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.baseUrl')}
         <input className={`${INPUT} mt-1`} value={draft.baseUrl} onChange={(event) => { onChange({ ...draft, baseUrl: event.target.value }); }} placeholder="https://api.example.com/v1" />
       </label>
+      <div>
+        <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.attribution')}
+          <select
+            className={`${INPUT} mt-1`}
+            value={draft.requestAttribution}
+            onChange={(event) => { onChange({ ...draft, requestAttribution: event.target.value as ProviderDraft['requestAttribution'] }); }}
+          >
+            {REQUEST_ATTRIBUTION_CHOICES.map((choice) => (
+              <option key={choice} value={choice}>{t(`st.providers.attribution.${choice}`)}</option>
+            ))}
+          </select>
+        </label>
+        <Hint>{t('st.providers.attributionHint')}</Hint>
+      </div>
+      <div>
+        <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.originator')}
+          <input
+            className={`${INPUT} mt-1`}
+            value={draft.requestOriginator}
+            onChange={(event) => { onChange({ ...draft, requestOriginator: event.target.value }); }}
+            placeholder={t('st.providers.originatorPlaceholder')}
+          />
+        </label>
+        <Hint>{t('st.providers.originatorHint')}</Hint>
+      </div>
       {managed ? (
         <Hint>{t('st.providers.managedHint')}</Hint>
       ) : (

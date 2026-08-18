@@ -54,6 +54,8 @@ import type { ThinkingEffort } from '#/kosong/contract/provider';
 import type { ModelCapability } from '#/kosong/contract/capability';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
+import type { ProvidersSection } from '#/kosong/provider/provider';
+import '#/kosong/provider/providers/kimi/kimi.contrib';
 import {
   type ModelRequestEvent,
   type ModelRequestInput,
@@ -92,6 +94,7 @@ function createRequester(
   firstCallError?: Error | null,
   subsequentCallErrors: readonly Error[] = [],
   capturedInputs?: ModelRequestInput[],
+  modelOverrides?: Partial<Model>,
 ): ModelRequester {
   const model: Model = {
     id: 'm',
@@ -105,6 +108,7 @@ function createRequester(
     alwaysThinking: false,
     providerName: 'p',
     authProvider: { getAuth: async () => undefined },
+    ...modelOverrides,
   };
   return {
     model,
@@ -158,6 +162,7 @@ function createService(
     readonly agentId?: string;
     readonly agentMeta?: AgentMeta;
     readonly requestParams?: ModelRequestParams;
+    readonly providers?: ProvidersSection;
   } = {},
 ) {
   const ix = disposables.add(new TestInstantiationService());
@@ -196,7 +201,8 @@ function createService(
   const context = { get: () => options.contextMessages ?? history };
   const tools = { list: () => [] };
   const config: Partial<IConfigService> = {
-    get: (() => undefined) as IConfigService['get'],
+    get: ((section: string) =>
+      section === 'providers' ? options.providers : undefined) as IConfigService['get'],
   };
   const log = { info: () => undefined, warn: () => undefined };
   const telemetryRecords: TelemetryRecord[] = [];
@@ -287,11 +293,12 @@ function captureRequestParams(requester: ModelRequester): ModelRequestParams[] {
 }
 
 describe('AgentLLMRequesterService request attribution headers', () => {
-  it('sends shared session and executor ids for main without subagent headers', async () => {
+  it('sends kiki-style session and executor ids for main without subagent headers', async () => {
     const requester = createRequester({ value: 0 }, null);
     const captured = captureRequestParams(requester);
     const { service } = createService(requester, undefined, {
       sessionId: 'session-main',
+      providers: { p: { requestAttribution: 'kiki' } },
       requestParams: {
         cacheKey: 'session-main',
         requestParams: {
@@ -311,7 +318,7 @@ describe('AgentLLMRequesterService request attribution headers', () => {
     expect(captured[0]?.requestParams).toEqual({ seed: 42 });
   });
 
-  it('adds the parent chain and reliable swarm source for a child', async () => {
+  it('adds the kiki-style parent chain and reliable swarm source for a child', async () => {
     const requester = createRequester({ value: 0 }, null);
     const captured = captureRequestParams(requester);
     const { service } = createService(requester, undefined, {
@@ -322,6 +329,7 @@ describe('AgentLLMRequesterService request attribution headers', () => {
         parentAgentId: 'main',
         labels: { parentAgentId: 'main', swarmItem: 'review' },
       },
+      providers: { p: { requestAttribution: 'kiki' } },
     });
 
     await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
@@ -333,6 +341,152 @@ describe('AgentLLMRequesterService request attribution headers', () => {
       'x-kiki-subagent': 'swarm',
     });
     expect(captured[0]?.headers).not.toHaveProperty('x-kiki-parent-turn-id');
+  });
+
+  it('sends codex-style session/thread ids for main without subagent headers', async () => {
+    const requester = createRequester({ value: 0 }, null);
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, {
+      sessionId: 'session-main',
+      providers: { p: { requestAttribution: 'codex' } },
+    });
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+
+    expect(captured[0]?.headers).toEqual({
+      'session-id': 'session-main',
+      'thread-id': 'main',
+      originator: 'codex_cli_rs',
+    });
+  });
+
+  it('maps both subagent sources to collab_spawn under the codex style', async () => {
+    for (const agentMeta of [
+      { type: 'sub', parentAgentId: 'main', labels: { parentAgentId: 'main', swarmItem: 'review' } },
+      { type: 'sub', parentAgentId: 'main' },
+    ] as const) {
+      const requester = createRequester({ value: 0 }, null);
+      const captured = captureRequestParams(requester);
+      const { service } = createService(requester, undefined, {
+        sessionId: 'session-child',
+        agentId: 'agent-7',
+        agentMeta,
+        providers: { p: { requestAttribution: 'codex' } },
+      });
+
+      await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+
+      expect(captured[0]?.headers).toEqual({
+        'session-id': 'session-child',
+        'thread-id': 'agent-7',
+        originator: 'codex_cli_rs',
+        'x-codex-parent-thread-id': 'main',
+        'x-openai-subagent': 'collab_spawn',
+      });
+    }
+  });
+
+  it('sends no attribution headers under the kimi or none styles', async () => {
+    for (const requestAttribution of ['kimi', 'none'] as const) {
+      const requester = createRequester({ value: 0 }, null);
+      const captured = captureRequestParams(requester);
+      const { service } = createService(requester, undefined, {
+        providers: { p: { requestAttribution } },
+      });
+
+      await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+
+      expect(captured[0]?.headers).toBeUndefined();
+    }
+  });
+
+  it('defaults kimi-family providers to no attribution headers', async () => {
+    const requester = createRequester({ value: 0 }, null, [], undefined, {
+      providerType: 'kimi',
+    });
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined);
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+
+    expect(captured[0]?.headers).toBeUndefined();
+  });
+
+  it('defaults non-kimi providers to the codex style', async () => {
+    const requester = createRequester({ value: 0 }, null, [], undefined, {
+      providerType: 'openai',
+    });
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, { sessionId: 'session-main' });
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+
+    expect(captured[0]?.headers).toEqual({
+      'session-id': 'session-main',
+      'thread-id': 'main',
+      originator: 'codex_cli_rs',
+    });
+  });
+
+  it('lets an explicit style override the family default', async () => {
+    const requester = createRequester({ value: 0 }, null, [], undefined, {
+      providerType: 'kimi',
+    });
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, {
+      sessionId: 'session-main',
+      providers: { p: { requestAttribution: 'kiki' } },
+    });
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+
+    expect(captured[0]?.headers).toEqual({
+      'x-kiki-session-id': 'session-main',
+      'x-kiki-agent-id': 'main',
+    });
+  });
+
+  it('honors an explicit requestOriginator over the codex style default', async () => {
+    const requester = createRequester({ value: 0 }, null);
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, {
+      sessionId: 'session-main',
+      providers: { p: { requestAttribution: 'codex', requestOriginator: 'my-ide' } },
+    });
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+
+    expect(captured[0]?.headers).toEqual({
+      'session-id': 'session-main',
+      'thread-id': 'main',
+      originator: 'my-ide',
+    });
+  });
+
+  it('sends no originator header under the kiki style when unconfigured', async () => {
+    const requester = createRequester({ value: 0 }, null);
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, {
+      providers: { p: { requestAttribution: 'kiki' } },
+    });
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+
+    expect(captured[0]?.headers).not.toHaveProperty('originator');
+  });
+
+  it('sends an explicitly configured originator under non-codex styles', async () => {
+    for (const requestAttribution of ['kimi', 'kiki', 'none'] as const) {
+      const requester = createRequester({ value: 0 }, null);
+      const captured = captureRequestParams(requester);
+      const { service } = createService(requester, undefined, {
+        providers: { p: { requestAttribution, requestOriginator: 'my-ide' } },
+      });
+
+      await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+
+      expect(captured[0]?.headers?.['originator']).toBe('my-ide');
+    }
   });
 });
 

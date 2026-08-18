@@ -26,8 +26,14 @@
  * warnings through `eventBus`, records durable request-trace Ops
  * through `wire`, reports each request's `x-trace-id` to its caller, and
  * reports provider failures through `telemetry`. Each physical request also
- * carries runtime-owned `x-kiki-*` session/agent lineage headers; parent-turn
- * attribution remains absent until spawn metadata carries an authoritative
+ * carries runtime-owned session/agent lineage headers in the provider's
+ * configured `request_attribution` style (codex-style `session-id` /
+ * `thread-id` by default, no attribution headers for kimi-family providers,
+ * the reserved `x-kiki-*` set under the kiki style), plus the `originator`
+ * header from the provider's `request_originator` (codex style defaults it
+ * to `codex_cli_rs`, other styles send it only when configured);
+ * parent-turn attribution
+ * remains absent until spawn metadata carries an authoritative
  * parent turn rather than a sampled current turn. The mutable request state
  * (`lastConfigLogSignature`, `turnConfigs`, `mediaDegradedTurns`,
  * `mediaStrippedTurns`, `emittedThinkingEffortWarnings`) is registered into
@@ -80,8 +86,14 @@ import type { ModelOverrides } from '#/kosong/model/model.types';
 import { IModelService } from '#/kosong/model/model';
 import { completionBudgetParams, resolveCompletionBudget } from '#/kosong/model/completionBudget';
 import { resolveThinkingKeep, type ThinkingConfig } from '#/kosong/model/thinking';
-import { THINKING_SECTION } from '#/app/kosongConfig/configSection';
+import { PROVIDERS_SECTION, THINKING_SECTION } from '#/app/kosongConfig/configSection';
 import type { Protocol } from '#/kosong/protocol/protocol';
+import { getProviderDefinition } from '#/kosong/provider/providerDefinition';
+import type {
+  ProviderConfig,
+  ProvidersSection,
+  RequestAttribution,
+} from '#/kosong/provider/provider';
 import type { ApiErrorEvent } from '#/app/telemetry/events';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IWireService } from '#/wire/wire';
@@ -653,6 +665,12 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
           : undefined,
     });
     const requester = this.modelCatalog.getRequester(resolved.modelAlias);
+    const providerConfig =
+      this.config.get<ProvidersSection>(PROVIDERS_SECTION)?.[requester.model.providerName];
+    const attribution = resolveRequestAttribution(
+      providerConfig,
+      requester.model.providerType,
+    );
 
     const messages = overrides.messages ?? this.context.get();
     return {
@@ -662,10 +680,12 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         ...baseParams,
         requestParams: stripKikiReservedRequestParams(baseParams.requestParams),
         ...budgetParams,
-        headers: kikiRequestHeaders(
+        headers: attributionRequestHeaders(
+          attribution,
           this.sessionContext.sessionId,
           this.agentContext.agentId,
           agentMeta,
+          providerConfig?.requestOriginator,
         ),
       },
       modelAlias: resolved.modelAlias,
@@ -813,23 +833,60 @@ class MutableLLMRequestTrace implements LLMRequestTrace {
   }
 }
 
-function kikiRequestHeaders(
+function resolveRequestAttribution(
+  provider: ProviderConfig | undefined,
+  providerType: string | undefined,
+): RequestAttribution {
+  if (provider?.requestAttribution !== undefined) return provider.requestAttribution;
+  if (providerType !== undefined && getProviderDefinition(providerType)?.id === 'kimi') {
+    return 'kimi';
+  }
+  return 'codex';
+}
+
+function attributionRequestHeaders(
+  attribution: RequestAttribution,
   sessionId: string,
   agentId: string,
   meta: AgentMeta | undefined,
-): Readonly<Record<string, string>> {
-  const headers: Record<string, string> = {
-    'x-kiki-session-id': sessionId,
-    'x-kiki-agent-id': agentId,
-  };
+  originator: string | undefined,
+): Readonly<Record<string, string>> | undefined {
   const parentAgentId = subagentParentAgentId(meta);
-  if (parentAgentId !== undefined) {
-    headers['x-kiki-parent-agent-id'] = parentAgentId;
+  switch (attribution) {
+    case 'codex': {
+      const headers: Record<string, string> = {
+        'session-id': sessionId,
+        'thread-id': agentId,
+        originator: originator ?? 'codex_cli_rs',
+      };
+      if (parentAgentId !== undefined) {
+        headers['x-codex-parent-thread-id'] = parentAgentId;
+      }
+      if (isSubagentMeta(meta)) {
+        headers['x-openai-subagent'] = 'collab_spawn';
+      }
+      return headers;
+    }
+    case 'kiki': {
+      const headers: Record<string, string> = {
+        'x-kiki-session-id': sessionId,
+        'x-kiki-agent-id': agentId,
+      };
+      if (originator !== undefined) {
+        headers['originator'] = originator;
+      }
+      if (parentAgentId !== undefined) {
+        headers['x-kiki-parent-agent-id'] = parentAgentId;
+      }
+      if (isSubagentMeta(meta)) {
+        headers['x-kiki-subagent'] = subagentSwarmItem(meta) === undefined ? 'agent' : 'swarm';
+      }
+      return headers;
+    }
+    case 'kimi':
+    case 'none':
+      return originator === undefined ? undefined : { originator };
   }
-  if (isSubagentMeta(meta)) {
-    headers['x-kiki-subagent'] = subagentSwarmItem(meta) === undefined ? 'agent' : 'swarm';
-  }
-  return headers;
 }
 
 function logFieldsForSource(source: AgentLLMRequestSource | undefined): AgentLLMRequestLogFields {

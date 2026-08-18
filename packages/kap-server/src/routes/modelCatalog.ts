@@ -342,6 +342,12 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         const provider: ProviderConfig = { type: req.body.type };
         if (req.body.api_key !== undefined) provider.apiKey = req.body.api_key;
         if (req.body.base_url !== undefined) provider.baseUrl = req.body.base_url;
+        if (req.body.request_attribution !== undefined) {
+          provider.requestAttribution = req.body.request_attribution;
+        }
+        if (req.body.request_originator !== undefined) {
+          provider.requestOriginator = req.body.request_originator;
+        }
         if (req.body.default_model !== undefined) {
           // The provider-level default references the model alias id
           // (`<id>/<model>`), the form runtime resolution reads back.
@@ -463,6 +469,8 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         // old on-disk value alive and resurrect it on the next boot.
         provider.apiKey = req.body.api_key ?? target.apiKey;
         provider.baseUrl = req.body.base_url;
+        provider.requestAttribution = req.body.request_attribution;
+        provider.requestOriginator = req.body.request_originator;
         provider.defaultModel =
           req.body.default_model !== undefined
             ? // The provider-level default references the model alias id

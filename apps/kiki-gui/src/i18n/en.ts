@@ -733,6 +733,18 @@ export const en = {
   'st.providers.idLabel': 'Provider ID',
   'st.providers.protocol': 'Protocol',
   'st.providers.baseUrl': 'Base URL',
+  'st.providers.attribution': 'Request attribution',
+  'st.providers.attribution.auto': 'Auto (provider family default)',
+  'st.providers.attribution.codex': 'Codex (session-id / thread-id)',
+  'st.providers.attribution.kimi': 'Kimi (no attribution headers)',
+  'st.providers.attribution.kiki': 'Kiki (x-kiki-* headers)',
+  'st.providers.attribution.none': 'None (no attribution headers)',
+  'st.providers.attributionHint':
+    'Which session/agent lineage headers the runtime adds to every request to this provider.',
+  'st.providers.originator': 'Originator header',
+  'st.providers.originatorPlaceholder': 'codex_cli_rs',
+  'st.providers.originatorHint':
+    'Sent as the originator request header. Codex attribution defaults to codex_cli_rs; other styles send it only when set here.',
   'st.providers.apiKey': 'API key',
   'st.providers.keyStored': 'Stored key present — leave blank to keep it',
   'st.providers.keyNew': 'Paste a new key',

@@ -55,6 +55,10 @@ export const providerWireTypeSchema = z.enum([
 ]);
 export type ProviderWireType = z.infer<typeof providerWireTypeSchema>;
 
+/** The request-attribution header styles accepted by the create/replace routes. */
+export const requestAttributionSchema = z.enum(['codex', 'kimi', 'kiki', 'none']);
+export type RequestAttributionWire = z.infer<typeof requestAttributionSchema>;
+
 export const createProviderModelSchema = z.object({
   model: z.string().min(1),
   max_context_size: z.number().int().min(1),
@@ -112,6 +116,8 @@ export const createProviderRequestSchema = z
     api_key: z.string().optional(),
     base_url: z.string().trim().optional(),
     default_model: z.string().min(1).optional(),
+    request_attribution: requestAttributionSchema.optional(),
+    request_originator: z.string().optional(),
     models: z.array(createProviderModelSchema).min(1),
   })
   .superRefine((value, ctx) => {
@@ -151,6 +157,8 @@ export const replaceProviderRequestSchema = z
     api_key: z.string().optional(),
     base_url: z.string().trim().optional(),
     default_model: z.string().min(1).optional(),
+    request_attribution: requestAttributionSchema.optional(),
+    request_originator: z.string().optional(),
     models: z.array(createProviderModelSchema).min(1),
   })
   .superRefine((value, ctx) => {

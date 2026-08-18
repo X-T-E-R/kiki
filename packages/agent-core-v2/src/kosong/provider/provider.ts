@@ -30,12 +30,22 @@ export interface OAuthRef {
 
 export type ModelSource = 'static' | 'discover' | 'oauth-catalog';
 
+/**
+ * Per-provider request-attribution header style: which session/agent lineage
+ * headers the runtime adds to every LLM request. Unconfigured falls back to
+ * the provider family default (kimi vendors send none, everyone else sends
+ * the codex-style `session-id` / `thread-id` pair).
+ */
+export type RequestAttribution = 'codex' | 'kimi' | 'kiki' | 'none';
+
 export interface ProviderConfig {
   modelSource?: ModelSource;
 
   baseUrl?: string;
   customHeaders?: Record<string, string>;
   defaultModel?: string;
+  requestAttribution?: RequestAttribution;
+  requestOriginator?: string;
 
   type?: ProviderType;
   apiKey?: string;

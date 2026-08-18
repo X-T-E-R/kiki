@@ -65,6 +65,8 @@ const providerDraft = (patch: Partial<ProviderDraft> = {}): ProviderDraft => ({
   defaultModel: 'chat',
   apiKey: '',
   clearApiKey: false,
+  requestAttribution: 'auto',
+  requestOriginator: '',
   models: [
     {
       model: 'chat',
@@ -286,6 +288,8 @@ describe('settings persistence and validation', () => {
         type: 'openai',
         base_url: 'https://api.example.test/v1',
         default_model: 'example/chat',
+        request_attribution: 'kiki',
+        request_originator: 'my-ide',
         has_api_key: true,
         status: 'connected',
         models: ['example/chat'],
@@ -302,6 +306,8 @@ describe('settings persistence and validation', () => {
     expect(draft?.apiKey).toBe('');
     expect(draft?.defaultModel).toBe('chat');
     expect(draft?.models[0]?.model).toBe('chat');
+    expect(draft?.requestAttribution).toBe('kiki');
+    expect(draft?.requestOriginator).toBe('my-ide');
   });
 
   it('uses the provider PUT wire and omits a blank write-once secret', async () => {
@@ -354,6 +360,37 @@ describe('settings persistence and validation', () => {
       'example',
       providerDraft({ clearApiKey: true }),
     );
+  });
+
+  it('serializes request_attribution only when a style is chosen (auto omits)', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(init?.body as string) as Record<string, unknown>);
+      return new Response(JSON.stringify({
+        code: 0,
+        msg: 'success',
+        data: { provider: { id: 'example', type: 'openai', has_api_key: false, status: 'unconfigured' } },
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const connection = { url: 'http://127.0.0.1:8080', token: 'token' };
+    await replaceProvider(connection, 'example', providerDraft({ requestAttribution: 'codex' }));
+    await replaceProvider(connection, 'example', providerDraft({ requestOriginator: 'my-ide' }));
+    await replaceProvider(connection, 'example', providerDraft());
+
+    expect(bodies[0]?.['request_attribution']).toBe('codex');
+    expect(bodies[1]?.['request_originator']).toBe('my-ide');
+    expect(bodies[2]?.['request_attribution']).toBeUndefined();
+    expect('request_attribution' in (bodies[2] ?? {})).toBe(false);
+    expect(bodies[2]?.['request_originator']).toBeUndefined();
+    expect('request_originator' in (bodies[2] ?? {})).toBe(false);
+  });
+
+  it('tracks request_attribution edits as dirty', () => {
+    const initial = providerDraft();
+    expect(isProviderDraftDirty(providerDraft({ requestAttribution: 'none' }), initial)).toBe(true);
+    expect(isProviderDraftDirty(providerDraft({ requestOriginator: 'my-ide' }), initial)).toBe(true);
+    expect(isProviderDraftDirty(providerDraft(), initial)).toBe(false);
   });
 });
 

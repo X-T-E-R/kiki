@@ -153,6 +153,18 @@ export const PROVIDER_WIRE_TYPES: readonly ProviderWireType[] = [
   'vertexai',
 ];
 
+/** Per-provider request-attribution header style; 'auto' means unconfigured. */
+export type RequestAttributionStyle = 'codex' | 'kimi' | 'kiki' | 'none';
+export type RequestAttributionChoice = RequestAttributionStyle | 'auto';
+
+export const REQUEST_ATTRIBUTION_CHOICES: readonly RequestAttributionChoice[] = [
+  'auto',
+  'codex',
+  'kimi',
+  'kiki',
+  'none',
+];
+
 export interface ProviderModelDraft {
   model: string;
   maxContextSize: number;
@@ -168,6 +180,8 @@ export interface ProviderDraft {
   defaultModel: string;
   apiKey: string;
   clearApiKey: boolean;
+  requestAttribution: RequestAttributionChoice;
+  requestOriginator: string;
   models: ProviderModelDraft[];
 }
 
@@ -778,6 +792,8 @@ export function providerDraftFromCatalog(
     defaultModel,
     apiKey: '',
     clearApiKey: false,
+    requestAttribution: provider.request_attribution ?? 'auto',
+    requestOriginator: provider.request_originator ?? '',
     models: providerModels,
   };
 }
@@ -870,6 +886,8 @@ export function providerDraftsEqual(a: ProviderDraft, b: ProviderDraft): boolean
   if (a.id !== b.id || a.type !== b.type || a.baseUrl !== b.baseUrl) return false;
   if (a.defaultModel !== b.defaultModel || a.apiKey !== b.apiKey) return false;
   if (a.clearApiKey !== b.clearApiKey) return false;
+  if (a.requestAttribution !== b.requestAttribution) return false;
+  if (a.requestOriginator !== b.requestOriginator) return false;
   if (a.models.length !== b.models.length) return false;
   return a.models.every((model, index) => {
     const other = b.models[index];
@@ -1150,6 +1168,9 @@ function providerBody(draft: ProviderDraft, includeId: boolean): Record<string, 
     api_key: apiKey,
     base_url: draft.baseUrl || undefined,
     default_model: draft.defaultModel,
+    request_attribution:
+      draft.requestAttribution === 'auto' ? undefined : draft.requestAttribution,
+    request_originator: draft.requestOriginator.trim() || undefined,
     models: draft.models.map((model) => ({
       model: model.model,
       max_context_size: model.maxContextSize,
