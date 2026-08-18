@@ -66,6 +66,10 @@ describe('ModelPriceCatalog', () => {
     'anthropic/prefixed': price(2, 3),
     canonical: { ...price(3, 4), aliases: ['friendly'] },
     'OpenAI/Case.Model-V1': price(4, 5),
+    'xai/grok-4.6': price(6, 7),
+    'deepseek/deepseek-v4-pro': price(7, 8),
+    'model-2024': price(8, 9),
+    'azure_ai/FW-Kimi-K3': price(9, 10),
     'dashscope/qwen3-max': { max_input_tokens: 262_144 },
     fallback_generalizations: {
       rules: [
@@ -98,9 +102,40 @@ describe('ModelPriceCatalog', () => {
     });
   });
 
+  it('resolves gateway-prefixed and date-pinned model ids through the full chain', () => {
+    expect(catalog.resolve('axon-message/grok-4.6')).toMatchObject({
+      requestedModel: 'axon-message/grok-4.6',
+      catalogModel: 'xai/grok-4.6',
+      strategy: 'provider-prefix',
+    });
+    expect(catalog.resolve('deepseek-v4-pro-0813')).toMatchObject({
+      requestedModel: 'deepseek-v4-pro-0813',
+      catalogModel: 'deepseek/deepseek-v4-pro',
+      strategy: 'provider-prefix',
+    });
+    expect(catalog.resolve('gateway/friendly')).toMatchObject({
+      catalogModel: 'canonical',
+      strategy: 'alias',
+    });
+    expect(catalog.resolve('gateway/future-model-9')).toMatchObject({
+      catalogModel: 'future-family',
+      strategy: 'family-regex',
+    });
+    expect(catalog.resolve('gateway/openai/case-model.v1')).toMatchObject({
+      catalogModel: 'OpenAI/Case.Model-V1',
+      strategy: 'normalized',
+    });
+    expect(catalog.resolve('model-2024')).toMatchObject({
+      catalogModel: 'model-2024',
+      strategy: 'exact',
+    });
+  });
+
   it('keeps unpriced and unmapped models unknown instead of treating them as free', () => {
     expect(catalog.calculate('dashscope/qwen3-max', { inputOther: 10 })).toBeUndefined();
     expect(catalog.calculate('missing', { inputOther: 10 })).toBeUndefined();
+    expect(catalog.calculate('kimi-code/k3', { inputOther: 10 })).toBeUndefined();
+    expect(catalog.calculate('k3-256k', { inputOther: 10 })).toBeUndefined();
   });
 
   it('prices all four token components in USD per token', () => {

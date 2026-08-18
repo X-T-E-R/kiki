@@ -167,13 +167,26 @@ function aliasesOf(value: unknown): readonly string[] {
 function modelCandidates(model: string): readonly string[] {
   const candidates = [model];
   const slash = model.indexOf('/');
-  if (slash > 0 && PROVIDER_PREFIXES.includes(model.slice(0, slash) as never)) {
-    candidates.push(model.slice(slash + 1));
+  if (slash > 0) {
+    const bare = model.slice(slash + 1);
+    if (!PROVIDER_PREFIXES.includes(model.slice(0, slash) as never)) {
+      // An unknown first segment is a routing prefix (gateway / runtime name),
+      // not a pricing provider: also try the bare model id, then the bare id
+      // under every known provider prefix.
+      candidates.push(bare);
+      for (const provider of PROVIDER_PREFIXES) candidates.push(`${provider}/${bare}`);
+      return candidates;
+    }
+    candidates.push(bare);
   } else {
     for (const provider of PROVIDER_PREFIXES) candidates.push(`${provider}/${model}`);
   }
   return candidates;
 }
+
+/** A trailing MMDD-style snapshot pin (`-0813`), stripped only as a last
+ *  resort after the full candidate chain missed. */
+const DATE_SUFFIX_PATTERN = /-?\d{4}$/;
 
 export function validatePriceCatalogText(
   text: string,
@@ -276,8 +289,21 @@ export class ModelPriceCatalog {
   resolve(model: string): ModelPriceMatch | undefined {
     const requestedModel = model.trim();
     if (requestedModel.length === 0) return undefined;
-    const candidates = modelCandidates(requestedModel);
+    const direct = this.matchChain(requestedModel, modelCandidates(requestedModel));
+    if (direct !== undefined) return direct;
+    // Last resort: a trailing date suffix (`deepseek-v4-pro-0813`) is a
+    // snapshot pin, not part of the priced family — strip it once and retry
+    // the full chain. Only reached after a complete miss, so a model whose
+    // real name ends in four digits still resolves by its exact name first.
+    const stripped = requestedModel.replace(DATE_SUFFIX_PATTERN, '');
+    if (stripped.length === 0 || stripped === requestedModel) return undefined;
+    return this.matchChain(requestedModel, modelCandidates(stripped));
+  }
 
+  private matchChain(
+    requestedModel: string,
+    candidates: readonly string[],
+  ): ModelPriceMatch | undefined {
     for (const candidate of candidates) {
       const entry = this.entries.get(candidate);
       if (entry !== undefined) {
