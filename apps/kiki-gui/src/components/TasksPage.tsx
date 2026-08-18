@@ -22,6 +22,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import type { Task, TaskStatus } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../i18n';
+import { sortTasks } from '../lib/sorting';
 import { pushToast } from '../lib/toasts';
 import { useConnection } from '../state/connection';
 
@@ -32,16 +33,6 @@ const STATUS_FILTERS: readonly (TaskStatus | 'all')[] = [
   'failed',
   'cancelled',
 ];
-
-/** Running work first, then newest-created first within each status tier. */
-export function sortTasks(tasks: readonly Task[]): Task[] {
-  return [...tasks].sort((a, b) => {
-    if ((a.status === 'running') !== (b.status === 'running')) {
-      return a.status === 'running' ? -1 : 1;
-    }
-    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-  });
-}
 
 function statusPillTone(status: TaskStatus): string {
   switch (status) {

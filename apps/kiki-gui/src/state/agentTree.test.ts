@@ -134,6 +134,44 @@ describe('buildAgentForest', () => {
     expect(agentSiblings(forest, 'agent-2').map((node) => node.agentId)).toEqual(['agent-10']);
   });
 
+  it('orders siblings newest-started first when startedAt is known', () => {
+    const forest = buildAgentForest(
+      [],
+      [
+        roster({ agentId: 'main' }),
+        roster({ agentId: 'agent-1', parentAgentId: 'main', startedAt: '2026-01-01T00:00:00.000Z' }),
+        roster({ agentId: 'agent-2', parentAgentId: 'main', startedAt: '2026-03-01T00:00:00.000Z' }),
+        roster({ agentId: 'agent-3', parentAgentId: 'main', startedAt: '2026-02-01T00:00:00.000Z' }),
+      ],
+    );
+    expect(forest.byId['main']!.childIds).toEqual(['agent-2', 'agent-3', 'agent-1']);
+  });
+
+  it('sinks siblings without startedAt below timestamped ones, id order within each tier', () => {
+    const forest = buildAgentForest(
+      [],
+      [
+        roster({ agentId: 'main' }),
+        roster({ agentId: 'agent-1', parentAgentId: 'main' }),
+        roster({ agentId: 'agent-2', parentAgentId: 'main', startedAt: '2026-01-01T00:00:00.000Z' }),
+        roster({ agentId: 'agent-10', parentAgentId: 'main' }),
+      ],
+    );
+    expect(forest.byId['main']!.childIds).toEqual(['agent-2', 'agent-1', 'agent-10']);
+  });
+
+  it('keeps main first among roots regardless of recency', () => {
+    const forest = buildAgentForest(
+      [],
+      [
+        roster({ agentId: 'agent-1', startedAt: '2026-03-01T00:00:00.000Z' }),
+        roster({ agentId: 'main' }),
+        roster({ agentId: 'agent-2', startedAt: '2026-02-01T00:00:00.000Z' }),
+      ],
+    );
+    expect(forest.roots.map((node) => node.agentId)).toEqual(['main', 'agent-1', 'agent-2']);
+  });
+
   it('prefers roster.parentAgentId over any other parent hint', () => {
     const forest = buildAgentForest(
       [live({ subagentId: 'agent-1', name: 'FromLive' })],
@@ -647,6 +685,34 @@ describe('mergeAgentTranscript', () => {
     });
     const again = mergeAgentTranscript(server, liveBlocks);
     expect(again.blocks.map((item) => item.id)).toEqual(merged.blocks.map((item) => item.id));
+  });
+
+  it('dedupes a t-prefixed REST follow-up against the live turn and keeps the live identity', () => {
+    const merged = mergeAgentTranscript(
+      page([
+        block({
+          id: 'user-agent-turn-t2-prompt',
+          kind: 'user',
+          turnId: 't2',
+          text: 'check the follow-up',
+        }),
+      ]),
+      [
+        block({
+          id: 'user-turn-2-prompt',
+          kind: 'user',
+          turnId: '2',
+          text: 'check the follow-up',
+        }),
+      ],
+    );
+
+    expect(merged.blocks.filter((item) => item.kind === 'user')).toHaveLength(1);
+    expect(merged.blocks[0]).toMatchObject({
+      id: 'user-turn-2-prompt',
+      turnId: '2',
+      text: 'check the follow-up',
+    });
   });
 
   it('keeps two same-turn REST assistants distinct across a second poll', () => {

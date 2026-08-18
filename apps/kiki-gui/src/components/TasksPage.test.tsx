@@ -11,7 +11,7 @@ import type { Task } from '@moonshot-ai/protocol';
 import { I18nProvider } from '../i18n';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { RightRail } from './RightRail';
-import { sortTasks, TasksPage } from './TasksPage';
+import { TasksPage } from './TasksPage';
 import { createViewState } from '../state/transcript';
 
 const listTasks = vi.fn();
@@ -83,23 +83,6 @@ async function renderPage(initialPath = '/s/sess-1/tasks') {
   for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   return container;
 }
-
-describe('sortTasks', () => {
-  it('puts running tasks first, then newest-created first', () => {
-    const sorted = sortTasks([
-      makeTask({ id: 'old-done', created_at: '2026-01-01T00:00:00.000Z' }),
-      makeTask({ id: 'running-old', status: 'running', created_at: '2026-01-01T00:00:00.000Z' }),
-      makeTask({ id: 'new-done', created_at: '2026-01-03T00:00:00.000Z' }),
-      makeTask({ id: 'running-new', status: 'running', created_at: '2026-01-02T00:00:00.000Z' }),
-    ]);
-    expect(sorted.map((task) => task.id)).toEqual([
-      'running-new',
-      'running-old',
-      'new-done',
-      'old-done',
-    ]);
-  });
-});
 
 describe('TasksPage', () => {
   it('renders status filter chips with counts and filters rows by status', async () => {

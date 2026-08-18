@@ -3,15 +3,58 @@
  * and session meta (model, cwd, message count, context/token usage).
  */
 
-import { memo, useMemo, useState } from 'react';
+import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import type { GoalSnapshot, Task } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../i18n';
+import { sortTasks } from '../lib/sorting';
 import type { AgentForest } from '../state/agentTree';
 import type { SessionViewState, TodoItem } from '../state/transcript';
 import { AgentTreeView } from './AgentTreeView';
+
+/**
+ * Counts rows (tagged `data-rail-item`) that sit fully below the scroll
+ * container's visible bottom edge. Re-runs every render (the lists are small)
+ * plus on scroll and resize, so the "N more below" hint tracks the viewport.
+ */
+function useHiddenBelow(ref: React.RefObject<HTMLDivElement | null>): number {
+  const [hidden, setHidden] = useState(0);
+  useLayoutEffect(() => {
+    const container = ref.current;
+    if (container === null) return;
+    const update = () => {
+      const bottom = container.getBoundingClientRect().bottom;
+      let count = 0;
+      for (const item of container.querySelectorAll('[data-rail-item]')) {
+        if (item.getBoundingClientRect().top > bottom + 1) count += 1;
+      }
+      setHidden(count);
+    };
+    update();
+    // jsdom (component tests) has no ResizeObserver; scroll still covered.
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(update);
+    observer?.observe(container);
+    container.addEventListener('scroll', update, { passive: true });
+    return () => {
+      observer?.disconnect();
+      container.removeEventListener('scroll', update);
+    };
+  });
+  return hidden;
+}
+
+/** Sticky "N more below" hint pinned to the bottom of a rail scroll container. */
+function OverflowHint({ count }: { count: number }) {
+  const { t } = useI18n();
+  if (count === 0) return null;
+  return (
+    <p data-rail-overflow className="pt-1.5 pb-0.5 text-[10.5px] text-ink-faint">
+      {t('rail.moreBelow', { count })}
+    </p>
+  );
+}
 
 /**
  * Collapsible rail chapter — button + useState + aria-expanded + rotating
@@ -58,6 +101,8 @@ function todoTone(status: string): { icon: string; className: string } {
 
 const TodosSection = memo(function TodosSection({ todos }: { todos: readonly TodoItem[] }) {
   const { t } = useI18n();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const hiddenBelow = useHiddenBelow(scrollRef);
   if (todos.length === 0) {
     return <p className="text-[12px] text-ink-faint">{t('rail.noTodos')}</p>;
   }
@@ -70,12 +115,12 @@ const TodosSection = memo(function TodosSection({ todos }: { todos: readonly Tod
       <p className="mb-1.5 text-[10.5px] text-ink-faint">
         {t('rail.todosDone', { done, total: todos.length })}
       </p>
-      <div data-todos-scroll className="max-h-80 overflow-y-auto pr-1">
+      <div ref={scrollRef} data-todos-scroll className="max-h-80 overflow-y-auto pr-1">
         <ul className="space-y-1">
           {todos.map((todo, index) => {
             const tone = todoTone(todo.status);
             return (
-              <li key={`${index}-${todo.title}`} className="flex items-start gap-2">
+              <li key={`${index}-${todo.title}`} data-rail-item className="flex items-start gap-2">
                 <span
                   aria-hidden
                   className={`mt-[3px] flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border text-[9px] font-bold ${tone.className}`}
@@ -93,6 +138,9 @@ const TodosSection = memo(function TodosSection({ todos }: { todos: readonly Tod
             );
           })}
         </ul>
+        <div className="sticky bottom-0 bg-panel">
+          <OverflowHint count={hiddenBelow} />
+        </div>
       </div>
     </div>
   );
@@ -122,14 +170,18 @@ const TasksSection = memo(function TasksSection({
 }) {
   const { t } = useI18n();
   const navigate = useNavigate();
-  if (tasks.length === 0) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const hiddenBelow = useHiddenBelow(scrollRef);
+  // Running work first, then newest-created — same order as the tasks page.
+  const sorted = useMemo(() => sortTasks(tasks), [tasks]);
+  if (sorted.length === 0) {
     return <p className="text-[12px] text-ink-faint">{t('rail.noTasks')}</p>;
   }
   return (
-    <div data-tasks-scroll className="max-h-80 overflow-y-auto pr-1">
+    <div ref={scrollRef} data-tasks-scroll className="max-h-80 overflow-y-auto pr-1">
       <ul className="space-y-1.5">
-        {tasks.map((task) => (
-          <li key={task.id} className="rounded-lg border border-hairline bg-panel px-2.5 py-1.5">
+        {sorted.map((task) => (
+          <li key={task.id} data-rail-item className="rounded-lg border border-hairline bg-panel px-2.5 py-1.5">
             <div className="flex items-center gap-1.5">
               <span className={`rounded-full px-1.5 py-px text-[10px] font-medium ${taskStatusTone(task.status)}`}>
                 {t(`rail.taskStatus.${task.status}`)}
@@ -159,15 +211,18 @@ const TasksSection = memo(function TasksSection({
           </li>
         ))}
       </ul>
-      {sessionId !== undefined ? (
+      {sessionId !== undefined || hiddenBelow > 0 ? (
         <div className="sticky bottom-0 bg-panel pt-1.5 pb-0.5">
-          <button
-            type="button"
-            onClick={() => void navigate(`/s/${sessionId}/tasks`)}
-            className="text-[10.5px] font-medium text-accent transition-colors hover:text-accent-deep"
-          >
-            {t('tasks.viewAll')}
-          </button>
+          <OverflowHint count={hiddenBelow} />
+          {sessionId !== undefined ? (
+            <button
+              type="button"
+              onClick={() => void navigate(`/s/${sessionId}/tasks`)}
+              className="text-[10.5px] font-medium text-accent transition-colors hover:text-accent-deep"
+            >
+              {t('tasks.viewAll')}
+            </button>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -183,9 +238,14 @@ const SubagentsSection = memo(function SubagentsSection({
   selectedAgentId?: string;
   onOpen: (agentId: string) => void;
 }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const hiddenBelow = useHiddenBelow(scrollRef);
   return (
-    <div data-subagent-scroll className="max-h-80 overflow-y-auto pr-1">
+    <div ref={scrollRef} data-subagent-scroll className="max-h-80 overflow-y-auto pr-1">
       <AgentTreeView forest={forest} selectedAgentId={selectedAgentId} onOpen={onOpen} />
+      <div className="sticky bottom-0 bg-panel">
+        <OverflowHint count={hiddenBelow} />
+      </div>
     </div>
   );
 });

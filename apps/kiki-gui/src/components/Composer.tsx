@@ -53,6 +53,7 @@ import {
 } from '../lib/settings';
 import { useConnection } from '../state/connection';
 import { ContextMeter } from './ContextMeter';
+import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 
 const MODES: readonly { id: PermissionMode; labelKey: I18nKey; hintKey: I18nKey }[] = [
   { id: 'manual', labelKey: 'composer.mode.manual', hintKey: 'composer.mode.manualHint' },
@@ -243,6 +244,33 @@ export function Composer({
     staleTime: 60_000,
   });
   const models = modelsQuery.data?.items ?? [];
+
+  // Model picker options: the inherit entry first, then the catalog; the model
+  // id rides `keywords` so searching works against display names AND raw ids.
+  const modelOptions: readonly SearchableSelectOption[] = useMemo(
+    () => [
+      {
+        value: '',
+        label:
+          defaultModel !== undefined
+            ? t('composer.inheritSession', { model: defaultModel })
+            : t(
+                modelSource === 'local-default'
+                  ? 'composer.inheritLocal'
+                  : 'composer.inheritServer',
+                { model: serverDefaultModel ?? t('composer.unknown') },
+              ),
+      },
+      ...models.map((item) => ({
+        value: item.model,
+        label: `${item.display_name ?? item.model}${item.model === defaultModel ? t('composer.sessionDefaultSuffix') : ''}`,
+        hint: item.provider,
+        keywords: item.model,
+        title: item.model,
+      })),
+    ],
+    [models, defaultModel, serverDefaultModel, modelSource, t],
+  );
 
   // The composer mount now survives route changes (the conversation shell owns
   // it), so session-scoped transient UI must reset when the session under it
@@ -672,38 +700,26 @@ export function Composer({
                 </div>
               ) : null}
             </div>
-            <select
-              className="max-w-56 truncate rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft outline-none transition-colors hover:border-hairline-strong focus:border-accent focus:ring-2 focus:ring-accent/30"
-              value={model ?? ''}
-              onChange={(event) => {
-                onChangeModel(event.target.value === '' ? undefined : event.target.value);
-              }}
-              title={t('composer.modelTitle', { source: t(`composer.modelSource.${modelSource}`) })}
-              aria-label={t('composer.modelAria')}
-            >
-              {models.length === 0 ? (
-                <option value="">{effectiveModel ?? t('composer.inheritDefault')}</option>
-              ) : (
-                <>
-                  <option value="">
-                    {defaultModel !== undefined
-                      ? t('composer.inheritSession', { model: defaultModel })
-                      : t(
-                          modelSource === 'local-default'
-                            ? 'composer.inheritLocal'
-                            : 'composer.inheritServer',
-                          { model: serverDefaultModel ?? t('composer.unknown') },
-                        )}
-                  </option>
-                  {models.map((item) => (
-                    <option key={`${item.provider}/${item.model}`} value={item.model}>
-                      {item.display_name ?? item.model}
-                      {item.model === defaultModel ? t('composer.sessionDefaultSuffix') : ''}
-                    </option>
-                  ))}
-                </>
-              )}
-            </select>
+            {models.length === 0 ? (
+              <span
+                className="max-w-56 truncate rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft"
+                title={t('composer.modelTitle', { source: t(`composer.modelSource.${modelSource}`) })}
+              >
+                {effectiveModel ?? t('composer.inheritDefault')}
+              </span>
+            ) : (
+              <SearchableSelect
+                id="composer-model-select"
+                options={modelOptions}
+                value={model ?? ''}
+                onChange={(next) => { onChangeModel(next === '' ? undefined : next); }}
+                title={t('composer.modelTitle', { source: t(`composer.modelSource.${modelSource}`) })}
+                ariaLabel={t('composer.modelAria')}
+                placement="above"
+                panelClassName="anim-enter absolute z-40 bottom-full left-0 mb-1 w-72 max-w-[calc(100vw-48px)] overflow-hidden rounded-xl border border-hairline bg-panel shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
+                buttonClassName="flex max-w-56 items-center gap-1 rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft outline-none transition-colors hover:border-hairline-strong focus:border-accent focus:ring-2 focus:ring-accent/30"
+              />
+            )}
             {efforts !== undefined && efforts.length > 0 && effort !== undefined ? (
               <select
                 className="rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft outline-none transition-colors hover:border-hairline-strong focus:border-accent"

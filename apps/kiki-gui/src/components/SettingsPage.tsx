@@ -55,6 +55,7 @@ import {
   type SettingsSearchEntry,
 } from '../lib/settings';
 import { formatTokens } from '../lib/time';
+import { filterWorkspaces, sortWorkspacesByRecency } from '../lib/sorting';
 import { useConnection } from '../state/connection';
 import { ConfirmDialog } from './ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from './controls';
@@ -63,6 +64,7 @@ import { OAuthDeviceCard } from './OAuthDeviceCard';
 import { MsUnitInput, NewProviderWizard, ProviderEditor } from './ProviderFields';
 import { useRestartRequirement } from './RestartBanner';
 import { RuntimeConfigEditor } from './RuntimeConfigEditor';
+import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
 
 const SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
@@ -961,9 +963,20 @@ function CapabilitiesSection() {
   });
 
   const workspaces = workspacesQuery.data?.items ?? [];
+  const sortedWorkspaces = useMemo(() => sortWorkspacesByRecency(workspaces), [workspaces]);
+  const workspaceOptions: readonly SearchableSelectOption[] = useMemo(
+    () =>
+      sortedWorkspaces.map((workspace) => ({
+        value: workspace.id,
+        label: workspace.name,
+        hint: workspace.root,
+        title: workspace.name,
+      })),
+    [sortedWorkspaces],
+  );
   useEffect(() => {
-    if (workspaceId === '' && workspaces[0] !== undefined) setWorkspaceId(workspaces[0].id);
-  }, [workspaceId, workspaces]);
+    if (workspaceId === '' && sortedWorkspaces[0] !== undefined) setWorkspaceId(sortedWorkspaces[0].id);
+  }, [workspaceId, sortedWorkspaces]);
   useEffect(() => {
     const config = configQuery.data;
     if (config === undefined) return;
@@ -1102,10 +1115,14 @@ function CapabilitiesSection() {
       <SectionCard id="st-card-mcp" title={t('st.mcp.title')}>
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-2">
-            <label htmlFor="workspace-mcp-select" className="text-[11px] font-medium text-ink-soft">{t('st.mcp.workspace')}</label>
-            <select id="workspace-mcp-select" className={SMALL_INPUT} value={workspaceId} onChange={(event) => { setWorkspaceId(event.target.value); }}>
-              {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
-            </select>
+            <span className="text-[11px] font-medium text-ink-soft">{t('st.mcp.workspace')}</span>
+            <SearchableSelect
+              id="workspace-mcp-select"
+              options={workspaceOptions}
+              value={workspaceId}
+              onChange={setWorkspaceId}
+              ariaLabel={t('st.mcp.workspace')}
+            />
           </div>
           <div className="space-y-2">
             <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint">{t('st.mcp.statusTitle')}</p>
@@ -1127,10 +1144,14 @@ function CapabilitiesSection() {
 
       <SectionCard id="st-card-skills" title={t('st.skills.title')}>
         <div className="mb-3 flex items-center gap-2">
-          <label htmlFor="workspace-skills-select" className="text-[11px] font-medium text-ink-soft">{t('st.skills.workspace')}</label>
-          <select id="workspace-skills-select" className={SMALL_INPUT} value={workspaceId} onChange={(event) => { setWorkspaceId(event.target.value); }}>
-            {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
-          </select>
+          <span className="text-[11px] font-medium text-ink-soft">{t('st.skills.workspace')}</span>
+          <SearchableSelect
+            id="workspace-skills-select"
+            options={workspaceOptions}
+            value={workspaceId}
+            onChange={setWorkspaceId}
+            ariaLabel={t('st.skills.workspace')}
+          />
         </div>
         <div className="space-y-2">
           {skillsQuery.data?.skills.map((skill) => <SkillRow key={skill.name} skill={skill} />)}
@@ -2082,15 +2103,32 @@ function WorkspacesSection() {
   const { t } = useI18n();
   const navigate = useGuardedNavigate();
   const query = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
+  const [filter, setFilter] = useState('');
+  const items = useMemo(() => query.data?.items ?? [], [query.data]);
+  const visible = useMemo(
+    () => filterWorkspaces(sortWorkspacesByRecency(items), filter),
+    [items, filter],
+  );
   return (
     <SectionCard id="st-card-workspaces" title={t('st.workspaces.title')}>
       <div className="space-y-2">
-        {query.data?.items.map((workspace) => (
+        {items.length > 0 ? (
+          <input
+            type="text"
+            value={filter}
+            onChange={(event) => { setFilter(event.target.value); }}
+            placeholder={t('st.workspaces.search')}
+            aria-label={t('st.workspaces.search')}
+            className={SMALL_INPUT}
+          />
+        ) : null}
+        {visible.map((workspace) => (
           <div key={workspace.id} className="flex items-center justify-between gap-3 rounded-lg border border-hairline bg-paper px-3 py-2">
-            <div className="min-w-0"><p className="truncate text-[13px] font-medium text-ink">{workspace.name}</p><p className="truncate font-mono text-[10.5px] text-ink-faint">{workspace.root}</p></div>
+            <div className="min-w-0"><p className="truncate text-[13px] font-medium text-ink" title={workspace.name}>{workspace.name}</p><p className="truncate font-mono text-[10.5px] text-ink-faint" title={workspace.root}>{workspace.root}</p></div>
             <button type="button" onClick={() => void navigate(`/new?workspace=${encodeURIComponent(workspace.id)}`)} className={SECONDARY_BUTTON}>{t('st.workspaces.newSession')}</button>
           </div>
         ))}
+        {visible.length === 0 && filter.trim() !== '' ? <Hint>{t('st.workspaces.noMatches', { query: filter.trim() })}</Hint> : null}
         {query.isLoading ? <Hint>{t('st.workspaces.loading')}</Hint> : null}
         {query.isError ? <InlineError error={query.error} /> : null}
         <Hint>{t('st.workspaces.hint')}</Hint>

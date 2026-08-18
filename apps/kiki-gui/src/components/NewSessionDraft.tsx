@@ -15,9 +15,11 @@ import type { PermissionMode, Workspace } from '@moonshot-ai/protocol';
 
 import { resolveSelectedEffort } from './Composer';
 import { useGuardedNavigate } from './dirtyGuard';
+import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { useI18n } from '../i18n';
 import { buildPromptContent, type ComposerAttachment } from '../lib/attachments';
 import { readDraft, writeDraft } from '../lib/drafts';
+import { sortWorkspacesByRecency } from '../lib/sorting';
 import {
   readSettings,
   resolveEffectiveModel,
@@ -85,7 +87,7 @@ export function useNewSessionDraft({
   const effectiveWorkspace: Workspace | undefined = useMemo(
     () =>
       workspaces.find((w) => w.id === workspaceId) ??
-      workspaces.toSorted((a, b) => b.last_opened_at.localeCompare(a.last_opened_at))[0],
+      sortWorkspacesByRecency(workspaces)[0],
     [workspaces, workspaceId],
   );
 
@@ -249,23 +251,30 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
   const [cwdBlurred, setCwdBlurred] = useState(false);
   const trimmedCwd = state.cwd.trim();
   const cwdInvalid = trimmedCwd !== '' && !isAbsoluteCwdPath(trimmedCwd);
+  const workspaceOptions: readonly SearchableSelectOption[] = useMemo(
+    () =>
+      sortWorkspacesByRecency(state.workspaces).map((workspace) => ({
+        value: workspace.id,
+        label: workspace.name,
+        hint: workspace.root,
+        title: workspace.name,
+      })),
+    [state.workspaces],
+  );
 
   return (
     <div className="flex flex-wrap items-center gap-3">
       <label className="text-[11px] font-medium text-ink-soft">{t('new.workspace')}</label>
-      <select
-        className="max-w-xs truncate rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink outline-none focus:border-accent"
+      <SearchableSelect
+        id="new-workspace-select"
+        options={workspaceOptions}
         value={state.workspaceId !== '' ? state.workspaceId : (state.effectiveWorkspace?.id ?? '')}
-        onChange={(event) => { state.selectWorkspace(event.target.value); }}
+        onChange={(nextId) => { state.selectWorkspace(nextId); }}
         disabled={state.workspacesLoading}
-      >
-        {state.workspaces.length === 0 ? <option value="">{t('new.noWorkspaces')}</option> : null}
-        {state.workspaces.map((workspace) => (
-          <option key={workspace.id} value={workspace.id}>
-            {workspace.name}
-          </option>
-        ))}
-      </select>
+        emptyText={t('new.noWorkspaces')}
+        ariaLabel={t('new.workspace')}
+        buttonClassName="flex w-64 max-w-full items-center gap-1.5 rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
+      />
       <span className="text-[11px] text-ink-faint">{t('new.or')}</span>
       <div className="min-w-0 flex-1">
         <input

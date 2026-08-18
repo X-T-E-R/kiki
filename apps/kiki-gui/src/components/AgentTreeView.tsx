@@ -70,7 +70,7 @@ const AgentTreeRow = memo(function AgentTreeRow({
   const indent = Math.min(depth, 6) * 12;
 
   return (
-    <li>
+    <li data-rail-item>
       <div className="flex items-stretch">
         {depth > 0 ? (
           <span

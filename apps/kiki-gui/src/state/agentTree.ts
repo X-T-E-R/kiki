@@ -221,6 +221,25 @@ export function compareAgentIds(a: string, b: string): number {
   return a < b ? -1 : 1;
 }
 
+/**
+ * Sibling/root ordering for the rail: newest-started first so freshly spawned
+ * agents surface at the top. Nodes without a usable startedAt sink below
+ * timestamped ones, and ties (or fully untimestamped sets) keep the stable
+ * agent-id order — `main` always leads a root list.
+ */
+function compareDraftsByRecency(a: DraftNode, b: DraftNode): number {
+  if (a.agentId === MAIN_AGENT_ID || b.agentId === MAIN_AGENT_ID) {
+    return compareAgentIds(a.agentId, b.agentId);
+  }
+  const aTime = a.startedAt === undefined ? Number.NaN : Date.parse(a.startedAt);
+  const bTime = b.startedAt === undefined ? Number.NaN : Date.parse(b.startedAt);
+  const aHas = Number.isFinite(aTime);
+  const bHas = Number.isFinite(bTime);
+  if (aHas && bHas && aTime !== bTime) return bTime - aTime;
+  if (aHas !== bHas) return aHas ? -1 : 1;
+  return compareAgentIds(a.agentId, b.agentId);
+}
+
 function createById(): Record<string, AgentTreeNode> {
   return Object.create(null) as Record<string, AgentTreeNode>;
 }
@@ -413,8 +432,10 @@ export function buildAgentForest(
     childIds.get(parentId)!.push(agentId);
   }
 
-  for (const children of childIds.values()) children.sort(compareAgentIds);
-  rootIds.sort(compareAgentIds);
+  const byRecency = (a: string, b: string): number =>
+    compareDraftsByRecency(drafts.get(a)!, drafts.get(b)!);
+  for (const children of childIds.values()) children.sort(byRecency);
+  rootIds.sort(byRecency);
 
   if (drafts.has(MAIN_AGENT_ID) && !parentOf.get(MAIN_AGENT_ID)) {
     const synthetic = drafts.get(MAIN_AGENT_ID)!;
@@ -827,14 +848,18 @@ export function isLiveLikeBlock(block: AgentTimelineBlock): boolean {
   );
 }
 
+function canonicalTurnId(turnId: string): string {
+  return /^t\d+$/.test(turnId) ? turnId.slice(1) : turnId;
+}
+
 export function blockTurnId(block: AgentTimelineBlock): string | undefined {
-  if (present(block.turnId)) return block.turnId;
+  if (present(block.turnId)) return canonicalTurnId(block.turnId);
   const live = /^(?:assistant|thinking)-live-(.+?)(?:-final-.+)?$/.exec(block.id);
-  if (live?.[1] !== undefined) return live[1];
+  if (live?.[1] !== undefined) return canonicalTurnId(live[1]);
   const turnPrompt = /^(?:user|system)-turn-(.+)-prompt(?:-reminder-\d+)?$/.exec(block.id);
-  if (turnPrompt?.[1] !== undefined) return turnPrompt[1];
+  if (turnPrompt?.[1] !== undefined) return canonicalTurnId(turnPrompt[1]);
   const agentTurn = /^user-agent-turn-(.+)-prompt(?:-reminder-\d+)?$/.exec(block.id);
-  if (agentTurn?.[1] !== undefined) return agentTurn[1];
+  if (agentTurn?.[1] !== undefined) return canonicalTurnId(agentTurn[1]);
   return undefined;
 }
 
@@ -853,8 +878,19 @@ function pairGroupKey(block: AgentTimelineBlock): string | undefined {
 function combinePaired(left: AgentTimelineBlock, right: AgentTimelineBlock): AgentTimelineBlock {
   const leftLive = isLiveLikeBlock(left);
   const rightLive = isLiveLikeBlock(right);
-  if (leftLive && !rightLive) return mergeServerAndLive(right, left);
-  if (rightLive && !leftLive) return mergeServerAndLive(left, right);
+  if (leftLive !== rightLive) {
+    const live = leftLive ? left : right;
+    const server = leftLive ? right : left;
+    const merged = mergeServerAndLive(server, live);
+    const sameTurnContent =
+      SEMANTIC_KINDS.has(server.kind) &&
+      server.kind === live.kind &&
+      blockTurnId(server) === blockTurnId(live) &&
+      server.text === live.text;
+    return sameTurnContent
+      ? { ...merged, id: live.id, turnId: live.turnId ?? merged.turnId }
+      : merged;
+  }
   return { ...overlayDefined(left, right), id: left.id };
 }
 

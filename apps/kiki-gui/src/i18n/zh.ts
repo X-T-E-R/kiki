@@ -15,6 +15,11 @@ export const zh: Record<I18nKey, string> = {
   'common.remove': '移除',
   'common.unknownError': '未知错误',
 
+  // ---- 可搜索下拉（工作区/模型选择器） ----
+  'select.search': '搜索…',
+  'select.noMatches': '没有匹配“{query}”的选项。',
+  'select.empty': '暂无可选项。',
+
   // ---- connect screen ----
   'connect.tagline': '你的智能体工作台。连接一个正在运行的 kap-server 即可开始。',
   'connect.detect': '检测本地服务器',
@@ -529,6 +534,7 @@ export const zh: Record<I18nKey, string> = {
   'rail.taskStatus.completed': '已完成',
   'rail.taskStatus.failed': '失败',
   'rail.taskStatus.cancelled': '已取消',
+  'rail.moreBelow': '下方还有 {count} 条',
 
   // ---- tasks page (/s/:id/tasks) ----
   'tasks.title': '后台任务',
@@ -995,6 +1001,8 @@ export const zh: Record<I18nKey, string> = {
   'st.workspaces.title': '工作区',
   'st.workspaces.loading': '正在加载工作区…',
   'st.workspaces.newSession': '新会话',
+  'st.workspaces.search': '筛选工作区…',
+  'st.workspaces.noMatches': '没有匹配“{query}”的工作区。',
   'st.workspaces.hint':
     '工作区根目录由服务器发现和管理。此页面提供每个条目真实可用的操作，而非摆样子的编辑表单。',
   'st.about.title': '关于',

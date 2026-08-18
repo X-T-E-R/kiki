@@ -15,6 +15,11 @@ export const en = {
   'common.remove': 'Remove',
   'common.unknownError': 'Unknown error',
 
+  // ---- searchable select (workspace/model pickers) ----
+  'select.search': 'Search…',
+  'select.noMatches': 'No matches for “{query}”.',
+  'select.empty': 'Nothing to choose from.',
+
   // ---- connect screen ----
   'connect.tagline': 'A workshop desk for your agent. Connect to a running kap-server to begin.',
   'connect.detect': 'Detect local server',
@@ -537,6 +542,7 @@ export const en = {
   'rail.taskStatus.completed': 'completed',
   'rail.taskStatus.failed': 'failed',
   'rail.taskStatus.cancelled': 'cancelled',
+  'rail.moreBelow': '{count} more below',
 
   // ---- tasks page (/s/:id/tasks) ----
   'tasks.title': 'Tasks',
@@ -1015,6 +1021,8 @@ export const en = {
   'st.workspaces.title': 'Workspaces',
   'st.workspaces.loading': 'Loading workspaces…',
   'st.workspaces.newSession': 'New session',
+  'st.workspaces.search': 'Filter workspaces…',
+  'st.workspaces.noMatches': 'No workspaces match “{query}”.',
   'st.workspaces.hint':
     'Workspace roots are discovered and managed by the server. This page exposes the real action available for each entry instead of a fake edit form.',
   'st.about.title': 'About',
