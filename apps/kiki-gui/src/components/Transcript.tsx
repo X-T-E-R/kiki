@@ -53,6 +53,7 @@ import type {
 } from '../state/transcript';
 import { ApprovalCard, QuestionCard } from './Interactions';
 import { Markdown } from './Markdown';
+import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { ToolCard } from './ToolCard';
 import { KikiMark, Wordmark } from './Wordmark';
 
@@ -171,6 +172,7 @@ const UserMessage = memo(function UserMessage({
       <div className="max-w-[85%] rounded-2xl rounded-br-md border border-hairline bg-[#f3ede1] px-3.5 py-2 text-[13.5px] leading-relaxed whitespace-pre-wrap text-ink">
         {projectUserText(block.text)}
       </div>
+      {block.media !== undefined ? <MediaPartList media={block.media} align="end" /> : null}
       {block.promptStatus === 'queued' || block.promptStatus === 'blocked' ? (
         <span
           className={`mt-1 mr-1 flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10.5px] font-medium ${
@@ -231,10 +233,11 @@ const AssistantMessage = memo(function AssistantMessage({ block }: { block: Assi
           </>
         ) : (
           <>
-            <Markdown text={block.text} />
+            {block.text !== '' ? <Markdown text={block.text} /> : null}
             {block.streaming ? <span className="stream-caret font-mono">▍</span> : null}
           </>
         )}
+        {block.media !== undefined ? <MediaPartList media={block.media} /> : null}
         {block.stopped === true ? (
           <span className="mt-1 inline-flex items-center gap-1 rounded-md border border-hairline bg-paper px-1.5 py-px text-[10.5px] font-medium text-ink-faint">
             <span aria-hidden className="text-[9px]">■</span>
@@ -429,6 +432,7 @@ const SteerMessage = memo(function SteerMessage({ block }: { block: SteerBlock }
       <div className="max-w-[85%] rounded-2xl rounded-bl-md border border-accent/20 bg-accent-soft/40 px-3.5 py-2 text-[13.5px] leading-relaxed whitespace-pre-wrap text-ink">
         {block.text}
       </div>
+      {block.media !== undefined ? <MediaPartList media={block.media} /> : null}
     </div>
   );
 });
@@ -1377,12 +1381,13 @@ export function Transcript({
   }
 
   return (
-    <StickToBottom
-      className="relative min-h-0 flex-1"
-      initial="instant"
-      resize="smooth"
-      role="log"
-    >
+    <MediaPreviewProvider cwd={state.session?.metadata?.cwd}>
+      <StickToBottom
+        className="relative min-h-0 flex-1"
+        initial="instant"
+        resize="smooth"
+        role="log"
+      >
       {/* Bottom clearance is 24px of breathing room + the 36px fade band the
           shell's active composer seat overlaps (see index.css), so the last
           block always rests fully above the fade. The column cap rides the
@@ -1409,6 +1414,7 @@ export function Transcript({
         {!state.busy && state.turnTail !== undefined ? <TurnTailLine tail={state.turnTail} /> : null}
       </StickToBottom.Content>
       <JumpToBottom />
-    </StickToBottom>
+      </StickToBottom>
+    </MediaPreviewProvider>
   );
 }

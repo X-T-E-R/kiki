@@ -397,3 +397,12 @@ export function useConnection(): ConnectionValue {
   if (value === null) throw new Error('useConnection used before connecting');
   return value;
 }
+
+/**
+ * Non-throwing variant for overlays (media preview, lightbox) that can also
+ * render in tests or outside a live connection; features needing the client
+ * degrade to a disabled state when this returns null.
+ */
+export function useOptionalConnection(): ConnectionValue | null {
+  return useContext(ConnectionContext);
+}

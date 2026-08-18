@@ -10,8 +10,10 @@ import type { ToolInputDisplay } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../i18n';
 import { extractEditSource, diffStat } from '../lib/diff';
+import { extractToolOutputMedia } from '../lib/media';
 import type { ToolBlock } from '../state/transcript';
 import { DiffCard } from './DiffCard';
+import { FilePathLink, MediaPartList } from './mediaPreview';
 
 type Translate = ReturnType<typeof useI18n>['t'];
 type TranslatePlural = ReturnType<typeof useI18n>['tp'];
@@ -186,6 +188,21 @@ function CommandIsland({ command, output }: { command: string; output?: ReactNod
 function OutputView({ output }: { output: unknown }) {
   const { t } = useI18n();
   if (output === undefined || output === null) return null;
+  // Engine media results (ReadMediaFile & friends) arrive as raw content-part
+  // arrays; render their images as thumbnails instead of serialized JSON.
+  const mediaOutput = extractToolOutputMedia(output);
+  if (mediaOutput !== undefined) {
+    return (
+      <div className="space-y-2">
+        {mediaOutput.text !== '' ? (
+          <pre className="max-h-72 overflow-auto rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
+            {mediaOutput.text}
+          </pre>
+        ) : null}
+        <MediaPartList media={mediaOutput.media} />
+      </div>
+    );
+  }
   if (typeof output === 'string') {
     return (
       <pre className="max-h-72 overflow-auto rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
@@ -256,6 +273,16 @@ export const ToolCard = memo(function ToolCard({
   const errorSummary = toolErrorSummary(block);
   const summary = toolSummary(block, t, tp);
   const isCommand = block.display?.kind === 'command';
+  // File-carrying displays get a clickable path in the collapsed summary.
+  const displayPath =
+    block.display !== undefined &&
+    (block.display.kind === 'file_io' || block.display.kind === 'diff')
+      ? block.display.path
+      : undefined;
+  const displayOperation =
+    block.display !== undefined && block.display.kind === 'file_io'
+      ? block.display.operation
+      : undefined;
   // Edit-style calls (Edit/MultiEdit/Write): hunks from display or args —
   // diffstat in the collapsed header, unified diff card in the detail view.
   const editSource = useMemo(
@@ -278,6 +305,11 @@ export const ToolCard = memo(function ToolCard({
         {errorSummary !== undefined ? (
           <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-danger">
             {errorSummary}
+          </span>
+        ) : displayPath !== undefined ? (
+          <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink-soft">
+            {displayOperation !== undefined ? `${displayOperation} ` : ''}
+            <FilePathLink path={displayPath} />
           </span>
         ) : summary !== '' ? (
           <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-ink-soft">
@@ -331,7 +363,10 @@ export const ToolCard = memo(function ToolCard({
                   <p className="mb-1 text-[10.5px] font-semibold tracking-wide text-ink-faint uppercase">
                     {t('tc.changes')}
                     {editSource.path !== undefined ? (
-                      <span className="font-mono font-normal normal-case"> — {editSource.path}</span>
+                      <span className="font-mono font-normal normal-case">
+                        {' — '}
+                        <FilePathLink path={editSource.path} />
+                      </span>
                     ) : null}
                   </p>
                   <DiffCard hunks={editSource.hunks} />

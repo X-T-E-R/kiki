@@ -2573,3 +2573,191 @@ describe('system row producer label', () => {
     expect(sys.source).toBeUndefined();
   });
 });
+
+describe('media parts', () => {
+  it('keeps image parts on the user block instead of an [image] placeholder', () => {
+    const state = applySnapshot(
+      'session_test',
+      snapshot({
+        messages: {
+          items: [
+            {
+              id: 'm-img',
+              session_id: 'session_test',
+              role: 'user',
+              content: [
+                { type: 'text', text: 'look at this' },
+                { type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
+              ],
+              created_at: '2026-01-01T00:00:00.000Z',
+            },
+          ],
+          has_more: false,
+        },
+      }),
+    );
+    const user = state.blocks.find((block): block is UserBlock => block.kind === 'user');
+    expect(user?.text).toBe('look at this');
+    expect(user?.text).not.toContain('[image]');
+    expect(user?.media).toEqual([
+      { kind: 'image', url: 'data:image/png;base64,aGVsbG8=', mime: 'image/png' },
+    ]);
+  });
+
+  it('creates a user block for a media-only message (no text part)', () => {
+    const state = applySnapshot(
+      'session_test',
+      snapshot({
+        messages: {
+          items: [
+            {
+              id: 'm-only-img',
+              session_id: 'session_test',
+              role: 'user',
+              content: [
+                { type: 'image', source: { kind: 'url', url: 'data:image/jpeg;base64,/9j/' } },
+              ],
+              created_at: '2026-01-01T00:00:00.000Z',
+            },
+          ],
+          has_more: false,
+        },
+      }),
+    );
+    const user = state.blocks.find((block): block is UserBlock => block.kind === 'user');
+    expect(user?.text).toBe('');
+    expect(user?.media).toHaveLength(1);
+  });
+
+  it('keeps file parts as chip metadata on user blocks', () => {
+    const state = applySnapshot(
+      'session_test',
+      snapshot({
+        messages: {
+          items: [
+            {
+              id: 'm-file',
+              session_id: 'session_test',
+              role: 'user',
+              content: [
+                { type: 'file', file_id: 'upl_9', name: 'report.pdf', media_type: 'application/pdf', size: 4096 },
+              ],
+              created_at: '2026-01-01T00:00:00.000Z',
+            },
+          ],
+          has_more: false,
+        },
+      }),
+    );
+    const user = state.blocks.find((block): block is UserBlock => block.kind === 'user');
+    expect(user?.media).toEqual([
+      { kind: 'file', fileId: 'upl_9', name: 'report.pdf', mime: 'application/pdf', size: 4096 },
+    ]);
+  });
+
+  it('attaches assistant media parts to the trailing assistant block', () => {
+    const state = applySnapshot(
+      'session_test',
+      snapshot({
+        messages: {
+          items: [
+            {
+              id: 'm-assist',
+              session_id: 'session_test',
+              role: 'assistant',
+              content: [
+                { type: 'text', text: 'rendered it' },
+                { type: 'image', source: { kind: 'url', url: 'data:image/png;base64,CC' } },
+              ],
+              created_at: '2026-01-01T00:00:01.000Z',
+            },
+          ],
+          has_more: false,
+        },
+      }),
+    );
+    const assistant = state.blocks.find(
+      (block): block is AssistantBlock => block.kind === 'assistant',
+    );
+    expect(assistant?.text).toBe('rendered it');
+    expect(assistant?.media).toEqual([
+      { kind: 'image', url: 'data:image/png;base64,CC', mime: 'image/png' },
+    ]);
+  });
+
+  it('fills in echo media when prompt.submitted carries the full content', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = appendLocalUserMessage(state, {
+      userMessageId: 'm-echo',
+      promptId: 'p-echo',
+      text: 'see attached',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      status: 'running',
+    });
+    const echo = state.blocks.find((block): block is UserBlock => block.kind === 'user');
+    expect(echo?.media).toBeUndefined();
+    const result = applyFrame(
+      state,
+      frame(
+        {
+          type: 'prompt.submitted',
+          promptId: 'p-echo',
+          userMessageId: 'm-echo',
+          status: 'running',
+          content: [
+            { type: 'text', text: 'see attached' },
+            { type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'AA' } },
+          ],
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+        { seq: 11 },
+      ),
+    );
+    const users = result.state.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]?.media).toEqual([
+      { kind: 'image', url: 'data:image/png;base64,AA', mime: 'image/png' },
+    ]);
+  });
+
+  it('preserves media when a queued prompt is steered into the running turn', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = appendLocalUserMessage(state, {
+      userMessageId: 'm-run',
+      promptId: 'p-run',
+      text: 'working',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      status: 'running',
+    });
+    state = appendLocalUserMessage(state, {
+      userMessageId: 'm-q',
+      promptId: 'p-q',
+      text: 'queued with image',
+      createdAt: '2026-01-01T00:00:01.000Z',
+      status: 'queued',
+      media: [{ kind: 'image', url: 'data:image/png;base64,QQ', mime: 'image/png' }],
+    });
+    const result = applyFrame(
+      state,
+      frame(
+        {
+          type: 'prompt.steered',
+          promptIds: ['p-q'],
+          activePromptId: 'p-run',
+          content: [
+            { type: 'text', text: 'queued with image' },
+            { type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'QQ' } },
+          ],
+          steeredAt: '2026-01-01T00:00:02.000Z',
+        },
+        { seq: 12 },
+      ),
+    );
+    const steer = result.state.blocks.find(
+      (block): block is SteerBlock => block.kind === 'steer' && block.promptId === 'p-q',
+    );
+    expect(steer?.media).toEqual([
+      { kind: 'image', url: 'data:image/png;base64,QQ', mime: 'image/png' },
+    ]);
+  });
+});

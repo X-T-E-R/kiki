@@ -28,6 +28,7 @@ export function Dialog({
   ariaLabel,
   overlayId,
   panelClassName,
+  overlayClassName,
   children,
 }: {
   onClose: () => void;
@@ -37,6 +38,8 @@ export function Dialog({
   overlayId: string;
   /** Replaces the default panel chrome (larger dialogs restyle width/padding). */
   panelClassName?: string;
+  /** Replaces the default backdrop layout (slide-overs and lightboxes restyle alignment/tint). */
+  overlayClassName?: string;
   children: ReactNode;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -104,7 +107,9 @@ export function Dialog({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/20 p-4"
+      className={
+        overlayClassName ?? 'fixed inset-0 z-50 flex items-center justify-center bg-ink/20 p-4'
+      }
       onPointerDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}

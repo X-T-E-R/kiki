@@ -188,6 +188,29 @@ describe('KikiClient.readHostFile', () => {
   });
 });
 
+describe('KikiClient.readHostFileBytes', () => {
+  it('reads binary content with the response MIME from the fs:content endpoint', async () => {
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const parsed = new URL(String(url));
+      expect(parsed.pathname).toBe('/api/v1/fs:content');
+      expect(parsed.searchParams.get('path')).toBe('/work/shots/home.png');
+      expect(init?.method).toBe('GET');
+      expect((init?.headers as Record<string, string>)['Authorization']).toBe('Bearer token');
+      return new Response(new Uint8Array([1, 2, 3]), {
+        status: 200,
+        headers: { 'content-type': 'image/png' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+
+    const result = await client.readHostFileBytes('/work/shots/home.png');
+    expect(result.mime).toBe('image/png');
+    expect([...result.bytes]).toEqual([1, 2, 3]);
+    vi.unstubAllGlobals();
+  });
+});
+
 describe('KikiClient MCP JSON management', () => {
   it('uses the list, upsert, and remove endpoints with workspace scope', async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {

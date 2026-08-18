@@ -45,6 +45,7 @@ import {
   type WireTokenUsage,
 } from '../lib/types';
 import type { I18nKey, I18nParams } from '../i18n/locale';
+import { mediaFromContentParts, type MediaRef } from '../lib/media';
 import {
   MAIN_AGENT_ID,
   buildAgentForest,
@@ -65,6 +66,8 @@ export interface UserBlock {
   readonly kind: 'user';
   readonly id: string;
   readonly text: string;
+  /** Structured image/video/file parts kept from the wire content. */
+  readonly media?: readonly MediaRef[];
   readonly createdAt: string;
   readonly turnId?: string;
   /** Stable daemon identities when known. `turn.started.prompt` placeholders
@@ -122,6 +125,8 @@ export interface SteerBlock {
   readonly kind: 'steer';
   readonly id: string;
   readonly text: string;
+  /** Structured image/video/file parts kept from the wire content. */
+  readonly media?: readonly MediaRef[];
   readonly createdAt: string;
   readonly promptId?: string;
   readonly userMessageId?: string;
@@ -132,6 +137,8 @@ export interface AssistantBlock {
   readonly kind: 'assistant';
   readonly id: string;
   readonly text: string;
+  /** Structured image/video/file parts kept from the wire content. */
+  readonly media?: readonly MediaRef[];
   readonly streaming: boolean;
   readonly createdAt: string | undefined;
   readonly turnId?: string;
@@ -395,15 +402,20 @@ export function createViewState(sessionId: string): SessionViewState {
 // Snapshot → blocks
 // ---------------------------------------------------------------------------
 
-function textOfContent(content: Message['content']): string {
+/**
+ * Project wire content into display text + structured media. Media parts are
+ * no longer flattened into `[image]`/`[file: …]` placeholders — the transcript
+ * keeps them as `MediaRef`s so the view layer can render thumbnails/chips.
+ */
+export function projectMessageContent(content: Message['content']): {
+  text: string;
+  media: readonly MediaRef[];
+} {
   const parts: string[] = [];
   for (const part of content) {
     if (part.type === 'text') parts.push(part.text);
-    else if (part.type === 'image') parts.push('[image]');
-    else if (part.type === 'video') parts.push('[video]');
-    else if (part.type === 'file') parts.push(`[file: ${part.name}]`);
   }
-  return parts.join('\n');
+  return { text: parts.join('\n'), media: mediaFromContentParts(content) };
 }
 
 export interface SplitSystemRemindersResult {
@@ -726,6 +738,7 @@ function classifiedTextToBlocks(input: {
   id: string;
   classified: ClassifiedText;
   createdAt: string;
+  media?: readonly MediaRef[];
   promptId?: string;
   userMessageId?: string;
   promptStatus?: PromptStatus;
@@ -736,11 +749,12 @@ function classifiedTextToBlocks(input: {
   switch (classified.lane) {
     case 'you':
     case 'peer':
-      if (classified.text !== '') {
+      if (classified.text !== '' || (input.media !== undefined && input.media.length > 0)) {
         blocks.push({
           kind: 'user',
           id: `user-${input.id}`,
           text: classified.text,
+          media: input.media !== undefined && input.media.length > 0 ? input.media : undefined,
           createdAt: input.createdAt,
           promptId: input.promptId,
           userMessageId: input.userMessageId,
@@ -802,6 +816,7 @@ function userAndReminderBlocks(input: {
   id: string;
   text: string;
   createdAt: string;
+  media?: readonly MediaRef[];
   promptId?: string;
   userMessageId?: string;
   promptStatus?: PromptStatus;
@@ -817,6 +832,7 @@ function userAndReminderBlocks(input: {
       id: input.id,
     }),
     createdAt: input.createdAt,
+    media: input.media,
     promptId: input.promptId,
     userMessageId: input.userMessageId,
     promptStatus: input.promptStatus,
@@ -902,10 +918,12 @@ function messagesToBlocks(
           promptId: message.prompt_id,
           messageId: message.id,
         } satisfies UserBlockIdentity;
+        const projection = projectMessageContent(message.content);
         const additions = userAndReminderBlocks({
           id: message.id,
-          text: textOfContent(message.content),
+          text: projection.text,
           createdAt: message.created_at,
+          media: projection.media,
           promptId: message.prompt_id,
           userMessageId: message.id,
           origin: originFromMetadata(message.metadata),
@@ -927,6 +945,10 @@ function messagesToBlocks(
         const merged: UserBlock = {
           ...projected,
           id: existing.id,
+          media:
+            projected.media !== undefined && projected.media.length > 0
+              ? projected.media
+              : existing.media,
           promptId: projected.promptId ?? existing.promptId,
           userMessageId: existing.userMessageId ?? projected.userMessageId,
           promptStatus: existing.promptStatus,
@@ -935,6 +957,8 @@ function messagesToBlocks(
         break;
       }
       case 'assistant': {
+        const media = mediaFromContentParts(message.content);
+        const firstBlockIndex = blocks.length;
         let textIndex = 0;
         for (const part of message.content) {
           if (part.type === 'text') {
@@ -978,6 +1002,23 @@ function messagesToBlocks(
             blocks.push(block);
           }
         }
+        if (media.length > 0) {
+          // Attach media to the message's own last text block when there is
+          // one; otherwise give it a media-only assistant block.
+          const last = blocks.at(-1);
+          if (blocks.length > firstBlockIndex && last !== undefined && last.kind === 'assistant') {
+            blocks[blocks.length - 1] = { ...last, media };
+          } else {
+            blocks.push({
+              kind: 'assistant',
+              id: `assistant-${message.id}-media`,
+              text: '',
+              media,
+              streaming: false,
+              createdAt: message.created_at,
+            });
+          }
+        }
         break;
       }
       case 'tool': {
@@ -992,7 +1033,7 @@ function messagesToBlocks(
         blocks.push(
           ...userAndReminderBlocks({
             id: message.id,
-            text: textOfContent(message.content),
+            text: projectMessageContent(message.content).text,
             createdAt: message.created_at,
             origin: originFromMetadata(message.metadata),
             role: 'system',
@@ -1953,6 +1994,7 @@ function userBlockToSteer(
     kind: 'steer',
     id: `steer-${block.promptId ?? block.userMessageId ?? block.id}`,
     text: block.text,
+    media: block.media,
     createdAt: input.steeredAt || block.createdAt,
     promptId: block.promptId,
     userMessageId: block.userMessageId,
@@ -1997,7 +2039,8 @@ function applySteerToBlocks(
   input: {
     promptIds: readonly string[];
     activePromptId: string;
-    content: string;
+    text: string;
+    media: readonly MediaRef[];
     steeredAt: string;
   },
 ): readonly Block[] {
@@ -2023,7 +2066,7 @@ function applySteerToBlocks(
   }
   if (remaining.size > 0) {
     const classified = classifyTranscriptText({
-      text: input.content,
+      text: input.text,
       role: 'user',
       origin: { kind: 'user' },
     });
@@ -2032,6 +2075,7 @@ function applySteerToBlocks(
         kind: 'steer',
         id: `steer-${promptId}`,
         text: classified.text,
+        media: input.media.length > 0 ? input.media : undefined,
         createdAt: input.steeredAt,
         promptId,
         activePromptId: input.activePromptId,
@@ -2075,6 +2119,7 @@ export function preserveCapturedSteers(
       kind: 'steer',
       id: match.id,
       text: block.text,
+      media: block.media ?? match.media,
       createdAt: match.createdAt,
       promptId: block.promptId ?? match.promptId,
       userMessageId: block.userMessageId ?? match.userMessageId,
@@ -2096,8 +2141,11 @@ export function preserveCapturedSteers(
 function upsertPromptItemBlocks(
   blocks: readonly Block[],
   item: PromptItem,
+  mediaOverride?: readonly MediaRef[],
 ): readonly Block[] {
-  const text = textOfContent(item.content);
+  const projection = projectMessageContent(item.content);
+  const text = projection.text;
+  const media = mediaOverride ?? projection.media;
   if (blocks.some((block) => block.kind === 'steer' && isPromptIdentity(block, item.prompt_id, item.user_message_id))) {
     return blocks;
   }
@@ -2108,9 +2156,13 @@ function upsertPromptItemBlocks(
   );
   if (stableIndex >= 0) {
     const existing = blocks[stableIndex] as UserBlock;
-    if (existing.promptStatus === item.status) return blocks;
+    // The local echo has no media; the first content-carrying upsert
+    // (prompt.submitted / reconcile) fills it in.
+    const nextMedia =
+      media.length > 0 && existing.media === undefined ? media : existing.media;
+    if (existing.promptStatus === item.status && nextMedia === existing.media) return blocks;
     const next = blocks.slice();
-    next[stableIndex] = { ...existing, promptStatus: item.status };
+    next[stableIndex] = { ...existing, promptStatus: item.status, media: nextMedia };
     return next;
   }
   const split = splitSystemReminders(text);
@@ -2133,6 +2185,7 @@ function upsertPromptItemBlocks(
     id: item.user_message_id,
     text,
     createdAt: item.created_at,
+    media,
     promptId: item.prompt_id,
     userMessageId: item.user_message_id,
     promptStatus: item.status,
@@ -2666,10 +2719,12 @@ function applyFrameInternal(
       break;
     }
     case 'prompt.steered': {
+      const projection = projectMessageContent(payload.content as Message['content']);
       const steered = applySteerToBlocks(next.blocks, {
         promptIds: payload.promptIds,
         activePromptId: payload.activePromptId,
-        content: textOfContent(payload.content as Message['content']),
+        text: projection.text,
+        media: projection.media,
         steeredAt: payload.steeredAt,
       });
       evolve({
@@ -2882,6 +2937,9 @@ export function appendLocalUserMessage(
     text: string;
     createdAt: string;
     status: PromptStatus;
+    /** Composed attachments for immediate display; the prompt.submitted frame
+     * reconciles the authoritative content later. */
+    media?: readonly MediaRef[];
   },
 ): SessionViewState {
   const item: PromptItem = {
@@ -2903,7 +2961,7 @@ export function appendLocalUserMessage(
     busy: input.status === 'running' ? true : state.busy,
     activePromptId: input.status === 'running' ? input.promptId : state.activePromptId,
     queuedPromptIds,
-    blocks: upsertPromptItemBlocks(state.blocks, item),
+    blocks: upsertPromptItemBlocks(state.blocks, item, input.media),
   };
 }
 

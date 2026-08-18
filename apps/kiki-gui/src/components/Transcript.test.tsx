@@ -29,6 +29,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
 import { Markdown } from './Markdown';
+import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { splitPrefixSegments, splitStreamingText, TurnTailLine } from './Transcript';
 
 vi.mock('./markdown/streamdown-plugins', async (importOriginal) => {
@@ -282,5 +283,73 @@ describe('splitPrefixSegments streaming differential', () => {
       />,
     );
     expect(probe.container.querySelector('[data-turn-tail]')?.textContent).toContain('20 tok/s');
+  });
+});
+
+describe('media preview wiring', () => {
+  it('renders message image refs as thumbnails that open the lightbox', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work">
+        <MediaPartList
+          media={[{ kind: 'image', url: 'data:image/png;base64,AA', mime: 'image/png' }]}
+        />
+      </MediaPreviewProvider>,
+    );
+    const thumb = probe.container.querySelector('img');
+    expect(thumb?.getAttribute('src')).toBe('data:image/png;base64,AA');
+    await act(async () => {
+      thumb!.closest('button')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    // The lightbox portals to document.body.
+    const dialog = document.body.querySelector('[role="dialog"]');
+    expect(dialog?.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,AA');
+  });
+
+  it('renders file refs as chips with name and size', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work">
+        <MediaPartList
+          media={[{ kind: 'file', fileId: 'upl_1', name: 'report.pdf', mime: 'application/pdf', size: 4096 }]}
+        />
+      </MediaPreviewProvider>,
+    );
+    expect(probe.container.textContent).toContain('report.pdf');
+    expect(probe.container.textContent).toContain('4.0 KB');
+  });
+
+  it('opens the file preview pane from a workspace-relative markdown link', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work/app">
+        <Markdown text={'See [the config](./config/app.toml) for details.'} />
+      </MediaPreviewProvider>,
+    );
+    const link = probe.container.querySelector('a');
+    expect(link?.getAttribute('title')).toBe('/work/app/config/app.toml');
+    await act(async () => {
+      link!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    // The pane portals to document.body; without a connection the body shows
+    // the failure notice, but the header still names the file.
+    expect(document.body.textContent).toContain('app.toml');
+    expect(document.body.textContent).toContain('/work/app/config/app.toml');
+  });
+
+  it('keeps app routes as router links even inside the preview provider', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work/app">
+        <Markdown text={'[Usage](/usage)'} />
+      </MediaPreviewProvider>,
+    );
+    const link = probe.container.querySelector('a');
+    expect(link?.getAttribute('href')).toBe('/usage');
+    expect(link?.getAttribute('title')).toBeNull();
   });
 });

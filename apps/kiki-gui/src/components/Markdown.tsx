@@ -6,12 +6,18 @@
  * collapse). Typography lives in `.kiki-md` (index.css).
  */
 
-import { memo } from 'react';
+import { memo, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Streamdown, type Components } from 'streamdown';
 
+import {
+  resolveFileHref,
+  unwrapFileLinkTarget,
+  wrapFileLinkTarget,
+} from '../lib/media';
 import { KikiCodeBlock } from './markdown/KikiCodeBlock';
 import { useStreamdownPlugins } from './markdown/streamdown-plugins';
+import { useMediaPreview } from './mediaPreviewContext';
 
 /**
  * Plain-prose fast path: a single line with no markdown-reactive construct
@@ -38,16 +44,76 @@ export function isInAppHref(href: string | undefined): href is string {
   return href !== undefined && !EXTERNAL_HREF.test(href);
 }
 
-const components: Components = {
-  pre: KikiCodeBlock as Components['pre'],
-  a: ({ href, children }) =>
-    isInAppHref(href) ? (
-      <Link to={href}>{children}</Link>
-    ) : (
-      <a href={href} target="_blank" rel="noreferrer noopener">
+/**
+ * Streamdown's sanitize+harden chain strips `file:`/`C:` hrefs and resolves
+ * `./x` against a dummy origin, so the anchor component would never see the
+ * original local-file target. This remark plugin runs while link URLs are
+ * still pristine and rewrites file-ish targets behind FILE_LINK_SENTINEL
+ * (a plain path, which sanitize preserves); MarkdownAnchor unwraps it.
+ */
+interface MdastLike {
+  type?: string;
+  url?: string;
+  children?: MdastLike[];
+}
+
+function remarkLocalFileLinks() {
+  return (tree: MdastLike) => {
+    const visit = (node: MdastLike) => {
+      if (node.type === 'link' && typeof node.url === 'string') {
+        const wrapped = wrapFileLinkTarget(node.url);
+        if (wrapped !== undefined) node.url = wrapped;
+      }
+      node.children?.forEach(visit);
+    };
+    visit(tree);
+  };
+}
+
+const REMARK_PLUGINS = [remarkLocalFileLinks];
+
+/**
+ * Link renderer: local file paths (absolute, file://, or workspace-relative)
+ * open in the file preview pane; app routes keep the client-side Link;
+ * everything else is an external anchor. Without a MediaPreviewProvider the
+ * file branch falls through to the old behavior.
+ */
+function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNode }) {
+  const preview = useMediaPreview();
+  const target = href === undefined ? undefined : (unwrapFileLinkTarget(href) ?? href);
+  const filePath =
+    preview !== null && target !== undefined ? resolveFileHref(target, preview.cwd) : undefined;
+  if (filePath !== undefined && preview !== null) {
+    return (
+      <a
+        href={href}
+        title={filePath}
+        onClick={(event) => {
+          event.preventDefault();
+          preview.openFile(filePath);
+        }}
+      >
         {children}
       </a>
-    ),
+    );
+  }
+  // A sentinel-wrapped link that cannot resolve (e.g. relative path without a
+  // session cwd) renders as plain text rather than a dead route link.
+  if (href !== undefined && unwrapFileLinkTarget(href) !== undefined) {
+    return <span>{children}</span>;
+  }
+  return isInAppHref(href) ? (
+    <Link to={href}>{children}</Link>
+  ) : (
+    <a href={href} target="_blank" rel="noreferrer noopener">
+      {children}
+    </a>
+  );
+}
+
+const components: Components = {
+  pre: KikiCodeBlock as Components['pre'],
+  a: MarkdownAnchor as Components['a'],
 };
 
 export const Markdown = memo(function Markdown({
@@ -75,6 +141,7 @@ export const Markdown = memo(function Markdown({
       <Streamdown
         mode="streaming"
         plugins={plugins}
+        remarkPlugins={REMARK_PLUGINS}
         components={components}
         // kiki draws its own chrome; streamdown's built-in action rows stay off.
         controls={{ table: false, code: false, mermaid: false }}

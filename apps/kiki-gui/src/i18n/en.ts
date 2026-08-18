@@ -13,6 +13,7 @@ export const en = {
   'common.saving': 'Saving…',
   'common.retry': 'Retry',
   'common.remove': 'Remove',
+  'common.close': 'Close',
   'common.unknownError': 'Unknown error',
 
   // ---- searchable select (workspace/model pickers) ----
@@ -288,6 +289,18 @@ export const en = {
   'transcript.ttft': 'TTFT {seconds}s',
   'transcript.tokensPerSecond': '{rate} tok/s',
 
+  // ---- media + file preview ----
+  'media.attachment': 'Attachment',
+  'media.viewImage': 'View image',
+  'media.download': 'Download',
+  'media.zoomFit': 'Fit to screen',
+  'media.zoomActual': 'Actual size',
+  'preview.openFile': 'Preview {name}',
+  'preview.loading': 'Loading…',
+  'preview.failed': 'Could not load this file',
+  'preview.truncated': 'Large file — showing the first part only.',
+  'preview.unsupported': 'No preview available for this file type.',
+
   // ---- subagent cards ----
   'subagent.status.running': 'running',
   'subagent.status.suspended': 'suspended',
@@ -441,6 +454,7 @@ export const en = {
   'sv.ariaWorking': 'Kiki is working',
   'sv.closePanel': 'Close panel',
   'sv.imageEcho': '[image]',
+  'sv.fileEcho': '[file]',
   'sv.queueBar.one': '◔ {count} prompt queued — starts when the current turn finishes',
   'sv.queueBar.other': '◔ {count} prompts queued — starts when the current turn finishes',
   'sv.queueAria': 'Queued prompts',
@@ -1095,6 +1109,9 @@ export const en = {
   'attach.tooMany': 'At most {max} attachments per message.',
   'attach.readFailed': 'Could not read {name}',
   'attach.pastedImage': 'pasted image',
+  'attach.pastedFile': 'pasted file',
+  'attach.fileTooLarge': '"{name}" is {size} — files are capped at {max} each.',
+  'attach.uploadFailed': 'Could not upload {name}',
 
   // Batch C
   // ---- desktop boot / failure cards & provider network fallback ----
@@ -1131,6 +1148,10 @@ export const en = {
   'composer.slash.sendAnyway': 'Send anyway',
   'composer.slash.cancelSend': 'Keep editing',
   'composer.attachmentReading': 'Reading image…',
+  'composer.attachmentUploading': 'Uploading file…',
+  'composer.dropFiles': 'Drop files to attach',
+  'composer.quoteSelection': 'Quote',
+  'composer.removeQuote': 'Remove quote',
   'sv.approvalAmbiguous':
     'Several approval cards are visible — click one of them before answering with y / n.',
   'st.restart.confirmTitle': 'Restart the server?',

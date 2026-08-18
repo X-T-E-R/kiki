@@ -21,6 +21,7 @@ import type {
   ConfigResponse,
   CreateTerminalRequest,
   Envelope,
+  FileMeta,
   ForkSessionRequest,
   FsSearchResponse,
   GetTerminalResponse,
@@ -942,9 +943,26 @@ export class KikiClient {
   }
 
   async readHostFile(path: string): Promise<string> {
+    const response = await this.fetchHostFile(path, 'text/plain');
+    return await response.text();
+  }
+
+  /**
+   * Binary variant of readHostFile (fs:content streams raw bytes with a
+   * sniffed/extension MIME; the Accept header is ignored server-side).
+   */
+  async readHostFileBytes(path: string): Promise<{ bytes: Uint8Array; mime: string }> {
+    const response = await this.fetchHostFile(path, 'application/octet-stream');
+    const mime =
+      response.headers.get('content-type')?.split(';', 1)[0]?.trim() ||
+      'application/octet-stream';
+    return { bytes: new Uint8Array(await response.arrayBuffer()), mime };
+  }
+
+  private async fetchHostFile(path: string, accept: string): Promise<Response> {
     const url = new URL(joinUrl(this.baseUrl, '/fs:content'));
     url.searchParams.set('path', path);
-    const headers: Record<string, string> = { Accept: 'text/plain' };
+    const headers: Record<string, string> = { Accept: accept };
     if (this.token !== undefined) headers['Authorization'] = `Bearer ${this.token}`;
     const controller = new AbortController();
     let timedOut = false;
@@ -954,7 +972,7 @@ export class KikiClient {
     }, this.timeoutMs);
     try {
       const response = await fetch(url, { method: 'GET', headers, signal: controller.signal });
-      if (response.ok) return await response.text();
+      if (response.ok) return response;
       const envelope = await response.clone().json().catch(() => undefined) as Envelope<unknown> | undefined;
       if (envelope !== undefined && typeof envelope.code === 'number') throw new ApiError(envelope);
       throw new ApiError({ code: response.status, msg: `HTTP ${response.status}`, data: null });
@@ -1099,6 +1117,35 @@ export class KikiClient {
       `/sessions/${encodeURIComponent(sessionId)}/skills/${encodeURIComponent(skillName)}:activate`,
       { body },
     );
+  }
+
+  /**
+   * `POST /files` — multipart upload for prompt file attachments. Kept off the
+   * JSON `request` helper: the body is a FormData stream (the browser sets the
+   * multipart boundary); the reply is the same envelope shape.
+   */
+  async uploadFile(file: File): Promise<FileMeta> {
+    const form = new FormData();
+    form.append('file', file, file.name === '' ? 'attachment' : file.name);
+    const headers: Record<string, string> = { Accept: 'application/json' };
+    if (this.token !== undefined) headers['Authorization'] = `Bearer ${this.token}`;
+    let response: Response;
+    try {
+      response = await fetch(joinUrl(this.baseUrl, '/files'), {
+        method: 'POST',
+        headers,
+        body: form,
+      });
+    } catch (error) {
+      throw new ApiError({
+        code: -1,
+        msg: error instanceof Error ? error.message : 'network error',
+        data: null,
+      });
+    }
+    const envelope = (await response.json()) as Envelope<unknown>;
+    if (envelope.code !== API_CODES.SUCCESS) throw new ApiError(envelope);
+    return envelope.data as FileMeta;
   }
 
   /**

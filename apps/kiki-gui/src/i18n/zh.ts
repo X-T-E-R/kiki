@@ -13,6 +13,7 @@ export const zh: Record<I18nKey, string> = {
   'common.saving': '正在保存…',
   'common.retry': '重试',
   'common.remove': '移除',
+  'common.close': '关闭',
   'common.unknownError': '未知错误',
 
   // ---- 可搜索下拉（工作区/模型选择器） ----
@@ -284,6 +285,18 @@ export const zh: Record<I18nKey, string> = {
   'transcript.ttft': '首 token {seconds} 秒',
   'transcript.tokensPerSecond': '{rate} token/秒',
 
+  // ---- media + file preview ----
+  'media.attachment': '附件',
+  'media.viewImage': '查看图片',
+  'media.download': '下载',
+  'media.zoomFit': '适应屏幕',
+  'media.zoomActual': '原始大小',
+  'preview.openFile': '预览 {name}',
+  'preview.loading': '加载中…',
+  'preview.failed': '无法读取该文件',
+  'preview.truncated': '文件较大，仅显示前面一部分。',
+  'preview.unsupported': '该文件类型暂不支持预览。',
+
   // ---- subagent cards ----
   'subagent.status.running': '运行中',
   'subagent.status.suspended': '已挂起',
@@ -434,6 +447,7 @@ export const zh: Record<I18nKey, string> = {
   'sv.ariaWorking': 'Kiki 正在工作',
   'sv.closePanel': '关闭面板',
   'sv.imageEcho': '[图片]',
+  'sv.fileEcho': '[文件]',
   'sv.queueBar.one': '◔ {count} 条消息已排队 — 当前轮次结束后开始',
   'sv.queueBar.other': '◔ {count} 条消息已排队 — 当前轮次结束后开始',
   'sv.queueAria': '排队消息',
@@ -1073,6 +1087,9 @@ export const zh: Record<I18nKey, string> = {
   'attach.tooMany': '每条消息最多 {max} 个附件。',
   'attach.readFailed': '无法读取 {name}',
   'attach.pastedImage': '粘贴的图片',
+  'attach.pastedFile': '粘贴的文件',
+  'attach.fileTooLarge': '“{name}”大小为 {size} — 每个文件的上限为 {max}。',
+  'attach.uploadFailed': '无法上传 {name}',
 
   // Batch C
   // ---- desktop boot / failure cards & provider network fallback ----
@@ -1104,6 +1121,10 @@ export const zh: Record<I18nKey, string> = {
   'composer.slash.sendAnyway': '仍要发送',
   'composer.slash.cancelSend': '继续编辑',
   'composer.attachmentReading': '正在读取图片…',
+  'composer.attachmentUploading': '正在上传文件…',
+  'composer.dropFiles': '松开即可附加文件',
+  'composer.quoteSelection': '引用',
+  'composer.removeQuote': '移除引用',
   'sv.approvalAmbiguous': '当前有多张审批卡可见，请先点击其中一张再用 y / n 回答。',
   'st.restart.confirmTitle': '重启服务器？',
   'st.restart.confirmBodyActive':

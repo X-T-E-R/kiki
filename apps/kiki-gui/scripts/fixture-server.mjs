@@ -349,6 +349,8 @@ class FixtureServer {
     this.sessions = new Map();
     this.sockets = new Set();
     this.lastSearchBody = null; // last POST /search body (walker assertions)
+    this.lastFileUpload = null; // last POST /files meta (walker assertions)
+    this.fileCounter = 0;
     this.oauthOverride = null; // mutable oauth flow state (POST/DELETE /oauth/login)
     this.http = createServer((req, res) => void this.handleHttp(req, res));
     this.wss = new WebSocketServer({ noServer: true });
@@ -680,6 +682,27 @@ class FixtureServer {
       return;
     }
 
+    // Multipart upload: the real server streams the bytes into its file store
+    // and answers FileMeta; the fixture keeps the meta (plus the multipart
+    // byte count as a size stand-in) for walker assertions.
+    if (url.pathname === '/api/v1/files' && req.method === 'POST') {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const raw = Buffer.concat(chunks);
+      const head = raw.subarray(0, 4096).toString('latin1');
+      const nameMatch = /filename="([^"]*)"/.exec(head);
+      const typeMatch = /content-type:\s*([^\r\n]+)/i.exec(head);
+      const meta = {
+        id: `file_fixture_${++this.fileCounter}`,
+        name: nameMatch?.[1] ?? 'attachment',
+        media_type: typeMatch?.[1]?.trim() ?? 'application/octet-stream',
+        size: raw.length,
+        created_at: now(),
+      };
+      this.lastFileUpload = meta;
+      return this.envelope(res, meta);
+    }
+
     const path = url.pathname.replace(/^\/api\/v1/, '');
     const body = (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE')
       ? await this.readBody(req)
@@ -854,6 +877,26 @@ class FixtureServer {
     // filtering as the session route, `workspace` carried in the body.
     if (path === '/workspace/fs:search' && method === 'POST') {
       return this.replyFsSearch(res, null, body);
+    }
+    // Raw host file bytes (transcript media thumbnails / file preview pane).
+    // Like the real route: absolute path in, raw bytes + sniffed MIME out —
+    // NOT envelope-wrapped. Scenario-seeded via `fsFiles`.
+    if (path === '/fs:content' && method === 'GET') {
+      const filePath = query.get('path') ?? '';
+      const file = this.scenario?.data.fsFiles?.[filePath];
+      if (file === undefined) {
+        return this.envelope(res, null, 40409, 'fs.path_not_found');
+      }
+      const bytes =
+        file.base64 !== undefined
+          ? Buffer.from(file.base64, 'base64')
+          : Buffer.from(file.content ?? '', 'utf8');
+      res.writeHead(200, {
+        'content-type': file.mime ?? 'text/plain',
+        'content-length': bytes.length,
+      });
+      res.end(bytes);
+      return;
     }
     // Global full-text search — hits are scenario-seeded and substring-matched.
     if (path === '/search' && method === 'POST') {
@@ -1288,7 +1331,7 @@ class FixtureServer {
         });
       }
       case 'state':
-        return this.envelope(res, { last_search: this.lastSearchBody });
+        return this.envelope(res, { last_search: this.lastSearchBody, last_file_upload: this.lastFileUpload });
       case 'drop_ws':
         for (const ws of this.sockets) {
           try { ws.terminate(); } catch { /* closing */ }
