@@ -604,6 +604,7 @@ export const en = {
   'usage.tokens.cacheRead': 'Cache read',
   'usage.tokens.cacheWrite': 'Cache write',
   'usage.cacheHit': '{percent}% cache hit',
+  'usage.partialCost': 'Partial estimate: pricing is unavailable for {models}.',
   'usage.byModel': 'By model',
   'usage.byDay': 'By day',
   'usage.byDayHint':
@@ -812,7 +813,7 @@ export const en = {
   'st.runtime.removeEntry': 'Remove entry {n}',
   'st.runtime.listEmpty': 'No entries configured.',
   'st.runtime.cron': 'Cron operations',
-  'st.runtime.cronHint': 'cron is an operational domain; environment overrides may remain authoritative.',
+  'st.runtime.cronHint': 'cron is driven by KIMI_CRON_* environment variables and never persisted to the config file; shown read-only.',
   'st.runtime.cronDebug': 'Debug logging',
   'st.runtime.cronNoJitter': 'Disable jitter',
   'st.runtime.cronNoStale': 'Reject stale jobs',
@@ -891,8 +892,10 @@ export const en = {
   'st.subagents.issueEnforceNeedsPool': 'Hard allowlist enforcement requires at least one pool model.',
   'st.subagents.issueEnforceForce': 'Hard allowlist enforcement cannot be combined with force mode.',
   'st.namedAgents.title': 'Named agent profiles',
+  'st.namedAgents.editHint':
+    'User, project, and extra file profiles can edit descriptions and fixed model aliases. Built-in, plugin, explicit, and prompt-only profiles remain read-only.',
   'st.namedAgents.readOnlyHint':
-    'Loaded profile files and route sidecars are shown read-only. The core reloads watched files, but does not expose a self-contained validated write-back API.',
+    'User, project, and extra file profiles are editable; other profile sources remain read-only.',
   'st.namedAgents.loading': 'Loading named agent profiles…',
   'st.namedAgents.empty': 'No named agent profiles are currently loaded.',
   'st.namedAgents.sourceFile': 'source file',
@@ -900,6 +903,11 @@ export const en = {
   'st.namedAgents.workspace': 'workspace',
   'st.namedAgents.modelPin': 'pinned model alias',
   'st.namedAgents.route': 'route',
+  'st.namedAgents.routeModel': 'Route model alias: {route}',
+  'st.namedAgents.description': 'Description',
+  'st.namedAgents.edit': 'Edit',
+  'st.namedAgents.readOnly': 'read-only',
+  'st.namedAgents.saved': 'Agent profile saved and reloaded.',
   'st.sidecar.title': 'Server defaults',
   'st.sidecar.disabledHint':
     'These controls use the connected kap-server configuration API.',

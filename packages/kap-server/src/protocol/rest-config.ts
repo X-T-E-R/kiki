@@ -1,4 +1,73 @@
+import { IdentityConfigSchema } from '@moonshot-ai/agent-core-v2/app/agentIdentity/configSection';
+import { McpSectionSchema } from '@moonshot-ai/agent-core-v2/app/mcpConfig/configSection';
+import { ThreadCommunicationConfigSchema } from '@moonshot-ai/agent-core-v2/app/threadCommunication/configSection';
+import { ImageConfigSchema } from '@moonshot-ai/agent-core-v2/agent/media/configSection';
+import { AgentTaskConfigSchema } from '@moonshot-ai/agent-core-v2/agent/task/configSection';
+import {
+  TokenCountingConfigSchema,
+  type TokenCountingConfig,
+} from '@moonshot-ai/agent-core-v2/agent/tokenCounting/configSection';
+import { ToolsConfigSchema } from '@moonshot-ai/agent-core-v2/agent/toolPolicy/configSection';
+import {
+  DisabledBuiltinProfilesConfigSchema,
+  ExtraAgentDirsConfigSchema,
+} from '@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/configSection';
+import { WorkspaceInstanceConfigSchema } from '@moonshot-ai/agent-core-v2/workspace/workspaceInstance/configSection';
 import { z } from 'zod';
+
+const tokenCountingConfigSchema = TokenCountingConfigSchema as z.ZodType<TokenCountingConfig>;
+
+const cronConfigResponseSchema = z.object({
+  debug: z.boolean(),
+  noJitter: z.boolean(),
+  noStale: z.boolean(),
+  disabled: z.boolean(),
+  manualTick: z.boolean(),
+  clock: z.string().optional(),
+  pollIntervalMs: z.number().int().min(0).nullable().optional(),
+});
+
+const workspaceInstanceConfigRequestSchema = z
+  .object({
+    idle_ttl_ms: WorkspaceInstanceConfigSchema.shape.idleTtlMs,
+  })
+  .strict();
+
+const imageConfigRequestSchema = z.object({
+  max_edge_px: ImageConfigSchema.shape.maxEdgePx,
+  read_byte_budget: ImageConfigSchema.shape.readByteBudget,
+});
+
+const taskConfigRequestSchema = z.object({
+  max_running_tasks: AgentTaskConfigSchema.shape.maxRunningTasks,
+  keep_alive_on_exit: AgentTaskConfigSchema.shape.keepAliveOnExit,
+  bash_auto_background_on_timeout: AgentTaskConfigSchema.shape.bashAutoBackgroundOnTimeout,
+  bash_task_timeout_s: AgentTaskConfigSchema.shape.bashTaskTimeoutS,
+  kill_grace_period_ms: AgentTaskConfigSchema.shape.killGracePeriodMs,
+  print_wait_ceiling_s: AgentTaskConfigSchema.shape.printWaitCeilingS,
+  print_background_mode: AgentTaskConfigSchema.shape.printBackgroundMode,
+  print_max_turns: AgentTaskConfigSchema.shape.printMaxTurns,
+});
+
+const mcpConfigRequestSchema = z.object({
+  startup_timeout_ms: McpSectionSchema.shape.startupTimeoutMs,
+  tool_timeout_ms: McpSectionSchema.shape.toolTimeoutMs,
+});
+
+const replaceableConfigDomainSchema = z.enum([
+  'secondary_model',
+  'experimental',
+  'thread_communication',
+  'token_counting',
+  'workspace_instance',
+  'image',
+  'task',
+  'identity',
+  'extra_agent_dirs',
+  'disabled_builtin_profiles',
+  'mcp',
+  'tools',
+]);
 
 export const providerConfigResponseSchema = z.object({
   type: z.string(),
@@ -67,6 +136,17 @@ export const configResponseSchema = z.object({
   model_catalog: modelCatalogConfigResponseSchema.optional(),
   secondary_model: secondaryModelConfigResponseSchema.optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
+  cron: cronConfigResponseSchema.optional(),
+  thread_communication: ThreadCommunicationConfigSchema.optional(),
+  token_counting: tokenCountingConfigSchema.optional(),
+  workspace_instance: WorkspaceInstanceConfigSchema.optional(),
+  image: ImageConfigSchema.optional(),
+  task: AgentTaskConfigSchema.optional(),
+  identity: IdentityConfigSchema.optional(),
+  extra_agent_dirs: ExtraAgentDirsConfigSchema,
+  disabled_builtin_profiles: DisabledBuiltinProfilesConfigSchema,
+  mcp: McpSectionSchema.optional(),
+  tools: ToolsConfigSchema.optional(),
   telemetry: z.boolean().optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
 });
@@ -123,7 +203,17 @@ export const patchConfigRequestSchema = z.object({
     off_effort: z.string().optional(),
   }).passthrough().optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
-  replace_domains: z.array(z.enum(['secondary_model', 'experimental'])).optional(),
+  thread_communication: ThreadCommunicationConfigSchema.optional(),
+  token_counting: tokenCountingConfigSchema.optional(),
+  workspace_instance: workspaceInstanceConfigRequestSchema.optional(),
+  image: imageConfigRequestSchema.optional(),
+  task: taskConfigRequestSchema.optional(),
+  identity: IdentityConfigSchema.optional(),
+  extra_agent_dirs: ExtraAgentDirsConfigSchema,
+  disabled_builtin_profiles: DisabledBuiltinProfilesConfigSchema,
+  mcp: mcpConfigRequestSchema.optional(),
+  tools: ToolsConfigSchema.optional(),
+  replace_domains: z.array(replaceableConfigDomainSchema).optional(),
   telemetry: z.boolean().optional(),
-});
+}).strict();
 export type PatchConfigRequest = z.infer<typeof patchConfigRequestSchema>;

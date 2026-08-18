@@ -108,6 +108,10 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         delete camelPatch['yolo'];
         for (const domain of Object.keys(camelPatch)) {
           if (replaceDomains.has(domain)) {
+            // Config's TOML projection preserves omitted object keys for forward-compatible
+            // round-trips. Clear the section first so an explicit edge-level replacement
+            // also deletes keys removed by list/form editors.
+            await config.replace(domain, null);
             await config.replace(domain, camelPatch[domain]);
           } else {
             await config.set(domain, camelPatch[domain]);

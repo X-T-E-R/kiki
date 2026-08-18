@@ -169,19 +169,22 @@ export function RuntimeConfigEditor() {
           <Hint>{t('st.runtime.hint')}</Hint>
           <fieldset disabled={saving} className="space-y-4 disabled:opacity-60">
             <Group title={t('st.runtime.cron')} hint={t('st.runtime.cronHint')}>
-              <div className="grid gap-2 sm:grid-cols-2">
-                <Toggle label={t('st.runtime.cronDebug')} checked={draft.cron.debug} onChange={(debug) => { updateCron({ debug }); }} />
-                <Toggle label={t('st.runtime.cronNoJitter')} checked={draft.cron.noJitter} onChange={(noJitter) => { updateCron({ noJitter }); }} />
-                <Toggle label={t('st.runtime.cronNoStale')} checked={draft.cron.noStale} onChange={(noStale) => { updateCron({ noStale }); }} />
-                <Toggle label={t('st.runtime.cronDisabled')} checked={draft.cron.disabled} onChange={(disabled) => { updateCron({ disabled }); }} />
-                <Toggle label={t('st.runtime.cronManualTick')} checked={draft.cron.manualTick} onChange={(manualTick) => { updateCron({ manualTick }); }} />
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="text-[11px] font-medium text-ink-soft">{t('st.runtime.cronClock')}
-                  <input className={`${INPUT} mt-1 font-mono`} value={draft.cron.clock} onChange={(event) => { updateCron({ clock: event.target.value }); }} />
-                </label>
-                <NumberField label={t('st.runtime.cronPoll')} value={draft.cron.pollIntervalMs} placeholder={t('st.runtime.cronPollPlaceholder')} onChange={(pollIntervalMs) => { updateCron({ pollIntervalMs }); }} />
-              </div>
+              {/* cron is env-driven (KIMI_CRON_*) and never persisted — read-only display. */}
+              <fieldset disabled className="space-y-3 opacity-60">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Toggle label={t('st.runtime.cronDebug')} checked={draft.cron.debug} onChange={(debug) => { updateCron({ debug }); }} />
+                  <Toggle label={t('st.runtime.cronNoJitter')} checked={draft.cron.noJitter} onChange={(noJitter) => { updateCron({ noJitter }); }} />
+                  <Toggle label={t('st.runtime.cronNoStale')} checked={draft.cron.noStale} onChange={(noStale) => { updateCron({ noStale }); }} />
+                  <Toggle label={t('st.runtime.cronDisabled')} checked={draft.cron.disabled} onChange={(disabled) => { updateCron({ disabled }); }} />
+                  <Toggle label={t('st.runtime.cronManualTick')} checked={draft.cron.manualTick} onChange={(manualTick) => { updateCron({ manualTick }); }} />
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="text-[11px] font-medium text-ink-soft">{t('st.runtime.cronClock')}
+                    <input className={`${INPUT} mt-1 font-mono`} value={draft.cron.clock} onChange={(event) => { updateCron({ clock: event.target.value }); }} />
+                  </label>
+                  <NumberField label={t('st.runtime.cronPoll')} value={draft.cron.pollIntervalMs} placeholder={t('st.runtime.cronPollPlaceholder')} onChange={(pollIntervalMs) => { updateCron({ pollIntervalMs }); }} />
+                </div>
+              </fieldset>
             </Group>
 
             <Group title={t('st.runtime.communication')}>

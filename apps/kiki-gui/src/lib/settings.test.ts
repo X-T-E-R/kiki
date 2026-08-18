@@ -214,13 +214,8 @@ describe('settings persistence and validation', () => {
     draft.disabledBuiltinProfiles = [];
 
     const patch = runtimeConfigPatch(draft);
-    expect(patch.cron).toEqual(expect.objectContaining({
-      debug: true,
-      no_jitter: true,
-      manual_tick: true,
-      clock: 'utc',
-      poll_interval_ms: null,
-    }));
+    // cron is env-driven and never persisted — absent from both the patch and replace_domains.
+    expect(patch.cron).toBeUndefined();
     expect(patch.workspace_instance).toEqual({ idle_ttl_ms: 120_000 });
     expect(patch.image).toEqual({ max_edge_px: 2048, read_byte_budget: 4_000_000 });
     expect(patch.task).toEqual(expect.objectContaining({ max_running_tasks: 4, keep_alive_on_exit: true, print_background_mode: 'drain' }));
@@ -228,9 +223,10 @@ describe('settings persistence and validation', () => {
     expect(patch.disabled_builtin_profiles).toEqual([]);
     expect(patch.tools).toEqual({ enabled: ['Read'], disabled: ['Bash'] });
     expect(patch.replace_domains).toEqual(expect.arrayContaining([
-      'cron', 'thread_communication', 'token_counting', 'workspace_instance', 'image', 'task',
+      'thread_communication', 'token_counting', 'workspace_instance', 'image', 'task',
       'identity', 'extra_agent_dirs', 'disabled_builtin_profiles', 'mcp', 'tools',
     ]));
+    expect(patch.replace_domains).not.toContain('cron');
   });
 
   it('rejects invalid runtime integers before config writes', () => {
@@ -452,7 +448,7 @@ describe('settings search index', () => {
     expect(searchSettings(index, 'Models').some((hit) => hit.section === 'models')).toBe(true);
     expect(searchSettings(index, 'experimental feature').some((hit) => hit.cardId === 'st-card-experimental')).toBe(true);
     expect(searchSettings(index, 'hard allowlist').some((hit) => hit.cardId === 'st-card-subagents')).toBe(true);
-    expect(searchSettings(index, 'route sidecar').some((hit) => hit.cardId === 'st-card-named-agents')).toBe(true);
+    expect(searchSettings(index, 'pinned model alias').some((hit) => hit.cardId === 'st-card-named-agents')).toBe(true);
     expect(searchSettings(index, 'subagent')[0]?.section).toBe('agents');
     expect(searchSettings(index, '  ')).toEqual([]);
     expect(searchSettings(index, 'zzzz-no-such-setting')).toEqual([]);

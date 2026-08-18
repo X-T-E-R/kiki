@@ -650,21 +650,10 @@ function normalizeStringList(values: readonly string[]): string[] {
 }
 
 export function runtimeConfigPatch(draft: RuntimeConfigDraft): KikiConfigPatch {
-  const cronPoll = draft.cron.pollIntervalMs.trim();
-  const pollIntervalMs = cronPoll === 'null'
-    ? null
-    : parseOptionalInteger(cronPoll, 'cron.poll_interval_ms', 0);
+  // cron is env-driven (KIMI_CRON_*) and intentionally never persisted — the
+  // editor shows it read-only, so the patch neither sends nor replaces it.
   const mcpMax = 2_147_483_647;
   return {
-    cron: {
-      debug: draft.cron.debug,
-      no_jitter: draft.cron.noJitter,
-      no_stale: draft.cron.noStale,
-      disabled: draft.cron.disabled,
-      manual_tick: draft.cron.manualTick,
-      clock: draft.cron.clock.trim() || undefined,
-      poll_interval_ms: pollIntervalMs,
-    },
     thread_communication: { enabled: draft.threadCommunicationEnabled },
     token_counting: { strategy: draft.tokenCountingStrategy },
     workspace_instance: {
@@ -699,7 +688,6 @@ export function runtimeConfigPatch(draft: RuntimeConfigDraft): KikiConfigPatch {
       disabled: normalizeStringList(draft.toolsDisabled),
     },
     replace_domains: [
-      'cron',
       'thread_communication',
       'token_counting',
       'workspace_instance',

@@ -140,6 +140,217 @@ describe('server-v2 /api/v1/config', () => {
     expect(persisted).toContain('refresh_interval_ms = 300000');
   });
 
+  it('round-trips every persistable GUI runtime domain through config.toml', async () => {
+    await boot();
+
+    await patchConfig({
+      thread_communication: { enabled: true },
+      token_counting: { strategy: 'measured' },
+      workspace_instance: { idle_ttl_ms: 12_345 },
+      image: { max_edge_px: 1_024, read_byte_budget: 2_000_000 },
+      task: {
+        max_running_tasks: 3,
+        keep_alive_on_exit: true,
+        bash_auto_background_on_timeout: true,
+        bash_task_timeout_s: 45,
+        kill_grace_period_ms: 2_500,
+        print_wait_ceiling_s: 30,
+        print_background_mode: 'drain',
+        print_max_turns: 12,
+      },
+      identity: { name: 'Example Agent', slug: 'example-agent' },
+      extra_agent_dirs: ['/tmp/example-agents', '/tmp/team-agents'],
+      disabled_builtin_profiles: ['researcher', 'reviewer'],
+      mcp: { startup_timeout_ms: 5_000, tool_timeout_ms: 6_000 },
+      tools: { enabled: ['Read', 'Write'], disabled: ['Bash'] },
+      replace_domains: [
+        'thread_communication',
+        'token_counting',
+        'workspace_instance',
+        'image',
+        'task',
+        'identity',
+        'extra_agent_dirs',
+        'disabled_builtin_profiles',
+        'mcp',
+        'tools',
+      ],
+    });
+
+    await server?.close();
+    server = undefined;
+    await boot();
+
+    const after = await getConfig();
+    expect(after.thread_communication).toEqual({ enabled: true });
+    expect(after.token_counting).toEqual({ strategy: 'measured' });
+    expect(after.workspace_instance).toEqual({ idleTtlMs: 12_345 });
+    expect(after.image).toEqual({ maxEdgePx: 1_024, readByteBudget: 2_000_000 });
+    expect(after.task).toEqual({
+      maxRunningTasks: 3,
+      keepAliveOnExit: true,
+      bashAutoBackgroundOnTimeout: true,
+      bashTaskTimeoutS: 45,
+      killGracePeriodMs: 2_500,
+      printWaitCeilingS: 30,
+      printBackgroundMode: 'drain',
+      printMaxTurns: 12,
+    });
+    expect(after.identity).toEqual({ name: 'Example Agent', slug: 'example-agent' });
+    expect(after.extra_agent_dirs).toEqual(['/tmp/example-agents', '/tmp/team-agents']);
+    expect(after.disabled_builtin_profiles).toEqual(['researcher', 'reviewer']);
+    expect(after.mcp).toEqual({ startupTimeoutMs: 5_000, toolTimeoutMs: 6_000 });
+    expect(after.tools).toEqual({ enabled: ['Read', 'Write'], disabled: ['Bash'] });
+
+    const persisted = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(persisted).toContain('[thread_communication]');
+    expect(persisted).toContain('idle_ttl_ms = 12345');
+    expect(persisted).toContain('read_byte_budget = 2000000');
+    expect(persisted).toContain('print_background_mode = "drain"');
+    expect(persisted).toContain('startup_timeout_ms = 5000');
+  });
+
+  it('replace_domains removes omitted runtime fields and clears list domains', async () => {
+    await boot([
+      'extra_agent_dirs = ["/tmp/example-agents", "/tmp/old-agents"]',
+      'disabled_builtin_profiles = ["researcher", "reviewer"]',
+      '',
+      '[thread_communication]',
+      'enabled = true',
+      '',
+      '[token_counting]',
+      'strategy = "measured"',
+      '',
+      '[workspace_instance]',
+      'idle_ttl_ms = 12345',
+      '',
+      '[image]',
+      'max_edge_px = 1024',
+      'read_byte_budget = 2000000',
+      '',
+      '[task]',
+      'max_running_tasks = 3',
+      'keep_alive_on_exit = true',
+      'print_background_mode = "drain"',
+      'print_max_turns = 12',
+      '',
+      '[identity]',
+      'name = "Old Agent"',
+      'slug = "old-agent"',
+      '',
+      '[mcp]',
+      'startup_timeout_ms = 5000',
+      'tool_timeout_ms = 6000',
+      '',
+      '[tools]',
+      'enabled = ["Read", "Write"]',
+      'disabled = ["Bash"]',
+      '',
+    ].join('\n'));
+
+    const after = await patchConfig({
+      thread_communication: { enabled: false },
+      token_counting: { strategy: 'estimated' },
+      workspace_instance: {},
+      image: { max_edge_px: 2_048 },
+      task: { keep_alive_on_exit: false, print_background_mode: 'exit' },
+      identity: { name: 'Example Agent' },
+      extra_agent_dirs: ['/tmp/example-agents'],
+      disabled_builtin_profiles: [],
+      mcp: { tool_timeout_ms: 7_000 },
+      tools: { enabled: ['Write'] },
+      replace_domains: [
+        'thread_communication',
+        'token_counting',
+        'workspace_instance',
+        'image',
+        'task',
+        'identity',
+        'extra_agent_dirs',
+        'disabled_builtin_profiles',
+        'mcp',
+        'tools',
+      ],
+    });
+
+    expect(after.thread_communication).toEqual({ enabled: false });
+    expect(after.token_counting).toEqual({ strategy: 'estimated' });
+    expect(after.workspace_instance).toEqual({});
+    expect(after.image).toEqual({ maxEdgePx: 2_048 });
+    expect(after.task).toEqual({ keepAliveOnExit: false, printBackgroundMode: 'exit' });
+    expect(after.identity).toEqual({ name: 'Example Agent' });
+    expect(after.extra_agent_dirs).toEqual(['/tmp/example-agents']);
+    expect(after.disabled_builtin_profiles).toEqual([]);
+    expect(after.mcp).toEqual({ toolTimeoutMs: 7_000 });
+    expect(after.tools).toEqual({ enabled: ['Write'] });
+
+    const persisted = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(persisted).not.toContain('read_byte_budget');
+    expect(persisted).not.toContain('max_running_tasks');
+    expect(persisted).not.toContain('print_max_turns');
+    expect(persisted).not.toContain('slug =');
+    expect(persisted).not.toContain('startup_timeout_ms');
+    expect(persisted).not.toContain('disabled = ["Bash"]');
+    expect(persisted).not.toContain('/tmp/old-agents');
+    expect(persisted).not.toContain('"researcher"');
+  });
+
+  it('validates every runtime domain with the core schemas and rejects unknown top-level fields', async () => {
+    await boot();
+
+    const invalidPatches: Record<string, unknown>[] = [
+      { thread_communication: { enabled: 'yes' } },
+      { token_counting: { strategy: 'approximate' } },
+      { workspace_instance: { idle_ttl_ms: -1 } },
+      { image: { max_edge_px: 0 } },
+      { task: { max_running_tasks: 0 } },
+      { identity: { name: 42 } },
+      { extra_agent_dirs: [42] },
+      { disabled_builtin_profiles: [42] },
+      { mcp: { startup_timeout_ms: 0 } },
+      { tools: { enabled: [42] } },
+      { unknown_runtime_domain: { enabled: true } },
+    ];
+
+    for (const patch of invalidPatches) {
+      const res = await authedFetch(server as RunningServer, base, '/api/v1/config', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Envelope<null>;
+      expect(body.code).toBe(ErrorCode.VALIDATION_FAILED);
+    }
+  });
+
+  it('keeps cron operational settings non-writable through POST /config', async () => {
+    await boot();
+
+    for (const patch of [
+      { cron: { disabled: true } },
+      { replace_domains: ['cron'] },
+    ]) {
+      const res = await authedFetch(server as RunningServer, base, '/api/v1/config', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Envelope<null>;
+      expect(body.code).toBe(ErrorCode.VALIDATION_FAILED);
+    }
+
+    const after = await getConfig();
+    expect(after.cron).toEqual({
+      debug: false,
+      noJitter: false,
+      noStale: false,
+      disabled: false,
+      manualTick: false,
+    });
+  });
+
   it('serializes concurrent config patches so disjoint fields do not overwrite each other', async () => {
     await boot('[agents]\nenabled = true\n');
 
