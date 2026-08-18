@@ -62,6 +62,27 @@ describe('ContextMeter interaction', () => {
     await act(async () => { root.unmount(); });
   });
 
+  it('can open details below when embedded in a top header', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <ContextMeter used={8_000} limit={32_000} placement="below" />
+        </I18nProvider>,
+      );
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click();
+    });
+
+    expect(container.querySelector('[data-context-details]')?.className).toContain('top-full');
+    await act(async () => { root.unmount(); });
+  });
+
   it('renders the estimated system/tools/messages breakdown from context', async () => {
     const container = document.createElement('div');
     document.body.append(container);

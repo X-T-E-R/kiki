@@ -1050,7 +1050,12 @@ describe('server-v2 /api/v1/sessions/{sid}/transcript', () => {
     const sub = await session!.accessor.get(IAgentLifecycleService).create({ agentId: 'sub-1' });
     sub.accessor
       .get(IAgentContextMemoryService)
-      .append({ role: 'user', content: [{ type: 'text', text: 'scan the repo' }], toolCalls: [] } as ContextMessage);
+      .append({
+        role: 'user',
+        content: [{ type: 'text', text: 'scan the repo' }],
+        toolCalls: [],
+        origin: { kind: 'system_trigger', name: 'subagent' },
+      } as ContextMessage);
     await sub.accessor.get(IWireService).flush();
 
     // Reboot on the same home — the session drops out of memory (cold path).

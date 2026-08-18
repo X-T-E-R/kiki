@@ -603,7 +603,9 @@ export class TranscriptService {
       throw error;
     }
     const messages = [...reduceContextTranscript(records).entries];
-    const base = groupMessagesIntoSnapshot(messages);
+    const base = groupMessagesIntoSnapshot(messages, {
+      showSubagentPrompts: agentId !== MAIN_AGENT_ID,
+    });
     // Second fold: tasks / interactions / todos / meta (goal, plan, swarm)
     // come from the non-`context.*` records in the same journal.
     return foldWireRecordFacts(records, base);

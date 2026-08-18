@@ -570,17 +570,17 @@ describe('groupMessagesIntoSnapshot (cold path)', () => {
         origin: { kind: 'system_trigger', name: 'subagent' } as { kind: string },
       },
       { role: 'assistant', content: [{ type: 'text', text: 'scanning' }], toolCalls: [] },
-    ]);
+    ], { showSubagentPrompts: true });
 
     // A subagent's run prompt launches its own engine turn — the response
-    // must not fold into the previous turn. The run prompt itself is internal
-    // steering text: the boundary lands promptless.
+    // must not fold into the previous turn. In the child conversation the
+    // prompt is the parent agent's visible message.
     expect(snapshot.items.map((item) => item.kind)).toEqual(['turn', 'turn']);
     const subTurn = snapshot.items[1];
     if (subTurn?.kind !== 'turn') throw new Error('expected turn');
     expect(subTurn.ordinal).toBe(1);
     expect(subTurn.origin.kind).toBe('other');
-    expect(subTurn.prompt).toBeUndefined();
+    expect(subTurn.prompt).toBe('scan the repo');
     expect(subTurn.steps).toHaveLength(1);
   });
 

@@ -104,8 +104,13 @@ const MARKER_USER_ORIGINS: Readonly<Record<string, string>> = {
 
 const FALLBACK_ORIGIN: TurnOrigin = { kind: 'other' };
 
+export interface GroupMessagesOptions {
+  readonly showSubagentPrompts?: boolean;
+}
+
 export function groupMessagesIntoSnapshot(
   messages: readonly HistoryMessage[],
+  options: GroupMessagesOptions = {},
 ): AgentTranscriptSnapshot {
   const items: TranscriptItem[] = [];
   const attachments: TranscriptAttachment[] = [];
@@ -182,9 +187,14 @@ export function groupMessagesIntoSnapshot(
       if (originKind !== undefined && HIDDEN_USER_ORIGINS.has(originKind)) {
         if (opensOwnTurn(message)) {
           // A real turn boundary: advance the grouping (and the ordinal).
-          // The steering text is internal — the boundary lands promptless,
-          // mirroring the live path's displayable-origin gate.
-          startTurn(mapOrigin(message));
+          // Subagent run prompts are parent-agent messages in the child
+          // conversation; other system triggers remain promptless.
+          startTurn(
+            mapOrigin(message),
+            options.showSubagentPrompts === true && isSubagentTurnPrompt(message)
+              ? textOf(message)
+              : undefined,
+          );
         }
         continue;
       }
@@ -294,6 +304,11 @@ function opensOwnTurn(message: HistoryMessage): boolean {
     typeof origin.name === 'string' &&
     TURN_OPENING_SYSTEM_TRIGGERS.has(origin.name)
   );
+}
+
+function isSubagentTurnPrompt(message: HistoryMessage): boolean {
+  const origin = message.origin as { kind?: unknown; name?: unknown } | undefined;
+  return origin?.kind === 'system_trigger' && origin.name === 'subagent';
 }
 
 /**

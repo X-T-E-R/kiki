@@ -38,11 +38,13 @@ export function ContextMeter({
   used,
   limit,
   onCompact,
+  placement = 'above',
 }: {
   used: number;
   limit: number;
   /** Requests a compaction (the session view's /compact action). */
   onCompact?: () => void;
+  placement?: 'above' | 'below';
 }) {
   const { t, time } = useI18n();
   const breakdown = useContext(ContextBreakdownContext);
@@ -87,7 +89,9 @@ export function ContextMeter({
           data-context-details
           role="dialog"
           aria-label={t('context.detailsTitle')}
-          className="anim-enter absolute right-0 bottom-full z-30 mb-2 w-64 rounded-xl border border-hairline bg-panel p-3 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
+          className={`anim-enter absolute right-0 z-30 w-64 rounded-xl border border-hairline bg-panel p-3 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)] ${
+            placement === 'below' ? 'top-full mt-2' : 'bottom-full mb-2'
+          }`}
         >
           <div className="flex items-baseline justify-between gap-3">
             <p className="text-[11px] font-semibold text-ink">{t('context.detailsTitle')}</p>

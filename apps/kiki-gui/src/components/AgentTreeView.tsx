@@ -123,6 +123,9 @@ const AgentTreeRow = memo(function AgentTreeRow({
                 <span className="block truncate text-[10px] text-ink-faint">
                   {t(STATUS_I18N[node.status])}
                   {node.model !== undefined ? ` · ${node.model}` : ''}
+                  {node.thinkingEffort !== undefined
+                    ? ` · ${t('subagent.effort', { effort: node.thinkingEffort })}`
+                    : ''}
                   {` · ${t('subagent.tools', { count: node.toolCallCount })}`}
                   {children.length > 0 ? ` · ${tp('subagent.children', children.length)}` : ''}
                 </span>

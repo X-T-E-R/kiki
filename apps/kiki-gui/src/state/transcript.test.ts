@@ -4,7 +4,9 @@ import type { Message, Session, SessionSnapshotResponse } from '@moonshot-ai/pro
 
 import type { SessionEventFrame } from '../lib/types';
 import {
+  agentTranscriptPageFromResponse,
   agentTranscriptToBlocks,
+  applyAgentFrame,
   applyDelta,
   applyFrame,
   applySnapshot,
@@ -472,7 +474,7 @@ describe('agentTranscriptToBlocks', () => {
     expect(blocks.map((block) => block.kind)).toEqual(['user']);
   });
 
-  it('does not inherit a task/system-trigger turn origin onto later user frames', () => {
+  it('renders initial and follow-up parent messages as ordered You bubbles in a child transcript', () => {
     const blocks = agentTranscriptToBlocks({
       agent_id: 'child-1',
       has_more: false,
@@ -480,23 +482,34 @@ describe('agentTranscriptToBlocks', () => {
         {
           kind: 'turn',
           turnId: 'turn-1',
-          prompt: 'Continue the child task.',
+          prompt: 'Inspect the renderer.',
           origin: { kind: 'system_trigger', name: 'subagent' },
           steps: [
             {
               stepId: 'step-1',
-              frames: [
-                { kind: 'text', frameId: 'steer-1', role: 'user', text: 'inject now' },
-                { kind: 'text', frameId: 'asst-1', role: 'assistant', text: 'ok' },
-              ],
+              frames: [{ kind: 'text', frameId: 'asst-1', role: 'assistant', text: 'Initial report.' }],
+            },
+          ],
+        } as never,
+        {
+          kind: 'turn',
+          turnId: 'turn-2',
+          prompt: 'Also verify the tests.',
+          origin: { kind: 'system_trigger', name: 'subagent' },
+          steps: [
+            {
+              stepId: 'step-2',
+              frames: [{ kind: 'text', frameId: 'asst-2', role: 'assistant', text: 'Tests verified.' }],
             },
           ],
         } as never,
       ],
     });
-    expect(blocks.map((block) => block.kind)).toEqual(['system', 'user', 'assistant']);
-    expect((blocks[0] as SystemBlock).text).toBe('Continue the child task.');
-    expect((blocks[1] as UserBlock).text).toBe('inject now');
+    expect(blocks.map((block) => block.kind)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    expect(blocks.filter((block): block is UserBlock => block.kind === 'user').map((block) => block.text)).toEqual([
+      'Inspect the renderer.',
+      'Also verify the tests.',
+    ]);
   });
 
   it('renders hook/compaction markers without payload as localized notices, not undo copy', () => {
@@ -1485,6 +1498,17 @@ describe('classifyTranscriptText', () => {
     expect(classified.systemVariant).toBe('system_trigger');
   });
 
+  it('renders a subagent system trigger as You only in child-agent context', () => {
+    const input = {
+      text: 'inspect the renderer',
+      role: 'user',
+      origin: { kind: 'system_trigger', name: 'subagent' },
+    } as const;
+
+    expect(classifyTranscriptText(input).lane).toBe('system');
+    expect(classifyTranscriptText({ ...input, subagentPromptAsUser: true }).lane).toBe('you');
+  });
+
   it('keeps user-slash skill activations on the skill lane', () => {
     const classified = classifyTranscriptText({
       text: 'SKILL.md body',
@@ -1674,6 +1698,25 @@ describe('turn.started classification', () => {
     ).state;
     expect(state.blocks.filter((block) => block.kind === 'user')).toHaveLength(0);
     expect(state.blocks.filter((block) => block.kind === 'system')).toHaveLength(1);
+  });
+
+  it('mints a You bubble for the same system trigger in child-agent state', () => {
+    const state = applyAgentFrame(
+      createViewState('session_test'),
+      frame(
+        {
+          type: 'turn.started',
+          turnId: 4,
+          origin: { kind: 'system_trigger', name: 'subagent' },
+          prompt: 'Continue the child task.',
+        },
+        { seq: 11 },
+      ),
+    ).state;
+
+    expect(state.blocks).toMatchObject([
+      { kind: 'user', text: 'Continue the child task.', turnId: '4' },
+    ]);
   });
 });
 
@@ -1973,6 +2016,48 @@ describe('agent tree projections', () => {
     expect((blocks[0] as ApprovalBlock).originAgentId).toBeUndefined();
   });
 
+  it('passes agent status metadata into the detail transcript page', () => {
+    const page = agentTranscriptPageFromResponse(
+      {
+        agent_id: 'agent-1',
+        has_more: false,
+        items: [],
+        meta: {
+          agent: {
+            model: 'provider/child-model',
+            thinkingEffort: 'medium',
+            contextTokens: 8_000,
+            maxContextTokens: 32_000,
+            usage: {
+              total: {
+                inputOther: 50,
+                output: 20,
+                inputCacheRead: 5,
+                inputCacheCreation: 2,
+              },
+            },
+          },
+        },
+      },
+      [],
+    );
+
+    expect(page).toMatchObject({
+      model: 'provider/child-model',
+      thinkingEffort: 'medium',
+      contextTokens: 8_000,
+      maxContextTokens: 32_000,
+      usage: {
+        total: {
+          inputOther: 50,
+          output: 20,
+          inputCacheRead: 5,
+          inputCacheCreation: 2,
+        },
+      },
+    });
+  });
+
   it('builds one forest from live cards plus the transcript roster', () => {
     let state = applySnapshot('session_test', snapshot());
     state = applyFrame(
@@ -1990,9 +2075,26 @@ describe('agent tree projections', () => {
       ),
     ).state;
     const forest = sessionAgentForestFromTranscript(state, {
-      agent_id: 'main',
+      agent_id: 'agent-1',
       has_more: false,
       items: [],
+      meta: {
+        agent: {
+          model: 'provider/child-model',
+          thinkingEffort: 'high',
+          contextTokens: 12_000,
+          maxContextTokens: 64_000,
+          usage: {
+            total: {
+              inputOther: 100,
+              output: 40,
+              inputCacheRead: 20,
+              inputCacheCreation: 10,
+            },
+          },
+          phase: { kind: 'running' },
+        },
+      },
       agents: [
         { agentId: 'main', type: 'main' },
         { agentId: 'agent-1', type: 'sub', parentAgentId: 'main', label: 'Child' },
@@ -2000,7 +2102,22 @@ describe('agent tree projections', () => {
       ],
     });
     expect(forest.byId['main']!.childIds).toEqual(['agent-1']);
-    expect(forest.byId['agent-1']!.childIds).toEqual(['agent-2']);
+    expect(forest.byId['agent-1']).toMatchObject({
+      childIds: ['agent-2'],
+      model: 'provider/child-model',
+      thinkingEffort: 'high',
+      contextTokens: 12_000,
+      maxContextTokens: 64_000,
+      busy: true,
+      usage: {
+        total: {
+          inputOther: 100,
+          output: 40,
+          inputCacheRead: 20,
+          inputCacheCreation: 10,
+        },
+      },
+    });
     const visible = filterBlocksToDirectChildren(
       [
         ...state.blocks,

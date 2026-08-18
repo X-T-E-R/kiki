@@ -796,7 +796,15 @@ describe('agent tree chrome', () => {
     [],
     [
       { agentId: 'main', name: 'Main' },
-      { agentId: 'agent-1', parentAgentId: 'main', name: 'Child', status: 'running', toolCallCount: 2 },
+      {
+        agentId: 'agent-1',
+        parentAgentId: 'main',
+        name: 'Child',
+        model: 'provider/child-model',
+        thinkingEffort: 'high',
+        status: 'running',
+        toolCallCount: 2,
+      },
       { agentId: 'agent-2', parentAgentId: 'agent-1', name: 'Grandchild', status: 'completed', toolCallCount: 1 },
     ],
   );
@@ -873,6 +881,8 @@ describe('agent tree chrome', () => {
     expect(html).toContain('data-agent-depth="1"');
     expect(html).toContain('Child');
     expect(html).toContain('Grandchild');
+    expect(html).toContain('provider/child-model');
+    expect(html).toContain('effort high');
     expect(html).toContain('2 tools');
   });
 

@@ -532,6 +532,34 @@ describe('mergeAgentTranscript', () => {
     expect(merged.seq).toBe(4);
   });
 
+  it('passes server agent metadata through and lets live slices override it', () => {
+    const usage = {
+      total: { inputOther: 10, output: 4, inputCacheRead: 2, inputCacheCreation: 1 },
+    };
+    const merged = mergeAgentTranscript(
+      page([], {
+        model: 'server-model',
+        thinkingEffort: 'medium',
+        contextTokens: 1_000,
+        maxContextTokens: 8_000,
+        usage,
+      }),
+      {
+        blocks: [],
+        thinkingEffort: 'high',
+        contextTokens: 1_500,
+      },
+    );
+
+    expect(merged).toMatchObject({
+      model: 'server-model',
+      thinkingEffort: 'high',
+      contextTokens: 1_500,
+      maxContextTokens: 8_000,
+      usage,
+    });
+  });
+
   it('keeps server-only and live-only blocks', () => {
     const merged = mergeAgentTranscript(
       page([block({ id: 'server-only', kind: 'user', turnId: 'turn-1' })]),

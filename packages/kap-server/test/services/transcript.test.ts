@@ -147,6 +147,30 @@ describe('AgentTranscriptProjector', () => {
     expect(turn.state).toBe('completed');
   });
 
+  it('projects a parent-agent message on a subagent turn', () => {
+    const projector = new AgentTranscriptProjector('agent-1');
+    const tx = new AgentTranscript('agent-1');
+
+    tx.apply(
+      projector.map(
+        ev({
+          type: 'turn.started',
+          turnId: 0,
+          origin: { kind: 'system_trigger', name: 'subagent' },
+          prompt: 'inspect the renderer',
+        }),
+      ),
+    );
+
+    expect(turnOps('t0', tx.getItems())).toMatchObject({
+      prompt: 'inspect the renderer',
+      origin: {
+        kind: 'other',
+        payload: { kind: 'system_trigger', name: 'subagent' },
+      },
+    });
+  });
+
   it('places late-attach deltas into the engine-reported active step', () => {
     const tx = new AgentTranscript('main');
     // The projector missed turn.started AND turn.step.started for step 2 —

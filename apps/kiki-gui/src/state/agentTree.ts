@@ -18,6 +18,19 @@ export type AgentStatus =
   | 'cancelled'
   | 'background';
 
+export interface AgentTokenUsage {
+  readonly inputOther: number;
+  readonly output: number;
+  readonly inputCacheRead: number;
+  readonly inputCacheCreation: number;
+}
+
+export interface AgentUsageSummary {
+  readonly byModel?: Readonly<Record<string, AgentTokenUsage>>;
+  readonly currentTurn?: AgentTokenUsage;
+  readonly total?: AgentTokenUsage;
+}
+
 /**
  * Live session-view card. Structurally compatible with `SubagentBlock`
  * (same status union plus optional adapter fields). `parentAgentId` lets a
@@ -31,6 +44,9 @@ export interface AgentLiveSource {
   readonly label?: string;
   readonly model?: string;
   readonly thinkingEffort?: string;
+  readonly contextTokens?: number;
+  readonly maxContextTokens?: number;
+  readonly usage?: AgentUsageSummary;
   readonly status: string;
   readonly summary?: string;
   readonly error?: string;
@@ -51,6 +67,9 @@ export interface AgentRosterDescriptor {
   readonly label?: string;
   readonly model?: string;
   readonly thinkingEffort?: string;
+  readonly contextTokens?: number;
+  readonly maxContextTokens?: number;
+  readonly usage?: AgentUsageSummary;
   readonly status?: string;
   readonly busy?: boolean;
   readonly toolCallCount?: number;
@@ -95,6 +114,9 @@ export interface AgentTreeNode {
   readonly label: string;
   readonly model?: string;
   readonly thinkingEffort?: string;
+  readonly contextTokens?: number;
+  readonly maxContextTokens?: number;
+  readonly usage?: AgentUsageSummary;
   readonly status: AgentStatus;
   readonly busy: boolean;
   readonly toolCallCount: number;
@@ -103,6 +125,14 @@ export interface AgentTreeNode {
   readonly summary?: string;
   readonly error?: string;
   readonly childIds: readonly string[];
+}
+
+interface AgentTranscriptMetaFields {
+  readonly model?: string;
+  readonly thinkingEffort?: string;
+  readonly contextTokens?: number;
+  readonly maxContextTokens?: number;
+  readonly usage?: AgentUsageSummary;
 }
 
 export interface AgentForest {
@@ -120,7 +150,7 @@ export interface AgentTimelineBlock {
   readonly agentRefs?: unknown;
 }
 
-export interface AgentTranscriptPage {
+export interface AgentTranscriptPage extends AgentTranscriptMetaFields {
   readonly blocks: readonly AgentTimelineBlock[];
   readonly hasMore: boolean;
   readonly oldestTurnId?: string;
@@ -129,7 +159,7 @@ export interface AgentTranscriptPage {
   readonly toolCallCount?: number;
 }
 
-export interface AgentLiveTranscript {
+export interface AgentLiveTranscript extends AgentTranscriptMetaFields {
   readonly blocks: readonly AgentTimelineBlock[];
   readonly busy?: boolean;
   readonly toolCallCount?: number;
@@ -143,7 +173,7 @@ export interface AgentTranscriptFallback {
 
 export type AgentLiveTranscriptInput = readonly AgentTimelineBlock[] | AgentLiveTranscript;
 
-export interface MergedAgentTranscript {
+export interface MergedAgentTranscript extends AgentTranscriptMetaFields {
   readonly blocks: readonly AgentTimelineBlock[];
   readonly hasMore: boolean;
   readonly oldestTurnId?: string;
@@ -167,6 +197,9 @@ interface DraftNode {
   label: string | undefined;
   model: string | undefined;
   thinkingEffort: string | undefined;
+  contextTokens: number | undefined;
+  maxContextTokens: number | undefined;
+  usage: AgentUsageSummary | undefined;
   status: AgentStatus | undefined;
   busy: boolean | undefined;
   toolCallCount: number;
@@ -206,6 +239,30 @@ function emptyForest(): AgentForest {
  * material changed, so memoized transcript rows keyed on `forest` identity
  * are not broken by unrelated streaming deltas.
  */
+function tokenUsageEqual(a: AgentTokenUsage | undefined, b: AgentTokenUsage | undefined): boolean {
+  return (
+    a === b ||
+    (a !== undefined &&
+      b !== undefined &&
+      a.inputOther === b.inputOther &&
+      a.output === b.output &&
+      a.inputCacheRead === b.inputCacheRead &&
+      a.inputCacheCreation === b.inputCacheCreation)
+  );
+}
+
+function usageSummaryEqual(a: AgentUsageSummary | undefined, b: AgentUsageSummary | undefined): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  if (!tokenUsageEqual(a.currentTurn, b.currentTurn) || !tokenUsageEqual(a.total, b.total)) return false;
+  const aModels = Object.keys(a.byModel ?? {});
+  const bModels = Object.keys(b.byModel ?? {});
+  return (
+    aModels.length === bModels.length &&
+    aModels.every((model) => tokenUsageEqual(a.byModel?.[model], b.byModel?.[model]))
+  );
+}
+
 export function agentTreeNodesEqual(a: AgentTreeNode, b: AgentTreeNode): boolean {
   if (a === b) return true;
   return (
@@ -216,6 +273,9 @@ export function agentTreeNodesEqual(a: AgentTreeNode, b: AgentTreeNode): boolean
     a.label === b.label &&
     a.model === b.model &&
     a.thinkingEffort === b.thinkingEffort &&
+    a.contextTokens === b.contextTokens &&
+    a.maxContextTokens === b.maxContextTokens &&
+    usageSummaryEqual(a.usage, b.usage) &&
     a.status === b.status &&
     a.busy === b.busy &&
     a.toolCallCount === b.toolCallCount &&
@@ -382,6 +442,9 @@ export function buildAgentForest(
       label: present(draft.label) ? draft.label : name,
       model: draft.model,
       thinkingEffort: draft.thinkingEffort,
+      contextTokens: draft.contextTokens,
+      maxContextTokens: draft.maxContextTokens,
+      usage: draft.usage,
       status,
       busy: busyFromStatus(status, draft.busy),
       toolCallCount: draft.toolCallCount,
@@ -458,6 +521,11 @@ export function mergeAgentTranscript(
     hasMore: serverPage.hasMore,
     oldestTurnId: serverPage.oldestTurnId,
     seq: serverPage.seq,
+    model: live.model ?? serverPage.model,
+    thinkingEffort: live.thinkingEffort ?? serverPage.thinkingEffort,
+    contextTokens: live.contextTokens ?? serverPage.contextTokens,
+    maxContextTokens: live.maxContextTokens ?? serverPage.maxContextTokens,
+    usage: live.usage ?? serverPage.usage,
     busy: resolveBusy(serverPage, live, fallbackCaptured, live.blocks),
     toolCallCount,
   };
@@ -469,12 +537,9 @@ export function prependOlderAgentPage(
 ): AgentTranscriptPage {
   if (older.blocks.length === 0) {
     return {
+      ...current,
       blocks: current.blocks.slice(),
       hasMore: false,
-      oldestTurnId: current.oldestTurnId,
-      seq: current.seq,
-      busy: current.busy,
-      toolCallCount: current.toolCallCount,
     };
   }
 
@@ -487,12 +552,11 @@ export function prependOlderAgentPage(
 
   const cursor = advanceAgentHistoryCursor(current, older);
   return {
+    ...current,
     blocks: [...prepended, ...current.blocks],
     hasMore: cursor.hasMore,
     oldestTurnId: cursor.oldestTurnId,
     seq: cursor.seq,
-    busy: current.busy,
-    toolCallCount: current.toolCallCount,
   };
 }
 
@@ -518,6 +582,11 @@ export function applyNewestAgentPage(
       hasMore: current.page.hasMore,
       oldestTurnId: current.page.oldestTurnId ?? newest.oldestTurnId,
       seq: newest.seq ?? current.page.seq,
+      model: newest.model ?? current.page.model,
+      thinkingEffort: newest.thinkingEffort ?? current.page.thinkingEffort,
+      contextTokens: newest.contextTokens ?? current.page.contextTokens,
+      maxContextTokens: newest.maxContextTokens ?? current.page.maxContextTokens,
+      usage: newest.usage ?? current.page.usage,
       busy: newest.busy,
       toolCallCount: Math.max(
         current.page.toolCallCount ?? 0,
@@ -566,6 +635,9 @@ function ensureDraft(drafts: Map<string, DraftNode>, agentId: string): DraftNode
     label: undefined,
     model: undefined,
     thinkingEffort: undefined,
+    contextTokens: undefined,
+    maxContextTokens: undefined,
+    usage: undefined,
     status: undefined,
     busy: undefined,
     toolCallCount: 0,
@@ -605,6 +677,9 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
   // Roster is the authority over task fallback when it actually has a value.
   draft.model = firstPresent(entry.model) ?? draft.model;
   draft.thinkingEffort = firstPresent(entry.thinkingEffort) ?? draft.thinkingEffort;
+  draft.contextTokens = entry.contextTokens ?? draft.contextTokens;
+  draft.maxContextTokens = entry.maxContextTokens ?? draft.maxContextTokens;
+  draft.usage = entry.usage ?? draft.usage;
   draft.status = normalizeStatus(entry.status) ?? draft.status;
   if (entry.busy !== undefined) draft.busy = entry.busy;
   if (entry.toolCallCount !== undefined) {
@@ -623,6 +698,9 @@ function applyLiveBlock(draft: DraftNode, block: AgentLiveSource): void {
   draft.label = firstPresent(block.label) ?? draft.label;
   draft.model = firstPresent(block.model) ?? draft.model;
   draft.thinkingEffort = firstPresent(block.thinkingEffort) ?? draft.thinkingEffort;
+  draft.contextTokens = block.contextTokens ?? draft.contextTokens;
+  draft.maxContextTokens = block.maxContextTokens ?? draft.maxContextTokens;
+  draft.usage = block.usage ?? draft.usage;
   const status = normalizeStatus(block.status);
   if (status !== undefined) {
     draft.status = status;

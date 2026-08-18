@@ -6,12 +6,13 @@
  * input parts (absent when the turn opened with no text part): consumers
  * that render the user's prompt must take it from there, because the context
  * append carrying the same text is not a bus event and lands later. The
- * prompt rides the event only for displayable user origins
- * ({@link isDisplayablePromptOrigin}) — a system-triggered turn (goal
- * continuation, subagent run, cron…) has internal steering text as its input,
- * which must never surface in transcripts. When the turn's prompt bundles
- * skill activations, their rendered blocks (prepended to the content, one
- * text part per skill) are excluded from the extracted text.
+ * prompt rides the event only for displayable transcript origins
+ * ({@link isDisplayablePromptOrigin}). Ordinary system-triggered turns (goal
+ * continuation, cron…) keep their internal steering text hidden; the
+ * `system_trigger/subagent` origin is the exception because it represents the
+ * parent agent's message in the child agent's own conversation. When the turn's
+ * prompt bundles skill activations, their rendered blocks (prepended to the
+ * content, one text part per skill) are excluded from the extracted text.
  */
 
 import type { KimiErrorPayload } from '#/_base/errors/serialize';
@@ -52,6 +53,7 @@ export function turnPromptText(
 
 export function isDisplayablePromptOrigin(origin: PromptOrigin): boolean {
   if (origin.kind === 'user' || origin.kind === 'peer_thread') return true;
+  if (origin.kind === 'system_trigger' && origin.name === 'subagent') return true;
   return (
     (origin.kind === 'skill_activation' || origin.kind === 'plugin_command') &&
     origin.trigger === 'user-slash'

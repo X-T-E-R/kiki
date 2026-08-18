@@ -12,10 +12,9 @@ import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom'
 import type { PermissionMode, Session } from '@moonshot-ai/protocol';
 
 import { AgentBreadcrumb, AgentRelations } from './AgentBreadcrumb';
-import { SpawnInstructionCard } from './SpawnInstructionCard';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Composer, resolveSelectedEffort } from './Composer';
-import { ContextBreakdownProvider } from './ContextMeter';
+import { ContextBreakdownProvider, ContextMeter } from './ContextMeter';
 import {
   useConversationShell,
   useRegisterSeat,
@@ -853,7 +852,7 @@ export function SessionView({
   const { client, socket, meta, wsStatus } = useConnection();
   const { slots } = useConversationShell();
   const terminalAvailable = terminalCapabilityAvailable(meta.capabilities);
-  const { t, tp, locale } = useI18n();
+  const { t, tp, time, locale } = useI18n();
   const navigate = useNavigate();
   const location = useLocation();
   const agentMatch = useMatch('/s/:id/agent/:agentId');
@@ -1883,6 +1882,11 @@ export function SessionView({
       serverPage,
       {
         blocks: liveBlocks,
+        model: agentLiveState.model,
+        thinkingEffort: agentLiveState.thinkingEffort,
+        contextTokens: agentLiveState.contextTokens,
+        maxContextTokens: agentLiveState.maxContextTokens,
+        usage: agentLiveState.usage,
         busy: liveLoaded ? agentLiveState.busy : undefined,
         toolCallCount: liveLoaded ? countToolBlocks(liveBlocks) : undefined,
       },
@@ -1892,22 +1896,27 @@ export function SessionView({
       },
     );
     const capturedBlocks = merged.blocks as Block[];
-    // The instruction this agent was spawned with: the subagent transcript's
-    // own first-turn prompt when the server recorded it, else the spawn tool
-    // call's input from the main transcript. Its projected prompt block is
-    // filtered out of the conversation below — the card replaces it.
+    // Pre-patch transcripts may lack the initial subagent turn prompt. Keep the
+    // spawn tool input as a conversation-flow fallback, but prefer real turn
+    // prompts so initial and follow-up parent messages preserve turn order.
     const spawnInstruction = resolveSpawnInstruction({
       response: agentTranscriptQuery.data,
       blocks: state.blocks,
       agentId: selectedAgentId,
       parentToolCallId: selectedSubagent?.parentToolCallId,
     });
-    const spawnDuplicateIds = new Set(spawnInstruction?.duplicateBlockIds ?? []);
-    const spawnParent = crumbs.length >= 2 ? crumbs[crumbs.length - 2] : undefined;
-    const spawnFromLabel =
-      spawnParent === undefined || spawnParent.agentId === MAIN_AGENT_ID
-        ? undefined
-        : spawnParent.label;
+    const spawnFallbackBlock: UserBlock | undefined =
+      spawnInstruction?.source === 'spawn-call' &&
+      !capturedBlocks.some(
+        (block) => block.kind === 'user' && block.text.trim() === spawnInstruction.text,
+      )
+        ? {
+            kind: 'user',
+            id: `user-agent-spawn-${selectedAgentId}`,
+            text: spawnInstruction.text,
+            createdAt: selectedNode?.startedAt ?? selectedSubagent?.startedAt ?? '',
+          }
+        : undefined;
     const historyKey =
       agentTranscriptQuery.data !== undefined || historyForAgent !== null
         ? merged.hasMore
@@ -1949,17 +1958,35 @@ export function SessionView({
           ? t(`subagent.status.${selectedSubagent.status}` as I18nKey)
           : t('sv.historyUnavailable');
     const displayName = selectedNode?.label ?? selectedSubagent?.name ?? selectedAgentId;
-    const displayModel = selectedNode?.model ?? selectedSubagent?.model;
+    const displayModel = merged.model ?? selectedNode?.model ?? selectedSubagent?.model;
+    const displayEffort =
+      merged.thinkingEffort ?? selectedNode?.thinkingEffort ?? selectedSubagent?.thinkingEffort;
+    const displayContextTokens = merged.contextTokens ?? selectedNode?.contextTokens;
+    const displayMaxContextTokens = merged.maxContextTokens ?? selectedNode?.maxContextTokens;
+    const displayUsage = merged.usage ?? selectedNode?.usage;
+    const totalUsage = displayUsage?.total;
+    const cumulativeTokens =
+      totalUsage === undefined
+        ? undefined
+        : totalUsage.inputOther +
+          totalUsage.inputCacheRead +
+          totalUsage.inputCacheCreation +
+          totalUsage.output;
     const agentState: SessionViewState = {
       ...state,
       blocks: [
         historyNotice,
-        ...filterBlocksToDirectChildren(capturedBlocks, forest, selectedAgentId).filter(
-          (block) => !spawnDuplicateIds.has(block.id),
-        ),
+        ...(spawnFallbackBlock === undefined ? [] : [spawnFallbackBlock]),
+        ...filterBlocksToDirectChildren(capturedBlocks, forest, selectedAgentId),
         ...(reportBlock === undefined ? [] : [reportBlock]),
       ],
       busy: headerBusy,
+      model: displayModel,
+      thinkingEffort: displayEffort,
+      contextTokens: displayContextTokens,
+      maxContextTokens: displayMaxContextTokens,
+      contextBreakdown: undefined,
+      usage: displayUsage,
       pendingInteraction: 'none',
       hasMoreHistory: merged.hasMore,
       loadingOlder: loadingOlderAgent,
@@ -1999,6 +2026,38 @@ export function SessionView({
                       {displayModel}
                     </span>
                   ) : null}
+                  {displayEffort !== undefined ? (
+                    <span
+                      data-agent-effort
+                      className="rounded-full border border-hairline bg-paper px-2 py-0.5 text-[10.5px] text-ink-soft"
+                    >
+                      {t('subagent.effort', { effort: displayEffort })}
+                    </span>
+                  ) : null}
+                  {displayContextTokens !== undefined &&
+                  displayMaxContextTokens !== undefined &&
+                  displayMaxContextTokens > 0 ? (
+                    <ContextMeter
+                      used={displayContextTokens}
+                      limit={displayMaxContextTokens}
+                      placement="below"
+                    />
+                  ) : displayContextTokens !== undefined ? (
+                    <span
+                      data-agent-context
+                      className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[10.5px] text-ink-soft"
+                    >
+                      {t('sv.agentContext', { tokens: time.formatTokens(displayContextTokens) })}
+                    </span>
+                  ) : null}
+                  {cumulativeTokens !== undefined ? (
+                    <span
+                      data-agent-tokens
+                      className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[10.5px] text-ink-soft"
+                    >
+                      {t('sv.agentTokens', { tokens: time.formatTokens(cumulativeTokens) })}
+                    </span>
+                  ) : null}
                   <span
                     className={`rounded-full border px-2 py-0.5 text-[10.5px] ${
                       headerBusy ? 'border-accent/50 text-accent' : 'border-hairline text-ink-soft'
@@ -2030,15 +2089,6 @@ export function SessionView({
                     onOpen={openAgent}
                   />
                 </div>
-                {spawnInstruction !== undefined ? (
-                  <div className="shrink-0 border-b border-hairline bg-panel px-4 py-2">
-                    <SpawnInstructionCard
-                      key={selectedAgentId}
-                      prompt={spawnInstruction.text}
-                      fromLabel={spawnFromLabel}
-                    />
-                  </div>
-                ) : null}
               </>,
               slots.header,
             )

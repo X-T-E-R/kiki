@@ -709,12 +709,13 @@ describe('Agent loop', () => {
     );
   });
 
-  it('omits the turn.started prompt for system-triggered turns', async () => {
+  it('exposes subagent messages on turn.started while hiding other system triggers', async () => {
     const prompts: Array<string | undefined> = [];
     const subscription = ctx.get(IEventBus).subscribe('turn.started', (event) => {
       prompts.push(event.prompt);
     });
     ctx.mockNextResponse({ type: 'text', text: 'continued' });
+    ctx.mockNextResponse({ type: 'text', text: 'scanning' });
     ctx.mockNextResponse({ type: 'text', text: 'hi there' });
 
     const system = (
@@ -731,11 +732,25 @@ describe('Agent loop', () => {
       ).assigned
     ).turn;
     await system.result;
+    const subagent = (
+      await loop.enqueue(
+        new MessageStepRequest(
+          {
+            role: 'user',
+            content: [{ type: 'text', text: 'scan the repo' }],
+            toolCalls: [],
+            origin: { kind: 'system_trigger', name: 'subagent' },
+          },
+          { admission: 'newTurn' },
+        ),
+      ).assigned
+    ).turn;
+    await subagent.result;
     const user = (await loop.enqueue(nextTurnMessage('hi')).assigned).turn;
     await user.result;
     subscription.dispose();
 
-    expect(prompts).toEqual([undefined, 'hi']);
+    expect(prompts).toEqual([undefined, 'scan the repo', 'hi']);
   });
 });
 

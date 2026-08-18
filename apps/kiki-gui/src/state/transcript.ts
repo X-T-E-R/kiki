@@ -312,6 +312,7 @@ export interface SessionViewState {
   readonly activePromptId: string | undefined;
   readonly queuedPromptIds: readonly string[];
   readonly model: string | undefined;
+  readonly thinkingEffort: string | undefined;
   readonly permissionMode: PermissionMode | undefined;
   readonly planMode: boolean;
   readonly swarmMode: boolean;
@@ -360,6 +361,7 @@ export function createViewState(sessionId: string): SessionViewState {
     activePromptId: undefined,
     queuedPromptIds: [],
     model: undefined,
+    thinkingEffort: undefined,
     permissionMode: undefined,
     planMode: false,
     swarmMode: false,
@@ -586,7 +588,9 @@ function skillFromOrigin(origin: PromptOriginLike | undefined): ClassifiedText['
 /**
  * Unified classifier: origin first, then role, then envelope fallback.
  * Only real user origins (`user`, and `peer_thread` as a peer lane) may
- * become a right-side You bubble. An unrecognized but present origin is
+ * become a right-side You bubble. The child-agent transcript additionally
+ * opts its `system_trigger/subagent` turns into that lane because those prompts
+ * are messages from the parent agent. An unrecognized but present origin is
  * always system — never You.
  */
 export function classifyTranscriptText(input: {
@@ -594,12 +598,16 @@ export function classifyTranscriptText(input: {
   role?: string;
   origin?: PromptOriginLike;
   id?: string;
+  subagentPromptAsUser?: boolean;
 }): ClassifiedText {
   const origin = unwrapOrigin(input.origin);
   const split = splitSystemReminders(input.text);
   const kind = origin?.kind;
 
-  if (kind === 'user') {
+  if (
+    kind === 'user' ||
+    (input.subagentPromptAsUser === true && kind === 'system_trigger' && origin?.name === 'subagent')
+  ) {
     return { lane: 'you', origin, text: split.text, reminders: split.reminders };
   }
   if (kind === 'peer_thread') {
@@ -1107,6 +1115,7 @@ function markerToBlock(item: {
 
 export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Block[] {
   const blocks: Block[] = [];
+  const subagentPromptAsUser = response.agent_id !== MAIN_AGENT_ID;
   for (const item of response.items) {
     if (item.kind === 'marker') {
       const marker = markerToBlock(item);
@@ -1123,6 +1132,7 @@ export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Bloc
             text: item.prompt,
             role: 'user',
             origin,
+            subagentPromptAsUser,
           }),
           createdAt: item.startedAt ?? '',
           turnId: item.turnId,
@@ -1159,6 +1169,7 @@ export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Bloc
                     role: 'user',
                     origin,
                     id: frame.frameId,
+                    subagentPromptAsUser,
                   }),
                   createdAt: step.startedAt ?? item.startedAt ?? '',
                   turnId: item.turnId,
@@ -1232,20 +1243,13 @@ export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Bloc
 }
 
 /**
- * The instruction the parent agent spawned this subagent with, for the agent
- * detail page's "instruction from the main agent" card. Resolution order:
+ * Resolve the instruction that opened a subagent conversation. The detail page
+ * renders real turn prompts in-flow and uses the spawn-call result only as a
+ * pre-patch fallback. `duplicateBlockIds` remains part of the helper contract
+ * for callers that still replace a projected prompt with custom chrome.
  *
- *   1. The subagent's own server transcript: its first turn carries the
- *      original prompt (`TurnStartedEvent.prompt` survives in the turn
- *      header). The adapter projects that prompt into the block list, so the
- *      card replaces it — `duplicateBlockIds` lists the projected ids (REST
- *      `agent-turn-<id>-prompt` and live `turn-<id>-prompt` shapes, both
- *      `user-` and `system-` lanes, with and without the projector's `t`
- *      prefix) for the caller to filter out.
- *   2. The main transcript's spawn tool frame: the Agent call keeps the full
- *      prompt in `args.prompt`; an AgentSwarm resume map keeps it under
- *      `args.resume_agent_ids[agentId]`, and a templated swarm launch falls
- *      back to `args.prompt_template`.
+ * Resolution order: the subagent transcript's first prompt, then the parent
+ * transcript's Agent/AgentSwarm tool input (`prompt`, resume map, or template).
  */
 export interface SpawnInstruction {
   readonly text: string;
@@ -2018,6 +2022,7 @@ function applyFrameInternal(
           text: payload.prompt,
           role: 'user',
           origin,
+          subagentPromptAsUser: !routeSubagentEvents,
         });
         const additions = classifiedTextToBlocks({
           id: `turn-${payload.turnId}-prompt`,
@@ -2434,6 +2439,7 @@ function applyFrameInternal(
     case 'agent.status.updated': {
       evolve({
         model: payload.model ?? next.model,
+        thinkingEffort: payload.thinkingEffort ?? next.thinkingEffort,
         permissionMode: payload.permission ?? next.permissionMode,
         planMode: payload.planMode ?? next.planMode,
         swarmMode: payload.swarmMode ?? next.swarmMode,
@@ -2981,6 +2987,30 @@ export function rosterFromTranscriptAgents(
   });
 }
 
+export function rosterFromTranscriptResponse(
+  response: AgentTranscriptResponse | undefined,
+): readonly AgentRosterDescriptor[] {
+  const roster = [...rosterFromTranscriptAgents(response?.agents)];
+  if (response === undefined) return roster;
+  const meta = response.meta?.agent;
+  if (meta === undefined) return roster;
+  const index = roster.findIndex((agent) => agent.agentId === response.agent_id);
+  const statusFields = {
+    model: meta.model,
+    thinkingEffort: meta.thinkingEffort,
+    contextTokens: meta.contextTokens,
+    maxContextTokens: meta.maxContextTokens,
+    usage: meta.usage,
+    busy: agentBusyFromMeta(response),
+  };
+  if (index >= 0) {
+    roster[index] = { ...roster[index]!, ...statusFields };
+  } else {
+    roster.push({ agentId: response.agent_id, name: response.agent_id, ...statusFields });
+  }
+  return roster;
+}
+
 export function taskItemsFromTranscriptTasks(
   tasks: readonly AgentTranscriptTask[] | undefined,
 ): readonly AgentTaskItem[] {
@@ -3066,7 +3096,7 @@ export function sessionAgentForestFromTranscript(
 ): AgentForest {
   return sessionAgentForest(
     state,
-    rosterFromTranscriptAgents(response?.agents),
+    rosterFromTranscriptResponse(response),
     taskItemsFromTranscriptTasks(response?.tasks),
   );
 }
@@ -3081,6 +3111,11 @@ export function agentTranscriptPageFromResponse(
     hasMore: response.has_more,
     oldestTurnId: firstTurn?.kind === 'turn' ? firstTurn.turnId : undefined,
     seq: response.seq,
+    model: response.meta?.agent?.model,
+    thinkingEffort: response.meta?.agent?.thinkingEffort,
+    contextTokens: response.meta?.agent?.contextTokens,
+    maxContextTokens: response.meta?.agent?.maxContextTokens,
+    usage: response.meta?.agent?.usage,
     busy: agentBusyFromMeta(response),
     toolCallCount: countToolBlocks(blocks),
   };
