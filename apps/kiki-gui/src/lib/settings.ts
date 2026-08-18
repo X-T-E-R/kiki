@@ -6,6 +6,7 @@ import type {
 } from '@moonshot-ai/protocol';
 
 import { LocalizedError, type I18nKey, type ValidationIssue } from '../i18n/locale';
+import type { KikiConfigPatch, KikiConfigResponse } from './client';
 
 /** Client-local preferences stored in localStorage (`kiki.settings`). */
 export type SendShortcut = 'enter' | 'cmd-enter';
@@ -546,6 +547,191 @@ export function parseAdvancedServerConfig(value: string): AdvancedServerConfigPa
   };
 }
 
+export type TokenCountingStrategy = 'measured+estimated' | 'measured' | 'estimated';
+export type PrintBackgroundMode = 'exit' | 'drain' | 'steer';
+
+export interface RuntimeConfigDraft {
+  cron: {
+    debug: boolean;
+    noJitter: boolean;
+    noStale: boolean;
+    disabled: boolean;
+    manualTick: boolean;
+    clock: string;
+    pollIntervalMs: string;
+  };
+  threadCommunicationEnabled: boolean;
+  tokenCountingStrategy: TokenCountingStrategy;
+  workspaceIdleTtlMs: string;
+  imageMaxEdgePx: string;
+  imageReadByteBudget: string;
+  task: {
+    maxRunningTasks: string;
+    keepAliveOnExit: boolean;
+    bashAutoBackgroundOnTimeout: boolean;
+    bashTaskTimeoutS: string;
+    killGracePeriodMs: string;
+    printWaitCeilingS: string;
+    printBackgroundMode: PrintBackgroundMode;
+    printMaxTurns: string;
+  };
+  identityName: string;
+  identitySlug: string;
+  extraAgentDirs: string[];
+  disabledBuiltinProfiles: string[];
+  mcpStartupTimeoutMs: string;
+  mcpToolTimeoutMs: string;
+  toolsEnabled: string[];
+  toolsDisabled: string[];
+}
+
+function optionalNumberDraft(value: number | null | undefined): string {
+  return value === null ? 'null' : value === undefined ? '' : String(value);
+}
+
+export function runtimeConfigDraftFromConfig(config: KikiConfigResponse): RuntimeConfigDraft {
+  const task = config.task;
+  return {
+    cron: {
+      debug: config.cron?.debug ?? false,
+      noJitter: config.cron?.noJitter ?? false,
+      noStale: config.cron?.noStale ?? false,
+      disabled: config.cron?.disabled ?? false,
+      manualTick: config.cron?.manualTick ?? false,
+      clock: config.cron?.clock ?? '',
+      pollIntervalMs: optionalNumberDraft(config.cron?.pollIntervalMs),
+    },
+    threadCommunicationEnabled: config.thread_communication?.enabled ?? false,
+    tokenCountingStrategy: config.token_counting?.strategy ?? 'measured+estimated',
+    workspaceIdleTtlMs: optionalNumberDraft(config.workspace_instance?.idleTtlMs ?? 300_000),
+    imageMaxEdgePx: optionalNumberDraft(config.image?.maxEdgePx),
+    imageReadByteBudget: optionalNumberDraft(config.image?.readByteBudget),
+    task: {
+      maxRunningTasks: optionalNumberDraft(task?.maxRunningTasks),
+      keepAliveOnExit: task?.keepAliveOnExit ?? false,
+      bashAutoBackgroundOnTimeout: task?.bashAutoBackgroundOnTimeout ?? false,
+      bashTaskTimeoutS: optionalNumberDraft(task?.bashTaskTimeoutS),
+      killGracePeriodMs: optionalNumberDraft(task?.killGracePeriodMs),
+      printWaitCeilingS: optionalNumberDraft(task?.printWaitCeilingS),
+      printBackgroundMode: task?.printBackgroundMode ?? 'steer',
+      printMaxTurns: optionalNumberDraft(task?.printMaxTurns),
+    },
+    identityName: config.identity?.name ?? '',
+    identitySlug: config.identity?.slug ?? '',
+    extraAgentDirs: [...(config.extra_agent_dirs ?? [])],
+    disabledBuiltinProfiles: [...(config.disabled_builtin_profiles ?? [])],
+    mcpStartupTimeoutMs: optionalNumberDraft(config.mcp?.startupTimeoutMs),
+    mcpToolTimeoutMs: optionalNumberDraft(config.mcp?.toolTimeoutMs),
+    toolsEnabled: [...(config.tools?.enabled ?? [])],
+    toolsDisabled: [...(config.tools?.disabled ?? [])],
+  };
+}
+
+function parseOptionalInteger(
+  value: string,
+  field: string,
+  minimum: number,
+  maximum = Number.MAX_SAFE_INTEGER,
+): number | undefined {
+  const trimmed = value.trim();
+  if (trimmed === '') return undefined;
+  if (!/^\d+$/.test(trimmed)) {
+    throw new LocalizedError({ key: minimum === 0 ? 'val.runtimeNonNegative' : 'val.runtimePositive', params: { field } });
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new LocalizedError({ key: minimum === 0 ? 'val.runtimeNonNegative' : 'val.runtimePositive', params: { field } });
+  }
+  return parsed;
+}
+
+function normalizeStringList(values: readonly string[]): string[] {
+  return normalizeTags(values);
+}
+
+export function runtimeConfigPatch(draft: RuntimeConfigDraft): KikiConfigPatch {
+  const cronPoll = draft.cron.pollIntervalMs.trim();
+  const pollIntervalMs = cronPoll === 'null'
+    ? null
+    : parseOptionalInteger(cronPoll, 'cron.poll_interval_ms', 0);
+  const mcpMax = 2_147_483_647;
+  return {
+    cron: {
+      debug: draft.cron.debug,
+      no_jitter: draft.cron.noJitter,
+      no_stale: draft.cron.noStale,
+      disabled: draft.cron.disabled,
+      manual_tick: draft.cron.manualTick,
+      clock: draft.cron.clock.trim() || undefined,
+      poll_interval_ms: pollIntervalMs,
+    },
+    thread_communication: { enabled: draft.threadCommunicationEnabled },
+    token_counting: { strategy: draft.tokenCountingStrategy },
+    workspace_instance: {
+      idle_ttl_ms: parseOptionalInteger(draft.workspaceIdleTtlMs, 'workspace_instance.idle_ttl_ms', 0),
+    },
+    image: {
+      max_edge_px: parseOptionalInteger(draft.imageMaxEdgePx, 'image.max_edge_px', 1),
+      read_byte_budget: parseOptionalInteger(draft.imageReadByteBudget, 'image.read_byte_budget', 1),
+    },
+    task: {
+      max_running_tasks: parseOptionalInteger(draft.task.maxRunningTasks, 'task.max_running_tasks', 1),
+      keep_alive_on_exit: draft.task.keepAliveOnExit,
+      bash_auto_background_on_timeout: draft.task.bashAutoBackgroundOnTimeout,
+      bash_task_timeout_s: parseOptionalInteger(draft.task.bashTaskTimeoutS, 'task.bash_task_timeout_s', 0),
+      kill_grace_period_ms: parseOptionalInteger(draft.task.killGracePeriodMs, 'task.kill_grace_period_ms', 0),
+      print_wait_ceiling_s: parseOptionalInteger(draft.task.printWaitCeilingS, 'task.print_wait_ceiling_s', 1),
+      print_background_mode: draft.task.printBackgroundMode,
+      print_max_turns: parseOptionalInteger(draft.task.printMaxTurns, 'task.print_max_turns', 1),
+    },
+    identity: {
+      name: draft.identityName.trim() || undefined,
+      slug: draft.identitySlug.trim() || undefined,
+    },
+    extra_agent_dirs: normalizeStringList(draft.extraAgentDirs),
+    disabled_builtin_profiles: normalizeStringList(draft.disabledBuiltinProfiles),
+    mcp: {
+      startup_timeout_ms: parseOptionalInteger(draft.mcpStartupTimeoutMs, 'mcp.startup_timeout_ms', 1, mcpMax),
+      tool_timeout_ms: parseOptionalInteger(draft.mcpToolTimeoutMs, 'mcp.tool_timeout_ms', 1, mcpMax),
+    },
+    tools: {
+      enabled: normalizeStringList(draft.toolsEnabled),
+      disabled: normalizeStringList(draft.toolsDisabled),
+    },
+    replace_domains: [
+      'cron',
+      'thread_communication',
+      'token_counting',
+      'workspace_instance',
+      'image',
+      'task',
+      'identity',
+      'extra_agent_dirs',
+      'disabled_builtin_profiles',
+      'mcp',
+      'tools',
+    ],
+  };
+}
+
+export function toolPolicyValue(draft: RuntimeConfigDraft, toolName: string): 'enabled' | 'disabled' | 'inherited' {
+  if (draft.toolsDisabled.includes(toolName)) return 'disabled';
+  if (draft.toolsEnabled.includes(toolName)) return 'enabled';
+  return 'inherited';
+}
+
+export function setToolPolicy(
+  draft: RuntimeConfigDraft,
+  toolName: string,
+  policy: 'enabled' | 'disabled' | 'inherited',
+): RuntimeConfigDraft {
+  const enabled = draft.toolsEnabled.filter((name) => name !== toolName);
+  const disabled = draft.toolsDisabled.filter((name) => name !== toolName);
+  if (policy === 'enabled') enabled.push(toolName);
+  if (policy === 'disabled') disabled.push(toolName);
+  return { ...draft, toolsEnabled: enabled, toolsDisabled: disabled };
+}
+
 export function validateDesktopConfigDraft(input: {
   subagentDefaultModel: string;
   subagentDefaultEffort: string;
@@ -846,6 +1032,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'providers', cardId: 'st-card-providers', titleKey: 'st.providers.title', keywordKeys: ['st.providers.empty'] },
   { section: 'providers', cardId: 'st-card-providers-add', titleKey: 'st.providers.addTitle', keywordKeys: ['st.wizard.chooseTemplate', 'st.fetchModels.button'] },
   { section: 'capabilities', cardId: 'st-card-caps', titleKey: 'st.caps.title', keywordKeys: ['st.caps.mergeSkills', 'st.caps.telemetry', 'st.caps.extraDirs'] },
+  { section: 'capabilities', cardId: 'st-card-runtime', titleKey: 'st.runtime.title', keywordKeys: ['st.runtime.cron', 'st.runtime.communication', 'st.runtime.resources', 'st.runtime.task', 'st.runtime.agents'] },
   { section: 'capabilities', cardId: 'st-card-experimental', titleKey: 'st.experimental.title', keywordKeys: ['st.experimental.hint', 'st.experimental.overrideLabel'] },
   { section: 'capabilities', cardId: 'st-card-advanced', titleKey: 'st.advanced.title', keywordKeys: ['st.advanced.hint'] },
   { section: 'agents', cardId: 'st-card-subagents', titleKey: 'st.subagents.title', keywordKeys: ['st.subagents.pool', 'st.subagents.force', 'st.subagents.enforcePool', 'st.subagents.denyModels'] },

@@ -7,7 +7,6 @@ import type {
   ModelCatalogItem,
   PermissionMode,
   SkillDescriptor,
-  ToolDescriptor,
 } from '@moonshot-ai/protocol';
 
 import {
@@ -27,7 +26,7 @@ import {
   type SubagentGovernanceDraft,
   type SubagentGovernanceIssue,
 } from '../lib/agentSettings';
-import type { NamedAgentProfile } from '../lib/client';
+import type { KikiConfigResponse, NamedAgentProfile } from '../lib/client';
 import {
   appendExtraSkillDirs,
   buildSettingsSearchIndex,
@@ -56,6 +55,7 @@ import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
 import { OAuthDeviceCard } from './OAuthDeviceCard';
 import { MsUnitInput, NewProviderWizard, ProviderEditor } from './ProviderFields';
 import { useRestartRequirement } from './RestartBanner';
+import { RuntimeConfigEditor } from './RuntimeConfigEditor';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
 
 const SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
@@ -158,11 +158,11 @@ function GeneralSection() {
     staleTime: 60_000,
   });
 
-  const syncFromConfig = useCallback((config: Record<string, unknown> | undefined) => {
+  const syncFromConfig = useCallback((config: KikiConfigResponse | undefined) => {
     if (config === undefined) return;
-    const mode = config['default_permission_mode'];
+    const mode = config.default_permission_mode;
     if (mode === 'manual' || mode === 'auto' || mode === 'yolo') setPermissionMode(mode);
-    setPlanMode(config['default_plan_mode'] === true);
+    setPlanMode(config.default_plan_mode === true);
   }, []);
 
   useEffect(() => { syncFromConfig(configQuery.data); }, [configQuery.data, syncFromConfig]);
@@ -180,7 +180,7 @@ function GeneralSection() {
         default_plan_mode: plan,
       });
       queryClient.setQueryData(['config'], echoed);
-      syncFromConfig(echoed as Record<string, unknown>);
+      syncFromConfig(echoed);
       const echoedMode = echoed.default_permission_mode;
       if (echoedMode === 'manual' || echoedMode === 'auto' || echoedMode === 'yolo') {
         writeSettings({ defaultPermissionMode: echoedMode });
@@ -939,7 +939,6 @@ function CapabilitiesSection() {
 
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
-  const toolsQuery = useQuery({ queryKey: ['tools'], queryFn: () => client.listTools(), staleTime: 60_000 });
   const mcpQuery = useQuery({ queryKey: ['mcp-servers'], queryFn: () => client.listMcpServers(), staleTime: 60_000 });
   const skillsQuery = useQuery({
     queryKey: ['workspace-skills', workspaceId],
@@ -1074,6 +1073,8 @@ function CapabilitiesSection() {
         </div>
       </SectionCard>
 
+      <RuntimeConfigEditor />
+
       <ExperimentalFlagsCard />
 
       <SectionCard id="st-card-advanced" title={t('st.advanced.title')}>
@@ -1082,14 +1083,6 @@ function CapabilitiesSection() {
           <textarea className={`${INPUT} min-h-64 font-mono`} value={advanced} onChange={(event) => { setAdvanced(event.target.value); }} aria-label={t('st.advanced.aria')} />
           <button type="button" className={PRIMARY_BUTTON} disabled={advancedSaving} onClick={() => void saveAdvanced()}>{advancedSaving ? t('common.saving') : t('st.advanced.save')}</button>
           <FeedbackLine feedback={advancedFeedback} />
-        </div>
-      </SectionCard>
-
-      <SectionCard id="st-card-tools" title={t('st.tools.title')}>
-        <div className="space-y-2">
-          {toolsQuery.data?.tools.map((tool) => <ToolRow key={tool.name} tool={tool} />)}
-          {toolsQuery.isLoading ? <Hint>{t('st.tools.loading')}</Hint> : null}
-          {toolsQuery.isError ? <InlineError error={toolsQuery.error} /> : null}
         </div>
       </SectionCard>
 
@@ -1472,11 +1465,6 @@ function DesktopServerFileCard() {
       />
     </SectionCard>
   );
-}
-
-function ToolRow({ tool }: { tool: ToolDescriptor }) {
-  const { t } = useI18n();
-  return <div className="rounded-lg border border-hairline bg-paper px-3 py-2"><p className="text-[13px] font-medium text-ink">{tool.name}</p><p className="text-[11px] text-ink-soft">{tool.description}</p><p className="mt-0.5 font-mono text-[10px] text-ink-faint">{t('st.tools.source', { source: tool.source })}</p></div>;
 }
 
 function McpRow({ server }: { server: McpServer }) {

@@ -60,6 +60,7 @@ import type {
   SessionCreate,
   SessionSnapshotResponse,
   SetDefaultModelResponse,
+  Task,
   Terminal,
   UndoSessionResponse,
   UpdateSessionProfileRequest,
@@ -165,14 +166,76 @@ export interface SecondaryModelSettings {
   readonly enforcePool?: boolean;
 }
 
-export type KikiConfigResponse = Omit<ConfigResponse, 'subagent'> & {
+export interface RuntimeConfigProjection {
+  readonly cron?: {
+    readonly debug: boolean;
+    readonly noJitter: boolean;
+    readonly noStale: boolean;
+    readonly disabled: boolean;
+    readonly manualTick: boolean;
+    readonly clock?: string;
+    readonly pollIntervalMs?: number | null;
+  };
+  readonly thread_communication?: { readonly enabled: boolean };
+  readonly token_counting?: { readonly strategy: 'measured+estimated' | 'measured' | 'estimated' };
+  readonly workspace_instance?: { readonly idleTtlMs?: number };
+  readonly image?: { readonly maxEdgePx?: number; readonly readByteBudget?: number };
+  readonly task?: {
+    readonly maxRunningTasks?: number;
+    readonly keepAliveOnExit?: boolean;
+    readonly bashAutoBackgroundOnTimeout?: boolean;
+    readonly bashTaskTimeoutS?: number;
+    readonly killGracePeriodMs?: number;
+    readonly printWaitCeilingS?: number;
+    readonly printBackgroundMode?: 'exit' | 'drain' | 'steer';
+    readonly printMaxTurns?: number;
+  };
+  readonly identity?: { readonly name?: string; readonly slug?: string };
+  readonly extra_agent_dirs?: string[];
+  readonly disabled_builtin_profiles?: string[];
+  readonly mcp?: { readonly startupTimeoutMs?: number; readonly toolTimeoutMs?: number };
+  readonly tools?: { readonly enabled?: string[]; readonly disabled?: string[] };
+}
+
+export type KikiConfigResponse = Omit<ConfigResponse, 'subagent'> & RuntimeConfigProjection & {
   readonly subagent?: NonNullable<ConfigResponse['subagent']> & {
     readonly denyModels?: string[];
   };
   readonly secondary_model?: SecondaryModelSettings;
 };
 
-export type KikiConfigPatch = Omit<PatchConfigRequest, 'subagent'> & {
+export interface RuntimeConfigPatch {
+  readonly cron?: {
+    readonly debug: boolean;
+    readonly no_jitter: boolean;
+    readonly no_stale: boolean;
+    readonly disabled: boolean;
+    readonly manual_tick: boolean;
+    readonly clock?: string;
+    readonly poll_interval_ms?: number | null;
+  };
+  readonly thread_communication?: { readonly enabled: boolean };
+  readonly token_counting?: { readonly strategy: 'measured+estimated' | 'measured' | 'estimated' };
+  readonly workspace_instance?: { readonly idle_ttl_ms?: number };
+  readonly image?: { readonly max_edge_px?: number; readonly read_byte_budget?: number };
+  readonly task?: {
+    readonly max_running_tasks?: number;
+    readonly keep_alive_on_exit?: boolean;
+    readonly bash_auto_background_on_timeout?: boolean;
+    readonly bash_task_timeout_s?: number;
+    readonly kill_grace_period_ms?: number;
+    readonly print_wait_ceiling_s?: number;
+    readonly print_background_mode?: 'exit' | 'drain' | 'steer';
+    readonly print_max_turns?: number;
+  };
+  readonly identity?: { readonly name?: string; readonly slug?: string };
+  readonly extra_agent_dirs?: string[];
+  readonly disabled_builtin_profiles?: string[];
+  readonly mcp?: { readonly startup_timeout_ms?: number; readonly tool_timeout_ms?: number };
+  readonly tools?: { readonly enabled?: string[]; readonly disabled?: string[] };
+}
+
+export type KikiConfigPatch = Omit<PatchConfigRequest, 'subagent' | 'replace_domains'> & RuntimeConfigPatch & {
   readonly subagent?: NonNullable<PatchConfigRequest['subagent']> & {
     readonly deny_models?: string[];
   };
@@ -182,7 +245,7 @@ export type KikiConfigPatch = Omit<PatchConfigRequest, 'subagent'> & {
     readonly force?: boolean;
     readonly enforce_pool?: boolean;
   };
-  readonly replace_domains?: readonly ('secondary_model' | 'experimental')[];
+  readonly replace_domains?: readonly string[];
 };
 
 export interface NamedAgentRoute {
@@ -728,6 +791,19 @@ export class KikiClient {
     return this.request<ListTasksResponse>(
       'GET',
       `/sessions/${encodeURIComponent(sessionId)}/tasks`,
+    );
+  }
+
+  /** Single task; `with_output` opts into the tail-of-log preview (≤32KB default). */
+  getTask(
+    sessionId: string,
+    taskId: string,
+    query: { with_output?: boolean; output_bytes?: number } = {},
+  ): Promise<Task> {
+    return this.request<Task>(
+      'GET',
+      `/sessions/${encodeURIComponent(sessionId)}/tasks/${encodeURIComponent(taskId)}`,
+      { query: { with_output: query.with_output, output_bytes: query.output_bytes } },
     );
   }
 

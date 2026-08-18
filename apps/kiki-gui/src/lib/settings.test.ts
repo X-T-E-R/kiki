@@ -28,6 +28,8 @@ import {
   resolveModelSource,
   resolveSessionModelOverride,
   restartRequirementSnapshot,
+  runtimeConfigDraftFromConfig,
+  runtimeConfigPatch,
   searchSettings,
   serverFileSettingsFromConfig,
   serverFileSettingsPatch,
@@ -191,6 +193,53 @@ describe('settings persistence and validation', () => {
       builtin_product_skills: false,
       model_catalog: { refresh_interval_ms: 300_000, refresh_on_start: true },
     });
+  });
+
+  it('maps every runtime config domain from GET projection to a replacement patch', () => {
+    const draft = runtimeConfigDraftFromConfig({
+      providers: {},
+      cron: { debug: true, noJitter: true, noStale: false, disabled: false, manualTick: true, clock: 'utc', pollIntervalMs: null },
+      thread_communication: { enabled: true },
+      token_counting: { strategy: 'measured' },
+      workspace_instance: { idleTtlMs: 120_000 },
+      image: { maxEdgePx: 2048, readByteBudget: 4_000_000 },
+      task: { maxRunningTasks: 4, keepAliveOnExit: true, printBackgroundMode: 'drain' },
+      identity: { name: 'Example Agent', slug: 'example-agent' },
+      extra_agent_dirs: ['C:\\agents'],
+      disabled_builtin_profiles: ['reviewer'],
+      mcp: { startupTimeoutMs: 30_000, toolTimeoutMs: 60_000 },
+      tools: { enabled: ['Read'], disabled: ['Bash'] },
+    });
+    draft.extraAgentDirs.push(' C:\\agents ', 'D:\\agents');
+    draft.disabledBuiltinProfiles = [];
+
+    const patch = runtimeConfigPatch(draft);
+    expect(patch.cron).toEqual(expect.objectContaining({
+      debug: true,
+      no_jitter: true,
+      manual_tick: true,
+      clock: 'utc',
+      poll_interval_ms: null,
+    }));
+    expect(patch.workspace_instance).toEqual({ idle_ttl_ms: 120_000 });
+    expect(patch.image).toEqual({ max_edge_px: 2048, read_byte_budget: 4_000_000 });
+    expect(patch.task).toEqual(expect.objectContaining({ max_running_tasks: 4, keep_alive_on_exit: true, print_background_mode: 'drain' }));
+    expect(patch.extra_agent_dirs).toEqual(['C:\\agents', 'D:\\agents']);
+    expect(patch.disabled_builtin_profiles).toEqual([]);
+    expect(patch.tools).toEqual({ enabled: ['Read'], disabled: ['Bash'] });
+    expect(patch.replace_domains).toEqual(expect.arrayContaining([
+      'cron', 'thread_communication', 'token_counting', 'workspace_instance', 'image', 'task',
+      'identity', 'extra_agent_dirs', 'disabled_builtin_profiles', 'mcp', 'tools',
+    ]));
+  });
+
+  it('rejects invalid runtime integers before config writes', () => {
+    const draft = runtimeConfigDraftFromConfig({ providers: {} });
+    draft.imageMaxEdgePx = '0';
+    expect(() => runtimeConfigPatch(draft)).toThrow(/image\.max_edge_px/);
+    draft.imageMaxEdgePx = '';
+    draft.mcpStartupTimeoutMs = '2147483648';
+    expect(() => runtimeConfigPatch(draft)).toThrow(/mcp\.startup_timeout_ms/);
   });
 
   it('emits only fields changed from the last server echo', () => {
