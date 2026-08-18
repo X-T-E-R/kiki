@@ -49,6 +49,7 @@ import {
   MAIN_AGENT_ID,
   buildAgentForest,
   countToolBlocks,
+  pairTranscriptBlocks,
   type AgentForest,
   type AgentLiveSource,
   type AgentRosterDescriptor,
@@ -189,6 +190,10 @@ export interface SubagentBlock {
   readonly subagentId: string;
   readonly parentAgentId: string | undefined;
   readonly parentToolCallId: string | undefined;
+  /** Stable tool UUID used after a streamed call's display id is finalized. */
+  readonly parentToolCallUuid?: string;
+  /** Parent turn inferred from the spawn tool or temporal assistant anchor. */
+  readonly parentTurnId?: string;
   readonly name: string;
   readonly label?: string;
   readonly description: string | undefined;
@@ -818,8 +823,41 @@ function userAndReminderBlocks(input: {
   });
 }
 
-function messagesToBlocks(messages: readonly Message[]): Block[] {
+interface UserBlockIdentity {
+  readonly userMessageId?: string;
+  readonly promptId?: string;
+  readonly messageId?: string;
+}
+
+function userBlockMatchesIdentity(block: UserBlock, identity: UserBlockIdentity): boolean {
+  if (identity.userMessageId !== undefined && block.userMessageId === identity.userMessageId) {
+    return true;
+  }
+  if (identity.promptId !== undefined && block.promptId === identity.promptId) return true;
+  return (
+    identity.messageId !== undefined &&
+    (block.id === identity.messageId || block.id === `user-${identity.messageId}`)
+  );
+}
+
+function findUserBlock(
+  blocks: readonly Block[],
+  identity: UserBlockIdentity,
+): UserBlock | undefined {
+  return blocks.find(
+    (block): block is UserBlock =>
+      block.kind === 'user' && userBlockMatchesIdentity(block, identity),
+  );
+}
+
+function messagesToBlocks(
+  messages: readonly Message[],
+  existingBlocks: readonly Block[] = [],
+): Block[] {
   const blocks: Block[] = [];
+  const existingUsers = existingBlocks.filter(
+    (block): block is UserBlock => block.kind === 'user',
+  );
   const toolByCallId = new Map<string, ToolBlock>();
 
   const upsertToolResult = (toolCallId: string, output: unknown, isError: boolean | undefined) => {
@@ -859,17 +897,41 @@ function messagesToBlocks(messages: readonly Message[]): Block[] {
   for (const message of messages) {
     switch (message.role) {
       case 'user': {
-        blocks.push(
-          ...userAndReminderBlocks({
-            id: message.id,
-            text: textOfContent(message.content),
-            createdAt: message.created_at,
-            promptId: message.prompt_id ?? message.id,
-            userMessageId: message.id,
-            origin: originFromMetadata(message.metadata),
-            role: 'user',
-          }),
+        const identity = {
+          userMessageId: message.id,
+          promptId: message.prompt_id,
+          messageId: message.id,
+        } satisfies UserBlockIdentity;
+        const additions = userAndReminderBlocks({
+          id: message.id,
+          text: textOfContent(message.content),
+          createdAt: message.created_at,
+          promptId: message.prompt_id,
+          userMessageId: message.id,
+          origin: originFromMetadata(message.metadata),
+          role: 'user',
+        });
+        const projected = additions.find(
+          (block): block is UserBlock => block.kind === 'user',
         );
+        if (projected === undefined) {
+          blocks.push(...additions);
+          break;
+        }
+        if (findUserBlock(blocks, identity) !== undefined) break;
+        const existing = findUserBlock(existingUsers, identity);
+        if (existing === undefined) {
+          blocks.push(...additions);
+          break;
+        }
+        const merged: UserBlock = {
+          ...projected,
+          id: existing.id,
+          promptId: projected.promptId ?? existing.promptId,
+          userMessageId: existing.userMessageId ?? projected.userMessageId,
+          promptStatus: existing.promptStatus,
+        };
+        blocks.push(...additions.map((block) => (block === projected ? merged : block)));
         break;
       }
       case 'assistant': {
@@ -906,7 +968,9 @@ function messagesToBlocks(messages: readonly Message[]): Block[] {
               status: 'done',
               output: undefined,
               isError: undefined,
-              startedAt: 0,
+              startedAt: Number.isNaN(Date.parse(message.created_at))
+                ? 0
+                : Date.parse(message.created_at),
               durationMs: undefined,
               progressText: undefined,
             };
@@ -1254,6 +1318,7 @@ export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Bloc
 export interface SpawnInstruction {
   readonly text: string;
   readonly source: 'transcript' | 'spawn-call';
+  readonly turnId?: string;
   readonly duplicateBlockIds: readonly string[];
 }
 
@@ -1278,6 +1343,7 @@ export function resolveSpawnInstruction(input: {
   agentId: string;
   parentToolCallId: string | undefined;
 }): SpawnInstruction | undefined {
+  const firstTurn = input.response?.items.find((item) => item.kind === 'turn');
   const firstPromptTurn = input.response?.items.find(
     (item) => item.kind === 'turn' && typeof item.prompt === 'string' && item.prompt.trim() !== '',
   );
@@ -1293,6 +1359,7 @@ export function resolveSpawnInstruction(input: {
     return {
       text: firstPromptTurn.prompt.trim(),
       source: 'transcript',
+      turnId: firstPromptTurn.turnId,
       duplicateBlockIds,
     };
   }
@@ -1305,11 +1372,17 @@ export function resolveSpawnInstruction(input: {
   if (spawnCall === undefined) return undefined;
   const text = spawnInstructionFromToolArgs(spawnCall.args, input.agentId);
   if (text === undefined) return undefined;
-  return { text, source: 'spawn-call', duplicateBlockIds: [] };
+  return {
+    text,
+    source: 'spawn-call',
+    turnId: firstTurn?.kind === 'turn' ? firstTurn.turnId : undefined,
+    duplicateBlockIds: [],
+  };
 }
 
 type RestoredSnapshotSubagent = NonNullable<SessionSnapshotResponse['subagents']>[number] & {
   readonly parent_agent_id?: string;
+  readonly parent_tool_call_uuid?: string;
   readonly label?: string;
   readonly tool_call_count?: number;
 };
@@ -1325,11 +1398,199 @@ type KikiSessionSnapshot = SessionSnapshotResponse & {
   };
 };
 
+function timestampMs(value: string | undefined): number | undefined {
+  if (value === undefined || value === '') return undefined;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+function blockTimelineMs(block: Block): number | undefined {
+  switch (block.kind) {
+    case 'user':
+    case 'steer':
+    case 'assistant':
+    case 'thinking':
+    case 'system':
+    case 'system-reminder':
+    case 'skill':
+      return timestampMs(block.createdAt);
+    case 'tool':
+      return block.startedAt > 0 ? block.startedAt : undefined;
+    case 'subagent':
+      return timestampMs(block.startedAt);
+    case 'approval':
+      return timestampMs(block.request.created_at);
+    case 'question':
+      return timestampMs(block.request.created_at);
+    case 'shell':
+    case 'notice':
+      return undefined;
+  }
+}
+
+function compareTimelineIds(a: string, b: string): number {
+  return a === b ? 0 : a < b ? -1 : 1;
+}
+
+function compareSubagentTimeline(a: SubagentBlock, b: SubagentBlock): number {
+  const aTime = blockTimelineMs(a);
+  const bTime = blockTimelineMs(b);
+  if (aTime !== undefined && bTime !== undefined && aTime !== bTime) return aTime - bTime;
+  if (aTime !== undefined) return -1;
+  if (bTime !== undefined) return 1;
+  return compareTimelineIds(a.id, b.id);
+}
+
+function nearestParentTurn(
+  blocks: readonly Block[],
+  subagent: SubagentBlock,
+  beforeIndex?: number,
+): string | undefined {
+  if (subagent.parentTurnId !== undefined) return subagent.parentTurnId;
+  if (beforeIndex !== undefined) {
+    for (let index = beforeIndex - 1; index >= 0; index -= 1) {
+      const candidate = blocks[index];
+      if (candidate?.kind === 'assistant' && candidate.turnId !== undefined) {
+        return candidate.turnId;
+      }
+    }
+  }
+  const startedAt = blockTimelineMs(subagent);
+  let nearest: { turnId: string; at: number } | undefined;
+  for (const candidate of blocks) {
+    if (candidate.kind !== 'assistant' || candidate.turnId === undefined) continue;
+    const at = blockTimelineMs(candidate);
+    if (at === undefined || (startedAt !== undefined && at > startedAt)) continue;
+    if (nearest === undefined || at >= nearest.at) nearest = { turnId: candidate.turnId, at };
+  }
+  return nearest?.turnId;
+}
+
+function insertSubagentByTimeline(blocks: Block[], block: SubagentBlock): void {
+  if (block.parentTurnId !== undefined) {
+    let anchor = -1;
+    for (let index = 0; index < blocks.length; index += 1) {
+      const candidate = blocks[index];
+      if (candidate?.kind === 'assistant' && candidate.turnId === block.parentTurnId) {
+        anchor = index;
+      }
+    }
+    if (anchor >= 0) {
+      while (
+        blocks[anchor + 1]?.kind === 'subagent' &&
+        (blocks[anchor + 1] as SubagentBlock).parentTurnId === block.parentTurnId &&
+        compareSubagentTimeline(blocks[anchor + 1] as SubagentBlock, block) <= 0
+      ) {
+        anchor += 1;
+      }
+      blocks.splice(anchor + 1, 0, block);
+      return;
+    }
+  }
+
+  const startedAt = blockTimelineMs(block);
+  if (startedAt !== undefined) {
+    const insertionIndex = blocks.findIndex((candidate) => {
+      const candidateAt = blockTimelineMs(candidate);
+      if (candidateAt === undefined) return false;
+      if (candidateAt !== startedAt) return candidateAt > startedAt;
+      return candidate.kind === 'subagent' && compareTimelineIds(candidate.id, block.id) > 0;
+    });
+    if (insertionIndex >= 0) {
+      blocks.splice(insertionIndex, 0, block);
+      return;
+    }
+  }
+  blocks.push(block);
+}
+
+function insertSubagentBlocks(
+  source: readonly Block[],
+  subagents: readonly SubagentBlock[],
+): Block[] {
+  if (subagents.length === 0) return source.filter((block) => block.kind !== 'subagent');
+  const sorted = [...subagents].sort(compareSubagentTimeline);
+  const byParentTool = new Map<string, SubagentBlock[]>();
+  for (const subagent of sorted) {
+    const aliases = new Set(
+      [subagent.parentToolCallId, subagent.parentToolCallUuid].filter(
+        (alias): alias is string => alias !== undefined,
+      ),
+    );
+    for (const alias of aliases) {
+      const siblings = byParentTool.get(alias) ?? [];
+      siblings.push(subagent);
+      byParentTool.set(alias, siblings);
+    }
+  }
+
+  const inserted = new Set<string>();
+  const blocks: Block[] = [];
+  for (let index = 0; index < source.length; index += 1) {
+    const candidate = source[index]!;
+    if (candidate.kind === 'subagent') continue;
+    if (candidate.kind === 'tool') {
+      const anchored = byParentTool.get(candidate.toolCallId);
+      if (anchored !== undefined) {
+        for (const subagent of anchored) {
+          const parentTurnId = nearestParentTurn(source, subagent, index);
+          blocks.push(parentTurnId === undefined ? subagent : { ...subagent, parentTurnId });
+          inserted.add(subagent.subagentId);
+        }
+        continue;
+      }
+    }
+    blocks.push(candidate);
+  }
+
+  for (const subagent of sorted) {
+    if (inserted.has(subagent.subagentId)) continue;
+    const parentTurnId = nearestParentTurn(blocks, subagent);
+    insertSubagentByTimeline(
+      blocks,
+      parentTurnId === undefined ? subagent : { ...subagent, parentTurnId },
+    );
+  }
+  return blocks;
+}
+
+function mergeCapturedTranscript(
+  fresh: readonly Block[],
+  captured: readonly Block[],
+): readonly Block[] {
+  if (fresh === captured) return fresh;
+  if (fresh.length === 0) return captured;
+  if (captured.length === 0) return fresh;
+  return pairTranscriptBlocks(fresh, captured) as Block[];
+}
+
 export function applySnapshot(
   sessionId: string,
   snapshot: KikiSessionSnapshot,
+  previous?: SessionViewState,
 ): SessionViewState {
-  const blocks = messagesToBlocks(snapshot.messages.items);
+  let blocks = messagesToBlocks(snapshot.messages.items, previous?.blocks);
+  for (const prior of previous?.blocks ?? []) {
+    if (
+      prior.kind !== 'user' ||
+      (prior.promptStatus !== 'running' && prior.promptStatus !== 'queued')
+    ) {
+      continue;
+    }
+    const identity = {
+      userMessageId: prior.userMessageId,
+      promptId: prior.promptId,
+      messageId: prior.id.replace(/^user-/, ''),
+    } satisfies UserBlockIdentity;
+    if (findUserBlock(blocks, identity) !== undefined) continue;
+    const priorAt = blockTimelineMs(prior);
+    const insertionIndex =
+      priorAt === undefined
+        ? -1
+        : blocks.findIndex((candidate) => (blockTimelineMs(candidate) ?? priorAt) > priorAt);
+    if (insertionIndex < 0) blocks.push(prior);
+    else blocks.splice(insertionIndex, 0, prior);
+  }
 
   const inFlight = snapshot.in_flight_turn;
   if (inFlight !== null) {
@@ -1374,6 +1635,12 @@ export function applySnapshot(
   }
 
   const restoredSubagents = (snapshot.subagents ?? []) as readonly RestoredSnapshotSubagent[];
+  const previousSubagents = new Map(
+    (previous?.blocks ?? [])
+      .filter((block): block is SubagentBlock => block.kind === 'subagent')
+      .map((block) => [block.subagentId, block]),
+  );
+  const restoredBlocks: SubagentBlock[] = [];
   for (const subagent of restoredSubagents) {
     const status =
       subagent.subagent_phase === 'failed' || subagent.status === 'failed'
@@ -1383,12 +1650,15 @@ export function applySnapshot(
           : subagent.subagent_phase === 'completed' || subagent.status === 'completed'
             ? 'completed'
             : 'running';
-    blocks.push({
+    const prior = previousSubagents.get(subagent.id);
+    restoredBlocks.push({
       kind: 'subagent',
       id: `subagent-${subagent.id}`,
       subagentId: subagent.id,
       parentAgentId: subagent.parent_agent_id,
       parentToolCallId: subagent.parent_tool_call_id,
+      parentToolCallUuid: subagent.parent_tool_call_uuid ?? prior?.parentToolCallUuid,
+      parentTurnId: prior?.parentTurnId,
       name: subagent.subagent_type ?? subagent.description,
       label: subagent.label,
       description: subagent.description,
@@ -1400,9 +1670,10 @@ export function applySnapshot(
       startedAt: subagent.started_at ?? subagent.created_at,
       endedAt: subagent.completed_at,
       toolCallCount: subagent.tool_call_count ?? 0,
-      transcript: [],
+      transcript: mergeCapturedTranscript([], prior?.transcript ?? []),
     });
   }
+  blocks = insertSubagentBlocks(blocks, restoredBlocks);
 
   for (const approval of snapshot.pending_approvals) {
     blocks.push(approvalBlock(approval));
@@ -2247,6 +2518,8 @@ function applyFrameInternal(
         subagentId: payload.subagentId,
         parentAgentId: payload.parentAgentId ?? existing?.parentAgentId,
         parentToolCallId: payload.parentToolCallId,
+        parentToolCallUuid: payload.parentToolCallUuid ?? existing?.parentToolCallUuid,
+        parentTurnId: existing?.parentTurnId,
         name: payload.subagentName,
         label: existing?.label,
         description: payload.description,
@@ -2260,18 +2533,11 @@ function applyFrameInternal(
         toolCallCount: existing?.toolCallCount ?? 0,
         transcript: existing?.transcript ?? [],
       };
-      const parentIndex = next.blocks.findIndex(
-        (candidate) => candidate.kind === 'tool' && candidate.toolCallId === payload.parentToolCallId,
+      const subagents = next.blocks.filter(
+        (candidate): candidate is SubagentBlock =>
+          candidate.kind === 'subagent' && candidate.subagentId !== payload.subagentId,
       );
-      const withoutParentAndOldBubble = next.blocks.filter(
-        (candidate) =>
-          candidate.id !== key &&
-          !(candidate.kind === 'tool' && candidate.toolCallId === payload.parentToolCallId),
-      );
-      const insertionIndex = parentIndex >= 0 ? Math.min(parentIndex, withoutParentAndOldBubble.length) : withoutParentAndOldBubble.length;
-      const blocks = withoutParentAndOldBubble.slice();
-      blocks.splice(insertionIndex, 0, block);
-      evolve({ blocks });
+      evolve({ blocks: insertSubagentBlocks(next.blocks, [...subagents, block]) });
       break;
     }
     case 'subagent.started': {
@@ -2784,6 +3050,8 @@ function subagentBlocksEqual(a: SubagentBlock, b: SubagentBlock): boolean {
     a.subagentId === b.subagentId &&
     a.parentAgentId === b.parentAgentId &&
     a.parentToolCallId === b.parentToolCallId &&
+    a.parentToolCallUuid === b.parentToolCallUuid &&
+    a.parentTurnId === b.parentTurnId &&
     a.name === b.name &&
     a.label === b.label &&
     a.description === b.description &&
@@ -2799,34 +3067,11 @@ function subagentBlocksEqual(a: SubagentBlock, b: SubagentBlock): boolean {
   );
 }
 
-function insertAtReferencePosition(
-  blocks: Block[],
-  reference: readonly Block[],
-  referenceIndex: number,
-  block: SubagentBlock,
-): void {
-  for (let index = referenceIndex + 1; index < reference.length; index += 1) {
-    const anchor = blocks.findIndex((candidate) => candidate.id === reference[index]!.id);
-    if (anchor >= 0) {
-      blocks.splice(anchor, 0, block);
-      return;
-    }
-  }
-  for (let index = referenceIndex - 1; index >= 0; index -= 1) {
-    const anchor = blocks.findIndex((candidate) => candidate.id === reference[index]!.id);
-    if (anchor >= 0) {
-      blocks.splice(anchor + 1, 0, block);
-      return;
-    }
-  }
-  blocks.push(block);
-}
-
-/** Snapshot/resync cannot reconstruct finished child history. Preserve events
- * this client already observed, while letting the fresh snapshot own live
- * status and roster metadata for agents it still reports. Historical cards
- * keep both their object identity and their prior transcript anchor when the
- * snapshot is semantically unchanged, avoiding resync reorder/remount flashes. */
+/** Snapshot/resync cannot reconstruct finished child history. Preserve and
+ * identity-merge events this client already observed, while letting the fresh
+ * snapshot own live status and roster metadata. Cards are then reinserted by
+ * parent anchor or started-at order so renamed/finalized neighbors cannot sink
+ * them to the transcript tail. */
 export function preserveCapturedSubagents(
   rebuilt: SessionViewState,
   previous: SessionViewState,
@@ -2851,11 +3096,13 @@ export function preserveCapturedSubagents(
       ...block,
       parentAgentId: block.parentAgentId ?? prior.parentAgentId,
       parentToolCallId: block.parentToolCallId ?? prior.parentToolCallId,
+      parentToolCallUuid: block.parentToolCallUuid ?? prior.parentToolCallUuid,
+      parentTurnId: block.parentTurnId ?? prior.parentTurnId,
       label: block.label ?? prior.label,
       model: block.model ?? prior.model,
       thinkingEffort: block.thinkingEffort ?? prior.thinkingEffort,
       toolCallCount: Math.max(block.toolCallCount, prior.toolCallCount),
-      transcript: prior.transcript,
+      transcript: mergeCapturedTranscript(block.transcript, prior.transcript),
       summary: block.summary ?? prior.summary,
       error: block.error ?? prior.error,
     } satisfies SubagentBlock;
@@ -2865,15 +3112,10 @@ export function preserveCapturedSubagents(
     if (!mergedById.has(prior.subagentId)) mergedById.set(prior.subagentId, prior);
   }
 
-  const blocks = rebuilt.blocks.filter((block) => block.kind !== 'subagent') as Block[];
-  for (const prior of captured) {
-    const merged = mergedById.get(prior.subagentId)!;
-    insertAtReferencePosition(blocks, previous.blocks, previous.blocks.indexOf(prior), merged);
-  }
-  for (const block of fresh) {
-    if (capturedById.has(block.subagentId)) continue;
-    insertAtReferencePosition(blocks, rebuilt.blocks, rebuilt.blocks.indexOf(block), block);
-  }
+  const blocks = insertSubagentBlocks(
+    rebuilt.blocks,
+    [...mergedById.values()].sort(compareSubagentTimeline),
+  );
   return { ...rebuilt, version: rebuilt.version + 1, blocks };
 }
 

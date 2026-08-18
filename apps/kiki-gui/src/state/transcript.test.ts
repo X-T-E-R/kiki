@@ -210,6 +210,150 @@ describe('applySnapshot', () => {
     });
   });
 
+  it('embeds snapshot subagents by started_at instead of stacking them at the tail', () => {
+    const state = applySnapshot(
+      'session_test',
+      snapshot({
+        messages: {
+          items: [
+            {
+              id: 'm-user',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: 'delegate' }],
+              created_at: '2026-01-01T00:00:00.000Z',
+            },
+            {
+              id: 'm-assistant',
+              session_id: 'session_test',
+              role: 'assistant',
+              content: [{ type: 'text', text: 'after delegation' }],
+              created_at: '2026-01-01T00:00:02.000Z',
+            },
+          ],
+          has_more: false,
+        },
+        subagents: [
+          {
+            id: 'agent-b',
+            session_id: 'session_test',
+            kind: 'subagent',
+            description: 'Inspect B',
+            status: 'completed',
+            subagent_phase: 'completed',
+            subagent_type: 'explore',
+            parent_agent_id: 'main',
+            created_at: '2026-01-01T00:00:01.000Z',
+            completed_at: '2026-01-01T00:00:01.500Z',
+          },
+          {
+            id: 'agent-a',
+            session_id: 'session_test',
+            kind: 'subagent',
+            description: 'Inspect A',
+            status: 'completed',
+            subagent_phase: 'completed',
+            subagent_type: 'explore',
+            parent_agent_id: 'main',
+            created_at: '2026-01-01T00:00:01.000Z',
+            completed_at: '2026-01-01T00:00:01.500Z',
+          },
+        ] as never,
+      }),
+    );
+
+    expect(state.blocks.map((block) => block.kind)).toEqual([
+      'user',
+      'subagent',
+      'subagent',
+      'assistant',
+    ]);
+    expect(
+      state.blocks
+        .filter((block) => block.kind === 'subagent')
+        .map((block) => block.subagentId),
+    ).toEqual(['agent-a', 'agent-b']);
+  });
+
+  it('merges snapshot user rows by prompt identity and keeps the live user identity', () => {
+    const previous = appendLocalUserMessage(applySnapshot('session_test', snapshot()), {
+      userMessageId: 'm-live',
+      promptId: 'p1',
+      text: 'hello',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      status: 'running',
+    });
+    const state = applySnapshot(
+      'session_test',
+      snapshot({
+        messages: {
+          items: [
+            {
+              id: 'm-rest-1',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: 'hello' }],
+              created_at: '2026-01-01T00:00:00.000Z',
+              prompt_id: 'p1',
+            },
+            {
+              id: 'm-rest-2',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: 'hello' }],
+              created_at: '2026-01-01T00:00:00.000Z',
+              prompt_id: 'p1',
+            },
+          ],
+          has_more: false,
+        },
+      }),
+      previous,
+    );
+
+    const users = state.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({ id: 'user-m-live', userMessageId: 'm-live', promptId: 'p1' });
+  });
+
+  it('keeps captured subagent transcript blocks when a snapshot refreshes the roster', () => {
+    const rosterSnapshot = snapshot({
+      subagents: [
+        {
+          id: 'agent-live',
+          session_id: 'session_test',
+          kind: 'subagent',
+          description: 'Inspect follow-up',
+          status: 'running',
+          subagent_phase: 'running',
+          subagent_type: 'explore',
+          parent_agent_id: 'main',
+          created_at: '2026-01-01T00:00:01.000Z',
+        },
+      ] as never,
+    });
+    const initial = applySnapshot('session_test', rosterSnapshot);
+    const livePrompt: UserBlock = {
+      kind: 'user',
+      id: 'user-turn-2-prompt',
+      text: 'follow up',
+      createdAt: '2026-01-01T00:00:02.000Z',
+      turnId: '2',
+    };
+    const previous = {
+      ...initial,
+      blocks: initial.blocks.map((block) =>
+        block.kind === 'subagent' ? { ...block, transcript: [livePrompt] } : block,
+      ),
+    };
+
+    const rebuilt = applySnapshot('session_test', rosterSnapshot, previous);
+    const restored = rebuilt.blocks.find(
+      (block): block is import('./transcript').SubagentBlock => block.kind === 'subagent',
+    );
+    expect(restored?.transcript).toEqual([livePrompt]);
+  });
+
   it('renders the in-flight turn as streaming blocks and pending approvals', () => {
     const state = applySnapshot(
       'session_test',
@@ -895,6 +1039,96 @@ describe('applyFrame', () => {
     ).state;
     const texts = state.blocks.filter((b) => b.kind === 'assistant').map((b) => b.text);
     expect(texts).toEqual(['step one text', 'step two']);
+  });
+
+  it('matches a spawned subagent to the finalized parent tool UUID first', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = applyFrame(
+      state,
+      frame(
+        {
+          type: 'tool.call.started',
+          turnId: 1,
+          toolCallId: 'call-final-uuid',
+          name: 'Agent',
+          args: { prompt: 'inspect' },
+        },
+        { seq: 11, timestamp: '2026-01-01T00:00:01.000Z' },
+      ),
+    ).state;
+    state = applyFrame(
+      state,
+      frame(
+        {
+          type: 'subagent.spawned',
+          subagentId: 'child-uuid',
+          subagentName: 'Explorer',
+          parentToolCallId: 'call-stream-id',
+          parentToolCallUuid: 'call-final-uuid',
+          runInBackground: false,
+        },
+        { seq: 12, timestamp: '2026-01-01T00:00:02.000Z' },
+      ),
+    ).state;
+
+    expect(state.blocks.map((block) => block.kind)).toEqual(['subagent']);
+    expect(state.blocks[0]).toMatchObject({
+      subagentId: 'child-uuid',
+      parentToolCallId: 'call-stream-id',
+      parentToolCallUuid: 'call-final-uuid',
+    });
+  });
+
+  it('places a late subagent spawn after its finalized parent turn instead of at the tail', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = applyFrame(
+      state,
+      frame(
+        { type: 'assistant.delta', turnId: 1, delta: 'delegating' },
+        { volatile: true, offset: 0, timestamp: '2026-01-01T00:00:01.000Z' },
+      ),
+    ).state;
+    state = applyFrame(
+      state,
+      frame(
+        { type: 'turn.step.started', turnId: 1, step: 2 },
+        { seq: 11, timestamp: '2026-01-01T00:00:01.500Z' },
+      ),
+    ).state;
+    state = applyFrame(
+      state,
+      frame(
+        { type: 'assistant.delta', turnId: 2, delta: 'later output' },
+        { volatile: true, offset: 0, timestamp: '2026-01-01T00:00:03.000Z' },
+      ),
+    ).state;
+    state = applyFrame(
+      state,
+      frame(
+        { type: 'turn.step.started', turnId: 2, step: 2 },
+        { seq: 12, timestamp: '2026-01-01T00:00:03.500Z' },
+      ),
+    ).state;
+    state = applyFrame(
+      state,
+      frame(
+        {
+          type: 'subagent.spawned',
+          subagentId: 'child-late',
+          subagentName: 'Explorer',
+          parentToolCallId: 'finalized-parent-call',
+          runInBackground: false,
+        },
+        { seq: 13, timestamp: '2026-01-01T00:00:02.000Z' },
+      ),
+    ).state;
+
+    expect(state.blocks.map((block) => block.kind)).toEqual([
+      'assistant',
+      'subagent',
+      'assistant',
+    ]);
+    expect(state.blocks[1]).toMatchObject({ subagentId: 'child-late', parentTurnId: '1' });
   });
 
   it('starts from an empty view state', () => {

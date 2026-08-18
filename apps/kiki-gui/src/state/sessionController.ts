@@ -242,7 +242,7 @@ export class SessionController {
     try {
       const snapshot = await this.client.snapshot(this.sessionId);
       if (this.closed) return;
-      this.setState(applySnapshot(this.sessionId, snapshot));
+      this.setState(applySnapshot(this.sessionId, snapshot, this.state));
       this.socket.subscribe(this.sessionId, { seq: snapshot.as_of_seq, epoch: snapshot.epoch });
       await Promise.allSettled([this.refreshPrompts(), this.refreshTasks(), this.refreshGoal()]);
     } catch (error) {
@@ -381,7 +381,7 @@ export class SessionController {
       const snapshot = await this.client.snapshot(this.sessionId);
       if (this.closed) return;
       const rebuilt = preserveCapturedSteers(
-        preserveCapturedSubagents(applySnapshot(this.sessionId, snapshot), this.state),
+        preserveCapturedSubagents(applySnapshot(this.sessionId, snapshot, this.state), this.state),
         this.state,
       );
       this.setState(setResyncing(rebuilt, false));

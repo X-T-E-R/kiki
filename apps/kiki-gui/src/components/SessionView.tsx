@@ -74,6 +74,7 @@ import {
 import {
   agentPath,
   applyNewestAgentPage,
+  blockTurnId,
   mergeAgentTranscript,
   prependOlderAgentPage,
   type AgentHistoryCache,
@@ -1905,16 +1906,23 @@ export function SessionView({
       agentId: selectedAgentId,
       parentToolCallId: selectedSubagent?.parentToolCallId,
     });
+    const spawnTurnId =
+      spawnInstruction?.turnId === undefined
+        ? undefined
+        : blockTurnId({ id: '', kind: 'user', turnId: spawnInstruction.turnId });
+    const hasEquivalentSpawnPrompt = capturedBlocks.some((block) => {
+      if (block.kind !== 'user') return false;
+      const turnId = blockTurnId(block);
+      return turnId !== undefined && (spawnTurnId === undefined || turnId === spawnTurnId);
+    });
     const spawnFallbackBlock: UserBlock | undefined =
-      spawnInstruction?.source === 'spawn-call' &&
-      !capturedBlocks.some(
-        (block) => block.kind === 'user' && block.text.trim() === spawnInstruction.text,
-      )
+      spawnInstruction?.source === 'spawn-call' && !hasEquivalentSpawnPrompt
         ? {
             kind: 'user',
             id: `user-agent-spawn-${selectedAgentId}`,
             text: spawnInstruction.text,
             createdAt: selectedNode?.startedAt ?? selectedSubagent?.startedAt ?? '',
+            turnId: spawnInstruction.turnId,
           }
         : undefined;
     const historyKey =

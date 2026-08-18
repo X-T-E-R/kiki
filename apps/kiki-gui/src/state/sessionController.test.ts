@@ -456,6 +456,66 @@ describe('SessionController pipeline', () => {
     controller.close();
   });
 
+  it('does not duplicate a locally echoed user message after snapshot resync', async () => {
+    const { controller, client } = await openController();
+    const prompt = {
+      prompt_id: 'p-resync',
+      user_message_id: 'm-live',
+      status: 'running' as const,
+      content: [{ type: 'text' as const, text: 'keep one bubble' }],
+      created_at: '2026-01-01T00:00:02.000Z',
+    };
+    client.submitPrompt.mockResolvedValue(prompt);
+    await controller.sendPrompt({ text: 'keep one bubble', permissionMode: 'manual' });
+
+    client.snapshot.mockResolvedValue(
+      snapshot({
+        messages: {
+          items: [
+            {
+              id: 'm-rest-1',
+              session_id: 'session_test',
+              role: 'user',
+              content: prompt.content,
+              created_at: prompt.created_at,
+              prompt_id: prompt.prompt_id,
+            },
+            {
+              id: 'm-rest-2',
+              session_id: 'session_test',
+              role: 'user',
+              content: prompt.content,
+              created_at: prompt.created_at,
+              prompt_id: prompt.prompt_id,
+            },
+          ],
+          has_more: false,
+        },
+        in_flight_turn: {
+          turn_id: 1,
+          current_prompt_id: prompt.prompt_id,
+          assistant_text: '',
+          thinking_text: '',
+          running_tools: [],
+        },
+      }),
+    );
+    client.listPrompts.mockResolvedValue({ active: prompt, queued: [] });
+
+    await controller.resync();
+
+    const users = controller
+      .getState()
+      .blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({
+      id: 'user-m-live',
+      userMessageId: 'm-live',
+      promptId: 'p-resync',
+    });
+    controller.close();
+  });
+
   it('forwards the effort selected in Composer with the next prompt request', async () => {
     const { controller, client } = await openController();
     client.submitPrompt.mockResolvedValue({
