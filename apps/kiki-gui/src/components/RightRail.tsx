@@ -113,12 +113,15 @@ function taskStatusTone(status: Task['status']): string {
 
 const TasksSection = memo(function TasksSection({
   tasks,
+  sessionId,
   onCancel,
 }: {
   tasks: readonly Task[];
+  sessionId?: string;
   onCancel: (taskId: string) => void;
 }) {
   const { t } = useI18n();
+  const navigate = useNavigate();
   if (tasks.length === 0) {
     return <p className="text-[12px] text-ink-faint">{t('rail.noTasks')}</p>;
   }
@@ -156,6 +159,17 @@ const TasksSection = memo(function TasksSection({
           </li>
         ))}
       </ul>
+      {sessionId !== undefined ? (
+        <div className="sticky bottom-0 bg-panel pt-1.5 pb-0.5">
+          <button
+            type="button"
+            onClick={() => void navigate(`/s/${sessionId}/tasks`)}
+            className="text-[10.5px] font-medium text-accent transition-colors hover:text-accent-deep"
+          >
+            {t('tasks.viewAll')}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 });
@@ -311,7 +325,7 @@ export function RightRail({
 
       {showTasks ? (
         <RailSection title={t('rail.tasks')}>
-          <TasksSection tasks={backgroundTasks} onCancel={onCancelTask} />
+          <TasksSection tasks={backgroundTasks} sessionId={session?.id} onCancel={onCancelTask} />
         </RailSection>
       ) : null}
 

@@ -5,6 +5,7 @@
  *   /                → redirect to last session or /new
  *   /new             → full-page draft conversation
  *   /s/:id           → live session view
+ *   /s/:id/tasks     → session background-task browser
  *   /settings/:section? → settings panel
  *
  * Global actions: Ctrl+N / the sidebar button navigate to the /new draft page
@@ -39,6 +40,7 @@ import { SessionRouteView } from './components/SessionView';
 import { SettingsPage } from './components/SettingsPage';
 import { ShortcutsOverlay } from './components/ShortcutsOverlay';
 import { Sidebar } from './components/Sidebar';
+import { TasksPage } from './components/TasksPage';
 import { Toasts } from './components/Toasts';
 import { UsagePage } from './components/UsagePage';
 import {
@@ -357,6 +359,12 @@ export function App() {
           <Route
             path="/capabilities"
             element={<CapabilitiesPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
+          />
+          {/* More specific than the `/s/:id/*` splat, so the tasks browser wins
+              over SessionRouteView while the sidebar keeps the session active. */}
+          <Route
+            path="/s/:id/tasks"
+            element={<TasksPage onToggleSidebar={() => { setSidebarOpen((value) => !value); }} />}
           />
           <Route path="*" element={<RootRedirect />} />
         </Routes>
