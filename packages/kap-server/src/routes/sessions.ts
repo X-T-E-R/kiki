@@ -86,6 +86,7 @@ import {
   IAgentFullCompactionService,
   IAgentLoopService,
   IAgentLifecycleService,
+  IAgentUsageService,
   IAuthSummaryService,
   ISessionActivityView,
   ISessionBtwService,
@@ -1255,28 +1256,29 @@ export function resolveSessionFacts(core: Scope, sessionId: string): SessionFact
       live: false,
     };
   }
-  const main = handle.accessor
-    .get(IAgentLifecycleService)
-    .list()
-    .find((agent) => agent.id === MAIN_AGENT_ID);
+  const agents = handle.accessor.get(IAgentLifecycleService).list();
+  const main = agents.find((agent) => agent.id === MAIN_AGENT_ID);
   return {
     ...handle.accessor.get(ISessionActivityView).state(),
-    usage: main === undefined ? undefined : readMainAgentSessionUsage(main),
+    usage: main === undefined ? undefined : readSessionUsage(main, agents),
     live: true,
   };
 }
 
-function readMainAgentSessionUsage(main: IAgentScopeHandle): SessionUsage | undefined {
+function readSessionUsage(
+  main: IAgentScopeHandle,
+  agents: readonly IAgentScopeHandle[],
+): SessionUsage | undefined {
   try {
     const status = readLegacyStatus(main);
     if (status === undefined) return undefined;
     const total = status.usage?.total;
     const activity = main.accessor.get(IAgentActivityView).state();
     const latestTurnId = activity.turn?.turnId ?? activity.lastTurn?.turnId;
-    // The session wire has one usage bucket but v2 owns usage per Agent scope.
-    // Project the main agent only rather than inventing an edge-level subagent
-    // aggregate; a Session-scoped usage service can replace this when one exists.
-    return {
+    // Token usage is the sum of every materialized Agent scope in the session.
+    // Context and turn_count remain main-agent facts: subagent turns are not
+    // session conversation turns, and unreadable subagent usage is skipped.
+    const usage: SessionUsage = {
       input_tokens: total?.inputOther ?? 0,
       output_tokens: total?.output ?? 0,
       cache_read_tokens: total?.inputCacheRead ?? 0,
@@ -1286,6 +1288,19 @@ function readMainAgentSessionUsage(main: IAgentScopeHandle): SessionUsage | unde
       context_limit: status.maxContextTokens ?? 0,
       turn_count: latestTurnId === undefined ? 0 : latestTurnId + 1,
     };
+    for (const agent of agents) {
+      if (agent.id === MAIN_AGENT_ID) continue;
+      try {
+        const agentTotal = agent.accessor.get(IAgentUsageService).status().total;
+        usage.input_tokens += agentTotal?.inputOther ?? 0;
+        usage.output_tokens += agentTotal?.output ?? 0;
+        usage.cache_read_tokens += agentTotal?.inputCacheRead ?? 0;
+        usage.cache_creation_tokens += agentTotal?.inputCacheCreation ?? 0;
+      } catch {
+        // A partially materialized subagent must not block session projection.
+      }
+    }
+    return usage;
   } catch {
     return undefined;
   }

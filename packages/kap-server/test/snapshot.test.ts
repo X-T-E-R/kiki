@@ -324,6 +324,59 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
     });
   });
 
+  it('includes subagent usage in the snapshot session aggregate', async () => {
+    const sid = await createSession();
+    await ensureMainAgent(sid);
+    const session = getLiveSessionById(server!.core.accessor, sid);
+    if (session === undefined) throw new Error('expected a live session');
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    const main = lifecycle.get('main');
+    if (main === undefined) throw new Error('expected a live main agent');
+    const child = await lifecycle.create({ agentId: 'worker-1' });
+    main.accessor.get(IAgentUsageService).record('example-model', {
+      inputOther: 13,
+      output: 8,
+      inputCacheRead: 5,
+      inputCacheCreation: 2,
+    });
+    child.accessor.get(IAgentUsageService).record('example-model', {
+      inputOther: 7,
+      output: 3,
+      inputCacheRead: 4,
+      inputCacheCreation: 6,
+    });
+    emit(sid, {
+      type: 'turn.started',
+      turnId: 0,
+      origin: { kind: 'user' },
+    } as unknown as DomainEvent);
+    emit(sid, {
+      type: 'turn.ended',
+      turnId: 0,
+      reason: 'completed',
+    } as unknown as DomainEvent);
+    child.accessor.get(IEventBus).publish({
+      type: 'turn.started',
+      turnId: 4,
+      origin: { kind: 'user' },
+    } as unknown as DomainEvent);
+    child.accessor.get(IEventBus).publish({
+      type: 'turn.ended',
+      turnId: 4,
+      reason: 'completed',
+    } as unknown as DomainEvent);
+
+    const snap = await snapshot(sid);
+    expect(snap.session.usage).toMatchObject({
+      input_tokens: 20,
+      output_tokens: 11,
+      cache_read_tokens: 9,
+      cache_creation_tokens: 8,
+      total_cost_usd: 0,
+      turn_count: 1,
+    });
+  });
+
   it('reflects the durable watermark and in-flight turn after events', async () => {
     const sid = await createSession();
     await ensureMainAgent(sid);

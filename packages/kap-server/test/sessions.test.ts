@@ -771,6 +771,100 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(listed.body.data.items.find((item) => item.id === id)?.usage).toMatchObject(expected);
   });
 
+  it('includes subagent usage while keeping turn_count on the main agent', async () => {
+    const cwd = home as string;
+    const created = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });
+    const id = created.body.data.id;
+    const session = getLiveSessionById((server as RunningServer).core.accessor, id);
+    if (session === undefined) throw new Error('expected a live session');
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    const main = lifecycle.get(MAIN_AGENT_ID) ?? (await lifecycle.create({ agentId: MAIN_AGENT_ID }));
+    const child = await lifecycle.create({ agentId: 'worker-1' });
+
+    main.accessor.get(IAgentUsageService).record('example-model', {
+      inputOther: 11,
+      output: 7,
+      inputCacheRead: 5,
+      inputCacheCreation: 3,
+    });
+    child.accessor.get(IAgentUsageService).record('example-model', {
+      inputOther: 4,
+      output: 6,
+      inputCacheRead: 8,
+      inputCacheCreation: 10,
+    });
+    main.accessor.get(IEventBus).publish({
+      type: 'turn.started',
+      turnId: 0,
+      origin: { kind: 'user' },
+    } as unknown as DomainEvent);
+    main.accessor.get(IEventBus).publish({
+      type: 'turn.ended',
+      turnId: 0,
+      reason: 'completed',
+    } as unknown as DomainEvent);
+    child.accessor.get(IEventBus).publish({
+      type: 'turn.started',
+      turnId: 8,
+      origin: { kind: 'user' },
+    } as unknown as DomainEvent);
+    child.accessor.get(IEventBus).publish({
+      type: 'turn.ended',
+      turnId: 8,
+      reason: 'completed',
+    } as unknown as DomainEvent);
+
+    const expected = {
+      input_tokens: 15,
+      output_tokens: 13,
+      cache_read_tokens: 13,
+      cache_creation_tokens: 13,
+      total_cost_usd: 0,
+      turn_count: 1,
+    };
+    const got = await getJson<SessionWire>(`/api/v1/sessions/${id}`);
+    expect(got.body.data.usage).toMatchObject(expected);
+    const listed = await getJson<PageWire>('/api/v1/sessions');
+    expect(listed.body.data.items.find((item) => item.id === id)?.usage).toMatchObject(expected);
+  });
+
+  it('skips unreadable subagent usage during session projection', async () => {
+    const cwd = home as string;
+    const created = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });
+    const id = created.body.data.id;
+    const session = getLiveSessionById((server as RunningServer).core.accessor, id);
+    if (session === undefined) throw new Error('expected a live session');
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    const main = lifecycle.get(MAIN_AGENT_ID) ?? (await lifecycle.create({ agentId: MAIN_AGENT_ID }));
+    const materialized = lifecycle.list();
+    vi.spyOn(lifecycle, 'list').mockReturnValue([
+      ...materialized,
+      {
+        id: 'partial-worker',
+        accessor: {
+          get: () => {
+            throw new Error('usage unavailable');
+          },
+        },
+      } as never,
+    ]);
+    main.accessor.get(IAgentUsageService).record('example-model', {
+      inputOther: 3,
+      output: 2,
+      inputCacheRead: 1,
+      inputCacheCreation: 4,
+    });
+
+    const got = await getJson<SessionWire>(`/api/v1/sessions/${id}`);
+    expect(got.body.code).toBe(0);
+    expect(got.body.data.usage).toMatchObject({
+      input_tokens: 3,
+      output_tokens: 2,
+      cache_read_tokens: 1,
+      cache_creation_tokens: 4,
+    });
+  });
+
   it('returns best-effort status for a live session', async () => {
     const cwd = home as string;
     const created = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });
