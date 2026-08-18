@@ -224,6 +224,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
           archivedAt: this.data.archivedAt,
           custom: this.data.custom,
           lastTurnReason: this.data.lastTurnReason,
+          usage: this.data.usage,
         }),
       );
     } catch (error) {
@@ -280,6 +281,10 @@ function agentMetaEquals(a: AgentMeta, b: AgentMeta): boolean {
     delegatorEquals(a.delegator, b.delegator) &&
     a.forkedFrom === b.forkedFrom &&
     a.swarmItem === b.swarmItem &&
+    a.displayName === b.displayName &&
+    a.userLabel === b.userLabel &&
+    a.model === b.model &&
+    a.thinkingEffort === b.thinkingEffort &&
     recordEquals(a.labels, b.labels)
   );
 }

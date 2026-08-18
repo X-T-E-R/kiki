@@ -239,6 +239,8 @@ function snapshotSubagentCandidates(
         subagent_type: meta.displayName,
         parent_agent_id: subagentParentAgentId(meta),
         label: userLabel,
+        model: meta.model,
+        thinking_effort: meta.thinkingEffort,
         tool_call_count: 0,
         created_at: new Date(sessionCreatedAt).toISOString(),
       },

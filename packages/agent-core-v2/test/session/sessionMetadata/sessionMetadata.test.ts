@@ -198,6 +198,33 @@ describe('SessionMetadata', () => {
     expect(mirror.recorded[0]).toMatchObject({ id: 's1', archived: false });
   });
 
+  it('persists aggregate usage into metadata and the session-index mirror', async () => {
+    const usage = {
+      total: {
+        inputOther: 15,
+        output: 13,
+        inputCacheRead: 13,
+        inputCacheCreation: 13,
+      },
+      byModel: {
+        'example-model': {
+          inputOther: 15,
+          output: 13,
+          inputCacheRead: 13,
+          inputCacheCreation: 13,
+        },
+      },
+    };
+    const meta = ix.get(ISessionMetadata);
+    await meta.ready;
+
+    await meta.update({ usage }, { touchUpdatedAt: false });
+
+    expect((await meta.read()).usage).toEqual(usage);
+    expect(mirror.recorded.at(-1)?.usage).toEqual(usage);
+    expect((await createFreshMetadata(ix).read()).usage).toEqual(usage);
+  });
+
   it('persists the authoritative document before recording to the mirror', async () => {
     const store = ix.get(IAtomicDocumentStore);
     // Read the persisted document back from inside record(): at that point
@@ -572,6 +599,25 @@ describe('SessionMetadata', () => {
       'agent-0',
       'agent-1',
     ]);
+  });
+
+  it('persists and reloads an agent model binding symmetrically', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.registerAgent('agent-model', {
+      type: 'sub',
+      displayName: 'explore',
+      model: 'provider/subagent-model',
+      thinkingEffort: 'high',
+    });
+
+    const fresh = createFreshMetadata(ix);
+
+    expect((await fresh.read()).agents?.['agent-model']).toEqual({
+      type: 'sub',
+      displayName: 'explore',
+      model: 'provider/subagent-model',
+      thinkingEffort: 'high',
+    });
   });
 
   it('treats re-registering an unchanged agent as a no-op', async () => {

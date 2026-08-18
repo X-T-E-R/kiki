@@ -109,6 +109,7 @@ import {
   type IAgentScopeHandle,
   type Scope,
   type SessionSummary,
+  type SessionUsageSummary,
 } from '@moonshot-ai/agent-core-v2';
 import { toRestContextBreakdown } from '../protocol/context-usage';
 import { ErrorCode } from '../protocol/error-codes';
@@ -463,7 +464,7 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
             if (raw.exclude_empty === true && (summary.lastPrompt ?? '').length === 0) continue;
             if (archivedOnly) {
               if (!summary.archived) continue;
-              const facts = resolveSessionFacts(core, summary.id);
+              const facts = resolveSessionFacts(core, summary.id, summary.usage);
               if (raw.busy !== undefined && facts.busy !== raw.busy) continue;
               collected.push({ summary, cwd, facts });
             } else {
@@ -493,7 +494,11 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
           eligible.push({ summary, cwd });
         }
         const projected = eligible.map(({ summary, cwd }) =>
-          toWireSession(summary, cwd, resolveSessionFacts(core, summary.id)),
+          toWireSession(
+            summary,
+            cwd,
+            resolveSessionFacts(core, summary.id, summary.usage),
+          ),
         );
         // v1 filters ordinary lists by the busy fact post-page.
         const items =
@@ -507,7 +512,11 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
       const pageSize = raw.page_size ?? DEFAULT_SESSION_LIST_PAGE_SIZE;
       const { visible, hasMore } = await collect(pageSize);
       const projected = visible.map(({ summary, cwd, facts }) =>
-        toWireSession(summary, cwd, facts ?? resolveSessionFacts(core, summary.id)),
+        toWireSession(
+          summary,
+          cwd,
+          facts ?? resolveSessionFacts(core, summary.id, summary.usage),
+        ),
       );
       // v1 filters ordinary lists by the busy fact post-page; `archived_only`
       // already applied it during the drain above.
@@ -561,7 +570,14 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
         return;
       }
       reply.send(
-        okEnvelope(toWireSession(summary, cwd, resolveSessionFacts(core, session_id)), req.id),
+        okEnvelope(
+          toWireSession(
+            summary,
+            cwd,
+            resolveSessionFacts(core, session_id, summary.usage),
+          ),
+          req.id,
+        ),
       );
     },
   );
@@ -606,7 +622,14 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
         return;
       }
       reply.send(
-        okEnvelope(toWireSession(summary, cwd, resolveSessionFacts(core, session_id)), req.id),
+        okEnvelope(
+          toWireSession(
+            summary,
+            cwd,
+            resolveSessionFacts(core, session_id, summary.usage),
+          ),
+          req.id,
+        ),
       );
     },
   );
@@ -975,7 +998,7 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
           toWireSession(
             summary,
             summary.cwd ?? roots.get(summary.workspaceId) ?? '',
-            resolveSessionFacts(core, summary.id),
+            resolveSessionFacts(core, summary.id, summary.usage),
           ),
         );
         // v1 filters the projected page by the busy fact (post-page); `has_more`
@@ -1250,13 +1273,24 @@ export interface SessionFacts {
  * `failed`). A cold session (no live handle) is not busy and carries no
  * outcome.
  */
-export function resolveSessionFacts(core: Scope, sessionId: string): SessionFacts {
+export function resolveSessionFacts(
+  core: Scope,
+  sessionId: string,
+  persistedUsage?: SessionUsageSummary,
+): SessionFacts {
   const handle = getLiveSessionById(core.accessor, sessionId);
   if (handle === undefined) {
     return {
       busy: false,
       mainTurnActive: false,
       pendingInteraction: 'none',
+      usage:
+        persistedUsage === undefined
+          ? undefined
+          : readPersistedSessionUsage(
+              persistedUsage,
+              core.accessor.get(IModelPricingService),
+            ),
       live: false,
     };
   }
@@ -1297,6 +1331,48 @@ function addModelUsage(
     accumulated.inputCacheCreation += modelUsage.inputCacheCreation ?? 0;
     target.set(model, accumulated);
   }
+}
+
+function applyModelPricing(
+  usage: SessionUsage,
+  byModel: ReadonlyMap<string, MutableModelTokenUsage>,
+  pricing: IModelPricingService,
+): void {
+  const costByModel: Record<string, number> = {};
+  const unknownModels: string[] = [];
+  for (const [model, modelUsage] of byModel) {
+    const cost = pricing.calculate(model, modelUsage);
+    if (cost === undefined) {
+      unknownModels.push(model);
+    } else {
+      costByModel[model] = cost;
+      usage.total_cost_usd += cost;
+    }
+  }
+  usage.by_model = Object.keys(costByModel).length === 0 ? undefined : costByModel;
+  usage.cost_unknown_models =
+    unknownModels.length === 0 ? undefined : unknownModels.toSorted();
+}
+
+function readPersistedSessionUsage(
+  persisted: SessionUsageSummary | undefined,
+  pricing: IModelPricingService,
+): SessionUsage | undefined {
+  if (persisted === undefined) return undefined;
+  const byModel = new Map<string, MutableModelTokenUsage>();
+  addModelUsage(byModel, persisted.byModel);
+  const usage: SessionUsage = {
+    input_tokens: persisted.total.inputOther,
+    output_tokens: persisted.total.output,
+    cache_read_tokens: persisted.total.inputCacheRead,
+    cache_creation_tokens: persisted.total.inputCacheCreation,
+    total_cost_usd: 0,
+    context_tokens: 0,
+    context_limit: 0,
+    turn_count: 0,
+  };
+  applyModelPricing(usage, byModel, pricing);
+  return usage;
 }
 
 function readSessionUsage(
@@ -1340,20 +1416,7 @@ function readSessionUsage(
       }
     }
 
-    const costByModel: Record<string, number> = {};
-    const unknownModels: string[] = [];
-    for (const [model, modelUsage] of byModel) {
-      const cost = pricing.calculate(model, modelUsage);
-      if (cost === undefined) {
-        unknownModels.push(model);
-      } else {
-        costByModel[model] = cost;
-        usage.total_cost_usd += cost;
-      }
-    }
-    usage.by_model = Object.keys(costByModel).length === 0 ? undefined : costByModel;
-    usage.cost_unknown_models =
-      unknownModels.length === 0 ? undefined : unknownModels.toSorted();
+    applyModelPricing(usage, byModel, pricing);
     return usage;
   } catch {
     return undefined;

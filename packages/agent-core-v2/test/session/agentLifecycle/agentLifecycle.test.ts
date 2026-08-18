@@ -549,6 +549,18 @@ describe('AgentLifecycleService', () => {
   });
 
   it('persists complete agent metadata when creating a child', async () => {
+    ix.stub(IAppendLogStore, recordingAppendLog([
+      createWireMetadataRecord(1),
+      {
+        type: 'profile.bind',
+        modelAlias: 'provider/child-model',
+        profileName: 'explore',
+        thinkingEffort: 'high',
+        systemPrompt: '',
+        disallowedTools: [],
+        time: 2,
+      },
+    ]).store);
     const svc = ix.get(IAgentLifecycleService);
 
     const child = await svc.create({
@@ -565,9 +577,49 @@ describe('AgentLifecycleService', () => {
       parentAgentId: 'main',
       forkedFrom: 'main',
       labels: { swarmItem: 'swarm-item-1' },
-      displayName: undefined,
+      displayName: 'explore',
       userLabel: 'Review usage accounting',
+      model: 'provider/child-model',
+      thinkingEffort: 'high',
     });
+  });
+
+  it('keeps a persisted display name when restored profile metadata differs', async () => {
+    ix.stub(IAppendLogStore, recordingAppendLog([
+      createWireMetadataRecord(1),
+      {
+        type: 'profile.bind',
+        profileName: 'explore',
+        routeId: 'reviewer-route',
+        thinkingEffort: 'off',
+        systemPrompt: '',
+        disallowedTools: [],
+        time: 2,
+      },
+    ]).store);
+    ix.stub(ISessionMetadata, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChangeMetadata: () => ({ dispose: () => {} }),
+      read: () => Promise.resolve({
+        id: 'sess_test',
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+        agents: { child: { type: 'sub', displayName: 'trusted-name' } },
+      }),
+      update: () => Promise.resolve(),
+      setTitle: () => Promise.resolve(),
+      setArchived: () => Promise.resolve(),
+      registerAgent,
+    });
+
+    await ix.get(IAgentLifecycleService).create({ agentId: 'child' });
+
+    expect(registerAgent).toHaveBeenCalledWith(
+      'child',
+      expect.objectContaining({ displayName: 'trusted-name' }),
+    );
   });
 
   it('seals a fresh wire log with the metadata envelope as the first record', async () => {

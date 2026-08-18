@@ -32,6 +32,7 @@
  */
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+import type { TokenUsage } from '#/kosong/contract/usage';
 import type { Page } from '#/persistence/interface/queryStore';
 
 export const PARENT_SESSION_ID_KEY = 'parent_session_id';
@@ -39,6 +40,11 @@ export const PARENT_SESSION_ID_KEY = 'parent_session_id';
 export const CHILD_SESSION_KIND_KEY = 'child_session_kind';
 
 export const CHILD_SESSION_KIND = 'child';
+
+export interface SessionUsageSummary {
+  readonly total: TokenUsage;
+  readonly byModel?: Readonly<Record<string, TokenUsage>>;
+}
 
 export interface SessionSummary {
   readonly id: string;
@@ -54,6 +60,7 @@ export interface SessionSummary {
   readonly archivedAt?: number;
   readonly custom?: Record<string, unknown>;
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
+  readonly usage?: SessionUsageSummary;
 }
 
 export interface SessionListQuery {

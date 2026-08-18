@@ -142,6 +142,45 @@ describe('FileSessionIndex (legacy)', () => {
     expect(await store.get('missing')).toBeUndefined();
   });
 
+  it('projects persisted aggregate usage from the authoritative metadata document', async () => {
+    await seedSession('with-usage', {
+      usage: {
+        total: {
+          inputOther: 11,
+          output: 7,
+          inputCacheRead: 5,
+          inputCacheCreation: 3,
+        },
+        byModel: {
+          'example-model': {
+            inputOther: 11,
+            output: 7,
+            inputCacheRead: 5,
+            inputCacheCreation: 3,
+          },
+        },
+      },
+    });
+
+    const store = build();
+    expect((await store.get('with-usage'))?.usage).toEqual({
+      total: {
+        inputOther: 11,
+        output: 7,
+        inputCacheRead: 5,
+        inputCacheCreation: 3,
+      },
+      byModel: {
+        'example-model': {
+          inputOther: 11,
+          output: 7,
+          inputCacheRead: 5,
+          inputCacheCreation: 3,
+        },
+      },
+    });
+  });
+
   it('recovers cwd from the metadata document (v2 cwd, v1 workDir, custom.cwd)', async () => {
     await seedSession('v2', { cwd: '/repo/v2' });
     await seedSession('v1', { workDir: '/repo/v1' });

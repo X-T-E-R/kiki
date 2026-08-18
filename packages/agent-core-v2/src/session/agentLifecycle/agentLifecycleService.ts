@@ -366,8 +366,10 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         delegator: opts.delegator,
         forkedFrom: opts.forkedFrom,
         labels: opts.labels,
-        displayName: profile.routeId ?? profile.profileName ?? priorAgentMeta?.displayName,
+        displayName: priorAgentMeta?.displayName ?? profile.routeId ?? profile.profileName,
         userLabel: opts.userLabel ?? priorAgentMeta?.userLabel,
+        model: profile.modelAlias,
+        thinkingEffort: profile.thinkingLevel,
       });
       if (opts.deferCreateEvent === true) this.deferredCreateEvents.add(agentId);
       else this.onDidCreateEmitter.fire(handle);

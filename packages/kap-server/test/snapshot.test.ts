@@ -517,6 +517,8 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
       labels: { parentAgentId: 'main', swarmItem: 'Research API limits' },
       displayName: 'explore',
       userLabel: 'Research API limits',
+      model: 'provider/subagent-model',
+      thinkingEffort: 'high',
     });
 
     await server!.close();
@@ -533,6 +535,8 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
         subagent_type: 'explore',
         parent_agent_id: 'main',
         label: 'Research API limits',
+        model: 'provider/subagent-model',
+        thinking_effort: 'high',
         tool_call_count: 1,
       }),
     ]);

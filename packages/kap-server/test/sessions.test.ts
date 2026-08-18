@@ -866,6 +866,58 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(got.body.data.usage.cost_unknown_models).toEqual(['dashscope/qwen3-max']);
   });
 
+  it('returns persisted aggregate usage and pricing for a cold session', async () => {
+    const cwd = home as string;
+    const created = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });
+    const id = created.body.data.id;
+    const session = getLiveSessionById((server as RunningServer).core.accessor, id);
+    if (session === undefined) throw new Error('expected a live session');
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    const main = lifecycle.get(MAIN_AGENT_ID) ?? (await lifecycle.create({ agentId: MAIN_AGENT_ID }));
+    const child = await lifecycle.create({ agentId: 'cold-usage-worker' });
+
+    main.accessor.get(IAgentUsageService).record('claude-sonnet-4-5', {
+      inputOther: 10,
+      output: 2,
+      inputCacheRead: 4,
+      inputCacheCreation: 1,
+    });
+    child.accessor.get(IAgentUsageService).record('claude-sonnet-4-5', {
+      inputOther: 1,
+      output: 1,
+      inputCacheRead: 0,
+      inputCacheCreation: 0,
+    });
+    child.accessor.get(IAgentUsageService).record('dashscope/qwen3-max', {
+      inputOther: 100,
+      output: 20,
+      inputCacheRead: 0,
+      inputCacheCreation: 0,
+    });
+
+    await closeSessionById((server as RunningServer).core.accessor, id);
+    expect(getLiveSessionById((server as RunningServer).core.accessor, id)).toBeUndefined();
+
+    const got = await getJson<SessionWire>(`/api/v1/sessions/${id}`);
+    expect(got.body.data.usage).toMatchObject({
+      input_tokens: 111,
+      output_tokens: 23,
+      cache_read_tokens: 4,
+      cache_creation_tokens: 1,
+      context_tokens: 0,
+      context_limit: 0,
+      turn_count: 0,
+      cost_unknown_models: ['dashscope/qwen3-max'],
+    });
+    expect(got.body.data.usage.total_cost_usd).toBeCloseTo(0.00008295, 12);
+    expect(got.body.data.usage.by_model?.['claude-sonnet-4-5']).toBeCloseTo(0.00008295, 12);
+
+    const listed = await getJson<PageWire>('/api/v1/sessions');
+    expect(listed.body.data.items.find((item) => item.id === id)?.usage).toEqual(
+      got.body.data.usage,
+    );
+  });
+
   it('skips unreadable subagent usage during session projection', async () => {
     const cwd = home as string;
     const created = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });

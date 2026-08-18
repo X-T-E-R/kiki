@@ -13,6 +13,7 @@
 
 import type { Event } from '#/_base/event';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+import type { SessionUsageSummary } from '#/app/sessionIndex/sessionIndex';
 
 export interface AgentMeta {
   readonly homedir?: string;
@@ -24,6 +25,8 @@ export interface AgentMeta {
   readonly swarmItem?: string;
   readonly displayName?: string;
   readonly userLabel?: string;
+  readonly model?: string;
+  readonly thinkingEffort?: string;
 }
 
 export type DelegatorRef =
@@ -49,6 +52,7 @@ export interface SessionMeta {
   readonly agents?: Readonly<Record<string, AgentMeta>>;
   readonly custom?: Record<string, unknown>;
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
+  readonly usage?: SessionUsageSummary;
 }
 
 export type SessionMetaPatch = Partial<Omit<SessionMeta, 'id' | 'createdAt'>>;

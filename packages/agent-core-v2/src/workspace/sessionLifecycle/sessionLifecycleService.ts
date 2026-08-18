@@ -131,6 +131,7 @@ import {
   ISessionIndex,
   ISessionIndexMirror,
   PARENT_SESSION_ID_KEY,
+  type SessionUsageSummary,
 } from '#/app/sessionIndex/sessionIndex';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { ErrorCodes, Error2, isError2 } from '#/errors';
@@ -143,6 +144,7 @@ import {
 } from '#/persistence/interface/storage';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
+import { IAgentUsageService } from '#/agent/usage/usage';
 import { labelsFromAgentMeta } from '#/session/agentLifecycle/subagentMetadata';
 import { ISessionContext, sessionContextSeed } from '#/session/sessionContext/sessionContext';
 import { sessionEphemeralMcpServersSeed } from '#/session/mcp/ephemeralMcpServers';
@@ -160,6 +162,7 @@ import {
   createWireMetadataRecord,
   type WireRecord,
 } from '#/wire/record';
+import { addUsage, type TokenUsage } from '#/kosong/contract/usage';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IProviderService } from '#/kosong/provider/provider';
@@ -217,6 +220,39 @@ const SESSION_CREATE_RELOAD_SKILL_SOURCES: readonly string[] = [
   'extra',
   PLUGIN_SKILL_SOURCE_ID,
 ];
+
+function addUsageByModel(
+  target: Record<string, TokenUsage>,
+  byModel: Readonly<Record<string, TokenUsage>> | undefined,
+): TokenUsage | undefined {
+  if (byModel === undefined) return undefined;
+  let total: TokenUsage | undefined;
+  for (const [model, usage] of Object.entries(byModel)) {
+    target[model] = target[model] === undefined ? { ...usage } : addUsage(target[model], usage);
+    total = total === undefined ? { ...usage } : addUsage(total, usage);
+  }
+  return total;
+}
+
+function aggregateSessionUsage(handle: ISessionScopeHandle): SessionUsageSummary | undefined {
+  let total: TokenUsage | undefined;
+  const byModel: Record<string, TokenUsage> = {};
+  for (const agent of handle.accessor.get(IAgentLifecycleService).list()) {
+    try {
+      const status = agent.accessor.get(IAgentUsageService).status();
+      const byModelTotal = addUsageByModel(byModel, status.byModel);
+      const agentTotal = status.total ?? byModelTotal;
+      if (agentTotal !== undefined) {
+        total = total === undefined ? { ...agentTotal } : addUsage(total, agentTotal);
+      }
+    } catch {}
+  }
+  if (total === undefined) return undefined;
+  return {
+    total,
+    byModel: Object.keys(byModel).length === 0 ? undefined : byModel,
+  };
+}
 
 // NOTE: stays Disposable — its own 'get' and 'config' collide with the Fiber
 export class SessionLifecycleService extends Disposable implements ISessionLifecycleService {
@@ -538,6 +574,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const handle = this.sessions.get(sessionId);
     if (handle === undefined) return;
     await this.announceWillClose({ sessionId, handle, reason: 'exit' });
+    await this.persistUsage(handle);
     this.sessions.delete(sessionId);
     await this.drainAgents(handle);
     await drainSessionMetadataWrites();
@@ -552,6 +589,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (handle === undefined) return;
     const meta = handle.accessor.get(ISessionMetadata);
     await meta.setArchived(true);
+    await this.persistUsage(handle);
     await this.drainAgents(handle);
     this.event.publish({
       type: 'event.session.archived',
@@ -598,6 +636,14 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
 
   private async announceWillClose(event: SessionWillCloseEvent): Promise<void> {
     await this._onWillCloseSession.fireAsync(event, NO_ABORT);
+  }
+
+  private async persistUsage(handle: ISessionScopeHandle): Promise<void> {
+    const usage = aggregateSessionUsage(handle);
+    if (usage === undefined) return;
+    await handle.accessor
+      .get(ISessionMetadata)
+      .update({ usage }, { touchUpdatedAt: false });
   }
 
   private async drainAgents(handle: ISessionScopeHandle): Promise<void> {

@@ -20,10 +20,16 @@
  * stores, owning no state themselves.
  */
 
+import type { TokenUsage } from '#/kosong/contract/usage';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 
-import { CHILD_SESSION_KIND, CHILD_SESSION_KIND_KEY, type SessionSummary } from './sessionIndex';
+import {
+  CHILD_SESSION_KIND,
+  CHILD_SESSION_KIND_KEY,
+  type SessionSummary,
+  type SessionUsageSummary,
+} from './sessionIndex';
 
 const META_SCOPE = 'session-meta';
 const META_KEY = 'state.json';
@@ -39,6 +45,49 @@ export function parseTime(value: unknown): number {
 
 export function parseTurnOutcome(value: unknown): 'completed' | 'cancelled' | 'failed' | undefined {
   return value === 'completed' || value === 'cancelled' || value === 'failed' ? value : undefined;
+}
+
+function parseTokenUsage(value: unknown): TokenUsage | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const inputOther = record['inputOther'];
+  const output = record['output'];
+  const inputCacheRead = record['inputCacheRead'];
+  const inputCacheCreation = record['inputCacheCreation'];
+  if (
+    typeof inputOther !== 'number' ||
+    !Number.isFinite(inputOther) ||
+    inputOther < 0 ||
+    typeof output !== 'number' ||
+    !Number.isFinite(output) ||
+    output < 0 ||
+    typeof inputCacheRead !== 'number' ||
+    !Number.isFinite(inputCacheRead) ||
+    inputCacheRead < 0 ||
+    typeof inputCacheCreation !== 'number' ||
+    !Number.isFinite(inputCacheCreation) ||
+    inputCacheCreation < 0
+  ) {
+    return undefined;
+  }
+  return { inputOther, output, inputCacheRead, inputCacheCreation };
+}
+
+function parseSessionUsageSummary(value: unknown): SessionUsageSummary | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const total = parseTokenUsage(record['total']);
+  if (total === undefined) return undefined;
+  const rawByModel = record['byModel'];
+  if (rawByModel === null || typeof rawByModel !== 'object' || Array.isArray(rawByModel)) {
+    return { total };
+  }
+  const byModel: Record<string, TokenUsage> = {};
+  for (const [model, rawUsage] of Object.entries(rawByModel)) {
+    const usage = parseTokenUsage(rawUsage);
+    if (usage !== undefined) byModel[model] = usage;
+  }
+  return { total, byModel: Object.keys(byModel).length === 0 ? undefined : byModel };
 }
 
 export function recoverCwd(meta: Record<string, unknown>): string | undefined {
@@ -69,6 +118,7 @@ export function buildSessionSummary(fields: {
   archivedAt?: number;
   custom?: Record<string, unknown>;
   lastTurnReason?: 'completed' | 'cancelled' | 'failed';
+  usage?: SessionUsageSummary;
 }): SessionSummary {
   return {
     id: fields.id,
@@ -82,6 +132,7 @@ export function buildSessionSummary(fields: {
     archivedAt: fields.archivedAt,
     custom: fields.custom,
     lastTurnReason: fields.lastTurnReason,
+    usage: fields.usage,
   };
 }
 
@@ -112,7 +163,8 @@ export function summaryEquals(a: SessionSummary, b: SessionSummary): boolean {
     a.archived === b.archived &&
     a.archivedAt === b.archivedAt &&
     a.lastTurnReason === b.lastTurnReason &&
-    JSON.stringify(a.custom) === JSON.stringify(b.custom)
+    JSON.stringify(a.custom) === JSON.stringify(b.custom) &&
+    JSON.stringify(a.usage) === JSON.stringify(b.usage)
   );
 }
 
@@ -165,6 +217,7 @@ export async function readSessionSummary(
     archivedAt: meta['archivedAt'] === undefined ? undefined : parseTime(meta['archivedAt']),
     custom,
     lastTurnReason: parseTurnOutcome(meta['lastTurnReason']),
+    usage: parseSessionUsageSummary(meta['usage']),
   });
 }
 
