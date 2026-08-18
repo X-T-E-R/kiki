@@ -77,6 +77,10 @@ import { GoogleGenAIChatProvider } from '#/kosong/provider/bases/google-genai/go
 import '#/kosong/provider/bases/openai/index';
 import { OpenAIResponsesChatProvider } from '#/kosong/provider/bases/openai/openai-responses';
 import { OpenAILegacyChatProvider } from '#/kosong/provider/bases/openai/openai-legacy';
+import {
+  mergeProviderRequestAuth,
+  mergeRequestHeaders,
+} from '#/kosong/provider/bases/request-auth';
 import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegistry';
 import {
   getProviderDefinition,
@@ -244,6 +248,88 @@ describe('config defaultHeaders win (probe 2)', () => {
     const headers = (provider as unknown as { _defaultHeaders?: Record<string, string> })
       ._defaultHeaders;
     expect(headers).toEqual({ 'x-shared': 'trait', 'x-trait-only': 'trait' });
+  });
+});
+
+describe('per-request header attribution', () => {
+  it('strips reserved config/auth values and merges runtime headers last', () => {
+    const auth = mergeProviderRequestAuth(
+      {
+        apiKey: 'request-token',
+        headers: {
+          'X-Kiki-Agent-Id': 'spoofed-agent',
+          'x-auth-only': 'auth',
+          'X-Shared': 'auth',
+        },
+      },
+      {
+        'x-kiki-session-id': 'session-1',
+        'x-kiki-agent-id': 'agent-1',
+        'x-shared': 'runtime',
+      },
+    );
+    const headers = mergeRequestHeaders(
+      {
+        'X-Kiki-Subagent': 'spoofed-role',
+        'x-default-only': 'default',
+      },
+      undefined,
+      auth?.headers,
+    );
+
+    expect(auth?.apiKey).toBe('request-token');
+    expect(headers).toEqual({
+      'x-default-only': 'default',
+      'x-auth-only': 'auth',
+      'x-kiki-session-id': 'session-1',
+      'x-kiki-agent-id': 'agent-1',
+      'x-shared': 'runtime',
+    });
+  });
+
+  it('forwards merged headers through the OpenAI per-request auth path', async () => {
+    let capturedAuth: GenerateOptions['auth'];
+    const provider = new OpenAILegacyChatProvider({
+      model: 'gpt-4.1',
+      stream: false,
+      clientFactory: (auth) => {
+        capturedAuth = auth;
+        return {
+          chat: {
+            completions: {
+              create: () => ({
+                withResponse: () =>
+                  Promise.resolve({
+                    data: chatCompletionResponse(),
+                    response: { headers: new Headers() },
+                  }),
+              }),
+            },
+          },
+        } as never;
+      },
+    });
+
+    await drain(
+      await provider.generate('', [], [], {
+        auth: {
+          headers: {
+            'X-Kiki-Agent-Id': 'spoofed-agent',
+            'x-auth-only': 'auth',
+          },
+        },
+        headers: {
+          'x-kiki-session-id': 'session-1',
+          'x-kiki-agent-id': 'agent-1',
+        },
+      }),
+    );
+
+    expect(capturedAuth?.headers).toEqual({
+      'x-auth-only': 'auth',
+      'x-kiki-session-id': 'session-1',
+      'x-kiki-agent-id': 'agent-1',
+    });
   });
 });
 

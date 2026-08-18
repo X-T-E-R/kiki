@@ -64,6 +64,7 @@ import {
   type ToolMessageConversion,
 } from './openai-common';
 import {
+  mergeProviderRequestAuth,
   mergeRequestHeaders,
   requireProviderApiKey,
   resolveAuthBackedClient,
@@ -1158,7 +1159,9 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
     }
 
     try {
-      const client = this._createClient(options?.auth);
+      const client = this._createClient(
+        mergeProviderRequestAuth(options?.auth, options?.headers),
+      );
       const createParams: Record<string, unknown> = {
         model: this._model,
         input,
@@ -1215,7 +1218,7 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
       baseURL: this._baseUrl,
       maxRetries: 0,
     };
-    const defaultHeaders = mergeRequestHeaders(this._defaultHeaders, auth?.headers);
+    const defaultHeaders = mergeRequestHeaders(this._defaultHeaders, undefined, auth?.headers);
     if (defaultHeaders !== undefined) {
       clientOpts['defaultHeaders'] = defaultHeaders;
     }

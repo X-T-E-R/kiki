@@ -12,7 +12,8 @@
  *    `GenerateOptions` on each `generate` call instead of through morphs.
  *  - `GenerateOptions` is the per-turn intent carrier. Each wire dialect
  *    decides how — or whether — to encode an intent (e.g. a cache key may
- *    become `prompt_cache_key`, `metadata.user_id`, or be silently dropped).
+ *    become `prompt_cache_key`, `metadata.user_id`, or be silently dropped),
+ *    while request headers stay on the transport options rather than the body.
  *
  * Pure types only — no other domain, no I/O, no SDKs.
  */
@@ -100,6 +101,7 @@ export interface GenerateOptions {
   responseFormat?: ResponseFormat;
   cacheKey?: string;
   serviceTier?: ServiceTier;
+  headers?: Readonly<Record<string, string>>;
   requestParams?: RequestParams;
   sampling?: SamplingOptions;
   thinking?: ThinkingRequestOptions;

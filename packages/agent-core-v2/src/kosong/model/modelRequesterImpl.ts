@@ -35,12 +35,13 @@ import { translateProviderError } from '#/kosong/protocol/errors';
 import type { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 
 import type { AuthProvider, Model } from './catalog';
-import type {
-  ModelRequestEvent,
-  ModelRequestInput,
-  ModelRequestParams,
-  ModelRequester,
-  ModelRequestTiming,
+import {
+  stripKikiReservedRequestParams,
+  type ModelRequestEvent,
+  type ModelRequestInput,
+  type ModelRequestParams,
+  type ModelRequester,
+  type ModelRequestTiming,
 } from './modelRequester';
 
 export class ModelRequesterImpl implements ModelRequester {
@@ -113,7 +114,8 @@ export class ModelRequesterImpl implements ModelRequester {
       signal,
       cacheKey: params?.cacheKey,
       serviceTier: params?.serviceTier,
-      requestParams: params?.requestParams,
+      headers: params?.headers,
+      requestParams: stripKikiReservedRequestParams(params?.requestParams),
       sampling: params?.sampling,
       thinking:
         params?.thinkingEffort === undefined

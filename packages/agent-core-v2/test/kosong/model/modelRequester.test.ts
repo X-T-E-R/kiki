@@ -157,7 +157,15 @@ describe('ModelRequesterImpl request execution', () => {
         {
           cacheKey: 'session-1',
           serviceTier: 'priority',
-          requestParams: { seed: 42, enabled: true },
+          headers: {
+            'x-kiki-session-id': 'session-1',
+            'x-kiki-agent-id': 'agent-1',
+          },
+          requestParams: {
+            seed: 42,
+            enabled: true,
+            'X-Kiki-Agent-Id': 'spoofed-agent',
+          },
           sampling: { temperature: 0.5, topP: 0.9 },
           thinkingEffort: 'high',
           thinkingKeep: 'all',
@@ -174,6 +182,10 @@ describe('ModelRequesterImpl request execution', () => {
     expect(options?.auth).toEqual({ apiKey: 'sk-1' });
     expect(options?.cacheKey).toBe('session-1');
     expect(options?.serviceTier).toBe('priority');
+    expect(options?.headers).toEqual({
+      'x-kiki-session-id': 'session-1',
+      'x-kiki-agent-id': 'agent-1',
+    });
     expect(options?.requestParams).toEqual({ seed: 42, enabled: true });
     expect(options?.sampling).toEqual({ temperature: 0.5, topP: 0.9 });
     expect(options?.thinking).toEqual({ effort: 'high', keep: 'all' });

@@ -84,6 +84,7 @@ import {
 } from './openai-common';
 import { ReasoningKeyDialect } from './reasoning-key';
 import {
+  mergeProviderRequestAuth,
   mergeRequestHeaders,
   requireProviderApiKey,
   resolveAuthBackedClient,
@@ -660,7 +661,9 @@ export class OpenAILegacyChatProvider implements ChatProvider {
     }
 
     try {
-      const client = this._createClient(options?.auth);
+      const client = this._createClient(
+        mergeProviderRequestAuth(options?.auth, options?.headers),
+      );
       options?.onRequestSent?.();
       const { data, response } = await client.chat.completions
         .create(
@@ -784,7 +787,7 @@ export class OpenAILegacyChatProvider implements ChatProvider {
       baseURL: this._baseUrl,
       maxRetries: 0,
     };
-    const defaultHeaders = mergeRequestHeaders(this._defaultHeaders, auth?.headers);
+    const defaultHeaders = mergeRequestHeaders(this._defaultHeaders, undefined, auth?.headers);
     if (defaultHeaders !== undefined) {
       clientOpts['defaultHeaders'] = defaultHeaders;
     }

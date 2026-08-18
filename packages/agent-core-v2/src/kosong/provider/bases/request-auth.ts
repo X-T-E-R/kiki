@@ -3,8 +3,10 @@
  *
  * A base caches a construction-time client when an apiKey is available; a
  * per-request `ProviderRequestAuth` (OAuth token, extra headers) rebuilds the
- * client for that call. `requireProviderApiKey` is the single "no credential"
- * failure — it never invents a key from a vendor-specific source.
+ * client for that call. Runtime request headers are merged last, while the
+ * reserved `x-kiki-*` namespace is removed from config/auth inputs.
+ * `requireProviderApiKey` is the single "no credential" failure — it never
+ * invents a key from a vendor-specific source.
  */
 
 import { ChatProviderError } from '#/kosong/contract/errors';
@@ -25,17 +27,35 @@ export function requireProviderApiKey(
 }
 
 export function mergeRequestHeaders(
-  defaultHeaders: Record<string, string> | undefined,
-  requestHeaders: Record<string, string> | undefined,
+  defaultHeaders: Readonly<Record<string, string>> | undefined,
+  requestHeaders: Readonly<Record<string, string>> | undefined,
+  runtimeHeaders?: Readonly<Record<string, string>>,
 ): Record<string, string> | undefined {
-  const merged: Record<string, string> = {};
-  if (defaultHeaders !== undefined) {
-    Object.assign(merged, defaultHeaders);
-  }
-  if (requestHeaders !== undefined) {
-    Object.assign(merged, requestHeaders);
-  }
-  return Object.keys(merged).length > 0 ? merged : undefined;
+  const merged = new Map<string, [string, string]>();
+  const merge = (
+    headers: Readonly<Record<string, string>> | undefined,
+    allowReserved: boolean,
+  ): void => {
+    if (headers === undefined) return;
+    for (const [key, value] of Object.entries(headers)) {
+      const normalized = key.toLowerCase();
+      if (!allowReserved && normalized.startsWith('x-kiki-')) continue;
+      merged.set(normalized, [key, value]);
+    }
+  };
+  merge(defaultHeaders, false);
+  merge(requestHeaders, false);
+  merge(runtimeHeaders, true);
+  return merged.size > 0 ? Object.fromEntries(merged.values()) : undefined;
+}
+
+export function mergeProviderRequestAuth(
+  auth: ProviderRequestAuth | undefined,
+  runtimeHeaders: Readonly<Record<string, string>> | undefined,
+): ProviderRequestAuth | undefined {
+  const headers = mergeRequestHeaders(undefined, auth?.headers, runtimeHeaders);
+  if (auth === undefined && headers === undefined) return undefined;
+  return { ...auth, headers };
 }
 
 export function resolveAuthBackedClient<TClient>(

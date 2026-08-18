@@ -3,8 +3,9 @@
  * streamed events, and the per-turn intent carrier `ModelRequestParams`.
  *
  * `ModelRequestParams` is how every per-turn intent reaches the wire: prompt-cache
- * key, service tier, additional request params, sampling overrides, thinking
- * effort/keep, and the completion-token budget (with its window-clamp companions).
+ * key, service tier, transport headers, additional request params, sampling
+ * overrides, thinking effort/keep, and the completion-token budget (with its
+ * window-clamp companions).
  * It is deliberately dialect-free — each wire dialect encodes (or silently drops)
  * an intent in its own hooks. The requester maps the params onto `GenerateOptions`
  * 1:1; typed fields are resolved before `requestParams`, whose entries only fill
@@ -58,6 +59,7 @@ export type ModelRequestEvent =
 export interface ModelRequestParams {
   readonly cacheKey?: string;
   readonly serviceTier?: ServiceTier;
+  readonly headers?: Readonly<Record<string, string>>;
   readonly requestParams?: RequestParams;
   readonly sampling?: SamplingOptions;
   readonly thinkingEffort?: ThinkingEffort;
@@ -85,4 +87,12 @@ export interface ModelRequester {
 
 export function effectiveMaxCompletionTokens(params?: ModelRequestParams): number | undefined {
   return params?.maxCompletionTokens;
+}
+
+export function stripKikiReservedRequestParams(
+  params: RequestParams | undefined,
+): RequestParams | undefined {
+  if (params === undefined) return undefined;
+  const entries = Object.entries(params).filter(([key]) => !key.toLowerCase().startsWith('x-kiki-'));
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }

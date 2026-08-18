@@ -41,7 +41,12 @@ import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
 import { mergeConsecutiveUserMessages } from '../merge-user-messages';
-import { requireProviderApiKey, resolveAuthBackedClient } from '../request-auth';
+import {
+  mergeProviderRequestAuth,
+  mergeRequestHeaders,
+  requireProviderApiKey,
+  resolveAuthBackedClient,
+} from '../request-auth';
 
 function normalizeGoogleGenAIFinishReason(raw: unknown): {
   finishReason: FinishReason | null;
@@ -716,10 +721,14 @@ export class GoogleGenAIChatProvider implements ChatProvider {
       this._vertexai || this._apiKey !== undefined ? this._buildClient(this._apiKey) : undefined;
   }
 
-  private _buildClient(apiKey: string | undefined): GenAIClient {
+  private _buildClient(
+    apiKey: string | undefined,
+    auth?: ProviderRequestAuth,
+  ): GenAIClient {
     const httpOptions: { headers?: Record<string, string>; baseUrl?: string } = {};
-    if (this._defaultHeaders !== undefined) {
-      httpOptions.headers = this._defaultHeaders;
+    const headers = mergeRequestHeaders(this._defaultHeaders, undefined, auth?.headers);
+    if (headers !== undefined) {
+      httpOptions.headers = headers;
     }
     if (this._baseUrl !== undefined) {
       httpOptions.baseUrl = this._baseUrl;
@@ -797,7 +806,9 @@ export class GoogleGenAIChatProvider implements ChatProvider {
     applyResponseFormat(config, options?.responseFormat);
 
     try {
-      const client = this._createClient(options?.auth);
+      const client = this._createClient(
+        mergeProviderRequestAuth(options?.auth, options?.headers),
+      );
       const models = client.models as unknown as {
         generateContent(params: Record<string, unknown>): Promise<unknown>;
         generateContentStream(params: Record<string, unknown>): Promise<AsyncGenerator>;
@@ -887,8 +898,11 @@ export class GoogleGenAIChatProvider implements ChatProvider {
       { cachedClient: this._client, clientFactory: this._clientFactory },
       auth,
       (a) => {
-        if (this._vertexai) return this._buildClient(this._apiKey);
-        return this._buildClient(requireProviderApiKey('GoogleGenAIChatProvider', a, this._apiKey));
+        if (this._vertexai) return this._buildClient(this._apiKey, a);
+        return this._buildClient(
+          requireProviderApiKey('GoogleGenAIChatProvider', a, this._apiKey),
+          a,
+        );
       },
     );
   }

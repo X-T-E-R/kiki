@@ -28,6 +28,7 @@ import { AgentLLMRequesterService } from '#/agent/llmRequester/llmRequesterServi
 import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
@@ -57,12 +58,18 @@ import {
   type ModelRequestEvent,
   type ModelRequestInput,
   type ModelRequester,
+  type ModelRequestParams,
 } from '#/kosong/model/modelRequester';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { ILogService } from '#/_base/log/log';
 import { Error2, ErrorCodes } from '#/errors';
 import { IWireService } from '#/wire/wire';
 import type { WireRecord } from '#/wire/record';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import {
+  ISessionMetadata,
+  type AgentMeta,
+} from '#/session/sessionMetadata/sessionMetadata';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
 
 import { recordingWireLog, registerTestAgentWire } from '../../wire/stubs';
@@ -147,10 +154,17 @@ function createService(
   options: {
     readonly thinkingLevel?: ThinkingEffort;
     readonly contextMessages?: Message[];
+    readonly sessionId?: string;
+    readonly agentId?: string;
+    readonly agentMeta?: AgentMeta;
+    readonly requestParams?: ModelRequestParams;
   } = {},
 ) {
   const ix = disposables.add(new TestInstantiationService());
   const thinkingLevel = options.thinkingLevel ?? 'off';
+  const sessionId = options.sessionId ?? 'session-test';
+  const agentId = options.agentId ?? 'main';
+  const agentMeta = options.agentMeta ?? { type: agentId === 'main' ? 'main' : 'sub' };
   const profile: Partial<IAgentProfileService> = {
     resolveModelContext: () => ({
       modelAlias: 'm',
@@ -161,7 +175,7 @@ function createService(
       reservedContextSize: undefined,
       compactionTriggerRatio: undefined,
     }),
-    resolveRequestParams: () => ({}),
+    resolveRequestParams: () => options.requestParams ?? { cacheKey: sessionId },
     getSystemPrompt: () => 'system',
     data: () => ({
       cwd: '',
@@ -201,6 +215,16 @@ function createService(
   };
 
   ix.stub(IAgentContextMemoryService, context);
+  ix.stub(ISessionContext, { sessionId });
+  ix.stub(ISessionMetadata, {
+    read: async () => ({
+      id: sessionId,
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+      agents: { [agentId]: agentMeta },
+    }),
+  });
   ix.stub(IAgentToolSelectService, toolSelect);
   ix.stub(IAgentVideoResolverService, { resolve: async (messages) => messages });
   if (projector === undefined) {
@@ -238,6 +262,7 @@ function createService(
     log: recordingWireLog(records),
     eventBus,
   });
+  ix.stub(IAgentScopeContext, { agentId, scope: () => `agents/${agentId}` });
   ix.set(IAgentStateService, new AgentStateService());
   ix.set(IAgentLLMRequesterService, new SyncDescriptor(AgentLLMRequesterService));
 
@@ -250,6 +275,66 @@ function createService(
     measuredCalls,
   };
 }
+
+function captureRequestParams(requester: ModelRequester): ModelRequestParams[] {
+  const captured: ModelRequestParams[] = [];
+  const request = requester.request.bind(requester);
+  requester.request = async function* (input, signal, params) {
+    captured.push(params ?? {});
+    yield* request(input, signal, params);
+  };
+  return captured;
+}
+
+describe('AgentLLMRequesterService request attribution headers', () => {
+  it('sends shared session and executor ids for main without subagent headers', async () => {
+    const requester = createRequester({ value: 0 }, null);
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, {
+      sessionId: 'session-main',
+      requestParams: {
+        cacheKey: 'session-main',
+        requestParams: {
+          'X-Kiki-Session-Id': 'spoofed-session',
+          'x-kiki-subagent': 'spoofed-role',
+          seed: 42,
+        },
+      },
+    });
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+
+    expect(captured[0]?.headers).toEqual({
+      'x-kiki-session-id': 'session-main',
+      'x-kiki-agent-id': 'main',
+    });
+    expect(captured[0]?.requestParams).toEqual({ seed: 42 });
+  });
+
+  it('adds the parent chain and reliable swarm source for a child', async () => {
+    const requester = createRequester({ value: 0 }, null);
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, {
+      sessionId: 'session-child',
+      agentId: 'agent-7',
+      agentMeta: {
+        type: 'sub',
+        parentAgentId: 'main',
+        labels: { parentAgentId: 'main', swarmItem: 'review' },
+      },
+    });
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+
+    expect(captured[0]?.headers).toEqual({
+      'x-kiki-session-id': 'session-child',
+      'x-kiki-agent-id': 'agent-7',
+      'x-kiki-parent-agent-id': 'main',
+      'x-kiki-subagent': 'swarm',
+    });
+    expect(captured[0]?.headers).not.toHaveProperty('x-kiki-parent-turn-id');
+  });
+});
 
 describe('AgentLLMRequesterService measured anchors', () => {
   it('skips the measured anchor when the stream reports no usage', async () => {

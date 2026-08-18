@@ -87,7 +87,11 @@ import {
   type AnthropicModelVersion,
 } from './anthropic-profile';
 import { mergeConsecutiveUserMessages } from '../merge-user-messages';
-import { mergeRequestHeaders, resolveAuthBackedClient } from '../request-auth';
+import {
+  mergeProviderRequestAuth,
+  mergeRequestHeaders,
+  resolveAuthBackedClient,
+} from '../request-auth';
 import { normalizeToolCallIdsForProvider, sanitizeToolCallId } from '../tool-call-id';
 
 function normalizeAnthropicStopReason(raw: string | null | undefined): {
@@ -1009,8 +1013,9 @@ export class AnthropicChatProvider implements ChatProvider {
       createParams['betas'] = betas;
     }
 
+    const auth = mergeProviderRequestAuth(options?.auth, options?.headers);
     const requestOptions: Record<string, unknown> = {};
-    const headers = mergeRequestHeaders(extraHeaders, options?.auth?.headers);
+    const headers = mergeRequestHeaders(extraHeaders, undefined, auth?.headers);
     if (headers !== undefined) {
       requestOptions['headers'] = headers;
     }
@@ -1018,7 +1023,7 @@ export class AnthropicChatProvider implements ChatProvider {
       requestOptions['signal'] = options.signal;
     }
     const finalRequestOptions = Object.keys(requestOptions).length > 0 ? requestOptions : undefined;
-    const client = this._createClient(options?.auth);
+    const client = this._createClient(auth);
     options?.onRequestSent?.();
 
     if (this._stream) {
@@ -1141,7 +1146,9 @@ export class AnthropicChatProvider implements ChatProvider {
       defaultHeaders[name] = null;
     }
     for (const [name, value] of Object.entries(this._defaultHeaders ?? {})) {
-      defaultHeaders[name.toLowerCase()] = value;
+      const normalized = name.toLowerCase();
+      if (normalized.startsWith('x-kiki-')) continue;
+      defaultHeaders[normalized] = value;
     }
     defaultHeaders['x-api-key'] = apiKey;
     return defaultHeaders;

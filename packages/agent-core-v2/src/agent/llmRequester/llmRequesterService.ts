@@ -25,7 +25,10 @@
  * per-request fields) through `log`, publishes advisory model-capability
  * warnings through `eventBus`, records durable request-trace Ops
  * through `wire`, reports each request's `x-trace-id` to its caller, and
- * reports provider failures through `telemetry`. The mutable request state
+ * reports provider failures through `telemetry`. Each physical request also
+ * carries runtime-owned `x-kiki-*` session/agent lineage headers; parent-turn
+ * attribution remains absent until spawn metadata carries an authoritative
+ * parent turn rather than a sampled current turn. The mutable request state
  * (`lastConfigLogSignature`, `turnConfigs`, `mediaDegradedTurns`,
  * `mediaStrippedTurns`, `emittedThinkingEffortWarnings`) is registered into
  * `agentState` (`IAgentStateService`) and read/written through it. Bound at
@@ -43,6 +46,7 @@ import {
 } from '#/agent/contextProjector/contextProjector';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IAgentProfileService, type ProfileModelContext } from '#/agent/profile/profile';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
@@ -66,6 +70,7 @@ import { ILogService, type LogContext } from '#/_base/log/log';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import {
   effectiveMaxCompletionTokens,
+  stripKikiReservedRequestParams,
   type ModelRequestEvent,
   type ModelRequestParams,
   type ModelRequester,
@@ -81,6 +86,16 @@ import type { ApiErrorEvent } from '#/app/telemetry/events';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IWireService } from '#/wire/wire';
 import type { PayloadOf } from '#/wire/types';
+import {
+  isSubagentMeta,
+  subagentParentAgentId,
+  subagentSwarmItem,
+} from '#/session/agentLifecycle/subagentMetadata';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import {
+  ISessionMetadata,
+  type AgentMeta,
+} from '#/session/sessionMetadata/sessionMetadata';
 
 import {
   IAgentLLMRequesterService,
@@ -182,7 +197,10 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     @IAgentToolSelectService private readonly toolSelect: IAgentToolSelectService,
     @IAgentVideoResolverService private readonly videoResolver: IAgentVideoResolverService,
     @IAgentProfileService private readonly profile: IAgentProfileService,
+    @IAgentScopeContext private readonly agentContext: IAgentScopeContext,
     @IAgentUsageService private readonly usage: IAgentUsageService,
+    @ISessionContext private readonly sessionContext: ISessionContext,
+    @ISessionMetadata private readonly sessionMetadata: ISessionMetadata,
     @IConfigService private readonly config: IConfigService,
     @IModelService private readonly modelService: IModelService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
@@ -260,7 +278,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     trace.set(undefined);
     try {
       return await this.runRequest(
-        this.resolveRequest(overrides),
+        await this.resolveRequest(overrides),
         onPart,
         signal,
         (traceId) => {
@@ -614,10 +632,13 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     set.add(source.turnId);
   }
 
-  private resolveRequest(overrides: AgentLLMRequestOverrides): ResolvedLLMRequest {
+  private async resolveRequest(
+    overrides: AgentLLMRequestOverrides,
+  ): Promise<ResolvedLLMRequest> {
     const turnConfig = this.resolveTurnConfig(overrides.source);
     const resolved = turnConfig?.resolved ?? this.profile.resolveModelContext();
     const baseParams = turnConfig?.params ?? this.profile.resolveRequestParams();
+    const agentMeta = (await this.sessionMetadata.read()).agents?.[this.agentContext.agentId];
     const budgetParams = completionBudgetParams({
       budget: resolveCompletionBudget({
         maxOutputSize: overrides.maxOutputSize ?? resolved.maxOutputSize,
@@ -637,7 +658,16 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     return {
       requester,
       model: requester.model,
-      params: { ...baseParams, ...budgetParams },
+      params: {
+        ...baseParams,
+        requestParams: stripKikiReservedRequestParams(baseParams.requestParams),
+        ...budgetParams,
+        headers: kikiRequestHeaders(
+          this.sessionContext.sessionId,
+          this.agentContext.agentId,
+          agentMeta,
+        ),
+      },
       modelAlias: resolved.modelAlias,
       thinkingEffort: resolved.thinkingLevel,
       systemPrompt: overrides.systemPrompt ?? turnConfig?.systemPrompt ?? this.profile.getSystemPrompt(),
@@ -781,6 +811,25 @@ class MutableLLMRequestTrace implements LLMRequestTrace {
   set(traceId: string | undefined): void {
     this.traceId = traceId;
   }
+}
+
+function kikiRequestHeaders(
+  sessionId: string,
+  agentId: string,
+  meta: AgentMeta | undefined,
+): Readonly<Record<string, string>> {
+  const headers: Record<string, string> = {
+    'x-kiki-session-id': sessionId,
+    'x-kiki-agent-id': agentId,
+  };
+  const parentAgentId = subagentParentAgentId(meta);
+  if (parentAgentId !== undefined) {
+    headers['x-kiki-parent-agent-id'] = parentAgentId;
+  }
+  if (isSubagentMeta(meta)) {
+    headers['x-kiki-subagent'] = subagentSwarmItem(meta) === undefined ? 'agent' : 'swarm';
+  }
+  return headers;
 }
 
 function logFieldsForSource(source: AgentLLMRequestSource | undefined): AgentLLMRequestLogFields {
