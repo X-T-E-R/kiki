@@ -850,6 +850,7 @@ export const subagentSpawnedEventSchema = z.object({
   parentAgentId: z.string().optional(),
   callerAgentId: z.string().optional(),
   description: z.string().optional(),
+  userLabel: z.string().optional(),
   swarmIndex: z.number().optional(),
   runInBackground: z.boolean(),
   model: z.string().optional(),

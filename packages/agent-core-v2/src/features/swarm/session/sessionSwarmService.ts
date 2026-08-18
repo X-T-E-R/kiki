@@ -249,6 +249,7 @@ export class SessionSwarmService implements ISessionSwarmService {
           binding.bindingMode ?? 'fixed',
         ),
         delegator: { kind: 'agent', agentId: callerAgentId },
+        userLabel: options.swarmItem ?? options.description,
         runtimeId: callerRuntime.runtimeId,
       });
     } catch (error) {
@@ -265,6 +266,7 @@ export class SessionSwarmService implements ISessionSwarmService {
       parentToolCallId: options.parentToolCallId,
       parentToolCallUuid: options.parentToolCallUuid,
       description: options.description,
+      userLabel: options.swarmItem ?? options.description,
       swarmIndex: options.swarmIndex,
       runInBackground: options.runInBackground,
       model: binding.model,

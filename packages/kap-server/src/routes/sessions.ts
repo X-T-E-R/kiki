@@ -49,10 +49,11 @@
  * **Wire fidelity**: mirrors v1's `toProtocolSession`
  * (`packages/agent-core/src/services/session/session.ts`), which populates
  * only the index/metadata fields and returns placeholders for the heavy ones
- * (`agent_config:{model:''}`, `usage:zeros`, `permission_rules:[]`,
- * `message_count:0`, `last_seq:0`). v2 produces the same placeholder shape
- * from `ISessionIndex` (with `cwd` persisted on the session itself), and now
- * also surfaces `last_prompt` and the merged custom `metadata`.
+ * (`agent_config:{model:''}`, `permission_rules:[]`, `message_count:0`,
+ * `last_seq:0`). v2 keeps those placeholders for cold/index-only sessions,
+ * while a live main agent contributes its usage totals and turn count through
+ * `resolveSessionFacts`; `last_prompt` and merged custom `metadata` also come
+ * from the persisted session summary.
  *
  * **Busy / last turn**: v1's `SessionService` overwrites the placeholder
  * `status` with the live value before projecting (`_patchSessionStatus`). v2
@@ -78,6 +79,7 @@
 import {
   ErrorCodes,
   DEFAULT_AGENT_PROFILE_NAME,
+  IAgentActivityView,
   IAgentContextMemoryService,
   IAgentProfileService,
   IAgentConversationUndoService,
@@ -133,6 +135,7 @@ import {
   sessionSchema,
   type Session,
   type SessionPendingInteraction,
+  type SessionUsage,
 } from '../protocol/session';
 import { workspaceIdSchema } from '../protocol/workspace';
 import { z } from 'zod';
@@ -1216,7 +1219,7 @@ export function toWireSession(
     last_prompt: fields.lastPrompt,
     metadata: buildWireMetadata(fields.custom, cwd),
     agent_config: { model: '' },
-    usage: emptySessionUsage(),
+    usage: facts.usage ?? emptySessionUsage(),
     permission_rules: [],
     message_count: 0,
     last_seq: 0,
@@ -1229,6 +1232,7 @@ export interface SessionFacts {
   readonly mainTurnActive: boolean;
   readonly pendingInteraction: SessionPendingInteraction;
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
+  readonly usage?: SessionUsage;
   /** False when no live handle exists (cold session); live warm sessions
    *  always report their own outcome, never the persisted fallback. */
   readonly live?: boolean;
@@ -1251,7 +1255,40 @@ export function resolveSessionFacts(core: Scope, sessionId: string): SessionFact
       live: false,
     };
   }
-  return { ...handle.accessor.get(ISessionActivityView).state(), live: true };
+  const main = handle.accessor
+    .get(IAgentLifecycleService)
+    .list()
+    .find((agent) => agent.id === MAIN_AGENT_ID);
+  return {
+    ...handle.accessor.get(ISessionActivityView).state(),
+    usage: main === undefined ? undefined : readMainAgentSessionUsage(main),
+    live: true,
+  };
+}
+
+function readMainAgentSessionUsage(main: IAgentScopeHandle): SessionUsage | undefined {
+  try {
+    const status = readLegacyStatus(main);
+    if (status === undefined) return undefined;
+    const total = status.usage?.total;
+    const activity = main.accessor.get(IAgentActivityView).state();
+    const latestTurnId = activity.turn?.turnId ?? activity.lastTurn?.turnId;
+    // The session wire has one usage bucket but v2 owns usage per Agent scope.
+    // Project the main agent only rather than inventing an edge-level subagent
+    // aggregate; a Session-scoped usage service can replace this when one exists.
+    return {
+      input_tokens: total?.inputOther ?? 0,
+      output_tokens: total?.output ?? 0,
+      cache_read_tokens: total?.inputCacheRead ?? 0,
+      cache_creation_tokens: total?.inputCacheCreation ?? 0,
+      total_cost_usd: 0,
+      context_tokens: status.contextTokens,
+      context_limit: status.maxContextTokens ?? 0,
+      turn_count: latestTurnId === undefined ? 0 : latestTurnId + 1,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 /**

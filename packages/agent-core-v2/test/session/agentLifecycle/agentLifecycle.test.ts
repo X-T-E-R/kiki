@@ -555,6 +555,7 @@ describe('AgentLifecycleService', () => {
       agentId: 'child',
       forkedFrom: 'main',
       labels: { swarmItem: 'swarm-item-1' },
+      userLabel: 'Review usage accounting',
     });
 
     expect(child.id).toBe('child');
@@ -564,6 +565,8 @@ describe('AgentLifecycleService', () => {
       parentAgentId: 'main',
       forkedFrom: 'main',
       labels: { swarmItem: 'swarm-item-1' },
+      displayName: undefined,
+      userLabel: 'Review usage accounting',
     });
   });
 

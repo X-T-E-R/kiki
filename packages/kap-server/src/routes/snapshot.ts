@@ -38,6 +38,12 @@ import {
 } from '../protocol/rest-snapshot';
 import { readLegacyStatus } from '../services/legacyStatus/legacyStatus';
 import { loadMessageHistory } from '../services/messages/messageHistory';
+import {
+  isPersistedSubagent,
+  resolveSubagentDisplayName,
+  subagentParentAgentId,
+  subagentUserLabel,
+} from '../services/subagentProjection';
 import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
 import { toWireApproval } from './approvals';
 import { toWireQuestion } from './questions';
@@ -145,7 +151,17 @@ async function assembleSnapshot(
   const model = readBoundModel(main);
   const session =
     model === undefined ? projected : { ...projected, agent_config: { ...projected.agent_config, model } };
-  const subagents = enrichSnapshotSubagents(snapState.subagents, meta.agents);
+  const subagentCandidates = snapshotSubagentCandidates(
+    snapState.subagents,
+    meta.agents,
+    sessionId,
+    meta.createdAt,
+  );
+  const toolCallCounts = await broadcaster.getTranscriptToolCallCounts(
+    sessionId,
+    subagentCandidates.map((subagent) => subagent.id),
+  );
+  const subagents = enrichSnapshotSubagents(subagentCandidates, meta.agents, toolCallCounts);
   const status = readSnapshotStatus(main);
 
   // Messages — most recent page of the main agent's full history, from the
@@ -202,22 +218,53 @@ function readSnapshotStatus(main: IAgentScopeHandle): ReturnType<typeof readLega
   }
 }
 
+function snapshotSubagentCandidates(
+  liveSubagents: readonly SnapshotSubagent[],
+  agents: Readonly<Record<string, AgentMeta>> | undefined,
+  sessionId: string,
+  sessionCreatedAt: number,
+): SnapshotSubagent[] {
+  if (liveSubagents.length > 0) return [...liveSubagents];
+  return Object.entries(agents ?? {}).flatMap(([agentId, meta]) => {
+    if (!isPersistedSubagent(agentId, meta)) return [];
+    const userLabel = subagentUserLabel(meta);
+    return [
+      {
+        id: agentId,
+        session_id: sessionId,
+        kind: 'subagent' as const,
+        description: resolveSubagentDisplayName(userLabel, meta.displayName, agentId),
+        status: 'completed' as const,
+        subagent_phase: 'completed' as const,
+        subagent_type: meta.displayName,
+        parent_agent_id: subagentParentAgentId(meta),
+        label: userLabel,
+        tool_call_count: 0,
+        created_at: new Date(sessionCreatedAt).toISOString(),
+      },
+    ];
+  });
+}
+
 function enrichSnapshotSubagents(
   subagents: readonly SnapshotSubagent[],
   agents: Readonly<Record<string, AgentMeta>> | undefined,
+  toolCallCounts: ReadonlyMap<string, number>,
 ): SnapshotSubagent[] {
   return subagents.map((subagent) => {
     const meta = agents?.[subagent.id];
-    const parentFromDelegator = meta?.delegator?.kind === 'agent' ? meta.delegator.agentId : undefined;
+    const userLabel = firstNonEmpty(subagentUserLabel(meta), subagent.label);
+    const spawnedName = firstNonEmpty(subagent.subagent_type, meta?.displayName);
     return {
       ...subagent,
-      parent_agent_id: firstNonEmpty(
-        subagent.parent_agent_id,
-        parentFromDelegator,
-        meta?.labels?.['parentAgentId'],
-        meta?.parentAgentId ?? undefined,
+      description: resolveSubagentDisplayName(userLabel, spawnedName, subagent.id),
+      subagent_type: spawnedName,
+      parent_agent_id: firstNonEmpty(subagent.parent_agent_id, subagentParentAgentId(meta)),
+      label: userLabel,
+      tool_call_count: Math.max(
+        subagent.tool_call_count ?? 0,
+        toolCallCounts.get(subagent.id) ?? 0,
       ),
-      label: firstNonEmpty(meta?.labels?.['swarmItem'], meta?.swarmItem, subagent.label),
     };
   });
 }

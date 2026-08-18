@@ -55,9 +55,9 @@ export const inFlightTurnSchema = z.object({
 export type InFlightTurn = z.infer<typeof inFlightTurnSchema>;
 
 /**
- * A live subagent task as of the snapshot watermark. Extends the base task
- * wire shape with the swarm identity metadata that otherwise only rides the
- * (non-replayed) `subagent.spawned` WS event.
+ * A subagent task projected at the snapshot watermark. Live rows retain their
+ * phase; a cold-recovery row is rebuilt from persisted agent metadata and its
+ * transcript tool frames.
  */
 export const snapshotSubagentSchema = taskSchema.extend({
   subagent_phase: z.enum(['queued', 'working', 'suspended', 'completed', 'failed']).optional(),
@@ -85,9 +85,9 @@ export const sessionSnapshotResponseSchema = z.object({
   }),
   in_flight_turn: inFlightTurnSchema.nullable(),
   /**
-   * Roster of live subagent tasks at the watermark, so a reconnecting client
-   * can rebuild swarm cards before the swarm's tool result lands. Optional
-   * for cross-version tolerance: older servers do not send it.
+   * Roster of live subagent tasks at the watermark, falling back to persisted
+   * agent metadata and transcript tool counts after a cold reopen. Optional for
+   * cross-version tolerance: older servers do not send it.
    */
   subagents: z.array(snapshotSubagentSchema).optional(),
   context_tokens: z.number().int().nonnegative().optional(),

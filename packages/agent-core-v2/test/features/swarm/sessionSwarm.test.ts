@@ -1293,12 +1293,14 @@ describe('SessionSwarmService metadata compatibility', () => {
           model: 'provider/pool',
           thinking: 'low',
         },
+        userLabel: 'src/a.ts',
       }),
     );
     expect(eventBus.publish).toHaveBeenCalledWith(
       expect.objectContaining({
         type: 'subagent.spawned',
         subagentId: 'agent-new',
+        userLabel: 'src/a.ts',
         model: 'provider/pool',
         thinkingEffort: 'low',
       }),

@@ -22,6 +22,7 @@ import {
   IAgentConversationUndoService,
   IAgentGoalService,
   IAgentLifecycleService,
+  IAgentUsageService,
   IEventBus,
   IEventService,
   MAIN_AGENT_ID,
@@ -60,7 +61,16 @@ interface SessionWire {
   archived?: boolean;
   metadata: { cwd: string } & Record<string, unknown>;
   agent_config: { model: string };
-  usage: { input_tokens: number };
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_creation_tokens: number;
+    total_cost_usd: number;
+    context_tokens: number;
+    context_limit: number;
+    turn_count: number;
+  };
   permission_rules: unknown[];
   message_count: number;
   last_seq: number;
@@ -721,6 +731,46 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(generated.body.code).toBe(40401);
   });
 
+  it('projects live main-agent usage onto session reads', async () => {
+    const cwd = home as string;
+    const created = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });
+    const id = created.body.data.id;
+    const session = getLiveSessionById((server as RunningServer).core.accessor, id);
+    if (session === undefined) throw new Error('expected a live session');
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    const main = lifecycle.get(MAIN_AGENT_ID) ?? (await lifecycle.create({ agentId: MAIN_AGENT_ID }));
+
+    main.accessor.get(IAgentUsageService).record('example-model', {
+      inputOther: 11,
+      output: 7,
+      inputCacheRead: 5,
+      inputCacheCreation: 3,
+    });
+    main.accessor.get(IEventBus).publish({
+      type: 'turn.started',
+      turnId: 0,
+      origin: { kind: 'user' },
+    } as unknown as DomainEvent);
+    main.accessor.get(IEventBus).publish({
+      type: 'turn.ended',
+      turnId: 0,
+      reason: 'completed',
+    } as unknown as DomainEvent);
+
+    const expected = {
+      input_tokens: 11,
+      output_tokens: 7,
+      cache_read_tokens: 5,
+      cache_creation_tokens: 3,
+      total_cost_usd: 0,
+      turn_count: 1,
+    };
+    const got = await getJson<SessionWire>(`/api/v1/sessions/${id}`);
+    expect(got.body.data.usage).toMatchObject(expected);
+    const listed = await getJson<PageWire>('/api/v1/sessions');
+    expect(listed.body.data.items.find((item) => item.id === id)?.usage).toMatchObject(expected);
+  });
+
   it('returns best-effort status for a live session', async () => {
     const cwd = home as string;
     const created = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });
@@ -741,12 +791,7 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(typeof body.data.thinking_level).toBe('string');
     expect(typeof body.data.plan_mode).toBe('boolean');
     expect(body.data.context_tokens).toBe(0);
-    expect(body.data.context_breakdown).toEqual({
-      system_tokens: 0,
-      tools_tokens: 0,
-      messages_tokens: 0,
-      estimated: true,
-    });
+    expect(body.data.context_breakdown).toBeUndefined();
   });
 
   it('reflects plan/swarm/permission agent_config in GET /status', async () => {

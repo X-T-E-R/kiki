@@ -180,7 +180,7 @@ abstract class AgentCollaborationToolBase<T> implements AgentTool<T> {
     });
   }
 
-  protected createDeferredRunBridge(record: { agentId: string; profileName: string; prompt: string; displayModel?: string }, controller: AbortController): DeferredRunBridge {
+  protected createDeferredRunBridge(record: { agentId: string; profileName: string; prompt: string; userLabel?: string; displayModel?: string }, controller: AbortController): DeferredRunBridge {
     const target = this.lifecycle.get(record.agentId)!;
     let resolveCompletion!: (value: { result: string; usage?: TokenUsage }) => void;
     let rejectCompletion!: (reason: unknown) => void;
@@ -217,9 +217,9 @@ abstract class AgentCollaborationToolBase<T> implements AgentTool<T> {
     } };
   }
 
-  protected emitSpawned(requester: IAgentScopeHandle, record: { agentId: string; profileName: string; displayModel?: string }, toolCallId: string): void {
+  protected emitSpawned(requester: IAgentScopeHandle, record: { agentId: string; profileName: string; userLabel?: string; displayModel?: string }, toolCallId: string): void {
     emitAgentRunSpawned(requester, record.agentId, { profileName: record.profileName, parentToolCallId: toolCallId,
-      description: record.profileName, runInBackground: true, model: record.displayModel });
+      description: record.profileName, userLabel: record.userLabel, runInBackground: true, model: record.displayModel });
   }
 
   protected assertCanRegisterBackground(): void {
@@ -315,11 +315,11 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
           { ...subagentLabels(this.callerAgentId), [COLLABORATION_TASK_NAME_LABEL]: taskName,
             [COLLABORATION_AGENT_TYPE_LABEL]: selectedProfile.name, [COLLABORATION_LATEST_TASK_LABEL]: taskId },
           subagentBindingMode(binding),
-        ) });
+        ), userLabel: taskName });
       created.accessor.get(IAgentPermissionModeService).setMode(this.permissionMode.mode);
       created.accessor.get(IAgentUserToolService).inheritUserTools(this.userTools);
       controller = new AbortController();
-      const record = { agentId: created.id, profileName: selectedProfile.name, prompt, displayModel: binding.displayModel };
+      const record = { agentId: created.id, profileName: selectedProfile.name, prompt, userLabel: taskName, displayModel: binding.displayModel };
       bridge = this.createDeferredRunBridge(record, controller);
       this.tasks.registerTask(
         new SubagentTask(bridge.handle, taskName, controller, { taskName, agentType: selectedProfile.name }),

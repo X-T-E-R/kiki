@@ -157,6 +157,7 @@ export function readContextBreakdown(
   agent: IAgentScopeHandle,
   contextTokens: number,
 ): ContextBreakdown | undefined {
+  if (contextTokens === 0) return undefined;
   const profile = agent.accessor.get(IAgentProfileService) as IAgentProfileService | undefined;
   const tokenCounting = agent.accessor.get(IAgentTokenCountingService) as
     | IAgentTokenCountingService

@@ -498,6 +498,7 @@ export class SubagentTool implements ISubagentTool {
             subagentBindingMode(binding),
           ),
           delegator: { kind: 'agent', agentId: this.callerAgentId },
+          userLabel: args.description,
           runtimeId: runtime.identity.runtimeId,
         });
       } catch (error) {

@@ -350,6 +350,7 @@ export class TowerSpawnTool implements ITowerSpawnTool {
           thinking: binding?.thinking,
         },
         labels: subagentLabels(this.callerAgentId),
+        userLabel: description,
       });
     } catch (error) {
       throw binding === undefined

@@ -351,6 +351,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       await wire.restore();
       await this.bindBootstrap(handle, opts);
       await handle.accessor.get(IAgentToolActivationService).activate();
+      const profile = handle.accessor.get(IAgentProfileService).data();
       await this.sessionMetadata.registerAgent(agentId, {
         homedir: agentHomedir,
         type: agentId === 'main' ? 'main' : opts.delegator?.kind === 'external' ? 'independent' : 'sub',
@@ -365,6 +366,8 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         delegator: opts.delegator,
         forkedFrom: opts.forkedFrom,
         labels: opts.labels,
+        displayName: profile.routeId ?? profile.profileName ?? priorAgentMeta?.displayName,
+        userLabel: opts.userLabel ?? priorAgentMeta?.userLabel,
       });
       if (opts.deferCreateEvent === true) this.deferredCreateEvents.add(agentId);
       else this.onDidCreateEmitter.fire(handle);

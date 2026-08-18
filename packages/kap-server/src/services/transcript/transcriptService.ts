@@ -518,6 +518,30 @@ export class TranscriptService {
     this.dispatchOps(sessionId, { agentId, ops });
   }
 
+  async getAgentToolCallCounts(
+    sessionId: string,
+    agentIds: readonly string[],
+  ): Promise<ReadonlyMap<string, number>> {
+    const uniqueAgentIds = [...new Set(agentIds)];
+    const counts = new Map<string, number>();
+    const store = this.forSessionLive(sessionId);
+    if (store !== undefined) {
+      await this.whenReady(sessionId);
+      await Promise.all(uniqueAgentIds.map((agentId) => this.ensureAgentHistory(sessionId, agentId)));
+      for (const agentId of uniqueAgentIds) {
+        counts.set(agentId, countToolCallFrames(store.getAgent(agentId)?.getItems() ?? []));
+      }
+      return counts;
+    }
+    await Promise.all(
+      uniqueAgentIds.map(async (agentId) => {
+        const snapshot = await this.readColdSnapshot(sessionId, agentId);
+        counts.set(agentId, countToolCallFrames(snapshot?.items ?? []));
+      }),
+    );
+    return counts;
+  }
+
   /**
    * Roster for a cold session, read from the persisted session metadata
    * (`<sessionDir>/state.json`) and mapped like the live seeding
@@ -599,6 +623,17 @@ export class TranscriptService {
     this.live.delete(sessionId);
     entry.binding.dispose();
   }
+}
+
+export function countToolCallFrames(items: AgentTranscriptSnapshot['items']): number {
+  let count = 0;
+  for (const item of items) {
+    if (item.kind !== 'turn') continue;
+    for (const step of item.steps) {
+      count += step.frames.filter((frame) => frame.kind === 'tool').length;
+    }
+  }
+  return count;
 }
 
 /**

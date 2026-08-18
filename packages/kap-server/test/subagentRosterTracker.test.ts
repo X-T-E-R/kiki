@@ -21,6 +21,7 @@ function spawn(subagentId: string, extra: Record<string, unknown> = {}): Event {
     parentAgentId: 'main',
     parentToolCallId: 'tc_swarm_1',
     description: `task ${subagentId}`,
+    userLabel: `task ${subagentId}`,
     swarmIndex: 0,
     runInBackground: false,
     ...extra,
@@ -38,6 +39,7 @@ describe('SubagentRosterTracker', () => {
         session_id: SID,
         kind: 'subagent',
         description: 'task agent-1',
+        label: 'task agent-1',
         status: 'running',
         subagent_phase: 'queued',
         subagent_type: 'kimi-subagent',
@@ -49,6 +51,19 @@ describe('SubagentRosterTracker', () => {
         model: 'provider/secondary',
         thinking_effort: 'low',
       }),
+    ]);
+  });
+
+  it('resolves the display name from user label, spawned name, then agent id', () => {
+    const t = new SubagentRosterTracker();
+    t.apply(SID, spawn('agent-label', { userLabel: 'User label', subagentName: 'spawned' }));
+    t.apply(SID, spawn('agent-name', { userLabel: undefined, subagentName: 'spawned' }));
+    t.apply(SID, spawn('agent-id', { userLabel: undefined, subagentName: '' }));
+
+    expect(t.get(SID).map((entry) => entry.description)).toEqual([
+      'User label',
+      'spawned',
+      'agent-id',
     ]);
   });
 

@@ -22,6 +22,8 @@ export interface AgentMeta {
   readonly forkedFrom?: string;
   readonly labels?: Readonly<Record<string, string>>;
   readonly swarmItem?: string;
+  readonly displayName?: string;
+  readonly userLabel?: string;
 }
 
 export type DelegatorRef =

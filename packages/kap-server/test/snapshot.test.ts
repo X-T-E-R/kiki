@@ -17,6 +17,7 @@ import {
   IAgentLifecycleService,
   IAgentProfileService,
   IAgentPromptService,
+  IAgentUsageService,
   ISessionInteractionService,
   ISessionContext,
   ISessionIndex,
@@ -28,6 +29,7 @@ import {
   IWorkspaceService,
   getLiveSessionById,
   resumeSessionById,
+  type ContextMessage,
 } from '@moonshot-ai/agent-core-v2';
 import { sessionSnapshotResponseSchema } from '../src/protocol/rest-snapshot';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -137,6 +139,7 @@ describe('server-v2 snapshot route enrichment', () => {
       ]),
     };
     const broadcaster = {
+      getTranscriptToolCallCounts: async () => new Map([['agent-1', 3]]),
       getSnapshotState: async () => ({
         seq: 1,
         epoch: 'ep_snapshot',
@@ -282,14 +285,43 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
     expect(snap.in_flight_turn).toBeNull();
     expect(snap.context_tokens).toBe(0);
     expect(snap.max_context_tokens).toBeUndefined();
-    expect(snap.context_breakdown).toEqual({
-      system_tokens: 0,
-      tools_tokens: 0,
-      messages_tokens: 0,
-      estimated: true,
-    });
+    expect(snap.context_breakdown).toBeUndefined();
     expect(snap.pending_approvals).toEqual([]);
     expect(snap.pending_questions).toEqual([]);
+  });
+
+  it('projects live usage into the snapshot session', async () => {
+    const sid = await createSession();
+    await ensureMainAgent(sid);
+    const session = getLiveSessionById(server!.core.accessor, sid);
+    const main = session?.accessor.get(IAgentLifecycleService).get('main');
+    if (main === undefined) throw new Error('expected a live main agent');
+    main.accessor.get(IAgentUsageService).record('example-model', {
+      inputOther: 13,
+      output: 8,
+      inputCacheRead: 5,
+      inputCacheCreation: 2,
+    });
+    emit(sid, {
+      type: 'turn.started',
+      turnId: 0,
+      origin: { kind: 'user' },
+    } as unknown as DomainEvent);
+    emit(sid, {
+      type: 'turn.ended',
+      turnId: 0,
+      reason: 'completed',
+    } as unknown as DomainEvent);
+
+    const snap = await snapshot(sid);
+    expect(snap.session.usage).toMatchObject({
+      input_tokens: 13,
+      output_tokens: 8,
+      cache_read_tokens: 5,
+      cache_creation_tokens: 2,
+      total_cost_usd: 0,
+      turn_count: 1,
+    });
   });
 
   it('reflects the durable watermark and in-flight turn after events', async () => {
@@ -300,6 +332,7 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
     emit(sid, {
       type: 'turn.started',
       turnId: 1,
+      origin: { kind: 'user' },
     } as unknown as DomainEvent); // durable → seq 1
     emit(sid, { type: 'assistant.delta', turnId: 1, delta: 'Hello' } as unknown as DomainEvent); // volatile
 
@@ -385,6 +418,71 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
     expect((snap.messages.items[0]!.content[0] as { text: string }).text).toBe('hello-from-disk');
     expect((snap.messages.items[1]!.content[0] as { text: string }).text).toBe('hi-from-disk');
     expect(snap.epoch).toMatch(/^ep_/);
+  });
+
+  it('rebuilds persisted subagents with names and transcript tool counts', async () => {
+    const sid = await createSession();
+    await ensureMainAgent(sid);
+    const session = getLiveSessionById(server!.core.accessor, sid);
+    if (session === undefined) throw new Error(`session ${sid} not found`);
+    const sub = await session.accessor.get(IAgentLifecycleService).create({
+      agentId: 'agent-1',
+      delegator: { kind: 'agent', agentId: 'main' },
+      labels: { parentAgentId: 'main', swarmItem: 'Research API limits' },
+      userLabel: 'Research API limits',
+    });
+    sub.accessor.get(IAgentContextMemoryService).append(
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'inspect usage accounting' }],
+        toolCalls: [],
+      } as ContextMessage,
+      {
+        role: 'assistant',
+        content: [],
+        toolCalls: [
+          {
+            type: 'function',
+            id: 'call-read-1',
+            name: 'Read',
+            arguments: '{"path":"README.md"}',
+          },
+        ],
+      } as ContextMessage,
+      {
+        role: 'tool',
+        content: [{ type: 'text', text: 'done' }],
+        toolCalls: [],
+        toolCallId: 'call-read-1',
+      } as ContextMessage,
+    );
+    await sub.accessor.get(IWireService).flush();
+    await session.accessor.get(ISessionMetadata).registerAgent('agent-1', {
+      type: 'sub',
+      parentAgentId: 'main',
+      delegator: { kind: 'agent', agentId: 'main' },
+      labels: { parentAgentId: 'main', swarmItem: 'Research API limits' },
+      displayName: 'explore',
+      userLabel: 'Research API limits',
+    });
+
+    await server!.close();
+    server = undefined;
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    expect(getLiveSessionById(server!.core.accessor, sid)).toBeUndefined();
+
+    const snap = await snapshot(sid);
+    expect(snap.subagents).toEqual([
+      expect.objectContaining({
+        id: 'agent-1',
+        description: 'Research API limits',
+        subagent_type: 'explore',
+        parent_agent_id: 'main',
+        label: 'Research API limits',
+        tool_call_count: 1,
+      }),
+    ]);
   });
 
   // Regression for the v1-layout 50001 ("Invalid time value"): v1 persists

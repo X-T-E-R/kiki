@@ -730,6 +730,16 @@ export class SessionEventBroadcaster {
     return { seq: state.journal.seq, epoch: state.journal.epoch };
   }
 
+  async getTranscriptToolCallCounts(
+    sessionId: string,
+    agentIds: readonly string[],
+  ): Promise<ReadonlyMap<string, number>> {
+    return (
+      (await this.opts.transcriptService?.getAgentToolCallCounts(sessionId, agentIds)) ??
+      new Map<string, number>()
+    );
+  }
+
   /** Atomic-at-queue watermark + in-flight turn, for the snapshot route. */
   async getSnapshotState(sessionId: string): Promise<SessionSnapshotState> {
     const state = await this.ensureState(sessionId);

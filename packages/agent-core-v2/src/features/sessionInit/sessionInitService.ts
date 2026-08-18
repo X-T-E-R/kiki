@@ -84,6 +84,7 @@ export class SessionInitService implements ISessionInitService {
           model: own.modelAlias,
           thinking: own.thinkingLevel,
         },
+        userLabel: INIT_DESCRIPTION,
       });
       child.accessor.get(IAgentPermissionModeService).setMode(permissionMode);
 

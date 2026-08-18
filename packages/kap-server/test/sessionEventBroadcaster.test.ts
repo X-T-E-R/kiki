@@ -641,6 +641,28 @@ describe('SessionEventBroadcaster', () => {
     expect(() => agentStatusUpdatedEventSchema.parse(status)).not.toThrow();
   });
 
+  it('omits the context breakdown when the context is empty', async () => {
+    const lc = new FakeLifecycle();
+    const main = lc.addAgent('main');
+    main.set(IAgentTokenCountingService, { statusSize: () => 0 });
+    main.set(IAgentProfileService, {
+      getModel: () => 'example-model',
+      getModelCapabilities: () => ({ max_context_tokens: 128_000 }),
+    });
+    main.set(IAgentUsageService, { status: () => ({}) });
+    sessions.set('s1', lc);
+    const { target, envelopes } = collectingTarget();
+    await bc.subscribe('s1', target);
+
+    main.bus.emit(agentEvent('agent.status.updated', {}));
+    await bc.getCursor('s1');
+
+    const status = envelopes.find((envelope) => envelope.type === 'agent.status.updated')?.payload;
+    expect(status).toMatchObject({ contextTokens: 0 });
+    expect((status as { contextBreakdown?: unknown } | undefined)?.contextBreakdown).toBeUndefined();
+    expect(() => agentStatusUpdatedEventSchema.parse(status)).not.toThrow();
+  });
+
   it('folds the legacy status snapshot into subagent status events too', async () => {
     const lc = new FakeLifecycle();
     lc.addAgent('main');
@@ -1057,6 +1079,7 @@ describe('SessionEventBroadcaster', () => {
         subagentName: 'kimi-subagent',
         parentToolCallId: 'tc_swarm_1',
         description: 'task agent-1',
+        userLabel: 'task agent-1',
         swarmIndex: 0,
         runInBackground: false,
         model: 'provider/secondary',

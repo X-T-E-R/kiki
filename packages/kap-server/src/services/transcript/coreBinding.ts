@@ -33,6 +33,11 @@ import {
 } from '@moonshot-ai/agent-core-v2';
 import type { AgentDescriptor, TranscriptChangeEvent, TranscriptStore } from '@moonshot-ai/transcript';
 
+import {
+  resolveSubagentDisplayName,
+  subagentParentAgentId,
+  subagentUserLabel,
+} from '../subagentProjection';
 import { AgentTranscriptProjector, type ProjectorInteraction } from './coreEventMap';
 
 /** Minimal warn sink (matches `JournalLogger`). */
@@ -335,20 +340,20 @@ export function bindSessionTranscript(
 }
 
 export function descriptorFromMeta(agentId: string, meta: AgentMeta | undefined): AgentDescriptor {
-  const parentFromLabels = meta?.labels?.['parentAgentId'];
-  const swarmItem = meta?.labels?.['swarmItem'] ?? meta?.swarmItem;
+  const parentAgentId = subagentParentAgentId(meta);
   const delegator =
     meta?.delegator ??
-    (parentFromLabels !== undefined && parentFromLabels.length > 0
-      ? { kind: 'agent' as const, agentId: parentFromLabels }
-      : meta?.parentAgentId !== undefined && meta.parentAgentId !== null
-        ? { kind: 'agent' as const, agentId: meta.parentAgentId }
-        : undefined);
+    (parentAgentId === undefined ? undefined : { kind: 'agent' as const, agentId: parentAgentId });
+  const userLabel = subagentUserLabel(meta);
+  const type = meta?.type ?? (agentId === MAIN_AGENT_ID ? 'main' : 'sub');
   return {
     agentId,
-    type: meta?.type ?? (agentId === MAIN_AGENT_ID ? 'main' : 'sub'),
-    parentAgentId: delegator?.kind === 'agent' ? delegator.agentId : undefined,
+    type,
+    parentAgentId,
     delegator,
-    label: swarmItem !== undefined && swarmItem.length > 0 ? swarmItem : undefined,
+    label:
+      type === 'sub'
+        ? resolveSubagentDisplayName(userLabel, meta?.displayName, agentId)
+        : undefined,
   };
 }

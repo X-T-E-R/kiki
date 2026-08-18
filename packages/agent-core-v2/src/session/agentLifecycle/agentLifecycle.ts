@@ -37,6 +37,7 @@ export interface CreateAgentOptions {
   readonly forkedFrom?: string;
   readonly labels?: Readonly<Record<string, string>>;
   readonly delegator?: DelegatorRef;
+  readonly userLabel?: string;
   /** Internal transaction hook: publish onDidCreate only after the caller commits. */
   readonly deferCreateEvent?: boolean;
 }

@@ -43,6 +43,7 @@ export interface SubagentSpawnedEvent {
   readonly parentAgentId?: string;
   readonly callerAgentId?: string;
   readonly description?: string;
+  readonly userLabel?: string;
   readonly swarmIndex?: number;
   readonly runInBackground: boolean;
   readonly model?: string;
@@ -82,6 +83,7 @@ export interface AgentRunSpawnedMeta {
   readonly parentToolCallId?: string;
   readonly parentToolCallUuid?: string;
   readonly description?: string;
+  readonly userLabel?: string;
   readonly swarmIndex?: number;
   readonly runInBackground?: boolean;
   readonly model?: string;
@@ -113,6 +115,7 @@ export function emitAgentRunSpawned(
     parentAgentId: requester.id,
     callerAgentId: requester.id,
     description: meta.description,
+    userLabel: meta.userLabel ?? meta.description,
     swarmIndex: meta.swarmIndex,
     runInBackground: meta.runInBackground ?? false,
     model: meta.model,

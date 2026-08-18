@@ -40,6 +40,7 @@
 
 import type { Event } from './events';
 import type { SnapshotSubagent } from '../../../protocol/rest-snapshot';
+import { resolveSubagentDisplayName } from '../../../services/subagentProjection';
 
 const MAIN_AGENT_ID = 'main';
 
@@ -65,10 +66,15 @@ export class SubagentRosterTracker {
           id: event.subagentId,
           session_id: sessionId,
           kind: 'subagent',
-          description: event.description ?? event.subagentName ?? 'Sub Agent',
+          description: resolveSubagentDisplayName(
+            event.userLabel,
+            event.subagentName,
+            event.subagentId,
+          ),
           status: 'running',
           subagent_phase: 'queued',
           subagent_type: event.subagentName,
+          label: event.userLabel,
           parent_agent_id: event.parentAgentId,
           parent_tool_call_id: event.parentToolCallId === '' ? undefined : event.parentToolCallId,
           tool_call_count: 0,
