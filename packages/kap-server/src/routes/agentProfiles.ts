@@ -146,11 +146,11 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
           });
           return;
         }
-        if (isError2(error) && error.code === AgentProfileWriteErrors.codes.READ_ONLY) {
+        if (isError2(error) && error.code === AgentProfileWriteErrors.codes.PROFILE_READ_ONLY) {
           reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_READ_ONLY, error.message, req.id));
           return;
         }
-        if (isError2(error) && error.code === AgentProfileWriteErrors.codes.NOT_FOUND) {
+        if (isError2(error) && error.code === AgentProfileWriteErrors.codes.PROFILE_NOT_FOUND) {
           reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, error.message, req.id));
           return;
         }

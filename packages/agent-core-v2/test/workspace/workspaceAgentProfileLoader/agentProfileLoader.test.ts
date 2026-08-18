@@ -617,7 +617,7 @@ describe('agent profile loaders + session catalog', () => {
           name: DEFAULT_AGENT_PROFILE_NAME,
           scope: 'user',
           description: 'not allowed',
-        })).rejects.toMatchObject({ code: AgentProfileWriteErrors.codes.READ_ONLY });
+        })).rejects.toMatchObject({ code: AgentProfileWriteErrors.codes.PROFILE_READ_ONLY });
       });
     });
   });

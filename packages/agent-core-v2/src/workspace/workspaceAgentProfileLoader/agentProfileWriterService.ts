@@ -162,7 +162,7 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     );
     if (authoritative === undefined || updatedProfile === undefined) {
       throw new Error2(
-        AgentProfileWriteErrors.codes.NOT_FOUND,
+        AgentProfileWriteErrors.codes.PROFILE_NOT_FOUND,
         `Agent profile "${request.name}" disappeared after ${request.scope} reload`,
         { details: { name: request.name, scope: request.scope } },
       );
@@ -199,7 +199,7 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
       throw readOnlyError(name, match.sourceId);
     }
     throw new Error2(
-      AgentProfileWriteErrors.codes.NOT_FOUND,
+      AgentProfileWriteErrors.codes.PROFILE_NOT_FOUND,
       `Agent profile "${name}" was not found in ${scope} scope`,
       { details: { name, scope, workspaceId: this.workspace.workspaceId } },
     );
@@ -291,7 +291,7 @@ function validationError(issues: readonly ValidationIssue[]): Error2 {
 
 function readOnlyError(name: string, source: string): Error2 {
   return new Error2(
-    AgentProfileWriteErrors.codes.READ_ONLY,
+    AgentProfileWriteErrors.codes.PROFILE_READ_ONLY,
     `Agent profile "${name}" from source "${source}" is read-only`,
     { details: { name, source } },
   );
