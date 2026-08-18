@@ -557,7 +557,7 @@ export function Composer({
   return (
     <div className="px-6 pb-5">
       {/* One width axis with the transcript: the conversation shell declares
-          --kiki-chat-content-width; 760px fallback covers the Ctrl+N dialog. */}
+          --kiki-chat-content-width; the 760px fallback is defensive. */}
       <div className="mx-auto max-w-[var(--kiki-chat-content-width,760px)]">
         <div
           className="rounded-2xl border border-hairline bg-panel shadow-[0_2px_4px_rgba(28,25,23,0.03),0_16px_40px_-20px_rgba(28,25,23,0.18)]"

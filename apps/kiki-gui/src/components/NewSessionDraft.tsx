@@ -1,21 +1,19 @@
 /**
- * NewSessionDraft — the shared workspace/cwd picker plus Composer used by both
- * the /new full-page draft and the Ctrl+N NewSessionDialog modal. The hook
- * owns draft persistence (`lib/drafts.ts` key "new"), model/permission state,
- * and the create-then-navigate send path, so opening either surface resumes
- * the same draft and sending behaves identically.
+ * NewSessionDraft — the workspace/cwd picker state behind the /new full-page
+ * draft, the only new-session surface. The hook owns draft persistence
+ * (`lib/drafts.ts` key "new"), model/permission state, and the
+ * create-then-navigate send path.
  *
- * The /new page no longer renders the Composer here: it registers this
- * state into the conversation shell's composer seat (see NewSessionPage), so
- * the textarea survives the hero → session transition. The dialog keeps
- * rendering `NewSessionDraftPanel` itself (modal lifetime, remount is fine).
+ * The /new page does not render the Composer here: it registers this state
+ * into the conversation shell's composer seat (see NewSessionPage), so the
+ * textarea survives the hero → session transition.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { PermissionMode, Workspace } from '@moonshot-ai/protocol';
 
-import { Composer, resolveSelectedEffort } from './Composer';
+import { resolveSelectedEffort } from './Composer';
 import { useGuardedNavigate } from './dirtyGuard';
 import { useI18n } from '../i18n';
 import { buildPromptContent, type ComposerAttachment } from '../lib/attachments';
@@ -45,11 +43,8 @@ export function isAbsoluteCwdPath(value: string): boolean {
 
 export function useNewSessionDraft({
   initialWorkspaceId,
-  onSent,
 }: {
   initialWorkspaceId?: string;
-  /** Called once the server created the session and navigation was kicked off. */
-  onSent?: () => void;
 } = {}) {
   const { client } = useConnection();
   const navigate = useGuardedNavigate();
@@ -146,7 +141,6 @@ export function useNewSessionDraft({
     planMode,
     swarmMode,
     goalObjective,
-    onSent,
   });
   sendContextRef.current = {
     busy,
@@ -158,7 +152,6 @@ export function useNewSessionDraft({
     planMode,
     swarmMode,
     goalObjective,
-    onSent,
   };
 
   const send = useCallback((text: string, composerAttachments: readonly ComposerAttachment[]) => {
@@ -199,7 +192,6 @@ export function useNewSessionDraft({
           },
           replace: false,
         });
-        context.onSent?.();
       })
       .catch((error: unknown) => {
         setBusy(false);
@@ -249,8 +241,8 @@ export function useNewSessionDraft({
 export type NewSessionDraftState = ReturnType<typeof useNewSessionDraft>;
 
 /**
- * The workspace select + free-text cwd pair, shared verbatim between the
- * dialog's panel layout and the /new hero chip's popover.
+ * The workspace select + free-text cwd pair, shared by the /new hero chip's
+ * popover.
  */
 export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }) {
   const { t } = useI18n();
@@ -294,96 +286,6 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
           </p>
         ) : null}
       </div>
-    </div>
-  );
-}
-
-/**
- * The workspace/cwd row plus Composer plus the inline error — the modal form.
- * `autoFocus` focuses the Composer textarea on mount — used by the dialog so
- * Ctrl+N lands ready to type; the page keeps its historical unfocused first
- * paint.
- */
-export function NewSessionDraftPanel({
-  state,
-  autoFocus = false,
-}: {
-  state: NewSessionDraftState;
-  autoFocus?: boolean;
-}) {
-  const { client } = useConnection();
-  const { t } = useI18n();
-  const rootRef = useRef<HTMLDivElement>(null);
-  const composerDisabled = state.busy || state.workspacesLoading || state.effectiveWorkspace === undefined;
-
-  // The dialog's initial `[data-autofocus]` focus lands while the Composer is
-  // still disabled (workspaces query in flight), which silently fails. Once
-  // the query resolves and the textarea enables, re-focus it here — unless the
-  // user already moved focus to another control inside the panel.
-  useEffect(() => {
-    if (!autoFocus || composerDisabled) return;
-    const root = rootRef.current;
-    if (root === null || root.contains(document.activeElement)) return;
-    root.querySelector<HTMLElement>('[data-autofocus]')?.focus();
-  }, [autoFocus, composerDisabled]);
-
-  return (
-    <div ref={rootRef}>
-      <div className="mb-6 space-y-3 rounded-2xl border border-hairline bg-panel p-4 shadow-[0_2px_4px_rgba(28,25,23,0.03),0_16px_40px_-20px_rgba(28,25,23,0.18)]">
-        <WorkspacePickerFields state={state} />
-      </div>
-
-      <Composer
-        busy={state.busy}
-        disabled={composerDisabled}
-        value={state.draft}
-        onChange={state.updateDraft}
-        model={state.modelOverride}
-        defaultModel={undefined}
-        serverDefaultModel={state.inheritedDefault}
-        modelSource={state.modelSource}
-        permissionMode={state.permissionMode}
-        planMode={state.planMode}
-        swarmMode={state.swarmMode}
-        goalObjective={state.goalObjective}
-        goalStatus={undefined}
-        goalControl={undefined}
-        efforts={state.supportedEfforts}
-        effort={state.effectiveEffort}
-        busyPlaceholder={t('new.creating')}
-        autoFocus={autoFocus}
-        fsSearch={
-          // The session-less `@` picker searches the workspace directly
-          // (kap-server `POST /workspace/fs:search`); a custom cwd rides
-          // the same `workspace` slot as an absolute root.
-          state.cwd.trim() !== '' || state.effectiveWorkspace !== undefined
-            ? (query) =>
-                client
-                  .workspaceFsSearch(
-                    state.cwd.trim() !== '' ? state.cwd.trim() : state.effectiveWorkspace!.id,
-                    { query, limit: 30 },
-                  )
-                  .then((result) => result.items)
-            : undefined
-        }
-        attachments={state.attachments}
-        onChangeAttachments={state.setAttachments}
-        mentionScopeKey={state.cwd.trim() !== '' ? `cwd:${state.cwd.trim()}` : `ws:${state.effectiveWorkspace?.id ?? ''}`}
-        onChangeModel={state.setModelOverride}
-        onChangePermissionMode={state.setPermissionMode}
-        onChangePlanMode={state.setPlanMode}
-        onChangeSwarmMode={state.setSwarmMode}
-        onChangeGoalObjective={state.setGoalObjective}
-        onChangeGoalControl={() => {}}
-        onChangeEffort={state.setEffortOverride}
-        onSend={state.send}
-      />
-
-      {state.error !== null ? (
-        <div className="mt-3 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 font-mono text-[11.5px] text-danger">
-          {state.error}
-        </div>
-      ) : null}
     </div>
   );
 }

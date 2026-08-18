@@ -268,8 +268,8 @@ body {
  * column, the composer card, and the dock cards (queue strip) all read
  * --kiki-chat-content-width (the historical 760px shared cap). Declared on
  * the shell root because the transcript and the composer seat are sibling
- * subtrees; every consumer carries a `760px` fallback for surfaces outside
- * the shell (the Ctrl+N dialog). */
+ * subtrees; every consumer carries a `760px` fallback so the width stays
+ * sane on any surface rendered outside the shell. */
 .conversation-shell {
   --kiki-chat-content-width: 760px;
 

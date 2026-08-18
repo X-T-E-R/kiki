@@ -66,8 +66,7 @@ export function Dialog({
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     // A marked-but-disabled autofocus target suppresses the fallback: moving
     // initial focus to another control inside the child would defeat the
-    // child's re-focus-on-enable (e.g. NewSessionDialog's Composer textarea
-    // waits on the workspaces query).
+    // child's own re-focus-on-enable once its blocking query resolves.
     const marked = panel.querySelector<HTMLElement>('[data-autofocus]:not([disabled])');
     const initial =
       marked ??

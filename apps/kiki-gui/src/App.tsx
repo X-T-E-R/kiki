@@ -7,10 +7,11 @@
  *   /s/:id           → live session view
  *   /settings/:section? → settings panel
  *
- * Global overlays: Ctrl+N / the sidebar button open the NewSessionDialog from
- * any route, Ctrl+K opens the QuickSwitcher, Ctrl+Tab jumps to the most recent
- * other session, and Ctrl+/ (or a bare `?`) opens the shortcuts panel. Ctrl+N
- * and Ctrl+Tab are browser-reserved and register only in the desktop runtime.
+ * Global actions: Ctrl+N / the sidebar button navigate to the /new draft page
+ * from any route, Ctrl+K opens the QuickSwitcher, Ctrl+Tab jumps to the most
+ * recent other session, and Ctrl+/ (or a bare `?`) opens the shortcuts panel.
+ * Ctrl+N and Ctrl+Tab are browser-reserved and register only in the desktop
+ * runtime.
  * `document.title` follows the active route; toasts mount at the root.
  */
 
@@ -29,7 +30,6 @@ import {
 
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { DirtyGuardContext, shouldGuardNavigation } from './components/dirtyGuard';
-import { NewSessionDialog } from './components/NewSessionDialog';
 import { NewSessionPage } from './components/NewSessionPage';
 import { CapabilitiesPage } from './components/capabilities/CapabilitiesPage';
 import { ConversationShell } from './components/ConversationShell';
@@ -82,7 +82,6 @@ export function App() {
   const desktop = isDesktopRuntime();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
-  const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [dirtyIds, setDirtyIds] = useState<readonly string[]>([]);
@@ -192,7 +191,7 @@ export function App() {
     });
   }, [activeSessionId, isNewRoute, isSettingsRoute, isUsageRoute, isCapabilitiesRoute, sessions, t]);
 
-  // ⌘N / Ctrl+N opens the new-session dialog from any route; ⌘K / Ctrl+K
+  // ⌘N / Ctrl+N navigates to the /new draft page from any route; ⌘K / Ctrl+K
   // toggles the quick switcher; Ctrl+Tab jumps to the most recent other
   // session (the list arrives sorted by updated_at, newest first).
   // ⌘, / Ctrl+, opens settings.
@@ -206,17 +205,15 @@ export function App() {
         if (!desktop) return;
         event.preventDefault();
         setQuickSwitcherOpen(false);
-        setNewSessionOpen(true);
+        void navigate('/new');
       } else if (key === 'k' && !event.shiftKey && !event.altKey) {
         event.preventDefault();
-        setNewSessionOpen(false);
         setQuickSwitcherOpen((open) => !open);
       } else if (key === ',' && !event.shiftKey && !event.altKey) {
         event.preventDefault();
         void navigate('/settings');
       } else if (key === '/' && !event.shiftKey && !event.altKey) {
         event.preventDefault();
-        setNewSessionOpen(false);
         setQuickSwitcherOpen(false);
         setShortcutsOpen((open) => !open);
       }
@@ -249,14 +246,14 @@ export function App() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
-      if (!isSettingsRoute || sidebarOpen || newSessionOpen || quickSwitcherOpen || shortcutsOpen) return;
+      if (!isSettingsRoute || sidebarOpen || quickSwitcherOpen || shortcutsOpen) return;
       if (isEditableTarget(event.target)) return;
       event.preventDefault();
       void navigate(lastNonSettingsRef.current);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => { window.removeEventListener('keydown', onKeyDown); };
-  }, [isSettingsRoute, sidebarOpen, newSessionOpen, quickSwitcherOpen, shortcutsOpen, navigate]);
+  }, [isSettingsRoute, sidebarOpen, quickSwitcherOpen, shortcutsOpen, navigate]);
 
   // Ctrl+Tab jumps to the most recent other session. Browser tab switching
   // owns Ctrl+Tab (preventDefault cannot intercept it), so the binding only
@@ -305,7 +302,7 @@ export function App() {
         sessionsQuery={sessionsQuery}
         showArchived={showArchived}
         onToggleArchived={() => { setShowArchived((value) => !value); }}
-        onNewSession={() => { setNewSessionOpen(true); }}
+        onNewSession={() => { void navigate('/new'); }}
       />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -378,7 +375,6 @@ export function App() {
         />
       ) : null}
 
-      {newSessionOpen ? <NewSessionDialog onClose={() => { setNewSessionOpen(false); }} /> : null}
       {quickSwitcherOpen ? (
         <QuickSwitcher sessions={sessions} onClose={() => { setQuickSwitcherOpen(false); }} />
       ) : null}

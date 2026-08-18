@@ -4,9 +4,9 @@
  * here — this route publishes it into the conversation shell's seat (same DOM
  * node that docks at the bottom once the first send lands on /s/:id).
  *
- * The workspace picker + send path stay shared with the Ctrl+N
- * NewSessionDialog via `useNewSessionDraft`; the dialog's panel layout is
- * untouched.
+ * The workspace picker + send path come from the shared `useNewSessionDraft`
+ * hook; /new is the single new-session surface (Ctrl+N and the sidebar button
+ * navigate here).
  */
 
 import { useMemo, useState } from 'react';
@@ -35,8 +35,8 @@ function workspaceChipLabel(state: NewSessionDraftState): string | undefined {
 /**
  * The hero workspace chip (folder + label + chevron), transparent at rest and
  * filled on hover/open. Opens a popover carrying the same workspace/cwd
- * fields the dialog panel uses — the workspace stays switchable until the
- * first message creates the session.
+ * fields — the workspace stays switchable until the first message creates the
+ * session.
  */
 function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
   const { t } = useI18n();
