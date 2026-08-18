@@ -85,6 +85,7 @@ describe('WorkspaceMcpService', () => {
       ready: Promise.resolve(),
       servers: () => current,
       tunables: () => tunablesFn() as McpTunables,
+      reload: async () => {},
       onDidChange: configChanges.event,
     };
   }

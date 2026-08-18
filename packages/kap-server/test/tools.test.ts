@@ -25,6 +25,7 @@ import {
   IModelCatalog,
   type ExecutableTool,
 } from '@moonshot-ai/agent-core-v2';
+import { listMcpJsonServersResponseSchema } from '../src/protocol/rest-mcpConfig';
 import {
   listMcpServersResponseSchema,
   listToolsResponseSchema,
@@ -123,12 +124,36 @@ describe('server-v2 /api/v1 tools + mcp', () => {
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
 
-  async function createSession(): Promise<string> {
-    const { body } = await postJson<{ id: string }>('/api/v1/sessions', {
+  async function putJson<T>(
+    path: string,
+    body: unknown,
+  ): Promise<{ status: number; body: Envelope<T> }> {
+    const res = await fetch(`${base}${path}`, {
+      method: 'PUT',
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      body: JSON.stringify(body),
+    } as never);
+    return { status: res.status, body: (await res.json()) as Envelope<T> };
+  }
+
+  async function deleteJson<T>(path: string): Promise<{ status: number; body: Envelope<T> }> {
+    const res = await fetch(`${base}${path}`, {
+      method: 'DELETE',
+      headers: authHeaders(server as RunningServer),
+    } as never);
+    return { status: res.status, body: (await res.json()) as Envelope<T> };
+  }
+
+  async function createWorkspaceSession(): Promise<{ id: string; workspace_id: string }> {
+    const { body } = await postJson<{ id: string; workspace_id: string }>('/api/v1/sessions', {
       metadata: { cwd: home as string },
     });
     expect(body.code).toBe(0);
-    return body.data.id;
+    return body.data;
+  }
+
+  async function createSession(): Promise<string> {
+    return (await createWorkspaceSession()).id;
   }
 
   // The main agent scope is not created automatically on session creation
@@ -282,6 +307,70 @@ describe('server-v2 /api/v1 tools + mcp', () => {
       await createSession();
       const { body } = await postJson<null>('/api/v1/mcp/servers/foo');
       expect(body.code).toBe(40001);
+    });
+  });
+
+  describe('editable MCP JSON entries', () => {
+    it('lists, upserts, and deletes entries with authoritative echoes', async () => {
+      const created = await createWorkspaceSession();
+      const workspaceId = encodeURIComponent(created.workspace_id);
+
+      const initial = await getJson<unknown>(
+        `/api/v1/mcp/config/servers?workspace_id=${workspaceId}`,
+      );
+      expect(initial.body.code).toBe(0);
+      expect(listMcpJsonServersResponseSchema.parse(initial.body.data).entries).toEqual([]);
+
+      const upserted = await putJson<unknown>('/api/v1/mcp/servers/local', {
+        workspace_id: created.workspace_id,
+        scope: 'project',
+        config: {
+          transport: 'stdio',
+          command: 'node',
+          args: ['server.js'],
+          env: { TOKEN: 'value' },
+          enabled: false,
+        },
+      });
+      expect(upserted.body.code).toBe(0);
+      expect(listMcpJsonServersResponseSchema.parse(upserted.body.data).entries).toEqual([{
+        name: 'local',
+        scope: 'project',
+        config: {
+          transport: 'stdio',
+          command: 'node',
+          args: ['server.js'],
+          env: { TOKEN: 'value' },
+          enabled: false,
+        },
+      }]);
+
+      const removed = await deleteJson<unknown>(
+        `/api/v1/mcp/servers/local?workspace_id=${workspaceId}&scope=project`,
+      );
+      expect(removed.body.code).toBe(0);
+      expect(listMcpJsonServersResponseSchema.parse(removed.body.data).entries).toEqual([]);
+    });
+
+    it('rejects unknown MCP config fields with 40001', async () => {
+      const created = await createWorkspaceSession();
+      const response = await putJson<null>('/api/v1/mcp/servers/unsafe', {
+        workspace_id: created.workspace_id,
+        scope: 'user',
+        config: { transport: 'stdio', command: 'node', shell: true },
+      });
+
+      expect(response.body.code).toBe(40001);
+    });
+
+    it('returns 40408 when deleting a missing editable entry', async () => {
+      const created = await createWorkspaceSession();
+      const response = await deleteJson<null>(
+        `/api/v1/mcp/servers/missing?workspace_id=${encodeURIComponent(created.workspace_id)}&scope=user`,
+      );
+
+      expect(response.body.code).toBe(40408);
+      expect(response.body.msg).toContain('not found');
     });
   });
 });

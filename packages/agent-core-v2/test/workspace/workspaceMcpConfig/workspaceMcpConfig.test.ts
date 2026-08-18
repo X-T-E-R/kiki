@@ -10,7 +10,7 @@
  */
 
 import { mkdtempSync } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 
@@ -18,7 +18,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices } from '#/_base/di/test';
-import { Emitter } from '#/_base/event';
+import { Error2 } from '#/_base/errors/errors';
+import { Emitter, Event } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { MCP_SECTION, type McpSection } from '#/app/mcpConfig/configSection';
@@ -42,6 +43,8 @@ import {
   IWorkspaceMcpConfigService,
   type McpServersChange,
 } from '#/workspace/workspaceMcpConfig/workspaceMcpConfig';
+import { McpJsonWriteErrors } from '#/workspace/workspaceMcpConfig/errors';
+import { McpJsonWriterService } from '#/workspace/workspaceMcpConfig/mcpJsonWriterService';
 import { WorkspaceMcpConfigService } from '#/workspace/workspaceMcpConfig/workspaceMcpConfigService';
 
 import { stubLog } from '../../_base/log/stubs';
@@ -295,4 +298,151 @@ describe('WorkspaceMcpConfigService', () => {
     expect(changes).toEqual([]);
     expect(service.servers()).toEqual({ shared: stdioConfig('file-version') });
   }, 20000);
+});
+
+describe('McpJsonWriterService', () => {
+  let cwd: string;
+  let homeDir: string;
+  let effectiveServers: Record<string, McpServerConfig>;
+  let reload: ReturnType<typeof vi.fn<() => Promise<void>>>;
+
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'kimi-mcp-writer-cwd-'));
+    homeDir = mkdtempSync(join(tmpdir(), 'kimi-mcp-writer-home-'));
+    effectiveServers = {};
+    reload = vi.fn<() => Promise<void>>(async () => {});
+  });
+
+  afterEach(async () => {
+    await Promise.all([
+      rm(cwd, { recursive: true, force: true }),
+      rm(homeDir, { recursive: true, force: true }),
+    ]);
+  });
+
+  function createWriter(
+    atomicTextWriter?: (path: string, text: string) => Promise<void>,
+  ): McpJsonWriterService {
+    const config: IWorkspaceMcpConfigService = {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      servers: () => effectiveServers,
+      tunables: () => ({}),
+      reload,
+      onDidChange: Event.None as IWorkspaceMcpConfigService['onDidChange'],
+    };
+    return new McpJsonWriterService(
+      new HostFileSystem(),
+      { _serviceBrand: undefined, cwd, workspaceId: 'writer-workspace' } as IWorkspaceContext,
+      { _serviceBrand: undefined, homeDir } as IBootstrapService,
+      config,
+      atomicTextWriter,
+    );
+  }
+
+  it('upserts an entry atomically, preserves unrelated bytes, reloads, and echoes file entries', async () => {
+    const path = join(homeDir, 'mcp.json');
+    const original = [
+      '{',
+      '  "metadata": { "keep": true },',
+      '  "mcpServers": {',
+      '    "untouched": { "transport": "stdio", "command": "keep" },',
+      '    "editable": { "transport": "stdio", "command": "old" }',
+      '  }',
+      '}',
+      '',
+    ].join('\n');
+    await writeFile(path, original, 'utf8');
+    const writer = createWriter();
+
+    const result = await writer.upsert({
+      name: 'editable',
+      scope: 'user',
+      config: { transport: 'http', url: 'https://mcp.example.com' },
+    });
+
+    const written = await readFile(path, 'utf8');
+    expect(written).toContain('  "metadata": { "keep": true },');
+    expect(written).toContain('    "untouched": { "transport": "stdio", "command": "keep" },');
+    expect(written).toContain('"url": "https://mcp.example.com"');
+    expect(reload).toHaveBeenCalledOnce();
+    expect(result.entries).toEqual([
+      { name: 'editable', scope: 'user', config: { transport: 'http', url: 'https://mcp.example.com' } },
+      { name: 'untouched', scope: 'user', config: { transport: 'stdio', command: 'keep' } },
+    ]);
+  });
+
+  it('creates and removes a project entry and returns the authoritative remaining list', async () => {
+    const writer = createWriter();
+    await writer.upsert({
+      name: 'local',
+      scope: 'project',
+      config: { transport: 'stdio', command: 'node', args: ['server.js'], env: { TOKEN: 'value' } },
+    });
+
+    const result = await writer.remove({ name: 'local', scope: 'project' });
+
+    expect(result.entries).toEqual([]);
+    expect(JSON.parse(await readFile(join(cwd, '.kimi-code', 'mcp.json'), 'utf8'))).toEqual({
+      mcpServers: {},
+    });
+    expect(reload).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects unknown server fields before writing or reloading', async () => {
+    const path = join(homeDir, 'mcp.json');
+    await writeFile(path, '{"mcpServers":{}}\n', 'utf8');
+    const atomicTextWriter = vi.fn(async () => {});
+    const writer = createWriter(atomicTextWriter);
+
+    await expect(writer.upsert({
+      name: 'unsafe',
+      scope: 'user',
+      config: {
+        transport: 'stdio',
+        command: 'node',
+        unknown: true,
+      } as McpServerConfig,
+    })).rejects.toMatchObject({ code: 'validation.failed' });
+
+    expect(atomicTextWriter).not.toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
+    expect(await readFile(path, 'utf8')).toBe('{"mcpServers":{}}\n');
+  });
+
+  it('leaves the original file and reload state untouched when the atomic replacement fails', async () => {
+    const path = join(homeDir, 'mcp.json');
+    const original = '{"mcpServers":{"stable":{"transport":"stdio","command":"keep"}}}\n';
+    await writeFile(path, original, 'utf8');
+    const writer = createWriter(async () => {
+      throw new Error('disk full');
+    });
+
+    await expect(writer.upsert({
+      name: 'stable',
+      scope: 'user',
+      config: { transport: 'stdio', command: 'changed' },
+    })).rejects.toThrow('disk full');
+
+    expect(await readFile(path, 'utf8')).toBe(original);
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('reports read-only when removal targets a plugin or project-root server', async () => {
+    effectiveServers = { pluginOnly: stdioConfig('plugin') };
+    const writer = createWriter();
+
+    await expect(writer.remove({ name: 'pluginOnly', scope: 'user' })).rejects.toMatchObject({
+      code: McpJsonWriteErrors.codes.MCP_WRITE_READ_ONLY,
+    });
+  });
+
+  it('reports not found for an unknown editable entry', async () => {
+    const writer = createWriter();
+
+    await expect(writer.remove({ name: 'missing', scope: 'project' })).rejects.toBeInstanceOf(Error2);
+    await expect(writer.remove({ name: 'missing', scope: 'project' })).rejects.toMatchObject({
+      code: McpJsonWriteErrors.codes.MCP_WRITE_NOT_FOUND,
+    });
+  });
 });

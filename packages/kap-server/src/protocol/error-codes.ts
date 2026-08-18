@@ -150,6 +150,8 @@ export const ErrorCode = {
   SESSION_LOCKED: 40933,
   /** named agent profile is backed by a non-editable source */
   AGENT_PROFILE_READ_ONLY: 40934,
+  /** MCP server is loaded from a plugin or project-root file */
+  MCP_SERVER_READ_ONLY: 40935,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,

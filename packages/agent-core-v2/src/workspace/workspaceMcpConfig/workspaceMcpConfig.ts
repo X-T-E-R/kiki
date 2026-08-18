@@ -14,8 +14,9 @@
  * files, the plugin registry, or the `[mcp]` config section themselves: the
  * global timeout preferences are exposed here as {@link tunables} too, so the
  * connection side has exactly one configuration dependency. The domain holds
- * no connection state and never talks to an MCP server; writing config files
- * stays out of the engine. Bound at Workspace scope.
+ * no connection state and never talks to an MCP server; validated file writes
+ * explicitly call {@link reload} to publish their changes. Bound at Workspace
+ * scope.
  */
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
@@ -41,6 +42,8 @@ export interface IWorkspaceMcpConfigService {
   servers(): Readonly<Record<string, McpServerConfig>>;
 
   tunables(): McpTunables;
+
+  reload(): Promise<void>;
 
   readonly onDidChange: Event<McpServersChange>;
 }

@@ -281,6 +281,51 @@ export interface UpdateNamedAgentProfileRequest {
   }[];
 }
 
+export type McpJsonWriteScope = 'user' | 'project';
+export type McpJsonTransport = 'stdio' | 'http' | 'sse';
+
+interface McpJsonCommonConfig {
+  readonly enabled?: boolean;
+  readonly startupTimeoutMs?: number;
+  readonly toolTimeoutMs?: number;
+  readonly enabledTools?: readonly string[];
+  readonly disabledTools?: readonly string[];
+}
+
+export type McpJsonServerConfig =
+  | (McpJsonCommonConfig & {
+      readonly transport: 'stdio';
+      readonly command: string;
+      readonly args?: readonly string[];
+      readonly env?: Readonly<Record<string, string>>;
+      readonly cwd?: string;
+      readonly executor?: 'local' | 'kaos';
+      readonly runtime_id?: string;
+    })
+  | (McpJsonCommonConfig & {
+      readonly transport: 'http' | 'sse';
+      readonly url: string;
+      readonly headers?: Readonly<Record<string, string>>;
+      readonly auth?: 'oauth';
+      readonly bearerTokenEnvVar?: string;
+    });
+
+export interface McpJsonServerEntry {
+  readonly name: string;
+  readonly scope: McpJsonWriteScope;
+  readonly config: McpJsonServerConfig;
+}
+
+export interface ListMcpJsonServersResponse {
+  readonly entries: readonly McpJsonServerEntry[];
+}
+
+export interface UpsertMcpJsonServerRequest {
+  readonly workspace_id: string;
+  readonly scope: McpJsonWriteScope;
+  readonly config: McpJsonServerConfig;
+}
+
 export interface KikiClientOptions {
   /** Absolute base (`http://host:port`) or '' for same-origin (dev proxy). */
   readonly baseUrl: string;
@@ -940,6 +985,35 @@ export class KikiClient {
 
   listMcpServers(): Promise<ListMcpServersResponse> {
     return this.request<ListMcpServersResponse>('GET', '/mcp/servers');
+  }
+
+  listMcpJsonServers(workspaceId: string): Promise<ListMcpJsonServersResponse> {
+    return this.request<ListMcpJsonServersResponse>('GET', '/mcp/config/servers', {
+      query: { workspace_id: workspaceId },
+    });
+  }
+
+  upsertMcpJsonServer(
+    name: string,
+    body: UpsertMcpJsonServerRequest,
+  ): Promise<ListMcpJsonServersResponse> {
+    return this.request<ListMcpJsonServersResponse>(
+      'PUT',
+      `/mcp/servers/${encodeURIComponent(name)}`,
+      { body },
+    );
+  }
+
+  removeMcpJsonServer(
+    name: string,
+    workspaceId: string,
+    scope: McpJsonWriteScope,
+  ): Promise<ListMcpJsonServersResponse> {
+    return this.request<ListMcpJsonServersResponse>(
+      'DELETE',
+      `/mcp/servers/${encodeURIComponent(name)}`,
+      { query: { workspace_id: workspaceId, scope } },
+    );
   }
 
   restartMcpServer(serverId: string): Promise<RestartMcpServerResult> {

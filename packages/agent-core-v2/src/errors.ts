@@ -38,6 +38,7 @@ import { WireErrors } from '#/wire/errors';
 import { WorkspaceErrors } from '#/app/workspace/errors';
 import { AgentProfileRouteErrors } from '#/app/agentProfileCatalog/errors';
 import { AgentProfileWriteErrors } from '#/workspace/workspaceAgentProfileLoader/errors';
+import { McpJsonWriteErrors } from '#/workspace/workspaceMcpConfig/errors';
 
 export * from '#/_base/errors/codes';
 export * from '#/_base/errors/errorMessage';
@@ -77,6 +78,7 @@ export { WireErrors } from '#/wire/errors';
 export { WorkspaceErrors } from '#/app/workspace/errors';
 export { AgentProfileRouteErrors } from '#/app/agentProfileCatalog/errors';
 export { AgentProfileWriteErrors } from '#/workspace/workspaceAgentProfileLoader/errors';
+export { McpJsonWriteErrors } from '#/workspace/workspaceMcpConfig/errors';
 
 export const ErrorCodes = {
   ...CoreErrors.codes,
@@ -113,6 +115,7 @@ export const ErrorCodes = {
   ...WorkspaceErrors.codes,
   ...AgentProfileRouteErrors.codes,
   ...AgentProfileWriteErrors.codes,
+  ...McpJsonWriteErrors.codes,
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

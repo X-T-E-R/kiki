@@ -36,7 +36,7 @@ export const McpServerStdioConfigSchema = z.object({
   executor: z.enum(['local', 'kaos']).optional(),
   runtime_id: z.string().min(1).optional(),
   ...McpServerCommonFields,
-});
+}).strict();
 
 export type McpServerStdioConfig = z.infer<typeof McpServerStdioConfigSchema>;
 
@@ -47,7 +47,7 @@ export const McpServerHttpConfigSchema = z.object({
   auth: z.literal('oauth').optional(),
   bearerTokenEnvVar: z.string().min(1).optional(),
   ...McpServerCommonFields,
-});
+}).strict();
 
 export type McpServerHttpConfig = z.infer<typeof McpServerHttpConfigSchema>;
 
@@ -58,7 +58,7 @@ export const McpServerSseConfigSchema = z.object({
   auth: z.literal('oauth').optional(),
   bearerTokenEnvVar: z.string().min(1).optional(),
   ...McpServerCommonFields,
-});
+}).strict();
 
 export type McpServerSseConfig = z.infer<typeof McpServerSseConfigSchema>;
 export type McpRemoteServerConfig = McpServerHttpConfig | McpServerSseConfig;

@@ -23,9 +23,11 @@ import { McpServerConfigSchema, type McpServerConfig } from '#/mcpCore/config-sc
 import { ErrorCodes, Error2 } from '#/errors';
 import { z } from 'zod';
 
-const McpJsonFileSchema = z.object({
+export const McpJsonFileSchema = z.object({
   mcpServers: z.record(z.string(), McpServerConfigSchema).default({}),
-});
+}).passthrough();
+
+export type McpJsonFile = z.infer<typeof McpJsonFileSchema>;
 
 export interface McpJsonPaths {
   readonly user: string;
@@ -76,7 +78,7 @@ interface ReadMcpJsonOptions {
   readonly stdioCwdBase?: string;
 }
 
-async function readMcpJson(
+export async function readMcpJson(
   fs: IHostFileSystem,
   filePath: string,
   options: ReadMcpJsonOptions = {},
@@ -91,7 +93,11 @@ async function readMcpJson(
     });
   }
 
-  if (text.trim().length === 0) return {};
+  return normalizeMcpServers(parseMcpJsonText(text, filePath).mcpServers, options);
+}
+
+export function parseMcpJsonText(text: string, filePath: string): McpJsonFile {
+  if (text.trim().length === 0) return { mcpServers: {} };
 
   let data: unknown;
   try {
@@ -103,7 +109,7 @@ async function readMcpJson(
   }
 
   try {
-    return normalizeMcpServers(McpJsonFileSchema.parse(data).mcpServers, options);
+    return McpJsonFileSchema.parse(data);
   } catch (error: unknown) {
     throw new Error2(ErrorCodes.CONFIG_INVALID, `Invalid MCP server config in ${filePath}: ${describeError(error)}`, {
       cause: error,

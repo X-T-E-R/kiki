@@ -155,6 +155,48 @@ describe('KikiClient.updateNamedAgentProfile', () => {
   });
 });
 
+describe('KikiClient MCP JSON management', () => {
+  it('uses the list, upsert, and remove endpoints with workspace scope', async () => {
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const parsed = new URL(String(url));
+      if (init?.method === 'GET') {
+        expect(parsed.pathname).toBe('/api/v1/mcp/config/servers');
+        expect(parsed.searchParams.get('workspace_id')).toBe('wd test');
+      } else if (init?.method === 'PUT') {
+        expect(parsed.pathname).toBe('/api/v1/mcp/servers/local%20server');
+        expect(JSON.parse(init.body as string)).toEqual({
+          workspace_id: 'wd test',
+          scope: 'project',
+          config: { transport: 'stdio', command: 'node', args: ['server.js'] },
+        });
+      } else {
+        expect(init?.method).toBe('DELETE');
+        expect(parsed.pathname).toBe('/api/v1/mcp/servers/local%20server');
+        expect(parsed.searchParams.get('workspace_id')).toBe('wd test');
+        expect(parsed.searchParams.get('scope')).toBe('project');
+      }
+      return new Response(JSON.stringify({
+        code: 0,
+        msg: 'success',
+        data: { entries: [] },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+
+    await client.listMcpJsonServers('wd test');
+    await client.upsertMcpJsonServer('local server', {
+      workspace_id: 'wd test',
+      scope: 'project',
+      config: { transport: 'stdio', command: 'node', args: ['server.js'] },
+    });
+    await client.removeMcpJsonServer('local server', 'wd test', 'project');
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    vi.unstubAllGlobals();
+  });
+});
+
 function envelope(data: unknown): Response {
   return {
     json: async () => ({ code: 0, msg: 'ok', data, request_id: 'req_test' }),

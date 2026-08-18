@@ -85,7 +85,7 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
     );
     this._register(
       this.trust.onDidChange(() => {
-        void this.reloadFileServers().catch((error) => {
+        void this.reload().catch((error) => {
           this.log.warn(`mcp trust reload failed: ${String(error)}`);
         });
       }),
@@ -165,13 +165,13 @@ export class WorkspaceMcpConfigService extends Disposable implements IWorkspaceM
 
   private scheduleFileReload(): void {
     this.watchDebounce.cancelAndSet(() => {
-      void this.reloadFileServers().catch((error) => {
+      void this.reload().catch((error) => {
         this.log.warn(`mcp config reload failed: ${String(error)}`);
       });
     }, WATCH_DEBOUNCE_MS);
   }
 
-  private async reloadFileServers(): Promise<void> {
+  async reload(): Promise<void> {
     await this.ready;
     await this.mutate(async () => {
       const fresh = await loadMcpServers({

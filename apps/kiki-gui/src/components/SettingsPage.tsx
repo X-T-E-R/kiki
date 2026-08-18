@@ -29,6 +29,9 @@ import {
 import type {
   KikiConfigResponse,
   ListNamedAgentProfilesResponse,
+  McpJsonServerConfig,
+  McpJsonServerEntry,
+  McpJsonWriteScope,
   NamedAgentProfile,
 } from '../lib/client';
 import {
@@ -944,6 +947,12 @@ function CapabilitiesSection() {
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
   const mcpQuery = useQuery({ queryKey: ['mcp-servers'], queryFn: () => client.listMcpServers(), staleTime: 60_000 });
+  const mcpConfigQuery = useQuery({
+    queryKey: ['mcp-config-servers', workspaceId],
+    queryFn: () => client.listMcpJsonServers(workspaceId),
+    enabled: workspaceId !== '',
+    staleTime: 60_000,
+  });
   const skillsQuery = useQuery({
     queryKey: ['workspace-skills', workspaceId],
     queryFn: () => client.listWorkspaceSkills(workspaceId),
@@ -1091,10 +1100,28 @@ function CapabilitiesSection() {
       </SectionCard>
 
       <SectionCard id="st-card-mcp" title={t('st.mcp.title')}>
-        <div className="space-y-2">
-          {mcpQuery.data?.servers.map((server) => <McpRow key={server.id} server={server} />)}
-          {mcpQuery.isLoading ? <Hint>{t('st.mcp.loading')}</Hint> : null}
-          {mcpQuery.isError ? <InlineError error={mcpQuery.error} /> : null}
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <label htmlFor="workspace-mcp-select" className="text-[11px] font-medium text-ink-soft">{t('st.mcp.workspace')}</label>
+            <select id="workspace-mcp-select" className={SMALL_INPUT} value={workspaceId} onChange={(event) => { setWorkspaceId(event.target.value); }}>
+              {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
+            </select>
+          </div>
+          <div className="space-y-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint">{t('st.mcp.statusTitle')}</p>
+            {mcpQuery.data?.servers.map((server) => <McpRow key={server.id} server={server} />)}
+            {mcpQuery.isLoading ? <Hint>{t('st.mcp.loading')}</Hint> : null}
+            {mcpQuery.isError ? <InlineError error={mcpQuery.error} /> : null}
+          </div>
+          <McpConfigManager
+            workspaceId={workspaceId}
+            entries={mcpConfigQuery.data?.entries ?? []}
+            loading={mcpConfigQuery.isLoading}
+            error={mcpConfigQuery.error}
+            onEcho={(echo) => {
+              queryClient.setQueryData(['mcp-config-servers', workspaceId], echo);
+            }}
+          />
         </div>
       </SectionCard>
 
@@ -1622,6 +1649,262 @@ function McpRow({ server }: { server: McpServer }) {
         <button type="button" disabled={restarting} onClick={() => void restart()} className={SECONDARY_BUTTON}>{restarting ? t('st.mcp.restarting') : t('st.mcp.restart')}</button>
       </div>
       <FeedbackLine feedback={feedback} />
+    </div>
+  );
+}
+
+interface McpEditorDraft {
+  readonly original?: McpJsonServerEntry;
+  readonly name: string;
+  readonly scope: McpJsonWriteScope;
+  readonly transport: 'stdio' | 'http' | 'sse';
+  readonly command: string;
+  readonly args: string;
+  readonly env: string;
+  readonly url: string;
+}
+
+function mcpDraft(entry?: McpJsonServerEntry): McpEditorDraft {
+  if (entry === undefined) {
+    return { name: '', scope: 'project', transport: 'stdio', command: '', args: '', env: '', url: '' };
+  }
+  const config = entry.config;
+  return {
+    original: entry,
+    name: entry.name,
+    scope: entry.scope,
+    transport: config.transport,
+    command: config.transport === 'stdio' ? config.command : '',
+    args: config.transport === 'stdio' ? (config.args ?? []).join('\n') : '',
+    env: config.transport === 'stdio'
+      ? Object.entries(config.env ?? {}).map(([key, value]) => `${key}=${value}`).join('\n')
+      : '',
+    url: config.transport === 'stdio' ? '' : config.url,
+  };
+}
+
+function mcpCommonConfig(config: McpJsonServerConfig | undefined) {
+  return {
+    enabled: config?.enabled,
+    startupTimeoutMs: config?.startupTimeoutMs,
+    toolTimeoutMs: config?.toolTimeoutMs,
+    enabledTools: config?.enabledTools,
+    disabledTools: config?.disabledTools,
+  };
+}
+
+function parseMcpEnv(text: string): Record<string, string> | undefined {
+  const entries: Array<[string, string]> = [];
+  for (const raw of text.split(/\r?\n/u)) {
+    if (raw.trim() === '') continue;
+    const separator = raw.indexOf('=');
+    if (separator <= 0) throw new Error('st.mcp.envInvalid');
+    const key = raw.slice(0, separator).trim();
+    if (key === '') throw new Error('st.mcp.envInvalid');
+    entries.push([key, raw.slice(separator + 1)]);
+  }
+  return entries.length === 0 ? undefined : Object.fromEntries(entries);
+}
+
+export function mcpConfigFromDraft(draft: McpEditorDraft): McpJsonServerConfig {
+  const original = draft.original?.config;
+  if (draft.transport === 'stdio') {
+    const command = draft.command.trim();
+    if (command === '') throw new Error('st.mcp.commandRequired');
+    const sameTransport = original?.transport === 'stdio' ? original : undefined;
+    const args = draft.args.split(/\r?\n/u).map((value) => value.trim()).filter(Boolean);
+    return {
+      ...mcpCommonConfig(original),
+      ...sameTransport,
+      transport: 'stdio',
+      command,
+      args: args.length === 0 ? undefined : args,
+      env: parseMcpEnv(draft.env),
+    };
+  }
+  const url = draft.url.trim();
+  try {
+    new URL(url);
+  } catch {
+    throw new Error('st.mcp.urlInvalid');
+  }
+  const sameTransport = original?.transport === draft.transport ? original : undefined;
+  return {
+    ...mcpCommonConfig(original),
+    ...sameTransport,
+    transport: draft.transport,
+    url,
+  };
+}
+
+function McpConfigManager({
+  workspaceId,
+  entries,
+  loading,
+  error,
+  onEcho,
+}: {
+  workspaceId: string;
+  entries: readonly McpJsonServerEntry[];
+  loading: boolean;
+  error: unknown;
+  onEcho: (echo: { readonly entries: readonly McpJsonServerEntry[] }) => void;
+}) {
+  const { client } = useConnection();
+  const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState<McpEditorDraft | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const [pendingDelete, setPendingDelete] = useState<McpJsonServerEntry | null>(null);
+
+  const save = async () => {
+    if (draft === null || workspaceId === '') return;
+    const name = draft.name.trim();
+    if (name === '') {
+      setFeedback({ tone: 'error', text: t('st.mcp.nameRequired') });
+      return;
+    }
+    setSaving(true);
+    setFeedback(null);
+    try {
+      let config: McpJsonServerConfig;
+      try {
+        config = mcpConfigFromDraft(draft);
+      } catch (error) {
+        const key = error instanceof Error ? error.message as I18nKey : 'st.mcp.urlInvalid';
+        setFeedback({ tone: 'error', text: t(key) });
+        return;
+      }
+      let echoed = await client.upsertMcpJsonServer(name, {
+        workspace_id: workspaceId,
+        scope: draft.scope,
+        config,
+      });
+      onEcho(echoed);
+      const original = draft.original;
+      if (original !== undefined && (original.name !== name || original.scope !== draft.scope)) {
+        echoed = await client.removeMcpJsonServer(original.name, workspaceId, original.scope);
+        onEcho(echoed);
+      }
+      setDraft(null);
+      setFeedback({ tone: 'success', text: t('st.mcp.saved') });
+      await queryClient.invalidateQueries({ queryKey: ['mcp-servers'] });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    const entry = pendingDelete;
+    if (entry === null || workspaceId === '') return;
+    setSaving(true);
+    setFeedback(null);
+    setPendingDelete(null);
+    try {
+      const echoed = await client.removeMcpJsonServer(entry.name, workspaceId, entry.scope);
+      onEcho(echoed);
+      if (draft?.original?.name === entry.name && draft.original.scope === entry.scope) setDraft(null);
+      setFeedback({ tone: 'success', text: t('st.mcp.deleted') });
+      await queryClient.invalidateQueries({ queryKey: ['mcp-servers'] });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3 border-t border-hairline pt-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint">{t('st.mcp.configTitle')}</p>
+          <Hint>{t('st.mcp.configHint')}</Hint>
+        </div>
+        <button type="button" className={SECONDARY_BUTTON} disabled={workspaceId === '' || saving} onClick={() => { setDraft(mcpDraft()); setFeedback(null); }}>{t('st.mcp.add')}</button>
+      </div>
+      <div className="space-y-2">
+        {entries.map((entry) => (
+          <div key={`${entry.scope}:${entry.name}`} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-hairline bg-paper px-3 py-2">
+            <div className="min-w-0">
+              <p className="truncate text-[13px] font-medium text-ink">{entry.name}</p>
+              <p className="truncate font-mono text-[10.5px] text-ink-faint">{entry.scope} · {entry.config.transport}</p>
+            </div>
+            <div className="flex gap-2">
+              <button type="button" className={SECONDARY_BUTTON} disabled={saving} onClick={() => { setDraft(mcpDraft(entry)); setFeedback(null); }}>{t('st.mcp.edit')}</button>
+              <button type="button" className={SECONDARY_BUTTON} disabled={saving} onClick={() => { setPendingDelete(entry); }}>{t('st.mcp.delete')}</button>
+            </div>
+          </div>
+        ))}
+        {loading ? <Hint>{t('st.mcp.configLoading')}</Hint> : null}
+        {!loading && entries.length === 0 ? <Hint>{t('st.mcp.empty')}</Hint> : null}
+        {error !== null ? <InlineError error={error} /> : null}
+      </div>
+      {draft !== null ? (
+        <fieldset className="space-y-3 rounded-xl border border-hairline bg-paper p-3" disabled={saving}>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <label className="space-y-1 text-[11px] font-medium text-ink-soft">
+              {t('st.mcp.name')}
+              <input className={INPUT} value={draft.name} onChange={(event) => { setDraft({ ...draft, name: event.target.value }); }} />
+            </label>
+            <label className="space-y-1 text-[11px] font-medium text-ink-soft">
+              {t('st.mcp.scope')}
+              <select className={INPUT} value={draft.scope} onChange={(event) => { setDraft({ ...draft, scope: event.target.value as McpJsonWriteScope }); }}>
+                <option value="user">{t('st.mcp.scopeUser')}</option>
+                <option value="project">{t('st.mcp.scopeProject')}</option>
+              </select>
+            </label>
+            <label className="space-y-1 text-[11px] font-medium text-ink-soft">
+              {t('st.mcp.transport')}
+              <select className={INPUT} value={draft.transport} onChange={(event) => { setDraft({ ...draft, transport: event.target.value as McpEditorDraft['transport'] }); }}>
+                <option value="stdio">stdio</option>
+                <option value="http">http</option>
+                <option value="sse">sse</option>
+              </select>
+            </label>
+          </div>
+          {draft.transport === 'stdio' ? (
+            <div className="space-y-3">
+              <label className="block space-y-1 text-[11px] font-medium text-ink-soft">
+                {t('st.mcp.command')}
+                <input className={`${INPUT} font-mono`} value={draft.command} onChange={(event) => { setDraft({ ...draft, command: event.target.value }); }} />
+              </label>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="space-y-1 text-[11px] font-medium text-ink-soft">
+                  {t('st.mcp.args')}
+                  <textarea className={`${INPUT} min-h-24 font-mono`} value={draft.args} onChange={(event) => { setDraft({ ...draft, args: event.target.value }); }} placeholder={t('st.mcp.argsPlaceholder')} />
+                </label>
+                <label className="space-y-1 text-[11px] font-medium text-ink-soft">
+                  {t('st.mcp.env')}
+                  <textarea className={`${INPUT} min-h-24 font-mono`} value={draft.env} onChange={(event) => { setDraft({ ...draft, env: event.target.value }); }} placeholder={t('st.mcp.envPlaceholder')} />
+                </label>
+              </div>
+            </div>
+          ) : (
+            <label className="block space-y-1 text-[11px] font-medium text-ink-soft">
+              {t('st.mcp.url')}
+              <input className={`${INPUT} font-mono`} value={draft.url} onChange={(event) => { setDraft({ ...draft, url: event.target.value }); }} placeholder="https://mcp.example.com" />
+            </label>
+          )}
+          <div className="flex gap-2">
+            <button type="button" className={PRIMARY_BUTTON} onClick={() => void save()}>{saving ? t('common.saving') : t('common.save')}</button>
+            <button type="button" className={SECONDARY_BUTTON} onClick={() => { setDraft(null); }}>{t('common.cancel')}</button>
+          </div>
+        </fieldset>
+      ) : null}
+      <FeedbackLine feedback={feedback} />
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        overlayId="confirm-mcp-delete"
+        title={t('st.mcp.deleteTitle')}
+        body={t('st.mcp.deleteBody', { name: pendingDelete?.name ?? '' })}
+        confirmLabel={t('st.mcp.delete')}
+        tone="danger"
+        onConfirm={() => { void remove(); }}
+        onCancel={() => { setPendingDelete(null); }}
+      />
     </div>
   );
 }

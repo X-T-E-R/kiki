@@ -46,6 +46,7 @@ import {
 } from './settings';
 import { clearStoredDrafts, readDraft, resetDraftMemoryForTests, writeDraft } from './drafts';
 import { translate, type I18nKey } from '../i18n/locale';
+import { mcpConfigFromDraft } from '../components/SettingsPage';
 
 class MemoryStorage implements Storage {
   readonly #items = new Map<string, string>();
@@ -618,5 +619,41 @@ describe('restart requirement pub/sub', () => {
     markRestartRequired(['agents']);
     expect(seen).toEqual([true, false]);
     clearRestartRequirement();
+  });
+});
+
+describe('MCP settings draft projection', () => {
+  it('builds a strict stdio config from line-oriented args and env fields', () => {
+    expect(mcpConfigFromDraft({
+      name: 'local',
+      scope: 'project',
+      transport: 'stdio',
+      command: ' node ',
+      args: '-y\nserver.js',
+      env: 'TOKEN=value\nEMPTY=',
+      url: '',
+    })).toEqual({
+      enabled: undefined,
+      startupTimeoutMs: undefined,
+      toolTimeoutMs: undefined,
+      enabledTools: undefined,
+      disabledTools: undefined,
+      transport: 'stdio',
+      command: 'node',
+      args: ['-y', 'server.js'],
+      env: { TOKEN: 'value', EMPTY: '' },
+    });
+  });
+
+  it('rejects malformed environment lines before the client write', () => {
+    expect(() => mcpConfigFromDraft({
+      name: 'local',
+      scope: 'user',
+      transport: 'stdio',
+      command: 'node',
+      args: '',
+      env: 'TOKEN',
+      url: '',
+    })).toThrow('st.mcp.envInvalid');
   });
 });

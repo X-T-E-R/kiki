@@ -21,6 +21,8 @@ import type { IWorkspaceMcpService } from '#/workspace/workspaceMcp/workspaceMcp
 import { WorkspaceMcpService } from '#/workspace/workspaceMcp/workspaceMcpService';
 import type { IWorkspaceMcpConfigService } from '#/workspace/workspaceMcpConfig/workspaceMcpConfig';
 import { WorkspaceMcpConfigService } from '#/workspace/workspaceMcpConfig/workspaceMcpConfigService';
+import type { IMcpJsonWriter } from '#/workspace/workspaceMcpConfig/mcpJsonWriter';
+import { McpJsonWriterService } from '#/workspace/workspaceMcpConfig/mcpJsonWriterService';
 import type { IWorkspaceTrust } from '#/workspace/workspaceTrust/workspaceTrust';
 import { WorkspaceTrustService } from '#/workspace/workspaceTrust/workspaceTrustService';
 import type { IAgentProfileWriter } from '#/workspace/workspaceAgentProfileLoader/agentProfileWriter';
@@ -95,6 +97,7 @@ interface ProgramGeneration {
   readonly git: IWorkspaceGitService;
   readonly instructions: IWorkspaceInstructionsService;
   readonly mcpConfig: IWorkspaceMcpConfigService;
+  readonly mcpJsonWriter: IMcpJsonWriter;
   readonly mcp: IWorkspaceMcpService;
   readonly trust: IWorkspaceTrust;
   readonly skills: IWorkspaceSkillCatalog;
@@ -150,6 +153,7 @@ export class Program {
   get git(): IWorkspaceGitService { return this.requireGeneration().git; }
   get instructions(): IWorkspaceInstructionsService { return this.requireGeneration().instructions; }
   get mcpConfig(): IWorkspaceMcpConfigService { return this.requireGeneration().mcpConfig; }
+  get mcpJsonWriter(): IMcpJsonWriter { return this.requireGeneration().mcpJsonWriter; }
   get mcp(): IWorkspaceMcpService { return this.requireGeneration().mcp; }
   get trust(): IWorkspaceTrust { return this.requireGeneration().trust; }
   get skills(): IWorkspaceSkillCatalog { return this.requireGeneration().skills; }
@@ -296,6 +300,7 @@ export class Program {
       const instructions = own(new WorkspaceInstructionsService(this.context, runtime.fs!, runtime.environment, this.dependencies.bootstrap, runtime.watch!, this.dependencies.log, state));
       const trust = own(new WorkspaceTrustService(this.context, this.dependencies.docs, state));
       const mcpConfig = own(new WorkspaceMcpConfigService(this.context, this.dependencies.bootstrap, this.dependencies.plugins, this.dependencies.log, this.dependencies.config, runtime.watch!, runtime.fs!, trust));
+      const mcpJsonWriter = new McpJsonWriterService(runtime.fs!, this.context, this.dependencies.bootstrap, mcpConfig);
       const mcp = own(new WorkspaceMcpService(this.context, this.resolver, mcpConfig, this.dependencies.oauthStore, this.dependencies.log, this.dependencies.telemetry, this.dependencies.identity, this.dependencies.sessionManager));
       const userAgentProfiles = own(new UserAgentProfileLoaderService(this.dependencies.bootstrap, runtime.fs!, this.dependencies.log, this.dependencies.builtinAgentProfiles, this.context, runtime.watch!, this.dependencies.flags, this.dependencies.agentProfiles));
       const pluginAgentProfiles = own(new PluginAgentProfileLoaderService(this.dependencies.plugins, runtime.fs!, this.dependencies.log, userAgentProfiles, this.context, this.dependencies.flags, this.dependencies.agentProfiles));
@@ -320,6 +325,7 @@ export class Program {
         git,
         instructions,
         mcpConfig,
+        mcpJsonWriter,
         mcp,
         trust,
         skills,

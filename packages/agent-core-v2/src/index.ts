@@ -441,6 +441,9 @@ export {
 export * from '#/app/mcpConfig/oauthStore';
 export * from '#/workspace/workspaceMcpConfig/workspaceMcpConfig';
 export * from '#/workspace/workspaceMcpConfig/workspaceMcpConfigService';
+export * from '#/workspace/workspaceMcpConfig/mcpJsonWriter';
+export * from '#/workspace/workspaceMcpConfig/mcpJsonWriterService';
+export * from '#/workspace/workspaceMcpConfig/errors';
 export * from '#/workspace/workspaceMcp/workspaceMcp';
 export * from '#/workspace/workspaceMcp/workspaceMcpService';
 export * from '#/session/subagent/subagent';
