@@ -1295,12 +1295,24 @@ function SubagentGovernanceCard() {
   );
 }
 
+export function parseNamedAgentTools(value: string): readonly string[] | null {
+  const tools = value
+    .split(/[\n,]/u)
+    .map((item) => item.trim())
+    .filter((item) => item !== '');
+  return tools.length === 0 ? null : tools;
+}
+
 function NamedAgentProfileRow({
   profile,
   onUpdated,
+  onToggleEnabled,
+  toggleSaving,
 }: {
   profile: NamedAgentProfile;
   onUpdated: (profile: NamedAgentProfile) => void;
+  onToggleEnabled: (profile: NamedAgentProfile, enabled: boolean) => Promise<void>;
+  toggleSaving: boolean;
 }) {
   const { client } = useConnection();
   const { t, locale } = useI18n();
@@ -1308,18 +1320,38 @@ function NamedAgentProfileRow({
     profile.workspace_id !== undefined &&
     profile.source_file !== undefined &&
     (profile.source === 'user' || profile.source === 'workspace' || profile.source === 'extra');
+  const toggleLocked = profile.source !== 'builtin' || profile.name === 'agent';
+  const toggleTitle = profile.source !== 'builtin'
+    ? t('st.namedAgents.nonBuiltinToggleHint')
+    : profile.name === 'agent'
+      ? t('st.namedAgents.defaultToggleHint')
+      : t('st.namedAgents.builtinToggleHint');
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [description, setDescription] = useState(profile.description ?? '');
+  const [whenToUse, setWhenToUse] = useState(profile.when_to_use ?? '');
   const [modelAlias, setModelAlias] = useState(profile.pinned_model_alias ?? '');
+  const [thinkingEffort, setThinkingEffort] = useState(profile.thinking_effort ?? '');
+  const [serviceTier, setServiceTier] = useState<NamedAgentProfile['service_tier'] | ''>(profile.service_tier ?? '');
+  const [tools, setTools] = useState((profile.tools ?? []).join(', '));
+  const [disallowedTools, setDisallowedTools] = useState((profile.disallowed_tools ?? []).join(', '));
   const [routeAliases, setRouteAliases] = useState<Record<string, string>>(() =>
     Object.fromEntries(profile.routes.map((route) => [route.id, route.model_alias ?? ''])),
   );
+  const [rawOpen, setRawOpen] = useState(false);
+  const [rawLoading, setRawLoading] = useState(false);
+  const [rawSaving, setRawSaving] = useState(false);
+  const [rawText, setRawText] = useState('');
 
   const resetDraft = () => {
     setDescription(profile.description ?? '');
+    setWhenToUse(profile.when_to_use ?? '');
     setModelAlias(profile.pinned_model_alias ?? '');
+    setThinkingEffort(profile.thinking_effort ?? '');
+    setServiceTier(profile.service_tier ?? '');
+    setTools((profile.tools ?? []).join(', '));
+    setDisallowedTools((profile.disallowed_tools ?? []).join(', '));
     setRouteAliases(Object.fromEntries(profile.routes.map((route) => [route.id, route.model_alias ?? ''])));
     setFeedback(null);
   };
@@ -1332,7 +1364,12 @@ function NamedAgentProfileRow({
         scope: profile.source === 'workspace' ? 'project' : profile.source,
         workspace_id: profile.workspace_id,
         description: description.trim(),
+        when_to_use: whenToUse.trim() === '' ? null : whenToUse.trim(),
         pinned_model_alias: modelAlias.trim() === '' ? null : modelAlias.trim(),
+        thinking_effort: thinkingEffort === '' ? null : thinkingEffort,
+        service_tier: serviceTier === '' ? null : serviceTier,
+        tools: parseNamedAgentTools(tools),
+        disallowed_tools: parseNamedAgentTools(disallowedTools),
         routes: profile.routes.map((route) => ({
           id: route.id,
           model_alias: routeAliases[route.id]?.trim() === ''
@@ -1349,6 +1386,42 @@ function NamedAgentProfileRow({
       setSaving(false);
     }
   };
+  const toggleRaw = async () => {
+    if (rawOpen) {
+      setRawOpen(false);
+      return;
+    }
+    if (profile.source_file === undefined) return;
+    setRawOpen(true);
+    setRawLoading(true);
+    setFeedback(null);
+    try {
+      setRawText(await client.readHostFile(profile.source_file));
+    } catch (error) {
+      setRawOpen(false);
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setRawLoading(false);
+    }
+  };
+  const saveRaw = async () => {
+    if (!writable || profile.workspace_id === undefined) return;
+    setRawSaving(true);
+    setFeedback(null);
+    try {
+      const echoed = await client.updateNamedAgentProfile(profile.name, {
+        scope: profile.source === 'workspace' ? 'project' : profile.source,
+        workspace_id: profile.workspace_id,
+        raw_text: rawText,
+      });
+      onUpdated(echoed);
+      setFeedback({ tone: 'success', text: t('st.namedAgents.rawSaved') });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setRawSaving(false);
+    }
+  };
 
   return (
     <div className="rounded-lg border border-hairline bg-paper px-3 py-2">
@@ -1357,7 +1430,20 @@ function NamedAgentProfileRow({
           <p className="font-mono text-[12.5px] font-medium text-ink">{profile.name}</p>
           {!editing && profile.description !== undefined ? <p className="text-[11.5px] text-ink-soft">{profile.description}</p> : null}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <div title={toggleTitle}>
+            <Toggle
+              label={t('st.namedAgents.enabled')}
+              checked={!profile.disabled}
+              disabled={toggleLocked || toggleSaving}
+              onChange={(enabled) => {
+                setFeedback(null);
+                void onToggleEnabled(profile, enabled).catch((error: unknown) => {
+                  setFeedback({ tone: 'error', text: errorText(locale, error) });
+                });
+              }}
+            />
+          </div>
           <span className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint">
             {profile.source}{writable ? '' : ` · ${t('st.namedAgents.readOnly')}`}
           </span>
@@ -1372,20 +1458,39 @@ function NamedAgentProfileRow({
         <fieldset disabled={saving} className="mt-3 space-y-3 disabled:opacity-60">
           <label className="block text-[11px] font-medium text-ink-soft">
             {t('st.namedAgents.description')}
-            <textarea
-              className={`${INPUT} mt-1 min-h-20`}
-              value={description}
-              onChange={(event) => { setDescription(event.target.value); }}
-            />
+            <textarea className={`${INPUT} mt-1 min-h-20`} value={description} onChange={(event) => { setDescription(event.target.value); }} />
+          </label>
+          <label className="block text-[11px] font-medium text-ink-soft">
+            {t('st.namedAgents.whenToUse')}
+            <textarea className={`${INPUT} mt-1 min-h-16`} value={whenToUse} onChange={(event) => { setWhenToUse(event.target.value); }} />
           </label>
           <label className="block text-[11px] font-medium text-ink-soft">
             {t('st.namedAgents.modelPin')}
-            <input
-              className={`${INPUT} mt-1 font-mono`}
-              value={modelAlias}
-              placeholder="provider/model"
-              onChange={(event) => { setModelAlias(event.target.value); }}
-            />
+            <input className={`${INPUT} mt-1 font-mono`} value={modelAlias} placeholder="provider/model" onChange={(event) => { setModelAlias(event.target.value); }} />
+          </label>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="block text-[11px] font-medium text-ink-soft">
+              {t('st.namedAgents.thinkingEffort')}
+              <select className={`${INPUT} mt-1`} value={thinkingEffort} onChange={(event) => { setThinkingEffort(event.target.value); }}>
+                <option value="">{t('st.namedAgents.inherit')}</option>
+                {['low', 'medium', 'high', 'xhigh', 'max'].map((value) => <option key={value} value={value}>{value}</option>)}
+              </select>
+            </label>
+            <label className="block text-[11px] font-medium text-ink-soft">
+              {t('st.namedAgents.serviceTier')}
+              <select className={`${INPUT} mt-1`} value={serviceTier} onChange={(event) => { setServiceTier(event.target.value as typeof serviceTier); }}>
+                <option value="">{t('st.namedAgents.inherit')}</option>
+                {['auto', 'default', 'flex', 'priority'].map((value) => <option key={value} value={value}>{value}</option>)}
+              </select>
+            </label>
+          </div>
+          <label className="block text-[11px] font-medium text-ink-soft">
+            {t('st.namedAgents.tools')}
+            <textarea className={`${INPUT} mt-1 min-h-16 font-mono`} value={tools} placeholder={t('st.namedAgents.toolsPlaceholder')} onChange={(event) => { setTools(event.target.value); }} />
+          </label>
+          <label className="block text-[11px] font-medium text-ink-soft">
+            {t('st.namedAgents.disallowedTools')}
+            <textarea className={`${INPUT} mt-1 min-h-16 font-mono`} value={disallowedTools} placeholder={t('st.namedAgents.toolsPlaceholder')} onChange={(event) => { setDisallowedTools(event.target.value); }} />
           </label>
           {profile.routes.map((route) => (
             <label key={route.id} className="block text-[11px] font-medium text-ink-soft">
@@ -1394,9 +1499,7 @@ function NamedAgentProfileRow({
                 className={`${INPUT} mt-1 font-mono`}
                 value={routeAliases[route.id] ?? ''}
                 placeholder="provider/model"
-                onChange={(event) => {
-                  setRouteAliases((current) => ({ ...current, [route.id]: event.target.value }));
-                }}
+                onChange={(event) => { setRouteAliases((current) => ({ ...current, [route.id]: event.target.value })); }}
               />
             </label>
           ))}
@@ -1413,7 +1516,10 @@ function NamedAgentProfileRow({
         <div className="mt-2 space-y-1 break-all font-mono text-[10px] text-ink-faint">
           <p>{t('st.namedAgents.sourceFile')}: {profile.source_file ?? t('st.namedAgents.builtin')}</p>
           {profile.workspace_id !== undefined ? <p>{t('st.namedAgents.workspace')}: {profile.workspace_id}</p> : null}
+          {profile.when_to_use !== undefined ? <p>{t('st.namedAgents.whenToUse')}: {profile.when_to_use}</p> : null}
           {profile.pinned_model_alias !== undefined ? <p>{t('st.namedAgents.modelPin')}: {profile.pinned_model_alias}</p> : null}
+          {profile.thinking_effort !== undefined ? <p>{t('st.namedAgents.thinkingEffort')}: {profile.thinking_effort}</p> : null}
+          {profile.service_tier !== undefined ? <p>{t('st.namedAgents.serviceTier')}: {profile.service_tier}</p> : null}
           {profile.routes.map((route) => (
             <p key={route.id}>
               {t('st.namedAgents.route')}: {route.id}
@@ -1423,6 +1529,30 @@ function NamedAgentProfileRow({
           ))}
         </div>
       )}
+      {profile.source_file !== undefined ? (
+        <div className="mt-3 border-t border-hairline pt-3">
+          <button type="button" className={SECONDARY_BUTTON} onClick={() => void toggleRaw()}>
+            {rawOpen ? t('st.namedAgents.hideRaw') : writable ? t('st.namedAgents.editRaw') : t('st.namedAgents.viewRaw')}
+          </button>
+          {rawOpen ? (
+            <div className="mt-2 space-y-2">
+              {rawLoading ? <Hint>{t('st.namedAgents.rawLoading')}</Hint> : (
+                <textarea
+                  className={`${INPUT} min-h-64 font-mono text-[11px]`}
+                  value={rawText}
+                  readOnly={!writable}
+                  onChange={(event) => { setRawText(event.target.value); }}
+                />
+              )}
+              {writable && !rawLoading ? (
+                <button type="button" className={PRIMARY_BUTTON} disabled={rawSaving} onClick={() => void saveRaw()}>
+                  {rawSaving ? t('common.saving') : t('st.namedAgents.saveRaw')}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <FeedbackLine feedback={feedback} />
     </div>
   );
@@ -1432,10 +1562,16 @@ function NamedAgentProfilesCard() {
   const { client } = useConnection();
   const { t } = useI18n();
   const queryClient = useQueryClient();
+  const [toggleSaving, setToggleSaving] = useState<string | null>(null);
   const profilesQuery = useQuery({
     queryKey: ['named-agent-profiles'],
     queryFn: () => client.listNamedAgentProfiles(),
     staleTime: 15_000,
+  });
+  const configQuery = useQuery({
+    queryKey: ['config'],
+    queryFn: () => client.getConfig(),
+    staleTime: 60_000,
   });
   const updateEcho = (updated: NamedAgentProfile) => {
     queryClient.setQueryData<ListNamedAgentProfilesResponse>(
@@ -1446,12 +1582,37 @@ function NamedAgentProfilesCard() {
             items: current.items.map((profile) =>
               profile.name === updated.name &&
               profile.source === updated.source &&
-              profile.workspace_id === updated.workspace_id
+              profile.source_file === updated.source_file
                 ? updated
                 : profile,
             ),
           },
     );
+  };
+  const toggleEnabled = async (profile: NamedAgentProfile, enabled: boolean) => {
+    const disabled = configQuery.data?.disabled_builtin_profiles ?? [];
+    const next = enabled
+      ? disabled.filter((name) => name !== profile.name)
+      : [...new Set([...disabled, profile.name])];
+    setToggleSaving(profile.name);
+    try {
+      const echoed = await client.patchConfig({ disabled_builtin_profiles: next });
+      queryClient.setQueryData(['config'], echoed);
+      queryClient.setQueryData<ListNamedAgentProfilesResponse>(
+        ['named-agent-profiles'],
+        (current) => current === undefined
+          ? current
+          : {
+              items: current.items.map((item) =>
+                item.source === 'builtin' && item.name === profile.name
+                  ? { ...item, disabled: !enabled }
+                  : item,
+              ),
+            },
+      );
+    } finally {
+      setToggleSaving(null);
+    }
   };
 
   return (
@@ -1461,14 +1622,17 @@ function NamedAgentProfilesCard() {
         <div className="space-y-2">
           {profilesQuery.data?.items.map((profile, index) => (
             <NamedAgentProfileRow
-              key={`${profile.name}:${profile.source}:${profile.workspace_id ?? ''}:${index}`}
+              key={`${profile.name}:${profile.source}:${profile.source_file ?? profile.workspace_id ?? ''}:${index}`}
               profile={profile}
               onUpdated={updateEcho}
+              onToggleEnabled={toggleEnabled}
+              toggleSaving={toggleSaving !== null || configQuery.isLoading}
             />
           ))}
           {profilesQuery.isLoading ? <Hint>{t('st.namedAgents.loading')}</Hint> : null}
           {profilesQuery.data?.items.length === 0 ? <Hint>{t('st.namedAgents.empty')}</Hint> : null}
           {profilesQuery.isError ? <InlineError error={profilesQuery.error} /> : null}
+          {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         </div>
       </div>
     </SectionCard>

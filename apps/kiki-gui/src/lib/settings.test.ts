@@ -46,7 +46,7 @@ import {
 } from './settings';
 import { clearStoredDrafts, readDraft, resetDraftMemoryForTests, writeDraft } from './drafts';
 import { translate, type I18nKey } from '../i18n/locale';
-import { mcpConfigFromDraft } from '../components/SettingsPage';
+import { mcpConfigFromDraft, parseNamedAgentTools } from '../components/SettingsPage';
 
 class MemoryStorage implements Storage {
   readonly #items = new Map<string, string>();
@@ -86,6 +86,11 @@ describe('settings persistence and validation', () => {
       value: new MemoryStorage(),
     });
     vi.restoreAllMocks();
+  });
+
+  it('parses named-agent tool text from comma and newline separated input', () => {
+    expect(parseNamedAgentTools('Read, Bash\nSkill')).toEqual(['Read', 'Bash', 'Skill']);
+    expect(parseNamedAgentTools('  \n, ')).toBeNull();
   });
 
   it('defaults absent, partial, and malformed storage to safe local values', () => {

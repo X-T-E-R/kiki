@@ -1,15 +1,16 @@
 /**
  * `workspaceAgentProfileLoader` domain — validated named-profile write-back contract.
  *
- * A Workspace-scoped writer edits only the file-backed description and fixed
- * model aliases owned by the user, project, or extra source, reloads that
- * source, and returns the authoritative registry projection after reload.
+ * A Workspace-scoped writer applies validated common-field or whole-file
+ * updates to user, project, and extra profiles, reloads the owning source, and
+ * returns the authoritative registry projection after reload.
  */
 
 import type {
   AgentProfile,
   AgentProfileRouteDefinition,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import type { ServiceTier } from '#/kosong/contract/provider';
 
 export type AgentProfileWriteScope = 'user' | 'project' | 'extra';
 
@@ -23,8 +24,14 @@ export interface AgentProfileWriteRequest {
   readonly name: string;
   readonly scope: AgentProfileWriteScope;
   readonly description?: string;
+  readonly whenToUse?: string | null;
   readonly modelAlias?: string | null;
+  readonly thinkingEffort?: string | null;
+  readonly serviceTier?: ServiceTier | null;
+  readonly tools?: readonly string[] | null;
+  readonly disallowedTools?: readonly string[] | null;
   readonly routes?: readonly AgentProfileRouteUpdate[];
+  readonly rawText?: string;
 }
 
 export interface AgentProfileWriteResult {

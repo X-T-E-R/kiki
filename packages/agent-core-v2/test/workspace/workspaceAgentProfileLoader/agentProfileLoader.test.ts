@@ -524,6 +524,121 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
+  it('patches common profile fields using parser-compatible frontmatter values', async () => {
+    await withFixture(async (fixture) => {
+      const profilePath = await writeAgent(
+        join(fixture.homeDir, 'agents'),
+        'reviewer.md',
+        agentMd('reviewer', 'original'),
+      );
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const result = await stack.writer.update({
+          name: 'reviewer',
+          scope: 'user',
+          whenToUse: 'Use for focused reviews',
+          thinkingEffort: 'high',
+          serviceTier: 'priority',
+          tools: ['Read', 'Bash'],
+          disallowedTools: ['Write'],
+        });
+
+        expect(result.profile).toMatchObject({
+          whenToUse: 'Use for focused reviews',
+          thinkingEffort: 'high',
+          serviceTier: 'priority',
+          tools: ['Read', 'Bash'],
+          disallowedTools: ['Write'],
+        });
+        const text = await readFile(profilePath, 'utf8');
+        expect(text).toContain('whenToUse: "Use for focused reviews"');
+        expect(text).toContain('thinking_effort: "high"');
+        expect(text).toContain('service_tier: "priority"');
+        expect(text).toContain('tools: ["Read","Bash"]');
+        expect(text).toContain('disallowedTools: ["Write"]');
+
+        const cleared = await stack.writer.update({
+          name: 'reviewer',
+          scope: 'user',
+          whenToUse: null,
+          thinkingEffort: null,
+          serviceTier: null,
+          tools: null,
+          disallowedTools: null,
+        });
+        expect(cleared.profile.whenToUse).toBeUndefined();
+        expect(cleared.profile.thinkingEffort).toBeUndefined();
+        expect(cleared.profile.serviceTier).toBeUndefined();
+        expect(cleared.profile.tools).toBeUndefined();
+        expect(cleared.profile.disallowedTools).toBeUndefined();
+      });
+    });
+  });
+
+  it('replaces a profile with validated raw text and rejects mixed or invalid raw updates', async () => {
+    await withFixture(async (fixture) => {
+      const profilePath = await writeAgent(
+        join(fixture.homeDir, 'agents'),
+        'reviewer.md',
+        agentMd('reviewer', 'original'),
+      );
+      const writes: string[] = [];
+      await withStack(
+        fixture,
+        {
+          atomicTextWriter: async (path, text) => {
+            writes.push(path);
+            await atomicWrite(path, text);
+          },
+        },
+        async (stack) => {
+          await stack.ready();
+          const rawText = [
+            '---',
+            'name: reviewer',
+            'description: Raw replacement',
+            'thinking_effort: medium',
+            'tools: [Read]',
+            '---',
+            '',
+            'Raw prompt body.',
+            '',
+          ].join('\n');
+          const result = await stack.writer.update({
+            name: 'reviewer',
+            scope: 'user',
+            rawText,
+          });
+          expect(result.profile).toMatchObject({
+            description: 'Raw replacement',
+            thinkingEffort: 'medium',
+            tools: ['Read'],
+          });
+          expect(await readFile(profilePath, 'utf8')).toBe(rawText);
+          expect(writes).toEqual([profilePath]);
+
+          await expect(stack.writer.update({
+            name: 'reviewer',
+            scope: 'user',
+            rawText,
+            description: 'mixed',
+          })).rejects.toMatchObject({ code: 'validation.failed' });
+          await expect(stack.writer.update({
+            name: 'reviewer',
+            scope: 'user',
+            rawText: rawText.replace('name: reviewer', 'name: renamed'),
+          })).rejects.toMatchObject({ code: 'validation.failed' });
+          await expect(stack.writer.update({
+            name: 'reviewer',
+            scope: 'user',
+            rawText: 'not frontmatter',
+          })).rejects.toMatchObject({ code: 'validation.failed' });
+          expect(writes).toEqual([profilePath]);
+        },
+      );
+    });
+  });
+
   it('routes project and extra writes through their owning loaders', async () => {
     await withFixture(async (fixture) => {
       const projectPath = await writeAgent(
@@ -606,7 +721,7 @@ describe('agent profile loaders + session catalog', () => {
         await expect(stack.writer.update({
           name: 'reviewer',
           scope: 'user',
-          tools: ['Read'],
+          subagents: ['explore'],
         } as never)).rejects.toMatchObject({ code: 'validation.failed' });
         await expect(stack.writer.update({
           name: 'reviewer',

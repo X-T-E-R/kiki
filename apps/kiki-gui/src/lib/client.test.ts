@@ -94,6 +94,7 @@ describe('KikiClient.listNamedAgentProfiles', () => {
             source: 'user',
             source_file: '/agents/reviewer.md',
             pinned_model_alias: 'provider/fast',
+            disabled: false,
             routes: [],
           }],
         },
@@ -118,7 +119,12 @@ describe('KikiClient.updateNamedAgentProfile', () => {
         scope: 'project',
         workspace_id: 'wd_test',
         description: 'Updated reviewer',
+        when_to_use: 'Use for UI review',
         pinned_model_alias: 'provider/profile',
+        thinking_effort: 'high',
+        service_tier: 'priority',
+        tools: ['Read'],
+        disallowed_tools: null,
         routes: [{ id: 'reviewer-ui.fast', model_alias: null }],
       });
       return new Response(JSON.stringify({
@@ -131,6 +137,10 @@ describe('KikiClient.updateNamedAgentProfile', () => {
           workspace_id: 'wd_test',
           source_file: '/workspace/reviewer-ui.md',
           pinned_model_alias: 'provider/profile',
+          thinking_effort: 'high',
+          service_tier: 'priority',
+          tools: ['Read'],
+          disabled: false,
           routes: [{
             id: 'reviewer-ui.fast',
             source_file: '/workspace/.routes/reviewer-ui/fast.md',
@@ -145,12 +155,35 @@ describe('KikiClient.updateNamedAgentProfile', () => {
       scope: 'project',
       workspace_id: 'wd_test',
       description: 'Updated reviewer',
+      when_to_use: 'Use for UI review',
       pinned_model_alias: 'provider/profile',
+      thinking_effort: 'high',
+      service_tier: 'priority',
+      tools: ['Read'],
+      disallowed_tools: null,
       routes: [{ id: 'reviewer-ui.fast', model_alias: null }],
     });
 
     expect(result.description).toBe('Updated reviewer');
     expect(result.source).toBe('workspace');
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('KikiClient.readHostFile', () => {
+  it('reads raw file content from the fs:content endpoint', async () => {
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const parsed = new URL(String(url));
+      expect(parsed.pathname).toBe('/api/v1/fs:content');
+      expect(parsed.searchParams.get('path')).toBe('C:/agents/reviewer ui.md');
+      expect(init?.method).toBe('GET');
+      expect((init?.headers as Record<string, string>)['Authorization']).toBe('Bearer token');
+      return new Response('---\nname: reviewer\n---\n', { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+
+    await expect(client.readHostFile('C:/agents/reviewer ui.md')).resolves.toContain('name: reviewer');
     vi.unstubAllGlobals();
   });
 });

@@ -258,10 +258,16 @@ export interface NamedAgentRoute {
 export interface NamedAgentProfile {
   readonly name: string;
   readonly description?: string;
+  readonly when_to_use?: string;
   readonly source: string;
   readonly workspace_id?: string;
   readonly source_file?: string;
   readonly pinned_model_alias?: string;
+  readonly thinking_effort?: string;
+  readonly service_tier?: 'auto' | 'default' | 'flex' | 'priority';
+  readonly tools?: string[];
+  readonly disallowed_tools?: string[];
+  readonly disabled: boolean;
   readonly routes: NamedAgentRoute[];
 }
 
@@ -273,12 +279,18 @@ export interface UpdateNamedAgentProfileRequest {
   readonly scope: 'user' | 'project' | 'extra';
   readonly workspace_id: string;
   readonly description?: string;
+  readonly when_to_use?: string | null;
   readonly pinned_model_alias?: string | null;
+  readonly thinking_effort?: string | null;
+  readonly service_tier?: 'auto' | 'default' | 'flex' | 'priority' | null;
+  readonly tools?: readonly string[] | null;
+  readonly disallowed_tools?: readonly string[] | null;
   readonly routes?: readonly {
     readonly id: string;
     readonly description?: string;
     readonly model_alias?: string | null;
   }[];
+  readonly raw_text?: string;
 }
 
 export type McpJsonWriteScope = 'user' | 'project';
@@ -927,6 +939,39 @@ export class KikiClient {
     body: UpdateNamedAgentProfileRequest,
   ): Promise<NamedAgentProfile> {
     return this.request<NamedAgentProfile>('PATCH', `/agents/${encodeURIComponent(name)}`, { body });
+  }
+
+  async readHostFile(path: string): Promise<string> {
+    const url = new URL(joinUrl(this.baseUrl, '/fs:content'));
+    url.searchParams.set('path', path);
+    const headers: Record<string, string> = { Accept: 'text/plain' };
+    if (this.token !== undefined) headers['Authorization'] = `Bearer ${this.token}`;
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, this.timeoutMs);
+    try {
+      const response = await fetch(url, { method: 'GET', headers, signal: controller.signal });
+      if (response.ok) return await response.text();
+      const envelope = await response.clone().json().catch(() => undefined) as Envelope<unknown> | undefined;
+      if (envelope !== undefined && typeof envelope.code === 'number') throw new ApiError(envelope);
+      throw new ApiError({ code: response.status, msg: `HTTP ${response.status}`, data: null });
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new ApiError({
+        code: timedOut ? API_CODES.TIMEOUT : -1,
+        msg: timedOut
+          ? `Request timed out after ${this.timeoutMs}ms`
+          : error instanceof Error
+            ? error.message
+            : 'network error',
+        data: null,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   listWorkspaces(): Promise<ListWorkspacesResponse> {

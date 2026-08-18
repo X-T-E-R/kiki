@@ -1,21 +1,25 @@
 /**
  * `/agents` REST routes — named agent-profile catalog and validated write-back.
  *
- * GET projects the live App registry. PATCH borrows the addressed workspace's
- * core writer, edits only file-backed descriptions and model pins, explicitly
- * reloads the owning source, and echoes the authoritative post-reload profile.
+ * GET de-duplicates the live App registry and projects builtin disable state.
+ * PATCH borrows the addressed workspace's validated common-field / raw-file
+ * writer and echoes the authoritative post-reload profile.
  */
 
 import {
   AgentProfileWriteErrors,
+  DEFAULT_AGENT_PROFILE_NAME,
+  DISABLED_BUILTIN_PROFILES_SECTION,
   ErrorCodes,
   IAgentProfileRegistry,
+  IConfigService,
   IWorkspaceInstanceManager,
   IWorkspaceService,
   isError2,
   type AgentProfile,
   type AgentProfileRegistration,
   type AgentProfileRouteDefinition,
+  type DisabledBuiltinProfilesConfig,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
 import { z } from 'zod';
@@ -63,15 +67,35 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     },
     async (req, reply) => {
       const registry = core.accessor.get(IAgentProfileRegistry);
-      const items = registry.entries().flatMap((registration) =>
-        registration.contribution.profiles.map((profile) =>
-          toNamedAgentProfile(registration, profile),
-        ),
-      ).toSorted((a, b) =>
-        a.name.localeCompare(b.name)
-        || a.source.localeCompare(b.source)
-        || (a.workspace_id ?? '').localeCompare(b.workspace_id ?? '')
+      const config = core.accessor.get(IConfigService);
+      await config.ready;
+      const disabledBuiltins = new Set(
+        config.get<DisabledBuiltinProfilesConfig>(DISABLED_BUILTIN_PROFILES_SECTION) ?? [],
       );
+      disabledBuiltins.delete(DEFAULT_AGENT_PROFILE_NAME);
+      const deduped = new Map<
+        string,
+        { registration: AgentProfileRegistration; profile: AgentProfile }
+      >();
+      const registrations = registry.entries().toSorted((a, b) =>
+        b.priority - a.priority
+        || a.sourceId.localeCompare(b.sourceId)
+        || (a.workspaceKey ?? '').localeCompare(b.workspaceKey ?? '')
+      );
+      for (const registration of registrations) {
+        for (const profile of registration.contribution.profiles) {
+          const key = `${profile.name}\0${profile.sourcePath ?? ''}`;
+          if (!deduped.has(key)) deduped.set(key, { registration, profile });
+        }
+      }
+      const items = [...deduped.values()]
+        .map(({ registration, profile }) =>
+          toNamedAgentProfile(registration, profile, disabledBuiltins))
+        .toSorted((a, b) =>
+          a.name.localeCompare(b.name)
+          || a.source.localeCompare(b.source)
+          || (a.source_file ?? '').localeCompare(b.source_file ?? '')
+        );
       reply.send(okEnvelope({ items }, req.id));
     },
   );
@@ -119,12 +143,18 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
           name: req.params.name,
           scope: req.body.scope,
           description: req.body.description,
+          whenToUse: req.body.when_to_use,
           modelAlias: req.body.pinned_model_alias,
+          thinkingEffort: req.body.thinking_effort,
+          serviceTier: req.body.service_tier,
+          tools: req.body.tools,
+          disallowedTools: req.body.disallowed_tools,
           routes: req.body.routes?.map((route) => ({
             id: route.id,
             description: route.description,
             modelAlias: route.model_alias,
           })),
+          rawText: req.body.raw_text,
         });
         reply.send(okEnvelope(toNamedAgentProfile(
           {
@@ -170,14 +200,21 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
 function toNamedAgentProfile(
   registration: AgentProfileRegistration,
   profile: AgentProfile,
+  disabledBuiltins: ReadonlySet<string> = new Set(),
 ): NamedAgentProfile {
   return {
     name: profile.name,
     description: profile.description,
+    when_to_use: profile.whenToUse,
     source: registration.sourceId,
     workspace_id: registration.workspaceKey,
     source_file: profile.sourcePath,
     pinned_model_alias: profile.modelAlias,
+    thinking_effort: profile.thinkingEffort,
+    service_tier: profile.serviceTier,
+    tools: profile.tools === undefined ? undefined : [...profile.tools],
+    disallowed_tools: profile.disallowedTools === undefined ? undefined : [...profile.disallowedTools],
+    disabled: registration.sourceId === 'builtin' && disabledBuiltins.has(profile.name),
     routes: (registration.contribution.routes ?? [])
       .filter((candidate) => candidate.profile === profile.name)
       .map(toNamedAgentRoute)

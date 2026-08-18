@@ -38,7 +38,7 @@ describe('GET /api/v1/agents', () => {
     const routePath = join(routeDir, 'fast.md');
     await writeFile(
       join(home as string, 'config.toml'),
-      '[experimental]\n"agent-profile-routes" = true\n',
+      'disabled_builtin_profiles = ["explore", "agent"]\n\n[experimental]\n"agent-profile-routes" = true\n',
       'utf-8',
     );
     await writeFile(
@@ -47,7 +47,12 @@ describe('GET /api/v1/agents', () => {
         '---',
         'name: reviewer',
         'description: Reviews changes',
+        'whenToUse: Review important changes',
         'model_alias: provider/pinned',
+        'thinking_effort: high',
+        'service_tier: priority',
+        'tools: [Read, Bash]',
+        'disallowedTools: [Write]',
         '---',
         '',
         'Review the change.',
@@ -88,6 +93,14 @@ describe('GET /api/v1/agents', () => {
     });
     const created = (await create.json()) as Envelope<{ id: string }>;
     expect(created.code).toBe(0);
+    const otherWorkspace = join(home as string, 'other-workspace');
+    await mkdir(otherWorkspace, { recursive: true });
+    const createOther = await authedFetch(server, base, '/api/v1/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: otherWorkspace } }),
+    });
+    expect(((await createOther.json()) as Envelope<{ id: string }>).code).toBe(0);
 
     const response = await authedFetch(server, base, '/api/v1/agents');
     expect(response.status).toBe(200);
@@ -98,10 +111,16 @@ describe('GET /api/v1/agents', () => {
     expect(reviewer).toEqual({
       name: 'reviewer',
       description: 'Reviews changes',
+      when_to_use: 'Review important changes',
       source: 'user',
       workspace_id: expect.any(String),
       source_file: profilePath.replaceAll('\\', '/'),
       pinned_model_alias: 'provider/pinned',
+      thinking_effort: 'high',
+      service_tier: 'priority',
+      tools: ['Read', 'Bash'],
+      disallowed_tools: ['Write'],
+      disabled: false,
       routes: [{
         id: 'reviewer.fast',
         description: 'Fast review route',
@@ -109,7 +128,11 @@ describe('GET /api/v1/agents', () => {
         source_file: routePath.replaceAll('\\', '/'),
       }],
     });
-    expect(data.items.some((profile) => profile.source === 'builtin')).toBe(true);
+    expect(data.items.filter((profile) =>
+      profile.name === 'reviewer' && profile.source_file === profilePath.replaceAll('\\', '/')
+    )).toHaveLength(1);
+    expect(data.items.find((profile) => profile.name === 'explore' && profile.source === 'builtin')?.disabled).toBe(true);
+    expect(data.items.find((profile) => profile.name === 'agent' && profile.source === 'builtin')?.disabled).toBe(false);
 
     const patchedResponse = await authedFetch(server, base, '/api/v1/agents/reviewer', {
       method: 'PATCH',
@@ -118,7 +141,12 @@ describe('GET /api/v1/agents', () => {
         scope: 'user',
         workspace_id: reviewer?.workspace_id,
         description: 'Reviews changes carefully',
+        when_to_use: 'Use for final review',
         pinned_model_alias: 'provider/updated',
+        thinking_effort: 'medium',
+        service_tier: 'flex',
+        tools: ['Read'],
+        disallowed_tools: null,
         routes: [{ id: 'reviewer.fast', model_alias: 'provider/route-updated' }],
       }),
     });
@@ -131,13 +159,45 @@ describe('GET /api/v1/agents', () => {
     expect(patched.data).toMatchObject({
       name: 'reviewer',
       description: 'Reviews changes carefully',
+      when_to_use: 'Use for final review',
       source: 'user',
       workspace_id: reviewer?.workspace_id,
       pinned_model_alias: 'provider/updated',
+      thinking_effort: 'medium',
+      service_tier: 'flex',
+      tools: ['Read'],
+      disabled: false,
       routes: [{ id: 'reviewer.fast', model_alias: 'provider/route-updated' }],
     });
     expect(await readFile(profilePath, 'utf8')).toContain('description: "Reviews changes carefully"');
     expect(await readFile(routePath, 'utf8')).toContain('model_alias: "provider/route-updated"');
+
+    const rawText = '---\nname: reviewer\ndescription: Raw REST update\n---\n\nRaw body.\n';
+    const rawResponse = await authedFetch(server, base, '/api/v1/agents/reviewer', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        scope: 'user',
+        workspace_id: reviewer?.workspace_id,
+        raw_text: rawText,
+      }),
+    });
+    const raw = (await rawResponse.json()) as Envelope<{ description?: string }>;
+    expect(raw.code).toBe(0);
+    expect(raw.data.description).toBe('Raw REST update');
+    expect(await readFile(profilePath, 'utf8')).toBe(rawText);
+
+    const mixedResponse = await authedFetch(server, base, '/api/v1/agents/reviewer', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        scope: 'user',
+        workspace_id: reviewer?.workspace_id,
+        raw_text: rawText,
+        description: 'mixed',
+      }),
+    });
+    expect(((await mixedResponse.json()) as Envelope<null>).code).toBe(40001);
   });
 
   it('rejects writes to builtin profiles with a read-only business code', async () => {
@@ -195,7 +255,7 @@ describe('GET /api/v1/agents', () => {
       body: JSON.stringify({
         scope: 'user',
         workspace_id: 'wd_test',
-        tools: ['Read'],
+        subagents: ['explore'],
       }),
     });
     const body = (await response.json()) as Envelope<null> & {
@@ -203,7 +263,7 @@ describe('GET /api/v1/agents', () => {
     };
     expect(body.code).toBe(40001);
     expect(body.details).toEqual(expect.arrayContaining([
-      expect.objectContaining({ path: expect.stringMatching(/tools|^$/) }),
+      expect.objectContaining({ path: expect.stringMatching(/subagents|^$/) }),
     ]));
   });
 });

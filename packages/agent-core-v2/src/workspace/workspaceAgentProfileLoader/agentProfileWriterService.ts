@@ -2,9 +2,9 @@
  * `workspaceAgentProfileLoader` domain — validated agent-profile file writer.
  *
  * Locates one user, project, or extra contribution in the live App registry,
- * stages targeted frontmatter edits while preserving all other bytes, replaces
- * each changed file atomically, explicitly reloads the owning source, and
- * returns the post-reload registry entry. Workspace-scoped.
+ * validates targeted frontmatter or whole-file replacements, writes each
+ * changed file atomically, reloads the owning source, and returns the
+ * post-reload registry entry. Workspace-scoped.
  */
 
 import { atomicWrite } from '#/_base/utils/fs';
@@ -58,7 +58,20 @@ const FILE_SOURCE_BY_SCOPE: Record<AgentProfileWriteScope, AgentFileSource> = {
 };
 
 const MODEL_ALIAS_PATTERN = /^\S+$/u;
-const TOP_LEVEL_KEYS = new Set(['name', 'scope', 'description', 'modelAlias', 'routes']);
+const SERVICE_TIERS = new Set(['auto', 'default', 'flex', 'priority']);
+const TOP_LEVEL_KEYS = new Set([
+  'name',
+  'scope',
+  'description',
+  'whenToUse',
+  'modelAlias',
+  'thinkingEffort',
+  'serviceTier',
+  'tools',
+  'disallowedTools',
+  'routes',
+  'rawText',
+]);
 const ROUTE_KEYS = new Set(['id', 'description', 'modelAlias']);
 
 export class AgentProfileWriterService implements IAgentProfileWriter {
@@ -100,9 +113,12 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
 
     const staged: StagedWrite[] = [];
     const profileText = await this.fs.readText(profile.sourcePath);
-    let nextProfileText = profileText;
+    let nextProfileText = request.rawText ?? profileText;
     if (request.description !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'description', request.description);
+    }
+    if (request.whenToUse !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'whenToUse', request.whenToUse);
     }
     if (request.modelAlias !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'model_alias', request.modelAlias);
@@ -110,11 +126,29 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
         nextProfileText = updateFrontmatterScalar(nextProfileText, 'model_preference', null);
       }
     }
-    parseAgentFileText({
+    if (request.thinkingEffort !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'thinking_effort', request.thinkingEffort);
+    }
+    if (request.serviceTier !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'service_tier', request.serviceTier);
+    }
+    if (request.tools !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'tools', request.tools);
+    }
+    if (request.disallowedTools !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'disallowedTools', request.disallowedTools);
+    }
+    const parsedProfile = parseAgentFileText({
       path: profile.sourcePath,
       source: FILE_SOURCE_BY_SCOPE[request.scope],
       text: nextProfileText,
     });
+    if (parsedProfile.name !== request.name) {
+      throw validationError([{
+        path: 'rawText',
+        message: `profile name must remain ${request.name}`,
+      }]);
+    }
     if (nextProfileText !== profileText) {
       staged.push({ path: profile.sourcePath, text: nextProfileText });
     }
@@ -220,8 +254,16 @@ function validateRequest(request: AgentProfileWriteRequest): void {
   if (request.scope !== 'user' && request.scope !== 'project' && request.scope !== 'extra') {
     issues.push({ path: 'scope', message: 'scope must be user, project, or extra' });
   }
-  validateDescription(request.description, 'description', issues);
+  validateRequiredString(request.description, 'description', issues);
+  validateOptionalString(request.whenToUse, 'whenToUse', issues);
   validateModelAlias(request.modelAlias, 'modelAlias', issues);
+  validateOptionalString(request.thinkingEffort, 'thinkingEffort', issues);
+  validateServiceTier(request.serviceTier, issues);
+  validateStringList(request.tools, 'tools', issues);
+  validateStringList(request.disallowedTools, 'disallowedTools', issues);
+  if (request.rawText !== undefined && typeof request.rawText !== 'string') {
+    issues.push({ path: 'rawText', message: 'rawText must be a string' });
+  }
   if (request.routes !== undefined) {
     if (!Array.isArray(request.routes)) {
       issues.push({ path: 'routes', message: 'routes must be an array' });
@@ -243,7 +285,7 @@ function validateRequest(request: AgentProfileWriteRequest): void {
         } else {
           ids.add(route['id']);
         }
-        validateDescription(route['description'], `${path}.description`, issues);
+        validateRequiredString(route['description'], `${path}.description`, issues);
         validateModelAlias(route['modelAlias'], `${path}.modelAlias`, issues);
         if (route['description'] === undefined && route['modelAlias'] === undefined) {
           issues.push({ path, message: 'route update must include description or modelAlias' });
@@ -251,24 +293,45 @@ function validateRequest(request: AgentProfileWriteRequest): void {
       });
     }
   }
-  if (
-    request.description === undefined &&
-    request.modelAlias === undefined &&
-    (!Array.isArray(request.routes) || request.routes.length === 0)
-  ) {
-    issues.push({ path: '', message: 'at least one editable field is required' });
+  const structuredFields = [
+    request.description,
+    request.whenToUse,
+    request.modelAlias,
+    request.thinkingEffort,
+    request.serviceTier,
+    request.tools,
+    request.disallowedTools,
+  ];
+  const hasStructuredUpdate = structuredFields.some((value) => value !== undefined)
+    || (Array.isArray(request.routes) && request.routes.length > 0);
+  if (request.rawText !== undefined && hasStructuredUpdate) {
+    issues.push({ path: 'rawText', message: 'rawText cannot be combined with field or route updates' });
+  }
+  if (request.rawText === undefined && !hasStructuredUpdate) {
+    issues.push({ path: '', message: 'at least one editable field or rawText is required' });
   }
   if (issues.length > 0) throw validationError(issues);
 }
 
-function validateDescription(
+function validateRequiredString(
   value: unknown,
   path: string,
   issues: ValidationIssue[],
 ): void {
   if (value === undefined) return;
   if (typeof value !== 'string' || value.trim() === '') {
-    issues.push({ path, message: 'description must be a non-empty string' });
+    issues.push({ path, message: `${path} must be a non-empty string` });
+  }
+}
+
+function validateOptionalString(
+  value: unknown,
+  path: string,
+  issues: ValidationIssue[],
+): void {
+  if (value === undefined || value === null) return;
+  if (typeof value !== 'string' || value.trim() === '') {
+    issues.push({ path, message: `${path} must be a non-empty string or null` });
   }
 }
 
@@ -281,6 +344,30 @@ function validateModelAlias(
   if (typeof value !== 'string' || !MODEL_ALIAS_PATTERN.test(value)) {
     issues.push({ path, message: 'model alias must be a non-empty string without whitespace' });
   }
+}
+
+function validateServiceTier(value: unknown, issues: ValidationIssue[]): void {
+  if (value === undefined || value === null) return;
+  if (typeof value !== 'string' || !SERVICE_TIERS.has(value)) {
+    issues.push({ path: 'serviceTier', message: 'serviceTier must be auto, default, flex, priority, or null' });
+  }
+}
+
+function validateStringList(
+  value: unknown,
+  path: string,
+  issues: ValidationIssue[],
+): void {
+  if (value === undefined || value === null) return;
+  if (!Array.isArray(value)) {
+    issues.push({ path, message: `${path} must be an array of non-empty strings or null` });
+    return;
+  }
+  value.forEach((item, index) => {
+    if (typeof item !== 'string' || item.trim() === '') {
+      issues.push({ path: `${path}.${index}`, message: `${path} entries must be non-empty strings` });
+    }
+  });
 }
 
 function validationError(issues: readonly ValidationIssue[]): Error2 {
@@ -297,7 +384,11 @@ function readOnlyError(name: string, source: string): Error2 {
   );
 }
 
-function updateFrontmatterScalar(text: string, key: string, value: string | null): string {
+function updateFrontmatterScalar(
+  text: string,
+  key: string,
+  value: string | readonly string[] | null,
+): string {
   const block = locateFrontmatter(text);
   const lines = scanLines(block.content);
   const keyPattern = new RegExp(`^${escapeRegExp(key)}[ \\t]*:`);
