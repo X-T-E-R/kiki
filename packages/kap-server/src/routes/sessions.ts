@@ -144,6 +144,10 @@ import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
 import { defineRoute } from '../middleware/defineRoute';
+import {
+  IModelPricingService,
+  type ModelTokenUsage,
+} from '../pricing/modelPricingService';
 import { readLegacyStatus } from '../services/legacyStatus/legacyStatus';
 import { ensureMainAgent } from '../transport/mainAgent';
 import { parseActionSuffix } from './action-suffix';
@@ -1260,19 +1264,52 @@ export function resolveSessionFacts(core: Scope, sessionId: string): SessionFact
   const main = agents.find((agent) => agent.id === MAIN_AGENT_ID);
   return {
     ...handle.accessor.get(ISessionActivityView).state(),
-    usage: main === undefined ? undefined : readSessionUsage(main, agents),
+    usage:
+      main === undefined
+        ? undefined
+        : readSessionUsage(main, agents, core.accessor.get(IModelPricingService)),
     live: true,
   };
+}
+
+interface MutableModelTokenUsage {
+  inputOther: number;
+  output: number;
+  inputCacheRead: number;
+  inputCacheCreation: number;
+}
+
+function addModelUsage(
+  target: Map<string, MutableModelTokenUsage>,
+  byModel: Readonly<Record<string, ModelTokenUsage>> | undefined,
+): void {
+  if (byModel === undefined) return;
+  for (const [model, modelUsage] of Object.entries(byModel)) {
+    const accumulated = target.get(model) ?? {
+      inputOther: 0,
+      output: 0,
+      inputCacheRead: 0,
+      inputCacheCreation: 0,
+    };
+    accumulated.inputOther += modelUsage.inputOther ?? 0;
+    accumulated.output += modelUsage.output ?? 0;
+    accumulated.inputCacheRead += modelUsage.inputCacheRead ?? 0;
+    accumulated.inputCacheCreation += modelUsage.inputCacheCreation ?? 0;
+    target.set(model, accumulated);
+  }
 }
 
 function readSessionUsage(
   main: IAgentScopeHandle,
   agents: readonly IAgentScopeHandle[],
+  pricing: IModelPricingService,
 ): SessionUsage | undefined {
   try {
     const status = readLegacyStatus(main);
     if (status === undefined) return undefined;
     const total = status.usage?.total;
+    const byModel = new Map<string, MutableModelTokenUsage>();
+    addModelUsage(byModel, status.usage?.byModel);
     const activity = main.accessor.get(IAgentActivityView).state();
     const latestTurnId = activity.turn?.turnId ?? activity.lastTurn?.turnId;
     // Token usage is the sum of every materialized Agent scope in the session.
@@ -1291,15 +1328,32 @@ function readSessionUsage(
     for (const agent of agents) {
       if (agent.id === MAIN_AGENT_ID) continue;
       try {
-        const agentTotal = agent.accessor.get(IAgentUsageService).status().total;
+        const agentStatus = agent.accessor.get(IAgentUsageService).status();
+        const agentTotal = agentStatus.total;
         usage.input_tokens += agentTotal?.inputOther ?? 0;
         usage.output_tokens += agentTotal?.output ?? 0;
         usage.cache_read_tokens += agentTotal?.inputCacheRead ?? 0;
         usage.cache_creation_tokens += agentTotal?.inputCacheCreation ?? 0;
+        addModelUsage(byModel, agentStatus.byModel);
       } catch {
         // A partially materialized subagent must not block session projection.
       }
     }
+
+    const costByModel: Record<string, number> = {};
+    const unknownModels: string[] = [];
+    for (const [model, modelUsage] of byModel) {
+      const cost = pricing.calculate(model, modelUsage);
+      if (cost === undefined) {
+        unknownModels.push(model);
+      } else {
+        costByModel[model] = cost;
+        usage.total_cost_usd += cost;
+      }
+    }
+    usage.by_model = Object.keys(costByModel).length === 0 ? undefined : costByModel;
+    usage.cost_unknown_models =
+      unknownModels.length === 0 ? undefined : unknownModels.toSorted();
     return usage;
   } catch {
     return undefined;

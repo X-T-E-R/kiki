@@ -38,6 +38,7 @@ import { createKimiCodeHostIdentity, getVersion } from './cli/version';
 import { CLI_SHUTDOWN_TIMEOUT_MS, CLI_UI_MODE, PROCESS_NAME } from './constant/app';
 import { cleanupStaleNativeCacheForCurrent } from './native/native-assets';
 import { installMinidbTextBuildWorker } from './native/minidb-worker';
+import { installKapModelPricing } from './native/model-pricing';
 import { installKapSearchWorker } from './native/search-worker';
 import { installNativeModuleHook } from './native/module-hook';
 import { runNativeAssetSmokeIfRequested } from './native/smoke';
@@ -169,6 +170,14 @@ export function main(): void {
       : searchWorkerInstall.status === 'failed'
         ? `search-worker:failed code=${searchWorkerInstall.errorCode} sha256=${searchWorkerInstall.assetSha256 ?? 'unknown'}`
         : `search-worker:${searchWorkerInstall.status}`,
+  );
+  const pricingInstall = installKapModelPricing();
+  startupTrace(
+    pricingInstall.status === 'installed'
+      ? `model-pricing:installed basename=${pricingInstall.basename} sha256=${pricingInstall.assetSha256}`
+      : pricingInstall.status === 'failed'
+        ? `model-pricing:failed code=${pricingInstall.errorCode} sha256=${pricingInstall.assetSha256 ?? 'unknown'}`
+        : `model-pricing:${pricingInstall.status}`,
   );
   if (runNativeAssetSmokeIfRequested()) return;
 

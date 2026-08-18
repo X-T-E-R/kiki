@@ -6,10 +6,9 @@
  * jump-to-session. All aggregation lives in lib/usage (pure, unit-tested);
  * this file owns data fetching and presentation only.
  *
- * The v2 wire has no cost producer, so every cost surface (totals card,
- * per-model/per-day metric, ranking column) stays hidden while all reported
- * costs are 0 — the page falls back to token volumes and re-shows cost
- * automatically if a server ever reports spend.
+ * Cost surfaces stay hidden while all reported costs are 0. When the server
+ * supplies per-model cost decomposition, the model chart uses those recorded
+ * aliases rather than assigning the whole session cost to its configured model.
  *
  * Honesty rules (surfaced in the footer + the by-day hint): deleted sessions
  * are invisible to the REST surface, and per-day buckets group sessions by
@@ -61,6 +60,50 @@ async function fetchAllSessions(client: KikiClient): Promise<Session[]> {
   return all;
 }
 
+type ModelUsageRow = ReturnType<typeof groupUsageByModel>[number];
+type UsageCostDetails = Session['usage'] & {
+  readonly by_model?: Record<string, number>;
+  readonly cost_unknown_models?: readonly string[];
+};
+
+function modelUsageWithCosts(sessions: readonly Session[]): ModelUsageRow[] {
+  const baseRows = groupUsageByModel(sessions);
+  const costs = new Map<string, { costUsd: number; sessions: Set<string> }>();
+  for (const session of sessions) {
+    const details = session.usage as UsageCostDetails;
+    const entries = Object.entries(details.by_model ?? {});
+    if (entries.length === 0 && details.total_cost_usd > 0) {
+      entries.push([session.agent_config.model, details.total_cost_usd]);
+    }
+    for (const [model, costUsd] of entries) {
+      const entry = costs.get(model) ?? { costUsd: 0, sessions: new Set<string>() };
+      entry.costUsd += costUsd;
+      entry.sessions.add(session.id);
+      costs.set(model, entry);
+    }
+  }
+
+  const rows = new Map(baseRows.map((row) => [row.model, { ...row, costUsd: 0 }]));
+  for (const [model, cost] of costs) {
+    const row = rows.get(model);
+    rows.set(
+      model,
+      row === undefined
+        ? {
+            model,
+            sessions: cost.sessions.size,
+            turns: 0,
+            costUsd: cost.costUsd,
+            totalTokens: 0,
+          }
+        : { ...row, costUsd: cost.costUsd },
+    );
+  }
+  return [...rows.values()].toSorted(
+    (a, b) => b.costUsd - a.costUsd || b.totalTokens - a.totalTokens,
+  );
+}
+
 function dayLabel(dayStartMs: number, locale: Locale): string {
   return new Date(dayStartMs).toLocaleDateString(locale === 'zh' ? 'zh-CN' : 'en', {
     month: 'short',
@@ -109,9 +152,19 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     [allSessions, range, nowMs, includeArchived],
   );
   const totals = useMemo(() => aggregateUsage(filtered), [filtered]);
-  const models = useMemo(() => groupUsageByModel(filtered), [filtered]);
-  // The v2 wire has no cost producer: total_cost_usd is always 0, so cost
-  // surfaces stay hidden unless a server actually reports spend.
+  const models = useMemo(() => modelUsageWithCosts(filtered), [filtered]);
+  const unknownModels = useMemo(
+    () =>
+      [
+        ...new Set(
+          filtered.flatMap(
+            (session) =>
+              (session.usage as UsageCostDetails).cost_unknown_models ?? [],
+          ),
+        ),
+      ].toSorted(),
+    [filtered],
+  );
   const showCost = totals.costUsd > 0;
   const ranked = useMemo(
     () => (showCost ? rankSessionsByCost(filtered) : rankSessionsByTokens(filtered)),
@@ -215,6 +268,11 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
             </p>
           ) : (
             <>
+              {unknownModels.length > 0 ? (
+                <p className="rounded-xl border border-accent/25 bg-accent-soft px-3 py-2 text-[11px] leading-relaxed text-ink-soft">
+                  {t('usage.partialCost', { models: unknownModels.join(', ') })}
+                </p>
+              ) : null}
               <div className={`grid grid-cols-2 gap-3 ${showCost ? 'lg:grid-cols-3' : ''}`}>
                 {showCost ? (
                   <StatCard label={t('usage.card.cost')} value={formatCostUsd(totals.costUsd)} />

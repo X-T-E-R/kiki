@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  KAP_MODEL_PRICES_ASSET,
   NATIVE_ASSET_MANIFEST_VERSION,
   buildManifestKey,
   isManifestVersionSupported,
@@ -17,6 +18,14 @@ describe('buildManifestKey', () => {
   it('namespaces by target', () => {
     expect(buildManifestKey('darwin-arm64')).toBe('native/darwin-arm64/manifest.json');
     expect(buildManifestKey('linux-x64')).toBe('native/linux-x64/manifest.json');
+  });
+
+  it('keeps the LiteLLM snapshot in the kap-server runtime asset tree', () => {
+    expect(KAP_MODEL_PRICES_ASSET).toMatchObject({
+      key: 'kap-model-prices',
+      relativePath: 'runtime/kap-server/model_prices_and_context_window.json',
+      mode: 0o644,
+    });
   });
 });
 

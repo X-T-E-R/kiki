@@ -101,6 +101,10 @@ import {
 // it MUST stay above any `bootstrap()` call — registration happens at module
 // evaluation time.
 import { drainGlobalSearchDisposals, IGlobalSearchService } from './search/searchService';
+import {
+  drainModelPricingDisposals,
+  IModelPricingService,
+} from './pricing/modelPricingService';
 
 export interface ServerHostIdentity extends KimiHostIdentity {
   /** Fills the `${product_name}` slot in the base system prompt. Defaults render the CLI text. */
@@ -332,6 +336,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     core.accessor.get(IConfigService),
     logger,
   );
+  // App-scope pricing loads cache → vendored synchronously, then owns its
+  // fail-open background refresh timer for the server lifetime.
+  core.accessor.get(IModelPricingService);
 
   // Disk-backed catalog/index warmup is deliberately outside the listener's
   // readiness path. Reads remain authoritative while the session read model is
@@ -465,11 +472,12 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       await core.accessor.get(ISessionIndexMirror).drain();
       fsWatchBridge.dispose();
       core.dispose();
-      // `core.dispose()` runs the mirror's, the search service's and the query
+      // `core.dispose()` runs the mirror's, pricing/search services' and query
       // store's synchronous `dispose()`, whose drains/closes are asynchronous —
       // await them before releasing the instance registration (and before
       // embedding hosts tear down homeDir).
       await drainSessionIndexMirror();
+      await drainModelPricingDisposals();
       await drainGlobalSearchDisposals();
       await drainQueryStoreDisposals();
       await drainSessionMetadataWrites();

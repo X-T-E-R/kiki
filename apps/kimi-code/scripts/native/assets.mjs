@@ -6,6 +6,7 @@ import { dirname, extname, isAbsolute, join, relative, resolve } from 'node:path
 import { pathToFileURL } from 'node:url';
 
 import {
+  KAP_MODEL_PRICES_ASSET,
   KAP_SEARCH_WORKER_ASSET,
   MINIDB_TEXT_BUILD_WORKER_ASSET,
   NATIVE_ASSET_MANIFEST_VERSION,
@@ -274,21 +275,39 @@ export async function collectNativeAssets({ appRoot, target }) {
   }
 
   const runtimeFiles = [];
-  for (const [fileName, asset] of [
-    ['text-build-worker.mjs', MINIDB_TEXT_BUILD_WORKER_ASSET],
-    ['search-worker.mjs', KAP_SEARCH_WORKER_ASSET],
+  for (const [runtimeSource, asset] of [
+    [
+      resolve(appRoot, 'dist-native', 'intermediates', 'text-build-worker.mjs'),
+      MINIDB_TEXT_BUILD_WORKER_ASSET,
+    ],
+    [
+      resolve(appRoot, 'dist-native', 'intermediates', 'search-worker.mjs'),
+      KAP_SEARCH_WORKER_ASSET,
+    ],
+    [
+      resolve(
+        appRoot,
+        '..',
+        '..',
+        'packages',
+        'kap-server',
+        'vendor',
+        'litellm',
+        'model_prices_and_context_window.json',
+      ),
+      KAP_MODEL_PRICES_ASSET,
+    ],
   ]) {
-    const workerSource = resolve(appRoot, 'dist-native', 'intermediates', fileName);
-    const workerBytes = await readFile(workerSource);
-    const workerAssetKey = buildRuntimeAssetKey(target, asset.key);
+    const runtimeBytes = await readFile(runtimeSource);
+    const runtimeAssetKey = buildRuntimeAssetKey(target, asset.key);
     runtimeFiles.push({
       key: asset.key,
-      assetKey: workerAssetKey,
+      assetKey: runtimeAssetKey,
       relativePath: asset.relativePath,
-      sha256: sha256(workerBytes),
+      sha256: sha256(runtimeBytes),
       mode: asset.mode,
     });
-    assets[workerAssetKey] = workerSource;
+    assets[runtimeAssetKey] = runtimeSource;
   }
 
   const manifest = {

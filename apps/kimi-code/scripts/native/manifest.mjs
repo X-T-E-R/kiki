@@ -13,6 +13,12 @@ export const KAP_SEARCH_WORKER_ASSET = Object.freeze({
   mode: 0o644,
 });
 
+export const KAP_MODEL_PRICES_ASSET = Object.freeze({
+  key: 'kap-model-prices',
+  relativePath: 'runtime/kap-server/model_prices_and_context_window.json',
+  mode: 0o644,
+});
+
 export function buildManifestKey(target) {
   return `native/${target}/manifest.json`;
 }

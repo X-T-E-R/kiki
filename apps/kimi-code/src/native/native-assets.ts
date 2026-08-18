@@ -16,6 +16,7 @@ import { join as joinPosix } from 'pathe';
 
 import { KIMI_BUILD_INFO } from '#/cli/build-info';
 import {
+  KAP_MODEL_PRICES_ASSET,
   KAP_SEARCH_WORKER_ASSET,
   MINIDB_TEXT_BUILD_WORKER_ASSET,
   NATIVE_ASSET_MANIFEST_VERSION as MANIFEST_VERSION,
@@ -419,6 +420,10 @@ export function getMinidbTextBuildWorkerFile(
 
 export function getKapSearchWorkerFile(options: NativeAssetOptions = {}): string | null {
   return getNativeRuntimeFile(KAP_SEARCH_WORKER_ASSET.key, options);
+}
+
+export function getKapModelPricesFile(options: NativeAssetOptions = {}): string | null {
+  return getNativeRuntimeFile(KAP_MODEL_PRICES_ASSET.key, options);
 }
 
 export function getNativePackageRoot(

@@ -1,0 +1,8 @@
+LiteLLM model pricing snapshot
+
+Source: https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+Upstream revision: bc6e7df05b018eefe6c7293790ca3f4de38709ac
+Retrieved: 2026-03-26
+License: MIT (see the adjacent LICENSE file)
+
+The JSON is kept byte-for-byte parseable, so attribution lives in this NOTICE rather than a non-standard JSON comment header.

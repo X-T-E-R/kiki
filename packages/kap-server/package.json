@@ -19,10 +19,15 @@
     "./search-worker-runtime": {
       "types": "./src/search/worker/runtime.ts",
       "default": "./src/search/worker/runtime.ts"
+    },
+    "./model-pricing-runtime": {
+      "types": "./src/pricing/runtime.ts",
+      "default": "./src/pricing/runtime.ts"
     }
   },
   "scripts": {
     "build": "tsdown",
+    "model-prices:update": "node scripts/update-model-prices.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "clean": "rm -rf dist"

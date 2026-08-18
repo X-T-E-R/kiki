@@ -67,6 +67,8 @@ interface SessionWire {
     cache_read_tokens: number;
     cache_creation_tokens: number;
     total_cost_usd: number;
+    by_model?: Record<string, number>;
+    cost_unknown_models?: string[];
     context_tokens: number;
     context_limit: number;
     turn_count: number;
@@ -826,6 +828,42 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(got.body.data.usage).toMatchObject(expected);
     const listed = await getJson<PageWire>('/api/v1/sessions');
     expect(listed.body.data.items.find((item) => item.id === id)?.usage).toMatchObject(expected);
+  });
+
+  it('prices by-model usage across agents and reports partially unknown cost', async () => {
+    const cwd = home as string;
+    const created = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });
+    const id = created.body.data.id;
+    const session = getLiveSessionById((server as RunningServer).core.accessor, id);
+    if (session === undefined) throw new Error('expected a live session');
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    const main = lifecycle.get(MAIN_AGENT_ID) ?? (await lifecycle.create({ agentId: MAIN_AGENT_ID }));
+    const child = await lifecycle.create({ agentId: 'pricing-worker' });
+
+    main.accessor.get(IAgentUsageService).record('claude-sonnet-4-5', {
+      inputOther: 10,
+      output: 2,
+      inputCacheRead: 4,
+      inputCacheCreation: 1,
+    });
+    child.accessor.get(IAgentUsageService).record('claude-sonnet-4-5', {
+      inputOther: 1,
+      output: 1,
+      inputCacheRead: 0,
+      inputCacheCreation: 0,
+    });
+    child.accessor.get(IAgentUsageService).record('dashscope/qwen3-max', {
+      inputOther: 100,
+      output: 20,
+      inputCacheRead: 0,
+      inputCacheCreation: 0,
+    });
+
+    const got = await getJson<SessionWire>(`/api/v1/sessions/${id}`);
+    expect(got.body.data.usage.total_cost_usd).toBeCloseTo(0.00008295, 12);
+    expect(Object.keys(got.body.data.usage.by_model ?? {})).toEqual(['claude-sonnet-4-5']);
+    expect(got.body.data.usage.by_model?.['claude-sonnet-4-5']).toBeCloseTo(0.00008295, 12);
+    expect(got.body.data.usage.cost_unknown_models).toEqual(['dashscope/qwen3-max']);
   });
 
   it('skips unreadable subagent usage during session projection', async () => {
