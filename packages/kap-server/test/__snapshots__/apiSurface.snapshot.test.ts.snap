@@ -306,6 +306,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "PATCH",
+      "/api/v1/agents/{name}",
+    ],
+    [
+      "PATCH",
       "/api/v1/workspaces/{workspace_id}",
     ],
     [

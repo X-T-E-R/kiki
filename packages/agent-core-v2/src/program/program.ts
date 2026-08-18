@@ -23,6 +23,8 @@ import type { IWorkspaceMcpConfigService } from '#/workspace/workspaceMcpConfig/
 import { WorkspaceMcpConfigService } from '#/workspace/workspaceMcpConfig/workspaceMcpConfigService';
 import type { IWorkspaceTrust } from '#/workspace/workspaceTrust/workspaceTrust';
 import { WorkspaceTrustService } from '#/workspace/workspaceTrust/workspaceTrustService';
+import type { IAgentProfileWriter } from '#/workspace/workspaceAgentProfileLoader/agentProfileWriter';
+import { AgentProfileWriterService } from '#/workspace/workspaceAgentProfileLoader/agentProfileWriterService';
 import type { IExtraAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/extraAgentProfileLoader';
 import { ExtraAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/extraAgentProfileLoaderService';
 import type { IExplicitAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/explicitAgentProfileLoader';
@@ -97,6 +99,7 @@ interface ProgramGeneration {
   readonly trust: IWorkspaceTrust;
   readonly skills: IWorkspaceSkillCatalog;
   readonly agentProfiles: IWorkspaceAgentProfileLoader;
+  readonly agentProfileWriter: IAgentProfileWriter;
   readonly userAgentProfiles: IUserAgentProfileLoader;
   readonly pluginAgentProfiles: IPluginAgentProfileLoader;
   readonly explicitAgentProfiles: IExplicitAgentProfileLoader;
@@ -151,6 +154,7 @@ export class Program {
   get trust(): IWorkspaceTrust { return this.requireGeneration().trust; }
   get skills(): IWorkspaceSkillCatalog { return this.requireGeneration().skills; }
   get agentProfiles(): IWorkspaceAgentProfileLoader { return this.requireGeneration().agentProfiles; }
+  get agentProfileWriter(): IAgentProfileWriter { return this.requireGeneration().agentProfileWriter; }
   get sessionControllerGeneration(): string { return this.requireGeneration().id; }
 
   createSessionController(): SessionLifecycleService {
@@ -298,6 +302,7 @@ export class Program {
       const explicitAgentProfiles = own(new ExplicitAgentProfileLoaderService(this.context, this.dependencies.bootstrap, runtime.fs!, this.dependencies.log, userAgentProfiles, this.dependencies.agentProfiles));
       const extraAgentProfiles = own(new ExtraAgentProfileLoaderService(this.dependencies.config, this.context, this.dependencies.bootstrap, runtime.fs!, this.dependencies.log, userAgentProfiles, runtime.watch!, this.dependencies.flags, this.dependencies.agentProfiles));
       const agentProfiles = own(new WorkspaceAgentProfileLoaderService(this.context, runtime.fs!, this.dependencies.log, userAgentProfiles, runtime.watch!, this.dependencies.flags, this.dependencies.agentProfiles));
+      const agentProfileWriter = new AgentProfileWriterService(runtime.fs!, this.dependencies.agentProfiles, this.context, userAgentProfiles, agentProfiles, extraAgentProfiles);
       const skillDiscovery = new RuntimeSkillDiscovery(this.dependencies.log, runtime.fs!);
       const userSkills = own(new UserFileSkillSource(skillDiscovery, this.dependencies.bootstrap, this.dependencies.config));
       const explicitSkills = new ExplicitFileSkillSource(skillDiscovery, this.context, this.dependencies.bootstrap);
@@ -319,6 +324,7 @@ export class Program {
         trust,
         skills,
         agentProfiles,
+        agentProfileWriter,
         userAgentProfiles,
         pluginAgentProfiles,
         explicitAgentProfiles,

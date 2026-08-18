@@ -224,6 +224,9 @@ export {
   _clearAgentProfileContributionsForTests,
 } from '#/app/agentProfileCatalog/contribution';
 export * from '#/workspace/workspaceAgentProfileLoader/configSection';
+export * from '#/workspace/workspaceAgentProfileLoader/agentProfileWriter';
+export * from '#/workspace/workspaceAgentProfileLoader/agentProfileWriterService';
+export * from '#/workspace/workspaceAgentProfileLoader/errors';
 export * from '#/app/agentProfileCatalog/flag';
 export { parseAgentFileText } from '#/workspace/workspaceAgentProfileLoader/internal/agentFile';
 export { resolveAgentPath } from '#/workspace/workspaceAgentProfileLoader/internal/paths';

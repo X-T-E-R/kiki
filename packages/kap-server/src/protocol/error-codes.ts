@@ -79,6 +79,8 @@ export const ErrorCode = {
   RUNTIME_NOT_FOUND: 40420,
   /** peer thread reference does not resolve to an existing session */
   THREAD_NOT_FOUND: 40421,
+  /** named agent profile does not exist in the requested editable scope */
+  AGENT_PROFILE_NOT_FOUND: 40422,
 
   /** session 有正在进行的 prompt，拒绝新请求 */
   SESSION_BUSY: 40901,
@@ -146,6 +148,8 @@ export const ErrorCode = {
   THREAD_IDEMPOTENCY_CONFLICT: 40932,
   /** session is active in another process sharing the same home */
   SESSION_LOCKED: 40933,
+  /** named agent profile is backed by a non-editable source */
+  AGENT_PROFILE_READ_ONLY: 40934,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,

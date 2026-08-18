@@ -109,6 +109,52 @@ describe('KikiClient.listNamedAgentProfiles', () => {
   });
 });
 
+describe('KikiClient.updateNamedAgentProfile', () => {
+  it('PATCHes editable fields and returns the server echo used by the settings cache', async () => {
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      expect(String(url)).toBe('http://127.0.0.1:8080/api/v1/agents/reviewer%20ui');
+      expect(init?.method).toBe('PATCH');
+      expect(JSON.parse(init?.body as string)).toEqual({
+        scope: 'project',
+        workspace_id: 'wd_test',
+        description: 'Updated reviewer',
+        pinned_model_alias: 'provider/profile',
+        routes: [{ id: 'reviewer-ui.fast', model_alias: null }],
+      });
+      return new Response(JSON.stringify({
+        code: 0,
+        msg: 'success',
+        data: {
+          name: 'reviewer ui',
+          description: 'Updated reviewer',
+          source: 'workspace',
+          workspace_id: 'wd_test',
+          source_file: '/workspace/reviewer-ui.md',
+          pinned_model_alias: 'provider/profile',
+          routes: [{
+            id: 'reviewer-ui.fast',
+            source_file: '/workspace/.routes/reviewer-ui/fast.md',
+          }],
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+
+    const result = await client.updateNamedAgentProfile('reviewer ui', {
+      scope: 'project',
+      workspace_id: 'wd_test',
+      description: 'Updated reviewer',
+      pinned_model_alias: 'provider/profile',
+      routes: [{ id: 'reviewer-ui.fast', model_alias: null }],
+    });
+
+    expect(result.description).toBe('Updated reviewer');
+    expect(result.source).toBe('workspace');
+    vi.unstubAllGlobals();
+  });
+});
+
 function envelope(data: unknown): Response {
   return {
     json: async () => ({ code: 0, msg: 'ok', data, request_id: 'req_test' }),

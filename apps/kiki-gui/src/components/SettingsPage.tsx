@@ -26,7 +26,11 @@ import {
   type SubagentGovernanceDraft,
   type SubagentGovernanceIssue,
 } from '../lib/agentSettings';
-import type { KikiConfigResponse, NamedAgentProfile } from '../lib/client';
+import type {
+  KikiConfigResponse,
+  ListNamedAgentProfilesResponse,
+  NamedAgentProfile,
+} from '../lib/client';
 import {
   appendExtraSkillDirs,
   buildSettingsSearchIndex,
@@ -1264,29 +1268,135 @@ function SubagentGovernanceCard() {
   );
 }
 
-function NamedAgentProfileRow({ profile }: { profile: NamedAgentProfile }) {
-  const { t } = useI18n();
+function NamedAgentProfileRow({
+  profile,
+  onUpdated,
+}: {
+  profile: NamedAgentProfile;
+  onUpdated: (profile: NamedAgentProfile) => void;
+}) {
+  const { client } = useConnection();
+  const { t, locale } = useI18n();
+  const writable =
+    profile.workspace_id !== undefined &&
+    profile.source_file !== undefined &&
+    (profile.source === 'user' || profile.source === 'workspace' || profile.source === 'extra');
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const [description, setDescription] = useState(profile.description ?? '');
+  const [modelAlias, setModelAlias] = useState(profile.pinned_model_alias ?? '');
+  const [routeAliases, setRouteAliases] = useState<Record<string, string>>(() =>
+    Object.fromEntries(profile.routes.map((route) => [route.id, route.model_alias ?? ''])),
+  );
+
+  const resetDraft = () => {
+    setDescription(profile.description ?? '');
+    setModelAlias(profile.pinned_model_alias ?? '');
+    setRouteAliases(Object.fromEntries(profile.routes.map((route) => [route.id, route.model_alias ?? ''])));
+    setFeedback(null);
+  };
+  const save = async () => {
+    if (!writable || profile.workspace_id === undefined) return;
+    setSaving(true);
+    setFeedback(null);
+    try {
+      const echoed = await client.updateNamedAgentProfile(profile.name, {
+        scope: profile.source === 'workspace' ? 'project' : profile.source,
+        workspace_id: profile.workspace_id,
+        description: description.trim(),
+        pinned_model_alias: modelAlias.trim() === '' ? null : modelAlias.trim(),
+        routes: profile.routes.map((route) => ({
+          id: route.id,
+          model_alias: routeAliases[route.id]?.trim() === ''
+            ? null
+            : routeAliases[route.id]?.trim(),
+        })),
+      });
+      onUpdated(echoed);
+      setEditing(false);
+      setFeedback({ tone: 'success', text: t('st.namedAgents.saved') });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="rounded-lg border border-hairline bg-paper px-3 py-2">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="font-mono text-[12.5px] font-medium text-ink">{profile.name}</p>
-          {profile.description !== undefined ? <p className="text-[11.5px] text-ink-soft">{profile.description}</p> : null}
+          {!editing && profile.description !== undefined ? <p className="text-[11.5px] text-ink-soft">{profile.description}</p> : null}
         </div>
-        <span className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint">{profile.source}</span>
+        <div className="flex items-center gap-2">
+          <span className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint">
+            {profile.source}{writable ? '' : ` · ${t('st.namedAgents.readOnly')}`}
+          </span>
+          {writable && !editing ? (
+            <button type="button" className={SECONDARY_BUTTON} onClick={() => { resetDraft(); setEditing(true); }}>
+              {t('st.namedAgents.edit')}
+            </button>
+          ) : null}
+        </div>
       </div>
-      <div className="mt-2 space-y-1 break-all font-mono text-[10px] text-ink-faint">
-        <p>{t('st.namedAgents.sourceFile')}: {profile.source_file ?? t('st.namedAgents.builtin')}</p>
-        {profile.workspace_id !== undefined ? <p>{t('st.namedAgents.workspace')}: {profile.workspace_id}</p> : null}
-        {profile.pinned_model_alias !== undefined ? <p>{t('st.namedAgents.modelPin')}: {profile.pinned_model_alias}</p> : null}
-        {profile.routes.map((route) => (
-          <p key={route.id}>
-            {t('st.namedAgents.route')}: {route.id}
-            {route.model_alias === undefined ? '' : ` → ${route.model_alias}`}
-            {' · '}{route.source_file}
-          </p>
-        ))}
-      </div>
+      {editing ? (
+        <fieldset disabled={saving} className="mt-3 space-y-3 disabled:opacity-60">
+          <label className="block text-[11px] font-medium text-ink-soft">
+            {t('st.namedAgents.description')}
+            <textarea
+              className={`${INPUT} mt-1 min-h-20`}
+              value={description}
+              onChange={(event) => { setDescription(event.target.value); }}
+            />
+          </label>
+          <label className="block text-[11px] font-medium text-ink-soft">
+            {t('st.namedAgents.modelPin')}
+            <input
+              className={`${INPUT} mt-1 font-mono`}
+              value={modelAlias}
+              placeholder="provider/model"
+              onChange={(event) => { setModelAlias(event.target.value); }}
+            />
+          </label>
+          {profile.routes.map((route) => (
+            <label key={route.id} className="block text-[11px] font-medium text-ink-soft">
+              {t('st.namedAgents.routeModel', { route: route.id })}
+              <input
+                className={`${INPUT} mt-1 font-mono`}
+                value={routeAliases[route.id] ?? ''}
+                placeholder="provider/model"
+                onChange={(event) => {
+                  setRouteAliases((current) => ({ ...current, [route.id]: event.target.value }));
+                }}
+              />
+            </label>
+          ))}
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className={PRIMARY_BUTTON} disabled={description.trim() === '' || saving} onClick={() => void save()}>
+              {saving ? t('common.saving') : t('common.save')}
+            </button>
+            <button type="button" className={SECONDARY_BUTTON} disabled={saving} onClick={() => { resetDraft(); setEditing(false); }}>
+              {t('common.cancel')}
+            </button>
+          </div>
+        </fieldset>
+      ) : (
+        <div className="mt-2 space-y-1 break-all font-mono text-[10px] text-ink-faint">
+          <p>{t('st.namedAgents.sourceFile')}: {profile.source_file ?? t('st.namedAgents.builtin')}</p>
+          {profile.workspace_id !== undefined ? <p>{t('st.namedAgents.workspace')}: {profile.workspace_id}</p> : null}
+          {profile.pinned_model_alias !== undefined ? <p>{t('st.namedAgents.modelPin')}: {profile.pinned_model_alias}</p> : null}
+          {profile.routes.map((route) => (
+            <p key={route.id}>
+              {t('st.namedAgents.route')}: {route.id}
+              {route.model_alias === undefined ? '' : ` → ${route.model_alias}`}
+              {' · '}{route.source_file}
+            </p>
+          ))}
+        </div>
+      )}
+      <FeedbackLine feedback={feedback} />
     </div>
   );
 }
@@ -1294,19 +1404,40 @@ function NamedAgentProfileRow({ profile }: { profile: NamedAgentProfile }) {
 function NamedAgentProfilesCard() {
   const { client } = useConnection();
   const { t } = useI18n();
+  const queryClient = useQueryClient();
   const profilesQuery = useQuery({
     queryKey: ['named-agent-profiles'],
     queryFn: () => client.listNamedAgentProfiles(),
     staleTime: 15_000,
   });
+  const updateEcho = (updated: NamedAgentProfile) => {
+    queryClient.setQueryData<ListNamedAgentProfilesResponse>(
+      ['named-agent-profiles'],
+      (current) => current === undefined
+        ? { items: [updated] }
+        : {
+            items: current.items.map((profile) =>
+              profile.name === updated.name &&
+              profile.source === updated.source &&
+              profile.workspace_id === updated.workspace_id
+                ? updated
+                : profile,
+            ),
+          },
+    );
+  };
 
   return (
     <SectionCard id="st-card-named-agents" title={t('st.namedAgents.title')}>
       <div className="space-y-3">
-        <Hint>{t('st.namedAgents.readOnlyHint')}</Hint>
+        <Hint>{t('st.namedAgents.editHint')}</Hint>
         <div className="space-y-2">
           {profilesQuery.data?.items.map((profile, index) => (
-            <NamedAgentProfileRow key={`${profile.name}:${profile.source}:${profile.workspace_id ?? ''}:${index}`} profile={profile} />
+            <NamedAgentProfileRow
+              key={`${profile.name}:${profile.source}:${profile.workspace_id ?? ''}:${index}`}
+              profile={profile}
+              onUpdated={updateEcho}
+            />
           ))}
           {profilesQuery.isLoading ? <Hint>{t('st.namedAgents.loading')}</Hint> : null}
           {profilesQuery.data?.items.length === 0 ? <Hint>{t('st.namedAgents.empty')}</Hint> : null}

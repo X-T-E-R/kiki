@@ -13,13 +13,14 @@
  * test/workspace/workspaceAgentProfileLoader/agentProfileLoader.test.ts`.
  */
 
-import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
 import { join } from 'pathe';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Emitter, Event } from '#/_base/event';
+import { atomicWrite } from '#/_base/utils/fs';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import type { ServiceIdentifier } from '#/_base/di/instantiation';
 import { InstantiationService } from '#/_base/di/instantiationService';
@@ -73,6 +74,8 @@ import { IFlagService } from '#/app/flag/flag';
 import { AGENT_PROFILE_ROUTES_FLAG_ID } from '#/app/agentProfileCatalog/flag';
 import { isToolActive } from '#/agent/toolPolicy/evaluate';
 import { parseAgentRouteFileText } from '#/workspace/workspaceAgentProfileLoader/internal/agentRouteFile';
+import { AgentProfileWriterService } from '#/workspace/workspaceAgentProfileLoader/agentProfileWriterService';
+import { AgentProfileWriteErrors } from '#/workspace/workspaceAgentProfileLoader/errors';
 
 import { stubBootstrap } from '../../app/bootstrap/stubs';
 
@@ -299,6 +302,7 @@ interface StackOptions {
   readonly fsWatch?: IHostFsWatchService;
   readonly routesEnabled?: boolean;
   readonly userAgentProfileHomeDir?: string;
+  readonly atomicTextWriter?: (path: string, text: string) => Promise<void>;
 }
 
 function makeStack(fixture: Fixture, opts?: StackOptions) {
@@ -355,9 +359,19 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
     workspaceKey: workspaceContext.workspaceId,
   };
   const catalog = new SessionAgentProfileCatalogService(registry, seed, config, log, flags);
+  const writer = new AgentProfileWriterService(
+    hostFs,
+    registry,
+    workspaceContext,
+    userLoader,
+    workspaceLoader,
+    extraLoader,
+    opts?.atomicTextWriter,
+  );
 
   return {
     registry,
+    writer,
     builtinLoader,
     userLoader,
     pluginLoader,
@@ -423,6 +437,189 @@ describe('agent profile loaders + session catalog', () => {
     expect(() => parse('wrap', '${base_prompt} twice ${base_prompt}')).toThrow(/exactly once/);
     expect(() => parse('prepend', '${base_prompt}')).toThrow(/does not allow/);
     expect(() => parse('inherit', 'not empty')).toThrow(/empty body/);
+  });
+
+  it('atomically patches profile and route frontmatter, preserves the body, and echoes reload', async () => {
+    await withFixture(async (fixture) => {
+      const root = join(fixture.homeDir, 'agents');
+      const profilePath = await writeAgent(
+        root,
+        'reviewer.md',
+        [
+          '---',
+          'name: reviewer',
+          'description: Old description',
+          'model_preference: secondary',
+          'tools: [Read, Bash]',
+          'custom_field: keep-me',
+          '---',
+          '',
+          'Keep this prompt body exactly.',
+          '',
+        ].join('\r\n'),
+      );
+      const routePath = await writeAgent(
+        join(root, '.routes', 'reviewer'),
+        'fast.md',
+        routeMd(
+          'reviewer.fast',
+          'reviewer',
+          'KEEP ROUTE BODY',
+          'model_preference: primary\n',
+        ),
+      );
+      const writes: string[] = [];
+      await withStack(
+        fixture,
+        {
+          routesEnabled: true,
+          atomicTextWriter: async (path, text) => {
+            writes.push(path);
+            await atomicWrite(path, text);
+          },
+        },
+        async (stack) => {
+          await stack.ready();
+          const result = await stack.writer.update({
+            name: 'reviewer',
+            scope: 'user',
+            description: 'Updated description',
+            modelAlias: 'provider/profile',
+            routes: [{
+              id: 'reviewer.fast',
+              description: 'Updated route',
+              modelAlias: 'provider/route',
+            }],
+          });
+
+          expect(result.profile.description).toBe('Updated description');
+          expect(result.profile.modelAlias).toBe('provider/profile');
+          expect(result.routes).toMatchObject([{
+            id: 'reviewer.fast',
+            description: 'Updated route',
+            modelAlias: 'provider/route',
+          }]);
+          expect(stack.catalog.get('reviewer')).toMatchObject({
+            description: 'Updated description',
+            modelAlias: 'provider/profile',
+          });
+
+          const profileText = await readFile(profilePath, 'utf8');
+          expect(profileText).toContain('description: "Updated description"\r\n');
+          expect(profileText).toContain('model_alias: "provider/profile"\r\n');
+          expect(profileText).not.toContain('model_preference:');
+          expect(profileText).toContain('tools: [Read, Bash]\r\ncustom_field: keep-me\r\n');
+          expect(profileText.endsWith('\r\nKeep this prompt body exactly.\r\n')).toBe(true);
+
+          const routeText = await readFile(routePath, 'utf8');
+          expect(routeText).toContain('description: "Updated route"\n');
+          expect(routeText).toContain('model_alias: "provider/route"\n');
+          expect(routeText).not.toContain('model_preference:');
+          expect(routeText.endsWith('\n\nKEEP ROUTE BODY\n')).toBe(true);
+          expect(writes).toEqual([profilePath, routePath]);
+          expect((await readdir(root)).some((name) => name.includes('.tmp.'))).toBe(false);
+          expect((await readdir(join(root, '.routes', 'reviewer'))).some((name) => name.includes('.tmp.'))).toBe(false);
+        },
+      );
+    });
+  });
+
+  it('routes project and extra writes through their owning loaders', async () => {
+    await withFixture(async (fixture) => {
+      const projectPath = await writeAgent(
+        join(fixture.workDir, '.kimi-code', 'agents'),
+        'project-profile.md',
+        agentMd('project-profile', 'project original'),
+      );
+      const extraPath = await writeAgent(
+        fixture.extraDir,
+        'extra-profile.md',
+        agentMd('extra-profile', 'extra original'),
+      );
+      await withStack(
+        fixture,
+        { extraAgentDirs: [fixture.extraDir] },
+        async (stack) => {
+          await stack.ready();
+          const project = await stack.writer.update({
+            name: 'project-profile',
+            scope: 'project',
+            description: 'project updated',
+          });
+          const extra = await stack.writer.update({
+            name: 'extra-profile',
+            scope: 'extra',
+            description: 'extra updated',
+          });
+
+          expect(project.sourceId).toBe('workspace');
+          expect(project.profile.description).toBe('project updated');
+          expect(extra.sourceId).toBe('extra');
+          expect(extra.profile.description).toBe('extra updated');
+          expect(await readFile(projectPath, 'utf8')).toContain('description: "project updated"');
+          expect(await readFile(extraPath, 'utf8')).toContain('description: "extra updated"');
+        },
+      );
+    });
+  });
+
+  it('validates the whole write request before replacing any file', async () => {
+    await withFixture(async (fixture) => {
+      const profilePath = await writeAgent(
+        join(fixture.homeDir, 'agents'),
+        'reviewer.md',
+        agentMd('reviewer', 'original'),
+      );
+      const writes: string[] = [];
+      await withStack(
+        fixture,
+        {
+          atomicTextWriter: async (path, text) => {
+            writes.push(path);
+            await atomicWrite(path, text);
+          },
+        },
+        async (stack) => {
+          await stack.ready();
+          await expect(stack.writer.update({
+            name: 'reviewer',
+            scope: 'user',
+            description: 'would be partial',
+            routes: [{ id: 'reviewer.missing', modelAlias: 'provider/route' }],
+          })).rejects.toMatchObject({ code: 'validation.failed' });
+          expect(writes).toEqual([]);
+          expect(await readFile(profilePath, 'utf8')).toBe(agentMd('reviewer', 'original'));
+        },
+      );
+    });
+  });
+
+  it('rejects non-editable fields, malformed aliases, and read-only sources', async () => {
+    await withFixture(async (fixture) => {
+      await writeAgent(
+        join(fixture.homeDir, 'agents'),
+        'reviewer.md',
+        agentMd('reviewer', 'original'),
+      );
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        await expect(stack.writer.update({
+          name: 'reviewer',
+          scope: 'user',
+          tools: ['Read'],
+        } as never)).rejects.toMatchObject({ code: 'validation.failed' });
+        await expect(stack.writer.update({
+          name: 'reviewer',
+          scope: 'user',
+          modelAlias: 'provider / invalid',
+        })).rejects.toMatchObject({ code: 'validation.failed' });
+        await expect(stack.writer.update({
+          name: DEFAULT_AGENT_PROFILE_NAME,
+          scope: 'user',
+          description: 'not allowed',
+        })).rejects.toMatchObject({ code: AgentProfileWriteErrors.codes.READ_ONLY });
+      });
+    });
   });
 
   it('lists builtin profiles when no agent directories exist', async () => {

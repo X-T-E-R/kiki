@@ -37,6 +37,7 @@ import { WebErrors } from '#/app/web/errors';
 import { WireErrors } from '#/wire/errors';
 import { WorkspaceErrors } from '#/app/workspace/errors';
 import { AgentProfileRouteErrors } from '#/app/agentProfileCatalog/errors';
+import { AgentProfileWriteErrors } from '#/workspace/workspaceAgentProfileLoader/errors';
 
 export * from '#/_base/errors/codes';
 export * from '#/_base/errors/errorMessage';
@@ -75,6 +76,7 @@ export { WebErrors } from '#/app/web/errors';
 export { WireErrors } from '#/wire/errors';
 export { WorkspaceErrors } from '#/app/workspace/errors';
 export { AgentProfileRouteErrors } from '#/app/agentProfileCatalog/errors';
+export { AgentProfileWriteErrors } from '#/workspace/workspaceAgentProfileLoader/errors';
 
 export const ErrorCodes = {
   ...CoreErrors.codes,
@@ -110,6 +112,7 @@ export const ErrorCodes = {
   ...WireErrors.codes,
   ...WorkspaceErrors.codes,
   ...AgentProfileRouteErrors.codes,
+  ...AgentProfileWriteErrors.codes,
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

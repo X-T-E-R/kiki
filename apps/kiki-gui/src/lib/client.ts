@@ -250,6 +250,7 @@ export type KikiConfigPatch = Omit<PatchConfigRequest, 'subagent' | 'replace_dom
 
 export interface NamedAgentRoute {
   readonly id: string;
+  readonly description?: string;
   readonly model_alias?: string;
   readonly source_file: string;
 }
@@ -266,6 +267,18 @@ export interface NamedAgentProfile {
 
 export interface ListNamedAgentProfilesResponse {
   readonly items: NamedAgentProfile[];
+}
+
+export interface UpdateNamedAgentProfileRequest {
+  readonly scope: 'user' | 'project' | 'extra';
+  readonly workspace_id: string;
+  readonly description?: string;
+  readonly pinned_model_alias?: string | null;
+  readonly routes?: readonly {
+    readonly id: string;
+    readonly description?: string;
+    readonly model_alias?: string | null;
+  }[];
 }
 
 export interface KikiClientOptions {
@@ -862,6 +875,13 @@ export class KikiClient {
 
   listNamedAgentProfiles(): Promise<ListNamedAgentProfilesResponse> {
     return this.request<ListNamedAgentProfilesResponse>('GET', '/agents');
+  }
+
+  updateNamedAgentProfile(
+    name: string,
+    body: UpdateNamedAgentProfileRequest,
+  ): Promise<NamedAgentProfile> {
+    return this.request<NamedAgentProfile>('PATCH', `/agents/${encodeURIComponent(name)}`, { body });
   }
 
   listWorkspaces(): Promise<ListWorkspacesResponse> {

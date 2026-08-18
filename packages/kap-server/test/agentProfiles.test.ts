@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -104,10 +104,106 @@ describe('GET /api/v1/agents', () => {
       pinned_model_alias: 'provider/pinned',
       routes: [{
         id: 'reviewer.fast',
+        description: 'Fast review route',
         model_alias: 'provider/route',
         source_file: routePath.replaceAll('\\', '/'),
       }],
     });
     expect(data.items.some((profile) => profile.source === 'builtin')).toBe(true);
+
+    const patchedResponse = await authedFetch(server, base, '/api/v1/agents/reviewer', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        scope: 'user',
+        workspace_id: reviewer?.workspace_id,
+        description: 'Reviews changes carefully',
+        pinned_model_alias: 'provider/updated',
+        routes: [{ id: 'reviewer.fast', model_alias: 'provider/route-updated' }],
+      }),
+    });
+    const patched = (await patchedResponse.json()) as Envelope<{
+      description?: string;
+      pinned_model_alias?: string;
+      routes: Array<{ id: string; model_alias?: string }>;
+    }>;
+    expect(patched.code).toBe(0);
+    expect(patched.data).toMatchObject({
+      name: 'reviewer',
+      description: 'Reviews changes carefully',
+      source: 'user',
+      workspace_id: reviewer?.workspace_id,
+      pinned_model_alias: 'provider/updated',
+      routes: [{ id: 'reviewer.fast', model_alias: 'provider/route-updated' }],
+    });
+    expect(await readFile(profilePath, 'utf8')).toContain('description: "Reviews changes carefully"');
+    expect(await readFile(routePath, 'utf8')).toContain('model_alias: "provider/route-updated"');
+  });
+
+  it('rejects writes to builtin profiles with a read-only business code', async () => {
+    const agentsDir = join(home as string, 'agents');
+    await mkdir(agentsDir, { recursive: true });
+    await writeFile(
+      join(agentsDir, 'reviewer.md'),
+      '---\nname: reviewer\ndescription: reviewer\n---\n\nReview.\n',
+      'utf-8',
+    );
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+    });
+    base = `http://127.0.0.1:${server.port}`;
+    await authedFetch(server, base, '/api/v1/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: home } }),
+    });
+    const listed = (await (await authedFetch(server, base, '/api/v1/agents')).json()) as Envelope<unknown>;
+    const data = listNamedAgentProfilesResponseSchema.parse(listed.data);
+    const workspaceId = data.items.find((profile) => profile.name === 'reviewer')?.workspace_id;
+
+    const response = await authedFetch(server, base, '/api/v1/agents/agent', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        scope: 'user',
+        workspace_id: workspaceId,
+        description: 'cannot edit builtin',
+      }),
+    });
+    const body = (await response.json()) as Envelope<null>;
+    expect(body.code).toBe(40934);
+    expect(body.msg).toContain('read-only');
+  });
+
+  it('returns field details when the PATCH body requests non-editable fields', async () => {
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+    });
+    base = `http://127.0.0.1:${server.port}`;
+
+    const response = await authedFetch(server, base, '/api/v1/agents/reviewer', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        scope: 'user',
+        workspace_id: 'wd_test',
+        tools: ['Read'],
+      }),
+    });
+    const body = (await response.json()) as Envelope<null> & {
+      details?: Array<{ path: string; message: string }>;
+    };
+    expect(body.code).toBe(40001);
+    expect(body.details).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: expect.stringMatching(/tools|^$/) }),
+    ]));
   });
 });
