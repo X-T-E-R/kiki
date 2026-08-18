@@ -3,7 +3,7 @@
  * and session meta (model, cwd, message count, context/token usage).
  */
 
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import type { GoalSnapshot, Task } from '@moonshot-ai/protocol';
@@ -12,6 +12,35 @@ import { useI18n } from '../i18n';
 import type { AgentForest } from '../state/agentTree';
 import type { SessionViewState, TodoItem } from '../state/transcript';
 import { AgentTreeView } from './AgentTreeView';
+
+/**
+ * Collapsible rail chapter — button + useState + aria-expanded + rotating
+ * chevron (the repo's collapse idiom). Starts expanded.
+ */
+function RailSection({ title, children }: { title: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <section>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => { setOpen((value) => !value); }}
+        className="mb-2 flex w-full items-center gap-1.5 text-left"
+      >
+        <span
+          aria-hidden
+          className={`inline-block shrink-0 text-[8px] text-ink-faint transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
+        >
+          ▶
+        </span>
+        <span className="text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
+          {title}
+        </span>
+      </button>
+      {open ? children : null}
+    </section>
+  );
+}
 
 function todoTone(status: string): { icon: string; className: string } {
   const normalized = status.toLowerCase();
@@ -41,28 +70,30 @@ const TodosSection = memo(function TodosSection({ todos }: { todos: readonly Tod
       <p className="mb-1.5 text-[10.5px] text-ink-faint">
         {t('rail.todosDone', { done, total: todos.length })}
       </p>
-      <ul className="space-y-1">
-        {todos.map((todo, index) => {
-          const tone = todoTone(todo.status);
-          return (
-            <li key={`${index}-${todo.title}`} className="flex items-start gap-2">
-              <span
-                aria-hidden
-                className={`mt-[3px] flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border text-[9px] font-bold ${tone.className}`}
-              >
-                {tone.icon}
-              </span>
-              <span
-                className={`text-[12px] leading-snug ${
-                  tone.icon === '✓' ? 'text-ink-faint line-through' : 'text-ink'
-                }`}
-              >
-                {todo.title}
-              </span>
-            </li>
-          );
-        })}
-      </ul>
+      <div data-todos-scroll className="max-h-80 overflow-y-auto pr-1">
+        <ul className="space-y-1">
+          {todos.map((todo, index) => {
+            const tone = todoTone(todo.status);
+            return (
+              <li key={`${index}-${todo.title}`} className="flex items-start gap-2">
+                <span
+                  aria-hidden
+                  className={`mt-[3px] flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border text-[9px] font-bold ${tone.className}`}
+                >
+                  {tone.icon}
+                </span>
+                <span
+                  className={`text-[12px] leading-snug ${
+                    tone.icon === '✓' ? 'text-ink-faint line-through' : 'text-ink'
+                  }`}
+                >
+                  {todo.title}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
     </div>
   );
 });
@@ -92,38 +123,40 @@ const TasksSection = memo(function TasksSection({
     return <p className="text-[12px] text-ink-faint">{t('rail.noTasks')}</p>;
   }
   return (
-    <ul className="space-y-1.5">
-      {tasks.map((task) => (
-        <li key={task.id} className="rounded-lg border border-hairline bg-panel px-2.5 py-1.5">
-          <div className="flex items-center gap-1.5">
-            <span className={`rounded-full px-1.5 py-px text-[10px] font-medium ${taskStatusTone(task.status)}`}>
-              {t(`rail.taskStatus.${task.status}`)}
-            </span>
-            <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-ink">
-              {task.description}
-            </span>
-            {task.status === 'running' ? (
-              <button
-                type="button"
-                onClick={() => { onCancel(task.id); }}
-                title={t('rail.stopTitle')}
-                className="shrink-0 rounded-md border border-hairline px-1.5 py-0.5 text-[10px] text-ink-soft transition-colors hover:border-danger hover:text-danger"
-              >
-                {t('rail.stop')}
-              </button>
+    <div data-tasks-scroll className="max-h-80 overflow-y-auto pr-1">
+      <ul className="space-y-1.5">
+        {tasks.map((task) => (
+          <li key={task.id} className="rounded-lg border border-hairline bg-panel px-2.5 py-1.5">
+            <div className="flex items-center gap-1.5">
+              <span className={`rounded-full px-1.5 py-px text-[10px] font-medium ${taskStatusTone(task.status)}`}>
+                {t(`rail.taskStatus.${task.status}`)}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-ink">
+                {task.description}
+              </span>
+              {task.status === 'running' ? (
+                <button
+                  type="button"
+                  onClick={() => { onCancel(task.id); }}
+                  title={t('rail.stopTitle')}
+                  className="shrink-0 rounded-md border border-hairline px-1.5 py-0.5 text-[10px] text-ink-soft transition-colors hover:border-danger hover:text-danger"
+                >
+                  {t('rail.stop')}
+                </button>
+              ) : null}
+            </div>
+            {task.command !== undefined ? (
+              <p className="mt-1 truncate font-mono text-[10.5px] text-ink-faint">{task.command}</p>
             ) : null}
-          </div>
-          {task.command !== undefined ? (
-            <p className="mt-1 truncate font-mono text-[10.5px] text-ink-faint">{task.command}</p>
-          ) : null}
-          {task.output_preview !== undefined && task.output_preview !== '' ? (
-            <p className="mt-1 line-clamp-2 font-mono text-[10.5px] break-all text-ink-faint">
-              {task.output_preview}
-            </p>
-          ) : null}
-        </li>
-      ))}
-    </ul>
+            {task.output_preview !== undefined && task.output_preview !== '' ? (
+              <p className="mt-1 line-clamp-2 font-mono text-[10.5px] break-all text-ink-faint">
+                {task.output_preview}
+              </p>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 });
 
@@ -231,6 +264,13 @@ export function RightRail({
   const navigate = useNavigate();
   const session = state.session;
   const usage = session?.usage;
+  // Live cumulative usage rides agent.status.updated (state.usage.total);
+  // session.usage stays the snapshot/list fallback (and the only turns source).
+  const liveUsage = state.usage?.total;
+  const liveInputTokens =
+    liveUsage !== undefined
+      ? liveUsage.inputOther + liveUsage.inputCacheRead + liveUsage.inputCacheCreation
+      : undefined;
   const contextTokens = state.contextTokens ?? usage?.context_tokens;
   const contextLimit =
     state.maxContextTokens ?? (usage !== undefined && usage.context_limit > 0 ? usage.context_limit : undefined);
@@ -252,45 +292,30 @@ export function RightRail({
       }
     >
       {showGoal ? (
-        <section>
-          <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-            {t('rail.goal')}
-          </h3>
+        <RailSection title={t('rail.goal')}>
           <GoalSection goal={state.goal} goalUpdatedAt={state.goalUpdatedAt} />
-        </section>
+        </RailSection>
       ) : null}
 
       {showSubagents ? (
-        <section>
-          <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-            {t('rail.subagents')}
-          </h3>
+        <RailSection title={t('rail.subagents')}>
           <SubagentsSection forest={forest} selectedAgentId={selectedAgentId} onOpen={onOpenSubagent} />
-        </section>
+        </RailSection>
       ) : null}
 
       {showTodos ? (
-        <section>
-          <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-            {t('rail.todos')}
-          </h3>
+        <RailSection title={t('rail.todos')}>
           <TodosSection todos={state.todos} />
-        </section>
+        </RailSection>
       ) : null}
 
       {showTasks ? (
-        <section>
-          <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-            {t('rail.tasks')}
-          </h3>
+        <RailSection title={t('rail.tasks')}>
           <TasksSection tasks={backgroundTasks} onCancel={onCancelTask} />
-        </section>
+        </RailSection>
       ) : null}
 
-      <section>
-        <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-          {t('rail.session')}
-        </h3>
+      <RailSection title={t('rail.session')}>
         <div className="space-y-1.5">
           {state.model !== undefined ? <MetaRow label={t('rail.model')} value={state.model} mono /> : null}
           {session !== undefined ? (
@@ -313,10 +338,22 @@ export function RightRail({
               mono
             />
           ) : null}
+          {usage !== undefined && usage.turn_count > 0 ? (
+            <MetaRow label={t('rail.turns')} value={String(usage.turn_count)} />
+          ) : null}
           {usage !== undefined && usage.total_cost_usd > 0 ? (
             <MetaRow label={t('rail.cost')} value={`$${usage.total_cost_usd.toFixed(4)}`} mono />
           ) : null}
-          {usage !== undefined && (usage.input_tokens > 0 || usage.output_tokens > 0) ? (
+          {liveInputTokens !== undefined && liveUsage !== undefined && (liveInputTokens > 0 || liveUsage.output > 0) ? (
+            <MetaRow
+              label={t('rail.tokens')}
+              value={t('rail.tokensInOut', {
+                input: time.formatTokens(liveInputTokens),
+                output: time.formatTokens(liveUsage.output),
+              })}
+              mono
+            />
+          ) : usage !== undefined && (usage.input_tokens > 0 || usage.output_tokens > 0) ? (
             <MetaRow
               label={t('rail.tokens')}
               value={t('rail.tokensInOut', {
@@ -338,7 +375,7 @@ export function RightRail({
             </div>
           ) : null}
         </div>
-      </section>
+      </RailSection>
     </aside>
   );
 }

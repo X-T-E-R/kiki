@@ -2,9 +2,14 @@
  * UsagePage (/usage) — the cross-session usage dashboard. Aggregates the
  * polled Session records' lifetime `usage` counters (the only usage signal
  * the wire exposes): overview totals with a token/cache breakdown, a
- * per-model rollup, per-day activity buckets, and the cost ranking with
+ * per-model rollup, per-day activity buckets, and the session ranking with
  * jump-to-session. All aggregation lives in lib/usage (pure, unit-tested);
  * this file owns data fetching and presentation only.
+ *
+ * The v2 wire has no cost producer, so every cost surface (totals card,
+ * per-model/per-day metric, ranking column) stays hidden while all reported
+ * costs are 0 — the page falls back to token volumes and re-shows cost
+ * automatically if a server ever reports spend.
  *
  * Honesty rules (surfaced in the footer + the by-day hint): deleted sessions
  * are invisible to the REST surface, and per-day buckets group sessions by
@@ -31,6 +36,7 @@ import {
   groupUsageByModel,
   localDayStart,
   rankSessionsByCost,
+  rankSessionsByTokens,
   USAGE_RANGES,
   usageRangeStart,
   type UsageRange,
@@ -104,7 +110,13 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   );
   const totals = useMemo(() => aggregateUsage(filtered), [filtered]);
   const models = useMemo(() => groupUsageByModel(filtered), [filtered]);
-  const ranked = useMemo(() => rankSessionsByCost(filtered), [filtered]);
+  // The v2 wire has no cost producer: total_cost_usd is always 0, so cost
+  // surfaces stay hidden unless a server actually reports spend.
+  const showCost = totals.costUsd > 0;
+  const ranked = useMemo(
+    () => (showCost ? rankSessionsByCost(filtered) : rankSessionsByTokens(filtered)),
+    [filtered, showCost],
+  );
   const untitled = t('sidebar.untitled');
 
   const todayMs = localDayStart(nowMs);
@@ -116,7 +128,9 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     return bucketSessionsByDay(filtered, from, todayMs);
   }, [filtered, range, nowMs, todayMs]);
   const maxBucketCost = Math.max(0, ...buckets.map((bucket) => bucket.costUsd));
+  const maxBucketTokens = Math.max(0, ...buckets.map((bucket) => bucket.totalTokens));
   const maxModelCost = Math.max(0, ...models.map((model) => model.costUsd));
+  const maxModelTokens = Math.max(0, ...models.map((model) => model.totalTokens));
 
   const tokenCells: readonly { label: string; value: number }[] = [
     { label: t('usage.tokens.input'), value: totals.inputTokens },
@@ -201,11 +215,13 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
             </p>
           ) : (
             <>
-              <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
-                <StatCard label={t('usage.card.cost')} value={formatCostUsd(totals.costUsd)} />
+              <div className={`grid grid-cols-2 gap-3 ${showCost ? 'lg:grid-cols-3' : ''}`}>
+                {showCost ? (
+                  <StatCard label={t('usage.card.cost')} value={formatCostUsd(totals.costUsd)} />
+                ) : null}
                 <StatCard label={t('usage.card.sessions')} value={formatGrouped(totals.sessions)} />
                 <StatCard label={t('usage.card.turns')} value={formatGrouped(totals.turns)} />
-                <section className="col-span-2 rounded-2xl border border-hairline bg-panel p-5 shadow-[0_2px_4px_rgba(28,25,23,0.03)] lg:col-span-3">
+                <section className={`col-span-2 rounded-2xl border border-hairline bg-panel p-5 shadow-[0_2px_4px_rgba(28,25,23,0.03)] ${showCost ? 'lg:col-span-3' : ''}`}>
                   <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                     <h2 className="text-[10px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
                       {t('usage.card.tokens')}
@@ -237,7 +253,10 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
 
               <Card title={t('usage.byModel')}>
                 <div className="space-y-3.5">
-                  {models.map((model) => (
+                  {models.map((model) => {
+                    const metric = showCost ? model.costUsd : model.totalTokens;
+                    const maxMetric = showCost ? maxModelCost : maxModelTokens;
+                    return (
                     <div key={model.model === '' ? '(default)' : model.model}>
                       <div className="flex items-baseline gap-2">
                         <span
@@ -246,14 +265,14 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                           {model.model === '' ? t('usage.modelDefault') : model.model}
                         </span>
                         <span className="ml-auto shrink-0 font-mono text-[12px] font-semibold text-ink tabular-nums">
-                          {formatCostUsd(model.costUsd)}
+                          {showCost ? formatCostUsd(model.costUsd) : time.formatTokens(model.totalTokens)}
                         </span>
                       </div>
                       <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-hairline/60">
                         <div
                           className="h-full rounded-full bg-accent"
                           style={{
-                            width: `${maxModelCost > 0 ? Math.max(2, (model.costUsd / maxModelCost) * 100) : 2}%`,
+                            width: `${maxMetric > 0 ? Math.max(2, (metric / maxMetric) * 100) : 2}%`,
                           }}
                         />
                       </div>
@@ -265,7 +284,8 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                         })}
                       </p>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </Card>
 
@@ -273,25 +293,30 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                 <div className="flex h-28 items-end gap-[3px]" role="img" aria-label={t('usage.byDay')}>
                   {buckets.map((bucket) => {
                     const isToday = bucket.dayStartMs === todayMs;
-                    const height =
-                      bucket.costUsd > 0 && maxBucketCost > 0
-                        ? Math.max(4, (bucket.costUsd / maxBucketCost) * 100)
-                        : 0;
+                    const metric = showCost ? bucket.costUsd : bucket.totalTokens;
+                    const maxMetric = showCost ? maxBucketCost : maxBucketTokens;
+                    const height = metric > 0 && maxMetric > 0 ? Math.max(4, (metric / maxMetric) * 100) : 0;
+                    const titleParts = [
+                      dayLabel(bucket.dayStartMs, locale),
+                      `${time.formatTokens(bucket.totalTokens)} ${t('usage.col.tokens')}`,
+                    ];
+                    if (showCost) titleParts.push(formatCostUsd(bucket.costUsd));
+                    titleParts.push(tp('usage.sessionChip', bucket.sessions));
                     return (
                       <div
                         key={bucket.dayStartMs}
                         className="flex min-w-0 flex-1 flex-col justify-end self-stretch"
-                        title={`${dayLabel(bucket.dayStartMs, locale)} · ${formatCostUsd(bucket.costUsd)} · ${tp('usage.sessionChip', bucket.sessions)} · ${time.formatTokens(bucket.totalTokens)} ${t('usage.col.tokens')}`}
+                        title={titleParts.join(' · ')}
                       >
                         <div
                           className={`w-full rounded-t-[3px] transition-colors ${
-                            bucket.costUsd > 0
+                            metric > 0
                               ? isToday
                                 ? 'bg-accent'
                                 : 'bg-accent/55 hover:bg-accent/80'
                               : 'bg-hairline/70'
                           }`}
-                          style={{ height: bucket.costUsd > 0 ? `${height}%` : '2px' }}
+                          style={{ height: metric > 0 ? `${height}%` : '2px' }}
                         />
                       </div>
                     );
@@ -308,7 +333,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                 <p className="mt-2 text-[10.5px] leading-snug text-ink-faint">{t('usage.byDayHint')}</p>
               </Card>
 
-              <Card title={t('usage.topSessions')}>
+              <Card title={showCost ? t('usage.topSessions') : t('usage.topSessionsByTokens')}>
                 <div className="flex items-center gap-3 px-2 pb-1 text-[9.5px] font-semibold tracking-[0.06em] text-ink-faint uppercase">
                   <span className="w-6 shrink-0 text-right">#</span>
                   <span className="min-w-0 flex-1">{t('usage.col.session')}</span>
@@ -316,7 +341,9 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                   <span className="hidden w-20 shrink-0 text-right md:block">{t('usage.col.tokens')}</span>
                   <span className="hidden w-14 shrink-0 text-right md:block">{t('usage.col.turns')}</span>
                   <span className="hidden w-20 shrink-0 text-right lg:block">{t('usage.col.updated')}</span>
-                  <span className="w-20 shrink-0 text-right">{t('usage.col.cost')}</span>
+                  {showCost ? (
+                    <span className="w-20 shrink-0 text-right">{t('usage.col.cost')}</span>
+                  ) : null}
                 </div>
                 <div className="max-h-[340px] overflow-y-auto">
                   {ranked.map((session, index) => {
@@ -357,9 +384,11 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                         <span className="hidden w-20 shrink-0 text-right font-mono text-[10.5px] text-ink-faint lg:block">
                           {time.relativeTime(session.updated_at)}
                         </span>
-                        <span className="w-20 shrink-0 text-right font-mono text-[11.5px] font-semibold text-ink tabular-nums">
-                          {formatCostUsd(session.usage.total_cost_usd)}
-                        </span>
+                        {showCost ? (
+                          <span className="w-20 shrink-0 text-right font-mono text-[11.5px] font-semibold text-ink tabular-nums">
+                            {formatCostUsd(session.usage.total_cost_usd)}
+                          </span>
+                        ) : null}
                       </button>
                     );
                   })}

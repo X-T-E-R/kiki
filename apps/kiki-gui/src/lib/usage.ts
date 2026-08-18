@@ -205,6 +205,16 @@ export function rankSessionsByCost(sessions: readonly Session[]): Session[] {
 }
 
 /**
+ * Sessions ordered by lifetime token volume, largest first. The default
+ * ranking while the wire has no cost producer (total_cost_usd is always 0).
+ */
+export function rankSessionsByTokens(sessions: readonly Session[]): Session[] {
+  return sessions.toSorted(
+    (a, b) => sessionTotalTokens(b) - sessionTotalTokens(a) || b.updated_at.localeCompare(a.updated_at),
+  );
+}
+
+/**
  * Deterministic USD formatting (no Intl locale drift in tests):
  *   $0.00 · $0.0043 (<$0.01) · $0.432 (<$1) · $12.34 · $1,234.56
  */

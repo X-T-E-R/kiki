@@ -13,6 +13,7 @@ import {
   groupUsageByModel,
   localDayStart,
   rankSessionsByCost,
+  rankSessionsByTokens,
   usageRangeStart,
 } from './usage';
 
@@ -204,6 +205,17 @@ describe('rankSessionsByCost', () => {
       session('mid', { usage: usage({ total_cost_usd: 1 }) }),
     ]);
     expect(ranked.map((s) => s.id)).toEqual(['pricey', 'mid', 'cheap']);
+  });
+});
+
+describe('rankSessionsByTokens', () => {
+  it('orders by lifetime token volume across all four counters', () => {
+    const ranked = rankSessionsByTokens([
+      session('small', { usage: usage({ input_tokens: 100 }) }),
+      session('cache-heavy', { usage: usage({ cache_read_tokens: 50_000 }) }),
+      session('mid', { usage: usage({ input_tokens: 1000, output_tokens: 500 }) }),
+    ]);
+    expect(ranked.map((s) => s.id)).toEqual(['cache-heavy', 'mid', 'small']);
   });
 });
 

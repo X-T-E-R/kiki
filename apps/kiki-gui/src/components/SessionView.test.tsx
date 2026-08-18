@@ -900,9 +900,24 @@ describe('agent tree chrome', () => {
     expect(new Set(related.siblings.map((node) => node.agentId)).size).toBe(6);
     expect(RELATED_AGENT_PREVIEW_LIMIT).toBe(4);
 
-    const html = renderToStaticMarkup(
+    // Crowded relation sets start folded to a one-line summary.
+    const collapsed = renderToStaticMarkup(
       <I18nProvider>
         <AgentRelations forest={crowded} currentAgentId="agent-1" onOpen={() => {}} />
+      </I18nProvider>,
+    );
+    expect(collapsed).toContain('data-agent-relations');
+    expect(collapsed).toContain('aria-expanded="false"');
+    expect(collapsed).toContain('Related agents');
+    expect(collapsed).toContain('Siblings 6');
+    expect(collapsed).toContain('Children 6');
+    expect(collapsed).not.toContain('Peer 5');
+
+    // Opened (defaultOpen override, as after a click), each group still
+    // previews four pills with a "+N" entry of its own.
+    const html = renderToStaticMarkup(
+      <I18nProvider>
+        <AgentRelations forest={crowded} currentAgentId="agent-1" onOpen={() => {}} defaultOpen />
       </I18nProvider>,
     );
     expect(html).toContain('Peer 5');
@@ -911,6 +926,29 @@ describe('agent tree chrome', () => {
     expect(html).toContain('Child 4');
     expect(html).not.toContain('Child 5');
     expect(html).toContain('Show 2 more children');
+  });
+
+  it('truncates long agent names in relation pills with a tooltip', () => {
+    const longNamed = buildAgentForest(
+      [],
+      [
+        { agentId: 'main', name: 'Main' },
+        { agentId: 'agent-1', parentAgentId: 'main', name: 'Current' },
+        {
+          agentId: 'agent-2',
+          parentAgentId: 'main',
+          name: 'A very long sibling agent name that would otherwise overflow the relations strip entirely',
+        },
+      ],
+    );
+    const html = renderToStaticMarkup(
+      <I18nProvider>
+        <AgentRelations forest={longNamed} currentAgentId="agent-1" onOpen={() => {}} />
+      </I18nProvider>,
+    );
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('title="A very long sibling agent name');
+    expect(html).toContain('truncate');
   });
 
   it('keeps the RightRail subagent section in a bounded scroll region', () => {

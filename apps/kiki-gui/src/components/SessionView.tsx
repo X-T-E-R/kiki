@@ -12,6 +12,7 @@ import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom'
 import type { PermissionMode, Session } from '@moonshot-ai/protocol';
 
 import { AgentBreadcrumb, AgentRelations } from './AgentBreadcrumb';
+import { SpawnInstructionCard } from './SpawnInstructionCard';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Composer, resolveSelectedEffort } from './Composer';
 import { ContextBreakdownProvider } from './ContextMeter';
@@ -89,6 +90,7 @@ import {
   oldestTurnIdFromResponse,
   pendingQuestionCount,
   queuedPromptPreviews,
+  resolveSpawnInstruction,
   sessionAgentForestFromTranscript,
   type ApprovalBlock,
   type AssistantBlock,
@@ -1890,6 +1892,22 @@ export function SessionView({
       },
     );
     const capturedBlocks = merged.blocks as Block[];
+    // The instruction this agent was spawned with: the subagent transcript's
+    // own first-turn prompt when the server recorded it, else the spawn tool
+    // call's input from the main transcript. Its projected prompt block is
+    // filtered out of the conversation below — the card replaces it.
+    const spawnInstruction = resolveSpawnInstruction({
+      response: agentTranscriptQuery.data,
+      blocks: state.blocks,
+      agentId: selectedAgentId,
+      parentToolCallId: selectedSubagent?.parentToolCallId,
+    });
+    const spawnDuplicateIds = new Set(spawnInstruction?.duplicateBlockIds ?? []);
+    const spawnParent = crumbs.length >= 2 ? crumbs[crumbs.length - 2] : undefined;
+    const spawnFromLabel =
+      spawnParent === undefined || spawnParent.agentId === MAIN_AGENT_ID
+        ? undefined
+        : spawnParent.label;
     const historyKey =
       agentTranscriptQuery.data !== undefined || historyForAgent !== null
         ? merged.hasMore
@@ -1936,7 +1954,9 @@ export function SessionView({
       ...state,
       blocks: [
         historyNotice,
-        ...filterBlocksToDirectChildren(capturedBlocks, forest, selectedAgentId),
+        ...filterBlocksToDirectChildren(capturedBlocks, forest, selectedAgentId).filter(
+          (block) => !spawnDuplicateIds.has(block.id),
+        ),
         ...(reportBlock === undefined ? [] : [reportBlock]),
       ],
       busy: headerBusy,
@@ -2010,6 +2030,15 @@ export function SessionView({
                     onOpen={openAgent}
                   />
                 </div>
+                {spawnInstruction !== undefined ? (
+                  <div className="shrink-0 border-b border-hairline bg-panel px-4 py-2">
+                    <SpawnInstructionCard
+                      key={selectedAgentId}
+                      prompt={spawnInstruction.text}
+                      fromLabel={spawnFromLabel}
+                    />
+                  </div>
+                ) : null}
               </>,
               slots.header,
             )

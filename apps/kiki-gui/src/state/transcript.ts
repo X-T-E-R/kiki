@@ -1231,6 +1231,79 @@ export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Bloc
   return blocks;
 }
 
+/**
+ * The instruction the parent agent spawned this subagent with, for the agent
+ * detail page's "instruction from the main agent" card. Resolution order:
+ *
+ *   1. The subagent's own server transcript: its first turn carries the
+ *      original prompt (`TurnStartedEvent.prompt` survives in the turn
+ *      header). The adapter projects that prompt into the block list, so the
+ *      card replaces it — `duplicateBlockIds` lists the projected ids (REST
+ *      `agent-turn-<id>-prompt` and live `turn-<id>-prompt` shapes, both
+ *      `user-` and `system-` lanes, with and without the projector's `t`
+ *      prefix) for the caller to filter out.
+ *   2. The main transcript's spawn tool frame: the Agent call keeps the full
+ *      prompt in `args.prompt`; an AgentSwarm resume map keeps it under
+ *      `args.resume_agent_ids[agentId]`, and a templated swarm launch falls
+ *      back to `args.prompt_template`.
+ */
+export interface SpawnInstruction {
+  readonly text: string;
+  readonly source: 'transcript' | 'spawn-call';
+  readonly duplicateBlockIds: readonly string[];
+}
+
+function spawnInstructionFromToolArgs(args: unknown, agentId: string): string | undefined {
+  if (typeof args !== 'object' || args === null) return undefined;
+  const record = args as Record<string, unknown>;
+  const prompt = record['prompt'];
+  if (typeof prompt === 'string' && prompt.trim() !== '') return prompt.trim();
+  const resumeMap = record['resume_agent_ids'];
+  if (typeof resumeMap === 'object' && resumeMap !== null) {
+    const resumed = (resumeMap as Record<string, unknown>)[agentId];
+    if (typeof resumed === 'string' && resumed.trim() !== '') return resumed.trim();
+  }
+  const template = record['prompt_template'];
+  if (typeof template === 'string' && template.trim() !== '') return template.trim();
+  return undefined;
+}
+
+export function resolveSpawnInstruction(input: {
+  response: AgentTranscriptResponse | undefined;
+  blocks: readonly Block[];
+  agentId: string;
+  parentToolCallId: string | undefined;
+}): SpawnInstruction | undefined {
+  const firstPromptTurn = input.response?.items.find(
+    (item) => item.kind === 'turn' && typeof item.prompt === 'string' && item.prompt.trim() !== '',
+  );
+  if (firstPromptTurn !== undefined && firstPromptTurn.kind === 'turn' && typeof firstPromptTurn.prompt === 'string') {
+    const rawTurnId = firstPromptTurn.turnId;
+    const turnIds = [...new Set([rawTurnId, rawTurnId.replace(/^t/, '')])];
+    const duplicateBlockIds: string[] = [];
+    for (const turnId of turnIds) {
+      for (const prefix of ['user-turn-', 'system-turn-', 'user-agent-turn-', 'system-agent-turn-']) {
+        duplicateBlockIds.push(`${prefix}${turnId}-prompt`);
+      }
+    }
+    return {
+      text: firstPromptTurn.prompt.trim(),
+      source: 'transcript',
+      duplicateBlockIds,
+    };
+  }
+  const spawnCall = input.blocks.find(
+    (block): block is ToolBlock =>
+      block.kind === 'tool' &&
+      ((input.parentToolCallId !== undefined && block.toolCallId === input.parentToolCallId) ||
+        (block.agentRefs?.some((ref) => ref.agentId === input.agentId) ?? false)),
+  );
+  if (spawnCall === undefined) return undefined;
+  const text = spawnInstructionFromToolArgs(spawnCall.args, input.agentId);
+  if (text === undefined) return undefined;
+  return { text, source: 'spawn-call', duplicateBlockIds: [] };
+}
+
 type RestoredSnapshotSubagent = NonNullable<SessionSnapshotResponse['subagents']>[number] & {
   readonly parent_agent_id?: string;
   readonly label?: string;

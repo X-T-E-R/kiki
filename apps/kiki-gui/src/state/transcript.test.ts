@@ -22,6 +22,7 @@ import {
   preserveCapturedSubagents,
   queuedPromptPreviews,
   reconcilePromptList,
+  resolveSpawnInstruction,
   sessionAgentForestFromTranscript,
   setOlderError,
   setSessionRecord,
@@ -240,6 +241,101 @@ describe('applySnapshot', () => {
     expect((state.blocks[1] as ToolBlock).status).toBe('running');
     expect(pendingApprovalCount(state)).toBe(1);
     expect(state.activePromptId).toBe('p1');
+  });
+});
+
+describe('resolveSpawnInstruction', () => {
+  it('prefers the subagent transcript first-turn prompt and lists its projected blocks', () => {
+    const instruction = resolveSpawnInstruction({
+      response: {
+        agent_id: 'child-1',
+        has_more: false,
+        items: [
+          { kind: 'turn', turnId: 't1', prompt: '  Inspect the wire.  ', steps: [] },
+          { kind: 'turn', turnId: 't2', prompt: 'Resume follow-up.', steps: [] },
+        ],
+      },
+      blocks: [],
+      agentId: 'child-1',
+      parentToolCallId: undefined,
+    });
+    expect(instruction?.source).toBe('transcript');
+    expect(instruction?.text).toBe('Inspect the wire.');
+    // Both the REST (agent-turn) and live (turn) projected ids, with and
+    // without the projector's `t` prefix, in both lanes.
+    expect(instruction?.duplicateBlockIds).toContain('system-agent-turn-t1-prompt');
+    expect(instruction?.duplicateBlockIds).toContain('user-agent-turn-t1-prompt');
+    expect(instruction?.duplicateBlockIds).toContain('system-turn-1-prompt');
+    expect(instruction?.duplicateBlockIds).toContain('user-turn-1-prompt');
+    expect(instruction?.duplicateBlockIds.some((id) => id.includes('t2'))).toBe(false);
+  });
+
+  it('falls back to the spawn tool call input when the transcript has no prompt', () => {
+    const spawnTool: ToolBlock = {
+      kind: 'tool',
+      id: 'tool-call-1',
+      toolCallId: 'call-1',
+      name: 'Agent',
+      argsText: '',
+      args: { prompt: 'Map the protocol surface.', description: 'Map protocol' },
+      display: undefined,
+      description: undefined,
+      status: 'done',
+      output: undefined,
+      isError: undefined,
+      startedAt: 0,
+      durationMs: undefined,
+      progressText: undefined,
+      agentRefs: [{ agentId: 'child-1', role: 'child' }],
+    };
+    const instruction = resolveSpawnInstruction({
+      response: { agent_id: 'child-1', has_more: false, items: [] },
+      blocks: [spawnTool],
+      agentId: 'child-1',
+      parentToolCallId: 'call-1',
+    });
+    expect(instruction?.source).toBe('spawn-call');
+    expect(instruction?.text).toBe('Map the protocol surface.');
+    expect(instruction?.duplicateBlockIds).toEqual([]);
+  });
+
+  it('reads a swarm resume-map prompt keyed by agent id', () => {
+    const swarmTool: ToolBlock = {
+      kind: 'tool',
+      id: 'tool-call-2',
+      toolCallId: 'call-2',
+      name: 'AgentSwarm',
+      argsText: '',
+      args: { resume_agent_ids: { 'child-9': 'continue with the audit' } },
+      display: undefined,
+      description: undefined,
+      status: 'done',
+      output: undefined,
+      isError: undefined,
+      startedAt: 0,
+      durationMs: undefined,
+      progressText: undefined,
+      agentRefs: [{ agentId: 'child-9', role: 'member' }],
+    };
+    expect(
+      resolveSpawnInstruction({
+        response: undefined,
+        blocks: [swarmTool],
+        agentId: 'child-9',
+        parentToolCallId: undefined,
+      })?.text,
+    ).toBe('continue with the audit');
+  });
+
+  it('returns undefined when neither source carries a prompt', () => {
+    expect(
+      resolveSpawnInstruction({
+        response: { agent_id: 'child-1', has_more: false, items: [] },
+        blocks: [],
+        agentId: 'child-1',
+        parentToolCallId: undefined,
+      }),
+    ).toBeUndefined();
   });
 });
 
