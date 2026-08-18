@@ -158,6 +158,53 @@ export interface SearchMessagesResponse {
   source: 'live' | 'index';
 }
 
+export interface SecondaryModelSettings {
+  readonly defaultModel?: string;
+  readonly models?: Record<string, string>;
+  readonly force?: boolean;
+  readonly enforcePool?: boolean;
+}
+
+export type KikiConfigResponse = Omit<ConfigResponse, 'subagent'> & {
+  readonly subagent?: NonNullable<ConfigResponse['subagent']> & {
+    readonly denyModels?: string[];
+  };
+  readonly secondary_model?: SecondaryModelSettings;
+};
+
+export type KikiConfigPatch = Omit<PatchConfigRequest, 'subagent'> & {
+  readonly subagent?: NonNullable<PatchConfigRequest['subagent']> & {
+    readonly deny_models?: string[];
+  };
+  readonly secondary_model?: {
+    readonly default_model?: string;
+    readonly models?: Record<string, string>;
+    readonly force?: boolean;
+    readonly enforce_pool?: boolean;
+  };
+  readonly replace_domains?: readonly ('secondary_model' | 'experimental')[];
+};
+
+export interface NamedAgentRoute {
+  readonly id: string;
+  readonly model_alias?: string;
+  readonly source_file: string;
+}
+
+export interface NamedAgentProfile {
+  readonly name: string;
+  readonly description?: string;
+  readonly source: string;
+  readonly workspace_id?: string;
+  readonly source_file?: string;
+  readonly pinned_model_alias?: string;
+  readonly routes: NamedAgentRoute[];
+}
+
+export interface ListNamedAgentProfilesResponse {
+  readonly items: NamedAgentProfile[];
+}
+
 export interface KikiClientOptions {
   /** Absolute base (`http://host:port`) or '' for same-origin (dev proxy). */
   readonly baseUrl: string;
@@ -486,8 +533,8 @@ export class KikiClient {
     }
   }
 
-  meta(): Promise<MetaResponse> {
-    return this.request<MetaResponse>('GET', '/meta');
+  meta(): Promise<MetaResponse & { experimental_flags?: Record<string, boolean> }> {
+    return this.request<MetaResponse & { experimental_flags?: Record<string, boolean> }>('GET', '/meta');
   }
 
   listSessions(query: ListSessionsQuery = {}): Promise<PageResponse<Session>> {
@@ -733,8 +780,12 @@ export class KikiClient {
     return this.request<ListModelsResponse>('GET', '/models');
   }
 
-  getConfig(): Promise<ConfigResponse> {
-    return this.request<ConfigResponse>('GET', '/config');
+  getConfig(): Promise<KikiConfigResponse> {
+    return this.request<KikiConfigResponse>('GET', '/config');
+  }
+
+  listNamedAgentProfiles(): Promise<ListNamedAgentProfilesResponse> {
+    return this.request<ListNamedAgentProfilesResponse>('GET', '/agents');
   }
 
   listWorkspaces(): Promise<ListWorkspacesResponse> {
@@ -929,7 +980,7 @@ export class KikiClient {
     return { blob: await response.blob(), filename };
   }
 
-  patchConfig(body: PatchConfigRequest): Promise<ConfigResponse> {
-    return this.request<ConfigResponse>('POST', '/config', { body });
+  patchConfig(body: KikiConfigPatch): Promise<KikiConfigResponse> {
+    return this.request<KikiConfigResponse>('POST', '/config', { body });
   }
 }

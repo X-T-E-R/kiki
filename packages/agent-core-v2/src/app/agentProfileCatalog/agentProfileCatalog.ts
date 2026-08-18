@@ -90,6 +90,7 @@ export interface AgentProfile {
   readonly name: string;
   readonly routeId?: string;
   readonly description?: string;
+  readonly sourcePath?: string;
   readonly whenToUse?: string;
   readonly override?: boolean;
   readonly tools?: readonly string[];

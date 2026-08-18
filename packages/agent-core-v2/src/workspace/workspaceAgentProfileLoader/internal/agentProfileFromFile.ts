@@ -42,6 +42,7 @@ export function agentProfileFromFile(
   return normalizeAgentProfile({
     name: definition.name,
     description: definition.description,
+    sourcePath: definition.path,
     whenToUse: definition.whenToUse,
     override: definition.override || definition.source === 'explicit',
     tools: definition.tools,

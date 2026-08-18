@@ -4,19 +4,20 @@
  * Implements the v1 `/api/v1/config` wire contract on top of `agent-core-v2`'s
  * section-registry `IConfigService`:
  *   GET  /config   — global Kimi configuration, secrets redacted
- *   POST /config   — update global configuration (merge semantics)
+ *   POST /config   — update global configuration (merge semantics by default)
  *
  * **Wire fidelity**: reuses the local `protocol/rest-config` `configResponseSchema` /
- * `patchConfigRequestSchema` verbatim, so the request/response shape is
- * byte-for-byte compatible with v1's `routes/config.ts`. v2's `IConfigService`
- * is a per-domain registry (`get(domain)` / `set(domain, patch)`) and does not
- * expose a whole-config view or redaction, so this route is the edge facade
- * that:
+ * `patchConfigRequestSchema` and keeps the v1 request/response fields intact.
+ * The additive `replace_domains` option lets list/map editors replace selected
+ * domains exactly instead of leaving deleted deep-merge keys behind. v2's
+ * `IConfigService` is a per-domain registry (`get(domain)` / `set(domain, patch)` /
+ * `replace(domain, value)`) and does not expose a whole-config view or redaction,
+ * so this route is the edge facade that:
  *   - projects `getAll()` (camelCase resolved config) into the snake_case
  *     `ConfigResponse`, redacting provider credentials to `has_api_key`
  *     (mirrors v1 `toConfigResponse`);
- *   - splits v1's flat multi-domain `POST /config` patch into per-domain
- *     `IConfigService.set(domain, value)` calls (snake_case → camelCase);
+ *   - splits the flat multi-domain `POST /config` patch into per-domain merge or
+ *     explicitly requested replacement calls (snake_case → camelCase);
  *   - republishes the change as a v2 `DomainEvent` on `IEventService`.
  *
  * **Event shape**: v2's `DomainEvent` is `{ type, payload }`, and the Core
@@ -86,7 +87,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
       errors: {
         [ErrorCode.VALIDATION_FAILED]: {},
       },
-      description: 'Update the global Kimi configuration (merge semantics)',
+      description: 'Update the global Kimi configuration (merge by default)',
       tags: ['config'],
     },
     async (req, reply) => {
@@ -94,6 +95,10 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         const config = core.accessor.get(IConfigService);
         await config.ready;
         const camelPatch = convertKeysSnakeToCamel(req.body) as Record<string, unknown>;
+        const replaceDomains = new Set(
+          ((camelPatch['replaceDomains'] as string[] | undefined) ?? []).map(snakeToCamel),
+        );
+        delete camelPatch['replaceDomains'];
         // v1 wire sugar: `yolo: true` is an alias for
         // `default_permission_mode = 'yolo'`. Fold it into the canonical domain and
         // drop the key so `yolo` is never a config domain and never persisted.
@@ -102,10 +107,15 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         }
         delete camelPatch['yolo'];
         for (const domain of Object.keys(camelPatch)) {
-          await config.set(domain, camelPatch[domain]);
+          if (replaceDomains.has(domain)) {
+            await config.replace(domain, camelPatch[domain]);
+          } else {
+            await config.set(domain, camelPatch[domain]);
+          }
         }
         const response = toConfigResponse(config.getAll());
-        const changedFields = Object.keys(req.body as Record<string, unknown>);
+        const changedFields = Object.keys(req.body as Record<string, unknown>)
+          .filter((field) => field !== 'replace_domains');
         core.accessor.get(IEventService).publish({
           type: 'event.config.changed',
           payload: {

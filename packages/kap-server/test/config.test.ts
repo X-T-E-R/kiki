@@ -190,6 +190,56 @@ describe('server-v2 /api/v1/config', () => {
     ).not.toContain('provider/fastModel');
   });
 
+  it('replace_domains lets GUI list editors delete pool and experimental map entries', async () => {
+    await boot([
+      '[subagent]',
+      'deny_models = ["provider/blocked", "provider/old"]',
+      '',
+      '[secondary_model]',
+      'default_model = "provider/fast"',
+      '',
+      '[secondary_model.models]',
+      '"provider/fast" = "fast"',
+      '"provider/old" = "old"',
+      '',
+      '[experimental]',
+      'alpha = true',
+      'beta = false',
+      '',
+    ].join('\n'));
+
+    const after = await patchConfig({
+      subagent: { deny_models: ['provider/blocked'] },
+      secondary_model: {
+        default_model: 'provider/fast',
+        models: { 'provider/fast': 'fast' },
+        force: false,
+        enforce_pool: true,
+      },
+      experimental: { alpha: false },
+      replace_domains: ['secondary_model', 'experimental'],
+    });
+
+    expect(after.subagent?.denyModels).toEqual(['provider/blocked']);
+    expect(after.secondary_model).toEqual({
+      defaultModel: 'provider/fast',
+      models: { 'provider/fast': 'fast' },
+      force: false,
+      enforcePool: true,
+    });
+    expect(after.experimental).toEqual({ alpha: false });
+
+    const clearedPool = await patchConfig({
+      secondary_model: { default_model: 'provider/fast', force: true, enforce_pool: false },
+      replace_domains: ['secondary_model'],
+    });
+    expect(clearedPool.secondary_model).toEqual({
+      defaultModel: 'provider/fast',
+      force: true,
+      enforcePool: false,
+    });
+  });
+
   it('POST { providers } converts fields of a provider id colliding with a map-valued key', async () => {
     await boot();
     await patchConfig({

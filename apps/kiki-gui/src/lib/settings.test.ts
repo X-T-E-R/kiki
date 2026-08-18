@@ -401,8 +401,9 @@ describe('settings search index', () => {
     expect(index.length).toBeGreaterThan(10);
     expect(searchSettings(index, 'language')[0]?.cardId).toBe('st-card-language');
     expect(searchSettings(index, 'Models').some((hit) => hit.section === 'models')).toBe(true);
-    // hint-keyword-only hit: "NUL" appears nowhere in a card title
-    expect(searchSettings(index, 'experimental flag').some((hit) => hit.cardId === 'st-card-caps')).toBe(true);
+    expect(searchSettings(index, 'experimental feature').some((hit) => hit.cardId === 'st-card-experimental')).toBe(true);
+    expect(searchSettings(index, 'hard allowlist').some((hit) => hit.cardId === 'st-card-subagents')).toBe(true);
+    expect(searchSettings(index, 'route sidecar').some((hit) => hit.cardId === 'st-card-named-agents')).toBe(true);
     expect(searchSettings(index, 'subagent')[0]?.section).toBe('agents');
     expect(searchSettings(index, '  ')).toEqual([]);
     expect(searchSettings(index, 'zzzz-no-such-setting')).toEqual([]);

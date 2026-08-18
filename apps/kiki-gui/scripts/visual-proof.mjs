@@ -83,10 +83,12 @@ const STRINGS = {
     permissionModeAuto: 'auto',
     fetchModelsButton: 'Test connection & pull models',
     dirtyDiscard: 'Discard and leave',
-    skillDefaults: 'Skill and experiment defaults',
-    saveCapabilityDefaults: 'Save capability defaults',
-    experimentalAria: 'Experimental flag overrides',
-    flagBoolFragment: 'must be true or false',
+    subagentGovernanceTitle: 'Subagent model governance',
+    addPoolModel: 'Add model',
+    poolModelIdAria1: 'Subagent model 1 ID',
+    poolModelIdAria2: 'Subagent model 2 ID',
+    saveSubagentSettings: 'Save subagent settings',
+    duplicatePoolModel: 'Each pool model ID must be unique.',
     loadMore: 'Load more sessions',
     queuedChip: 'Queued — starts when the current turn finishes',
     onePromptQueued: '1 prompt queued',
@@ -165,10 +167,12 @@ const STRINGS = {
     permissionModeAuto: '自动',
     fetchModelsButton: '测试连接并拉取模型',
     dirtyDiscard: '丢弃并离开',
-    skillDefaults: '技能与实验默认值',
-    saveCapabilityDefaults: '保存能力默认值',
-    experimentalAria: '实验开关覆盖',
-    flagBoolFragment: '必须为 true 或 false',
+    subagentGovernanceTitle: '子代理模型治理',
+    addPoolModel: '添加模型',
+    poolModelIdAria1: '子代理模型 1 ID',
+    poolModelIdAria2: '子代理模型 2 ID',
+    saveSubagentSettings: '保存子代理设置',
+    duplicatePoolModel: '模型池中的模型 ID 不能重复。',
     loadMore: '加载更多会话',
     queuedChip: '已排队 — 当前轮次结束后开始',
     onePromptQueued: '1 条消息已排队',
@@ -792,14 +796,19 @@ async function scenarioSettingsWrite() {
 }
 
 async function scenarioSettingsInvalid() {
-  await page.goto(`${WEB_URL}/settings/capabilities?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+  await page.goto(`${WEB_URL}/settings/agents?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
-  await page.waitForSelector(`text=${S.skillDefaults}`, { timeout: 10_000 });
-  await page.fill(`textarea[aria-label="${S.experimentalAria}"]`, '{"search_worker":"yes"}');
-  await page.click(`button:has-text("${S.saveCapabilityDefaults}")`);
+  await page.waitForSelector(`text=${S.subagentGovernanceTitle}`, { timeout: 10_000 });
+  // Client-side governance validation: two pool rows sharing one model ID
+  // must surface an inline error instead of hitting the server.
+  await page.click(`button:has-text("${S.addPoolModel}")`);
+  await page.click(`button:has-text("${S.addPoolModel}")`);
+  await page.fill(`[aria-label="${S.poolModelIdAria1}"]`, 'dup-model');
+  await page.fill(`[aria-label="${S.poolModelIdAria2}"]`, 'dup-model');
+  await page.click(`button:has-text("${S.saveSubagentSettings}")`);
   await page.waitForSelector('[role="alert"]', { timeout: 5000 });
-  await waitForText(S.flagBoolFragment);
+  await waitForText(S.duplicatePoolModel);
   await shot('settings-invalid-inline-error');
 }
 

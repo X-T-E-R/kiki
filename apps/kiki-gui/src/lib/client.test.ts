@@ -80,6 +80,35 @@ describe('KikiClient.patchConfig', () => {
   });
 });
 
+describe('KikiClient.listNamedAgentProfiles', () => {
+  it('gets the additive /agents catalog endpoint', async () => {
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      expect(String(url)).toBe('http://127.0.0.1:8080/api/v1/agents');
+      expect(init?.method).toBe('GET');
+      return new Response(JSON.stringify({
+        code: 0,
+        msg: 'success',
+        data: {
+          items: [{
+            name: 'reviewer',
+            source: 'user',
+            source_file: '/agents/reviewer.md',
+            pinned_model_alias: 'provider/fast',
+            routes: [],
+          }],
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+
+    const result = await client.listNamedAgentProfiles();
+
+    expect(result.items[0]?.pinned_model_alias).toBe('provider/fast');
+    vi.unstubAllGlobals();
+  });
+});
+
 function envelope(data: unknown): Response {
   return {
     json: async () => ({ code: 0, msg: 'ok', data, request_id: 'req_test' }),

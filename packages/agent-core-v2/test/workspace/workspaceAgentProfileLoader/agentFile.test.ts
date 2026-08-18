@@ -316,6 +316,7 @@ describe('agentProfileFromFile', () => {
 
     expect(prompt).toBe('PROMPT_BODY');
     expect(profile.tools).toBeUndefined();
+    expect(profile.sourcePath).toBe('/tmp/agents/reviewer.md');
     expect(profile.whenToUse).toBe('reviews');
     expect(profile.override).toBe(false);
   });

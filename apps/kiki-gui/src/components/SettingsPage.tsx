@@ -20,12 +20,20 @@ import { useI18n } from '../i18n';
 import { errorText, issueText, type I18nKey, type Locale } from '../i18n/locale';
 import { clearStoredDrafts } from '../lib/drafts';
 import {
+  experimentalFlagRows,
+  subagentGovernanceFromConfig,
+  subagentGovernancePatch,
+  validateSubagentGovernance,
+  type SubagentGovernanceDraft,
+  type SubagentGovernanceIssue,
+} from '../lib/agentSettings';
+import type { NamedAgentProfile } from '../lib/client';
+import {
   appendExtraSkillDirs,
   buildSettingsSearchIndex,
   clearRestartRequirement,
   markRestartRequired,
   parseAdvancedServerConfig,
-  parseExperimentalFlags,
   readDesktopPrefs,
   readSettings,
   searchSettings,
@@ -826,6 +834,92 @@ function ProvidersSection() {
   );
 }
 
+function ExperimentalFlagsCard() {
+  const { client } = useConnection();
+  const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
+  const [overrides, setOverrides] = useState<Record<string, boolean>>({});
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
+  const metaQuery = useQuery({ queryKey: ['meta'], queryFn: () => client.meta(), staleTime: 15_000 });
+
+  useEffect(() => {
+    if (configQuery.data !== undefined) setOverrides({ ...(configQuery.data.experimental ?? {}) });
+  }, [configQuery.data]);
+
+  const rows = experimentalFlagRows(metaQuery.data ?? {}, { experimental: overrides });
+  const save = async () => {
+    setSaving(true);
+    setFeedback(null);
+    try {
+      const echoed = await client.patchConfig({
+        experimental: overrides,
+        replace_domains: ['experimental'],
+      });
+      queryClient.setQueryData(['config'], echoed);
+      setOverrides({ ...(echoed.experimental ?? {}) });
+      await queryClient.invalidateQueries({ queryKey: ['meta'] });
+      setFeedback({ tone: 'success', text: t('st.experimental.saved') });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <SectionCard id="st-card-experimental" title={t('st.experimental.title')}>
+      <div className="space-y-3">
+        <Hint>{t('st.experimental.hint')}</Hint>
+        <fieldset disabled={saving} className="space-y-2 disabled:opacity-60">
+          {rows.map((row) => (
+            <div key={row.id} className="rounded-lg border border-hairline bg-paper px-3 py-2">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="break-all font-mono text-[12px] font-medium text-ink">{row.id}</p>
+                  <p className="text-[10.5px] text-ink-faint">
+                    {t(row.effective ? 'st.experimental.effectiveOn' : 'st.experimental.effectiveOff')}
+                    {' · '}
+                    {t(row.override === undefined ? 'st.experimental.inherited' : 'st.experimental.overridden')}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Toggle
+                    label={t('st.experimental.overrideLabel', { id: row.id })}
+                    checked={row.override ?? row.effective}
+                    onChange={(checked) => { setOverrides((current) => ({ ...current, [row.id]: checked })); }}
+                  />
+                  {row.override !== undefined ? (
+                    <button
+                      type="button"
+                      className={SECONDARY_BUTTON}
+                      onClick={() => {
+                        setOverrides((current) => {
+                          const next = { ...current };
+                          delete next[row.id];
+                          return next;
+                        });
+                      }}
+                    >
+                      {t('st.experimental.useInherited')}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          ))}
+          {rows.length === 0 && !metaQuery.isLoading && !configQuery.isLoading ? <Hint>{t('st.experimental.empty')}</Hint> : null}
+        </fieldset>
+        <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? t('common.saving') : t('common.save')}</button>
+        {metaQuery.isError ? <InlineError error={metaQuery.error} /> : null}
+        {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
+        <FeedbackLine feedback={feedback} />
+      </div>
+    </SectionCard>
+  );
+}
+
 function CapabilitiesSection() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
@@ -833,7 +927,6 @@ function CapabilitiesSection() {
   const [workspaceId, setWorkspaceId] = useState('');
   const [mergeSkills, setMergeSkills] = useState(true);
   const [extraDirs, setExtraDirs] = useState('');
-  const [experimental, setExperimental] = useState('{}');
   const [advanced, setAdvanced] = useState('{}');
   const [telemetry, setTelemetry] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -864,7 +957,6 @@ function CapabilitiesSection() {
     if (config === undefined) return;
     setMergeSkills(config.merge_all_available_skills !== false);
     setExtraDirs((config.extra_skill_dirs ?? []).join('\n'));
-    setExperimental(JSON.stringify(config.experimental ?? {}, null, 2));
     setAdvanced(JSON.stringify({
       permission: config.permission ?? {},
       hooks: config.hooks ?? [],
@@ -894,26 +986,17 @@ function CapabilitiesSection() {
       setFeedback({ tone: 'error', text: issueText(locale, pathError) });
       return;
     }
-    let flags: Record<string, boolean>;
-    try {
-      flags = parseExperimentalFlags(experimental);
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-      return;
-    }
     setSaving(true);
     setFeedback(null);
     try {
       const echoed = await client.patchConfig({
         merge_all_available_skills: mergeSkills,
         extra_skill_dirs: extraDirs.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean),
-        experimental: flags,
         telemetry,
       });
       queryClient.setQueryData(['config'], echoed);
       setMergeSkills(echoed.merge_all_available_skills !== false);
       setExtraDirs((echoed.extra_skill_dirs ?? []).join('\n'));
-      setExperimental(JSON.stringify(echoed.experimental ?? {}, null, 2));
       setTelemetry(echoed.telemetry !== false);
       const previousTelemetry = configQuery.data?.telemetry !== false;
       if (telemetry !== previousTelemetry) {
@@ -986,13 +1069,12 @@ function CapabilitiesSection() {
             </div>
             <textarea id="settings-extra-skill-dirs" className={`${INPUT} mt-1 min-h-24 font-mono`} value={extraDirs} onChange={(event) => { setExtraDirs(event.target.value); }} placeholder={t('st.caps.extraDirsPlaceholder')} />
           </div>
-          <label className="block text-[11px] font-medium text-ink-soft">{t('st.caps.experimental')}
-            <textarea className={`${INPUT} mt-1 min-h-32 font-mono`} value={experimental} onChange={(event) => { setExperimental(event.target.value); }} aria-label={t('st.caps.experimentalAria')} />
-          </label>
           <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? t('common.saving') : t('st.caps.save')}</button>
           <FeedbackLine feedback={feedback} />
         </div>
       </SectionCard>
+
+      <ExperimentalFlagsCard />
 
       <SectionCard id="st-card-advanced" title={t('st.advanced.title')}>
         <div className="space-y-3">
@@ -1036,11 +1118,219 @@ function CapabilitiesSection() {
   );
 }
 
+const SUBAGENT_ISSUE_KEYS: Record<SubagentGovernanceIssue, I18nKey> = {
+  duplicate_model: 'st.subagents.issueDuplicate',
+  reserved_primary: 'st.subagents.issueReserved',
+  default_required: 'st.subagents.issueDefaultRequired',
+  default_not_in_pool: 'st.subagents.issueDefaultNotInPool',
+  force_pool_conflict: 'st.subagents.issueForcePool',
+  enforce_requires_pool: 'st.subagents.issueEnforceNeedsPool',
+  enforce_force_conflict: 'st.subagents.issueEnforceForce',
+};
+
+const EMPTY_SUBAGENT_GOVERNANCE: SubagentGovernanceDraft = {
+  models: [],
+  defaultModel: '',
+  force: false,
+  enforcePool: false,
+  denyModels: '',
+};
+
+function SubagentGovernanceCard() {
+  const { client } = useConnection();
+  const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState<SubagentGovernanceDraft>(EMPTY_SUBAGENT_GOVERNANCE);
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
+
+  useEffect(() => {
+    if (configQuery.data !== undefined) setDraft(subagentGovernanceFromConfig(configQuery.data));
+  }, [configQuery.data]);
+
+  const save = async () => {
+    const issue = validateSubagentGovernance(draft);
+    if (issue !== null) {
+      setFeedback({ tone: 'error', text: t(SUBAGENT_ISSUE_KEYS[issue]) });
+      return;
+    }
+    setSaving(true);
+    setFeedback(null);
+    try {
+      const echoed = await client.patchConfig(subagentGovernancePatch(draft));
+      queryClient.setQueryData(['config'], echoed);
+      setDraft(subagentGovernanceFromConfig(echoed));
+      setFeedback({ tone: 'success', text: t('st.subagents.saved') });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <SectionCard id="st-card-subagents" title={t('st.subagents.title')}>
+      <div className="space-y-4">
+        <Hint>{t('st.subagents.hint')}</Hint>
+        <fieldset disabled={configQuery.isLoading || saving} className="space-y-4 disabled:opacity-60">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-[11px] font-medium text-ink-soft">{t('st.subagents.pool')}</span>
+              <button
+                type="button"
+                className={SECONDARY_BUTTON}
+                onClick={() => { setDraft((current) => ({ ...current, models: [...current.models, { id: '', description: '' }] })); }}
+              >
+                {t('st.subagents.addModel')}
+              </button>
+            </div>
+            {draft.models.map((model, index) => (
+              <div key={`${index}:${model.id}`} className="grid gap-2 rounded-lg border border-hairline bg-paper p-2 sm:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)_auto]">
+                <button
+                  type="button"
+                  className={`h-8 w-8 rounded-md border text-sm ${draft.defaultModel === model.id && model.id !== '' ? 'border-accent bg-accent-soft text-accent' : 'border-hairline text-ink-faint'}`}
+                  aria-label={t('st.subagents.setDefault', { model: model.id || String(index + 1) })}
+                  title={t('st.subagents.default')}
+                  onClick={() => { if (model.id.trim() !== '') setDraft((current) => ({ ...current, defaultModel: model.id.trim() })); }}
+                >
+                  ★
+                </button>
+                <input
+                  className={INPUT}
+                  value={model.id}
+                  aria-label={t('st.subagents.modelId', { n: index + 1 })}
+                  placeholder="provider/model"
+                  onChange={(event) => {
+                    const id = event.target.value;
+                    setDraft((current) => ({
+                      ...current,
+                      models: current.models.map((entry, candidate) => candidate === index ? { ...entry, id } : entry),
+                    }));
+                  }}
+                />
+                <input
+                  className={INPUT}
+                  value={model.description}
+                  aria-label={t('st.subagents.modelDescription', { n: index + 1 })}
+                  placeholder={t('st.subagents.descriptionPlaceholder')}
+                  onChange={(event) => {
+                    const description = event.target.value;
+                    setDraft((current) => ({
+                      ...current,
+                      models: current.models.map((entry, candidate) => candidate === index ? { ...entry, description } : entry),
+                    }));
+                  }}
+                />
+                <button
+                  type="button"
+                  className={SECONDARY_BUTTON}
+                  aria-label={t('st.subagents.removeModel', { model: model.id || String(index + 1) })}
+                  onClick={() => {
+                    setDraft((current) => ({
+                      ...current,
+                      defaultModel: current.defaultModel === model.id ? '' : current.defaultModel,
+                      models: current.models.filter((_, candidate) => candidate !== index),
+                    }));
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            {draft.models.length === 0 ? <Hint>{t('st.subagents.poolEmpty')}</Hint> : null}
+          </div>
+          <label className="block text-[11px] font-medium text-ink-soft">{t('st.subagents.default')}
+            <input
+              className={`${INPUT} mt-1`}
+              value={draft.defaultModel}
+              placeholder="provider/model"
+              onChange={(event) => { setDraft((current) => ({ ...current, defaultModel: event.target.value })); }}
+            />
+          </label>
+          <div className="space-y-2">
+            <Toggle label={t('st.subagents.force')} checked={draft.force} onChange={(force) => { setDraft((current) => ({ ...current, force })); }} />
+            <Hint>{t('st.subagents.forceHint')}</Hint>
+            <Toggle label={t('st.subagents.enforcePool')} checked={draft.enforcePool} onChange={(enforcePool) => { setDraft((current) => ({ ...current, enforcePool })); }} />
+            <Hint>{t('st.subagents.enforcePoolHint')}</Hint>
+          </div>
+          <label className="block text-[11px] font-medium text-ink-soft">{t('st.subagents.denyModels')}
+            <textarea
+              className={`${INPUT} mt-1 min-h-24 font-mono`}
+              value={draft.denyModels}
+              placeholder={t('st.subagents.denyPlaceholder')}
+              onChange={(event) => { setDraft((current) => ({ ...current, denyModels: event.target.value })); }}
+            />
+          </label>
+        </fieldset>
+        <button type="button" className={PRIMARY_BUTTON} disabled={configQuery.isLoading || saving} onClick={() => void save()}>{saving ? t('common.saving') : t('st.subagents.save')}</button>
+        {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
+        <FeedbackLine feedback={feedback} />
+      </div>
+    </SectionCard>
+  );
+}
+
+function NamedAgentProfileRow({ profile }: { profile: NamedAgentProfile }) {
+  const { t } = useI18n();
+  return (
+    <div className="rounded-lg border border-hairline bg-paper px-3 py-2">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="font-mono text-[12.5px] font-medium text-ink">{profile.name}</p>
+          {profile.description !== undefined ? <p className="text-[11.5px] text-ink-soft">{profile.description}</p> : null}
+        </div>
+        <span className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint">{profile.source}</span>
+      </div>
+      <div className="mt-2 space-y-1 break-all font-mono text-[10px] text-ink-faint">
+        <p>{t('st.namedAgents.sourceFile')}: {profile.source_file ?? t('st.namedAgents.builtin')}</p>
+        {profile.workspace_id !== undefined ? <p>{t('st.namedAgents.workspace')}: {profile.workspace_id}</p> : null}
+        {profile.pinned_model_alias !== undefined ? <p>{t('st.namedAgents.modelPin')}: {profile.pinned_model_alias}</p> : null}
+        {profile.routes.map((route) => (
+          <p key={route.id}>
+            {t('st.namedAgents.route')}: {route.id}
+            {route.model_alias === undefined ? '' : ` → ${route.model_alias}`}
+            {' · '}{route.source_file}
+          </p>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function NamedAgentProfilesCard() {
+  const { client } = useConnection();
+  const { t } = useI18n();
+  const profilesQuery = useQuery({
+    queryKey: ['named-agent-profiles'],
+    queryFn: () => client.listNamedAgentProfiles(),
+    staleTime: 15_000,
+  });
+
+  return (
+    <SectionCard id="st-card-named-agents" title={t('st.namedAgents.title')}>
+      <div className="space-y-3">
+        <Hint>{t('st.namedAgents.readOnlyHint')}</Hint>
+        <div className="space-y-2">
+          {profilesQuery.data?.items.map((profile, index) => (
+            <NamedAgentProfileRow key={`${profile.name}:${profile.source}:${profile.workspace_id ?? ''}:${index}`} profile={profile} />
+          ))}
+          {profilesQuery.isLoading ? <Hint>{t('st.namedAgents.loading')}</Hint> : null}
+          {profilesQuery.data?.items.length === 0 ? <Hint>{t('st.namedAgents.empty')}</Hint> : null}
+          {profilesQuery.isError ? <InlineError error={profilesQuery.error} /> : null}
+        </div>
+      </div>
+    </SectionCard>
+  );
+}
+
 function AgentsSection() {
   const { t } = useI18n();
   return (
     <div className="space-y-5">
       <Hint>{t('st.agents.webHint')}</Hint>
+      <SubagentGovernanceCard />
+      <NamedAgentProfilesCard />
       <DesktopServerFileCard />
     </div>
   );
