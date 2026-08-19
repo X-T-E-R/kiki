@@ -695,16 +695,16 @@ describe('ContextMeter', () => {
     );
   }
 
-  it('shows the rounded percentage without a warning below 80%', () => {
-    const html = renderMeter(50_000, 100_000);
-    expect(html).toContain('50%');
+  it('shows the rounded percentage without a warning below 50%', () => {
+    const html = renderMeter(40_000, 100_000);
+    expect(html).toContain('40%');
     expect(html).not.toContain('details</span>');
     expect(html).not.toContain('amber-card');
   });
 
-  it('turns amber and points to details at exactly 80%', () => {
-    const html = renderMeter(80_000, 100_000);
-    expect(html).toContain('80%');
+  it('turns amber and points to details at exactly 50%', () => {
+    const html = renderMeter(50_000, 100_000);
+    expect(html).toContain('50%');
     expect(html).toContain('details</span>');
     expect(html).toContain('amber-card');
   });

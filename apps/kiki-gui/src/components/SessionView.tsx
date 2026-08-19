@@ -1796,6 +1796,7 @@ export function SessionView({
                 ? { used: contextUsed, limit: contextLimit }
                 : undefined
             }
+            sessionUsage={usage}
             sessionId={sessionId}
             fsSearch={handleFsSearch}
             attachments={attachments}

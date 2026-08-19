@@ -1,16 +1,35 @@
 /**
- * ContextMeter — the composer footer's mini context-usage gauge. Clicking the
- * gauge opens a bounded detail popover; compaction is an explicit action inside
- * that panel rather than the meter's click side effect.
+ * ContextMeter — the composer footer's mini context-usage gauge, rendered as a
+ * ring (not a bar). Clicking the ring opens a bounded detail card; compaction
+ * is an explicit action inside that card rather than the ring's click side
+ * effect.
+ *
+ * The ring colors by threshold (mirrors liveagent's contextUsage levels):
+ *   - < 50%  accent (normal)
+ *   - ≥ 50%  amber (warn, and the minimum at which manual compaction is advised)
+ *   - ≥ 80%  red (danger / over the keep-under threshold)
+ *
+ * The detail card layers the lifetime session usage (input / output /
+ * cache-read / cache-write tokens + cost) on top of the existing used /
+ * available / limit fields, reusing the wire `SessionUsage` counters already
+ * aggregated by lib/usage — the same data source the /usage dashboard reads.
  */
 
 import { createContext, useContext, useId, useState, type ReactNode } from 'react';
 
+import type { SessionUsage } from '@moonshot-ai/protocol';
+
 import { useI18n } from '../i18n';
+import { formatCostUsd } from '../lib/usage';
 import type { ContextBreakdown } from '../lib/types';
 
-/** Usage fraction at which the meter warns and suggests compaction. */
-export const CONTEXT_WARN_RATIO = 0.8;
+/** Usage fraction at which the meter warns (yellow) and compaction becomes available. */
+export const CONTEXT_WARN_RATIO = 0.5;
+
+/** Usage fraction at which the meter turns red (danger). */
+export const CONTEXT_DANGER_RATIO = 0.8;
+
+export type ContextUsageLevel = 'ok' | 'warn' | 'danger';
 
 /** Percentage (0-100, clamped) of the context window in use. */
 export function contextUsagePercent(used: number, limit: number): number {
@@ -21,6 +40,22 @@ export function contextUsagePercent(used: number, limit: number): number {
 export function contextUsageWarns(used: number, limit: number): boolean {
   return limit > 0 && used / limit >= CONTEXT_WARN_RATIO;
 }
+
+export function contextUsageDanger(used: number, limit: number): boolean {
+  return limit > 0 && used / limit >= CONTEXT_DANGER_RATIO;
+}
+
+export function contextUsageLevel(used: number, limit: number): ContextUsageLevel {
+  if (contextUsageDanger(used, limit)) return 'danger';
+  if (contextUsageWarns(used, limit)) return 'warn';
+  return 'ok';
+}
+
+const LEVEL_STROKE: Record<ContextUsageLevel, string> = {
+  ok: 'var(--color-accent)',
+  warn: 'var(--color-amber-rule)',
+  danger: 'var(--color-danger)',
+};
 
 const ContextBreakdownContext = createContext<ContextBreakdown | undefined>(undefined);
 
@@ -34,14 +69,30 @@ export function ContextBreakdownProvider({
   return <ContextBreakdownContext.Provider value={value}>{children}</ContextBreakdownContext.Provider>;
 }
 
+/** One labeled token row inside the detail card. */
+function TokenRow({ label, value, title }: { label: string; value: number; title: string }) {
+  const { time } = useI18n();
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <dt className="text-ink-faint">{label}</dt>
+      <dd className="font-mono text-ink tabular-nums" title={title}>
+        {time.formatTokens(value)}
+      </dd>
+    </div>
+  );
+}
+
 export function ContextMeter({
   used,
   limit,
+  usage,
   onCompact,
   placement = 'above',
 }: {
   used: number;
   limit: number;
+  /** Lifetime session usage (lifetime cumulative `session.usage`) for the detail card. */
+  usage?: SessionUsage;
   /** Requests a compaction (the session view's /compact action). */
   onCompact?: () => void;
   placement?: 'above' | 'below';
@@ -51,34 +102,73 @@ export function ContextMeter({
   const detailsId = useId();
   const [open, setOpen] = useState(false);
   const percent = contextUsagePercent(used, limit);
-  const warn = contextUsageWarns(used, limit);
+  const level = contextUsageLevel(used, limit);
+  const warn = level !== 'ok';
   const remaining = Math.max(0, limit - used);
   const label = t('context.meter', { percent });
-  const title = t(warn ? 'context.meterWarnTitle' : 'context.meterTitle', {
-    used: time.formatTokens(used),
-    limit: time.formatTokens(limit),
-  });
+  const title = t(
+    level === 'danger'
+      ? 'context.meterDangerTitle'
+      : warn
+        ? 'context.meterWarnTitle'
+        : 'context.meterTitle',
+    { used: time.formatTokens(used), limit: time.formatTokens(limit) },
+  );
+
+  const usageTotal =
+    usage === undefined
+      ? undefined
+      : usage.input_tokens +
+        usage.output_tokens +
+        usage.cache_read_tokens +
+        usage.cache_creation_tokens;
+
   return (
     <div className="relative shrink-0">
       <button
         type="button"
         data-context-meter
+        data-context-level={level}
         onClick={() => { setOpen((value) => !value); }}
         title={title}
         aria-label={title}
         aria-expanded={open}
         aria-controls={detailsId}
-        className={`flex items-center gap-1.5 rounded-full border px-2 py-0.5 transition-colors ${
-          warn
-            ? 'border-amber-rule/50 bg-amber-card text-amber-ink hover:border-amber-rule'
-            : 'border-hairline text-ink-faint hover:border-hairline-strong hover:text-ink-soft'
+        className={`flex items-center gap-1.5 rounded-full border py-0.5 pr-2 pl-1 transition-colors ${
+          level === 'danger'
+            ? 'border-danger/50 bg-danger/10 text-danger hover:border-danger'
+            : warn
+              ? 'border-amber-rule/50 bg-amber-card text-amber-ink hover:border-amber-rule'
+              : 'border-hairline text-ink-faint hover:border-hairline-strong hover:text-ink-soft'
         }`}
       >
-        <span className="h-1 w-10 overflow-hidden rounded-full bg-hairline">
-          <span
-            className={`block h-full rounded-full ${warn ? 'bg-amber-rule' : 'bg-accent'}`}
-            style={{ width: `${percent}%` }}
-          />
+        <span aria-hidden className="relative flex h-6 w-6 items-center justify-center">
+          <svg viewBox="0 0 24 24" className="h-6 w-6 -rotate-90">
+            <circle
+              cx="12"
+              cy="12"
+              r="9.5"
+              fill="none"
+              strokeWidth="2.25"
+              stroke="var(--color-hairline)"
+            />
+            <circle
+              cx="12"
+              cy="12"
+              r="9.5"
+              fill="none"
+              strokeWidth="2.25"
+              strokeLinecap="round"
+              pathLength="100"
+              strokeDasharray="100"
+              strokeDashoffset={100 - percent}
+              stroke={LEVEL_STROKE[level]}
+              className="transition-[stroke-dashoffset,stroke] duration-300"
+            />
+          </svg>
+          <span className="absolute font-mono text-[7px] leading-none font-semibold tabular-nums">
+            {percent}
+          </span>
         </span>
         <span className="font-mono text-[9.5px]">{label}</span>
         {warn ? <span className="text-[9.5px] font-medium">{t('context.detailsHint')}</span> : null}
@@ -89,7 +179,7 @@ export function ContextMeter({
           data-context-details
           role="dialog"
           aria-label={t('context.detailsTitle')}
-          className={`anim-enter absolute right-0 z-30 w-64 rounded-xl border border-hairline bg-panel p-3 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)] ${
+          className={`anim-enter absolute right-0 z-30 w-72 rounded-xl border border-hairline bg-panel p-3 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)] ${
             placement === 'below' ? 'top-full mt-2' : 'bottom-full mb-2'
           }`}
         >
@@ -97,12 +187,77 @@ export function ContextMeter({
             <p className="text-[11px] font-semibold text-ink">{t('context.detailsTitle')}</p>
             <span className="font-mono text-[11px] text-ink-soft">{label}</span>
           </div>
-          <div className="mt-2 h-2 overflow-hidden rounded-full bg-hairline">
-            <div
-              className={`h-full rounded-full ${warn ? 'bg-amber-rule' : 'bg-accent'}`}
-              style={{ width: `${percent}%` }}
-            />
+          <div className="mt-2.5 flex items-center gap-3">
+            <span aria-hidden className="relative flex h-10 w-10 shrink-0 items-center justify-center">
+              <svg viewBox="0 0 24 24" className="h-10 w-10 -rotate-90">
+                <circle
+                  cx="12"
+                  cy="12"
+                  r="9.5"
+                  fill="none"
+                  strokeWidth="2.25"
+                  stroke="var(--color-hairline)"
+                />
+                <circle
+                  cx="12"
+                  cy="12"
+                  r="9.5"
+                  fill="none"
+                  strokeWidth="2.25"
+                  strokeLinecap="round"
+                  pathLength="100"
+                  strokeDasharray="100"
+                  strokeDashoffset={100 - percent}
+                  stroke={LEVEL_STROKE[level]}
+                  className="transition-[stroke-dashoffset,stroke] duration-300"
+                />
+              </svg>
+              <span className="absolute font-mono text-[9px] leading-none font-semibold tabular-nums">
+                {percent}
+              </span>
+            </span>
+            <dl className="min-w-0 flex-1 space-y-1 text-[11px]">
+              <div className="flex items-center justify-between gap-3">
+                <dt className="text-ink-faint">{t('context.used')}</dt>
+                <dd className="font-mono text-ink tabular-nums">{time.formatTokens(used)}</dd>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <dt className="text-ink-faint">{t('context.limit')}</dt>
+                <dd className="font-mono text-ink tabular-nums">{time.formatTokens(limit)}</dd>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <dt className="text-ink-faint">{t('context.available')}</dt>
+                <dd className="font-mono text-ink tabular-nums">{time.formatTokens(remaining)}</dd>
+              </div>
+            </dl>
           </div>
+
+          {usage !== undefined ? (
+            <dl
+              data-context-usage
+              className="mt-3 space-y-1.5 border-t border-hairline pt-2.5 text-[11px]"
+            >
+              <div className="flex items-baseline justify-between gap-3">
+                <p className="text-[10.5px] font-medium text-ink-soft">{t('context.sessionUsage')}</p>
+                <span className="text-[9.5px] text-ink-faint">{t('context.sessionUsageHint')}</span>
+              </div>
+              <TokenRow label={t('usage.tokens.input')} value={usage.input_tokens} title={String(usage.input_tokens)} />
+              <TokenRow label={t('usage.tokens.output')} value={usage.output_tokens} title={String(usage.output_tokens)} />
+              <TokenRow label={t('usage.tokens.cacheRead')} value={usage.cache_read_tokens} title={String(usage.cache_read_tokens)} />
+              <TokenRow label={t('usage.tokens.cacheWrite')} value={usage.cache_creation_tokens} title={String(usage.cache_creation_tokens)} />
+              <div className="flex items-center justify-between gap-3 border-t border-hairline pt-1.5">
+                <dt className="text-ink-faint">{t('usage.card.cost')}</dt>
+                <dd className="font-mono text-ink tabular-nums">{formatCostUsd(usage.total_cost_usd)}</dd>
+              </div>
+              {usageTotal !== undefined ? (
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="text-ink-faint">{t('usage.card.tokens')}</dt>
+                  <dd className="font-mono text-ink tabular-nums">{time.formatTokens(usageTotal)}</dd>
+                </div>
+              ) : null}
+            </dl>
+          ) : null}
+
           {breakdown !== undefined ? (
             <div data-context-breakdown className="mt-3 border-t border-hairline pt-2.5">
               <div className="flex items-baseline justify-between gap-3">
@@ -110,35 +265,13 @@ export function ContextMeter({
                 <span className="text-[9.5px] text-ink-faint">{t('context.breakdownEstimated')}</span>
               </div>
               <dl className="mt-2 space-y-1.5 text-[11px]">
-                <div className="flex items-center justify-between gap-3">
-                  <dt className="text-ink-faint">{t('context.system')}</dt>
-                  <dd className="font-mono text-ink">{time.formatTokens(breakdown.systemTokens)}</dd>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <dt className="text-ink-faint">{t('context.tools')}</dt>
-                  <dd className="font-mono text-ink">{time.formatTokens(breakdown.toolsTokens)}</dd>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <dt className="text-ink-faint">{t('context.messages')}</dt>
-                  <dd className="font-mono text-ink">{time.formatTokens(breakdown.messagesTokens)}</dd>
-                </div>
+                <TokenRow label={t('context.system')} value={breakdown.systemTokens} title={String(breakdown.systemTokens)} />
+                <TokenRow label={t('context.tools')} value={breakdown.toolsTokens} title={String(breakdown.toolsTokens)} />
+                <TokenRow label={t('context.messages')} value={breakdown.messagesTokens} title={String(breakdown.messagesTokens)} />
               </dl>
             </div>
           ) : null}
-          <dl className="mt-3 space-y-1.5 text-[11px]">
-            <div className="flex items-center justify-between gap-3">
-              <dt className="text-ink-faint">{t('context.used')}</dt>
-              <dd className="font-mono text-ink">{time.formatTokens(used)}</dd>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <dt className="text-ink-faint">{t('context.available')}</dt>
-              <dd className="font-mono text-ink">{time.formatTokens(remaining)}</dd>
-            </div>
-            <div className="flex items-center justify-between gap-3 border-t border-hairline pt-1.5">
-              <dt className="text-ink-faint">{t('context.limit')}</dt>
-              <dd className="font-mono text-ink">{time.formatTokens(limit)}</dd>
-            </div>
-          </dl>
+
           {onCompact !== undefined ? (
             <button
               type="button"

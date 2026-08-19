@@ -22,7 +22,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEv
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
-import type { FsSearchHit, PermissionMode } from '@moonshot-ai/protocol';
+import type { FsSearchHit, PermissionMode, SessionUsage } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../i18n';
 import { errorText, issueText, type I18nKey } from '../i18n/locale';
@@ -55,6 +55,7 @@ import {
 } from '../lib/settings';
 import { useConnection } from '../state/connection';
 import { ContextMeter } from './ContextMeter';
+import { useComposerContextMenu } from './ComposerContextMenu';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 
 const MODES: readonly { id: PermissionMode; labelKey: I18nKey; hintKey: I18nKey }[] = [
@@ -110,6 +111,7 @@ export function Composer({
   efforts,
   effort,
   contextUsage,
+  sessionUsage,
   busyPlaceholder,
   sessionId,
   fsSearch,
@@ -157,6 +159,8 @@ export function Composer({
   effort: string | undefined;
   /** Session context usage for the footer's mini meter (hidden when absent). */
   contextUsage?: { readonly used: number; readonly limit: number };
+  /** Lifetime session usage for the context meter's detail card (hidden when absent). */
+  sessionUsage?: SessionUsage;
   /** Placeholder while busy (queue steering on /s, creation progress on /new). */
   busyPlaceholder?: string;
   /** Session scope for the skills catalog + session-scoped shortcuts. */
@@ -212,6 +216,9 @@ export function Composer({
   ).sendShortcut;
   const text = value;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Custom right-click menu for the input (cut/copy/paste-as-plain-text/select-all).
+  const { onContextMenu: onComposerContextMenu, menu: composerContextMenu } =
+    useComposerContextMenu({ textareaRef, onChange });
   // Event handlers can run several times before a controlled prop rerender.
   // Keep a synchronous attachment baseline alongside the rendered value so
   // same-tick paste/drop batches reserve against one another.
@@ -646,6 +653,7 @@ export function Composer({
 
   return (
     <div className="px-6 pb-5">
+      {composerContextMenu}
       {/* One width axis with the transcript: the conversation shell declares
           --kiki-chat-content-width; the 760px fallback is defensive. */}
       <div className="mx-auto max-w-[var(--kiki-chat-content-width,760px)]">
@@ -1048,6 +1056,7 @@ export function Composer({
                 }
               }}
               onClick={(event) => { refreshMenu(text, event.currentTarget.selectionStart); }}
+              onContextMenu={onComposerContextMenu}
               onBlur={(event) => {
                 setMenu(null);
                 // Redundant arming path for engines that DO fire focusout on
@@ -1112,6 +1121,7 @@ export function Composer({
             <ContextMeter
               used={contextUsage.used}
               limit={contextUsage.limit}
+              usage={sessionUsage}
               onCompact={onCompactContext}
             />
           ) : null}

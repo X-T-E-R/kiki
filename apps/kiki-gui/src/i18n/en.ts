@@ -82,6 +82,13 @@ export const en = {
   'menu.undo': 'Undo last turn…',
   'menu.rename': 'Rename…',
   'menu.archive': 'Archive',
+
+  // ---- composer right-click menu ----
+  'composer.contextMenuAria': 'Input actions',
+  'contextMenu.cut': 'Cut',
+  'contextMenu.copy': 'Copy',
+  'contextMenu.paste': 'Paste as plain text',
+  'contextMenu.selectAll': 'Select all',
   'undo.title': 'Undo the last turn?',
   'undo.bodyNamed':
     'This removes the most recent user message and kiki’s reply from “{title}”. Earlier turns are kept.',
@@ -144,8 +151,11 @@ export const en = {
   'context.meter': '{percent}%',
   'context.meterTitle': 'Context in use: {used} of {limit} — click for details',
   'context.meterWarnTitle': 'Context {used} of {limit} — review usage and compact if needed',
+  'context.meterDangerTitle': 'Context {used} of {limit} — over the keep-under threshold',
   'context.detailsHint': 'details',
   'context.detailsTitle': 'Context details',
+  'context.sessionUsage': 'Session usage',
+  'context.sessionUsageHint': 'lifetime',
   'context.breakdownTitle': 'Breakdown',
   'context.breakdownEstimated': 'estimated',
   'context.system': 'System',

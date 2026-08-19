@@ -5,7 +5,15 @@ import { createRoot } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
-import { ContextBreakdownProvider, ContextMeter } from './ContextMeter';
+import {
+  CONTEXT_DANGER_RATIO,
+  CONTEXT_WARN_RATIO,
+  ContextBreakdownProvider,
+  ContextMeter,
+  contextUsageDanger,
+  contextUsageLevel,
+  contextUsageWarns,
+} from './ContextMeter';
 
 const containers: HTMLDivElement[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
@@ -24,6 +32,20 @@ afterEach(() => {
 afterAll(() => {
   reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = false;
   vi.unstubAllGlobals();
+});
+
+describe('context usage thresholds', () => {
+  it('warns at 50% and turns danger at 80%', () => {
+    expect(CONTEXT_WARN_RATIO).toBe(0.5);
+    expect(CONTEXT_DANGER_RATIO).toBe(0.8);
+    expect(contextUsageWarns(50, 100)).toBe(true);
+    expect(contextUsageWarns(49, 100)).toBe(false);
+    expect(contextUsageDanger(80, 100)).toBe(true);
+    expect(contextUsageDanger(79, 100)).toBe(false);
+    expect(contextUsageLevel(49, 100)).toBe('ok');
+    expect(contextUsageLevel(50, 100)).toBe('warn');
+    expect(contextUsageLevel(80, 100)).toBe('danger');
+  });
 });
 
 describe('ContextMeter interaction', () => {
@@ -62,6 +84,46 @@ describe('ContextMeter interaction', () => {
     await act(async () => { root.unmount(); });
   });
 
+  it('renders the ring with a level data attribute and warns amber at exactly 50%', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <ContextMeter used={50_000} limit={100_000} />
+        </I18nProvider>,
+      );
+    });
+
+    const meter = container.querySelector<HTMLButtonElement>('[data-context-meter]');
+    expect(meter?.getAttribute('data-context-level')).toBe('warn');
+    expect(meter?.querySelector('svg')).not.toBeNull();
+    await act(async () => { root.unmount(); });
+  });
+
+  it('renders danger red above 80%', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <ContextMeter used={90_000} limit={100_000} />
+        </I18nProvider>,
+      );
+    });
+
+    expect(container.querySelector('[data-context-meter]')?.getAttribute('data-context-level')).toBe(
+      'danger',
+    );
+    await act(async () => { root.unmount(); });
+  });
+
   it('can open details below when embedded in a top header', async () => {
     const container = document.createElement('div');
     document.body.append(container);
@@ -80,6 +142,47 @@ describe('ContextMeter interaction', () => {
     });
 
     expect(container.querySelector('[data-context-details]')?.className).toContain('top-full');
+    await act(async () => { root.unmount(); });
+  });
+
+  it('shows the lifetime session usage and cost in the detail card', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <ContextMeter
+            used={80_000}
+            limit={200_000}
+            usage={{
+              input_tokens: 12_400,
+              output_tokens: 2_100,
+              cache_read_tokens: 8_000,
+              cache_creation_tokens: 500,
+              total_cost_usd: 0.0432,
+              context_tokens: 80_000,
+              context_limit: 200_000,
+              turn_count: 4,
+            }}
+          />
+        </I18nProvider>,
+      );
+    });
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click();
+    });
+
+    const usage = container.querySelector('[data-context-usage]');
+    expect(usage?.textContent).toContain('Session usage');
+    expect(usage?.textContent).toContain('Input');
+    expect(usage?.textContent).toContain('Output');
+    expect(usage?.textContent).toContain('Cache read');
+    expect(usage?.textContent).toContain('Cache write');
+    expect(usage?.textContent).toContain('$0.043');
+    expect(usage?.textContent).toContain('Total tokens');
     await act(async () => { root.unmount(); });
   });
 

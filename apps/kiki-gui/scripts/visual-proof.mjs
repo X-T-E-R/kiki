@@ -103,6 +103,11 @@ const STRINGS = {
     exportArchive: 'Export archive',
     undoLastTurn: 'Undo last turn',
     compactContext: 'Compact context',
+    compactOlderContext: 'Compact older context',
+    contextDetails: 'Context details',
+    sessionUsage: 'Session usage',
+    pasteAsPlainText: 'Paste as plain text',
+    contextMenuSelectAll: 'Select all',
     bannerPattern: /Connection lost|Disconnected from the server/,
     resyncing: 'Resyncing…',
     noSessions: 'No sessions yet',
@@ -187,6 +192,11 @@ const STRINGS = {
     exportArchive: '导出归档',
     undoLastTurn: '撤销最后一轮',
     compactContext: '压缩上下文',
+    compactOlderContext: '压缩较早上下文',
+    contextDetails: '上下文详情',
+    sessionUsage: '会话用量',
+    pasteAsPlainText: '粘贴为纯文本',
+    contextMenuSelectAll: '全选',
     bannerPattern: /正在重连|已与服务器断开连接/,
     resyncing: '正在重新同步…',
     noSessions: '还没有会话',
@@ -1691,6 +1701,80 @@ async function scenarioSearch() {
   await page.fill('[data-search-box]', '');
 }
 
+/**
+ * Session footer context ring: open the composer's ring detail card (amber at
+ * ~57%), assert its lifetime session-usage rows, verify clicking the card
+ * (not the ring) triggers compaction; then open the textarea's custom
+ * right-click menu (cut/copy disabled without a selection, paste/select-all
+ * present), and prove the ring apologizes in place during a stream by flipping
+ * amber → red once the context crosses the danger threshold.
+ */
+async function scenarioContextRing() {
+  await selectSession('Fixture: context ring');
+  await page.waitForSelector('[data-context-meter]', { timeout: 10_000 });
+  const levelBefore = await page
+    .locator('[data-context-meter]')
+    .getAttribute('data-context-level');
+  if (levelBefore !== 'warn') throw new Error(`expected warn ring on load, saw ${levelBefore}`);
+  const warnArc = await page.evaluate(() => {
+    const arc = document.querySelector('[data-context-meter] circle[stroke-dasharray="100"]');
+    return arc === null ? null : getComputedStyle(arc).stroke;
+  });
+  console.log(`[check] warn arc stroke: ${warnArc}`);
+  // c92a2a (--color-danger) / e8b04b (--color-amber-rule) / e8590c (--color-accent)
+  const AMBER = 'rgb(232, 176, 75)';
+  if (warnArc !== AMBER) throw new Error(`expected amber warn arc, saw ${warnArc}`);
+  await shot('context-ring-warn');
+
+  // Open the detail card via the ring; its usage rows must carry the seeded numbers.
+  await page.click('[data-context-meter]');
+  await page.waitForSelector('[data-context-details]', { timeout: 5000 });
+  const detailsText = await page.locator('[data-context-details]').innerText();
+  for (const expected of [S.sessionUsage, S.contextDetails]) {
+    if (!detailsText.includes(expected)) throw new Error(`detail card missing "${expected}"`);
+  }
+  await shot('context-ring-details');
+
+  // Compaction fires from the detail card's button, not the ring click itself.
+  await page.locator('[data-context-details] button', { hasText: S.compactOlderContext }).click();
+  await page.waitForSelector(`text=${S.compactionRequested}`, { timeout: 5000 });
+  await shot('context-ring-compact');
+
+  // The input's custom right-click menu.
+  await page.fill('textarea', 'ring menu probe');
+  await page.click('textarea');
+  await page.press('textarea', 'Control+A');
+  await page.click('textarea', { button: 'right' });
+  await page.waitForSelector('[data-composer-context-menu]', { timeout: 5000 });
+  const menuText = await page.locator('[data-composer-context-menu]').innerText();
+  if (!menuText.includes('Cut') || !menuText.includes('Copy') || !menuText.includes(S.pasteAsPlainText) || !menuText.includes(S.contextMenuSelectAll)) {
+    throw new Error(`unexpected context menu: ${menuText}`);
+  }
+  await shot('context-menu-open');
+  await page.locator('[data-composer-context-menu] button', { hasText: S.contextMenuSelectAll }).click();
+  await page.waitForSelector('[data-composer-context-menu]', { state: 'detached', timeout: 5000 });
+
+  // Now prove the ring recolors live during a stream.
+  await page.fill('textarea', 'Push the context over the danger threshold.');
+  await page.press('textarea', 'Enter');
+  await page.waitForFunction(
+    () => document.querySelector('[data-context-meter]')?.getAttribute('data-context-level') === 'danger',
+    { timeout: 15_000 },
+  );
+  // The arc transitions stroke + dash offset over 300ms — let it settle so the
+  // computed color reflects the target danger red, not the transition start.
+  await page.waitForTimeout(450);
+  const dangerArc = await page.evaluate(() => {
+    const arc = document.querySelector('[data-context-meter] circle[stroke-dasharray="100"]');
+    return arc === null ? null : getComputedStyle(arc).stroke;
+  });
+  console.log(`[check] danger arc stroke: ${dangerArc}`);
+  const RED = 'rgb(201, 42, 42)'; // --color-danger
+  if (dangerArc !== RED) throw new Error(`expected red danger arc, saw ${dangerArc}`);
+  await shot('context-ring-danger');
+  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 20_000 }).catch(() => undefined);
+}
+
 async function scenarioSessionActions() {
   await selectSession('Fixture: session actions');
   await page.waitForSelector('text=Second reply, undone.', { timeout: 10_000 });
@@ -1865,6 +1949,7 @@ const SCENARIOS = [
   ['attachments', scenarioAttachments],
   ['search', scenarioSearch],
   ['session-actions', scenarioSessionActions],
+  ['context-ring', scenarioContextRing],
   ['terminal', scenarioTerminal],
   ['capabilities', scenarioCapabilities],
   ['i18n', scenarioI18n],
