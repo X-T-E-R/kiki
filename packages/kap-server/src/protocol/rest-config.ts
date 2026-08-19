@@ -10,6 +10,7 @@ import {
 import { ToolsConfigSchema } from '@moonshot-ai/agent-core-v2/agent/toolPolicy/configSection';
 import {
   DisabledBuiltinProfilesConfigSchema,
+  DisabledNamedProfilesConfigSchema,
   ExtraAgentDirsConfigSchema,
 } from '@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/configSection';
 import { WorkspaceInstanceConfigSchema } from '@moonshot-ai/agent-core-v2/workspace/workspaceInstance/configSection';
@@ -65,6 +66,7 @@ const replaceableConfigDomainSchema = z.enum([
   'identity',
   'extra_agent_dirs',
   'disabled_builtin_profiles',
+  'disabled_named_profiles',
   'mcp',
   'tools',
 ]);
@@ -145,6 +147,7 @@ export const configResponseSchema = z.object({
   identity: IdentityConfigSchema.optional(),
   extra_agent_dirs: ExtraAgentDirsConfigSchema,
   disabled_builtin_profiles: DisabledBuiltinProfilesConfigSchema,
+  disabled_named_profiles: DisabledNamedProfilesConfigSchema,
   mcp: McpSectionSchema.optional(),
   tools: ToolsConfigSchema.optional(),
   telemetry: z.boolean().optional(),
@@ -211,6 +214,7 @@ export const patchConfigRequestSchema = z.object({
   identity: IdentityConfigSchema.optional(),
   extra_agent_dirs: ExtraAgentDirsConfigSchema,
   disabled_builtin_profiles: DisabledBuiltinProfilesConfigSchema,
+  disabled_named_profiles: DisabledNamedProfilesConfigSchema,
   mcp: mcpConfigRequestSchema.optional(),
   tools: ToolsConfigSchema.optional(),
   replace_domains: z.array(replaceableConfigDomainSchema).optional(),

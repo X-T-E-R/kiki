@@ -47,6 +47,8 @@ export const configResponseSchema = z.object({
   builtin_product_skills: z.boolean().optional(),
   model_catalog: modelCatalogConfigResponseSchema.optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
+  disabled_builtin_profiles: z.array(z.string()).optional(),
+  disabled_named_profiles: z.array(z.string()).optional(),
   telemetry: z.boolean().optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
 });
@@ -85,6 +87,8 @@ export const patchConfigRequestSchema = z.object({
     refresh_on_start: z.boolean().optional(),
   }).optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
+  disabled_builtin_profiles: z.array(z.string()).optional(),
+  disabled_named_profiles: z.array(z.string()).optional(),
   telemetry: z.boolean().optional(),
 });
 export type PatchConfigRequest = z.infer<typeof patchConfigRequestSchema>;

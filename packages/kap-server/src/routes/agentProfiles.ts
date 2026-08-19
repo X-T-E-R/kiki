@@ -1,14 +1,17 @@
 /**
  * `/agents` REST routes — named agent-profile catalog and validated write-back.
  *
- * GET de-duplicates the live App registry and projects builtin disable state.
- * PATCH borrows the addressed workspace's validated common-field / raw-file
+ * GET merges logical profiles across workspace registrations, exposes an
+ * expanded view, and projects builtin and named disable state. PATCH borrows
+ * the addressed workspace's validated common-field / raw-file
  * writer and echoes the authoritative post-reload profile.
  */
 
 import {
   AgentProfileWriteErrors,
+  BUILTIN_AGENT_PROFILE_SOURCE_ID,
   DISABLED_BUILTIN_PROFILES_SECTION,
+  DISABLED_NAMED_PROFILES_SECTION,
   ErrorCodes,
   IAgentProfileRegistry,
   IConfigService,
@@ -19,6 +22,7 @@ import {
   type AgentProfileRegistration,
   type AgentProfileRouteDefinition,
   type DisabledBuiltinProfilesConfig,
+  type DisabledNamedProfilesConfig,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
 import { z } from 'zod';
@@ -27,6 +31,7 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import {
+  listNamedAgentProfilesQuerySchema,
   listNamedAgentProfilesResponseSchema,
   namedAgentProfileNameParamsSchema,
   namedAgentProfileSchema,
@@ -39,7 +44,7 @@ interface AgentProfilesRouteHost {
     path: string,
     options: { preHandler: unknown[]; schema?: Record<string, unknown> },
     handler: (
-      req: { id: string },
+      req: { id: string; query: { expand?: boolean } },
       reply: { send(payload: unknown): unknown },
     ) => Promise<void> | void,
   ): unknown;
@@ -60,6 +65,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     {
       method: 'GET',
       path: '/agents',
+      querystring: listNamedAgentProfilesQuerySchema,
       success: { data: listNamedAgentProfilesResponseSchema },
       description: 'List loaded named agent profiles and route model pins',
       tags: ['agents'],
@@ -71,29 +77,15 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
       const disabledBuiltins = new Set(
         config.get<DisabledBuiltinProfilesConfig>(DISABLED_BUILTIN_PROFILES_SECTION) ?? [],
       );
-      const deduped = new Map<
-        string,
-        { registration: AgentProfileRegistration; profile: AgentProfile }
-      >();
-      const registrations = registry.entries().toSorted((a, b) =>
-        b.priority - a.priority
-        || a.sourceId.localeCompare(b.sourceId)
-        || (a.workspaceKey ?? '').localeCompare(b.workspaceKey ?? '')
+      const disabledNamed = new Set(
+        config.get<DisabledNamedProfilesConfig>(DISABLED_NAMED_PROFILES_SECTION) ?? [],
       );
-      for (const registration of registrations) {
-        for (const profile of registration.contribution.profiles) {
-          const key = `${profile.name}\0${profile.sourcePath ?? ''}`;
-          if (!deduped.has(key)) deduped.set(key, { registration, profile });
-        }
-      }
-      const items = [...deduped.values()]
-        .map(({ registration, profile }) =>
-          toNamedAgentProfile(registration, profile, disabledBuiltins))
-        .toSorted((a, b) =>
-          a.name.localeCompare(b.name)
-          || a.source.localeCompare(b.source)
-          || (a.source_file ?? '').localeCompare(b.source_file ?? '')
-        );
+      const items = projectNamedAgentProfiles(
+        registry.entries(),
+        disabledBuiltins,
+        disabledNamed,
+        req.query.expand === true,
+      );
       reply.send(okEnvelope({ items }, req.id));
     },
   );
@@ -195,10 +187,83 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
   );
 }
 
+function projectNamedAgentProfiles(
+  entries: readonly AgentProfileRegistration[],
+  disabledBuiltins: ReadonlySet<string>,
+  disabledNamed: ReadonlySet<string>,
+  expand: boolean,
+): NamedAgentProfile[] {
+  const registrations = entries.toSorted((a, b) =>
+    b.priority - a.priority
+    || a.sourceId.localeCompare(b.sourceId)
+    || (a.workspaceKey ?? '').localeCompare(b.workspaceKey ?? '')
+  );
+  if (expand) {
+    return registrations
+      .flatMap((registration) =>
+        registration.contribution.profiles.map((profile) =>
+          toNamedAgentProfile(registration, profile, disabledBuiltins, disabledNamed),
+        ))
+      .toSorted(compareNamedAgentProfiles);
+  }
+
+  const merged = new Map<
+    string,
+    {
+      registration: AgentProfileRegistration;
+      profile: AgentProfile;
+      workspaceIds: Set<string>;
+    }
+  >();
+  for (const registration of registrations) {
+    for (const profile of registration.contribution.profiles) {
+      const key = JSON.stringify([
+        profile.name,
+        registration.sourceId,
+        profile.sourcePath ?? null,
+      ]);
+      const existing = merged.get(key);
+      if (existing !== undefined) {
+        if (registration.workspaceKey !== undefined) {
+          existing.workspaceIds.add(registration.workspaceKey);
+        }
+        continue;
+      }
+      merged.set(key, {
+        registration,
+        profile,
+        workspaceIds: new Set(
+          registration.workspaceKey === undefined ? [] : [registration.workspaceKey],
+        ),
+      });
+    }
+  }
+
+  return [...merged.values()]
+    .map(({ registration, profile, workspaceIds }) =>
+      toNamedAgentProfile(
+        registration,
+        profile,
+        disabledBuiltins,
+        disabledNamed,
+        workspaceIds.size === 0 ? undefined : [...workspaceIds].toSorted(),
+      ))
+    .toSorted(compareNamedAgentProfiles);
+}
+
+function compareNamedAgentProfiles(a: NamedAgentProfile, b: NamedAgentProfile): number {
+  return a.name.localeCompare(b.name)
+    || a.source.localeCompare(b.source)
+    || (a.source_file ?? '').localeCompare(b.source_file ?? '')
+    || (a.workspace_id ?? '').localeCompare(b.workspace_id ?? '');
+}
+
 function toNamedAgentProfile(
   registration: AgentProfileRegistration,
   profile: AgentProfile,
   disabledBuiltins: ReadonlySet<string> = new Set(),
+  disabledNamed: ReadonlySet<string> = new Set(),
+  workspaceIds?: readonly string[],
 ): NamedAgentProfile {
   return {
     name: profile.name,
@@ -206,13 +271,16 @@ function toNamedAgentProfile(
     when_to_use: profile.whenToUse,
     source: registration.sourceId,
     workspace_id: registration.workspaceKey,
+    workspace_ids: workspaceIds === undefined ? undefined : [...workspaceIds],
     source_file: profile.sourcePath,
     pinned_model_alias: profile.modelAlias,
     thinking_effort: profile.thinkingEffort,
     service_tier: profile.serviceTier,
     tools: profile.tools === undefined ? undefined : [...profile.tools],
     disallowed_tools: profile.disallowedTools === undefined ? undefined : [...profile.disallowedTools],
-    disabled: registration.sourceId === 'builtin' && disabledBuiltins.has(profile.name),
+    disabled: registration.sourceId === BUILTIN_AGENT_PROFILE_SOURCE_ID
+      ? disabledBuiltins.has(profile.name)
+      : disabledNamed.has(profile.name),
     routes: (registration.contribution.routes ?? [])
       .filter((candidate) => candidate.profile === profile.name)
       .map(toNamedAgentRoute)

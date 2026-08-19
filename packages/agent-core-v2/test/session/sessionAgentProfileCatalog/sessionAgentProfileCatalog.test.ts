@@ -32,7 +32,10 @@ import { AgentProfileRegistryService } from '#/app/agentProfileCatalog/agentProf
 import { IConfigService } from '#/app/config/config';
 import type { IFlagService } from '#/app/flag/flag';
 import { SessionAgentProfileCatalogService } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalogService';
-import { DISABLED_BUILTIN_PROFILES_SECTION } from '#/workspace/workspaceAgentProfileLoader/configSection';
+import {
+  DISABLED_BUILTIN_PROFILES_SECTION,
+  DISABLED_NAMED_PROFILES_SECTION,
+} from '#/workspace/workspaceAgentProfileLoader/configSection';
 import {
   AGENT_PROFILE_SOURCE_PRIORITY,
   AgentProfileContribution,
@@ -65,11 +68,16 @@ function profile(name: string, options?: { readonly override?: boolean }): Agent
   });
 }
 
-function configStub(initialDisabled: readonly string[] = []): {
+function configStub(
+  initialDisabled: readonly string[] = [],
+  initialDisabledNamed: readonly string[] = [],
+): {
   readonly service: IConfigService;
   setDisabled(names: readonly string[]): void;
+  setDisabledNamed(names: readonly string[]): void;
 } {
   let disabled = [...initialDisabled];
+  let disabledNamed = [...initialDisabledNamed];
   const sectionChanges = new Emitter<{ readonly domain: string }>();
   return {
     service: {
@@ -77,8 +85,11 @@ function configStub(initialDisabled: readonly string[] = []): {
       ready: Promise.resolve(),
       onDidChangeConfiguration: () => ({ dispose: () => {} }),
       onDidSectionChange: sectionChanges.event,
-      get: (domain: string) =>
-        domain === DISABLED_BUILTIN_PROFILES_SECTION ? [...disabled] : undefined,
+      get: (domain: string) => {
+        if (domain === DISABLED_BUILTIN_PROFILES_SECTION) return [...disabled];
+        if (domain === DISABLED_NAMED_PROFILES_SECTION) return [...disabledNamed];
+        return undefined;
+      },
       inspect: () => ({
         value: undefined,
         defaultValue: undefined,
@@ -95,13 +106,21 @@ function configStub(initialDisabled: readonly string[] = []): {
       disabled = [...names];
       sectionChanges.fire({ domain: DISABLED_BUILTIN_PROFILES_SECTION });
     },
+    setDisabledNamed: (names) => {
+      disabledNamed = [...names];
+      sectionChanges.fire({ domain: DISABLED_NAMED_PROFILES_SECTION });
+    },
   };
 }
 
-function makeCatalog(workspaceKey: string = WORKSPACE_KEY, disabled: readonly string[] = []) {
+function makeCatalog(
+  workspaceKey: string = WORKSPACE_KEY,
+  disabled: readonly string[] = [],
+  disabledNamed: readonly string[] = [],
+) {
   const container = new InstantiationService(new ServiceCollection(), true);
   const registry = container.createInstance(AgentProfileRegistryService);
-  const config = configStub(disabled);
+  const config = configStub(disabled, disabledNamed);
   const warnings: string[] = [];
   const log = stubLog();
   log.warn = (message: string) => warnings.push(message);
@@ -284,6 +303,46 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     expect(catalog.get('coder')).toBe(coderProfile);
     expect(catalog.get('plan')).toBe(planProfile);
     expect(catalog.get('explore')).toBeUndefined();
+    expect(seen).toEqual(['catalog']);
+    subscription.dispose();
+    catalog.dispose();
+    container.dispose();
+  });
+
+  it('filters named profiles, rejects their dispatch selection, and hot-reprojects config changes', () => {
+    const { container, catalog, config, contribute } = makeCatalog(
+      WORKSPACE_KEY,
+      [DEFAULT_AGENT_PROFILE_NAME],
+      ['reviewer', DEFAULT_AGENT_PROFILE_NAME],
+    );
+    const defaultProfile = profile(DEFAULT_AGENT_PROFILE_NAME);
+    const namedDefaultProfile = profile(DEFAULT_AGENT_PROFILE_NAME, { override: true });
+    const reviewerProfile = profile('reviewer');
+    const coderProfile = profile('coder');
+    contribute(BUILTIN_AGENT_PROFILE_SOURCE_ID, [defaultProfile]);
+    contribute('user', [namedDefaultProfile, reviewerProfile, coderProfile], {
+      workspaceKey: WORKSPACE_KEY,
+    });
+
+    expect(catalog.getDefault()).toBe(defaultProfile);
+    expect(catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toBeUndefined();
+    expect(catalog.get('reviewer')).toBeUndefined();
+    expect(catalog.get('coder')).toBe(coderProfile);
+    expect(() => catalog.resolveSelection({ profile: 'reviewer' })).toThrow(
+      'Unknown agent type: "reviewer"',
+    );
+
+    const seen: string[] = [];
+    const subscription = catalog.onDidChange((sourceId) => seen.push(sourceId));
+    config.setDisabledNamed(['coder', DEFAULT_AGENT_PROFILE_NAME]);
+
+    expect(catalog.getDefault()).toBe(defaultProfile);
+    expect(catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toBeUndefined();
+    expect(catalog.get('reviewer')).toBe(reviewerProfile);
+    expect(catalog.get('coder')).toBeUndefined();
+    expect(() => catalog.resolveSelection({ profile: 'coder' })).toThrow(
+      'Unknown agent type: "coder"',
+    );
     expect(seen).toEqual(['catalog']);
     subscription.dispose();
     catalog.dispose();

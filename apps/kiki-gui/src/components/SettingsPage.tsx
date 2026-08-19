@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 
 import type {
   McpServer,
@@ -23,10 +23,13 @@ import { useI18n } from '../i18n';
 import { errorText, issueText, type I18nKey, type Locale } from '../i18n/locale';
 import { clearStoredDrafts } from '../lib/drafts';
 import {
+  disabledProfilePatch,
   experimentalFlagRows,
+  mergeNamedAgentProfiles,
   subagentGovernanceFromConfig,
   subagentGovernancePatch,
   validateSubagentGovernance,
+  workspaceChipDisplay,
   type SubagentGovernanceDraft,
   type SubagentGovernanceIssue,
 } from '../lib/agentSettings';
@@ -41,6 +44,8 @@ import type {
 import {
   appendExtraSkillDirs,
   buildSettingsSearchIndex,
+  CAPABILITY_GROUPS,
+  capabilityGroupForCard,
   clearRestartRequirement,
   markRestartRequired,
   parseAdvancedServerConfig,
@@ -75,11 +80,11 @@ import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
 const SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'general', labelKey: 'st.section.general' },
   { id: 'models', labelKey: 'st.section.models' },
-  { id: 'connection', labelKey: 'st.section.connection' },
   { id: 'providers', labelKey: 'st.section.providers' },
   { id: 'agents', labelKey: 'st.section.agents' },
   { id: 'capabilities', labelKey: 'st.section.capabilities' },
   { id: 'workspaces', labelKey: 'st.section.workspaces' },
+  { id: 'connection', labelKey: 'st.section.connection' },
   { id: 'about', labelKey: 'st.section.about' },
 ];
 
@@ -121,6 +126,63 @@ function SectionCard({
       </div>
       {children}
     </section>
+  );
+}
+
+/**
+ * Collapsible group header for the capabilities section — a labeled layer
+ * (title + card count + chevron + hairline rule) whose body folds with the
+ * shared `.expand-collapse` grid-rows transition, mirroring the
+ * /capabilities page's CapabilityGroup without nesting card chrome.
+ */
+function SettingsGroup({
+  id,
+  title,
+  count,
+  open,
+  onToggle,
+  children,
+}: {
+  id: string;
+  title: string;
+  count: number;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div data-settings-group={id} className="space-y-3">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={`st-group-body-${id}`}
+        onClick={onToggle}
+        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-panel focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+      >
+        <span
+          aria-hidden
+          className={`shrink-0 text-[11px] text-ink-faint transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
+        >
+          ▾
+        </span>
+        <span className="shrink-0 text-[12px] font-semibold uppercase tracking-wide text-ink-soft">
+          {title}
+        </span>
+        <span className="shrink-0 rounded-full border border-hairline bg-paper px-1.5 py-px font-mono text-[10px] text-ink-faint tabular-nums">
+          {count}
+        </span>
+        <span aria-hidden className="h-px min-w-4 flex-1 bg-hairline" />
+      </button>
+      <div
+        id={`st-group-body-${id}`}
+        className="expand-collapse grid"
+        style={{ gridTemplateRows: open ? '1fr' : '0fr' }}
+      >
+        <div className="overflow-hidden">
+          <div className="space-y-5 pb-1">{children}</div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -950,6 +1012,12 @@ function CapabilitiesSection() {
   const [advancedFeedback, setAdvancedFeedback] = useState<Feedback>(null);
   const restart = useRestartRequirement();
   const isDesktop = isDesktopRuntime();
+  // Group fold state: user toggles override CAPABILITY_GROUPS defaults; a
+  // settings-search flash forces the target card's group open so the
+  // scroll + flash lands on a visible card.
+  const [openOverrides, setOpenOverrides] = useState<Readonly<Record<string, boolean>>>({});
+  const flashId = useContext(SettingsFlashContext);
+  const flashGroupId = flashId !== null ? capabilityGroupForCard(flashId)?.id : undefined;
 
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
@@ -1070,53 +1138,61 @@ function CapabilitiesSection() {
     }
   };
 
-  return (
-    <div className="space-y-5">
-      <SectionCard
-        id="st-card-caps"
-        title={t('st.caps.title')}
-        badge={restart.fields.includes('telemetry') ? 'restart' : undefined}
-      >
-        <div className="space-y-4">
-          <Toggle label={t('st.caps.mergeSkills')} checked={mergeSkills} onChange={setMergeSkills} />
-          <div className="space-y-1.5">
-            <Toggle label={t('st.caps.telemetry')} checked={telemetry} onChange={setTelemetry} />
-            <Hint>{t('st.caps.telemetryHint')}</Hint>
-          </div>
-          <div>
-            <div className="flex items-center justify-between gap-3">
-              <label htmlFor="settings-extra-skill-dirs" className="text-[11px] font-medium text-ink-soft">{t('st.caps.extraDirs')}</label>
-              {isDesktop ? (
-                <button
-                  type="button"
-                  className={SECONDARY_BUTTON}
-                  disabled={selectingDirs}
-                  onClick={() => void selectExtraDirs()}
-                >
-                  {t('st.caps.selectDirs')}
-                </button>
-              ) : null}
+  const groupContent: Record<string, React.ReactNode> = {
+    skills: (
+      <>
+        <SectionCard
+          id="st-card-caps"
+          title={t('st.caps.title')}
+          badge={restart.fields.includes('telemetry') ? 'restart' : undefined}
+        >
+          <div className="space-y-4">
+            <Toggle label={t('st.caps.mergeSkills')} checked={mergeSkills} onChange={setMergeSkills} />
+            <div className="space-y-1.5">
+              <Toggle label={t('st.caps.telemetry')} checked={telemetry} onChange={setTelemetry} />
+              <Hint>{t('st.caps.telemetryHint')}</Hint>
             </div>
-            <textarea id="settings-extra-skill-dirs" className={`${INPUT} mt-1 min-h-24 font-mono`} value={extraDirs} onChange={(event) => { setExtraDirs(event.target.value); }} placeholder={t('st.caps.extraDirsPlaceholder')} />
+            <div>
+              <div className="flex items-center justify-between gap-3">
+                <label htmlFor="settings-extra-skill-dirs" className="text-[11px] font-medium text-ink-soft">{t('st.caps.extraDirs')}</label>
+                {isDesktop ? (
+                  <button
+                    type="button"
+                    className={SECONDARY_BUTTON}
+                    disabled={selectingDirs}
+                    onClick={() => void selectExtraDirs()}
+                  >
+                    {t('st.caps.selectDirs')}
+                  </button>
+                ) : null}
+              </div>
+              <textarea id="settings-extra-skill-dirs" className={`${INPUT} mt-1 min-h-24 font-mono`} value={extraDirs} onChange={(event) => { setExtraDirs(event.target.value); }} placeholder={t('st.caps.extraDirsPlaceholder')} />
+            </div>
+            <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? t('common.saving') : t('st.caps.save')}</button>
+            <FeedbackLine feedback={feedback} />
           </div>
-          <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? t('common.saving') : t('st.caps.save')}</button>
-          <FeedbackLine feedback={feedback} />
-        </div>
-      </SectionCard>
+        </SectionCard>
 
-      <RuntimeConfigEditor />
-
-      <ExperimentalFlagsCard />
-
-      <SectionCard id="st-card-advanced" title={t('st.advanced.title')}>
-        <div className="space-y-3">
-          <Hint>{t('st.advanced.hint')}</Hint>
-          <textarea className={`${INPUT} min-h-64 font-mono`} value={advanced} onChange={(event) => { setAdvanced(event.target.value); }} aria-label={t('st.advanced.aria')} />
-          <button type="button" className={PRIMARY_BUTTON} disabled={advancedSaving} onClick={() => void saveAdvanced()}>{advancedSaving ? t('common.saving') : t('st.advanced.save')}</button>
-          <FeedbackLine feedback={advancedFeedback} />
-        </div>
-      </SectionCard>
-
+        <SectionCard id="st-card-skills" title={t('st.skills.title')}>
+          <div className="mb-3 flex items-center gap-2">
+            <span className="text-[11px] font-medium text-ink-soft">{t('st.skills.workspace')}</span>
+            <SearchableSelect
+              id="workspace-skills-select"
+              options={workspaceOptions}
+              value={workspaceId}
+              onChange={setWorkspaceId}
+              ariaLabel={t('st.skills.workspace')}
+            />
+          </div>
+          <div className="space-y-2">
+            {skillsQuery.data?.skills.map((skill) => <SkillRow key={skill.name} skill={skill} />)}
+            {skillsQuery.isLoading ? <Hint>{t('st.skills.loading')}</Hint> : null}
+            {skillsQuery.isError ? <InlineError error={skillsQuery.error} /> : null}
+          </div>
+        </SectionCard>
+      </>
+    ),
+    mcp: (
       <SectionCard id="st-card-mcp" title={t('st.mcp.title')}>
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-2">
@@ -1146,24 +1222,42 @@ function CapabilitiesSection() {
           />
         </div>
       </SectionCard>
-
-      <SectionCard id="st-card-skills" title={t('st.skills.title')}>
-        <div className="mb-3 flex items-center gap-2">
-          <span className="text-[11px] font-medium text-ink-soft">{t('st.skills.workspace')}</span>
-          <SearchableSelect
-            id="workspace-skills-select"
-            options={workspaceOptions}
-            value={workspaceId}
-            onChange={setWorkspaceId}
-            ariaLabel={t('st.skills.workspace')}
-          />
-        </div>
-        <div className="space-y-2">
-          {skillsQuery.data?.skills.map((skill) => <SkillRow key={skill.name} skill={skill} />)}
-          {skillsQuery.isLoading ? <Hint>{t('st.skills.loading')}</Hint> : null}
-          {skillsQuery.isError ? <InlineError error={skillsQuery.error} /> : null}
+    ),
+    runtime: <RuntimeConfigEditor />,
+    experimental: <ExperimentalFlagsCard />,
+    advanced: (
+      <SectionCard id="st-card-advanced" title={t('st.advanced.title')}>
+        <div className="space-y-3">
+          <Hint>{t('st.advanced.hint')}</Hint>
+          <textarea className={`${INPUT} min-h-64 font-mono`} value={advanced} onChange={(event) => { setAdvanced(event.target.value); }} aria-label={t('st.advanced.aria')} />
+          <button type="button" className={PRIMARY_BUTTON} disabled={advancedSaving} onClick={() => void saveAdvanced()}>{advancedSaving ? t('common.saving') : t('st.advanced.save')}</button>
+          <FeedbackLine feedback={advancedFeedback} />
         </div>
       </SectionCard>
+    ),
+  };
+
+  return (
+    <div className="space-y-6">
+      <p className="px-1 text-[11.5px] text-ink-faint">
+        {t('st.caps.browseHint')}{' '}
+        <Link to="/capabilities" className="font-medium text-accent hover:underline">{t('st.caps.browseLink')}</Link>
+      </p>
+      {CAPABILITY_GROUPS.map((group) => {
+        const open = group.id === flashGroupId ? true : (openOverrides[group.id] ?? group.defaultOpen);
+        return (
+          <SettingsGroup
+            key={group.id}
+            id={group.id}
+            title={t(group.titleKey)}
+            count={group.cardIds.length}
+            open={open}
+            onToggle={() => { setOpenOverrides((current) => ({ ...current, [group.id]: !open })); }}
+          >
+            {groupContent[group.id]}
+          </SettingsGroup>
+        );
+      })}
     </div>
   );
 }
@@ -1346,12 +1440,15 @@ function NamedAgentProfileRow({
     profile.workspace_id !== undefined &&
     profile.source_file !== undefined &&
     (profile.source === 'user' || profile.source === 'workspace' || profile.source === 'extra');
-  const toggleLocked = profile.source !== 'builtin';
-  const toggleTitle = profile.source !== 'builtin'
-    ? t('st.namedAgents.nonBuiltinToggleHint')
-    : profile.name === 'agent'
+  // Both disable channels are user-facing now: built-in profiles write
+  // disabled_builtin_profiles, named profiles write disabled_named_profiles.
+  const toggleTitle = profile.source === 'builtin'
+    ? profile.name === 'agent'
       ? t('st.namedAgents.defaultToggleHint')
-      : t('st.namedAgents.builtinToggleHint');
+      : t('st.namedAgents.builtinToggleHint')
+    : t('st.namedAgents.namedToggleHint');
+  const workspaceIds = profile.workspace_ids ?? (profile.workspace_id === undefined ? [] : [profile.workspace_id]);
+  const workspaceChips = workspaceChipDisplay(workspaceIds);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -1450,18 +1547,45 @@ function NamedAgentProfileRow({
   };
 
   return (
-    <div className="rounded-lg border border-hairline bg-paper px-3 py-2">
+    <div
+      data-agent-profile={profile.name}
+      className={`rounded-lg border border-hairline bg-paper px-3 py-2 transition-opacity ${profile.disabled ? 'opacity-60' : ''}`}
+    >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="font-mono text-[12.5px] font-medium text-ink">{profile.name}</p>
+          <p className="font-mono text-[12.5px] font-medium text-ink">
+            {profile.name}
+            {profile.disabled ? (
+              <span className="ml-2 rounded-full border border-hairline bg-panel px-1.5 py-px align-middle text-[9px] font-medium uppercase tracking-wide text-ink-faint">
+                {t('st.namedAgents.disabledBadge')}
+              </span>
+            ) : null}
+          </p>
           {!editing && profile.description !== undefined ? <p className="text-[11.5px] text-ink-soft">{profile.description}</p> : null}
+          {workspaceChips.shown.length > 0 ? (
+            <p className="mt-1 flex flex-wrap items-center gap-1">
+              {workspaceChips.shown.map((id) => (
+                <span key={id} title={id} className="max-w-40 truncate rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[9.5px] text-ink-faint">
+                  {id}
+                </span>
+              ))}
+              {workspaceChips.extra > 0 ? (
+                <span
+                  title={workspaceIds.join(', ')}
+                  className="rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[9.5px] text-ink-faint"
+                >
+                  +{workspaceChips.extra} {t('st.namedAgents.workspaces')}
+                </span>
+              ) : null}
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
           <div title={toggleTitle}>
             <Toggle
               label={t('st.namedAgents.enabled')}
               checked={!profile.disabled}
-              disabled={toggleLocked || toggleSaving}
+              disabled={toggleSaving}
               onChange={(enabled) => {
                 setFeedback(null);
                 void onToggleEnabled(profile, enabled).catch((error: unknown) => {
@@ -1541,7 +1665,7 @@ function NamedAgentProfileRow({
       ) : (
         <div className="mt-2 space-y-1 break-all font-mono text-[10px] text-ink-faint">
           <p>{t('st.namedAgents.sourceFile')}: {profile.source_file ?? t('st.namedAgents.builtin')}</p>
-          {profile.workspace_id !== undefined ? <p>{t('st.namedAgents.workspace')}: {profile.workspace_id}</p> : null}
+          {workspaceIds.length > 0 ? <p>{t('st.namedAgents.workspace')}: {workspaceIds.join(', ')}</p> : null}
           {profile.when_to_use !== undefined ? <p>{t('st.namedAgents.whenToUse')}: {profile.when_to_use}</p> : null}
           {profile.pinned_model_alias !== undefined ? <p>{t('st.namedAgents.modelPin')}: {profile.pinned_model_alias}</p> : null}
           {profile.thinking_effort !== undefined ? <p>{t('st.namedAgents.thinkingEffort')}: {profile.thinking_effort}</p> : null}
@@ -1616,21 +1740,18 @@ function NamedAgentProfilesCard() {
     );
   };
   const toggleEnabled = async (profile: NamedAgentProfile, enabled: boolean) => {
-    const disabled = configQuery.data?.disabled_builtin_profiles ?? [];
-    const next = enabled
-      ? disabled.filter((name) => name !== profile.name)
-      : [...new Set([...disabled, profile.name])];
     setToggleSaving(profile.name);
     try {
-      const echoed = await client.patchConfig({ disabled_builtin_profiles: next });
+      const echoed = await client.patchConfig(disabledProfilePatch(configQuery.data ?? {}, profile, enabled));
       queryClient.setQueryData(['config'], echoed);
+      // Named profiles disable globally by name; built-ins only by name+source.
       queryClient.setQueryData<ListNamedAgentProfilesResponse>(
         ['named-agent-profiles'],
         (current) => current === undefined
           ? current
           : {
               items: current.items.map((item) =>
-                item.source === 'builtin' && item.name === profile.name
+                item.name === profile.name && (profile.source !== 'builtin' || item.source === 'builtin')
                   ? { ...item, disabled: !enabled }
                   : item,
               ),
@@ -1640,13 +1761,19 @@ function NamedAgentProfilesCard() {
       setToggleSaving(null);
     }
   };
+  // Merged view: one row per name+source+file across workspaces. Idempotent
+  // over servers that already return the merged /agents payload.
+  const profiles = useMemo(
+    () => mergeNamedAgentProfiles(profilesQuery.data?.items ?? []),
+    [profilesQuery.data],
+  );
 
   return (
     <SectionCard id="st-card-named-agents" title={t('st.namedAgents.title')}>
       <div className="space-y-3">
         <Hint>{t('st.namedAgents.editHint')}</Hint>
         <div className="space-y-2">
-          {profilesQuery.data?.items.map((profile, index) => (
+          {profiles.map((profile, index) => (
             <NamedAgentProfileRow
               key={`${profile.name}:${profile.source}:${profile.source_file ?? profile.workspace_id ?? ''}:${index}`}
               profile={profile}

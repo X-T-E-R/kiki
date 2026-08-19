@@ -39,6 +39,7 @@ export * from './rest/fs';
 export * from './rest/file';
 export * from './rest/modelCatalog';
 export * from './rest/config';
+export * from './rest/agentProfile';
 export * from './rest/terminal';
 export * from './rest/connection';
 export * from './rest/guiStore';
