@@ -17,7 +17,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
+
+import type { Workspace } from '@moonshot-ai/protocol';
 import {
   Navigate,
   Route,
@@ -49,7 +51,14 @@ import {
   readNativeDesktopPrefs,
   writeNativeDesktopPrefs,
 } from './lib/desktop';
-import { dedupeSessions, mergeSessionFirstPage, type SessionListData } from './lib/sessionList';
+import {
+  arrangePinnedFirst,
+  dedupeSessions,
+  groupSessionsByTime,
+  mergeSessionFirstPage,
+  type SessionListData,
+  type TimeGroup,
+} from './lib/sessionList';
 import { readLastSessionId, writeDesktopPrefs } from './lib/settings';
 import { anyOverlayOpen } from './lib/uiBusy';
 import { resolveWindowTitle, type WindowRoute } from './lib/windowTitle';
@@ -84,6 +93,7 @@ export function App() {
   const desktop = isDesktopRuntime();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [workspaceFilter, setWorkspaceFilter] = useState<string | undefined>(undefined);
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [dirtyIds, setDirtyIds] = useState<readonly string[]>([]);
@@ -140,11 +150,12 @@ export function App() {
   const isCapabilitiesRoute = useMatch('/capabilities') !== null;
 
   const sessionsQuery = useInfiniteQuery({
-    queryKey: ['sessions', showArchived],
+    queryKey: ['sessions', showArchived, workspaceFilter],
     queryFn: ({ pageParam }) =>
       client.listSessions({
         page_size: 100,
         include_archive: showArchived || undefined,
+        workspace_id: workspaceFilter,
         before_id: pageParam,
       }),
     getNextPageParam: (lastPage) =>
@@ -158,17 +169,40 @@ export function App() {
   useEffect(() => {
     const timer = setInterval(() => {
       void client
-        .listSessions({ page_size: 100, include_archive: showArchived || undefined })
+        .listSessions({
+          page_size: 100,
+          include_archive: showArchived || undefined,
+          workspace_id: workspaceFilter,
+        })
         .then((first) => {
-          queryClient.setQueryData(['sessions', showArchived], (old: SessionListData | undefined) =>
-            mergeSessionFirstPage(old, first),
+          queryClient.setQueryData(
+            ['sessions', showArchived, workspaceFilter],
+            (old: SessionListData | undefined) => mergeSessionFirstPage(old, first),
           );
         })
         .catch(() => undefined);
     }, 5000);
     return () => { clearInterval(timer); };
-  }, [client, queryClient, showArchived]);
-  const sessions = useMemo(() => dedupeSessions(sessionsQuery.data), [sessionsQuery.data]);
+  }, [client, queryClient, showArchived, workspaceFilter]);
+
+  const workspacesQuery = useQuery({
+    queryKey: ['workspaces'],
+    queryFn: () => client.listWorkspaces(),
+    staleTime: 30_000,
+  });
+  const workspaceOptions = useMemo<readonly Workspace[]>(
+    () => workspacesQuery.data?.items ?? [],
+    [workspacesQuery.data],
+  );
+
+  const sessions = useMemo(
+    () => arrangePinnedFirst(dedupeSessions(sessionsQuery.data)),
+    [sessionsQuery.data],
+  );
+  const sessionGroups = useMemo<readonly TimeGroup[]>(
+    () => groupSessionsByTime(sessions, Date.now()),
+    [sessions],
+  );
 
   // document.title follows the route: session title, page name, or bare Kiki.
   useEffect(() => {
@@ -301,7 +335,11 @@ export function App() {
         className={`app-sidebar ${sidebarOpen ? 'open' : ''}`}
         activeSessionId={activeSessionId}
         sessions={sessions}
+        sessionGroups={sessionGroups}
         sessionsQuery={sessionsQuery}
+        workspaceOptions={workspaceOptions}
+        workspaceFilter={workspaceFilter}
+        onWorkspaceFilter={setWorkspaceFilter}
         showArchived={showArchived}
         onToggleArchived={() => { setShowArchived((value) => !value); }}
         onNewSession={() => { void navigate('/new'); }}

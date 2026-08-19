@@ -351,6 +351,7 @@ class FixtureServer {
     this.lastSearchBody = null; // last POST /search body (walker assertions)
     this.lastFileUpload = null; // last POST /files meta (walker assertions)
     this.fileCounter = 0;
+    this.workspaces = []; // mutable registered workspaces (PATCH/DELETE editable)
     this.oauthOverride = null; // mutable oauth flow state (POST/DELETE /oauth/login)
     this.http = createServer((req, res) => void this.handleHttp(req, res));
     this.wss = new WebSocketServer({ noServer: true });
@@ -370,6 +371,7 @@ class FixtureServer {
     this.models = structuredClone(data.models ?? []);
     this.auth = structuredClone(data.auth ?? null);
     this.sessions.clear();
+    this.workspaces = structuredClone(data.workspaces ?? []);
     for (const session of data.sessions ?? []) {
       const bound = bind(session, session.id);
       this.sessions.set(session.id, new FixtureSession(bound, bind(data.snapshots?.[session.id] ?? {}, session.id)));
@@ -867,14 +869,31 @@ class FixtureServer {
       });
     }
     if (path === '/workspaces') {
-      return this.envelope(res, {
-        items: this.scenario?.data.workspaces ?? [
-          { id: 'wd_fixture_000000000000', root: 'C:/fixture', name: 'fixture', created_at: now(), last_opened_at: now(), session_count: sessions.length },
-        ],
-      });
+      const items =
+        this.workspaces.length > 0
+          ? this.workspaces
+          : this.scenario?.data.workspaces ?? [
+              { id: 'wd_fixture_000000000000', root: 'C:/fixture', name: 'fixture', created_at: now(), last_opened_at: now(), session_count: sessions.length },
+            ];
+      return this.envelope(res, { items });
     }
-    // Session-less workspace file search (`@` mentions on /new) — same
-    // filtering as the session route, `workspace` carried in the body.
+    const workspaceMatch = /^\/workspaces\/([^/]+)$/.exec(path);
+    if (workspaceMatch !== null && method === 'PATCH') {
+      const target = this.workspaces.find((ws) => ws.id === workspaceMatch[1]);
+      if (target === undefined) {
+        return this.envelope(res, null, 40410, 'workspace.not_found');
+      }
+      target.name = String(body?.name ?? target.name);
+      return this.envelope(res, target);
+    }
+    if (workspaceMatch !== null && method === 'DELETE') {
+      const index = this.workspaces.findIndex((ws) => ws.id === workspaceMatch[1]);
+      if (index < 0) {
+        return this.envelope(res, null, 40410, 'workspace.not_found');
+      }
+      this.workspaces.splice(index, 1);
+      return this.envelope(res, { deleted: true });
+    }
     if (path === '/workspace/fs:search' && method === 'POST') {
       return this.replyFsSearch(res, null, body);
     }
@@ -902,13 +921,23 @@ class FixtureServer {
     if (path === '/search' && method === 'POST') {
       const q = String(body?.query ?? '').toLowerCase();
       this.lastSearchBody = body ?? null;
-      const hits = (this.scenario?.data.searchHits ?? []).filter((hit) =>
+      let hits = (this.scenario?.data.searchHits ?? []).filter((hit) =>
         q === '' ||
         hit.snippet.toLowerCase().includes(q) ||
         hit.session_title.toLowerCase().includes(q));
+      // Optional cursor "pagination": `SEARCH_PAGE_SIZE` controls the page, and
+      // `page_token` (any non-empty string) advances to the following page.
+      const pageSize = this.scenario?.data.searchPageSize ?? hits.length;
+      const requestedPage = body?.page_token === undefined ? 0 : 1;
+      const start = requestedPage * pageSize;
+      const page = hits.slice(start, start + pageSize);
+      const hasMore = hits.length > start + pageSize;
+      const pageToken =
+        requestedPage === 0 && hasMore ? 'page-2' : requestedPage === 1 && hasMore ? 'page-3' : undefined;
       return this.envelope(res, {
-        items: hits,
-        has_more: false,
+        items: page,
+        has_more: hasMore,
+        page_token: pageToken,
         index_state: {
           state: 'ready',
           indexed_sessions: this.sessions.size,
@@ -922,6 +951,10 @@ class FixtureServer {
       let items = sessions.map((s) => s.record);
       if (query.get('include_archive') !== 'true') items = items.filter((s) => s.archived !== true);
       if (query.get('archived_only') === 'true') items = items.filter((s) => s.archived === true);
+      const workspaceId = query.get('workspace_id');
+      if (workspaceId !== null && workspaceId !== '') {
+        items = items.filter((s) => s.workspace_id === workspaceId);
+      }
       items.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
       // Keyset pagination like the real route: before_id pages older than the
       // cursor, after_id newer; page_size bounds the wire page (default 20).
@@ -965,6 +998,16 @@ class FixtureServer {
     if (tail === '' ) return this.envelope(res, session.record);
     if (tail === '/profile' && body !== undefined) {
       if (typeof body.title === 'string') session.record.title = body.title;
+      // Mirror the real `updateSessionProfile`: a metadata patch merges onto
+      // the existing custom document (pin flags survive renames that omit it).
+      if (body.metadata !== undefined && typeof body.metadata === 'object' && body.metadata !== null) {
+        const merged = {};
+        for (const [key, value] of Object.entries(session.record.metadata ?? {})) {
+          if (key !== 'cwd') merged[key] = value;
+        }
+        Object.assign(merged, body.metadata);
+        session.record.metadata = { ...merged, cwd: session.record.metadata?.cwd ?? 'C:/fixture' };
+      }
       session.record.updated_at = now();
       this.emit(session.record.id, { type: 'session.meta.updated', payload: { title: session.record.title } });
       return this.envelope(res, session.record);

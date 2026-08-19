@@ -65,6 +65,7 @@ import type {
   Terminal,
   UndoSessionResponse,
   UpdateSessionProfileRequest,
+  Workspace,
 } from '@moonshot-ai/protocol';
 
 export class ApiError extends Error {
@@ -562,6 +563,15 @@ export interface GetAgentTranscriptOptions {
   readonly pageSize?: number;
 }
 
+/**
+ * `GET /sessions` query widened with `workspace_id` — kap-server accepts it
+ * (`sessionsListQueryCoercion`) but `@moonshot-ai/protocol`'s
+ * `ListSessionsQuery` has not caught up, so the client advertises it locally.
+ */
+export interface ListSessionsOptions extends ListSessionsQuery {
+  readonly workspace_id?: string;
+}
+
 function joinUrl(baseUrl: string, path: string): string {
   const root = baseUrl === '' ? window.location.origin : baseUrl.replace(/\/+$/, '');
   return `${root}/api/v1${path}`;
@@ -671,7 +681,7 @@ export class KikiClient {
     return this.request<MetaResponse & { experimental_flags?: Record<string, boolean> }>('GET', '/meta');
   }
 
-  listSessions(query: ListSessionsQuery = {}): Promise<PageResponse<Session>> {
+  listSessions(query: ListSessionsOptions = {}): Promise<PageResponse<Session>> {
     return this.request<PageResponse<Session>>('GET', '/sessions', {
       query: {
         page_size: query.page_size ?? 100,
@@ -681,6 +691,7 @@ export class KikiClient {
         include_archive: query.include_archive,
         archived_only: query.archived_only,
         exclude_empty: query.exclude_empty,
+        workspace_id: query.workspace_id,
       },
     });
   }
@@ -994,6 +1005,23 @@ export class KikiClient {
 
   listWorkspaces(): Promise<ListWorkspacesResponse> {
     return this.request<ListWorkspacesResponse>('GET', '/workspaces');
+  }
+
+  /** `PATCH /workspaces/{id}` — display-name rename (server echos the workspace). */
+  renameWorkspace(workspaceId: string, name: string): Promise<Workspace> {
+    return this.request<Workspace>(
+      'PATCH',
+      `/workspaces/${encodeURIComponent(workspaceId)}`,
+      { body: { name } },
+    );
+  }
+
+  /** `DELETE /workspaces/{id}` — unregister (does not remove on-disk content). */
+  removeWorkspace(workspaceId: string): Promise<{ deleted: true }> {
+    return this.request<{ deleted: true }>(
+      'DELETE',
+      `/workspaces/${encodeURIComponent(workspaceId)}`,
+    );
   }
 
   getAuth(): Promise<AuthSummary> {

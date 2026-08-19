@@ -257,6 +257,14 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
                       {session.title !== '' ? session.title : session.last_prompt ?? session.id}
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    data-recent-more
+                    onClick={() => { void navigate('/settings/workspaces'); }}
+                    className="rounded-full border border-dashed border-hairline-strong px-3 py-1 text-[11.5px] text-ink-faint transition-colors hover:border-accent hover:text-accent"
+                  >
+                    {t('new.recentMore')}
+                  </button>
                 </div>
               </div>
             </div>,
