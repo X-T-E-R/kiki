@@ -36,7 +36,13 @@ import {
 import { API_CODES, ApiError, isSessionNotFoundMessage } from '../lib/client';
 import { readComposerState, readDraft, writeComposerState, writeDraft } from '../lib/drafts';
 import { isMainWindowVisibleAndFocused, showDesktopNotification } from '../lib/desktop';
-import { buildQuotePrefix } from '../lib/selectionQuote';
+import {
+  addAnnotation,
+  buildAnnotationsPrefix,
+  buildQuotePrefix,
+  removeAnnotation,
+  type SelectionAnnotation,
+} from '../lib/selectionQuote';
 import { useI18n } from '../i18n';
 import type { I18nKey } from '../i18n/locale';
 import {
@@ -936,13 +942,26 @@ export function SessionView({
   // button. The route keys this component by session id, so the quote resets
   // with the session; send (and the chip's ×) clear it explicitly.
   const [quote, setQuote] = useState<string | null>(null);
+  // Selection annotations (quote + one-line comment) accumulate independently
+  // of the quote chip — any number of them ride the same prompt.
+  const [annotations, setAnnotations] = useState<readonly SelectionAnnotation[]>([]);
   const transcriptQuoteRef = useRef<HTMLDivElement>(null);
-  const handleQuoteSelection = useCallback((text: string) => {
-    setQuote(text);
+  const focusComposer = useCallback(() => {
     // Return focus to the composer so the user can type the follow-up at once.
     document.querySelector<HTMLTextAreaElement>('[data-composer]')?.focus();
   }, []);
+  const handleQuoteSelection = useCallback((text: string) => {
+    setQuote(text);
+    focusComposer();
+  }, [focusComposer]);
+  const handleAnnotateSelection = useCallback((text: string, comment: string) => {
+    setAnnotations((current) => addAnnotation(current, text, comment));
+    focusComposer();
+  }, [focusComposer]);
   const handleRemoveQuote = useCallback(() => { setQuote(null); }, []);
+  const handleRemoveAnnotation = useCallback((id: string) => {
+    setAnnotations((current) => removeAnnotation(current, id));
+  }, []);
 
   const controller = useActiveController(sessionId);
   const queryClient = useQueryClient();
@@ -1299,9 +1318,12 @@ export function SessionView({
     if (controller === null) return null;
     return {
       send: (text: string, composerAttachments: readonly ComposerAttachment[]) => {
-        // A quoted transcript selection rides the prompt text as a Markdown
-        // blockquote prefix — exactly what the transcript renders back.
-        const quotedText = quote !== null ? `${buildQuotePrefix(quote)}${text}` : text;
+        // Selection carry-overs ride the prompt text as plain-text prefixes —
+        // annotations first (blockquote + comment per segment), then the plain
+        // quote as a Markdown blockquote — exactly what the transcript renders
+        // back. The wire protocol stays untouched.
+        const prefix = `${buildAnnotationsPrefix(annotations)}${quote !== null ? buildQuotePrefix(quote) : ''}`;
+        const quotedText = prefix === '' ? text : `${prefix}${text}`;
         const content = buildPromptContent(quotedText, composerAttachments);
         if (content === null) return;
         const textPart = content.find((part) => part.type === 'text');
@@ -1332,6 +1354,7 @@ export function SessionView({
             setDraft('');
             setAttachments([]);
             setQuote(null);
+            setAnnotations([]);
             setGoalControl(undefined);
           })
           .catch((error: unknown) => {
@@ -1469,6 +1492,7 @@ export function SessionView({
     goalObjective,
     goalControl,
     quote,
+    annotations,
     sessionId,
     t,
   ]);
@@ -1898,6 +1922,8 @@ export function SessionView({
             onChangeAttachments={setAttachments}
             quote={quote}
             onRemoveQuote={handleRemoveQuote}
+            annotations={annotations}
+            onRemoveAnnotation={handleRemoveAnnotation}
             onActivateSkill={handleActivateSkill}
             onSessionAction={runSessionAction}
             onCompactContext={handleCompactContext}
@@ -1941,7 +1967,9 @@ export function SessionView({
     handleFsSearch,
     attachments,
     quote,
+    annotations,
     handleRemoveQuote,
+    handleRemoveAnnotation,
     handleActivateSkill,
     runSessionAction,
     handleCompactContext,
@@ -2366,7 +2394,11 @@ export function SessionView({
           rowActions={transcriptRowActions}
         />
       </div>
-      <SelectionQuoteButton containerRef={transcriptQuoteRef} onQuote={handleQuoteSelection} />
+      <SelectionQuoteButton
+        containerRef={transcriptQuoteRef}
+        onQuote={handleQuoteSelection}
+        onAnnotate={handleAnnotateSelection}
+      />
       {slots.dock !== null
         ? createPortal(
             <>

@@ -1226,6 +1226,9 @@ export const en = {
   'composer.dropFiles': 'Drop files to attach',
   'composer.quoteSelection': 'Quote',
   'composer.removeQuote': 'Remove quote',
+  'composer.annotateSelection': 'Annotate',
+  'composer.annotationPlaceholder': 'Comment on this selection — Enter to save, Esc to cancel',
+  'composer.removeAnnotation': 'Remove annotation',
   'sv.approvalAmbiguous':
     'Several approval cards are visible — click one of them before answering with y / n.',
   'st.restart.confirmTitle': 'Restart the server?',
