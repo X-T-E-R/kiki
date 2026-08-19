@@ -933,9 +933,18 @@ async function scenarioSettings() {
   await page.waitForSelector(`text=${S.dirtyDiscard}`, { timeout: 5000 });
   await shot('settings-dirty-guard');
   await page.click(`text=${S.dirtyDiscard}`);
+  // Capabilities hierarchy: skills + MCP groups start open, the runtime and
+  // advanced tails start folded.
+  await page.waitForSelector('[data-settings-group="skills"] > button[aria-expanded="true"]', { timeout: 10_000 });
+  await page.waitForSelector('[data-settings-group="mcp"] > button[aria-expanded="true"]', { timeout: 10_000 });
+  await page.waitForSelector('[data-settings-group="advanced"] > button[aria-expanded="false"]', { timeout: 10_000 });
+  await page.waitForSelector('text=fixture-mcp', { timeout: 10_000 });
+  await shot('settings-capabilities');
+  // Fold the runtime group open to reach the tools policy card.
+  await page.locator('[data-settings-group="runtime"] > button').click();
   await page.waitForSelector(`text=${S.tools}`, { timeout: 10_000 });
   await page.waitForTimeout(400);
-  await shot('settings-capabilities');
+  await shot('settings-capabilities-runtime');
 }
 
 async function scenarioSettingsWrite() {
@@ -1027,6 +1036,41 @@ async function scenarioWorkspaces() {
     { timeout: 5000 },
   );
   await shot('settings-workspace-removed');
+}
+
+async function scenarioSettingsAgents() {
+  // Named-agent management: merged view (the two fixture workspaces share one
+  // `reviewer` profile) plus both disable channels — named profiles write
+  // disabled_named_profiles, built-ins write disabled_builtin_profiles, and
+  // both survive a reload through the fixture config echo.
+  await page.goto(`${WEB_URL}/settings/agents?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'domcontentloaded',
+  });
+  await page.waitForSelector('#st-card-named-agents', { timeout: 10_000 });
+  await page.waitForSelector('[data-agent-profile="reviewer"]', { timeout: 10_000 });
+  const reviewerRows = await page.locator('[data-agent-profile="reviewer"]').count();
+  if (reviewerRows !== 1) {
+    throw new Error(`merged view must render reviewer once, got ${reviewerRows} rows`);
+  }
+  // Three workspace ids collapse into two chips + an overflow pill.
+  await page.waitForSelector('[data-agent-profile="reviewer"] >> text=+1', { timeout: 5000 });
+  await shot('settings-agents-merged');
+
+  const reviewerSwitch = () => page.locator('[data-agent-profile="reviewer"] [role="switch"]');
+  const exploreSwitch = () => page.locator('[data-agent-profile="explore"] [role="switch"]');
+  await reviewerSwitch().click();
+  await page.waitForSelector('[data-agent-profile="reviewer"] [role="switch"][aria-checked="false"]', { timeout: 5000 });
+  await exploreSwitch().click();
+  await page.waitForSelector('[data-agent-profile="explore"] [role="switch"][aria-checked="false"]', { timeout: 5000 });
+  await shot('settings-agents-disabled');
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-agent-profile="reviewer"] [role="switch"][aria-checked="false"]', { timeout: 10_000 });
+  await page.waitForSelector('[data-agent-profile="explore"] [role="switch"][aria-checked="false"]', { timeout: 10_000 });
+  // Re-enable so the merged row returns to full opacity for the next run.
+  await reviewerSwitch().click();
+  await page.waitForSelector('[data-agent-profile="reviewer"] [role="switch"][aria-checked="true"]', { timeout: 5000 });
+  await shot('settings-agents-disabled-reloaded');
 }
 async function scenarioSidebarOrganize() {
   // Three sessions across two workspaces; the pinned row floats to a "Pinned"
@@ -2254,6 +2298,7 @@ const SCENARIOS = [
   ['settings-invalid', scenarioSettingsInvalid],
   ['settings-browser-editable', scenarioSettingsBrowserEditable],
   ['settings-workspaces', scenarioWorkspaces],
+  ['settings-agents', scenarioSettingsAgents],
   ['slash-commands', scenarioSlashCommands],
   ['attachments', scenarioAttachments],
   ['preview-workbench', scenarioPreviewWorkbench],

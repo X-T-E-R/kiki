@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   appendExtraSkillDirs,
   buildSettingsSearchIndex,
+  CAPABILITY_GROUPS,
+  capabilityGroupForCard,
   clearRestartRequirement,
   fetchRemoteModels,
   humanizeMs,
@@ -33,6 +35,7 @@ import {
   searchSettings,
   serverFileSettingsFromConfig,
   serverFileSettingsPatch,
+  SETTINGS_SEARCH_SPEC,
   settingsServerSnapshot,
   settingsSnapshot,
   subscribeRestartRequirement,
@@ -495,6 +498,28 @@ describe('settings search index', () => {
     expect(searchSettings(index, 'subagent')[0]?.section).toBe('agents');
     expect(searchSettings(index, '  ')).toEqual([]);
     expect(searchSettings(index, 'zzzz-no-such-setting')).toEqual([]);
+  });
+});
+
+describe('capabilities section grouping', () => {
+  it('covers every capabilities search card exactly once, in a known group', () => {
+    const capabilitiesCards = SETTINGS_SEARCH_SPEC
+      .filter((entry) => entry.section === 'capabilities')
+      .map((entry) => entry.cardId);
+    const grouped = CAPABILITY_GROUPS.flatMap((group) => group.cardIds);
+    expect([...grouped].toSorted()).toEqual([...capabilitiesCards].toSorted());
+    expect(new Set(grouped).size).toBe(grouped.length);
+    expect(new Set(CAPABILITY_GROUPS.map((group) => group.id)).size).toBe(CAPABILITY_GROUPS.length);
+  });
+
+  it('keeps everyday groups open by default and folds the advanced tail', () => {
+    expect(capabilityGroupForCard('st-card-caps')?.defaultOpen).toBe(true);
+    expect(capabilityGroupForCard('st-card-mcp')?.defaultOpen).toBe(true);
+    expect(capabilityGroupForCard('st-card-advanced')?.defaultOpen).toBe(false);
+    expect(capabilityGroupForCard('st-card-experimental')?.defaultOpen).toBe(false);
+    expect(capabilityGroupForCard('st-card-runtime')?.id).toBe('runtime');
+    expect(capabilityGroupForCard('st-card-tools')?.id).toBe('runtime');
+    expect(capabilityGroupForCard('st-card-about')).toBeUndefined();
   });
 });
 

@@ -1015,6 +1015,35 @@ export async function fetchRemoteModels(probe: RemoteModelsProbe): Promise<Provi
   }));
 }
 
+// ---- capabilities section grouping ----
+
+/**
+ * Information hierarchy for the settings capabilities section: cards are
+ * bucketed into collapsible groups so the section reads as five labeled
+ * layers instead of a flat wall. Everyday surfaces (skills, MCP) stay open;
+ * low-frequency / dangerous surfaces (runtime policy, experimental flags,
+ * raw JSON domains) start collapsed. `cardIds` lets a settings-search hit
+ * force its group open before the scroll + flash lands.
+ */
+export interface CapabilityGroupSpec {
+  readonly id: string;
+  readonly titleKey: I18nKey;
+  readonly cardIds: readonly string[];
+  readonly defaultOpen: boolean;
+}
+
+export const CAPABILITY_GROUPS: readonly CapabilityGroupSpec[] = [
+  { id: 'skills', titleKey: 'st.caps.group.skills', cardIds: ['st-card-caps', 'st-card-skills'], defaultOpen: true },
+  { id: 'mcp', titleKey: 'st.caps.group.mcp', cardIds: ['st-card-mcp'], defaultOpen: true },
+  { id: 'runtime', titleKey: 'st.caps.group.runtime', cardIds: ['st-card-runtime', 'st-card-tools'], defaultOpen: false },
+  { id: 'experimental', titleKey: 'st.caps.group.experimental', cardIds: ['st-card-experimental'], defaultOpen: false },
+  { id: 'advanced', titleKey: 'st.caps.group.advanced', cardIds: ['st-card-advanced'], defaultOpen: false },
+];
+
+export function capabilityGroupForCard(cardId: string): CapabilityGroupSpec | undefined {
+  return CAPABILITY_GROUPS.find((group) => group.cardIds.includes(cardId));
+}
+
 // ---- settings search index ----
 
 export interface SettingsSearchSpecEntry {

@@ -172,5 +172,61 @@ export default {
       last_opened_at: ts(60),
       session_count: 0,
     },
+    {
+      id: 'wd_fixture_000000000002',
+      root: 'C:/fixture/third',
+      name: 'third',
+      created_at: ts(120),
+      last_opened_at: ts(90),
+      session_count: 0,
+    },
+  ],
+  // Expanded rows; GET /agents merges the three `reviewer` rows (same
+  // name+source+file across the workspaces) into one with workspace_ids.
+  agentProfiles: [
+    {
+      name: 'agent',
+      source: 'builtin',
+      description: 'General-purpose built-in agent for subagent dispatch.',
+      routes: [],
+    },
+    {
+      name: 'explore',
+      source: 'builtin',
+      description: 'Read-only codebase exploration agent.',
+      routes: [],
+    },
+    {
+      name: 'reviewer',
+      source: 'workspace',
+      workspace_id: WSID,
+      source_file: 'C:/fixture/shared/agents/reviewer.md',
+      description: 'Review code changes and suggest improvements.',
+      routes: [],
+    },
+    {
+      name: 'reviewer',
+      source: 'workspace',
+      workspace_id: 'wd_fixture_000000000001',
+      source_file: 'C:/fixture/shared/agents/reviewer.md',
+      description: 'Review code changes and suggest improvements.',
+      routes: [],
+    },
+    {
+      name: 'reviewer',
+      source: 'workspace',
+      workspace_id: 'wd_fixture_000000000002',
+      source_file: 'C:/fixture/shared/agents/reviewer.md',
+      description: 'Review code changes and suggest improvements.',
+      routes: [],
+    },
+    {
+      name: 'frontend',
+      source: 'user',
+      workspace_id: WSID,
+      source_file: 'C:/fixture/user/agents/frontend.md',
+      description: 'Owns a UI slice end to end.',
+      routes: [],
+    },
   ],
 };

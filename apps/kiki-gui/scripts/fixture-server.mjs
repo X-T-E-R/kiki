@@ -354,6 +354,7 @@ class FixtureServer {
     this.lastFsWrite = null; // last POST /fs:write body (walker assertions)
     this.fileCounter = 0;
     this.workspaces = []; // mutable registered workspaces (PATCH/DELETE editable)
+    this.agentProfiles = []; // expanded named-agent rows; GET /agents merges them
     this.oauthOverride = null; // mutable oauth flow state (POST/DELETE /oauth/login)
     this.http = createServer((req, res) => void this.handleHttp(req, res));
     this.wss = new WebSocketServer({ noServer: true });
@@ -374,6 +375,9 @@ class FixtureServer {
     this.auth = structuredClone(data.auth ?? null);
     this.sessions.clear();
     this.workspaces = structuredClone(data.workspaces ?? []);
+    this.agentProfiles = structuredClone(data.agentProfiles ?? [
+      { name: 'agent', source: 'builtin', description: 'General-purpose built-in agent.', routes: [] },
+    ]);
     for (const session of data.sessions ?? []) {
       const bound = bind(session, session.id);
       this.sessions.set(session.id, new FixtureSession(bound, bind(data.snapshots?.[session.id] ?? {}, session.id)));
@@ -388,9 +392,41 @@ class FixtureServer {
     console.log(`[fixture] scenario "${name}" loaded (${this.sessions.size} sessions)`);
   }
 
+  // /agents helpers: disabled synthesis mirrors kap-server's config channels.
+  agentProfilesWithDisabled() {
+    const disabledBuiltin = this.config.disabled_builtin_profiles ?? [];
+    const disabledNamed = this.config.disabled_named_profiles ?? [];
+    return this.agentProfiles.map((profile) => ({
+      routes: [],
+      ...profile,
+      disabled: (profile.source === 'builtin' ? disabledBuiltin : disabledNamed).includes(profile.name),
+    }));
+  }
+
+  mergedAgentProfiles() {
+    const merged = [];
+    const indexByKey = new Map();
+    for (const profile of this.agentProfilesWithDisabled()) {
+      const key = `${profile.name}\n${profile.source}\n${profile.source_file ?? ''}`;
+      const ids = profile.workspace_ids ?? (profile.workspace_id === undefined ? [] : [profile.workspace_id]);
+      const existingIndex = indexByKey.get(key);
+      if (existingIndex === undefined) {
+        indexByKey.set(key, merged.length);
+        merged.push({ ...profile, workspace_ids: ids });
+        continue;
+      }
+      const existing = merged[existingIndex];
+      merged[existingIndex] = {
+        ...existing,
+        workspace_ids: [...new Set([...existing.workspace_ids, ...ids])],
+        disabled: existing.disabled || profile.disabled,
+      };
+    }
+    return merged;
+  }
+
   // ------------------------------------------------------------- WS fan-out
-  sendFrame(connection, frame) {
-    if (connection.readyState === 1) connection.send(JSON.stringify(frame));
+  sendFrame(connection, frame) {    if (connection.readyState === 1) connection.send(JSON.stringify(frame));
   }
 
   /** Emit a session_event frame to every connection subscribed to the session. */
@@ -748,6 +784,38 @@ class FixtureServer {
     }
     if (path === '/config') {
       return this.envelope(res, this.config);
+    }
+    // Named agent profiles: `disabled` is synthesized from the two config
+    // channels; the default view merges duplicate name+source+file rows
+    // across workspaces into one item with `workspace_ids`, `?expand=1`
+    // returns the raw per-workspace rows.
+    if (path === '/agents') {
+      const items = query.get('expand') === '1'
+        ? this.agentProfilesWithDisabled()
+        : this.mergedAgentProfiles();
+      return this.envelope(res, { items });
+    }
+    const agentMatch = /^\/agents\/([^/]+)$/.exec(path);
+    if (agentMatch !== null && method === 'PATCH') {
+      const name = decodeURIComponent(agentMatch[1]);
+      const patch = body ?? {};
+      const target = this.agentProfiles.find((profile) =>
+        profile.name === name
+        && (patch.workspace_id === undefined || profile.workspace_id === patch.workspace_id));
+      if (target === undefined) return this.envelope(res, null, 40404, `fixture: no agent ${name}`);
+      for (const profile of this.agentProfiles) {
+        if (profile.name !== name) continue;
+        if (patch.workspace_id !== undefined && profile.workspace_id !== patch.workspace_id) continue;
+        for (const [key, value] of Object.entries(patch)) {
+          if (key === 'scope' || key === 'workspace_id') continue;
+          if (value === null || value === undefined) delete profile[key];
+          else profile[key] = value;
+        }
+      }
+      const disabled = (target.source === 'builtin'
+        ? (this.config.disabled_builtin_profiles ?? [])
+        : (this.config.disabled_named_profiles ?? [])).includes(target.name);
+      return this.envelope(res, { routes: [], ...target, disabled });
     }
     if (path === '/models') {
       return this.envelope(res, {

@@ -1,4 +1,4 @@
-import type { KikiConfigPatch, KikiConfigResponse } from './client';
+import type { KikiConfigPatch, KikiConfigResponse, NamedAgentProfile } from './client';
 
 export interface SecondaryModelDraftEntry {
   readonly id: string;
@@ -90,4 +90,65 @@ export function experimentalFlagRows(
   return [...new Set([...Object.keys(effective), ...Object.keys(overrides)])]
     .toSorted((a, b) => a.localeCompare(b))
     .map((id) => ({ id, effective: effective[id] === true, override: overrides[id] }));
+}
+
+/**
+ * Two disable channels: built-in profiles ride `disabled_builtin_profiles`,
+ * every named (user/project/extra/…) profile rides `disabled_named_profiles`
+ * and is disabled globally by name.
+ */
+export function disabledProfilePatch(
+  config: Pick<KikiConfigResponse, 'disabled_builtin_profiles' | 'disabled_named_profiles'>,
+  profile: Pick<NamedAgentProfile, 'name' | 'source'>,
+  enabled: boolean,
+): KikiConfigPatch {
+  const current = profile.source === 'builtin'
+    ? (config.disabled_builtin_profiles ?? [])
+    : (config.disabled_named_profiles ?? []);
+  const next = enabled
+    ? current.filter((name) => name !== profile.name)
+    : [...new Set([...current, profile.name])];
+  return profile.source === 'builtin'
+    ? { disabled_builtin_profiles: next }
+    : { disabled_named_profiles: next };
+}
+
+/**
+ * Merged-view normalization for /agents. New servers collapse duplicate
+ * name+source+file rows across workspaces into one item carrying
+ * `workspace_ids`; older servers (or `?expand=1`) return one row per
+ * workspace. This pass is idempotent over already-merged payloads, so the
+ * client renders one row per agent regardless of server version. `disabled`
+ * is OR-ed: a name disabled anywhere shows disabled in the merged row.
+ */
+export function mergeNamedAgentProfiles(
+  items: readonly NamedAgentProfile[],
+): NamedAgentProfile[] {
+  const merged: NamedAgentProfile[] = [];
+  const indexByKey = new Map<string, number>();
+  for (const item of items) {
+    const key = `${item.name}\n${item.source}\n${item.source_file ?? ''}`;
+    const ids = item.workspace_ids ?? (item.workspace_id === undefined ? [] : [item.workspace_id]);
+    const existingIndex = indexByKey.get(key);
+    if (existingIndex === undefined) {
+      indexByKey.set(key, merged.length);
+      merged.push({ ...item, workspace_ids: ids });
+      continue;
+    }
+    const existing = merged[existingIndex]!;
+    merged[existingIndex] = {
+      ...existing,
+      workspace_ids: [...new Set([...(existing.workspace_ids ?? []), ...ids])],
+      disabled: existing.disabled || item.disabled,
+    };
+  }
+  return merged;
+}
+
+/** Compact workspace chip model: the first `max` ids plus an overflow count. */
+export function workspaceChipDisplay(
+  ids: readonly string[],
+  max = 2,
+): { readonly shown: readonly string[]; readonly extra: number } {
+  return { shown: ids.slice(0, max), extra: Math.max(0, ids.length - max) };
 }
