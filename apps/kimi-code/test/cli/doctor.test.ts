@@ -379,6 +379,114 @@ model_alias: missing-model
     );
   });
 
+  it('accepts a model_alias that resolves through the shared model-id rules', async () => {
+    await writeFile(
+      join(dir, 'config.toml'),
+      `
+[providers.kimi]
+type = "kimi"
+base_url = "https://api.example.com/v1"
+api_key = "YOUR_API_KEY"
+
+[models."openai/fast-model"]
+provider = "openai"
+model = "fast-model"
+max_context_size = 262144
+`,
+      'utf-8',
+    );
+    const agentPath = await writeAgentFile(
+      'reviewer.md',
+      `
+name: reviewer
+description: Reviews changes
+model_alias: fast-model
+`,
+    );
+    const { deps, stdout, stderr } = makeDeps();
+
+    const code = await handleDoctor(deps, {});
+
+    expect(code).toBe(0);
+    expect(stderr.join('')).toBe('');
+    expect(stdout.join('')).toContain(`OK agents       ${agentPath}`);
+  });
+
+  it('accepts a provider-qualified model_alias that resolves to a bare table key', async () => {
+    await writeFile(
+      join(dir, 'config.toml'),
+      `
+[providers.kimi]
+type = "kimi"
+base_url = "https://api.example.com/v1"
+api_key = "YOUR_API_KEY"
+
+[models.fast-model]
+provider = "openai"
+model = "fast-model"
+max_context_size = 262144
+`,
+      'utf-8',
+    );
+    const agentPath = await writeAgentFile(
+      'reviewer.md',
+      `
+name: reviewer
+description: Reviews changes
+model_alias: openai/fast-model
+`,
+    );
+    const { deps, stdout, stderr } = makeDeps();
+
+    const code = await handleDoctor(deps, {});
+
+    expect(code).toBe(0);
+    expect(stderr.join('')).toBe('');
+    expect(stdout.join('')).toContain(`OK agents       ${agentPath}`);
+  });
+
+  it('reports an ambiguous model_alias as an error', async () => {
+    await writeFile(
+      join(dir, 'config.toml'),
+      `
+[providers.kimi]
+type = "kimi"
+base_url = "https://api.example.com/v1"
+api_key = "YOUR_API_KEY"
+
+[models."alpha/fast-model"]
+provider = "alpha"
+model = "fast-model"
+max_context_size = 262144
+
+[models."beta/fast-model"]
+provider = "beta"
+model = "fast-model"
+max_context_size = 262144
+`,
+      'utf-8',
+    );
+    const agentPath = await writeAgentFile(
+      'reviewer.md',
+      `
+name: reviewer
+description: Reviews changes
+model_alias: fast-model
+`,
+    );
+    const { deps, stdout, stderr } = makeDeps();
+
+    const code = await handleDoctor(deps, {});
+
+    expect(code).toBe(1);
+    expect(stdout.join('')).toBe('');
+    const err = stderr.join('');
+    expect(err).toContain(`ERROR agents       ${agentPath}`);
+    expect(err).toContain(
+      'Model "fast-model" matches multiple configured models: "alpha/fast-model", "beta/fast-model". Use a full model id to disambiguate.',
+    );
+  });
+
   it('warns about unknown frontmatter keys without failing', async () => {
     await writeValidConfig();
     const agentPath = await writeAgentFile(

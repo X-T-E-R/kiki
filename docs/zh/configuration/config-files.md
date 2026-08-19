@@ -162,6 +162,7 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | `off_effort` | `string` | 否 | 关闭 Thinking 时在线上传输的 effort 编码（如 xai grok 的 `none`）。仅对声明了该编码的模型（catalog 会导入）有意义：设置后选择 Off 会发送这个值而不是省略 effort 字段——对默认就会推理的模型，这是真正关闭推理的唯一方式 |
 | `base_url` | `string` | 否 | 模型级端点覆盖（catalog 导入网关模型时写入，这些模型与供应商默认端点不同）。解析时优先于供应商的 `base_url`；仅在与 `protocol` 配合时生效 |
 | `display_name` | `string` | 否 | UI 中显示的名称，未设时回退到 `model` |
+| `aliases` | `array<string>` | 否 | 该模型的额外路由键。任意一项精确匹配都会解析到这个表键，包含 `/` 的旧名称也可以。这是重命名表键后让旧名称继续可用的正规做法。两个模型声明同一段 alias 字符串会报错 |
 | `reasoning_key` | `string` | 否 | 仅 `openai` 供应商。当网关用非标准字段名返回推理内容时才需要设置；默认自动识别 `reasoning_content` / `reasoning_details` / `reasoning` |
 | `adaptive_thinking` | `boolean` | 否 | 仅 `anthropic` 供应商。强制开启或关闭 adaptive thinking，覆盖按模型名推断的逻辑。省略时自动推断（Claude ≥ 4.6 使用 adaptive） |
 
@@ -172,6 +173,37 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 provider = "openai"
 model = "gpt-4.1"
 max_context_size = 1047576
+```
+
+### 模型别名解析
+
+`[models]` 每一项的键就是模型别名——`default_model`、`-m` 以及 Agent 的 `model_alias` 用的都是这个名字。请求按下面的顺序解析：
+
+1. 精确的表键
+2. 与某条模型的 `aliases` 列表精确匹配
+3. 无歧义的裸名，匹配表键或记录的 `model` 字段（相等，或以 `/<name>` 结尾）
+4. 带供应商前缀的名称（`<prefix>/<name>`）：最后一段是表键，且前缀与该记录的 `provider` 一致
+
+在匹配唯一时，裸名和带供应商前缀的名称可以互相解析。若有多个已配置模型同时匹配，解析会失败，并提示使用完整模型 id 来消歧。
+
+缩短表键之后，把旧名称写进 `aliases`，会话和 Agent profile 里仍保存旧名的地方就能继续工作：
+
+```toml
+[models.fast-model]
+provider = "openai"
+model = "fast-model"
+max_context_size = 1047576
+aliases = ["openai/fast-model"]
+```
+
+审查用模型也一样，如果旧键带供应商前缀：
+
+```toml
+[models.k3-review]
+provider = "openai"
+model = "k3-review"
+max_context_size = 262144
+aliases = ["openai/k3-review"]
 ```
 
 ### 模型覆盖项

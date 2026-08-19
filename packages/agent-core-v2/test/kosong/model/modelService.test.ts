@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { modelsFromToml, modelsToToml } from '#/app/kosongConfig/configSection';
+import { CONFIG_INVALID_ERROR_CODE } from '#/kosong/contract/errors';
 import { type ModelRecord } from '#/kosong/model/model';
 import { ModelService } from '#/kosong/model/modelService';
 
@@ -137,9 +138,13 @@ describe('ModelService', () => {
 
     expect(() => service.resolveId('deepseek-v4-flash')).toThrowError(
       expect.objectContaining({
-        message: expect.stringMatching(
-          /alpha\/deepseek-v4-flash.*beta\/other.*full model id/,
-        ),
+        code: CONFIG_INVALID_ERROR_CODE,
+        message:
+          'Model "deepseek-v4-flash" matches multiple configured models: "alpha/deepseek-v4-flash", "beta/other". Use a full model id to disambiguate.',
+        details: {
+          model: 'deepseek-v4-flash',
+          candidates: ['alpha/deepseek-v4-flash', 'beta/other'],
+        },
       }),
     );
   });
@@ -151,6 +156,76 @@ describe('ModelService', () => {
 
     expect(service.resolveId('missing')).toBeUndefined();
     expect(service.resolveId('other/deepseek-v4-flash')).toBeUndefined();
+  });
+
+  it('resolves a provider-qualified id to the matching bare key', () => {
+    const service = createService({
+      'fast-model': { provider: 'openai', model: 'fast-model' },
+    });
+
+    expect(service.resolveId('openai/fast-model')).toBe('fast-model');
+  });
+
+  it('resolves a provider-qualified id when provider uses a managed: prefix', () => {
+    const service = createService({
+      'k3-review': { provider: 'managed:kimi-code', model: 'k3-review' },
+    });
+
+    expect(service.resolveId('kimi-code/k3-review')).toBe('k3-review');
+  });
+
+  it('does not resolve a provider-qualified id whose prefix matches no provider', () => {
+    const service = createService({
+      'fast-model': { provider: 'openai', model: 'fast-model' },
+    });
+
+    expect(service.resolveId('anthropic/fast-model')).toBeUndefined();
+  });
+
+  it('resolves an exact aliases entry that contains a slash', () => {
+    const service = createService({
+      'fast-model': {
+        provider: 'openai',
+        model: 'fast-model',
+        aliases: ['openai/legacy-flash'],
+      },
+    });
+
+    expect(service.resolveId('openai/legacy-flash')).toBe('fast-model');
+  });
+
+  it('rejects duplicate aliases with the same ambiguity error as bare ids', () => {
+    const service = createService({
+      alpha: { aliases: ['fast-model'] },
+      beta: { aliases: ['fast-model'] },
+    });
+
+    expect(() => service.resolveId('fast-model')).toThrowError(
+      expect.objectContaining({
+        code: CONFIG_INVALID_ERROR_CODE,
+        message:
+          'Model "fast-model" matches multiple configured models: "alpha", "beta". Use a full model id to disambiguate.',
+        details: { model: 'fast-model', candidates: ['alpha', 'beta'] },
+      }),
+    );
+  });
+
+  it('prefers an exact aliases hit over bare-name tail matching', () => {
+    const service = createService({
+      'openai/fast-model': { provider: 'openai', model: 'fast-model' },
+      'k3-review': { aliases: ['fast-model'] },
+    });
+
+    expect(service.resolveId('fast-model')).toBe('k3-review');
+  });
+
+  it('uses providerId when provider is unset to accept or reject a qualified prefix', () => {
+    const service = createService({
+      'fast-model': { providerId: 'openai', model: 'fast-model' },
+    });
+
+    expect(service.resolveId('openai/fast-model')).toBe('fast-model');
+    expect(service.resolveId('anthropic/fast-model')).toBeUndefined();
   });
 
   it('supports CRUD and diffs state changes into onDidChangeModels', async () => {

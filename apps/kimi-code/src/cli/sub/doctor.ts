@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
 
+import type { ModelRecord } from '@moonshot-ai/agent-core-v2/kosong/model/model';
+import { resolveModelId } from '@moonshot-ai/agent-core-v2/kosong/model/resolveModelId';
 import {
   createKimiConfigRpc,
   type KimiConfigRpc,
@@ -71,7 +73,7 @@ export interface DoctorOptions {
 }
 
 interface DoctorConfigContext {
-  readonly modelAliases: Set<string>;
+  models: Readonly<Record<string, ModelRecord>>;
   extraAgentDirs: readonly string[];
   secondaryModelEnabled: boolean;
 }
@@ -325,7 +327,7 @@ interface ParsedAgentFile {
 
 function createDoctorConfigContext(deps: ResolvedDoctorDeps): DoctorConfigContext {
   return {
-    modelAliases: new Set(),
+    models: {},
     extraAgentDirs: [],
     secondaryModelEnabled: resolveSecondaryModelFlag(deps, undefined),
   };
@@ -343,11 +345,8 @@ function updateDoctorConfigContext(
     return;
   }
 
-  context.modelAliases.clear();
   const models = data['models'];
-  if (isRecord(models)) {
-    for (const name of Object.keys(models)) context.modelAliases.add(name);
-  }
+  context.models = isRecord(models) ? modelsSectionFromToml(models) : {};
 
   const extraAgentDirs = data['extra_agent_dirs'];
   context.extraAgentDirs = Array.isArray(extraAgentDirs)
@@ -527,10 +526,9 @@ async function checkAgentProfiles(
   for (const file of parsedFiles) {
     const errors: string[] = [];
     const warnings: string[] = [];
-    if (file.modelAlias !== undefined && !context.modelAliases.has(file.modelAlias)) {
-      errors.push(
-        `model_alias "${file.modelAlias}" does not name an entry in config.toml [models].`,
-      );
+    if (file.modelAlias !== undefined) {
+      const modelAliasError = describeUnresolvedModelAlias(context.models, file.modelAlias);
+      if (modelAliasError !== undefined) errors.push(modelAliasError);
     }
     const missingSubagents =
       file.subagents?.includes('*') === true
@@ -709,6 +707,41 @@ function isValidationIssue(value: unknown): value is KimiConfigValidationIssue {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function modelsSectionFromToml(models: Record<string, unknown>): Record<string, ModelRecord> {
+  const out: Record<string, ModelRecord> = {};
+  for (const [id, entry] of Object.entries(models)) {
+    out[id] = isRecord(entry) ? modelRecordFromToml(entry) : {};
+  }
+  return out;
+}
+
+function modelRecordFromToml(entry: Record<string, unknown>): ModelRecord {
+  const aliases = entry['aliases'];
+  const provider = entry['provider'];
+  const providerId = entry['provider_id'] ?? entry['providerId'];
+  const model = entry['model'];
+  return {
+    ...(typeof provider === 'string' ? { provider } : {}),
+    ...(typeof providerId === 'string' ? { providerId } : {}),
+    ...(typeof model === 'string' ? { model } : {}),
+    ...(Array.isArray(aliases)
+      ? { aliases: aliases.filter((item): item is string => typeof item === 'string') }
+      : {}),
+  };
+}
+
+function describeUnresolvedModelAlias(
+  models: Readonly<Record<string, ModelRecord>>,
+  modelAlias: string,
+): string | undefined {
+  try {
+    if (resolveModelId(models, modelAlias) !== undefined) return undefined;
+    return `model_alias "${modelAlias}" does not name an entry in config.toml [models].`;
+  } catch (error) {
+    return errorMessage(error);
+  }
 }
 
 function findZodError(error: unknown): z.ZodError | undefined {

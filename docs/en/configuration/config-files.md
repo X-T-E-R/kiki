@@ -162,6 +162,7 @@ Each entry in the `models` table defines a model alias (the name used in `defaul
 | `off_effort` | `string` | No | Effort value sent on the wire to disable thinking (e.g. `none` for xai grok). Only meaningful for models that declare such an encoding (catalog imports set it): turning thinking Off then sends this value instead of omitting the effort field — the only way to actually stop reasoning on models that reason by default |
 | `base_url` | `string` | No | Per-model endpoint override (written by catalog imports for gateway models served away from the provider default). Resolution prefers it over the provider's `base_url`; only takes effect together with `protocol` |
 | `display_name` | `string` | No | Name shown in the UI; falls back to `model` when unset |
+| `aliases` | `array<string>` | No | Extra routing keys for this model. An exact match on any entry resolves to this table key, including names that contain `/`. This is the supported way to keep old names working after you rename a key. The same alias string on two models is an error |
 | `reasoning_key` | `string` | No | `openai` provider only. Override the field name used for reasoning content when the gateway returns it under a non-standard name; by default `reasoning_content`, `reasoning_details`, and `reasoning` are auto-detected |
 | `adaptive_thinking` | `boolean` | No | `anthropic` provider only. Force adaptive thinking on or off, overriding the version inference based on the model name. Omit to infer automatically (Claude ≥ 4.6 uses adaptive) |
 
@@ -172,6 +173,37 @@ When an alias contains `.`, use a quoted key:
 provider = "openai"
 model = "gpt-4.1"
 max_context_size = 1047576
+```
+
+### Model alias resolution
+
+The key of each `[models]` entry is the model's alias — the name used by `default_model`, `-m`, and an agent's `model_alias`. A request is resolved in this order:
+
+1. Exact table key
+2. Exact match against a model's `aliases` list
+3. Bare name that uniquely matches a table key or a record's `model` field (equal to the name, or ending in `/<name>`)
+4. Provider-qualified name (`<prefix>/<name>`) whose last segment is a table key and whose prefix is consistent with that record's `provider`
+
+A bare name and a provider-qualified name resolve to each other when the match is unique. If more than one configured model matches, resolution fails and asks you to use a full model id to disambiguate.
+
+When you shorten a table key, put the previous name in `aliases` so sessions and agent profiles that still store the old name keep working:
+
+```toml
+[models.fast-model]
+provider = "openai"
+model = "fast-model"
+max_context_size = 1047576
+aliases = ["openai/fast-model"]
+```
+
+The same pattern applies to a review model whose key used to be qualified:
+
+```toml
+[models.k3-review]
+provider = "openai"
+model = "k3-review"
+max_context_size = 262144
+aliases = ["openai/k3-review"]
 ```
 
 ### Model overrides
