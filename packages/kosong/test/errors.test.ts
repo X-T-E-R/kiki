@@ -361,6 +361,15 @@ describe('normalizeAPIStatusError', () => {
     ['api_key=AIza-PLAINSECRET123', 'AIza-PLAINSECRET123'],
     ['token: plainsecret123', 'plainsecret123'],
     ['Authorization: Basic plainsecret123', 'plainsecret123'],
+    [
+      'Authorization: Digest username="Mufasa", realm="test", nonce="abc", response="VERYSECRET"',
+      'VERYSECRET',
+    ],
+    [
+      'Authorization: AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20260101/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=deadbeefsecret',
+      'deadbeefsecret',
+    ],
+    ['Authorization: Basic "plain secret"', 'plain secret'],
   ])('redacts the labeled secret in string body %s', (body, secret) => {
     const error = normalizeAPIStatusError(400, '400 Bad Request', null, null, null, body);
     expect(error.message).toContain('[REDACTED]');
@@ -395,6 +404,13 @@ describe('normalizeAPIStatusError', () => {
     expect((error.message.match(/\[REDACTED\]/g) ?? []).length).toBe(1);
     expect(error.message).not.toContain(' — ');
     expect(error.message.length).toBeLessThanOrEqual(700);
+  });
+
+  it('still appends a distinct non-JSON body that only matches after stripping spaces', () => {
+    const error = normalizeAPIStatusError(400, '400 quota exceeded', null, null, null, 'quotaexceeded');
+    expect(error.message).toContain('quota exceeded');
+    expect(error.message).toContain('quotaexceeded');
+    expect(error.message).toContain(' — ');
   });
 });
 

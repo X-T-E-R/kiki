@@ -423,8 +423,7 @@ const STATUS_ERROR_SENSITIVE_KEY_SUFFIX = /(?:^|_)(?:api_key|authorization|secre
 const STATUS_ERROR_SENSITIVE_KEY_NAME =
   'access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|api[_-]?key|password|secret|token';
 const STATUS_ERROR_SK_TOKEN = /\bsk-[A-Za-z0-9_-]{8,}\b/g;
-const STATUS_ERROR_AUTHORIZATION =
-  /\b(Authorization)(\s*[=:]\s*)([^\s,;]+)(?:\s+(\S+))?/gi;
+const STATUS_ERROR_AUTHORIZATION = /\b(Authorization)(\s*[=:]\s*)(.*)$/gim;
 const STATUS_ERROR_KEY_VALUE = new RegExp(
   String.raw`\b((?:${STATUS_ERROR_SENSITIVE_KEY_NAME}))(\s*[=:]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)`,
   'gi',
@@ -452,13 +451,7 @@ function isSensitiveStatusErrorKey(key: string): boolean {
 function redactSensitiveText(text: string): string {
   return text
     .replace(STATUS_ERROR_SK_TOKEN, STATUS_ERROR_REDACTED)
-    .replace(
-      STATUS_ERROR_AUTHORIZATION,
-      (_match, header: string, separator: string, scheme: string, credential?: string) =>
-        credential === undefined
-          ? `${header}${separator}${STATUS_ERROR_REDACTED}`
-          : `${header}${separator}${scheme} ${STATUS_ERROR_REDACTED}`,
-    )
+    .replace(STATUS_ERROR_AUTHORIZATION, `$1$2${STATUS_ERROR_REDACTED}`)
     .replace(STATUS_ERROR_JSON_SECRET, `$1$2$1: $3${STATUS_ERROR_REDACTED}$4`)
     .replace(STATUS_ERROR_KEY_VALUE, `$1$2${STATUS_ERROR_REDACTED}`);
 }
@@ -512,10 +505,6 @@ function extractStatusErrorBodyDetail(body: unknown): string | null {
   }
 }
 
-function compactStatusErrorText(text: string): string {
-  return text.replaceAll(/\s+/g, '');
-}
-
 function tryParseJsonValue(text: string): unknown | undefined {
   const trimmed = text.trim();
   if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return undefined;
@@ -528,11 +517,11 @@ function tryParseJsonValue(text: string): unknown | undefined {
 
 function messageContainsStatusErrorDetail(message: string, detail: string): boolean {
   if (message.includes(detail)) return true;
-  const compactMessage = compactStatusErrorText(message);
-  if (compactMessage.includes(compactStatusErrorText(detail))) return true;
   const parsedDetail = tryParseJsonValue(detail);
   if (parsedDetail === undefined) return false;
-  const jsonStart = message.indexOf('{') === -1 ? message.indexOf('[') : message.indexOf('{');
+  const brace = message.indexOf('{');
+  const bracket = message.indexOf('[');
+  const jsonStart = brace === -1 ? bracket : bracket === -1 ? brace : Math.min(brace, bracket);
   if (jsonStart < 0) return false;
   const parsedMessage = tryParseJsonValue(message.slice(jsonStart));
   if (parsedMessage === undefined) return false;
