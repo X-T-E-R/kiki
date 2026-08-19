@@ -191,6 +191,14 @@ body {
   transition: grid-template-rows 180ms ease-out;
 }
 
+/* Collapsed long user messages: mask the CONTENT (not an overlay), so the
+ * fade composes over any bubble background (codeg's collapsed-content-fade,
+ * Apache-2.0). Only applied when the content actually overflows. */
+.collapsed-content-fade {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 2.5rem), transparent);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .anim-enter,
   .settings-card-flash,

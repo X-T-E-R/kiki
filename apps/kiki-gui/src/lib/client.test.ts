@@ -469,3 +469,98 @@ describe('KikiClient.getAgentTranscript', () => {
     }
   });
 });
+
+describe('KikiClient message-closure routes', () => {
+  const okResponse = (data: unknown) =>
+    new Response(JSON.stringify({ code: 0, msg: 'success', data }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+
+  it('posts :edit with full-replacement content and the expected cursor', async () => {
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      expect(String(url)).toBe(
+        'http://127.0.0.1:8080/api/v1/sessions/s1/messages/m1:edit',
+      );
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(init?.body as string)).toEqual({
+        content: [{ type: 'text', text: 'rewritten' }],
+        expected_cursor: { seq: 42, epoch: 'ep1' },
+      });
+      return okResponse({
+        prompt_id: 'p1',
+        user_message_id: 'm2',
+        status: 'running',
+        content: [{ type: 'text', text: 'rewritten' }],
+        created_at: '2026-01-01T00:00:00.000Z',
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+    const result = await client.editMessage('s1', 'm1', {
+      content: [{ type: 'text', text: 'rewritten' }],
+      expected_cursor: { seq: 42, epoch: 'ep1' },
+    });
+    expect(result.prompt_id).toBe('p1');
+    vi.unstubAllGlobals();
+  });
+
+  it('posts :regenerate with the expected cursor', async () => {
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      expect(String(url)).toBe(
+        'http://127.0.0.1:8080/api/v1/sessions/s1/messages/m9:regenerate',
+      );
+      expect(JSON.parse(init?.body as string)).toEqual({
+        expected_cursor: { seq: 7 },
+      });
+      return okResponse({
+        prompt_id: 'p2',
+        user_message_id: 'm8',
+        status: 'running',
+        content: [],
+        created_at: '2026-01-01T00:00:00.000Z',
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+    await client.regenerateMessage('s1', 'm9', { expected_cursor: { seq: 7 } });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    vi.unstubAllGlobals();
+  });
+
+  it('sends the fork truncation pair on :fork', async () => {
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      expect(String(url)).toBe('http://127.0.0.1:8080/api/v1/sessions/s1:fork');
+      expect(JSON.parse(init?.body as string)).toEqual({
+        through_message_id: 'm3',
+        expected_cursor: { seq: 11, epoch: 'ep1' },
+      });
+      return okResponse({ id: 's2' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+    const fork = await client.forkSession('s1', {
+      through_message_id: 'm3',
+      expected_cursor: { seq: 11, epoch: 'ep1' },
+    });
+    expect(fork.id).toBe('s2');
+    vi.unstubAllGlobals();
+  });
+
+  it('surfaces a 40937 cursor mismatch as an ApiError code', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ code: 40937, msg: 'session.cursor_mismatch', data: null }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+    const failure = await client
+      .regenerateMessage('s1', 'm9', { expected_cursor: { seq: 1 } })
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).code).toBe(40937);
+    vi.unstubAllGlobals();
+  });
+});

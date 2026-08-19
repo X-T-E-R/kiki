@@ -92,6 +92,10 @@ export function sessionActionErrorKey(error: unknown): I18nKey | null {
         return 'error.nothingToCompact';
       case API_CODES.SESSION_BUSY:
         return 'error.sessionBusy';
+      case API_CODES.MESSAGE_ACTION_UNAVAILABLE:
+        return 'error.messageActionUnavailable';
+      case API_CODES.SESSION_CURSOR_MISMATCH:
+        return 'error.sessionCursorMismatch';
       default:
         return null;
     }
@@ -109,6 +113,10 @@ export function sessionActionErrorMessage(error: unknown): string {
         return 'Nothing to compact yet — the history is too short.';
       case API_CODES.SESSION_BUSY:
         return 'The session is busy — try again when the current turn finishes.';
+      case API_CODES.MESSAGE_ACTION_UNAVAILABLE:
+        return 'This message can no longer be edited or rerun.';
+      case API_CODES.SESSION_CURSOR_MISMATCH:
+        return 'This session was updated elsewhere — review the latest state, then try again.';
       default:
         return error.message;
     }

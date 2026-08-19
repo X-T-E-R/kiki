@@ -11,9 +11,13 @@ import {
   applyFrame,
   applySnapshot,
   appendLocalUserMessage,
+  assistantMessageIdFromBlockId,
+  buildFloorEntries,
   createViewState,
   derivePendingInteraction,
+  floorPreview,
   incrementSubagentToolCount,
+  latestFinalAssistantBlockId,
   markApprovalResolved,
   markQuestionOutcome,
   pendingApprovalCount,
@@ -24,6 +28,7 @@ import {
   preserveCapturedSubagents,
   queuedPromptPreviews,
   reconcilePromptList,
+  resolveActiveFloorId,
   resolveSpawnInstruction,
   sessionAgentForestFromTranscript,
   setOlderError,
@@ -2759,5 +2764,144 @@ describe('media parts', () => {
     expect(steer?.media).toEqual([
       { kind: 'image', url: 'data:image/png;base64,QQ', mime: 'image/png' },
     ]);
+  });
+});
+
+describe('message-closure anchors', () => {
+  const user = (id: string, text = 'q'): UserBlock => ({
+    kind: 'user',
+    id,
+    text,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  });
+  const assistant = (id: string, streaming = false): AssistantBlock => ({
+    kind: 'assistant',
+    id,
+    text: 'a',
+    streaming,
+    createdAt: '2026-01-01T00:00:01.000Z',
+  });
+
+  it('latestFinalAssistantBlockId picks the last settled assistant block', () => {
+    expect(latestFinalAssistantBlockId([])).toBeUndefined();
+    expect(
+      latestFinalAssistantBlockId([user('u1'), assistant('a1'), assistant('a2')]),
+    ).toBe('a2');
+    // A streaming tail never qualifies — regenerate/fork wait for it to settle.
+    expect(
+      latestFinalAssistantBlockId([user('u1'), assistant('a1'), assistant('live', true)]),
+    ).toBe('a1');
+  });
+
+  it('assistantMessageIdFromBlockId unwraps snapshot ids and rejects live ids', () => {
+    expect(assistantMessageIdFromBlockId('assistant-msg_42-0')).toBe('msg_42');
+    expect(assistantMessageIdFromBlockId('assistant-msg_42-media')).toBe('msg_42');
+    expect(assistantMessageIdFromBlockId('assistant-live-1-final-end@42')).toBeUndefined();
+    expect(assistantMessageIdFromBlockId('assistant-live-7')).toBeUndefined();
+    expect(assistantMessageIdFromBlockId('user-msg_1')).toBeUndefined();
+  });
+});
+
+describe('floor navigation model', () => {
+  const user = (id: string, text: string): UserBlock => ({
+    kind: 'user',
+    id,
+    text,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  });
+  const assistant = (id: string): AssistantBlock => ({
+    kind: 'assistant',
+    id,
+    text: 'a',
+    streaming: false,
+    createdAt: '2026-01-01T00:00:01.000Z',
+  });
+
+  it('builds one floor per user message with a codepoint-safe preview', () => {
+    const entries = buildFloorEntries([
+      user('user-1', 'first question\nwith a second line'),
+      assistant('assistant-1'),
+      user('user-2', 'emoji 😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀 tail'),
+    ]);
+    expect(entries.map((entry) => entry.blockId)).toEqual(['user-1', 'user-2']);
+    expect(entries[0]?.preview).toBe('first question');
+    // 24 codepoints + ellipsis, never a split surrogate.
+    expect(entries[1]?.preview.endsWith('…')).toBe(true);
+    expect(Array.from(entries[1]?.preview ?? '').length).toBe(25);
+  });
+
+  it('floorPreview trims and keeps short text intact', () => {
+    expect(floorPreview('  hello  ')).toBe('hello');
+    expect(floorPreview('short')).toBe('short');
+  });
+
+  it('resolveActiveFloorId lands on the last row at or above the viewport', () => {
+    const positions = [
+      { blockId: 'user-1', top: -200 },
+      { blockId: 'user-2', top: 40 },
+      { blockId: 'user-3', top: 400 },
+    ];
+    expect(resolveActiveFloorId(positions, 0)).toBe('user-2');
+    expect(resolveActiveFloorId(positions, 500)).toBe('user-3');
+    expect(resolveActiveFloorId([{ blockId: 'user-1', top: 500 }], 0)).toBeUndefined();
+  });
+});
+
+describe('preserveCapturedSubagents orphan marking', () => {
+  it('flags captures the rewritten snapshot no longer contains', () => {
+    const base = snapshot({
+      messages: {
+        items: [
+          {
+            id: 'm-user',
+            session_id: 'session_test',
+            role: 'user',
+            content: [{ type: 'text', text: 'kept' }],
+            created_at: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+        has_more: false,
+      },
+    });
+    const orphanCard: import('./transcript').SubagentBlock = {
+      kind: 'subagent',
+      id: 'subagent-agent-x',
+      subagentId: 'agent-x',
+      parentAgentId: 'main',
+      parentToolCallId: 'call-1',
+      name: 'Explorer',
+      description: 'truncated branch',
+      model: undefined,
+      thinkingEffort: undefined,
+      status: 'completed',
+      summary: 'done',
+      error: undefined,
+      startedAt: '2026-01-01T00:00:01.000Z',
+      endedAt: '2026-01-01T00:00:02.000Z',
+      toolCallCount: 1,
+      transcript: [],
+    };
+    const previous = {
+      ...applySnapshot('session_test', base),
+      blocks: [...applySnapshot('session_test', base).blocks, orphanCard],
+    };
+    const rebuilt = applySnapshot('session_test', base);
+
+    // Plain resync keeps the card untouched; a rewrite resync marks it.
+    const kept = preserveCapturedSubagents(rebuilt, previous);
+    expect(
+      kept.blocks.find((b): b is import('./transcript').SubagentBlock => b.kind === 'subagent')
+        ?.orphaned,
+    ).toBeUndefined();
+    const marked = preserveCapturedSubagents(rebuilt, previous, { orphanMissing: true });
+    const card = marked.blocks.find(
+      (b): b is import('./transcript').SubagentBlock => b.kind === 'subagent',
+    );
+    expect(card?.orphaned).toBe(true);
+    // A second rewrite resync does not churn the already-marked reference.
+    const remarked = preserveCapturedSubagents(marked, marked, { orphanMissing: true });
+    expect(
+      remarked.blocks.find((b): b is import('./transcript').SubagentBlock => b.kind === 'subagent'),
+    ).toBe(card);
   });
 });

@@ -25,7 +25,7 @@ import { QueueStrip } from './QueueStrip';
 import { RightRail } from './RightRail';
 import { SelectionQuoteButton } from './SelectionQuoteButton';
 import { TerminalPanel } from './TerminalPanel';
-import { Transcript, useStableForest } from './Transcript';
+import { Transcript, useStableForest, type TranscriptRowActions } from './Transcript';
 import { KikiMark } from './Wordmark';
 import {
   buildPromptContent,
@@ -86,6 +86,7 @@ import {
   agentBusyFromMeta,
   agentTranscriptPageFromResponse,
   agentTranscriptToBlocks,
+  assistantMessageIdFromBlockId,
   countToolBlocks,
   createViewState,
   filterBlocksToDirectChildren,
@@ -1563,6 +1564,98 @@ export function SessionView({
     () => controller?.loadOlderMessages() ?? Promise.resolve(false),
     [controller],
   );
+
+  // ---- message-closure row actions (edit-resend / regenerate / fork) ----
+
+  const handleEditMessage = useCallback(
+    (block: UserBlock, text: string) => {
+      if (controller === null || block.userMessageId === undefined) return;
+      controller.editMessage(block.userMessageId, { text }).catch((error: unknown) => {
+        pushToast({
+          tone: 'error',
+          text: t('action.editFailed', { detail: sessionActionErrorText(locale, error) }),
+        });
+      });
+    },
+    [controller, t, locale],
+  );
+
+  /**
+   * Wire message id behind an assistant row. Snapshot-derived block ids embed
+   * it; live-finalized ones don't, and while regenerate/fork is eligible (idle
+   * session, latest reply) the newest assistant message on the server IS that
+   * reply — resolve it with one messages fetch.
+   */
+  const resolveAssistantMessageId = useCallback(
+    async (block: AssistantBlock): Promise<string | undefined> => {
+      const fromBlock = assistantMessageIdFromBlockId(block.id);
+      if (fromBlock !== undefined) return fromBlock;
+      const page = await client.listMessages(sessionId, { page_size: 50 });
+      const assistants = page.items
+        .filter((message) => message.role === 'assistant')
+        .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+      return assistants.at(-1)?.id;
+    },
+    [client, sessionId],
+  );
+
+  const handleRegenerate = useCallback(
+    (block: AssistantBlock) => {
+      if (controller === null) return;
+      void (async () => {
+        const messageId = await resolveAssistantMessageId(block);
+        if (messageId === undefined) {
+          pushToast({ tone: 'error', text: t('error.messageActionUnavailable') });
+          return;
+        }
+        await controller.regenerateMessage(messageId);
+      })().catch((error: unknown) => {
+        pushToast({
+          tone: 'error',
+          text: t('action.regenerateFailed', { detail: sessionActionErrorText(locale, error) }),
+        });
+      });
+    },
+    [controller, resolveAssistantMessageId, t, locale],
+  );
+
+  const handleForkMessage = useCallback(
+    (block: UserBlock | AssistantBlock) => {
+      if (controller === null) return;
+      void (async () => {
+        const messageId =
+          block.kind === 'user'
+            ? block.userMessageId
+            : await resolveAssistantMessageId(block);
+        if (messageId === undefined) {
+          pushToast({ tone: 'error', text: t('error.messageActionUnavailable') });
+          return;
+        }
+        // Open-tail fork: navigate only — nothing auto-runs in the copy.
+        const fork = await controller.forkFromMessage(messageId);
+        queryClient.invalidateQueries({ queryKey: ['sessions'] }).catch(() => undefined);
+        pushToast({ tone: 'success', text: t('action.forkDoneSession') });
+        void navigate(`/s/${fork.id}`);
+      })().catch((error: unknown) => {
+        pushToast({
+          tone: 'error',
+          text: t('action.forkFailed', { detail: sessionActionErrorText(locale, error) }),
+        });
+      });
+    },
+    [controller, resolveAssistantMessageId, queryClient, navigate, t, locale],
+  );
+
+  const transcriptRowActions = useMemo<TranscriptRowActions>(
+    () => ({
+      disabled: state.busy || state.resyncing || state.resyncFailed,
+      onEditMessage: handleEditMessage,
+      onRegenerate: handleRegenerate,
+      onFork: handleForkMessage,
+    }),
+    [state.busy, state.resyncing, state.resyncFailed, handleEditMessage, handleRegenerate, handleForkMessage],
+  );
+
   const openAgent = useCallback(
     (agentId: string) => {
       if (agentId === MAIN_AGENT_ID) {
@@ -2266,6 +2359,7 @@ export function SessionView({
           onRetryLoad={handleRetryLoad}
           forest={forest}
           onOpenAgent={openAgent}
+          rowActions={transcriptRowActions}
         />
       </div>
       <SelectionQuoteButton containerRef={transcriptQuoteRef} onQuote={handleQuoteSelection} />

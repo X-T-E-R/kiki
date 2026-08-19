@@ -14,8 +14,8 @@ import type {
   Session,
 } from '@moonshot-ai/protocol';
 
-import { API_CODES, ApiError, type KikiClient } from '../lib/client';
-import { isInteractionEvent, type ResyncRequiredPayload, type SessionEventFrame } from '../lib/types';
+import { API_CODES, ApiError, type KikiClient, type SessionCursor } from '../lib/client';
+import { isHistoryRewrittenEvent, isInteractionEvent, type ResyncRequiredPayload, type SessionEventFrame } from '../lib/types';
 import type { KikiSocket } from '../lib/ws';
 import { FrameBuffer } from './framePipeline';
 import {
@@ -277,6 +277,13 @@ export class SessionController {
 
   handleFrame(frame: SessionEventFrame): void {
     if (this.closed || frame.session_id !== this.sessionId) return;
+    // A rewrite invalidates every cached block from the target onward; the
+    // frame itself carries no incremental payload, so skip the pipeline and
+    // rebuild from a snapshot (quarantine covers frames already in flight).
+    if (isHistoryRewrittenEvent(frame.payload)) {
+      void this.resync({ rewrite: true });
+      return;
+    }
     if (this.state.resyncing || this.state.resyncFailed) {
       if (!this.quarantineOverflowed && this.pendingFrames.push(frame).overflowed) {
         this.quarantineOverflowed = true;
@@ -349,7 +356,8 @@ export class SessionController {
   }
 
   handleResyncRequired(payload: ResyncRequiredPayload): void {
-    if (payload.session_id === this.sessionId) void this.resync();
+    if (payload.session_id !== this.sessionId) return;
+    void this.resync({ rewrite: payload.reason === 'history_rewritten' });
   }
 
   /** Volatile deltas are never journaled or replayed, so a turn that was
@@ -371,9 +379,19 @@ export class SessionController {
     void this.resync();
   }
 
-  async resync(): Promise<void> {
-    if (this.resyncInFlight || this.closed) return;
+  /** Rewrite resyncs requested while another resync was in flight — the
+   * in-flight snapshot may predate the rewrite, so it re-runs afterwards. */
+  private rewriteResyncQueued = false;
+
+  async resync(options: { rewrite?: boolean } = {}): Promise<void> {
+    if (this.closed) return;
+    if (this.resyncInFlight) {
+      if (options.rewrite === true) this.rewriteResyncQueued = true;
+      return;
+    }
     this.resyncInFlight = true;
+    const rewrite = options.rewrite === true || this.rewriteResyncQueued;
+    this.rewriteResyncQueued = false;
     this.clearResyncTimer();
     this.setState(setResyncing(this.state, true));
     let runAgain = false;
@@ -381,7 +399,11 @@ export class SessionController {
       const snapshot = await this.client.snapshot(this.sessionId);
       if (this.closed) return;
       const rebuilt = preserveCapturedSteers(
-        preserveCapturedSubagents(applySnapshot(this.sessionId, snapshot, this.state), this.state),
+        preserveCapturedSubagents(
+          applySnapshot(this.sessionId, snapshot, this.state),
+          this.state,
+          { orphanMissing: rewrite },
+        ),
         this.state,
       );
       this.setState(setResyncing(rebuilt, false));
@@ -392,6 +414,13 @@ export class SessionController {
         runAgain = true;
       } else {
         this.replayPendingFrames(rebuilt.cursor.seq);
+        // Volatile deltas quarantined during the resync are dropped on replay
+        // by design. A turn that started AND settled inside the resync window
+        // (rewrites rerun fast) leaves a hole only the journal can fill: once
+        // idle, run one more resync so the snapshot picks up the committed
+        // content. Converges because the follow-up quarantines no volatiles.
+        if (this.droppedVolatileInReplay && !this.state.busy) runAgain = true;
+        this.droppedVolatileInReplay = false;
       }
       await Promise.allSettled([this.refreshPrompts(), this.refreshTasks(), this.refreshGoal()]);
     } catch {
@@ -402,15 +431,22 @@ export class SessionController {
       }
     } finally {
       this.resyncInFlight = false;
+      if (this.rewriteResyncQueued && !this.closed) runAgain = true;
       if (runAgain && !this.closed) queueMicrotask(() => void this.resync());
     }
   }
+
+  private droppedVolatileInReplay = false;
 
   private replayPendingFrames(minSeq: number): void {
     const frames = this.pendingFrames.drain();
     let gap = false;
     for (const frame of frames) {
-      if (frame.volatile === true || frame.seq <= minSeq) continue;
+      if (frame.volatile === true) {
+        this.droppedVolatileInReplay = true;
+        continue;
+      }
+      if (frame.seq <= minSeq) continue;
       const before = this.state;
       this.applyIncomingFrame(frame);
       if (this.state === before && frame.seq > this.state.cursor.seq) gap = true;
@@ -544,6 +580,91 @@ export class SessionController {
       }),
     );
     this.schedulePromptRefresh();
+  }
+
+  /**
+   * Optimistic-concurrency cursor for the message-closure routes: the view's
+   * current durable watermark. The server answers 40937 when the journal moved
+   * past it (another client edited/forked first).
+   */
+  private expectedCursor(): SessionCursor {
+    return { seq: this.state.cursor.seq, epoch: this.state.cursor.epoch };
+  }
+
+  /**
+   * Edit-resend a user message (`POST …/messages/{mid}:edit`, full-replacement
+   * semantics — attachments are NOT inherited; the body is the whole new
+   * content). The server truncates the history from the target onward and
+   * reruns the turn; we resync locally so the truncated tail (and any orphaned
+   * subagent captures) repaint from server truth.
+   */
+  async editMessage(
+    messageId: string,
+    input: {
+      text: string;
+      content?: MessageContent[];
+      model?: string;
+      thinking?: string;
+      permissionMode?: PermissionMode;
+      planMode?: boolean;
+      swarmMode?: boolean;
+    },
+  ): Promise<void> {
+    assertSessionWritable(this.state);
+    await this.client.editMessage(this.sessionId, messageId, {
+      content: input.content ?? [{ type: 'text', text: input.text }],
+      expected_cursor: this.expectedCursor(),
+      model: input.model,
+      thinking: input.thinking,
+      permission_mode: input.permissionMode,
+      plan_mode: input.planMode === true ? true : undefined,
+      swarm_mode: input.swarmMode === true ? true : undefined,
+    });
+    this.schedulePromptRefresh();
+    // The server also emits event.session.history_rewritten; resyncing here
+    // makes the local repaint independent of WS delivery.
+    void this.resync({ rewrite: true });
+  }
+
+  /**
+   * Regenerate the turn behind an assistant message
+   * (`POST …/messages/{mid}:regenerate`). Same rewrite + resync shape as
+   * editMessage, without new content.
+   */
+  async regenerateMessage(
+    messageId: string,
+    input: {
+      model?: string;
+      thinking?: string;
+      permissionMode?: PermissionMode;
+      planMode?: boolean;
+      swarmMode?: boolean;
+    } = {},
+  ): Promise<void> {
+    assertSessionWritable(this.state);
+    await this.client.regenerateMessage(this.sessionId, messageId, {
+      expected_cursor: this.expectedCursor(),
+      model: input.model,
+      thinking: input.thinking,
+      permission_mode: input.permissionMode,
+      plan_mode: input.planMode === true ? true : undefined,
+      swarm_mode: input.swarmMode === true ? true : undefined,
+    });
+    this.schedulePromptRefresh();
+    void this.resync({ rewrite: true });
+  }
+
+  /**
+   * Fork the session at a message (`POST …:fork` with the truncation pair).
+   * Returns the new session record; the caller navigates. Open-tail semantics:
+   * no prompt runs in the fork until the user sends one.
+   */
+  async forkFromMessage(messageId: string): Promise<Session> {
+    const fork = await this.client.forkSession(this.sessionId, {
+      through_message_id: messageId,
+      expected_cursor: this.expectedCursor(),
+    });
+    return fork;
   }
 
   async abortActive(): Promise<void> {

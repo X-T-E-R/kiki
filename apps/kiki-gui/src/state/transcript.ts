@@ -214,6 +214,12 @@ export interface SubagentBlock {
   readonly toolCallCount: number;
   /** Events captured for the child in this client's unfiltered session stream. */
   readonly transcript: readonly Block[];
+  /**
+   * Set when a history rewrite (edit-resend / regenerate) truncated the turn
+   * this card was captured from. The card stays visible but dimmed — the local
+   * capture is the only remaining record of that branch.
+   */
+  readonly orphaned?: boolean;
 }
 
 /** Subtle in-flow notice: compaction, abort, errors, turn failures. */
@@ -3129,10 +3135,15 @@ function subagentBlocksEqual(a: SubagentBlock, b: SubagentBlock): boolean {
  * identity-merge events this client already observed, while letting the fresh
  * snapshot own live status and roster metadata. Cards are then reinserted by
  * parent anchor or started-at order so renamed/finalized neighbors cannot sink
- * them to the transcript tail. */
+ * them to the transcript tail.
+ *
+ * With `orphanMissing` (a history-rewrite resync), captured cards the fresh
+ * snapshot no longer contains are kept but flagged `orphaned` — the rewrite
+ * truncated their branch, and the local capture is the only record left. */
 export function preserveCapturedSubagents(
   rebuilt: SessionViewState,
   previous: SessionViewState,
+  options: { orphanMissing?: boolean } = {},
 ): SessionViewState {
   const captured = previous.blocks.filter(
     (block): block is SubagentBlock => block.kind === 'subagent',
@@ -3167,7 +3178,9 @@ export function preserveCapturedSubagents(
     mergedById.set(block.subagentId, subagentBlocksEqual(prior, merged) ? prior : merged);
   }
   for (const prior of captured) {
-    if (!mergedById.has(prior.subagentId)) mergedById.set(prior.subagentId, prior);
+    if (mergedById.has(prior.subagentId)) continue;
+    const orphan = options.orphanMissing === true && prior.orphaned !== true;
+    mergedById.set(prior.subagentId, orphan ? { ...prior, orphaned: true } : prior);
   }
 
   const blocks = insertSubagentBlocks(
@@ -3188,6 +3201,74 @@ export function setGoal(
     goal,
     goalUpdatedAt: updatedAt ?? state.goalUpdatedAt,
   };
+}
+
+/**
+ * The last settled assistant block — the regenerate/fork anchor for the most
+ * recent completed turn. Streaming blocks never qualify.
+ */
+export function latestFinalAssistantBlockId(blocks: readonly Block[]): string | undefined {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index]!;
+    if (block.kind === 'assistant' && !block.streaming) return block.id;
+  }
+  return undefined;
+}
+
+/**
+ * Wire message id behind an assistant block id. Snapshot-derived ids are
+ * `assistant-<messageId>-<textIndex>` / `assistant-<messageId>-media`; live
+ * ids (`assistant-live-<turn>[-final-<tag>]`) carry no message id, so callers
+ * fall back to a `/messages` fetch for turns finished in this attach.
+ */
+export function assistantMessageIdFromBlockId(blockId: string): string | undefined {
+  if (blockId.startsWith('assistant-live-')) return undefined;
+  const match = /^assistant-(.+)-(?:\d+|media)$/.exec(blockId);
+  return match?.[1];
+}
+
+/** Floor-nav model: one floor per settled user message, preview from its first line. */
+export interface FloorEntry {
+  readonly blockId: string;
+  readonly preview: string;
+}
+
+const FLOOR_PREVIEW_CODEPOINTS = 24;
+
+/** Codepoint-safe truncation (emoji in the preview must not split). */
+export function floorPreview(text: string): string {
+  const firstLine = text.split('\n', 1)[0] ?? '';
+  const points = Array.from(firstLine.trim());
+  return points.length > FLOOR_PREVIEW_CODEPOINTS
+    ? `${points.slice(0, FLOOR_PREVIEW_CODEPOINTS).join('')}…`
+    : points.join('');
+}
+
+export function buildFloorEntries(blocks: readonly Block[]): FloorEntry[] {
+  const entries: FloorEntry[] = [];
+  for (const block of blocks) {
+    if (block.kind !== 'user') continue;
+    entries.push({ blockId: block.id, preview: floorPreview(block.text) });
+  }
+  return entries;
+}
+
+/**
+ * Which floor owns a viewport position: the last row whose top sits at or
+ * above `viewportTop + slack` (slack absorbs the sticky top-edge chrome).
+ * Pure so the rail's scroll handler stays testable without a DOM.
+ */
+export function resolveActiveFloorId(
+  positions: readonly { blockId: string; top: number }[],
+  viewportTop: number,
+  slack = 80,
+): string | undefined {
+  let active: string | undefined;
+  for (const position of positions) {
+    if (position.top <= viewportTop + slack) active = position.blockId;
+    else break;
+  }
+  return active;
 }
 
 /**

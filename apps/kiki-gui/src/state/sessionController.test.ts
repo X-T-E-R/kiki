@@ -112,6 +112,9 @@ interface Harness {
     submitPrompt: ReturnType<typeof vi.fn>;
     abortPrompt: ReturnType<typeof vi.fn>;
     steerPrompt: ReturnType<typeof vi.fn>;
+    editMessage: ReturnType<typeof vi.fn>;
+    regenerateMessage: ReturnType<typeof vi.fn>;
+    forkSession: ReturnType<typeof vi.fn>;
   };
   socket: { subscribe: ReturnType<typeof vi.fn>; updateCursor: ReturnType<typeof vi.fn> };
   flushAll: () => void;
@@ -129,6 +132,21 @@ async function openController(): Promise<Harness> {
     submitPrompt: vi.fn(),
     abortPrompt: vi.fn(async () => ({ aborted: true, at_seq: 1 })),
     steerPrompt: vi.fn(async () => ({ steered: true as const, prompt_ids: [] as string[] })),
+    editMessage: vi.fn(async () => ({
+      prompt_id: 'p-edit',
+      user_message_id: 'm-edit',
+      status: 'running',
+      content: [],
+      created_at: '2026-01-01T00:00:02.000Z',
+    })),
+    regenerateMessage: vi.fn(async () => ({
+      prompt_id: 'p-regen',
+      user_message_id: 'm-user',
+      status: 'running',
+      content: [],
+      created_at: '2026-01-01T00:00:02.000Z',
+    })),
+    forkSession: vi.fn(async () => ({ ...session, id: 'session_fork' })),
   };
   const socket = {
     subscribe: vi.fn(),
@@ -1000,6 +1018,195 @@ describe('SessionController pipeline', () => {
     expect(mainPublishes()).toBe(publishesBeforeChunk + 1);
     controller.flushFrames();
     expect(controller.getState().session?.title).toBe('t249');
+    controller.close();
+  });
+});
+
+describe('SessionController message closure', () => {
+  it('rebuilds from a snapshot on event.session.history_rewritten', async () => {
+    const { controller, client, socket } = await openController();
+    client.snapshot.mockResolvedValue(
+      snapshot({
+        as_of_seq: 12,
+        messages: {
+          items: [
+            {
+              id: 'm-kept',
+              session_id: 'session_test',
+              role: 'user',
+              content: [{ type: 'text', text: 'kept after the rewrite' }],
+              created_at: '2026-01-01T00:00:00.000Z',
+            },
+          ],
+          has_more: false,
+        },
+      }),
+    );
+    const calls = () => client.snapshot.mock.calls.length;
+    const before = calls();
+    controller.handleFrame(
+      frame(
+        {
+          type: 'event.session.history_rewritten',
+          reason: 'edit_resend',
+          target_message_id: 'm-gone',
+        } as never,
+        { seq: 12 },
+      ),
+    );
+    await waitFor(() => calls() > before);
+    await waitFor(() => !controller.getState().resyncing && !controller.getState().resyncFailed);
+    // Resubscribed at the snapshot watermark; the truncated block list is the
+    // snapshot's, not the pre-rewrite one.
+    expect(socket.subscribe).toHaveBeenLastCalledWith('session_test', { seq: 12, epoch: 'epoch-1' });
+    expect(
+      controller.getState().blocks.some((b) => b.kind === 'user' && b.text.includes('kept')),
+    ).toBe(true);
+    controller.close();
+  });
+
+  it('resyncs with rewrite marking on resync_required(history_rewritten)', async () => {
+    const { controller, client } = await openController();
+    const calls = () => client.snapshot.mock.calls.length;
+    const before = calls();
+    controller.handleResyncRequired({
+      session_id: 'session_test',
+      reason: 'history_rewritten',
+      current_seq: 12,
+      epoch: 'epoch-1',
+    });
+    await waitFor(() => calls() > before);
+    await waitFor(() => !controller.getState().resyncing && !controller.getState().resyncFailed);
+    controller.close();
+  });
+
+  it('follows up with one resync when a turn lived and settled inside the resync window', async () => {
+    const { controller, client } = await openController();
+    const calls = () => client.snapshot.mock.calls.length;
+    const before = calls(); // open()
+    void controller.resync(); // the quarantine window opens synchronously
+    // The whole rewritten turn arrives while the snapshot fetch is in flight:
+    // durable bookends replay afterwards, the volatile delta is dropped by
+    // design — its content exists only in the journal.
+    controller.handleFrame(
+      frame({ type: 'turn.started', turnId: 1, origin: { kind: 'user' }, prompt: 'rerun' } as never, { seq: 11 }),
+    );
+    controller.handleFrame(
+      frame(
+        { type: 'assistant.delta', turnId: 1, delta: 'content the snapshot missed', agentId: 'main' } as never,
+        { seq: 11, volatile: true, offset: 0 },
+      ),
+    );
+    controller.handleFrame(
+      frame({ type: 'turn.ended', turnId: 1, reason: 'completed', agentId: 'main' } as never, { seq: 12 }),
+    );
+    // Idle after the replay (turn.ended landed) → exactly one follow-up
+    // snapshot picks up the committed content.
+    await waitFor(() => calls() >= before + 2);
+    await waitFor(() => !controller.getState().resyncing && !controller.getState().resyncFailed);
+    // Converges — no resync loop.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(calls()).toBe(before + 2);
+    expect(controller.getState().busy).toBe(false);
+    controller.close();
+  });
+
+  it('marks captured subagent cards orphaned when the rewrite drops their branch', async () => {
+    const { controller, client, flushAll } = await openController();
+    controller.handleFrame(
+      frame(
+        {
+          type: 'subagent.spawned',
+          subagentId: 'agent-x',
+          subagentName: 'Explorer',
+          parentToolCallId: 'parent-call',
+          description: 'Explore',
+          runInBackground: false,
+        } as never,
+        { seq: 11 },
+      ),
+    );
+    flushAll();
+    expect(
+      controller.getState().blocks.some((b) => b.kind === 'subagent' && b.subagentId === 'agent-x'),
+    ).toBe(true);
+    // The post-rewrite snapshot no longer contains the card's branch.
+    controller.handleFrame(
+      frame(
+        {
+          type: 'event.session.history_rewritten',
+          reason: 'regenerate',
+          target_message_id: 'm1',
+        } as never,
+        { seq: 12 },
+      ),
+    );
+    await waitFor(() => !controller.getState().resyncing && client.snapshot.mock.calls.length >= 2);
+    const card = controller
+      .getState()
+      .blocks.find((b): b is SubagentBlock => b.kind === 'subagent' && b.subagentId === 'agent-x');
+    expect(card?.orphaned).toBe(true);
+    controller.close();
+  });
+
+  it('editMessage posts full-replacement content with the cursor and resyncs', async () => {
+    const { controller, client } = await openController();
+    const calls = () => client.snapshot.mock.calls.length;
+    const before = calls();
+    await controller.editMessage('m-user', { text: 'rewritten' });
+    expect(client.editMessage).toHaveBeenCalledWith('session_test', 'm-user', {
+      content: [{ type: 'text', text: 'rewritten' }],
+      expected_cursor: { seq: 10, epoch: 'epoch-1' },
+      model: undefined,
+      thinking: undefined,
+      permission_mode: undefined,
+      plan_mode: undefined,
+      swarm_mode: undefined,
+    });
+    // Proactive local resync — the repaint does not wait on the WS frame.
+    await waitFor(() => calls() > before);
+    controller.close();
+  });
+
+  it('regenerateMessage posts the cursor and resyncs', async () => {
+    const { controller, client } = await openController();
+    const calls = () => client.snapshot.mock.calls.length;
+    const before = calls();
+    await controller.regenerateMessage('m-assistant');
+    expect(client.regenerateMessage).toHaveBeenCalledWith('session_test', 'm-assistant', {
+      expected_cursor: { seq: 10, epoch: 'epoch-1' },
+      model: undefined,
+      thinking: undefined,
+      permission_mode: undefined,
+      plan_mode: undefined,
+      swarm_mode: undefined,
+    });
+    await waitFor(() => calls() > before);
+    controller.close();
+  });
+
+  it('forkFromMessage sends the truncation pair and returns the new session', async () => {
+    const { controller, client } = await openController();
+    const fork = await controller.forkFromMessage('m-user');
+    expect(client.forkSession).toHaveBeenCalledWith('session_test', {
+      through_message_id: 'm-user',
+      expected_cursor: { seq: 10, epoch: 'epoch-1' },
+    });
+    expect(fork.id).toBe('session_fork');
+    controller.close();
+  });
+
+  it('refuses edit/regenerate while a resync is in flight', async () => {
+    const { controller, client } = await openController();
+    const held = deferred<SessionSnapshotResponse>();
+    client.snapshot.mockReturnValueOnce(held.promise);
+    void controller.resync();
+    await waitFor(() => controller.getState().resyncing);
+    await expect(controller.editMessage('m1', { text: 'x' })).rejects.toThrow(/resync/i);
+    await expect(controller.regenerateMessage('m1')).rejects.toThrow(/resync/i);
+    expect(client.editMessage).not.toHaveBeenCalled();
+    held.resolve(snapshot());
+    await waitFor(() => !controller.getState().resyncing && !controller.getState().resyncFailed);
     controller.close();
   });
 });

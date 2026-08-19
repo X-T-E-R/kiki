@@ -71,6 +71,20 @@ export type InteractionEvent =
   | QuestionAnsweredEvent
   | QuestionDismissedEvent;
 
+/**
+ * `event.session.history_rewritten` — durable signal that the journal was
+ * truncated and rebuilt (edit-resend / regenerate). The payload is only a
+ * notice; the controller reacts with a snapshot resync, so the fields are
+ * informational (toast / orphan marking) rather than applied incrementally.
+ */
+export interface HistoryRewrittenEvent {
+  readonly type: 'event.session.history_rewritten';
+  readonly reason: 'edit_resend' | 'regenerate';
+  readonly target_message_id: string;
+  readonly agentId?: string;
+  readonly sessionId?: string;
+}
+
 export interface WireTokenUsage {
   readonly inputOther: number;
   readonly output: number;
@@ -96,7 +110,7 @@ type ExtendedAgentEvent =
     });
 
 /** Any payload that can ride a `session_event` frame. */
-export type SessionEventPayload = ExtendedAgentEvent | InteractionEvent;
+export type SessionEventPayload = ExtendedAgentEvent | InteractionEvent | HistoryRewrittenEvent;
 
 /**
  * The WS `session_event` envelope: frame `type` mirrors the payload event
@@ -117,9 +131,13 @@ export interface SessionEventFrame {
 /** `resync_required` system frame payload. */
 export interface ResyncRequiredPayload {
   readonly session_id: string;
-  readonly reason: 'buffer_overflow' | 'session_recreated' | 'epoch_changed';
+  readonly reason: 'buffer_overflow' | 'session_recreated' | 'epoch_changed' | 'history_rewritten';
   readonly current_seq: number;
   readonly epoch?: string;
+}
+
+export function isHistoryRewrittenEvent(payload: SessionEventPayload): payload is HistoryRewrittenEvent {
+  return payload.type === 'event.session.history_rewritten';
 }
 
 export function isInteractionEvent(payload: SessionEventPayload): payload is InteractionEvent {
