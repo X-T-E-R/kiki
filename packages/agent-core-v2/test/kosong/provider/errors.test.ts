@@ -76,6 +76,28 @@ describe('non-abort classification still works', () => {
     expect(convertOpenAIError(status)).toBe(status);
     expect(isRetryableGenerateError(status)).toBe(true);
   });
+
+  it('includes the provider body message on a 400', () => {
+    const err = new OpenAIAPIError(
+      400,
+      { message: 'content_filter: the request was rejected', type: 'invalid_request_error' },
+      'Bad Request',
+      new Headers(),
+    );
+    const result = convertOpenAIError(err);
+    expect(result).toBeInstanceOf(APIStatusError);
+    expect((result as APIStatusError).statusCode).toBe(400);
+    expect(result.message).toContain('content_filter: the request was rejected');
+    expect(isRetryableGenerateError(result)).toBe(false);
+  });
+
+  it('keeps a body-less 400 as the SDK status message', () => {
+    const err = new OpenAIAPIError(400, undefined, 'Bad Request', new Headers());
+    const result = convertOpenAIError(err);
+    expect(result).toBeInstanceOf(APIStatusError);
+    expect(result.message).toBe('400 Bad Request');
+    expect(isRetryableGenerateError(result)).toBe(false);
+  });
 });
 
 async function* streamEvents(events: readonly Record<string, unknown>[]) {

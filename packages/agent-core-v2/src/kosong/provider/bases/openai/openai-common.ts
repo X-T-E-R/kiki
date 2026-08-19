@@ -138,7 +138,14 @@ export function convertOpenAIError(
     if (isOpenAIInsufficientQuotaError(error)) {
       return new APIProviderQuotaExhaustedError(error.message, reqId, retryAfterMs, traceId);
     }
-    return normalizeAPIStatusError(error.status, error.message, reqId, retryAfterMs, traceId);
+    return normalizeAPIStatusError(
+      error.status,
+      error.message,
+      reqId,
+      retryAfterMs,
+      traceId,
+      error.error,
+    );
   }
   if (
     error instanceof OpenAIAPIError &&

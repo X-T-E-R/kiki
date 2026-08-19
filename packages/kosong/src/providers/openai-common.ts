@@ -155,7 +155,14 @@ export function convertOpenAIError(
     if (isOpenAIInsufficientQuotaError(error)) {
       return new APIProviderQuotaExhaustedError(error.message, reqId, retryAfterMs, traceId);
     }
-    return normalizeAPIStatusError(error.status, error.message, reqId, retryAfterMs, traceId);
+    return normalizeAPIStatusError(
+      error.status,
+      error.message,
+      reqId,
+      retryAfterMs,
+      traceId,
+      error.error,
+    );
   }
   // Base APIError with no status and no body => transport-layer failure.
   // When the error has a body (e.g. SSE error events from the server),

@@ -626,6 +626,8 @@ export function convertAnthropicError(
       error.message,
       reqId,
       parseRetryAfterMs(error.headers),
+      undefined,
+      error.error,
     );
   }
   if (error instanceof AnthropicError) {
