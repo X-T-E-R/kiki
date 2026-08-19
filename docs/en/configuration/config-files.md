@@ -193,6 +193,64 @@ display_name = "Kimi for Coding (custom)"
 
 You can also switch models temporarily without touching the config file — by setting `KIMI_MODEL_*` environment variables, the CLI synthesizes a temporary provider in memory that does not persist after restart. See [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-kimi-model).
 
+### Model cognition
+
+`[models."<alias>".cognition]` attaches prompt files to a single model alias, so a model that needs different conditioning (extra instructions shaping how it reasons) than the rest of your catalog gets it without touching any agent profile. Every field points at a file read from disk at runtime; no default text ships with the CLI, and nothing is injected unless you declare a file.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `overlay` | `string` or `array<string>` | — | File(s) merged into the bound model's system prompt. Multiple paths are joined with a blank line in declaration order |
+| `overlay_mode` | `string` | `append` | How `overlay` combines with the profile's prompt: `append`, `prepend`, `wrap`, `persona`, or `replace` |
+| `steering` | `string` or `array<string>` | — | File(s) injected as a user message right after your prompt, at the start of every turn |
+| `anchor` | `string` or `array<string>` | — | File(s) used as the complete system prompt for the opening steps of a turn, replacing the profile prompt and any `overlay` |
+| `anchor_steps` | `integer` | `1` | How many model requests at the start of an anchored turn use the `anchor` text; must be at least 1 |
+| `anchor_scope` | `string` | `session` | `session` anchors only the session's first turn; `turn` anchors the opening steps of every turn |
+
+Paths are relative to the [data root directory](./data-locations.md#data-root-directory) (`~/.kimi-code` by default). Absolute paths, paths that resolve outside the data root (including through a symlink), and missing files are rejected when the profile binds, with an error naming the field and the path — a typo stops the session instead of silently sending an unconditioned prompt. A declared file that exists but is empty is skipped; when every file declared for one field is empty, that field behaves as unset.
+
+The three fields differ in how far they sit from the model's next token. `overlay` and `anchor` rewrite the system prompt, which the model reads once, before your request. `steering` sits directly after your prompt as an ordinary user message — not a `<system-reminder>` — and the same text is re-injected on every new turn, including after compaction re-arms the context, so the cue never drifts away from the latest request.
+
+`overlay_mode` decides how much of the profile's prompt survives:
+
+| Mode | Result |
+| --- | --- |
+| `append` | Profile prompt, then the overlay |
+| `prepend` | Overlay, then the profile prompt |
+| `wrap` | Overlay, the profile prompt, then a fixed closing line stating that the overlay still governs reasoning |
+| `persona` | The overlay takes the place of the profile prompt's opening `You are …` paragraph; the rest of that prompt is kept |
+| `replace` | The overlay becomes the entire system prompt |
+
+`persona` locates the identity paragraph by matching `You are` at the very start of the prompt. A profile whose prompt opens some other way has no identity paragraph to drop, so the overlay is appended instead.
+
+Anchoring is a per-request substitution, not a rewrite of the stored prompt. For the first `anchor_steps` requests of an anchored turn the model receives the `anchor` text as its entire system prompt; from the next step onward it receives the normal prompt, overlay included, for the rest of the session. Reach for it when a long profile prompt crowds out the conditioning you want at the moment the model plans, and the full prompt only matters once it starts calling tools. A system prompt passed explicitly by a caller is never replaced.
+
+Cognition binds to the alias rather than to the main agent, so a subagent that binds the same alias — through `model_alias`, [`[subagent] default_model`](#subagent), or inheritance from its caller — gets the same overlay, steering, and anchor. Switching aliases mid-session re-renders the overlay for the newly bound model.
+
+The example below conditions a DeepSeek V4 model whose default habit is to narrate execution step by step instead of planning first. It pairs a short `anchor` — a thin persona that stands in for the profile prompt while the model plans — with `steering` that asks for a plan before action:
+
+```toml
+[models."axon-message/deepseek-v4-flash-0731".cognition]
+anchor = "cognition/flash-anchor.md"
+anchor_steps = 3
+steering = "cognition/flash-steering.md"
+```
+
+`~/.kimi-code/cognition/flash-anchor.md`:
+
+```
+You are a helpful software engineer assistant.
+```
+
+`~/.kimi-code/cognition/flash-steering.md`:
+
+```
+Router: classify this task (build or fix) now, then adopt the matching style — build: direct production; fix: inspect-first. Let's first understand the problem and devise a plan; then let's carry out the plan and act.
+```
+
+With both files in place, the model plans before acting during the first three steps of the session, then continues with its full profile prompt.
+
+Treat that wording as a starting point rather than a setting. Which phrasing actually shifts a model's reasoning was measured on this one model, and another model — or another profile prompt — may need different text, or none at all. The mechanism itself does not interpret the files.
+
 ## `secondary_model`
 
 The secondary model is a second model configuration alongside the main model — typically a cheaper one, for features that do not need the main model's capability. It remains the legacy fallback recipe for subagent spawning.

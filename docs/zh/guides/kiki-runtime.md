@@ -18,6 +18,7 @@
 | `kap-server`、`@moonshot-ai/protocol`，以及它们提供的会话、配置和认证契约 | 继承 | Kiki 客户端使用这些契约，不另行定义一套服务端或协议。 |
 | `agent-core` 和 `agent-core-v2` 中的模型绑定区域 | 改造 | Kiki 扩展了选定的上游 Agent 引擎路径，同时保留原有的会话和任务生命周期。 |
 | 为新派生子 Agent 显式绑定模型 alias 和 thinking effort | Kiki 独有 | 绑定行为是下游新增功能，在两条 Agent 引擎路径中实现；只有其中的旧版符号选择器路径默认关闭，显式绑定本身是稳定能力，始终可用。 |
+| 通过 [`[models."<alias>".cognition]`](../configuration/config-files.md#模型认知) 按模型做提示词调节 | Kiki 独有 | Overlay、steering 和 anchor 提示词文件挂到模型别名上，而不是 Agent profile 上。仓库不为它们附带任何默认正文；每个文件都在运行时从数据根读取，未声明的字段不会注入任何内容。 |
 | 由 6 个工具组成的 Codex 风格协作适配器 | Kiki 独有 | 适配器新增 `spawn_agent`、`list_agents`、`wait_agent`、`followup_task`、`interrupt_agent` 和 `send_message`，但不表示完整兼容 Codex。 |
 | 本地 peer thread 通信 | Kiki 独有 | 主 Agent 可以跨本地工作区列出、读取、发送消息并等待现有会话；REST 和 Klient 只允许外部客户端指定目标，发送结果不带 peer 归属。 |
 | 独立的 `@kiki/gui` package | Kiki 独有 | GUI 是继承服务端和协议表面的下游客户端。部分组件改造自已单独标注来源的其他开源项目，因此这些组件在 Kiki 独有 package 内归类为改造。 |
@@ -108,6 +109,7 @@ GUI package 在 `apps/kiki-gui/ATTRIBUTION.md` 中记录了改造自 codeg、Aio
 - **命令与 Agent 引擎选择**：`apps/kimi-code/package.json` 和 `apps/kimi-code/src/cli/experimental-v2.ts`
 - **继承的服务端和协议**：`packages/kap-server/`、`packages/protocol/`、`packages/node-sdk/` 和 `packages/oauth/`
 - **改造过的模型绑定区域**：`packages/agent-core/src/session/subagent-binding.ts` 和 `packages/agent-core-v2/src/session/subagent/`
+- **Kiki 独有的按模型提示词调节**：`packages/agent-core-v2/src/agent/cognition/`、`packages/agent-core-v2/src/features/modelSteering/` 以及 `packages/agent-core-v2/src/app/kosongConfig/configSection.ts` 中的 `cognition` schema
 - **Kiki 独有的协作适配器**：`packages/agent-core/src/tools/builtin/collaboration/agent-collaboration.ts` 和 `packages/agent-core-v2/src/agent/tools/agent-collaboration/agentCollaborationTool.ts`
 - **Kiki 独有的 peer thread 核心与传输层**：`packages/agent-core-v2/src/app/threadCommunication/`、`packages/kap-server/src/routes/threads.ts` 和 `packages/klient/src/contract/global/threads.ts`
 - **Kiki 独有 GUI 及其来源项目边界**：`apps/kiki-gui/package.json`、`apps/kiki-gui/src/lib/client.ts` 和 `apps/kiki-gui/ATTRIBUTION.md`
