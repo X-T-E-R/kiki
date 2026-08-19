@@ -184,6 +184,32 @@ describe('groupUsageByModel', () => {
       { model: 'kimi/k2', sessions: 1, turns: 0, costUsd: 1, totalTokens: 150 },
     ]);
   });
+
+  it('keeps unattributed tokens when an old server provides only model costs', () => {
+    const groups = groupUsageByModel([
+      session('legacy-costs', {
+        agent_config: { model: 'kimi/k2' },
+        usage: usage({
+          total_cost_usd: 2,
+          turn_count: 3,
+          input_tokens: 140,
+          output_tokens: 60,
+          by_model: { 'axon-message/grok-4.6': 2 },
+        }),
+      }),
+    ]);
+
+    expect(groups).toEqual([
+      {
+        model: 'axon-message/grok-4.6',
+        sessions: 1,
+        turns: 0,
+        costUsd: 2,
+        totalTokens: 0,
+      },
+      { model: '', sessions: 1, turns: 3, costUsd: 0, totalTokens: 200 },
+    ]);
+  });
 });
 
 describe('bucketSessionsByDay', () => {

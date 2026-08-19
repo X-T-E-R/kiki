@@ -20,22 +20,39 @@ export function addSessionUsage(
   };
 }
 
+export interface SessionUsageReplayResult {
+  readonly usage?: SessionUsageSummary;
+  readonly complete: boolean;
+}
+
 export async function readSessionUsageFromWires(
   log: IAppendLogStore,
   agentScopes: readonly string[],
-): Promise<SessionUsageSummary | undefined> {
+): Promise<SessionUsageReplayResult> {
   let summary: SessionUsageSummary | undefined;
+  let complete = true;
   for (const scope of agentScopes) {
+    let hasRecords = false;
     try {
       for await (const record of log.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY)) {
+        hasRecords = true;
         const parsed = parseUsageRecord(record);
         if (parsed !== undefined) {
           summary = addSessionUsage(summary, parsed.model, parsed.usage);
         }
       }
-    } catch {}
+    } catch {
+      complete = false;
+    }
+    if (!hasRecords) complete = false;
   }
-  return summary;
+  return {
+    usage:
+      summary === undefined
+        ? undefined
+        : { ...summary, wireComplete: complete ? true : undefined },
+    complete,
+  };
 }
 
 function parseUsageRecord(

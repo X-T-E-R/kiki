@@ -215,13 +215,21 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     if (existing !== undefined) {
       this.data = normalizeSessionMeta(existing, this.ctx.sessionId);
       const agentIds = [...new Set(['main', ...Object.keys(this.data.agents ?? {})])];
-      const recoveredUsage =
+      const replay =
         this.data.usage?.wireComplete === true
           ? undefined
           : await readSessionUsageFromWires(
               this.logStore,
               agentIds.map((agentId) => this.ctx.scope(`agents/${agentId}`)),
             );
+      const recoveredUsage =
+        replay === undefined
+          ? undefined
+          : replay.complete
+            ? replay.usage
+            : this.data.usage === undefined
+              ? replay.usage
+              : undefined;
       if (
         this.data.agents === undefined ||
         this.data.custom === undefined ||

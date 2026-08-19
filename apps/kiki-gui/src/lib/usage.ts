@@ -138,24 +138,25 @@ export function groupUsageByModel(sessions: readonly Session[]): ModelUsage[] {
       ...tokenEntries.map(([model]) => model),
       ...costEntries.map(([model]) => model),
     ]);
-    const hasBreakdown = models.size > 0;
-    if (!hasBreakdown) models.add(session.agent_config.model);
+    const hasTokenBreakdown = tokenEntries.length > 0;
+    const hasCostBreakdown = costEntries.length > 0;
+    const unattributedModel = hasCostBreakdown ? '' : session.agent_config.model;
+    if (!hasTokenBreakdown) models.add(unattributedModel);
     const tokens = new Map(tokenEntries);
     const costs = new Map(costEntries);
     for (const model of models) {
       const entry = byModel.get(model) ?? { sessions: 0, turns: 0, costUsd: 0, totalTokens: 0 };
       entry.sessions += 1;
-      entry.turns += !hasBreakdown ? session.usage.turn_count : 0;
+      entry.turns +=
+        !hasTokenBreakdown && model === unattributedModel ? session.usage.turn_count : 0;
       entry.costUsd +=
         costs.get(model) ??
-        (costEntries.length === 0 && model === session.agent_config.model
+        (!hasCostBreakdown && model === session.agent_config.model
           ? session.usage.total_cost_usd
           : 0);
       entry.totalTokens +=
         tokens.get(model) ??
-        (tokenEntries.length === 0 && model === session.agent_config.model
-          ? sessionTotalTokens(session)
-          : 0);
+        (!hasTokenBreakdown && model === unattributedModel ? sessionTotalTokens(session) : 0);
       byModel.set(model, entry);
     }
   }
