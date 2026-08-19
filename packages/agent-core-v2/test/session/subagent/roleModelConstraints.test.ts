@@ -1,10 +1,3 @@
-/**
- * Scenario: role-level `allowed_models` / `deny_models` at bind time.
- * Machine `[subagent].deny_models` stays authoritative; role lists only narrow.
- * Run: `pnpm --filter @moonshot-ai/agent-core-v2 exec vitest run
- * test/session/subagent/roleModelConstraints.test.ts`.
- */
-
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -123,7 +116,7 @@ function routePin(modelAlias: string): AgentProfileRouteDefinition {
   };
 }
 
-describe('role model constraints at bind time', () => {
+describe('role model constraints at bind time: role allowed_models / deny_models only narrow, machine [subagent].deny_models stays authoritative', () => {
   it('rejects any other dispatch-time model_alias when allowed_models has a single pin', () => {
     const pin: SubagentRoleModelConstraints = { allowedModels: ['fast-model'] };
 

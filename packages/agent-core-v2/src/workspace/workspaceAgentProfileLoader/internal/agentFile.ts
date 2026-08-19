@@ -259,10 +259,6 @@ function parseRequestParams(
   return out;
 }
 
-// Parsing has no model service, so a written alias cannot be canonicalized here.
-// Comparing the segment after the last "/" keeps equivalent spellings such as
-// "fast" and "vendor/fast" from raising a false alarm; binding-time resolution
-// remains the authoritative check.
 function aliasTail(alias: string): string {
   return alias.slice(alias.lastIndexOf('/') + 1);
 }

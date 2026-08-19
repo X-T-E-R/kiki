@@ -1,13 +1,3 @@
-/**
- * Scenario: Agent tool profile-description rendering — advisory
- * `recommendedModels` lines, catalog filtering, and placement relative to
- * binding / Tools lines.
- * There is no existing Agent-tool `description` getter suite; this covers the
- * exported `buildProfileDescriptions` helper that that getter uses.
- * Run: `pnpm --filter @moonshot-ai/agent-core-v2 exec vitest run
- * test/agent/tools/agent/buildProfileDescriptions.test.ts`.
- */
-
 import { describe, expect, it } from 'vitest';
 
 import { buildProfileDescriptions } from '#/agent/tools/agent/agentTool';
@@ -54,7 +44,7 @@ function render(target: AgentProfile, available: readonly string[]): string {
   );
 }
 
-describe('buildProfileDescriptions recommended models', () => {
+describe('buildProfileDescriptions recommended models: advisory lines, catalog filtering, and placement relative to the binding and Tools lines', () => {
   it('renders alternative models after binding lines and before Tools', () => {
     const text = render(profile(), [
       'axon-message/grok-4.6',
