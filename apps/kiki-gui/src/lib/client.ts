@@ -22,7 +22,6 @@ import type {
   CreateTerminalRequest,
   Envelope,
   FileMeta,
-  ForkSessionRequest,
   FsSearchResponse,
   GetTerminalResponse,
   GoalSnapshot,
@@ -36,6 +35,7 @@ import type {
   ListToolsResponse,
   ListWorkspacesResponse,
   Message,
+  MessageContent,
   MetaResponse,
   OAuthFlowSnapshot,
   OAuthFlowStart,
@@ -45,6 +45,7 @@ import type {
   OAuthLogoutResponse,
   PageResponse,
   PatchConfigRequest,
+  PermissionMode,
   PromptAbortResponse,
   PromptListResponse,
   PromptSteerResult,
@@ -100,6 +101,8 @@ export const API_CODES = {
   APPROVAL_EXPIRED: 41001,
   QUESTION_EXPIRED: 41002,
   TERMINAL_NOT_FOUND: 40414,
+  MESSAGE_ACTION_UNAVAILABLE: 40936,
+  SESSION_CURSOR_MISMATCH: 40937,
 } as const;
 
 /**
@@ -159,6 +162,47 @@ export interface SearchMessagesResponse {
     degraded?: string;
   };
   source: 'live' | 'index';
+}
+
+/**
+ * Optimistic-concurrency cursor for the message-closure routes
+ * (`messages/{mid}:edit|regenerate`, `:fork` with a truncation point). The
+ * server compares it against the session journal watermark and answers 40937
+ * when the client acted on a stale view.
+ */
+export interface SessionCursor {
+  readonly seq: number;
+  readonly epoch?: string;
+}
+
+/** Optional per-run execution overrides shared by :edit / :regenerate. */
+export interface MessageRunOverrides {
+  readonly model?: string;
+  readonly thinking?: string;
+  readonly permission_mode?: PermissionMode;
+  readonly plan_mode?: boolean;
+  readonly swarm_mode?: boolean;
+}
+
+/** `POST /sessions/{sid}/messages/{mid}:edit` body — full replacement semantics. */
+export interface EditMessageRequest extends MessageRunOverrides {
+  readonly content: MessageContent[];
+  readonly expected_cursor: SessionCursor;
+}
+
+/** `POST /sessions/{sid}/messages/{mid}:regenerate` body. */
+export interface RegenerateMessageRequest extends MessageRunOverrides {
+  readonly expected_cursor: SessionCursor;
+}
+
+/** `:fork` extension: truncate the forked history at a message (paired fields).
+ * Fully local mirror (title/metadata echo ForkSessionRequest) so the app does
+ * not depend on the in-flux protocol type. */
+export interface KikiForkSessionRequest {
+  readonly title?: string;
+  readonly metadata?: Record<string, unknown>;
+  readonly through_message_id?: string;
+  readonly expected_cursor?: SessionCursor;
 }
 
 export interface SecondaryModelSettings {
@@ -1213,10 +1257,50 @@ export class KikiClient {
     return this.request<SearchMessagesResponse>('POST', '/search', { body, signal });
   }
 
-  forkSession(sessionId: string, body: ForkSessionRequest = {}): Promise<Session> {
+  /**
+   * `POST /sessions/{id}:fork` — copy the session. The message-closure pair
+   * (`through_message_id` + `expected_cursor`) forks only the history through
+   * that message and guards against a concurrent rewrite (40937).
+   */
+  forkSession(sessionId: string, body: KikiForkSessionRequest = {}): Promise<Session> {
     return this.request<Session>('POST', `/sessions/${encodeURIComponent(sessionId)}:fork`, {
       body,
     });
+  }
+
+  /**
+   * `POST /sessions/{sid}/messages/{mid}:edit` — full-replacement edit of a
+   * user message: the server truncates everything from the target onward and
+   * resubmits the new content as a fresh prompt (PromptSubmitResult). 40936
+   * when the message cannot be edited, 40937 on cursor mismatch, 40901 busy.
+   */
+  editMessage(
+    sessionId: string,
+    messageId: string,
+    body: EditMessageRequest,
+  ): Promise<PromptSubmitResult> {
+    return this.request<PromptSubmitResult>(
+      'POST',
+      `/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}:edit`,
+      { body },
+    );
+  }
+
+  /**
+   * `POST /sessions/{sid}/messages/{mid}:regenerate` — drop the target
+   * assistant reply (and anything after it) and rerun its turn. Same result
+   * and error codes as :edit.
+   */
+  regenerateMessage(
+    sessionId: string,
+    messageId: string,
+    body: RegenerateMessageRequest,
+  ): Promise<PromptSubmitResult> {
+    return this.request<PromptSubmitResult>(
+      'POST',
+      `/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}:regenerate`,
+      { body },
+    );
   }
 
   /** Compacts older context. 40901 while busy, 40910 when nothing compactable. */

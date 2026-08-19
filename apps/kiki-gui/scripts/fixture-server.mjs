@@ -174,6 +174,7 @@ class FixtureSession {
     this.lastPromptSubmission = null;
     this.lastSkillActivation = null; // {name, args, attachments} — walker assertions
     this.lastFsSearch = null; // last fs:search body
+    this.lastMessageAction = null; // {action: 'edit'|'regenerate', message_id, body}
     this.seq = scenarioData.as_of_seq ?? this.messages.length;
     this.epoch = scenarioData.epoch ?? 'ep_fixture_1';
     this.scriptRunning = false;
@@ -1087,6 +1088,26 @@ class FixtureServer {
       return this.replyFsSearch(res, session, body);
     }
     if (tail === ':fork') {
+      // Message-closure extension: an expected_cursor that lags the journal
+      // fails the fork (40937); through_message_id truncates the copy's
+      // history right after that message (open tail — nothing runs in it).
+      const forkCursor = body?.expected_cursor;
+      if (
+        forkCursor !== undefined &&
+        (forkCursor.seq !== session.seq ||
+          (forkCursor.epoch !== undefined && forkCursor.epoch !== session.epoch))
+      ) {
+        return this.envelope(res, null, 40937, 'session.cursor_mismatch');
+      }
+      let forkMessages = structuredClone(session.messages);
+      if (typeof body?.through_message_id === 'string') {
+        const combined = [...session.older, ...session.messages];
+        const throughIndex = combined.findIndex((m) => m.id === body.through_message_id);
+        if (throughIndex < 0) {
+          return this.envelope(res, null, 40936, 'message.action_unavailable');
+        }
+        forkMessages = structuredClone(combined.slice(0, throughIndex + 1));
+      }
       const id = nextId('session');
       const record = {
         ...structuredClone(session.record),
@@ -1101,9 +1122,10 @@ class FixtureServer {
         busy: false,
         pending_interaction: 'none',
         archived: false,
+        message_count: forkMessages.length,
       };
       this.sessions.set(id, new FixtureSession(record, {
-        messages: structuredClone(session.messages),
+        messages: forkMessages,
       }));
       return this.envelope(res, record);
     }
@@ -1176,6 +1198,114 @@ class FixtureServer {
         });
       }
       return this.envelope(res, transcript);
+    }
+    // Message-closure routes: full-replacement edit of a user message, and
+    // regenerate of an assistant reply. Both truncate the journal from the
+    // target onward, emit the durable history_rewritten signal, and rerun the
+    // turn through the scenario's onPrompt script — the GUI then resyncs.
+    const messageActionMatch = /^\/messages\/([^/]+):(edit|regenerate)$/.exec(tail);
+    if (messageActionMatch !== null && method === 'POST') {
+      const messageId = decodeURIComponent(messageActionMatch[1]);
+      const actionName = messageActionMatch[2];
+      if (session.record.busy || session.activePrompt !== null || session.scriptRunning) {
+        return this.envelope(res, null, 40901, 'session.busy');
+      }
+      const expected = body?.expected_cursor;
+      if (
+        expected !== undefined &&
+        (expected.seq !== session.seq ||
+          (expected.epoch !== undefined && expected.epoch !== session.epoch))
+      ) {
+        return this.envelope(res, null, 40937, 'session.cursor_mismatch');
+      }
+      const combined = [...session.older, ...session.messages];
+      const targetIndex = combined.findIndex((m) => m.id === messageId);
+      const target = targetIndex >= 0 ? combined[targetIndex] : undefined;
+      if (target === undefined) {
+        return this.envelope(res, null, 40936, 'message.action_unavailable');
+      }
+      const truncateBefore = (count) => {
+        if (count <= session.older.length) {
+          session.older = session.older.slice(0, count);
+          session.messages = [];
+        } else {
+          session.messages = session.messages.slice(0, count - session.older.length);
+        }
+      };
+      const textOf = (content) =>
+        (content ?? []).filter((c) => c.type === 'text').map((c) => c.text).join('\n');
+      if (actionName === 'edit') {
+        if (target.role !== 'user' || !Array.isArray(body?.content)) {
+          return this.envelope(res, null, 40936, 'message.action_unavailable');
+        }
+        session.lastMessageAction = { action: actionName, message_id: messageId, body };
+        truncateBefore(targetIndex);
+        const promptId = nextId('msg');
+        const createdAt = now();
+        session.messages.push({
+          id: promptId,
+          session_id: session.record.id,
+          role: 'user',
+          content: body.content,
+          created_at: createdAt,
+          prompt_id: promptId,
+        });
+        session.record.message_count = session.older.length + session.messages.length;
+        this.emit(session.record.id, {
+          type: 'event.session.history_rewritten',
+          payload: { reason: 'edit_resend', target_message_id: messageId },
+        });
+        const item = {
+          prompt_id: promptId,
+          user_message_id: promptId,
+          status: 'running',
+          content: body.content,
+          created_at: createdAt,
+          text: textOf(body.content),
+        };
+        this.startPrompt(session, item);
+        return this.envelope(res, {
+          prompt_id: promptId,
+          user_message_id: promptId,
+          status: 'running',
+          content: body.content,
+          created_at: createdAt,
+        });
+      }
+      // regenerate
+      if (target.role !== 'assistant') {
+        return this.envelope(res, null, 40936, 'message.action_unavailable');
+      }
+      const kept = combined.slice(0, targetIndex);
+      const anchor = [...kept].reverse().find((m) => m.role === 'user');
+      if (anchor === undefined) {
+        return this.envelope(res, null, 40936, 'message.action_unavailable');
+      }
+      truncateBefore(targetIndex);
+      session.record.message_count = session.older.length + session.messages.length;
+      session.lastMessageAction = { action: actionName, message_id: messageId, body };
+      this.emit(session.record.id, {
+        type: 'event.session.history_rewritten',
+        payload: { reason: 'regenerate', target_message_id: messageId },
+      });
+      const regenPromptId = nextId('msg');
+      const regenAt = now();
+      const regenItem = {
+        prompt_id: regenPromptId,
+        user_message_id: anchor.id,
+        status: 'running',
+        content: anchor.content,
+        created_at: regenAt,
+        text: textOf(anchor.content),
+      };
+      this.startPrompt(session, regenItem);
+      return this.envelope(res, {
+        prompt_id: regenPromptId,
+        user_message_id: anchor.id,
+        status: 'running',
+        content: anchor.content,
+        created_at: regenAt,
+      });
     }
     if (tail === '/messages') {
       const beforeId = query.get('before_id');
@@ -1390,6 +1520,8 @@ class FixtureServer {
           last_prompt_submission: session.lastPromptSubmission,
           last_skill_activation: session.lastSkillActivation,
           last_fs_search: session.lastFsSearch,
+          last_message_action: session.lastMessageAction,
+          message_ids: session.messages.map((m) => m.id),
           terminals: [...session.terminals.values()].map((t) => t.record),
         });
       }

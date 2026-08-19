@@ -28,9 +28,16 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
+import { createViewState, type Block, type SessionViewState } from '../state/transcript';
 import { Markdown } from './Markdown';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
-import { splitPrefixSegments, splitStreamingText, TurnTailLine } from './Transcript';
+import {
+  splitPrefixSegments,
+  splitStreamingText,
+  Transcript,
+  TurnTailLine,
+  type TranscriptRowActions,
+} from './Transcript';
 
 vi.mock('./markdown/streamdown-plugins', async (importOriginal) => {
   const original = await importOriginal<typeof import('./markdown/streamdown-plugins')>();
@@ -353,3 +360,229 @@ describe('media preview wiring', () => {
     expect(link?.getAttribute('title')).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Message-closure row actions + collapsible user messages. These render the
+// full Transcript; the ResizeObserver noop stub from beforeAll covers both
+// use-stick-to-bottom and the collapse hook's observer path (the hook's
+// synchronous first measure is what the collapse tests drive).
+
+function transcriptState(blocks: Block[]): SessionViewState {
+  return { ...createViewState('session_test'), loaded: true, blocks };
+}
+
+function noopActions(): Promise<void> {
+  return Promise.resolve();
+}
+
+async function renderTranscript(
+  blocks: Block[],
+  rowActions?: TranscriptRowActions,
+): Promise<HTMLDivElement> {
+  const { root, container } = makeRoot();
+  await renderSettled(
+    root,
+    <Transcript
+      state={transcriptState(blocks)}
+      onLoadOlder={() => Promise.resolve(false)}
+      onResolveApproval={() => noopActions()}
+      onAnswerQuestion={() => noopActions()}
+      onDismissQuestion={() => noopActions()}
+      rowActions={rowActions}
+    />,
+  );
+  return container;
+}
+
+function userBlock(overrides: Partial<Extract<Block, { kind: 'user' }>> & { id: string; text: string }): Block {
+  return { kind: 'user', createdAt: '2026-01-01T00:00:00.000Z', ...overrides };
+}
+
+function assistantBlock(id: string, text: string): Block {
+  return { kind: 'assistant', id, text, streaming: false, createdAt: '2026-01-01T00:00:01.000Z' };
+}
+
+function rowActionButtons(row: Element): string[] {
+  return [...row.querySelectorAll('[data-row-action]')].map(
+    (el) => el.getAttribute('data-row-action') ?? '',
+  );
+}
+
+function click(element: Element): void {
+  element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+}
+
+describe('message row actions', () => {
+  it('shows edit/fork on settled user rows and regenerate/fork on the latest final reply only', async () => {
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage: () => undefined,
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const container = await renderTranscript(
+      [
+        userBlock({ id: 'user-m1', text: 'first question', userMessageId: 'm1' }),
+        assistantBlock('assistant-m2-0', 'first answer'),
+        userBlock({ id: 'user-m3', text: 'second question', userMessageId: 'm3' }),
+        assistantBlock('assistant-live-1-final-end@9', 'second answer'),
+      ],
+      rowActions,
+    );
+    const rows = [...container.querySelectorAll('[data-block-id]')];
+    expect(rows).toHaveLength(4);
+    expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'edit', 'fork']);
+    // An older assistant row copies but never regenerates.
+    expect(rowActionButtons(rows[1]!)).toEqual(['copy']);
+    expect(rowActionButtons(rows[2]!)).toEqual(['copy', 'edit', 'fork']);
+    expect(rowActionButtons(rows[3]!)).toEqual(['copy', 'regenerate', 'fork']);
+  });
+
+  it('hides edit/fork on user rows without a wire identity or with a parked prompt', async () => {
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage: () => undefined,
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const container = await renderTranscript(
+      [
+        userBlock({ id: 'turn-1-prompt', text: 'placeholder without id' }),
+        userBlock({ id: 'user-m9', text: 'parked', userMessageId: 'm9', promptStatus: 'queued' }),
+      ],
+      rowActions,
+    );
+    const rows = [...container.querySelectorAll('[data-block-id]')];
+    expect(rowActionButtons(rows[0]!)).toEqual(['copy']);
+    expect(rowActionButtons(rows[1]!)).toEqual(['copy']);
+  });
+
+  it('hides all mutating actions when rowActions is absent (read-only surface)', async () => {
+    const container = await renderTranscript([
+      userBlock({ id: 'user-m1', text: 'question', userMessageId: 'm1' }),
+      assistantBlock('assistant-m2-0', 'answer'),
+    ]);
+    const rows = [...container.querySelectorAll('[data-block-id]')];
+    expect(rowActionButtons(rows[0]!)).toEqual([]);
+    // The assistant copy button survives without row actions.
+    expect(rowActionButtons(rows[1]!)).toEqual(['copy']);
+  });
+
+  it('edits inline: prefilled editor submits through onEditMessage', async () => {
+    const onEditMessage = vi.fn();
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage,
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const container = await renderTranscript(
+      [userBlock({ id: 'user-m1', text: 'original text', userMessageId: 'm1' })],
+      rowActions,
+    );
+    const row = container.querySelector('[data-block-id="user-m1"]')!;
+    await act(async () => {
+      flushSync(() => {
+        click(row.querySelector('[data-row-action="edit"]')!);
+      });
+    });
+    const textarea = container.querySelector<HTMLTextAreaElement>('[data-edit-editor] textarea');
+    expect(textarea?.value).toBe('original text');
+    // The attachment note explains the full-replacement semantics.
+    expect(container.querySelector('[data-edit-editor]')?.textContent).toContain(
+      'attachments are not carried over',
+    );
+    await act(async () => {
+      flushSync(() => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+        setter.call(textarea!, 'edited text');
+        textarea!.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    });
+    await act(async () => {
+      flushSync(() => {
+        click(container.querySelector('[data-edit-submit]')!);
+      });
+    });
+    expect(onEditMessage).toHaveBeenCalledOnce();
+    const [block, text] = onEditMessage.mock.calls[0] as [{ text: string }, string];
+    expect(block.text).toBe('original text');
+    expect(text).toBe('edited text');
+    // The editor closed on submit.
+    expect(container.querySelector('[data-edit-editor]')).toBeNull();
+  });
+
+  it('disables mutating actions while the session is busy', async () => {
+    const rowActions: TranscriptRowActions = {
+      disabled: true,
+      onEditMessage: () => undefined,
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const container = await renderTranscript(
+      [
+        userBlock({ id: 'user-m1', text: 'question', userMessageId: 'm1' }),
+        assistantBlock('assistant-m2-0', 'answer'),
+      ],
+      rowActions,
+    );
+    const edit = container.querySelector<HTMLButtonElement>('[data-row-action="edit"]');
+    const regenerate = container.querySelector<HTMLButtonElement>('[data-row-action="regenerate"]');
+    const copy = container.querySelector<HTMLButtonElement>('[data-row-action="copy"]');
+    expect(edit?.disabled).toBe(true);
+    expect(regenerate?.disabled).toBe(true);
+    expect(copy?.disabled).toBe(false);
+  });
+});
+
+describe('collapsible user message', () => {
+  // jsdom has no layout: drive the overflow decision with prototype getters
+  // keyed on the clamp class (clamped → clientHeight caps at 240px).
+  function stubMetrics() {
+    const scroll = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(
+      function (this: HTMLElement) {
+        return (this.textContent ?? '').length;
+      },
+    );
+    const client = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(
+      function (this: HTMLElement) {
+        const full = (this.textContent ?? '').length;
+        return this.classList.contains('max-h-60') ? Math.min(240, full) : full;
+      },
+    );
+    return () => {
+      scroll.mockRestore();
+      client.mockRestore();
+    };
+  }
+
+  it('shows no toggle for short messages', async () => {
+    const restore = stubMetrics();
+    const container = await renderTranscript([userBlock({ id: 'user-m1', text: 'short' })]);
+    expect(container.querySelector('[data-collapsible-toggle]')).toBeNull();
+    restore();
+  });
+
+  it('clamps overflowing messages and expands on toggle', async () => {
+    const restore = stubMetrics();
+    const container = await renderTranscript([
+      userBlock({ id: 'user-m1', text: 'x'.repeat(600) }),
+    ]);
+    const content = container.querySelector('[data-collapsible-content]')!;
+    const toggle = container.querySelector('[data-collapsible-toggle]');
+    expect(toggle).not.toBeNull();
+    expect(content.className).toContain('max-h-60');
+    expect(content.className).toContain('collapsed-content-fade');
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => {
+      flushSync(() => {
+        click(toggle!);
+      });
+    });
+    expect(content.className).not.toContain('max-h-60');
+    expect(content.className).not.toContain('collapsed-content-fade');
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true');
+    restore();
+  });
+});
+

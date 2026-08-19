@@ -20,6 +20,7 @@ import type { ApprovalDecision, QuestionAnswer } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../i18n';
 import type { I18nKey } from '../i18n/locale';
+import { useCollapsibleOverflow } from '../lib/collapsibleOverflow';
 import { formatTokensPerSecond } from '../lib/usage';
 import {
   agentChildren,
@@ -35,6 +36,7 @@ import {
   type DisplayNode,
   type ToolGroup,
 } from '../state/grouping';
+import { latestFinalAssistantBlockId } from '../state/transcript';
 import type {
   AssistantBlock,
   Block,
@@ -51,9 +53,11 @@ import type {
   TurnTailInfo,
   UserBlock,
 } from '../state/transcript';
+import { FloorNavRail } from './FloorNavRail';
 import { ApprovalCard, QuestionCard } from './Interactions';
 import { Markdown } from './Markdown';
 import { MediaPartList } from './mediaPreview';
+import { MessageRowActions, UserMessageEditor } from './RowActions';
 import { ToolCard } from './ToolCard';
 import { KikiMark, Wordmark } from './Wordmark';
 
@@ -153,25 +157,92 @@ export function projectUserText(text: string): ReactNode {
   return <>{parts}</>;
 }
 
+/**
+ * Row-level action surface handed down from SessionView. Absent on read-only
+ * or subagent transcripts — no hover actions render there.
+ */
+export interface TranscriptRowActions {
+  /** Turn running / resyncing: mutating actions render but disable. */
+  disabled: boolean;
+  onEditMessage: (block: UserBlock, text: string) => void;
+  onRegenerate: (block: AssistantBlock) => void;
+  onFork: (block: UserBlock | AssistantBlock) => void;
+}
+
 const UserMessage = memo(function UserMessage({
   block,
   onCancelQueued,
+  rowActions,
 }: {
   block: UserBlock;
   onCancelQueued?: (promptId: string) => void;
+  rowActions?: TranscriptRowActions;
 }) {
   const { t, time } = useI18n();
+  const [editing, setEditing] = useState(false);
+  const { contentRef, contentId, isOverflowing, expanded, toggle } =
+    useCollapsibleOverflow<HTMLDivElement>(block.text);
+  const clipped = !expanded;
+  // Edit/fork need the stable wire identity; parked prompts settle through
+  // the queue strip instead of a rewrite.
+  const settled = block.promptStatus === undefined;
+  const canMutate = rowActions !== undefined && block.userMessageId !== undefined && settled;
   return (
-    <div className="anim-enter flex flex-col items-end" title={time.absoluteTime(block.createdAt)}>
+    <div className="anim-enter group/msg flex flex-col items-end" title={time.absoluteTime(block.createdAt)}>
       <span className="mb-1 flex items-baseline gap-1.5 pr-1">
+        {rowActions !== undefined && !editing ? (
+          <MessageRowActions
+            copyText={block.text}
+            canEdit={canMutate}
+            canFork={canMutate}
+            disabled={rowActions.disabled}
+            onEdit={() => { setEditing(true); }}
+            onFork={() => { rowActions.onFork(block); }}
+          />
+        ) : null}
         <span className="text-[10.5px] font-semibold tracking-wide text-ink-faint uppercase">
           {t('transcript.you')}
         </span>
         <span className="text-xs text-ink-faint">{time.relativeTime(block.createdAt)}</span>
       </span>
-      <div className="max-w-[85%] rounded-2xl rounded-br-md border border-hairline bg-[#f3ede1] px-3.5 py-2 text-[13.5px] leading-relaxed whitespace-pre-wrap text-ink">
-        {projectUserText(block.text)}
-      </div>
+      {editing && rowActions !== undefined ? (
+        <UserMessageEditor
+          initialText={block.text}
+          onSubmit={(text) => {
+            setEditing(false);
+            rowActions.onEditMessage(block, text);
+          }}
+          onCancel={() => { setEditing(false); }}
+        />
+      ) : (
+        <div className="max-w-[85%] rounded-2xl rounded-br-md border border-hairline bg-[#f3ede1] px-3.5 py-2 text-[13.5px] leading-relaxed whitespace-pre-wrap text-ink">
+          <div
+            ref={contentRef}
+            id={contentId}
+            data-collapsible-content
+            className={
+              clipped
+                ? `max-h-60 overflow-hidden${isOverflowing ? ' collapsed-content-fade' : ''}`
+                : undefined
+            }
+          >
+            {projectUserText(block.text)}
+          </div>
+        </div>
+      )}
+      {!editing && isOverflowing ? (
+        <button
+          type="button"
+          data-collapsible-toggle
+          onClick={toggle}
+          aria-expanded={expanded}
+          aria-controls={contentId}
+          className="mt-1 mr-1 inline-flex items-center gap-1 text-[11px] font-medium text-ink-faint transition-colors hover:text-accent"
+        >
+          {expanded ? t('transcript.showLess') : t('transcript.showMore')}
+          <span aria-hidden className="text-[9px]">{expanded ? '▴' : '▾'}</span>
+        </button>
+      ) : null}
       {block.media !== undefined ? <MediaPartList media={block.media} align="end" /> : null}
       {block.promptStatus === 'queued' || block.promptStatus === 'blocked' ? (
         <span
@@ -201,9 +272,17 @@ const UserMessage = memo(function UserMessage({
   );
 });
 
-const AssistantMessage = memo(function AssistantMessage({ block }: { block: AssistantBlock }) {
+const AssistantMessage = memo(function AssistantMessage({
+  block,
+  rowActions,
+  isLatestFinal = false,
+}: {
+  block: AssistantBlock;
+  rowActions?: TranscriptRowActions;
+  /** Latest completed turn's final reply — the regenerate/fork anchor. */
+  isLatestFinal?: boolean;
+}) {
   const { t, time } = useI18n();
-  const [copied, setCopied] = useState(false);
   const streaming = block.streaming && block.text !== '';
   const { prefix, tail } = useMemo(
     () => (streaming ? splitStreamingText(block.text) : { prefix: '', tail: '' }),
@@ -213,6 +292,9 @@ const AssistantMessage = memo(function AssistantMessage({ block }: { block: Assi
     () => (streaming && prefix !== '' ? splitPrefixSegments(prefix) : []),
     [streaming, prefix],
   );
+  const showActions =
+    !block.streaming &&
+    (block.text !== '' || (rowActions !== undefined && isLatestFinal));
   return (
     <div className="anim-enter group/msg relative flex gap-3" title={time.absoluteTime(block.createdAt)}>
       <KikiMark className="mt-[7px] shrink-0" />
@@ -245,25 +327,16 @@ const AssistantMessage = memo(function AssistantMessage({ block }: { block: Assi
           </span>
         ) : null}
       </div>
-      {!block.streaming && block.text !== '' ? (
-        <button
-          type="button"
-          title={t('transcript.copyTitle')}
-          onClick={() => {
-            void navigator.clipboard
-              .writeText(block.text)
-              .then(() => {
-                setCopied(true);
-                setTimeout(() => { setCopied(false); }, 1400);
-              })
-              .catch(() => undefined);
-          }}
-          className={`absolute -top-1 right-0 rounded-md border border-hairline bg-panel px-1.5 py-0.5 font-mono text-[10px] transition-opacity ${
-            copied ? 'text-success opacity-100' : 'text-ink-faint opacity-0 group-hover/msg:opacity-100 hover:text-ink'
-          }`}
-        >
-          {copied ? '✓' : t('transcript.copy')}
-        </button>
+      {showActions ? (
+        <MessageRowActions
+          framed
+          copyText={block.text}
+          canRegenerate={rowActions !== undefined && isLatestFinal}
+          canFork={rowActions !== undefined && isLatestFinal}
+          disabled={rowActions?.disabled ?? false}
+          onRegenerate={() => { rowActions?.onRegenerate(block); }}
+          onFork={() => { rowActions?.onFork(block); }}
+        />
       ) : null}
     </div>
   );
@@ -599,7 +672,8 @@ const SubagentCard = memo(function SubagentCard({
     <div
       data-subagent-id={block.subagentId}
       data-agent-depth={depth}
-      className={depth === 0 ? 'ml-6' : 'ml-4'}
+      data-orphaned={block.orphaned === true || undefined}
+      className={`${depth === 0 ? 'ml-6' : 'ml-4'}${block.orphaned === true ? ' opacity-60' : ''}`}
     >
       <div className="flex items-stretch gap-1">
         {depth > 0 ? <span aria-hidden className="w-px shrink-0 bg-hairline" /> : null}
@@ -612,6 +686,11 @@ const SubagentCard = memo(function SubagentCard({
           >
             {body}
           </button>
+          {block.orphaned === true ? (
+            <p className="mt-1 pl-1 text-[10.5px] text-ink-faint italic">
+              {t('transcript.orphanedSubagent')}
+            </p>
+          ) : null}
           {childCount > 0 ? (
             <button
               type="button"
@@ -772,6 +851,8 @@ const BlockView = memo(function BlockView({
   forest,
   childBlocks,
   onOpenAgent,
+  rowActions,
+  latestFinalAssistantId,
 }: {
   block: Exclude<Block, ToolBlock>;
   readOnly: boolean;
@@ -790,6 +871,8 @@ const BlockView = memo(function BlockView({
   forest?: AgentForest;
   childBlocks?: ReadonlyMap<string, SubagentBlock>;
   onOpenAgent?: (agentId: string) => void;
+  rowActions?: TranscriptRowActions;
+  latestFinalAssistantId?: string;
 }) {
   const { t } = useI18n();
   const originUnknown =
@@ -803,9 +886,16 @@ const BlockView = memo(function BlockView({
   const originFallback = originUnknown
     ? t(readOnly ? 'ia.originCurrentContext' : 'ia.originUnknown')
     : undefined;
+  const liveRowActions = readOnly ? undefined : rowActions;
   switch (block.kind) {
     case 'user':
-      return <UserMessage block={block} onCancelQueued={readOnly ? undefined : onCancelQueued} />;
+      return (
+        <UserMessage
+          block={block}
+          onCancelQueued={readOnly ? undefined : onCancelQueued}
+          rowActions={liveRowActions}
+        />
+      );
     case 'system-reminder':
       return <SystemReminderMessage block={block} />;
     case 'system':
@@ -815,7 +905,13 @@ const BlockView = memo(function BlockView({
     case 'steer':
       return <SteerMessage block={block} />;
     case 'assistant':
-      return <AssistantMessage block={block} />;
+      return (
+        <AssistantMessage
+          block={block}
+          rowActions={liveRowActions}
+          isLatestFinal={block.id === latestFinalAssistantId}
+        />
+      );
     case 'thinking':
       return <ThinkingMessage block={block} />;
     case 'shell':
@@ -987,6 +1083,8 @@ type TranscriptRowProps = {
   agentNames: ReadonlyMap<string, string>;
   childBlocks: ReadonlyMap<string, SubagentBlock>;
   forest?: AgentForest;
+  rowActions?: TranscriptRowActions;
+  latestFinalAssistantId?: string;
   onResolveApproval: (
     approvalId: string,
     decision: ApprovalDecision,
@@ -1025,6 +1123,8 @@ const TranscriptRow = memo(
     agentNames,
     childBlocks,
     forest,
+    rowActions,
+    latestFinalAssistantId,
     onResolveApproval,
     onAnswerQuestion,
     onDismissQuestion,
@@ -1050,6 +1150,8 @@ const TranscriptRow = memo(
             forest={forest}
             childBlocks={childBlocks}
             onOpenAgent={onOpenAgent}
+            rowActions={rowActions}
+            latestFinalAssistantId={latestFinalAssistantId}
           />
         )}
       </div>
@@ -1061,6 +1163,8 @@ const TranscriptRow = memo(
     prev.approvalShortcutHints === next.approvalShortcutHints &&
     (!nodeUsesAgentNames(prev.node) || prev.agentNames === next.agentNames) &&
     subagentBranchEqual(prev.node, prev.forest, next.forest) &&
+    prev.rowActions === next.rowActions &&
+    prev.latestFinalAssistantId === next.latestFinalAssistantId &&
     prev.onResolveApproval === next.onResolveApproval &&
     prev.onAnswerQuestion === next.onAnswerQuestion &&
     prev.onDismissQuestion === next.onDismissQuestion &&
@@ -1099,6 +1203,8 @@ const TranscriptPage = memo(
     prev.approvalShortcutHints === next.approvalShortcutHints &&
     (!prev.page.nodes.some(nodeUsesAgentNames) || prev.agentNames === next.agentNames) &&
     prev.page.nodes.every((node) => subagentBranchEqual(node, prev.forest, next.forest)) &&
+    prev.rowActions === next.rowActions &&
+    prev.latestFinalAssistantId === next.latestFinalAssistantId &&
     prev.onResolveApproval === next.onResolveApproval &&
     prev.onAnswerQuestion === next.onAnswerQuestion &&
     prev.onDismissQuestion === next.onDismissQuestion &&
@@ -1287,6 +1393,7 @@ export function Transcript({
   readOnly = false,
   forest,
   onOpenAgent,
+  rowActions,
 }: {
   state: SessionViewState;
   onLoadOlder: () => Promise<boolean>;
@@ -1302,6 +1409,7 @@ export function Transcript({
   readOnly?: boolean;
   forest?: AgentForest;
   onOpenAgent?: (agentId: string) => void;
+  rowActions?: TranscriptRowActions;
 }) {
   const { t } = useI18n();
   const { blocks, loaded, loadError } = state;
@@ -1341,6 +1449,9 @@ export function Transcript({
     (b) => (b.kind === 'assistant' || b.kind === 'thinking') && b.streaming,
   );
   const showTurnStatus = state.busy && !streamingNow;
+  // Regenerate/fork anchor: the latest completed turn's final assistant reply.
+  // Changes only at turn boundaries, so the page memos survive token deltas.
+  const latestFinalAssistantId = useMemo(() => latestFinalAssistantBlockId(blocks), [blocks]);
 
   if (loadError !== undefined) {
     return (
@@ -1402,6 +1513,8 @@ export function Transcript({
             agentNames={agentNames}
             childBlocks={childBlocks}
             forest={stableForest}
+            rowActions={rowActions}
+            latestFinalAssistantId={latestFinalAssistantId}
             onResolveApproval={onResolveApproval}
             onAnswerQuestion={onAnswerQuestion}
             onDismissQuestion={onDismissQuestion}
@@ -1412,6 +1525,7 @@ export function Transcript({
         {showTurnStatus ? <TurnStatusLine startedAt={state.turnStartedAt} /> : null}
         {!state.busy && state.turnTail !== undefined ? <TurnTailLine tail={state.turnTail} /> : null}
       </StickToBottom.Content>
+      <FloorNavRail blocks={blocks} />
       <JumpToBottom />
       </StickToBottom>
   );

@@ -162,6 +162,14 @@ const STRINGS = {
     previewSource: 'Source',
     previewCollapse: 'Collapse preview panel',
     previewReadonlyPattern: /Read-only here/,
+    editAction: 'edit',
+    regenerateAction: 'regenerate',
+    forkAction: 'fork',
+    resendEdit: 'Resend',
+    showMore: 'Show more',
+    showLess: 'Show less',
+    editNote: 'Full replacement',
+    forkedDone: 'Forked — opened the copy.',
   },
   zh: {
     newSession: '新会话',
@@ -262,6 +270,14 @@ const STRINGS = {
     previewSource: '源码',
     previewCollapse: '收起预览面板',
     previewReadonlyPattern: /此处为只读/,
+    editAction: '编辑',
+    regenerateAction: '重新生成',
+    forkAction: '分叉',
+    resendEdit: '重发',
+    showMore: '展开全部',
+    showLess: '收起',
+    editNote: '完整替换语义',
+    forkedDone: '已分叉 — 正在打开副本。',
   },
 };
 const S = STRINGS[LOCALE];
@@ -394,7 +410,124 @@ async function displayNodeKinds() {
   });
 }
 
-// ------------------------------------------------------------- scenarios
+/**
+ * rewrite-flow — the message-closure walk: long user message collapse, floor
+ * nav rail, hover row actions, edit-resend (truncates the tail), regenerate,
+ * and fork-to-new-session navigation. Asserts hit the fixture control plane
+ * (last_message_action / message_ids) so the wire contract itself is proven,
+ * not just the repaint.
+ */
+async function scenarioRewriteFlow() {
+  await selectSession('Fixture: rewrite flow');
+  await waitForText('TAIL-REPLY doomed to be rewritten away.');
+
+  // A2: the long user message clamps and offers the expand toggle.
+  const longRow = page.locator('[data-block-id^="user-"]', { hasText: 'Requirement 14' }).first();
+  await longRow.waitFor({ timeout: 10_000 });
+  const clamped = longRow.locator('[data-collapsible-content]');
+  const clampBox = await clamped.boundingBox();
+  const toggle = longRow.locator('[data-collapsible-toggle]');
+  await toggle.waitFor({ timeout: 5_000 });
+  console.log(`[check] collapsed user bubble height=${clampBox?.height}`);
+  if (clampBox === null || clampBox.height > 320) {
+    throw new Error(`expected the long user message to be clamped, got height ${clampBox?.height}`);
+  }
+  await shot('rewrite-flow-collapsed');
+  await toggle.click();
+  await page.waitForTimeout(400);
+  const expandedBox = await clamped.boundingBox();
+  console.log(`[check] expanded user bubble height=${expandedBox?.height}`);
+  if (expandedBox === null || expandedBox.height <= 320) {
+    throw new Error('expected the user message to expand past the clamp');
+  }
+  await shot('rewrite-flow-expanded');
+  // Collapse back so the edit walk starts from a compact layout.
+  await longRow.locator('[data-collapsible-toggle]').click();
+  await page.waitForTimeout(300);
+
+  // A3: scrolling reveals the floor rail; clicking a tick jumps.
+  await page.mouse.move(720, 450);
+  await page.mouse.wheel(0, -3000);
+  await page.waitForTimeout(400);
+  const rail = page.locator('[data-floor-nav]');
+  await rail.waitFor({ timeout: 5_000 });
+  const railOpacity = await rail.evaluate((el) => getComputedStyle(el).opacity);
+  console.log(`[check] floor rail opacity while scrolling=${railOpacity}`);
+  if (Number(railOpacity) < 0.9) throw new Error('floor rail did not reveal on scroll');
+  const tickCount = await rail.locator('[data-floor-tick]').count();
+  console.log(`[check] floor ticks=${tickCount}`);
+  if (tickCount !== 3) throw new Error(`expected 3 floor ticks, got ${tickCount}`);
+  await shot('rewrite-flow-floors');
+  await rail.locator('[data-floor-tick]').first().click();
+  await page.waitForTimeout(700);
+
+  // A1 edit: hover the first user row, open the inline editor, resend.
+  const firstRow = page.locator('[data-block-id^="user-"]', { hasText: 'First fixture question' }).first();
+  await firstRow.hover();
+  await firstRow.locator('[data-row-action="edit"]').click();
+  const editor = page.locator('[data-edit-editor]');
+  await editor.waitFor({ timeout: 5_000 });
+  await waitForText(S.editNote);
+  await shot('rewrite-flow-editing');
+  await editor.locator('textarea').fill('First fixture question — edited resend.');
+  await editor.locator('[data-edit-submit]').click();
+  await waitForText('EDITED-REPLY landed after the rewrite.');
+  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 30_000 }).catch(() => undefined);
+  await page.waitForTimeout(800); // resync repaint settles
+  // The truncated tail is gone from both the DOM and the server journal.
+  const tailGone = await page.locator('text=TAIL-REPLY').count();
+  const tailPromptGone = await page.locator('text=Tail question that edits will truncate.').count();
+  console.log(`[check] after edit tail blocks=${tailGone + tailPromptGone}`);
+  if (tailGone + tailPromptGone !== 0) throw new Error('edit-resend did not truncate the tail');
+  const afterEdit = await control({ action: 'session', session_id: 'session_fixture_rewrite' });
+  console.log(`[check] edit action=${JSON.stringify(afterEdit.data?.last_message_action?.action)} ids=${JSON.stringify(afterEdit.data?.message_ids)}`);
+  if (afterEdit.data?.last_message_action?.action !== 'edit') {
+    throw new Error('fixture did not record the edit action');
+  }
+  // Editing the FIRST user message truncates all six originals; the journal
+  // then holds exactly the resent user message and the committed reply.
+  if ((afterEdit.data?.message_ids ?? []).length !== 2) {
+    throw new Error('expected 2 messages after the edit truncation');
+  }
+  await shot('rewrite-flow-edit-done');
+
+  // A1 regenerate: only the latest final assistant reply offers it.
+  const replyRow = page.locator('[data-block-id^="assistant-"]', { hasText: 'EDITED-REPLY' }).first();
+  await replyRow.hover();
+  await replyRow.locator('[data-row-action="regenerate"]').click();
+  await waitForText('EDITED-REPLY landed after the rewrite.');
+  await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 30_000 }).catch(() => undefined);
+  await page.waitForTimeout(800);
+  const afterRegen = await control({ action: 'session', session_id: 'session_fixture_rewrite' });
+  console.log(`[check] regenerate action=${JSON.stringify(afterRegen.data?.last_message_action?.action)}`);
+  if (afterRegen.data?.last_message_action?.action !== 'regenerate') {
+    throw new Error('fixture did not record the regenerate action');
+  }
+  await shot('rewrite-flow-regenerated');
+
+  // A1 fork: from the first user message — navigates to the truncated copy.
+  const forkRow = page.locator('[data-block-id^="user-"]', { hasText: 'First fixture question' }).first();
+  await forkRow.hover();
+  await forkRow.locator('[data-row-action="fork"]').click();
+  await page.waitForURL(/\/s\/session_/, { timeout: 10_000 });
+  await page.waitForFunction(
+    () => !window.location.pathname.includes('session_fixture_rewrite'),
+    { timeout: 10_000 },
+  );
+  await waitForText('First fixture question');
+  await page.waitForTimeout(500);
+  // Fork through the (only) user message: the copy keeps just that message —
+  // the reply comes after it, and the fork's tail stays open.
+  const forkUrl = page.url();
+  const forkId = forkUrl.split('/s/')[1];
+  const forked = await control({ action: 'session', session_id: forkId });
+  console.log(`[check] fork messages=${JSON.stringify(forked.data?.message_ids)}`);
+  if ((forked.data?.message_ids ?? []).length !== 1) {
+    throw new Error('expected the fork to keep 1 message (through the first user message)');
+  }
+  await shot('rewrite-flow-forked');
+}
+
 
 async function scenarioBasicStream() {
   await selectSession('Fixture: basic stream');
@@ -2130,6 +2263,7 @@ const SCENARIOS = [
   ['terminal', scenarioTerminal],
   ['capabilities', scenarioCapabilities],
   ['i18n', scenarioI18n],
+  ['rewrite-flow', scenarioRewriteFlow],
   // responsive stays last: it shrinks the viewport to 320px and nothing
   // afterward may assume a desktop layout.
   ['responsive', scenarioResponsive],
