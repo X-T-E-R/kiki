@@ -10,6 +10,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { SESSION_INDEX_STORAGE_VERSION } from '#/app/sessionIndex/sessionIndexModel';
 import {
   IQueryStore,
   type Checkpoint,
@@ -25,7 +26,9 @@ import {
 
 const SEP = String.fromCodePoint(0);
 const CHECKPOINT_COLLECTION = '__checkpoint__';
-const STORE_SUBDIR = 'query-store';
+// Reuse the session-index storage generation so binaries with incompatible
+// shard-lock policies never share physical lock or WAL files.
+export const MINIDB_QUERY_STORE_SUBDIR = `query-store-v${SESSION_INDEX_STORAGE_VERSION}`;
 const SHARD_COUNT = 16;
 // MiniDb coordinates a multi-shard batch sequentially. Its 250ms default can
 // expire the early shard writers before one fan-out finishes, forcing every
@@ -66,7 +69,7 @@ export class MiniDbQueryStore extends Disposable implements IQueryStore {
     @ILogService private readonly log: ILogService,
   ) {
     super();
-    this.dir = join(this.bootstrap.cacheDir, STORE_SUBDIR);
+    this.dir = join(this.bootstrap.cacheDir, MINIDB_QUERY_STORE_SUBDIR);
     this._register(toDisposable(() => {
       const pending = this.close().catch(() => {});
       pendingDisposals.add(pending);

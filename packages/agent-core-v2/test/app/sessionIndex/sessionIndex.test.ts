@@ -31,7 +31,11 @@ import {
   drainSessionIndexMirror,
   SessionIndexMirror,
 } from '#/app/sessionIndex/sessionIndexMirrorService';
-import { drainQueryStoreDisposals, MiniDbQueryStore } from '#/persistence/backends/minidb/miniDbQueryStore';
+import {
+  drainQueryStoreDisposals,
+  MINIDB_QUERY_STORE_SUBDIR,
+  MiniDbQueryStore,
+} from '#/persistence/backends/minidb/miniDbQueryStore';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
@@ -299,6 +303,43 @@ describe('FileSessionIndex (legacy)', () => {
 
     const store = build();
     const usage = (await store.get('corrupt-wire-usage'))?.usage;
+    expect(usage).toMatchObject(persistedUsage);
+    expect(usage?.wireComplete).toBeUndefined();
+  });
+
+  it('keeps persisted usage when a usage record is structurally invalid during recovery', async () => {
+    const persistedUsage = {
+      total: { inputOther: 20, output: 10, inputCacheRead: 4, inputCacheCreation: 2 },
+      byModel: {
+        'example-model': {
+          inputOther: 20,
+          output: 10,
+          inputCacheRead: 4,
+          inputCacheCreation: 2,
+        },
+      },
+    };
+    await seedSession('invalid-wire-usage', {
+      agents: { main: { type: 'main' } },
+      usage: persistedUsage,
+    });
+    const dir = join(sessionsDir, workspaceId, 'invalid-wire-usage', 'agents', 'main');
+    await fsp.mkdir(dir, { recursive: true });
+    await fsp.writeFile(
+      join(dir, 'wire.jsonl'),
+      `${JSON.stringify({
+        type: 'usage.record',
+        model: 'example-model',
+        usage: { inputOther: 3, output: 2, inputCacheRead: 1, inputCacheCreation: 0 },
+      })}\n${JSON.stringify({
+        type: 'usage.record',
+        model: 'example-model',
+        usage: { inputOther: 17, output: 8, inputCacheRead: 3 },
+      })}\n`,
+    );
+
+    const store = build();
+    const usage = (await store.get('invalid-wire-usage'))?.usage;
     expect(usage).toMatchObject(persistedUsage);
     expect(usage?.wireComplete).toBeUndefined();
   });
@@ -1202,7 +1243,7 @@ describe('FileSessionIndex (read model)', () => {
     disposeHost = undefined;
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
-    await fsp.rm(join(homeDir, 'cache', 'query-store'), { recursive: true, force: true });
+    await fsp.rm(join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR), { recursive: true, force: true });
 
     const second = build();
     const fallback = await second.listRecent({ workspaceIds: [workspaceId] });
@@ -1542,7 +1583,7 @@ describe('FileSessionIndex (read model)', () => {
     disposeHost = undefined;
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
-    await fsp.rm(join(homeDir, 'cache', 'query-store'), { recursive: true, force: true });
+    await fsp.rm(join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR), { recursive: true, force: true });
 
     const second = build();
     (queryStore as GatedFlakyQueryStore).failNextBatch = true;
@@ -1648,7 +1689,7 @@ describe('FileSessionIndex (read model)', () => {
     await mirror.drain();
     expect(await store.count({ workspaceIds: [workspaceId] })).toBe(3);
 
-    const storeDir = join(homeDir, 'cache', 'query-store');
+    const storeDir = join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR);
     const entries = await fsp.readdir(storeDir, { recursive: true, withFileTypes: true });
     const files = entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
     expect(files.length).toBeGreaterThan(0);

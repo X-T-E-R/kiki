@@ -1,6 +1,7 @@
 import type { SessionSummary } from './sessionIndex';
 
-export const SESSION_INDEX_MANIFEST = 'sessionIndex:v3';
+export const SESSION_INDEX_STORAGE_VERSION = 3;
+export const SESSION_INDEX_MANIFEST = `sessionIndex:v${SESSION_INDEX_STORAGE_VERSION}`;
 
 export const PARENT_INDEX_NAME = 'byParent';
 

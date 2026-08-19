@@ -20,6 +20,7 @@ import {
   IEventBus,
   IEventService,
   MAIN_AGENT_ID,
+  MINIDB_QUERY_STORE_SUBDIR,
   closeSessionById,
   drainSessionMetadataWrites,
   getLiveSessionById,
@@ -1937,8 +1938,8 @@ describe('server-v2 /api/v1/sessions (minidb read model)', () => {
   it('serves session routes from the authoritative store when the read model cannot open', async () => {
     await (server as RunningServer).close();
     server = undefined;
-    await rm(join(home as string, 'cache', 'query-store'), { recursive: true, force: true });
-    await writeFile(join(home as string, 'cache', 'query-store'), 'sabotage', 'utf8');
+    await rm(join(home as string, 'cache', MINIDB_QUERY_STORE_SUBDIR), { recursive: true, force: true });
+    await writeFile(join(home as string, 'cache', MINIDB_QUERY_STORE_SUBDIR), 'sabotage', 'utf8');
 
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
