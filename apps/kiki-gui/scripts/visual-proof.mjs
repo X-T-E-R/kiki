@@ -170,6 +170,9 @@ const STRINGS = {
     showLess: 'Show less',
     editNote: 'Full replacement',
     forkedDone: 'Forked — opened the copy.',
+    quoteAction: 'Quote',
+    annotateAction: 'Annotate',
+    removeAnnotation: 'Remove annotation',
   },
   zh: {
     newSession: '新会话',
@@ -278,6 +281,9 @@ const STRINGS = {
     showLess: '收起',
     editNote: '完整替换语义',
     forkedDone: '已分叉 — 正在打开副本。',
+    quoteAction: '引用',
+    annotateAction: '标注',
+    removeAnnotation: '移除标注',
   },
 };
 const S = STRINGS[LOCALE];
@@ -1954,6 +1960,120 @@ async function scenarioAttachments() {
   await shot('attachments-sent');
 }
 
+/**
+ * selection-annotate — the transcript selection popover's two actions:
+ * "Quote" chips the selection (blockquote prefix on send, unchanged), while
+ * "Annotate" opens an in-place comment input (Enter commits, Esc cancels) and
+ * chips quote+comment pairs. Chips accumulate across selections, survive each
+ * other, and are individually removable. The sent prompt is asserted on the
+ * control plane: annotation segments (blockquote + `Comment:`) first, then the
+ * plain quote blockquote, then the typed text — plain text all the way down.
+ */
+async function scenarioSelectionAnnotate() {
+  await selectSession('Fixture: selection annotate');
+  await waitForText('drains parked prompts in order');
+
+  const FRAGMENT_A = 'batches transcript blocks into floors';
+  const COMMENT_A = 'Floor batching keeps long sessions cheap';
+  const FRAGMENT_B = 'drains parked prompts in order';
+  const COMMENT_B = 'Promotion order matters';
+  const QUOTE = 'Queue promotion';
+  const TYPED = 'please factor these in';
+
+  // Select a text fragment inside the transcript and fire the mouseup the
+  // floating popover listens for.
+  const selectFragment = async (marker) => {
+    await page.evaluate((needle) => {
+      const log = document.querySelector('[role="log"]');
+      const walker = document.createTreeWalker(log, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+      while (node !== null) {
+        const index = node.textContent.indexOf(needle);
+        if (index !== -1) {
+          const range = document.createRange();
+          range.setStart(node, index);
+          range.setEnd(node, index + needle.length);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          break;
+        }
+        node = walker.nextNode();
+      }
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    }, marker);
+    await page.waitForSelector('[data-selection-quote]', { timeout: 5000 });
+  };
+  const annotate = async (marker, comment) => {
+    await selectFragment(marker);
+    await page.click('[data-selection-annotate-action]');
+    await page.waitForSelector('[data-selection-annotate-input]', { timeout: 5000 });
+    await page.fill('[data-selection-annotate-input]', comment);
+    await page.press('[data-selection-annotate-input]', 'Enter');
+    await page.waitForTimeout(300); // let the chip entrance animation settle
+  };
+  const annotationChips = page.locator('[data-annotation-chip]');
+
+  // A1: the popover offers both actions above the selection.
+  await selectFragment(FRAGMENT_A);
+  await page.waitForTimeout(300); // let the popover entrance animation settle
+  const pillText = await page.locator('[data-selection-quote]').innerText();
+  if (!pillText.includes(S.quoteAction) || !pillText.includes(S.annotateAction)) {
+    throw new Error(`selection popover missing an action: ${pillText}`);
+  }
+  await shot('selection-annotate-actions');
+
+  // A2: annotate opens the in-place comment input.
+  await page.click('[data-selection-annotate-action]');
+  await page.waitForSelector('[data-selection-annotate-input]', { timeout: 5000 });
+  await shot('selection-annotate-input');
+  await page.fill('[data-selection-annotate-input]', COMMENT_A);
+  await page.press('[data-selection-annotate-input]', 'Enter');
+  await page.waitForSelector('[data-annotation-chip]', { timeout: 5000 });
+  if ((await annotationChips.count()) !== 1) throw new Error('first annotation chip missing');
+
+  // A3: annotations accumulate — a second selection adds a second chip.
+  await annotate(FRAGMENT_B, COMMENT_B);
+  if ((await annotationChips.count()) !== 2) {
+    throw new Error(`annotations did not accumulate: ${await annotationChips.count()}`);
+  }
+  await shot('selection-annotate-chips');
+
+  // A4: chips are individually removable; the other one stays.
+  await annotationChips.nth(1).locator(`button[aria-label="${S.removeAnnotation}"]`).click();
+  if ((await annotationChips.count()) !== 1) throw new Error('annotation chip was not removable');
+  const remaining = await annotationChips.nth(0).innerText();
+  if (!remaining.includes(COMMENT_A)) throw new Error(`wrong chip survived removal: ${remaining}`);
+  await annotate(FRAGMENT_B, COMMENT_B);
+  if ((await annotationChips.count()) !== 2) throw new Error('re-annotation did not restore the chip');
+
+  // A5: the quote action still lands its own chip beside the annotations.
+  await selectFragment(QUOTE);
+  await page.locator('[data-selection-quote] button', { hasText: S.quoteAction }).click();
+  await page.waitForSelector('[data-quote-chip]', { timeout: 5000 });
+  if ((await annotationChips.count()) !== 2) throw new Error('quote replaced the annotations');
+  await page.waitForTimeout(300); // let the chip entrance animation settle
+  await shot('selection-annotate-quote-chip');
+
+  // A6: send — the wire text carries annotation segments, then the quote
+  // blockquote, then the typed text.
+  await page.click('textarea');
+  await page.type('textarea', TYPED);
+  await page.press('textarea', 'Enter');
+  await waitForText('Selection annotations received by the fixture.');
+  const state = await control({ action: 'session', session_id: 'session_fixture_selection_annotate' });
+  const content = state.data?.last_prompt_submission?.content ?? [];
+  const textPart = content.find((part) => part.type === 'text');
+  const expected =
+    `> ${FRAGMENT_A}\n\nComment: ${COMMENT_A}\n\n` +
+    `> ${FRAGMENT_B}\n\nComment: ${COMMENT_B}\n\n` +
+    `> ${QUOTE}\n\n${TYPED}`;
+  if (textPart === undefined || textPart.text !== expected) {
+    throw new Error(`selection carry-overs assembled wrong: ${JSON.stringify(textPart)}`);
+  }
+  await shot('selection-annotate-sent');
+}
+
 async function scenarioPreviewWorkbench() {
   await selectSession('Fixture: preview workbench');
   await page.waitForSelector('text=Workbench notes', { timeout: 10_000 });
@@ -2301,6 +2421,7 @@ const SCENARIOS = [
   ['settings-agents', scenarioSettingsAgents],
   ['slash-commands', scenarioSlashCommands],
   ['attachments', scenarioAttachments],
+  ['selection-annotate', scenarioSelectionAnnotate],
   ['preview-workbench', scenarioPreviewWorkbench],
   ['search', scenarioSearch],
   ['session-actions', scenarioSessionActions],

@@ -46,6 +46,7 @@ import {
   type SlashItem,
 } from '../lib/slashCommands';
 import { registerOverlay } from '../lib/uiBusy';
+import type { SelectionAnnotation } from '../lib/selectionQuote';
 import {
   isComposerSendKey,
   settingsServerSnapshot,
@@ -119,6 +120,8 @@ export function Composer({
   attachments,
   quote,
   onRemoveQuote,
+  annotations,
+  onRemoveAnnotation,
   onChangeAttachments,
   onActivateSkill,
   onSessionAction,
@@ -177,6 +180,9 @@ export function Composer({
   /** Selected transcript text quoted into this prompt; rendered as a chip. */
   quote?: string | null;
   onRemoveQuote?: () => void;
+  /** Selection annotations (quote + comment) accumulating beside the quote. */
+  annotations?: readonly SelectionAnnotation[];
+  onRemoveAnnotation?: (id: string) => void;
   /**
    * Setter accepting a next array or an updater over the previous one. The
    * updater form is what back-to-back image pastes use — render closures go
@@ -846,6 +852,43 @@ export function Composer({
               >
                 ×
               </button>
+            </div>
+          ) : null}
+          {annotations !== undefined && annotations.length > 0 ? (
+            <div data-annotation-chips className="mx-3.5 mt-2 flex flex-col gap-1.5">
+              {annotations.map((annotation) => (
+                <div
+                  key={annotation.id}
+                  data-annotation-chip
+                  tabIndex={0}
+                  className="group anim-enter relative flex items-start gap-2 rounded-lg border-l-2 border-amber-rule bg-amber-card px-2.5 py-1.5 outline-none"
+                >
+                  <span aria-hidden className="shrink-0 text-[11.5px] leading-snug text-amber-ink">
+                    ✎
+                  </span>
+                  <p className="min-w-0 flex-1 truncate text-[11.5px] leading-snug text-amber-ink">
+                    {annotation.comment}
+                  </p>
+                  <button
+                    type="button"
+                    aria-label={t('composer.removeAnnotation')}
+                    onClick={() => { onRemoveAnnotation?.(annotation.id); }}
+                    className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-amber-ink/60 transition-colors hover:bg-amber-ink/10 hover:text-amber-ink"
+                  >
+                    ×
+                  </button>
+                  {/* Hover/focus reveal: the full quoted source + comment. The
+                      chip itself is focusable so click/touch opens it too. */}
+                  <div className="pointer-events-none absolute bottom-full left-0 z-40 mb-1 hidden w-72 max-w-[calc(100vw-48px)] rounded-lg border border-amber-rule/50 bg-panel p-2 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)] group-hover:block group-focus-within:block">
+                    <p className="max-h-16 overflow-hidden border-l-2 border-accent/60 pl-1.5 text-[11px] leading-snug whitespace-pre-wrap text-ink-soft">
+                      {annotation.quote}
+                    </p>
+                    <p className="mt-1.5 text-[11.5px] leading-snug whitespace-pre-wrap text-amber-ink">
+                      {annotation.comment}
+                    </p>
+                  </div>
+                </div>
+              ))}
             </div>
           ) : null}
           {attachments.length > 0 ? (

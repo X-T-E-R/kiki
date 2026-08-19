@@ -1208,6 +1208,9 @@ export const zh: Record<I18nKey, string> = {
   'composer.dropFiles': '松开即可附加文件',
   'composer.quoteSelection': '引用',
   'composer.removeQuote': '移除引用',
+  'composer.annotateSelection': '标注',
+  'composer.annotationPlaceholder': '给这段文字写一句评论（Enter 确认，Esc 取消）',
+  'composer.removeAnnotation': '移除标注',
   'sv.approvalAmbiguous': '当前有多张审批卡可见，请先点击其中一张再用 y / n 回答。',
   'st.restart.confirmTitle': '重启服务器？',
   'st.restart.confirmBodyActive':
