@@ -34,9 +34,10 @@ import {
   registerAgentToolService,
 } from '#/agent/toolRegistry/toolContribution';
 import { IAgentToolRegistryService, type ToolReference } from '#/agent/toolRegistry/toolRegistry';
-import {
-  type AgentProfile,
-  type AgentProfileRouteCatalogEntry,
+import type {
+  AgentProfile,
+  AgentProfileRouteCatalogEntry,
+  AgentRecommendedModel,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
@@ -184,6 +185,7 @@ export class SubagentTool implements ISubagentTool {
         this.toolPolicy.isToolActiveForProfile(profile, name, source),
       true,
       this.collaborationEnabled() ? undefined : COLLABORATION_TOOL_NAMES,
+      (alias) => this.isRecommendedModelAliasAvailable(alias),
     );
     if (typeLines) {
       description += `\n\nAvailable agent types (pass via subagent_type):\n${typeLines}`;
@@ -206,6 +208,22 @@ export class SubagentTool implements ISubagentTool {
       description += `\n\n${modelLines}`;
     }
     return description;
+  }
+
+  private isRecommendedModelAliasAvailable(alias: string): boolean {
+    try {
+      if (this.models.resolveId(alias) !== undefined) return true;
+    } catch (error) {
+      this.log.debug('Omitting unresolved recommended model alias from Agent tool description', {
+        alias,
+        error,
+      });
+      return false;
+    }
+    this.log.debug('Omitting unavailable recommended model alias from Agent tool description', {
+      alias,
+    });
+    return false;
   }
 
   private catalogProfiles(): readonly AgentProfile[] {
@@ -708,7 +726,7 @@ function buildRouteDescriptions(routes: readonly AgentProfileRouteCatalogEntry[]
 }
 
 
-function buildProfileDescriptions(
+export function buildProfileDescriptions(
   profiles: readonly AgentProfile[],
   tools: readonly ToolReference[],
   isToolActive: (
@@ -717,7 +735,8 @@ function buildProfileDescriptions(
     source: ToolReference['source'],
   ) => boolean,
   showModelPreference: boolean,
-  externallyUnavailableTools?: ReadonlySet<string>,
+  externallyUnavailableTools: ReadonlySet<string> | undefined,
+  isModelAliasAvailable: (alias: string) => boolean,
 ): string {
   return profiles
     .map((profile) => {
@@ -734,6 +753,13 @@ function buildProfileDescriptions(
       }
       if (profile.thinkingEffort !== undefined) {
         bindingLines.push(`  Thinking effort: ${profile.thinkingEffort}`);
+      }
+      const alternativeModelsLine = formatAlternativeModelsLine(
+        profile.recommendedModels,
+        isModelAliasAvailable,
+      );
+      if (alternativeModelsLine !== undefined) {
+        bindingLines.push(alternativeModelsLine);
       }
       const headerLines =
         bindingLines.length === 0 ? header : `${header}\n${bindingLines.join('\n')}`;
@@ -766,6 +792,31 @@ function buildProfileDescriptions(
       return `${headerLines}\n  Tools: ${activeTools.join(', ')}`;
     })
     .join('\n');
+}
+
+function formatAlternativeModelsLine(
+  entries: readonly AgentRecommendedModel[] | undefined,
+  isModelAliasAvailable: (alias: string) => boolean,
+): string | undefined {
+  if (entries === undefined || entries.length === 0) return undefined;
+  const parts: string[] = [];
+  for (const entry of entries) {
+    if (!isModelAliasAvailable(entry.alias)) continue;
+    const when = collapseWhitespace(entry.when);
+    const effort =
+      entry.thinkingEffort === undefined ? undefined : collapseWhitespace(entry.thinkingEffort);
+    parts.push(
+      effort === undefined
+        ? `${entry.alias} — ${when}`
+        : `${entry.alias} (thinking_effort=${effort}) — ${when}`,
+    );
+  }
+  if (parts.length === 0) return undefined;
+  return `  Alternative models: ${parts.join('; ')}`;
+}
+
+function collapseWhitespace(value: string): string {
+  return value.replaceAll(/\s+/gu, ' ').trim();
 }
 
 function formatBackgroundAgentResult(

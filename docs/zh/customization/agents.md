@@ -134,11 +134,23 @@ disallowedTools:
 | `model_preference` | 否 | 仅在次主力模型实验功能启用时可用的旧版符号选择器：`primary` 继承调用方的模型绑定，`secondary` 选择 [`[secondary_model] model`](../configuration/config-files.md#secondary-model)。与 `model_alias` 互斥 |
 | `model_alias` | 否 | `[models]` 中区分大小写的精确 alias。名为 `primary` 或 `secondary` 的 alias 仍按字面值处理，与符号字段 `model_preference` 不同 |
 | `thinking_effort` | 否 | 该 profile 作为新子 Agent 启动时请求的 thinking effort，与模型选择器独立解析 |
+| `recommended_models` | 否 | 建议性的备选模型列表，供父 Agent 作为 `Agent.model_alias` 传入。每个条目是一个 mapping，必填 `alias` 与 `when`，可选 `thinking_effort`。只有在本机 `[models]` 表中能解析的 alias 才会出现在 `Agent` 工具说明里；全部无法解析时整行省略。它不绑定模型，不改变启动时的模型解析，也不会写进子 Agent 的提示词。只支持 YAML mapping 列表，不支持逗号分隔字符串。alias 相同但 `thinking_effort` 不同的条目按两条保留 |
 | `service_tier` | 否 | 该 profile 作为子 Agent 运行时每个 LLM 请求携带的服务档位：`auto`、`default`、`flex` 或 `priority`。目前只有 `openai_responses` 协议会把它编码进请求体，其他协议静默忽略 |
 | `request_params` | 否 | 附加请求参数，标量 map（值只允许字符串 / 数字 / 布尔值），该子 Agent 的每个请求都会携带。OpenAI 系协议展开进请求体（Kimi 经 `extra_body`），不会覆盖引擎生成的字段；Anthropic 协议静默忽略；与 `service_tier` 等一等字段冲突时一等字段优先。键名原样发送，provider 可能拒绝它不认识的键 |
 | `tools` | 否 | 工具名允许列表，如 `Read`、`Bash`；MCP 工具用 glob 匹配，如 `mcp__github__*`。支持 YAML 列表或逗号分隔字符串（`tools: Read, Grep`）两种写法。缺省表示允许全部工具；单独的 `*` 同样表示允许全部工具；空列表（`tools: []`）表示禁用全部工具 |
 | `disallowedTools` | 否 | 禁止列表，写法与匹配规则相同，在 `tools` 之后应用 |
 | `subagents` | 否 | 允许委派的子 Agent 名称列表，写法与 `tools` 相同（YAML 列表或逗号分隔字符串）。省略字段或单独写 `*` 表示不限制；空列表（`subagents: []`）表示禁止派发任何子 Agent；其他显式名称构成白名单 |
+
+`recommended_models` 是一个 YAML mapping 列表。顶层写成字符串、标量或单个 mapping 都是非法的，因为每个条目都需要 `when` 触发条件。示例：
+
+```yaml
+recommended_models:
+  - alias: fast-model
+    when: 范围与验收标准已经明确，快速给出结论比等待更划算。
+    thinking_effort: high
+  - alias: k3-review
+    when: 默认 alias 自己就能完成的常规评审。
+```
 
 内置工具与用户工具按名称精确匹配（区分大小写）；以 `mcp__` 开头的条目按 glob 匹配 MCP 工具。有三种写法永远匹配不到任何工具，在 profile 生效时会给出警告：`mcp__` 模式之外使用通配符（`disallowedTools` 里单独的 `*` 什么也禁不掉）；不是完整 `mcp__<服务器>__<工具>` 形式的 `mcp__` 字面量（`mcp__github` 匹配不到任何工具 —— 匹配整个服务器要用 `mcp__github__*`）；以及任何已注册或内置工具都没有的名字（通常是笔误，如把 `Read` 写成 `read`）。
 
@@ -172,7 +184,7 @@ request_params:
 重点检查交互回归、无障碍与视觉一致性。
 ```
 
-必填字段为 `id`、`profile`、`description` 和 `prompt_mode`。可选字段为 `whenToUse`、`model_preference`、`model_alias`、`thinking_effort`、`service_tier`、`request_params`、`tools`、`disallowedTools`、`subagents`。与普通 Agent 文件不同，route Frontmatter 使用严格解析。未知字段、非法类型、路径 / ID / profile 不匹配、同一来源内重复 ID、互斥的模型选择器只会让该 sidecar 被跳过并产生带 code 的诊断；基础 profile 和其他 route 仍会加载。
+必填字段为 `id`、`profile`、`description` 和 `prompt_mode`。可选字段为 `whenToUse`、`model_preference`、`model_alias`、`thinking_effort`、`service_tier`、`request_params`、`tools`、`disallowedTools`、`subagents`。与普通 Agent 文件不同，route Frontmatter 使用严格解析。未知字段、非法类型、路径 / ID / profile 不匹配、同一来源内重复 ID、互斥的模型选择器只会让该 sidecar 被跳过并产生带 code 的诊断；基础 profile 和其他 route 仍会加载。`recommended_models` 等仅属于 Agent 文件的字段在这里属于未知字段，会导致该 sidecar 被跳过。
 
 `prompt_mode` 始终保留基础提示词：`inherit` 要求正文为空；`prepend` 与 `append` 要求正文非空且不能包含 `${base_prompt}`；`wrap` 要求正文必须且只能包含一次 `${base_prompt}`。不提供无保护的 replace 模式。
 

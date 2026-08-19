@@ -93,6 +93,10 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     'thinking_effort',
     options.path,
   );
+  const recommendedModels = parseRecommendedModels(
+    frontmatter['recommended_models'],
+    options.path,
+  );
   const serviceTier = parseServiceTier(frontmatter['service_tier'], options.path);
   let requestParams = parseRequestParams(frontmatter['request_params'], options.path);
   if (
@@ -131,12 +135,65 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     modelPreference,
     modelAlias,
     thinkingEffort,
+    recommendedModels,
     serviceTier,
     requestParams,
     prompt,
     path: options.path,
     source: options.source,
   };
+}
+
+const RECOMMENDED_MODEL_ENTRY_KEYS = new Set(['alias', 'when', 'thinking_effort']);
+
+function parseRecommendedModels(
+  value: unknown,
+  filePath: string,
+): AgentFileDefinition['recommendedModels'] {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) {
+    throw new AgentFileParseError(
+      `Frontmatter field "recommended_models" in ${filePath} must be a list of mappings`,
+    );
+  }
+  const out: Array<{
+    readonly alias: string;
+    readonly when: string;
+    readonly thinkingEffort?: string;
+  }> = [];
+  for (const [index, item] of value.entries()) {
+    if (!isRecord(item)) {
+      throw new AgentFileParseError(
+        `Frontmatter field "recommended_models[${index}]" in ${filePath} must be a mapping`,
+      );
+    }
+    for (const key of Object.keys(item)) {
+      if (!RECOMMENDED_MODEL_ENTRY_KEYS.has(key)) {
+        throw new AgentFileParseError(
+          `Frontmatter field "recommended_models[${index}]" in ${filePath} contains unknown key "${key}"`,
+        );
+      }
+    }
+    const alias = requiredNonEmptyString(
+      item['alias'],
+      `recommended_models[${index}].alias`,
+      filePath,
+    );
+    const when = requiredNonEmptyString(
+      item['when'],
+      `recommended_models[${index}].when`,
+      filePath,
+    );
+    const thinkingEffort = optionalNonEmptyStringField(
+      item['thinking_effort'],
+      `recommended_models[${index}].thinking_effort`,
+      filePath,
+    );
+    out.push(
+      thinkingEffort === undefined ? { alias, when } : { alias, when, thinkingEffort },
+    );
+  }
+  return out;
 }
 
 function parseModelPreference(

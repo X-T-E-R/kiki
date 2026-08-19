@@ -51,6 +51,7 @@ describe('parseAgentFileText', () => {
     expect(def.modelPreference).toBeUndefined();
     expect(def.serviceTier).toBeUndefined();
     expect(def.requestParams).toBeUndefined();
+    expect(def.recommendedModels).toBeUndefined();
     expect(def.tools).toBeUndefined();
     expect(def.disallowedTools).toBeUndefined();
     expect(def.subagents).toBeUndefined();
@@ -81,6 +82,86 @@ describe('parseAgentFileText', () => {
         '---\nname: solo\ndescription: d\nmodel_preference: primary\nmodel_alias: fast-model\n---\n\nbody\n',
       ),
     ).toThrow(/mutually exclusive/);
+  });
+
+  it('parses recommended_models as advisory entries without consuming model_alias', () => {
+    const def = parse(`---
+name: solo
+description: d
+model_alias: gpt-5.6-sol
+thinking_effort: high
+recommended_models:
+  - alias: axon-message/grok-4.6
+    when: Scope and acceptance checks are already named and a fast decisive pass beats waiting.
+    thinking_effort: high
+  - alias: axon-message/deepseek-v4-pro-0813
+    when: Ordinary coding where DeepSeek Pro can finish the acceptance checks.
+---
+
+body
+`);
+
+    expect(def.modelAlias).toBe('gpt-5.6-sol');
+    expect(def.thinkingEffort).toBe('high');
+    expect(def.recommendedModels).toEqual([
+      {
+        alias: 'axon-message/grok-4.6',
+        when: 'Scope and acceptance checks are already named and a fast decisive pass beats waiting.',
+        thinkingEffort: 'high',
+      },
+      {
+        alias: 'axon-message/deepseek-v4-pro-0813',
+        when: 'Ordinary coding where DeepSeek Pro can finish the acceptance checks.',
+      },
+    ]);
+  });
+
+  it('keeps two recommended_models entries that share an alias with different thinking_effort', () => {
+    const def = parse(`---
+name: solo
+description: d
+recommended_models:
+  - alias: shared-model
+    when: Fast pass.
+    thinking_effort: low
+  - alias: shared-model
+    when: Careful pass.
+    thinking_effort: high
+---
+
+body
+`);
+
+    expect(def.recommendedModels).toEqual([
+      { alias: 'shared-model', when: 'Fast pass.', thinkingEffort: 'low' },
+      { alias: 'shared-model', when: 'Careful pass.', thinkingEffort: 'high' },
+    ]);
+  });
+
+  it('rejects a recommended_models entry missing when', () => {
+    expect(() =>
+      parse(
+        '---\nname: solo\ndescription: d\nrecommended_models:\n  - alias: other-model\n---\n\nbody\n',
+      ),
+    ).toThrow(/"recommended_models\[0\]\.when"/);
+  });
+
+  it('rejects a recommended_models entry with an unknown key', () => {
+    expect(() =>
+      parse(
+        '---\nname: solo\ndescription: d\nrecommended_models:\n  - alias: other-model\n    when: now\n    rank: 1\n---\n\nbody\n',
+      ),
+    ).toThrow(/unknown key "rank"/);
+  });
+
+  it.each([
+    ['bare string', 'recommended_models: other-model'],
+    ['scalar', 'recommended_models: 42'],
+    ['mapping', 'recommended_models:\n  alias: other-model\n  when: now'],
+  ])('rejects recommended_models when it is a %s rather than a list', (_label, field) => {
+    expect(() => parse(`---\nname: solo\ndescription: d\n${field}\n---\n\nbody\n`)).toThrow(
+      /"recommended_models"/,
+    );
   });
 
   it.each(['auto', 'default', 'flex', 'priority'] as const)(
@@ -431,6 +512,20 @@ describe('agentProfileFromFile', () => {
       serviceTier: 'priority',
       requestParams: { seed: 42, enabled: true },
     });
+  });
+
+  it('passes recommended models through without injecting them into the prompt', () => {
+    const recommendedModels = [
+      { alias: 'other-model', when: 'When the task is already scoped.' },
+    ];
+    const profile = agentProfileFromFile(
+      { ...base, recommendedModels, prompt: 'PROMPT_BODY' },
+      basePrompt,
+    );
+
+    expect(profile.recommendedModels).toEqual(recommendedModels);
+    expect(profile.systemPrompt({})).toBe('PROMPT_BODY');
+    expect(profile.systemPrompt({})).not.toContain('already scoped');
   });
 
   it('treats an explicit file as an override intent', () => {

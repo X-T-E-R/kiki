@@ -6,6 +6,18 @@ export const DEFAULT_AGENT_PROFILE_NAME = 'agent';
 
 export type AgentModelPreference = 'primary' | 'secondary';
 
+/**
+ * One advisory alternative-model entry from an agent file's
+ * `recommended_models` frontmatter. The dispatcher may pass `alias` (and
+ * optional `thinkingEffort`) as `Agent` tool arguments; this metadata never
+ * binds a model by itself.
+ */
+export interface AgentRecommendedModel {
+  readonly alias: string;
+  readonly when: string;
+  readonly thinkingEffort?: string;
+}
+
 export interface AgentProfilePromptPrefixContext {
   readonly cwd: string;
   readonly process: IHostProcessService;
@@ -62,6 +74,7 @@ export interface AgentProfile {
   readonly modelPreference?: AgentModelPreference;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
+  readonly recommendedModels?: readonly AgentRecommendedModel[];
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;
   readonly systemPrompt: (context: AgentProfileContext) => string;

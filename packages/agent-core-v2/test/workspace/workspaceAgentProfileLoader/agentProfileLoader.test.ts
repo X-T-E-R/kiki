@@ -439,6 +439,28 @@ describe('agent profile loaders + session catalog', () => {
     expect(() => parse('inherit', 'not empty')).toThrow(/empty body/);
   });
 
+  it('rejects recommended_models as an unknown route sidecar field', () => {
+    expect(() =>
+      parseAgentRouteFileText({
+        path: '/agents/.routes/reviewer/fast.md',
+        expectedProfile: 'reviewer',
+        expectedRouteName: 'fast',
+        text: [
+          '---',
+          'id: reviewer.fast',
+          'profile: reviewer',
+          'description: fast',
+          'prompt_mode: inherit',
+          'recommended_models:',
+          '  - alias: other-model',
+          '    when: now',
+          '---',
+          '',
+        ].join('\n'),
+      }),
+    ).toThrow(/Unknown frontmatter field "recommended_models"/);
+  });
+
   it('atomically patches profile and route frontmatter, preserves the body, and echoes reload', async () => {
     await withFixture(async (fixture) => {
       const root = join(fixture.homeDir, 'agents');

@@ -134,11 +134,23 @@ You are a strict code reviewer. Read the diff, then report findings grouped by s
 | `model_preference` | no | Legacy symbolic selector available only with the secondary-model experiment: `primary` inherits the caller's model binding, while `secondary` selects [`[secondary_model] model`](../configuration/config-files.md#secondary-model). Mutually exclusive with `model_alias` |
 | `model_alias` | no | Exact, case-sensitive alias from `[models]`. Literal aliases named `primary` or `secondary` stay literal; this differs from the symbolic `model_preference` field |
 | `thinking_effort` | no | Thinking effort requested when this profile starts as a new subagent. It resolves independently from the model selector |
+| `recommended_models` | no | Advisory list of alternative model aliases the parent agent may pass as `Agent.model_alias`. Each entry is a mapping with required `alias` and `when`, and optional `thinking_effort`. Shown in the `Agent` tool description only for aliases that exist in this machine's `[models]` table; omitted entirely when none remain. Does not bind a model, does not change spawn resolution, and is never added to the child agent's prompt. YAML list of mappings only — not a comma-separated string. Duplicate aliases with different `thinking_effort` values are kept as separate entries |
 | `service_tier` | no | Service tier requested on every LLM request this agent makes as a subagent: `auto`, `default`, `flex`, or `priority`. Only the `openai_responses` provider protocol encodes it into the request body; other protocols silently ignore it |
 | `request_params` | no | Extra request parameters as a scalar map (string/number/boolean values only), sent with every request this subagent makes. OpenAI-family providers spread them into the request body (Kimi via `extra_body`) without overriding engine-generated fields; Anthropic ignores the map; a first-class field such as `service_tier` wins on collision. Keys are sent verbatim, so a provider may reject names it does not recognize |
 | `tools` | no | Allowlist of tool names such as `Read` or `Bash`; MCP tools are matched with globs such as `mcp__github__*`. Accepts a YAML list or a comma-separated string (`tools: Read, Grep`). Omit to allow all tools; a lone `*` also allows all tools; an empty list (`tools: []`) disables all tools |
 | `disallowedTools` | no | Denylist with the same syntax and matching rules, applied after `tools` |
 | `subagents` | no | Allowlist of sub-agent names this agent may delegate to, with the same syntax as `tools` (YAML list or comma-separated string). Omit the field or use a lone `*` to allow every type; use an empty list (`subagents: []`) to prohibit all subagent dispatch; otherwise the explicit names form the allowlist |
+
+`recommended_models` is a YAML list of mappings. A string, scalar, or mapping at the top level is invalid, because every entry needs a `when` trigger. Example:
+
+```yaml
+recommended_models:
+  - alias: fast-model
+    when: Scope and acceptance checks are already named and a fast decisive pass beats waiting.
+    thinking_effort: high
+  - alias: k3-review
+    when: Ordinary review work the default alias can finish on its own.
+```
 
 Built-in and user tools match by exact, case-sensitive name; entries starting with `mcp__` match MCP tools as globs. Three entry shapes never match anything and are reported with a warning when the profile takes effect: a wildcard outside an `mcp__` pattern (a bare `*` in `disallowedTools` disables nothing), an `mcp__` literal that is not a full `mcp__<server>__<tool>` name (`mcp__github` matches nothing — use `mcp__github__*` for the whole server), and a name no registered or built-in tool has (usually a typo, such as `read` instead of `Read`).
 
@@ -172,7 +184,7 @@ request_params:
 Focus on interaction regressions, accessibility, and visual consistency.
 ```
 
-The required fields are `id`, `profile`, `description`, and `prompt_mode`. Optional fields are `whenToUse` plus `model_preference`, `model_alias`, `thinking_effort`, `service_tier`, `request_params`, `tools`, `disallowedTools`, and `subagents`. Unlike ordinary Agent files, route frontmatter is strict. Unknown fields, invalid types, a path/ID/profile mismatch, duplicate IDs in one source, and incompatible model selectors cause only that sidecar to be skipped with a coded diagnostic; the base profile and sibling routes still load.
+The required fields are `id`, `profile`, `description`, and `prompt_mode`. Optional fields are `whenToUse` plus `model_preference`, `model_alias`, `thinking_effort`, `service_tier`, `request_params`, `tools`, `disallowedTools`, and `subagents`. Unlike ordinary Agent files, route frontmatter is strict. Unknown fields, invalid types, a path/ID/profile mismatch, duplicate IDs in one source, and incompatible model selectors cause only that sidecar to be skipped with a coded diagnostic; the base profile and sibling routes still load. Agent-file-only fields such as `recommended_models` are unknown here and skip the sidecar.
 
 `prompt_mode` always preserves the base prompt: `inherit` requires an empty body; `prepend` and `append` require a non-empty body and reject `${base_prompt}`; `wrap` requires `${base_prompt}` exactly once. There is no unguarded replace mode.
 

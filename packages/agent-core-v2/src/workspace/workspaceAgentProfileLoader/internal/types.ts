@@ -10,6 +10,7 @@
 import type {
   AgentModelPreference,
   AgentProfileRouteDefinition,
+  AgentRecommendedModel,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { SkippedAgentFile } from '#/app/agentProfileCatalog/agentProfileContribution';
 import type { RequestParams, ServiceTier } from '#/kosong/contract/provider';
@@ -34,6 +35,7 @@ export interface AgentFileDefinition {
   readonly modelPreference?: AgentModelPreference;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
+  readonly recommendedModels?: readonly AgentRecommendedModel[];
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;
   readonly prompt: string;
