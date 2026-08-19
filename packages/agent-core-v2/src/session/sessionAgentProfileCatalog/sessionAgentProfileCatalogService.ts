@@ -12,10 +12,11 @@
  * candidate wins, except that replacing a same-name `builtin` profile
  * requires `override: true` in the frontmatter — a non-override collision is
  * warned about and skipped to the next candidate. Builtins named by the
- * `disabledBuiltinProfiles` config section are omitted from discovery and
- * dispatch. The builtin default is retained separately as a binding fallback
- * so the main agent can still start when `agent` is disabled. `ready` waits for
- * config loading so downstream tool descriptions see the effective projection.
+ * `disabledBuiltinProfiles` config section and file-backed profiles named by
+ * `disabledNamedProfiles` are omitted from discovery and dispatch. The builtin
+ * default is retained separately as a binding fallback so the main agent can
+ * still start when `agent` is disabled. `ready` waits for config loading so
+ * downstream tool descriptions see the effective projection.
  * Bound at Session scope.
  */
 
@@ -44,7 +45,9 @@ import { BUILTIN_AGENT_PROFILE_SOURCE_ID } from '#/app/agentProfileCatalog/built
 import { IConfigService } from '#/app/config/config';
 import {
   DISABLED_BUILTIN_PROFILES_SECTION,
+  DISABLED_NAMED_PROFILES_SECTION,
   type DisabledBuiltinProfilesConfig,
+  type DisabledNamedProfilesConfig,
 } from '#/workspace/workspaceAgentProfileLoader/configSection';
 
 import { ISessionAgentProfileCatalogSeed } from './agentProfileCatalogSeed';
@@ -99,7 +102,10 @@ export class SessionAgentProfileCatalogService
     );
     this._register(
       this.config.onDidSectionChange((change) => {
-        if (change.domain !== DISABLED_BUILTIN_PROFILES_SECTION) return;
+        if (
+          change.domain !== DISABLED_BUILTIN_PROFILES_SECTION
+          && change.domain !== DISABLED_NAMED_PROFILES_SECTION
+        ) return;
         this.reproject();
         this.onDidChangeEmitter.fire('catalog');
       }),
@@ -226,12 +232,19 @@ export class SessionAgentProfileCatalogService
     );
   }
 
+  private disabledNamedProfileNames(): ReadonlySet<string> {
+    return new Set(
+      this.config.get<DisabledNamedProfilesConfig>(DISABLED_NAMED_PROFILES_SECTION) ?? [],
+    );
+  }
+
   private reproject(): void {
     const merged = new Map<string, AgentProfile>();
     let defaultBindingProfile: AgentProfile | undefined;
     const inspections = new Map<string, AgentProfileInspection>();
     const entries = this.relevantEntries();
     const disabledBuiltinProfiles = this.disabledBuiltinProfileNames();
+    const disabledNamedProfiles = this.disabledNamedProfileNames();
 
     const builtinEntry = entries.find((e) => e.sourceId === BUILTIN_AGENT_PROFILE_SOURCE_ID);
     if (builtinEntry !== undefined) {
@@ -259,6 +272,7 @@ export class SessionAgentProfileCatalogService
         entryProfiles.set(profile.name, profile);
       }
       for (const profile of entryProfiles.values()) {
+        if (disabledNamedProfiles.has(profile.name)) continue;
         const candidates = fileCandidates.get(profile.name) ?? [];
         candidates.push({
           profile,

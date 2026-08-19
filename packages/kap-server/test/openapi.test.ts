@@ -92,6 +92,16 @@ describe('server-v2 OpenAPI', () => {
     expect(params.some((p) => p['name'] === 'tail')).toBe(false);
   });
 
+  it('documents the agent-list expand query', async () => {
+    const doc = await fetchOpenApi();
+    const listAgentsOp = operation(doc, '/api/v1/agents', 'get');
+    const params = listAgentsOp['parameters'] as Array<Record<string, unknown>>;
+
+    expect(params).toEqual(expect.arrayContaining([
+      expect.objectContaining({ in: 'query', name: 'expand' }),
+    ]));
+  });
+
   it('describes the file upload as multipart/form-data', async () => {
     const doc = await fetchOpenApi();
     const uploadOp = operation(doc, '/api/v1/files', 'post');

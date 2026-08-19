@@ -161,6 +161,7 @@ describe('server-v2 /api/v1/config', () => {
       identity: { name: 'Example Agent', slug: 'example-agent' },
       extra_agent_dirs: ['/tmp/example-agents', '/tmp/team-agents'],
       disabled_builtin_profiles: ['researcher', 'reviewer'],
+      disabled_named_profiles: ['reviewer'],
       mcp: { startup_timeout_ms: 5_000, tool_timeout_ms: 6_000 },
       tools: { enabled: ['Read', 'Write'], disabled: ['Bash'] },
       replace_domains: [
@@ -172,6 +173,7 @@ describe('server-v2 /api/v1/config', () => {
         'identity',
         'extra_agent_dirs',
         'disabled_builtin_profiles',
+        'disabled_named_profiles',
         'mcp',
         'tools',
       ],
@@ -199,6 +201,7 @@ describe('server-v2 /api/v1/config', () => {
     expect(after.identity).toEqual({ name: 'Example Agent', slug: 'example-agent' });
     expect(after.extra_agent_dirs).toEqual(['/tmp/example-agents', '/tmp/team-agents']);
     expect(after.disabled_builtin_profiles).toEqual(['researcher', 'reviewer']);
+    expect(after.disabled_named_profiles).toEqual(['reviewer']);
     expect(after.mcp).toEqual({ startupTimeoutMs: 5_000, toolTimeoutMs: 6_000 });
     expect(after.tools).toEqual({ enabled: ['Read', 'Write'], disabled: ['Bash'] });
 
@@ -214,6 +217,7 @@ describe('server-v2 /api/v1/config', () => {
     await boot([
       'extra_agent_dirs = ["/tmp/example-agents", "/tmp/old-agents"]',
       'disabled_builtin_profiles = ["researcher", "reviewer"]',
+      'disabled_named_profiles = ["reviewer"]',
       '',
       '[thread_communication]',
       'enabled = true',
@@ -257,6 +261,7 @@ describe('server-v2 /api/v1/config', () => {
       identity: { name: 'Example Agent' },
       extra_agent_dirs: ['/tmp/example-agents'],
       disabled_builtin_profiles: [],
+      disabled_named_profiles: [],
       mcp: { tool_timeout_ms: 7_000 },
       tools: { enabled: ['Write'] },
       replace_domains: [
@@ -268,6 +273,7 @@ describe('server-v2 /api/v1/config', () => {
         'identity',
         'extra_agent_dirs',
         'disabled_builtin_profiles',
+        'disabled_named_profiles',
         'mcp',
         'tools',
       ],
@@ -281,6 +287,7 @@ describe('server-v2 /api/v1/config', () => {
     expect(after.identity).toEqual({ name: 'Example Agent' });
     expect(after.extra_agent_dirs).toEqual(['/tmp/example-agents']);
     expect(after.disabled_builtin_profiles).toEqual([]);
+    expect(after.disabled_named_profiles).toEqual([]);
     expect(after.mcp).toEqual({ toolTimeoutMs: 7_000 });
     expect(after.tools).toEqual({ enabled: ['Write'] });
 
@@ -307,6 +314,7 @@ describe('server-v2 /api/v1/config', () => {
       { identity: { name: 42 } },
       { extra_agent_dirs: [42] },
       { disabled_builtin_profiles: [42] },
+      { disabled_named_profiles: [42] },
       { mcp: { startup_timeout_ms: 0 } },
       { tools: { enabled: [42] } },
       { unknown_runtime_domain: { enabled: true } },

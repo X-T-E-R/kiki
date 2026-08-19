@@ -40,6 +40,7 @@ describe('GET /api/v1/agents', () => {
       join(home as string, 'config.toml'),
       [
         'disabled_builtin_profiles = ["explore", "agent"]',
+        'disabled_named_profiles = ["reviewer"]',
         '',
         '[providers.stub]',
         'type = "openai"',
@@ -130,13 +131,14 @@ describe('GET /api/v1/agents', () => {
       when_to_use: 'Review important changes',
       source: 'user',
       workspace_id: expect.any(String),
+      workspace_ids: [expect.any(String), expect.any(String)],
       source_file: profilePath.replaceAll('\\', '/'),
       pinned_model_alias: 'provider/pinned',
       thinking_effort: 'high',
       service_tier: 'priority',
       tools: ['Read', 'Bash'],
       disallowed_tools: ['Write'],
-      disabled: false,
+      disabled: true,
       routes: [{
         id: 'reviewer.fast',
         description: 'Fast review route',
@@ -149,6 +151,21 @@ describe('GET /api/v1/agents', () => {
     )).toHaveLength(1);
     expect(data.items.find((profile) => profile.name === 'explore' && profile.source === 'builtin')?.disabled).toBe(true);
     expect(data.items.find((profile) => profile.name === 'agent' && profile.source === 'builtin')?.disabled).toBe(true);
+
+    const expandedResponse = await authedFetch(server, base, '/api/v1/agents?expand=1');
+    expect(expandedResponse.status).toBe(200);
+    const expandedBody = (await expandedResponse.json()) as Envelope<unknown>;
+    expect(expandedBody.code).toBe(0);
+    const expanded = listNamedAgentProfilesResponseSchema.parse(expandedBody.data);
+    const expandedReviewers = expanded.items.filter((profile) =>
+      profile.name === 'reviewer'
+      && profile.source === 'user'
+      && profile.source_file === profilePath.replaceAll('\\', '/')
+    );
+    expect(expandedReviewers).toHaveLength(2);
+    expect(expandedReviewers.every((profile) => profile.workspace_ids === undefined)).toBe(true);
+    expect(new Set(expandedReviewers.map((profile) => profile.workspace_id)).size).toBe(2);
+    expect(expandedReviewers.every((profile) => profile.disabled)).toBe(true);
 
     const patchedResponse = await authedFetch(server, base, '/api/v1/agents/reviewer', {
       method: 'PATCH',

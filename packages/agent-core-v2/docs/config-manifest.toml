@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (29 sections · 2 overlay(s))
+# Index (30 sections · 2 overlay(s))
 #   agents                   src/session/agentCollaboration/configSection.ts
 #   background               src/agent/task/configSection.ts
 #   builtinProductSkills     src/app/skillCatalog/configSection.ts
@@ -16,6 +16,7 @@
 #   defaultPermissionMode    src/agent/permissionMode/configSection.ts
 #   defaultPlanMode          src/features/plan/configSection.ts
 #   disabledBuiltinProfiles  src/workspace/workspaceAgentProfileLoader/configSection.ts
+#   disabledNamedProfiles    src/workspace/workspaceAgentProfileLoader/configSection.ts
 #   experimental             src/app/flag/flag.ts
 #   extraAgentDirs           src/workspace/workspaceAgentProfileLoader/configSection.ts
 #   extraSkillDirs           src/app/skillCatalog/configSection.ts
@@ -129,6 +130,14 @@ default_plan_mode = false
 # ##########################################################################
 
 disabled_builtin_profiles = []
+
+# ##########################################################################
+# disabledNamedProfiles (config.toml: disabled_named_profiles)
+#   owner: src/workspace/workspaceAgentProfileLoader/configSection.ts
+#   scope: core
+# ##########################################################################
+
+disabled_named_profiles = []
 
 # ##########################################################################
 # experimental

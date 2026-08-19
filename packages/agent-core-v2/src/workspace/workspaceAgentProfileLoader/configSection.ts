@@ -2,8 +2,9 @@
  * `workspaceAgentProfileLoader` domain — agent-file config sections.
  *
  * Registers the top-level config domains `extraAgentDirs` (additional
- * directories scanned for agent Markdown files) and
- * `disabledBuiltinProfiles` (builtin profile names omitted from session
+ * directories scanned for agent Markdown files), `disabledBuiltinProfiles`
+ * (builtin profile names omitted from session catalogs), and
+ * `disabledNamedProfiles` (file-backed profile names omitted from session
  * catalogs). Values stay camelCase in memory; TOML uses snake_case keys.
  */
 
@@ -26,5 +27,15 @@ export type DisabledBuiltinProfilesConfig = z.infer<
 >;
 
 registerConfigSection(DISABLED_BUILTIN_PROFILES_SECTION, DisabledBuiltinProfilesConfigSchema, {
+  defaultValue: [],
+});
+
+export const DISABLED_NAMED_PROFILES_SECTION = 'disabledNamedProfiles';
+export const DisabledNamedProfilesConfigSchema = z.array(z.string()).optional();
+export type DisabledNamedProfilesConfig = z.infer<
+  typeof DisabledNamedProfilesConfigSchema
+>;
+
+registerConfigSection(DISABLED_NAMED_PROFILES_SECTION, DisabledNamedProfilesConfigSchema, {
   defaultValue: [],
 });
