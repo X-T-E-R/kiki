@@ -27,7 +27,12 @@ const SEP = String.fromCodePoint(0);
 const CHECKPOINT_COLLECTION = '__checkpoint__';
 const STORE_SUBDIR = 'query-store';
 const SHARD_COUNT = 16;
-const LOCK_ACQUIRE_TIMEOUT_MS = 1000;
+// MiniDb coordinates a multi-shard batch sequentially. Its 250ms default can
+// expire the early shard writers before one fan-out finishes, forcing every
+// following batch to reopen the shards and replay their growing WALs. The
+// acquire timeout stays longer than the hold so a peer can wait for handoff.
+const LOCK_HOLD_MS = 5_000;
+const LOCK_ACQUIRE_TIMEOUT_MS = 7_000;
 const DROP_BATCH_SIZE = 500;
 
 function physicalKey(collection: string, key: string): string {
@@ -90,6 +95,7 @@ export class MiniDbQueryStore extends Disposable implements IQueryStore {
       valueMode: 'memory',
       fsyncPolicy: 'everysec',
       lockAcquireTimeoutMs: LOCK_ACQUIRE_TIMEOUT_MS,
+      lockHoldMs: LOCK_HOLD_MS,
     });
   }
 

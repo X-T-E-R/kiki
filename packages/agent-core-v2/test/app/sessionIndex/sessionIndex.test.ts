@@ -228,7 +228,11 @@ describe('FileSessionIndex (legacy)', () => {
     for (const [agentId, record] of records) {
       const dir = join(sessionsDir, workspaceId, 'wire-usage', 'agents', agentId);
       await fsp.mkdir(dir, { recursive: true });
-      await fsp.writeFile(join(dir, 'wire.jsonl'), `${JSON.stringify(record)}\n`);
+      const metadata =
+        agentId === 'main'
+          ? `${JSON.stringify({ type: 'metadata', protocol_version: '1', created_at: 1 })}\n`
+          : '';
+      await fsp.writeFile(join(dir, 'wire.jsonl'), `${metadata}${JSON.stringify(record)}\n`);
     }
 
     const store = build();

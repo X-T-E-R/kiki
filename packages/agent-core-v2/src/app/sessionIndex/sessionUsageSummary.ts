@@ -36,10 +36,13 @@ export async function readSessionUsageFromWires(
     try {
       for await (const record of log.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY)) {
         hasRecords = true;
+        if (record.type !== 'usage.record') continue;
         const parsed = parseUsageRecord(record);
-        if (parsed !== undefined) {
-          summary = addSessionUsage(summary, parsed.model, parsed.usage);
+        if (parsed === undefined) {
+          complete = false;
+          continue;
         }
+        summary = addSessionUsage(summary, parsed.model, parsed.usage);
       }
     } catch {
       complete = false;

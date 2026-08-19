@@ -274,6 +274,48 @@ describe('SessionMetadata', () => {
     expect(persisted?.['usage']).toEqual(usage);
   });
 
+  it('keeps persisted usage when a usage record is structurally invalid during migration', async () => {
+    const usage = {
+      total: { inputOther: 20, output: 10, inputCacheRead: 4, inputCacheCreation: 2 },
+      byModel: {
+        'example-model': {
+          inputOther: 20,
+          output: 10,
+          inputCacheRead: 4,
+          inputCacheCreation: 2,
+        },
+      },
+    };
+    const store = ix.get(IAtomicDocumentStore);
+    await store.set(META_SCOPE, 'state.json', {
+      id: 's1',
+      version: 2,
+      createdAt: 1700000000000,
+      updatedAt: 1700000000000,
+      archived: false,
+      agents: { main: { type: 'main' } },
+      custom: {},
+      usage,
+    });
+    const log = ix.get(IAppendLogStore);
+    log.append('sessions/wd_test/s1/agents/main', AGENT_WIRE_RECORD_KEY, {
+      type: 'usage.record',
+      model: 'example-model',
+      usage: { inputOther: 3, output: 2, inputCacheRead: 1, inputCacheCreation: 0 },
+    });
+    log.append('sessions/wd_test/s1/agents/main', AGENT_WIRE_RECORD_KEY, {
+      type: 'usage.record',
+      model: 'example-model',
+      usage: { inputOther: 17, output: 8, inputCacheRead: 3 },
+    });
+    await log.flush();
+
+    const meta = ix.get(ISessionMetadata);
+    expect((await meta.read()).usage).toEqual(usage);
+    const persisted = await store.get<Record<string, unknown>>(META_SCOPE, 'state.json');
+    expect(persisted?.['usage']).toEqual(usage);
+  });
+
   it('persists the authoritative document before recording to the mirror', async () => {
     const store = ix.get(IAtomicDocumentStore);
     const persistedAtRecord: Promise<Record<string, unknown> | undefined>[] = [];
