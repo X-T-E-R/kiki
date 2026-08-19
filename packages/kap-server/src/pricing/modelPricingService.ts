@@ -21,6 +21,8 @@ import {
 
 import { getModelPricingRuntimeState } from './runtime';
 
+import { LOCAL_MODEL_PRICE_OVERRIDES, type LocalModelPriceOverride } from './modelPriceOverrides';
+
 const PRICE_CACHE_DIR = 'model-pricing';
 const PRICE_FILE_NAME = 'model_prices_and_context_window.json';
 const DEFAULT_REFRESH_INTERVAL_MS = 12 * 60 * 60 * 1_000;
@@ -61,7 +63,9 @@ export type ModelPriceMatchStrategy =
   | 'provider-prefix'
   | 'alias'
   | 'family-regex'
-  | 'normalized';
+  | 'normalized'
+  | 'override'
+  | 'override-alias';
 
 export interface ModelPriceMatch {
   readonly requestedModel: string;
@@ -289,15 +293,55 @@ export class ModelPriceCatalog {
   resolve(model: string): ModelPriceMatch | undefined {
     const requestedModel = model.trim();
     if (requestedModel.length === 0) return undefined;
+    const local = LOCAL_MODEL_PRICE_OVERRIDES[requestedModel];
+    if (local !== undefined) {
+      return this.resolveOverride(requestedModel, local);
+    }
+
     const direct = this.matchChain(requestedModel, modelCandidates(requestedModel));
     if (direct !== undefined) return direct;
     // Last resort: a trailing date suffix (`deepseek-v4-pro-0813`) is a
     // snapshot pin, not part of the priced family — strip it once and retry
     // the full chain. Only reached after a complete miss, so a model whose
     // real name ends in four digits still resolves by its exact name first.
+    // The local override table is consulted for the plain name above, but is
+    // deliberately NOT consulted for the stripped name: date pins carry the
+    // bare model id (`deepseek-v4-pro-0813`), which has no `kimi-code/` prefix.
     const stripped = requestedModel.replace(DATE_SUFFIX_PATTERN, '');
     if (stripped.length === 0 || stripped === requestedModel) return undefined;
     return this.matchChain(requestedModel, modelCandidates(stripped));
+  }
+
+  private resolveOverride(
+    requestedModel: string,
+    override: LocalModelPriceOverride,
+  ): ModelPriceMatch | undefined {
+    if (override.navigateTo !== undefined) {
+      const entry = this.entries.get(override.navigateTo);
+      if (entry !== undefined) {
+        return {
+          requestedModel,
+          catalogModel: override.navigateTo,
+          strategy: 'override-alias',
+          prices: toPrices(entry),
+        };
+      }
+      // The override pointed at a catalog key that is absent from the active
+      // snapshot (older vendored copy, or a reset catalog). Fall through so the
+      // alias is reported as "no price" rather than inventing a non-catalog
+      // figure.
+      return undefined;
+    }
+    const prices = override.prices;
+    if (prices !== undefined) {
+      return {
+        requestedModel,
+        catalogModel: requestedModel,
+        strategy: 'override',
+        prices,
+      };
+    }
+    return undefined;
   }
 
   private matchChain(

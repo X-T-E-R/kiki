@@ -70,6 +70,11 @@ describe('ModelPriceCatalog', () => {
     'deepseek/deepseek-v4-pro': price(7, 8),
     'model-2024': price(8, 9),
     'azure_ai/FW-Kimi-K3': price(9, 10),
+    'dashscope/kimi-k2.7-code': {
+      input_cost_per_token: 0.95e-6,
+      output_cost_per_token: 4e-6,
+      cache_read_input_token_cost: 0.19e-6,
+    },
     'dashscope/qwen3-max': { max_input_tokens: 262_144 },
     fallback_generalizations: {
       rules: [
@@ -134,8 +139,45 @@ describe('ModelPriceCatalog', () => {
   it('keeps unpriced and unmapped models unknown instead of treating them as free', () => {
     expect(catalog.calculate('dashscope/qwen3-max', { inputOther: 10 })).toBeUndefined();
     expect(catalog.calculate('missing', { inputOther: 10 })).toBeUndefined();
-    expect(catalog.calculate('kimi-code/k3', { inputOther: 10 })).toBeUndefined();
-    expect(catalog.calculate('k3-256k', { inputOther: 10 })).toBeUndefined();
+    expect(catalog.calculate('kimi-code/kimi-deep-coder', { inputOther: 10 })).toBeUndefined();
+    expect(catalog.calculate('kimi-code/not-a-real-model', { inputOther: 10 })).toBeUndefined();
+  });
+
+  it('resolves kimi-code internal aliases through the local override table', () => {
+    expect(catalog.resolve('kimi-code/k3')).toMatchObject({
+      requestedModel: 'kimi-code/k3',
+      strategy: 'override',
+      prices: {
+        inputCostPerToken: 3e-6,
+        outputCostPerToken: 15e-6,
+        cacheReadInputTokenCost: 0.3e-6,
+      },
+    });
+    expect(catalog.resolve('kimi-code/k3-256k')).toMatchObject({
+      strategy: 'override',
+      prices: { inputCostPerToken: 3e-6, outputCostPerToken: 15e-6 },
+    });
+    expect(catalog.resolve('kimi-code/kimi-for-coding')).toMatchObject({
+      catalogModel: 'dashscope/kimi-k2.7-code',
+      strategy: 'override-alias',
+    });
+  });
+
+  it('prices kimi-code overrides through calculate and keeps premium aliases priced', () => {
+    const k3 = catalog.calculate('kimi-code/k3', {
+      inputOther: 2,
+      output: 1,
+      inputCacheRead: 10,
+    });
+    expect(k3).toBe(2 * 3e-6 + 1 * 15e-6 + 10 * 0.3e-6);
+
+    const kfc = catalog.calculate('kimi-code/kimi-for-coding', { inputOther: 1 });
+    expect(kfc).toBe(0.95e-6);
+
+    const highspeed = catalog.calculate('kimi-code/kimi-for-coding-highspeed', {
+      inputOther: 1,
+    });
+    expect(highspeed).toBe(1.9e-6);
   });
 
   it('prices all four token components in USD per token', () => {
