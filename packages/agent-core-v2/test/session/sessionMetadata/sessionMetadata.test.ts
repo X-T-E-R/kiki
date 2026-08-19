@@ -17,6 +17,7 @@ import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
+import { AGENT_WIRE_RECORD_KEY } from '#/wire/record';
 
 import { stubSessionIndexMirror } from '../../app/sessionIndex/stubs';
 import { stubLog } from '../../_base/log/stubs';
@@ -223,6 +224,96 @@ describe('SessionMetadata', () => {
     expect((await meta.read()).usage).toEqual(usage);
     expect(mirror.recorded.at(-1)?.usage).toEqual(usage);
     expect((await createFreshMetadata(ix).read()).usage).toEqual(usage);
+  });
+
+  it('keeps persisted usage when one agent wire is corrupted during migration', async () => {
+    const usage = {
+      total: { inputOther: 20, output: 10, inputCacheRead: 4, inputCacheCreation: 2 },
+      byModel: {
+        'example-model': {
+          inputOther: 3,
+          output: 2,
+          inputCacheRead: 1,
+          inputCacheCreation: 0,
+        },
+        'worker-model': {
+          inputOther: 17,
+          output: 8,
+          inputCacheRead: 3,
+          inputCacheCreation: 2,
+        },
+      },
+    };
+    const store = ix.get(IAtomicDocumentStore);
+    await store.set(META_SCOPE, 'state.json', {
+      id: 's1',
+      version: 2,
+      createdAt: 1700000000000,
+      updatedAt: 1700000000000,
+      archived: false,
+      agents: { main: { type: 'main' }, worker: { type: 'sub' } },
+      custom: {},
+      usage,
+    });
+    const log = ix.get(IAppendLogStore);
+    log.append('sessions/wd_test/s1/agents/main', AGENT_WIRE_RECORD_KEY, {
+      type: 'usage.record',
+      model: 'example-model',
+      usage: { inputOther: 3, output: 2, inputCacheRead: 1, inputCacheCreation: 0 },
+    });
+    await log.flush();
+    await ix.get(IFileSystemStorageService).write(
+      'sessions/wd_test/s1/agents/worker',
+      AGENT_WIRE_RECORD_KEY,
+      new TextEncoder().encode('{broken\n'),
+    );
+
+    const meta = ix.get(ISessionMetadata);
+    expect((await meta.read()).usage).toEqual(usage);
+    const persisted = await store.get<Record<string, unknown>>(META_SCOPE, 'state.json');
+    expect(persisted?.['usage']).toEqual(usage);
+  });
+
+  it('keeps persisted usage when a usage record is structurally invalid during migration', async () => {
+    const usage = {
+      total: { inputOther: 20, output: 10, inputCacheRead: 4, inputCacheCreation: 2 },
+      byModel: {
+        'example-model': {
+          inputOther: 20,
+          output: 10,
+          inputCacheRead: 4,
+          inputCacheCreation: 2,
+        },
+      },
+    };
+    const store = ix.get(IAtomicDocumentStore);
+    await store.set(META_SCOPE, 'state.json', {
+      id: 's1',
+      version: 2,
+      createdAt: 1700000000000,
+      updatedAt: 1700000000000,
+      archived: false,
+      agents: { main: { type: 'main' } },
+      custom: {},
+      usage,
+    });
+    const log = ix.get(IAppendLogStore);
+    log.append('sessions/wd_test/s1/agents/main', AGENT_WIRE_RECORD_KEY, {
+      type: 'usage.record',
+      model: 'example-model',
+      usage: { inputOther: 3, output: 2, inputCacheRead: 1, inputCacheCreation: 0 },
+    });
+    log.append('sessions/wd_test/s1/agents/main', AGENT_WIRE_RECORD_KEY, {
+      type: 'usage.record',
+      model: 'example-model',
+      usage: { inputOther: 17, output: 8, inputCacheRead: 3 },
+    });
+    await log.flush();
+
+    const meta = ix.get(ISessionMetadata);
+    expect((await meta.read()).usage).toEqual(usage);
+    const persisted = await store.get<Record<string, unknown>>(META_SCOPE, 'state.json');
+    expect(persisted?.['usage']).toEqual(usage);
   });
 
   it('persists the authoritative document before recording to the mirror', async () => {

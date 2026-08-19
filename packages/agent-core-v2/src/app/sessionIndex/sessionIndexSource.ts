@@ -223,14 +223,19 @@ export async function readSessionSummary(
   const hasConversation = typeof meta['lastPrompt'] === 'string' && meta['lastPrompt'].length > 0;
   const recoverableAgentIds =
     agentIds.length === 0 && !hasConversation ? [] : [...new Set(['main', ...agentIds])];
-  const recoveredUsage =
+  const replay =
     persistedUsage?.wireComplete === true || recoverableAgentIds.length === 0
       ? undefined
       : await readSessionUsageFromWires(
           log,
           recoverableAgentIds.map((agentId) => `${base}/agents/${agentId}`),
         );
-  const usage = recoveredUsage ?? persistedUsage;
+  const usage =
+    replay === undefined
+      ? persistedUsage
+      : replay.complete
+        ? replay.usage ?? persistedUsage
+        : persistedUsage ?? replay.usage;
   return buildSessionSummary({
     id: sessionId,
     workspaceId,

@@ -21,13 +21,21 @@ import {
   ISessionIndexMirror,
   type SessionSummary,
 } from '#/app/sessionIndex/sessionIndex';
-import { recencyColumn, sessionCollection } from '#/app/sessionIndex/sessionIndexModel';
+import {
+  SESSION_INDEX_MANIFEST,
+  recencyColumn,
+  sessionCollection,
+} from '#/app/sessionIndex/sessionIndexModel';
 import { FileSessionIndex } from '#/app/sessionIndex/sessionIndexService';
 import {
   drainSessionIndexMirror,
   SessionIndexMirror,
 } from '#/app/sessionIndex/sessionIndexMirrorService';
-import { drainQueryStoreDisposals, MiniDbQueryStore } from '#/persistence/backends/minidb/miniDbQueryStore';
+import {
+  drainQueryStoreDisposals,
+  MINIDB_QUERY_STORE_SUBDIR,
+  MiniDbQueryStore,
+} from '#/persistence/backends/minidb/miniDbQueryStore';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
@@ -224,7 +232,11 @@ describe('FileSessionIndex (legacy)', () => {
     for (const [agentId, record] of records) {
       const dir = join(sessionsDir, workspaceId, 'wire-usage', 'agents', agentId);
       await fsp.mkdir(dir, { recursive: true });
-      await fsp.writeFile(join(dir, 'wire.jsonl'), `${JSON.stringify(record)}\n`);
+      const metadata =
+        agentId === 'main'
+          ? `${JSON.stringify({ type: 'metadata', protocol_version: '1', created_at: 1 })}\n`
+          : '';
+      await fsp.writeFile(join(dir, 'wire.jsonl'), `${metadata}${JSON.stringify(record)}\n`);
     }
 
     const store = build();
@@ -251,6 +263,118 @@ describe('FileSessionIndex (legacy)', () => {
       },
       wireComplete: true,
     });
+  });
+
+  it('keeps persisted usage when one agent wire is corrupted during recovery', async () => {
+    const persistedUsage = {
+      total: { inputOther: 20, output: 10, inputCacheRead: 4, inputCacheCreation: 2 },
+      byModel: {
+        'example-model': {
+          inputOther: 3,
+          output: 2,
+          inputCacheRead: 1,
+          inputCacheCreation: 0,
+        },
+        'worker-model': {
+          inputOther: 17,
+          output: 8,
+          inputCacheRead: 3,
+          inputCacheCreation: 2,
+        },
+      },
+    };
+    await seedSession('corrupt-wire-usage', {
+      agents: { main: { type: 'main' }, worker: { type: 'sub' } },
+      usage: persistedUsage,
+    });
+    const mainDir = join(sessionsDir, workspaceId, 'corrupt-wire-usage', 'agents', 'main');
+    const workerDir = join(sessionsDir, workspaceId, 'corrupt-wire-usage', 'agents', 'worker');
+    await fsp.mkdir(mainDir, { recursive: true });
+    await fsp.mkdir(workerDir, { recursive: true });
+    await fsp.writeFile(
+      join(mainDir, 'wire.jsonl'),
+      `${JSON.stringify({
+        type: 'usage.record',
+        model: 'example-model',
+        usage: { inputOther: 3, output: 2, inputCacheRead: 1, inputCacheCreation: 0 },
+      })}\n`,
+    );
+    await fsp.writeFile(join(workerDir, 'wire.jsonl'), '{broken\n');
+
+    const store = build();
+    const usage = (await store.get('corrupt-wire-usage'))?.usage;
+    expect(usage).toMatchObject(persistedUsage);
+    expect(usage?.wireComplete).toBeUndefined();
+  });
+
+  it('keeps persisted usage when a usage record is structurally invalid during recovery', async () => {
+    const persistedUsage = {
+      total: { inputOther: 20, output: 10, inputCacheRead: 4, inputCacheCreation: 2 },
+      byModel: {
+        'example-model': {
+          inputOther: 20,
+          output: 10,
+          inputCacheRead: 4,
+          inputCacheCreation: 2,
+        },
+      },
+    };
+    await seedSession('invalid-wire-usage', {
+      agents: { main: { type: 'main' } },
+      usage: persistedUsage,
+    });
+    const dir = join(sessionsDir, workspaceId, 'invalid-wire-usage', 'agents', 'main');
+    await fsp.mkdir(dir, { recursive: true });
+    await fsp.writeFile(
+      join(dir, 'wire.jsonl'),
+      `${JSON.stringify({
+        type: 'usage.record',
+        model: 'example-model',
+        usage: { inputOther: 3, output: 2, inputCacheRead: 1, inputCacheCreation: 0 },
+      })}\n${JSON.stringify({
+        type: 'usage.record',
+        model: 'example-model',
+        usage: { inputOther: 17, output: 8, inputCacheRead: 3 },
+      })}\n`,
+    );
+
+    const store = build();
+    const usage = (await store.get('invalid-wire-usage'))?.usage;
+    expect(usage).toMatchObject(persistedUsage);
+    expect(usage?.wireComplete).toBeUndefined();
+  });
+
+  it('keeps persisted usage when an enumerated agent wire is missing', async () => {
+    const persistedUsage = {
+      total: { inputOther: 8, output: 4, inputCacheRead: 2, inputCacheCreation: 1 },
+      byModel: {
+        'example-model': {
+          inputOther: 8,
+          output: 4,
+          inputCacheRead: 2,
+          inputCacheCreation: 1,
+        },
+      },
+    };
+    await seedSession('missing-wire-usage', {
+      agents: { main: { type: 'main' }, worker: { type: 'sub' } },
+      usage: persistedUsage,
+    });
+    const mainDir = join(sessionsDir, workspaceId, 'missing-wire-usage', 'agents', 'main');
+    await fsp.mkdir(mainDir, { recursive: true });
+    await fsp.writeFile(
+      join(mainDir, 'wire.jsonl'),
+      `${JSON.stringify({
+        type: 'usage.record',
+        model: 'example-model',
+        usage: { inputOther: 3, output: 2, inputCacheRead: 1, inputCacheCreation: 0 },
+      })}\n`,
+    );
+
+    const store = build();
+    const usage = (await store.get('missing-wire-usage'))?.usage;
+    expect(usage).toMatchObject(persistedUsage);
+    expect(usage?.wireComplete).toBeUndefined();
   });
 
   it('recovers main-agent usage for old metadata without an agents map', async () => {
@@ -925,6 +1049,78 @@ describe('FileSessionIndex (read model)', () => {
     expect(await store.count({ workspaceIds: [workspaceId], includeArchived: true })).toBe(3);
   });
 
+  it('keeps legacy published collections when the isolated publish fails', async () => {
+    class PublishFailingQueryStore extends MiniDbQueryStore {
+      failPublish = false;
+      override async setCheckpoint(source: string, checkpoint: Checkpoint): Promise<void> {
+        if (this.failPublish && source === SESSION_INDEX_MANIFEST) {
+          throw new Error('injected isolated publish crash');
+        }
+        await super.setCheckpoint(source, checkpoint);
+      }
+    }
+    overrideScopedService(
+      LifecycleScope.App,
+      IQueryStore,
+      PublishFailingQueryStore,
+      ScopeActivation.OnDemand,
+      'storage',
+    );
+    const fileStorage = new FileStorageService(homeDir);
+    const host = createScopedTestHost([
+      stubPair(IFileSystemStorageService, fileStorage),
+      stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
+      stubPair(IAppendLogStore, new AppendLogStore(fileStorage)),
+      stubPair(IBootstrapService, stubBootstrap(homeDir)),
+      stubPair(ILogService, stubLog()),
+      stubPair(IFlagService, stubFlag(true)),
+    ]);
+    disposeHost = () => {
+      host.dispose();
+    };
+    queryStore = host.app.accessor.get(IQueryStore);
+    mirror = host.app.accessor.get(ISessionIndexMirror);
+    const store = host.app.accessor.get(ISessionIndex) as FileSessionIndex;
+    const legacySummary = summary('legacy', { createdAt: 1, updatedAt: 2 });
+    await queryStore.put('session:g1', 'legacy', legacySummary, {
+      columns: { 'g1:updatedAt': legacySummary.updatedAt },
+    });
+    await queryStore.setCheckpoint('sessionIndex', { seq: 1 });
+    await queryStore.setCheckpoint('sessionIndex:v2', { seq: 1 });
+
+    (queryStore as PublishFailingQueryStore).failPublish = true;
+    const status = await store.prepare();
+
+    expect(status).toMatchObject({ state: 'degraded', reason: 'projection failed' });
+    expect(await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST)).toBeUndefined();
+    expect(await queryStore.getCheckpoint('sessionIndex')).toEqual({ seq: 1 });
+    expect(await queryStore.getCheckpoint('sessionIndex:v2')).toEqual({ seq: 1 });
+    expect(await queryStore.get<SessionSummary>('session:g1', 'legacy')).toEqual(legacySummary);
+  });
+
+  it('reprojects an intermediate v2 checkpoint into the isolated collection namespace', async () => {
+    await seedSession('fresh', { createdAt: 1, updatedAt: 3 });
+    const store = build();
+    const intermediateSummary = summary('intermediate', { createdAt: 1, updatedAt: 2 });
+    await queryStore.put('session:g1', 'intermediate', intermediateSummary, {
+      columns: { 'g1:updatedAt': intermediateSummary.updatedAt },
+    });
+    await queryStore.setCheckpoint('sessionIndex:v2', { seq: 1 });
+
+    await expect(store.prepare()).resolves.toEqual({
+      state: 'ready',
+      generation: 1,
+      degradedCount: 0,
+    });
+    expect(await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST)).toEqual({ seq: 1 });
+    expect(await queryStore.get<SessionSummary>(sessionCollection(1), 'fresh')).toMatchObject({
+      id: 'fresh',
+    });
+    expect(await queryStore.get<SessionSummary>('session:g1', 'intermediate')).toEqual(
+      intermediateSummary,
+    );
+  });
+
   it('a crashed initial projection falls back to disk and recovers on retry', async () => {
     await seedSession('a', { title: 'a', createdAt: 1, updatedAt: 2 });
     await seedSession('b', { title: 'b', createdAt: 2, updatedAt: 3 });
@@ -1047,7 +1243,7 @@ describe('FileSessionIndex (read model)', () => {
     disposeHost = undefined;
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
-    await fsp.rm(join(homeDir, 'cache', 'query-store'), { recursive: true, force: true });
+    await fsp.rm(join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR), { recursive: true, force: true });
 
     const second = build();
     const fallback = await second.listRecent({ workspaceIds: [workspaceId] });
@@ -1387,7 +1583,7 @@ describe('FileSessionIndex (read model)', () => {
     disposeHost = undefined;
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
-    await fsp.rm(join(homeDir, 'cache', 'query-store'), { recursive: true, force: true });
+    await fsp.rm(join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR), { recursive: true, force: true });
 
     const second = build();
     (queryStore as GatedFlakyQueryStore).failNextBatch = true;
@@ -1493,7 +1689,7 @@ describe('FileSessionIndex (read model)', () => {
     await mirror.drain();
     expect(await store.count({ workspaceIds: [workspaceId] })).toBe(3);
 
-    const storeDir = join(homeDir, 'cache', 'query-store');
+    const storeDir = join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR);
     const entries = await fsp.readdir(storeDir, { recursive: true, withFileTypes: true });
     const files = entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
     expect(files.length).toBeGreaterThan(0);

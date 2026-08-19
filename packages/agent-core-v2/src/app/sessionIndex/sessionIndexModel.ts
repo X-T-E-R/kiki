@@ -1,6 +1,7 @@
 import type { SessionSummary } from './sessionIndex';
 
-export const SESSION_INDEX_MANIFEST = 'sessionIndex:v2';
+export const SESSION_INDEX_STORAGE_VERSION = 3;
+export const SESSION_INDEX_MANIFEST = `sessionIndex:v${SESSION_INDEX_STORAGE_VERSION}`;
 
 export const PARENT_INDEX_NAME = 'byParent';
 
@@ -10,11 +11,11 @@ export interface SessionWorkspaceCounts {
 }
 
 export function sessionCollection(generation: number): string {
-  return `session:g${generation}`;
+  return `session:v2:g${generation}`;
 }
 
 export function sessionCountersCollection(generation: number): string {
-  return `sessionCounters:g${generation}`;
+  return `sessionCounters:v2:g${generation}`;
 }
 
 /**
@@ -27,7 +28,7 @@ export function sessionCountersCollection(generation: number): string {
  * index strips it again on every read.
  */
 export function recencyColumn(generation: number): string {
-  return `g${generation}:updatedAt`;
+  return `v2:g${generation}:updatedAt`;
 }
 
 /** Attach the generation's recency field to a summary for storage. */

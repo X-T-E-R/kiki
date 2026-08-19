@@ -9,7 +9,11 @@ import { createScopedTestHost, stubPair } from '#/_base/di/test';
 import { ILogService } from '#/_base/log/log';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { ClusterDb } from '@moonshot-ai/minidb/cluster';
-import { drainQueryStoreDisposals, MiniDbQueryStore } from '#/persistence/backends/minidb/miniDbQueryStore';
+import {
+  drainQueryStoreDisposals,
+  MINIDB_QUERY_STORE_SUBDIR,
+  MiniDbQueryStore,
+} from '#/persistence/backends/minidb/miniDbQueryStore';
 import { IQueryStore } from '#/persistence/interface/queryStore';
 import { stubBootstrap } from '../../../app/bootstrap/stubs';
 import { stubLog } from '../../../_base/log/stubs';
@@ -134,7 +138,7 @@ describe('MiniDbQueryStore', () => {
     await expect(
       store.ensureIndex(COLLECTION, { kind: 'text', name: 'body', fields: ['body'] }),
     ).rejects.toThrow(/structural read model/);
-    const storeDir = join(homeDir, 'cache', 'query-store');
+    const storeDir = join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR);
     const shardEntries = await fsp.readdir(join(storeDir, 'shard-00'));
     expect(shardEntries.filter((name) => name.includes('text'))).toEqual([]);
   });
@@ -147,7 +151,7 @@ describe('MiniDbQueryStore', () => {
   });
 
   it('shares the store with a second cluster instance instead of locking it out', async () => {
-    const storeDir = join(homeDir, 'cache', 'query-store');
+    const storeDir = join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR);
     const peer = await ClusterDb.open({ dir: storeDir, shardCount: 16, valueCodec: 'json' });
     try {
       const store = build();
@@ -161,6 +165,30 @@ describe('MiniDbQueryStore', () => {
     }
   });
 
+  it('isolates the versioned store from a legacy query-store lock domain', async () => {
+    const legacyDir = join(homeDir, 'cache', 'query-store');
+    const legacy = await ClusterDb.open({
+      dir: legacyDir,
+      shardCount: 16,
+      valueCodec: 'json',
+      lockHoldMs: 250,
+      lockAcquireTimeoutMs: 1_000,
+    });
+    const physical = `${COLLECTION}${SEP}shared`;
+    try {
+      await legacy.set(physical, { owner: 'legacy-before' });
+      const store = build();
+      await store.put(COLLECTION, 'shared', { owner: 'current' });
+
+      await expect(legacy.set(physical, { owner: 'legacy-after' })).resolves.toBeUndefined();
+      expect(await legacy.get(physical)).toEqual({ owner: 'legacy-after' });
+      expect(await store.get(COLLECTION, 'shared')).toEqual({ owner: 'current' });
+      expect(MINIDB_QUERY_STORE_SUBDIR).not.toBe('query-store');
+    } finally {
+      await legacy.close();
+    }
+  });
+
   it('wipes and rebuilds the store after the cluster registry is corrupted', async () => {
     const first = build();
     await first.put(COLLECTION, 'a', { id: 'a', v: 1 });
@@ -169,7 +197,7 @@ describe('MiniDbQueryStore', () => {
     disposeHost?.();
     disposeHost = undefined;
 
-    const registryFile = join(homeDir, 'cache', 'query-store', 'cluster.indexes.json');
+    const registryFile = join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR, 'cluster.indexes.json');
     await fsp.writeFile(registryFile, '{ definitely not valid json');
 
     const second = build();
@@ -183,7 +211,7 @@ describe('MiniDbQueryStore', () => {
   it('opens a 16-shard cluster under the cache dir', async () => {
     const store = build();
     await store.put(COLLECTION, 'a', { id: 'a' });
-    const storeDir = join(homeDir, 'cache', 'query-store');
+    const storeDir = join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR);
     const meta = JSON.parse(await fsp.readFile(join(storeDir, 'cluster.meta.json'), 'utf8')) as {
       shardCount: number;
     };
