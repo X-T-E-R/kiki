@@ -161,6 +161,26 @@ describe('convertOpenAIError: 400 body diagnostics', () => {
     expect(result.message).not.toContain('super-secret-token');
     expect(result.message.length).toBeLessThanOrEqual(700);
   });
+
+  it('redacts labeled plaintext secrets inlined in the OpenAI SDK message', () => {
+    const labeled = 'api_key=AIza-PLAINSECRET123 token: plainsecret123 Authorization: Basic plainsecret123';
+    const err = new OpenAIAPIError(400, { message: labeled }, 'Bad Request', new Headers());
+    const result = convertOpenAIError(err);
+    expect(result.message).toContain('[REDACTED]');
+    expect(result.message).not.toContain('AIza-PLAINSECRET123');
+    expect(result.message).not.toContain('plainsecret123');
+  });
+
+  it('does not re-append a pretty-printed JSON body already present in the OpenAI message', () => {
+    const payload = { api_key: 'sk-live-SECRETVALUE', stack: 'internal stack' };
+    const pretty = JSON.stringify(payload, null, 2);
+    const err = new OpenAIAPIError(400, payload, pretty, new Headers());
+    const result = convertOpenAIError(err);
+    expect(result.message).not.toContain('sk-live-SECRETVALUE');
+    expect(result.message).toContain('internal stack');
+    expect((result.message.match(/\[REDACTED\]/g) ?? []).length).toBe(1);
+    expect(result.message).not.toContain(' — ');
+  });
 });
 describe('convertOpenAIError: context overflow', () => {
   it('normalizes context overflow status errors', () => {

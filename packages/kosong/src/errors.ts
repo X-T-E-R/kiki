@@ -420,10 +420,19 @@ const STATUS_ERROR_REDACTED = '[REDACTED]';
 const STATUS_ERROR_SENSITIVE_KEY =
   /^(?:api[_-]?key|authorization|secret|password|token|access[_-]?token|refresh[_-]?token|private[_-]?key|client[_-]?secret|bearer)$/i;
 const STATUS_ERROR_SENSITIVE_KEY_SUFFIX = /(?:^|_)(?:api_key|authorization|secret|password|token|bearer)$/i;
+const STATUS_ERROR_SENSITIVE_KEY_NAME =
+  'access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|api[_-]?key|password|secret|token';
 const STATUS_ERROR_SK_TOKEN = /\bsk-[A-Za-z0-9_-]{8,}\b/g;
-const STATUS_ERROR_BEARER_TOKEN = /\bBearer\s+\S+/gi;
-const STATUS_ERROR_JSON_SECRET =
-  /("?)((?:api[_-]?key|authorization|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|secret|password|token))\1\s*:\s*(")(?:\\.|[^"\\])*(")/gi;
+const STATUS_ERROR_AUTHORIZATION =
+  /\b(Authorization)(\s*[=:]\s*)([^\s,;]+)(?:\s+(\S+))?/gi;
+const STATUS_ERROR_KEY_VALUE = new RegExp(
+  String.raw`\b((?:${STATUS_ERROR_SENSITIVE_KEY_NAME}))(\s*[=:]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)`,
+  'gi',
+);
+const STATUS_ERROR_JSON_SECRET = new RegExp(
+  String.raw`("?)((?:${STATUS_ERROR_SENSITIVE_KEY_NAME}|authorization))\1\s*:\s*(")(?:\\.|[^"\\])*(")`,
+  'gi',
+);
 
 function truncateStatusErrorSnippet(text: string): string {
   if (text.length <= STATUS_ERROR_BODY_SNIPPET_MAX_CHARS) return text;
@@ -443,8 +452,15 @@ function isSensitiveStatusErrorKey(key: string): boolean {
 function redactSensitiveText(text: string): string {
   return text
     .replace(STATUS_ERROR_SK_TOKEN, STATUS_ERROR_REDACTED)
-    .replace(STATUS_ERROR_BEARER_TOKEN, `Bearer ${STATUS_ERROR_REDACTED}`)
-    .replace(STATUS_ERROR_JSON_SECRET, `$1$2$1: $3${STATUS_ERROR_REDACTED}$4`);
+    .replace(
+      STATUS_ERROR_AUTHORIZATION,
+      (_match, header: string, separator: string, scheme: string, credential?: string) =>
+        credential === undefined
+          ? `${header}${separator}${STATUS_ERROR_REDACTED}`
+          : `${header}${separator}${scheme} ${STATUS_ERROR_REDACTED}`,
+    )
+    .replace(STATUS_ERROR_JSON_SECRET, `$1$2$1: $3${STATUS_ERROR_REDACTED}$4`)
+    .replace(STATUS_ERROR_KEY_VALUE, `$1$2${STATUS_ERROR_REDACTED}`);
 }
 
 function redactSensitiveValue(value: unknown): unknown {
@@ -496,6 +512,37 @@ function extractStatusErrorBodyDetail(body: unknown): string | null {
   }
 }
 
+function compactStatusErrorText(text: string): string {
+  return text.replaceAll(/\s+/g, '');
+}
+
+function tryParseJsonValue(text: string): unknown | undefined {
+  const trimmed = text.trim();
+  if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return undefined;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function messageContainsStatusErrorDetail(message: string, detail: string): boolean {
+  if (message.includes(detail)) return true;
+  const compactMessage = compactStatusErrorText(message);
+  if (compactMessage.includes(compactStatusErrorText(detail))) return true;
+  const parsedDetail = tryParseJsonValue(detail);
+  if (parsedDetail === undefined) return false;
+  const jsonStart = message.indexOf('{') === -1 ? message.indexOf('[') : message.indexOf('{');
+  if (jsonStart < 0) return false;
+  const parsedMessage = tryParseJsonValue(message.slice(jsonStart));
+  if (parsedMessage === undefined) return false;
+  try {
+    return JSON.stringify(parsedMessage) === JSON.stringify(parsedDetail);
+  } catch {
+    return false;
+  }
+}
+
 // Only 400s get the body splice: that is the status whose SDK message is often
 // just the reason phrase ("400 Bad Request") while the real rejection lives in
 // the body. Classification below still keys off the original `message`.
@@ -503,9 +550,9 @@ function compose400StatusErrorMessage(message: string, body: unknown): string {
   const redactedMessage = redactSensitiveText(message);
   const detail = extractStatusErrorBodyDetail(body);
   let assembled = redactedMessage;
-  if (detail !== null && !redactedMessage.includes(detail)) {
+  if (detail !== null && !messageContainsStatusErrorDetail(redactedMessage, detail)) {
     const snippet = truncateStatusErrorSnippet(detail);
-    if (!redactedMessage.includes(snippet)) {
+    if (!messageContainsStatusErrorDetail(redactedMessage, snippet)) {
       assembled = `${redactedMessage} — ${snippet}`;
     }
   }
