@@ -3,7 +3,7 @@
 
 import type { InfiniteData } from '@tanstack/react-query';
 
-import type { PageResponse, Session } from '@moonshot-ai/protocol';
+import type { PageResponse, Session, Workspace } from '@moonshot-ai/protocol';
 
 export type SessionListData = InfiniteData<PageResponse<Session>>;
 
@@ -65,21 +65,77 @@ export function dedupeSessions(data: SessionListData | undefined): Session[] {
     });
 }
 
+/**
+ * Within-bucket sort order for the session list. Pinned sessions always float
+ * to the top of their bucket (newest-pinned first) regardless of this order
+ * — the selected order only arranges the unpinned remainder.
+ */
+export type SessionSortOrder = 'updated-desc' | 'updated-asc' | 'title';
+
+function byUpdatedDesc(a: Session, b: Session): number {
+  return b.updated_at.localeCompare(a.updated_at);
+}
+
+function byUpdatedAsc(a: Session, b: Session): number {
+  return a.updated_at.localeCompare(b.updated_at);
+}
+
+function byTitle(a: Session, b: Session): number {
+  const an = a.title.trim();
+  const bn = b.title.trim();
+  if (an !== bn) {
+    return an.localeCompare(bn, undefined, { sensitivity: 'base', numeric: true });
+  }
+  // Deterministic tie-break that does not drift with the runtime locale.
+  return b.updated_at.localeCompare(a.updated_at);
+}
+
 /** Pinned sessions float to the top (newest-pinned first by `updated_at`). */
 export function arrangePinnedFirst(sessions: readonly Session[]): Session[] {
   return [...sessions].sort((a, b) => {
     const ap = isPinnedSession(a);
     const bp = isPinnedSession(b);
     if (ap !== bp) return ap ? -1 : 1;
-    return b.updated_at.localeCompare(a.updated_at);
+    return byUpdatedDesc(a, b);
   });
 }
 
-export interface TimeGroup {
-  /** `pinned` / `week` / `month` / `older` (pinned rows all report `pinned`). */
-  readonly key: 'pinned' | 'week' | 'month' | 'older';
+/**
+ * Order one bucket's worth of sessions: pinned first (newest-pinned first),
+ * then the unpinned remainder by the requested order (`updated-desc` mirrors
+ * `arrangePinnedFirst` exactly).
+ */
+export function sortSessionItems(
+  sessions: readonly Session[],
+  order: SessionSortOrder,
+): Session[] {
+  const pinned: Session[] = [];
+  const rest: Session[] = [];
+  for (const session of sessions) {
+    (isPinnedSession(session) ? pinned : rest).push(session);
+  }
+  pinned.sort(byUpdatedDesc);
+  if (order === 'title') rest.sort(byTitle);
+  else if (order === 'updated-asc') rest.sort(byUpdatedAsc);
+  else rest.sort(byUpdatedDesc);
+  return [...pinned, ...rest];
+}
+
+export interface SessionGroup {
+  /**
+   * Stable bucket key. Time grouping: `pinned` / `week` / `month` / `older`
+   * (pinned rows all report `pinned`). Workspace grouping: the workspace id,
+   * with `__none` for sessions lacking a resolvable workspace.
+   */
+  readonly key: string;
+  /** Human label for the group header (baked in so the renderer stays dumb). */
+  readonly label: string;
   readonly items: Session[];
 }
+
+/** `pinned` / `week` / `month` / `older` (pinned rows all report `pinned`). */
+export type TimeGroupKey = 'pinned' | 'week' | 'month' | 'older';
+export type TimeGroup = SessionGroup & { readonly key: TimeGroupKey };
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 // 4 weeks (28 days) is the "month" bucket cut-off; earlier than that is
@@ -89,17 +145,19 @@ const MONTH_WINDOW_MS = 4 * WEEK_MS;
 /**
  * Split a freshly-ordered list into bucketed groups: pinned sessions first,
  * then "past 7 days" + "past 4 weeks" + "older". Invalid timestamps land in
- * `older` rather than crashing the list.
+ * `older` rather than crashing the list. `labels` overrides the four group
+ * header labels for localization; when omitted, bare keys are used (tests).
  */
 export function groupSessionsByTime(
   sessions: readonly Session[],
   nowMs: number,
+  labels: { pinned?: string; week?: string; month?: string; older?: string } = {},
 ): TimeGroup[] {
   const buckets: TimeGroup[] = [
-    { key: 'pinned', items: [] },
-    { key: 'week', items: [] },
-    { key: 'month', items: [] },
-    { key: 'older', items: [] },
+    { key: 'pinned', label: labels.pinned ?? 'pinned', items: [] },
+    { key: 'week', label: labels.week ?? 'week', items: [] },
+    { key: 'month', label: labels.month ?? 'month', items: [] },
+    { key: 'older', label: labels.older ?? 'older', items: [] },
   ];
   for (const session of sessions) {
     let group: TimeGroup;
@@ -119,4 +177,55 @@ export function groupSessionsByTime(
     group.items.push(session);
   }
   return buckets.filter((group) => group.items.length > 0);
+}
+
+/** Bucket key for sessions whose `workspace_id` cannot be resolved. */
+export const WORKSPACE_UNGROUPED_KEY = '__none';
+
+/**
+ * Bucket sessions by workspace, ordered by the `workspaces` list order (the
+ * caller pre-sorts by recency). A session whose `workspace_id` no longer maps
+ * to a registered workspace — or is missing — lands in the trailing "unknown"
+ * group alongside all other orphans. Item order within each bucket is
+ * preserved as given (the caller applies `sortSessionItems` first). `label`
+ * resolves via `resolveName(workspace)`; `ungroupedLabel` names the orphan
+ * bucket.
+ */
+export function groupSessionsByWorkspace(
+  sessions: readonly Session[],
+  workspaces: readonly Workspace[],
+  resolveName: (workspace: Workspace) => string = (workspace) => workspace.name,
+  ungroupedLabel = 'ungrouped',
+): SessionGroup[] {
+  const order = new Map<string, number>(workspaces.map((workspace, index) => [workspace.id, index]));
+  const named = new Map<string, string>();
+  for (const workspace of workspaces) named.set(workspace.id, resolveName(workspace));
+
+  // Preserve the workspaces-list order for buckets that actually have rows.
+  const buckets = new Map<string, SessionGroup>();
+  const ensure = (key: string, label: string): SessionGroup => {
+    let bucket = buckets.get(key);
+    if (bucket === undefined) {
+      bucket = { key, label, items: [] };
+      buckets.set(key, bucket);
+    }
+    return bucket;
+  };
+
+  for (const session of sessions) {
+    const workspaceKey = session.workspace_id;
+    const index = order.get(workspaceKey);
+    if (index !== undefined) ensure(workspaceKey, named.get(workspaceKey) ?? workspaceKey).items.push(session);
+    else ensure(WORKSPACE_UNGROUPED_KEY, ungroupedLabel).items.push(session);
+  }
+
+  const result: SessionGroup[] = [];
+  for (const [index, workspace] of workspaces.entries()) {
+    const bucket = buckets.get(workspace.id);
+    if (bucket !== undefined) result[index] = bucket;
+  }
+  const orphan = buckets.get(WORKSPACE_UNGROUPED_KEY);
+  if (orphan !== undefined) result.push(orphan);
+
+  return result.filter((group): group is SessionGroup => group !== undefined);
 }

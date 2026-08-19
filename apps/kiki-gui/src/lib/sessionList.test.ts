@@ -1,15 +1,18 @@
 import { describe, expect, it } from 'vitest';
 
-import type { PageResponse, Session } from '@moonshot-ai/protocol';
+import type { PageResponse, Session, Workspace } from '@moonshot-ai/protocol';
 
 import {
   arrangePinnedFirst,
   dedupeSessions,
   groupSessionsByTime,
+  groupSessionsByWorkspace,
   isPinnedSession,
   mergeSessionFirstPage,
   pinMetadataPatch,
   SESSION_PIN_META_KEY,
+  sortSessionItems,
+  WORKSPACE_UNGROUPED_KEY,
   type SessionListData,
 } from './sessionList';
 
@@ -106,6 +109,89 @@ describe('arrangePinnedFirst', () => {
     const c = session('c', '2026-01-04T00:00:00.000Z');
     const d = session('d', '2026-01-01T00:00:00.000Z', { metadata: { cwd: 'C:/tmp', [SESSION_PIN_META_KEY]: true } });
     expect(arrangePinnedFirst([a, b, c, d]).map((s) => s.id)).toEqual(['b', 'd', 'c', 'a']);
+  });
+});
+
+describe('sortSessionItems', () => {
+  const pinnedNew = session('pin-new', '2026-01-04T00:00:00.000Z', { metadata: { cwd: 'C:/tmp', [SESSION_PIN_META_KEY]: true } });
+  const pinnedOld = session('pin-old', '2026-01-01T00:00:00.000Z', { metadata: { cwd: 'C:/tmp', [SESSION_PIN_META_KEY]: true } });
+  const newer = session('z-newer', '2026-01-03T00:00:00.000Z');
+  const older = session('a-older', '2026-01-02T00:00:00.000Z');
+
+  it('sorts by most-recently-updated for the unpinned remainder (pinned still first)', () => {
+    expect(sortSessionItems([older, pinnedOld, newer, pinnedNew], 'updated-desc').map((s) => s.id)).toEqual([
+      'pin-new', 'pin-old', 'z-newer', 'a-older',
+    ]);
+  });
+
+  it('sorts by least-recently-updated for the unpinned remainder', () => {
+    expect(sortSessionItems([older, pinnedOld, newer, pinnedNew], 'updated-asc').map((s) => s.id)).toEqual([
+      'pin-new', 'pin-old', 'a-older', 'z-newer',
+    ]);
+  });
+
+  it('sorts by title (case/base-insensitive, numeric-aware) with a deterministic tie-break', () => {
+    const bb = session('bb', '2026-01-02T00:00:00.000Z', { title: 'Beta' });
+    const aa = session('aa', '2026-01-02T00:00:00.000Z', { title: 'alpha' });
+    const n10 = session('n10', '2026-01-02T00:00:00.000Z', { title: 'Item 10' });
+    const n2 = session('n2', '2026-01-02T00:00:00.000Z', { title: 'Item 2' });
+    expect(sortSessionItems([bb, n10, aa, n2], 'title').map((s) => s.title)).toEqual([
+      'alpha', 'Beta', 'Item 2', 'Item 10',
+    ]);
+  });
+});
+
+function workspace(id: string, name: string): Workspace {
+  return {
+    id,
+    root: `C:/${name}`,
+    name,
+    created_at: '2026-01-01T00:00:00.000Z',
+    last_opened_at: '2026-01-02T00:00:00.000Z',
+    session_count: 0,
+  };
+}
+
+describe('groupSessionsByWorkspace', () => {
+  const wa = workspace('wd_a_000000000000', 'Alpha');
+  const wb = workspace('wd_b_000000000000', 'Beta');
+  const wc = workspace('wd_c_000000000000', 'Gamma');
+
+  it('groups by workspace following the workspaces-list order', () => {
+    const groups = groupSessionsByWorkspace(
+      [
+        session('s2', '2026-01-03T00:00:00.000Z', { workspace_id: wb.id }),
+        session('s1', '2026-01-03T00:00:00.000Z', { workspace_id: wa.id }),
+      ],
+      [wc, wa, wb],
+    );
+    expect(groups.map((g) => g.key)).toEqual([wa.id, wb.id]);
+    expect(groups.map((g) => g.label)).toEqual(['Alpha', 'Beta']);
+    expect(groups[0]!.items.map((s) => s.id)).toEqual(['s1']);
+    expect(groups[1]!.items.map((s) => s.id)).toEqual(['s2']);
+  });
+
+  it('buckets unknown or missing workspace_ids into an ungrouped trailing bucket', () => {
+    const unknown = session('unknown', '2026-01-03T00:00:00.000Z', { workspace_id: 'wd_gone_000000000000' });
+    const missing = session('missing', '2026-01-03T00:00:00.000Z', { workspace_id: '' });
+    const groups = groupSessionsByWorkspace(
+      [missing, unknown, session('known', '2026-01-03T00:00:00.000Z', { workspace_id: wa.id })],
+      [wa],
+      (w) => w.name,
+      'Ungrouped',
+    );
+    expect(groups.map((g) => g.key)).toEqual([wa.id, WORKSPACE_UNGROUPED_KEY]);
+    expect(groups[1]!.label).toBe('Ungrouped');
+    // Item order inside the bucket is preserved as given.
+    expect(groups[1]!.items.map((s) => s.id)).toEqual(['missing', 'unknown']);
+  });
+
+  it('omits workspaces that have no rows', () => {
+    const groups = groupSessionsByWorkspace(
+      [session('s1', '2026-01-03T00:00:00.000Z', { workspace_id: wa.id })],
+      [wa, wb],
+    );
+    expect(groups.map((g) => g.key)).toEqual([wa.id]);
   });
 });
 

@@ -213,19 +213,39 @@ body {
 }
 
 .app-sidebar {
+  position: relative;
   display: flex;
   height: 100%;
-  width: 264px;
+  width: var(--kiki-sidebar-width, 264px);
   flex-shrink: 0;
   flex-direction: column;
   border-right: 1px solid var(--color-hairline);
   background-color: var(--color-panel);
 }
 
+/* Only the desktop flex panel exposes the resize grab handle; the mobile
+ * fixed drawer owns the viewport edge and keeps its natural width. */
+.app-sidebar__resizer {
+  position: absolute;
+  right: -3px;
+  top: 0;
+  bottom: 0;
+  z-index: 10;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.app-sidebar__resizer:hover,
+.app-sidebar__resizer[data-dragging='true'] {
+  background-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+
 .app-rail {
+  position: relative;
   display: flex;
   height: 100%;
-  width: 300px;
+  width: var(--kiki-rail-width, 300px);
   flex-shrink: 0;
   flex-direction: column;
   gap: 1.25rem;
@@ -233,6 +253,25 @@ body {
   border-left: 1px solid var(--color-hairline);
   background-color: var(--color-panel);
   padding: 1rem;
+}
+
+/* The rail also scrolls its own body (`overflow-y: auto`), so the grab strip
+ * lives INSIDE the panel's left edge instead of straddling the border — a
+ * negative left offset would be clipped by the scroll container. */
+.app-rail__resizer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 10;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.app-rail__resizer:hover,
+.app-rail__resizer[data-dragging='true'] {
+  background-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
 }
 
 @media (max-width: 767px) {

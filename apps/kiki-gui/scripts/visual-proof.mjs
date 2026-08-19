@@ -93,6 +93,12 @@ const STRINGS = {
     searchLoadMore: 'Load more results',
     workspaceFilterAll: 'All workspaces',
     groupPinned: 'Pinned',
+    groupByTime: 'By time',
+    groupByWorkspace: 'By workspace',
+    groupUngrouped: 'Ungrouped',
+    sortUpdatedDesc: 'Recently updated',
+    sortUpdatedAsc: 'Least recently updated',
+    sortTitle: 'By name',
     menuPin: 'Pin to top',
     menuUnpin: 'Unpin',
     renameButton: 'Rename',
@@ -201,6 +207,12 @@ const STRINGS = {
     searchLoadMore: '加载更多结果',
     workspaceFilterAll: '全部工作区',
     groupPinned: '已置顶',
+    groupByTime: '按时间',
+    groupByWorkspace: '按工作区',
+    groupUngrouped: '未分组',
+    sortUpdatedDesc: '最近更新',
+    sortUpdatedAsc: '最早更新',
+    sortTitle: '按名称',
     menuPin: '置顶',
     menuUnpin: '取消置顶',
     renameButton: '重命名',
@@ -1039,6 +1051,10 @@ async function scenarioSidebarOrganize() {
     page.evaluate(() =>
       Array.from(document.querySelectorAll('aside [data-session-title]')).map((n) => n.textContent ?? ''),
     );
+  const groupKeys = async () =>
+    page.evaluate(() =>
+      Array.from(document.querySelectorAll('aside [data-session-group]')).map((n) => n.getAttribute('data-session-group')),
+    );
 
   await page.waitForFunction(
     () => {
@@ -1055,6 +1071,79 @@ async function scenarioSidebarOrganize() {
   const alphaIdx = order.findIndex((t) => t.includes('ws-a alpha'));
   if (pinnedIdx < 0 || alphaIdx < 0) throw new Error(`missing rows in sidebar: ${JSON.stringify(order)}`);
   if (pinnedIdx > alphaIdx) throw new Error('pinned session did not sort above the newest unpinned session');
+
+  // --- Resizing: the sidebar element's rendered width changes and persists.
+  await page.waitForSelector('[data-sidebar-resizer]', { timeout: 5000 });
+  const sidebarPxWidth = () =>
+    page.evaluate(() => {
+      const el = document.querySelector('[data-session-sidebar]');
+      return el === null ? null : Math.round(el.getBoundingClientRect().width);
+    });
+  const widthBefore = await sidebarPxWidth();
+  const handle = await page.locator('[data-sidebar-resizer]').boundingBox();
+  if (handle === null) throw new Error('sidebar resizer has no box');
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handle.x + handle.width / 2 + 60, handle.y + handle.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await page.waitForTimeout(200);
+  const widthAfter = await sidebarPxWidth();
+  const storedAfter = await page.evaluate(() => {
+    try {
+      return JSON.parse(localStorage.getItem('kiki.layout') ?? '{}')?.sidebarWidth;
+    } catch {
+      return undefined;
+    }
+  });
+  if (widthBefore === null || widthAfter === null) throw new Error('sidebar element missing');
+  if (Math.abs(widthAfter - widthBefore) < 30) {
+    throw new Error(`sidebar width did not meaningfully change: ${widthBefore} -> ${widthAfter}`);
+  }
+  if (storedAfter === undefined || Math.abs(widthAfter - storedAfter) > 1) {
+    throw new Error(`rendered sidebar width (${widthAfter}) diverges from stored width (${storedAfter})`);
+  }
+  await shot('sidebar-resized');
+
+  // Double-click resets to the default.
+  await page.locator('[data-sidebar-resizer]').dblclick();
+  await page.waitForTimeout(200);
+  const resetWidth = await sidebarPxWidth();
+  if (resetWidth !== 264) {
+    throw new Error(`sidebar double-click did not reset to 264 (got ${resetWidth})`);
+  }
+
+  // --- Workspace grouping: bucket headers follow the workspace list order.
+  await page.selectOption('[data-group-by]', 'workspace');
+  await page.waitForFunction(
+    () => document.querySelectorAll('aside [data-session-group]').length === 2,
+    undefined,
+    { timeout: 5000 },
+  );
+  const wsKeys = await groupKeys();
+  if (wsKeys[0] !== 'wd_fixture_000000000000' || wsKeys[1] !== 'wd_fixture_000000000001') {
+    throw new Error(`unexpected workspace grouping: ${JSON.stringify(wsKeys)}`);
+  }
+  await shot('sidebar-group-by-workspace');
+
+  // --- Sorting: "By name" reorders the unpinned rows within their bucket.
+  await page.selectOption('[data-group-by]', 'time');
+  await page.waitForTimeout(200);
+  await page.selectOption('[data-sort-by]', 'title');
+  await page.waitForFunction(
+    () => {
+      const titles = Array.from(document.querySelectorAll('aside [data-session-title]')).map((n) => n.textContent ?? '');
+      const alphaIdx = titles.findIndex((t) => t.includes('ws-a alpha'));
+      const betaIdx = titles.findIndex((t) => t.includes('ws-b beta'));
+      return alphaIdx >= 0 && betaIdx >= 0 && alphaIdx < betaIdx;
+    },
+    undefined,
+    { timeout: 5000 },
+  );
+  await shot('sidebar-sort-by-name');
+
+  // Restore default ordering for later assertions.
+  await page.selectOption('[data-sort-by]', 'updated-desc');
+  await page.selectOption('[data-group-by]', 'time');
 
   // Workspace filtering narrows the sidebar to workspace B's row only.
   await page.selectOption('[data-workspace-filter]', 'wd_fixture_000000000001');

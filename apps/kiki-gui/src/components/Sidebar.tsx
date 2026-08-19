@@ -23,8 +23,16 @@ import {
   isPinnedSession,
   pinMetadataPatch,
   togglePinned,
-  type TimeGroup,
+  type SessionGroup,
 } from '../lib/sessionList';
+import {
+  SIDEBAR_DEFAULT_WIDTH,
+  SIDEBAR_MAX_WIDTH,
+  SIDEBAR_MIN_WIDTH,
+  useLayoutPreferences,
+  usePaneResize,
+  writeLayoutPreferences,
+} from '../lib/layoutPrefs';
 import {
   compactSessionContext,
   exportSessionArchive,
@@ -87,11 +95,15 @@ export function Sidebar({
   showArchived,
   onToggleArchived,
   onNewSession,
+  groupBy,
+  onGroupBy,
+  sortBy,
+  onSortBy,
   className,
 }: {
   activeSessionId: string | undefined;
   sessions: readonly Session[];
-  sessionGroups: readonly TimeGroup[];
+  sessionGroups: readonly SessionGroup[];
   sessionsQuery: {
     isLoading: boolean;
     isError: boolean;
@@ -105,6 +117,10 @@ export function Sidebar({
   onWorkspaceFilter: (workspaceId: string | undefined) => void;
   showArchived: boolean;
   onToggleArchived: () => void;
+  groupBy: 'time' | 'workspace';
+  onGroupBy: (groupBy: 'time' | 'workspace') => void;
+  sortBy: 'updated-desc' | 'updated-asc' | 'title';
+  onSortBy: (sortBy: 'updated-desc' | 'updated-asc' | 'title') => void;
   /** Opens the new-session dialog (the /new page stays the no-session landing). */
   onNewSession: () => void;
   className?: string;
@@ -123,6 +139,32 @@ export function Sidebar({
   const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchPageToken, setSearchPageToken] = useState<string | undefined>(undefined);
+
+  // Local panel-layout prefs: the sidebar owns its own width (screen readers
+  // prefer explicit resize handles as buttons, but we keep the drag-only
+  // interaction consistent with the preview workbench) and mirrors the
+  // persisted grouping/sorting selection through the parent's controlled state.
+  const layoutPrefs = useLayoutPreferences();
+  // Local live width drives the inline CSS var during a drag so the panel
+  // resizes on every pointer-move; the persisted pref is only written on
+  // pointer-up. Cross-document changes (storage event) re-sync the local copy.
+  const [sidebarWidthValue, setSidebarWidthValue] = useState(layoutPrefs.sidebarWidth);
+  useEffect(() => {
+    setSidebarWidthValue(layoutPrefs.sidebarWidth);
+  }, [layoutPrefs.sidebarWidth]);
+  const { startResize, reset } = usePaneResize({
+    value: sidebarWidthValue,
+    min: SIDEBAR_MIN_WIDTH,
+    max: SIDEBAR_MAX_WIDTH,
+    onChange: (value, final) => {
+      setSidebarWidthValue(value);
+      if (final) writeLayoutPreferences({ sidebarWidth: value });
+    },
+    onReset: () => {
+      setSidebarWidthValue(SIDEBAR_DEFAULT_WIDTH);
+      writeLayoutPreferences({ sidebarWidth: SIDEBAR_DEFAULT_WIDTH });
+    },
+  });
 
   const refreshSessions = useCallback(
     () => void queryClient.invalidateQueries({ queryKey: ['sessions'] }),
@@ -239,7 +281,19 @@ export function Sidebar({
   };
 
   return (
-    <aside className={className ?? 'flex h-full w-[264px] shrink-0 flex-col border-r border-hairline bg-panel'}>
+    <aside
+      className={className ?? 'app-sidebar'}
+      style={{ '--kiki-sidebar-width': `${sidebarWidthValue}px` } as React.CSSProperties}
+      data-session-sidebar
+    >
+      <div
+        data-sidebar-resizer
+        className="app-sidebar__resizer hidden md:block"
+        aria-hidden
+        title={t('sidebar.resizeAria')}
+        onPointerDown={startResize}
+        onDoubleClick={reset}
+      />
       <div className="flex items-center justify-between px-4 pt-4 pb-3">
         <Wordmark />
         <span
@@ -304,6 +358,32 @@ export function Sidebar({
               ×
             </button>
           )}
+        </div>
+        <div className="mt-2 flex items-center gap-1.5">
+          <select
+            data-group-by
+            value={groupBy}
+            onChange={(event) => { onGroupBy(event.target.value === 'workspace' ? 'workspace' : 'time'); }}
+            aria-label={t('sidebar.groupByAria')}
+            className="min-w-0 flex-1 rounded-lg border border-hairline bg-paper px-2 py-1.5 text-[12px] text-ink outline-none focus:border-accent"
+          >
+            <option value="time">{t('sidebar.groupByTime')}</option>
+            <option value="workspace">{t('sidebar.groupByWorkspace')}</option>
+          </select>
+          <select
+            data-sort-by
+            value={sortBy}
+            onChange={(event) => {
+              const next = event.target.value;
+              onSortBy(next === 'updated-asc' || next === 'title' ? next : 'updated-desc');
+            }}
+            aria-label={t('sidebar.sortByAria')}
+            className="min-w-0 flex-1 rounded-lg border border-hairline bg-paper px-2 py-1.5 text-[12px] text-ink outline-none focus:border-accent"
+          >
+            <option value="updated-desc">{t('sidebar.sortUpdatedDesc')}</option>
+            <option value="updated-asc">{t('sidebar.sortUpdatedAsc')}</option>
+            <option value="title">{t('sidebar.sortTitle')}</option>
+          </select>
         </div>
         {workspaceOptions.length > 0 ? (
           <select
@@ -450,14 +530,11 @@ export function Sidebar({
         ) : null}
         {sessionGroups.map((group) => (
           <div key={group.key} className="mb-1">
-            <p className="sticky top-0 z-[1] bg-[var(--color-panel)] px-2 py-1 text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-              {group.key === 'pinned'
-                ? t('sidebar.groupPinned')
-                : group.key === 'week'
-                  ? t('sidebar.groupWeek')
-                  : group.key === 'month'
-                    ? t('sidebar.groupMonth')
-                    : t('sidebar.groupOlder')}
+            <p
+              data-session-group={group.key}
+              className="sticky top-0 z-[1] bg-[var(--color-panel)] px-2 py-1 text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase"
+            >
+              {group.label}
             </p>
             {group.items.map((session) => {
               const active = session.id === activeSessionId;
