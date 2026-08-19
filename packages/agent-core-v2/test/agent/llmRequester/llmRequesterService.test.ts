@@ -24,6 +24,7 @@ import {
   type MediaStripSnapshot,
 } from '#/agent/contextProjector/contextProjector';
 import { AgentContextProjectorService } from '#/agent/contextProjector/contextProjectorService';
+import { IAgentCognitionAnchorService } from '#/agent/cognition/cognitionAnchor';
 import { AgentLLMRequesterService } from '#/agent/llmRequester/llmRequesterService';
 import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
@@ -249,6 +250,9 @@ function createService(
   ix.stub(IAgentTokenCountingService, tokenCounting);
   ix.stub(IAgentToolRegistryService, tools);
   ix.stub(IAgentProfileService, profile);
+  ix.stub(IAgentCognitionAnchorService, {
+    project: async () => undefined,
+  });
   ix.stub(IAgentUsageService, usage);
   ix.stub(IConfigService, config);
   ix.stub(ILogService, log);

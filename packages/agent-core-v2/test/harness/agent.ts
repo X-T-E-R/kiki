@@ -187,7 +187,7 @@ import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IWireService } from '#/wire/wire';
 import { WireService } from '#/wire/wireService';
 import { promptTurn } from '#/agent/loop/turnOps';
-import { IModelService, type ModelsSection } from '#/kosong/model/model';
+import { type CognitionConfig, IModelService, type ModelsSection } from '#/kosong/model/model';
 import {
   DEFAULT_MODEL_SECTION,
   DEFAULT_PROVIDER_SECTION,
@@ -260,6 +260,7 @@ interface ModelConfigForConfig {
   readonly capabilities?: readonly string[];
   readonly supportEfforts?: readonly string[];
   readonly defaultEffort?: string;
+  readonly cognition?: CognitionConfig;
 }
 
 interface ProviderConfigForConfig {

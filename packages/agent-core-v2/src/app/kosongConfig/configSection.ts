@@ -37,7 +37,12 @@ import {
   transformPlainObject,
 } from '#/app/config/toml';
 import { type AssertExact, type Equal } from '#/_base/utils/typeEquality';
-import type { ModelOverride, ModelRecord, ModelsSection } from '#/kosong/model/model';
+import type {
+  CognitionConfig,
+  ModelOverride,
+  ModelRecord,
+  ModelsSection,
+} from '#/kosong/model/model';
 import type { ThinkingConfig } from '#/kosong/model/thinking';
 import type { OAuthRef, ProviderConfig, ProvidersSection } from '#/kosong/provider/provider';
 import { ProtocolSchema } from '#/kosong/protocol/protocol';
@@ -209,8 +214,23 @@ export const ModelOverrideSchema = ModelBaseSchema.omit({
   betaApi: true,
 }).partial();
 
+const CognitionPathRefSchema = z.union([
+  z.string().min(1),
+  z.array(z.string().min(1)).min(1),
+]);
+
+export const CognitionConfigSchema = z.object({
+  overlay: CognitionPathRefSchema.optional(),
+  steering: CognitionPathRefSchema.optional(),
+  anchor: CognitionPathRefSchema.optional(),
+  overlayMode: z.enum(['append', 'prepend', 'wrap', 'persona', 'replace']).optional(),
+  anchorSteps: z.number().int().min(1).optional(),
+  anchorScope: z.enum(['session', 'turn']).optional(),
+});
+
 export const ModelRecordSchema = ModelBaseSchema.extend({
   overrides: ModelOverrideSchema.optional(),
+  cognition: CognitionConfigSchema.optional(),
 }).passthrough();
 
 export const ModelsSectionSchema = z
@@ -221,6 +241,9 @@ export const ModelsSectionSchema = z
 
 type _AssertModelOverride = AssertExact<
   Equal<z.infer<typeof ModelOverrideSchema>, ModelOverride>
+>;
+type _AssertCognitionConfig = AssertExact<
+  Equal<z.infer<typeof CognitionConfigSchema>, CognitionConfig>
 >;
 type _AssertModelRecord = AssertExact<Equal<z.infer<typeof ModelRecordSchema>, ModelRecord>>;
 type _AssertModelsSection = AssertExact<
@@ -238,6 +261,9 @@ export const modelsFromToml = (rawSnake: unknown): unknown => {
     const converted = transformPlainObject(entry);
     if (isPlainObject(converted['overrides'])) {
       converted['overrides'] = transformPlainObject(converted['overrides']);
+    }
+    if (isPlainObject(converted['cognition'])) {
+      converted['cognition'] = transformPlainObject(converted['cognition']);
     }
     out[id] = converted;
   }
@@ -259,6 +285,8 @@ export const modelsToToml = (value: unknown, rawSnake: unknown): unknown => {
         merged[camelToSnake(key)] = [...field];
       } else if (key === 'overrides' && isPlainObject(field)) {
         merged['overrides'] = modelOverridesToToml(field, merged['overrides']);
+      } else if (key === 'cognition' && isPlainObject(field)) {
+        merged['cognition'] = cognitionToToml(field, merged['cognition']);
       } else {
         setDefined(merged, camelToSnake(key), field);
       }
@@ -275,6 +303,21 @@ function modelOverridesToToml(
   const out = cloneRecord(rawSnake);
   for (const [key, value] of Object.entries(overrides)) {
     if (key === 'capabilities' && Array.isArray(value)) {
+      out[camelToSnake(key)] = [...value];
+    } else {
+      setDefined(out, camelToSnake(key), value);
+    }
+  }
+  return out;
+}
+
+function cognitionToToml(
+  cognition: Record<string, unknown>,
+  rawSnake: unknown,
+): Record<string, unknown> {
+  const out = cloneRecord(rawSnake);
+  for (const [key, value] of Object.entries(cognition)) {
+    if ((key === 'overlay' || key === 'steering' || key === 'anchor') && Array.isArray(value)) {
       out[camelToSnake(key)] = [...value];
     } else {
       setDefined(out, camelToSnake(key), value);

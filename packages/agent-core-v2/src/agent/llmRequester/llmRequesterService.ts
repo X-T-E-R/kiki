@@ -51,6 +51,7 @@ import {
   type MediaStripSnapshot,
 } from '#/agent/contextProjector/contextProjector';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
+import { IAgentCognitionAnchorService } from '#/agent/cognition/cognitionAnchor';
 import { IAgentProfileService, type ProfileModelContext } from '#/agent/profile/profile';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -209,6 +210,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     @IAgentToolSelectService private readonly toolSelect: IAgentToolSelectService,
     @IAgentVideoResolverService private readonly videoResolver: IAgentVideoResolverService,
     @IAgentProfileService private readonly profile: IAgentProfileService,
+    @IAgentCognitionAnchorService private readonly cognitionAnchor: IAgentCognitionAnchorService,
     @IAgentScopeContext private readonly agentContext: IAgentScopeContext,
     @IAgentUsageService private readonly usage: IAgentUsageService,
     @ISessionContext private readonly sessionContext: ISessionContext,
@@ -673,6 +675,14 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     );
 
     const messages = overrides.messages ?? this.context.get();
+    const resolvedSystemPrompt =
+      overrides.systemPrompt ?? turnConfig?.systemPrompt ?? this.profile.getSystemPrompt();
+    const anchoredPrompt = await this.cognitionAnchor.project({
+      sourceType: overrides.source?.type,
+      turnId: overrides.source?.type === 'turn' ? overrides.source.turnId : undefined,
+      step: overrides.source?.type === 'turn' ? overrides.source.step : undefined,
+      hasExplicitSystemPrompt: overrides.systemPrompt !== undefined,
+    });
     return {
       requester,
       model: requester.model,
@@ -690,7 +700,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       },
       modelAlias: resolved.modelAlias,
       thinkingEffort: resolved.thinkingLevel,
-      systemPrompt: overrides.systemPrompt ?? turnConfig?.systemPrompt ?? this.profile.getSystemPrompt(),
+      systemPrompt: anchoredPrompt ?? resolvedSystemPrompt,
       tools: [...(overrides.tools ?? this.defaultTools())],
       messages: [...messages],
       source: overrides.source,

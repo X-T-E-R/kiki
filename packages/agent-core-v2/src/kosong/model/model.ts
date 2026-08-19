@@ -46,6 +46,17 @@ export interface ModelOverride {
   offEffort?: string;
 }
 
+export type CognitionPathRef = string | string[];
+
+export interface CognitionConfig {
+  overlay?: CognitionPathRef;
+  steering?: CognitionPathRef;
+  anchor?: CognitionPathRef;
+  overlayMode?: 'append' | 'prepend' | 'wrap' | 'persona' | 'replace';
+  anchorSteps?: number;
+  anchorScope?: 'session' | 'turn';
+}
+
 export interface ModelRecord {
   providerId?: string;
 
@@ -73,6 +84,7 @@ export interface ModelRecord {
   offEffort?: string;
 
   overrides?: ModelOverride;
+  cognition?: CognitionConfig;
 
   [key: string]: unknown;
 }

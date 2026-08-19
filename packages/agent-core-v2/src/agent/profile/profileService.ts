@@ -125,6 +125,8 @@ import type { LoopControl } from '#/agent/loop/configSection';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { IHostClock } from '#/os/interface/hostClock';
+import { IHostEnvironment } from '#/os/interface/hostEnvironment';
+import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type { ToolSource } from '#/tool/toolContract';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -138,6 +140,11 @@ import { IPluginService } from '#/app/plugin/plugin';
 import type { ResolvedAgentProfile, SystemPromptContext } from '#/agent/profile/profile';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
+import {
+  applyOverlay,
+  CognitionFileError,
+  loadCognitionSlots,
+} from '#/agent/cognition/cognitionFiles';
 
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IAgentTelemetryContextService } from '#/app/telemetry/agentTelemetryContext';
@@ -261,6 +268,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @IHostClock private readonly clock: IHostClock,
     @ISessionContext private readonly sessionContext: ISessionContext,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
+    @IHostFileSystem private readonly hostFs: IHostFileSystem,
+    @IHostEnvironment private readonly hostEnv: IHostEnvironment,
     @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
     @ISessionAgentProfileCatalog private readonly catalog: ISessionAgentProfileCatalog,
     @ISessionSkillCatalog private readonly skillCatalog: ISessionSkillCatalog,
@@ -478,6 +487,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.assertBindable(selection.baseProfile.name, selection.route?.id);
     const currentProfileName = this.profileName;
     const rendered = profile.renderSystemPrompt(context);
+    const systemPrompt = await this.applyCognitionOverlay(rendered.text, alias);
     this.cacheAgentsMdWarning(context);
 
     const thinkingLevel = this.resolveThinkingEffort(
@@ -521,7 +531,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       serviceTier: profile.serviceTier,
       requestParams:
         profile.requestParams === undefined ? undefined : { ...profile.requestParams },
-      systemPrompt: rendered.text,
+      systemPrompt,
       environmentDisclosure: rendered.environment,
       agentsMdPaths: context.agentsMdPaths ?? [],
       activeToolNames: profile.tools,
@@ -533,7 +543,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       modelAlias: alias,
       profileName: profile.name,
       thinkingLevel,
-      systemPrompt: rendered.text,
+      systemPrompt,
       disallowedTools: profile.disallowedTools ?? [],
     });
     this.seedAgentsMdReminder(context);
@@ -625,7 +635,20 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   async applyProfile(profile: ResolvedAgentProfile, options?: ApplyProfileOptions): Promise<void> {
     const context = await this.buildSystemPromptContext(profile, options);
-    this.useProfile(profile, context);
+    this.activeProfile = profile;
+    const rendered = profile.renderSystemPrompt(context);
+    const systemPrompt = await this.applyCognitionOverlay(
+      rendered.text,
+      this.modelAlias ?? '',
+    );
+    this.update({
+      profileName: profile.name,
+      systemPrompt,
+      environmentDisclosure: rendered.environment,
+      agentsMdPaths: context.agentsMdPaths ?? [],
+      disallowedTools: profile.disallowedTools ?? [],
+    });
+    this.setActiveTools(profile.tools);
     this.seedAgentsMdReminder(context);
     this.cacheAgentsMdWarning(context);
     this.publishAgentsMdWarning();
@@ -636,28 +659,55 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const profile = this.resolveActiveProfile();
     if (profile === undefined) return;
 
-    let context: SystemPromptContext;
     try {
-      context = await this.buildSystemPromptContext(profile);
+      const context = await this.buildSystemPromptContext(profile);
+      this.activeProfile = profile;
+      const rendered = profile.renderSystemPrompt(context);
+      const systemPrompt = await this.applyCognitionOverlay(
+        rendered.text,
+        this.modelAlias ?? '',
+      );
+      this.update({
+        profileName: profile.name,
+        systemPrompt,
+        environmentDisclosure: rendered.environment,
+        agentsMdPaths: context.agentsMdPaths ?? [],
+      });
+      this.seedAgentsMdReminder(context);
+      this.cacheAgentsMdWarning(context);
+      this.publishAgentsMdWarning();
     } catch (error) {
       this.eventBus.publish({
         type: 'warning',
         message: `System prompt refresh skipped: ${error instanceof Error ? error.message : String(error)}`,
         code: 'system-prompt-refresh-failed',
       });
-      return;
     }
-    this.activeProfile = profile;
-    const rendered = profile.renderSystemPrompt(context);
-    this.update({
-      profileName: profile.name,
-      systemPrompt: rendered.text,
-      environmentDisclosure: rendered.environment,
-      agentsMdPaths: context.agentsMdPaths ?? [],
-    });
-    this.seedAgentsMdReminder(context);
-    this.cacheAgentsMdWarning(context);
-    this.publishAgentsMdWarning();
+  }
+
+  private async applyCognitionOverlay(base: string, modelAlias: string): Promise<string> {
+    if (modelAlias.length === 0) return base;
+    const record = this.models.get(modelAlias);
+    try {
+      const slots = await loadCognitionSlots(
+        this.hostFs,
+        this.bootstrap.homeDir,
+        record?.cognition,
+        this.hostEnv.pathClass,
+      );
+      return applyOverlay(base, slots.overlay, record?.cognition?.overlayMode ?? 'append');
+    } catch (error) {
+      if (error instanceof CognitionFileError) {
+        throw new ProfileError(
+          error.reason === 'missing'
+            ? ProfileErrors.codes.COGNITION_FILE_MISSING
+            : ProfileErrors.codes.COGNITION_PATH_INVALID,
+          error.message,
+          { slot: error.slot, path: error.ref, reason: error.reason },
+        );
+      }
+      throw error;
+    }
   }
 
   private seedAgentsMdReminder(context: SystemPromptContext): void {
