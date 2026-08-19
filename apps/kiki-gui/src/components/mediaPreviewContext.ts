@@ -11,8 +11,14 @@ export interface MediaPreviewApi {
   readonly cwd: string | undefined;
   /** Open the fullscreen image lightbox for a ready URL (data:/blob:/http). */
   readonly openImage: (src: string, name?: string) => void;
-  /** Open the file preview pane for an absolute host path (fs:content). */
+  /** Open (or activate) the file's tab in the preview workspace + focus it. */
   readonly openFile: (path: string) => void;
+  /** Number of open preview tabs (0 → the header toggle hides itself). */
+  readonly previewTabCount: number;
+  /** Whether the preview workspace panel is currently expanded. */
+  readonly previewPanelOpen: boolean;
+  /** Collapse/expand the preview workspace (tabs are preserved). */
+  readonly togglePreviewPanel: () => void;
 }
 
 export const MediaPreviewContext = createContext<MediaPreviewApi | null>(null);

@@ -26,6 +26,7 @@ import { RightRail } from './RightRail';
 import { SelectionQuoteButton } from './SelectionQuoteButton';
 import { TerminalPanel } from './TerminalPanel';
 import { Transcript, useStableForest } from './Transcript';
+import { MediaPreviewProvider, PreviewToggleButton } from './mediaPreview';
 import { KikiMark } from './Wordmark';
 import {
   buildPromptContent,
@@ -272,6 +273,7 @@ function Header({
         open={terminalOpen}
         onToggle={onToggleTerminal}
       />
+      <PreviewToggleButton />
       <button
         type="button"
         onClick={onToggleRail}
@@ -2029,7 +2031,7 @@ export function SessionView({
       olderError: agentOlderError,
     };
     return (
-      <>
+      <MediaPreviewProvider cwd={state.session?.metadata?.cwd}>
         {slots.header !== null
           ? createPortal(
               <>
@@ -2100,6 +2102,7 @@ export function SessionView({
                   >
                     {headerBusy ? t('sv.working') : statusLabel}
                   </span>
+                  <PreviewToggleButton />
                   <button
                     type="button"
                     onClick={() => { setRailOpen((value) => !value); }}
@@ -2221,12 +2224,12 @@ export function SessionView({
           onConfirm={confirmClearQueueRun}
           onCancel={() => { setConfirmClearQueue(false); }}
         />
-      </>
+      </MediaPreviewProvider>
     );
   }
 
   return (
-    <>
+    <MediaPreviewProvider cwd={state.session?.metadata?.cwd}>
       {slots.header !== null
         ? createPortal(
             <Header
@@ -2382,6 +2385,6 @@ export function SessionView({
         onConfirm={confirmClearQueueRun}
         onCancel={() => { setConfirmClearQueue(false); }}
       />
-    </>
+    </MediaPreviewProvider>
   );
 }

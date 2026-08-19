@@ -37,6 +37,12 @@
     "proof:test": "node --test scripts/visual-proof-options.test.mjs"
   },
   "dependencies": {
+    "@codemirror/commands": "^6.11.0",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/language-data": "^6.5.2",
+    "@codemirror/search": "^6.7.1",
+    "@codemirror/state": "^6.7.1",
+    "@codemirror/view": "^6.43.9",
     "@fontsource-variable/fraunces": "^5.2.5",
     "@fontsource/jetbrains-mono": "^5.2.5",
     "@fontsource/space-grotesk": "^5.2.5",
@@ -51,6 +57,7 @@
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/xterm": "^5.5.0",
+    "codemirror": "^6.0.2",
     "diff": "^8.0.2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

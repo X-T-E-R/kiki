@@ -151,6 +151,9 @@ const STRINGS = {
     ranForPattern: /Ran for/,
     ttftPattern: /TTFT/,
     queueExpandAria: 'Show or hide the queued prompts',
+    previewSource: 'Source',
+    previewCollapse: 'Collapse preview panel',
+    previewReadonlyPattern: /Read-only here/,
   },
   zh: {
     newSession: '新会话',
@@ -240,6 +243,9 @@ const STRINGS = {
     ranForPattern: /用时/,
     ttftPattern: /首 token/,
     queueExpandAria: '展开或收起排队消息',
+    previewSource: '源码',
+    previewCollapse: '收起预览面板',
+    previewReadonlyPattern: /此处为只读/,
   },
 };
 const S = STRINGS[LOCALE];
@@ -1669,6 +1675,58 @@ async function scenarioAttachments() {
   await shot('attachments-sent');
 }
 
+async function scenarioPreviewWorkbench() {
+  await selectSession('Fixture: preview workbench');
+  await page.waitForSelector('text=Workbench notes', { timeout: 10_000 });
+  // Clicking a transcript file link opens the resident workspace with one tab.
+  await page.locator('.conversation-body a', { hasText: 'server.ts' }).first().click();
+  await page.waitForSelector('[data-preview-workspace]', { timeout: 5000 });
+  await page.waitForSelector('[data-preview-tab="C:/fixture/workshop/src/server.ts"]');
+  // Code tab: CodeMirror mounts (read-only in the browser build — the hint
+  // strip asserts the missing server write endpoint degradation).
+  await page.waitForSelector('[data-preview-tabpanel="C:/fixture/workshop/src/server.ts"] .cm-content', { timeout: 10_000 });
+  await shot('preview-workbench-code');
+  const readonlyHint = await page.locator('[data-preview-workspace]').innerText();
+  if (!S.previewReadonlyPattern.test(readonlyHint)) {
+    throw new Error(`read-only hint missing from the browser build: ${readonlyHint}`);
+  }
+  // A second link adds a tab and activates it; markdown defaults to rendered.
+  await page.locator('.conversation-body a', { hasText: 'design.md' }).first().click();
+  await page.waitForSelector('[data-preview-tab="C:/fixture/workshop/docs/design.md"]');
+  await page.waitForSelector('[data-preview-tabpanel="C:/fixture/workshop/docs/design.md"] h1', { timeout: 5000 });
+  await shot('preview-workbench-markdown');
+  // Source mode swaps the renderer for the editor.
+  await page.locator('[data-md-mode="source"]').click();
+  await page.waitForSelector('[data-preview-tabpanel="C:/fixture/workshop/docs/design.md"] .cm-content', { timeout: 10_000 });
+  await shot('preview-workbench-md-source');
+  // Image tab renders inline bytes.
+  await page.locator('.conversation-body a', { hasText: 'board.svg' }).first().click();
+  await page.waitForSelector('[data-preview-tab="C:/fixture/workshop/shots/board.svg"]');
+  await page.waitForSelector('[data-preview-tabpanel="C:/fixture/workshop/shots/board.svg"] img', { timeout: 5000 });
+  await shot('preview-workbench-image');
+  // Re-clicking an already-open file only reactivates its tab (no duplicate).
+  await page.locator('.conversation-body a', { hasText: 'server.ts' }).first().click();
+  await page.waitForTimeout(300);
+  const tabCount = await page.locator('[data-preview-tab]').count();
+  if (tabCount !== 3) throw new Error(`expected 3 tabs after re-open, saw ${tabCount}`);
+  // Context menu → close others leaves exactly the right-clicked tab.
+  await page.locator('[data-preview-tab="C:/fixture/workshop/src/server.ts"]').click({ button: 'right' });
+  await page.waitForSelector('[data-preview-tab-menu]', { timeout: 5000 });
+  // Let the 200ms anim-enter fade finish so the menu box is fully opaque.
+  await page.waitForTimeout(300);
+  await shot('preview-workbench-tab-menu');
+  await page.locator('[data-preview-tab-menu] button').nth(1).click();
+  await page.waitForTimeout(300);
+  const remaining = await page.locator('[data-preview-tab]').count();
+  if (remaining !== 1) throw new Error(`close-others should leave 1 tab, saw ${remaining}`);
+  // Collapse hides the panel; the header toggle brings it back.
+  await page.getByRole('button', { name: S.previewCollapse }).click();
+  await page.waitForSelector('[data-preview-workspace]', { state: 'detached', timeout: 5000 });
+  await page.locator('[data-preview-toggle]').click();
+  await page.waitForSelector('[data-preview-workspace]', { timeout: 5000 });
+  await shot('preview-workbench-reopened');
+}
+
 async function scenarioSearch() {
   // Open a session first so the main panel is not sitting on the previous
   // scenario's (stale) lastSessionId redirect.
@@ -1947,6 +2005,7 @@ const SCENARIOS = [
   ['settings-browser-editable', scenarioSettingsBrowserEditable],
   ['slash-commands', scenarioSlashCommands],
   ['attachments', scenarioAttachments],
+  ['preview-workbench', scenarioPreviewWorkbench],
   ['search', scenarioSearch],
   ['session-actions', scenarioSessionActions],
   ['context-ring', scenarioContextRing],
