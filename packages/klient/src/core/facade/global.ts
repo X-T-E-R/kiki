@@ -31,6 +31,7 @@ import type {
   FsBrowseResponse,
   FsHomeResponse,
 } from '@moonshot-ai/agent-core-v2/app/hostFolderBrowser/hostFolderBrowser';
+import type { FileMeta } from '@moonshot-ai/agent-core-v2/app/file/fileService';
 import type { ModelRecord } from '@moonshot-ai/agent-core-v2/kosong/model/model';
 import type { IModelCatalog } from '@moonshot-ai/agent-core-v2/kosong/model/catalog';
 import type { IProviderDiscoveryService } from '@moonshot-ai/agent-core-v2/app/kosongConfig/discovery';
@@ -249,6 +250,30 @@ export interface GlobalThreadsFacade {
   isWorkspaceEnabled(workspaceId: string): Promise<boolean>;
 }
 
+/** One downloaded upload: its metadata plus the buffered bytes. */
+export interface FileDownload {
+  readonly meta: FileMeta;
+  readonly data: Uint8Array;
+}
+
+export interface GlobalFilesFacade {
+  /**
+   * Upload buffered bytes to the daemon's file store. Bytes cross the wire
+   * base64-encoded (JSON cannot carry them), so very large uploads pay one
+   * encode here and one decode in the dispatcher.
+   */
+  save(input: {
+    data: Uint8Array;
+    filename: string;
+    name?: string;
+    mimeType?: string;
+    expiresInSec?: number;
+  }): Promise<FileMeta>;
+  /** Download one upload back into memory. */
+  get(fileId: string): Promise<FileDownload>;
+  delete(fileId: string): Promise<void>;
+}
+
 /** Aggregated host/environment snapshot (`bootstrapService` properties). */
 export interface KlientEnvInfo {
   readonly platform: string;
@@ -276,6 +301,7 @@ export interface GlobalFacade {
   readonly capabilities: GlobalCapabilitiesFacade;
   readonly hostFs: GlobalHostFsFacade;
   readonly threads: GlobalThreadsFacade;
+  readonly files: GlobalFilesFacade;
   env(): Promise<KlientEnvInfo>;
 }
 
@@ -510,7 +536,12 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
       send: (input) =>
         call('threadCommunicationService', 'sendMessage', [input]) as Promise<SendThreadMessageResult>,
       wait: (input) =>
-        call('threadCommunicationService', 'waitThreads', [input], WAIT_THREADS_CALL_TIMEOUT_MS) as Promise<WaitThreadsResult>,
+        call(
+          'threadCommunicationService',
+          'waitThreads',
+          [input],
+          WAIT_THREADS_CALL_TIMEOUT_MS,
+        ) as Promise<WaitThreadsResult>,
       getWorkspaceOverride: (workspaceId) =>
         call('threadCommunicationService', 'getWorkspaceOverride', [workspaceId]) as Promise<
           boolean | undefined
@@ -521,6 +552,23 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
         call('threadCommunicationService', 'clearWorkspaceOverride', [workspaceId]) as Promise<void>,
       isWorkspaceEnabled: (workspaceId) =>
         call('threadCommunicationService', 'isWorkspaceEnabled', [workspaceId]) as Promise<boolean>,
+    },
+
+    files: {
+      save: ({ data, filename, name, mimeType, expiresInSec }) =>
+        call('fileService', 'save', [
+          Buffer.from(data).toString('base64'),
+          filename,
+          { name, mimeType, expiresInSec },
+        ]) as Promise<FileMeta>,
+      get: async (fileId) => {
+        const wire = (await call('fileService', 'get', [fileId])) as {
+          meta: FileMeta;
+          data: string;
+        };
+        return { meta: wire.meta, data: Buffer.from(wire.data, 'base64') };
+      },
+      delete: (fileId) => call('fileService', 'delete', [fileId]) as Promise<void>,
     },
 
     env,

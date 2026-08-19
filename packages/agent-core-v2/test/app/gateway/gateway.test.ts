@@ -58,6 +58,7 @@ describe('RestGateway', () => {
       steer: () => Promise.resolve([]),
       list: () => ({ active: undefined, pending: [] }),
       abort: () => true,
+      drain: () => Promise.resolve(),
       inject: () => Promise.resolve(undefined),
       retry: () => Promise.resolve(undefined),
       clear: () => {},
@@ -75,6 +76,7 @@ describe('RestGateway', () => {
     };
     const agents: IAgentLifecycleService = {
       _serviceBrand: undefined,
+      onWillCreate: () => ({ dispose: () => {} }),
       onDidCreate: () => ({ dispose: () => {} }),
       onDidDispose: () => ({ dispose: () => {} }),
       create: () => Promise.resolve(agentHandle),

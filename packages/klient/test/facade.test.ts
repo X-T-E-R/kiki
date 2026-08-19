@@ -257,13 +257,23 @@ describe('agent skill routing', () => {
     const klient = createKlientFromChannel(channel);
     const agent = klient.session('s1').agent('main');
 
-    channel.result = { turn_id: 7 };
+    channel.result = {
+      turn_id: 7,
+      prompt_id: 'p1',
+      created_at: '2026-01-01T00:00:00.000Z',
+      state: 'running',
+    };
     await expect(
       agent.promptWithSkills({
         input: [{ type: 'text', text: 'Review this change.' }],
         skills: [{ name: 'review' }, { name: 'security', args: 'src/app.ts' }],
       }),
-    ).resolves.toEqual({ turn_id: 7 });
+    ).resolves.toEqual({
+      turn_id: 7,
+      prompt_id: 'p1',
+      created_at: '2026-01-01T00:00:00.000Z',
+      state: 'running',
+    });
     expect(channel.calls[0]).toEqual({
       scope: { sessionId: 's1', agentId: 'main' },
       service: 'agentSkillService',
@@ -695,5 +705,63 @@ describe('event hub', () => {
     expect(seen.completed).toEqual([completed]);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBeInstanceOf(KlientValidationError);
+  });
+});
+
+describe('files routing', () => {
+  const META = {
+    id: 'f_1',
+    name: 'a.png',
+    media_type: 'image/png',
+    size: 4,
+    created_at: '2026-01-01T00:00:00.000Z',
+  };
+
+  it('routes the files save/get/delete lifecycle through fileService', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+
+    channel.result = META;
+    const meta = await klient.global.files.save({
+      data: new Uint8Array([1, 2, 3, 4]),
+      filename: 'a.png',
+      mimeType: 'image/png',
+    });
+    expect(meta).toEqual(META);
+    expect(channel.calls[0]).toMatchObject({
+      scope: {},
+      service: 'fileService',
+      method: 'save',
+      args: ['AQIDBA==', 'a.png', { mimeType: 'image/png' }],
+    });
+
+    channel.result = { meta: META, data: 'AQIDBA==' };
+    const got = await klient.global.files.get('f_1');
+    expect(got.meta).toEqual(META);
+    expect([...got.data]).toEqual([1, 2, 3, 4]);
+    expect(channel.calls[1]).toMatchObject({
+      scope: {},
+      service: 'fileService',
+      method: 'get',
+      args: ['f_1'],
+    });
+
+    channel.result = undefined;
+    await expect(klient.global.files.delete('f_1')).resolves.toBeUndefined();
+    expect(channel.calls[2]).toMatchObject({
+      scope: {},
+      service: 'fileService',
+      method: 'delete',
+      args: ['f_1'],
+    });
+  });
+
+  it('files.save rejects invalid input before it hits the wire', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    await expect(
+      klient.global.files.save({ data: new Uint8Array(0), filename: '' }),
+    ).rejects.toBeInstanceOf(KlientValidationError);
+    expect(channel.calls).toHaveLength(0);
   });
 });

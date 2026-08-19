@@ -65,7 +65,6 @@ interface ProfileCandidate {
   readonly priority: number;
 }
 
-// NOTE: stays Disposable — its own 'get' collides with the Fiber
 export class SessionAgentProfileCatalogService
   extends Disposable
   implements ISessionAgentProfileCatalog

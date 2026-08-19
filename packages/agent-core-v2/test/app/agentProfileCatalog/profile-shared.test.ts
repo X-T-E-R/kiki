@@ -1,20 +1,9 @@
-/**
- * Scenario: shared system-prompt rendering — the single `${var}` variable
- * table (`systemPromptVars`), user-template rendering with a lazily bound
- * `${base_prompt}` (`renderPromptTemplateResult`), and the builtin template
- * renderer (`renderSystemPromptResult`) including structured environment
- * disclosure metadata and its code-composed conditional sections (Windows
- * notes, additional directories, skills), plus `normalizeAgentProfile`
- * deriving the missing render entry at registration. Pure functions, no IO.
- * Run: `pnpm --filter @moonshot-ai/agent-core-v2 exec vitest run
- * test/app/agentProfileCatalog/profile-shared.test.ts`.
- */
-
 import { describe, expect, it } from 'vitest';
 
 import {
   normalizeAgentProfile,
   type AgentProfileContext,
+  type AgentProfileInput,
   type SystemPromptRenderResult,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import {
@@ -23,12 +12,19 @@ import {
   registerAgentProfile,
 } from '#/app/agentProfileCatalog/contribution';
 import {
+  DEFAULT_REPLY_STYLE_GUIDE,
   renderPromptTemplateResult,
   renderSystemPromptResult,
   subagentAllowlistFor,
   subagentTypeNotAllowedMessage,
   systemPromptVars,
 } from '#/app/agentProfileCatalog/profile-shared';
+
+type AssertFalse<T extends false> = T;
+
+type RenderlessInputIsNotAssignable = AssertFalse<
+  [{ name: string }] extends [AgentProfileInput] ? true : false
+>;
 
 describe('subagent allowlists', () => {
   const catalog = (subagents?: readonly string[]) => ({
@@ -150,7 +146,7 @@ describe('systemPromptVars', () => {
     const vars = systemPromptVars({}, { skillActive: true });
 
     expect(vars['product_name']).toBe('Kimi Code CLI');
-    expect(vars['reply_style_guide']).toContain("render as Markdown in the user's terminal");
+    expect(vars['reply_style_guide']).toBe(DEFAULT_REPLY_STYLE_GUIDE);
   });
 
   it('lets the context override host-identity variables', () => {
@@ -327,15 +323,15 @@ describe('renderSystemPromptResult', () => {
 
   it('renders the host identity from the context, defaulting to the CLI text', () => {
     const fallback = renderSystemPromptResult('', {}, { skillActive: true }).text;
-    expect(fallback).toContain('You are Kimi Code CLI,');
-    expect(fallback).toContain("render as Markdown in the user's terminal");
+    expect(fallback).toContain('Kimi Code CLI');
+    expect(fallback).toContain(DEFAULT_REPLY_STYLE_GUIDE);
 
     const overridden = renderSystemPromptResult(
       '',
       { productName: 'Kimi Desktop', replyStyleGuide: 'GUI_STYLE' },
       { skillActive: true },
     ).text;
-    expect(overridden).toContain('You are Kimi Desktop,');
+    expect(overridden).toContain('Kimi Desktop');
     expect(overridden).toContain('GUI_STYLE');
     expect(overridden).not.toContain('Kimi Code CLI');
   });
@@ -418,10 +414,10 @@ describe('normalizeAgentProfile', () => {
   });
 
   it('rejects a profile without any render entry', () => {
-    expect(() =>
-      // @ts-expect-error runtime guard for inputs that escape the type union
-      normalizeAgentProfile({ name: 'empty' }),
-    ).toThrow(/must define systemPrompt or renderSystemPrompt/);
+    const renderless = { name: 'empty' } as unknown as AgentProfileInput;
+    expect(() => normalizeAgentProfile(renderless)).toThrow(
+      /must define systemPrompt or renderSystemPrompt/,
+    );
   });
 
   it('keeps the input object as receiver for a method-style text-only profile', () => {
@@ -454,9 +450,6 @@ describe('normalizeAgentProfile', () => {
   });
 
   it('prefers the structured entry when both are given and keeps cross-entry this calls working', () => {
-    // Declared standalone (not inline) so `this` is inferred from the literal
-    // itself: cross-entry calls are a runtime-binding contract, and TS cannot
-    // contextually type them through the input union.
     const input = {
       name: 'both',
       systemPrompt(_context: AgentProfileContext) {
@@ -482,10 +475,10 @@ describe('normalizeAgentProfile', () => {
     _clearAgentProfileContributionsForTests();
     try {
       registerAgentProfile({ name: 'kept', systemPrompt: () => 'text' });
-      expect(() =>
-        // @ts-expect-error runtime guard for inputs that escape the type union
-        registerAgentProfile({ name: 'empty' }),
-      ).toThrow(/must define systemPrompt or renderSystemPrompt/);
+      const renderless = { name: 'empty' } as unknown as AgentProfileInput;
+      expect(() => registerAgentProfile(renderless)).toThrow(
+        /must define systemPrompt or renderSystemPrompt/,
+      );
       expect(getAgentProfileContributions().map((profile) => profile.name)).toEqual(['kept']);
     } finally {
       _clearAgentProfileContributionsForTests();

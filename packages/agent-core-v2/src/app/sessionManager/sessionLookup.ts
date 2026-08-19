@@ -1,12 +1,3 @@
-/**
- * `sessionManager` domain — session-lookup helpers for App-scope callers.
- *
- * Resolves persisted sessions through `sessionIndex` and the App-scope
- * `ISessionManager`, materializing workspace programs through
- * `IWorkspaceInstanceManager` when needed. The helpers operate on a stable
- * accessor and own no scoped state.
- */
-
 import type { ServicesAccessor } from '#/_base/di/instantiation';
 import type { IDisposable } from '#/_base/di/lifecycle';
 import type { ISessionScopeHandle } from '#/_base/di/scope';

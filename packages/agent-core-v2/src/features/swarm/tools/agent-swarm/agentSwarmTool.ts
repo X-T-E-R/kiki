@@ -1,17 +1,3 @@
-/**
- * `swarm` domain — `AgentSwarmTool` implementation (the `AgentSwarm`
- * tool).
- *
- * Launches a batch of child agents (an ordinary Agent scope each) through the
- * session swarm coordinator (`ISessionSwarmService`) and renders the
- * per-subagent XML result. Reads persisted swarm item labels through the
- * Session-scoped coordinator so later `resume_agent_ids` calls relabel
- * resumed subagents like v1. Spawn tasks carry the resolved model/thinking
- * binding together with its inherit-or-fixed mode. Swarm mode is entered
- * through `IAgentSwarmService`; the caller identity comes from
- * `IAgentScopeContext`. Bound at Agent scope through `SwarmFeature`.
- */
-
 import {
   ToolAccesses,
   type ExecutableToolContext,

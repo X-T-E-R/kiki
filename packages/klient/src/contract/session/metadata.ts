@@ -67,6 +67,7 @@ export const sessionMetaKeySchema = z.enum([
   'agents',
   'custom',
   'lastTurnReason',
+  'usage',
 ]);
 
 export const sessionMetadataChangedEventSchema = z.object({

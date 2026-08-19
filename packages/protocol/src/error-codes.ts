@@ -119,6 +119,8 @@ export const ErrorCode = {
   MESSAGE_ACTION_UNAVAILABLE: 40936,
   /** expected session event cursor no longer matches the current watermark */
   SESSION_CURSOR_MISMATCH: 40937,
+  /** prompt_id 已在该 agent 的历史中使用 */
+  PROMPT_ID_CONFLICT: 40938,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,
@@ -228,6 +230,7 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.THREAD_IDEMPOTENCY_CONFLICT]: 'thread.idempotency_conflict',
   [ErrorCode.MESSAGE_ACTION_UNAVAILABLE]: 'message.action_unavailable',
   [ErrorCode.SESSION_CURSOR_MISMATCH]: 'session.cursor_mismatch',
+  [ErrorCode.PROMPT_ID_CONFLICT]: 'prompt.id_conflict',
 
   [ErrorCode.APPROVAL_EXPIRED]: 'approval.expired',
   [ErrorCode.QUESTION_EXPIRED]: 'question.expired',

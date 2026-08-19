@@ -1,29 +1,3 @@
-/**
- * `/api/v1/ws` connection — speaks the v1 WebSocket protocol
- * (`server_hello` / `client_hello` / `subscribe` / `subscribe_v2` /
- * `unsubscribe` / terminal controls / `ack` / `resync_required` / event
- * envelopes).
- *
- * Each connection is a {@link BroadcastTarget}: sequenced envelopes from the
- * {@link SessionEventBroadcaster} are forwarded to the socket. Subscription
- * semantics live in the `subscribe` frame: it replays durable events since
- * the client's `{seq, epoch}` cursor, or sends `resync_required` when the
- * gap cannot be served incrementally. `client_hello` is only the handshake —
- * it still accepts inline subscriptions for legacy clients, but forwards
- * them to the same shared attach path (`attachSession`). Transcript grade
- * subscriptions are a separate concern carried ONLY by `subscribe_v2`.
- *
- * Heartbeat: the server sends an application-level `ping` frame every
- * {@link DEFAULT_HEARTBEAT_INTERVAL_MS} (advertised as `heartbeat_ms` in
- * `server_hello`). Protocol-level WS ping/pong is not used because browser
- * clients cannot observe it from JS. Any inbound frame proves the peer is
- * alive; after two silent cycles the connection is closed with 1001. The
- * heartbeat can be disabled explicitly for legacy hosts by configuring a
- * zero interval, in which case `server_hello` omits `heartbeat_ms`. The
- * outbound path separately terminates slow consumers before queued or
- * socket-buffered bytes can grow without bound.
- */
-
 import {
   terminalAttachMessageSchema,
   terminalCloseMessageSchema,
@@ -76,26 +50,15 @@ import { ErrorCode } from '../../../protocol/error-codes';
 
 const DEFAULT_MAX_BUFFER_SIZE = 1000;
 
-/**
- * Application-level heartbeat cadence. 10s keeps connections alive through
- * intermediaries with ~30s idle timeouts (3x headroom) and bounds how long a
- * half-open connection goes unnoticed.
- */
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 10_000;
-/** Close the connection once no inbound frame has arrived for this many cycles. */
 const HEARTBEAT_MISS_LIMIT = 2;
 
-/** Per-session subscription state held by the connection (see `TargetSubscription`). */
 type SessionSubscription = TargetSubscription;
 
-// Subscription-event send buffer — coalesces a burst of frames (notably
-// high-frequency volatile text deltas) within one render-frame-sized window.
-// Public/control frames are immediate barriers: they enter the same FIFO and
-// flush any earlier subscription frames so cross-channel order stays intact.
 const DEFAULT_FLUSH_INTERVAL_MS = 16;
 const DEFAULT_MAX_BATCH_SIZE = 64;
-const DEFAULT_HIGH_WATER_MARK_BYTES = 1 << 20; // 1 MiB
-const DEFAULT_MAX_OUTBOUND_BUFFER_BYTES = 4 << 20; // 4 MiB hard cap
+const DEFAULT_HIGH_WATER_MARK_BYTES = 1 << 20;
+const DEFAULT_MAX_OUTBOUND_BUFFER_BYTES = 4 << 20;
 const DEFAULT_MAX_BACKPRESSURE_ROUNDS = 3;
 const DEFAULT_BACKPRESSURE_RETRY_MS = 5;
 const DEFAULT_BACKPRESSURE_MAX_DELAY_MS = 100;
@@ -222,9 +185,6 @@ export class WsConnectionV1 implements BroadcastTarget {
     this.socket.on('error', () => this.onClose());
 
     opts.connectionRegistry.add(this);
-    // Global events (session/workspace/config facts) flow to every established
-    // connection without any subscription; session/agent events stay
-    // subscribe-gated via `broadcaster.subscribe`.
     this.broadcaster.addGlobalTarget(this);
     this.sendImmediateFrame(
       buildServerHello({
@@ -279,13 +239,12 @@ export class WsConnectionV1 implements BroadcastTarget {
     try {
       frame = JSON.parse(rawDataToString(data)) as InboundFrame;
     } catch {
-      return; // non-JSON frame — drop
+      return;
     }
     if (typeof frame?.type !== 'string') return;
 
     switch (frame.type) {
       case 'pong':
-        // Heartbeat reply; the liveness timestamp above is all it needs to do.
         return;
       case 'client_hello':
         this.enqueueControl(() => this.onClientHello(frame));
@@ -316,14 +275,12 @@ export class WsConnectionV1 implements BroadcastTarget {
         this.enqueueControl(() => this.onTerminalControl(frame));
         return;
       default:
-        // Unknown / not-yet-implemented control frame (e.g. abort) — ignore.
         return;
     }
   }
 
   private enqueueControl(task: () => Promise<void>): void {
     this.controlQueue = this.controlQueue.then(task).catch(() => {
-      // A failed control frame must not wedge the queue behind it.
     });
   }
 
@@ -344,18 +301,11 @@ export class WsConnectionV1 implements BroadcastTarget {
     if (!(await this.authorize(frame))) return;
     this.gotClientHello = true;
 
-    // Handshake only. The inline subscription fields are legacy compatibility
-    // — they are forwarded to the same attach path `subscribe` uses; new
-    // clients send just `client_id` here and subscribe separately.
     const payload = frame.payload ?? {};
     const subscriptions = asStringArray(payload['subscriptions']);
     const cursors = payload['cursors'] as Record<string, SessionCursor> | undefined;
     const agentFilter = parseAgentFilter(payload['agent_filter']);
 
-    // Temporary opt-in for the `event.di.*` debug feed: only kimi-inspect
-    // consumes it, so the broadcaster gates that fan-out to connections whose
-    // hello declares this client id (see `addDiEventTarget`). Both kimi-inspect
-    // sockets (activity + transcript) send `client_id: 'kimi-inspect'`.
     if (payload['client_id'] === 'kimi-inspect') this.broadcaster.addDiEventTarget(this);
 
     const accepted: string[] = [];
@@ -367,8 +317,6 @@ export class WsConnectionV1 implements BroadcastTarget {
         sid,
         cursors?.[sid],
         agentFilter?.[sid],
-        // Transcript grades are owned by `subscribe_v2`; a plain re-attach
-        // must not wipe grades this connection already holds.
         this.subscriptions.get(sid)?.transcriptGrades,
         undefined,
         { accepted, resyncRequired, serverCursors },
@@ -400,8 +348,6 @@ export class WsConnectionV1 implements BroadcastTarget {
         sid,
         cursors?.[sid],
         agentFilter?.[sid],
-        // Transcript grades are owned by `subscribe_v2`; preserve whatever
-        // this connection already holds (the replay below filters through it).
         this.subscriptions.get(sid)?.transcriptGrades,
         undefined,
         { accepted, resyncRequired, serverCursors, notFound },
@@ -773,10 +719,6 @@ export class WsConnectionV1 implements BroadcastTarget {
   }
 
   private async authorize(frame: InboundFrame): Promise<boolean> {
-    // Present-only: the upgrade handler already authenticated the socket, so a
-    // missing `client_hello` token is accepted (the production web client
-    // authenticates at the upgrade and sends no token here). If a token IS
-    // presented it must still be valid.
     const payload = frame.payload ?? {};
     const token = typeof payload['token'] === 'string' ? (payload['token'] as string) : undefined;
     if (token === undefined || this.validateCredential === undefined) return true;
@@ -798,7 +740,6 @@ export class WsConnectionV1 implements BroadcastTarget {
   private sendSubscribedFrame(msg: unknown): void {
     if (!this.enqueueOutbound(msg)) return;
     if (this.outbound.length >= this.maxBatchSize) {
-      // Batch is full — flush now rather than wait for the interval.
       this.flush();
       return;
     }
@@ -855,7 +796,6 @@ export class WsConnectionV1 implements BroadcastTarget {
     }
     if (this.outbound.length === 0) return;
     if (this.closed || this.socket.readyState !== this.socket.OPEN) {
-      // Socket is gone — drop queued frames rather than send into a dead pipe.
       this.outbound = [];
       this.outboundSerialized = [];
       this.outboundBytes = 0;
@@ -884,7 +824,6 @@ export class WsConnectionV1 implements BroadcastTarget {
         const text = serializedByFrame.get(frame) ?? JSON.stringify(frame);
         if (text !== undefined) this.socket.send(text);
       } catch {
-        // best-effort
       }
     }
   }
@@ -907,8 +846,6 @@ export class WsConnectionV1 implements BroadcastTarget {
       this.overLimitBackpressureRounds = 0;
     }
     if (now - this.backpressureSince >= DEFAULT_BACKPRESSURE_MAX_DELAY_MS) {
-      // Moderate pressure still gets a bounded-delay force flush. The hard cap
-      // above prevents that fallback from turning into unbounded socket memory.
       this.flush(true);
       return;
     }
@@ -947,14 +884,10 @@ export class WsConnectionV1 implements BroadcastTarget {
   close(code = 1000, reason?: string): void {
     if (this.closed) return;
     this.stopHeartbeat();
-    // Best-effort: push out any queued frames (e.g. the tail of a delta
-    // stream) before tearing the socket down, so the client sees a complete
-    // stream rather than a truncated one.
     this.flush(true);
     try {
       this.socket.close(code, reason);
     } catch {
-      // ignore
     }
   }
 
@@ -979,7 +912,6 @@ export class WsConnectionV1 implements BroadcastTarget {
       service.detachAllForSink(this.id);
     }
     this.terminalAttachments.clear();
-    // registry removal is handled by registerWsV1 on the socket 'close' event.
   }
 }
 
@@ -1001,14 +933,6 @@ function asStringArray(value: unknown): string[] {
   return value.filter((v): v is string => typeof v === 'string');
 }
 
-/**
- * Parse the wire `agent_filter` payload (`Record<session_id, agent_id[]>`) into
- * a per-session allowlist map. Sessions missing from the returned map — or the
- * whole field absent — fall back to "every agent" (`undefined`), the legacy
- * session-grained behavior. Malformed entries (non-object, empty arrays,
- * non-string ids) are dropped per-session rather than failing the whole
- * handshake, so a bad entry cannot widen another session's filter.
- */
 function parseAgentFilter(value: unknown): Record<string, AgentFilter> | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
   const out: Record<string, AgentFilter> = {};
@@ -1028,11 +952,6 @@ function rawDataToString(data: RawData): string {
   return Buffer.from(data as ArrayBuffer).toString('utf8');
 }
 
-// ---------------------------------------------------------------------------
-// Outbound coalescing
-// ---------------------------------------------------------------------------
-
-/** A volatile text-delta envelope that can be merged with an adjacent one. */
 interface CoalescableDelta {
   type: 'assistant.delta' | 'thinking.delta';
   seq: number;

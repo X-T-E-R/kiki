@@ -206,6 +206,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/v1/sessions/{session_id}/media/{file_id}",
+    ],
+    [
+      "GET",
       "/api/v1/sessions/{session_id}/messages",
     ],
     [
@@ -494,6 +498,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/v1/workspace/fs:suggest",
+    ],
+    [
+      "POST",
       "/api/v1/workspaces",
     ],
     [
@@ -503,6 +511,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/v1/workspaces/{workspace_id}/untrust",
+    ],
+    [
+      "POST",
+      "/api/v2/sessions:archive",
+    ],
+    [
+      "POST",
+      "/api/v2/sessions:restore",
     ],
     [
       "PUT",

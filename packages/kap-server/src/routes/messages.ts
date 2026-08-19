@@ -1,24 +1,3 @@
-/**
- * `/sessions/{session_id}/messages*` route handlers.
- *
- * Implements the v1 `/api/v1/sessions/{sid}/messages` wire contract on top of
- * `services/messages/messageHistory`, which reads the persisted wire transcript
- * for cold sessions and merges the unflushed live tail for live ones. This
- * route projects reads into the protocol envelope and composes edit-resend /
- * regenerate through the Session mutation gate, durable event broadcaster,
- * and transcript invalidation boundary.
- *
- *   GET    /sessions/{session_id}/messages              query: ListMessages   data: Page<Message>
- *   GET    /sessions/{session_id}/messages/{message_id} -                     data: Message
- *   POST   /sessions/{session_id}/messages/{message_id}:edit
- *   POST   /sessions/{session_id}/messages/{message_id}:regenerate
- *
- * **Error mapping**:
- *   - unknown session   → `40401` (session.not_found)
- *   - unknown message   → `40403` (message.not_found, get endpoint only)
- *   - invalid query     → `40001` (validation.failed, via defineRoute)
- */
-
 import { join } from 'node:path';
 
 import {
@@ -91,13 +70,6 @@ export interface MessageRouteDeps {
   readonly transcriptService: TranscriptService;
 }
 
-// --- Query coercion ---------------------------------------------------------
-
-/**
- * HTTP query strings arrive as `Record<string, string>`. Coerce `page_size`
- * here so the protocol's cursor schema stays HTTP-agnostic — mirrors
- * `sessions.ts:sessionsListQueryCoercion` and v1's messages route.
- */
 const messagesListQueryCoercion = z
   .object({
     before_id: z.string().min(1).optional(),
@@ -115,8 +87,6 @@ const messagesListQueryCoercion = z
       });
     }
   });
-
-// --- Params -----------------------------------------------------------------
 
 const sessionIdParamSchema = z.object({
   session_id: z.string().min(1),
@@ -164,7 +134,6 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
     listRoute.handler as Parameters<MessageRouteHost['get']>[2],
   );
 
-  // GET /sessions/{session_id}/messages/{message_id} -------------------
   const getRoute = defineRoute(
     {
       method: 'GET',
@@ -219,6 +188,8 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
       operationId: 'messageAction',
     },
     async (req, reply) => {
+      let preparedMedia: Awaited<ReturnType<typeof resolvePromptMediaFiles>> | undefined;
+      let enqueued = false;
       try {
         const { session_id, tail } = req.params as { session_id: string; tail: string };
         const parsed = parseActionSuffix({
@@ -237,7 +208,7 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
         if (parsed.action === 'edit') {
           const body = editMessageRequestSchema.parse(req.body);
           await assertPromptFileRefs(body.content, core.accessor.get(IFileService));
-          const resolvedContent = await resolvePromptMediaFiles(
+          preparedMedia = await resolvePromptMediaFiles(
             body.content,
             core.accessor.get(IFileService),
             core.accessor.get(IBootstrapService).cacheDir,
@@ -255,7 +226,13 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
             agent,
             parsed.id,
             body,
-            resolvedContent,
+            preparedMedia.content,
+          );
+          enqueued = true;
+          const staging = preparedMedia;
+          void Promise.race([handle.launched, handle.completion]).then(
+            () => staging?.discard(),
+            () => staging?.discard(),
           );
           reply.send(okEnvelope(projectPromptHandle(handle), req.id));
           return;
@@ -264,6 +241,7 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
         const handle = await regenerateMessage(deps, session, agent, parsed.id, body);
         reply.send(okEnvelope(projectPromptHandle(handle), req.id));
       } catch (err) {
+        if (!enqueued) await preparedMedia?.discard();
         sendMappedError(reply, req, err);
       }
     },
@@ -275,12 +253,6 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
   );
 }
 
-/**
- * Map a thrown sentinel error to the right envelope:
- *   - unknown session → `code: 40401`
- *   - unknown message → `code: 40403`
- *   - anything else   → `code: 50001`.
- */
 function sendMappedError(
   reply: { send(payload: unknown): unknown },
   req: { id: string },

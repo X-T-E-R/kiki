@@ -31,6 +31,7 @@ import { catalogContract } from './global/catalog.js';
 import { providerDiscoveryContract } from './global/providerDiscovery.js';
 import { configContract } from './global/config.js';
 import { envContract } from './global/env.js';
+import { filesContract } from './global/files.js';
 import { flagsContract } from './global/flags.js';
 import { hostFsContract } from './global/hostFs.js';
 import { modelsContract } from './global/models.js';
@@ -64,6 +65,7 @@ export const globalContract: KlientContract = {
   hostFolderBrowser: hostFsContract,
   bootstrapService: envContract,
   threadCommunicationService: threadsContract,
+  fileService: filesContract,
   sessionManager: sessionManagerContract,
   // session scope
   sessionMetadata: sessionMetadataContract,

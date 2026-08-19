@@ -1,12 +1,3 @@
-/**
- * `agentLifecycle` domain — builtin agent profile contributions.
- *
- * Registers the default `agent` profile plus the `coder` / `explore` task-agent
- * profiles. Each profile is self-contained: its structured `renderSystemPrompt`
- * merges the shared base template with its own role text at call time, so a
- * child agent no longer inherits the parent's prompt through a runtime overlay.
- */
-
 import { collectGitContext } from './gitContext';
 import { registerAgentProfile } from '#/app/agentProfileCatalog/contribution';
 import {
@@ -28,6 +19,11 @@ const AGENT_TOOLS = [
   'TaskList',
   'TaskOutput',
   'TaskStop',
+  'list_threads',
+  'read_thread',
+  'send_message_to_thread',
+  'wait_threads',
+  'WaitFor',
   'CronCreate',
   'CronList',
   'CronDelete',
@@ -51,9 +47,6 @@ const AGENT_TOOLS = [
   'GetGoal',
   'SetGoalBudget',
   'UpdateGoal',
-  // TowerInit stays in the default allowlist so the main agent can enter
-  // tower mode; the rest of the Tower* set is activated by TowerInit.
-  'TowerInit',
   'mcp__*',
 ] as const;
 
@@ -80,6 +73,7 @@ const CODER_TOOLS = [
   'TaskOutput',
   'TaskStop',
   'TodoList',
+  'WaitFor',
   'WebSearch',
   'FetchURL',
   'Write',

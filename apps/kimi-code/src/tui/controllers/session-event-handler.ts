@@ -120,6 +120,8 @@ export interface SessionEventHost {
   updateTerminalTitle(): void;
   sendQueuedMessage(session: Session, item: QueuedMessage): void;
   shiftQueuedMessage(): QueuedMessage | undefined;
+  handleTurnStarted?(event: TurnStartedEvent): void;
+  handleTurnEnded?(event: TurnEndedEvent): void;
   readonly btwPanelController: BtwPanelController;
   readonly tasksBrowserController: TasksBrowserController;
 }
@@ -320,6 +322,7 @@ export class SessionEventHandler {
   // ---------------------------------------------------------------------------
 
   private handleTurnBegin(event: TurnStartedEvent): void {
+    this.host.handleTurnStarted?.(event);
     this.currentTurnHasAssistantText = false;
     if (event.origin?.kind === 'plugin_command') {
       this.pluginCommandTurns.set(String(event.turnId), event.origin.pluginId);
@@ -369,6 +372,7 @@ export class SessionEventHandler {
   }
 
   private handleTurnEnd(event: TurnEndedEvent, sendQueued: (item: QueuedMessage) => void): void {
+    this.host.handleTurnEnded?.(event);
     this.host.streamingUI.flushNow();
     this.clearStepRetry();
     if (event.reason === 'cancelled') {
@@ -672,7 +676,7 @@ export class SessionEventHandler {
     const tc = this.host.streamingUI.getToolComponent(event.toolCallId);
     if (tc === undefined) return;
     if (event.update.kind === 'status') {
-      tc.appendProgress(text);
+      tc.appendProgress(text, { replace: event.update.replace === true });
       return;
     }
     if (event.update.kind === 'stdout' || event.update.kind === 'stderr') {

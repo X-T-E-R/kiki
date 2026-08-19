@@ -1,9 +1,3 @@
-/**
- * Error facade — aggregates every domain's error contribution into the unified
- * `ErrorCodes` const and re-exports the error primitives. Importing this
- * module registers every domain's codes.
- */
-
 import { CoreErrors } from '#/_base/errors/codes';
 import { AgentLifecycleErrors } from '#/session/agentLifecycle/errors';
 import { AuthErrors } from '#/app/auth/errors';
@@ -14,6 +8,7 @@ import { ConfigErrors } from '#/app/config/errors';
 import { CapabilityErrors } from '#/app/capability/errors';
 import { CronErrors } from '#/app/cron/errors';
 import { DebugErrors } from '#/debug/errors';
+import { EventErrors } from '#/app/event/errors';
 import { FileErrors } from '#/app/file/fileService';
 import { FsErrors } from '#/workspace/workspaceFs/internal/errors';
 import { FullCompactionErrors } from '#/agent/fullCompaction/errors';
@@ -30,6 +25,7 @@ import { ModelsDevImportErrors } from '#/app/kosongConfig/errors';
 import { SessionExportErrors } from '#/app/sessionExport/errors';
 import { SessionErrors } from '#/session/errors';
 import { SkillErrors } from '#/app/skillCatalog/errors';
+import { StateErrors } from '#/state/errors';
 import { StorageErrors } from '#/persistence/interface/storage';
 import { TerminalErrors } from '#/os/interface/terminalErrors';
 import { UsageErrors } from '#/agent/usage/errors';
@@ -79,6 +75,8 @@ export { WorkspaceErrors } from '#/app/workspace/errors';
 export { AgentProfileRouteErrors } from '#/app/agentProfileCatalog/errors';
 export { AgentProfileWriteErrors } from '#/workspace/workspaceAgentProfileLoader/errors';
 export { McpJsonWriteErrors } from '#/workspace/workspaceMcpConfig/errors';
+export { EventErrors } from '#/app/event/errors';
+export { StateErrors } from '#/state/errors';
 
 export const ErrorCodes = {
   ...CoreErrors.codes,
@@ -116,6 +114,8 @@ export const ErrorCodes = {
   ...AgentProfileRouteErrors.codes,
   ...AgentProfileWriteErrors.codes,
   ...McpJsonWriteErrors.codes,
+  ...EventErrors.codes,
+  ...StateErrors.codes,
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

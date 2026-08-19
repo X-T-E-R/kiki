@@ -1,11 +1,3 @@
-/**
- * `kosong/model` domain — `IModelService` implementation.
- *
- * The in-memory model registry plus the default-model pointer. Holds no
- * config dependency: the persistence bridge hydrates it via `loadAll` and
- * persists the change events it fires. Bound at App scope.
- */
-
 import { Disposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';

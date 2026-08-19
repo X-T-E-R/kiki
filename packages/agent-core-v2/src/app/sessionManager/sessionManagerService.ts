@@ -1,3 +1,4 @@
+
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { Emitter, type Event, type IWaitUntil } from '#/_base/event';
 import { ScopeActivation, registerScopedService, type ISessionScopeHandle } from '#/_base/di/scope';
@@ -18,7 +19,11 @@ import {
 import type { SessionLifecycleService } from '#/workspace/sessionLifecycle/sessionLifecycleService';
 import { IWorkspaceInstanceManager } from '#/workspace/workspaceInstance/workspaceInstanceManager';
 
-import { ISessionManager, type CreateManagedSessionOptions } from './sessionManager';
+import {
+  ISessionManager,
+  type CreateManagedSessionOptions,
+  type UnguardedSessionLifecycle,
+} from './sessionManager';
 
 interface SessionControllerEntry {
   readonly workspaceId: string;
@@ -32,12 +37,14 @@ export class SessionManager implements ISessionManager {
   declare readonly _serviceBrand: undefined;
   private readonly sessions = new Map<string, ISessionScopeHandle>();
   private readonly owners = new Map<string, SessionLifecycleService>();
+  private readonly pendingResumes = new Map<string, Promise<ISessionScopeHandle | undefined>>();
+  private readonly resumeFailures = new Map<string, Error>();
+  private readonly lifecycleChains = new Map<string, Promise<void>>();
   private readonly controllers = new Map<string, SessionControllerEntry>();
   private readonly controllerEntries = new Set<SessionControllerEntry>();
   private readonly controllerWorkspaces = new Map<SessionLifecycleService, string>();
   private readonly workspaceOperations = new Map<string, Set<Promise<unknown>>>();
   private readonly closingWorkspaces = new Set<string>();
-  private readonly resuming = new Map<string, Promise<ISessionScopeHandle | undefined>>();
   private readonly willCreateEmitter = new Emitter<SessionWillCreateEvent>();
   readonly onWillCreateSession: Event<SessionWillCreateEvent> = this.willCreateEmitter.event;
   private readonly didCreateEmitter = new Emitter<SessionCreatedEvent & IWaitUntil>();
@@ -62,38 +69,88 @@ export class SessionManager implements ISessionManager {
         ? { root: options.workDir }
         : { workspaceId: options.workspaceId, root: options.workDir },
     );
-    return this.runWorkspaceOperation(
-      lease.instance.id,
-      () => this.controllerForWorkspace(lease.instance.id).create(options),
-      () => lease.dispose(),
-    );
+    const workspaceId = lease.instance.id;
+    const create = () =>
+      this.runWorkspaceOperation(
+        workspaceId,
+        () => this.controllerForWorkspace(workspaceId).create(options),
+        () => lease.dispose(),
+      );
+    if (options.sessionId === undefined) return create();
+    return this.serializeLifecycle(options.sessionId, create);
   }
 
-  resume(sessionId: string, options?: ResumeSessionOptions): Promise<ISessionScopeHandle | undefined> {
-    const inflight = this.resuming.get(sessionId);
-    if (inflight !== undefined) return inflight;
-    const live = this.sessions.get(sessionId);
-    if (live !== undefined) return Promise.resolve(live);
-    const promise = this.doResume(sessionId, options).finally(() => this.resuming.delete(sessionId));
-    this.resuming.set(sessionId, promise);
-    return promise;
-  }
-
-  private async doResume(
+  async resume(
     sessionId: string,
     options?: ResumeSessionOptions,
   ): Promise<ISessionScopeHandle | undefined> {
-    const target = await this.controllerForSession(sessionId);
-    if (target === undefined) return undefined;
-    return this.runWorkspaceOperation(
-      target.workspaceId,
-      () => target.controller.resume(sessionId, options),
-      target.release,
-    );
+    const inflight = this.pendingResumes.get(sessionId);
+    if (inflight !== undefined) return inflight;
+    this.resumeFailures.delete(sessionId);
+    const promise = this.serializeLifecycle(sessionId, async () => {
+      const target = await this.controllerForSession(sessionId);
+      if (target === undefined) return undefined;
+      return this.runWorkspaceOperation(
+        target.workspaceId,
+        () => target.controller.resume(sessionId, options),
+        target.release,
+      );
+    }).finally(() => this.pendingResumes.delete(sessionId));
+    this.pendingResumes.set(sessionId, promise);
+    void promise.catch((error: unknown) => {
+      this.resumeFailures.set(
+        sessionId,
+        error instanceof Error ? error : new Error('session resume failed'),
+      );
+    });
+    return promise;
   }
 
   get(sessionId: string): ISessionScopeHandle | undefined {
     return this.sessions.get(sessionId);
+  }
+
+  async whenResumeSettled(sessionId: string): Promise<void> {
+    await this.pendingResumes.get(sessionId);
+    const failure = this.resumeFailures.get(sessionId);
+    if (failure !== undefined) throw failure;
+    await this.owners.get(sessionId)?.whenResumeSettled(sessionId);
+  }
+
+  private serializeLifecycle<T>(sessionId: string, work: () => Promise<T>): Promise<T> {
+    const prev = this.lifecycleChains.get(sessionId) ?? Promise.resolve();
+    const run = prev.then(work, work);
+    const next = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.lifecycleChains.set(sessionId, next);
+    void next.finally(() => {
+      if (this.lifecycleChains.get(sessionId) === next) this.lifecycleChains.delete(sessionId);
+    });
+    return run;
+  }
+
+  private serializeLifecycleForKeys<T>(keys: readonly string[], work: () => Promise<T>): Promise<T> {
+    const [first, ...rest] = keys;
+    if (first === undefined) return work();
+    return this.serializeLifecycle(first, () => this.serializeLifecycleForKeys(rest, work));
+  }
+
+  private lifecycleKeys(...ids: (string | undefined)[]): string[] {
+    return [...new Set(ids.filter((id): id is string => id !== undefined))].sort();
+  }
+
+  withLifecycleSerialization<T>(
+    sessionId: string,
+    work: (unguarded: UnguardedSessionLifecycle) => Promise<T>,
+  ): Promise<T> {
+    return this.serializeLifecycle(sessionId, () =>
+      work({
+        archive: () => this.archiveInner(sessionId),
+        restore: () => this.restoreInner(sessionId),
+      }),
+    );
   }
 
   list(): readonly ISessionScopeHandle[] {
@@ -101,18 +158,22 @@ export class SessionManager implements ISessionManager {
   }
 
   async close(sessionId: string): Promise<void> {
-    const controller = this.owners.get(sessionId);
-    if (controller === undefined) return;
-    const workspaceId = this.controllerWorkspaces.get(controller);
-    if (workspaceId === undefined) return;
-    await this.runWorkspaceOperation(workspaceId, () => controller.close(sessionId));
+    await this.serializeLifecycle(sessionId, async () => {
+      const controller = this.owners.get(sessionId);
+      if (controller === undefined) return;
+      const workspaceId = this.controllerWorkspaces.get(controller);
+      if (workspaceId === undefined) return;
+      await this.runWorkspaceOperation(workspaceId, () => controller.close(sessionId));
+    });
   }
 
   async closeWorkspace(workspaceId: string): Promise<void> {
     this.closingWorkspaces.add(workspaceId);
     try {
       await this.waitForWorkspaceOperations(workspaceId);
-      const entries = [...this.controllerEntries].filter((entry) => entry.workspaceId === workspaceId);
+      const entries = [...this.controllerEntries].filter(
+        (entry) => entry.workspaceId === workspaceId,
+      );
       for (const entry of entries) {
         for (const handle of entry.controller.list()) await entry.controller.close(handle.id);
       }
@@ -122,7 +183,7 @@ export class SessionManager implements ISessionManager {
     }
   }
 
-  async archive(sessionId: string): Promise<void> {
+  private async archiveInner(sessionId: string): Promise<void> {
     const target = await this.controllerForSession(sessionId);
     if (target === undefined) return;
     await this.runWorkspaceOperation(
@@ -132,7 +193,14 @@ export class SessionManager implements ISessionManager {
     );
   }
 
-  async restore(sessionId: string, options?: ResumeSessionOptions): Promise<ISessionScopeHandle | undefined> {
+  async archive(sessionId: string): Promise<void> {
+    await this.serializeLifecycle(sessionId, () => this.archiveInner(sessionId));
+  }
+
+  private async restoreInner(
+    sessionId: string,
+    options?: ResumeSessionOptions,
+  ): Promise<ISessionScopeHandle | undefined> {
     const target = await this.controllerForSession(sessionId);
     if (target === undefined) return undefined;
     return this.runWorkspaceOperation(
@@ -142,45 +210,61 @@ export class SessionManager implements ISessionManager {
     );
   }
 
+  async restore(sessionId: string, options?: ResumeSessionOptions): Promise<ISessionScopeHandle | undefined> {
+    return this.serializeLifecycle(sessionId, () => this.restoreInner(sessionId, options));
+  }
+
   async delete(sessionId: string): Promise<void> {
-    const target = await this.controllerForSession(sessionId);
-    if (target === undefined) {
-      throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
-    }
-    await this.runWorkspaceOperation(
-      target.workspaceId,
-      () => target.controller.delete(sessionId),
-      target.release,
-    );
+    await this.serializeLifecycle(sessionId, async () => {
+      const target = await this.controllerForSession(sessionId);
+      if (target === undefined) {
+        throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
+      }
+      await this.runWorkspaceOperation(
+        target.workspaceId,
+        () => target.controller.delete(sessionId),
+        target.release,
+      );
+    });
   }
 
   async fork(options: ForkSessionOptions): Promise<ISessionScopeHandle> {
-    const target = await this.controllerForSession(options.sourceSessionId);
-    if (target === undefined) {
-      throw new Error2(
-        ErrorCodes.SESSION_NOT_FOUND,
-        `session ${options.sourceSessionId} does not exist`,
-      );
-    }
-    return this.runWorkspaceOperation(
-      target.workspaceId,
-      () => target.controller.fork(options),
-      target.release,
+    return this.serializeLifecycleForKeys(
+      this.lifecycleKeys(options.sourceSessionId, options.newSessionId),
+      async () => {
+        const target = await this.controllerForSession(options.sourceSessionId);
+        if (target === undefined) {
+          throw new Error2(
+            ErrorCodes.SESSION_NOT_FOUND,
+            `session ${options.sourceSessionId} does not exist`,
+          );
+        }
+        return this.runWorkspaceOperation(
+          target.workspaceId,
+          () => target.controller.fork(options),
+          target.release,
+        );
+      },
     );
   }
 
   async createChild(options: CreateChildSessionOptions): Promise<ISessionScopeHandle> {
-    const target = await this.controllerForSession(options.sourceSessionId);
-    if (target === undefined) {
-      throw new Error2(
-        ErrorCodes.SESSION_NOT_FOUND,
-        `session ${options.sourceSessionId} does not exist`,
-      );
-    }
-    return this.runWorkspaceOperation(
-      target.workspaceId,
-      () => target.controller.createChild(options),
-      target.release,
+    return this.serializeLifecycleForKeys(
+      this.lifecycleKeys(options.sourceSessionId, options.newSessionId),
+      async () => {
+        const target = await this.controllerForSession(options.sourceSessionId);
+        if (target === undefined) {
+          throw new Error2(
+            ErrorCodes.SESSION_NOT_FOUND,
+            `session ${options.sourceSessionId} does not exist`,
+          );
+        }
+        return this.runWorkspaceOperation(
+          target.workspaceId,
+          () => target.controller.createChild(options),
+          target.release,
+        );
+      },
     );
   }
 
@@ -196,7 +280,9 @@ export class SessionManager implements ISessionManager {
     this.closingWorkspaces.clear();
     this.sessions.clear();
     this.owners.clear();
-    this.resuming.clear();
+    this.pendingResumes.clear();
+    this.resumeFailures.clear();
+    this.lifecycleChains.clear();
     this.willCreateEmitter.dispose();
     this.didCreateEmitter.dispose();
     this.willCloseEmitter.dispose();

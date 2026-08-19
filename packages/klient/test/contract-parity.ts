@@ -83,6 +83,10 @@ import type {
 } from '@moonshot-ai/agent-core-v2/app/capability/types';
 import type { ExperimentalFeatureState } from '@moonshot-ai/agent-core-v2/app/flag/flag';
 import type {
+  FileMeta,
+  SaveOptions,
+} from '@moonshot-ai/agent-core-v2/app/file/fileService';
+import type {
   FsBrowseResponse,
   FsHomeResponse,
 } from '@moonshot-ai/agent-core-v2/app/hostFolderBrowser/hostFolderBrowser';
@@ -182,6 +186,7 @@ import {
   promptPayloadSchema,
   promptSkillActivationSchema,
   promptWithSkillsPayloadSchema,
+  promptWithSkillsResultSchema,
   runCommandPayloadSchema,
   runShellCommandPayloadSchema,
   runtimeBindingSchema,
@@ -275,6 +280,10 @@ import {
   refreshProviderModelsResponseSchema,
 } from '../src/contract/global/providerDiscovery.js';
 import { experimentalFeatureStateSchema } from '../src/contract/global/flags.js';
+import {
+  fileMetaSchema,
+  fileSaveOptionsSchema,
+} from '../src/contract/global/files.js';
 import {
   fsBrowseResponseSchema,
   fsHomeResponseSchema,
@@ -426,6 +435,11 @@ const _experimentalFeatureState: AssertWire<
 // hostFs.ts
 const _fsBrowseResponse: AssertWire<typeof fsBrowseResponseSchema, FsBrowseResponse> = true;
 const _fsHomeResponse: AssertWire<typeof fsHomeResponseSchema, FsHomeResponse> = true;
+
+// files.ts (`fileGetResultSchema` has no engine counterpart — the wire
+// adaptation replaces `GetResult.stream` with base64 `data`).
+const _fileMeta: AssertWire<typeof fileMetaSchema, FileMeta> = true;
+const _fileSaveOptions: AssertWire<typeof fileSaveOptionsSchema, SaveOptions> = true;
 
 // catalog.ts / providerDiscovery.ts — protocol wire shapes derived through the
 // catalog and discovery service interfaces.
@@ -630,6 +644,11 @@ const _steerPayload: AssertWireToEngine<typeof steerPayloadSchema, SteerPayload>
 const _activateSkillPayload: AssertWire<typeof activateSkillPayloadSchema, ActivateSkillPayload> =
   true;
 const _promptLaunchResult: AssertWire<typeof promptLaunchResultSchema, PromptLaunchResult> = true;
+type PromptWithSkillsResult = Awaited<ReturnType<IAgentSkillService['promptWithSkills']>>;
+const _promptWithSkillsResult: AssertWire<
+  typeof promptWithSkillsResultSchema,
+  PromptWithSkillsResult
+> = true;
 const _cancelPayload: AssertWire<typeof cancelPayloadSchema, CancelPayload> = true;
 const _runShellCommandPayload: AssertWire<
   typeof runShellCommandPayloadSchema,

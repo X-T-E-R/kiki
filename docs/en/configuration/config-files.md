@@ -40,7 +40,7 @@ model = "k3"
 max_context_size = 1048576
 capabilities = [ "thinking", "always_thinking", "image_in", "video_in", "tool_use" ]
 display_name = "K3"
-support_efforts = [ "max" ]
+support_efforts = [ "low", "high", "max" ]
 default_effort = "max"
 
 [models."kimi-code/kimi-for-coding"]
@@ -265,6 +265,18 @@ A configured `[secondary_model.models]` table is a soft allowlist by default: th
 
 In the interactive TUI, the [`/secondary_model`](../reference/slash-commands.md) command opens a model picker that writes this section and live-applies it to the current session, so newly spawned subagents bind the new secondary model right away.
 
+A typical soft pool lists the aliases and the selection hints shown to the main agent:
+
+```toml
+[secondary_model]
+default_model = "kimi-code/kimi-for-coding-highspeed"
+
+[secondary_model.models]
+"kimi-code/k3" = "Pick this for hard problems. Strong at complex reasoning, algorithm design, deep debugging, math, and systematic challenges."
+"kimi-code/kimi-for-coding-highspeed" = "Fast but priced higher. Good for latency-sensitive tasks: daily refactoring, code explanation, small edits, and summaries."
+"kimi-code/kimi-for-coding" = "A balanced coding workhorse. Good for most feature development and code-change tasks."
+```
+
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `default_model` | `string` | — | Default key from `[secondary_model.models]`. Without an explicit pool, it forms a legacy single-entry soft pool |
@@ -276,6 +288,31 @@ In the interactive TUI, the [`/secondary_model`](../reference/slash-commands.md)
 | Other fields | — | — | Accepts every field of [`[models."<alias>".overrides]`](#models) (`max_context_size`, `max_output_size`, `support_efforts`, …) as a model patch applied only to subagents |
 
 Every field besides `model` forms a patch: when at least one patch field is set, the runtime synthesizes a derived model entry in memory (a copy of the pointed entry with the patch merged into its overrides, patch winning conflicts) and subagents bind that derived entry; with no patch fields, subagents bind the pointed entry directly. The derived entry lives only in memory (never written back to `config.toml`) and is hidden from model-selection lists.
+
+Different pool entries can carry different default thinking levels by registering a standalone model variant, overriding its `default_effort`, and listing both aliases. The variant does not inherit fields from the original entry, so copy `capabilities`, `support_efforts`, and the other model metadata in full; `default_effort` must be one of the declared `support_efforts` values:
+
+```toml
+# "kimi-code/k3" is provisioned by /login (default: high); this registers
+# a max-effort variant of the same model.
+[models.k3-max]
+provider = "managed:kimi-code"
+model = "k3"
+max_context_size = 1048576
+capabilities = [ "thinking", "always_thinking", "image_in", "video_in", "tool_use" ]
+support_efforts = [ "low", "high", "max" ]
+
+[models.k3-max.overrides]
+default_effort = "max"
+
+[secondary_model]
+default_model = "kimi-code/k3"
+
+[secondary_model.models]
+"kimi-code/k3" = "Default high effort. Good for most implementation, analysis, and multi-turn interaction tasks."
+k3-max = "The same model at max thinking effort. Good for the hardest subtasks."
+```
+
+A global `[thinking].effort` still takes priority for both the main agent and subagents; the variant's default applies only when the global effort is unset.
 
 ## `thinking`
 

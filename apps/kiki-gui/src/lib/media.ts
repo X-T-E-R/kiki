@@ -52,6 +52,7 @@ function refFromSource(
     case 'url':
       return { kind, url: source.url, mime: mimeFromDataUrl(source.url) };
     case 'file':
+    case 'session_media':
       return { kind, fileId: source.file_id };
   }
 }

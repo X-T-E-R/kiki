@@ -583,12 +583,15 @@ describe('AgentProfileService.bind', () => {
     expect(svc.data().profileName).toBe(DEFAULT_AGENT_PROFILE_NAME);
   });
 
-  it('rejects binding a different profile once bound', async () => {
+  it('rejects binding a different profile once bound before catalog resolution', async () => {
     const { profile: svc } = buildContext();
 
     await svc.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
 
     await expect(svc.bind({ profile: 'coder', model: MOCK_MODEL })).rejects.toThrow(
+      /already bound/,
+    );
+    await expect(svc.bind({ profile: 'missing-profile', model: MOCK_MODEL })).rejects.toThrow(
       /already bound/,
     );
     expect(svc.data().profileName).toBe(DEFAULT_AGENT_PROFILE_NAME);

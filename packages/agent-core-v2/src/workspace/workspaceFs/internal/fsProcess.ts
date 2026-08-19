@@ -1,12 +1,3 @@
-/**
- * `workspaceFs` domain — `runCommand` helper over `IHostProcessService`.
- *
- * Collects a child process's full stdout/stderr and exit code through the
- * host process abstraction, with optional `AbortSignal` support (the caller
- * decides timeout semantics). Kept as a standalone helper so it can be
- * unit-tested with a fake process service.
- */
-
 import { type Readable } from 'node:stream';
 
 import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';

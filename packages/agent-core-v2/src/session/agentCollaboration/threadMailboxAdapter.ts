@@ -192,8 +192,13 @@ async function warnIfLegacyMailboxPresent(
   log: ILogService,
   path: string,
 ): Promise<void> {
-  const entries = await fs.readdir(path).catch(() => undefined);
-  if (entries === undefined || entries.length === 0) return;
+  let entries;
+  try {
+    entries = await fs.readdir(path);
+  } catch {
+    return;
+  }
+  if (entries.length === 0) return;
   log.warn('Legacy named-agent mailbox data is no longer used and can be deleted manually.', {
     path,
   });

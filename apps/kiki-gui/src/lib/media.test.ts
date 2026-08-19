@@ -38,11 +38,15 @@ describe('mediaFromContentParts', () => {
     ]);
   });
 
-  it('keeps upload-id sources as non-renderable refs', () => {
+  it('keeps upload and session-owned sources as non-renderable refs', () => {
     const content: Message['content'] = [
       { type: 'image', source: { kind: 'file', file_id: 'upl_1' } },
+      { type: 'video', source: { kind: 'session_media', file_id: 'media_1' } },
     ];
-    expect(mediaFromContentParts(content)).toEqual([{ kind: 'image', fileId: 'upl_1' }]);
+    expect(mediaFromContentParts(content)).toEqual([
+      { kind: 'image', fileId: 'upl_1' },
+      { kind: 'video', fileId: 'media_1' },
+    ]);
   });
 
   it('keeps file parts as chip metadata', () => {

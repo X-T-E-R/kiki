@@ -1,14 +1,3 @@
-/**
- * `tools` domain — `BashTool` implementation for shell command execution.
- *
- * Acquires the host process capability through `agentRuntime`, resolves command
- * paths through the session's `workspaceContext`, and renders the default cwd
- * from `sessionContext`. Foreground and detached lifecycle, output persistence,
- * timeouts, and cancellation are owned by `agentTask`; `toolPolicy` gates
- * background controls and `config` supplies task timing behavior. Bound at
- * Agent scope.
- */
-
 import { IAgentTaskService } from '#/agent/task/task';
 import { resolveAgentTaskConfig } from '#/agent/task/configSection';
 import { IConfigService } from '#/app/config/config';

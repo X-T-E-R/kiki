@@ -261,6 +261,7 @@ function lifecycleHarness(initial: readonly IAgentScopeHandle[]) {
   const onDidCreate = new Emitter<IAgentScopeHandle>();
   const service: AgentLifecycle & { create: ReturnType<typeof vi.fn> } = {
     _serviceBrand: undefined,
+    onWillCreate: Event.None as AgentLifecycle['onWillCreate'],
     onDidCreate: onDidCreate.event,
     onDidDispose: Event.None as AgentLifecycle['onDidDispose'],
     create: vi.fn(async () => { throw new Error('unexpected wake'); }),

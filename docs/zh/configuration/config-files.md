@@ -40,7 +40,7 @@ model = "k3"
 max_context_size = 1048576
 capabilities = [ "thinking", "always_thinking", "image_in", "video_in", "tool_use" ]
 display_name = "K3"
-support_efforts = [ "max" ]
+support_efforts = [ "low", "high", "max" ]
 default_effort = "max"
 
 [models."kimi-code/kimi-for-coding"]
@@ -265,6 +265,18 @@ Thinking effort 独立解析，优先级为：工具 `thinking_effort` → profi
 
 在交互式 TUI 中，可以使用 [`/secondary_model`](../reference/slash-commands.md) 命令打开模型选择器来设置该配置：选择后会写入本小节配置，并在当前会话立即生效——之后派生的子 Agent 会直接绑定新的次主力模型。
 
+典型的软模型池会列出模型 alias，以及 main agent 选择时看到的说明：
+
+```toml
+[secondary_model]
+default_model = "kimi-code/kimi-for-coding-highspeed"
+
+[secondary_model.models]
+"kimi-code/k3" = "难题选它。擅长复杂推理、算法设计、深度调试、数学和系统性难题。"
+"kimi-code/kimi-for-coding-highspeed" = "速度快但单价较高。适合日常重构、代码解释、小改动、总结等看重响应速度的任务。"
+"kimi-code/kimi-for-coding" = "均衡的编码主力。适合大多数功能开发和代码修改任务。"
+```
+
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `default_model` | `string` | — | `[secondary_model.models]` 中的默认 key。未显式配置模型池时，它会形成兼容用的单条目软白名单 |
@@ -276,6 +288,30 @@ Thinking effort 独立解析，优先级为：工具 `thinking_effort` → profi
 | 其他字段 | — | — | 接受 [`[models."<alias>".overrides]`](#models) 的全部字段（`max_context_size`、`max_output_size`、`support_efforts` 等），作为仅对子 Agent 生效的模型补丁 |
 
 `model` 之外的字段构成补丁：存在补丁字段时，运行时会在内存中合成一个派生模型条目（被指向条目的拷贝，补丁并入其 overrides 且补丁优先），子 Agent 实际绑定该派生条目；没有补丁字段时，子 Agent 直接绑定 `model` 指向的条目。派生条目只存在于内存中（不写回 `config.toml`），也不会出现在模型选择列表里。
+
+模型池中的不同条目可以携带不同的默认 Thinking 档位：为同一底层模型注册一个独立变体，只覆盖它的 `default_effort`，再把两个 alias 都列进模型池。变体不会继承原条目的字段，因此必须完整复制 `capabilities`、`support_efforts` 等模型元数据；`default_effort` 也必须是 `support_efforts` 中声明的值：
+
+```toml
+# "kimi-code/k3" 由 /login 提供（默认 high 档）；这里为同一模型注册一个 max 档位变体。
+[models.k3-max]
+provider = "managed:kimi-code"
+model = "k3"
+max_context_size = 1048576
+capabilities = [ "thinking", "always_thinking", "image_in", "video_in", "tool_use" ]
+support_efforts = [ "low", "high", "max" ]
+
+[models.k3-max.overrides]
+default_effort = "max"
+
+[secondary_model]
+default_model = "kimi-code/k3"
+
+[secondary_model.models]
+"kimi-code/k3" = "默认 high 档位。适合大多数实现、分析和多轮交互任务。"
+k3-max = "同一模型的 max Thinking 档位。适合最难的子任务。"
+```
+
+全局 `[thinking].effort` 对 main agent 与 subagent 仍有更高优先级；只有全局 effort 未设置时，变体的默认档位才生效。
 
 ## `thinking`
 

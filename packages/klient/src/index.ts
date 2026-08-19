@@ -26,9 +26,11 @@ export type { Caller, ScopedCaller, ScopedStreamCaller } from './core/facade/glo
 
 export type {
   ConfigTargetLiteral,
+  FileDownload,
   GlobalAuthFacade,
   GlobalConfigFacade,
   GlobalFacade,
+  GlobalFilesFacade,
   GlobalFlagsFacade,
   GlobalHostFsFacade,
   GlobalThreadsFacade,
@@ -75,6 +77,7 @@ export type {
   PlanData,
   PromptLaunchResult,
   PromptWithSkillsInput,
+  PromptWithSkillsResult,
   SetModelResult,
   ShellCommandResult,
   ThinkingLevel,
@@ -113,6 +116,7 @@ export type {
   FsBrowseResponse,
   FsHomeResponse,
 } from '@moonshot-ai/agent-core-v2/app/hostFolderBrowser/hostFolderBrowser';
+export type { FileMeta } from '@moonshot-ai/agent-core-v2/app/file/fileService';
 export type {
   PluginCommandDef,
   PluginInfo,
