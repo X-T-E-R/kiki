@@ -55,10 +55,13 @@ import {
   arrangePinnedFirst,
   dedupeSessions,
   groupSessionsByTime,
+  groupSessionsByWorkspace,
   mergeSessionFirstPage,
+  sortSessionItems,
+  type SessionGroup,
   type SessionListData,
-  type TimeGroup,
 } from './lib/sessionList';
+import { useLayoutPreferences, writeLayoutPreferences } from './lib/layoutPrefs';
 import { readLastSessionId, writeDesktopPrefs } from './lib/settings';
 import { anyOverlayOpen } from './lib/uiBusy';
 import { resolveWindowTitle, type WindowRoute } from './lib/windowTitle';
@@ -94,6 +97,7 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [workspaceFilter, setWorkspaceFilter] = useState<string | undefined>(undefined);
+  const layoutPrefs = useLayoutPreferences();
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [dirtyIds, setDirtyIds] = useState<readonly string[]>([]);
@@ -195,14 +199,35 @@ export function App() {
     [workspacesQuery.data],
   );
 
+  // The canonical session order powers QuickSwitcher / Ctrl+Tab hopping and the
+  // /new recent chips, so it stays pinned-first + newest-first regardless of
+  // the sidebar's view preference. Grouping applies its own sort internally.
   const sessions = useMemo(
     () => arrangePinnedFirst(dedupeSessions(sessionsQuery.data)),
     [sessionsQuery.data],
   );
-  const sessionGroups = useMemo<readonly TimeGroup[]>(
-    () => groupSessionsByTime(sessions, Date.now()),
-    [sessions],
-  );
+  const sessionGroups = useMemo<readonly SessionGroup[]>(() => {
+    const sorted = sortSessionItems(sessions, layoutPrefs.sortBy);
+    const nowMs = Date.now();
+    if (layoutPrefs.groupBy === 'workspace') {
+      return groupSessionsByWorkspace(
+        sorted,
+        workspaceOptions,
+        (workspace) => workspace.name,
+        t('sidebar.groupUngrouped'),
+      );
+    }
+    return groupSessionsByTime(
+      sorted,
+      nowMs,
+      {
+        pinned: t('sidebar.groupPinned'),
+        week: t('sidebar.groupWeek'),
+        month: t('sidebar.groupMonth'),
+        older: t('sidebar.groupOlder'),
+      },
+    );
+  }, [sessions, workspaceOptions, layoutPrefs.groupBy, layoutPrefs.sortBy, t]);
 
   // document.title follows the route: session title, page name, or bare Kiki.
   useEffect(() => {
@@ -342,6 +367,10 @@ export function App() {
         onWorkspaceFilter={setWorkspaceFilter}
         showArchived={showArchived}
         onToggleArchived={() => { setShowArchived((value) => !value); }}
+        groupBy={layoutPrefs.groupBy}
+        onGroupBy={(groupBy) => { writeLayoutPreferences({ groupBy }); }}
+        sortBy={layoutPrefs.sortBy}
+        onSortBy={(sortBy) => { writeLayoutPreferences({ sortBy }); }}
         onNewSession={() => { void navigate('/new'); }}
       />
 

@@ -3,12 +3,20 @@
  * and session meta (model, cwd, message count, context/token usage).
  */
 
-import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import type { GoalSnapshot, Task } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../i18n';
+import {
+  RAIL_DEFAULT_WIDTH,
+  RAIL_MAX_WIDTH,
+  RAIL_MIN_WIDTH,
+  useLayoutPreferences,
+  usePaneResize,
+  writeLayoutPreferences,
+} from '../lib/layoutPrefs';
 import { sortTasks } from '../lib/sorting';
 import type { AgentForest } from '../state/agentTree';
 import type { SessionViewState, TodoItem } from '../state/transcript';
@@ -359,12 +367,42 @@ export function RightRail({
   const showTodos = state.todos.length > 0;
   const showTasks = backgroundTasks.length > 0;
 
+  const layoutPrefs = useLayoutPreferences();
+  const [railWidthValue, setRailWidthValue] = useState(layoutPrefs.railWidth);
+  useEffect(() => {
+    setRailWidthValue(layoutPrefs.railWidth);
+  }, [layoutPrefs.railWidth]);
+  const { startResize, reset } = usePaneResize({
+    value: railWidthValue,
+    min: RAIL_MIN_WIDTH,
+    max: RAIL_MAX_WIDTH,
+    direction: -1,
+    onChange: (value, final) => {
+      setRailWidthValue(value);
+      if (final) writeLayoutPreferences({ railWidth: value });
+    },
+    onReset: () => {
+      setRailWidthValue(RAIL_DEFAULT_WIDTH);
+      writeLayoutPreferences({ railWidth: RAIL_DEFAULT_WIDTH });
+    },
+  });
+
   return (
     <aside
       className={
-        className ?? 'flex h-full w-[300px] shrink-0 flex-col gap-5 overflow-y-auto border-l border-hairline bg-panel px-4 py-4'
+        className ?? 'app-rail'
       }
+      style={{ '--kiki-rail-width': `${railWidthValue}px` } as React.CSSProperties}
+      data-session-rail
     >
+      <div
+        data-rail-resizer
+        className="app-rail__resizer hidden lg:block"
+        aria-hidden
+        title={t('rail.resizeAria')}
+        onPointerDown={startResize}
+        onDoubleClick={reset}
+      />
       {showGoal ? (
         <RailSection title={t('rail.goal')}>
           <GoalSection goal={state.goal} goalUpdatedAt={state.goalUpdatedAt} />
