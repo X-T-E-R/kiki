@@ -319,6 +319,58 @@ function appendThinkingEffortConfigHint(statusCode: number, message: string): st
 The provider rejected the configured thinking effort. Non-Kimi providers receive effort strings without client-side mapping; choose an effort supported by the selected model. For Kimi models, check support_efforts and default_effort. See ${THINKING_EFFORT_CONFIG_DOCS_URL}`;
 }
 
+const STATUS_ERROR_BODY_SNIPPET_MAX_CHARS = 500;
+
+function truncateStatusErrorSnippet(text: string): string {
+  if (text.length <= STATUS_ERROR_BODY_SNIPPET_MAX_CHARS) return text;
+  return `${text.slice(0, STATUS_ERROR_BODY_SNIPPET_MAX_CHARS)}...`;
+}
+
+function readObjectStringProp(value: object, key: string): string | undefined {
+  const raw = (value as Record<string, unknown>)[key];
+  return typeof raw === 'string' ? raw : undefined;
+}
+
+function readNestedErrorObject(value: object): object | undefined {
+  const raw = (value as Record<string, unknown>)['error'];
+  return typeof raw === 'object' && raw !== null ? raw : undefined;
+}
+
+function extractStatusErrorBodySnippet(body: unknown): string | null {
+  if (body === null || body === undefined) return null;
+  if (typeof body === 'string') {
+    const trimmed = body.trim();
+    return trimmed.length === 0 ? null : truncateStatusErrorSnippet(trimmed);
+  }
+  if (typeof body !== 'object') return null;
+
+  let current: object | undefined = body;
+  for (let depth = 0; current !== undefined && depth < 4; depth += 1) {
+    const nestedMessage = readObjectStringProp(current, 'message');
+    if (nestedMessage !== undefined) {
+      const trimmed = nestedMessage.trim();
+      if (trimmed.length > 0) return truncateStatusErrorSnippet(trimmed);
+    }
+    current = readNestedErrorObject(current);
+  }
+
+  try {
+    const serialized = JSON.stringify(body);
+    if (serialized === undefined || serialized === '{}' || serialized === '[]') return null;
+    return truncateStatusErrorSnippet(serialized);
+  } catch {
+    return null;
+  }
+}
+
+function appendStatusErrorBodySnippet(statusCode: number, message: string, body: unknown): string {
+  if (statusCode !== 400) return message;
+  const snippet = extractStatusErrorBodySnippet(body);
+  if (snippet === null) return message;
+  if (message.includes(snippet)) return message;
+  return `${message} — ${snippet}`;
+}
+
 export function isContextOverflowErrorCode(code: string | null | undefined): boolean {
   return code === 'context_length_exceeded';
 }
@@ -329,22 +381,24 @@ export function normalizeAPIStatusError(
   requestId?: string | null,
   retryAfterMs?: number | null,
   traceId?: string | null,
+  body?: unknown,
 ): APIStatusError {
+  const displayMessage = appendStatusErrorBodySnippet(statusCode, message, body);
   if (statusCode === 429) {
     return new APIProviderRateLimitError(message, requestId, retryAfterMs, traceId);
   }
   if (isContextOverflowStatusError(statusCode, message)) {
-    return new APIContextOverflowError(statusCode, message, requestId, retryAfterMs, traceId);
+    return new APIContextOverflowError(statusCode, displayMessage, requestId, retryAfterMs, traceId);
   }
   if (isRequestTooLargeStatusError(statusCode, message)) {
-    return new APIRequestTooLargeError(statusCode, message, requestId, retryAfterMs, traceId);
+    return new APIRequestTooLargeError(statusCode, displayMessage, requestId, retryAfterMs, traceId);
   }
   if (isProviderOverloadStatusError(statusCode, message)) {
-    return new APIProviderOverloadedError(statusCode, message, requestId, retryAfterMs, traceId);
+    return new APIProviderOverloadedError(statusCode, displayMessage, requestId, retryAfterMs, traceId);
   }
   return new APIStatusError(
     statusCode,
-    appendThinkingEffortConfigHint(statusCode, message),
+    appendThinkingEffortConfigHint(statusCode, displayMessage),
     requestId,
     retryAfterMs,
     traceId,

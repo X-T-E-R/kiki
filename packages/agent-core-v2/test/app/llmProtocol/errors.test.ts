@@ -446,6 +446,38 @@ describe('normalizeAPIStatusError', () => {
     expect(error).not.toBeInstanceOf(APIRequestTooLargeError);
     expect(error).not.toBeInstanceOf(APIContextOverflowError);
   });
+
+  it('appends a truncated provider body fragment onto a bare 400 message', () => {
+    const error = normalizeAPIStatusError(
+      400,
+      '400 Bad Request',
+      'req-400',
+      null,
+      null,
+      { error: { message: "This model's maximum context length is 8192 tokens" } },
+    );
+    expect(error.constructor).toBe(APIStatusError);
+    expect(error.statusCode).toBe(400);
+    expect(error.message).toContain('400 Bad Request');
+    expect(error.message).toContain("This model's maximum context length is 8192 tokens");
+    expect(isRetryableGenerateError(error)).toBe(false);
+  });
+
+  it('falls back to the original 400 message when the body is missing', () => {
+    const error = normalizeAPIStatusError(400, '400 Bad Request');
+    expect(error.constructor).toBe(APIStatusError);
+    expect(error.message).toBe('400 Bad Request');
+    expect(isRetryableGenerateError(error)).toBe(false);
+  });
+
+  it('truncates a giant 400 body fragment', () => {
+    const error = normalizeAPIStatusError(400, '400 Bad Request', null, null, null, {
+      message: 'x'.repeat(800),
+    });
+    expect(error.message).toContain('400 Bad Request');
+    expect(error.message).toContain(`${'x'.repeat(500)}...`);
+    expect(error.message).not.toContain('x'.repeat(501));
+  });
 });
 
 describe('parseRetryAfterMs', () => {
