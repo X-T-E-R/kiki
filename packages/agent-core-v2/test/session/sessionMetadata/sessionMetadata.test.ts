@@ -11,7 +11,9 @@ import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { SessionMetadata } from '#/session/sessionMetadata/sessionMetadataService';
 import { ISessionStateService } from '#/session/state/sessionState';
 import { SessionStateService } from '#/session/state/sessionStateService';
+import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
@@ -52,6 +54,7 @@ describe('SessionMetadata', () => {
     ix.stub(ISessionIndexMirror, mirror);
     ix.set(ISessionStateService, new SyncDescriptor(SessionStateService));
     ix.set(IFileSystemStorageService, new SyncDescriptor(InMemoryStorageService));
+    ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
     ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
     ix.set(ISessionMetadata, new SyncDescriptor(SessionMetadata));
   });

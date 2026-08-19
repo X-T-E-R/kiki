@@ -84,6 +84,12 @@ class FakeSessionMetadata implements ISessionMetadata {
     return Promise.resolve(this.meta);
   }
 
+  usage(): SessionMeta['usage'] {
+    return this.meta.usage;
+  }
+
+  recordUsage(): void {}
+
   update(patch: SessionMetaPatch): Promise<void> {
     this.meta = { ...this.meta, ...patch };
     this.emitter.fire({ changed: Object.keys(patch) as (keyof SessionMeta)[] });

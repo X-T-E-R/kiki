@@ -1161,12 +1161,18 @@ export function resolveSessionFacts(
   }
   const agents = handle.accessor.get(IAgentLifecycleService).list();
   const main = agents.find((agent) => agent.id === MAIN_AGENT_ID);
+  const sessionUsage = handle.accessor.get(ISessionMetadata).usage() ?? persistedUsage;
   return {
     ...handle.accessor.get(ISessionActivityView).state(),
     usage:
       main === undefined
         ? undefined
-        : readSessionUsage(main, agents, core.accessor.get(IModelPricingService)),
+        : readSessionUsage(
+            main,
+            agents,
+            core.accessor.get(IModelPricingService),
+            sessionUsage,
+          ),
     live: true,
   };
 }
@@ -1203,9 +1209,15 @@ function applyModelPricing(
   byModel: ReadonlyMap<string, MutableModelTokenUsage>,
   pricing: IModelPricingService,
 ): void {
+  const tokensByModel: Record<string, number> = {};
   const costByModel: Record<string, number> = {};
   const unknownModels: string[] = [];
   for (const [model, modelUsage] of byModel) {
+    tokensByModel[model] =
+      modelUsage.inputOther +
+      modelUsage.output +
+      modelUsage.inputCacheRead +
+      modelUsage.inputCacheCreation;
     const cost = pricing.calculate(model, modelUsage);
     if (cost === undefined) {
       unknownModels.push(model);
@@ -1214,6 +1226,7 @@ function applyModelPricing(
       usage.total_cost_usd += cost;
     }
   }
+  usage.tokens_by_model = Object.keys(tokensByModel).length === 0 ? undefined : tokensByModel;
   usage.by_model = Object.keys(costByModel).length === 0 ? undefined : costByModel;
   usage.cost_unknown_models =
     unknownModels.length === 0 ? undefined : unknownModels.toSorted();
@@ -1244,18 +1257,16 @@ function readSessionUsage(
   main: IAgentScopeHandle,
   agents: readonly IAgentScopeHandle[],
   pricing: IModelPricingService,
+  persisted?: SessionUsageSummary,
 ): SessionUsage | undefined {
   try {
     const status = readLegacyStatus(main);
     if (status === undefined) return undefined;
-    const total = status.usage?.total;
+    const total = persisted?.total ?? status.usage?.total;
     const byModel = new Map<string, MutableModelTokenUsage>();
-    addModelUsage(byModel, status.usage?.byModel);
+    addModelUsage(byModel, persisted?.byModel ?? status.usage?.byModel);
     const activity = main.accessor.get(IAgentActivityView).state();
     const latestTurnId = activity.turn?.turnId ?? activity.lastTurn?.turnId;
-    // Token usage is the sum of every materialized Agent scope in the session.
-    // Context and turn_count remain main-agent facts: subagent turns are not
-    // session conversation turns, and unreadable subagent usage is skipped.
     const usage: SessionUsage = {
       input_tokens: total?.inputOther ?? 0,
       output_tokens: total?.output ?? 0,
@@ -1266,18 +1277,18 @@ function readSessionUsage(
       context_limit: status.maxContextTokens ?? 0,
       turn_count: latestTurnId === undefined ? 0 : latestTurnId + 1,
     };
-    for (const agent of agents) {
-      if (agent.id === MAIN_AGENT_ID) continue;
-      try {
-        const agentStatus = agent.accessor.get(IAgentUsageService).status();
-        const agentTotal = agentStatus.total;
-        usage.input_tokens += agentTotal?.inputOther ?? 0;
-        usage.output_tokens += agentTotal?.output ?? 0;
-        usage.cache_read_tokens += agentTotal?.inputCacheRead ?? 0;
-        usage.cache_creation_tokens += agentTotal?.inputCacheCreation ?? 0;
-        addModelUsage(byModel, agentStatus.byModel);
-      } catch {
-        // A partially materialized subagent must not block session projection.
+    if (persisted === undefined) {
+      for (const agent of agents) {
+        if (agent.id === MAIN_AGENT_ID) continue;
+        try {
+          const agentStatus = agent.accessor.get(IAgentUsageService).status();
+          const agentTotal = agentStatus.total;
+          usage.input_tokens += agentTotal?.inputOther ?? 0;
+          usage.output_tokens += agentTotal?.output ?? 0;
+          usage.cache_read_tokens += agentTotal?.inputCacheRead ?? 0;
+          usage.cache_creation_tokens += agentTotal?.inputCacheCreation ?? 0;
+          addModelUsage(byModel, agentStatus.byModel);
+        } catch {}
       }
     }
 

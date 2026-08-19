@@ -61,47 +61,9 @@ async function fetchAllSessions(client: KikiClient): Promise<Session[]> {
 }
 
 type ModelUsageRow = ReturnType<typeof groupUsageByModel>[number];
-type UsageCostDetails = Session['usage'] & {
-  readonly by_model?: Record<string, number>;
-  readonly cost_unknown_models?: readonly string[];
-};
 
 function modelUsageWithCosts(sessions: readonly Session[]): ModelUsageRow[] {
-  const baseRows = groupUsageByModel(sessions);
-  const costs = new Map<string, { costUsd: number; sessions: Set<string> }>();
-  for (const session of sessions) {
-    const details = session.usage as UsageCostDetails;
-    const entries = Object.entries(details.by_model ?? {});
-    if (entries.length === 0 && details.total_cost_usd > 0) {
-      entries.push([session.agent_config.model, details.total_cost_usd]);
-    }
-    for (const [model, costUsd] of entries) {
-      const entry = costs.get(model) ?? { costUsd: 0, sessions: new Set<string>() };
-      entry.costUsd += costUsd;
-      entry.sessions.add(session.id);
-      costs.set(model, entry);
-    }
-  }
-
-  const rows = new Map(baseRows.map((row) => [row.model, { ...row, costUsd: 0 }]));
-  for (const [model, cost] of costs) {
-    const row = rows.get(model);
-    rows.set(
-      model,
-      row === undefined
-        ? {
-            model,
-            sessions: cost.sessions.size,
-            turns: 0,
-            costUsd: cost.costUsd,
-            totalTokens: 0,
-          }
-        : { ...row, costUsd: cost.costUsd },
-    );
-  }
-  return [...rows.values()].toSorted(
-    (a, b) => b.costUsd - a.costUsd || b.totalTokens - a.totalTokens,
-  );
+  return groupUsageByModel(sessions);
 }
 
 function dayLabel(dayStartMs: number, locale: Locale): string {
@@ -157,10 +119,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     () =>
       [
         ...new Set(
-          filtered.flatMap(
-            (session) =>
-              (session.usage as UsageCostDetails).cost_unknown_models ?? [],
-          ),
+          filtered.flatMap((session) => session.usage.cost_unknown_models ?? []),
         ),
       ].toSorted(),
     [filtered],

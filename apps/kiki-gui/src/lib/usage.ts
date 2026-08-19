@@ -132,13 +132,32 @@ export interface ModelUsage {
 export function groupUsageByModel(sessions: readonly Session[]): ModelUsage[] {
   const byModel = new Map<string, { sessions: number; turns: number; costUsd: number; totalTokens: number }>();
   for (const session of sessions) {
-    const model = session.agent_config.model;
-    const entry = byModel.get(model) ?? { sessions: 0, turns: 0, costUsd: 0, totalTokens: 0 };
-    entry.sessions += 1;
-    entry.turns += session.usage.turn_count;
-    entry.costUsd += session.usage.total_cost_usd;
-    entry.totalTokens += sessionTotalTokens(session);
-    byModel.set(model, entry);
+    const tokenEntries = Object.entries(session.usage.tokens_by_model ?? {});
+    const costEntries = Object.entries(session.usage.by_model ?? {});
+    const models = new Set([
+      ...tokenEntries.map(([model]) => model),
+      ...costEntries.map(([model]) => model),
+    ]);
+    const hasBreakdown = models.size > 0;
+    if (!hasBreakdown) models.add(session.agent_config.model);
+    const tokens = new Map(tokenEntries);
+    const costs = new Map(costEntries);
+    for (const model of models) {
+      const entry = byModel.get(model) ?? { sessions: 0, turns: 0, costUsd: 0, totalTokens: 0 };
+      entry.sessions += 1;
+      entry.turns += !hasBreakdown ? session.usage.turn_count : 0;
+      entry.costUsd +=
+        costs.get(model) ??
+        (costEntries.length === 0 && model === session.agent_config.model
+          ? session.usage.total_cost_usd
+          : 0);
+      entry.totalTokens +=
+        tokens.get(model) ??
+        (tokenEntries.length === 0 && model === session.agent_config.model
+          ? sessionTotalTokens(session)
+          : 0);
+      byModel.set(model, entry);
+    }
   }
   return [...byModel.entries()]
     .map(([model, entry]) => ({ model, ...entry }))
