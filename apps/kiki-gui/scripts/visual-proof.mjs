@@ -90,6 +90,14 @@ const STRINGS = {
     saveSubagentSettings: 'Save subagent settings',
     duplicatePoolModel: 'Each pool model ID must be unique.',
     loadMore: 'Load more sessions',
+    searchLoadMore: 'Load more results',
+    workspaceFilterAll: 'All workspaces',
+    groupPinned: 'Pinned',
+    menuPin: 'Pin to top',
+    menuUnpin: 'Unpin',
+    renameButton: 'Rename',
+    removeButton: 'Unregister',
+    save: 'Save',
     queuedChip: 'Queued — starts when the current turn finishes',
     onePromptQueued: '1 prompt queued',
     queueBarPattern: /prompts? queued/,
@@ -182,6 +190,14 @@ const STRINGS = {
     saveSubagentSettings: '保存子代理设置',
     duplicatePoolModel: '模型池中的模型 ID 不能重复。',
     loadMore: '加载更多会话',
+    searchLoadMore: '加载更多结果',
+    workspaceFilterAll: '全部工作区',
+    groupPinned: '已置顶',
+    menuPin: '置顶',
+    menuUnpin: '取消置顶',
+    renameButton: '重命名',
+    removeButton: '注销',
+    save: '保存',
     queuedChip: '已排队 — 当前轮次结束后开始',
     onePromptQueued: '1 条消息已排队',
     queueBarPattern: /条消息已排队/,
@@ -844,6 +860,92 @@ async function scenarioSettingsBrowserEditable() {
   await page.locator('[data-testid="desktop-config-fields"]').scrollIntoViewIfNeeded();
   await page.waitForTimeout(300);
   await shot('settings-browser-editable');
+}
+
+async function scenarioWorkspaces() {
+  // Workspace rename + unregister over the two `settings.scenario.mjs` rows.
+  await page.goto(`${WEB_URL}/settings/workspaces?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'domcontentloaded',
+  });
+  await page.waitForSelector('#st-card-workspaces', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-workspaces >> text=other', { timeout: 10_000 });
+  await shot('settings-workspaces');
+
+  // Rename the "fixture" row via its aria-label (locale-independent name) and
+  // confirm the dialog + server echo update the list.
+  const renameByAria = page.locator(`#st-card-workspaces [aria-label="${S.renameButton} fixture"]`);
+  await renameByAria.click();
+  const renameDialog = page.locator('[role="dialog"][aria-label="Rename workspace"]');
+  await renameDialog.waitFor({ timeout: 5000 });
+  await renameDialog.locator('input').fill('fixture-renamed');
+  await renameDialog.locator(`button:has-text("${S.save}")`).click();
+  await page.waitForSelector('#st-card-workspaces >> text=fixture-renamed', { timeout: 5000 });
+  await shot('settings-workspace-renamed');
+
+  // Unregister the renamed workspace; the confirm dialog proves the entry is
+  // gone after the DELETE resolves and refetch reconciles.
+  const removeByAria = page.locator(`#st-card-workspaces [aria-label="${S.removeButton} fixture-renamed"]`);
+  await removeByAria.click();
+  await page.waitForSelector('[role="alertdialog"]', { timeout: 5000 });
+  await page.click(`[role="alertdialog"] button:has-text("${S.removeButton}")`);
+  await page.waitForFunction(
+    () => !document.querySelector('#st-card-workspaces')?.textContent?.includes('fixture-renamed'),
+    undefined,
+    { timeout: 5000 },
+  );
+  await shot('settings-workspace-removed');
+}
+async function scenarioSidebarOrganize() {
+  // Three sessions across two workspaces; the pinned row floats to a "Pinned"
+  // group and the rest bucket by recency.
+  await page.waitForSelector('[data-workspace-filter]', { timeout: 10_000 });
+
+  // Scope every assertion to the sidebar so the /new recent-session chips
+  // (which render the same titles in the main panel) never match.
+  const sidebarTitles = async () =>
+    page.evaluate(() =>
+      Array.from(document.querySelectorAll('aside [data-session-title]')).map((n) => n.textContent ?? ''),
+    );
+
+  await page.waitForFunction(
+    () => {
+      const titles = Array.from(document.querySelectorAll('aside [data-session-title]')).map((n) => n.textContent ?? '');
+      return titles.some((t) => t.includes('ws-a pinned'));
+    },
+    undefined,
+    { timeout: 10_000 },
+  );
+
+  // Pinned rows must appear above the newest unpinned row.
+  const order = await sidebarTitles();
+  const pinnedIdx = order.findIndex((t) => t.includes('ws-a pinned'));
+  const alphaIdx = order.findIndex((t) => t.includes('ws-a alpha'));
+  if (pinnedIdx < 0 || alphaIdx < 0) throw new Error(`missing rows in sidebar: ${JSON.stringify(order)}`);
+  if (pinnedIdx > alphaIdx) throw new Error('pinned session did not sort above the newest unpinned session');
+
+  // Workspace filtering narrows the sidebar to workspace B's row only.
+  await page.selectOption('[data-workspace-filter]', 'wd_fixture_000000000001');
+  await page.waitForFunction(
+    () => {
+      const titles = Array.from(document.querySelectorAll('aside [data-session-title]')).map((n) => n.textContent ?? '');
+      return titles.includes('Fixture: ws-b beta') && !titles.includes('Fixture: ws-a alpha');
+    },
+    undefined,
+    { timeout: 5000 },
+  );
+  await shot('sidebar-workspace-filter');
+
+  // Back to all workspaces restores the pinned + grouped view.
+  await page.selectOption('[data-workspace-filter]', '');
+  await page.waitForFunction(
+    () => {
+      const titles = Array.from(document.querySelectorAll('aside [data-session-title]')).map((n) => n.textContent ?? '');
+      return titles.includes('Fixture: ws-a pinned') && titles.includes('Fixture: ws-a alpha');
+    },
+    undefined,
+    { timeout: 5000 },
+  );
+  await shot('sidebar-pinned-group');
 }
 
 async function scenarioResponsive() {
@@ -1741,9 +1843,23 @@ async function scenarioSearch() {
     .filter({ hasText: /Fixture: search/ })
     .count();
   if (groupCount !== 2) throw new Error(`expected 2 session groups, saw ${groupCount}`);
+
+  // Pagination: the fixture ents the first page to 2 hits, so a "load more"
+  // button must appear and advance to the remaining hits on request.
+  const loadMoreButton = page.locator('[data-search-load-more]');
+  await loadMoreButton.waitFor({ state: 'visible', timeout: 5000 });
+  await loadMoreButton.click();
+  await page.waitForSelector('text=keep the persimmon cache under half of the heap', {
+    timeout: 5000,
+  });
+  await shot('search-results-paged');
+
   const state = await control({ action: 'state' });
   if (state.data?.last_search?.query !== 'persimmon') {
     throw new Error(`search body mismatch: ${JSON.stringify(state.data?.last_search)}`);
+  }
+  if (state.data?.last_search?.page_token === undefined) {
+    throw new Error(`expected the load-more request to carry a page_token: ${JSON.stringify(state.data?.last_search)}`);
   }
   await page
     .locator('[data-search-results] button', { hasText: 'draining the queue' })
@@ -1996,6 +2112,7 @@ const SCENARIOS = [
   ['reconnect-mid-turn', scenarioReconnectMidTurn],
   ['resync-hold', scenarioResyncHold],
   ['session-pages', scenarioSessionPages],
+  ['sidebar-organize', scenarioSidebarOrganize],
   ['empty-states', scenarioEmptyStates],
   ['draft-flow', scenarioDraftFlow],
   ['hero-shell', scenarioHeroShell],
@@ -2003,6 +2120,7 @@ const SCENARIOS = [
   ['settings-write', scenarioSettingsWrite],
   ['settings-invalid', scenarioSettingsInvalid],
   ['settings-browser-editable', scenarioSettingsBrowserEditable],
+  ['settings-workspaces', scenarioWorkspaces],
   ['slash-commands', scenarioSlashCommands],
   ['attachments', scenarioAttachments],
   ['preview-workbench', scenarioPreviewWorkbench],

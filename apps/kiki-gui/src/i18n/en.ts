@@ -64,9 +64,18 @@ export const en = {
   'sidebar.hideArchived': 'Hide archived',
   'sidebar.loadMore': 'Load more sessions',
   'sidebar.loadingMore': 'Loading…',
+  'sidebar.searchLoadMore': 'Load more results',
   'sidebar.settings': 'Settings',
   'sidebar.disconnect': 'Disconnect',
   'sidebar.sessionActionsFor': 'Session actions for {title}',
+  'sidebar.workspaceFilterAria': 'Filter sessions by workspace',
+  'sidebar.workspaceAll': 'All workspaces',
+  'sidebar.groupPinned': 'Pinned',
+  'sidebar.groupWeek': 'Past 7 days',
+  'sidebar.groupMonth': 'Past 4 weeks',
+  'sidebar.groupOlder': 'Older',
+  'sidebar.pinnedAria': 'Pinned to top',
+  'sidebar.emptyShowArchived': 'Show archived sessions',
   'sidebar.status.approval': 'Awaiting approval',
   'sidebar.status.question': 'Awaiting answer',
   'sidebar.status.working': 'Working',
@@ -81,6 +90,8 @@ export const en = {
   'menu.compact': 'Compact context',
   'menu.undo': 'Undo last turn…',
   'menu.rename': 'Rename…',
+  'menu.pin': 'Pin to top',
+  'menu.unpin': 'Unpin',
   'menu.archive': 'Archive',
 
   // ---- composer right-click menu ----
@@ -554,6 +565,7 @@ export const en = {
   'new.noWorkspaces': '(no workspaces)',
   'new.recent': 'Recent sessions',
   'new.creating': 'Creating the session…',
+  'new.recentMore': 'View all sessions →',
 
   // ---- hero (/new conversation shell) ----
   'hero.chooseWorkspace': 'Choose workspace',
@@ -1071,8 +1083,16 @@ export const en = {
   'st.workspaces.newSession': 'New session',
   'st.workspaces.search': 'Filter workspaces…',
   'st.workspaces.noMatches': 'No workspaces match “{query}”.',
+  'st.workspaces.rename': 'Rename',
+  'st.workspaces.remove': 'Unregister',
+  'st.workspaces.renameTitle': 'Rename workspace',
+  'st.workspaces.renameAria': 'Rename {name}',
+  'st.workspaces.removeAria': 'Unregister {name}',
+  'st.workspaces.removeTitle': 'Unregister “{name}”?',
+  'st.workspaces.removeBody':
+    'This unregisters the workspace from the server. Its on-disk files are untouched.',
   'st.workspaces.hint':
-    'Workspace roots are discovered and managed by the server. This page exposes the real action available for each entry instead of a fake edit form.',
+    'Workspace roots are discovered and managed by the server. Rename changes the display name; unregister only removes the catalog entry (files stay on disk).',
   'st.about.title': 'About',
   'st.about.serverVersion': 'Server version',
   'st.about.serverId': 'Server ID',

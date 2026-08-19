@@ -274,6 +274,68 @@ function captureFetch(): { calls: URL[]; restore: () => void } {
   };
 }
 
+describe('KikiClient.listSessions', () => {
+  it('passes workspace_id through to the query string', async () => {
+    const captured = captureFetch();
+    try {
+      const client = new KikiClient({ baseUrl: 'http://example.test' });
+      await client.listSessions({ workspace_id: 'wd_demo_000000000000', page_size: 20 });
+      const params = captured.calls[0]!.searchParams;
+      expect(params.get('workspace_id')).toBe('wd_demo_000000000000');
+      expect(params.get('page_size')).toBe('20');
+      // Non-workspace filters stay empty rather than `?busy=undefined`.
+      expect(params.has('busy')).toBe(false);
+      expect(params.has('include_archive')).toBe(false);
+    } finally {
+      captured.restore();
+    }
+  });
+});
+
+describe('KikiClient workspace lifecycle', () => {
+  it('PATCHes the rename route and returns the server echo', async () => {
+    const original = globalThis.fetch;
+    const echo = {
+      id: 'wd_demo_000000000000',
+      root: 'C:/demo',
+      name: 'Renamed',
+      created_at: '2026-01-01T00:00:00.000Z',
+      last_opened_at: '2026-01-01T00:00:00.000Z',
+      session_count: 0,
+    };
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe('/api/v1/workspaces/wd_demo_000000000000');
+      expect(init?.method).toBe('PATCH');
+      expect(JSON.parse(init?.body as string)).toEqual({ name: 'Renamed' });
+      return envelope(echo);
+    }) as typeof fetch;
+    try {
+      const client = new KikiClient({ baseUrl: 'http://example.test' });
+      const result = await client.renameWorkspace('wd_demo_000000000000', 'Renamed');
+      expect(result.name).toBe('Renamed');
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it('DELETEs the unregister route', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe('/api/v1/workspaces/wd_demo_000000000000');
+      expect(init?.method).toBe('DELETE');
+      return envelope({ deleted: true });
+    }) as typeof fetch;
+    try {
+      const client = new KikiClient({ baseUrl: 'http://example.test' });
+      await expect(client.removeWorkspace('wd_demo_000000000000')).resolves.toEqual({ deleted: true });
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
+
 describe('KikiClient.getAgentTranscript', () => {
   afterEach(() => {
     vi.unstubAllGlobals();

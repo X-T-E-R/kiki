@@ -15,7 +15,7 @@
  * success-shaped refetch, matching `KikiClient.cancelTask`'s okCodes.
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
 
@@ -145,13 +145,27 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   const [filter, setFilter] = useState<TaskStatus | 'all'>('all');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [pendingCancelId, setPendingCancelId] = useState<string | null>(null);
+  // Tracks the last poll where a task was running. Once the set goes quiet the
+  // interval switches to a short grace pass so a "running → completed" flip
+  // that straddled a tick still flushes to the DOM before polling stops.
+  const lastRunningAtRef = useRef(0);
 
   const tasksQuery = useQuery({
     queryKey: ['session-tasks', sessionId],
     queryFn: () => client.listTasks(sessionId).then((response) => response.items),
     enabled: sessionId !== '',
-    refetchInterval: (query) =>
-      (query.state.data ?? []).some((task) => task.status === 'running') ? 3000 : false,
+    refetchInterval: (query) => {
+      const data = query.state.data ?? [];
+      const running = data.some((task) => task.status === 'running');
+      if (running) {
+        lastRunningAtRef.current = Date.now();
+        return 3000;
+      }
+      // Grace pass: keep polling shortly after the last running task so a
+      // completion that landed between polls is still picked up.
+      return Date.now() - lastRunningAtRef.current < 8000 ? 4000 : false;
+    },
+    refetchOnWindowFocus: true,
   });
 
   const cancelMutation = useMutation({
