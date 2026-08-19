@@ -18,6 +18,7 @@ The classification describes the origin and maintenance boundary of a surface, n
 | `kap-server`, `@moonshot-ai/protocol`, and the session, configuration, and authentication contracts they expose | Inherited | Kiki clients consume these contracts instead of defining a separate server or protocol family. |
 | Model-binding areas in `agent-core` and `agent-core-v2` | Adapted | Kiki extends selected upstream agent-engine paths while preserving their existing session and task lifecycles. |
 | Explicit model-alias and thinking-effort binding for newly spawned subagents | Kiki-only | The binding behavior is a downstream addition implemented in both agent-engine paths; only the legacy symbolic-selector path is disabled by default, while the explicit binding itself is stable and always available. |
+| Per-model prompt conditioning via [`[models."<alias>".cognition]`](../configuration/config-files.md#model-cognition) | Kiki-only | Overlay, steering, and anchor prompt files attach to a model alias rather than an agent profile. The repository ships no default text for them; every file is read from the data root at runtime, and an undeclared field injects nothing. |
 | Six-tool Codex-style collaboration adapter | Kiki-only | The adapter adds `spawn_agent`, `list_agents`, `wait_agent`, `followup_task`, `interrupt_agent`, and `send_message`; it does not claim complete Codex compatibility. |
 | Local peer-thread communication | Kiki-only | Main Agents can list, read, message, and wait on existing sessions across local workspaces; REST and Klient provide target-only external-client sends without peer attribution. |
 | Standalone `@kiki/gui` package | Kiki-only | The GUI is a downstream client of the inherited server and protocol surfaces. Some components adapt separately attributed donor material, so those components are classified as adapted within the Kiki-only package. |
@@ -108,6 +109,7 @@ The following repository paths back the classifications in this guide:
 - **Command and engine selection**: `apps/kimi-code/package.json` and `apps/kimi-code/src/cli/experimental-v2.ts`
 - **Inherited server and protocol**: `packages/kap-server/`, `packages/protocol/`, `packages/node-sdk/`, and `packages/oauth/`
 - **Adapted model-binding areas**: `packages/agent-core/src/session/subagent-binding.ts` and `packages/agent-core-v2/src/session/subagent/`
+- **Kiki-only per-model prompt conditioning**: `packages/agent-core-v2/src/agent/cognition/`, `packages/agent-core-v2/src/features/modelSteering/`, and the `cognition` schema in `packages/agent-core-v2/src/app/kosongConfig/configSection.ts`
 - **Kiki-only collaboration adapter**: `packages/agent-core/src/tools/builtin/collaboration/agent-collaboration.ts` and `packages/agent-core-v2/src/agent/tools/agent-collaboration/agentCollaborationTool.ts`
 - **Kiki-only peer-thread core and transport**: `packages/agent-core-v2/src/app/threadCommunication/`, `packages/kap-server/src/routes/threads.ts`, and `packages/klient/src/contract/global/threads.ts`
 - **Kiki-only GUI and its donor boundary**: `apps/kiki-gui/package.json`, `apps/kiki-gui/src/lib/client.ts`, and `apps/kiki-gui/ATTRIBUTION.md`

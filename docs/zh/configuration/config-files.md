@@ -193,6 +193,64 @@ display_name = "Kimi for Coding (custom)"
 
 无需修改配置文件也可以临时切换模型——通过 `KIMI_MODEL_*` 环境变量在内存里合成一个临时供应商，详见[用环境变量定义模型](./env-vars.md#用环境变量定义模型-kimi-model)。
 
+### 模型认知
+
+`[models."<alias>".cognition]` 把提示词文件挂到单个模型别名上，这样 catalog 里某个需要不同调节（用来塑造推理方式的额外指令）的模型就能单独拿到，而不必改任何 Agent profile。每个字段都指向运行时从磁盘读取的文件；CLI 不附带任何默认正文，未声明文件时也不会注入任何内容。
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `overlay` | `string` 或 `array<string>` | — | 合并进所绑定模型系统提示词的文件。多条路径按声明顺序以空行拼接 |
+| `overlay_mode` | `string` | `append` | `overlay` 与 profile 提示词的组合方式：`append`、`prepend`、`wrap`、`persona` 或 `replace` |
+| `steering` | `string` 或 `array<string>` | — | 作为 User 消息、紧接在你的提示词之后、在每一轮开头注入的文件 |
+| `anchor` | `string` 或 `array<string>` | — | 用作一轮开头若干步的完整系统提示词的文件，会替换 profile 提示词以及任何 `overlay` |
+| `anchor_steps` | `integer` | `1` | 被锚定的一轮开头有多少次模型请求使用 `anchor` 正文；必须至少为 1 |
+| `anchor_scope` | `string` | `session` | `session` 只锚定会话的第一轮；`turn` 锚定每一轮的开头若干步 |
+
+路径相对于[数据根目录](./data-locations.md#数据根目录)（默认为 `~/.kimi-code`）。绝对路径、解析后落到数据根之外的路径（包括经由符号链接）以及缺失的文件，会在 profile 绑定时被拒绝，错误信息会标出字段和路径——写错路径会让会话停下来，而不是静默送出未经调节的提示词。已声明且存在但内容为空的文件会被跳过；某个字段声明的文件全部为空时，该字段视为未设置。
+
+三个字段离模型下一个 token 的远近不同。`overlay` 和 `anchor` 改写系统提示词，模型在你的请求之前只读一次。`steering` 紧接在你的提示词之后，作为普通 User 消息注入——不是 `<system-reminder>`——并且每一轮新开始时都会重新注入同一段正文，压缩后重新装填上下文时也一样，因此这条提示不会从最近一次请求旁边漂走。
+
+`overlay_mode` 决定 profile 提示词还剩多少：
+
+| 模式 | 结果 |
+| --- | --- |
+| `append` | 先是 profile 提示词，然后是 overlay |
+| `prepend` | 先是 overlay，然后是 profile 提示词 |
+| `wrap` | overlay、profile 提示词，然后是一句固定收尾，声明 overlay 仍支配推理 |
+| `persona` | overlay 替换 profile 提示词开头的 `You are …` 段落；该提示词的其余部分保留 |
+| `replace` | overlay 成为完整的系统提示词 |
+
+`persona` 通过匹配提示词最开头的 `You are` 来定位身份段落。提示词以其他方式开头的 profile 没有可替换的身份段落，此时改为把 overlay 追加到末尾。
+
+锚定是按请求替换，而不是改写已存储的提示词。被锚定的一轮里，前 `anchor_steps` 次请求会把 `anchor` 正文当作完整系统提示词发给模型；从下一步起直到会话结束，模型收到的是含 overlay 在内的常规提示词。适合用在这种场景：冗长的 profile 提示词挤掉了你希望模型在规划当下看到的调节内容，而完整提示词只在它开始工具调用之后才重要。调用方显式传入的系统提示词永远不会被替换。
+
+模型认知绑定在别名上，而不是主 Agent 上，因此绑定同一别名的子 Agent——无论是通过 `model_alias`、[`[subagent] default_model`](#subagent)，还是从调用方继承——都会拿到同一套 overlay、steering 和 anchor。会话中途切换别名会为新绑定的模型重新渲染 overlay。
+
+下面的例子给一个 DeepSeek V4 模型做调节：它默认习惯逐步叙述执行过程，而不是先规划。短 `anchor` 是一层精简 persona，在模型规划时顶替 profile 提示词；再配上要求先规划再行动的 `steering`：
+
+```toml
+[models."axon-message/deepseek-v4-flash-0731".cognition]
+anchor = "cognition/flash-anchor.md"
+anchor_steps = 3
+steering = "cognition/flash-steering.md"
+```
+
+`~/.kimi-code/cognition/flash-anchor.md`：
+
+```
+You are a helpful software engineer assistant.
+```
+
+`~/.kimi-code/cognition/flash-steering.md`：
+
+```
+Router: classify this task (build or fix) now, then adopt the matching style — build: direct production; fix: inspect-first. Let's first understand the problem and devise a plan; then let's carry out the plan and act.
+```
+
+两个文件都就位后，模型会在会话的前三步先规划再行动，随后继续使用完整的 profile 提示词。
+
+把那段措辞当作起点，而不是一项设置。哪种表述真能改变模型的推理，是在这一个模型上测出来的；另一个模型——或另一份 profile 提示词——可能需要不同的正文，也可能完全不需要。机制本身并不解读这些文件。
+
 ## `secondary_model`
 
 次主力模型是主模型之外的第二个模型配置——通常是一个更便宜的模型，供不需要主模型能力的功能绑定使用。它仍是子 Agent 派生的旧版后备 recipe。

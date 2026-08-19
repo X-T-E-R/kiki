@@ -12,6 +12,8 @@ export const ProfileErrors = {
     PROFILE_UNKNOWN: 'profile.unknown',
     PROFILE_ALREADY_BOUND: 'profile.already_bound',
     PROFILE_NOT_BOUND: 'profile.not_bound',
+    COGNITION_FILE_MISSING: 'profile.cognition_file_missing',
+    COGNITION_PATH_INVALID: 'profile.cognition_path_invalid',
   },
 } as const satisfies ErrorDomain;
 

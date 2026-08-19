@@ -61,6 +61,41 @@ describe('models TOML transforms', () => {
       overrides: { max_output_size: 4096, default_effort: 'low' },
     });
   });
+
+  it('converts nested cognition overlay_mode and path arrays', () => {
+    const from = modelsFromToml({
+      flash: {
+        provider: 'deepseek',
+        model: 'deepseek-v4-flash',
+        cognition: {
+          overlay: 'cognition/flash-overlay.md',
+          overlay_mode: 'append',
+          steering: ['cognition/a.md', 'cognition/b.md'],
+          anchor: ['cognition/flash-anchor.md', 'cognition/flash-anchor-2.md'],
+          anchor_steps: 3,
+          anchor_scope: 'turn',
+        },
+      },
+    }) as Record<string, Record<string, unknown>>;
+    expect(from['flash']?.['cognition']).toEqual({
+      overlay: 'cognition/flash-overlay.md',
+      overlayMode: 'append',
+      steering: ['cognition/a.md', 'cognition/b.md'],
+      anchor: ['cognition/flash-anchor.md', 'cognition/flash-anchor-2.md'],
+      anchorSteps: 3,
+      anchorScope: 'turn',
+    });
+
+    const back = modelsToToml(from, undefined) as Record<string, Record<string, unknown>>;
+    expect(back['flash']?.['cognition']).toEqual({
+      overlay: 'cognition/flash-overlay.md',
+      overlay_mode: 'append',
+      steering: ['cognition/a.md', 'cognition/b.md'],
+      anchor: ['cognition/flash-anchor.md', 'cognition/flash-anchor-2.md'],
+      anchor_steps: 3,
+      anchor_scope: 'turn',
+    });
+  });
 });
 
 describe('ModelService', () => {
