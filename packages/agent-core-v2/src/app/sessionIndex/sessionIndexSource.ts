@@ -21,8 +21,11 @@
  */
 
 import type { TokenUsage } from '#/kosong/contract/usage';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
+
+import { readSessionUsageFromWires } from './sessionUsageSummary';
 
 import {
   CHILD_SESSION_KIND,
@@ -78,16 +81,21 @@ function parseSessionUsageSummary(value: unknown): SessionUsageSummary | undefin
   const record = value as Record<string, unknown>;
   const total = parseTokenUsage(record['total']);
   if (total === undefined) return undefined;
+  const wireComplete = record['wireComplete'] === true ? true : undefined;
   const rawByModel = record['byModel'];
   if (rawByModel === null || typeof rawByModel !== 'object' || Array.isArray(rawByModel)) {
-    return { total };
+    return { total, wireComplete };
   }
   const byModel: Record<string, TokenUsage> = {};
   for (const [model, rawUsage] of Object.entries(rawByModel)) {
     const usage = parseTokenUsage(rawUsage);
     if (usage !== undefined) byModel[model] = usage;
   }
-  return { total, byModel: Object.keys(byModel).length === 0 ? undefined : byModel };
+  return {
+    total,
+    byModel: Object.keys(byModel).length === 0 ? undefined : byModel,
+    wireComplete,
+  };
 }
 
 export function recoverCwd(meta: Record<string, unknown>): string | undefined {
@@ -193,6 +201,7 @@ export async function listSessionIds(
 
 export async function readSessionSummary(
   docs: IAtomicDocumentStore,
+  log: IAppendLogStore,
   sessionsScope: string,
   workspaceId: string,
   sessionId: string,
@@ -205,6 +214,23 @@ export async function readSessionSummary(
     rawCustom !== null && typeof rawCustom === 'object' && !Array.isArray(rawCustom)
       ? (rawCustom as Record<string, unknown>)
       : undefined;
+  const persistedUsage = parseSessionUsageSummary(meta['usage']);
+  const rawAgents = meta['agents'];
+  const agentIds =
+    rawAgents !== null && typeof rawAgents === 'object' && !Array.isArray(rawAgents)
+      ? Object.keys(rawAgents)
+      : [];
+  const hasConversation = typeof meta['lastPrompt'] === 'string' && meta['lastPrompt'].length > 0;
+  const recoverableAgentIds =
+    agentIds.length === 0 && !hasConversation ? [] : [...new Set(['main', ...agentIds])];
+  const recoveredUsage =
+    persistedUsage?.wireComplete === true || recoverableAgentIds.length === 0
+      ? undefined
+      : await readSessionUsageFromWires(
+          log,
+          recoverableAgentIds.map((agentId) => `${base}/agents/${agentId}`),
+        );
+  const usage = recoveredUsage ?? persistedUsage;
   return buildSessionSummary({
     id: sessionId,
     workspaceId,
@@ -217,7 +243,7 @@ export async function readSessionSummary(
     archivedAt: meta['archivedAt'] === undefined ? undefined : parseTime(meta['archivedAt']),
     custom,
     lastTurnReason: parseTurnOutcome(meta['lastTurnReason']),
-    usage: parseSessionUsageSummary(meta['usage']),
+    usage,
   });
 }
 

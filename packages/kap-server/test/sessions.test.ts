@@ -21,6 +21,7 @@ import {
   IEventService,
   MAIN_AGENT_ID,
   closeSessionById,
+  drainSessionMetadataWrites,
   getLiveSessionById,
   sessionDirOf,
   type ServiceIdentifier,
@@ -62,6 +63,7 @@ interface SessionWire {
     cache_read_tokens: number;
     cache_creation_tokens: number;
     total_cost_usd: number;
+    tokens_by_model?: Record<string, number>;
     by_model?: Record<string, number>;
     cost_unknown_models?: string[];
     context_tokens: number;
@@ -805,6 +807,7 @@ describe('server-v2 /api/v1/sessions', () => {
     const got = await getJson<SessionWire>(`/api/v1/sessions/${id}`);
     expect(got.body.data.usage).toMatchObject(expected);
     const listed = await getJson<PageWire>('/api/v1/sessions');
+    expect(listed.body.data.items.map((item) => item.id)).toContain(id);
     expect(listed.body.data.items.find((item) => item.id === id)?.usage).toMatchObject(expected);
   });
 
@@ -894,6 +897,67 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(listed.body.data.items.find((item) => item.id === id)?.usage).toEqual(
       got.body.data.usage,
     );
+  });
+
+  it('keeps subagent usage in cold and resumed session projections after restart', async () => {
+    const cwd = home as string;
+    const created = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });
+    const id = created.body.data.id;
+    const session = getLiveSessionById((server as RunningServer).core.accessor, id);
+    if (session === undefined) throw new Error('expected a live session');
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    const main = lifecycle.get(MAIN_AGENT_ID) ?? (await lifecycle.create({ agentId: MAIN_AGENT_ID }));
+    const child = await lifecycle.create({ agentId: 'restart-usage-worker' });
+
+    main.accessor.get(IAgentUsageService).record('example-model', {
+      inputOther: 11,
+      output: 7,
+      inputCacheRead: 5,
+      inputCacheCreation: 3,
+    });
+    child.accessor.get(IAgentUsageService).record('claude-sonnet-4-5', {
+      inputOther: 4,
+      output: 6,
+      inputCacheRead: 8,
+      inputCacheCreation: 10,
+    });
+    await drainSessionMetadataWrites();
+    await (server as RunningServer).close();
+    server = undefined;
+
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: cwd,
+      logLevel: 'silent',
+      debugEndpoints: true,
+    });
+    base = `http://127.0.0.1:${server.port}`;
+
+    const listed = await getJson<PageWire>('/api/v1/sessions');
+    const coldUsage = listed.body.data.items.find((item) => item.id === id)?.usage;
+    expect(coldUsage).toMatchObject({
+      input_tokens: 15,
+      output_tokens: 13,
+      cache_read_tokens: 13,
+      cache_creation_tokens: 13,
+      context_tokens: 0,
+      context_limit: 0,
+      turn_count: 0,
+      cost_unknown_models: ['example-model'],
+    });
+    expect(coldUsage?.tokens_by_model).toMatchObject({
+      'example-model': 26,
+      'claude-sonnet-4-5': 28,
+    });
+    expect(coldUsage?.total_cost_usd).toBeGreaterThan(0);
+    expect(coldUsage?.by_model?.['claude-sonnet-4-5']).toBeGreaterThan(0);
+
+    const snapshot = await getJson<{ session: SessionWire }>(`/api/v1/sessions/${id}/snapshot`);
+    expect(snapshot.body.data.session.usage).toEqual(coldUsage);
+    const warmListed = await getJson<PageWire>('/api/v1/sessions');
+    expect(warmListed.body.data.items.find((item) => item.id === id)?.usage).toEqual(coldUsage);
   });
 
   it('skips unreadable subagent usage during session projection', async () => {

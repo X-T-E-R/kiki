@@ -5,6 +5,7 @@ import { ILogService } from '#/_base/log/log';
 import { IntervalTimer } from '#/_base/utils/timer';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import {
   IQueryStore,
@@ -84,6 +85,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IAtomicDocumentStore private readonly docs: IAtomicDocumentStore,
+    @IAppendLogStore private readonly appendLog: IAppendLogStore,
     @IQueryStore private readonly queryStore: IQueryStore,
     @IFlagService private readonly flags: IFlagService,
     @ISessionIndexMirror private readonly mirror: ISessionIndexMirror,
@@ -93,6 +95,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     this.projector = new SessionIndexProjector({
       storage,
       docs,
+      appendLog,
       queryStore,
       log,
       sessionsScope: bootstrap.scope('sessions'),
@@ -605,7 +608,13 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     for (const workspaceId of await listWorkspaceIds(this.storage, this.sessionsScope)) {
       const sessionIds = await listSessionIds(this.storage, this.sessionsScope, workspaceId);
       if (!sessionIds.includes(id)) continue;
-      const summary = await readSessionSummary(this.docs, this.sessionsScope, workspaceId, id);
+      const summary = await readSessionSummary(
+        this.docs,
+        this.appendLog,
+        this.sessionsScope,
+        workspaceId,
+        id,
+      );
       if (summary !== undefined) return summary;
     }
     return undefined;
@@ -651,7 +660,13 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       collected = [];
       for (const workspaceId of ids) {
         for (const sessionId of await listSessionIds(this.storage, this.sessionsScope, workspaceId)) {
-          const summary = await readSessionSummary(this.docs, this.sessionsScope, workspaceId, sessionId);
+          const summary = await readSessionSummary(
+            this.docs,
+            this.appendLog,
+            this.sessionsScope,
+            workspaceId,
+            sessionId,
+          );
           if (summary !== undefined) collected.push(summary);
         }
       }

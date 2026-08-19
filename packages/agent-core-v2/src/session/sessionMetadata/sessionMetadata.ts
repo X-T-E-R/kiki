@@ -1,6 +1,7 @@
 import type { Event } from '#/_base/event';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { SessionUsageSummary } from '#/app/sessionIndex/sessionIndex';
+import type { TokenUsage } from '#/kosong/contract/usage';
 
 export interface AgentMeta {
   readonly homedir?: string;
@@ -54,6 +55,8 @@ export interface ISessionMetadata {
   readonly ready: Promise<void>;
   readonly onDidChangeMetadata: Event<SessionMetadataChangedEvent>;
   read(): Promise<SessionMeta>;
+  usage(): SessionUsageSummary | undefined;
+  recordUsage(model: string, usage: TokenUsage): void;
   update(patch: SessionMetaPatch, opts?: { readonly touchUpdatedAt?: boolean }): Promise<void>;
   setTitle(title: string): Promise<void>;
   /**

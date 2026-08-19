@@ -146,6 +146,7 @@ function aggregateSessionUsage(handle: ISessionScopeHandle): SessionUsageSummary
   return {
     total,
     byModel: Object.keys(byModel).length === 0 ? undefined : byModel,
+    wireComplete: true,
   };
 }
 
@@ -483,9 +484,10 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const handle = this.sessions.get(sessionId);
     if (handle === undefined) return;
     await this.announceWillClose({ sessionId, handle, reason: 'exit' });
-    await this.persistUsage(handle);
+    const usageFallback = aggregateSessionUsage(handle);
     this.sessions.delete(sessionId);
     await this.drainAgents(handle);
+    await this.persistUsage(handle, usageFallback);
     await drainSessionMetadataWrites();
     await this.indexMirror.drain();
     handle.dispose();
@@ -498,8 +500,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (handle === undefined) return;
     const meta = handle.accessor.get(ISessionMetadata);
     await meta.setArchived(true);
-    await this.persistUsage(handle);
+    const usageFallback = aggregateSessionUsage(handle);
     await this.drainAgents(handle);
+    await this.persistUsage(handle, usageFallback);
     this.event.publish(new SessionArchived({ payload: { sessionId } }));
     await this.announceWillClose({ sessionId, handle, reason: 'archive' });
     this.sessions.delete(sessionId);
@@ -544,12 +547,15 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     await this._onWillCloseSession.fireAsync(event, NO_ABORT);
   }
 
-  private async persistUsage(handle: ISessionScopeHandle): Promise<void> {
-    const usage = aggregateSessionUsage(handle);
+  private async persistUsage(
+    handle: ISessionScopeHandle,
+    fallback: SessionUsageSummary | undefined,
+  ): Promise<void> {
+    const metadata = handle.accessor.get(ISessionMetadata);
+    const current = metadata.usage();
+    const usage = current?.wireComplete === true ? current : fallback ?? current;
     if (usage === undefined) return;
-    await handle.accessor
-      .get(ISessionMetadata)
-      .update({ usage }, { touchUpdatedAt: false });
+    await metadata.update({ usage }, { touchUpdatedAt: false });
   }
 
   private async drainAgents(handle: ISessionScopeHandle): Promise<void> {
@@ -691,6 +697,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         updatedAt: toEpochMs(sourceMeta?.updatedAt) || Date.now(),
         lastPrompt: turnSlice === undefined ? sourceMeta?.lastPrompt : turnSlice.lastPrompt,
         lastTurnReason: sourceMeta?.lastTurnReason,
+        usage: aggregateSessionUsage(target),
         custom: forkCustomMetadata(sourceMeta?.custom, opts.metadata),
       });
 

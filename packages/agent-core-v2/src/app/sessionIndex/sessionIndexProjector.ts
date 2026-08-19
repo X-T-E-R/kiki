@@ -1,4 +1,5 @@
 import { ILogService } from '#/_base/log/log';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IQueryStore, type WriteOp } from '#/persistence/interface/queryStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -28,6 +29,7 @@ const SHARED_SCAN_REUSE_MS = 30_000;
 export interface SessionIndexProjectorDeps {
   readonly storage: IFileSystemStorageService;
   readonly docs: IAtomicDocumentStore;
+  readonly appendLog: IAppendLogStore;
   readonly queryStore: IQueryStore;
   readonly log: ILogService;
   readonly sessionsScope: string;
@@ -205,13 +207,13 @@ export class SessionIndexProjector {
   }
 
   private async scanAuthoritative(): Promise<AuthoritativeScan> {
-    const { storage, docs, sessionsScope } = this.deps;
+    const { storage, docs, appendLog, sessionsScope } = this.deps;
     const summaries: SessionSummary[] = [];
     const counts = new Map<string, { active: number; archived: number }>();
     for (const workspaceId of await listWorkspaceIds(storage, sessionsScope)) {
       const sessionIds = await listSessionIds(storage, sessionsScope, workspaceId);
       const found = await mapBounded(sessionIds, SCAN_CONCURRENCY, (sessionId) =>
-        readSessionSummary(docs, sessionsScope, workspaceId, sessionId),
+        readSessionSummary(docs, appendLog, sessionsScope, workspaceId, sessionId),
       );
       const entry = counts.get(workspaceId) ?? { active: 0, archived: 0 };
       for (const summary of found) {

@@ -19,6 +19,7 @@ import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { profileKey } from '#/agent/profile/profileOps';
 import { TOWER_WORKER_PROFILE } from '#/features/tower/tower';
 import { IAgentTaskService } from '#/agent/task/task';
+import { IAgentUsageService } from '#/agent/usage/usage';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -102,6 +103,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   private readonly onDidCreateEmitter = this._register(new Emitter<IAgentScopeHandle>());
   private readonly onDidDisposeEmitter = this._register(new Emitter<string>());
   private readonly interactionBusDisposables = new Map<string, IDisposable>();
+  private readonly usageDisposables = new Map<string, IDisposable>();
   private readonly creating = new Map<string, Promise<IAgentScopeHandle>>();
   private readonly deferredCreateEvents = new Set<string>();
 
@@ -131,17 +133,18 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     super();
     this._register(
       this.onDidDispose((agentId) => {
-        const d = this.interactionBusDisposables.get(agentId);
-        if (d !== undefined) {
-          d.dispose();
-          this.interactionBusDisposables.delete(agentId);
+        for (const disposables of [this.interactionBusDisposables, this.usageDisposables]) {
+          disposables.get(agentId)?.dispose();
+          disposables.delete(agentId);
         }
       }),
     );
     this._register({
       dispose: () => {
-        for (const d of this.interactionBusDisposables.values()) d.dispose();
-        this.interactionBusDisposables.clear();
+        for (const disposables of [this.interactionBusDisposables, this.usageDisposables]) {
+          for (const d of disposables.values()) d.dispose();
+          disposables.clear();
+        }
       },
     });
   }
@@ -152,6 +155,16 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       .get(IEventBus)
       .subscribe(TurnEnded, (e) => this.interaction.cancelPendingForTurn(e.turnId));
     this.interactionBusDisposables.set(handle.id, d);
+  }
+
+  private subscribeUsage(handle: IAgentScopeHandle): void {
+    if (this.usageDisposables.has(handle.id)) return;
+    const d = handle.accessor
+      .get(IAgentUsageService)
+      .onDidRecord(({ model, usage }) => {
+        this.sessionMetadata.recordUsage(model, usage);
+      });
+    this.usageDisposables.set(handle.id, d);
   }
 
   private resolveModelId(alias: string): string {
@@ -332,6 +345,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       await wire.seal();
       handle.accessor.get(IAgentStateService).contributeState(interactionKey);
       this.subscribeInteractionBus(handle);
+      this.subscribeUsage(handle);
       this.onWillCreateEmitter.fire(handle);
       await handle.accessor.get(IEventDispatcher).restore();
       await this.bindBootstrap(handle, opts);

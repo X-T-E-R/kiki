@@ -439,6 +439,8 @@ function sessionMetadataStub(agents: Readonly<Record<string, AgentMeta>>): ISess
       archived: false,
       agents,
     }),
+    usage: () => undefined,
+    recordUsage: () => {},
     update: async () => {},
     setTitle: async () => {},
     setGeneratedTitleIfUncustomized: async () => false,

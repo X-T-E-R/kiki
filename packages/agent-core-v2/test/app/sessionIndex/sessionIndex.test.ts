@@ -28,8 +28,10 @@ import {
   SessionIndexMirror,
 } from '#/app/sessionIndex/sessionIndexMirrorService';
 import { drainQueryStoreDisposals, MiniDbQueryStore } from '#/persistence/backends/minidb/miniDbQueryStore';
+import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import {
   IQueryStore,
@@ -86,6 +88,7 @@ describe('FileSessionIndex (legacy)', () => {
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
+      stubPair(IAppendLogStore, new AppendLogStore(fileStorage)),
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
       stubPair(IQueryStore, stubQueryStore()),
       stubPair(ISessionIndexMirror, stubSessionIndexMirror()),
@@ -179,6 +182,102 @@ describe('FileSessionIndex (legacy)', () => {
           inputCacheCreation: 3,
         },
       },
+    });
+  });
+
+  it('recovers complete aggregate usage from every agent wire over partial metadata', async () => {
+    await seedSession('wire-usage', {
+      agents: {
+        main: { type: 'main' },
+        worker: { type: 'sub' },
+      },
+      usage: {
+        total: { inputOther: 11, output: 7, inputCacheRead: 5, inputCacheCreation: 3 },
+        byModel: {
+          'example-model': {
+            inputOther: 11,
+            output: 7,
+            inputCacheRead: 5,
+            inputCacheCreation: 3,
+          },
+        },
+      },
+    });
+    const records = new Map([
+      [
+        'main',
+        {
+          type: 'usage.record',
+          model: 'example-model',
+          usage: { inputOther: 11, output: 7, inputCacheRead: 5, inputCacheCreation: 3 },
+        },
+      ],
+      [
+        'worker',
+        {
+          type: 'usage.record',
+          model: 'grok-4.6',
+          usage: { inputOther: 4, output: 6, inputCacheRead: 8, inputCacheCreation: 10 },
+        },
+      ],
+    ]);
+    for (const [agentId, record] of records) {
+      const dir = join(sessionsDir, workspaceId, 'wire-usage', 'agents', agentId);
+      await fsp.mkdir(dir, { recursive: true });
+      await fsp.writeFile(join(dir, 'wire.jsonl'), `${JSON.stringify(record)}\n`);
+    }
+
+    const store = build();
+    expect((await store.get('wire-usage'))?.usage).toEqual({
+      total: {
+        inputOther: 15,
+        output: 13,
+        inputCacheRead: 13,
+        inputCacheCreation: 13,
+      },
+      byModel: {
+        'example-model': {
+          inputOther: 11,
+          output: 7,
+          inputCacheRead: 5,
+          inputCacheCreation: 3,
+        },
+        'grok-4.6': {
+          inputOther: 4,
+          output: 6,
+          inputCacheRead: 8,
+          inputCacheCreation: 10,
+        },
+      },
+      wireComplete: true,
+    });
+  });
+
+  it('recovers main-agent usage for old metadata without an agents map', async () => {
+    await seedSession('legacy-wire-usage', { lastPrompt: 'hello' });
+    const dir = join(sessionsDir, workspaceId, 'legacy-wire-usage', 'agents', 'main');
+    await fsp.mkdir(dir, { recursive: true });
+    await fsp.writeFile(
+      join(dir, 'wire.jsonl'),
+      `${JSON.stringify({
+        type: 'usage.record',
+        model: 'example-model',
+        usage: { inputOther: 3, output: 2, inputCacheRead: 1, inputCacheCreation: 4 },
+      })}\n`,
+    );
+
+    const store = build();
+    expect((await store.get('legacy-wire-usage'))?.usage).toEqual({
+      total: { inputOther: 3, output: 2, inputCacheRead: 1, inputCacheCreation: 4 },
+      byModel: {
+        'example-model': {
+          inputOther: 3,
+          output: 2,
+          inputCacheRead: 1,
+          inputCacheCreation: 4,
+        },
+      },
+      wireComplete: true,
     });
   });
 
@@ -387,6 +486,7 @@ describe('FileSessionIndex (read model)', () => {
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
+      stubPair(IAppendLogStore, new AppendLogStore(fileStorage)),
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
       stubPair(ILogService, stubLog()),
       stubPair(IFlagService, stubFlag(true)),
@@ -777,6 +877,7 @@ describe('FileSessionIndex (read model)', () => {
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
+      stubPair(IAppendLogStore, new AppendLogStore(fileStorage)),
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
       stubPair(ILogService, stubLog()),
       stubPair(IFlagService, stubFlag(true)),
@@ -849,6 +950,7 @@ describe('FileSessionIndex (read model)', () => {
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
+      stubPair(IAppendLogStore, new AppendLogStore(fileStorage)),
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
       stubPair(ILogService, stubLog()),
       stubPair(IFlagService, stubFlag(true)),
@@ -905,6 +1007,7 @@ describe('FileSessionIndex (read model)', () => {
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
+      stubPair(IAppendLogStore, new AppendLogStore(fileStorage)),
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
       stubPair(ILogService, stubLog()),
       stubPair(IFlagService, stubFlag(true)),
@@ -993,6 +1096,7 @@ describe('FileSessionIndex (read model)', () => {
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, docs),
+      stubPair(IAppendLogStore, new AppendLogStore(fileStorage)),
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
       stubPair(ILogService, stubLog()),
       stubPair(IFlagService, stubFlag(true)),
@@ -1052,6 +1156,7 @@ describe('FileSessionIndex (read model)', () => {
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
+      stubPair(IAppendLogStore, new AppendLogStore(fileStorage)),
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
       stubPair(ILogService, stubLog()),
       stubPair(IFlagService, stubFlag(true)),
@@ -1110,6 +1215,7 @@ describe('FileSessionIndex (read model)', () => {
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, docs),
+      stubPair(IAppendLogStore, new AppendLogStore(fileStorage)),
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
       stubPair(ILogService, stubLog()),
       stubPair(IFlagService, stubFlag(true)),
@@ -1185,6 +1291,7 @@ describe('FileSessionIndex (read model)', () => {
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, docs),
+      stubPair(IAppendLogStore, new AppendLogStore(fileStorage)),
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
       stubPair(ILogService, stubLog()),
       stubPair(IFlagService, stubFlag(true)),
@@ -1252,6 +1359,7 @@ describe('FileSessionIndex (read model)', () => {
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
+      stubPair(IAppendLogStore, new AppendLogStore(fileStorage)),
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
       stubPair(ILogService, stubLog()),
       stubPair(IFlagService, stubFlag(true)),
@@ -1317,6 +1425,7 @@ describe('FileSessionIndex (read model)', () => {
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, docs),
+      stubPair(IAppendLogStore, new AppendLogStore(fileStorage)),
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
       stubPair(ILogService, stubLog()),
       stubPair(IFlagService, stubFlag(true)),
@@ -1353,6 +1462,7 @@ describe('FileSessionIndex (read model)', () => {
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, docs),
+      stubPair(IAppendLogStore, new AppendLogStore(fileStorage)),
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
       stubPair(ILogService, stubLog()),
       stubPair(IFlagService, stubFlag(true)),

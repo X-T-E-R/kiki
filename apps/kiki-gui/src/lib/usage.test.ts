@@ -158,6 +158,32 @@ describe('groupUsageByModel', () => {
     expect(groups[0]).toMatchObject({ sessions: 1, costUsd: 9, totalTokens: 800, turns: 0 });
     expect(groups[1]).toMatchObject({ sessions: 2, costUsd: 3, totalTokens: 150, turns: 5 });
   });
+
+  it('shows subagent models from the server per-model token and cost breakdown', () => {
+    const groups = groupUsageByModel([
+      session('mixed', {
+        usage: usage({
+          total_cost_usd: 3,
+          turn_count: 2,
+          input_tokens: 140,
+          output_tokens: 60,
+          tokens_by_model: { 'kimi/k2': 150, 'axon-message/grok-4.6': 50 },
+          by_model: { 'kimi/k2': 1, 'axon-message/grok-4.6': 2 },
+        }),
+      }),
+    ]);
+
+    expect(groups).toEqual([
+      {
+        model: 'axon-message/grok-4.6',
+        sessions: 1,
+        turns: 0,
+        costUsd: 2,
+        totalTokens: 50,
+      },
+      { model: 'kimi/k2', sessions: 1, turns: 0, costUsd: 1, totalTokens: 150 },
+    ]);
+  });
 });
 
 describe('bucketSessionsByDay', () => {

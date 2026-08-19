@@ -978,6 +978,8 @@ function stubSessionMetadata(meta: SessionMeta): ISessionMetadata {
     ready: Promise.resolve(),
     onDidChangeMetadata: noopEvent,
     read: async () => meta,
+    usage: () => meta.usage,
+    recordUsage: () => {},
     update: async () => {},
     setTitle: async () => {},
     setGeneratedTitleIfUncustomized: async () => false,

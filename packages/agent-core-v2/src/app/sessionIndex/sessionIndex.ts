@@ -11,6 +11,7 @@ export const CHILD_SESSION_KIND = 'child';
 export interface SessionUsageSummary {
   readonly total: TokenUsage;
   readonly byModel?: Readonly<Record<string, TokenUsage>>;
+  readonly wireComplete?: boolean;
 }
 
 export interface SessionSummary {

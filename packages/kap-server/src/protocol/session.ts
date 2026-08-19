@@ -16,6 +16,7 @@ export const sessionUsageSchema = z.object({
   cache_read_tokens: z.number().int().nonnegative(),
   cache_creation_tokens: z.number().int().nonnegative(),
   total_cost_usd: z.number().nonnegative(),
+  tokens_by_model: z.record(z.string(), z.number().int().nonnegative()).optional(),
   /** Estimated USD cost grouped by the recorded model alias. */
   by_model: z.record(z.string(), z.number().nonnegative()).optional(),
   /** Models with usage that could not be fully priced from the active catalog. */
