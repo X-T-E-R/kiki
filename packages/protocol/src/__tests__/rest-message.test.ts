@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  editMessageRequestSchema,
   getMessageResponseSchema,
   listMessagesQuerySchema,
   listMessagesResponseSchema,
+  regenerateMessageRequestSchema,
 } from '../rest/message';
 
 describe('listMessagesQuerySchema', () => {
@@ -74,5 +76,26 @@ describe('getMessageResponseSchema', () => {
       prompt_id: 'prompt_01',
     });
     expect(parsed.prompt_id).toBe('prompt_01');
+  });
+});
+
+describe('message action request schemas', () => {
+  const expected_cursor = { seq: 12, epoch: 'ep_test' };
+
+  it('accepts editable content and execution overrides', () => {
+    expect(editMessageRequestSchema.parse({
+      content: [{ type: 'text', text: 'replacement' }],
+      model: 'example-model',
+      plan_mode: true,
+      expected_cursor,
+    })).toMatchObject({ model: 'example-model', plan_mode: true, expected_cursor });
+  });
+
+  it('rejects non-editable assistant/tool parts and missing cursors', () => {
+    expect(editMessageRequestSchema.safeParse({
+      content: [{ type: 'thinking', thinking: 'hidden' }],
+      expected_cursor,
+    }).success).toBe(false);
+    expect(regenerateMessageRequestSchema.safeParse({}).success).toBe(false);
   });
 });

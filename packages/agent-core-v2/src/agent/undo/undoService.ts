@@ -37,6 +37,10 @@ import { ErrorCodes, Error2 } from '#/errors';
 import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import {
+  ISessionHistoryMutationService,
+  type SessionHistoryMutationLease,
+} from '#/session/historyMutation/historyMutation';
 import { IWireService } from '#/wire/wire';
 
 import { IAgentConversationUndoService, type UndoAvailability } from './undo';
@@ -70,6 +74,8 @@ export class AgentConversationUndoService
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IWireService private readonly wire: IWireService,
     @ILogService private readonly log: ILogService,
+    @ISessionHistoryMutationService
+    private readonly historyMutation: ISessionHistoryMutationService,
   ) {
     super();
   }
@@ -83,7 +89,10 @@ export class AgentConversationUndoService
     };
   }
 
-  async undo(turns: number): Promise<number> {
+  async undo(
+    turns: number,
+    historyMutationLease?: SessionHistoryMutationLease,
+  ): Promise<number> {
     if (!isValidUndoCount(turns)) {
       throw new Error2(
         ErrorCodes.REQUEST_INVALID,
@@ -91,12 +100,14 @@ export class AgentConversationUndoService
         { details: { field: 'count' } },
       );
     }
-    const run = this.undoQueue.then(() => this.undoNow(turns));
-    this.undoQueue = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
+    return this.historyMutation.runAdmission(historyMutationLease, async () => {
+      const run = this.undoQueue.then(() => this.undoNow(turns));
+      this.undoQueue = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      return run;
+    });
   }
 
   private async undoNow(turns: number): Promise<number> {

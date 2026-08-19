@@ -42,6 +42,7 @@ export function sliceMainRecordsAtTurn(
   records: readonly WireRecord[],
   sourceSessionId: string,
   turnIndex: number,
+  throughUserMessage = false,
 ): MainTurnSlice {
   const turnStarts: number[] = [];
   for (let index = 0; index < records.length; index += 1) {
@@ -56,7 +57,7 @@ export function sliceMainRecordsAtTurn(
     );
   }
 
-  const end = turnStarts[turnIndex + 1] ?? records.length;
+  const end = throughUserMessage ? start + 1 : (turnStarts[turnIndex + 1] ?? records.length);
   const retainedTurnInputs = turnInputIndicesThrough(records, turnIndex);
   const retained = records
     .slice(0, end)

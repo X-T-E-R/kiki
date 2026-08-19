@@ -239,6 +239,8 @@ export type KimiErrorCode =
   | 'session.state_invalid'
   | 'session.fork_active_turn'
   | 'session.undo_unavailable'
+  | 'session.cursor_mismatch'
+  | 'message.action_unavailable'
   | 'session.export_not_found'
   | 'session.export_missing_version'
   | 'session.export_output_conflict'
@@ -546,6 +548,12 @@ export interface SessionMetaUpdatedEvent {
 export interface SessionCreatedEvent {
   readonly type: 'event.session.created';
   readonly session: Session;
+}
+
+export interface SessionHistoryRewrittenEvent {
+  readonly type: 'event.session.history_rewritten';
+  readonly reason: 'edit_resend' | 'regenerate';
+  readonly target_message_id: string;
 }
 
 export interface WorkspaceCreatedEvent {
@@ -981,6 +989,7 @@ export type AgentEvent =
   | AgentStatusUpdatedEvent
   | SessionMetaUpdatedEvent
   | SessionCreatedEvent
+  | SessionHistoryRewrittenEvent
   | WorkspaceCreatedEvent
   | WorkspaceUpdatedEvent
   | WorkspaceDeletedEvent
@@ -1243,6 +1252,8 @@ export const kimiErrorCodeSchema = z.enum([
   'session.state_invalid',
   'session.fork_active_turn',
   'session.undo_unavailable',
+  'session.cursor_mismatch',
+  'message.action_unavailable',
   'session.export_not_found',
   'session.export_missing_version',
   'session.export_output_conflict',
@@ -1528,6 +1539,12 @@ export const sessionCreatedEventSchema = z.object({
   type: z.literal('event.session.created'),
   session: sessionSchema,
 }) satisfies z.ZodType<SessionCreatedEvent>;
+
+export const sessionHistoryRewrittenEventSchema = z.object({
+  type: z.literal('event.session.history_rewritten'),
+  reason: z.enum(['edit_resend', 'regenerate']),
+  target_message_id: z.string().min(1),
+}) satisfies z.ZodType<SessionHistoryRewrittenEvent>;
 
 export const workspaceCreatedEventSchema = z.object({
   type: z.literal('event.workspace.created'),
@@ -1908,6 +1925,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   agentStatusUpdatedEventSchema,
   sessionMetaUpdatedEventSchema,
   sessionCreatedEventSchema,
+  sessionHistoryRewrittenEventSchema,
   workspaceCreatedEventSchema,
   workspaceUpdatedEventSchema,
   workspaceDeletedEventSchema,

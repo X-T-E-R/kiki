@@ -586,6 +586,12 @@ export const sessionCreatedEventSchema = z.object({
   session: sessionSchema,
 });
 
+export const sessionHistoryRewrittenEventSchema = z.object({
+  type: z.literal('event.session.history_rewritten'),
+  reason: z.enum(['edit_resend', 'regenerate']),
+  target_message_id: z.string().min(1),
+});
+
 export const workspaceCreatedEventSchema = z.object({
   type: z.literal('event.workspace.created'),
   workspace: workspaceSchema,
@@ -991,6 +997,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   agentDisposedEventSchema,
   sessionMetaUpdatedEventSchema,
   sessionCreatedEventSchema,
+  sessionHistoryRewrittenEventSchema,
   workspaceCreatedEventSchema,
   workspaceUpdatedEventSchema,
   workspaceDeletedEventSchema,

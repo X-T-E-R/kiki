@@ -64,6 +64,17 @@ export const promptSubmissionSchema = z.object({
 });
 export type PromptSubmission = z.infer<typeof promptSubmissionSchema>;
 
+export const promptExecutionOverridesSchema = promptSubmissionSchema.pick({
+  profile: true,
+  model: true,
+  thinking: true,
+  permission_mode: true,
+  plan_mode: true,
+  swarm_mode: true,
+  disabled_tools: true,
+});
+export type PromptExecutionOverrides = z.infer<typeof promptExecutionOverridesSchema>;
+
 export const promptStatusSchema = z.enum(['running', 'queued', 'blocked']);
 export type PromptStatus = z.infer<typeof promptStatusSchema>;
 

@@ -109,6 +109,7 @@ import type { TranscriptService } from '../../../services/transcript/transcriptS
 import { InFlightTurnTracker } from './inFlightTurnTracker';
 import { SubagentRosterTracker } from './subagentRosterTracker';
 import { TurnUsageTracker } from './turnUsageTracker';
+import { buildResyncRequired } from './protocol';
 import {
   type EventEnvelope,
   type JournalLogger,
@@ -116,7 +117,11 @@ import {
   sessionJournalPath,
 } from './sessionEventJournal';
 
-export type ResyncReason = 'buffer_overflow' | 'session_recreated' | 'epoch_changed';
+export type ResyncReason =
+  | 'buffer_overflow'
+  | 'session_recreated'
+  | 'epoch_changed'
+  | 'history_rewritten';
 
 export interface BufferedSinceResult {
   events: Array<{ seq: number; envelope: EventEnvelope }>;
@@ -139,6 +144,7 @@ export type BroadcastDelivery = 'subscription' | 'immediate';
 /** A connection (or test double) that receives sequenced envelopes. */
 export interface BroadcastTarget {
   send(envelope: EventEnvelope, delivery?: BroadcastDelivery): void;
+  sendControl?(frame: unknown): void;
 }
 
 /**
@@ -728,6 +734,53 @@ export class SessionEventBroadcaster {
     }
     await state.queue;
     return { seq: state.journal.seq, epoch: state.journal.epoch };
+  }
+
+  async publishHistoryRewritten(
+    sessionId: string,
+    reason: 'edit_resend' | 'regenerate',
+    targetMessageId: string,
+  ): Promise<{ seq: number; epoch: string }> {
+    const state = await this.ensureState(sessionId);
+    if (state === undefined) throw new Error(`session ${sessionId} does not exist`);
+    const event: Event = {
+      type: 'event.session.history_rewritten',
+      reason,
+      target_message_id: targetMessageId,
+      agentId: 'main',
+      sessionId,
+    };
+    const queued = state.queue
+      .then(() => this.dispatch(state, event, false))
+      .then(() => state.journal.flush());
+    state.queue = queued.catch((error: unknown) => {
+      this.logDispatchDropped(sessionId, event.type, error);
+    });
+    await queued;
+    return { seq: state.journal.seq, epoch: state.journal.epoch };
+  }
+
+  refreshTranscriptAfterHistoryRewrite(sessionId: string): void {
+    const state = this.sessions.get(sessionId);
+    const store = this.opts.transcriptService?.forSessionLive(sessionId);
+    if (state === undefined || store === undefined) return;
+    this.ensureTranscriptStream(state, store);
+  }
+
+  broadcastHistoryResync(
+    sessionId: string,
+    cursor: { seq: number; epoch: string },
+  ): void {
+    const state = this.sessions.get(sessionId);
+    if (state === undefined) return;
+    const frame = buildResyncRequired(sessionId, 'history_rewritten', cursor.seq, cursor.epoch);
+    for (const target of state.targets.keys()) {
+      try {
+        target.sendControl?.(frame);
+      } catch {
+        // best-effort compatibility notification; the durable event remains authoritative
+      }
+    }
   }
 
   async getTranscriptToolCallCounts(
