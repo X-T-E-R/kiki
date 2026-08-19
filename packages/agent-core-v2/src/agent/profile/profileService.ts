@@ -143,6 +143,7 @@ import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMd
 import {
   applyOverlay,
   CognitionFileError,
+  cognitionPathRefs,
   loadCognitionSlots,
 } from '#/agent/cognition/cognitionFiles';
 
@@ -568,8 +569,17 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       await this.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: canonicalAlias });
       this.telemetry.track2('model_switch', { model: canonicalAlias });
     } else if (this.modelAlias !== canonicalAlias) {
+      const previousAlias = this.modelAlias;
       this.update({ modelAlias: canonicalAlias });
       this.telemetry.track2('model_switch', { model: canonicalAlias });
+      // The overlay is baked into the persisted prompt, so an alias switch has
+      // to re-render it; steering and anchor already read the live alias.
+      if (
+        this.declaresCognitionOverlay(previousAlias) ||
+        this.declaresCognitionOverlay(canonicalAlias)
+      ) {
+        await this.refreshSystemPrompt();
+      }
     }
     return {
       model: canonicalAlias,
@@ -683,6 +693,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         code: 'system-prompt-refresh-failed',
       });
     }
+  }
+
+  private declaresCognitionOverlay(modelAlias: string | undefined): boolean {
+    if (modelAlias === undefined || modelAlias.length === 0) return false;
+    return cognitionPathRefs(this.models.get(modelAlias)?.cognition?.overlay).length > 0;
   }
 
   private async applyCognitionOverlay(base: string, modelAlias: string): Promise<string> {

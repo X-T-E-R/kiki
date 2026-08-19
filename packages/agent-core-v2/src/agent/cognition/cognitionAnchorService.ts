@@ -4,8 +4,7 @@
  * Request-time projection of `[models.<alias>.cognition].anchor` onto
  * turn LLM requests. The file is loaded once and cached. Whether a
  * request is anchored is a function of `source.step`, `anchorSteps`,
- * `anchorScope`, and the first turnId this agent instance has seen.
- * Bound at Agent scope.
+ * `anchorScope`, and the turn id. Bound at Agent scope.
  */
 
 import { LifecycleScope } from '#/app/scopes';
@@ -26,10 +25,14 @@ import { cognitionPathRefs, readCognitionSlot } from './cognitionFiles';
 const DEFAULT_ANCHOR_STEPS = 1;
 const DEFAULT_ANCHOR_SCOPE = 'session';
 
+// The loop reserves turn ids from a wire-persisted clock that starts at zero
+// (`agent/loop/turnOps.ts`), so this identifies the agent's opening turn even
+// after a cold resume, where an in-memory latch would re-anchor mid-session.
+const FIRST_TURN_ID = 0;
+
 export class AgentCognitionAnchorService implements IAgentCognitionAnchorService {
   declare readonly _serviceBrand: undefined;
 
-  private firstTurnId: number | undefined;
   private cachedText: string | undefined;
   private hasCachedText = false;
   private inflight: Promise<string | undefined> | undefined;
@@ -48,14 +51,14 @@ export class AgentCognitionAnchorService implements IAgentCognitionAnchorService
     const refs = cognitionPathRefs(cognition?.anchor);
     if (refs.length === 0) return undefined;
 
-    if (this.firstTurnId === undefined) {
-      this.firstTurnId = input.turnId;
-    }
     if (input.hasExplicitSystemPrompt) return undefined;
     if (!stepWithinAnchorWindow(input.step, cognition?.anchorSteps ?? DEFAULT_ANCHOR_STEPS)) {
       return undefined;
     }
-    if ((cognition?.anchorScope ?? DEFAULT_ANCHOR_SCOPE) !== 'turn' && input.turnId !== this.firstTurnId) {
+    if (
+      (cognition?.anchorScope ?? DEFAULT_ANCHOR_SCOPE) !== 'turn' &&
+      input.turnId !== FIRST_TURN_ID
+    ) {
       return undefined;
     }
     return this.loadAnchor(refs);

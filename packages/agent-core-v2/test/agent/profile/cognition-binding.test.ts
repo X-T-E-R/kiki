@@ -142,6 +142,46 @@ describe('per-model cognition overlay', () => {
     });
   });
 
+  it('drops the overlay when setModel switches to a model without one', async () => {
+    const agent = createBoundAgent(
+      { overlay: 'cognition/overlay.md' },
+      {
+        [OTHER_MODEL]: {
+          provider: 'test-provider',
+          model: OTHER_MODEL,
+          maxContextSize: 1_000_000,
+        },
+      },
+    );
+    const profile = agent.get(IAgentProfileService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    expect(profile.getSystemPrompt()).toContain('FLASH OVERLAY');
+
+    await profile.setModel(OTHER_MODEL);
+    expect(profile.data().modelAlias).toBe(OTHER_MODEL);
+    expect(profile.getSystemPrompt()).not.toContain('FLASH OVERLAY');
+    expect(profile.data().profileName).toBe(DEFAULT_AGENT_PROFILE_NAME);
+  });
+
+  it('picks the overlay up when setModel switches to a model that declares one', async () => {
+    const agent = createBoundAgent(
+      { overlay: 'cognition/overlay.md' },
+      {
+        [OTHER_MODEL]: {
+          provider: 'test-provider',
+          model: OTHER_MODEL,
+          maxContextSize: 1_000_000,
+        },
+      },
+    );
+    const profile = agent.get(IAgentProfileService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: OTHER_MODEL });
+    expect(profile.getSystemPrompt()).not.toContain('FLASH OVERLAY');
+
+    await profile.setModel(MOCK_MODEL);
+    expect(profile.getSystemPrompt()).toContain('FLASH OVERLAY');
+  });
+
   it('does not overlay a different model in the same catalog', async () => {
     const agent = createBoundAgent(
       { overlay: 'cognition/overlay.md' },
