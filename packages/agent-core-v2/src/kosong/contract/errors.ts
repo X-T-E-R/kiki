@@ -320,10 +320,47 @@ The provider rejected the configured thinking effort. Non-Kimi providers receive
 }
 
 const STATUS_ERROR_BODY_SNIPPET_MAX_CHARS = 500;
+const STATUS_ERROR_MESSAGE_MAX_CHARS = 700;
+const STATUS_ERROR_REDACTED = '[REDACTED]';
+const STATUS_ERROR_SENSITIVE_KEY =
+  /^(?:api[_-]?key|authorization|secret|password|token|access[_-]?token|refresh[_-]?token|private[_-]?key|client[_-]?secret|bearer)$/i;
+const STATUS_ERROR_SENSITIVE_KEY_SUFFIX = /(?:^|_)(?:api_key|authorization|secret|password|token|bearer)$/i;
+const STATUS_ERROR_SK_TOKEN = /\bsk-[A-Za-z0-9_-]{8,}\b/g;
+const STATUS_ERROR_BEARER_TOKEN = /\bBearer\s+\S+/gi;
+const STATUS_ERROR_JSON_SECRET =
+  /("?)((?:api[_-]?key|authorization|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|secret|password|token))\1\s*:\s*(")(?:\\.|[^"\\])*(")/gi;
 
 function truncateStatusErrorSnippet(text: string): string {
   if (text.length <= STATUS_ERROR_BODY_SNIPPET_MAX_CHARS) return text;
   return `${text.slice(0, STATUS_ERROR_BODY_SNIPPET_MAX_CHARS)}...`;
+}
+
+function truncateStatusErrorMessage(text: string): string {
+  if (text.length <= STATUS_ERROR_MESSAGE_MAX_CHARS) return text;
+  return `${text.slice(0, STATUS_ERROR_MESSAGE_MAX_CHARS - 3)}...`;
+}
+
+function isSensitiveStatusErrorKey(key: string): boolean {
+  const normalized = key.toLowerCase().replaceAll('-', '_');
+  return STATUS_ERROR_SENSITIVE_KEY.test(normalized) || STATUS_ERROR_SENSITIVE_KEY_SUFFIX.test(normalized);
+}
+
+function redactSensitiveText(text: string): string {
+  return text
+    .replace(STATUS_ERROR_SK_TOKEN, STATUS_ERROR_REDACTED)
+    .replace(STATUS_ERROR_BEARER_TOKEN, `Bearer ${STATUS_ERROR_REDACTED}`)
+    .replace(STATUS_ERROR_JSON_SECRET, `$1$2$1: $3${STATUS_ERROR_REDACTED}$4`);
+}
+
+function redactSensitiveValue(value: unknown): unknown {
+  if (typeof value === 'string') return redactSensitiveText(value);
+  if (Array.isArray(value)) return value.map(redactSensitiveValue);
+  if (typeof value !== 'object' || value === null) return value;
+  const redacted: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    redacted[key] = isSensitiveStatusErrorKey(key) ? STATUS_ERROR_REDACTED : redactSensitiveValue(nested);
+  }
+  return redacted;
 }
 
 function readObjectStringProp(value: object, key: string): string | undefined {
@@ -336,39 +373,50 @@ function readNestedErrorObject(value: object): object | undefined {
   return typeof raw === 'object' && raw !== null ? raw : undefined;
 }
 
-function extractStatusErrorBodySnippet(body: unknown): string | null {
+function extractStatusErrorBodyDetail(body: unknown): string | null {
   if (body === null || body === undefined) return null;
-  if (typeof body === 'string') {
-    const trimmed = body.trim();
-    return trimmed.length === 0 ? null : truncateStatusErrorSnippet(trimmed);
+  const sanitized = redactSensitiveValue(body);
+  if (typeof sanitized === 'string') {
+    const trimmed = sanitized.trim();
+    return trimmed.length === 0 ? null : trimmed;
   }
-  if (typeof body !== 'object') return null;
+  if (typeof sanitized !== 'object' || sanitized === null) return null;
 
-  let current: object | undefined = body;
+  let current: object | undefined = sanitized;
   for (let depth = 0; current !== undefined && depth < 4; depth += 1) {
     const nestedMessage = readObjectStringProp(current, 'message');
     if (nestedMessage !== undefined) {
       const trimmed = nestedMessage.trim();
-      if (trimmed.length > 0) return truncateStatusErrorSnippet(trimmed);
+      if (trimmed.length > 0) return trimmed;
     }
     current = readNestedErrorObject(current);
   }
 
   try {
-    const serialized = JSON.stringify(body);
+    const serialized = JSON.stringify(sanitized);
     if (serialized === undefined || serialized === '{}' || serialized === '[]') return null;
-    return truncateStatusErrorSnippet(serialized);
+    return serialized;
   } catch {
     return null;
   }
 }
 
+function compose400StatusErrorMessage(message: string, body: unknown): string {
+  const redactedMessage = redactSensitiveText(message);
+  const detail = extractStatusErrorBodyDetail(body);
+  let assembled = redactedMessage;
+  if (detail !== null && !redactedMessage.includes(detail)) {
+    const snippet = truncateStatusErrorSnippet(detail);
+    if (!redactedMessage.includes(snippet)) {
+      assembled = `${redactedMessage} — ${snippet}`;
+    }
+  }
+  return truncateStatusErrorMessage(assembled);
+}
+
 function appendStatusErrorBodySnippet(statusCode: number, message: string, body: unknown): string {
   if (statusCode !== 400) return message;
-  const snippet = extractStatusErrorBodySnippet(body);
-  if (snippet === null) return message;
-  if (message.includes(snippet)) return message;
-  return `${message} — ${snippet}`;
+  return compose400StatusErrorMessage(message, body);
 }
 
 export function isContextOverflowErrorCode(code: string | null | undefined): boolean {
@@ -396,9 +444,10 @@ export function normalizeAPIStatusError(
   if (isProviderOverloadStatusError(statusCode, message)) {
     return new APIProviderOverloadedError(statusCode, displayMessage, requestId, retryAfterMs, traceId);
   }
+  const hinted = appendThinkingEffortConfigHint(statusCode, displayMessage);
   return new APIStatusError(
     statusCode,
-    appendThinkingEffortConfigHint(statusCode, displayMessage),
+    statusCode === 400 ? truncateStatusErrorMessage(hinted) : hinted,
     requestId,
     retryAfterMs,
     traceId,

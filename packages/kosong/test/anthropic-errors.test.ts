@@ -35,6 +35,45 @@ describe('convertAnthropicError', () => {
     expect(result).toBeInstanceOf(APIConnectionError);
   });
 
+  it('bounds an 800-char body already inlined by the Anthropic SDK message', () => {
+    const detail = `provider-rejected-${'x'.repeat(800)}`;
+    const err = AnthropicAPIError.generate(
+      400,
+      { type: 'error', error: { type: 'invalid_request_error', message: detail } },
+      'Bad Request',
+      new Headers(),
+    );
+    const result = convertAnthropicError(err);
+    expect(result).toBeInstanceOf(APIStatusError);
+    expect((result as APIStatusError).statusCode).toBe(400);
+    expect(result.message.length).toBeLessThanOrEqual(700);
+    expect((result.message.match(/provider-rejected-/g) ?? []).length).toBe(1);
+    expect(isRetryableGenerateError(result)).toBe(false);
+  });
+
+  it('redacts api_key and Authorization from an Anthropic 400 body', () => {
+    const err = AnthropicAPIError.generate(
+      400,
+      {
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          api_key: 'sk-live-SECRETVALUE',
+          Authorization: 'Bearer super-secret-token',
+          stack: 'internal stack',
+        },
+      },
+      'Bad Request',
+      new Headers(),
+    );
+    const result = convertAnthropicError(err);
+    expect(result).toBeInstanceOf(APIStatusError);
+    expect(result.message).toContain('[REDACTED]');
+    expect(result.message).not.toContain('sk-live-SECRETVALUE');
+    expect(result.message).not.toContain('super-secret-token');
+    expect(result.message.length).toBeLessThanOrEqual(700);
+  });
+
   it('APIError with status -> APIStatusError', () => {
     const err = AnthropicAPIError.generate(
       502,

@@ -153,6 +153,29 @@ describe('normalizeAPIStatusError: 400 body diagnostics', () => {
     expect(error.message).toContain('400 Bad Request');
     expect(error.message).toContain(`${'x'.repeat(500)}...`);
     expect(error.message).not.toContain('x'.repeat(501));
+    expect(error.message.length).toBeLessThanOrEqual(700);
+  });
+
+  it('does not re-append a body already inlined in the SDK message', () => {
+    const detail = `provider-rejected-${'x'.repeat(800)}`;
+    const error = normalizeAPIStatusError(400, `400 ${detail}`, null, null, null, { message: detail });
+    expect(error.message.length).toBeLessThanOrEqual(700);
+    expect((error.message.match(/provider-rejected-/g) ?? []).length).toBe(1);
+    expect(error.message).toContain('400');
+    expect(isRetryableGenerateError(error)).toBe(false);
+  });
+
+  it('redacts sensitive keys and inline secrets from a 400 body', () => {
+    const error = normalizeAPIStatusError(400, '400 Bad Request', null, null, null, {
+      api_key: 'sk-live-SECRETVALUE',
+      Authorization: 'Bearer super-secret-token',
+      stack: 'internal stack',
+    });
+    expect(error.message).toContain('[REDACTED]');
+    expect(error.message).toContain('internal stack');
+    expect(error.message).not.toContain('sk-live-SECRETVALUE');
+    expect(error.message).not.toContain('super-secret-token');
+    expect(error.message.length).toBeLessThanOrEqual(700);
   });
 });
 
