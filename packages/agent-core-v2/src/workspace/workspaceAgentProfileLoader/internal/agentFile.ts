@@ -93,6 +93,19 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     'thinking_effort',
     options.path,
   );
+  const allowedModels = parseStringList(
+    frontmatter['allowed_models'],
+    'allowed_models',
+    options.path,
+  );
+  const denyModels = parseStringList(frontmatter['deny_models'], 'deny_models', options.path);
+  warnIncoherentModelConstraints(
+    modelAlias,
+    allowedModels,
+    denyModels,
+    options.path,
+    options.warn,
+  );
   const recommendedModels = parseRecommendedModels(
     frontmatter['recommended_models'],
     options.path,
@@ -135,6 +148,8 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     modelPreference,
     modelAlias,
     thinkingEffort,
+    allowedModels,
+    denyModels,
     recommendedModels,
     serviceTier,
     requestParams,
@@ -242,6 +257,49 @@ function parseRequestParams(
     });
   }
   return out;
+}
+
+// Parsing has no model service, so a written alias cannot be canonicalized here.
+// Comparing the segment after the last "/" keeps equivalent spellings such as
+// "fast" and "vendor/fast" from raising a false alarm; binding-time resolution
+// remains the authoritative check.
+function aliasTail(alias: string): string {
+  return alias.slice(alias.lastIndexOf('/') + 1);
+}
+
+function listMatchesAlias(entries: readonly string[], alias: string): boolean {
+  const tail = aliasTail(alias);
+  return entries.some((entry) => aliasTail(entry) === tail);
+}
+
+function warnIncoherentModelConstraints(
+  modelAlias: string | undefined,
+  allowedModels: readonly string[] | undefined,
+  denyModels: readonly string[] | undefined,
+  filePath: string,
+  warn?: (message: string) => void,
+): void {
+  if (warn === undefined) return;
+  const hasAllowlist = allowedModels !== undefined && allowedModels.length > 0;
+  if (modelAlias === undefined) {
+    if (hasAllowlist) {
+      warn(
+        `Frontmatter field "allowed_models" in ${filePath} is set without "model_alias"; a dispatch that does not name a model inherits the caller's model, which the allowlist will reject`,
+      );
+    }
+    return;
+  }
+  if (listMatchesAlias(denyModels ?? [], modelAlias)) {
+    warn(
+      `Frontmatter field "model_alias" in ${filePath} is listed in deny_models; the profile still loads, but binding this alias will fail`,
+    );
+    return;
+  }
+  if (hasAllowlist && !listMatchesAlias(allowedModels, modelAlias)) {
+    warn(
+      `Frontmatter field "model_alias" in ${filePath} is not in allowed_models; the profile still loads, but binding this alias will fail`,
+    );
+  }
 }
 
 function parseBoolean(value: unknown, field: string, filePath: string): boolean {

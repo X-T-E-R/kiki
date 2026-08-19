@@ -102,6 +102,16 @@ export interface SubagentBindingRequest {
   readonly thinkingEffort?: string;
 }
 
+/**
+ * Role-level model constraints sourced from an agent-file profile.
+ * Must not be populated from tool input — a dispatcher cannot grant itself
+ * permission by passing these lists as tool arguments.
+ */
+export interface SubagentRoleModelConstraints {
+  readonly allowedModels?: readonly string[];
+  readonly denyModels?: readonly string[];
+}
+
 export interface SubagentBindingOwner {
   readonly modelAlias: string;
   readonly thinkingLevel: string;
@@ -314,6 +324,64 @@ function assertModelNotDenied(
   );
 }
 
+function identitySet(entries: readonly string[] | undefined, models?: IModelService): Set<string> {
+  return new Set((entries ?? []).map((model) => resolveModelIdentity(model, models)));
+}
+
+function assertRoleModelConstraints(
+  config: IConfigService,
+  model: string,
+  constraints: SubagentRoleModelConstraints | undefined,
+  models?: IModelService,
+): void {
+  if (constraints === undefined) return;
+  const canonicalModel = resolveModelIdentity(model, models);
+  const roleDenied = identitySet(constraints.denyModels, models);
+  if (roleDenied.has(canonicalModel)) {
+    throw new Error2(
+      ErrorCodes.CONFIG_INVALID,
+      `Subagent model "${canonicalModel}" is denied by this agent's deny_models.`,
+      {
+        details: {
+          model: canonicalModel,
+          deniedModels: [canonicalModel],
+          roleDenyModels: [...roleDenied],
+        },
+      },
+    );
+  }
+  const allowed = constraints.allowedModels;
+  if (allowed === undefined || allowed.length === 0) return;
+  const allowedIds = identitySet(allowed, models);
+  if (allowedIds.has(canonicalModel)) return;
+  const machineDenied = deniedModelIdentities(config, models);
+  const permittedModels = allowed.filter((alias) => {
+    const identity = resolveModelIdentity(alias, models);
+    return !machineDenied.has(identity) && !roleDenied.has(identity);
+  });
+  throw new Error2(
+    ErrorCodes.CONFIG_INVALID,
+    `Subagent model "${canonicalModel}" is not in this agent's allowed_models. Permitted models: ${permittedModels.join(', ') || '(none)'}.`,
+    {
+      details: {
+        model: canonicalModel,
+        allowedModels: [...allowed],
+        permittedModels,
+      },
+    },
+  );
+}
+
+function assertBoundModelAllowed(
+  config: IConfigService,
+  model: string,
+  constraints: SubagentRoleModelConstraints | undefined,
+  models?: IModelService,
+): void {
+  assertModelNotDenied(config, model, models);
+  assertRoleModelConstraints(config, model, constraints, models);
+}
+
 function assertPoolDoesNotUseDeniedModels(
   config: IConfigService,
   pool: SubagentModelPool,
@@ -404,6 +472,7 @@ export function resolveSubagentBinding(
   requested?: string | SubagentBindingRequest,
   profileRequest: SubagentBindingRequest = {},
   models?: IModelService,
+  roleConstraints?: SubagentRoleModelConstraints,
 ): SubagentModelBinding {
   const tool = normalizeRequest(requested);
   const profile = normalizeRequest(profileRequest);
@@ -415,6 +484,9 @@ export function resolveSubagentBinding(
   const pool = enabled ? resolveSubagentModelPool(config) : undefined;
   const selected = selectModelRequest(tool, profile);
   const explicitThinking = normalized(tool.thinkingEffort) ?? normalized(profile.thinkingEffort);
+  const assertBound = (model: string): void => {
+    assertBoundModelAllowed(config, model, roleConstraints, models);
+  };
 
   if (enabled && section?.force === true) {
     if (section.enforcePool === true) {
@@ -443,7 +515,7 @@ export function resolveSubagentBinding(
         { details: { model: choice } },
       );
     }
-    assertModelNotDenied(config, forcedModel, models);
+    assertBound(forcedModel);
     return recordBindingMetadata(
       { model: forcedModel, thinking: explicitThinking, displayModel: forcedModel },
       { source: 'secondary', mode: 'fixed' },
@@ -457,7 +529,7 @@ export function resolveSubagentBinding(
       : selected?.modelPreference === 'secondary' && selected.source === 'profile'
         ? pool?.defaultModel
         : selected?.modelPreference);
-  if (selectedModel !== undefined) assertModelNotDenied(config, selectedModel, models);
+  if (selectedModel !== undefined) assertBound(selectedModel);
 
   if (enabled && section?.enforcePool === true) {
     if (pool === undefined || Object.keys(section.models ?? {}).length === 0) {
@@ -520,6 +592,7 @@ export function resolveSubagentBinding(
     }
     const mode: SubagentBindingMode =
       explicitThinking === undefined && own.inheritByDefault !== false ? 'inherit' : 'fixed';
+    assertRoleModelConstraints(config, own.modelAlias, roleConstraints, models);
     return recordBindingMetadata(
       {
         model: own.modelAlias,
@@ -553,6 +626,7 @@ export function resolveSubagentBinding(
       { details: { model: choice, availableModels: available } },
     );
   }
+  assertRoleModelConstraints(config, choice, roleConstraints, models);
   return recordBindingMetadata(
     { model: choice, thinking: explicitThinking, displayModel: choice },
     { source: 'secondary', mode: 'fixed' },
@@ -566,6 +640,7 @@ export function resolveAgentCollaborationBinding(
   request: Pick<SubagentBindingRequest, 'modelAlias' | 'thinkingEffort'>,
   profile: SubagentBindingRequest,
   models?: IModelService,
+  roleConstraints?: SubagentRoleModelConstraints,
 ): SubagentModelBinding {
   const agents = config.get<AgentsConfig | undefined>(AGENTS_SECTION);
   const requestModel = normalized(request.modelAlias);
@@ -603,7 +678,7 @@ export function resolveAgentCollaborationBinding(
   const configuredDefault = normalized(agents?.defaultSubagentModel);
   const poolDefault = pool?.defaultModel;
   const model = exactModel ?? preferredModel ?? configuredDefault ?? poolDefault ?? own.modelAlias;
-  assertModelNotDenied(config, model, models);
+  assertBoundModelAllowed(config, model, roleConstraints, models);
   const source: SubagentModelSource =
     requestModel !== undefined
       ? 'tool'

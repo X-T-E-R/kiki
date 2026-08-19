@@ -11,7 +11,9 @@
  * through as the delegation allowlist; `model_preference` becomes the
  * symbolic default model used when the profile is delegated to; `service_tier`
  * becomes the profile's per-turn service-tier intent; `request_params` carries
- * additional scalar per-turn request fields; `recommended_models` passes
+ * additional scalar per-turn request fields; `allowed_models` and
+ * `deny_models` pass through as role-level spawn constraints that can only
+ * narrow machine permission; `recommended_models` passes
  * through as advisory dispatcher metadata and is never rendered into the
  * child prompt.
  * `profilesFromDiscovery` packs a whole discovery pass into an
@@ -53,6 +55,8 @@ export function agentProfileFromFile(
     modelPreference: definition.modelPreference,
     modelAlias: definition.modelAlias,
     thinkingEffort: definition.thinkingEffort,
+    allowedModels: definition.allowedModels,
+    denyModels: definition.denyModels,
     recommendedModels: definition.recommendedModels,
     serviceTier: definition.serviceTier,
     requestParams: definition.requestParams,

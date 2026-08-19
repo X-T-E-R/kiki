@@ -461,6 +461,29 @@ describe('agent profile loaders + session catalog', () => {
     ).toThrow(/Unknown frontmatter field "recommended_models"/);
   });
 
+  it.each(['allowed_models', 'deny_models'])(
+    'rejects %s as an unknown route sidecar field',
+    (field) => {
+      expect(() =>
+        parseAgentRouteFileText({
+          path: '/agents/.routes/reviewer/fast.md',
+          expectedProfile: 'reviewer',
+          expectedRouteName: 'fast',
+          text: [
+            '---',
+            'id: reviewer.fast',
+            'profile: reviewer',
+            'description: fast',
+            'prompt_mode: inherit',
+            `${field}: [fast-model]`,
+            '---',
+            '',
+          ].join('\n'),
+        }),
+      ).toThrow(new RegExp(`Unknown frontmatter field "${field}"`));
+    },
+  );
+
   it('atomically patches profile and route frontmatter, preserves the body, and echoes reload', async () => {
     await withFixture(async (fixture) => {
       const root = join(fixture.homeDir, 'agents');
@@ -1204,6 +1227,27 @@ describe('agent profile loaders + session catalog', () => {
           stack.warnings.some((warning) =>
             warning.includes('overrides request_params.service_tier'),
           ),
+        ).toBe(true);
+      });
+    });
+  });
+
+  it('loads a profile whose model_alias is excluded by its own constraints and warns', async () => {
+    await withFixture(async (fixture) => {
+      const file = await writeAgent(
+        fixture.workDir,
+        'pinned-incoherent.md',
+        '---\nname: pinned-incoherent\ndescription: incoherent pin\nmodel_alias: k3-review\nallowed_models: [fast-model]\n---\n\nbody\n',
+      );
+      await withStack(fixture, { explicitFiles: [file] }, async (stack) => {
+        await stack.ready();
+
+        expect(stack.catalog.get('pinned-incoherent')).toMatchObject({
+          modelAlias: 'k3-review',
+          allowedModels: ['fast-model'],
+        });
+        expect(
+          stack.warnings.some((warning) => warning.includes('not in allowed_models')),
         ).toBe(true);
       });
     });

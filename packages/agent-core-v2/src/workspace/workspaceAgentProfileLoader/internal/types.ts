@@ -35,6 +35,8 @@ export interface AgentFileDefinition {
   readonly modelPreference?: AgentModelPreference;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
+  readonly allowedModels?: readonly string[];
+  readonly denyModels?: readonly string[];
   readonly recommendedModels?: readonly AgentRecommendedModel[];
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;

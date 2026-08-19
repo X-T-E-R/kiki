@@ -94,4 +94,37 @@ describe('buildProfileDescriptions recommended models', () => {
     );
     expect(text).not.toContain('Alternative models');
   });
+
+  it('renders an allowed-models line after thinking effort when an allowlist is present', () => {
+    const text = render(
+      profile({ allowedModels: ['fast-model', 'k3-review'] }),
+      ['axon-message/grok-4.6', 'axon-message/deepseek-v4-pro-0813'],
+    );
+
+    expect(text).toBe(
+      [
+        '- implementer: Does the implementation slice When the scope is named',
+        '  Model alias: gpt-5.6-sol',
+        '  Thinking effort: high',
+        '  Allowed models: fast-model, k3-review',
+        '  Alternative models: axon-message/grok-4.6 (thinking_effort=high) — Scope and acceptance checks are already named.; axon-message/deepseek-v4-pro-0813 — Ordinary coding where DeepSeek Pro can finish.',
+        '  Tools: all',
+      ].join('\n'),
+    );
+  });
+
+  it('omits the allowed-models line when there is no allowlist', () => {
+    const text = render(profile({ allowedModels: undefined }), [
+      'axon-message/grok-4.6',
+      'axon-message/deepseek-v4-pro-0813',
+    ]);
+
+    expect(text).not.toContain('Allowed models');
+  });
+
+  it('omits the allowed-models line when the allowlist is empty', () => {
+    const text = render(profile({ allowedModels: [] }), []);
+
+    expect(text).not.toContain('Allowed models');
+  });
 });

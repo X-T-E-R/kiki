@@ -273,6 +273,10 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
         modelAlias: selectedProfile.modelAlias,
         thinkingEffort: selectedProfile.thinkingEffort,
       };
+      const roleConstraints = {
+        allowedModels: selectedProfile.allowedModels,
+        denyModels: selectedProfile.denyModels,
+      };
       let binding = resolveAgentCollaborationBinding(
         this.config,
         this.flags,
@@ -280,6 +284,7 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
         bindingRequest,
         profileBinding,
         this.models,
+        roleConstraints,
       );
       if (subagentModelSource(binding) === 'caller') {
         const callerMeta = (await this.metadata.read()).agents?.[this.callerAgentId];
@@ -292,6 +297,7 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
             bindingRequest,
             profileBinding,
             this.models,
+            roleConstraints,
           );
         }
       }

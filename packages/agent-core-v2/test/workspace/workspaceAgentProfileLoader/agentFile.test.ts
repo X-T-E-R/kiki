@@ -52,6 +52,8 @@ describe('parseAgentFileText', () => {
     expect(def.serviceTier).toBeUndefined();
     expect(def.requestParams).toBeUndefined();
     expect(def.recommendedModels).toBeUndefined();
+    expect(def.allowedModels).toBeUndefined();
+    expect(def.denyModels).toBeUndefined();
     expect(def.tools).toBeUndefined();
     expect(def.disallowedTools).toBeUndefined();
     expect(def.subagents).toBeUndefined();
@@ -348,6 +350,101 @@ body
     );
   });
 
+  it('parses allowed_models and deny_models as a YAML list or comma-separated string', () => {
+    const fromList = parse(`---
+name: solo
+description: d
+allowed_models:
+  - fast-model
+  - k3-review
+deny_models:
+  - heavy-model
+---
+
+body
+`);
+    const fromString = parse(
+      '---\nname: solo\ndescription: d\nallowed_models: fast-model, k3-review\ndeny_models: heavy-model\n---\n\nbody\n',
+    );
+
+    expect(fromList.allowedModels).toEqual(['fast-model', 'k3-review']);
+    expect(fromList.denyModels).toEqual(['heavy-model']);
+    expect(fromString.allowedModels).toEqual(['fast-model', 'k3-review']);
+    expect(fromString.denyModels).toEqual(['heavy-model']);
+  });
+
+  it('warns when model_alias is excluded by the profile\'s own constraints and still loads', () => {
+    const denyWarnings: string[] = [];
+    const denied = parseAgentFileText({
+      path: '/tmp/agents/reviewer.md',
+      source: 'project',
+      text: '---\nname: solo\ndescription: d\nmodel_alias: heavy-model\ndeny_models: [heavy-model]\n---\n\nbody\n',
+      warn: (message) => denyWarnings.push(message),
+    });
+    expect(denied.modelAlias).toBe('heavy-model');
+    expect(denied.denyModels).toEqual(['heavy-model']);
+    expect(denyWarnings).toEqual([
+      expect.stringContaining('model_alias" in /tmp/agents/reviewer.md is listed in deny_models'),
+    ]);
+
+    const allowWarnings: string[] = [];
+    const excluded = parseAgentFileText({
+      path: '/tmp/agents/reviewer.md',
+      source: 'project',
+      text: '---\nname: solo\ndescription: d\nmodel_alias: k3-review\nallowed_models: [fast-model]\n---\n\nbody\n',
+      warn: (message) => allowWarnings.push(message),
+    });
+    expect(excluded.modelAlias).toBe('k3-review');
+    expect(excluded.allowedModels).toEqual(['fast-model']);
+    expect(allowWarnings).toEqual([
+      expect.stringContaining('model_alias" in /tmp/agents/reviewer.md is not in allowed_models'),
+    ]);
+  });
+
+  it('does not warn when model_alias and a constraint entry are equivalent spellings', () => {
+    const warnings: string[] = [];
+    const parsed = parseAgentFileText({
+      path: '/tmp/agents/reviewer.md',
+      source: 'project',
+      text: '---\nname: solo\ndescription: d\nmodel_alias: fast-model\nallowed_models: [vendor/fast-model]\n---\n\nbody\n',
+      warn: (message) => warnings.push(message),
+    });
+    expect(parsed.modelAlias).toBe('fast-model');
+    expect(warnings).toEqual([]);
+  });
+
+  it('warns when an allowlist is declared without model_alias', () => {
+    const warnings: string[] = [];
+    const parsed = parseAgentFileText({
+      path: '/tmp/agents/reviewer.md',
+      source: 'project',
+      text: '---\nname: solo\ndescription: d\nallowed_models: [fast-model]\n---\n\nbody\n',
+      warn: (message) => warnings.push(message),
+    });
+    expect(parsed.modelAlias).toBeUndefined();
+    expect(parsed.allowedModels).toEqual(['fast-model']);
+    expect(warnings).toEqual([
+      expect.stringContaining('allowed_models" in /tmp/agents/reviewer.md is set without "model_alias"'),
+    ]);
+  });
+
+  it('does not warn when only deny_models is declared without model_alias', () => {
+    const warnings: string[] = [];
+    parseAgentFileText({
+      path: '/tmp/agents/reviewer.md',
+      source: 'project',
+      text: '---\nname: solo\ndescription: d\ndeny_models: [heavy-model]\n---\n\nbody\n',
+      warn: (message) => warnings.push(message),
+    });
+    expect(warnings).toEqual([]);
+  });
+
+  it('rejects a non-string, non-list allowed_models field', () => {
+    expect(() =>
+      parse('---\nname: solo\ndescription: d\nallowed_models: 42\n---\n\nbody\n'),
+    ).toThrow(/"allowed_models"/);
+  });
+
   it('rejects non-string tool entries', () => {
     expect(() =>
       parse('---\nname: solo\ndescription: d\ntools:\n  - 42\n---\n\nbody\n'),
@@ -526,6 +623,16 @@ describe('agentProfileFromFile', () => {
     expect(profile.recommendedModels).toEqual(recommendedModels);
     expect(profile.systemPrompt({})).toBe('PROMPT_BODY');
     expect(profile.systemPrompt({})).not.toContain('already scoped');
+  });
+
+  it('passes allowed_models and deny_models through', () => {
+    const profile = agentProfileFromFile(
+      { ...base, allowedModels: ['fast-model'], denyModels: ['heavy-model'] },
+      basePrompt,
+    );
+
+    expect(profile.allowedModels).toEqual(['fast-model']);
+    expect(profile.denyModels).toEqual(['heavy-model']);
   });
 
   it('treats an explicit file as an override intent', () => {

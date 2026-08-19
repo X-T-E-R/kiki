@@ -247,6 +247,10 @@ export class AgentSwarmTool implements IAgentSwarmTool {
               thinkingEffort: targetProfile.thinkingEffort,
             },
             this.models,
+            {
+              allowedModels: targetProfile.allowedModels,
+              denyModels: targetProfile.denyModels,
+            },
           ),
           this.models,
         );

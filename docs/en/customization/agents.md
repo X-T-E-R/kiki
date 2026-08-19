@@ -134,6 +134,8 @@ You are a strict code reviewer. Read the diff, then report findings grouped by s
 | `model_preference` | no | Legacy symbolic selector available only with the secondary-model experiment: `primary` inherits the caller's model binding, while `secondary` selects [`[secondary_model] model`](../configuration/config-files.md#secondary-model). Mutually exclusive with `model_alias` |
 | `model_alias` | no | Exact, case-sensitive alias from `[models]`. Literal aliases named `primary` or `secondary` stay literal; this differs from the symbolic `model_preference` field |
 | `thinking_effort` | no | Thinking effort requested when this profile starts as a new subagent. It resolves independently from the model selector |
+| `allowed_models` | no | Optional allowlist of model aliases this role may bind. YAML list or comma-separated string, same syntax as `tools`. When present and non-empty, the bound model must be a member. Comparisons use canonical model identity, so a bare alias matches a provider-qualified name. This list can only **narrow** what the machine already permits; it cannot re-permit a model listed in `[subagent].deny_models` or in this file's `deny_models`. A single-item list is the way to hard-pin a role to one alias — prefer it over a route sidecar whose only delta is a pinned model. Omit the field, or use an empty list, to impose no extra allowlist |
+| `deny_models` | no | Optional role-level denylist with the same syntax as `allowed_models`. Unioned with machine `[subagent].deny_models`; deny always wins over `allowed_models`. Route sidecars cannot declare this field |
 | `recommended_models` | no | Advisory list of alternative model aliases the parent agent may pass as `Agent.model_alias`. Each entry is a mapping with required `alias` and `when`, and optional `thinking_effort`. Shown in the `Agent` tool description only for aliases that exist in this machine's `[models]` table; omitted entirely when none remain. Does not bind a model, does not change spawn resolution, and is never added to the child agent's prompt. YAML list of mappings only — not a comma-separated string. Duplicate aliases with different `thinking_effort` values are kept as separate entries |
 | `service_tier` | no | Service tier requested on every LLM request this agent makes as a subagent: `auto`, `default`, `flex`, or `priority`. Only the `openai_responses` provider protocol encodes it into the request body; other protocols silently ignore it |
 | `request_params` | no | Extra request parameters as a scalar map (string/number/boolean values only), sent with every request this subagent makes. OpenAI-family providers spread them into the request body (Kimi via `extra_body`) without overriding engine-generated fields; Anthropic ignores the map; a first-class field such as `service_tier` wins on collision. Keys are sent verbatim, so a provider may reject names it does not recognize |
@@ -151,6 +153,23 @@ recommended_models:
   - alias: k3-review
     when: Ordinary review work the default alias can finish on its own.
 ```
+
+`allowed_models` and `deny_models` only narrow. Machine `[subagent].deny_models` always wins, even when the role allowlists the same alias. A single-item `allowed_models` hard-pins the role; route sidecars cannot declare either field.
+
+```yaml
+allowed_models:
+  - fast-model
+  - k3-review
+deny_models:
+  - heavy-model
+```
+
+```yaml
+# Hard-pin this role to one alias:
+allowed_models: [fast-model]
+```
+
+Pair an allowlist with the `model_alias` you intend to pin. A profile that declares `allowed_models` but no `model_alias` still loads with a warning, and a dispatch that names no model inherits the caller's model — which the allowlist then rejects.
 
 Built-in and user tools match by exact, case-sensitive name; entries starting with `mcp__` match MCP tools as globs. Three entry shapes never match anything and are reported with a warning when the profile takes effect: a wildcard outside an `mcp__` pattern (a bare `*` in `disallowedTools` disables nothing), an `mcp__` literal that is not a full `mcp__<server>__<tool>` name (`mcp__github` matches nothing — use `mcp__github__*` for the whole server), and a name no registered or built-in tool has (usually a typo, such as `read` instead of `Read`).
 
@@ -184,7 +203,7 @@ request_params:
 Focus on interaction regressions, accessibility, and visual consistency.
 ```
 
-The required fields are `id`, `profile`, `description`, and `prompt_mode`. Optional fields are `whenToUse` plus `model_preference`, `model_alias`, `thinking_effort`, `service_tier`, `request_params`, `tools`, `disallowedTools`, and `subagents`. Unlike ordinary Agent files, route frontmatter is strict. Unknown fields, invalid types, a path/ID/profile mismatch, duplicate IDs in one source, and incompatible model selectors cause only that sidecar to be skipped with a coded diagnostic; the base profile and sibling routes still load. Agent-file-only fields such as `recommended_models` are unknown here and skip the sidecar.
+The required fields are `id`, `profile`, `description`, and `prompt_mode`. Optional fields are `whenToUse` plus `model_preference`, `model_alias`, `thinking_effort`, `service_tier`, `request_params`, `tools`, `disallowedTools`, and `subagents`. Unlike ordinary Agent files, route frontmatter is strict. Unknown fields, invalid types, a path/ID/profile mismatch, duplicate IDs in one source, and incompatible model selectors cause only that sidecar to be skipped with a coded diagnostic; the base profile and sibling routes still load. Agent-file-only fields such as `recommended_models`, `allowed_models`, and `deny_models` are unknown here and skip the sidecar. A route may pin `model_alias`, but that pin is still checked against the base profile's `allowed_models` / `deny_models`.
 
 `prompt_mode` always preserves the base prompt: `inherit` requires an empty body; `prepend` and `append` require a non-empty body and reject `${base_prompt}`; `wrap` requires `${base_prompt}` exactly once. There is no unguarded replace mode.
 
@@ -200,7 +219,7 @@ Resume never reselects or switches a route. The journal stores the canonical bas
 
 Only the legacy tool parameter `model` (`primary` / `secondary`), the profile field `model_preference`, and the secondary recipe remain behind the secondary-model experiment. When enabled, the secondary recipe is inserted between the `[subagent]` defaults and the caller binding. When disabled, a profile's `model_preference` is ignored with a warning, while explicitly passing the `model` tool parameter returns a clear error. Resumed and retried subagents keep their persisted model and effort; passing binding fields on an `Agent` resume is rejected. A mixed `AgentSwarm` call applies them only to item-based new spawns.
 
-Subagent model governance compares canonical model identities after resolving `[models]` aliases. It has three levels: `[subagent] deny_models` rejects explicit selections of listed models at every dispatch entry; `[secondary_model] enforce_pool = true` turns the configured pool into a hard allowlist while always retaining `primary`; and the default soft-pool mode keeps exact off-pool `model_alias` values working as an escape hatch. `[secondary_model] force = true` remains the strongest pin, binding every spawn to one model, and cannot be combined with `enforce_pool`. See the [configuration reference](../configuration/config-files.md#secondary-model) for fields and validation rules.
+Subagent model governance compares canonical model identities after resolving `[models]` aliases. Machine `[subagent] deny_models` rejects listed models at every dispatch entry. A role file may further narrow that set with `allowed_models` and `deny_models`; those lists never widen machine permission, and a single-item `allowed_models` is the hard pin for that role. `[secondary_model] enforce_pool = true` turns the configured pool into a hard allowlist while always retaining `primary`; and the default soft-pool mode keeps exact off-pool `model_alias` values working as an escape hatch. `[secondary_model] force = true` remains the strongest machine-wide pin, binding every spawn to one model, and cannot be combined with `enforce_pool`. See the [configuration reference](../configuration/config-files.md#secondary-model) for fields and validation rules.
 
 A file with invalid content discovered in a directory is skipped with a warning and does not affect other files. A file passed explicitly via `--agent-file` must be valid — otherwise the CLI reports the error and exits.
 

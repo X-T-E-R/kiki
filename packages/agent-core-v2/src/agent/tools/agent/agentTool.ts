@@ -443,6 +443,10 @@ export class SubagentTool implements ISubagentTool {
         modelAlias: profile.modelAlias,
         thinkingEffort: profile.thinkingEffort,
       };
+      const roleConstraints = {
+        allowedModels: profile.allowedModels,
+        denyModels: profile.denyModels,
+      };
       let binding = resolveSubagentBinding(
         this.config,
         this.flags,
@@ -450,6 +454,7 @@ export class SubagentTool implements ISubagentTool {
         toolBindingRequest,
         profileBindingRequest,
         this.models,
+        roleConstraints,
       );
       if (subagentModelSource(binding) === 'caller') {
         const callerMeta = (await this.sessionMetadata.read()).agents?.[this.callerAgentId];
@@ -462,6 +467,7 @@ export class SubagentTool implements ISubagentTool {
             toolBindingRequest,
             profileBindingRequest,
             this.models,
+            roleConstraints,
           );
         }
       }
@@ -753,6 +759,9 @@ export function buildProfileDescriptions(
       }
       if (profile.thinkingEffort !== undefined) {
         bindingLines.push(`  Thinking effort: ${profile.thinkingEffort}`);
+      }
+      if (profile.allowedModels !== undefined && profile.allowedModels.length > 0) {
+        bindingLines.push(`  Allowed models: ${profile.allowedModels.join(', ')}`);
       }
       const alternativeModelsLine = formatAlternativeModelsLine(
         profile.recommendedModels,
