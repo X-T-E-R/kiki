@@ -48,6 +48,7 @@ import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { applyPromptMetadataUpdate } from '#/session/sessionMetadata/promptMetadata';
+import { ISessionHistoryMutationService } from '#/session/historyMutation/historyMutation';
 
 import {
   IAgentPromptService,
@@ -77,6 +78,7 @@ declare module '#/app/event/eventBus' {
 interface Deferred<T> { readonly promise: Promise<T>; resolve(value: T): void; reject(reason: unknown): void }
 interface Record extends PromptSnapshot {
   state: PromptState;
+  readonly alreadyMaterialized: boolean;
   readonly launchedDeferred: Deferred<Turn | undefined>;
   readonly completionDeferred: Deferred<PromptCompletion>;
   handle: PromptHandle;
@@ -106,6 +108,8 @@ export class AgentPromptService implements IAgentPromptService {
     @IEventService private readonly eventService: IEventService,
     @ISessionContext private readonly sessionContext: ISessionContext,
     @IAgentScopeContext private readonly scopeContext: IAgentScopeContext,
+    @ISessionHistoryMutationService
+    private readonly historyMutation: ISessionHistoryMutationService,
   ) {
     this.states.register(promptLaunchingKey);
     toolExecutor.hooks.onDidExecuteTool.register('prompt-service-delivery', async (ctx, next) => {
@@ -123,6 +127,10 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   async enqueue(input: PromptInput): Promise<PromptHandle> {
+    return this.historyMutation.runAdmission(input.historyMutationLease, () => this.enqueueNow(input));
+  }
+
+  private async enqueueNow(input: PromptInput): Promise<PromptHandle> {
     const peerMessageId =
       input.message.origin?.kind === 'peer_thread' ? input.message.origin.messageId : undefined;
     if (peerMessageId !== undefined) {
@@ -135,8 +143,14 @@ export class AgentPromptService implements IAgentPromptService {
     const completionDeferred = deferred<PromptCompletion>();
     const record = {} as Record;
     Object.assign(record, {
-      id, userMessageId: id, createdAt: new Date().toISOString(), state: 'pending', message,
-      launchedDeferred, completionDeferred,
+      id,
+      userMessageId: id,
+      createdAt: new Date().toISOString(),
+      state: 'pending',
+      message,
+      alreadyMaterialized: input.alreadyMaterialized === true,
+      launchedDeferred,
+      completionDeferred,
     });
     record.handle = {
       get id() { return record.id; }, get userMessageId() { return record.userMessageId; },
@@ -301,11 +315,14 @@ export class AgentPromptService implements IAgentPromptService {
       if (this.fullCompaction.compacting !== null && this.loop.status().state !== 'running') { this.pending.unshift(item); return; }
       const { message, captions } = this.extractCompressionCaptions(item.message);
       if (await this.blockedByHook(message, false)) {
-        this.appendPrompt(message, captions); item.state = 'blocked'; item.launchedDeferred.resolve(undefined);
+        if (!item.alreadyMaterialized) this.appendPrompt(message, captions);
+        item.state = 'blocked'; item.launchedDeferred.resolve(undefined);
         item.completionDeferred.resolve({ promptId: item.id, result: undefined, state: 'blocked' });
         this.publishCompleted(item.id, 'blocked'); return;
       }
-      const turn = (await this.loop.enqueue(new PromptStepRequest(message, captions, this.reminders)).assigned).turn;
+      const turn = (await this.loop.enqueue(
+        new PromptStepRequest(message, captions, this.reminders, item.alreadyMaterialized),
+      ).assigned).turn;
       if (turn === undefined) { this.pending.unshift(item); return; }
       item.state = 'running'; item.launchedDeferred.resolve(turn); this.active = Object.assign(item, { turn });
       void turn.result.then((result) => this.settle(item, result));

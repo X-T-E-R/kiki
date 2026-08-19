@@ -1,13 +1,15 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
   IAgentContextMemoryService,
   IAgentLifecycleService,
+  IAuthSummaryService,
   IWireService,
   getLiveSessionById,
   IModelCatalog,
+  ISessionInteractionService,
   type ContextMessage,
   type ScopeSeed,
 } from '@moonshot-ai/agent-core-v2';
@@ -22,7 +24,7 @@ interface Envelope<T> {
   msg: string;
   data: T;
   request_id: string;
-  details?: { path: string; message: string }[];
+  details?: unknown;
 }
 
 interface MessageWire {
@@ -75,7 +77,14 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
         throw new Error('modelCatalog.setDefaultModel not exercised in this test');
       },
     };
-    seeds = [[IModelCatalog, modelCatalog]];
+    seeds = [
+      [IModelCatalog, modelCatalog],
+      [IAuthSummaryService, {
+        _serviceBrand: undefined,
+        summarize: async () => [],
+        ensureReady: async () => {},
+      }],
+    ];
     await boot();
   });
 
@@ -107,6 +116,23 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
       headers: authHeaders(server as RunningServer),
     } as never);
     return { status: res.status, body: (await res.json()) as Envelope<T> };
+  }
+
+  async function postJson<T>(path: string, payload: unknown): Promise<Envelope<T>> {
+    const res = await fetch(`${base}${path}`, {
+      method: 'POST',
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      body: JSON.stringify(payload),
+    } as never);
+    return (await res.json()) as Envelope<T>;
+  }
+
+  async function cursor(sessionId: string): Promise<{ seq: number; epoch: string }> {
+    const snapshot = await getJson<{ as_of_seq: number; epoch: string }>(
+      `/api/v1/sessions/${sessionId}/snapshot`,
+    );
+    expect(snapshot.body.code).toBe(0);
+    return { seq: snapshot.body.data.as_of_seq, epoch: snapshot.body.data.epoch };
   }
 
   async function createSession(): Promise<string> {
@@ -228,6 +254,212 @@ describe('server-v2 /api/v1/sessions/{sid}/messages', () => {
       `/api/v1/sessions/${id}/messages/msg_does_not_exist`,
     );
     expect(missing.body.code).toBe(40403);
+  });
+
+  it('edit-resend truncates the suffix and preserves the edited user message id', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [
+      { id: 'user_1', role: 'user', content: [{ type: 'text', text: 'first' }], toolCalls: [], origin: { kind: 'user' } },
+      { id: 'assistant_1', role: 'assistant', content: [{ type: 'text', text: 'old reply' }], toolCalls: [] },
+      { id: 'user_2', role: 'user', content: [{ type: 'text', text: 'second' }], toolCalls: [], origin: { kind: 'user' } },
+      { id: 'assistant_2', role: 'assistant', content: [{ type: 'text', text: 'newer reply' }], toolCalls: [] },
+    ]);
+
+    const result = await postJson<{ user_message_id: string }>(
+      `/api/v1/sessions/${id}/messages/user_1:edit`,
+      {
+        content: [{ type: 'text', text: 'first edited' }],
+        expected_cursor: await cursor(id),
+      },
+    );
+    expect(result.code, JSON.stringify(result)).toBe(0);
+    expect(result.data.user_message_id).toBe('user_1');
+
+    const listed = await getJson<PageWire>(`/api/v1/sessions/${id}/messages?page_size=100`);
+    const userMessages = listed.body.data.items.filter((message) => message.role === 'user');
+    expect(userMessages).toHaveLength(1);
+    expect(userMessages[0]).toMatchObject({
+      id: 'user_1',
+      content: [{ type: 'text', text: 'first edited' }],
+    });
+    expect(listed.body.data.items.some((message) => message.id === 'user_2')).toBe(false);
+
+    await cursor(id);
+    const journal = await readFile(join(home as string, 'server', 'events', `${id}.jsonl`), 'utf8');
+    const eventTypes = journal
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { kind: string; envelope?: { type?: string } })
+      .filter((line) => line.kind === 'event')
+      .map((line) => line.envelope?.type);
+    expect(eventTypes.indexOf('event.session.history_rewritten')).toBeGreaterThanOrEqual(0);
+    expect(eventTypes.indexOf('turn.started')).toBeGreaterThan(
+      eventTypes.indexOf('event.session.history_rewritten'),
+    );
+  });
+
+  it('regenerate reuses the original core user content and message id', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [
+      { id: 'user_original', role: 'user', content: [{ type: 'text', text: 'original prompt' }], toolCalls: [], origin: { kind: 'user' } },
+      { id: 'assistant_final', role: 'assistant', content: [{ type: 'text', text: 'original reply' }], toolCalls: [] },
+    ]);
+
+    const result = await postJson<{ user_message_id: string }>(
+      `/api/v1/sessions/${id}/messages/assistant_final:regenerate`,
+      { expected_cursor: await cursor(id) },
+    );
+    expect(result.code, JSON.stringify(result)).toBe(0);
+    expect(result.data.user_message_id).toBe('user_original');
+
+    const listed = await getJson<PageWire>(`/api/v1/sessions/${id}/messages?page_size=100`);
+    expect(listed.body.data.items.filter((message) => message.role === 'user')).toEqual([
+      expect.objectContaining({
+        id: 'user_original',
+        content: [{ type: 'text', text: 'original prompt' }],
+      }),
+    ]);
+    expect(listed.body.data.items.some((message) => message.id === 'assistant_final')).toBe(false);
+  });
+
+  it('serializes competing edits so one succeeds and one observes cursor mismatch', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [
+      { id: 'race_user', role: 'user', content: [{ type: 'text', text: 'before' }], toolCalls: [], origin: { kind: 'user' } },
+      { id: 'race_assistant', role: 'assistant', content: [{ type: 'text', text: 'reply' }], toolCalls: [] },
+    ]);
+    const expectedCursor = await cursor(id);
+    const [left, right] = await Promise.all([
+      postJson(`/api/v1/sessions/${id}/messages/race_user:edit`, {
+        content: [{ type: 'text', text: 'left' }],
+        expected_cursor: expectedCursor,
+      }),
+      postJson(`/api/v1/sessions/${id}/messages/race_user:edit`, {
+        content: [{ type: 'text', text: 'right' }],
+        expected_cursor: expectedCursor,
+      }),
+    ]);
+    expect([left.code, right.code].sort((a, b) => a - b)).toEqual([0, 40937]);
+  });
+
+  it('forks at exact user and final-assistant message boundaries', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [
+      { id: 'fork_user_1', role: 'user', content: [{ type: 'text', text: 'one' }], toolCalls: [], origin: { kind: 'user' } },
+      { id: 'fork_assistant_1', role: 'assistant', content: [{ type: 'text', text: 'reply one' }], toolCalls: [] },
+      { id: 'fork_user_2', role: 'user', content: [{ type: 'text', text: 'two' }], toolCalls: [], origin: { kind: 'user' } },
+      { id: 'fork_assistant_2', role: 'assistant', content: [{ type: 'text', text: 'reply two' }], toolCalls: [] },
+    ]);
+    const expected_cursor = await cursor(id);
+
+    const atUser = await postJson<{ id: string }>(`/api/v1/sessions/${id}:fork`, {
+      through_message_id: 'fork_user_2',
+      expected_cursor,
+    });
+    expect(atUser.code, JSON.stringify(atUser)).toBe(0);
+    const userForkMessages = await getJson<PageWire>(
+      `/api/v1/sessions/${atUser.data.id}/messages?page_size=100`,
+    );
+    expect(userForkMessages.body.data.items.map((message) => message.id)).toEqual([
+      'fork_user_2',
+      'fork_assistant_1',
+      'fork_user_1',
+    ]);
+
+    const atAssistant = await postJson<{ id: string }>(`/api/v1/sessions/${id}:fork`, {
+      through_message_id: 'fork_assistant_1',
+      expected_cursor,
+    });
+    expect(atAssistant.code, JSON.stringify(atAssistant)).toBe(0);
+    const assistantForkMessages = await getJson<PageWire>(
+      `/api/v1/sessions/${atAssistant.data.id}/messages?page_size=100`,
+    );
+    expect(assistantForkMessages.body.data.items.map((message) => message.id)).toEqual([
+      'fork_assistant_1',
+      'fork_user_1',
+    ]);
+  });
+
+  it('rejects unsupported message roles with MESSAGE_ACTION_UNAVAILABLE', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [
+      { id: 'role_user', role: 'user', content: [{ type: 'text', text: 'prompt' }], toolCalls: [], origin: { kind: 'user' } },
+      { id: 'role_assistant', role: 'assistant', content: [{ type: 'text', text: 'reply' }], toolCalls: [] },
+    ]);
+    const result = await postJson(`/api/v1/sessions/${id}/messages/role_assistant:edit`, {
+      content: [{ type: 'text', text: 'not allowed' }],
+      expected_cursor: await cursor(id),
+    });
+    expect(result.code).toBe(40936);
+  });
+
+  it('leaves history unchanged when attachment preflight fails', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [
+      { id: 'preflight_user', role: 'user', content: [{ type: 'text', text: 'prompt' }], toolCalls: [], origin: { kind: 'user' } },
+      { id: 'preflight_assistant', role: 'assistant', content: [{ type: 'text', text: 'reply' }], toolCalls: [] },
+    ]);
+    const result = await postJson(`/api/v1/sessions/${id}/messages/preflight_user:edit`, {
+      content: [{
+        type: 'file',
+        file_id: 'file_missing',
+        name: 'missing.txt',
+        media_type: 'text/plain',
+        size: 1,
+      }],
+      expected_cursor: await cursor(id),
+    });
+    expect(result.code).toBe(40407);
+    const listed = await getJson<PageWire>(`/api/v1/sessions/${id}/messages?page_size=100`);
+    expect(listed.body.data.items.map((message) => message.id)).toEqual([
+      'preflight_assistant',
+      'preflight_user',
+    ]);
+  });
+
+  it('rejects history actions while a human interaction is pending', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [
+      { id: 'busy_user', role: 'user', content: [{ type: 'text', text: 'prompt' }], toolCalls: [], origin: { kind: 'user' } },
+      { id: 'busy_assistant', role: 'assistant', content: [{ type: 'text', text: 'reply' }], toolCalls: [] },
+    ]);
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    session.accessor.get(ISessionInteractionService).enqueue({
+      kind: 'question',
+      payload: { questions: [] },
+    });
+
+    const result = await postJson(`/api/v1/sessions/${id}/messages/busy_user:edit`, {
+      content: [{ type: 'text', text: 'replacement' }],
+      expected_cursor: await cursor(id),
+    });
+    expect(result.code).toBe(40901);
+    expect(result.details).toMatchObject({ reason: 'pending_interaction' });
+  });
+
+  it('returns SESSION_UNDO_UNAVAILABLE across a compaction boundary', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [
+      { id: 'compacted_user', role: 'user', content: [{ type: 'text', text: 'old prompt' }], toolCalls: [], origin: { kind: 'user' } },
+      { id: 'compacted_assistant', role: 'assistant', content: [{ type: 'text', text: 'old reply' }], toolCalls: [] },
+    ]);
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const agent = session.accessor.get(IAgentLifecycleService).get('main')!;
+    agent.accessor.get(IAgentContextMemoryService).applyCompaction({
+      summary: 'compacted history',
+      compactedCount: 2,
+      tokensBefore: 20,
+      tokensAfter: 5,
+      keptUserMessageCount: 0,
+      droppedCount: 2,
+    });
+    await agent.accessor.get(IWireService).flush();
+
+    const result = await postJson(`/api/v1/sessions/${id}/messages/compacted_user:edit`, {
+      content: [{ type: 'text', text: 'replacement' }],
+      expected_cursor: await cursor(id),
+    });
+    expect(result.code).toBe(40911);
   });
 
   it('returns 40403 for a message id not present in the session', async () => {

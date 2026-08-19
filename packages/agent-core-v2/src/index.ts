@@ -152,6 +152,8 @@ export * from '#/session/sessionActivity/sessionActivity';
 export * from '#/session/sessionActivity/sessionActivityService';
 export * from '#/session/sessionActivity/sessionOutcomeMirror';
 export * from '#/session/sessionActivity/sessionOutcomeMirrorService';
+export * from '#/session/historyMutation/historyMutation';
+export * from '#/session/historyMutation/historyMutationService';
 export * from '#/session/sessionTitle/agentTitlePromptSource';
 import '#/session/sessionTitle/agentTitlePromptSourceService';
 export * from '#/session/sessionTitle/sessionTitle';

@@ -53,7 +53,11 @@ export function buildAck<P>(id: string, code: number, msg: string, payload: P): 
   return { type: 'ack', id, code, msg, payload };
 }
 
-export type ResyncReason = 'buffer_overflow' | 'session_recreated' | 'epoch_changed';
+export type ResyncReason =
+  | 'buffer_overflow'
+  | 'session_recreated'
+  | 'epoch_changed'
+  | 'history_rewritten';
 
 export interface ResyncRequiredFrame {
   type: 'resync_required';

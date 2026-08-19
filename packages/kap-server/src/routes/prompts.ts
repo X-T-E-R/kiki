@@ -371,7 +371,7 @@ function projectPromptList(snapshot: PromptQueueSnapshot) {
   };
 }
 
-function projectPromptHandle(handle: PromptHandle) {
+export function projectPromptHandle(handle: PromptHandle) {
   return projectPromptSnapshot(handle);
 }
 

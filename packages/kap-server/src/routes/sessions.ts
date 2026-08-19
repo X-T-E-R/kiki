@@ -91,6 +91,7 @@ import {
   ISessionActivityView,
   ISessionBtwService,
   ISessionContext,
+  ISessionHistoryMutationService,
   ISessionIndex,
   ISessionMetadata,
   ISessionLegacyService,
@@ -107,6 +108,7 @@ import {
   Error2,
   type ContextMessage,
   type IAgentScopeHandle,
+  type ISessionScopeHandle,
   type Scope,
   type SessionSummary,
   type SessionUsageSummary,
@@ -150,7 +152,14 @@ import {
   type ModelTokenUsage,
 } from '../pricing/modelPricingService';
 import { readLegacyStatus } from '../services/legacyStatus/legacyStatus';
+import { loadMessageHistoryEntries } from '../services/messages/messageHistory';
+import {
+  assertCursor,
+  assertSessionIdle,
+  resolveForkMessageBoundary,
+} from '../services/messages/messageActions';
 import { ensureMainAgent } from '../transport/mainAgent';
+import type { SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
 import { parseActionSuffix } from './action-suffix';
 import { applySessionAgentConfig } from './sessionAgentConfig';
 import { updateSessionProfile } from './sessionProfile';
@@ -264,12 +273,21 @@ const sessionActionRequestSchema = z.preprocess(
     instruction: z.string().optional(),
     count: z.number().int().positive().optional(),
     page_size: z.number().int().min(1).max(100).optional(),
+    through_message_id: z.string().min(1).optional(),
+    expected_cursor: z.object({
+      seq: z.number().int().nonnegative(),
+      epoch: z.string().min(1),
+    }).optional(),
   }),
 );
 
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
 
-export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void {
+export function registerSessionsRoutes(
+  app: SessionRouteHost,
+  core: Scope,
+  broadcaster?: SessionEventBroadcaster,
+): void {
   const createRoute = defineRoute(
     {
       method: 'POST',
@@ -774,6 +792,8 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
         [ErrorCode.SESSION_LOCKED]: {},
         [ErrorCode.COMPACTION_UNABLE]: {},
         [ErrorCode.SESSION_UNDO_UNAVAILABLE]: {},
+        [ErrorCode.MESSAGE_ACTION_UNAVAILABLE]: {},
+        [ErrorCode.SESSION_CURSOR_MISMATCH]: {},
       },
       description: 'Run a session action',
       tags: ['sessions'],
@@ -807,11 +827,39 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
               `session ${parsed.id} does not exist`,
             );
           }
-          const handle = await core.accessor.get(ISessionManager).fork({
-            sourceSessionId: parsed.id,
-            title: body.title,
-            metadata: body.metadata,
-          });
+          let handle: ISessionScopeHandle;
+          if (body.through_message_id === undefined) {
+            handle = await core.accessor.get(ISessionManager).fork({
+              sourceSessionId: parsed.id,
+              title: body.title,
+              metadata: body.metadata,
+            });
+          } else {
+            if (broadcaster === undefined || body.expected_cursor === undefined) {
+              throw new Error2(ErrorCodes.REQUEST_INVALID, 'Targeted fork is unavailable');
+            }
+            const source = await resumeSessionById(core.accessor, parsed.id);
+            if (source === undefined) {
+              throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${parsed.id} does not exist`);
+            }
+            const gate = source.accessor.get(ISessionHistoryMutationService);
+            const lease = await gate.acquire();
+            try {
+              await assertCursor(broadcaster, parsed.id, body.expected_cursor);
+              assertSessionIdle(source);
+              const entries = await loadMessageHistoryEntries(core, parsed.id);
+              const boundary = resolveForkMessageBoundary(entries, body.through_message_id);
+              handle = await core.accessor.get(ISessionManager).fork({
+                sourceSessionId: parsed.id,
+                title: body.title,
+                metadata: body.metadata,
+                turnIndex: boundary.turnIndex,
+                throughUserMessage: boundary.throughUserMessage,
+              });
+            } finally {
+              lease.dispose();
+            }
+          }
           const meta = await handle.accessor.get(ISessionMetadata).read();
           const ctx = handle.accessor.get(ISessionContext);
           const session = toWireSession(
@@ -1528,7 +1576,14 @@ function sendMappedError(
         return;
       case 'session.fork_active_turn':
       case ErrorCodes.SESSION_BUSY:
-        reply.send(errEnvelope(ErrorCode.SESSION_BUSY, err.message, requestId, err.stack));
+        reply.send({
+          code: ErrorCode.SESSION_BUSY,
+          msg: err.message,
+          data: null,
+          request_id: requestId,
+          details: err.details,
+          stack: err.stack,
+        });
         return;
       case ErrorCodes.STORAGE_LOCKED:
         reply.send(errEnvelope(ErrorCode.SESSION_LOCKED, err.message, requestId, err.stack));
@@ -1542,6 +1597,19 @@ function sendMappedError(
           msg: err.message,
           data: (err as { details?: unknown }).details ?? null,
           request_id: requestId,
+          stack: err.stack,
+        });
+        return;
+      case 'message.action_unavailable':
+      case 'session.cursor_mismatch':
+        reply.send({
+          code: err.code === 'message.action_unavailable'
+            ? ErrorCode.MESSAGE_ACTION_UNAVAILABLE
+            : ErrorCode.SESSION_CURSOR_MISMATCH,
+          msg: err.message,
+          data: null,
+          request_id: requestId,
+          details: err.details,
           stack: err.stack,
         });
         return;

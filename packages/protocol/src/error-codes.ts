@@ -115,6 +115,10 @@ export const ErrorCode = {
   THREAD_CURSOR_INVALID: 40931,
   /** an idempotency key was reused with a different payload */
   THREAD_IDEMPOTENCY_CONFLICT: 40932,
+  /** target message cannot be used for the requested action */
+  MESSAGE_ACTION_UNAVAILABLE: 40936,
+  /** expected session event cursor no longer matches the current watermark */
+  SESSION_CURSOR_MISMATCH: 40937,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,
@@ -222,6 +226,8 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.THREAD_SELF_SEND]: 'thread.self_send',
   [ErrorCode.THREAD_CURSOR_INVALID]: 'thread.cursor_invalid',
   [ErrorCode.THREAD_IDEMPOTENCY_CONFLICT]: 'thread.idempotency_conflict',
+  [ErrorCode.MESSAGE_ACTION_UNAVAILABLE]: 'message.action_unavailable',
+  [ErrorCode.SESSION_CURSOR_MISMATCH]: 'session.cursor_mismatch',
 
   [ErrorCode.APPROVAL_EXPIRED]: 'approval.expired',
   [ErrorCode.QUESTION_EXPIRED]: 'question.expired',

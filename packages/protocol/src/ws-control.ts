@@ -382,7 +382,7 @@ export type PongMessage = z.infer<typeof pongMessageSchema>;
 
 export const resyncRequiredPayloadSchema = z.object({
   session_id: z.string(),
-  reason: z.enum(['buffer_overflow', 'session_recreated', 'epoch_changed']),
+  reason: z.enum(['buffer_overflow', 'session_recreated', 'epoch_changed', 'history_rewritten']),
   current_seq: z.number().int().nonnegative(),
   /** Current journal epoch — the client should adopt it after resyncing. */
   epoch: z.string().min(1).optional(),

@@ -4,6 +4,7 @@ import {
   emptySessionUsage,
   permissionRuleSchema,
   sessionCreateSchema,
+  sessionForkSchema,
   sessionSchema,
   sessionUpdateSchema,
   sessionUsageSchema,
@@ -217,5 +218,22 @@ describe('sessionUpdateSchema', () => {
 
   it('parses an empty update (no-op)', () => {
     expect(sessionUpdateSchema.parse({})).toEqual({});
+  });
+});
+
+describe('sessionForkSchema', () => {
+  it('preserves the legacy empty/title-only fork bodies', () => {
+    expect(sessionForkSchema.parse({})).toEqual({});
+    expect(sessionForkSchema.parse({ title: 'copy' })).toEqual({ title: 'copy' });
+  });
+
+  it('requires through_message_id and expected_cursor as a pair', () => {
+    const pair = {
+      through_message_id: 'msg_1',
+      expected_cursor: { seq: 4, epoch: 'ep_test' },
+    };
+    expect(sessionForkSchema.parse(pair)).toEqual(pair);
+    expect(sessionForkSchema.safeParse({ through_message_id: 'msg_1' }).success).toBe(false);
+    expect(sessionForkSchema.safeParse({ expected_cursor: pair.expected_cursor }).success).toBe(false);
   });
 });

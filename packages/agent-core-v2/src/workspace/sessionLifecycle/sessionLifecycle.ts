@@ -56,6 +56,7 @@ export interface ForkSessionOptions {
    * the complete session is copied (the existing fork behavior).
    */
   readonly turnIndex?: number;
+  readonly throughUserMessage?: boolean;
 }
 
 export interface ResumeSessionOptions {

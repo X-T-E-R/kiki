@@ -152,6 +152,10 @@ export const ErrorCode = {
   AGENT_PROFILE_READ_ONLY: 40934,
   /** MCP server is loaded from a plugin or project-root file */
   MCP_SERVER_READ_ONLY: 40935,
+  /** target message cannot be used for the requested action */
+  MESSAGE_ACTION_UNAVAILABLE: 40936,
+  /** expected session event cursor no longer matches the current watermark */
+  SESSION_CURSOR_MISMATCH: 40937,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,

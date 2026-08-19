@@ -136,9 +136,24 @@ export const sessionUpdateSchema = z.object({
 
 export type SessionUpdate = z.infer<typeof sessionUpdateSchema>;
 
+export const expectedSessionCursorSchema = z.object({
+  seq: z.number().int().nonnegative(),
+  epoch: z.string().min(1),
+});
+export type ExpectedSessionCursor = z.infer<typeof expectedSessionCursorSchema>;
+
 export const sessionForkSchema = z.object({
   title: z.string().min(1).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  through_message_id: z.string().min(1).optional(),
+  expected_cursor: expectedSessionCursorSchema.optional(),
+}).superRefine((value, ctx) => {
+  if ((value.through_message_id === undefined) === (value.expected_cursor === undefined)) return;
+  ctx.addIssue({
+    code: 'custom',
+    message: 'through_message_id and expected_cursor must be provided together',
+    path: value.through_message_id === undefined ? ['through_message_id'] : ['expected_cursor'],
+  });
 });
 
 export type SessionFork = z.infer<typeof sessionForkSchema>;

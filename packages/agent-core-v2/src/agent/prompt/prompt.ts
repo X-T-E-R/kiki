@@ -3,6 +3,7 @@ import type { ContextMessage } from '#/agent/contextMemory/types';
 import type { Turn, TurnResult } from '#/agent/loop/loop';
 import type { ContentPart } from '#/kosong/contract/message';
 import type { Hooks } from '#/hooks';
+import type { SessionHistoryMutationLease } from '#/session/historyMutation/historyMutation';
 
 export interface PromptSubmitContext {
   readonly promptMessage: ContextMessage;
@@ -13,6 +14,8 @@ export interface PromptSubmitContext {
 export interface PromptInput {
   readonly id?: string;
   readonly message: ContextMessage;
+  readonly historyMutationLease?: SessionHistoryMutationLease;
+  readonly alreadyMaterialized?: boolean;
 }
 
 export type PromptState =

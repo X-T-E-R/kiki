@@ -267,6 +267,10 @@ export class WsConnectionV1 implements BroadcastTarget {
     else this.sendSubscribedFrame(envelope);
   }
 
+  sendControl(frame: unknown): void {
+    this.sendImmediateFrame(frame);
+  }
+
   private onMessage(data: RawData): void {
     if (this.closed) return;
     // Any inbound frame proves transport liveness, even if its payload is not understood.

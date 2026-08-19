@@ -28,6 +28,8 @@ import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { ErrorCodes, Error2 } from '#/errors';
 import { createHooks } from '#/hooks';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionHistoryMutationService } from '#/session/historyMutation/historyMutation';
+import { SessionHistoryMutationService } from '#/session/historyMutation/historyMutationService';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IWireService } from '#/wire/wire';
 
@@ -76,6 +78,7 @@ function harness() {
       reg.defineInstance(IAgentFullCompactionService, fullCompaction);
       reg.define(IEventBus, EventBusService);
       reg.define(IAgentSystemReminderService, AgentSystemReminderService);
+      reg.define(ISessionHistoryMutationService, SessionHistoryMutationService);
       reg.define(IAgentPromptService, AgentPromptService);
       reg.definePartialInstance(ITelemetryService, { track: () => {}, track2: () => {} });
       reg.definePartialInstance(ISessionMetadata, {

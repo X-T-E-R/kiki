@@ -721,6 +721,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
               await this.readSourceWireRecords(sourceHandle, sourceId, MAIN_AGENT_ID),
               sourceId,
               opts.turnIndex,
+              opts.throughUserMessage,
             );
 
       targetSessionDir = sessionDirOf(this.bootstrap.homeDir, this.handlerScope, targetId);

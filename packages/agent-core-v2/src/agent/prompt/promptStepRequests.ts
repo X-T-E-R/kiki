@@ -4,9 +4,10 @@
  *
  * `PromptStepRequest` / `SteerStepRequest` carry an already-built user
  * `ContextMessage` (image-compression captions pre-split), apply the image
- * format gate as the last funnel before the history, and materialize it
- * at pop time — caption reminders are appended before the host message,
- * preserving the prompt-owned undo boundary.
+ * format gate as the last funnel before the history, and normally materialize
+ * it at pop time. A history rewrite can mark the host message pre-materialized
+ * so the replacement is durable before turn admission; ordinary captions are
+ * still appended before their host, preserving the prompt-owned undo boundary.
  * `PromptStepRequest` uses `newTurn`, seeding the
  * `turn.prompt` record from its message. `SteerStepRequest` uses
  * `activeOrNewTurn`, is mergeable, and survives turn boundaries; it records
@@ -68,12 +69,21 @@ export class PromptStepRequest extends UserMessageStepRequest {
     message: ContextMessage,
     captions: readonly string[],
     reminders: IAgentSystemReminderService,
+    private readonly alreadyMaterialized = false,
   ) {
     super(message, captions, reminders, { admission: 'newTurn' });
   }
 
   override get turnSeed(): TurnSeed {
     return { input: this.message.content, origin: this.message.origin ?? USER_PROMPT_ORIGIN };
+  }
+
+  override onWillMaterialize(): void {
+    if (!this.alreadyMaterialized) super.onWillMaterialize();
+  }
+
+  override resolveContextMessages(): readonly ContextMessage[] {
+    return this.alreadyMaterialized ? [] : super.resolveContextMessages();
   }
 }
 

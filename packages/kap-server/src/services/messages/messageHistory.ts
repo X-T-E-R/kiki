@@ -75,6 +75,12 @@ export interface PageResponse<T> {
   has_more: boolean;
 }
 
+export interface MessageHistoryEntry {
+  readonly index: number;
+  readonly contextMessage: ContextMessage;
+  readonly message: Message;
+}
+
 export async function listMessages(
   core: Scope,
   sessionId: string,
@@ -120,6 +126,33 @@ export async function getMessage(
     throw new MessageNotFoundError(sessionId, messageId);
   }
   return entry;
+}
+
+export async function loadMessageHistoryEntries(
+  core: Scope,
+  sessionId: string,
+): Promise<readonly MessageHistoryEntry[]> {
+  const summary = await core.accessor.get(ISessionIndex).get(sessionId);
+  if (summary === undefined) throw new SessionNotFoundError(sessionId);
+  const session = await resumeSessionById(core.accessor, sessionId);
+  if (session === undefined) return [];
+  const agent = await ensureMainAgent(session);
+  const transcript = await readTranscript(core, agent);
+  const merged = mergeLiveTail(
+    transcript,
+    agent.accessor.get(IAgentContextMemoryService).get(),
+  );
+  let previousMs = Number.NEGATIVE_INFINITY;
+  return merged.messages.map((contextMessage, index) => {
+    const baseMs = merged.times[index] ?? summary.createdAt + index;
+    const createdAtMs = Math.max(previousMs + 1, baseMs);
+    previousMs = createdAtMs;
+    return {
+      index,
+      contextMessage,
+      message: toProtocolMessage(sessionId, index, contextMessage, summary.createdAt, createdAtMs),
+    };
+  });
 }
 
 async function loadMessages(core: Scope, sessionId: string): Promise<Message[]> {
