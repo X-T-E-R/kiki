@@ -35,6 +35,70 @@ describe('convertAnthropicError', () => {
     expect(result).toBeInstanceOf(APIConnectionError);
   });
 
+  it('bounds an 800-char body already inlined by the Anthropic SDK message', () => {
+    const detail = `provider-rejected-${'x'.repeat(800)}`;
+    const err = AnthropicAPIError.generate(
+      400,
+      { type: 'error', error: { type: 'invalid_request_error', message: detail } },
+      'Bad Request',
+      new Headers(),
+    );
+    const result = convertAnthropicError(err);
+    expect(result).toBeInstanceOf(APIStatusError);
+    expect((result as APIStatusError).statusCode).toBe(400);
+    expect(result.message.length).toBeLessThanOrEqual(700);
+    expect((result.message.match(/provider-rejected-/g) ?? []).length).toBe(1);
+    expect(isRetryableGenerateError(result)).toBe(false);
+  });
+
+  it('redacts api_key and Authorization from an Anthropic 400 body', () => {
+    const err = AnthropicAPIError.generate(
+      400,
+      {
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          api_key: 'sk-live-SECRETVALUE',
+          Authorization: 'Bearer super-secret-token',
+          stack: 'internal stack',
+        },
+      },
+      'Bad Request',
+      new Headers(),
+    );
+    const result = convertAnthropicError(err);
+    expect(result).toBeInstanceOf(APIStatusError);
+    expect(result.message).toContain('[REDACTED]');
+    expect(result.message).not.toContain('sk-live-SECRETVALUE');
+    expect(result.message).not.toContain('super-secret-token');
+    expect(result.message.length).toBeLessThanOrEqual(700);
+  });
+
+  it('redacts labeled plaintext secrets inlined in the Anthropic SDK message', () => {
+    const labeled = 'api_key=AIza-PLAINSECRET123 token: plainsecret123 Authorization: Basic plainsecret123';
+    const err = AnthropicAPIError.generate(
+      400,
+      { type: 'error', error: { type: 'invalid_request_error', message: labeled } },
+      'Bad Request',
+      new Headers(),
+    );
+    const result = convertAnthropicError(err);
+    expect(result.message).toContain('[REDACTED]');
+    expect(result.message).not.toContain('AIza-PLAINSECRET123');
+    expect(result.message).not.toContain('plainsecret123');
+  });
+
+  it('does not re-append a pretty-printed JSON body already present in the Anthropic message', () => {
+    const payload = { api_key: 'sk-live-SECRETVALUE', stack: 'internal stack' };
+    const pretty = JSON.stringify(payload, null, 2);
+    const err = AnthropicAPIError.generate(400, payload, pretty, new Headers());
+    const result = convertAnthropicError(err);
+    expect(result.message).not.toContain('sk-live-SECRETVALUE');
+    expect(result.message).toContain('internal stack');
+    expect((result.message.match(/\[REDACTED\]/g) ?? []).length).toBe(1);
+    expect(result.message).not.toContain(' — ');
+  });
+
   it('APIError with status -> APIStatusError', () => {
     const err = AnthropicAPIError.generate(
       502,

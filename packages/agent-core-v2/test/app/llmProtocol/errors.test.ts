@@ -477,6 +477,85 @@ describe('normalizeAPIStatusError', () => {
     expect(error.message).toContain('400 Bad Request');
     expect(error.message).toContain(`${'x'.repeat(500)}...`);
     expect(error.message).not.toContain('x'.repeat(501));
+    expect(error.message.length).toBeLessThanOrEqual(700);
+  });
+
+  it('does not re-append a body already inlined in the SDK message', () => {
+    const detail = `provider-rejected-${'x'.repeat(800)}`;
+    const error = normalizeAPIStatusError(400, `400 ${detail}`, null, null, null, { message: detail });
+    expect(error.message.length).toBeLessThanOrEqual(700);
+    expect((error.message.match(/provider-rejected-/g) ?? []).length).toBe(1);
+    expect(error.message).toContain('400');
+    expect(isRetryableGenerateError(error)).toBe(false);
+  });
+
+  it('redacts sensitive keys and inline secrets from a 400 body', () => {
+    const error = normalizeAPIStatusError(400, '400 Bad Request', null, null, null, {
+      api_key: 'sk-live-SECRETVALUE',
+      Authorization: 'Bearer super-secret-token',
+      stack: 'internal stack',
+    });
+    expect(error.message).toContain('[REDACTED]');
+    expect(error.message).toContain('internal stack');
+    expect(error.message).not.toContain('sk-live-SECRETVALUE');
+    expect(error.message).not.toContain('super-secret-token');
+    expect(error.message.length).toBeLessThanOrEqual(700);
+  });
+
+  it.each([
+    ['api_key=AIza-PLAINSECRET123', 'AIza-PLAINSECRET123'],
+    ['token: plainsecret123', 'plainsecret123'],
+    ['Authorization: Basic plainsecret123', 'plainsecret123'],
+    [
+      'Authorization: Digest username="Mufasa", realm="test", nonce="abc", response="VERYSECRET"',
+      'VERYSECRET',
+    ],
+    [
+      'Authorization: AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/20260101/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=deadbeefsecret',
+      'deadbeefsecret',
+    ],
+    ['Authorization: Basic "plain secret"', 'plain secret'],
+  ])('redacts the labeled secret in string body %s', (body, secret) => {
+    const error = normalizeAPIStatusError(400, '400 Bad Request', null, null, null, body);
+    expect(error.message).toContain('[REDACTED]');
+    expect(error.message).toContain('400 Bad Request');
+    expect(error.message).not.toContain(secret);
+  });
+
+  it('does not redact prose that only mentions token without a value', () => {
+    const error = normalizeAPIStatusError(400, '400 Bad Request', null, null, null, {
+      message: 'token limit exceeded',
+    });
+    expect(error.message).toContain('token limit exceeded');
+    expect(error.message).not.toContain('[REDACTED]');
+  });
+
+  it('redacts labeled secrets already inlined in the SDK message', () => {
+    const error = normalizeAPIStatusError(
+      400,
+      '400 api_key=AIza-PLAINSECRET123 token: plainsecret123 Authorization: Basic plainsecret123',
+    );
+    expect(error.message).toContain('[REDACTED]');
+    expect(error.message).not.toContain('AIza-PLAINSECRET123');
+    expect(error.message).not.toContain('plainsecret123');
+  });
+
+  it('does not re-append a pretty-printed JSON body already present in the SDK message', () => {
+    const payload = { api_key: 'sk-live-SECRETVALUE', stack: 'internal stack' };
+    const pretty = JSON.stringify(payload, null, 2);
+    const error = normalizeAPIStatusError(400, `400 Bad Request\n${pretty}`, null, null, null, payload);
+    expect(error.message).not.toContain('sk-live-SECRETVALUE');
+    expect(error.message).toContain('internal stack');
+    expect((error.message.match(/\[REDACTED\]/g) ?? []).length).toBe(1);
+    expect(error.message).not.toContain(' — ');
+    expect(error.message.length).toBeLessThanOrEqual(700);
+  });
+
+  it('still appends a distinct non-JSON body that only matches after stripping spaces', () => {
+    const error = normalizeAPIStatusError(400, '400 quota exceeded', null, null, null, 'quotaexceeded');
+    expect(error.message).toContain('quota exceeded');
+    expect(error.message).toContain('quotaexceeded');
+    expect(error.message).toContain(' — ');
   });
 });
 
