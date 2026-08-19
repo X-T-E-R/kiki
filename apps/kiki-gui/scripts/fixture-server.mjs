@@ -350,6 +350,7 @@ class FixtureServer {
     this.sockets = new Set();
     this.lastSearchBody = null; // last POST /search body (walker assertions)
     this.lastFileUpload = null; // last POST /files meta (walker assertions)
+    this.lastFsWrite = null; // last POST /fs:write body (walker assertions)
     this.fileCounter = 0;
     this.oauthOverride = null; // mutable oauth flow state (POST/DELETE /oauth/login)
     this.http = createServer((req, res) => void this.handleHttp(req, res));
@@ -379,6 +380,7 @@ class FixtureServer {
     }
     this.sockets.clear();
     this.lastSearchBody = null;
+    this.lastFsWrite = null;
     this.oauthOverride = null;
     console.log(`[fixture] scenario "${name}" loaded (${this.sessions.size} sessions)`);
   }
@@ -898,6 +900,24 @@ class FixtureServer {
       res.end(bytes);
       return;
     }
+    // Host-file write mock for the preview workspace editor. The REAL
+    // kap-server deliberately has no unconfined write endpoint (fs:content is
+    // read-only), so the GUI writes via tauri-plugin-fs on desktop; this
+    // fixture route exists so the save/conflict flows can be exercised in
+    // proofs once a server endpoint lands. Body: { path, content }.
+    if (path === '/fs:write' && method === 'POST' && body !== undefined) {
+      const filePath = String(body.path ?? '');
+      const files = this.scenario?.data.fsFiles;
+      if (files === undefined || files[filePath] === undefined) {
+        return this.envelope(res, null, 40409, 'fs.path_not_found');
+      }
+      const content = String(body.content ?? '');
+      const next = { ...files[filePath], content };
+      delete next.base64;
+      files[filePath] = next;
+      this.lastFsWrite = { path: filePath, content };
+      return this.envelope(res, { written: true, path: filePath });
+    }
     // Global full-text search — hits are scenario-seeded and substring-matched.
     if (path === '/search' && method === 'POST') {
       const q = String(body?.query ?? '').toLowerCase();
@@ -1331,7 +1351,7 @@ class FixtureServer {
         });
       }
       case 'state':
-        return this.envelope(res, { last_search: this.lastSearchBody, last_file_upload: this.lastFileUpload });
+        return this.envelope(res, { last_search: this.lastSearchBody, last_file_upload: this.lastFileUpload, last_fs_write: this.lastFsWrite ?? null });
       case 'drop_ws':
         for (const ws of this.sockets) {
           try { ws.terminate(); } catch { /* closing */ }

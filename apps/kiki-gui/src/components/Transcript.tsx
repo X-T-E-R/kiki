@@ -53,7 +53,7 @@ import type {
 } from '../state/transcript';
 import { ApprovalCard, QuestionCard } from './Interactions';
 import { Markdown } from './Markdown';
-import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
+import { MediaPartList } from './mediaPreview';
 import { ToolCard } from './ToolCard';
 import { KikiMark, Wordmark } from './Wordmark';
 
@@ -1381,13 +1381,12 @@ export function Transcript({
   }
 
   return (
-    <MediaPreviewProvider cwd={state.session?.metadata?.cwd}>
-      <StickToBottom
-        className="relative min-h-0 flex-1"
-        initial="instant"
-        resize="smooth"
-        role="log"
-      >
+    <StickToBottom
+      className="relative min-h-0 flex-1"
+      initial="instant"
+      resize="smooth"
+      role="log"
+    >
       {/* Bottom clearance is 24px of breathing room + the 36px fade band the
           shell's active composer seat overlaps (see index.css), so the last
           block always rests fully above the fade. The column cap rides the
@@ -1415,6 +1414,5 @@ export function Transcript({
       </StickToBottom.Content>
       <JumpToBottom />
       </StickToBottom>
-    </MediaPreviewProvider>
   );
 }

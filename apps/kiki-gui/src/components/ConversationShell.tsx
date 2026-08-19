@@ -63,6 +63,8 @@ export interface ConversationShellSlots {
   readonly heroFooter: HTMLElement | null;
   readonly rail: HTMLElement | null;
   readonly footer: HTMLElement | null;
+  /** Preview workspace dock — between the conversation column and the rail. */
+  readonly preview: HTMLElement | null;
 }
 
 interface ConversationShellContextValue {
@@ -79,6 +81,7 @@ const EMPTY_SLOTS: ConversationShellSlots = {
   heroFooter: null,
   rail: null,
   footer: null,
+  preview: null,
 };
 
 /**
@@ -98,6 +101,15 @@ export function useConversationShell(): ConversationShellContextValue {
     throw new Error('useConversationShell must be used under <ConversationShell>');
   }
   return context;
+}
+
+/**
+ * Null-safe variant for components that also render outside the shell (unit
+ * tests mount MediaPreviewProvider bare; the preview workspace then falls
+ * back to its fixed-overlay form instead of portaling into the slot).
+ */
+export function useOptionalConversationShell(): ConversationShellContextValue | null {
+  return useContext(ConversationShellContext);
 }
 
 /**
@@ -187,14 +199,15 @@ export function ConversationShell() {
   const [heroFooter, heroFooterRef] = useSlotRef();
   const [rail, railRef] = useSlotRef();
   const [footer, footerRef] = useSlotRef();
+  const [preview, previewRef] = useSlotRef();
 
   const contextValue = useMemo<ConversationShellContextValue>(
     () => ({
-      slots: { header, dock, heroFooter, rail, footer },
+      slots: { header, dock, heroFooter, rail, footer, preview },
       registerSeat,
       unregisterSeat,
     }),
-    [header, dock, heroFooter, rail, footer, registerSeat, unregisterSeat],
+    [header, dock, heroFooter, rail, footer, preview, registerSeat, unregisterSeat],
   );
 
   const isNewRoute = useMatch('/new') !== null;
@@ -221,6 +234,7 @@ export function ConversationShell() {
             </div>
             <div ref={footerRef} className="conversation-footer-slot" />
           </div>
+          <div ref={previewRef} className="conversation-preview-slot" />
           <div ref={railRef} className="conversation-rail-slot" />
         </div>
       </div>

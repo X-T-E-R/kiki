@@ -300,8 +300,66 @@ body {
 .conversation-dock-slot:empty,
 .conversation-herofooter-slot:empty,
 .conversation-footer-slot:empty,
+.conversation-preview-slot:empty,
 .conversation-rail-slot:empty {
   display: none;
+}
+
+/* The preview workspace docks as a plain flex child of the row (its slot
+ * carries no box of its own); below lg it becomes a fixed right drawer like
+ * .app-rail. */
+.conversation-preview-slot {
+  display: contents;
+}
+
+.preview-workspace {
+  position: relative;
+  display: flex;
+  height: 100%;
+  flex-shrink: 0;
+  flex-direction: column;
+  border-left: 1px solid var(--color-hairline);
+  background-color: var(--color-panel);
+}
+
+.preview-workspace__resizer {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  z-index: 10;
+  width: 6px;
+  cursor: col-resize;
+}
+
+.preview-workspace__resizer:hover {
+  background-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+
+@media (max-width: 1023px) {
+  .preview-workspace {
+    position: fixed;
+    right: 0;
+    top: 0;
+    z-index: 30;
+    max-width: 94vw;
+    box-shadow: -16px 0 48px -24px rgba(28, 25, 23, 0.4);
+  }
+}
+
+/* Bare-provider fallback (unit tests / static pages without the shell). */
+.preview-workspace--overlay {
+  position: fixed;
+  right: 0;
+  top: 0;
+  z-index: 30;
+  max-width: 94vw;
+  box-shadow: -16px 0 48px -24px rgba(28, 25, 23, 0.4);
+}
+
+/* CodeMirror fills the tab panel's flex height. */
+.preview-workspace .cm-editor {
+  height: 100%;
 }
 
 .conversation-middle {

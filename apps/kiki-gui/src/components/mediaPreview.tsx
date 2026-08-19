@@ -1,18 +1,37 @@
 /**
- * MediaPreviewProvider — owns the transcript's media overlays (image lightbox
- * + file preview pane) and exposes `openImage` / `openFile` plus the session
- * cwd through MediaPreviewContext. Also hosts the small presentational
- * building blocks that consume it: MediaPartList (thumbnails/chips for
- * message media refs) and FilePathLink (clickable host paths).
+ * MediaPreviewProvider — owns the transcript's media overlays (image lightbox)
+ * and the resident preview workspace (multi-tab file panel) plus the session
+ * cwd, exposed through MediaPreviewContext. Also hosts the small
+ * presentational building blocks that consume it: MediaPartList
+ * (thumbnails/chips for message media refs) and FilePathLink (clickable host
+ * paths).
+ *
+ * The workspace portals into ConversationShell's `preview` slot so it docks
+ * between the conversation column and the right rail; without a shell (unit
+ * tests, static pages) it renders as a fixed right overlay. Dirty buffers
+ * report upward so tab dots, close confirmations, the app-level dirty guard,
+ * and the beforeunload guard all read one set.
  */
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 
 import { useI18n } from '../i18n';
 import { basenameOf, formatBytes, type MediaRef } from '../lib/media';
 import { useOptionalConnection } from '../state/connection';
-import { FilePreviewPane } from './FilePreviewPane';
+import {
+  closeAllPreviewTabs,
+  closeOtherPreviewTabs,
+  closePreviewTab,
+  EMPTY_PREVIEW_TABS,
+  movePreviewTab,
+  openPreviewTab,
+  type PreviewTabsState,
+} from '../state/previewWorkspace';
+import { useOptionalConversationShell } from './ConversationShell';
+import { useDirtyReporter } from './dirtyGuard';
 import { MediaLightbox } from './MediaLightbox';
+import { PreviewCloseConfirm, PreviewWorkspace } from './PreviewWorkspace';
 import {
   MediaPreviewContext,
   useMediaPreview,
@@ -20,6 +39,47 @@ import {
 } from './mediaPreviewContext';
 
 export { useMediaPreview } from './mediaPreviewContext';
+
+const WIDTH_STORAGE_KEY = 'kiki.previewPanelWidth';
+const DEFAULT_WIDTH = 420;
+
+function readStoredWidth(): number {
+  try {
+    const raw = localStorage.getItem(WIDTH_STORAGE_KEY);
+    const value = raw === null ? Number.NaN : Number(raw);
+    return Number.isFinite(value) && value >= 320 ? value : DEFAULT_WIDTH;
+  } catch {
+    return DEFAULT_WIDTH;
+  }
+}
+
+type CloseAction =
+  | { readonly kind: 'tab'; readonly path: string }
+  | { readonly kind: 'others'; readonly path: string }
+  | { readonly kind: 'all' };
+
+function applyCloseAction(state: PreviewTabsState, action: CloseAction): PreviewTabsState {
+  switch (action.kind) {
+    case 'tab':
+      return closePreviewTab(state, action.path);
+    case 'others':
+      return closeOtherPreviewTabs(state, action.path);
+    case 'all':
+      return closeAllPreviewTabs();
+  }
+}
+
+/** Paths an action would close; used to decide whether to confirm first. */
+export function affectedByClose(state: PreviewTabsState, action: CloseAction): readonly string[] {
+  switch (action.kind) {
+    case 'tab':
+      return state.tabs.includes(action.path) ? [action.path] : [];
+    case 'others':
+      return state.tabs.filter((tab) => tab !== action.path);
+    case 'all':
+      return state.tabs;
+  }
+}
 
 export function MediaPreviewProvider({
   cwd,
@@ -29,23 +89,124 @@ export function MediaPreviewProvider({
   children: ReactNode;
 }) {
   const [image, setImage] = useState<{ src: string; name?: string } | null>(null);
-  const [file, setFile] = useState<string | null>(null);
+  const [tabsState, setTabsState] = useState<PreviewTabsState>(EMPTY_PREVIEW_TABS);
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [width, setWidth] = useState(readStoredWidth);
+  const [dirtyPaths, setDirtyPaths] = useState<ReadonlySet<string>>(new Set());
+  const [confirmClose, setConfirmClose] = useState<{
+    dirty: readonly string[];
+    action: CloseAction;
+  } | null>(null);
+  const shell = useOptionalConversationShell();
+
+  const openFile = useCallback((path: string) => {
+    setTabsState((state) => openPreviewTab(state, path));
+    setPanelOpen(true);
+  }, []);
+
+  const togglePanel = useCallback(() => { setPanelOpen((value) => !value); }, []);
+
+  const reportDirty = useCallback((path: string, dirty: boolean) => {
+    setDirtyPaths((previous) => {
+      const has = previous.has(path);
+      if (has === dirty) return previous;
+      const next = new Set(previous);
+      if (dirty) next.add(path);
+      else next.delete(path);
+      return next;
+    });
+  }, []);
+
+  const requestClose = useCallback(
+    (action: CloseAction) => {
+      const affected = affectedByClose(tabsState, action);
+      const dirty = affected.filter((path) => dirtyPaths.has(path));
+      if (dirty.length > 0) {
+        setConfirmClose({ dirty, action });
+        return;
+      }
+      setTabsState((state) => applyCloseAction(state, action));
+    },
+    [tabsState, dirtyPaths],
+  );
+
+  const confirmCloseRun = useCallback(() => {
+    setConfirmClose((pending) => {
+      if (pending !== null) {
+        setTabsState((state) => applyCloseAction(state, pending.action));
+      }
+      return null;
+    });
+  }, []);
+
+  const handleMove = useCallback((path: string, targetIndex: number) => {
+    setTabsState((state) => movePreviewTab(state, path, targetIndex));
+  }, []);
+
+  const handleWidthChange = useCallback((next: number, final: boolean) => {
+    setWidth(next);
+    if (final) {
+      try {
+        localStorage.setItem(WIDTH_STORAGE_KEY, String(next));
+      } catch {
+        // storage unavailable — session-only width
+      }
+    }
+  }, []);
+
+  // Navigation + unload guards while any buffer is dirty.
+  useDirtyReporter('preview-workspace', dirtyPaths.size > 0);
+  useEffect(() => {
+    if (dirtyPaths.size === 0) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => { window.removeEventListener('beforeunload', onBeforeUnload); };
+  }, [dirtyPaths.size]);
+
   const api = useMemo<MediaPreviewApi>(
     () => ({
       cwd,
       openImage: (src, name) => { setImage({ src, name }); },
-      openFile: (path) => { setFile(path); },
+      openFile,
+      previewTabCount: tabsState.tabs.length,
+      previewPanelOpen: panelOpen,
+      togglePreviewPanel: togglePanel,
     }),
-    [cwd],
+    [cwd, openFile, tabsState.tabs.length, panelOpen, togglePanel],
   );
+
+  const panel = panelOpen ? (
+    <PreviewWorkspace
+      tabs={tabsState.tabs}
+      active={tabsState.active}
+      dirtyPaths={dirtyPaths}
+      width={width}
+      onActivate={(path) => { setTabsState((state) => ({ ...state, active: path })); }}
+      onClose={(path) => { requestClose({ kind: 'tab', path }); }}
+      onCloseOthers={(path) => { requestClose({ kind: 'others', path }); }}
+      onCloseAll={() => { requestClose({ kind: 'all' }); }}
+      onMove={handleMove}
+      onCollapse={() => { setPanelOpen(false); }}
+      onWidthChange={handleWidthChange}
+      onOpenImage={(src, name) => { setImage({ src, name }); }}
+      reportDirty={reportDirty}
+      overlay={shell?.slots.preview == null}
+    />
+  ) : null;
+
   return (
     <MediaPreviewContext.Provider value={api}>
       {children}
-      {file !== null ? (
-        <FilePreviewPane
-          path={file}
-          onClose={() => { setFile(null); }}
-          onOpenImage={(src, name) => { setImage({ src, name }); }}
+      {panel !== null && shell?.slots.preview != null
+        ? createPortal(panel, shell.slots.preview)
+        : panel}
+      {confirmClose !== null ? (
+        <PreviewCloseConfirm
+          paths={confirmClose.dirty}
+          onConfirm={confirmCloseRun}
+          onCancel={() => { setConfirmClose(null); }}
         />
       ) : null}
       {image !== null ? (
@@ -56,6 +217,30 @@ export function MediaPreviewProvider({
         />
       ) : null}
     </MediaPreviewContext.Provider>
+  );
+}
+
+/** Header toggle for the preview workspace; hides itself with no open tabs. */
+export function PreviewToggleButton({ className }: { className?: string }) {
+  const { t } = useI18n();
+  const preview = useMediaPreview();
+  if (preview === null || preview.previewTabCount === 0) return null;
+  return (
+    <button
+      type="button"
+      onClick={preview.togglePreviewPanel}
+      title={t('preview.toggleAria')}
+      aria-label={t('preview.toggleAria')}
+      aria-expanded={preview.previewPanelOpen}
+      data-preview-toggle
+      className={`shrink-0 rounded-lg border px-2 py-1 text-[11px] transition-colors ${
+        preview.previewPanelOpen
+          ? 'border-accent bg-accent-soft text-accent'
+          : 'border-hairline text-ink-soft hover:border-hairline-strong'
+      } ${className ?? ''}`}
+    >
+      {t('preview.toggle')}
+    </button>
   );
 }
 
