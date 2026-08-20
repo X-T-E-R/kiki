@@ -12,9 +12,17 @@ export interface PromptSubmitContext {
   block: boolean;
 }
 
+export interface PromptExecutionBinding {
+  readonly profile?: string;
+  readonly model?: string;
+  readonly thinking?: string;
+}
+
 export interface PromptInput {
   readonly id?: string;
   readonly message: ContextMessage;
+  readonly execution?: PromptExecutionBinding;
+  readonly deferredDisabledTools?: readonly string[];
   readonly historyMutationLease?: SessionHistoryMutationLease;
   readonly alreadyMaterialized?: boolean;
 }
@@ -54,6 +62,7 @@ export interface PromptQueueSnapshot {
 
 export interface PromptPayload {
   readonly input: readonly ContentPart[];
+  readonly execution?: PromptExecutionBinding;
   /**
    * Client-managed session tool denylist (full-replace semantics), applied
    * before the prompt is enqueued. Omit to keep the current value; `[]`
@@ -78,7 +87,11 @@ export interface PromptLaunchResult {
 
 export interface PromptReservation extends IDisposable {
   readonly id: string;
-  submit(message: ContextMessage): Promise<PromptHandle>;
+  submit(
+    message: ContextMessage,
+    execution?: PromptExecutionBinding,
+    deferredDisabledTools?: readonly string[],
+  ): Promise<PromptHandle>;
 }
 
 export const promptAdmission = Symbol('promptAdmission');

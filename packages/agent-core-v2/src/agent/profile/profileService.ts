@@ -354,7 +354,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       boundProfileName !== undefined &&
       (input.profile !== undefined || input.route !== undefined)
     ) {
-      this.assertBindable(input.profile ?? boundProfileName, input.route);
+      this.assertRouteBindable(input.route);
     }
     const selection =
       input.route === undefined
@@ -385,7 +385,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       resolveId,
     );
     const subagentLeases = selection.profile.subagentLeases;
-    this.assertBindable(selection.baseProfile.name, selection.route?.id);
+    this.assertRouteBindable(selection.route?.id);
     const routeModelAlias = selection.route?.lockedModelAlias;
     const canonicalRouteModelAlias =
       routeModelAlias === undefined ? undefined : this.resolveModelId(routeModelAlias);
@@ -441,7 +441,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
     await this.sessionToolPolicy.ready;
     const context = await this.buildSystemPromptContext(profile);
-    this.assertBindable(selection.baseProfile.name, selection.route?.id);
+    this.assertRouteBindable(selection.route?.id);
     const currentProfileName = this.profileName;
     this.delegationPosition =
       input.delegationPosition ??
@@ -461,7 +461,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         routeLockedThinking: selection.route?.lockedThinkingEffort,
         modelProfileThinking: matchedModelProfile?.thinkingEffort,
         profileThinking: profile.thinkingEffort,
-        sessionThinking: currentProfileName !== undefined ? this.thinkingLevel : undefined,
+        sessionThinking:
+          currentProfileName === selection.baseProfile.name ? this.thinkingLevel : undefined,
       }),
       model,
     );
@@ -1155,15 +1156,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     }
   }
 
-  private assertBindable(requested: string, requestedRoute?: string): void {
+  private assertRouteBindable(requestedRoute?: string): void {
     const current = this.profileName;
-    if (current !== undefined && current !== requested) {
-      throw new ProfileError(
-        ProfileErrors.codes.PROFILE_ALREADY_BOUND,
-        `agent is already bound to profile "${current}"; cannot switch to "${requested}" in this session`,
-        { current, requested },
-      );
-    }
     const currentRoute = this.routeId;
     if (current !== undefined && currentRoute !== requestedRoute) {
       throw new Error2(

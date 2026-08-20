@@ -147,10 +147,13 @@ describe('sessionCreateSchema', () => {
     const parsed = sessionCreateSchema.parse({
       title: 'My session',
       metadata: { cwd: '/tmp/test' },
-      agent_config: { model: 'moonshot-v1-128k' },
+      agent_config: { model: 'moonshot-v1-128k', profile: 'reviewer' },
     });
     expect(parsed.title).toBe('My session');
-    expect(parsed.agent_config?.model).toBe('moonshot-v1-128k');
+    expect(parsed.agent_config).toEqual({
+      model: 'moonshot-v1-128k',
+      profile: 'reviewer',
+    });
   });
 
   it('accepts an entirely empty body (route layer rejects when neither workspace_id nor metadata.cwd is present)', () => {

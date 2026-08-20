@@ -4,6 +4,49 @@ const modelAliasSchema = z.string().min(1).regex(/^\S+$/, 'model alias must not 
 const optionalProfileStringSchema = z.string().trim().min(1).nullable().optional();
 const profileStringListSchema = z.array(z.string().trim().min(1)).nullable().optional();
 const serviceTierSchema = z.enum(['auto', 'default', 'flex', 'priority']);
+const modelPreferenceSchema = z.enum(['primary', 'secondary']);
+const promptModeSchema = z.enum(['prepend', 'append', 'wrap']);
+const requestParamsSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]));
+
+export const namedAgentModelProfileSchema = z.object({
+  alias: z.string(),
+  when: z.string(),
+  thinking_effort: z.string().optional(),
+  allowed_efforts: z.array(z.string()).optional(),
+  prompt_mode: promptModeSchema.optional(),
+  prompt: z.string().optional(),
+});
+export type NamedAgentModelProfile = z.infer<typeof namedAgentModelProfileSchema>;
+
+export const namedAgentSpawnConstraintsSchema = z.object({
+  allowed_models: z.array(z.string()).optional(),
+  deny_models: z.array(z.string()).optional(),
+  allowed_efforts: z.array(z.string()).optional(),
+  disallowed_tools: z.array(z.string()).optional(),
+});
+export type NamedAgentSpawnConstraints = z.infer<typeof namedAgentSpawnConstraintsSchema>;
+
+export const namedAgentSubagentLeaseSchema = z.object({
+  name: z.string(),
+  description: z.string().optional(),
+  when_to_use: z.string().optional(),
+  model_preference: modelPreferenceSchema.optional(),
+  model_alias: z.string().optional(),
+  thinking_effort: z.string().optional(),
+  allowed_models: z.array(z.string()).optional(),
+  deny_models: z.array(z.string()).optional(),
+  allowed_efforts: z.array(z.string()).optional(),
+  tools: z.array(z.string()).nullable().optional(),
+  disallowed_tools: z.array(z.string()).optional(),
+  subagents: z.array(z.string()).nullable().optional(),
+  prompt_mode: promptModeSchema.optional(),
+  prompt: z.string().optional(),
+  delegation_notice: z.enum(['auto', 'off']).optional(),
+  service_tier: serviceTierSchema.nullable().optional(),
+  request_params: requestParamsSchema.nullable().optional(),
+  model_profiles: z.array(namedAgentModelProfileSchema).optional(),
+});
+export type NamedAgentSubagentLease = z.infer<typeof namedAgentSubagentLeaseSchema>;
 
 export const namedAgentRouteSchema = z.object({
   id: z.string(),
@@ -21,11 +64,15 @@ export const namedAgentProfileSchema = z.object({
   workspace_id: z.string().optional(),
   workspace_ids: z.array(z.string()).optional(),
   source_file: z.string().optional(),
+  main: z.boolean(),
   pinned_model_alias: z.string().optional(),
   thinking_effort: z.string().optional(),
   service_tier: serviceTierSchema.optional(),
   tools: z.array(z.string()).optional(),
   disallowed_tools: z.array(z.string()).optional(),
+  model_profiles: z.array(namedAgentModelProfileSchema).optional(),
+  spawn_constraints: namedAgentSpawnConstraintsSchema.optional(),
+  subagents: z.array(z.union([z.string(), namedAgentSubagentLeaseSchema])).optional(),
   disabled: z.boolean(),
   routes: z.array(namedAgentRouteSchema),
 });

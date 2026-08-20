@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 
 import {
+  DEFAULT_AGENT_PROFILE_NAME,
   IBootstrapService,
   IAgentLifecycleService,
   IAgentPermissionModeService,
@@ -14,10 +15,12 @@ import {
   IFileService,
   ISessionMediaStore,
   ISessionMetadata,
+  ISessionAgentProfileCatalog,
   ISessionSkillCatalog,
   isUserActivatableSkillType,
   promptMetadataTextFromContentParts,
   ProfileError,
+  type PromptExecutionBinding,
   type PromptHandle,
   type PromptQueueSnapshot,
   type PromptReservation,
@@ -137,27 +140,30 @@ async function assertActivatableSkills(
   }
 }
 
-async function applyProfileSelection(
+async function validateProfileSelection(
+  session: ISessionScopeHandle,
   profile: IAgentProfileService,
   profileName: string,
-  model: string | undefined,
-  thinking: string | undefined,
-): Promise<boolean> {
-  if (profile.data().profileName === profileName) return false;
-  try {
-    await profile.bind({
-      profile: profileName,
-      model,
-      thinking,
-      strictThinking: thinking !== undefined,
-    });
-  } catch (error) {
-    if (error instanceof ProfileError) {
-      throw new Error2(ErrorCodes.REQUEST_INVALID, error.message);
-    }
-    throw error;
+): Promise<void> {
+  const current = profile.data();
+  if (current.profileName === profileName) return;
+  if (current.routeId !== undefined) {
+    throw new Error2(
+      ErrorCodes.REQUEST_INVALID,
+      `agent route is already bound to "${current.routeId}"; cannot switch profile in this session`,
+    );
   }
-  return true;
+  const catalog = session.accessor.get(ISessionAgentProfileCatalog);
+  await catalog.ready;
+  const selected = profileName === DEFAULT_AGENT_PROFILE_NAME
+    ? catalog.getDefault()
+    : catalog.get(profileName);
+  if (selected !== undefined) return;
+  const available = catalog.list().map((item) => item.name).join(', ');
+  throw new Error2(
+    ErrorCodes.REQUEST_INVALID,
+    `Unknown agent profile: "${profileName}". Available profiles: ${available}`,
+  );
 }
 
 export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
@@ -256,28 +262,33 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         );
         const resolvedContent = preparedMedia.content;
 
-        let thinkingConsumed = false;
         if (req.body.profile !== undefined) {
-          thinkingConsumed =
-            (await applyProfileSelection(
-              resolved.profile,
-              req.body.profile,
-              req.body.model,
-              req.body.thinking,
-            )) && req.body.thinking !== undefined;
+          await validateProfileSelection(session, resolved.profile, req.body.profile);
         }
-        if (req.body.model !== undefined) await resolved.profile.setModel(req.body.model);
-        if (req.body.thinking !== undefined && !thinkingConsumed)
-          resolved.profile.setThinking(req.body.thinking);
+        const execution: PromptExecutionBinding | undefined =
+          req.body.profile === undefined &&
+            req.body.model === undefined &&
+            req.body.thinking === undefined
+            ? undefined
+            : {
+                profile: req.body.profile,
+                model: req.body.model,
+                thinking: req.body.thinking,
+              };
         if (req.body.permission_mode !== undefined) resolved.permissionMode.setMode(req.body.permission_mode);
+        let deferredDisabledTools: readonly string[] | undefined;
         if (req.body.disabled_tools !== undefined) {
-          try {
-            await resolved.toolPolicy.setSessionDisabledTools(req.body.disabled_tools);
-          } catch (error) {
-            if (error instanceof ProfileError) {
-              throw new Error2(ErrorCodes.REQUEST_INVALID, error.message);
+          if (execution !== undefined && !resolved.profile.isRunnable()) {
+            deferredDisabledTools = req.body.disabled_tools;
+          } else {
+            try {
+              await resolved.toolPolicy.setSessionDisabledTools(req.body.disabled_tools);
+            } catch (error) {
+              if (error instanceof ProfileError) {
+                throw new Error2(ErrorCodes.REQUEST_INVALID, error.message);
+              }
+              throw error;
             }
-            throw error;
           }
         }
         const parts = contentToCoreParts(resolvedContent);
@@ -295,6 +306,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             result = await resolved.skill.promptWithSkills({
               input: parts,
               skills: req.body.skills,
+              execution,
+              deferredDisabledTools,
             });
           } catch (error) {
             settlement.dispose();
@@ -326,7 +339,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           content: parts,
           toolCalls: [],
           origin: { kind: 'user' },
-        });
+        }, execution, deferredDisabledTools);
         enqueued = true;
         const staging = preparedMedia;
         void Promise.race([handle.launched, handle.completion]).then(

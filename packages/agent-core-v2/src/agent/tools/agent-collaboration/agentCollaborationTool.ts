@@ -283,6 +283,7 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
       const bindingRequest = fillLeasePins(
         {
           modelAlias: optionalNonblank(args.model, 'model'),
+          modelPreference: undefined,
           thinkingEffort: optionalNonblank(args.reasoning_effort, 'reasoning_effort'),
         },
         dispatched.lease,

@@ -54,6 +54,7 @@ export type PermissionRule = z.infer<typeof permissionRuleSchema>;
 
 export const sessionAgentConfigSchema = z.object({
   model: z.string(),
+  profile: z.string().min(1).optional(),
   system_prompt: z.string().optional(),
   tools: z.array(z.string()).optional(),
   mcp_servers: z.array(z.string()).optional(),

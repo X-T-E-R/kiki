@@ -57,7 +57,7 @@ interface SessionWire {
   last_turn_reason?: 'completed' | 'cancelled' | 'failed';
   archived?: boolean;
   metadata: { cwd: string } & Record<string, unknown>;
-  agent_config: { model: string };
+  agent_config: { model: string; profile?: string };
   usage: {
     input_tokens: number;
     output_tokens: number;
@@ -355,12 +355,14 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(Number.isNaN(Date.parse(body.data.created_at))).toBe(false);
   });
 
-  it('binds an explicitly requested model and thinking effort while creating a session', async () => {
+  it('binds the default profile when create supplies only a thinking effort', async () => {
     await (server as RunningServer).close();
     server = undefined;
     await writeFile(
       join(home as string, 'config.toml'),
       [
+        'default_model = "stub"',
+        '',
         '[providers.stub]',
         'type = "openai"',
         'base_url = "http://127.0.0.1:9999"',
@@ -388,9 +390,10 @@ describe('server-v2 /api/v1/sessions', () => {
 
     const created = await postJson<SessionWire>('/api/v1/sessions', {
       metadata: { cwd: home as string },
-      agent_config: { model: 'stub', thinking: 'high' },
+      agent_config: { thinking: 'high' },
     });
     expect(created.body.code, JSON.stringify(created.body)).toBe(0);
+    expect(created.body.data.agent_config).toEqual({ model: 'stub', profile: 'agent' });
 
     const status = await getJson<{ model: string; thinking_level: string }>(
       `/api/v1/sessions/${created.body.data.id}/status`,

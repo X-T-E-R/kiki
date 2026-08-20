@@ -47,8 +47,8 @@ export const promptSubmissionSchema = z.object({
   content: z.array(messageContentSchema).min(1),
   metadata: z.record(z.string(), z.unknown()).optional(),
   agent_id: z.string().min(1).optional(),
-  // Agent profile to bind at the target agent's first bind. Once bound,
-  // subsequent prompts must repeat the same value or omit the field.
+  // Agent profile captured with this prompt and applied when the prompt starts.
+  // A different name replaces the target agent's current base-profile binding.
   profile: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
   thinking: promptThinkingSchema.optional(),

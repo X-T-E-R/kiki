@@ -17,6 +17,7 @@ import type { ExecutableToolResult } from '#/tool/toolContract';
 import type { ToolDidExecuteContext } from '#/agent/toolExecutor/toolHooks';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { IAgentProfileService } from '#/agent/profile/profile';
 import { IFileService } from '#/app/file/fileService';
 import type { ContentPart } from '#/kosong/contract/message';
 import { IEventService } from '#/app/event/event';
@@ -36,6 +37,7 @@ import {
   IAgentPromptService,
   promptAdmission,
   type PromptCompletion,
+  type PromptExecutionBinding,
   type PromptHandle,
   type PromptInput,
   type PromptLaunchResult,
@@ -105,6 +107,8 @@ export interface PromptQueued extends PromptQueuedPayload {}
 interface Deferred<T> { readonly promise: Promise<T>; resolve(value: T): void; reject(reason: unknown): void }
 interface Record extends PromptSnapshot {
   state: PromptState;
+  readonly execution?: PromptExecutionBinding;
+  readonly deferredDisabledTools?: readonly string[];
   readonly alreadyMaterialized: boolean;
   readonly launchedDeferred: Deferred<Turn | undefined>;
   readonly completionDeferred: Deferred<PromptCompletion>;
@@ -151,6 +155,7 @@ export class AgentPromptService implements IAgentPromptService {
     @IAgentSystemReminderService private readonly reminders: IAgentSystemReminderService,
     @IInstantiationService private readonly instantiation: IInstantiationService,
     @IAgentLoopService private readonly loop: IAgentLoopService,
+    @IAgentProfileService private readonly profile: IAgentProfileService,
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
     @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
@@ -195,12 +200,12 @@ export class AgentPromptService implements IAgentPromptService {
     let submitted = false;
     return {
       id,
-      submit: async (message) => {
+      submit: async (message, execution, deferredDisabledTools) => {
         if (submitted) throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt reservation already submitted');
         submitted = true;
         this.reservedPromptIds.delete(id);
         await this.dispatcher.dispatch(new PromptAccepted({ promptId: id }));
-        return this.enqueue({ id, message });
+        return this.enqueue({ id, message, execution, deferredDisabledTools });
       },
       dispose: () => {
         this.reservedPromptIds.delete(id);
@@ -230,6 +235,8 @@ export class AgentPromptService implements IAgentPromptService {
       createdAt: new Date().toISOString(),
       state: 'pending',
       message,
+      execution: input.execution,
+      deferredDisabledTools: input.deferredDisabledTools,
       alreadyMaterialized: input.alreadyMaterialized === true,
       launchedDeferred,
       completionDeferred,
@@ -290,14 +297,19 @@ export class AgentPromptService implements IAgentPromptService {
   async submit(payload: PromptPayload): Promise<PromptLaunchResult | undefined> {
     const reservation = this[promptAdmission](payload.promptId);
     try {
+      let deferredDisabledTools: readonly string[] | undefined;
       if (payload.disabledTools !== undefined) {
-        try {
-          await this.toolPolicy.setSessionDisabledTools(payload.disabledTools);
-        } catch (error) {
-          throw new Error2(
-            ErrorCodes.REQUEST_INVALID,
-            error instanceof Error ? error.message : String(error),
-          );
+        if (payload.execution !== undefined && !this.profile.isRunnable()) {
+          deferredDisabledTools = payload.disabledTools;
+        } else {
+          try {
+            await this.toolPolicy.setSessionDisabledTools(payload.disabledTools);
+          } catch (error) {
+            throw new Error2(
+              ErrorCodes.REQUEST_INVALID,
+              error instanceof Error ? error.message : String(error),
+            );
+          }
         }
       }
       await this.updatePromptMetadata(promptMetadataTextFromContentParts(payload.input));
@@ -306,7 +318,7 @@ export class AgentPromptService implements IAgentPromptService {
         content: [...payload.input],
         toolCalls: [],
         origin: { kind: 'user' },
-      });
+      }, payload.execution, deferredDisabledTools);
       if (handle.state === 'pending') return undefined;
       const turn = await handle.launched;
       return turn === undefined ? undefined : { turn_id: turn.id };
@@ -441,6 +453,10 @@ export class AgentPromptService implements IAgentPromptService {
     this.launching = true;
     try {
       if (this.fullCompaction.compacting !== null && this.loop.status().state !== 'running') { this.pending.unshift(item); return; }
+      await this.applyExecutionBinding(item.execution);
+      if (item.deferredDisabledTools !== undefined) {
+        await this.toolPolicy.setSessionDisabledTools(item.deferredDisabledTools);
+      }
       const { message, captions } = this.extractCompressionCaptions(item.message);
       await this.materializeDaemonRefs(message);
       if (await this.blockedByHook(message, false)) {
@@ -475,6 +491,41 @@ export class AgentPromptService implements IAgentPromptService {
     this.steered.delete(item.id);
     if (state === 'cancelled') this.publishAborted(item.id); else this.publishCompleted(item.id, state);
     void this.startNext();
+  }
+
+  private async applyExecutionBinding(execution: PromptExecutionBinding | undefined): Promise<void> {
+    if (execution === undefined) return;
+    let profileChanged = false;
+    let thinkingConsumed = false;
+    if (
+      execution.profile !== undefined &&
+      this.profile.data().profileName !== execution.profile
+    ) {
+      await this.profile.bind({
+        profile: execution.profile,
+        model: execution.model,
+        thinking: execution.thinking,
+        strictThinking: execution.thinking !== undefined,
+      });
+      profileChanged = true;
+      thinkingConsumed = execution.thinking !== undefined;
+    }
+    if (execution.model !== undefined) await this.profile.setModel(execution.model);
+    if (execution.thinking !== undefined && !thinkingConsumed) {
+      this.profile.setThinking(execution.thinking);
+    }
+    if (profileChanged) await this.syncProfileBindingMetadata();
+  }
+
+  private async syncProfileBindingMetadata(): Promise<void> {
+    const current = (await this.metadata.read()).agents?.[this.scopeContext.agentId];
+    const binding = this.profile.data();
+    await this.metadata.registerAgent(this.scopeContext.agentId, {
+      ...current,
+      displayName: binding.routeId ?? binding.profileName,
+      model: binding.modelAlias,
+      thinkingEffort: binding.thinkingLevel,
+    });
   }
 
   private async materializeDaemonRefs(message: ContextMessage): Promise<void> {

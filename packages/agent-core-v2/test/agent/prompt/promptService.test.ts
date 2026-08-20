@@ -13,6 +13,11 @@ import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompacti
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { AgentPromptService, PromptQueued, PromptSteered } from '#/agent/prompt/promptService';
+import {
+  IAgentProfileService,
+  type BindAgentInput,
+  type ProfileData,
+} from '#/agent/profile/profile';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 import { AgentSystemReminderService } from '#/agent/systemReminder/systemReminderService';
@@ -37,7 +42,7 @@ import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { stubContextMemory } from '../contextMemory/stubs';
 import { stubLoopWithHooks, stubToolExecutor, stubWire, type StubLoopOptions } from '../loop/stubs';
 import { registerStateServices } from '../../state/stubs';
-import { SteerStepRequest } from '#/agent/prompt/promptStepRequests';
+import { PromptStepRequest, SteerStepRequest } from '#/agent/prompt/promptStepRequests';
 
 function message(text: string): ContextMessage {
   return { role: 'user', content: [{ type: 'text', text }], toolCalls: [], origin: { kind: 'user' } };
@@ -78,6 +83,26 @@ const noopBlob: IAgentBlobService = {
   isBlobRef: () => false,
 };
 
+function boundProfileData(profileName: string): ProfileData {
+  return {
+    profileName,
+    modelAlias: `${profileName}-model`,
+    modelCapabilities: {
+      image_in: false,
+      video_in: false,
+      audio_in: false,
+      thinking: true,
+      tool_use: true,
+      max_context_tokens: 1_000_000,
+    },
+    thinkingLevel: `${profileName}-thinking`,
+    systemPrompt: `${profileName} system prompt`,
+    activeToolNames: [`${profileName}-tool`],
+    subagents: [`${profileName}-subagent`],
+    spawnPolicy: { allowedModels: [`${profileName}-spawn-model`] },
+  };
+}
+
 function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
   const disposables = new DisposableStore();
   onTestFinished(() => disposables.dispose());
@@ -103,26 +128,62 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
     })),
     materialize: vi.fn(async (): Promise<string | undefined> => undefined),
   };
+  let profileState = boundProfileData('initial');
+  const profile = {
+    data: vi.fn(() => profileState),
+    bind: vi.fn(async (input: BindAgentInput) => {
+      profileState = boundProfileData(input.profile ?? profileState.profileName ?? 'initial');
+      if (input.model !== undefined) profileState = { ...profileState, modelAlias: input.model };
+      if (input.thinking !== undefined) {
+        profileState = { ...profileState, thinkingLevel: input.thinking };
+      }
+    }),
+    setModel: vi.fn(async (model: string) => {
+      profileState = { ...profileState, modelAlias: model };
+      return { model };
+    }),
+    setThinking: vi.fn((thinking: string) => {
+      profileState = { ...profileState, thinkingLevel: thinking };
+    }),
+    isRunnable: vi.fn(() =>
+      profileState.profileName !== undefined && profileState.modelAlias !== undefined,
+    ),
+  };
+  const toolPolicy = {
+    setSessionDisabledTools: vi.fn(async (_disabledTools: readonly string[]) => {}),
+  };
+  let agentMeta: Record<string, unknown> = {};
+  const metadata = {
+    read: async () => ({
+      id: 'test-session',
+      createdAt: 0,
+      updatedAt: 0,
+      archived: false,
+      agents: { main: agentMeta },
+    }),
+    update: async () => {},
+    registerAgent: async (_agentId: string, next: Record<string, unknown>) => {
+      agentMeta = next;
+    },
+  };
   const ix = createServices(disposables, {
     strict: true, additionalServices: (reg) => {
       registerStateServices(reg);
       reg.defineInstance(IAgentContextMemoryService, context);
       reg.defineInstance(IAgentLoopService, loop);
+      reg.definePartialInstance(IAgentProfileService, profile);
       reg.defineInstance(IWireService, stubWire());
       reg.defineInstance(IAgentBlobService, noopBlob);
       reg.define(IEventDispatcher, EventDispatcherService);
       reg.defineInstance(IAgentToolExecutorService, stubToolExecutor());
-      reg.definePartialInstance(IAgentToolPolicyService, { setSessionDisabledTools: async () => {} });
+      reg.definePartialInstance(IAgentToolPolicyService, toolPolicy);
       reg.defineInstance(IAgentFullCompactionService, fullCompaction);
       reg.define(IEventBus, EventBusService);
       reg.define(IAgentSystemReminderService, AgentSystemReminderService);
       reg.define(ISessionHistoryMutationService, SessionHistoryMutationService);
       reg.define(IAgentPromptService, AgentPromptService);
       reg.definePartialInstance(ITelemetryService, { track: () => {}, track2: () => {} });
-      reg.definePartialInstance(ISessionMetadata, {
-        read: async () => ({ id: 'test-session', createdAt: 0, updatedAt: 0, archived: false }),
-        update: async () => {},
-      });
+      reg.definePartialInstance(ISessionMetadata, metadata);
       reg.definePartialInstance(IEventService, { publish: () => {} });
       reg.definePartialInstance(ISessionContext, { sessionId: 'test-session' });
       reg.defineInstance(IAgentScopeContext, makeAgentScopeContext({ agentId: 'main', agentScope: '' }));
@@ -130,7 +191,16 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
       reg.definePartialInstance(ISessionMediaStore, { materialize: intake.materialize });
     }
   });
-  return { prompt: ix.get(IAgentPromptService), loop, context, fullCompaction, eventBus: ix.get(IEventBus), intake };
+  return {
+    prompt: ix.get(IAgentPromptService),
+    profile,
+    toolPolicy,
+    loop,
+    context,
+    fullCompaction,
+    eventBus: ix.get(IEventBus),
+    intake,
+  };
 }
 
 describe('AgentPromptService', () => {
@@ -148,6 +218,154 @@ describe('AgentPromptService', () => {
     const first = await prompt.enqueue({ message: message('one') });
     const second = await prompt.enqueue({ message: message('two') });
     expect(prompt.list().pending.map((item) => item.id)).toEqual([first.id, second.id]);
+  });
+
+  it('applies each queued execution binding only when its turn starts', async () => {
+    const { prompt, profile, loop } = harness({ manualTurnResult: true });
+    const turnBindings: ProfileData[] = [];
+    const enqueue = loop.enqueue.bind(loop);
+    vi.spyOn(loop, 'enqueue').mockImplementation((request, options) => {
+      if (request instanceof PromptStepRequest) {
+        turnBindings.push(structuredClone(profile.data()));
+      }
+      return enqueue(request, options);
+    });
+
+    const active = await prompt.enqueue({ id: 'active', message: message('active') });
+    await active.launched;
+    const first = await prompt.enqueue({
+      id: 'q1',
+      message: message('one'),
+      execution: { profile: 'A' },
+    });
+    const second = await prompt.enqueue({
+      id: 'q2',
+      message: message('two'),
+      execution: { profile: 'B' },
+    });
+
+    expect(profile.data()).toMatchObject(boundProfileData('initial'));
+    expect(profile.bind).not.toHaveBeenCalled();
+    expect(turnBindings).toEqual([expect.objectContaining(boundProfileData('initial'))]);
+
+    loop.settleActive();
+    await first.launched;
+    expect(turnBindings[1]).toMatchObject({
+      profileName: 'A',
+      modelAlias: 'A-model',
+      thinkingLevel: 'A-thinking',
+      systemPrompt: 'A system prompt',
+      activeToolNames: ['A-tool'],
+      subagents: ['A-subagent'],
+      spawnPolicy: { allowedModels: ['A-spawn-model'] },
+    });
+    expect(profile.data()).toMatchObject(turnBindings[1] as ProfileData);
+
+    loop.settleActive();
+    await second.launched;
+    expect(turnBindings[2]).toMatchObject({
+      profileName: 'B',
+      modelAlias: 'B-model',
+      thinkingLevel: 'B-thinking',
+      systemPrompt: 'B system prompt',
+      activeToolNames: ['B-tool'],
+      subagents: ['B-subagent'],
+      spawnPolicy: { allowedModels: ['B-spawn-model'] },
+    });
+    expect(profile.bind).toHaveBeenNthCalledWith(1, {
+      profile: 'A',
+      model: undefined,
+      thinking: undefined,
+      strictThinking: false,
+    });
+    expect(profile.bind).toHaveBeenNthCalledWith(2, {
+      profile: 'B',
+      model: undefined,
+      thinking: undefined,
+      strictThinking: false,
+    });
+
+    loop.settleActive();
+    await second.completion;
+  });
+
+  it('applies deferred disabled tools after binding and before turn launch', async () => {
+    const { prompt, profile, toolPolicy, loop } = harness();
+    const enqueue = vi.spyOn(loop, 'enqueue');
+
+    const handle = await prompt.enqueue({
+      id: 'bootstrap',
+      message: message('bootstrap'),
+      execution: { profile: 'A' },
+      deferredDisabledTools: ['Bash'],
+    });
+    await handle.launched;
+
+    expect(toolPolicy.setSessionDisabledTools).toHaveBeenCalledWith(['Bash']);
+    expect(profile.bind.mock.invocationCallOrder[0]).toBeLessThan(
+      toolPolicy.setSessionDisabledTools.mock.invocationCallOrder[0] as number,
+    );
+    expect(toolPolicy.setSessionDisabledTools.mock.invocationCallOrder[0]).toBeLessThan(
+      enqueue.mock.invocationCallOrder[0] as number,
+    );
+  });
+
+  it('rejects a queued profile switch when the current profile is route-locked', async () => {
+    const { prompt, profile, loop } = harness({ manualTurnResult: true });
+    profile.data.mockReturnValue({
+      ...boundProfileData('locked'),
+      routeId: 'locked.route',
+    });
+    profile.bind.mockRejectedValue(
+      new Error2(ErrorCodes.ROUTE_SWITCH_FORBIDDEN, 'route switch forbidden'),
+    );
+    const active = await prompt.enqueue({ id: 'active', message: message('active') });
+    await active.launched;
+    const queued = await prompt.enqueue({
+      id: 'queued',
+      message: message('queued'),
+      execution: { profile: 'other' },
+    });
+
+    loop.settleActive();
+
+    await expect(queued.completion).resolves.toMatchObject({ state: 'failed' });
+    expect(profile.bind).toHaveBeenCalledWith({
+      profile: 'other',
+      model: undefined,
+      thinking: undefined,
+      strictThinking: false,
+    });
+    expect(loop.launches).toEqual([0]);
+  });
+
+  it('keeps same-name profile selection idempotent when a queued prompt starts', async () => {
+    const { prompt, profile, loop } = harness({ manualTurnResult: true });
+    const active = await prompt.enqueue({ id: 'active', message: message('active') });
+    await active.launched;
+    const queued = await prompt.enqueue({
+      id: 'queued',
+      message: message('queued'),
+      execution: {
+        profile: 'initial',
+        model: 'override-model',
+        thinking: 'override-thinking',
+      },
+    });
+
+    loop.settleActive();
+    await queued.launched;
+
+    expect(profile.bind).not.toHaveBeenCalled();
+    expect(profile.setModel).toHaveBeenCalledWith('override-model');
+    expect(profile.setThinking).toHaveBeenCalledWith('override-thinking');
+    expect(profile.data()).toMatchObject({
+      profileName: 'initial',
+      modelAlias: 'override-model',
+      thinkingLevel: 'override-thinking',
+    });
+    loop.settleActive();
+    await queued.completion;
   });
 
   it('deduplicates a peer origin already present in durable context', async () => {

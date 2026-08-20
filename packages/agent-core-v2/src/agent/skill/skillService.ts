@@ -150,7 +150,7 @@ export class AgentSkillService extends Service implements IAgentSkillService {
           kind: 'user',
           skillActivations: prepared.map((activation) => activation.entry),
         },
-      });
+      }, input.execution, input.deferredDisabledTools);
       if (handle.state === 'pending') {
         return { prompt_id: handle.id, created_at: handle.createdAt, state: 'queued' };
       }

@@ -646,18 +646,63 @@ describe('AgentProfileService.bind', () => {
     expect(svc.data().profileName).toBe(DEFAULT_AGENT_PROFILE_NAME);
   });
 
-  it('rejects binding a different profile once bound before catalog resolution', async () => {
-    const { profile: svc } = buildContext();
-
-    await svc.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
-
-    await expect(svc.bind({ profile: 'coder', model: MOCK_MODEL })).rejects.toThrow(
-      /already bound/,
+  it('rebinds to a different base profile and applies the new profile pins', async () => {
+    const first = normalizeAgentProfile({
+      name: 'first',
+      modelAlias: MOCK_MODEL,
+      thinkingEffort: 'low',
+      tools: ['Read'],
+      systemPrompt: () => 'first profile',
+    });
+    const second = normalizeAgentProfile({
+      name: 'second',
+      modelAlias: MOCK_MODEL,
+      thinkingEffort: 'off',
+      tools: ['Bash'],
+      systemPrompt: () => 'second profile',
+    });
+    const catalog: ISessionAgentProfileCatalog = {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChange: Event.None as ISessionAgentProfileCatalog['onDidChange'],
+      get: (name) => [first, second].find((profile) => profile.name === name),
+      getDefault: () => first,
+      list: () => [first, second],
+      listRoutes: () => [],
+      routeDiagnostics: () => [],
+      resolveSelection: () => {
+        throw new Error('routes are not configured');
+      },
+      inspect: () => undefined,
+      load: async () => {},
+      reload: async () => {},
+    };
+    ctx = createTestAgent(
+      sessionService(ISessionAgentProfileCatalog, catalog),
+      hostEnvironmentServices(homeDir),
     );
-    await expect(svc.bind({ profile: 'missing-profile', model: MOCK_MODEL })).rejects.toThrow(
-      /already bound/,
-    );
-    expect(svc.data().profileName).toBe(DEFAULT_AGENT_PROFILE_NAME);
+    ctx.configure({
+      modelCapabilities: {
+        image_in: false,
+        video_in: false,
+        audio_in: false,
+        thinking: true,
+        tool_use: true,
+        max_context_tokens: 1_000_000,
+      },
+    });
+    const svc = ctx.get(IAgentProfileService);
+
+    await svc.bind({ profile: first.name, model: MOCK_MODEL, thinking: 'high' });
+    await svc.bind({ profile: second.name });
+
+    expect(svc.data().profileName).toBe(second.name);
+    expect(svc.data().modelAlias).toBe(MOCK_MODEL);
+    expect(svc.data().thinkingLevel).toBe('off');
+    expect(svc.getSystemPrompt()).toBe('second profile');
+    expect(svc.getActiveToolNames()).toEqual(['Bash']);
+    await expect(svc.bind({ profile: 'missing-profile' })).rejects.toThrow(/Unknown agent profile/);
+    expect(svc.data().profileName).toBe(second.name);
   });
 
   it('rejects an unsupported thinking effort atomically before first bind', async () => {

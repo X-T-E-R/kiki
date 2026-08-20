@@ -261,7 +261,9 @@ export function registerSessionsRoutes(
           workspaceId: touched.id,
           workDir,
           mainAgentBinding:
-            body.agent_config?.model === undefined && body.agent_config?.profile === undefined
+            body.agent_config?.model === undefined
+              && body.agent_config?.profile === undefined
+              && body.agent_config?.thinking === undefined
               ? undefined
               : {
                   profile: body.agent_config.profile ?? DEFAULT_AGENT_PROFILE_NAME,
@@ -277,7 +279,7 @@ export function registerSessionsRoutes(
         const session = toWireSession(
           { ...meta, workspaceId: touched.id },
           touched.root,
-          { busy: false, mainTurnActive: false, pendingInteraction: 'none' },
+          resolveSessionFacts(core, meta.id),
         );
         core.accessor.get(IEventService).publish(
           new SessionCreated({ payload: { agentId: 'main', sessionId: session.id, session } }),
@@ -1111,7 +1113,7 @@ export function toWireSession(
     archived: fields.archived,
     last_prompt: fields.lastPrompt,
     metadata: buildWireMetadata(fields.custom, cwd),
-    agent_config: { model: '' },
+    agent_config: facts.agentConfig ?? { model: '' },
     usage: facts.usage ?? emptySessionUsage(),
     permission_rules: [],
     message_count: 0,
@@ -1125,6 +1127,7 @@ export interface SessionFacts {
   readonly mainTurnActive: boolean;
   readonly pendingInteraction: SessionPendingInteraction;
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
+  readonly agentConfig?: Session['agent_config'];
   readonly usage?: SessionUsage;
   /** False when no live handle exists (cold session); live warm sessions
    *  always report their own outcome, never the persisted fallback. */
@@ -1162,8 +1165,12 @@ export function resolveSessionFacts(
   const agents = handle.accessor.get(IAgentLifecycleService).list();
   const main = agents.find((agent) => agent.id === MAIN_AGENT_ID);
   const sessionUsage = handle.accessor.get(ISessionMetadata).usage() ?? persistedUsage;
+  const profile = main?.accessor.get(IAgentProfileService).data();
   return {
     ...handle.accessor.get(ISessionActivityView).state(),
+    agentConfig: profile === undefined
+      ? undefined
+      : { model: profile.modelAlias ?? '', profile: profile.profileName },
     usage:
       main === undefined
         ? undefined

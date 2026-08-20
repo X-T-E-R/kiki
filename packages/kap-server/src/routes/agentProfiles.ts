@@ -273,11 +273,33 @@ function toNamedAgentProfile(
     workspace_id: registration.workspaceKey,
     workspace_ids: workspaceIds === undefined ? undefined : [...workspaceIds],
     source_file: profile.sourcePath,
+    main: profile.main === true,
     pinned_model_alias: profile.modelAlias,
     thinking_effort: profile.thinkingEffort,
     service_tier: profile.serviceTier,
     tools: profile.tools === undefined ? undefined : [...profile.tools],
     disallowed_tools: profile.disallowedTools === undefined ? undefined : [...profile.disallowedTools],
+    model_profiles: profile.modelProfiles?.map(toNamedAgentModelProfile),
+    spawn_constraints: profile.spawnConstraints === undefined
+      ? undefined
+      : {
+          allowed_models: profile.spawnConstraints.allowedModels === undefined
+            ? undefined
+            : [...profile.spawnConstraints.allowedModels],
+          deny_models: profile.spawnConstraints.denyModels === undefined
+            ? undefined
+            : [...profile.spawnConstraints.denyModels],
+          allowed_efforts: profile.spawnConstraints.allowedEfforts === undefined
+            ? undefined
+            : [...profile.spawnConstraints.allowedEfforts],
+          disallowed_tools: profile.spawnConstraints.disallowedTools === undefined
+            ? undefined
+            : [...profile.spawnConstraints.disallowedTools],
+        },
+    subagents: profile.subagents?.map((name) => {
+      const lease = profile.subagentLeases?.[name];
+      return lease === undefined ? name : toNamedAgentSubagentLease(lease);
+    }),
     disabled: registration.sourceId === BUILTIN_AGENT_PROFILE_SOURCE_ID
       ? disabledBuiltins.has(profile.name)
       : disabledNamed.has(profile.name),
@@ -285,6 +307,52 @@ function toNamedAgentProfile(
       .filter((candidate) => candidate.profile === profile.name)
       .map(toNamedAgentRoute)
       .toSorted((a, b) => a.id.localeCompare(b.id)),
+  };
+}
+
+function toNamedAgentModelProfile(
+  modelProfile: NonNullable<AgentProfile['modelProfiles']>[number],
+): NonNullable<NamedAgentProfile['model_profiles']>[number] {
+  return {
+    alias: modelProfile.alias,
+    when: modelProfile.when,
+    thinking_effort: modelProfile.thinkingEffort,
+    allowed_efforts: modelProfile.allowedEfforts === undefined
+      ? undefined
+      : [...modelProfile.allowedEfforts],
+    prompt_mode: modelProfile.promptMode,
+    prompt: modelProfile.prompt,
+  };
+}
+
+function toNamedAgentSubagentLease(
+  lease: NonNullable<AgentProfile['subagentLeases']>[string],
+): Exclude<NonNullable<NamedAgentProfile['subagents']>[number], string> {
+  return {
+    name: lease.name,
+    description: lease.description,
+    when_to_use: lease.whenToUse,
+    model_preference: lease.modelPreference,
+    model_alias: lease.modelAlias,
+    thinking_effort: lease.thinkingEffort,
+    allowed_models: lease.allowedModels === undefined ? undefined : [...lease.allowedModels],
+    deny_models: lease.denyModels === undefined ? undefined : [...lease.denyModels],
+    allowed_efforts: lease.allowedEfforts === undefined ? undefined : [...lease.allowedEfforts],
+    tools: lease.tools === undefined || lease.tools === null ? lease.tools : [...lease.tools],
+    disallowed_tools: lease.disallowedTools === undefined
+      ? undefined
+      : [...lease.disallowedTools],
+    subagents: lease.subagents === undefined || lease.subagents === null
+      ? lease.subagents
+      : [...lease.subagents],
+    prompt_mode: lease.promptMode,
+    prompt: lease.prompt,
+    delegation_notice: lease.delegationNotice,
+    service_tier: lease.serviceTier,
+    request_params: lease.requestParams === undefined || lease.requestParams === null
+      ? lease.requestParams
+      : { ...lease.requestParams },
+    model_profiles: lease.modelProfiles?.map(toNamedAgentModelProfile),
   };
 }
 

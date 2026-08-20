@@ -1,6 +1,6 @@
 import { createDecorator } from "#/_base/di/instantiation";
 import type { SkillActivationOrigin } from '#/agent/contextMemory/types';
-import type { PromptLaunchResult } from '#/agent/prompt/prompt';
+import type { PromptExecutionBinding, PromptLaunchResult } from '#/agent/prompt/prompt';
 import type { ContentPart } from '#/kosong/contract/message';
 
 export interface SkillActivationInput {
@@ -17,6 +17,8 @@ export interface PromptSkillActivation {
 export interface PromptWithSkillsInput {
   readonly input: readonly ContentPart[];
   readonly skills: readonly PromptSkillActivation[];
+  readonly execution?: PromptExecutionBinding;
+  readonly deferredDisabledTools?: readonly string[];
 }
 
 export interface PromptWithSkillsResult {

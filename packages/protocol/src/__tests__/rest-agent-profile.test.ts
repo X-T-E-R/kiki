@@ -14,10 +14,33 @@ describe('named agent profile REST protocol', () => {
       source: 'user',
       workspace_id: 'wd_a',
       workspace_ids: ['wd_a', 'wd_b'],
+      main: true,
+      model_profiles: [{
+        alias: 'fast',
+        when: 'Use for small tasks',
+        thinking_effort: 'low',
+      }],
+      spawn_constraints: {
+        allowed_models: ['fast'],
+        allowed_efforts: ['low'],
+      },
+      subagents: [
+        'explore',
+        {
+          name: 'reviewer',
+          model_alias: 'fast',
+          tools: null,
+          model_profiles: [{ alias: 'fast', when: 'Use for reviews' }],
+        },
+      ],
       disabled: true,
       routes: [],
     })).toMatchObject({
       workspace_ids: ['wd_a', 'wd_b'],
+      main: true,
+      model_profiles: [{ alias: 'fast', when: 'Use for small tasks' }],
+      spawn_constraints: { allowed_models: ['fast'] },
+      subagents: ['explore', { name: 'reviewer', model_alias: 'fast' }],
       disabled: true,
     });
   });

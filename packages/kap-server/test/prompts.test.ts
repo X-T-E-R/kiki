@@ -9,6 +9,7 @@ import {
   IAgentLifecycleService,
   IAgentPermissionModeService,
   IAgentProfileService,
+  IAgentPromptService,
   IAgentToolPolicyService,
   IBootstrapService,
   IFileService,
@@ -16,6 +17,7 @@ import {
   ISessionMetadata,
   closeSessionById,
   getLiveSessionById,
+  resumeSessionById,
 } from '@moonshot-ai/agent-core-v2';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -59,6 +61,15 @@ const PROMPT_TOML = [
   'provider = "stub"',
   'model = "stub"',
   'max_context_size = 1000',
+  'capabilities = ["thinking"]',
+  'support_efforts = ["low", "high"]',
+  '',
+  '[models.stub-alt]',
+  'provider = "stub"',
+  'model = "stub-alt"',
+  'max_context_size = 1000',
+  'capabilities = ["thinking"]',
+  'support_efforts = ["low", "high"]',
   '',
 ].join('\n');
 
@@ -1125,6 +1136,53 @@ describe('server-v2 /api/v1 prompts', () => {
     expect(body.msg).toContain('agent_does_not_exist');
   });
 
+  it('rejects a queued profile switch while the active binding is route-locked', async () => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+    const session = getLiveSessionById(server!.core.accessor, id);
+    if (session === undefined) throw new Error(`session ${id} not found`);
+    const main = session.accessor.get(IAgentLifecycleService).get('main');
+    if (main === undefined) throw new Error('main agent not found');
+    const profile = main.accessor.get(IAgentProfileService);
+    await profile.bind({ profile: 'agent', model: 'stub' });
+    const binding = profile.data();
+    profile.applyBindingSnapshot({
+      modelAlias: binding.modelAlias,
+      profileName: binding.profileName,
+      routeId: 'agent.locked',
+      lockedModelAlias: binding.modelAlias,
+      thinkingLevel: binding.thinkingLevel,
+      systemPrompt: binding.systemPrompt,
+      activeToolNames: binding.activeToolNames,
+      toolAllowPolicies: binding.toolAllowPolicies,
+      disallowedTools: binding.disallowedTools,
+      subagents: binding.subagents,
+      subagentLeases: binding.subagentLeases,
+      spawnPolicy: binding.spawnPolicy,
+    });
+
+    const active = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'active' }],
+    });
+    expect(active.body.code).toBe(0);
+    const prompt = main.accessor.get(IAgentPromptService);
+    expect(prompt.list().active?.id).toBe(active.body.data.prompt_id);
+
+    const rejected = await call<null>('POST', `/api/v1/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'queued' }],
+      profile: 'coder',
+    });
+    expect(rejected.body.code).toBe(40001);
+    expect(rejected.body.msg).toContain('agent.locked');
+    expect(profile.data()).toMatchObject({
+      profileName: 'agent',
+      routeId: 'agent.locked',
+      modelAlias: 'stub',
+    });
+    expect(prompt.list().pending).toEqual([]);
+    prompt.abort(active.body.data.prompt_id);
+  });
+
   it('binds a discovered custom agent profile on the first prompt', async () => {
     await mkdir(join(home as string, 'agents'), { recursive: true });
     await writeFile(
@@ -1161,23 +1219,121 @@ describe('server-v2 /api/v1 prompts', () => {
     expect(again.body.code).toBe(0);
   });
 
-  it('rejects switching to a different profile once bound', async () => {
+  it('rebinds the main profile, applies pins and overrides, and survives resume', async () => {
+    await mkdir(join(home as string, 'agents'), { recursive: true });
+    await writeFile(
+      join(home as string, 'agents', 'pinned-profile.md'),
+      [
+        '---',
+        'name: pinned-profile',
+        'description: Uses the pinned model and effort',
+        'model_alias: stub-alt',
+        'thinking_effort: low',
+        '---',
+        '',
+        'Pinned profile.',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    await writeFile(
+      join(home as string, 'agents', 'override-profile.md'),
+      [
+        '---',
+        'name: override-profile',
+        'description: Allows explicit request overrides',
+        'model_alias: stub-alt',
+        'thinking_effort: low',
+        '---',
+        '',
+        'Override profile.',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    await (server as RunningServer).close();
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home as string,
+      logLevel: 'silent',
+    });
+    base = `http://127.0.0.1:${server.port}`;
+
     const id = await createSession(home as string);
     await createMainAgent(id);
 
     const first = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'hello' }],
+      profile: 'agent',
       model: 'stub',
+      thinking: 'high',
     });
     expect(first.body.code).toBe(0);
 
-    const { body } = await call<null>('POST', `/api/v1/sessions/${id}/prompts`, {
-      content: [{ type: 'text', text: 'again' }],
-      profile: 'some-other-agent',
-      model: 'stub',
+    const session = getLiveSessionById(server!.core.accessor, id);
+    if (session === undefined) throw new Error(`session ${id} not found`);
+    const main = session.accessor.get(IAgentLifecycleService).get('main');
+    if (main === undefined) throw new Error('main agent not found');
+    const prompt = main.accessor.get(IAgentPromptService);
+    expect(prompt.abort(first.body.data.prompt_id)).toBe(true);
+    await vi.waitFor(() => expect(prompt.list().active).toBeUndefined(), { timeout: 10_000 });
+
+    const rebound = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'use the pinned profile' }],
+      profile: 'pinned-profile',
     });
-    expect(body.code).toBe(40001);
-    expect(body.msg).toContain('already bound');
+    expect(rebound.body.code, JSON.stringify(rebound.body)).toBe(0);
+
+    const profile = main.accessor.get(IAgentProfileService);
+    expect(profile?.data()).toMatchObject({
+      profileName: 'pinned-profile',
+      modelAlias: 'stub-alt',
+      thinkingLevel: 'low',
+    });
+    expect((await session.accessor.get(ISessionMetadata).read()).agents?.['main']).toMatchObject({
+      displayName: 'pinned-profile',
+      model: 'stub-alt',
+      thinkingEffort: 'low',
+    });
+    const currentSession = await call<{ agent_config: { model: string; profile?: string } }>(
+      'GET',
+      `/api/v1/sessions/${id}`,
+    );
+    expect(currentSession.body.data.agent_config).toEqual({
+      model: 'stub-alt',
+      profile: 'pinned-profile',
+    });
+
+    await closeSessionById(server!.core.accessor, id);
+    const resumed = await resumeSessionById(server!.core.accessor, id);
+    const resumedProfile = resumed?.accessor
+      .get(IAgentLifecycleService)
+      .get('main')
+      ?.accessor.get(IAgentProfileService);
+    expect(resumedProfile?.data()).toMatchObject({
+      profileName: 'pinned-profile',
+      modelAlias: 'stub-alt',
+      thinkingLevel: 'low',
+    });
+
+    const overridden = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'override the new pin' }],
+      profile: 'override-profile',
+      model: 'stub',
+      thinking: 'high',
+    });
+    expect(overridden.body.code).toBe(0);
+    const overriddenProfile = getLiveSessionById(server!.core.accessor, id)?.accessor
+      .get(IAgentLifecycleService)
+      .get('main')
+      ?.accessor.get(IAgentProfileService);
+    expect(overriddenProfile?.data()).toMatchObject({
+      profileName: 'override-profile',
+      modelAlias: 'stub',
+      thinkingLevel: 'high',
+    });
   });
 
   it('applies a requested thinking effort together with the profile bind', async () => {
