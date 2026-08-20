@@ -39,6 +39,7 @@ import { KikiSocket, type WsStatus } from '../lib/ws';
 import {
   readDeepLinkConfig,
   readStoredConfig,
+  scrubConnectionUrl,
   selectInitialConnection,
   type ConnectionConfig,
   type ConnectionSelection,
@@ -96,8 +97,10 @@ type ConnectError =
 
 /** Strip credentials from the address bar once they have been consumed. */
 function scrubUrl(): void {
-  if (window.location.hash !== '' || window.location.search !== '') {
-    window.history.replaceState(null, '', window.location.pathname);
+  const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  const scrubbedUrl = scrubConnectionUrl(window.location);
+  if (scrubbedUrl !== currentUrl) {
+    window.history.replaceState(null, '', scrubbedUrl);
   }
 }
 

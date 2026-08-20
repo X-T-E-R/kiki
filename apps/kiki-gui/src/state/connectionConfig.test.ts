@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   readDeepLinkConfig,
   readStoredConfig,
+  scrubConnectionUrl,
   selectInitialConnection,
 } from './connectionConfig';
 
@@ -35,6 +36,27 @@ describe('connection config readers', () => {
       url: '',
       token: 'fragment token',
     });
+  });
+
+  it('preserves non-connection query and fragment parameters when scrubbing', () => {
+    expect(
+      scrubConnectionUrl({
+        pathname: '/new',
+        search: '?agent=reviewer%2Ffast&workspace=demo+workspace',
+        hash: '#view=details',
+      }),
+    ).toBe('/new?agent=reviewer%2Ffast&workspace=demo+workspace#view=details');
+  });
+
+  it('removes every consumed connection parameter while retaining the rest', () => {
+    expect(
+      scrubConnectionUrl({
+        pathname: '/new',
+        search:
+          '?agent=reviewer&server=https%3A%2F%2Fexample.test&url=https%3A%2F%2Ffallback.example.test&token=query-secret',
+        hash: '#token=fragment-secret&view=details',
+      }),
+    ).toBe('/new?agent=reviewer#view=details');
   });
 
   it('rejects malformed stored values', () => {

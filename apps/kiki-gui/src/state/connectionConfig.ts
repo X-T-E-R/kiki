@@ -9,6 +9,29 @@ export interface ConnectionSelection {
   readonly source: 'desktop' | 'deep-link' | 'stored' | 'manual' | 'local-detection';
 }
 
+const CONNECTION_QUERY_PARAMS = ['server', 'url', 'token'] as const;
+
+export function scrubConnectionUrl(
+  location: Pick<Location, 'pathname' | 'search' | 'hash'>,
+): string {
+  const params = new URLSearchParams(location.search);
+  for (const name of CONNECTION_QUERY_PARAMS) params.delete(name);
+
+  const search = params.toString();
+  const hashParts = location.hash.startsWith('#')
+    ? location.hash.slice(1).split('&')
+    : [];
+  const scrubbedHashParts = hashParts.filter((part) => !part.startsWith('token='));
+  const hash =
+    scrubbedHashParts.length === hashParts.length
+      ? location.hash
+      : scrubbedHashParts.length === 0
+        ? ''
+        : `#${scrubbedHashParts.join('&')}`;
+
+  return `${location.pathname}${search === '' ? '' : `?${search}`}${hash}`;
+}
+
 export function readDeepLinkConfig(
   location: Pick<Location, 'search' | 'hash'> = window.location,
 ): ConnectionConfig | null {
