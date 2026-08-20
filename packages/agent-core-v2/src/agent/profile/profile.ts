@@ -3,6 +3,7 @@ import type {
   AgentProfileContext,
   EnvironmentDisclosureSnapshot,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import type { SpawnConstraints, SubagentLease } from '#/app/agentProfileCatalog/subagentLease';
 import type { ModelCapability } from '#/kosong/contract/capability';
 import type { RequestParams, ServiceTier, ThinkingEffort } from '#/kosong/contract/provider';
 import type { ModelRequestParams } from '#/kosong/model/modelRequester';
@@ -55,6 +56,9 @@ export interface ProfileData extends AgentConfigData {
   readonly toolAllowPolicies?: readonly (readonly string[])[];
   readonly disallowedTools?: readonly string[];
   readonly subagents?: readonly string[];
+  readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
+  readonly spawnPolicy?: SpawnConstraints;
+  readonly appliedLease?: SubagentLease;
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;
   readonly environmentDisclosure?: EnvironmentDisclosureSnapshot;
@@ -89,6 +93,9 @@ export interface ProfileBindingSnapshot {
   readonly toolAllowPolicies?: readonly (readonly string[])[];
   readonly disallowedTools?: readonly string[];
   readonly subagents?: readonly string[];
+  readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
+  readonly spawnPolicy?: SpawnConstraints;
+  readonly appliedLease?: SubagentLease;
 }
 
 export interface ProfileServiceOptions {
@@ -121,6 +128,8 @@ export interface BindAgentInput {
   readonly thinking?: string;
   readonly strictThinking?: boolean;
   readonly delegationPosition?: 'main' | 'sub' | 'independent';
+  readonly lease?: SubagentLease;
+  readonly spawnPolicy?: SpawnConstraints;
 }
 
 export interface IAgentProfileService {

@@ -12,6 +12,7 @@ import {
   normalizeAgentProfile,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { TASK_AGENT_ROLE_PREFIX } from '#/app/agentProfileCatalog/profile-shared';
+import { ErrorCodes, isError2 } from '#/errors';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 
 import {
@@ -173,5 +174,93 @@ describe('delegation context at bind', () => {
     });
     expect(profile.getSystemPrompt()).toContain('CUSTOM BODY');
     expect(profile.getSystemPrompt()).not.toContain(TASK_AGENT_ROLE_PREFIX);
+  });
+
+  it('rejects a sub bind whose model is outside the child allowed_models', async () => {
+    const custom = normalizeAgentProfile({
+      name: 'locked-child',
+      allowedModels: ['grok-4.6'],
+      systemPrompt: () => 'LOCKED',
+    });
+    ctx = createTestAgent(
+      homeDirServices(homeDir),
+      sessionService(ISessionAgentProfileCatalog, catalogWith(custom)),
+    );
+    await expect(
+      ctx.get(IAgentProfileService).bind({
+        profile: 'locked-child',
+        model: MOCK_MODEL,
+        delegationPosition: 'sub',
+      }),
+    ).rejects.toSatisfy((error) => isError2(error) && error.code === ErrorCodes.CONFIG_INVALID);
+  });
+
+  it('rejects a sub bind denied by [subagent].deny_models even without a lease', async () => {
+    const custom = normalizeAgentProfile({
+      name: 'open-child',
+      systemPrompt: () => 'OPEN',
+    });
+    ctx = createTestAgent(
+      homeDirServices(homeDir),
+      sessionService(ISessionAgentProfileCatalog, catalogWith(custom)),
+      { initialConfig: { subagent: { denyModels: [MOCK_MODEL] } } },
+    );
+    await expect(
+      ctx.get(IAgentProfileService).bind({
+        profile: 'open-child',
+        model: MOCK_MODEL,
+        delegationPosition: 'sub',
+      }),
+    ).rejects.toSatisfy((error) => isError2(error) && error.code === ErrorCodes.CONFIG_INVALID);
+  });
+
+  it('does not bind [subagent].deny_models against the main agent', async () => {
+    const custom = normalizeAgentProfile({
+      name: 'open-child',
+      systemPrompt: () => 'OPEN',
+    });
+    ctx = createTestAgent(
+      homeDirServices(homeDir),
+      sessionService(ISessionAgentProfileCatalog, catalogWith(custom)),
+      { initialConfig: { subagent: { denyModels: [MOCK_MODEL] } } },
+    );
+    await ctx.get(IAgentProfileService).bind({
+      profile: 'open-child',
+      model: MOCK_MODEL,
+    });
+    expect(ctx.get(IAgentProfileService).getSystemPrompt()).toContain('OPEN');
+  });
+
+  it('reapplies slot 4 after a snapshot replay refreshes the system prompt', async () => {
+    const custom = normalizeAgentProfile({
+      name: 'leased-child',
+      systemPrompt: () => 'CHILD BODY',
+    });
+    ctx = createTestAgent(
+      homeDirServices(homeDir),
+      sessionService(ISessionAgentProfileCatalog, catalogWith(custom)),
+    );
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({
+      profile: 'leased-child',
+      model: MOCK_MODEL,
+      delegationPosition: 'sub',
+      lease: {
+        name: 'leased-child',
+        promptMode: 'prepend',
+        prompt: 'LEASE PREPEND',
+      },
+    });
+    expect(profile.getSystemPrompt()).toContain('LEASE PREPEND');
+    expect(profile.getSystemPrompt()).toContain('CHILD BODY');
+    expect(profile.data().appliedLease).toEqual({
+      name: 'leased-child',
+      promptMode: 'prepend',
+      prompt: 'LEASE PREPEND',
+    });
+    profile.applyBindingSnapshot(profile.data());
+    await profile.refreshSystemPrompt();
+    expect(profile.getSystemPrompt()).toContain('LEASE PREPEND');
+    expect(profile.getSystemPrompt()).toContain('CHILD BODY');
   });
 });

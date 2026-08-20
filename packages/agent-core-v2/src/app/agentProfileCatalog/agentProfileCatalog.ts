@@ -1,6 +1,7 @@
 import type { ILogger } from '#/_base/log/log';
 import type { RequestParams, ServiceTier } from '#/kosong/contract/provider';
 import type { IHostProcessService } from '#/os/interface/hostProcess';
+import type { SpawnConstraints, SubagentLease } from './subagentLease';
 
 export const DEFAULT_AGENT_PROFILE_NAME = 'agent';
 
@@ -73,6 +74,8 @@ export interface AgentProfile {
   readonly toolAllowPolicies?: readonly (readonly string[])[];
   readonly disallowedTools?: readonly string[];
   readonly subagents?: readonly string[];
+  readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
+  readonly spawnConstraints?: SpawnConstraints;
   readonly modelPreference?: AgentModelPreference;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;

@@ -32,6 +32,7 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
+import { IModelService } from '#/kosong/model/model';
 import type { SessionWillCloseEvent } from '#/workspace/sessionLifecycle/sessionLifecycle';
 
 const authority: ExternalAuthority = {
@@ -98,6 +99,7 @@ describe('SessionExternalDelegationService', () => {
       read: async () => ({ id: 'session_test', createdAt: 0, updatedAt: 0, archived: false, agents: {} }),
     });
     ix.stub(ISessionWorkspaceContext, { _serviceBrand: undefined, workDir: '/workspace', additionalDirs: [] });
+    ix.stub(IModelService, { resolveId: (id: string) => id });
     willClose = new Emitter<SessionWillCloseEvent & IWaitUntil>();
     disposables.add(willClose);
     ix.set(ISessionManager, {

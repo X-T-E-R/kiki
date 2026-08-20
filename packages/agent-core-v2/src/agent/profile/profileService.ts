@@ -72,6 +72,13 @@ import {
   resolveModelProfileEntry,
 } from '#/app/agentProfileCatalog/modelProfileOverlay';
 import {
+  aliasIdentity,
+  applyLease,
+  applySpawnPolicy,
+  intersectSpawnPolicy,
+  spawnConstraintOrigin,
+} from '#/app/agentProfileCatalog/applySubagentLease';
+import {
   resolveMainModelCandidate,
   resolveMainThinkingCandidate,
 } from '#/agent/profile/mainModelCandidate';
@@ -81,6 +88,7 @@ import {
   routeModelOverrideMessage,
   routeThinkingOverrideMessage,
 } from '#/session/subagent/modelConstraints';
+import { assertBoundModelAllowed } from '#/session/subagent/configSection';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IAgentTelemetryContextService } from '#/app/telemetry/agentTelemetryContext';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -321,6 +329,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         toolAllowPolicies: snapshot.toolAllowPolicies,
         disallowedTools: snapshot.disallowedTools ?? [],
         subagents: snapshot.subagents,
+        subagentLeases: snapshot.subagentLeases,
+        spawnPolicy: snapshot.spawnPolicy,
+        appliedLease: snapshot.appliedLease,
       }),
     );
     this.afterConfigDispatch({
@@ -365,7 +376,15 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
             return { profile: base, baseProfile: base, route: undefined };
           })()
         : this.catalog.resolveSelection({ profile: input.profile, route: input.route });
-    const profile = selection.profile;
+    const resolveId = aliasIdentity(this.models);
+    const leased = applyLease(selection.profile, input.lease, resolveId);
+    const profile = applySpawnPolicy(leased, input.spawnPolicy, resolveId);
+    const spawnPolicy = intersectSpawnPolicy(
+      input.spawnPolicy,
+      selection.profile.spawnConstraints,
+      resolveId,
+    );
+    const subagentLeases = selection.profile.subagentLeases;
     this.assertBindable(selection.baseProfile.name, selection.route?.id);
     const routeModelAlias = selection.route?.lockedModelAlias;
     const canonicalRouteModelAlias =
@@ -473,7 +492,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       for (const message of humanProfileDeviations({
         model: alias,
         thinking: thinkingLevel,
-        constraints: roleConstraintsFromProfile(profile),
+        constraints: roleConstraintsFromProfile(
+          profile,
+          spawnConstraintOrigin(input.lease, input.spawnPolicy),
+        ),
         models: this.models,
         profileName: selection.baseProfile.name,
         checkModel: requested.source === 'input',
@@ -481,6 +503,19 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       })) {
         this.emitDeviationWarning(message);
       }
+    }
+
+    if (this.delegationPosition !== 'main') {
+      assertBoundModelAllowed(
+        this.config,
+        alias,
+        roleConstraintsFromProfile(
+          profile,
+          spawnConstraintOrigin(input.lease, input.spawnPolicy),
+        ),
+        this.models,
+        thinkingLevel,
+      );
     }
 
     this.activeProfile = profile;
@@ -502,6 +537,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       toolAllowPolicies: profile.toolAllowPolicies,
       disallowedTools: profile.disallowedTools ?? [],
       subagents: profile.subagents,
+      subagentLeases,
+      spawnPolicy,
+      appliedLease: input.lease,
     }));
     this.afterConfigDispatch({
       modelAlias: alias,
@@ -808,6 +846,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       disallowedTools: [...(this.profileState.disallowedTools ?? [])],
       subagents:
         this.profileState.subagents === undefined ? undefined : [...this.profileState.subagents],
+      subagentLeases: this.profileState.subagentLeases,
+      spawnPolicy: this.profileState.spawnPolicy,
+      appliedLease: this.profileState.appliedLease,
       serviceTier: this.serviceTier,
       requestParams:
         this.requestParams === undefined ? undefined : { ...this.requestParams },
@@ -1138,9 +1179,16 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const profileName = this.profileName;
     if (profileName === undefined) return undefined;
     if (this.routeId !== undefined) return undefined;
-    return profileName === DEFAULT_AGENT_PROFILE_NAME
-      ? this.catalog.getDefault()
-      : this.catalog.get(profileName);
+    const catalogProfile =
+      profileName === DEFAULT_AGENT_PROFILE_NAME
+        ? this.catalog.getDefault()
+        : this.catalog.get(profileName);
+    if (catalogProfile === undefined) return undefined;
+    return applyLease(
+      catalogProfile,
+      this.profileState.appliedLease,
+      aliasIdentity(this.models),
+    );
   }
 
   private cacheAgentsMdWarning(context: Pick<SystemPromptContext, 'agentsMdWarning'>): void {

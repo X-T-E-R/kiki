@@ -54,6 +54,8 @@ export function agentProfileFromFile(
     tools: definition.tools,
     disallowedTools: definition.disallowedTools,
     subagents: definition.subagents,
+    subagentLeases: definition.subagentLeases,
+    spawnConstraints: definition.spawnConstraints,
     modelPreference: definition.modelPreference,
     modelAlias: definition.modelAlias,
     thinkingEffort: definition.thinkingEffort,

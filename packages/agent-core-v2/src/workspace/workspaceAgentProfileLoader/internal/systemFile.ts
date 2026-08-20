@@ -112,6 +112,12 @@ function loadUpgradedSystemMd(
       subagents: Object.hasOwn(parsed.data, 'subagents')
         ? definition.subagents
         : builtinDefault.subagents,
+      subagentLeases: Object.hasOwn(parsed.data, 'subagents')
+        ? definition.subagentLeases
+        : builtinDefault.subagentLeases,
+      spawnConstraints: Object.hasOwn(parsed.data, 'spawn_constraints')
+        ? definition.spawnConstraints
+        : builtinDefault.spawnConstraints,
     },
     (context) => builtinDefault.renderSystemPrompt(context),
     (context) => builtinDefault.renderSystemPrompt(context),
@@ -129,6 +135,8 @@ function loadLegacySystemMd(text: string, builtinDefault: AgentProfile): AgentPr
     tools: builtinDefault.tools,
     disallowedTools: builtinDefault.disallowedTools,
     subagents: builtinDefault.subagents,
+    subagentLeases: builtinDefault.subagentLeases,
+    spawnConstraints: builtinDefault.spawnConstraints,
     renderSystemPrompt: (context) =>
       renderPromptTemplateResult(
         text,

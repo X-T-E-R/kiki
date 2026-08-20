@@ -1,6 +1,7 @@
 import { CoreErrors } from '#/_base/errors/codes';
 import { Error2 } from '#/_base/errors/errors';
 import { FrontmatterError, parseFrontmatter } from '#/_base/text/frontmatter';
+import { openIfEmpty, parseSpawnConstraints, parseSubagentList, SubagentLeaseParseError } from '#/app/agentProfileCatalog/subagentLease';
 
 import type { AgentFileDefinition, AgentFileSource } from './types';
 
@@ -102,9 +103,19 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     'disallowedTools',
     options.path,
   );
-  const rawSubagents = parseStringList(frontmatter['subagents'], 'subagents', options.path);
-  const subagents =
-    rawSubagents?.length === 1 && rawSubagents[0] === '*' ? undefined : rawSubagents;
+  let parsedSubagents;
+  let spawnConstraints;
+  try {
+    parsedSubagents = parseSubagentList(frontmatter['subagents'], options.path);
+    spawnConstraints = parseSpawnConstraints(frontmatter['spawn_constraints'], options.path);
+  } catch (error) {
+    if (error instanceof SubagentLeaseParseError) {
+      throw new AgentFileParseError(error.message, error);
+    }
+    throw error;
+  }
+  const subagents = parsedSubagents.subagents;
+  const subagentLeases = parsedSubagents.subagentLeases;
   const modelPreference = parseModelPreference(frontmatter['model_preference'], options.path);
   const modelAlias = optionalNonEmptyStringField(
     frontmatter['model_alias'],
@@ -116,16 +127,12 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     'thinking_effort',
     options.path,
   );
-  const allowedModels = parseStringList(
-    frontmatter['allowed_models'],
-    'allowed_models',
-    options.path,
+  const allowedModels = openIfEmpty(
+    parseStringList(frontmatter['allowed_models'], 'allowed_models', options.path),
   );
-  const denyModels = parseStringList(frontmatter['deny_models'], 'deny_models', options.path);
-  const allowedEfforts = parseStringList(
-    frontmatter['allowed_efforts'],
-    'allowed_efforts',
-    options.path,
+  const denyModels = openIfEmpty(parseStringList(frontmatter['deny_models'], 'deny_models', options.path));
+  const allowedEfforts = openIfEmpty(
+    parseStringList(frontmatter['allowed_efforts'], 'allowed_efforts', options.path),
   );
   warnIncoherentModelConstraints(
     modelAlias,
@@ -171,6 +178,8 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     tools,
     disallowedTools,
     subagents,
+    subagentLeases,
+    spawnConstraints,
     modelPreference,
     modelAlias,
     thinkingEffort,

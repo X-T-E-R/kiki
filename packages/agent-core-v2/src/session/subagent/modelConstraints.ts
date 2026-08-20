@@ -9,19 +9,24 @@ export interface SubagentRoleModelConstraints {
   readonly denyModels?: readonly string[];
   readonly allowedEfforts?: readonly string[];
   readonly modelProfiles?: readonly AgentModelProfile[];
+  readonly origin?: string;
 }
 
-export function roleConstraintsFromProfile(profile: {
-  readonly allowedModels?: readonly string[];
-  readonly denyModels?: readonly string[];
-  readonly allowedEfforts?: readonly string[];
-  readonly modelProfiles?: readonly AgentModelProfile[];
-}): SubagentRoleModelConstraints {
+export function roleConstraintsFromProfile(
+  profile: {
+    readonly allowedModels?: readonly string[];
+    readonly denyModels?: readonly string[];
+    readonly allowedEfforts?: readonly string[];
+    readonly modelProfiles?: readonly AgentModelProfile[];
+  },
+  origin?: string,
+): SubagentRoleModelConstraints {
   return {
     allowedModels: profile.allowedModels,
     denyModels: profile.denyModels,
     allowedEfforts: profile.allowedEfforts,
     modelProfiles: profile.modelProfiles,
+    ...(origin === undefined ? {} : { origin }),
   };
 }
 
@@ -62,7 +67,10 @@ export function humanProfileDeviations(input: {
   const checkThinking = input.checkThinking !== false;
   const canonicalModel = resolveModelIdentity(input.model, input.models);
   const roleDenied = identitySet(constraints.denyModels, input.models);
-  const profile = input.profileName === undefined ? 'this profile' : `profile "${input.profileName}"`;
+  const profile =
+    input.profileName !== undefined
+      ? `profile "${input.profileName}"`
+      : (constraints.origin ?? 'this profile');
   if (checkModel) {
     if (roleDenied.has(canonicalModel)) {
       messages.push(
@@ -70,9 +78,9 @@ export function humanProfileDeviations(input: {
       );
     } else {
       const allowed = constraints.allowedModels;
-      if (allowed !== undefined && allowed.length > 0) {
+      if (allowed !== undefined) {
         const allowedIds = identitySet(allowed, input.models);
-        if (!allowedIds.has(canonicalModel)) {
+        if (allowed.length === 0 || !allowedIds.has(canonicalModel)) {
           messages.push(
             `Model "${canonicalModel}" is not in ${profile} allowed_models; continuing with the explicit choice.`,
           );
@@ -122,10 +130,11 @@ function assertRoleModelAllowDeny(
 ): void {
   const canonicalModel = resolveModelIdentity(model, models);
   const roleDenied = identitySet(constraints.denyModels, models);
+  const origin = constraints.origin ?? "this agent's";
   if (roleDenied.has(canonicalModel)) {
     throw new Error2(
       ErrorCodes.CONFIG_INVALID,
-      `Subagent model "${canonicalModel}" is denied by this agent's deny_models.`,
+      `Subagent model "${canonicalModel}" is denied by ${origin} deny_models.`,
       {
         details: {
           model: canonicalModel,
@@ -136,7 +145,7 @@ function assertRoleModelAllowDeny(
     );
   }
   const allowed = constraints.allowedModels;
-  if (allowed === undefined || allowed.length === 0) return;
+  if (allowed === undefined) return;
   const allowedIds = identitySet(allowed, models);
   if (allowedIds.has(canonicalModel)) return;
   const permittedModels = allowed.filter((alias) => {
@@ -145,7 +154,7 @@ function assertRoleModelAllowDeny(
   });
   throw new Error2(
     ErrorCodes.CONFIG_INVALID,
-    `Subagent model "${canonicalModel}" is not in this agent's allowed_models. Permitted models: ${permittedModels.join(', ') || '(none)'}.`,
+    `Subagent model "${canonicalModel}" is not in ${origin} allowed_models. Permitted models: ${permittedModels.join(', ') || '(none)'}.`,
     {
       details: {
         model: canonicalModel,
@@ -168,7 +177,7 @@ function assertRoleEffortAllowlist(
   if (effortAllowed(thinking, permitted)) return;
   throw new Error2(
     ErrorCodes.CONFIG_INVALID,
-    `Subagent thinking effort "${thinking}" is not in this agent's allowed_efforts. Permitted efforts: ${permitted.join(', ') || '(none)'}.`,
+    `Subagent thinking effort "${thinking}" is not in ${constraints.origin ?? "this agent's"} allowed_efforts. Permitted efforts: ${permitted.join(', ') || '(none)'}.`,
     {
       details: {
         model: resolveModelIdentity(model, models),
@@ -184,11 +193,12 @@ function effectiveAllowedEfforts(
   model: string,
   models: IModelService | undefined,
 ): readonly string[] | undefined {
-  const role = nonemptyList(constraints.allowedEfforts);
+  const role = constraints.allowedEfforts;
   const entry = resolveModelProfileEntry(constraints.modelProfiles, model, resolveId(models));
   const entryEfforts = nonemptyList(entry?.allowedEfforts);
   if (role === undefined) return entryEfforts;
   if (entryEfforts === undefined) return role;
+  if (role.length === 0) return [];
   const allowed = new Set(entryEfforts.map(effortKey));
   return role.filter((effort) => allowed.has(effortKey(effort)));
 }

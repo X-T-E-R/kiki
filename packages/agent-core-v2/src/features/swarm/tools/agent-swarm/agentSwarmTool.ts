@@ -17,6 +17,14 @@ import {
   subagentAllowlistFor,
   subagentTypeNotAllowedMessage,
 } from '#/app/agentProfileCatalog/profile-shared';
+import {
+  aliasIdentity,
+  appliedDispatchProfile,
+  assertAutomaticDispatchPermitted,
+  fillLeasePins,
+  routePermittedByProfile,
+  spawnConstraintOrigin,
+} from '#/app/agentProfileCatalog/applySubagentLease';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentSwarmService } from '#/features/swarm/agent/swarm';
 import {
@@ -116,9 +124,16 @@ export class AgentSwarmTool implements IAgentSwarmTool {
       ? AGENT_SWARM_DESCRIPTION
       : `${AGENT_SWARM_DESCRIPTION}\n\n${modelLines}`;
     const allowlist = subagentAllowlistFor(this.catalog, this.profile.data());
-    const routes = this.catalogRoutes().filter(
-      (route) => allowlist === undefined || allowlist.includes(route.profile),
-    );
+    const own = this.profile.data();
+    const defaults = this.catalog.getDefault();
+    const resolveId = aliasIdentity(this.models);
+    const routes = this.catalogRoutes().filter((route) => {
+      if (allowlist !== undefined && !allowlist.includes(route.profile)) return false;
+      const base = this.catalog.get(route.profile);
+      if (base === undefined) return false;
+      const effective = appliedDispatchProfile(base, route.profile, own, defaults, resolveId).profile;
+      return routePermittedByProfile(route, effective, this.models);
+    });
     if (routes.length > 0) {
       description += `\n\nAvailable agent routes (pass via route):\n${formatRouteDescriptions(routes)}`;
     }
@@ -219,15 +234,35 @@ export class AgentSwarmTool implements IAgentSwarmTool {
           { details: { profileName, allowlist } },
         );
       }
-      const targetProfile = selection.profile;
-      const symbolicModel =
-        args.model === 'primary' || args.model === 'secondary' ? args.model : undefined;
+      const targetDispatched = appliedDispatchProfile(
+        selection.profile,
+        profileName,
+        own,
+        this.catalog.getDefault(),
+        aliasIdentity(this.models),
+      );
+      const targetProfile = targetDispatched.profile;
+      assertAutomaticDispatchPermitted(targetProfile, selection.route, this.models);
+      const filled = fillLeasePins(
+        {
+          modelAlias,
+          thinkingEffort,
+          modelPreference: args.model,
+        },
+        targetDispatched.lease,
+        selection.route,
+      );
+      const filledSymbolic =
+        filled.modelPreference === 'primary' || filled.modelPreference === 'secondary'
+          ? filled.modelPreference
+          : undefined;
       assertProfileRouteBinding(
         selection.route,
         {
-          modelAlias: modelAlias ?? (symbolicModel === undefined ? args.model : undefined),
-          thinkingEffort,
-          modelPreference: symbolicModel,
+          modelAlias:
+            filled.modelAlias ?? (filledSymbolic === undefined ? filled.modelPreference : undefined),
+          thinkingEffort: filled.thinkingEffort,
+          modelPreference: filledSymbolic,
         },
         this.models,
       );
@@ -238,17 +273,20 @@ export class AgentSwarmTool implements IAgentSwarmTool {
             this.flags,
             { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
             {
-              modelPreference: args.model,
-              modelAlias,
-              thinkingEffort,
+              modelPreference: filled.modelPreference,
+              modelAlias: filled.modelAlias,
+              thinkingEffort: filled.thinkingEffort,
             },
             {
-              modelPreference: targetProfile.modelPreference,
-              modelAlias: targetProfile.modelAlias,
-              thinkingEffort: targetProfile.thinkingEffort,
+              modelPreference: selection.profile.modelPreference,
+              modelAlias: selection.profile.modelAlias,
+              thinkingEffort: selection.profile.thinkingEffort,
             },
             this.models,
-            roleConstraintsFromProfile(targetProfile),
+            roleConstraintsFromProfile(
+              targetProfile,
+              spawnConstraintOrigin(targetDispatched.lease, targetDispatched.spawnPolicy),
+            ),
           ),
           this.models,
         );

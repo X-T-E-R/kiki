@@ -584,6 +584,158 @@ body
   it('rejects an empty prompt body', () => {
     expect(() => parse('---\nname: solo\ndescription: d\n---\n')).toThrow(/prompt body/);
   });
+
+  it('parses a mixed subagents list into names plus leases', () => {
+    const def = parse(`---
+name: grok-play
+description: d
+spawn_constraints:
+  allowed_models: [grok-4.6, grok-4.6-fast]
+  allowed_efforts: [low, medium, high]
+subagents:
+  - explore
+  - name: worker-lite
+    model_alias: grok-4.6-fast
+    thinking_effort: high
+    allowed_models: [grok-4.6, grok-4.6-fast]
+    tools: [Bash, Read, Grep, Glob]
+    prompt_mode: append
+    prompt: ignore worktrees
+  - name: reviewer
+    deny_models: [gpt-5.6-sol]
+    whenToUse: only review kiki diffs
+---
+
+body
+`);
+    expect(def.subagents).toEqual(['explore', 'worker-lite', 'reviewer']);
+    expect(def.spawnConstraints).toEqual({
+      allowedModels: ['grok-4.6', 'grok-4.6-fast'],
+      allowedEfforts: ['low', 'medium', 'high'],
+    });
+    expect(def.subagentLeases?.['worker-lite']).toMatchObject({
+      name: 'worker-lite',
+      modelAlias: 'grok-4.6-fast',
+      thinkingEffort: 'high',
+      allowedModels: ['grok-4.6', 'grok-4.6-fast'],
+      tools: ['Bash', 'Read', 'Grep', 'Glob'],
+      promptMode: 'append',
+      prompt: 'ignore worktrees',
+    });
+    expect(def.subagentLeases?.['reviewer']).toMatchObject({
+      name: 'reviewer',
+      denyModels: ['gpt-5.6-sol'],
+      whenToUse: 'only review kiki diffs',
+    });
+    expect(def.subagentLeases?.['explore']).toBeUndefined();
+  });
+
+  it('keeps a string-only subagents list without a lease table', () => {
+    const def = parse(FULL_FILE);
+    expect(def.subagents).toEqual(['explore', 'plan']);
+    expect(def.subagentLeases).toBeUndefined();
+    expect(def.spawnConstraints).toBeUndefined();
+  });
+
+  it('rejects duplicate subagent names', () => {
+    expect(() =>
+      parse(`---
+name: solo
+description: d
+subagents:
+  - explore
+  - name: explore
+    model_alias: grok-4.6
+---
+
+body
+`),
+    ).toThrow(/more than once/);
+  });
+
+  it('rejects a dotted lease name', () => {
+    expect(() =>
+      parse(`---
+name: solo
+description: d
+subagents:
+  - name: explore.flash
+    model_alias: grok-4.6
+---
+
+body
+`),
+    ).toThrow(/kebab-case profile name, not a route id/);
+  });
+
+  it('rejects prompt_mode replace on a lease', () => {
+    expect(() =>
+      parse(`---
+name: solo
+description: d
+subagents:
+  - name: worker-lite
+    prompt_mode: replace
+    prompt: no
+---
+
+body
+`),
+    ).toThrow(/cannot be "replace"/);
+  });
+
+  it('rejects nested mappings inside a lease subagents overlay', () => {
+    expect(() =>
+      parse(`---
+name: solo
+description: d
+subagents:
+  - name: worker-lite
+    subagents:
+      - name: explore
+        model_alias: grok-4.6
+---
+
+body
+`),
+    ).toThrow(/list of non-empty strings/);
+  });
+
+  it('rejects spawn_constraints nested on a lease entry', () => {
+    expect(() =>
+      parse(`---
+name: solo
+description: d
+subagents:
+  - name: worker-lite
+    spawn_constraints:
+      allowed_models: [grok-4.6]
+---
+
+body
+`),
+    ).toThrow(/cannot be overlaid/);
+  });
+
+  it('rejects an unknown lease key', () => {
+    expect(() =>
+      parse(`---
+name: solo
+description: d
+subagents:
+  - name: worker-lite
+    rank: 1
+---
+
+body
+`),
+    ).toThrow(/unknown key "rank"/);
+  });
+
+  it('coerces an empty allowed_models list to unrestricted', () => {
+    const def = parse('---\nname: solo\ndescription: d\nallowed_models: []\n---\n\nbody\n');
+    expect(def.allowedModels).toBeUndefined();
+  });
 });
 
 describe('agentProfileFromFile', () => {
@@ -785,6 +937,24 @@ describe('agentProfileFromFile', () => {
     );
 
     expect(profile.allowedEfforts).toEqual(['max', 'high']);
+  });
+
+  it('passes subagent leases and spawn_constraints through', () => {
+    const profile = agentProfileFromFile(
+      {
+        ...base,
+        subagents: ['explore', 'worker-lite'],
+        subagentLeases: {
+          'worker-lite': { name: 'worker-lite', modelAlias: 'grok-4.6-fast' },
+        },
+        spawnConstraints: { allowedModels: ['grok-4.6'] },
+      },
+      basePrompt,
+    );
+
+    expect(profile.subagents).toEqual(['explore', 'worker-lite']);
+    expect(profile.subagentLeases?.['worker-lite']?.modelAlias).toBe('grok-4.6-fast');
+    expect(profile.spawnConstraints).toEqual({ allowedModels: ['grok-4.6'] });
   });
 
   it('passes main through', () => {

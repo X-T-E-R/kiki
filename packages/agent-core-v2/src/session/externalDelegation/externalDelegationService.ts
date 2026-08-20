@@ -30,10 +30,18 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
 import { subagentAllowlistFor } from '#/app/agentProfileCatalog/profile-shared';
+import {
+  aliasIdentity,
+  appliedDispatchProfile,
+  assertAutomaticDispatchPermitted,
+  fillLeasePins,
+  isDispatchBlocked,
+} from '#/app/agentProfileCatalog/applySubagentLease';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { ILogService } from '#/_base/log/log';
+import { IModelService } from '#/kosong/model/model';
 import { IAgentCollaborationRegistry } from '#/session/agentCollaboration/registry';
 
 import { EXTERNAL_DELEGATION_FLAG_ID } from './flag';
@@ -122,6 +130,7 @@ export class SessionExternalDelegationService
     @ILogService private readonly log: ILogService,
     @IAgentCollaborationRegistry private readonly names: IAgentCollaborationRegistry,
     @ISessionManager lifecycle: ISessionManager,
+    @IModelService private readonly models: IModelService,
   ) {
     super();
     this.scope = session.scope('external-delegation');
@@ -164,9 +173,13 @@ export class SessionExternalDelegationService
     const main = this.requireMain();
     const own = main.accessor.get(IAgentProfileService).data();
     const allowlist = subagentAllowlistFor(this.profiles, own);
+    const defaults = this.profiles.getDefault();
+    const resolveId = aliasIdentity(this.models);
     const dispatchables = this.profiles
       .list()
       .filter((profile) => allowlist === undefined || allowlist.includes(profile.name))
+      .map((profile) => appliedDispatchProfile(profile, profile.name, own, defaults, resolveId).profile)
+      .filter((profile) => !isDispatchBlocked(profile))
       .map((profile) => ({ kind: 'named' as const, profileName: profile.name, description: profile.description }));
     return {
       version: 1,
@@ -340,18 +353,32 @@ export class SessionExternalDelegationService
     if (mainData.modelAlias === undefined) throw invalid('Main agent has no configured model.');
     const allowlist = subagentAllowlistFor(this.profiles, mainData);
     if (allowlist !== undefined && !allowlist.includes(profileName)) throw invalid('Named-agent profile is not admitted.');
+    const dispatched = appliedDispatchProfile(
+      profile,
+      profileName,
+      mainData,
+      this.profiles.getDefault(),
+      aliasIdentity(this.models),
+    );
+    assertAutomaticDispatchPermitted(dispatched.profile, undefined, this.models);
+    const filled = fillLeasePins(
+      { modelAlias, thinkingEffort },
+      dispatched.lease,
+    );
     const delegator = { kind: 'external' as const, delegationId: doc.delegationId };
     if (!(await this.names.reserve(taskName, delegator))) throw invalid('Named child task_name is already reserved.');
-    const lease = main.accessor.get(IAgentRuntimeService).acquire(['process']);
+    const runtimeLease = main.accessor.get(IAgentRuntimeService).acquire(['process']);
     try {
       const child = await this.agents.create({
         binding: {
           profile: profile.name,
-          model: modelAlias ?? profile.modelAlias ?? mainData.modelAlias,
-          thinking: thinkingEffort ?? profile.thinkingEffort ?? mainData.thinkingLevel,
-          strictThinking: thinkingEffort !== undefined || profile.thinkingEffort !== undefined,
+          model: filled.modelAlias ?? dispatched.profile.modelAlias ?? mainData.modelAlias,
+          thinking: filled.thinkingEffort ?? dispatched.profile.thinkingEffort ?? mainData.thinkingLevel,
+          strictThinking: filled.thinkingEffort !== undefined || dispatched.profile.thinkingEffort !== undefined,
+          lease: dispatched.lease,
+          spawnPolicy: dispatched.spawnPolicy,
         },
-        runtimeId: lease.runtime.identity.runtimeId,
+        runtimeId: runtimeLease.runtime.identity.runtimeId,
         delegator,
         labels: { externalDelegationTaskName: taskName, externalDelegationProfile: profile.name },
       });
@@ -365,7 +392,7 @@ export class SessionExternalDelegationService
       this.names.release(taskName, delegator);
       throw error;
     } finally {
-      lease.dispose();
+      runtimeLease.dispose();
     }
   }
 

@@ -3,6 +3,7 @@ import { nothing, original } from 'immer';
 import { z } from 'zod';
 
 import type { EnvironmentDisclosureSnapshot } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import type { SpawnConstraints, SubagentLease } from '#/app/agentProfileCatalog/subagentLease';
 import { Event2 } from '#/app/event/event2';
 import type { RequestParams, ServiceTier, ThinkingEffort } from '#/kosong/contract/provider';
 import { defineState } from '#/state/state';
@@ -30,6 +31,9 @@ export interface ProfileModelState {
   readonly agentsMdPaths?: readonly string[];
   readonly disallowedTools?: readonly string[];
   readonly subagents?: readonly string[];
+  readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
+  readonly spawnPolicy?: SpawnConstraints;
+  readonly appliedLease?: SubagentLease;
   readonly toolAllowPolicies?: readonly (readonly string[])[];
 }
 
@@ -50,6 +54,9 @@ const profileBindSchema = z.object({
   toolAllowPolicies: z.array(z.array(z.string()).readonly()).readonly().optional(),
   disallowedTools: z.array(z.string()).readonly(),
   subagents: z.array(z.string()).readonly().optional(),
+  subagentLeases: z.custom<Readonly<Record<string, SubagentLease>>>().optional(),
+  spawnPolicy: z.custom<SpawnConstraints>().optional(),
+  appliedLease: z.custom<SubagentLease>().optional(),
 });
 
 export class ProfileBind extends Event2<z.infer<typeof profileBindSchema>> {
@@ -132,6 +139,9 @@ export const profileKey = defineState(
     agentsMdPaths: e.agentsMdPaths ?? s.agentsMdPaths,
     disallowedTools: e.disallowedTools,
     subagents: e.subagents,
+    subagentLeases: e.subagentLeases,
+    spawnPolicy: e.spawnPolicy,
+    appliedLease: e.appliedLease,
     toolAllowPolicies: e.toolAllowPolicies,
   }))
   .on(ConfigUpdate, (s, e) => {

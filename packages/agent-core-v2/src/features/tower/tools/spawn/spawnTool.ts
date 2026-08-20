@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { callerLeaseTable } from '#/app/agentProfileCatalog/applySubagentLease';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentTaskService } from '#/agent/task/task';
@@ -281,11 +282,14 @@ export class TowerSpawnTool implements ITowerSpawnTool {
     let created: IAgentScopeHandle;
     try {
       if (binding !== undefined) this.modelCatalog.get(binding.model);
+      const table = callerLeaseTable(this.profile.data(), {});
       created = await this.lifecycle.create({
         binding: {
           profile: TOWER_WORKER_PROFILE,
           model: binding?.model,
           thinking: binding?.thinking,
+          lease: table.leases[TOWER_WORKER_PROFILE],
+          spawnPolicy: table.spawnPolicy,
         },
         labels: subagentLabels(this.callerAgentId),
         userLabel: description,

@@ -16,6 +16,12 @@ import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { Event2 } from '#/app/event/event2';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
+import {
+  aliasIdentity,
+  appliedDispatchProfile,
+  assertAutomaticDispatchPermitted,
+  leaseHasBindingPin,
+} from '#/app/agentProfileCatalog/applySubagentLease';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import {
   refreshInheritedSubagentBinding,
@@ -163,6 +169,14 @@ export class SessionSwarmService implements ISessionSwarmService {
         details: { agentId: callerAgentId },
       });
     }
+    const dispatched = appliedDispatchProfile(
+      profile,
+      selection.baseProfile.name,
+      callerData,
+      this.catalog.getDefault(),
+      aliasIdentity(this.models),
+    );
+    assertAutomaticDispatchPermitted(dispatched.profile, selection.route, this.models);
     const suppliedBinding = options.binding as
       | (NonNullable<AgentSpawnAttemptOptions['binding']> & {
           readonly bindingMode?: PersistedSubagentBindingMode;
@@ -175,16 +189,23 @@ export class SessionSwarmService implements ISessionSwarmService {
       profile.thinkingEffort !== undefined ||
       profile.modelPreference !== undefined;
     let binding = suppliedBinding ?? {
-      model: selection.route?.lockedModelAlias ?? profile.modelAlias ?? callerData.modelAlias,
+      model:
+        selection.route?.lockedModelAlias ??
+        dispatched.lease?.modelAlias ??
+        profile.modelAlias ??
+        callerData.modelAlias,
       thinking:
         selection.route?.lockedThinkingEffort ??
+        dispatched.lease?.thinkingEffort ??
         profile.thinkingEffort ??
         callerData.thinkingLevel,
       modelSource:
-        selection.route?.lockedModelAlias !== undefined || profile.modelAlias !== undefined
+        selection.route?.lockedModelAlias !== undefined ||
+        dispatched.lease?.modelAlias !== undefined ||
+        profile.modelAlias !== undefined
           ? ('profile' as const)
           : ('caller' as const),
-      bindingMode: profilePinned ? ('fixed' as const) : ('inherit' as const),
+      bindingMode: profilePinned || leaseHasBindingPin(dispatched.lease) ? ('fixed' as const) : ('inherit' as const),
     };
     if (binding.modelSource === 'caller') {
       const nestedDefault = resolveNestedSubagentDefaultContext(
@@ -228,6 +249,8 @@ export class SessionSwarmService implements ISessionSwarmService {
           route: selection.route?.id,
           model: binding.model,
           thinking: binding.thinking,
+          lease: dispatched.lease,
+          spawnPolicy: dispatched.spawnPolicy,
         },
         labels: withSubagentBindingMode(
           subagentLabels(callerAgentId, { swarmItem: options.swarmItem }),
@@ -260,7 +283,7 @@ export class SessionSwarmService implements ISessionSwarmService {
     let promptText: string;
     try {
       const view = new RuntimeWorkspaceView(lease.runtime, { workDir: this.sessionContext.cwd });
-      promptText = await applyProfilePromptPrefix(profile, options.prompt, {
+      promptText = await applyProfilePromptPrefix(dispatched.profile, options.prompt, {
         cwd: view.workDir,
         process: lease.runtime.process!,
         log: this.log,

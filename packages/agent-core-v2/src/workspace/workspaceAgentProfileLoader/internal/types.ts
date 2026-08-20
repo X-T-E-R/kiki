@@ -12,6 +12,7 @@ import type {
   AgentProfileRouteDefinition,
   AgentModelProfile,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import type { SpawnConstraints, SubagentLease } from '#/app/agentProfileCatalog/subagentLease';
 import type { SkippedAgentFile } from '#/app/agentProfileCatalog/agentProfileContribution';
 import type { RequestParams, ServiceTier } from '#/kosong/contract/provider';
 
@@ -33,6 +34,8 @@ export interface AgentFileDefinition {
   readonly tools?: readonly string[];
   readonly disallowedTools?: readonly string[];
   readonly subagents?: readonly string[];
+  readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
+  readonly spawnConstraints?: SpawnConstraints;
   readonly modelPreference?: AgentModelPreference;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;

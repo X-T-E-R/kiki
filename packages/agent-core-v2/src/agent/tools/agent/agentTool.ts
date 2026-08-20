@@ -45,6 +45,15 @@ import {
   subagentAllowlistFor,
   subagentTypeNotAllowedMessage,
 } from '#/app/agentProfileCatalog/profile-shared';
+import {
+  aliasIdentity,
+  appliedDispatchProfile,
+  assertAutomaticDispatchPermitted,
+  fillLeasePins,
+  isDispatchBlocked,
+  routePermittedByProfile,
+  spawnConstraintOrigin,
+} from '#/app/agentProfileCatalog/applySubagentLease';
 import { ILogService } from '#/_base/log/log';
 import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
@@ -174,7 +183,12 @@ export class SubagentTool implements ISubagentTool {
       : AGENT_BACKGROUND_DISABLED_DESCRIPTION;
     let description = `${AGENT_DESCRIPTION_BASE}\n\n${backgroundDescription}`;
     const allowlist = subagentAllowlistFor(this.catalog, this.profile.data());
-    const catalogProfiles = this.catalogProfiles();
+    const own = this.profile.data();
+    const resolveId = aliasIdentity(this.models);
+    const defaults = this.catalog.getDefault();
+    const catalogProfiles = this.catalogProfiles()
+      .map((profile) => appliedDispatchProfile(profile, profile.name, own, defaults, resolveId).profile)
+      .filter((profile) => !isDispatchBlocked(profile));
     const profiles =
       allowlist === undefined
         ? catalogProfiles
@@ -192,9 +206,13 @@ export class SubagentTool implements ISubagentTool {
       description += `\n\nAvailable agent types (pass via subagent_type):\n${typeLines}`;
     }
     const routeLines = buildRouteDescriptions(
-      this.catalogRoutes().filter(
-        (route) => allowlist === undefined || allowlist.includes(route.profile),
-      ),
+      this.catalogRoutes().filter((route) => {
+        if (allowlist !== undefined && !allowlist.includes(route.profile)) return false;
+        const base = this.catalog.get(route.profile);
+        if (base === undefined) return false;
+        const effective = appliedDispatchProfile(base, route.profile, own, defaults, resolveId).profile;
+        return routePermittedByProfile(route, effective, this.models);
+      }),
     );
     if (routeLines) {
       description += `\n\nAvailable agent routes (pass via route):\n${routeLines}`;
@@ -416,35 +434,58 @@ export class SubagentTool implements ISubagentTool {
           { details: { profileName: baseProfileName, allowlist } },
         );
       }
-      const profile = selection.profile;
+      const dispatched = appliedDispatchProfile(
+        selection.profile,
+        baseProfileName,
+        own,
+        this.catalog.getDefault(),
+        aliasIdentity(this.models),
+      );
+      const profile = dispatched.profile;
+      assertAutomaticDispatchPermitted(profile, selection.route, this.models);
       if (own.modelAlias === undefined) {
         throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'Caller agent has no model bound', {
           details: { agentId: this.callerAgentId },
         });
       }
-      const symbolicModel =
-        args.model === 'primary' || args.model === 'secondary' ? args.model : undefined;
+      const filled = fillLeasePins(
+        {
+          modelAlias,
+          thinkingEffort,
+          modelPreference: args.model,
+        },
+        dispatched.lease,
+        selection.route,
+      );
+      const filledSymbolic =
+        filled.modelPreference === 'primary' || filled.modelPreference === 'secondary'
+          ? filled.modelPreference
+          : undefined;
       assertProfileRouteBinding(
         selection.route,
         {
-          modelAlias: modelAlias ?? (symbolicModel === undefined ? args.model : undefined),
-          thinkingEffort,
-          modelPreference: symbolicModel,
+          modelAlias:
+            filled.modelAlias ?? (filledSymbolic === undefined ? filled.modelPreference : undefined),
+          thinkingEffort: filled.thinkingEffort,
+          modelPreference: filledSymbolic,
         },
         this.models,
       );
       assertProfileRouteModelAvailable(selection.route, this.modelCatalog, this.models);
       const toolBindingRequest = {
-        modelPreference: args.model,
-        modelAlias,
-        thinkingEffort,
+        modelPreference: filled.modelPreference,
+        modelAlias: filled.modelAlias,
+        thinkingEffort: filled.thinkingEffort,
       };
       const profileBindingRequest = {
-        modelPreference: profile.modelPreference,
-        modelAlias: profile.modelAlias,
-        thinkingEffort: profile.thinkingEffort,
+        modelPreference: selection.profile.modelPreference,
+        modelAlias: selection.profile.modelAlias,
+        thinkingEffort: selection.profile.thinkingEffort,
       };
-      const roleConstraints = roleConstraintsFromProfile(profile);
+      const roleConstraints = roleConstraintsFromProfile(
+        profile,
+        spawnConstraintOrigin(dispatched.lease, dispatched.spawnPolicy),
+      );
       let binding = resolveSubagentBinding(
         this.config,
         this.flags,
@@ -484,6 +525,8 @@ export class SubagentTool implements ISubagentTool {
             route: selection.route?.id,
             model: binding.model,
             thinking: binding.thinking,
+            lease: dispatched.lease,
+            spawnPolicy: dispatched.spawnPolicy,
           },
           labels: withSubagentBindingMode(
             subagentLabels(this.callerAgentId),

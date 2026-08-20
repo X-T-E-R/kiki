@@ -337,7 +337,7 @@ function assertRoleModelConstraints(
   );
 }
 
-function assertBoundModelAllowed(
+export function assertBoundModelAllowed(
   config: IConfigService,
   model: string,
   constraints: SubagentRoleModelConstraints | undefined,

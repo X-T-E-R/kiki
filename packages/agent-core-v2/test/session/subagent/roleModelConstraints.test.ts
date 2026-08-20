@@ -142,6 +142,14 @@ describe('role model constraints at bind time: role allowed_models / deny_models
     expect(error.message).not.toContain('[subagent].deny_models');
   });
 
+  it('treats an empty allowed_models list as deny-all for automatic dispatch', () => {
+    const error = configError(() =>
+      bindSubagent({ modelAlias: 'fast-model' }, { allowedModels: [] }),
+    );
+    expect(error.message).toContain('not in this agent\'s allowed_models');
+    expect(error.message).toContain('(none)');
+  });
+
   it('does not let role allowed_models re-permit a machine [subagent].deny_models entry', () => {
     const error = configError(() =>
       bindSubagent(
