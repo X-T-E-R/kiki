@@ -4,13 +4,17 @@ import {
   disabledProfilePatch,
   experimentalFlagRows,
   mergeNamedAgentProfiles,
+  namedAgentSessionHref,
+  partitionNamedAgentProfiles,
   subagentGovernanceFromConfig,
   subagentGovernancePatch,
+  summarizeNamedAgentLease,
+  summarizeNamedAgentModelProfile,
   validateSubagentGovernance,
   workspaceChipDisplay,
   type SubagentGovernanceDraft,
 } from './agentSettings';
-import type { NamedAgentProfile } from './client';
+import type { NamedAgentProfile, NamedAgentSubagentLease } from './client';
 
 const validDraft: SubagentGovernanceDraft = {
   models: [
@@ -129,6 +133,7 @@ describe('merged named-agent view', () => {
   const row = (overrides: Partial<NamedAgentProfile>): NamedAgentProfile => ({
     name: 'reviewer',
     source: 'workspace',
+    main: false,
     disabled: false,
     routes: [],
     ...overrides,
@@ -173,5 +178,156 @@ describe('workspace chip display', () => {
     expect(workspaceChipDisplay([])).toEqual({ shown: [], extra: 0 });
     expect(workspaceChipDisplay(['ws-a', 'ws-b'])).toEqual({ shown: ['ws-a', 'ws-b'], extra: 0 });
     expect(workspaceChipDisplay(['ws-a', 'ws-b', 'ws-c', 'ws-d'])).toEqual({ shown: ['ws-a', 'ws-b'], extra: 2 });
+  });
+});
+
+describe('main/subagent partition', () => {
+  const row = (overrides: Partial<NamedAgentProfile>): NamedAgentProfile => ({
+    name: 'reviewer',
+    source: 'workspace',
+    main: false,
+    disabled: false,
+    routes: [],
+    ...overrides,
+  });
+
+  it('puts main-flagged profiles in the main bucket and keeps the rest as subagents', () => {
+    const buckets = partitionNamedAgentProfiles([
+      row({ name: 'agent', source: 'builtin', main: true }),
+      row({ name: 'explore', source: 'builtin' }),
+      row({ name: 'reviewer', main: true }),
+      row({ name: 'frontend', source: 'user' }),
+    ]);
+    expect(buckets.main.map((profile) => profile.name)).toEqual(['agent', 'reviewer']);
+    expect(buckets.sub.map((profile) => profile.name)).toEqual(['explore', 'frontend']);
+  });
+});
+
+describe('named-agent session deep link', () => {
+  const row = (overrides: Partial<NamedAgentProfile>): NamedAgentProfile => ({
+    name: 'reviewer',
+    source: 'workspace',
+    main: false,
+    disabled: false,
+    routes: [],
+    ...overrides,
+  });
+
+  it('prefers the merged workspace ids, then the single workspace id', () => {
+    expect(namedAgentSessionHref(row({ workspace_ids: ['ws-a', 'ws-b'], workspace_id: 'ws-c' })))
+      .toBe('/new?workspace=ws-a&agent=reviewer');
+    expect(namedAgentSessionHref(row({ workspace_id: 'ws-c' })))
+      .toBe('/new?workspace=ws-c&agent=reviewer');
+  });
+
+  it('falls back to the most recent workspace and then to an agent-only link', () => {
+    expect(namedAgentSessionHref(row({ name: 'agent', source: 'builtin' }), 'ws-recent'))
+      .toBe('/new?workspace=ws-recent&agent=agent');
+    expect(namedAgentSessionHref(row({ name: 'agent', source: 'builtin' })))
+      .toBe('/new?agent=agent');
+  });
+
+  it('encodes workspace ids and profile names', () => {
+    expect(namedAgentSessionHref(row({ name: 'my agent', workspace_id: 'ws/a' })))
+      .toBe('/new?workspace=ws%2Fa&agent=my+agent');
+  });
+});
+
+describe('subagent lease read-only summary', () => {
+  it('surfaces every non-empty field of a full protocol lease', () => {
+    const lease: NamedAgentSubagentLease = {
+      name: 'explore',
+      description: 'Read-only exploration.',
+      when_to_use: 'Mapping unfamiliar code.',
+      model_preference: 'secondary',
+      model_alias: 'fixture/kiki-lite',
+      thinking_effort: 'low',
+      allowed_models: ['fixture/kiki-lite'],
+      deny_models: ['fixture/kiki-pro'],
+      allowed_efforts: ['low', 'medium'],
+      tools: ['Read', 'Glob'],
+      disallowed_tools: ['Bash'],
+      subagents: ['scout'],
+      prompt_mode: 'append',
+      prompt: 'Stay read-only.',
+      delegation_notice: 'off',
+      service_tier: 'flex',
+      request_params: { temperature: 0.2, stream: true },
+      model_profiles: [
+        {
+          alias: 'deep',
+          when: 'Thorough pass',
+          thinking_effort: 'high',
+          allowed_efforts: ['medium', 'high'],
+          prompt_mode: 'prepend',
+          prompt: 'Check twice.',
+        },
+      ],
+    };
+    const summary = summarizeNamedAgentLease(lease);
+    expect(summary.headline).toBe('explore · fixture/kiki-lite · low');
+    expect(summary.details).toEqual([
+      { label: 'description', value: 'Read-only exploration.' },
+      { label: 'whenToUse', value: 'Mapping unfamiliar code.' },
+      { label: 'modelPreference', value: 'secondary' },
+      { label: 'serviceTier', value: 'flex' },
+      { label: 'delegationNotice', value: 'off' },
+      { label: 'promptMode', value: 'append' },
+      { label: 'allowedModels', value: 'fixture/kiki-lite' },
+      { label: 'deniedModels', value: 'fixture/kiki-pro' },
+      { label: 'allowedEfforts', value: 'low, medium' },
+      { label: 'tools', value: 'Read, Glob' },
+      { label: 'disallowedTools', value: 'Bash' },
+      { label: 'subagents', value: 'scout' },
+      { label: 'prompt', value: 'Stay read-only.' },
+      { label: 'requestParams', value: '{"temperature":0.2,"stream":true}' },
+      { label: 'modelProfile', value: 'deep → Thorough pass · high' },
+      { label: 'allowedEfforts', value: 'medium, high' },
+      { label: 'promptMode', value: 'prepend' },
+      { label: 'prompt', value: 'Check twice.' },
+    ]);
+  });
+
+  it('renders nothing but the headline for empty and explicitly cleared fields', () => {
+    const summary = summarizeNamedAgentLease({
+      name: 'explore',
+      tools: null,
+      subagents: null,
+      service_tier: null,
+      request_params: null,
+      allowed_models: [],
+    });
+    expect(summary.headline).toBe('explore');
+    expect(summary.details).toEqual([]);
+  });
+});
+
+describe('model profile read-only summary', () => {
+  it('keeps the headline shape and surfaces optional contract fields', () => {
+    const summary = summarizeNamedAgentModelProfile({
+      alias: 'fast',
+      when: 'Quick tweaks',
+      thinking_effort: 'low',
+      allowed_efforts: ['low', 'medium'],
+      prompt_mode: 'wrap',
+      prompt: 'Be terse.',
+    });
+    expect(summary.headline).toBe('fast → Quick tweaks · low');
+    expect(summary.details).toEqual([
+      { label: 'allowedEfforts', value: 'low, medium' },
+      { label: 'promptMode', value: 'wrap' },
+      { label: 'prompt', value: 'Be terse.' },
+    ]);
+  });
+
+  it('omits the effort suffix and every detail when fields are empty', () => {
+    const summary = summarizeNamedAgentModelProfile({
+      alias: 'fast',
+      when: 'Quick tweaks',
+      allowed_efforts: [],
+      prompt: '',
+    });
+    expect(summary.headline).toBe('fast → Quick tweaks');
+    expect(summary.details).toEqual([]);
   });
 });

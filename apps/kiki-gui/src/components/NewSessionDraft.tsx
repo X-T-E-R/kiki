@@ -13,7 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { useQuery } from '@tanstack/react-query';
 import type { PermissionMode, Workspace } from '@moonshot-ai/protocol';
 
-import { resolveSelectedEffort } from './Composer';
+import { resolveSelectedEffort, DEFAULT_AGENT_PROFILE } from './Composer';
 import { useGuardedNavigate } from './dirtyGuard';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { useI18n } from '../i18n';
@@ -45,8 +45,11 @@ export function isAbsoluteCwdPath(value: string): boolean {
 
 export function useNewSessionDraft({
   initialWorkspaceId,
+  initialProfile,
 }: {
   initialWorkspaceId?: string;
+  /** `?agent=` prefill — the profile the new session binds at creation. */
+  initialProfile?: string;
 } = {}) {
   const { client } = useConnection();
   const navigate = useGuardedNavigate();
@@ -72,6 +75,7 @@ export function useNewSessionDraft({
   const [modelOverride, setModelOverride] = useState(() =>
     resolveSessionModelOverride(undefined),
   );
+  const [agentProfile, setAgentProfile] = useState(initialProfile ?? DEFAULT_AGENT_PROFILE);
   // The selected effort is the wire value. When the model catalog supplies a
   // visible default, sending without touching the select still submits it.
   const [effortOverride, setEffortOverride] = useState<string | undefined>(undefined);
@@ -139,6 +143,7 @@ export function useNewSessionDraft({
     effectiveWorkspace,
     modelOverride,
     effectiveEffort,
+    agentProfile,
     permissionMode,
     planMode,
     swarmMode,
@@ -150,6 +155,7 @@ export function useNewSessionDraft({
     effectiveWorkspace,
     modelOverride,
     effectiveEffort,
+    agentProfile,
     permissionMode,
     planMode,
     swarmMode,
@@ -172,8 +178,14 @@ export function useNewSessionDraft({
 
     const body =
       trimmedCwd !== ''
-        ? { metadata: { cwd: trimmedCwd } }
-        : { workspace_id: context.effectiveWorkspace?.id };
+        ? {
+            metadata: { cwd: trimmedCwd },
+            agent_config: { profile: context.agentProfile },
+          }
+        : {
+            workspace_id: context.effectiveWorkspace?.id,
+            agent_config: { profile: context.agentProfile },
+          };
 
     client
       .createSession(body)
@@ -218,6 +230,7 @@ export function useNewSessionDraft({
     swarmMode,
     goalObjective,
     modelOverride,
+    agentProfile,
     workspaces,
     workspacesLoading,
     effectiveWorkspace,
@@ -235,6 +248,7 @@ export function useNewSessionDraft({
     setSwarmMode,
     setGoalObjective,
     setModelOverride,
+    setAgentProfile,
     setEffortOverride,
     send,
   };

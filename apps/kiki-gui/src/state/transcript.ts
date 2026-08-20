@@ -330,6 +330,9 @@ export interface SessionViewState {
   readonly activePromptId: string | undefined;
   readonly queuedPromptIds: readonly string[];
   readonly model: string | undefined;
+  /** Bound main-agent profile name (`agent_config.profile`); undefined when the
+   * server predates profile echo or the snapshot carries none. */
+  readonly profile: string | undefined;
   readonly thinkingEffort: string | undefined;
   readonly permissionMode: PermissionMode | undefined;
   readonly planMode: boolean;
@@ -379,6 +382,7 @@ export function createViewState(sessionId: string): SessionViewState {
     activePromptId: undefined,
     queuedPromptIds: [],
     model: undefined,
+    profile: undefined,
     thinkingEffort: undefined,
     permissionMode: undefined,
     planMode: false,
@@ -1758,6 +1762,7 @@ export function applySnapshot(
       snapshot.session.agent_config.model !== ''
         ? snapshot.session.agent_config.model
         : undefined,
+    profile: snapshot.session.agent_config.profile,
     permissionMode: snapshot.session.agent_config.permission_mode,
     planMode: snapshot.session.agent_config.plan_mode ?? false,
     swarmMode: snapshot.session.agent_config.swarm_mode ?? false,
@@ -3282,6 +3287,9 @@ export function setSessionRecord(state: SessionViewState, session: Session): Ses
     ...state,
     version: state.version + 1,
     session,
+    // A cold list row can fall back to `{ model: '' }` with no profile echo;
+    // only a record that actually carries a binding may move the pill.
+    profile: session.agent_config.profile ?? state.profile,
   };
 }
 

@@ -86,9 +86,10 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const workspaceParam = searchParams.get('workspace') ?? undefined;
+  const agentParam = searchParams.get('agent') ?? undefined;
   const { slots } = useConversationShell();
 
-  const state = useNewSessionDraft({ initialWorkspaceId: workspaceParam });
+  const state = useNewSessionDraft({ initialWorkspaceId: workspaceParam, initialProfile: agentParam });
 
   const recentQuery = useQuery({
     queryKey: ['sessions', 'recent'],
@@ -140,6 +141,8 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
           defaultModel={undefined}
           serverDefaultModel={state.inheritedDefault}
           modelSource={state.modelSource}
+          agentProfile={state.agentProfile}
+          onChangeAgentProfile={state.setAgentProfile}
           permissionMode={state.permissionMode}
           planMode={state.planMode}
           swarmMode={state.swarmMode}
@@ -171,6 +174,8 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
       state.draft,
       state.updateDraft,
       state.modelOverride,
+      state.agentProfile,
+      state.setAgentProfile,
       state.inheritedDefault,
       state.modelSource,
       state.permissionMode,

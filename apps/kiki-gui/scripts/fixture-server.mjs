@@ -1072,7 +1072,12 @@ class FixtureServer {
         pending_interaction: 'none',
         archived: false,
         metadata: body.metadata ?? { cwd: 'C:/fixture' },
-        agent_config: { model: '' },
+        agent_config: {
+          model: body.agent_config?.model ?? '',
+          ...(body.agent_config?.profile !== undefined
+            ? { profile: body.agent_config.profile }
+            : {}),
+        },
         usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, total_cost_usd: 0, context_tokens: 0, context_limit: 0, turn_count: 0 },
         permission_rules: [],
         message_count: 0,
@@ -1400,6 +1405,17 @@ class FixtureServer {
       session.record.message_count += 1;
       session.record.last_prompt = text;
       session.lastPromptSubmission = body;
+      // A distinct `profile` on the submission rebinds the session before the
+      // prompt runs (mirrors kap-server); the record echo is the only place
+      // the GUI can read the new binding back.
+      if (typeof body.profile === 'string' && body.profile !== '') {
+        session.record.agent_config = {
+          ...session.record.agent_config,
+          profile: body.profile,
+          ...(typeof body.model === 'string' && body.model !== '' ? { model: body.model } : {}),
+        };
+        session.record.updated_at = now();
+      }
       const item = { prompt_id: promptId, user_message_id: userMessageId, status: 'running', content: body.content, created_at: createdAt, text };
       // A parked turn owns the session — park behind it like the real server.
       if (session.scriptRunning || session.activePrompt !== null) {

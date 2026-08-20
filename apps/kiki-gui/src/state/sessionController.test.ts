@@ -558,6 +558,34 @@ describe('SessionController pipeline', () => {
     controller.close();
   });
 
+  it('forwards a profile rebind with the prompt and omits it otherwise', async () => {
+    const { controller, client } = await openController();
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: 'p-profile',
+      user_message_id: 'm-profile',
+      status: 'running',
+      content: [{ type: 'text', text: 'switch gears' }],
+      created_at: '2026-01-02T00:00:00.000Z',
+    });
+
+    await controller.sendPrompt({
+      text: 'switch gears',
+      profile: 'reviewer',
+      permissionMode: 'manual',
+    });
+    expect(client.submitPrompt).toHaveBeenCalledWith(
+      'session_test',
+      expect.objectContaining({ profile: 'reviewer' }),
+    );
+
+    await controller.sendPrompt({ text: 'plain follow-up', permissionMode: 'manual' });
+    expect(client.submitPrompt).toHaveBeenLastCalledWith(
+      'session_test',
+      expect.objectContaining({ profile: undefined }),
+    );
+    controller.close();
+  });
+
   it('queues a prompt behind a busy turn and promotes it from the server list', async () => {
     const { controller, client } = await openController();
     client.submitPrompt

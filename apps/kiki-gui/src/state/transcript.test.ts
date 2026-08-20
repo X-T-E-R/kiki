@@ -215,6 +215,31 @@ describe('applySnapshot', () => {
     });
   });
 
+  it('echoes the bound agent profile from the snapshot, and a profile-less record cannot clobber it', () => {
+    const state = applySnapshot(
+      'session_test',
+      snapshot({
+        session: { ...session, agent_config: { model: 'provider/session-model', profile: 'reviewer' } },
+      }),
+    );
+    expect(state.profile).toBe('reviewer');
+
+    // Cold list rows may fall back to `{ model: '' }` without a profile echo.
+    const clobbered = setSessionRecord(state, {
+      ...session,
+      updated_at: '2026-01-02T00:00:00.000Z',
+      agent_config: { model: '' },
+    });
+    expect(clobbered.profile).toBe('reviewer');
+
+    const rebound = setSessionRecord(state, {
+      ...session,
+      updated_at: '2026-01-02T00:00:00.000Z',
+      agent_config: { model: 'provider/session-model', profile: 'planner' },
+    });
+    expect(rebound.profile).toBe('planner');
+  });
+
   it('embeds snapshot subagents by started_at instead of stacking them at the tail', () => {
     const state = applySnapshot(
       'session_test',

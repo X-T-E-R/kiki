@@ -84,6 +84,9 @@ const STRINGS = {
     fetchModelsButton: 'Test connection & pull models',
     dirtyDiscard: 'Discard and leave',
     subagentGovernanceTitle: 'Subagent model governance',
+    modelProfileLabel: 'model profile',
+    promptModeLabel: 'prompt mode',
+    delegationNoticeLabel: 'delegation notice',
     addPoolModel: 'Add model',
     poolModelIdAria1: 'Subagent model 1 ID',
     poolModelIdAria2: 'Subagent model 2 ID',
@@ -201,6 +204,9 @@ const STRINGS = {
     fetchModelsButton: '测试连接并拉取模型',
     dirtyDiscard: '丢弃并离开',
     subagentGovernanceTitle: '子代理模型治理',
+    modelProfileLabel: '模型档',
+    promptModeLabel: '提示词模式',
+    delegationNoticeLabel: '委派通知',
     addPoolModel: '添加模型',
     poolModelIdAria1: '子代理模型 1 ID',
     poolModelIdAria2: '子代理模型 2 ID',
@@ -1057,21 +1063,45 @@ async function scenarioWorkspaces() {
 }
 
 async function scenarioSettingsAgents() {
-  // Named-agent management: merged view (the two fixture workspaces share one
-  // `reviewer` profile) plus both disable channels — named profiles write
+  // Named-agent management: the section splits into a main-agent card
+  // (`main: true`, here the built-in `agent`) and a subagent-profiles card.
+  // The merged view (the fixture workspaces share one `reviewer` profile)
+  // plus both disable channels — named profiles write
   // disabled_named_profiles, built-ins write disabled_builtin_profiles, and
   // both survive a reload through the fixture config echo.
   await page.goto(`${WEB_URL}/settings/agents?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
-  await page.waitForSelector('#st-card-named-agents', { timeout: 10_000 });
-  await page.waitForSelector('[data-agent-profile="reviewer"]', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-main-agents', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-subagent-profiles', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-main-agents [data-agent-profile="agent"]', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-subagent-profiles [data-agent-profile="reviewer"]', { timeout: 10_000 });
   const reviewerRows = await page.locator('[data-agent-profile="reviewer"]').count();
   if (reviewerRows !== 1) {
     throw new Error(`merged view must render reviewer once, got ${reviewerRows} rows`);
   }
   // Three workspace ids collapse into two chips + an overflow pill.
   await page.waitForSelector('[data-agent-profile="reviewer"] >> text=+1', { timeout: 5000 });
+  // Every row carries a new-session deep link: the file-backed reviewer pins
+  // its own workspace; the builtin main profile falls back to the most
+  // recent workspace.
+  const hrefOf = (name) => page.locator(`[data-agent-profile="${name}"] [data-new-session-href]`).getAttribute('data-new-session-href');
+  const reviewerHref = await hrefOf('reviewer');
+  if (reviewerHref !== '/new?workspace=wd_fixture_000000000000&agent=reviewer') {
+    throw new Error(`reviewer new-session href mismatch: ${reviewerHref}`);
+  }
+  const mainHref = await hrefOf('agent');
+  if (mainHref !== '/new?workspace=wd_fixture_000000000000&agent=agent') {
+    throw new Error(`main-agent new-session href mismatch: ${mainHref}`);
+  }
+  // Read-only projection fields render in the summary (frontend fixture row),
+  // including the structured lease's nested constraint fields.
+  await page.waitForSelector(`[data-agent-profile="frontend"] >> text=${S.modelProfileLabel}`, { timeout: 5000 });
+  await page.waitForSelector(`[data-agent-profile="frontend"] >> text=${S.promptModeLabel}`, { timeout: 5000 });
+  await page.waitForSelector(`[data-agent-profile="frontend"] >> text=${S.delegationNoticeLabel}`, { timeout: 5000 });
+  await page.locator('[data-agent-profile="frontend"]').scrollIntoViewIfNeeded();
+  await page.waitForTimeout(200);
+  await shot('settings-agents-lease-detail');
   await shot('settings-agents-merged');
 
   const reviewerSwitch = () => page.locator('[data-agent-profile="reviewer"] [role="switch"]');

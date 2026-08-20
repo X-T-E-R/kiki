@@ -26,6 +26,7 @@ import type { FsSearchHit, PermissionMode, SessionUsage } from '@moonshot-ai/pro
 
 import { useI18n } from '../i18n';
 import { errorText, issueText, type I18nKey } from '../i18n/locale';
+import type { NamedAgentProfile } from '../lib/client';
 import {
   ACCEPTED_IMAGE_MIMES,
   fileToImageAttachment,
@@ -90,6 +91,28 @@ export function resolveSelectedEffort(
   return efforts[0];
 }
 
+/** Fallback display/binding when the server echoes no profile on a session. */
+export const DEFAULT_AGENT_PROFILE = 'agent';
+
+/**
+ * Profile picker options: disabled rows drop out (mirroring Settings), a
+ * curated main profile gets the ` · main` suffix (same idiom as the model
+ * select's session-default suffix), and the description rides the hint line.
+ */
+export function buildAgentProfileOptions(
+  items: readonly NamedAgentProfile[],
+  mainSuffix: string,
+): SearchableSelectOption[] {
+  return items
+    .filter((item) => !item.disabled)
+    .map((item) => ({
+      value: item.name,
+      label: `${item.name}${item.main ? mainSuffix : ''}`,
+      hint: item.description,
+      title: item.name,
+    }));
+}
+
 type ComposerMenu =
   | { kind: 'slash'; start: number; end: number; query: string; inline: boolean }
   | { kind: 'mention'; start: number; query: string };
@@ -103,6 +126,8 @@ export function Composer({
   defaultModel,
   serverDefaultModel,
   modelSource,
+  agentProfile,
+  agentProfilePending = false,
   permissionMode,
   planMode,
   swarmMode,
@@ -127,6 +152,7 @@ export function Composer({
   onSessionAction,
   onCompactContext,
   onChangeModel,
+  onChangeAgentProfile,
   onChangePermissionMode,
   onChangePlanMode,
   onChangeSwarmMode,
@@ -149,6 +175,13 @@ export function Composer({
   serverDefaultModel: string | undefined;
   /** Where the effective model value comes from. */
   modelSource: ComposerModelSource;
+  /**
+   * Main-agent profile shown in the picker (pending choice included). Omit
+   * together with `onChangeAgentProfile` to hide the control entirely.
+   */
+  agentProfile?: string;
+  /** A confirmed switch is waiting for the next prompt — accent tint. */
+  agentProfilePending?: boolean;
   permissionMode: PermissionMode;
   /** PromptSubmission.plan_mode — the wire field name (verified). */
   planMode: boolean;
@@ -200,6 +233,8 @@ export function Composer({
   /** The context meter's click target (asks the session to compact). */
   onCompactContext?: () => void;
   onChangeModel: (model: string | undefined) => void;
+  /** Profile picked in the select; the parent owns the confirm/pending flow. */
+  onChangeAgentProfile?: (name: string) => void;
   onChangePermissionMode: (mode: PermissionMode) => void;
   onChangePlanMode: (on: boolean) => void;
   onChangeSwarmMode: (on: boolean) => void;
@@ -290,6 +325,24 @@ export function Composer({
       })),
     ],
     [models, defaultModel, serverDefaultModel, modelSource, t],
+  );
+
+  // Named agent profiles for the profile picker (same catalog Settings uses).
+  // A server that predates the /agents route errors the query and the control
+  // simply never renders — session creation/rebind then leave profile unset.
+  const agentProfilesQuery = useQuery({
+    queryKey: ['agentProfiles'],
+    queryFn: () => client.listNamedAgentProfiles(),
+    staleTime: 60_000,
+    retry: false,
+  });
+  const agentProfileOptions: readonly SearchableSelectOption[] = useMemo(
+    () =>
+      buildAgentProfileOptions(
+        agentProfilesQuery.data?.items ?? [],
+        t('composer.agentProfileMainSuffix'),
+      ),
+    [agentProfilesQuery.data, t],
   );
 
   // The composer mount now survives route changes (the conversation shell owns
@@ -796,6 +849,28 @@ export function Composer({
                 </div>
               ) : null}
             </div>
+            {onChangeAgentProfile !== undefined && agentProfilesQuery.data !== undefined ? (
+              <SearchableSelect
+                id="composer-agent-profile-select"
+                options={agentProfileOptions}
+                value={agentProfile ?? DEFAULT_AGENT_PROFILE}
+                onChange={onChangeAgentProfile}
+                title={
+                  agentProfilePending
+                    ? t('composer.agentProfilePendingTitle')
+                    : t('composer.agentProfileTitle')
+                }
+                ariaLabel={t('composer.agentProfileAria')}
+                emptyText={t('composer.noAgentProfiles')}
+                placement="above"
+                panelClassName="anim-enter absolute z-40 bottom-full left-0 mb-1 w-72 max-w-[calc(100vw-48px)] overflow-hidden rounded-xl border border-hairline bg-panel shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
+                buttonClassName={`flex max-w-44 items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[11px] outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/30 ${
+                  agentProfilePending
+                    ? 'border-accent bg-accent-soft text-accent'
+                    : 'border-hairline bg-panel text-ink-soft hover:border-hairline-strong'
+                }`}
+              />
+            ) : null}
             {models.length === 0 ? (
               <span
                 className="max-w-56 truncate rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft"

@@ -37,6 +37,10 @@ import type {
   Message,
   MessageContent,
   MetaResponse,
+  NamedAgentModelProfile as ProtocolNamedAgentModelProfile,
+  NamedAgentRoute as ProtocolNamedAgentRoute,
+  NamedAgentSpawnConstraints as ProtocolNamedAgentSpawnConstraints,
+  NamedAgentSubagentLease as ProtocolNamedAgentSubagentLease,
   OAuthFlowSnapshot,
   OAuthFlowStart,
   OAuthLoginQuery,
@@ -296,12 +300,13 @@ export type KikiConfigPatch = Omit<PatchConfigRequest, 'subagent' | 'replace_dom
   readonly replace_domains?: readonly string[];
 };
 
-export interface NamedAgentRoute {
-  readonly id: string;
-  readonly description?: string;
-  readonly model_alias?: string;
-  readonly source_file: string;
-}
+// Named-agent wire shapes alias the protocol contract types directly so the
+// GUI can never drift from the /agents schema (the subagent lease in
+// particular carries the full constraint field set).
+export type NamedAgentRoute = ProtocolNamedAgentRoute;
+export type NamedAgentModelProfile = ProtocolNamedAgentModelProfile;
+export type NamedAgentSpawnConstraints = ProtocolNamedAgentSpawnConstraints;
+export type NamedAgentSubagentLease = ProtocolNamedAgentSubagentLease;
 
 export interface NamedAgentProfile {
   readonly name: string;
@@ -312,6 +317,8 @@ export interface NamedAgentProfile {
   /** Merged /agents view: every workspace this name+source+file applies to. */
   readonly workspace_ids?: string[];
   readonly source_file?: string;
+  /** Curated main-profile flag from the engine catalog. */
+  readonly main: boolean;
   readonly pinned_model_alias?: string;
   readonly thinking_effort?: string;
   readonly service_tier?: 'auto' | 'default' | 'flex' | 'priority';
@@ -319,6 +326,9 @@ export interface NamedAgentProfile {
   readonly disallowed_tools?: string[];
   readonly disabled: boolean;
   readonly routes: NamedAgentRoute[];
+  readonly model_profiles?: NamedAgentModelProfile[];
+  readonly spawn_constraints?: NamedAgentSpawnConstraints;
+  readonly subagents?: (string | NamedAgentSubagentLease)[];
 }
 
 export interface ListNamedAgentProfilesResponse {

@@ -37,6 +37,7 @@ import {
   resolveApprovalShortcutTarget,
   resolveControlledFlag,
   resolveControlledValue,
+  resolveProfileSwitchSubmission,
   replaceQueuedPrompt,
   resolveSessionSeatPhase,
   SessionRouteView,
@@ -319,6 +320,56 @@ describe('store-controlled mode pills', () => {
     expect(shouldClearModeOverride('auto', 'manual')).toBe(false);
     expect(shouldClearModeOverride('auto', undefined)).toBe(false);
     expect(shouldClearModeOverride(undefined, 'auto')).toBe(false);
+  });
+});
+
+describe('resolveProfileSwitchSubmission', () => {
+  it('passes model/thinking through untouched when no switch is pending', () => {
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        model: 'provider/model',
+        thinking: 'high',
+      }),
+    ).toEqual({ model: 'provider/model', thinking: 'high' });
+  });
+
+  it('treats a pending pick equal to the live binding as no switch', () => {
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: 'agent',
+        boundProfile: 'agent',
+        modelTouched: false,
+        model: 'provider/model',
+        thinking: undefined,
+      }),
+    ).toEqual({ model: 'provider/model', thinking: undefined });
+  });
+
+  it('withholds model/thinking on a switch so the new profile pins apply', () => {
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: 'reviewer',
+        boundProfile: 'agent',
+        modelTouched: false,
+        model: 'provider/model',
+        thinking: 'high',
+      }),
+    ).toEqual({ profile: 'reviewer', model: undefined, thinking: undefined });
+  });
+
+  it('lets explicit post-confirm model/effort picks override the new pins', () => {
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: 'reviewer',
+        boundProfile: 'agent',
+        modelTouched: true,
+        model: 'provider/other',
+        thinking: 'low',
+      }),
+    ).toEqual({ profile: 'reviewer', model: 'provider/other', thinking: 'low' });
   });
 });
 

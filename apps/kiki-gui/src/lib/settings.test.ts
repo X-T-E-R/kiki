@@ -494,7 +494,8 @@ describe('settings search index', () => {
     expect(searchSettings(index, 'Models').some((hit) => hit.section === 'models')).toBe(true);
     expect(searchSettings(index, 'experimental feature').some((hit) => hit.cardId === 'st-card-experimental')).toBe(true);
     expect(searchSettings(index, 'hard allowlist').some((hit) => hit.cardId === 'st-card-subagents')).toBe(true);
-    expect(searchSettings(index, 'pinned model alias').some((hit) => hit.cardId === 'st-card-named-agents')).toBe(true);
+    expect(searchSettings(index, 'pinned model alias').some((hit) => hit.cardId === 'st-card-subagent-profiles')).toBe(true);
+    expect(searchSettings(index, 'Main agents').some((hit) => hit.cardId === 'st-card-main-agents')).toBe(true);
     expect(searchSettings(index, 'subagent')[0]?.section).toBe('agents');
     expect(searchSettings(index, '  ')).toEqual([]);
     expect(searchSettings(index, 'zzzz-no-such-setting')).toEqual([]);

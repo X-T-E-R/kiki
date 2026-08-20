@@ -183,17 +183,23 @@ export default {
   ],
   // Expanded rows; GET /agents merges the three `reviewer` rows (same
   // name+source+file across the workspaces) into one with workspace_ids.
+  // `main` splits the settings agents section into the main-agent card and
+  // the subagent-profiles card; `frontend` carries the read-only projection
+  // fields (model_profiles / spawn_constraints / subagents).
   agentProfiles: [
     {
       name: 'agent',
       source: 'builtin',
       description: 'General-purpose built-in agent for subagent dispatch.',
+      main: true,
+      subagents: ['explore', 'reviewer'],
       routes: [],
     },
     {
       name: 'explore',
       source: 'builtin',
       description: 'Read-only codebase exploration agent.',
+      main: false,
       routes: [],
     },
     {
@@ -202,6 +208,7 @@ export default {
       workspace_id: WSID,
       source_file: 'C:/fixture/shared/agents/reviewer.md',
       description: 'Review code changes and suggest improvements.',
+      main: false,
       routes: [],
     },
     {
@@ -210,6 +217,7 @@ export default {
       workspace_id: 'wd_fixture_000000000001',
       source_file: 'C:/fixture/shared/agents/reviewer.md',
       description: 'Review code changes and suggest improvements.',
+      main: false,
       routes: [],
     },
     {
@@ -218,6 +226,7 @@ export default {
       workspace_id: 'wd_fixture_000000000002',
       source_file: 'C:/fixture/shared/agents/reviewer.md',
       description: 'Review code changes and suggest improvements.',
+      main: false,
       routes: [],
     },
     {
@@ -226,6 +235,30 @@ export default {
       workspace_id: WSID,
       source_file: 'C:/fixture/user/agents/frontend.md',
       description: 'Owns a UI slice end to end.',
+      main: false,
+      model_profiles: [
+        {
+          alias: 'fast',
+          when: 'Quick style or copy tweaks',
+          thinking_effort: 'low',
+          allowed_efforts: ['low', 'medium'],
+          prompt_mode: 'append',
+        },
+      ],
+      spawn_constraints: {
+        allowed_models: ['fixture/kiki-lite'],
+        allowed_efforts: ['low', 'medium'],
+      },
+      subagents: [
+        {
+          name: 'explore',
+          model_alias: 'fixture/kiki-lite',
+          thinking_effort: 'low',
+          allowed_models: ['fixture/kiki-lite'],
+          disallowed_tools: ['Bash'],
+          delegation_notice: 'off',
+        },
+      ],
       routes: [],
     },
   ],

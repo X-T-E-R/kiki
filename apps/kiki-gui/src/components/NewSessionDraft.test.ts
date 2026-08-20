@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveSelectedEffort } from './Composer';
+import { buildAgentProfileOptions, resolveSelectedEffort } from './Composer';
 import { isAbsoluteCwdPath } from './NewSessionDraft';
+import type { NamedAgentProfile } from '../lib/client';
 
 describe('isAbsoluteCwdPath', () => {
   it('accepts POSIX, Windows-drive, and UNC absolute paths', () => {
@@ -36,5 +37,31 @@ describe('resolveSelectedEffort', () => {
   it('omits thinking when the effective model has no effort selector', () => {
     expect(resolveSelectedEffort(undefined, 'high', 'medium')).toBeUndefined();
     expect(resolveSelectedEffort([], 'high', 'medium')).toBeUndefined();
+  });
+});
+
+describe('buildAgentProfileOptions', () => {
+  const profile = (overrides: Partial<NamedAgentProfile>): NamedAgentProfile => ({
+    name: 'agent',
+    source: 'builtin',
+    main: false,
+    disabled: false,
+    routes: [],
+    ...overrides,
+  });
+
+  it('drops disabled profiles and badges curated main profiles', () => {
+    const options = buildAgentProfileOptions(
+      [
+        profile({ name: 'agent', main: true, description: 'General-purpose.' }),
+        profile({ name: 'reviewer', source: 'workspace' }),
+        profile({ name: 'legacy', disabled: true }),
+      ],
+      ' · main',
+    );
+    expect(options.map((option) => option.value)).toEqual(['agent', 'reviewer']);
+    expect(options[0]?.label).toBe('agent · main');
+    expect(options[0]?.hint).toBe('General-purpose.');
+    expect(options[1]?.label).toBe('reviewer');
   });
 });

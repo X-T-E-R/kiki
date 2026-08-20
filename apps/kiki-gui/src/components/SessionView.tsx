@@ -13,7 +13,7 @@ import type { PermissionMode, Session } from '@moonshot-ai/protocol';
 
 import { AgentBreadcrumb, AgentRelations } from './AgentBreadcrumb';
 import { ConfirmDialog } from './ConfirmDialog';
-import { Composer, resolveSelectedEffort } from './Composer';
+import { Composer, DEFAULT_AGENT_PROFILE, resolveSelectedEffort } from './Composer';
 import { ContextBreakdownProvider, ContextMeter } from './ContextMeter';
 import {
   useConversationShell,
@@ -587,6 +587,29 @@ export function shouldClearModeOverride<T>(
 }
 
 /**
+ * Send-time resolution for a confirmed profile switch. A switch rides the
+ * next prompt as `profile`; model/thinking are withheld so the new profile's
+ * own pins apply — unless the user explicitly re-picked them after
+ * confirming, in which case those explicit choices win.
+ */
+export function resolveProfileSwitchSubmission(input: {
+  pendingProfile: string | undefined;
+  boundProfile: string;
+  modelTouched: boolean;
+  model: string | undefined;
+  thinking: string | undefined;
+}): { profile?: string; model?: string; thinking?: string } {
+  const switching =
+    input.pendingProfile !== undefined && input.pendingProfile !== input.boundProfile;
+  if (!switching) return { model: input.model, thinking: input.thinking };
+  return {
+    profile: input.pendingProfile,
+    model: input.modelTouched ? input.model : undefined,
+    thinking: input.modelTouched ? input.thinking : undefined,
+  };
+}
+
+/**
  * Batch approval resolution: settles every pending card, reporting how many
  * decisions failed to send (individual cards keep their own retry path).
  */
@@ -929,6 +952,13 @@ export function SessionView({
   const [effortOverride, setEffortOverride] = useState(
     restoredComposer.effortOverride ?? initialOptionsRef.current.thinking,
   );
+  // Mid-session main-profile switch: the pick waits as `pendingProfile` until
+  // the next prompt carries it; `profileModelTouched` remembers whether the
+  // user re-picked model/effort AFTER confirming (those then ride along,
+  // overriding the new profile's pins — see resolveProfileSwitchSubmission).
+  const [pendingProfile, setPendingProfile] = useState<string | undefined>(undefined);
+  const [profileSwitchConfirm, setProfileSwitchConfirm] = useState<string | undefined>(undefined);
+  const [profileModelTouched, setProfileModelTouched] = useState(false);
   const [confirmUndo, setConfirmUndo] = useState(false);
   const [batchConfirm, setBatchConfirm] = useState<
     { decision: 'approved' | 'rejected'; ids: readonly string[] } | undefined
@@ -1238,6 +1268,41 @@ export function SessionView({
     catalogItem?.default_effort,
   );
 
+  // The live main-agent binding, from the snapshot's agent_config echo.
+  const boundProfile = state.profile ?? DEFAULT_AGENT_PROFILE;
+  const profilePending = pendingProfile !== undefined && pendingProfile !== boundProfile;
+
+  // A model/effort pick made while a profile switch is pending is explicit:
+  // it overrides the incoming profile's pins on the switch prompt.
+  const handleModelChange = useCallback((model: string | undefined) => {
+    setModelOverride(model);
+    if (pendingProfile !== undefined) setProfileModelTouched(true);
+  }, [pendingProfile]);
+  const handleEffortChange = useCallback((effort: string) => {
+    setEffortOverride(effort);
+    if (pendingProfile !== undefined) setProfileModelTouched(true);
+  }, [pendingProfile]);
+
+  const handleAgentProfileChange = useCallback(
+    (name: string) => {
+      if (name === (pendingProfile ?? boundProfile)) return;
+      if (name === boundProfile) {
+        // Reverting to the live binding needs no confirm — drop the pending pick.
+        setPendingProfile(undefined);
+        setProfileModelTouched(false);
+        return;
+      }
+      setProfileSwitchConfirm(name);
+    },
+    [pendingProfile, boundProfile],
+  );
+  const confirmProfileSwitchRun = useCallback(() => {
+    if (profileSwitchConfirm === undefined) return;
+    setPendingProfile(profileSwitchConfirm);
+    setProfileModelTouched(false);
+    setProfileSwitchConfirm(undefined);
+  }, [profileSwitchConfirm]);
+
   // Global y / n shortcut for the focused-or-unambiguous visible approval.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1335,14 +1400,22 @@ export function SessionView({
             : composerAttachments.some((item) => item.kind === 'upload')
               ? t('sv.fileEcho')
               : t('sv.imageEcho');
+        const profileSwitch = resolveProfileSwitchSubmission({
+          pendingProfile,
+          boundProfile,
+          modelTouched: profileModelTouched,
+          model: effectiveModel,
+          thinking: effectiveEffort,
+        });
         void controller
           .sendPrompt({
             text: echoText,
             content,
-            model: effectiveModel,
+            profile: profileSwitch.profile,
+            model: profileSwitch.model,
             // FU7: the select's visible value is the prompt's wire value,
             // including the catalog default when the user leaves it untouched.
-            thinking: effectiveEffort,
+            thinking: profileSwitch.thinking,
             permissionMode,
             planMode,
             swarmMode,
@@ -1356,12 +1429,25 @@ export function SessionView({
             setQuote(null);
             setAnnotations([]);
             setGoalControl(undefined);
+            if (profileSwitch.profile !== undefined) {
+              setPendingProfile(undefined);
+              setProfileModelTouched(false);
+              // No WS frame carries the binding — re-read the record so the
+              // pill shows the new profile immediately.
+              void controller.refreshSession();
+            }
           })
           .catch((error: unknown) => {
             pushToast({
               tone: 'error',
               text: error instanceof Error ? error.message : String(error),
             });
+            // A rejected rebind (e.g. route-locked) drops the pending pick so
+            // the pill falls back to the live binding.
+            if (profileSwitch.profile !== undefined) {
+              setPendingProfile(undefined);
+              setProfileModelTouched(false);
+            }
           });
       },
       activateSkill: (
@@ -1486,6 +1572,9 @@ export function SessionView({
     client,
     effectiveModel,
     effectiveEffort,
+    pendingProfile,
+    boundProfile,
+    profileModelTouched,
     permissionMode,
     planMode,
     swarmMode,
@@ -1902,6 +1991,8 @@ export function SessionView({
             defaultModel={sessionModel}
             serverDefaultModel={inheritedDefault}
             modelSource={modelSource}
+            agentProfile={pendingProfile ?? boundProfile}
+            agentProfilePending={profilePending}
             permissionMode={permissionMode}
             planMode={planMode}
             swarmMode={swarmMode}
@@ -1927,13 +2018,14 @@ export function SessionView({
             onActivateSkill={handleActivateSkill}
             onSessionAction={runSessionAction}
             onCompactContext={handleCompactContext}
-            onChangeModel={setModelOverride}
+            onChangeModel={handleModelChange}
+            onChangeAgentProfile={handleAgentProfileChange}
             onChangePermissionMode={setPermissionOverride}
             onChangePlanMode={setPlanOverride}
             onChangeSwarmMode={setSwarmOverride}
             onChangeGoalObjective={setGoalObjective}
             onChangeGoalControl={setGoalControl}
-            onChangeEffort={setEffortOverride}
+            onChangeEffort={handleEffortChange}
             onSend={handleComposerSend}
             onAbort={handleComposerAbort}
           />
@@ -1954,6 +2046,9 @@ export function SessionView({
     sessionModel,
     inheritedDefault,
     modelSource,
+    pendingProfile,
+    boundProfile,
+    profilePending,
     permissionMode,
     planMode,
     swarmMode,
@@ -1975,6 +2070,9 @@ export function SessionView({
     handleCompactContext,
     handleComposerSend,
     handleComposerAbort,
+    handleModelChange,
+    handleEffortChange,
+    handleAgentProfileChange,
     t,
   ]);
   useRegisterSeat(seat);
@@ -2510,6 +2608,17 @@ export function SessionView({
         confirmLabel={t('sv.queueClearAll')}
         onConfirm={confirmClearQueueRun}
         onCancel={() => { setConfirmClearQueue(false); }}
+      />
+      <ConfirmDialog
+        open={profileSwitchConfirm !== undefined}
+        overlayId="confirm-profile-switch"
+        title={t('profile.switchTitle', { profile: profileSwitchConfirm ?? '' })}
+        body={t('profile.switchBody')}
+        consequences={[t('profile.switchModelReset'), t('profile.switchSubagents')]}
+        confirmLabel={t('profile.switchConfirm')}
+        tone="default"
+        onConfirm={confirmProfileSwitchRun}
+        onCancel={() => { setProfileSwitchConfirm(undefined); }}
       />
     </MediaPreviewProvider>
   );

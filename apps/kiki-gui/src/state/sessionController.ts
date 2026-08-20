@@ -513,6 +513,17 @@ export class SessionController {
     }
   }
 
+  /** Re-read the session record (post-rebind the echoed `agent_config` is the
+   * only profile truth — no WS frame carries it). */
+  async refreshSession(): Promise<void> {
+    try {
+      const record = await this.client.getSession(this.sessionId);
+      if (!this.closed) this.handleSessionRecord(record);
+    } catch {
+      // Best-effort: the next snapshot/poll repaints the binding regardless.
+    }
+  }
+
   async loadOlderMessages(): Promise<boolean> {
     const current = this.state;
     if (
@@ -548,6 +559,11 @@ export class SessionController {
      * as base64 parts). When omitted, a single text part carries `text`.
      */
     content?: MessageContent[];
+    /**
+     * Main-agent profile to bind before this prompt runs. Carry the new name
+     * WITHOUT model/thinking so the rebind lands on the profile's own pins.
+     */
+    profile?: string;
     model?: string;
     thinking?: string;
     permissionMode: PermissionMode;
@@ -559,6 +575,7 @@ export class SessionController {
     assertSessionWritable(this.state);
     const result = await this.client.submitPrompt(this.sessionId, {
       content: input.content ?? [{ type: 'text', text: input.text }],
+      profile: input.profile,
       model: input.model,
       thinking: input.thinking,
       permission_mode: input.permissionMode,
