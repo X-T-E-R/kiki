@@ -257,9 +257,12 @@ function createInitialAppState(input: KimiTUIStartupInput): AppState {
     sessionId: '',
     permissionMode: startupPermission,
     planMode: input.cliOptions.plan,
+    agentProfile: input.agentProfile,
+    agentFiles: input.cliOptions.agentFiles.length > 0 ? [...input.cliOptions.agentFiles] : undefined,
     inputMode: 'prompt',
     swarmMode: false,
-    thinkingEffort: 'off',
+    thinkingEffort: input.cliOptions.thinking ?? 'off',
+    lazySessionThinking: input.cliOptions.thinking,
     contextUsage: 0,
     contextTokens: 0,
     maxContextTokens: 0,
@@ -421,6 +424,7 @@ export class KimiTUI {
         auto: startupInput.cliOptions.auto,
         plan: startupInput.cliOptions.plan,
         model: startupInput.cliOptions.model,
+        thinking: startupInput.cliOptions.thinking,
         agentProfile: startupInput.agentProfile,
         agentFiles: startupInput.cliOptions.agentFiles,
         startupNotice: startupInput.startupNotice,
@@ -850,10 +854,11 @@ export class KimiTUI {
     const createSessionOptions: MutableCreateSessionOptions = {
       workDir,
       model: startup.model,
+      thinking: startup.thinking,
       permission: startup.auto ? 'auto' : startup.yolo ? 'yolo' : undefined,
       planMode: startup.plan ? true : undefined,
-      // --agent/--agent-file bind the startup session only; sessions created
-      // later in this process fall back to the default profile.
+      // The selected profile is a process-level new-session preference: the
+      // current session stays immutable, while /new keeps this binding.
       agentProfile: startup.agentProfile,
       agentFiles: startup.agentFiles?.length ? [...startup.agentFiles] : undefined,
     };
@@ -931,6 +936,9 @@ export class KimiTUI {
         await this.applyStartupModesToResumedSession(session);
         if (startup.model !== undefined) {
           await session.setModel(startup.model);
+        }
+        if (startup.thinking !== undefined) {
+          await session.setThinking(startup.thinking);
         }
       }
     } catch (error) {
@@ -2151,7 +2159,10 @@ export class KimiTUI {
       patch.planMode = config.defaultPlanMode === true;
     }
     const effort = thinkingEffortFromConfig(config.thinking);
-    if (effort !== undefined) {
+    if (startup.thinking !== undefined) {
+      patch.thinkingEffort = startup.thinking;
+      patch.lazySessionThinking = startup.thinking;
+    } else if (effort !== undefined) {
       patch.thinkingEffort = effort;
     } else if (startupModel !== undefined) {
       // No concrete effort configured: mirror the engine, which resolves the
@@ -2171,7 +2182,7 @@ export class KimiTUI {
     this.setAppState(patch);
   }
 
-  private async createSessionFromCurrentState(bindStartupAgent = false): Promise<Session> {
+  private async createSessionFromCurrentState(): Promise<Session> {
     // Background warm-up of the cache-hint config on every new session.
     this.cacheHint.refreshConfigInBackground();
     const model = this.state.appState.model.trim();
@@ -2206,15 +2217,13 @@ export class KimiTUI {
     if (this.state.appState.additionalDirs.length > 0) {
       options.additionalDirs = [...this.state.appState.additionalDirs];
     }
-    if (bindStartupAgent) {
-      // The --agent/--agent-file startup binding is consumed by the first
-      // lazy-created session; `/new` sessions fall back to the default profile.
-      if (this.state.appState.agentProfile !== undefined) {
-        options.agentProfile = this.state.appState.agentProfile;
-      }
-      if (this.state.appState.agentFiles !== undefined) {
-        options.agentFiles = [...this.state.appState.agentFiles];
-      }
+    // Profile selection applies only when a session is created. Keep the
+    // process-level selection across /new; changing it never rebinds the live session.
+    if (this.state.appState.agentProfile !== undefined) {
+      options.agentProfile = this.state.appState.agentProfile;
+    }
+    if (this.state.appState.agentFiles !== undefined) {
+      options.agentFiles = [...this.state.appState.agentFiles];
     }
     return this.harness.createSession(options);
   }
@@ -2253,7 +2262,7 @@ export class KimiTUI {
   private async lazyCreateSession(): Promise<Session | undefined> {
     let session: Session;
     try {
-      session = await this.createSessionFromCurrentState(true);
+      session = await this.createSessionFromCurrentState();
     } catch (error) {
       const msg = formatErrorMessage(error);
       this.showError(`Failed to start a session: ${msg}`);

@@ -39,6 +39,7 @@ interface StartupDriver {
   init(): Promise<boolean>;
   handleLoginCommand(): Promise<void>;
   handleLogoutCommand(): Promise<void>;
+  createSessionFromCurrentState(): Promise<unknown>;
   stop(exitCode?: number): Promise<void>;
 }
 
@@ -549,6 +550,33 @@ describe('KimiTUI startup', () => {
     expect(driver.state.startupState).toBe('ready');
   });
 
+  it('keeps the selected agent binding for later /new session creation', async () => {
+    const session = makeSession();
+    const harness = makeHarness(session);
+    const driver = makeDriver(harness, {
+      ...makeStartupInput({ agent: 'reviewer', agentFiles: ['reviewer.md'] }),
+      agentProfile: 'reviewer',
+    });
+
+    await expect(driver.init()).resolves.toBe(false);
+    harness.createSession.mockClear();
+
+    await driver.createSessionFromCurrentState();
+    expect(harness.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentProfile: 'reviewer',
+        agentFiles: ['reviewer.md'],
+      }),
+    );
+
+    driver.state.appState.agentProfile = 'grok-only';
+    harness.createSession.mockClear();
+    await driver.createSessionFromCurrentState();
+    expect(harness.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({ agentProfile: 'grok-only' }),
+    );
+  });
+
   it('resumes the latest session for --continue and marks history for replay', async () => {
     const session = makeSession({ id: 'ses-latest' });
     const harness = makeHarness(session, {
@@ -888,6 +916,43 @@ describe('KimiTUI startup', () => {
 
     expect(session.setModel).toHaveBeenCalledWith('kimi-code/k2.5');
     expect(driver.state.appState.model).toBe('kimi-code/k2.5');
+  });
+
+  it('passes and reapplies the CLI thinking override for fresh and resumed sessions', async () => {
+    const freshHarness = makeHarness();
+    const freshDriver = makeDriver(freshHarness, makeStartupInput({ thinking: 'high' }));
+
+    await expect(freshDriver.init()).resolves.toBe(false);
+    expect(freshHarness.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({ thinking: 'high' }),
+    );
+
+    let thinkingEffort = 'off';
+    const resumedSession = makeSession({
+      setThinking: vi.fn(async (nextEffort: string) => {
+        thinkingEffort = nextEffort;
+      }),
+      getStatus: vi.fn(async () => ({
+        model: 'k2',
+        thinkingEffort,
+        permission: 'manual',
+        planMode: false,
+        contextTokens: 10,
+        maxContextTokens: 100,
+        contextUsage: 0.1,
+      })),
+    });
+    const resumedHarness = makeHarness(resumedSession, {
+      listSessions: vi.fn(async () => [{ id: 'ses-latest' }]),
+    });
+    const resumedDriver = makeDriver(
+      resumedHarness,
+      makeStartupInput({ continue: true, thinking: 'high' }),
+    );
+
+    await expect(resumedDriver.init()).resolves.toBe(true);
+    expect(resumedSession.setThinking).toHaveBeenCalledWith('high');
+    expect(resumedDriver.state.appState.thinkingEffort).toBe('high');
   });
 
   it('enters picker startup for bare --session without creating a session', async () => {

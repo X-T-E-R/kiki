@@ -31,8 +31,8 @@ export interface AppState {
   sessionId: string;
   permissionMode: PermissionMode;
   planMode: boolean;
-  /** Resolved profile name from --agent/--agent-file, carried to the
-   * lazy-created first session when the TUI starts session-less. */
+  /** Profile selected for future session creation, initially sourced from
+   * --agent/--agent-file and replaceable through /agent. */
   agentProfile?: string;
   /** Raw --agent-file paths, passed to session creation alongside `agentProfile`. */
   agentFiles?: readonly string[];
@@ -316,7 +316,8 @@ export interface TUIStartupOptions {
   readonly auto: boolean;
   readonly plan: boolean;
   readonly model?: string;
-  /** Resolved profile name from --agent/--agent-file; bound to the startup session only. */
+  readonly thinking?: string;
+  /** Profile preference for new sessions, initialized from --agent/--agent-file. */
   readonly agentProfile?: string;
   /** Raw --agent-file paths, passed to session creation alongside `agentProfile`. */
   readonly agentFiles?: readonly string[];

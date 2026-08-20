@@ -185,6 +185,14 @@ export const BUILTIN_SLASH_COMMANDS = [
     availability: 'always',
   },
   {
+    name: 'agent',
+    aliases: [],
+    description: 'Select the agent profile for new sessions',
+    priority: 100,
+    argumentHint: '[name]',
+    availability: 'always',
+  },
+  {
     name: 'secondary-model',
     aliases: ['subagent-model'],
     description: 'Configure the secondary model for subagents',

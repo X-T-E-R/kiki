@@ -7,6 +7,7 @@ export * from './plugin-commands';
 export * from './types';
 
 export { dispatchInput, type SlashCommandHost } from './dispatch';
+export { handleAgentCommand, loadSelectableAgentProfiles } from './agent';
 export { handleLoginCommand, handleLogoutCommand } from './auth';
 export { handleBtwCommand } from './btw';
 export { handleCopyCommand } from './copy';

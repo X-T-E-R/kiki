@@ -313,13 +313,15 @@ async function resolveNativeSession(
   }
 
   // `--agent` / `--agent-file` are creation-only: validateOptions rejects them
-  // together with --session/--continue, so resume paths only apply an
-  // explicitly requested model — the bound profile is restored by the engine.
-  const applyModelOverride = async (
+  // together with --session/--continue. Model and thinking remain invocation
+  // overrides and can be applied after the bound profile is restored on resume.
+  const applyInvocationOverrides = async (
     profile: IAgentProfileService,
     model: string | undefined,
+    thinking: string | undefined,
   ): Promise<void> => {
     if (model !== undefined) await profile.setModel(model);
+    if (thinking !== undefined) profile.setThinking(thinking);
   };
 
   const resumeById = async (id: string): Promise<ISessionScopeHandle> => {
@@ -358,7 +360,7 @@ async function resolveNativeSession(
     const session = await resumeById(opts.session);
     const agent = await ensureMainAgent(session);
     const profile = agent.accessor.get(IAgentProfileService);
-    await applyModelOverride(profile, opts.model);
+    await applyInvocationOverrides(profile, opts.model, opts.thinking);
     const currentModel = profile.getModel();
     const { restorePermission } = forceAuto(agent);
     return {
@@ -377,7 +379,7 @@ async function resolveNativeSession(
       const session = await resumeById(previous.id);
       const agent = await ensureMainAgent(session);
       const profile = agent.accessor.get(IAgentProfileService);
-      await applyModelOverride(profile, opts.model);
+      await applyInvocationOverrides(profile, opts.model, opts.thinking);
       const currentModel = profile.getModel();
       const { restorePermission } = forceAuto(agent);
       return {
@@ -398,6 +400,7 @@ async function resolveNativeSession(
     mainAgentBinding: {
       profile: agentProfileName ?? 'agent',
       model,
+      thinking: opts.thinking,
     },
   });
   const agent = await ensureMainAgent(session);

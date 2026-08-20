@@ -86,6 +86,7 @@ const mocks = vi.hoisted(() => {
   const session = {
     id: 'ses_goal',
     setModel: vi.fn(),
+    setThinking: vi.fn(),
     setPermission: vi.fn(),
     setApprovalHandler: vi.fn(),
     setQuestionHandler: vi.fn(),

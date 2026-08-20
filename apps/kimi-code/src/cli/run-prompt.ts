@@ -329,6 +329,9 @@ async function resolvePromptSession(
     if (opts.model !== undefined) {
       await session.setModel(opts.model);
     }
+    if (opts.thinking !== undefined) {
+      await session.setThinking(opts.thinking);
+    }
     installHeadlessHandlers(session);
     return {
       session,
@@ -356,6 +359,9 @@ async function resolvePromptSession(
       if (opts.model !== undefined) {
         await session.setModel(opts.model);
       }
+      if (opts.thinking !== undefined) {
+        await session.setThinking(opts.thinking);
+      }
       installHeadlessHandlers(session);
       return {
         session,
@@ -373,6 +379,7 @@ async function resolvePromptSession(
   const session = await harness.createSession({
     workDir,
     model,
+    thinking: opts.thinking,
     permission: 'auto',
     additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
     agentProfile,

@@ -314,7 +314,11 @@ describe('kimi doctor agent profiles', () => {
       `
 name: reviewer
 description: Reviews changes
+main: true
 model_alias: kimi
+model_profiles:
+  - alias: kimi
+    when: Use for code review
 service_tier: priority
 request_params:
   seed: 42

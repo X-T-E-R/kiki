@@ -150,6 +150,7 @@ describe('built-in slash command registry', () => {
     expect(names).toEqual(
       expect.arrayContaining([
         'add-dir',
+        'agent',
         'compact',
         'btw',
         'editor',

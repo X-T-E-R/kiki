@@ -45,6 +45,7 @@ describe('CLI options parsing', () => {
       expect(opts.continue).toBe(false);
       expect(opts.session).toBeUndefined();
       expect(opts.model).toBeUndefined();
+      expect(opts.thinking).toBeUndefined();
       expect(opts.outputFormat).toBeUndefined();
       expect(opts.prompt).toBeUndefined();
       expect(opts.skillsDirs).toEqual([]);
@@ -238,6 +239,27 @@ describe('CLI options parsing', () => {
       const opts = parse(['--model', '   ']);
       expect(() => validateOptions(opts)).toThrow(OptionConflictError);
       expect(() => validateOptions(opts)).toThrow('Model cannot be empty.');
+    });
+  });
+
+  describe('--thinking / --effort', () => {
+    it('parses --thinking as an invocation override', () => {
+      expect(parse(['--thinking', 'high']).thinking).toBe('high');
+    });
+
+    it('parses --effort as an alias', () => {
+      expect(parse(['--effort=medium']).thinking).toBe('medium');
+    });
+
+    it('allows thinking overrides with resumed sessions', () => {
+      const opts = parse(['--session', 'ses_123', '--thinking', 'high']);
+      expect(validateOptions(opts).uiMode).toBe('shell');
+    });
+
+    it('rejects empty thinking effort values', () => {
+      const opts = parse(['--thinking', '   ']);
+      expect(() => validateOptions(opts)).toThrow(OptionConflictError);
+      expect(() => validateOptions(opts)).toThrow('Thinking effort cannot be empty.');
     });
   });
 

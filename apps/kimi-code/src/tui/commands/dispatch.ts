@@ -24,6 +24,7 @@ import {
   extractInlineSkillActivations,
   findInlineSkillTokens,
 } from '../utils/inline-skill-tokens';
+import { handleAgentCommand } from './agent';
 import { handleLoginCommand, handleLogoutCommand } from './auth';
 import { handleBtwCommand } from './btw';
 import { handleCopyCommand } from './copy';
@@ -530,6 +531,9 @@ async function handleBuiltInSlashCommand(
       return;
     case 'model':
       await handleModelCommand(host, args);
+      return;
+    case 'agent':
+      await handleAgentCommand(host, args);
       return;
     case 'secondary-model':
       await handleSecondaryModelCommand(host, args);

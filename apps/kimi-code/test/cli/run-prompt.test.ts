@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => {
   const session = {
     id: 'ses_prompt',
     setModel: vi.fn(),
+    setThinking: vi.fn(),
     setPermission: vi.fn(),
     setApprovalHandler: vi.fn(),
     setQuestionHandler: vi.fn(),
@@ -709,6 +710,24 @@ describe('runPrompt', () => {
     expect(mocks.initializeTelemetry).toHaveBeenCalledWith(
       expect.objectContaining({ model: 'kimi-code/k2.5' }),
     );
+  });
+
+  it('passes the thinking override to fresh sessions and applies it on resume', async () => {
+    await runPrompt(opts({ thinking: 'high' }), '1.2.3-test', {
+      stdout: writer(),
+      stderr: writer(),
+    });
+    expect(mocks.harnessCreateSession).toHaveBeenCalledWith(
+      expect.objectContaining({ thinking: 'high' }),
+    );
+
+    vi.clearAllMocks();
+    await runPrompt(opts({ session: 'ses_existing', thinking: 'medium' }), '1.2.3-test', {
+      stdout: writer(),
+      stderr: writer(),
+    });
+    expect(mocks.harnessResumeSession).toHaveBeenCalledWith({ id: 'ses_existing' });
+    expect(mocks.session.setThinking).toHaveBeenCalledWith('medium');
   });
 
   it('writes stream-json output as assistant JSONL with resume meta without transcript bullets', async () => {
