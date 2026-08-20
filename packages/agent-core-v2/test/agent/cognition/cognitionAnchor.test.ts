@@ -116,6 +116,38 @@ describe('cognition first-turn anchor', () => {
     expect(profile.getSystemPrompt()).toBe(fullPrompt);
   });
 
+  it('does not carry ${delegation_context} injection into the anchor window', async () => {
+    await writeFile(
+      join(homeDir, 'cognition/anchor.md'),
+      'ANCHOR BODY ${delegation_context}\n',
+    );
+    const { agent, requester, fullPrompt } = await createBoundAgent({
+      overlay: 'cognition/overlay.md',
+      anchor: 'cognition/anchor.md',
+    });
+    expect(fullPrompt).not.toContain('${delegation_context}');
+    const anchored = await requestTurn(requester, agent, FIRST_TURN, 1);
+    expect(anchored).toBe('ANCHOR BODY ${delegation_context}');
+    expect(anchored).not.toContain(OVERLAY_TEXT);
+  });
+
+  it('does not carry ${profile_prompt} overlay substitution into the anchor window', async () => {
+    await writeFile(
+      join(homeDir, 'cognition/overlay.md'),
+      `overlay around \${profile_prompt}\n`,
+    );
+    const { agent, requester, fullPrompt } = await createBoundAgent({
+      overlay: 'cognition/overlay.md',
+      overlayMode: 'wrap',
+      anchor: 'cognition/anchor.md',
+    });
+    expect(fullPrompt).toContain('overlay around');
+    expect(fullPrompt).not.toContain('${profile_prompt}');
+    const anchored = await requestTurn(requester, agent, FIRST_TURN, 1);
+    expect(anchored).toBe(ANCHOR_TEXT);
+    expect(anchored).not.toContain('overlay around');
+  });
+
   it('keeps the first three steps of the opening turn when anchor_steps is 3', async () => {
     const { agent, requester, fullPrompt } = await createBoundAgent({
       overlay: 'cognition/overlay.md',

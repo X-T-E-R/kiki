@@ -261,10 +261,10 @@ export function registerSessionsRoutes(
           workspaceId: touched.id,
           workDir,
           mainAgentBinding:
-            body.agent_config?.model === undefined
+            body.agent_config?.model === undefined && body.agent_config?.profile === undefined
               ? undefined
               : {
-                  profile: DEFAULT_AGENT_PROFILE_NAME,
+                  profile: body.agent_config.profile ?? DEFAULT_AGENT_PROFILE_NAME,
                   model: body.agent_config.model,
                   thinking: body.agent_config.thinking,
                   strictThinking: body.agent_config.thinking !== undefined,

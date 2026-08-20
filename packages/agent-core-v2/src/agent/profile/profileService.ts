@@ -25,10 +25,19 @@ import {
   type ThinkingConfig,
 } from '#/kosong/model/thinking';
 import { THINKING_SECTION } from '#/app/kosongConfig/configSection';
-import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { DEFAULT_AGENT_PROFILE_NAME, type EnvironmentDisclosureSnapshot } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
 import { ErrorCodes, Error2 } from "#/errors";
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
+import { AGENTS_SECTION, type AgentsConfig } from '#/session/agentCollaboration/configSection';
+import {
+  DelegationFileError,
+  injectDelegationContext,
+  resolveDelegationSnippet,
+  type DelegationPosition,
+} from '#/agent/profile/delegationContext';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import type { LoopControl } from '#/agent/loop/configSection';
@@ -57,6 +66,21 @@ import {
   loadCognitionSlots,
 } from '#/agent/cognition/cognitionFiles';
 
+import {
+  applyMatchedModelProfilePrompt,
+  declaresModelProfilePrompt,
+  resolveModelProfileEntry,
+} from '#/app/agentProfileCatalog/modelProfileOverlay';
+import {
+  resolveMainModelCandidate,
+  resolveMainThinkingCandidate,
+} from '#/agent/profile/mainModelCandidate';
+import {
+  humanProfileDeviations,
+  roleConstraintsFromProfile,
+  routeModelOverrideMessage,
+  routeThinkingOverrideMessage,
+} from '#/session/subagent/modelConstraints';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IAgentTelemetryContextService } from '#/app/telemetry/agentTelemetryContext';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -152,6 +176,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   private activeProfile: ResolvedAgentProfile | undefined;
+  private readonly emittedDeviationWarnings = new Set<string>();
+  private delegationPosition: DelegationPosition = 'main';
 
   private frozenSkillListing: string | undefined;
   private frozenPluginSections: string | undefined;
@@ -182,6 +208,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @IPluginService private readonly plugins: IPluginService,
     @IAgentIdentity private readonly identity: IAgentIdentity,
     @IAgentAgentsMdReminderService private readonly agentsMdReminder: IAgentAgentsMdReminderService,
+    @IAgentScopeContext private readonly agentScope: IAgentScopeContext,
   ) {
     super();
     this.states.contributeState(profileKey);
@@ -363,7 +390,13 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         `Agent profile route "${selection.route.id}" locks thinking_effort to "${selection.route.lockedThinkingEffort}"`,
       );
     }
-    const requestedAlias = input.model ?? routeModelAlias ?? this.config.get<string>('defaultModel');
+    const requested = resolveMainModelCandidate({
+      inputModel: input.model,
+      routeLockedAlias: routeModelAlias,
+      profileModelAlias: profile.modelAlias,
+      defaultModel: this.config.get<string>('defaultModel'),
+    });
+    const requestedAlias = requested.alias;
     if (requestedAlias === undefined || requestedAlias === '') {
       throw new ProfileError(
         ProfileErrors.codes.MODEL_NOT_CONFIGURED,
@@ -391,14 +424,26 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const context = await this.buildSystemPromptContext(profile);
     this.assertBindable(selection.baseProfile.name, selection.route?.id);
     const currentProfileName = this.profileName;
-    const rendered = profile.renderSystemPrompt(context);
-    const systemPrompt = await this.applyCognitionOverlay(rendered.text, alias);
+    this.delegationPosition =
+      input.delegationPosition ??
+      (this.agentScope.agentId === MAIN_AGENT_ID ? 'main' : 'sub');
+    const assembled = await this.assembleBoundSystemPrompt(profile, context, alias);
+    const systemPrompt = assembled.text;
     this.cacheAgentsMdWarning(context);
 
+    const matchedModelProfile = resolveModelProfileEntry(
+      profile.modelProfiles,
+      alias,
+      (id) => this.models.resolveId(id),
+    );
     const thinkingLevel = this.resolveThinkingEffort(
-      input.thinking ??
-        selection.route?.lockedThinkingEffort ??
-        (currentProfileName !== undefined ? this.thinkingLevel : undefined),
+      resolveMainThinkingCandidate({
+        inputThinking: input.thinking,
+        routeLockedThinking: selection.route?.lockedThinkingEffort,
+        modelProfileThinking: matchedModelProfile?.thinkingEffort,
+        profileThinking: profile.thinkingEffort,
+        sessionThinking: currentProfileName !== undefined ? this.thinkingLevel : undefined,
+      }),
       model,
     );
     const resolvedRoute = selection.route;
@@ -424,6 +469,20 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       );
     }
 
+    if (requested.source === 'input' || input.thinking !== undefined) {
+      for (const message of humanProfileDeviations({
+        model: alias,
+        thinking: thinkingLevel,
+        constraints: roleConstraintsFromProfile(profile),
+        models: this.models,
+        profileName: selection.baseProfile.name,
+        checkModel: requested.source === 'input',
+        checkThinking: input.thinking !== undefined,
+      })) {
+        this.emitDeviationWarning(message);
+      }
+    }
+
     this.activeProfile = profile;
     this.activeToolNamesOverlay = undefined;
     await this.dispatcher.dispatch(new ProfileBind({
@@ -437,7 +496,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       requestParams:
         profile.requestParams === undefined ? undefined : { ...profile.requestParams },
       systemPrompt,
-      environmentDisclosure: rendered.environment,
+      environmentDisclosure: assembled.environment,
       agentsMdPaths: context.agentsMdPaths ?? [],
       activeToolNames: profile.tools,
       toolAllowPolicies: profile.toolAllowPolicies,
@@ -463,9 +522,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       this.profileState.lockedModelAlias !== undefined &&
       canonicalAlias !== this.profileState.lockedModelAlias
     ) {
-      throw new Error2(
-        ErrorCodes.ROUTE_BINDING_CONFLICT,
-        `Agent profile route "${this.routeId}" locks model_alias to "${this.profileState.lockedModelAlias}"`,
+      this.emitDeviationWarning(
+        routeModelOverrideMessage(
+          this.routeId,
+          this.profileState.lockedModelAlias,
+          canonicalAlias,
+        ),
       );
     }
     const model = this.modelCatalog.get(canonicalAlias);
@@ -476,13 +538,25 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       const previousAlias = this.modelAlias;
       this.update({ modelAlias: canonicalAlias });
       this.telemetry.track2('model_switch', { model: canonicalAlias });
-      // The overlay is baked into the persisted prompt, so an alias switch has
-      // to re-render it; steering and anchor already read the live alias.
       if (
         this.declaresCognitionOverlay(previousAlias) ||
-        this.declaresCognitionOverlay(canonicalAlias)
+        this.declaresCognitionOverlay(canonicalAlias) ||
+        this.declaresModelProfilePrompt(previousAlias) ||
+        this.declaresModelProfilePrompt(canonicalAlias)
       ) {
         await this.refreshSystemPrompt();
+      }
+    }
+    if (this.activeProfile !== undefined) {
+      for (const message of humanProfileDeviations({
+        model: canonicalAlias,
+        thinking: this.thinkingLevel,
+        constraints: roleConstraintsFromProfile(this.activeProfile),
+        models: this.models,
+        profileName: this.activeProfile.name,
+        checkThinking: false,
+      })) {
+        this.emitDeviationWarning(message);
       }
     }
     return {
@@ -496,9 +570,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       this.profileState.lockedThinkingEffort !== undefined &&
       level !== this.profileState.lockedThinkingEffort
     ) {
-      throw new Error2(
-        ErrorCodes.ROUTE_BINDING_CONFLICT,
-        `Agent profile route "${this.routeId}" locks thinking_effort to "${this.profileState.lockedThinkingEffort}"`,
+      this.emitDeviationWarning(
+        routeThinkingOverrideMessage(
+          this.routeId,
+          this.profileState.lockedThinkingEffort,
+          level,
+        ),
       );
     }
     const previousEffort = this.thinkingLevel;
@@ -506,6 +583,18 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const normalized = normalizeRequestedThinkingEffort(level);
     this.update({ thinkingLevel: normalized ?? level });
     const effort = this.thinkingLevel;
+    if (this.activeProfile !== undefined && this.modelAlias !== undefined) {
+      for (const message of humanProfileDeviations({
+        model: this.modelAlias,
+        thinking: effort,
+        constraints: roleConstraintsFromProfile(this.activeProfile),
+        models: this.models,
+        profileName: this.activeProfile.name,
+        checkModel: false,
+      })) {
+        this.emitDeviationWarning(message);
+      }
+    }
     if (effort !== previousEffort) {
       this.telemetry.track2('thinking_toggle', {
         enabled: effort !== 'off',
@@ -539,7 +628,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const rendered = profile.renderSystemPrompt(context);
     this.update({
       profileName: profile.name,
-      systemPrompt: rendered.text,
+      systemPrompt: injectDelegationContext(rendered.text, undefined),
       environmentDisclosure: rendered.environment,
       agentsMdPaths: context.agentsMdPaths ?? [],
       disallowedTools: profile.disallowedTools ?? [],
@@ -550,15 +639,15 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   async applyProfile(profile: ResolvedAgentProfile, options?: ApplyProfileOptions): Promise<void> {
     const context = await this.buildSystemPromptContext(profile, options);
     this.activeProfile = profile;
-    const rendered = profile.renderSystemPrompt(context);
-    const systemPrompt = await this.applyCognitionOverlay(
-      rendered.text,
+    const assembled = await this.assembleBoundSystemPrompt(
+      profile,
+      context,
       this.modelAlias ?? '',
     );
     this.update({
       profileName: profile.name,
-      systemPrompt,
-      environmentDisclosure: rendered.environment,
+      systemPrompt: assembled.text,
+      environmentDisclosure: assembled.environment,
       agentsMdPaths: context.agentsMdPaths ?? [],
       disallowedTools: profile.disallowedTools ?? [],
     });
@@ -576,15 +665,15 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     try {
       const context = await this.buildSystemPromptContext(profile);
       this.activeProfile = profile;
-      const rendered = profile.renderSystemPrompt(context);
-      const systemPrompt = await this.applyCognitionOverlay(
-        rendered.text,
+      const assembled = await this.assembleBoundSystemPrompt(
+        profile,
+        context,
         this.modelAlias ?? '',
       );
       this.update({
         profileName: profile.name,
-        systemPrompt,
-        environmentDisclosure: rendered.environment,
+        systemPrompt: assembled.text,
+        environmentDisclosure: assembled.environment,
         agentsMdPaths: context.agentsMdPaths ?? [],
       });
       this.seedAgentsMdReminder(context);
@@ -604,6 +693,66 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private declaresCognitionOverlay(modelAlias: string | undefined): boolean {
     if (modelAlias === undefined || modelAlias.length === 0) return false;
     return cognitionPathRefs(this.models.get(modelAlias)?.cognition?.overlay).length > 0;
+  }
+
+  private declaresModelProfilePrompt(modelAlias: string | undefined): boolean {
+    return declaresModelProfilePrompt(
+      this.activeProfile?.modelProfiles,
+      modelAlias,
+      (id) => this.models.resolveId(id),
+    );
+  }
+
+  private emitDeviationWarning(message: string): void {
+    if (this.emittedDeviationWarnings.has(message)) return;
+    this.emittedDeviationWarnings.add(message);
+    void this.dispatcher.dispatch(
+      new WarningIssued({
+        code: 'profile-constraint-override',
+        message,
+      }),
+    );
+  }
+
+  private async assembleBoundSystemPrompt(
+    profile: ResolvedAgentProfile,
+    context: SystemPromptContext,
+    alias: string,
+  ): Promise<{ readonly text: string; readonly environment: EnvironmentDisclosureSnapshot }> {
+    const rendered = profile.renderSystemPrompt(context);
+    const withModel = applyMatchedModelProfilePrompt(
+      rendered.text,
+      profile.modelProfiles,
+      alias,
+      (id) => this.models.resolveId(id),
+    );
+    let snippet: string | undefined;
+    try {
+      snippet = await resolveDelegationSnippet({
+        position: this.delegationPosition,
+        notice: profile.delegationNotice,
+        config: this.config.get<AgentsConfig | undefined>(AGENTS_SECTION)?.delegation,
+        fs: this.hostFs,
+        homeDir: this.bootstrap.homeDir,
+        pathClass: this.hostEnv.pathClass,
+      });
+    } catch (error) {
+      if (error instanceof DelegationFileError) {
+        throw new ProfileError(
+          error.reason === 'missing' || error.reason === 'empty'
+            ? ProfileErrors.codes.DELEGATION_FILE_MISSING
+            : ProfileErrors.codes.DELEGATION_PATH_INVALID,
+          error.message,
+          { slot: error.slot, path: error.ref, reason: error.reason },
+        );
+      }
+      throw error;
+    }
+    const withDelegation = injectDelegationContext(withModel, snippet);
+    return {
+      text: await this.applyCognitionOverlay(withDelegation, alias),
+      environment: rendered.environment,
+    };
   }
 
   private async applyCognitionOverlay(base: string, modelAlias: string): Promise<string> {

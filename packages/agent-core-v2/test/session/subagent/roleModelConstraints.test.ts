@@ -226,4 +226,31 @@ describe('role model constraints at bind time: role allowed_models / deny_models
     );
     expect(error.message).toContain('allowed_models');
   });
+
+  it('intersects role allowed_efforts with a matching model_profiles entry', () => {
+    const constraints: SubagentRoleModelConstraints = {
+      allowedEfforts: ['high', 'max'],
+      modelProfiles: [
+        {
+          alias: 'fast-model',
+          when: 'when fast',
+          allowedEfforts: ['max'],
+        },
+      ],
+    };
+
+    expect(
+      bindSubagent({ modelAlias: 'fast-model', thinkingEffort: 'max' }, constraints),
+    ).toMatchObject({ thinking: 'max' });
+    const error = configError(() =>
+      bindSubagent({ modelAlias: 'fast-model', thinkingEffort: 'high' }, constraints),
+    );
+    expect(error.message).toContain('allowed_efforts');
+    expect(error.message).toContain('max');
+    expect(
+      configError(() =>
+        bindCollaboration({ modelAlias: 'fast-model', thinkingEffort: 'high' }, constraints),
+      ).message,
+    ).toContain('allowed_efforts');
+  });
 });

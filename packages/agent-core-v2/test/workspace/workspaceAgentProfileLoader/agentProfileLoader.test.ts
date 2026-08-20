@@ -433,9 +433,12 @@ describe('agent profile loaders + session catalog', () => {
         text: `---\nid: reviewer.wrapped\nprofile: reviewer\ndescription: wrapped\nprompt_mode: ${mode}\n---\n\n${body}`,
       });
     expect(parse('wrap', 'before ${base_prompt} after').promptMode).toBe('wrap');
+    expect(parse('wrap', 'before ${parent_prompt} after').promptMode).toBe('wrap');
     expect(() => parse('wrap', 'no base')).toThrow(/exactly once/);
     expect(() => parse('wrap', '${base_prompt} twice ${base_prompt}')).toThrow(/exactly once/);
+    expect(() => parse('wrap', '${parent_prompt} and ${base_prompt}')).toThrow(/exactly once/);
     expect(() => parse('prepend', '${base_prompt}')).toThrow(/does not allow/);
+    expect(() => parse('prepend', '${parent_prompt}')).toThrow(/does not allow/);
     expect(() => parse('inherit', 'not empty')).toThrow(/empty body/);
   });
 
@@ -795,7 +798,7 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
-  it('loads and composes a named route without widening base authority', async () => {
+  it('loads and composes a named route, replacing declared tools, disallowedTools, and subagents', async () => {
     await withFixture(async (fixture) => {
       const root = join(fixture.homeDir, 'agents');
       await writeAgent(
@@ -830,7 +833,8 @@ describe('agent profile loaders + session catalog', () => {
         expect(isToolActive(effective, 'Read')).toBe(true);
         expect(isToolActive(effective, 'Bash')).toBe(false);
         expect(isToolActive(effective, 'Write')).toBe(false);
-        expect(effective.subagents).toEqual(['explore']);
+        expect(effective.disallowedTools).toEqual(['Bash']);
+        expect(effective.subagents).toEqual(['explore', 'added']);
         expect(effective.serviceTier).toBeUndefined();
         expect(effective.requestParams).toEqual({ base: true, route: true });
         expect(
@@ -847,7 +851,7 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
-  it('narrows MCP and collaboration tools without widening the builtin base profile', async () => {
+  it('replaces declared route tools even when that widens the base allowlist', async () => {
     await withFixture(async (fixture) => {
       const agentsRoot = join(fixture.homeDir, 'agents');
       await writeAgent(
@@ -893,8 +897,8 @@ describe('agent profile loaders + session catalog', () => {
 
         const explore = stack.catalog.resolveSelection({ route: 'explore.review' }).profile;
         expect(isToolActive(explore, 'Read')).toBe(true);
-        expect(isToolActive(explore, 'send_message')).toBe(false);
-        expect(isToolActive(explore, 'mcp__github__create_issue', 'mcp')).toBe(false);
+        expect(isToolActive(explore, 'send_message')).toBe(true);
+        expect(isToolActive(explore, 'mcp__github__create_issue', 'mcp')).toBe(true);
       });
     });
   });

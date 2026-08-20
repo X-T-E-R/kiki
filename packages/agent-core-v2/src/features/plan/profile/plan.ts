@@ -2,7 +2,6 @@ import { registerAgentProfile } from '#/app/agentProfileCatalog/contribution';
 import {
   renderSystemPromptResult,
   skillActiveFor,
-  TASK_AGENT_ROLE_PREFIX,
 } from '#/app/agentProfileCatalog/profile-shared';
 
 const PLAN_TOOLS = [
@@ -15,7 +14,6 @@ const PLAN_TOOLS = [
 ] as const;
 
 const PLAN_ROLE =
-  `${TASK_AGENT_ROLE_PREFIX}\n\n` +
   'Before designing your implementation plan, consider whether you fully understand the codebase areas ' +
   'relevant to the task. If not, recommend the parent agent to use the explore agent ' +
   '(subagent_type="explore") to investigate key questions first. In your response, clearly state:\n' +

@@ -33,6 +33,8 @@ import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog
 import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
 import { IWireService } from '#/wire/wire';
+import { IEventBus } from '#/app/event/eventBus';
+import { WarningIssued } from '#/agent/profile/profileOps';
 import type { ExecutableTool, ToolExecution, ToolResult, ToolSource } from '#/tool/toolContract';
 
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
@@ -242,6 +244,42 @@ describe('AgentProfileService.bind', () => {
     expect(ctx.get(IModelCatalog).get(svc.data().modelAlias!).id).toBe(canonicalId);
   });
 
+  it('binds a profile model_alias when the caller does not name a model', async () => {
+    const pinned = normalizeAgentProfile({
+      name: 'reviewer',
+      modelAlias: MOCK_MODEL,
+      thinkingEffort: 'low',
+      systemPrompt: () => 'pinned reviewer',
+    });
+    const catalog: ISessionAgentProfileCatalog = {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChange: Event.None as ISessionAgentProfileCatalog['onDidChange'],
+      get: (name) => (name === pinned.name ? pinned : undefined),
+      getDefault: () => pinned,
+      list: () => [pinned],
+      listRoutes: () => [],
+      routeDiagnostics: () => [],
+      resolveSelection: () => ({ profile: pinned, baseProfile: pinned, route: undefined }),
+      inspect: () => undefined,
+      load: async () => {},
+      reload: async () => {},
+    };
+    ctx = createTestAgent(
+      sessionService(ISessionAgentProfileCatalog, catalog),
+      hostEnvironmentServices(homeDir),
+    );
+    await ctx.get(IConfigService).set('defaultModel', '', ConfigTarget.Memory);
+    const svc = ctx.get(IAgentProfileService);
+
+    await svc.bind({ profile: 'reviewer' });
+
+    expect(svc.data()).toMatchObject({
+      profileName: 'reviewer',
+      modelAlias: MOCK_MODEL,
+    });
+  });
+
   it('resolves a bare subagent profile model pin through the canonical model entry', async () => {
     ctx = createTestAgent(
       sessionService(ISessionAgentProfileCatalog, routedCatalog(MOCK_MODEL)),
@@ -379,13 +417,20 @@ describe('AgentProfileService.bind', () => {
     });
   });
 
-  it('binds and persists the routed authority snapshot and keeps its pins locked', async () => {
+  it('binds the routed snapshot and warns when a human overrides its pins', async () => {
     const persistence = new InMemoryWireRecordPersistence();
     ctx = createTestAgent(
       { persistence },
       hostEnvironmentServices(homeDir),
       sessionService(ISessionAgentProfileCatalog, routedCatalog()),
     );
+    await ctx.get(IModelService).set('other-model', {
+      provider: 'test-provider',
+      model: 'other-model',
+      maxContextSize: 1_000_000,
+      capabilities: ['thinking'],
+      supportEfforts: ['low', 'high'],
+    });
     const { profile, toolPolicy } = profileServices(ctx);
 
     await profile.bind({ route: 'reviewer.ui-k3' });
@@ -414,11 +459,29 @@ describe('AgentProfileService.bind', () => {
       lockedModelAlias: MOCK_MODEL,
       lockedThinkingEffort: 'off',
     });
-    await expect(profile.setModel('other-model')).rejects.toMatchObject({
-      code: 'agent_profile_route.binding_conflict',
+    const warnings: Array<{ code?: string; message: string }> = [];
+    ctx.get(IEventBus).subscribe(WarningIssued, (event) => {
+      warnings.push({ code: event.code, message: event.message });
     });
-    expect(() => profile.setThinking('high')).toThrow(
-      expect.objectContaining({ code: 'agent_profile_route.binding_conflict' }),
+    await expect(profile.setModel('other-model')).resolves.toMatchObject({
+      model: 'other-model',
+    });
+    expect(profile.data().modelAlias).toBe('other-model');
+    expect(profile.data().lockedModelAlias).toBe(MOCK_MODEL);
+    profile.setThinking('high');
+    expect(profile.data().thinkingLevel).toBe('high');
+    expect(profile.data().lockedThinkingEffort).toBe('off');
+    expect(warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'profile-constraint-override',
+          message: expect.stringContaining('locks model_alias'),
+        }),
+        expect.objectContaining({
+          code: 'profile-constraint-override',
+          message: expect.stringContaining('locks thinking_effort'),
+        }),
+      ]),
     );
     await expect(profile.bind({ profile: 'reviewer', model: MOCK_MODEL })).rejects.toMatchObject({
       code: 'agent_profile_route.switch_forbidden',

@@ -17,6 +17,7 @@ import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle'
 import { labelsFromAgentMeta, subagentLabels, subagentParentAgentId } from '#/session/agentLifecycle/subagentMetadata';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
+import { roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
 import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
@@ -273,10 +274,7 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
         modelAlias: selectedProfile.modelAlias,
         thinkingEffort: selectedProfile.thinkingEffort,
       };
-      const roleConstraints = {
-        allowedModels: selectedProfile.allowedModels,
-        denyModels: selectedProfile.denyModels,
-      };
+      const roleConstraints = roleConstraintsFromProfile(selectedProfile);
       let binding = resolveAgentCollaborationBinding(
         this.config,
         this.flags,

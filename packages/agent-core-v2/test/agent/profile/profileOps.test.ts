@@ -424,6 +424,9 @@ describe('AgentProfileService (wire-backed config.update)', () => {
     });
     const records = await readRecords();
 
+    modelCatalog = createModelCatalogStub({
+      'other-model': createTestModel({ id: 'other-model' }),
+    });
     const replay = buildHost('profile-replay-route-snapshot');
     await restoreTestEventDispatcher(
       replay.dispatcher,
@@ -445,12 +448,14 @@ describe('AgentProfileService (wire-backed config.update)', () => {
       disallowedTools: ['Write', 'Bash'],
       subagents: ['explore'],
     });
-    await expect(replay.svc.setModel('other-model')).rejects.toMatchObject({
-      code: 'agent_profile_route.binding_conflict',
+    await expect(replay.svc.setModel('other-model')).resolves.toMatchObject({
+      model: 'other-model',
     });
-    expect(() => replay.svc.setThinking('low')).toThrow(
-      expect.objectContaining({ code: 'agent_profile_route.binding_conflict' }),
-    );
+    expect(replay.svc.data().modelAlias).toBe('other-model');
+    expect(replay.svc.data().lockedModelAlias).toBe('removed-route-model');
+    replay.svc.setThinking('low');
+    expect(replay.svc.data().thinkingLevel).toBe('low');
+    expect(replay.svc.data().lockedThinkingEffort).toBe('high');
     replay.ix.dispose();
   });
 

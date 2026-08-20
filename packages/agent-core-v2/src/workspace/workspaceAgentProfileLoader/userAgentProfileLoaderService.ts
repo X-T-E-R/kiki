@@ -76,6 +76,10 @@ export class UserAgentProfileLoaderService
     return this.defaultProfile;
   }
 
+  getBuiltinDefault(): AgentProfile {
+    return this.builtin.getDefault();
+  }
+
   protected async load(): Promise<AgentProfileContribution> {
     await this.watchReady;
     const roots = await userAgentRoots(
@@ -98,6 +102,7 @@ export class UserAgentProfileLoaderService
         includeRoutes: this.flags.enabled(AGENT_PROFILE_ROUTES_FLAG_ID),
       }),
       (context) => this.defaultProfile.renderSystemPrompt(context),
+      (context) => this.builtin.getDefault().renderSystemPrompt(context),
     );
     if (systemMd === undefined) return contribution;
     return { ...contribution, profiles: [...contribution.profiles, systemMd] };

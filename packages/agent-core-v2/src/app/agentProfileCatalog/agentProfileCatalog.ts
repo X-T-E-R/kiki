@@ -6,17 +6,18 @@ export const DEFAULT_AGENT_PROFILE_NAME = 'agent';
 
 export type AgentModelPreference = 'primary' | 'secondary';
 
-/**
- * One advisory alternative-model entry from an agent file's
- * `recommended_models` frontmatter. The dispatcher may pass `alias` (and
- * optional `thinkingEffort`) as `Agent` tool arguments; this metadata never
- * binds a model by itself.
- */
-export interface AgentRecommendedModel {
+export type AgentModelProfilePromptMode = 'prepend' | 'append' | 'wrap';
+
+export interface AgentModelProfile {
   readonly alias: string;
   readonly when: string;
   readonly thinkingEffort?: string;
+  readonly allowedEfforts?: readonly string[];
+  readonly promptMode?: AgentModelProfilePromptMode;
+  readonly prompt?: string;
 }
+
+export type AgentRecommendedModel = AgentModelProfile;
 
 export interface AgentProfilePromptPrefixContext {
   readonly cwd: string;
@@ -67,6 +68,7 @@ export interface AgentProfile {
   readonly sourcePath?: string;
   readonly whenToUse?: string;
   readonly override?: boolean;
+  readonly main?: boolean;
   readonly tools?: readonly string[];
   readonly toolAllowPolicies?: readonly (readonly string[])[];
   readonly disallowedTools?: readonly string[];
@@ -76,13 +78,15 @@ export interface AgentProfile {
   readonly thinkingEffort?: string;
   readonly allowedModels?: readonly string[];
   readonly denyModels?: readonly string[];
-  readonly recommendedModels?: readonly AgentRecommendedModel[];
+  readonly allowedEfforts?: readonly string[];
+  readonly modelProfiles?: readonly AgentModelProfile[];
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;
   readonly systemPrompt: (context: AgentProfileContext) => string;
   readonly renderSystemPrompt: (context: AgentProfileContext) => SystemPromptRenderResult;
   readonly promptPrefix?: (ctx: AgentProfilePromptPrefixContext) => Promise<string>;
   readonly summaryPolicy?: AgentProfileSummaryPolicy;
+  readonly delegationNotice?: 'auto' | 'off';
 }
 
 export type AgentProfileRoutePromptMode = 'inherit' | 'prepend' | 'append' | 'wrap';

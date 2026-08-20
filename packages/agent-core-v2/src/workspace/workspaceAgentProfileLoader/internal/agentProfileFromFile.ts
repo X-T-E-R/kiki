@@ -13,9 +13,9 @@
  * becomes the profile's per-turn service-tier intent; `request_params` carries
  * additional scalar per-turn request fields; `allowed_models` and
  * `deny_models` pass through as role-level spawn constraints that can only
- * narrow machine permission; `recommended_models` passes
- * through as advisory dispatcher metadata and is never rendered into the
- * child prompt.
+ * narrow machine permission; `model_profiles` passes
+ * through as dispatcher metadata and optional per-alias prompt deltas, and
+ * `when` is never rendered into the child prompt.
  * `profilesFromDiscovery` packs a whole discovery pass into an
  * `AgentProfileContribution`, binding each profile's `${base_prompt}`
  * placeholder lazily at render time so it always reflects the effective
@@ -39,6 +39,7 @@ import type { AgentFileDefinition, AgentFileDiscoveryResult } from './types';
 export function agentProfileFromFile(
   definition: AgentFileDefinition,
   basePrompt: (context: AgentProfileContext) => SystemPromptRenderResult,
+  builtinPrompt?: (context: AgentProfileContext) => SystemPromptRenderResult,
 ): AgentProfile {
   const skillActive =
     (definition.tools === undefined || definition.tools.includes('Skill')) &&
@@ -49,6 +50,7 @@ export function agentProfileFromFile(
     sourcePath: definition.path,
     whenToUse: definition.whenToUse,
     override: definition.override || definition.source === 'explicit',
+    main: definition.main,
     tools: definition.tools,
     disallowedTools: definition.disallowedTools,
     subagents: definition.subagents,
@@ -57,20 +59,31 @@ export function agentProfileFromFile(
     thinkingEffort: definition.thinkingEffort,
     allowedModels: definition.allowedModels,
     denyModels: definition.denyModels,
-    recommendedModels: definition.recommendedModels,
+    allowedEfforts: definition.allowedEfforts,
+    modelProfiles: definition.modelProfiles,
     serviceTier: definition.serviceTier,
     requestParams: definition.requestParams,
+    delegationNotice: definition.delegationNotice,
     renderSystemPrompt: (context) =>
-      renderPromptTemplateResult(definition.prompt, context, { skillActive }, basePrompt),
+      renderPromptTemplateResult(
+        definition.prompt,
+        context,
+        { skillActive },
+        basePrompt,
+        builtinPrompt,
+      ),
   });
 }
 
 export function profilesFromDiscovery(
   result: AgentFileDiscoveryResult,
   basePrompt: (context: AgentProfileContext) => SystemPromptRenderResult,
+  builtinPrompt?: (context: AgentProfileContext) => SystemPromptRenderResult,
 ): AgentProfileContribution {
   return {
-    profiles: result.agents.map((definition) => agentProfileFromFile(definition, basePrompt)),
+    profiles: result.agents.map((definition) =>
+      agentProfileFromFile(definition, basePrompt, builtinPrompt),
+    ),
     routes: result.routes,
     skipped: result.skipped,
     scannedRoots: result.scannedRoots,

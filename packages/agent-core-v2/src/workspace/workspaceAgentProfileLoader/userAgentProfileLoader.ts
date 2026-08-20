@@ -5,6 +5,7 @@ export interface IUserAgentProfileLoader {
   readonly _serviceBrand: undefined;
   readonly ready: Promise<void>;
   getDefaultProfile(): AgentProfile;
+  getBuiltinDefault(): AgentProfile;
   reload(): Promise<void>;
 }
 

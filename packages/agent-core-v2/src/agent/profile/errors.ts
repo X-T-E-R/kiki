@@ -10,6 +10,8 @@ export const ProfileErrors = {
     PROFILE_NOT_BOUND: 'profile.not_bound',
     COGNITION_FILE_MISSING: 'profile.cognition_file_missing',
     COGNITION_PATH_INVALID: 'profile.cognition_path_invalid',
+    DELEGATION_FILE_MISSING: 'profile.delegation_file_missing',
+    DELEGATION_PATH_INVALID: 'profile.delegation_path_invalid',
   },
 } as const satisfies ErrorDomain;
 

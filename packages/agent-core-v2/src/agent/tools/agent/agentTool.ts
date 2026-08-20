@@ -71,6 +71,7 @@ import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceCo
 import { emitAgentRunSpawned, mirrorAgentRun, SubagentStarted } from '#/session/subagent/mirrorAgentRun';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
+import { roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
 import {
   addSubagentBindingSchemaConstraints,
   buildSubagentModelDescriptions,
@@ -228,7 +229,7 @@ export class SubagentTool implements ISubagentTool {
 
   private catalogProfiles(): readonly AgentProfile[] {
     if (this.frozenCatalogProfiles !== undefined) return this.frozenCatalogProfiles;
-    const profiles = this.catalog.list();
+    const profiles = this.catalog.list().filter((profile) => profile.main !== true);
     if (this.catalogReady) this.frozenCatalogProfiles = profiles;
     return profiles;
   }
@@ -443,10 +444,7 @@ export class SubagentTool implements ISubagentTool {
         modelAlias: profile.modelAlias,
         thinkingEffort: profile.thinkingEffort,
       };
-      const roleConstraints = {
-        allowedModels: profile.allowedModels,
-        denyModels: profile.denyModels,
-      };
+      const roleConstraints = roleConstraintsFromProfile(profile);
       let binding = resolveSubagentBinding(
         this.config,
         this.flags,
@@ -764,7 +762,7 @@ export function buildProfileDescriptions(
         bindingLines.push(`  Allowed models: ${profile.allowedModels.join(', ')}`);
       }
       const alternativeModelsLine = formatAlternativeModelsLine(
-        profile.recommendedModels,
+        profile.modelProfiles,
         isModelAliasAvailable,
       );
       if (alternativeModelsLine !== undefined) {

@@ -12,14 +12,17 @@ import { join } from 'pathe';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { Event } from '#/_base/event';
+import { DEFAULT_AGENT_PROFILE_NAME, normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { CognitionConfig, ModelRecord } from '#/kosong/model/model';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { ProfileErrors } from '#/agent/profile/errors';
+import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 
 import {
   createTestAgent,
   homeDirServices,
+  sessionService,
   type TestAgentContext,
 } from '../../harness';
 
@@ -196,5 +199,54 @@ describe('per-model cognition overlay', () => {
     const profile = agent.get(IAgentProfileService);
     await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: OTHER_MODEL });
     expect(profile.getSystemPrompt()).not.toContain('FLASH OVERLAY');
+  });
+
+  it('applies a matching model_profiles prompt before the cognition overlay', async () => {
+    const custom = normalizeAgentProfile({
+      name: DEFAULT_AGENT_PROFILE_NAME,
+      modelProfiles: [
+        {
+          alias: MOCK_MODEL,
+          when: 'When the live alias matches.',
+          promptMode: 'prepend',
+          prompt: 'ROLE DELTA',
+        },
+      ],
+      systemPrompt: () => 'PROFILE BODY',
+    });
+    const catalog: ISessionAgentProfileCatalog = {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChange: Event.None as ISessionAgentProfileCatalog['onDidChange'],
+      get: (name) => (name === custom.name ? custom : undefined),
+      getDefault: () => custom,
+      list: () => [custom],
+      listRoutes: () => [],
+      routeDiagnostics: () => [],
+      resolveSelection: () => ({ profile: custom, baseProfile: custom, route: undefined }),
+      inspect: () => undefined,
+      load: async () => {},
+      reload: async () => {},
+    };
+    ctx = createTestAgent(
+      homeDirServices(homeDir),
+      sessionService(ISessionAgentProfileCatalog, catalog),
+    );
+    const current = ctx.kimiConfig.models?.[MOCK_MODEL];
+    expect(current).toBeDefined();
+    ctx.kimiConfig = {
+      ...ctx.kimiConfig,
+      models: {
+        ...ctx.kimiConfig.models,
+        [MOCK_MODEL]: { ...current!, cognition: { overlay: 'cognition/overlay.md' } },
+      },
+    };
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    const prompt = profile.getSystemPrompt();
+    expect(prompt).toMatch(/^ROLE DELTA\n\nPROFILE BODY/);
+    expect(prompt).toMatch(/FLASH OVERLAY\s*$/);
+    expect(prompt.indexOf('ROLE DELTA')).toBeLessThan(prompt.indexOf('FLASH OVERLAY'));
+    expect(prompt).not.toContain('When the live alias matches.');
   });
 });

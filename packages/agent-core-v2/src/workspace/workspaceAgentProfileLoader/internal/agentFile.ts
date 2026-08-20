@@ -21,6 +21,9 @@ export interface ParseAgentFileOptions {
   readonly source: AgentFileSource;
   readonly text: string;
   readonly warn?: (message: string) => void;
+  readonly fallbackDescription?: string;
+  readonly forceName?: string;
+  readonly forceOverride?: boolean;
 }
 
 const AGENT_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -55,23 +58,43 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
       `Frontmatter field "name" in ${options.path} must be a non-empty string`,
     );
   }
-  const name = nonEmptyString(nameField) ?? deriveNameFromPath(options.path);
+  const name =
+    options.forceName ?? nonEmptyString(nameField) ?? deriveNameFromPath(options.path);
   if (name === undefined) {
     throw new AgentFileParseError(`Missing required frontmatter field "name" in ${options.path}`);
   }
-  if (!AGENT_NAME_PATTERN.test(name)) {
+  if (options.forceName === undefined && !AGENT_NAME_PATTERN.test(name)) {
     throw new AgentFileParseError(
       `Invalid agent name "${name}" in ${options.path}: expected kebab-case (e.g. "code-reviewer")`,
     );
   }
 
-  const description = requiredNonEmptyString(
-    frontmatter['description'],
-    'description',
+  if (
+    frontmatter['description'] !== undefined &&
+    frontmatter['description'] !== null &&
+    typeof frontmatter['description'] !== 'string'
+  ) {
+    throw new AgentFileParseError(
+      `Frontmatter field "description" in ${options.path} must be a non-empty string`,
+    );
+  }
+  const description =
+    nonEmptyString(frontmatter['description']) ?? options.fallbackDescription;
+  if (description === undefined) {
+    throw new AgentFileParseError(
+      `Missing required frontmatter field "description" in ${options.path}`,
+    );
+  }
+
+  const override =
+    options.forceOverride === true
+      ? true
+      : parseBoolean(frontmatter['override'], 'override', options.path);
+  const main = parseBoolean(frontmatter['main'], 'main', options.path);
+  const delegationNotice = parseDelegationNotice(
+    frontmatter['delegation_notice'],
     options.path,
   );
-
-  const override = parseBoolean(frontmatter['override'], 'override', options.path);
   const rawTools = parseStringList(frontmatter['tools'], 'tools', options.path);
   const tools = rawTools?.length === 1 && rawTools[0] === '*' ? undefined : rawTools;
   const disallowedTools = parseStringList(
@@ -99,6 +122,11 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     options.path,
   );
   const denyModels = parseStringList(frontmatter['deny_models'], 'deny_models', options.path);
+  const allowedEfforts = parseStringList(
+    frontmatter['allowed_efforts'],
+    'allowed_efforts',
+    options.path,
+  );
   warnIncoherentModelConstraints(
     modelAlias,
     allowedModels,
@@ -106,10 +134,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     options.path,
     options.warn,
   );
-  const recommendedModels = parseRecommendedModels(
-    frontmatter['recommended_models'],
-    options.path,
-  );
+  const modelProfiles = resolveModelProfiles(frontmatter, options.path, options.warn);
   const serviceTier = parseServiceTier(frontmatter['service_tier'], options.path);
   let requestParams = parseRequestParams(frontmatter['request_params'], options.path);
   if (
@@ -142,6 +167,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     description,
     whenToUse: nonEmptyString(frontmatter['whenToUse']),
     override,
+    ...(main ? { main: true } : {}),
     tools,
     disallowedTools,
     subagents,
@@ -150,65 +176,151 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     thinkingEffort,
     allowedModels,
     denyModels,
-    recommendedModels,
+    allowedEfforts,
+    modelProfiles,
     serviceTier,
     requestParams,
     prompt,
     path: options.path,
     source: options.source,
+    ...(delegationNotice === undefined ? {} : { delegationNotice }),
   };
 }
 
-const RECOMMENDED_MODEL_ENTRY_KEYS = new Set(['alias', 'when', 'thinking_effort']);
+const MODEL_PROFILE_ENTRY_KEYS = new Set([
+  'alias',
+  'when',
+  'thinking_effort',
+  'prompt_mode',
+  'prompt',
+  'allowed_efforts',
+]);
 
-function parseRecommendedModels(
-  value: unknown,
+function resolveModelProfiles(
+  frontmatter: Record<string, unknown>,
   filePath: string,
-): AgentFileDefinition['recommendedModels'] {
+  warn?: (message: string) => void,
+): AgentFileDefinition['modelProfiles'] {
+  const hasNew = Object.hasOwn(frontmatter, 'model_profiles');
+  const hasOld = Object.hasOwn(frontmatter, 'recommended_models');
+  if (hasNew && hasOld) {
+    warn?.(
+      `Frontmatter fields "model_profiles" and "recommended_models" in ${filePath} are both set; using "model_profiles"`,
+    );
+    return parseModelProfiles(frontmatter['model_profiles'], 'model_profiles', filePath);
+  }
+  if (hasNew) {
+    return parseModelProfiles(frontmatter['model_profiles'], 'model_profiles', filePath);
+  }
+  if (hasOld) {
+    warn?.(
+      `Frontmatter field "recommended_models" in ${filePath} is deprecated; use "model_profiles"`,
+    );
+    return parseModelProfiles(frontmatter['recommended_models'], 'recommended_models', filePath);
+  }
+  return undefined;
+}
+
+function parseModelProfiles(
+  value: unknown,
+  field: string,
+  filePath: string,
+): AgentFileDefinition['modelProfiles'] {
   if (value === undefined || value === null) return undefined;
   if (!Array.isArray(value)) {
     throw new AgentFileParseError(
-      `Frontmatter field "recommended_models" in ${filePath} must be a list of mappings`,
+      `Frontmatter field "${field}" in ${filePath} must be a list of mappings`,
     );
   }
-  const out: Array<{
-    readonly alias: string;
-    readonly when: string;
-    readonly thinkingEffort?: string;
-  }> = [];
+  const out: NonNullable<AgentFileDefinition['modelProfiles']>[number][] = [];
   for (const [index, item] of value.entries()) {
     if (!isRecord(item)) {
       throw new AgentFileParseError(
-        `Frontmatter field "recommended_models[${index}]" in ${filePath} must be a mapping`,
+        `Frontmatter field "${field}[${index}]" in ${filePath} must be a mapping`,
       );
     }
     for (const key of Object.keys(item)) {
-      if (!RECOMMENDED_MODEL_ENTRY_KEYS.has(key)) {
+      if (!MODEL_PROFILE_ENTRY_KEYS.has(key)) {
         throw new AgentFileParseError(
-          `Frontmatter field "recommended_models[${index}]" in ${filePath} contains unknown key "${key}"`,
+          `Frontmatter field "${field}[${index}]" in ${filePath} contains unknown key "${key}"`,
         );
       }
     }
-    const alias = requiredNonEmptyString(
-      item['alias'],
-      `recommended_models[${index}].alias`,
-      filePath,
-    );
-    const when = requiredNonEmptyString(
-      item['when'],
-      `recommended_models[${index}].when`,
-      filePath,
-    );
+    const prefix = `${field}[${index}]`;
+    const alias = requiredNonEmptyString(item['alias'], `${prefix}.alias`, filePath);
+    const when = requiredNonEmptyString(item['when'], `${prefix}.when`, filePath);
     const thinkingEffort = optionalNonEmptyStringField(
       item['thinking_effort'],
-      `recommended_models[${index}].thinking_effort`,
+      `${prefix}.thinking_effort`,
       filePath,
     );
-    out.push(
-      thinkingEffort === undefined ? { alias, when } : { alias, when, thinkingEffort },
+    const promptMode = parseModelProfilePromptMode(item['prompt_mode'], `${prefix}.prompt_mode`, filePath);
+    const prompt = optionalNonEmptyStringField(item['prompt'], `${prefix}.prompt`, filePath);
+    if (promptMode !== undefined && prompt === undefined) {
+      throw new AgentFileParseError(
+        `Frontmatter field "${prefix}.prompt" in ${filePath} is required when prompt_mode is set`,
+      );
+    }
+    if (prompt !== undefined && promptMode === undefined) {
+      throw new AgentFileParseError(
+        `Frontmatter field "${prefix}.prompt_mode" in ${filePath} is required when prompt is set`,
+      );
+    }
+    if (promptMode !== undefined && prompt !== undefined) {
+      validateModelProfilePrompt(promptMode, prompt, prefix, filePath);
+    }
+    const allowedEfforts = parseStringList(
+      item['allowed_efforts'],
+      `${prefix}.allowed_efforts`,
+      filePath,
     );
+    out.push({
+      alias,
+      when,
+      ...(thinkingEffort === undefined ? {} : { thinkingEffort }),
+      ...(promptMode === undefined ? {} : { promptMode, prompt }),
+      ...(allowedEfforts === undefined ? {} : { allowedEfforts }),
+    });
   }
   return out;
+}
+
+function parseModelProfilePromptMode(
+  value: unknown,
+  field: string,
+  filePath: string,
+): 'prepend' | 'append' | 'wrap' | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value === 'prepend' || value === 'append' || value === 'wrap') return value;
+  throw new AgentFileParseError(
+    `Frontmatter field "${field}" in ${filePath} must be "prepend", "append", or "wrap"`,
+  );
+}
+
+function countParentPromptTokens(prompt: string): number {
+  return prompt.split('${base_prompt}').length - 1 + (prompt.split('${parent_prompt}').length - 1);
+}
+
+function validateModelProfilePrompt(
+  mode: 'prepend' | 'append' | 'wrap',
+  prompt: string,
+  prefix: string,
+  filePath: string,
+): void {
+  const count = countParentPromptTokens(prompt);
+  if (mode === 'wrap') {
+    if (count !== 1) {
+      throw new AgentFileParseError(
+        `Frontmatter field "${prefix}.prompt" in ${filePath} with prompt_mode "wrap" requires \${parent_prompt} (or \${base_prompt}) exactly once`,
+      );
+    }
+    return;
+  }
+  if (count !== 0) {
+    throw new AgentFileParseError(
+      `Frontmatter field "${prefix}.prompt" in ${filePath} with prompt_mode "${mode}" does not allow \${parent_prompt} or \${base_prompt}`,
+    );
+  }
 }
 
 function parseModelPreference(
@@ -303,6 +415,17 @@ function parseBoolean(value: unknown, field: string, filePath: string): boolean 
   if (typeof value === 'boolean') return value;
   throw new AgentFileParseError(
     `Frontmatter field "${field}" in ${filePath} must be a boolean`,
+  );
+}
+
+function parseDelegationNotice(
+  value: unknown,
+  filePath: string,
+): 'auto' | 'off' | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value === 'auto' || value === 'off') return value;
+  throw new AgentFileParseError(
+    `Frontmatter field "delegation_notice" in ${filePath} must be "auto" or "off"`,
   );
 }
 

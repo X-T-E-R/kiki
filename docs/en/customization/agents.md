@@ -131,27 +131,33 @@ You are a strict code reviewer. Read the diff, then report findings grouped by s
 | `description` | yes | What the agent does. Shown to the main Agent when it picks a sub-agent, so write it to guide delegation decisions |
 | `whenToUse` | no | Extra hint describing when the agent should be used |
 | `override` | no | Whether this file may replace a same-name built-in Agent. Defaults to `false`; `--agent-file` is already explicit and does not require this field |
+| `main` | no | Curation flag. When `true`, this profile is a main-agent candidate and is omitted from the `Agent` tool's default role list. It is not an authorization gate: `--agent`, `--agent-file`, MCP, and the SDK can still bind any catalog name |
+| `delegation_notice` | no | `auto` (default) injects a position-based handoff notice when this profile runs as a sub-agent or an independent host agent; `off` skips it. Main-agent binds never inject |
 | `model_preference` | no | Legacy symbolic selector available only with the secondary-model experiment: `primary` inherits the caller's model binding, while `secondary` selects [`[secondary_model] model`](../configuration/config-files.md#secondary-model). Mutually exclusive with `model_alias` |
 | `model_alias` | no | Exact, case-sensitive alias from `[models]`. Literal aliases named `primary` or `secondary` stay literal; this differs from the symbolic `model_preference` field |
 | `thinking_effort` | no | Thinking effort requested when this profile starts as a new subagent. It resolves independently from the model selector |
 | `allowed_models` | no | Optional allowlist of model aliases this role may bind. YAML list or comma-separated string, same syntax as `tools`. When present and non-empty, the bound model must be a member. Comparisons use canonical model identity, so a bare alias matches a provider-qualified name. This list can only **narrow** what the machine already permits; it cannot re-permit a model listed in `[subagent].deny_models` or in this file's `deny_models`. A single-item list is the way to hard-pin a role to one alias — prefer it over a route sidecar whose only delta is a pinned model. Omit the field, or use an empty list, to impose no extra allowlist |
-| `deny_models` | no | Optional role-level denylist with the same syntax as `allowed_models`. Unioned with machine `[subagent].deny_models`; deny always wins over `allowed_models`. Route sidecars cannot declare this field |
-| `recommended_models` | no | Advisory list of alternative model aliases the parent agent may pass as `Agent.model_alias`. Each entry is a mapping with required `alias` and `when`, and optional `thinking_effort`. Shown in the `Agent` tool description only for aliases that exist in this machine's `[models]` table; omitted entirely when none remain. Does not bind a model, does not change spawn resolution, and is never added to the child agent's prompt. YAML list of mappings only — not a comma-separated string. Duplicate aliases with different `thinking_effort` values are kept as separate entries |
+| `deny_models` | no | Optional denylist of model aliases this role must not bind, same syntax as `allowed_models`. Auto-dispatch is rejected; an explicit human choice is admitted with a one-time warning. Machine `[subagent].deny_models` still rejects every path, including humans |
+| `allowed_efforts` | no | Optional allowlist of thinking efforts this role may bind, YAML list or comma-separated string. Role-level values intersect with a matching `model_profiles` entry. Auto-dispatch (Agent / AgentSwarm / `spawn_agent`) is rejected when the resolved effort is outside the intersection; an explicit human choice is admitted with a one-time warning |
+| `model_profiles` | no | Per-alias run recipe for this role. YAML list of mappings only. Required `alias` and `when`; optional `thinking_effort`, `allowed_efforts`, `prompt_mode` (`prepend` / `append` / `wrap`), and `prompt`. `when` is shown to the parent dispatcher in the `Agent` tool description and is never added to the child prompt. `prompt_mode` + `prompt` compose onto this role's body before the model cognition overlay; `wrap` uses `${parent_prompt}` (or its alias `${base_prompt}`) exactly once. Entries whose alias is missing from this machine's `[models]` table are omitted from the tool description and do not apply. Duplicate aliases stay listed; overlay matching uses the first entry whose alias resolves. The deprecated `recommended_models` key is still accepted as an alias and warns at load; if both keys are present, `model_profiles` wins |
 | `service_tier` | no | Service tier requested on every LLM request this agent makes as a subagent: `auto`, `default`, `flex`, or `priority`. Only the `openai_responses` provider protocol encodes it into the request body; other protocols silently ignore it |
 | `request_params` | no | Extra request parameters as a scalar map (string/number/boolean values only), sent with every request this subagent makes. OpenAI-family providers spread them into the request body (Kimi via `extra_body`) without overriding engine-generated fields; Anthropic ignores the map; a first-class field such as `service_tier` wins on collision. Keys are sent verbatim, so a provider may reject names it does not recognize |
 | `tools` | no | Allowlist of tool names such as `Read` or `Bash`; MCP tools are matched with globs such as `mcp__github__*`. Accepts a YAML list or a comma-separated string (`tools: Read, Grep`). Omit to allow all tools; a lone `*` also allows all tools; an empty list (`tools: []`) disables all tools |
 | `disallowedTools` | no | Denylist with the same syntax and matching rules, applied after `tools` |
 | `subagents` | no | Allowlist of sub-agent names this agent may delegate to, with the same syntax as `tools` (YAML list or comma-separated string). Omit the field or use a lone `*` to allow every type; use an empty list (`subagents: []`) to prohibit all subagent dispatch; otherwise the explicit names form the allowlist |
 
-`recommended_models` is a YAML list of mappings. A string, scalar, or mapping at the top level is invalid, because every entry needs a `when` trigger. Example:
+`model_profiles` is a YAML list of mappings. A string, scalar, or mapping at the top level is invalid, because every entry needs a `when` trigger. Example:
 
 ```yaml
-recommended_models:
+model_profiles:
   - alias: fast-model
     when: Scope and acceptance checks are already named and a fast decisive pass beats waiting.
     thinking_effort: high
   - alias: k3-review
     when: Ordinary review work the default alias can finish on its own.
+    prompt_mode: prepend
+    prompt: |
+      Prefer system-level and global-contract reasoning.
 ```
 
 `allowed_models` and `deny_models` only narrow. Machine `[subagent].deny_models` always wins, even when the role allowlists the same alias. A single-item `allowed_models` hard-pins the role; route sidecars cannot declare either field.
@@ -173,7 +179,7 @@ Pair an allowlist with the `model_alias` you intend to pin. A profile that decla
 
 Built-in and user tools match by exact, case-sensitive name; entries starting with `mcp__` match MCP tools as globs. Three entry shapes never match anything and are reported with a warning when the profile takes effect: a wildcard outside an `mcp__` pattern (a bare `*` in `disallowedTools` disables nothing), an `mcp__` literal that is not a full `mcp__<server>__<tool>` name (`mcp__github` matches nothing — use `mcp__github__*` for the whole server), and a name no registered or built-in tool has (usually a typo, such as `read` instead of `Read`).
 
-The body is the agent's system prompt, and it is rendered as a template each time the prompt is built: `${var}` placeholders substitute live context values — unknown variables stay verbatim, a bare `$` is never special, and a variable with no context value renders as an empty string. `${base_prompt}` embeds the effective default system prompt (the built-in default, or your `SYSTEM.md` override when present), so a file can wrap the default behavior instead of replacing it. If the file replaces the default prompt but should still honor instructions contributed by enabled plugins, place `${plugin_sections}` where those instructions should appear. The available variables are listed in the SYSTEM.md section below.
+The body is the agent's system prompt, and it is rendered as a template each time the prompt is built: `${var}` placeholders substitute live context values — unknown variables stay verbatim, a bare `$` is never special, and a variable with no context value renders as an empty string. `${parent_prompt}` (alias `${base_prompt}`) embeds the implicit parent for this file: the effective default system prompt in an agent file, the built-in default inside `SYSTEM.md`, or the base profile in a route. `${builtin_prompt}` is always the built-in default, even when `SYSTEM.md` exists. If the file replaces the default prompt but should still honor instructions contributed by enabled plugins, place `${plugin_sections}` where those instructions should appear. The available variables are listed in the SYSTEM.md section below.
 
 Unknown fields are ignored, so newer files stay readable by older versions. Fields from other agent tools (such as Claude Code's `model` or OpenCode's `mode`) are ignored the same way, the comma-separated `tools` form keeps Claude Code-style agent files loadable, and a missing `name` falls back to the file name so OpenCode-style files load too — a minimal file with `description` and a body works across tools.
 
@@ -203,13 +209,13 @@ request_params:
 Focus on interaction regressions, accessibility, and visual consistency.
 ```
 
-The required fields are `id`, `profile`, `description`, and `prompt_mode`. Optional fields are `whenToUse` plus `model_preference`, `model_alias`, `thinking_effort`, `service_tier`, `request_params`, `tools`, `disallowedTools`, and `subagents`. Unlike ordinary Agent files, route frontmatter is strict. Unknown fields, invalid types, a path/ID/profile mismatch, duplicate IDs in one source, and incompatible model selectors cause only that sidecar to be skipped with a coded diagnostic; the base profile and sibling routes still load. Agent-file-only fields such as `recommended_models`, `allowed_models`, and `deny_models` are unknown here and skip the sidecar. A route may pin `model_alias`, but that pin is still checked against the base profile's `allowed_models` / `deny_models`.
+The required fields are `id`, `profile`, `description`, and `prompt_mode`. Optional fields are `whenToUse` plus `model_preference`, `model_alias`, `thinking_effort`, `service_tier`, `request_params`, `tools`, `disallowedTools`, and `subagents`. Unlike ordinary Agent files, route frontmatter is strict. Unknown fields, invalid types, a path/ID/profile mismatch, duplicate IDs in one source, and incompatible model selectors cause only that sidecar to be skipped with a coded diagnostic; the base profile and sibling routes still load. Agent-file-only fields such as `model_profiles`, `recommended_models`, `allowed_models`, and `deny_models` are unknown here and skip the sidecar. A route may pin `model_alias`, but that pin is still checked against the base profile's `allowed_models` / `deny_models`.
 
-`prompt_mode` always preserves the base prompt: `inherit` requires an empty body; `prepend` and `append` require a non-empty body and reject `${base_prompt}`; `wrap` requires `${base_prompt}` exactly once. There is no unguarded replace mode.
+`prompt_mode` always preserves the base prompt: `inherit` requires an empty body; `prepend` and `append` require a non-empty body and reject `${parent_prompt}` / `${base_prompt}`; `wrap` requires `${parent_prompt}` or `${base_prompt}` exactly once. There is no unguarded replace mode.
 
-Routes can only narrow authority. Route `tools` is an additional allow layer (base **and** route must allow a tool), `disallowedTools` is added to the base denylist, and `subagents` is intersected with the base allowlist; `subagents: []` makes the route a leaf. Caller checks still use the base role, so a route cannot introduce a role the caller could not dispatch. Create and allowlist another base profile when broader authority is required.
+If a route declares `tools`, `disallowedTools`, or `subagents`, that field replaces the base value entirely. Omit the field to inherit the base. `subagents: []` makes the route a leaf. Caller checks still use the base role, so a route cannot introduce a role the caller could not dispatch. Create and allowlist another base profile when you need a different role identity.
 
-An omitted request field inherits the base value. `service_tier: null` clears the base tier; another tier replaces it. `request_params: null` clears the base map; a mapping overlays scalar keys on it. A route-declared `model_alias` or `thinking_effort` is locked: a call may omit it or repeat the same value, but a conflict is rejected. A missing locked alias fails before Agent allocation and never uses the ordinary profile-alias fallback; dispatch also fails if the selected model cannot honor a locked effort exactly.
+An omitted request field inherits the base value. `service_tier: null` clears the base tier; another tier replaces it. `request_params: null` clears the base map; a mapping overlays scalar keys on it. A route-declared `model_alias` or `thinking_effort` is locked for automatic dispatch: Agent / AgentSwarm / `spawn_agent` must omit it or repeat the same value; a conflict is rejected. A missing locked alias fails before Agent allocation and never uses the ordinary profile-alias fallback; dispatch also fails if the selected model cannot honor a locked effort exactly. In an already-bound session, an explicit human `/model` or effort change is admitted with a one-time warning; the lock stays on the snapshot.
 
 When enabled, both `Agent` and `AgentSwarm` show compact route entries filtered through the caller's base-role allowlist. Entries contain the route ID, base role, description/usage hint, model and effort defaults, and overridden field names—never the prompt body. Pass `route: reviewer.ui-k3`; omit `subagent_type` to derive `reviewer`, or pass that matching base explicitly. A mismatch is a coded error. There is no automatic ranking or silent fallback.
 
@@ -227,7 +233,7 @@ A file with invalid content discovered in a directory is skipped with a warning 
 `tools` and `disallowedTools` shape the tools shown to the model and are enforced again before execution. `subagents` works the same way: the `Agent` tool lists only the sub-agent types the caller may delegate to, and both `Agent` and `AgentSwarm` re-check the allowlist before dispatching; resuming an existing sub-agent is exempt. Permission rules remain a separate control for operations that require approval.
 :::
 
-Custom agents delegated as sub-agents run without the built-in sub-agent framing ("your final message is the entire handoff"). If you write an agent meant for delegation, state in the body that its last message should be the complete, self-contained result for the caller.
+When a custom agent runs as a dispatched sub-agent, Kimi prepends a short handoff notice: the last message is the complete deliverable for the caller. An independent host invocation (MCP / SDK) gets a different notice: there is no parent agent. Main-agent binds inject nothing. Put `${delegation_context}` in the body to place the notice; otherwise it is prepended. Set `delegation_notice: off` on the profile, or `[agents.delegation] sub = false` / `independent = false` in `config.toml`, to skip it. A configured path must exist and be non-empty, or bind fails.
 
 ### Selecting the Main Agent
 
@@ -247,13 +253,18 @@ kimi -p --agent reviewer "Review the changes on this branch"
 
 The bound agent is the session's identity: it is fixed at the session's first bind and cannot be switched later. In the TUI the flags bind only the startup session; a session created later in the same process (for example via `/new`) starts with the default agent.
 
-For main-agent customization, reference `${base_prompt}` in the body so the environment, workspace-instruction, Skill, and plugin injections already present in the effective default prompt stay in effect. When you want to replace the default prompt but keep only plugin-contributed instructions, use `${plugin_sections}` instead. A body without `${base_prompt}` or `${plugin_sections}` owns the entire prompt and excludes plugin instructions, which fits self-contained sub-agents.
+For main-agent customization, reference `${parent_prompt}` or `${base_prompt}` in the body so the environment, workspace-instruction, Skill, and plugin injections already present in the effective default prompt stay in effect. `${builtin_prompt}` is the stock default even when `SYSTEM.md` exists. When you want to replace the default prompt but keep only plugin-contributed instructions, use `${plugin_sections}` instead. A body without `${parent_prompt}` / `${base_prompt}` or `${plugin_sections}` owns the entire prompt and excludes plugin instructions, which fits self-contained sub-agents.
 
 ### Overriding the main agent's system prompt with SYSTEM.md
 
-To override the main agent's system prompt permanently — without passing `--agent` or `--agent-file` on every launch — write a `$KIMI_CODE_HOME/SYSTEM.md` file (default: `~/.kimi-code/SYSTEM.md`; it moves with `KIMI_CODE_HOME`). While the file exists and is non-empty, it replaces the built-in default main agent's system prompt in full — and only the prompt: the description, tool set, and sub-agent delegation allowlist are inherited from the built-in defaults. SYSTEM.md takes effect in every launch mode, including interactive TUI sessions.
+To override the default main agent permanently — without passing `--agent` or `--agent-file` on every launch — write a `$KIMI_CODE_HOME/SYSTEM.md` file (default: `~/.kimi-code/SYSTEM.md`; it moves with `KIMI_CODE_HOME`). A missing or empty file has no effect. A read failure falls back to the built-in prompt with a warning. SYSTEM.md takes effect in every launch mode, including interactive TUI sessions.
 
-SYSTEM.md is a plain Markdown body — no frontmatter is required or read. A missing or empty file has no effect, and a read failure falls back to the built-in prompt with a warning. Explicit intent still outranks it: a project-scoped same-name agent file declaring `override: true` and any file passed via `--agent-file` take precedence, and selecting another agent with `--agent` bypasses it entirely. Within the user scope itself, SYSTEM.md wins over a same-name file discovered in the `agents/` directories.
+How the file is parsed depends on its first line:
+
+- **Legacy body.** The file does not start with `---` followed by a YAML mapping. Only the prompt is replaced; description, tools, and the sub-agent allowlist stay on the built-in defaults. Frontmatter is not required or read.
+- **Upgraded profile.** The file starts with `---` and that fence parses as a YAML mapping. It loads as a normal agent file named `agent`, with `override` forced on. Fields you omit (`tools`, `disallowedTools`, `subagents`) still copy the built-in defaults; fields you declare take effect.
+
+Explicit intent still outranks it: a project-scoped same-name agent file declaring `override: true` and any file passed via `--agent-file` take precedence, and selecting another agent with `--agent` bypasses it entirely. Within the user scope itself, SYSTEM.md wins over a same-name file discovered in the `agents/` directories.
 
 Like the body of a regular agent file, SYSTEM.md is rendered as a template each time the prompt is built — `${var}` placeholders in the body are substituted from the live context:
 
@@ -267,7 +278,10 @@ Like the body of a regular agent file, SYSTEM.md is rendered as a template each 
 | `${shell}` | Shell name and path, for example `bash (\`/bin/bash\`)` |
 | `${now}` | Current time in ISO format |
 | `${additional_dirs_info}` | Additional directories added to the workspace; empty when there are none |
-| `${base_prompt}` | The default system prompt. Inside `SYSTEM.md` itself this is the built-in default; inside an agent file it is the effective default — the built-in default, or your `SYSTEM.md` override when present |
+| `${parent_prompt}` | The implicit parent prompt for this file. Same slot as `${base_prompt}` |
+| `${base_prompt}` | Alias of `${parent_prompt}`. Inside `SYSTEM.md` this is the built-in default; inside an agent file it is the effective default — the built-in default, or your `SYSTEM.md` override when present; inside a route it is the base profile |
+| `${builtin_prompt}` | The built-in default main prompt, ignoring `SYSTEM.md` |
+| `${delegation_context}` | Position-based handoff notice; empty for the main agent |
 | `${plugin_sections}` | A complete Plugin Instructions block contributed by enabled plugins; empty when no enabled plugin contributes instructions |
 
 Unknown variables stay verbatim, a bare `$` is never special, and a variable with no context value renders as an empty string. Four pre-composed blocks — `${windows_notes}`, `${additional_dirs_section}`, `${skills_section}`, and `${plugin_sections}` — render the matching built-in prompt section, or an empty string when it does not apply. The built-in default prompt already includes `${plugin_sections}`, so do not add it again when `${base_prompt}` already expands to that prompt. The variables are enough to rebuild the skeleton of the built-in prompt, for example:

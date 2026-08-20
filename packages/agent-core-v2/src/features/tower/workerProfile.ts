@@ -5,7 +5,6 @@ import {
 import {
   renderSystemPromptResult,
   skillActiveFor,
-  TASK_AGENT_ROLE_PREFIX,
 } from '#/app/agentProfileCatalog/profile-shared';
 import SUMMARY_CONTINUATION_PROMPT from '../../session/agentLifecycle/profile/summary-continuation.md?raw';
 
@@ -44,7 +43,6 @@ const TOWER_WORKER_TOOLS = [
 ] as const;
 
 const CODER_ROLE =
-  `${TASK_AGENT_ROLE_PREFIX}\n\n` +
   'Your final message is the entire handoff — the parent sees nothing else from your run. ' +
   'Make it technically complete: what you changed and why, the path of every file you touched, ' +
   'how you verified the change (tests or commands run, with results), and anything left undone ' +

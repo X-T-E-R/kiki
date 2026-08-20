@@ -193,6 +193,57 @@ describe('renderPromptTemplateResult', () => {
     expect(calls).toBe(1);
   });
 
+  it('treats ${parent_prompt} as an alias of ${base_prompt} and binds once', () => {
+    let calls = 0;
+    const basePrompt = (): SystemPromptRenderResult => {
+      calls += 1;
+      return {
+        text: 'PARENT',
+        environment: { cwd: '', date: { disclosed: false } },
+      };
+    };
+
+    expect(
+      renderPromptTemplateResult('wrap\n\n${parent_prompt}', {}, { skillActive: true }, basePrompt)
+        .text,
+    ).toBe('wrap\n\nPARENT');
+    expect(calls).toBe(1);
+
+    expect(
+      renderPromptTemplateResult(
+        'a=${parent_prompt} b=${base_prompt}',
+        {},
+        { skillActive: true },
+        basePrompt,
+      ).text,
+    ).toBe('a=PARENT b=PARENT');
+    expect(calls).toBe(2);
+  });
+
+  it('resolves ${builtin_prompt} from a separate callback', () => {
+    const result = renderPromptTemplateResult(
+      'parent=${parent_prompt} builtin=${builtin_prompt}',
+      {},
+      { skillActive: true },
+      () => ({
+        text: 'EFFECTIVE',
+        environment: { cwd: '', date: { disclosed: false } },
+      }),
+      () => ({
+        text: 'BUILTIN',
+        environment: { cwd: '', date: { disclosed: false } },
+      }),
+    );
+
+    expect(result.text).toBe('parent=EFFECTIVE builtin=BUILTIN');
+  });
+
+  it('keeps ${builtin_prompt} verbatim when no builtin callback is provided', () => {
+    expect(renderPromptTemplateResult('${builtin_prompt}', {}, { skillActive: true }).text).toBe(
+      '${builtin_prompt}',
+    );
+  });
+
   it('keeps ${base_prompt} verbatim when no base prompt is provided', () => {
     expect(renderPromptTemplateResult('${base_prompt}', {}, { skillActive: true }).text).toBe(
       '${base_prompt}',

@@ -162,8 +162,16 @@ export function parseAgentRouteFileText(
   };
 }
 
+function countParentPromptTokens(prompt: string): number {
+  return (
+    prompt.split('${base_prompt}').length -
+    1 +
+    (prompt.split('${parent_prompt}').length - 1)
+  );
+}
+
 function validatePrompt(mode: AgentProfileRoutePromptMode, prompt: string, path: string): void {
-  const count = prompt.split('${base_prompt}').length - 1;
+  const count = countParentPromptTokens(prompt);
   if (mode === 'inherit') {
     if (prompt.length !== 0) throw invalid(path, 'prompt_mode "inherit" requires an empty body');
     return;
@@ -171,12 +179,18 @@ function validatePrompt(mode: AgentProfileRoutePromptMode, prompt: string, path:
   if (prompt.length === 0) throw invalid(path, `prompt_mode "${mode}" requires a body`);
   if (mode === 'wrap') {
     if (count !== 1) {
-      throw invalid(path, 'prompt_mode "wrap" requires ${base_prompt} exactly once');
+      throw invalid(
+        path,
+        'prompt_mode "wrap" requires ${parent_prompt} (or ${base_prompt}) exactly once',
+      );
     }
     return;
   }
   if (count !== 0) {
-    throw invalid(path, `prompt_mode "${mode}" does not allow \${base_prompt} in the body`);
+    throw invalid(
+      path,
+      `prompt_mode "${mode}" does not allow \${parent_prompt} or \${base_prompt} in the body`,
+    );
   }
 }
 

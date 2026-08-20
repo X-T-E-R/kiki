@@ -37,6 +37,7 @@ import {
   getLiveSessionById,
   HostProcessError,
   IAgentLifecycleService,
+  IAgentProfileService,
   IHostRequestHeaders,
   ISessionManager,
   ISessionTodoService,
@@ -985,6 +986,101 @@ describe('SDKRpcClientV2 workspace trust', () => {
       const markers = await readdir(join(homeDir, 'workspace-trust'));
       expect(markers.length).toBe(1);
       expect(await readdir(workDir)).not.toContain('workspace-trust');
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
+describe('SDKRpcClientV2 createSession profile binding', () => {
+  it('applies create-time thinking and permission without a model source', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+    tempDirs.push(homeDir);
+    const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
+    tempDirs.push(workDir);
+    const harness = createKimiHarnessV2({ homeDir, identity: TEST_IDENTITY });
+    try {
+      const session = await harness.createSession({
+        id: 'ses_thinking_permission_no_model',
+        workDir,
+        thinking: 'low',
+        permission: 'auto',
+      });
+      await expect(session.getStatus()).resolves.toMatchObject({
+        thinkingEffort: 'low',
+        permission: 'auto',
+      });
+      expect(await sessionDirExists(homeDir, session.id)).toBe(true);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('binds a named agent profile when a default model is configured', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+    tempDirs.push(homeDir);
+    const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
+    tempDirs.push(workDir);
+    await writeFile(
+      join(homeDir, 'config.toml'),
+      `
+default_model = "kimi-test-model"
+
+[providers.local]
+type = "kimi"
+base_url = "https://example.test/v1"
+api_key = "sk-test"
+
+[models."kimi-test-model"]
+provider = "local"
+model = "kimi-test-model"
+max_context_size = 1000
+`,
+      'utf-8',
+    );
+    const agentDir = join(workDir, '.kimi-code', 'agents');
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(
+      join(agentDir, 'reviewer.md'),
+      '---\nname: reviewer\ndescription: Reviews code.\nsubagents:\n  - explore\n---\n\nReview the requested change.\n',
+      'utf-8',
+    );
+    const client = new SDKRpcClientV2({ homeDir, identity: TEST_IDENTITY });
+    try {
+      await client.createSession({
+        id: 'ses_named_profile',
+        workDir,
+        agentProfile: 'reviewer',
+      });
+      const handle = getLiveSessionById(client.engineAccessor, 'ses_named_profile');
+      const main = handle?.accessor.get(IAgentLifecycleService).get('main');
+      expect(main?.accessor.get(IAgentProfileService).data()).toMatchObject({
+        profileName: 'reviewer',
+        modelAlias: 'kimi-test-model',
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('does not persist a session when the requested agent profile is missing', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+    tempDirs.push(homeDir);
+    const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
+    tempDirs.push(workDir);
+    const harness = createKimiHarnessV2({ homeDir, identity: TEST_IDENTITY });
+    try {
+      await expect(
+        harness.createSession({
+          id: 'ses_missing_profile',
+          workDir,
+          agentProfile: 'missing-agent',
+        }),
+      ).rejects.toMatchObject({
+        name: 'KimiError',
+        code: 'agent.not_found',
+      });
+      expect(await sessionDirExists(homeDir, 'ses_missing_profile')).toBe(false);
     } finally {
       await harness.close();
     }

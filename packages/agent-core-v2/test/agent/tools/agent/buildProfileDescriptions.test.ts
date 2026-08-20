@@ -26,7 +26,7 @@ function profile(overrides: Partial<AgentProfile> = {}): AgentProfile {
     whenToUse: 'When the scope is named',
     modelAlias: 'gpt-5.6-sol',
     thinkingEffort: 'high',
-    recommendedModels: RECOMMENDATIONS,
+    modelProfiles: RECOMMENDATIONS,
     systemPrompt: () => '',
     ...overrides,
   });

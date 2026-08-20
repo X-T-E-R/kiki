@@ -130,7 +130,12 @@ export function applyOverlay(
   if (overlay === undefined || overlay.length === 0) return base;
   if (base.length === 0) return overlay;
   if (mode === 'prepend') return `${overlay}\n\n${base}`;
-  if (mode === 'wrap') return `${overlay}\n\n${base}\n\n${WRAP_CLOSE}`;
+  if (mode === 'wrap') {
+    if (overlay.includes('${profile_prompt}')) {
+      return overlay.replaceAll('${profile_prompt}', base);
+    }
+    return `${overlay}\n\n${base}\n\n${WRAP_CLOSE}`;
+  }
   if (mode === 'persona') {
     const rest = stripLeadingIdentityParagraph(base);
     return rest.length === 0 ? overlay : `${overlay}\n\n${rest}`;

@@ -61,6 +61,7 @@ export class PluginAgentProfileLoaderService
         { includeRoutes: this.flags.enabled(AGENT_PROFILE_ROUTES_FLAG_ID) },
       ),
       (context) => this.user.getDefaultProfile().renderSystemPrompt(context),
+      (context) => this.user.getBuiltinDefault().renderSystemPrompt(context),
     );
   }
 }

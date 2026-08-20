@@ -32,6 +32,7 @@ import {
   subagentModelSource,
 } from '#/session/subagent/configSection';
 import { assertProfileRouteBinding } from '#/session/subagent/profileRouteBinding';
+import { roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
 import {
   AgentSwarmToolInputSchema,
   IAgentSwarmTool,
@@ -247,10 +248,7 @@ export class AgentSwarmTool implements IAgentSwarmTool {
               thinkingEffort: targetProfile.thinkingEffort,
             },
             this.models,
-            {
-              allowedModels: targetProfile.allowedModels,
-              denyModels: targetProfile.denyModels,
-            },
+            roleConstraintsFromProfile(targetProfile),
           ),
           this.models,
         );

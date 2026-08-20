@@ -120,6 +120,7 @@ export interface BindAgentInput {
   readonly model?: string;
   readonly thinking?: string;
   readonly strictThinking?: boolean;
+  readonly delegationPosition?: 'main' | 'sub' | 'independent';
 }
 
 export interface IAgentProfileService {

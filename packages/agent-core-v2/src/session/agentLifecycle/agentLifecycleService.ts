@@ -57,6 +57,8 @@ import {
   type ForkAgentOptions,
   IAgentLifecycleService,
 } from './agentLifecycle';
+import { resolveDelegationPosition } from '#/agent/profile/delegationContext';
+import { resolveMainModelCandidate } from '#/agent/profile/mainModelCandidate';
 
 let nextAgentId = 0;
 
@@ -250,8 +252,12 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         `Agent profile route "${route.id}" locks thinking_effort to "${route.lockedThinkingEffort}"`,
       );
     }
-    const requestedAlias =
-      route.lockedModelAlias ?? binding.model ?? this.config.get<string>('defaultModel');
+    const requestedAlias = resolveMainModelCandidate({
+      inputModel: binding.model,
+      routeLockedAlias: route.lockedModelAlias,
+      profileModelAlias: selection.profile.modelAlias,
+      defaultModel: this.config.get<string>('defaultModel'),
+    }).alias;
     if (requestedAlias === undefined || requestedAlias === '') return;
     const alias = this.resolveModelId(requestedAlias);
     let model: Model;
@@ -353,7 +359,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       const profile = handle.accessor.get(IAgentProfileService).data();
       await this.sessionMetadata.registerAgent(agentId, {
         homedir: agentHomedir,
-        type: agentId === 'main' ? 'main' : opts.delegator?.kind === 'external' ? 'independent' : 'sub',
+        type: resolveDelegationPosition(agentId, opts.delegator),
         parentAgentId:
           agentId === 'main'
             ? undefined
@@ -406,7 +412,10 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     opts: CreateAgentOptions,
   ): Promise<void> {
     if (opts.binding !== undefined) {
-      await handle.accessor.get(IAgentProfileService).bind(opts.binding);
+      await handle.accessor.get(IAgentProfileService).bind({
+        ...opts.binding,
+        delegationPosition: resolveDelegationPosition(handle.id, opts.delegator),
+      });
     }
     const permissionMode = this.config.get<PermissionMode>(DEFAULT_PERMISSION_MODE_SECTION);
     const hasRestoredPermissionMode = handle.accessor

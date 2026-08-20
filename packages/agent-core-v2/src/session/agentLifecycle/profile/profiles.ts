@@ -3,7 +3,6 @@ import { registerAgentProfile } from '#/app/agentProfileCatalog/contribution';
 import {
   renderSystemPromptResult,
   skillActiveFor,
-  TASK_AGENT_ROLE_PREFIX,
 } from '#/app/agentProfileCatalog/profile-shared';
 
 import EXPLORE_ROLE from './explore-overlay.md?raw';
@@ -91,7 +90,6 @@ const EXPLORE_TOOLS = [
 ] as const;
 
 const CODER_ROLE =
-  `${TASK_AGENT_ROLE_PREFIX}\n\n` +
   'Your final message is the entire handoff — the parent sees nothing else from your run. ' +
   'Make it technically complete: what you changed and why, the path of every file you touched, ' +
   'how you verified the change (tests or commands run, with results), and anything left undone ' +

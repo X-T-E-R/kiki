@@ -78,6 +78,15 @@ describe('cognition file paths', () => {
     expect(wrapped).toContain('End of assignment');
   });
 
+  it('substitutes ${profile_prompt} in wrap overlays and does not eat ${base_prompt}', () => {
+    expect(applyOverlay('BASE', 'before ${profile_prompt} after', 'wrap')).toBe(
+      'before BASE after',
+    );
+    expect(applyOverlay('BASE', 'keep ${base_prompt}', 'wrap')).toBe(
+      'keep ${base_prompt}\n\nBASE\n\nEnd of assignment. Resume the thinking protocol above; it still governs reasoning.',
+    );
+  });
+
   it('replaces a leading You-are paragraph in persona mode', () => {
     const base = 'You are the frontend subagent.\n\n## Authority\nOwn the slice.';
     expect(applyOverlay(base, 'You are a helpful software engineer assistant.', 'persona')).toBe(

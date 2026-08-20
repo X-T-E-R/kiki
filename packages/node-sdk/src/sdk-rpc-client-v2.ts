@@ -1299,33 +1299,49 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
         );
       }
     }
-    const handle = await this.engineAccessor.get(ISessionManager).create({
-      sessionId: input.id,
-      workDir,
-      additionalDirs: input.additionalDirs,
-    });
-    // Wired before the optional main-agent materialization so a profile-bind
-    // warning (oversized AGENTS.md) reaches the listeners like v1's create.
-    this.wireSession(handle);
-    if (
-      input.model !== undefined ||
-      input.thinking !== undefined ||
-      input.permission !== undefined
-    ) {
-      const agent = await this.materializeMainAgent(handle, {
-        model: input.model,
-        thinking: input.thinking,
+    try {
+      return await this.withCreateSessionAgentFiles(input.agentFiles, async () => {
+        const mainAgentBinding = this.createSessionMainBinding(input);
+        const handle = await this.engineAccessor.get(ISessionManager).create({
+          sessionId: input.id,
+          workDir,
+          additionalDirs: input.additionalDirs,
+          mainAgentBinding,
+        });
+        // Wired before the optional main-agent materialization so a profile-bind
+        // warning (oversized AGENTS.md) reaches the listeners like v1's create.
+        this.wireSession(handle);
+        if (
+          mainAgentBinding === undefined &&
+          (input.thinking !== undefined || input.permission !== undefined)
+        ) {
+          const agent = await this.materializeMainAgent(
+            handle,
+            input.thinking === undefined ? undefined : { thinking: input.thinking },
+          );
+          if (
+            input.thinking !== undefined &&
+            agent.accessor.get(IAgentProfileService).data().profileName === undefined
+          ) {
+            agent.accessor.get(IAgentProfileService).setThinking(input.thinking);
+          }
+          if (input.permission !== undefined) {
+            agent.accessor.get(IAgentPermissionModeService).setMode(input.permission);
+          }
+        } else if (input.permission !== undefined) {
+          const agent = await ensureMainAgent(handle);
+          agent.accessor.get(IAgentPermissionModeService).setMode(input.permission);
+        }
+        if (input.metadata !== undefined) {
+          await this.klient.session(handle.id).update({ custom: { ...input.metadata } });
+        }
+        // v1 returns the caller's metadata verbatim on create (not the merged
+        // custom map a later listing would report), so override it here too.
+        return { ...(await this.liveSessionSummary(handle)), metadata: input.metadata };
       });
-      if (input.permission !== undefined) {
-        agent.accessor.get(IAgentPermissionModeService).setMode(input.permission);
-      }
+    } catch (error) {
+      this.mapCreateSessionProfileError(error);
     }
-    if (input.metadata !== undefined) {
-      await this.klient.session(handle.id).update({ custom: { ...input.metadata } });
-    }
-    // v1 returns the caller's metadata verbatim on create (not the merged
-    // custom map a later listing would report), so override it here too.
-    return { ...(await this.liveSessionSummary(handle)), metadata: input.metadata };
   }
 
   /**
@@ -1614,6 +1630,49 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
   // already exist (v1's `AGENT_NOT_FOUND`).
   // -----------------------------------------------------------------------
 
+  private createSessionMainBinding(
+    input: CreateSessionOptions,
+  ):
+    | {
+        readonly profile: string;
+        readonly model?: string;
+        readonly thinking?: string;
+      }
+    | undefined {
+    if (input.model === undefined && input.agentProfile === undefined) {
+      return undefined;
+    }
+    return {
+      profile: input.agentProfile ?? DEFAULT_AGENT_PROFILE_NAME,
+      model: input.model,
+      thinking: input.thinking,
+    };
+  }
+
+  private async withCreateSessionAgentFiles<T>(
+    agentFiles: readonly string[] | undefined,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    if (agentFiles === undefined) return run();
+    const args = this.engineAccessor.get(IBootstrapService).args as {
+      agentFiles?: readonly string[];
+    };
+    const previous = args.agentFiles;
+    args.agentFiles = agentFiles;
+    try {
+      return await run();
+    } finally {
+      args.agentFiles = previous;
+    }
+  }
+
+  private mapCreateSessionProfileError(error: unknown): never {
+    if (error instanceof ProfileError && error.code === ProfileErrors.codes.PROFILE_UNKNOWN) {
+      throw new KimiError(ErrorCodes.AGENT_NOT_FOUND, error.message);
+    }
+    throw error;
+  }
+
   /**
    * The session's materialized main agent with v1's eager default binding
    * applied: a freshly created agent whose profile is still unbound gets the
@@ -1625,7 +1684,7 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
    */
   private async materializeMainAgent(
     session: ISessionScopeHandle,
-    binding?: { readonly model?: string; readonly thinking?: string },
+    binding?: { readonly profile?: string; readonly model?: string; readonly thinking?: string },
   ): Promise<IAgentScopeHandle> {
     await this.modelReady;
     const agent = await ensureMainAgent(session);
@@ -1633,13 +1692,13 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     if (binding !== undefined || profile.data().profileName === undefined) {
       try {
         await profile.bind({
-          profile: DEFAULT_AGENT_PROFILE_NAME,
+          profile: binding?.profile ?? DEFAULT_AGENT_PROFILE_NAME,
           model: binding?.model,
           thinking: binding?.thinking,
         });
       } catch (error) {
         if (
-          binding === undefined &&
+          (binding === undefined || binding.model === undefined) &&
           error instanceof ProfileError &&
           error.code === ProfileErrors.codes.MODEL_NOT_CONFIGURED
         ) {

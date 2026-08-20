@@ -44,6 +44,8 @@ async function writeTestModelConfig(homeDir: string, modelName = 'kimi-test-mode
   await writeFile(
     join(homeDir, 'config.toml'),
     `
+default_model = "${modelName}"
+
 [providers.local]
 type = "kimi"
 base_url = "https://example.test/v1"

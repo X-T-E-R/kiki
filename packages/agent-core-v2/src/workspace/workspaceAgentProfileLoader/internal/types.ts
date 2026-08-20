@@ -10,7 +10,7 @@
 import type {
   AgentModelPreference,
   AgentProfileRouteDefinition,
-  AgentRecommendedModel,
+  AgentModelProfile,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { SkippedAgentFile } from '#/app/agentProfileCatalog/agentProfileContribution';
 import type { RequestParams, ServiceTier } from '#/kosong/contract/provider';
@@ -29,6 +29,7 @@ export interface AgentFileDefinition {
   readonly description: string;
   readonly whenToUse?: string;
   readonly override: boolean;
+  readonly main?: boolean;
   readonly tools?: readonly string[];
   readonly disallowedTools?: readonly string[];
   readonly subagents?: readonly string[];
@@ -37,12 +38,14 @@ export interface AgentFileDefinition {
   readonly thinkingEffort?: string;
   readonly allowedModels?: readonly string[];
   readonly denyModels?: readonly string[];
-  readonly recommendedModels?: readonly AgentRecommendedModel[];
+  readonly allowedEfforts?: readonly string[];
+  readonly modelProfiles?: readonly AgentModelProfile[];
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;
   readonly prompt: string;
   readonly path: string;
   readonly source: AgentFileSource;
+  readonly delegationNotice?: 'auto' | 'off';
 }
 
 export interface AgentFileDiscoveryResult {

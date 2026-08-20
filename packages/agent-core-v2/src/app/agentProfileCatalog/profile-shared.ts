@@ -102,18 +102,30 @@ export function renderPromptTemplateResult(
   context: AgentProfileContext,
   options: { readonly skillActive: boolean },
   basePrompt?: (context: AgentProfileContext) => SystemPromptRenderResult,
+  builtinPrompt?: (context: AgentProfileContext) => SystemPromptRenderResult,
 ): SystemPromptRenderResult {
   const vars = systemPromptVars(context, options);
   let baseResult: SystemPromptRenderResult | undefined;
-  if (basePrompt !== undefined && template.includes('${base_prompt}')) {
+  let builtinResult: SystemPromptRenderResult | undefined;
+  const wantsParent =
+    template.includes('${base_prompt}') || template.includes('${parent_prompt}');
+  if (basePrompt !== undefined && wantsParent) {
     baseResult = basePrompt(context);
     vars['base_prompt'] = baseResult.text;
+    vars['parent_prompt'] = baseResult.text;
+  }
+  if (builtinPrompt !== undefined && template.includes('${builtin_prompt}')) {
+    builtinResult = builtinPrompt(context);
+    vars['builtin_prompt'] = builtinResult.text;
   }
   return {
     text: renderPrompt(template, vars),
     environment: mergeEnvironmentDisclosure(
-      environmentForTemplate(template, context),
-      baseResult?.environment,
+      mergeEnvironmentDisclosure(
+        environmentForTemplate(template, context),
+        baseResult?.environment,
+      ),
+      builtinResult?.environment,
     ),
   };
 }

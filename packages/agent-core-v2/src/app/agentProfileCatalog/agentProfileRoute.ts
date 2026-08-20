@@ -1,8 +1,10 @@
 /**
  * `agentProfileCatalog` domain — pure named profile-route composition.
  *
- * Composes a route over its canonical base profile while retaining every
- * base authority ceiling and rendering the base prompt exactly once.
+ * Composes a route over its canonical base profile. `tools`, `disallowedTools`,
+ * and `subagents` replace the base when the route declares them and inherit
+ * otherwise. Model locks, service tier, and request params keep their existing
+ * merge rules. The base prompt is rendered exactly once.
  */
 
 import type {
@@ -16,12 +18,16 @@ export function resolveAgentProfileRoute(
   route: AgentProfileRouteDefinition,
   base: AgentProfile,
 ): ResolvedAgentProfileRoute {
-  const toolAllowPolicies = [base.tools, ...(base.toolAllowPolicies ?? []), route.tools].filter(
-    (policy): policy is readonly string[] => policy !== undefined,
-  );
-  const tools = base.tools ?? route.tools;
-  const disallowedTools = union(base.disallowedTools, route.disallowedTools);
-  const subagents = intersectAllowlist(base.subagents, route.subagents);
+  const tools = route.tools !== undefined ? route.tools : base.tools;
+  const disallowedTools =
+    route.disallowedTools !== undefined ? route.disallowedTools : base.disallowedTools;
+  const subagents = route.subagents !== undefined ? route.subagents : base.subagents;
+  const toolAllowPolicies =
+    route.tools !== undefined
+      ? undefined
+      : ([base.tools, ...(base.toolAllowPolicies ?? [])].filter(
+          (policy): policy is readonly string[] => policy !== undefined,
+        ));
   const serviceTier =
     route.serviceTier === undefined
       ? base.serviceTier
@@ -43,7 +49,10 @@ export function resolveAgentProfileRoute(
     ...base,
     routeId: route.id,
     tools,
-    toolAllowPolicies: toolAllowPolicies.length === 0 ? undefined : toolAllowPolicies,
+    toolAllowPolicies:
+      toolAllowPolicies === undefined || toolAllowPolicies.length === 0
+        ? undefined
+        : toolAllowPolicies,
     disallowedTools,
     subagents,
     modelPreference:
@@ -56,9 +65,9 @@ export function resolveAgentProfileRoute(
       if (route.promptMode === 'inherit') return base.renderSystemPrompt(context);
       const template =
         route.promptMode === 'prepend'
-          ? `${route.prompt}\n\n\${base_prompt}`
+          ? `${route.prompt}\n\n\${parent_prompt}`
           : route.promptMode === 'append'
-            ? `\${base_prompt}\n\n${route.prompt}`
+            ? `\${parent_prompt}\n\n${route.prompt}`
             : route.prompt;
       const skillActive =
         [effective.tools, ...(effective.toolAllowPolicies ?? [])]
@@ -87,23 +96,4 @@ export function resolveAgentProfileRoute(
     lockedModelAlias: route.modelAlias,
     lockedThinkingEffort: route.thinkingEffort,
   };
-}
-
-function union(
-  base: readonly string[] | undefined,
-  route: readonly string[] | undefined,
-): readonly string[] | undefined {
-  if (base === undefined && route === undefined) return undefined;
-  return [...new Set([...(base ?? []), ...(route ?? [])])];
-}
-
-function intersectAllowlist(
-  base: readonly string[] | undefined,
-  route: readonly string[] | undefined,
-): readonly string[] | undefined {
-  if (route === undefined) return base;
-  if (base === undefined) return route;
-  if (base.includes('*')) return route;
-  if (route.includes('*')) return base;
-  return route.filter((name) => base.includes(name));
 }

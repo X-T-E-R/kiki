@@ -51,14 +51,33 @@ describe('parseAgentFileText', () => {
     expect(def.modelPreference).toBeUndefined();
     expect(def.serviceTier).toBeUndefined();
     expect(def.requestParams).toBeUndefined();
-    expect(def.recommendedModels).toBeUndefined();
+    expect(def.modelProfiles).toBeUndefined();
     expect(def.allowedModels).toBeUndefined();
     expect(def.denyModels).toBeUndefined();
+    expect(def.allowedEfforts).toBeUndefined();
     expect(def.tools).toBeUndefined();
     expect(def.disallowedTools).toBeUndefined();
     expect(def.subagents).toBeUndefined();
     expect(def.whenToUse).toBeUndefined();
     expect(def.prompt).toBe('body');
+    expect(def.main).toBeUndefined();
+    expect(def.delegationNotice).toBeUndefined();
+  });
+
+  it('parses main: true as a curation flag', () => {
+    const def = parse('---\nname: solo\ndescription: d\nmain: true\n---\n\nbody\n');
+    expect(def.main).toBe(true);
+  });
+
+  it('parses delegation_notice off', () => {
+    const def = parse('---\nname: solo\ndescription: d\ndelegation_notice: off\n---\n\nbody\n');
+    expect(def.delegationNotice).toBe('off');
+  });
+
+  it('rejects an unsupported delegation_notice', () => {
+    expect(() =>
+      parse('---\nname: solo\ndescription: d\ndelegation_notice: always\n---\n\nbody\n'),
+    ).toThrow(/"delegation_notice"/);
   });
 
   it('parses a symbolic model preference', () => {
@@ -105,7 +124,7 @@ body
 
     expect(def.modelAlias).toBe('gpt-5.6-sol');
     expect(def.thinkingEffort).toBe('high');
-    expect(def.recommendedModels).toEqual([
+    expect(def.modelProfiles).toEqual([
       {
         alias: 'axon-message/grok-4.6',
         when: 'Scope and acceptance checks are already named and a fast decisive pass beats waiting.',
@@ -134,7 +153,7 @@ recommended_models:
 body
 `);
 
-    expect(def.recommendedModels).toEqual([
+    expect(def.modelProfiles).toEqual([
       { alias: 'shared-model', when: 'Fast pass.', thinkingEffort: 'low' },
       { alias: 'shared-model', when: 'Careful pass.', thinkingEffort: 'high' },
     ]);
@@ -164,6 +183,117 @@ body
     expect(() => parse(`---\nname: solo\ndescription: d\n${field}\n---\n\nbody\n`)).toThrow(
       /"recommended_models"/,
     );
+  });
+
+  it('parses model_profiles with prompt delta and allowed_efforts', () => {
+    const def = parse(`---
+name: solo
+description: d
+model_profiles:
+  - alias: k3-256k
+    when: System-level reasoning.
+    thinking_effort: max
+    allowed_efforts: [max]
+    prompt_mode: prepend
+    prompt: |
+      Reason at the system level.
+---
+
+body
+`);
+
+    expect(def.modelProfiles).toEqual([
+      {
+        alias: 'k3-256k',
+        when: 'System-level reasoning.',
+        thinkingEffort: 'max',
+        allowedEfforts: ['max'],
+        promptMode: 'prepend',
+        prompt: 'Reason at the system level.',
+      },
+    ]);
+  });
+
+  it('accepts wrap prompt with parent_prompt exactly once', () => {
+    const def = parse(`---
+name: solo
+description: d
+model_profiles:
+  - alias: k3-256k
+    when: wrap it
+    prompt_mode: wrap
+    prompt: |
+      BEFORE
+      \${parent_prompt}
+      AFTER
+---
+
+body
+`);
+
+    expect(def.modelProfiles?.[0]).toMatchObject({
+      promptMode: 'wrap',
+      prompt: 'BEFORE\n${parent_prompt}\nAFTER',
+    });
+  });
+
+  it('rejects wrap prompt without a parent token', () => {
+    expect(() =>
+      parse(`---
+name: solo
+description: d
+model_profiles:
+  - alias: k3-256k
+    when: wrap it
+    prompt_mode: wrap
+    prompt: no parent
+---
+
+body
+`),
+    ).toThrow(/exactly once/);
+  });
+
+  it('warns once when only the deprecated recommended_models key is present', () => {
+    const warnings: string[] = [];
+    const def = parseAgentFileText({
+      path: '/tmp/agents/reviewer.md',
+      source: 'project',
+      text: '---\nname: solo\ndescription: d\nrecommended_models:\n  - alias: other-model\n    when: now\n---\n\nbody\n',
+      warn: (message) => warnings.push(message),
+    });
+
+    expect(def.modelProfiles).toEqual([{ alias: 'other-model', when: 'now' }]);
+    expect(warnings).toEqual([
+      expect.stringContaining('recommended_models" in /tmp/agents/reviewer.md is deprecated'),
+    ]);
+  });
+
+  it('prefers model_profiles and warns when both keys are present', () => {
+    const warnings: string[] = [];
+    const def = parseAgentFileText({
+      path: '/tmp/agents/reviewer.md',
+      source: 'project',
+      text: `---
+name: solo
+description: d
+model_profiles:
+  - alias: new-model
+    when: new
+recommended_models:
+  - alias: old-model
+    when: old
+---
+
+body
+`,
+      warn: (message) => warnings.push(message),
+    });
+
+    expect(def.modelProfiles).toEqual([{ alias: 'new-model', when: 'new' }]);
+    expect(warnings).toEqual([
+      expect.stringContaining('using "model_profiles"'),
+    ]);
   });
 
   it.each(['auto', 'default', 'flex', 'priority'] as const)(
@@ -530,6 +660,19 @@ describe('agentProfileFromFile', () => {
     expect(profile.systemPrompt({})).toBe('extra instructions\n\nBASE_PROMPT');
   });
 
+  it('embeds the effective default prompt via ${parent_prompt} and the builtin via ${builtin_prompt}', () => {
+    const profile = agentProfileFromFile(
+      { ...base, prompt: 'parent=${parent_prompt} builtin=${builtin_prompt}' },
+      basePrompt,
+      () => ({
+        text: 'BUILTIN_PROMPT',
+        environment: { cwd: '', date: { disclosed: false } },
+      }),
+    );
+
+    expect(profile.systemPrompt({})).toBe('parent=BASE_PROMPT builtin=BUILTIN_PROMPT');
+  });
+
   it('forwards the base prompt environment disclosure through renderSystemPrompt', () => {
     const profile = agentProfileFromFile(
       { ...base, prompt: 'extra instructions\n\n${base_prompt}' },
@@ -611,16 +754,16 @@ describe('agentProfileFromFile', () => {
     });
   });
 
-  it('passes recommended models through without injecting them into the prompt', () => {
-    const recommendedModels = [
+  it('passes model profiles through without injecting when into the prompt', () => {
+    const modelProfiles = [
       { alias: 'other-model', when: 'When the task is already scoped.' },
     ];
     const profile = agentProfileFromFile(
-      { ...base, recommendedModels, prompt: 'PROMPT_BODY' },
+      { ...base, modelProfiles, prompt: 'PROMPT_BODY' },
       basePrompt,
     );
 
-    expect(profile.recommendedModels).toEqual(recommendedModels);
+    expect(profile.modelProfiles).toEqual(modelProfiles);
     expect(profile.systemPrompt({})).toBe('PROMPT_BODY');
     expect(profile.systemPrompt({})).not.toContain('already scoped');
   });
@@ -633,6 +776,30 @@ describe('agentProfileFromFile', () => {
 
     expect(profile.allowedModels).toEqual(['fast-model']);
     expect(profile.denyModels).toEqual(['heavy-model']);
+  });
+
+  it('passes allowed_efforts through', () => {
+    const profile = agentProfileFromFile(
+      { ...base, allowedEfforts: ['max', 'high'] },
+      basePrompt,
+    );
+
+    expect(profile.allowedEfforts).toEqual(['max', 'high']);
+  });
+
+  it('passes main through', () => {
+    const profile = agentProfileFromFile({ ...base, main: true }, basePrompt);
+
+    expect(profile.main).toBe(true);
+  });
+
+  it('passes delegation_notice through', () => {
+    const profile = agentProfileFromFile(
+      { ...base, delegationNotice: 'off' },
+      basePrompt,
+    );
+
+    expect(profile.delegationNotice).toBe('off');
   });
 
   it('treats an explicit file as an override intent', () => {

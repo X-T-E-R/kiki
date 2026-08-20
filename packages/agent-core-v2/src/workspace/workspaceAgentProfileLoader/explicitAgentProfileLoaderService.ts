@@ -57,6 +57,7 @@ export class ExplicitAgentProfileLoaderService
             warn: (message) => this.log.warn(message),
           }),
           (context) => this.user.getDefaultProfile().renderSystemPrompt(context),
+          (context) => this.user.getBuiltinDefault().renderSystemPrompt(context),
         ),
       );
     }
