@@ -11,6 +11,7 @@ import {
 } from '#/_base/di/scope';
 import { unwrapErrorCause } from '#/_base/errors/errors';
 import { AsyncEmitter, Emitter, type Event, type IWaitUntil } from '#/_base/event';
+import { drainLogCloses } from '#/_base/log/logService';
 import { DEFAULT_PLAN_MODE_SECTION } from '#/features/plan/configSection';
 import { IAgentPlanService } from '#/features/plan/plan';
 import { LifecycleScope } from '#/app/scopes';
@@ -493,9 +494,11 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     this.sessions.delete(sessionId);
     await this.drainAgents(handle);
     await this.persistUsage(handle, usageFallback);
+    await this.appendLogStore.drainRetirements();
     await drainSessionMetadataWrites();
     await this.indexMirror.drain();
     handle.dispose();
+    await drainLogCloses();
     await this.releaseSessionLock(sessionId);
     this._onDidCloseSession.fire({ sessionId });
   }
@@ -508,12 +511,14 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const usageFallback = aggregateSessionUsage(handle);
     await this.drainAgents(handle);
     await this.persistUsage(handle, usageFallback);
+    await this.appendLogStore.drainRetirements();
     this.event.publish(new SessionArchived({ payload: { sessionId } }));
     await this.announceWillClose({ sessionId, handle, reason: 'archive' });
     this.sessions.delete(sessionId);
     await drainSessionMetadataWrites();
     await this.indexMirror.drain();
     handle.dispose();
+    await drainLogCloses();
     await this.releaseSessionLock(sessionId);
     this._onDidArchiveSession.fire({ sessionId });
   }
