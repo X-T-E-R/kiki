@@ -77,7 +77,7 @@ export async function setSessionArchivedBatch(
     try {
       const manager = accessor.get(ISessionManager);
       return await manager.withLifecycleSerialization(id, async (unguarded) => {
-        await manager.whenResumeSettled(id);
+        await manager.whenResumeSettled(id).catch(() => undefined);
         const live = getLiveSessionById(accessor, id);
         if (live !== undefined) {
           if (archived) await unguarded.archive();
