@@ -7,6 +7,7 @@ import {
   modelCatalogItemSchema,
   providerCatalogItemSchema,
   providerCatalogStatusSchema,
+  requestIdentityPolicySchema,
   setDefaultModelResponseSchema,
   type ModelCatalogItem,
   type ProviderCatalogItem,
@@ -26,6 +27,10 @@ describe('model catalog schemas', () => {
     type: 'kimi',
     base_url: 'https://api.example.test/v1',
     default_model: 'k2',
+    request_identity: {
+      preset: 'grok_build_compatible',
+      overrides: { client: { user_agent: 'grok_build' } },
+    },
     has_api_key: true,
     status: 'connected',
     models: ['k2'],
@@ -51,6 +56,16 @@ describe('model catalog schemas', () => {
   it('round-trips a provider catalog item', () => {
     expect(providerCatalogItemSchema.parse(provider)).toEqual(provider);
     expect(getProviderResponseSchema.parse(provider)).toEqual(provider);
+  });
+
+  it('rejects unknown request-identity fields recursively', () => {
+    expect(requestIdentityPolicySchema.safeParse({ preset: 'none', future_root: true }).success).toBe(false);
+    expect(
+      requestIdentityPolicySchema.safeParse({
+        preset: 'none',
+        overrides: { request: { future_axis: 'value' } },
+      }).success,
+    ).toBe(false);
   });
 
   it('round-trips list responses and set-default response', () => {

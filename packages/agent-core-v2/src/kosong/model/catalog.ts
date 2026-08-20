@@ -7,6 +7,10 @@ import type { TokenUsage } from '#/kosong/contract/usage';
 import type { Protocol, ProtocolProviderOptions } from '#/kosong/protocol/protocol';
 
 import type { ProviderConfig } from '../provider/provider';
+import {
+  RequestIdentityPolicyWireSchema,
+  requestIdentityToWire,
+} from '../requestIdentity/requestIdentityPolicy';
 
 import type { ModelInspection } from './inspection';
 import type { ModelRecord } from './model';
@@ -85,6 +89,7 @@ export const providerCatalogItemSchema = z.object({
   type: z.string().min(1),
   base_url: z.string().min(1).optional(),
   default_model: z.string().min(1).optional(),
+  request_identity: RequestIdentityPolicyWireSchema.optional(),
   request_attribution: z.enum(['codex', 'kimi', 'kiki', 'none']).optional(),
   request_originator: z.string().optional(),
   has_api_key: z.boolean(),
@@ -152,6 +157,7 @@ export function toProtocolProvider(
     type: provider.type ?? 'openai',
     base_url: provider.baseUrl,
     default_model: defaultModel,
+    request_identity: requestIdentityToWire(provider.requestIdentity),
     request_attribution: provider.requestAttribution,
     request_originator: provider.requestOriginator,
     has_api_key: credential.hasApiKey,

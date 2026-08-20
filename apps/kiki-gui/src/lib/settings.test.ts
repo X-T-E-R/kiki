@@ -70,6 +70,8 @@ const providerDraft = (patch: Partial<ProviderDraft> = {}): ProviderDraft => ({
   clearApiKey: false,
   requestAttribution: 'auto',
   requestOriginator: '',
+  requestIdentityChoice: 'auto',
+  requestIdentityOverridesJson: '',
   models: [
     {
       model: 'chat',
@@ -316,6 +318,60 @@ describe('settings persistence and validation', () => {
     expect(draft?.models[0]?.model).toBe('chat');
     expect(draft?.requestAttribution).toBe('kiki');
     expect(draft?.requestOriginator).toBe('my-ide');
+    expect(draft?.requestIdentityChoice).toBe('legacy_kiki');
+  });
+
+  it('round-trips authored request identity presets and advanced overrides', async () => {
+    const draft = providerDraftFromCatalog(
+      {
+        id: 'example',
+        type: 'openai_responses',
+        request_identity: {
+          preset: 'codex_compatible',
+          overrides: { client: { user_agent: 'codex' } },
+        },
+        has_api_key: true,
+        status: 'connected',
+        models: ['example/chat'],
+      },
+      [{ provider: 'example', model: 'example/chat', max_context_size: 128000 }],
+    );
+    expect(draft?.requestIdentityChoice).toBe('codex_compatible');
+    expect(JSON.parse(draft?.requestIdentityOverridesJson ?? '')).toEqual({
+      client: { user_agent: 'codex' },
+    });
+
+    let body: Record<string, unknown> | undefined;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      body = JSON.parse(init?.body as string) as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        code: 0,
+        msg: 'success',
+        data: { provider: { id: 'example', type: 'openai_responses', has_api_key: true, status: 'connected' } },
+      }));
+    }));
+    await replaceProvider(
+      { url: 'http://127.0.0.1:8080', token: 'token' },
+      'example',
+      draft!,
+    );
+    expect(body?.['request_identity']).toEqual({
+      preset: 'codex_compatible',
+      overrides: { client: { user_agent: 'codex' } },
+    });
+    expect(body).not.toHaveProperty('request_attribution');
+    expect(body).not.toHaveProperty('request_originator');
+  });
+
+  it('rejects malformed advanced request identity JSON without saving', () => {
+    expect(
+      validateProviderDraft(
+        providerDraft({
+          requestIdentityChoice: 'grok_build_compatible',
+          requestIdentityOverridesJson: '{',
+        }),
+      )?.key,
+    ).toBe('val.providerRequestIdentity');
   });
 
   it('uses the provider PUT wire and omits a blank write-once secret', async () => {

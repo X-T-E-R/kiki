@@ -3,8 +3,13 @@ import { z } from 'zod';
 import { createDecorator, type ServicesAccessor } from '#/_base/di/instantiation';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { Error2, ErrorCodes } from '#/errors';
-import type { AgentTool } from '#/tool/toolContract';
-import { ToolAccesses, type ExecutableToolContext, type ExecutableToolResult, type ToolExecution } from '#/tool/toolContract';
+import {
+  ToolAccesses,
+  type AgentTool,
+  type ExecutableToolContext,
+  type ExecutableToolResult,
+  type ToolExecution,
+} from '#/tool/toolContract';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { IAgentTaskService } from '#/agent/task/task';
@@ -14,7 +19,7 @@ import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
-import { labelsFromAgentMeta, subagentLabels, subagentParentAgentId } from '#/session/agentLifecycle/subagentMetadata';
+import { labelsFromAgentMeta, requestIdentitySpawnLabels, subagentLabels, subagentParentAgentId } from '#/session/agentLifecycle/subagentMetadata';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
@@ -341,6 +346,7 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
         log: this.log,
       });
       const delegator = { kind: 'agent' as const, agentId: this.callerAgentId };
+      const callerMeta = (await this.metadata.read()).agents?.[this.callerAgentId];
       if (!(await this.collaborationRegistry.reserve(taskName, delegator))) return failure(`Named agent "${taskName}" already exists in this session.`);
 
       taskId = this.tasks.allocateTaskId?.('agent');
@@ -351,7 +357,9 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
         runtimeId: runtimeLease.runtime.identity.runtimeId,
         delegator: { kind: 'agent', agentId: this.callerAgentId },
         labels: withSubagentBindingMode(
-          { ...subagentLabels(this.callerAgentId), [COLLABORATION_TASK_NAME_LABEL]: taskName,
+          { ...subagentLabels(this.callerAgentId),
+            ...requestIdentitySpawnLabels(this.callerAgentId, context.turnId, callerMeta),
+            [COLLABORATION_TASK_NAME_LABEL]: taskName,
             [COLLABORATION_AGENT_TYPE_LABEL]: selectedProfile.name, [COLLABORATION_LATEST_TASK_LABEL]: taskId },
           subagentBindingMode(binding),
         ), userLabel: taskName });

@@ -11,6 +11,11 @@
 
 import { ChatProviderError } from '#/kosong/contract/errors';
 import type { ProviderRequestAuth } from '#/kosong/contract/provider';
+import {
+  SUPPRESS_REQUEST_IDENTITY_HEADER,
+  SUPPRESS_USER_AGENT_HEADER,
+} from '#/kosong/requestIdentity/requestIdentityProjector';
+import { REQUEST_IDENTITY_RESERVED_HEADERS } from '#/kosong/requestIdentity/requestIdentityPolicy';
 
 export function requireProviderApiKey(
   providerName: string,
@@ -74,3 +79,24 @@ export function resolveAuthBackedClient<TClient>(
   }
   return build(auth);
 }
+
+export const requestIdentityFetch: typeof fetch = async (input, init) => {
+  const request = new Request(input, init);
+  const suppressIdentity = request.headers.has(SUPPRESS_REQUEST_IDENTITY_HEADER);
+  if (!suppressIdentity && !request.headers.has(SUPPRESS_USER_AGENT_HEADER)) {
+    return globalThis.fetch(request);
+  }
+  const headers = new Headers(request.headers);
+  headers.delete(SUPPRESS_USER_AGENT_HEADER);
+  headers.delete(SUPPRESS_REQUEST_IDENTITY_HEADER);
+  headers.delete('user-agent');
+  if (suppressIdentity) {
+    for (const name of REQUEST_IDENTITY_RESERVED_HEADERS) headers.delete(name);
+    const names: string[] = [];
+    headers.forEach((_value, name) => names.push(name));
+    for (const name of names) {
+      if (name.startsWith('x-msh-')) headers.delete(name);
+    }
+  }
+  return globalThis.fetch(new Request(request, { headers }));
+};

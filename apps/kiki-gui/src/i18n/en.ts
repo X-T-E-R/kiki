@@ -851,6 +851,21 @@ export const en = {
   'st.providers.attribution.none': 'None (no attribution headers)',
   'st.providers.attributionHint':
     'Which session/agent lineage headers the runtime adds to every request to this provider.',
+  'st.providers.requestIdentity': 'Request identity',
+  'st.providers.requestIdentity.auto': 'Auto (legacy provider-family default)',
+  'st.providers.requestIdentity.codex_compatible': 'Codex-compatible (Responses only)',
+  'st.providers.requestIdentity.grok_build_compatible': 'Grok Build-compatible',
+  'st.providers.requestIdentity.kiki': 'Kiki',
+  'st.providers.requestIdentity.none': 'None (no request identity)',
+  'st.providers.requestIdentity.legacy_codex': 'Legacy Codex attribution',
+  'st.providers.requestIdentity.legacy_kimi': 'Legacy Kimi attribution',
+  'st.providers.requestIdentity.legacy_kiki': 'Legacy Kiki attribution',
+  'st.providers.requestIdentity.legacy_none': 'Legacy none attribution',
+  'st.providers.requestIdentityHint':
+    'Select request identity semantics. Compatible presets emulate identity fields, not the client transport.',
+  'st.providers.requestIdentityAdvanced': 'Advanced overrides (JSON)',
+  'st.providers.requestIdentityAdvancedHint':
+    'Optional orthogonal policy overrides. Leave blank to use the complete preset.',
   'st.providers.originator': 'Originator header',
   'st.providers.originatorPlaceholder': 'codex_cli_rs',
   'st.providers.originatorHint':
@@ -1212,6 +1227,7 @@ export const en = {
   'val.providerId':
     'Provider ID must start with a letter or digit and use only letters, digits, spaces, - or _.',
   'val.providerProtocol': 'Choose a supported provider protocol.',
+  'val.providerRequestIdentity': 'Request identity overrides must be a valid JSON object.',
   'val.baseUrlAbsolute': 'Base URL must be a valid absolute URL.',
   'val.baseUrlHttp': 'Base URL must use http or https.',
   'val.baseUrlEnv': 'Base URL cannot contain an environment-variable placeholder.',

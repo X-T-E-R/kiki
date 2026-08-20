@@ -94,6 +94,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   for (const key of ENV_KEYS) {
     const value = envSnapshot[key];
     if (value === undefined) {
@@ -103,6 +104,20 @@ afterEach(() => {
     }
   }
 });
+
+async function captureRejectedFetch(run: () => Promise<unknown>): Promise<Request> {
+  let captured: Request | undefined;
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    captured = new Request(input, init);
+    return new Response(JSON.stringify({ error: { message: 'stop', type: 'invalid_request_error' } }), {
+      status: 400,
+      headers: { 'content-type': 'application/json' },
+    });
+  }));
+  await run().catch(() => undefined);
+  if (captured === undefined) throw new Error('fetch was not called');
+  return captured;
+}
 
 const registry = new ProtocolAdapterRegistry();
 
@@ -282,6 +297,209 @@ describe('per-request header attribution', () => {
       'x-kiki-session-id': 'session-1',
       'x-kiki-agent-id': 'agent-1',
     });
+  });
+});
+
+describe('request identity final fetch projection', () => {
+  it('preserves the legacy raw-session cache input on OpenAI Chat wire', async () => {
+    const provider = new OpenAILegacyChatProvider({
+      model: 'gpt-4o',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test/v1',
+    });
+    const body = await captureOpenAIBody(provider, { cacheKey: 'raw-session-example' });
+    expect(body['prompt_cache_key']).toBe('raw-session-example');
+  });
+
+  it('fails closed when a custom SDK client bypasses final User-Agent suppression', async () => {
+    const provider = new OpenAIResponsesChatProvider({
+      model: 'gpt-5',
+      clientFactory: () => ({ responses: { create: vi.fn() } }) as never,
+    });
+    const failure = await provider.generate('', [], PROBE_HISTORY, {
+      requestIdentity: { suppressUserAgent: true },
+    }).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ code: 'request_identity.unsupported' });
+  });
+
+  it('captures the Codex turn-state response header for the current logical turn', async () => {
+    const provider = new OpenAIResponsesChatProvider({ model: 'gpt-5', apiKey: 'sk-probe' });
+    const client = sdkClient(provider) as { responses: { create: unknown } };
+    client.responses.create = vi.fn().mockImplementation(() => {
+      const promise = Promise.resolve(responsesEventStream()) as Promise<unknown> & {
+        withResponse: () => Promise<{ data: unknown; response: Response }>;
+      };
+      promise.withResponse = async () => ({
+        data: responsesEventStream(),
+        response: new Response(null, { headers: { 'x-codex-turn-state': 'sticky-state' } }),
+      });
+      return promise;
+    });
+    let state: string | null = null;
+    await drain(await provider.generate('', [], PROBE_HISTORY, {
+      requestIdentity: {
+        onResponseHeaders: (headers) => {
+          state = headers.get('x-codex-turn-state');
+        },
+      },
+    }));
+    expect(state).toBe('sticky-state');
+  });
+
+  it('sends Codex canonical metadata and donor-shaped headers on Responses', async () => {
+    const provider = new OpenAIResponsesChatProvider({
+      model: 'gpt-5',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test/v1',
+      defaultHeaders: { 'User-Agent': 'host/1.0' },
+    });
+    const metadata = {
+      'x-codex-installation-id': '00000000-0000-4000-8000-000000000001',
+      session_id: '00000000-0000-4000-8000-000000000002',
+      thread_id: '00000000-0000-4000-8000-000000000002',
+      turn_id: '00000000-0000-7000-8000-000000000004',
+      'x-codex-window-id': '00000000-0000-4000-8000-000000000002:1',
+    };
+    const request = await captureRejectedFetch(() =>
+      provider.generate('sys', [], PROBE_HISTORY, {
+        cacheKey: metadata.session_id,
+        headers: {
+          'session-id': metadata.session_id,
+          'thread-id': metadata.thread_id,
+          'x-client-request-id': metadata.thread_id,
+          originator: 'codex_cli_rs',
+          'User-Agent': 'codex_cli_rs/1.0.0 (linux; x64)',
+        },
+        requestIdentity: { responsesClientMetadata: metadata },
+      }),
+    );
+    const body = await request.clone().json() as Record<string, unknown>;
+    expect(request.headers.get('session-id')).toBe(metadata.session_id);
+    expect(request.headers.get('x-client-request-id')).toBe(metadata.thread_id);
+    expect(request.headers.get('user-agent')).toBe('codex_cli_rs/1.0.0 (linux; x64)');
+    expect(body['prompt_cache_key']).toBe(metadata.session_id);
+    expect(body['client_metadata']).toEqual(metadata);
+  });
+
+  it('sends Grok headers on Messages without session metadata and keeps cache_control', async () => {
+    const provider = new AnthropicChatProvider({
+      model: 'claude-sonnet-4-6',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test',
+      defaultHeaders: { 'User-Agent': 'host/1.0' },
+      metadata: { user_id: 'caller-supplied' },
+    });
+    const sessionId = '00000000-0000-4000-8000-000000000003';
+    const request = await captureRejectedFetch(() =>
+      provider.generate('sys', [], PROBE_HISTORY, {
+        headers: {
+          'x-grok-conv-id': sessionId,
+          'x-grok-session-id': sessionId,
+          'x-grok-req-id': '00000000-0000-4000-8000-000000000004',
+          'x-grok-turn-idx': '1',
+          'x-grok-agent-id': '00000000-0000-4000-8000-000000000001',
+          'x-grok-client-identifier': 'grok-shell',
+          'x-grok-client-version': '1.0.0',
+          'x-grok-model-override': 'claude-sonnet-4-6',
+          'User-Agent': 'grok-shell/1.0.0 (linux; x64)',
+        },
+        requestIdentity: { suppressMessagesMetadataUserId: true },
+      }),
+    );
+    const body = await request.clone().json() as Record<string, unknown>;
+    expect(request.headers.get('x-grok-conv-id')).toBe(sessionId);
+    expect(request.headers.get('x-grok-session-id')).toBe(sessionId);
+    expect(request.headers.get('user-agent')).toBe('grok-shell/1.0.0 (linux; x64)');
+    expect(body).not.toHaveProperty('metadata');
+    expect(body).not.toHaveProperty('prompt_cache_key');
+    expect(body['system']).toEqual([
+      expect.objectContaining({ cache_control: { type: 'ephemeral' } }),
+    ]);
+  });
+
+  it('sends Grok session identity as the Responses prompt cache key', async () => {
+    const provider = new OpenAIResponsesChatProvider({
+      model: 'grok-code-fast-1',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test/v1',
+    });
+    const sessionId = '00000000-0000-4000-8000-000000000003';
+    const request = await captureRejectedFetch(() =>
+      provider.generate('sys', [], PROBE_HISTORY, {
+        cacheKey: sessionId,
+        headers: {
+          'x-grok-conv-id': sessionId,
+          'x-grok-session-id': sessionId,
+          'x-grok-req-id': '00000000-0000-4000-8000-000000000004',
+          'x-grok-turn-idx': '1',
+          'x-grok-agent-id': '00000000-0000-4000-8000-000000000001',
+        },
+      }),
+    );
+    const body = await request.clone().json() as Record<string, unknown>;
+    expect(request.headers.get('x-grok-conv-id')).toBe(sessionId);
+    expect(body['prompt_cache_key']).toBe(sessionId);
+    expect(body).not.toHaveProperty('client_metadata');
+  });
+
+  it.each([
+    ['openai_responses', () => new OpenAIResponsesChatProvider({
+      model: 'gpt-5', apiKey: 'sk-probe', baseUrl: 'https://api.example.test/v1',
+      defaultHeaders: { 'User-Agent': 'host/1.0', 'X-Msh-Device-Id': 'device', 'x-kiki-session-id': 'legacy' },
+    })],
+    ['anthropic', () => new AnthropicChatProvider({
+      model: 'claude-sonnet-4-6', apiKey: 'sk-probe', baseUrl: 'https://api.example.test',
+      defaultHeaders: { 'User-Agent': 'host/1.0', 'X-Msh-Device-Id': 'device', 'x-kiki-session-id': 'legacy' },
+    })],
+  ] as const)('removes all none-owned identity and User-Agent at final fetch for %s', async (_protocol, factory) => {
+    const request = await captureRejectedFetch(() =>
+      factory().generate('sys', [], PROBE_HISTORY, {
+        headers: { 'x-kiki-internal-suppress-request-identity': '1' },
+        requestParams: {
+          prompt_cache_key: 'caller-cache-key',
+          client_metadata: 'caller-metadata',
+        },
+        requestIdentity: { suppressUserAgent: true, suppressIdentity: true },
+      }),
+    );
+    const body = await request.clone().json() as Record<string, unknown>;
+    expect(request.headers.has('user-agent')).toBe(false);
+    expect(request.headers.has('x-kiki-internal-suppress-user-agent')).toBe(false);
+    expect(request.headers.has('x-kiki-internal-suppress-request-identity')).toBe(false);
+    expect(request.headers.has('x-kiki-session-id')).toBe(false);
+    expect(request.headers.has('x-msh-device-id')).toBe(false);
+    expect(request.headers.has('authorization') || request.headers.has('x-api-key')).toBe(true);
+    expect(request.headers.get('content-type')).toContain('application/json');
+    expect(body).not.toHaveProperty('prompt_cache_key');
+    expect(body).not.toHaveProperty('client_metadata');
+    expect(body).not.toHaveProperty('metadata');
+    if (Array.isArray(body['system'])) {
+      expect(body['system']).toEqual([
+        expect.objectContaining({ cache_control: { type: 'ephemeral' } }),
+      ]);
+    }
+  });
+
+  it('suppresses only User-Agent when identity axes remain enabled', async () => {
+    const provider = new OpenAIResponsesChatProvider({
+      model: 'gpt-5',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test/v1',
+      defaultHeaders: { 'User-Agent': 'host/1.0' },
+    });
+    const request = await captureRejectedFetch(() =>
+      provider.generate('sys', [], PROBE_HISTORY, {
+        headers: {
+          'session-id': 'session-example',
+          'thread-id': 'thread-example',
+          'x-kiki-internal-suppress-user-agent': '1',
+        },
+        requestIdentity: { suppressUserAgent: true },
+      }),
+    );
+    expect(request.headers.has('user-agent')).toBe(false);
+    expect(request.headers.get('session-id')).toBe('session-example');
+    expect(request.headers.get('thread-id')).toBe('thread-example');
   });
 });
 

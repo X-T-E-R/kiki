@@ -20,6 +20,7 @@ import type {
   SamplingOptions,
   ServiceTier,
   ThinkingEffort,
+  RequestIdentityWireOptions,
   VideoUploadInput,
 } from '#/kosong/contract/provider';
 import type { Tool } from '#/kosong/contract/tool';
@@ -68,6 +69,7 @@ export interface ModelRequestParams {
   readonly usedContextTokens?: number;
   readonly maxContextTokens?: number;
   readonly onTraceId?: (traceId: string | null) => void;
+  readonly requestIdentity?: RequestIdentityWireOptions;
 }
 
 export interface ModelRequester {

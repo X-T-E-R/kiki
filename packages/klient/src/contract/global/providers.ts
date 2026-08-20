@@ -23,12 +23,60 @@ const stringRecordSchema = z.record(z.string(), z.string());
 
 const modelSourceSchema = z.enum(['static', 'discover', 'oauth-catalog']);
 
+export const requestIdentityPolicySchema = z.object({
+  preset: z.enum(['codex_compatible', 'grok_build_compatible', 'kiki', 'none']),
+  overrides: z
+    .object({
+      lineage: z
+        .object({
+          format: z.enum(['codex', 'grok_build', 'kiki', 'none']).optional(),
+          sessionScope: z.enum(['shared_session', 'agent_session', 'none']).optional(),
+          threadIdentity: z.enum(['agent', 'none']).optional(),
+          parentThread: z.enum(['immediate_agent', 'none']).optional(),
+          subagentMarker: z.enum(['enabled', 'none']).optional(),
+          turnAncestry: z.enum(['spawn_context', 'none']).optional(),
+        }).strict()
+        .optional(),
+      client: z
+        .object({
+          installationIdentity: z.enum(['persistent_local', 'none']).optional(),
+          originator: z
+            .discriminatedUnion('mode', [
+              z.object({ mode: z.literal('none') }).strict(),
+              z.object({ mode: z.literal('codex_default') }).strict(),
+              z.object({ mode: z.literal('custom'), value: z.string() }).strict(),
+            ])
+            .optional(),
+          userAgent: z.enum(['codex', 'grok_build', 'host', 'none']).optional(),
+        }).strict()
+        .optional(),
+      request: z
+        .object({
+          logicalId: z.enum(['turn', 'none']).optional(),
+          turnIndex: z.enum(['agent_session', 'none']).optional(),
+        }).strict()
+        .optional(),
+      cache: z
+        .object({
+          source: z.enum(['session', 'none']).optional(),
+          responses: z.enum(['prompt_cache_key', 'none']).optional(),
+          messages: z.enum(['metadata_user_id', 'none']).optional(),
+        }).strict()
+        .optional(),
+      responsesMetadata: z.enum(['codex', 'none']).optional(),
+    }).strict()
+    .optional(),
+}).strict();
+
 export const providerConfigSchema = z.object({
   modelSource: modelSourceSchema.optional(),
 
   baseUrl: z.string().optional(),
   customHeaders: stringRecordSchema.optional(),
   defaultModel: z.string().optional(),
+  requestIdentity: requestIdentityPolicySchema.optional(),
+  requestAttribution: z.enum(['codex', 'kimi', 'kiki', 'none']).optional(),
+  requestOriginator: z.string().optional(),
 
   type: providerTypeSchema.optional(),
   apiKey: z.string().optional(),

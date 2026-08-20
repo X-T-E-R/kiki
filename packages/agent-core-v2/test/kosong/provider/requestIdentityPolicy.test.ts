@@ -1,0 +1,287 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  requestIdentityFromWire,
+  requestIdentityToWire,
+  resolveAuthoredRequestIdentity,
+  resolveProviderRequestIdentity,
+  RequestIdentityPolicySchema,
+  RequestIdentityPolicyWireSchema,
+  type RequestIdentityPolicy,
+} from '#/kosong/requestIdentity/requestIdentityPolicy';
+import { projectRequestIdentity } from '#/kosong/requestIdentity/requestIdentityProjector';
+
+const SNAPSHOT = {
+  installationId: '00000000-0000-4000-8000-000000000001',
+  sharedSessionId: '00000000-0000-4000-8000-000000000002',
+  threadId: '00000000-0000-4000-8000-000000000003',
+  agentSessionId: '00000000-0000-4000-8000-000000000004',
+  logicalId: '00000000-0000-7000-8000-000000000005',
+  turnIndex: 1,
+  parentTurnId: '00000000-0000-7000-8000-000000000006',
+  rootTurnId: '00000000-0000-7000-8000-000000000007',
+  parentThreadId: '00000000-0000-4000-8000-000000000008',
+  windowId: '00000000-0000-4000-8000-000000000003:1',
+  setTurnState: () => undefined,
+};
+
+function project(policy: RequestIdentityPolicy) {
+  return projectRequestIdentity({
+    policy: resolveAuthoredRequestIdentity(policy),
+    protocol: 'openai_responses',
+    model: 'wire-model',
+    rawSessionId: 'raw-session',
+    rawAgentId: 'child',
+    parentAgentId: 'main',
+    subagentKind: 'agent',
+    snapshot: SNAPSHOT,
+    runtimeVersion: '1.0.0',
+    platform: 'linux',
+    arch: 'x64',
+  });
+}
+
+describe('request identity policy', () => {
+  it.each([
+    ['codex_compatible', 'codex', 'shared_session', 'codex'],
+    ['grok_build_compatible', 'grok_build', 'agent_session', 'grok_build'],
+    ['kiki', 'kiki', 'shared_session', 'host'],
+    ['none', 'none', 'none', 'none'],
+  ] as const)('expands %s into complete orthogonal axes', (preset, format, scope, userAgent) => {
+    const resolved = resolveAuthoredRequestIdentity({ preset });
+    expect(resolved.lineage.format).toBe(format);
+    expect(resolved.lineage.sessionScope).toBe(scope);
+    expect(resolved.client.userAgent).toBe(userAgent);
+  });
+
+  it('applies overrides leaf-by-leaf without replacing sibling defaults', () => {
+    const resolved = resolveAuthoredRequestIdentity({
+      preset: 'kiki',
+      overrides: { client: { originator: { mode: 'custom', value: 'example-client' } } },
+    });
+    expect(resolved.client.originator).toEqual({ mode: 'custom', value: 'example-client' });
+    expect(resolved.client.userAgent).toBe('host');
+    expect(resolved.lineage.format).toBe('kiki');
+  });
+
+  it.each(['codex', 'kimi', 'kiki', 'none'] as const)(
+    'keeps legacy %s distinct from new presets',
+    (requestAttribution) => {
+      const resolved = resolveProviderRequestIdentity({ requestAttribution }, 'openai');
+      expect(resolved.source).toBe('legacy');
+      expect(resolved.cache.messages).toBe('metadata_user_id');
+      expect(resolved.client.userAgent).toBe('host');
+      expect(resolved.responsesMetadata).toBe('none');
+    },
+  );
+
+  it('keeps the provider-family default deterministic', () => {
+    expect(resolveProviderRequestIdentity(undefined, 'kimi').lineage.format).toBe('none');
+    expect(resolveProviderRequestIdentity(undefined, 'openai').lineage.format).toBe('codex');
+  });
+
+  it('accepts matching new and legacy Kiki fields and rejects conflicting dual fields', () => {
+    expect(
+      resolveProviderRequestIdentity(
+        { requestIdentity: { preset: 'kiki' }, requestAttribution: 'kiki' },
+        'openai',
+      ).source,
+    ).toBe('new');
+    expect(() =>
+      resolveProviderRequestIdentity(
+        { requestIdentity: { preset: 'none' }, requestAttribution: 'none' },
+        'openai',
+      ),
+    ).toThrow(/conflicts/u);
+  });
+
+  it('accepts a matching deprecated originator alias and rejects CR/LF', () => {
+    const requestIdentity = {
+      preset: 'kiki' as const,
+      overrides: { client: { originator: { mode: 'custom' as const, value: 'example-client' } } },
+    };
+    expect(
+      resolveProviderRequestIdentity(
+        { requestIdentity, requestOriginator: 'example-client' },
+        'openai',
+      ).client.originator,
+    ).toEqual({ mode: 'custom', value: 'example-client' });
+    expect(() =>
+      resolveProviderRequestIdentity(
+        { requestAttribution: 'kiki', requestOriginator: 'bad\r\nvalue' },
+        'openai',
+      ),
+    ).toThrow(/control characters/u);
+  });
+
+  it('round-trips snake-case public policy fields', () => {
+    const authored = {
+      preset: 'grok_build_compatible' as const,
+      overrides: {
+        client: { userAgent: 'grok_build' as const },
+        request: { turnIndex: 'agent_session' as const },
+      },
+    };
+    expect(requestIdentityFromWire(requestIdentityToWire(authored)!)).toEqual(authored);
+  });
+
+  it('rejects invalid cross-axis combinations', () => {
+    expect(() =>
+      resolveAuthoredRequestIdentity({
+        preset: 'grok_build_compatible',
+        overrides: { lineage: { sessionScope: 'shared_session' } },
+      }),
+    ).toThrow(/turnIndex/u);
+    expect(() =>
+      resolveAuthoredRequestIdentity({
+        preset: 'none',
+        overrides: { cache: { source: 'session' } },
+      }),
+    ).toThrow(/cache source/u);
+    expect(() =>
+      resolveAuthoredRequestIdentity({
+        preset: 'grok_build_compatible',
+        overrides: { lineage: { turnAncestry: 'spawn_context' } },
+      }),
+    ).toThrow(/parent lineage/u);
+  });
+
+  it.each([
+    {
+      name: 'session scope',
+      overrides: {
+        lineage: { sessionScope: 'none' as const },
+        cache: { source: 'none' as const },
+      },
+      headers: ['session-id'],
+      metadata: ['session_id'],
+    },
+    {
+      name: 'thread identity',
+      overrides: { lineage: { threadIdentity: 'none' as const } },
+      headers: ['thread-id', 'x-client-request-id', 'x-codex-window-id'],
+      metadata: ['thread_id', 'x-codex-window-id'],
+    },
+    {
+      name: 'parent thread',
+      overrides: { lineage: { parentThread: 'none' as const } },
+      headers: ['x-codex-parent-thread-id'],
+      metadata: ['x-codex-parent-thread-id'],
+    },
+    {
+      name: 'subagent marker',
+      overrides: { lineage: { subagentMarker: 'none' as const } },
+      headers: ['x-openai-subagent'],
+      metadata: ['x-openai-subagent'],
+    },
+    {
+      name: 'turn ancestry',
+      overrides: { lineage: { turnAncestry: 'none' as const } },
+      headers: [],
+      metadata: ['parent_turn_id', 'root_turn_id'],
+    },
+    {
+      name: 'installation identity',
+      overrides: { client: { installationIdentity: 'none' as const } },
+      headers: [],
+      metadata: ['x-codex-installation-id'],
+    },
+    {
+      name: 'logical request id',
+      overrides: { request: { logicalId: 'none' as const } },
+      headers: [],
+      metadata: ['turn_id'],
+    },
+    {
+      name: 'originator',
+      overrides: { client: { originator: { mode: 'none' as const } } },
+      headers: ['originator'],
+      metadata: [],
+    },
+  ])('makes the $name leaf authoritative', ({ overrides, headers, metadata }) => {
+    const projected = project({ preset: 'codex_compatible', overrides });
+    for (const header of headers) expect(projected.headers).not.toHaveProperty(header);
+    for (const key of metadata) {
+      expect(projected.wire?.responsesClientMetadata).not.toHaveProperty(key);
+    }
+  });
+
+  it('makes the Responses cache leaf authoritative', () => {
+    expect(
+      project({
+        preset: 'codex_compatible',
+        overrides: { cache: { responses: 'none' } },
+      }).cacheKey,
+    ).toBeUndefined();
+    expect(
+      project({
+        preset: 'codex_compatible',
+        overrides: { cache: { source: 'none' } },
+      }).cacheKey,
+    ).toBeUndefined();
+  });
+
+  it('makes the Responses metadata leaf authoritative', () => {
+    const projected = project({
+      preset: 'codex_compatible',
+      overrides: { responsesMetadata: 'none' },
+    });
+    expect(projected.wire?.responsesClientMetadata).toBeUndefined();
+    expect(projected.headers).not.toHaveProperty('x-codex-turn-metadata');
+    expect(projected.headers).not.toHaveProperty('x-codex-window-id');
+    expect(projected.headers).toHaveProperty('thread-id', SNAPSHOT.threadId);
+  });
+
+  it('uses the selected session scope without changing the Codex wire format', () => {
+    const projected = project({
+      preset: 'codex_compatible',
+      overrides: { lineage: { sessionScope: 'agent_session' } },
+    });
+    expect(projected.headers).toHaveProperty('session-id', SNAPSHOT.agentSessionId);
+    expect(projected.cacheKey).toBe(SNAPSHOT.agentSessionId);
+    expect(projected.wire?.responsesClientMetadata).toHaveProperty(
+      'session_id',
+      SNAPSHOT.agentSessionId,
+    );
+  });
+
+  it.each([
+    ['logical request id', { request: { logicalId: 'none' as const } }, 'x-grok-req-id'],
+    ['turn index', { request: { turnIndex: 'none' as const } }, 'x-grok-turn-idx'],
+    [
+      'installation identity',
+      { client: { installationIdentity: 'none' as const } },
+      'x-grok-agent-id',
+    ],
+  ])('makes the Grok $name leaf authoritative', (_name, overrides, header) => {
+    const projected = project({ preset: 'grok_build_compatible', overrides });
+    expect(projected.headers).not.toHaveProperty(header);
+  });
+
+  it('treats userAgent=none as UA-only suppression when other identity axes remain', () => {
+    const projected = project({
+      preset: 'codex_compatible',
+      overrides: { client: { userAgent: 'none' } },
+    });
+    expect(projected.headers).toMatchObject({
+      'session-id': SNAPSHOT.sharedSessionId,
+      'thread-id': SNAPSHOT.threadId,
+      'x-kiki-internal-suppress-user-agent': '1',
+    });
+    expect(projected.headers).not.toHaveProperty('x-kiki-internal-suppress-request-identity');
+    expect(projected.wire?.suppressIdentity).toBe(false);
+  });
+
+  it.each([RequestIdentityPolicySchema, RequestIdentityPolicyWireSchema])(
+    'rejects unknown root and nested policy fields recursively',
+    (schema) => {
+      expect(schema.safeParse({ preset: 'none', future_root: true }).success).toBe(false);
+      expect(
+        schema.safeParse({
+          preset: 'none',
+          overrides: { request: { future_axis: 'value' } },
+        }).success,
+      ).toBe(false);
+    },
+  );
+});

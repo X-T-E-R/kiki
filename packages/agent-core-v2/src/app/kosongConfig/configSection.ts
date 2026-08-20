@@ -24,6 +24,7 @@ import type {
 import type { ThinkingConfig } from '#/kosong/model/thinking';
 import type { OAuthRef, ProviderConfig, ProvidersSection } from '#/kosong/provider/provider';
 import { ProtocolSchema } from '#/kosong/protocol/protocol';
+import { RequestIdentityPolicySchema } from '#/kosong/requestIdentity/requestIdentityPolicy';
 
 export const PROVIDERS_SECTION = 'providers';
 
@@ -51,6 +52,7 @@ export const ProviderConfigSchema = z.object({
   baseUrl: z.string().optional(),
   customHeaders: StringRecordSchema.optional(),
   defaultModel: z.string().optional(),
+  requestIdentity: RequestIdentityPolicySchema.optional(),
   requestAttribution: RequestAttributionSchema.optional(),
   requestOriginator: z.string().optional(),
 
@@ -102,6 +104,8 @@ function providerEntryFromToml(data: Record<string, unknown>): Record<string, un
     const targetKey = snakeToCamel(key);
     if (targetKey === 'oauth') {
       out[targetKey] = isPlainObject(value) ? transformPlainObject(value) : value;
+    } else if (targetKey === 'requestIdentity') {
+      out[targetKey] = isPlainObject(value) ? deepSnakeToCamel(value) : value;
     } else if (targetKey === 'env' || targetKey === 'customHeaders') {
       out[targetKey] = isPlainObject(value) ? cloneRecord(value) : value;
     } else {
@@ -129,6 +133,8 @@ function providerEntryToToml(
   for (const [key, value] of Object.entries(provider)) {
     if (key === 'oauth' && isPlainObject(value)) {
       out[camelToSnake(key)] = plainObjectToToml(value, undefined);
+    } else if (key === 'requestIdentity' && isPlainObject(value)) {
+      out[camelToSnake(key)] = deepCamelToSnake(value);
     } else if ((key === 'env' || key === 'customHeaders') && value !== undefined) {
       out[camelToSnake(key)] = cloneRecord(value);
     } else {
@@ -136,6 +142,24 @@ function providerEntryToToml(
     }
   }
   return out;
+}
+
+function deepSnakeToCamel(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [
+      snakeToCamel(key),
+      isPlainObject(entry) ? deepSnakeToCamel(entry) : entry,
+    ]),
+  );
+}
+
+function deepCamelToSnake(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [
+      camelToSnake(key),
+      isPlainObject(entry) ? deepCamelToSnake(entry) : entry,
+    ]),
+  );
 }
 
 registerConfigSection(PROVIDERS_SECTION, ProvidersSectionSchema, {

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
@@ -18,6 +18,7 @@ import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { IAgentMediaResolverService } from '#/agent/media/mediaResolver';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { IConfigService } from '#/app/config/config';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import {
   APIRequestTooLargeError,
   APIStatusError,
@@ -46,26 +47,32 @@ import { completionBudgetParams, resolveCompletionBudget } from '#/kosong/model/
 import { resolveThinkingKeep, type ThinkingConfig } from '#/kosong/model/thinking';
 import { PROVIDERS_SECTION, THINKING_SECTION } from '#/app/kosongConfig/configSection';
 import type { Protocol } from '#/kosong/protocol/protocol';
-import { getProviderDefinition } from '#/kosong/provider/providerDefinition';
 import type {
   ProviderConfig,
   ProvidersSection,
-  RequestAttribution,
 } from '#/kosong/provider/provider';
+import {
+  REQUEST_IDENTITY_RESERVED_HEADERS,
+  resolveProviderRequestIdentity,
+  type ResolvedRequestIdentityPolicy,
+} from '#/kosong/requestIdentity/requestIdentityPolicy';
+import { projectRequestIdentity } from '#/kosong/requestIdentity/requestIdentityProjector';
 import type { ApiErrorEvent } from '#/app/telemetry/events';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import {
   isSubagentMeta,
+  requestIdentitySpawnContext,
   subagentParentAgentId,
   subagentSwarmItem,
 } from '#/session/agentLifecycle/subagentMetadata';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import {
   ISessionMetadata,
-  type AgentMeta,
 } from '#/session/sessionMetadata/sessionMetadata';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { WarningIssued } from '#/agent/profile/profileOps';
+import { IRequestIdentityRegistry } from '#/session/requestIdentity/requestIdentityRegistry';
+import { RequestIdentityErrors } from '#/kosong/requestIdentity/errors';
 
 import {
   IAgentLLMRequesterService,
@@ -130,6 +137,8 @@ interface TurnRequestConfig {
   readonly resolved: ProfileModelContext;
   readonly params: ModelRequestParams;
   readonly systemPrompt: string;
+  readonly providerConfig: ProviderConfig | undefined;
+  readonly requestIdentity: ResolvedRequestIdentityPolicy;
 }
 
 export const llmRequesterLastConfigLogSignatureKey = defineState<string | undefined>(
@@ -172,12 +181,14 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     @ISessionContext private readonly sessionContext: ISessionContext,
     @ISessionMetadata private readonly sessionMetadata: ISessionMetadata,
     @IConfigService private readonly config: IConfigService,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IModelService private readonly modelService: IModelService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @ILogService private readonly log: ILogService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
     @IAgentStateService private readonly states: IAgentStateService,
+    @IRequestIdentityRegistry private readonly requestIdentities: IRequestIdentityRegistry,
   ) {
     this.states.contributeState(llmRequestTraceKey);
     this.states.contributeState(llmRequesterLastConfigLogSignatureKey);
@@ -616,13 +627,47 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     });
     const requester = this.modelCatalog.getRequester(resolved.modelAlias);
     const providerConfig =
+      turnConfig?.providerConfig ??
       this.config.get<ProvidersSection>(PROVIDERS_SECTION)?.[requester.model.providerName];
-    const attribution = resolveRequestAttribution(
-      providerConfig,
-      requester.model.providerType,
-    );
+    const requestIdentity =
+      turnConfig?.requestIdentity ??
+      resolveProviderRequestIdentity(providerConfig, requester.model.providerType);
+    validateRequestIdentityHeaderCollisions(providerConfig, requestIdentity);
 
     const messages = overrides.messages ?? this.context.get();
+    const parentAgentId = subagentParentAgentId(agentMeta);
+    const spawnContext = requestIdentitySpawnContext(agentMeta);
+    const snapshot = await this.requestIdentities.snapshot({
+      agentId: this.agentContext.agentId,
+      turnKey: requestIdentityTurnKey(overrides.source),
+      parentAgentId,
+      ...spawnContext,
+      compactionWindow: messages.filter(
+        (message) =>
+          (message as Message & { readonly origin?: { readonly kind?: string } }).origin?.kind ===
+          'compaction_summary',
+      ).length,
+      logicalIdKind:
+        requestIdentity.lineage.format === 'codex' ? 'uuidv7' : 'uuidv4',
+    });
+    const identityProjection = projectRequestIdentity({
+      policy: requestIdentity,
+      protocol: requester.model.protocol,
+      model: requester.model.name,
+      rawSessionId: this.sessionContext.sessionId,
+      rawAgentId: this.agentContext.agentId,
+      parentAgentId,
+      subagentKind:
+        isSubagentMeta(agentMeta)
+          ? subagentSwarmItem(agentMeta) === undefined
+            ? 'agent'
+            : 'swarm'
+          : undefined,
+      snapshot,
+      runtimeVersion: this.bootstrap.clientIdentity.version,
+      platform: this.bootstrap.platform,
+      arch: this.bootstrap.arch,
+    });
     const resolvedSystemPrompt =
       overrides.systemPrompt ?? turnConfig?.systemPrompt ?? this.profile.getSystemPrompt();
     const anchoredPrompt = await this.cognitionAnchor.project({
@@ -636,15 +681,14 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       model: requester.model,
       params: {
         ...baseParams,
-        requestParams: stripKikiReservedRequestParams(baseParams.requestParams),
-        ...budgetParams,
-        headers: attributionRequestHeaders(
-          attribution,
-          this.sessionContext.sessionId,
-          this.agentContext.agentId,
-          agentMeta,
-          providerConfig?.requestOriginator,
+        cacheKey: identityProjection.cacheKey,
+        requestParams: stripRequestIdentityBodyParams(
+          stripKikiReservedRequestParams(baseParams.requestParams),
+          requestIdentity,
         ),
+        ...budgetParams,
+        headers: identityProjection.headers,
+        requestIdentity: identityProjection.wire,
       },
       modelAlias: resolved.modelAlias,
       thinkingEffort: resolved.thinkingLevel,
@@ -657,7 +701,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
   }
 
   private resolveTurnConfig(source: AgentLLMRequestSource | undefined): TurnRequestConfig | undefined {
-    if (source?.type !== 'turn') return undefined;
+    if (source?.turnId === undefined) return undefined;
     return this.getOrCreateTurnConfig(source.turnId);
   }
 
@@ -667,10 +711,19 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
     }
     let snapshot = this.turnConfigs.get(turnId);
     if (snapshot === undefined) {
+      const resolved = this.profile.resolveModelContext();
+      const requester = this.modelCatalog.getRequester(resolved.modelAlias);
+      const providerConfig =
+        this.config.get<ProvidersSection>(PROVIDERS_SECTION)?.[requester.model.providerName];
       snapshot = {
-        resolved: this.profile.resolveModelContext(),
+        resolved,
         params: this.profile.resolveRequestParams(),
         systemPrompt: this.profile.getSystemPrompt(),
+        providerConfig,
+        requestIdentity: resolveProviderRequestIdentity(
+          providerConfig,
+          requester.model.providerType,
+        ),
       };
       this.turnConfigs.set(turnId, snapshot);
     }
@@ -791,60 +844,34 @@ class MutableLLMRequestTrace implements LLMRequestTrace {
   }
 }
 
-function resolveRequestAttribution(
-  provider: ProviderConfig | undefined,
-  providerType: string | undefined,
-): RequestAttribution {
-  if (provider?.requestAttribution !== undefined) return provider.requestAttribution;
-  if (providerType !== undefined && getProviderDefinition(providerType)?.id === 'kimi') {
-    return 'kimi';
-  }
-  return 'codex';
+function requestIdentityTurnKey(source: AgentLLMRequestSource | undefined): string {
+  if (source?.turnId !== undefined) return `turn:${String(source.turnId)}`;
+  return `operation:${source?.type === 'operation' ? (source.requestKind ?? 'unknown') : 'unknown'}:${randomUUID()}`;
 }
 
-function attributionRequestHeaders(
-  attribution: RequestAttribution,
-  sessionId: string,
-  agentId: string,
-  meta: AgentMeta | undefined,
-  originator: string | undefined,
-): Readonly<Record<string, string>> | undefined {
-  const parentAgentId = subagentParentAgentId(meta);
-  switch (attribution) {
-    case 'codex': {
-      const headers: Record<string, string> = {
-        'session-id': sessionId,
-        'thread-id': agentId,
-        originator: originator ?? 'codex_cli_rs',
-      };
-      if (parentAgentId !== undefined) {
-        headers['x-codex-parent-thread-id'] = parentAgentId;
-      }
-      if (isSubagentMeta(meta)) {
-        headers['x-openai-subagent'] = 'collab_spawn';
-      }
-      return headers;
+function validateRequestIdentityHeaderCollisions(
+  provider: ProviderConfig | undefined,
+  policy: ResolvedRequestIdentityPolicy,
+): void {
+  if (policy.source !== 'new') return;
+  for (const key of Object.keys(provider?.customHeaders ?? {})) {
+    if (REQUEST_IDENTITY_RESERVED_HEADERS.has(key.toLowerCase())) {
+      throw new Error2(
+        RequestIdentityErrors.codes.REQUEST_IDENTITY_CONFLICT,
+        `custom_headers.${key} conflicts with request_identity`,
+      );
     }
-    case 'kiki': {
-      const headers: Record<string, string> = {
-        'x-kiki-session-id': sessionId,
-        'x-kiki-agent-id': agentId,
-      };
-      if (originator !== undefined) {
-        headers['originator'] = originator;
-      }
-      if (parentAgentId !== undefined) {
-        headers['x-kiki-parent-agent-id'] = parentAgentId;
-      }
-      if (isSubagentMeta(meta)) {
-        headers['x-kiki-subagent'] = subagentSwarmItem(meta) === undefined ? 'agent' : 'swarm';
-      }
-      return headers;
-    }
-    case 'kimi':
-    case 'none':
-      return originator === undefined ? undefined : { originator };
   }
+}
+
+function stripRequestIdentityBodyParams(
+  params: ModelRequestParams['requestParams'],
+  policy: ResolvedRequestIdentityPolicy,
+): ModelRequestParams['requestParams'] {
+  if (params === undefined || policy.source !== 'new') return params;
+  const reserved = new Set(['prompt_cache_key', 'client_metadata', 'metadata', 'metadata.user_id']);
+  const entries = Object.entries(params).filter(([key]) => !reserved.has(key.toLowerCase()));
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 function logFieldsForSource(source: AgentLLMRequestSource | undefined): AgentLLMRequestLogFields {

@@ -28,6 +28,7 @@ import type {
 import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import { ProtocolErrors } from '#/kosong/protocol/errors';
+import { RequestIdentityErrors } from '#/kosong/requestIdentity/errors';
 
 import {
   applyMissingProperties,
@@ -46,6 +47,7 @@ import {
 import {
   mergeProviderRequestAuth,
   mergeRequestHeaders,
+  requestIdentityFetch,
   requireProviderApiKey,
   resolveAuthBackedClient,
 } from '../request-auth';
@@ -1136,6 +1138,16 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
       }
     }
 
+    if (
+      options?.requestIdentity?.suppressUserAgent === true &&
+      (this._httpClient !== undefined || this._clientFactory !== undefined)
+    ) {
+      throw new Error2(
+        RequestIdentityErrors.codes.REQUEST_IDENTITY_UNSUPPORTED,
+        'request identity none requires the final fetch suppression seam',
+      );
+    }
+
     try {
       const client = this._createClient(
         mergeProviderRequestAuth(options?.auth, options?.headers),
@@ -1157,7 +1169,14 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
           ...responseFormatToResponsesText(options.responseFormat),
         };
       }
+      if (options?.requestIdentity?.responsesClientMetadata !== undefined) {
+        createParams['client_metadata'] = options.requestIdentity.responsesClientMetadata;
+      }
       applyMissingProperties(createParams, options?.requestParams);
+      if (options?.requestIdentity?.suppressIdentity === true) {
+        delete createParams['prompt_cache_key'];
+        delete createParams['client_metadata'];
+      }
 
       if (
         !('responses' in client) ||
@@ -1170,11 +1189,21 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
       }
 
       options?.onRequestSent?.();
-      const response = await (
+      const responsePromise = (
         client.responses as {
-          create(params: unknown, opts?: unknown): Promise<unknown>;
+          create(params: unknown, opts?: unknown): Promise<unknown> & {
+            withResponse?: () => Promise<{ data: unknown; response: Response }>;
+          };
         }
       ).create(createParams, options?.signal ? { signal: options.signal } : undefined);
+      const response =
+        options?.requestIdentity?.onResponseHeaders !== undefined &&
+        responsePromise.withResponse !== undefined
+          ? await responsePromise.withResponse().then(({ data, response: rawResponse }) => {
+              options.requestIdentity?.onResponseHeaders?.(rawResponse.headers);
+              return data;
+            })
+          : await responsePromise;
       return new OpenAIResponsesStreamedMessage(response, this._stream, this._convertErrorHook);
     } catch (error: unknown) {
       throw convertOpenAIError(error, this._convertErrorHook);
@@ -1202,6 +1231,8 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
     }
     if (this._httpClient !== undefined) {
       clientOpts['httpClient'] = this._httpClient;
+    } else {
+      clientOpts['fetch'] = requestIdentityFetch;
     }
     return new OpenAI(clientOpts as ConstructorParameters<typeof OpenAI>[0]);
   }

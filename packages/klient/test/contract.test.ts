@@ -11,6 +11,8 @@ import { describe, expect, it } from 'vitest';
 import { pluginManifestSchema } from '../src/contract/global/plugins.js';
 import { createSessionOptionsSchema } from '../src/contract/session/lifecycle.js';
 import { promptPayloadSchema } from '../src/contract/agent/schemas.js';
+import { requestIdentityPolicySchema as providerRequestIdentityPolicySchema } from '../src/contract/global/providers.js';
+import { requestIdentityPolicySchema as catalogRequestIdentityPolicySchema } from '../src/contract/global/catalog.js';
 
 type McpTimeoutField = 'startupTimeoutMs' | 'toolTimeoutMs';
 
@@ -75,4 +77,19 @@ describe('prompt contract validation', () => {
   it('accepts a non-empty caller-chosen promptId', () => {
     expect(promptPayloadSchema.safeParse({ input: [], promptId: 'submission-1' }).success).toBe(true);
   });
+});
+
+describe('request identity contract validation', () => {
+  it.each([providerRequestIdentityPolicySchema, catalogRequestIdentityPolicySchema])(
+    'rejects unknown root and nested axes recursively',
+    (schema) => {
+      expect(schema.safeParse({ preset: 'none', future_root: true }).success).toBe(false);
+      expect(
+        schema.safeParse({
+          preset: 'none',
+          overrides: { request: { future_axis: 'value' } },
+        }).success,
+      ).toBe(false);
+    },
+  );
 });

@@ -168,7 +168,7 @@ export class AgentSwarmTool implements IAgentSwarmTool {
   ): Promise<ExecutableToolResult> {
     try {
       this.swarmMode.enter('tool');
-      const result = await this.runSwarm(args, context.signal, context.toolCallId);
+      const result = await this.runSwarm(args, context.signal, context.toolCallId, context.turnId);
       return {
         output: result,
       };
@@ -184,6 +184,7 @@ export class AgentSwarmTool implements IAgentSwarmTool {
     args: AgentSwarmToolInput,
     signal: AbortSignal,
     toolCallId: string,
+    turnId: number,
   ): Promise<string> {
     const modelAlias = normalizeSubagentBindingValue(args.model_alias, 'model_alias');
     const thinkingEffort = normalizeSubagentBindingValue(
@@ -309,6 +310,7 @@ export class AgentSwarmTool implements IAgentSwarmTool {
         profileName: spec.kind === 'resume' ? 'subagent' : profileName,
         routeId: spec.kind === 'resume' ? undefined : routeId,
         parentToolCallId: toolCallId,
+        parentTurnId: turnId,
         prompt: spec.prompt,
         description: childDescription(args.description, spec.index, descriptionName),
         swarmIndex: spec.index,

@@ -27,7 +27,7 @@ import {
   PROVIDER_WIRE_TYPES,
   providerDraftFromCatalog,
   replaceProvider,
-  REQUEST_ATTRIBUTION_CHOICES,
+  REQUEST_IDENTITY_CHOICES,
   validateProviderDraft,
   type MsUnit,
   type ProviderDraft,
@@ -52,6 +52,8 @@ export function blankProviderDraft(): ProviderDraft {
     clearApiKey: false,
     requestAttribution: 'auto',
     requestOriginator: '',
+    requestIdentityChoice: 'auto',
+    requestIdentityOverridesJson: '',
     models: [{ model: '', maxContextSize: 128000, displayName: '', capabilities: [], supportEfforts: [] }],
   };
 }
@@ -419,20 +421,20 @@ export function ProviderFields({
         <input className={`${INPUT} mt-1`} value={draft.baseUrl} onChange={(event) => { onChange({ ...draft, baseUrl: event.target.value }); }} placeholder="https://api.example.com/v1" />
       </label>
       <div>
-        <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.attribution')}
+        <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.requestIdentity')}
           <select
             className={`${INPUT} mt-1`}
-            value={draft.requestAttribution}
-            onChange={(event) => { onChange({ ...draft, requestAttribution: event.target.value as ProviderDraft['requestAttribution'] }); }}
+            value={draft.requestIdentityChoice}
+            onChange={(event) => { onChange({ ...draft, requestIdentityChoice: event.target.value as ProviderDraft['requestIdentityChoice'], requestIdentityOverridesJson: '' }); }}
           >
-            {REQUEST_ATTRIBUTION_CHOICES.map((choice) => (
-              <option key={choice} value={choice}>{t(`st.providers.attribution.${choice}`)}</option>
+            {REQUEST_IDENTITY_CHOICES.map((choice) => (
+              <option key={choice} value={choice}>{t(`st.providers.requestIdentity.${choice}`)}</option>
             ))}
           </select>
         </label>
-        <Hint>{t('st.providers.attributionHint')}</Hint>
+        <Hint>{t('st.providers.requestIdentityHint')}</Hint>
       </div>
-      <div>
+      {draft.requestIdentityChoice.startsWith('legacy_') ? <div>
         <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.originator')}
           <input
             className={`${INPUT} mt-1`}
@@ -442,7 +444,18 @@ export function ProviderFields({
           />
         </label>
         <Hint>{t('st.providers.originatorHint')}</Hint>
-      </div>
+      </div> : null}
+      {['codex_compatible', 'grok_build_compatible', 'kiki', 'none'].includes(draft.requestIdentityChoice) ? <div>
+        <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.requestIdentityAdvanced')}
+          <textarea
+            className={`${INPUT} mt-1 min-h-24 font-mono`}
+            value={draft.requestIdentityOverridesJson}
+            onChange={(event) => { onChange({ ...draft, requestIdentityOverridesJson: event.target.value }); }}
+            placeholder="{}"
+          />
+        </label>
+        <Hint>{t('st.providers.requestIdentityAdvancedHint')}</Hint>
+      </div> : null}
       {managed ? (
         <Hint>{t('st.providers.managedHint')}</Hint>
       ) : (

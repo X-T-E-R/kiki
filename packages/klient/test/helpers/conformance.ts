@@ -263,9 +263,17 @@ export function defineKlientConformance(
         await target.klient.global.kosong.addProvider(name, {
           type: 'openai',
           auth: { method: 'api-key', apiKey: 'conf-key' },
+          requestIdentity: {
+            preset: 'grok_build_compatible',
+            overrides: { client: { userAgent: 'grok_build' } },
+          },
         });
         const got = await target.klient.global.kosong.getProvider(name);
         expect(got.has_api_key).toBe(true);
+        expect(got.request_identity).toEqual({
+          preset: 'grok_build_compatible',
+          overrides: { client: { user_agent: 'grok_build' } },
+        });
 
         await waitFor(
           () => events.some((event) => [...event.added, ...event.changed].includes(name)),

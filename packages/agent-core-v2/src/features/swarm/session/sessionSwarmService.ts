@@ -32,6 +32,7 @@ import {
   delegatorRef,
   isSubagentMeta,
   labelsFromAgentMeta,
+  requestIdentitySpawnLabels,
   subagentLabels,
   subagentParentAgentId,
   subagentSwarmItem,
@@ -243,6 +244,11 @@ export class SessionSwarmService implements ISessionSwarmService {
     }
     let child: IAgentScopeHandle;
     try {
+      const callerMeta = (await this.metadata.read()).agents?.[callerAgentId];
+      const identityLabels =
+        options.parentTurnId === undefined
+          ? {}
+          : requestIdentitySpawnLabels(callerAgentId, options.parentTurnId, callerMeta);
       child = await this.lifecycle.create({
         binding: {
           profile: selection.baseProfile.name,
@@ -253,7 +259,10 @@ export class SessionSwarmService implements ISessionSwarmService {
           spawnPolicy: dispatched.spawnPolicy,
         },
         labels: withSubagentBindingMode(
-          subagentLabels(callerAgentId, { swarmItem: options.swarmItem }),
+          {
+            ...subagentLabels(callerAgentId, { swarmItem: options.swarmItem }),
+            ...identityLabels,
+          },
           binding.bindingMode ?? 'fixed',
         ),
         delegator: { kind: 'agent', agentId: callerAgentId },

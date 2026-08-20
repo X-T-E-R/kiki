@@ -288,6 +288,77 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     expect(single.body.data.request_attribution).toBe('kiki');
   });
 
+  it('round-trips request_identity and preserves it across an old-client replace', async () => {
+    await boot();
+    const requestIdentity = {
+      preset: 'grok_build_compatible',
+      overrides: { client: { user_agent: 'grok_build' } },
+    } as const;
+    const created = await postJson<{ request_identity?: unknown }>('/api/v1/providers', {
+      ...CREATE_BODY,
+      request_identity: requestIdentity,
+    });
+    expect(created.body.code).toBe(0);
+    expect(created.status).toBe(201);
+    expect(created.body.data.request_identity).toEqual(requestIdentity);
+    expect((await readConfigToml())['providers']).toMatchObject({
+      'my-openai': {
+        request_identity: {
+          preset: 'grok_build_compatible',
+          overrides: { client: { user_agent: 'grok_build' } },
+        },
+      },
+    });
+
+    const replaced = await putJson<{ provider: { request_identity?: unknown } }>(
+      '/api/v1/providers/my-openai',
+      REPLACE_BODY,
+    );
+    expect(replaced.status).toBe(200);
+    expect(replaced.body.data.provider.request_identity).toEqual(requestIdentity);
+  });
+
+  it('clears request_identity only on explicit null and rejects conflicting dual fields', async () => {
+    await boot();
+    await postJson('/api/v1/providers', {
+      ...CREATE_BODY,
+      request_identity: { preset: 'none' },
+    });
+
+    const cleared = await putJson<{ provider: { request_identity?: unknown } }>(
+      '/api/v1/providers/my-openai',
+      { ...REPLACE_BODY, request_identity: null },
+    );
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.data.provider.request_identity).toBeUndefined();
+
+    const conflict = await putJson('/api/v1/providers/my-openai', {
+      ...REPLACE_BODY,
+      request_identity: { preset: 'none' },
+      request_attribution: 'none',
+    });
+    expect(conflict.body.code).toBe(40001);
+    expect(conflict.body.details?.some((detail) => detail.path === 'request_identity')).toBe(true);
+  });
+
+  it('rejects unknown root and nested request_identity fields', async () => {
+    await boot();
+    const unknownRoot = await postJson('/api/v1/providers', {
+      ...CREATE_BODY,
+      request_identity: { preset: 'none', future_root: true },
+    });
+    expect(unknownRoot.body.code).toBe(40001);
+
+    const unknownAxis = await postJson('/api/v1/providers', {
+      ...CREATE_BODY,
+      request_identity: {
+        preset: 'none',
+        overrides: { request: { future_axis: 'value' } },
+      },
+    });
+    expect(unknownAxis.body.code).toBe(40001);
+  });
+
   it('rejects an unknown request_attribution value with 40001 on both create and replace', async () => {
     await boot(KEEP_DEFAULT_TOML);
     const created = await postJson<unknown>('/api/v1/providers', {

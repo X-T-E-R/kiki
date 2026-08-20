@@ -10,6 +10,40 @@ import type { Tool } from '@moonshot-ai/agent-core-v2/kosong/contract/tool';
 import type { TokenUsage } from '@moonshot-ai/agent-core-v2/kosong/contract/usage';
 import type { ResponseFormat } from '@moonshot-ai/agent-core-v2/kosong/contract/provider';
 
+export type RequestAttribution = 'codex' | 'kimi' | 'kiki' | 'none';
+
+export type RequestIdentityPolicy = {
+  preset: 'codex_compatible' | 'grok_build_compatible' | 'kiki' | 'none';
+  overrides?: {
+    lineage?: {
+      format?: 'codex' | 'grok_build' | 'kiki' | 'none';
+      sessionScope?: 'shared_session' | 'agent_session' | 'none';
+      threadIdentity?: 'agent' | 'none';
+      parentThread?: 'immediate_agent' | 'none';
+      subagentMarker?: 'enabled' | 'none';
+      turnAncestry?: 'spawn_context' | 'none';
+    };
+    client?: {
+      installationIdentity?: 'persistent_local' | 'none';
+      originator?:
+        | { mode: 'none' }
+        | { mode: 'codex_default' }
+        | { mode: 'custom'; value: string };
+      userAgent?: 'codex' | 'grok_build' | 'host' | 'none';
+    };
+    request?: {
+      logicalId?: 'turn' | 'none';
+      turnIndex?: 'agent_session' | 'none';
+    };
+    cache?: {
+      source?: 'session' | 'none';
+      responses?: 'prompt_cache_key' | 'none';
+      messages?: 'metadata_user_id' | 'none';
+    };
+    responsesMetadata?: 'codex' | 'none';
+  };
+};
+
 // ---------------------------------------------------------------------------
 // Provider auth
 // ---------------------------------------------------------------------------
@@ -29,6 +63,11 @@ export interface ProviderInput {
   baseUrl?: string;
   auth: ProviderAuth;
   defaultModel?: string;
+  requestIdentity?: RequestIdentityPolicy;
+  /** @deprecated Use requestIdentity. */
+  requestAttribution?: RequestAttribution;
+  /** @deprecated Use requestIdentity.overrides.client.originator. */
+  requestOriginator?: string;
 }
 
 /**

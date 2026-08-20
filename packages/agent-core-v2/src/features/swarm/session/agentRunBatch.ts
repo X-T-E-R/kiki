@@ -20,6 +20,7 @@ export interface AgentRunAttemptOptions {
 }
 
 export interface AgentSpawnAttemptOptions extends AgentRunAttemptOptions {
+  readonly parentTurnId?: number;
   readonly profileName: string;
   readonly routeId?: string;
   readonly swarmItem?: string;
@@ -295,6 +296,7 @@ export class AgentRunBatch<T> {
         handle = await this.launcher.resume(task.resumeAgentId, runOptions);
       } else {
         const spawnOptions: AgentSpawnAttemptOptions = {
+          parentTurnId: task.parentTurnId,
           profileName: task.profileName,
           routeId: task.routeId,
           swarmItem: task.swarmItem,

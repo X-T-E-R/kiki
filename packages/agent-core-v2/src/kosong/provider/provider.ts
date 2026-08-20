@@ -1,5 +1,6 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { Event, IWaitUntil } from '#/_base/event';
+import type { RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIdentityPolicy';
 
 export type ProviderType = string;
 
@@ -25,6 +26,7 @@ export interface ProviderConfig {
   baseUrl?: string;
   customHeaders?: Record<string, string>;
   defaultModel?: string;
+  requestIdentity?: RequestIdentityPolicy;
   requestAttribution?: RequestAttribution;
   requestOriginator?: string;
 
