@@ -266,12 +266,6 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         if (req.body.request_identity !== undefined) {
           provider.requestIdentity = requestIdentityFromWire(req.body.request_identity);
         }
-        if (req.body.request_attribution !== undefined) {
-          provider.requestAttribution = req.body.request_attribution;
-        }
-        if (req.body.request_originator !== undefined) {
-          provider.requestOriginator = req.body.request_originator;
-        }
         if (req.body.default_model !== undefined) {
           provider.defaultModel = `${id}/${req.body.default_model}`;
         }
@@ -374,19 +368,13 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         const provider: ProviderConfig = { ...target, type: req.body.type };
         provider.apiKey = req.body.api_key ?? target.apiKey;
         provider.baseUrl = req.body.base_url;
-        const touchedLegacy =
-          req.body.request_attribution !== undefined || req.body.request_originator !== undefined;
         if (req.body.request_identity !== undefined) {
           if (req.body.request_identity === null) {
             delete provider.requestIdentity;
           } else {
             provider.requestIdentity = requestIdentityFromWire(req.body.request_identity);
           }
-        } else if (touchedLegacy) {
-          delete provider.requestIdentity;
         }
-        provider.requestAttribution = req.body.request_attribution;
-        provider.requestOriginator = req.body.request_originator;
         provider.defaultModel =
           req.body.default_model !== undefined
             ?

@@ -42,19 +42,15 @@ export const OAuthRefSchema = z.object({
 
 export const ModelSourceSchema = z.enum(['static', 'discover', 'oauth-catalog']);
 
-export const RequestAttributionSchema = z.enum(['codex', 'kimi', 'kiki', 'none']);
-
 const StringRecordSchema = z.record(z.string(), z.string());
 
-export const ProviderConfigSchema = z.object({
+const ProviderConfigObjectSchema = z.object({
   modelSource: ModelSourceSchema.optional(),
 
   baseUrl: z.string().optional(),
   customHeaders: StringRecordSchema.optional(),
   defaultModel: z.string().optional(),
   requestIdentity: RequestIdentityPolicySchema.optional(),
-  requestAttribution: RequestAttributionSchema.optional(),
-  requestOriginator: z.string().optional(),
 
   type: ProviderTypeSchema.optional(),
   apiKey: z.string().optional(),
@@ -62,6 +58,21 @@ export const ProviderConfigSchema = z.object({
   env: StringRecordSchema.optional(),
   source: z.record(z.string(), z.unknown()).optional(),
 });
+
+export const ProviderConfigSchema = z.preprocess((value, ctx) => {
+  if (isPlainObject(value)) {
+    for (const removed of ['requestAttribution', 'requestOriginator'] as const) {
+      if (removed in value) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `${removed} was removed; use requestIdentity`,
+          path: [removed],
+        });
+      }
+    }
+  }
+  return value;
+}, ProviderConfigObjectSchema);
 
 export const ProvidersSectionSchema = z.record(z.string(), ProviderConfigSchema);
 
@@ -130,6 +141,8 @@ function providerEntryToToml(
   rawProvider: unknown,
 ): Record<string, unknown> {
   const out = cloneRecord(rawProvider);
+  delete out['request_attribution'];
+  delete out['request_originator'];
   for (const [key, value] of Object.entries(provider)) {
     if (key === 'oauth' && isPlainObject(value)) {
       out[camelToSnake(key)] = plainObjectToToml(value, undefined);

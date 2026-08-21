@@ -34,6 +34,8 @@ import {
   mergeRequestHeaders,
 } from '#/kosong/provider/bases/request-auth';
 import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegistry';
+import { resolveAuthoredRequestIdentity } from '#/kosong/requestIdentity/requestIdentityPolicy';
+import { projectRequestIdentity } from '#/kosong/requestIdentity/requestIdentityProjector';
 import {
   getProviderDefinition,
   getProviderDefinitions,
@@ -379,6 +381,109 @@ describe('request identity final fetch projection', () => {
     expect(request.headers.get('user-agent')).toBe('codex_cli_rs/1.0.0 (linux; x64)');
     expect(body['prompt_cache_key']).toBe(metadata.session_id);
     expect(body['client_metadata']).toEqual(metadata);
+  });
+
+  it.each([
+    ['Kimi-family', true],
+    ['third-party', false],
+  ] as const)('sends Kimi Code donor identity on %s Responses', async (_kind, isKimiProvider) => {
+    const projection = projectRequestIdentity({
+      policy: resolveAuthoredRequestIdentity({ preset: 'kimi_code' }),
+      protocol: 'openai_responses',
+      model: 'example-model',
+      rawSessionId: 'session-example',
+      rawAgentId: 'agent-example',
+      isKimiProvider,
+      snapshot: {
+        installationId: '00000000-0000-4000-8000-000000000001',
+        sharedSessionId: '00000000-0000-4000-8000-000000000002',
+        threadId: '00000000-0000-4000-8000-000000000003',
+        agentSessionId: '00000000-0000-4000-8000-000000000004',
+        logicalId: '00000000-0000-4000-8000-000000000005',
+        turnIndex: 1,
+        windowId: '00000000-0000-4000-8000-000000000003:1',
+        setTurnState: () => undefined,
+      },
+      runtimeVersion: '1.2.3',
+      platform: 'linux',
+      arch: 'x64',
+      hostRequestHeaders: {
+        'X-Msh-Device-Name': 'example-host',
+        'X-Msh-Device-Model': 'Example Model',
+        'X-Msh-Os-Version': 'Example OS 1',
+        'X-Msh-Device-Id': '00000000-0000-4000-8000-000000000009',
+      },
+    });
+    const provider = new OpenAIResponsesChatProvider({
+      model: 'example-model',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test/v1',
+      defaultHeaders: { 'User-Agent': 'host/1.0' },
+    });
+    const request = await captureRejectedFetch(() =>
+      provider.generate('sys', [], PROBE_HISTORY, {
+        cacheKey: projection.cacheKey,
+        headers: projection.headers,
+        requestIdentity: projection.wire,
+      }),
+    );
+    const body = await request.clone().json() as Record<string, unknown>;
+    expect(request.headers.get('user-agent')).toBe('kimi-code-cli/1.2.3');
+    expect(body['prompt_cache_key']).toBe('session-example');
+    if (isKimiProvider) {
+      expect(request.headers.get('x-msh-platform')).toBe('kimi_code_cli');
+      expect(request.headers.get('x-msh-device-name')).toBe('example-host');
+      expect(request.headers.get('x-msh-device-id')).toBe(
+        '00000000-0000-4000-8000-000000000009',
+      );
+    } else {
+      expect(request.headers.has('x-msh-platform')).toBe(false);
+      expect(request.headers.has('x-msh-device-id')).toBe(false);
+    }
+    expect(request.headers.has('x-kiki-session-id')).toBe(false);
+  });
+
+  it('sends Kimi Code session affinity as Messages metadata and keeps cache_control', async () => {
+    const projection = projectRequestIdentity({
+      policy: resolveAuthoredRequestIdentity({ preset: 'kimi_code' }),
+      protocol: 'anthropic',
+      model: 'example-model',
+      rawSessionId: 'session-example',
+      rawAgentId: 'agent-example',
+      isKimiProvider: true,
+      snapshot: {
+        installationId: '00000000-0000-4000-8000-000000000001',
+        sharedSessionId: '00000000-0000-4000-8000-000000000002',
+        threadId: '00000000-0000-4000-8000-000000000003',
+        agentSessionId: '00000000-0000-4000-8000-000000000004',
+        logicalId: '00000000-0000-4000-8000-000000000005',
+        turnIndex: 1,
+        windowId: '00000000-0000-4000-8000-000000000003:1',
+        setTurnState: () => undefined,
+      },
+      runtimeVersion: '1.2.3',
+      platform: 'linux',
+      arch: 'x64',
+    });
+    const provider = new AnthropicChatProvider({
+      model: 'example-model',
+      apiKey: 'sk-probe',
+      baseUrl: 'https://api.example.test',
+    });
+    const request = await captureRejectedFetch(() =>
+      provider.generate('sys', [], PROBE_HISTORY, {
+        cacheKey: projection.cacheKey,
+        headers: projection.headers,
+        requestIdentity: projection.wire,
+      }),
+    );
+    const body = await request.clone().json() as Record<string, unknown>;
+    expect(request.headers.get('user-agent')).toBe('kimi-code-cli/1.2.3');
+    expect(body['metadata']).toEqual({ user_id: 'session-example' });
+    expect(body['system']).toEqual([
+      expect.objectContaining({ cache_control: { type: 'ephemeral' } }),
+    ]);
+    expect(request.headers.has('x-kiki-session-id')).toBe(false);
   });
 
   it('sends Grok headers on Messages without session metadata and keeps cache_control', async () => {

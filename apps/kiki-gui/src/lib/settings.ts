@@ -154,39 +154,19 @@ export const PROVIDER_WIRE_TYPES: readonly ProviderWireType[] = [
   'vertexai',
 ];
 
-/** Per-provider request-attribution header style; 'auto' means unconfigured. */
-export type RequestAttributionStyle = 'codex' | 'kimi' | 'kiki' | 'none';
-export type RequestAttributionChoice = RequestAttributionStyle | 'auto';
-
-export const REQUEST_ATTRIBUTION_CHOICES: readonly RequestAttributionChoice[] = [
-  'auto',
-  'codex',
-  'kimi',
-  'kiki',
-  'none',
-];
-
 export type RequestIdentityChoice =
   | 'auto'
   | 'codex_compatible'
   | 'grok_build_compatible'
-  | 'kiki'
-  | 'none'
-  | 'legacy_codex'
-  | 'legacy_kimi'
-  | 'legacy_kiki'
-  | 'legacy_none';
+  | 'kimi_code'
+  | 'none';
 
 export const REQUEST_IDENTITY_CHOICES: readonly RequestIdentityChoice[] = [
   'auto',
   'codex_compatible',
   'grok_build_compatible',
-  'kiki',
+  'kimi_code',
   'none',
-  'legacy_codex',
-  'legacy_kimi',
-  'legacy_kiki',
-  'legacy_none',
 ];
 
 export interface ProviderModelDraft {
@@ -204,8 +184,6 @@ export interface ProviderDraft {
   defaultModel: string;
   apiKey: string;
   clearApiKey: boolean;
-  requestAttribution: RequestAttributionChoice;
-  requestOriginator: string;
   requestIdentityChoice: RequestIdentityChoice;
   requestIdentityOverridesJson: string;
   models: ProviderModelDraft[];
@@ -818,13 +796,7 @@ export function providerDraftFromCatalog(
     defaultModel,
     apiKey: '',
     clearApiKey: false,
-    requestAttribution: provider.request_attribution ?? 'auto',
-    requestOriginator: provider.request_originator ?? '',
-    requestIdentityChoice:
-      provider.request_identity?.preset ??
-      (provider.request_attribution === undefined
-        ? 'auto'
-        : (`legacy_${provider.request_attribution}` as RequestIdentityChoice)),
+    requestIdentityChoice: provider.request_identity?.preset ?? 'auto',
     requestIdentityOverridesJson:
       provider.request_identity?.overrides === undefined
         ? ''
@@ -928,8 +900,6 @@ export function providerDraftsEqual(a: ProviderDraft, b: ProviderDraft): boolean
   if (a.id !== b.id || a.type !== b.type || a.baseUrl !== b.baseUrl) return false;
   if (a.defaultModel !== b.defaultModel || a.apiKey !== b.apiKey) return false;
   if (a.clearApiKey !== b.clearApiKey) return false;
-  if (a.requestAttribution !== b.requestAttribution) return false;
-  if (a.requestOriginator !== b.requestOriginator) return false;
   if (a.requestIdentityChoice !== b.requestIdentityChoice) return false;
   if (a.requestIdentityOverridesJson !== b.requestIdentityOverridesJson) return false;
   if (a.models.length !== b.models.length) return false;
@@ -1237,21 +1207,13 @@ export async function deleteProvider(
 function providerBody(draft: ProviderDraft, includeId: boolean): Record<string, unknown> {
   const apiKey = draft.clearApiKey ? '' : draft.apiKey || undefined;
   const requestIdentity = requestIdentityFromDraft(draft);
-  const legacyAttribution = draft.requestIdentityChoice.startsWith('legacy_')
-    ? (draft.requestIdentityChoice.slice('legacy_'.length) as RequestAttributionStyle)
-    : draft.requestIdentityChoice === 'auto' && draft.requestAttribution !== 'auto'
-      ? draft.requestAttribution
-      : undefined;
   return {
     id: includeId ? draft.id : undefined,
     type: draft.type,
     api_key: apiKey,
     base_url: draft.baseUrl || undefined,
     default_model: draft.defaultModel,
-    request_identity: requestIdentity,
-    request_attribution: legacyAttribution,
-    request_originator:
-      requestIdentity === undefined ? draft.requestOriginator.trim() || undefined : undefined,
+    request_identity: requestIdentity ?? (includeId ? undefined : null),
     models: draft.models.map((model) => ({
       model: model.model,
       max_context_size: model.maxContextSize,
@@ -1285,7 +1247,7 @@ function parseRequestIdentityOverrides(
 function isNewRequestIdentityChoice(
   value: RequestIdentityChoice,
 ): value is RequestIdentityPolicyWire['preset'] {
-  return ['codex_compatible', 'grok_build_compatible', 'kiki', 'none'].includes(value);
+  return ['codex_compatible', 'grok_build_compatible', 'kimi_code', 'none'].includes(value);
 }
 
 async function serverRequest<T>(

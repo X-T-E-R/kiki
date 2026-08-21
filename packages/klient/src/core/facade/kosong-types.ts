@@ -10,13 +10,11 @@ import type { Tool } from '@moonshot-ai/agent-core-v2/kosong/contract/tool';
 import type { TokenUsage } from '@moonshot-ai/agent-core-v2/kosong/contract/usage';
 import type { ResponseFormat } from '@moonshot-ai/agent-core-v2/kosong/contract/provider';
 
-export type RequestAttribution = 'codex' | 'kimi' | 'kiki' | 'none';
-
 export type RequestIdentityPolicy = {
-  preset: 'codex_compatible' | 'grok_build_compatible' | 'kiki' | 'none';
+  preset: 'codex_compatible' | 'grok_build_compatible' | 'kimi_code' | 'none';
   overrides?: {
     lineage?: {
-      format?: 'codex' | 'grok_build' | 'kiki' | 'none';
+      format?: 'codex' | 'grok_build' | 'kimi_code' | 'none';
       sessionScope?: 'shared_session' | 'agent_session' | 'none';
       threadIdentity?: 'agent' | 'none';
       parentThread?: 'immediate_agent' | 'none';
@@ -29,7 +27,7 @@ export type RequestIdentityPolicy = {
         | { mode: 'none' }
         | { mode: 'codex_default' }
         | { mode: 'custom'; value: string };
-      userAgent?: 'codex' | 'grok_build' | 'host' | 'none';
+      userAgent?: 'codex' | 'grok_build' | 'kimi_code' | 'host' | 'none';
     };
     request?: {
       logicalId?: 'turn' | 'none';
@@ -64,10 +62,6 @@ export interface ProviderInput {
   auth: ProviderAuth;
   defaultModel?: string;
   requestIdentity?: RequestIdentityPolicy;
-  /** @deprecated Use requestIdentity. */
-  requestAttribution?: RequestAttribution;
-  /** @deprecated Use requestIdentity.overrides.client.originator. */
-  requestOriginator?: string;
 }
 
 /**

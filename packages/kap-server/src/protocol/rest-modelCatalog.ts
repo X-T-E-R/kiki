@@ -41,10 +41,6 @@ export const providerWireTypeSchema = z.enum([
 ]);
 export type ProviderWireType = z.infer<typeof providerWireTypeSchema>;
 
-/** The request-attribution header styles accepted by the create/replace routes. */
-export const requestAttributionSchema = z.enum(['codex', 'kimi', 'kiki', 'none']);
-export type RequestAttributionWire = z.infer<typeof requestAttributionSchema>;
-
 export const createProviderModelSchema = z.object({
   model: z.string().min(1),
   max_context_size: z.number().int().min(1),
@@ -62,8 +58,6 @@ function refineProviderForm(
     base_url?: string | undefined;
     models: Array<{ model: string }>;
     request_identity?: RequestIdentityPolicyWire | null;
-    request_attribution?: RequestAttributionWire;
-    request_originator?: string;
   },
   ctx: z.RefinementCtx,
 ): void {
@@ -76,14 +70,9 @@ function refineProviderForm(
   }
   if (value.request_identity !== undefined && value.request_identity !== null) {
     try {
-      resolveProviderRequestIdentity(
-        {
-          requestIdentity: requestIdentityFromWire(value.request_identity),
-          requestAttribution: value.request_attribution,
-          requestOriginator: value.request_originator,
-        },
-        value.type,
-      );
+      resolveProviderRequestIdentity({
+        requestIdentity: requestIdentityFromWire(value.request_identity),
+      });
     } catch (error) {
       ctx.addIssue({
         code: 'custom',
@@ -121,11 +110,10 @@ export const createProviderRequestSchema = z
     api_key: z.string().optional(),
     base_url: z.string().trim().optional(),
     default_model: z.string().min(1).optional(),
-    request_attribution: requestAttributionSchema.optional(),
-    request_originator: z.string().optional(),
     request_identity: RequestIdentityPolicyWireSchema.optional(),
     models: z.array(createProviderModelSchema).min(1),
   })
+  .strict()
   .superRefine((value, ctx) => {
     refineProviderForm(value, ctx);
     if (
@@ -159,11 +147,10 @@ export const replaceProviderRequestSchema = z
     api_key: z.string().optional(),
     base_url: z.string().trim().optional(),
     default_model: z.string().min(1).optional(),
-    request_attribution: requestAttributionSchema.optional(),
-    request_originator: z.string().optional(),
     request_identity: RequestIdentityPolicyWireSchema.nullable().optional(),
     models: z.array(createProviderModelSchema).min(1),
   })
+  .strict()
   .superRefine((value, ctx) => {
     refineProviderForm(value, ctx);
     if (

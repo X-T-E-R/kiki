@@ -11,7 +11,10 @@ import { describe, expect, it } from 'vitest';
 import { pluginManifestSchema } from '../src/contract/global/plugins.js';
 import { createSessionOptionsSchema } from '../src/contract/session/lifecycle.js';
 import { promptPayloadSchema } from '../src/contract/agent/schemas.js';
-import { requestIdentityPolicySchema as providerRequestIdentityPolicySchema } from '../src/contract/global/providers.js';
+import {
+  providerConfigSchema,
+  requestIdentityPolicySchema as providerRequestIdentityPolicySchema,
+} from '../src/contract/global/providers.js';
 import { requestIdentityPolicySchema as catalogRequestIdentityPolicySchema } from '../src/contract/global/catalog.js';
 
 type McpTimeoutField = 'startupTimeoutMs' | 'toolTimeoutMs';
@@ -80,6 +83,16 @@ describe('prompt contract validation', () => {
 });
 
 describe('request identity contract validation', () => {
+  it.each(['requestAttribution', 'requestOriginator'] as const)(
+    'rejects removed provider field %s without changing unrelated unknown-field handling',
+    (removed) => {
+      expect(providerConfigSchema.safeParse({ type: 'openai', [removed]: 'old' }).success).toBe(false);
+      expect(providerConfigSchema.parse({ type: 'openai', futureField: 'ignored' })).toEqual({
+        type: 'openai',
+      });
+    },
+  );
+
   it.each([providerRequestIdentityPolicySchema, catalogRequestIdentityPolicySchema])(
     'rejects unknown root and nested axes recursively',
     (schema) => {
@@ -90,6 +103,14 @@ describe('request identity contract validation', () => {
           overrides: { request: { future_axis: 'value' } },
         }).success,
       ).toBe(false);
+    },
+  );
+
+  it.each([providerRequestIdentityPolicySchema, catalogRequestIdentityPolicySchema])(
+    'accepts kimi_code and rejects the removed kiki preset name',
+    (schema) => {
+      expect(schema.safeParse({ preset: 'kimi_code' }).success).toBe(true);
+      expect(schema.safeParse({ preset: 'kiki' }).success).toBe(false);
     },
   );
 });

@@ -263,36 +263,11 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     ]);
   });
 
-  it('persists request_attribution on create and echoes it in the catalog item', async () => {
-    await boot();
-    const { status, body } = await postJson<{ request_attribution?: string }>(
-      '/api/v1/providers',
-      { ...CREATE_BODY, request_attribution: 'kiki' },
-    );
-    expect(status).toBe(201);
-    expect(body.code).toBe(0);
-    expect(body.data.request_attribution).toBe('kiki');
-
-    const onDisk = await readConfigToml();
-    expect(onDisk['providers']).toEqual({
-      'my-openai': {
-        type: 'openai',
-        api_key: 'sk-test-openai',
-        base_url: 'https://api.openai.example/v1',
-        default_model: 'my-openai/gpt-4.1',
-        request_attribution: 'kiki',
-      },
-    });
-
-    const single = await getJson<{ request_attribution?: string }>('/api/v1/providers/my-openai');
-    expect(single.body.data.request_attribution).toBe('kiki');
-  });
-
-  it('round-trips request_identity and preserves it across an old-client replace', async () => {
+  it('round-trips request_identity and preserves it when replace omits the field', async () => {
     await boot();
     const requestIdentity = {
-      preset: 'grok_build_compatible',
-      overrides: { client: { user_agent: 'grok_build' } },
+      preset: 'kimi_code',
+      overrides: { client: { user_agent: 'kimi_code' } },
     } as const;
     const created = await postJson<{ request_identity?: unknown }>('/api/v1/providers', {
       ...CREATE_BODY,
@@ -304,8 +279,8 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     expect((await readConfigToml())['providers']).toMatchObject({
       'my-openai': {
         request_identity: {
-          preset: 'grok_build_compatible',
-          overrides: { client: { user_agent: 'grok_build' } },
+          preset: 'kimi_code',
+          overrides: { client: { user_agent: 'kimi_code' } },
         },
       },
     });
@@ -318,7 +293,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     expect(replaced.body.data.provider.request_identity).toEqual(requestIdentity);
   });
 
-  it('clears request_identity only on explicit null and rejects conflicting dual fields', async () => {
+  it('clears request_identity only on explicit null', async () => {
     await boot();
     await postJson('/api/v1/providers', {
       ...CREATE_BODY,
@@ -332,13 +307,6 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     expect(cleared.status).toBe(200);
     expect(cleared.body.data.provider.request_identity).toBeUndefined();
 
-    const conflict = await putJson('/api/v1/providers/my-openai', {
-      ...REPLACE_BODY,
-      request_identity: { preset: 'none' },
-      request_attribution: 'none',
-    });
-    expect(conflict.body.code).toBe(40001);
-    expect(conflict.body.details?.some((detail) => detail.path === 'request_identity')).toBe(true);
   });
 
   it('rejects unknown root and nested request_identity fields', async () => {
@@ -359,21 +327,19 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     expect(unknownAxis.body.code).toBe(40001);
   });
 
-  it('rejects an unknown request_attribution value with 40001 on both create and replace', async () => {
+  it('rejects removed attribution fields on both create and replace', async () => {
     await boot(KEEP_DEFAULT_TOML);
     const created = await postJson<unknown>('/api/v1/providers', {
       ...CREATE_BODY,
-      request_attribution: 'copilot',
+      request_attribution: 'none',
     });
     expect(created.body.code).toBe(40001);
     expect(created.body.data).toBeNull();
-    expect(
-      created.body.details?.some((detail) => detail.path === 'request_attribution'),
-    ).toBe(true);
+    expect(created.body.details?.length).toBeGreaterThan(0);
 
     const replaced = await putJson<unknown>('/api/v1/providers/openai', {
       ...REPLACE_BODY,
-      request_attribution: 'copilot',
+      request_originator: 'my-ide',
     });
     expect(replaced.body.code).toBe(40001);
     expect(replaced.body.data).toBeNull();
@@ -705,74 +671,6 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
         api_key: '',
         base_url: 'https://api.openai.example/v1',
         default_model: 'openai/gpt-4.1',
-      },
-    });
-  });
-
-  it('sets request_attribution on replace and clears it when the field leaves the form', async () => {
-    await boot(KEEP_DEFAULT_TOML);
-    const set = await putJson<{ provider: { request_attribution?: string } }>(
-      '/api/v1/providers/openai',
-      { ...REPLACE_BODY, request_attribution: 'none' },
-    );
-    expect(set.status).toBe(200);
-    expect(set.body.data.provider.request_attribution).toBe('none');
-    expect((await readConfigToml())['providers']).toEqual({
-      kimi: { type: 'kimi', api_key: 'sk-test' },
-      openai: {
-        type: 'openai',
-        api_key: 'sk-openai',
-        base_url: 'https://api.openai.example/v1',
-        default_model: 'openai/gpt-4.1',
-        request_attribution: 'none',
-      },
-    });
-
-    const cleared = await putJson<{ provider: { request_attribution?: string } }>(
-      '/api/v1/providers/openai',
-      REPLACE_BODY,
-    );
-    expect(cleared.status).toBe(200);
-    expect(cleared.body.data.provider.request_attribution).toBeUndefined();
-    // An absent field is authoritative: the key is really gone from config.toml.
-    expect((await readConfigToml())['providers']).toEqual({
-      kimi: { type: 'kimi', api_key: 'sk-test' },
-      openai: {
-        type: 'openai',
-        api_key: 'sk-openai',
-        base_url: 'https://api.openai.example/v1',
-        default_model: 'openai/gpt-4.1',
-      },
-    });
-  });
-
-  it('persists request_originator on create and clears it when the field leaves the form', async () => {
-    await boot();
-    const { status, body } = await postJson<{ request_originator?: string }>(
-      '/api/v1/providers',
-      { ...CREATE_BODY, request_originator: 'my-ide' },
-    );
-    expect(status).toBe(201);
-    expect(body.data.request_originator).toBe('my-ide');
-    expect((await readConfigToml())['providers']).toMatchObject({
-      'my-openai': { request_originator: 'my-ide' },
-    });
-
-    const single = await getJson<{ request_originator?: string }>('/api/v1/providers/my-openai');
-    expect(single.body.data.request_originator).toBe('my-ide');
-
-    const cleared = await putJson<{ provider: { request_originator?: string } }>(
-      '/api/v1/providers/my-openai',
-      REPLACE_BODY,
-    );
-    expect(cleared.status).toBe(200);
-    expect(cleared.body.data.provider.request_originator).toBeUndefined();
-    expect((await readConfigToml())['providers']).toEqual({
-      'my-openai': {
-        type: 'openai',
-        api_key: 'sk-test-openai',
-        base_url: 'https://api.openai.example/v1',
-        default_model: 'my-openai/gpt-4.1',
       },
     });
   });

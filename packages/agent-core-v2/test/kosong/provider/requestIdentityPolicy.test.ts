@@ -25,15 +25,19 @@ const SNAPSHOT = {
   setTurnState: () => undefined,
 };
 
-function project(policy: RequestIdentityPolicy) {
+function project(
+  policy: RequestIdentityPolicy,
+  options: { isKimiProvider?: boolean; protocol?: 'openai_responses' | 'anthropic' } = {},
+) {
   return projectRequestIdentity({
     policy: resolveAuthoredRequestIdentity(policy),
-    protocol: 'openai_responses',
+    protocol: options.protocol ?? 'openai_responses',
     model: 'wire-model',
     rawSessionId: 'raw-session',
     rawAgentId: 'child',
     parentAgentId: 'main',
     subagentKind: 'agent',
+    isKimiProvider: options.isKimiProvider ?? false,
     snapshot: SNAPSHOT,
     runtimeVersion: '1.0.0',
     platform: 'linux',
@@ -45,7 +49,7 @@ describe('request identity policy', () => {
   it.each([
     ['codex_compatible', 'codex', 'shared_session', 'codex'],
     ['grok_build_compatible', 'grok_build', 'agent_session', 'grok_build'],
-    ['kiki', 'kiki', 'shared_session', 'host'],
+    ['kimi_code', 'kimi_code', 'shared_session', 'kimi_code'],
     ['none', 'none', 'none', 'none'],
   ] as const)('expands %s into complete orthogonal axes', (preset, format, scope, userAgent) => {
     const resolved = resolveAuthoredRequestIdentity({ preset });
@@ -56,62 +60,79 @@ describe('request identity policy', () => {
 
   it('applies overrides leaf-by-leaf without replacing sibling defaults', () => {
     const resolved = resolveAuthoredRequestIdentity({
-      preset: 'kiki',
+      preset: 'kimi_code',
       overrides: { client: { originator: { mode: 'custom', value: 'example-client' } } },
     });
     expect(resolved.client.originator).toEqual({ mode: 'custom', value: 'example-client' });
-    expect(resolved.client.userAgent).toBe('host');
-    expect(resolved.lineage.format).toBe('kiki');
+    expect(resolved.client.userAgent).toBe('kimi_code');
+    expect(resolved.lineage.format).toBe('kimi_code');
   });
 
-  it.each(['codex', 'kimi', 'kiki', 'none'] as const)(
-    'keeps legacy %s distinct from new presets',
-    (requestAttribution) => {
-      const resolved = resolveProviderRequestIdentity({ requestAttribution }, 'openai');
-      expect(resolved.source).toBe('legacy');
-      expect(resolved.cache.messages).toBe('metadata_user_id');
-      expect(resolved.client.userAgent).toBe('host');
-      expect(resolved.responsesMetadata).toBe('none');
-    },
-  );
+  it('projects enabled Codex format with disabled identity leaves from an empty snapshot', () => {
+    const projected = projectRequestIdentity({
+      policy: resolveAuthoredRequestIdentity({
+        preset: 'none',
+        overrides: {
+          lineage: { format: 'codex' },
+          client: { userAgent: 'host' },
+        },
+      }),
+      protocol: 'openai_responses',
+      model: 'wire-model',
+      rawSessionId: 'session-example',
+      rawAgentId: 'agent-example',
+      isKimiProvider: false,
+      snapshot: { setTurnState: () => undefined },
+      runtimeVersion: '1.0.0',
+      platform: 'linux',
+      arch: 'x64',
+    });
 
-  it('keeps the provider-family default deterministic', () => {
-    expect(resolveProviderRequestIdentity(undefined, 'kimi').lineage.format).toBe('none');
-    expect(resolveProviderRequestIdentity(undefined, 'openai').lineage.format).toBe('codex');
+    expect(projected.headers).toBeUndefined();
+    expect(projected.cacheKey).toBeUndefined();
+    expect(projected.wire).toMatchObject({
+      suppressUserAgent: false,
+      suppressIdentity: false,
+      suppressMessagesMetadataUserId: true,
+      responsesClientMetadata: undefined,
+    });
   });
 
-  it('accepts matching new and legacy Kiki fields and rejects conflicting dual fields', () => {
-    expect(
-      resolveProviderRequestIdentity(
-        { requestIdentity: { preset: 'kiki' }, requestAttribution: 'kiki' },
-        'openai',
-      ).source,
-    ).toBe('new');
+  it('defaults an omitted policy to Kimi Code', () => {
+    expect(resolveProviderRequestIdentity(undefined).preset).toBe('kimi_code');
+  });
+
+  it('rejects the removed kiki preset name instead of treating it as an alias', () => {
+    expect(RequestIdentityPolicySchema.safeParse({ preset: 'kiki' }).success).toBe(false);
+    expect(RequestIdentityPolicyWireSchema.safeParse({ preset: 'kiki' }).success).toBe(false);
+  });
+
+  it('rejects control characters in the new originator axis', () => {
     expect(() =>
-      resolveProviderRequestIdentity(
-        { requestIdentity: { preset: 'none' }, requestAttribution: 'none' },
-        'openai',
-      ),
-    ).toThrow(/conflicts/u);
-  });
-
-  it('accepts a matching deprecated originator alias and rejects CR/LF', () => {
-    const requestIdentity = {
-      preset: 'kiki' as const,
-      overrides: { client: { originator: { mode: 'custom' as const, value: 'example-client' } } },
-    };
-    expect(
-      resolveProviderRequestIdentity(
-        { requestIdentity, requestOriginator: 'example-client' },
-        'openai',
-      ).client.originator,
-    ).toEqual({ mode: 'custom', value: 'example-client' });
-    expect(() =>
-      resolveProviderRequestIdentity(
-        { requestAttribution: 'kiki', requestOriginator: 'bad\r\nvalue' },
-        'openai',
-      ),
+      resolveAuthoredRequestIdentity({
+        preset: 'kimi_code',
+        overrides: { client: { originator: { mode: 'custom', value: 'bad\r\nvalue' } } },
+      }),
     ).toThrow(/control characters/u);
+  });
+
+  it('projects Kimi Code product identity without donor-absent lineage', () => {
+    const kimi = project({ preset: 'kimi_code' }, { isKimiProvider: true });
+    expect(kimi.headers).toMatchObject({
+      'User-Agent': 'kimi-code-cli/1.0.0',
+      'X-Msh-Platform': 'kimi_code_cli',
+      'X-Msh-Version': '1.0.0',
+      'X-Msh-Device-Id': SNAPSHOT.installationId,
+    });
+    expect(kimi.headers?.['X-Msh-Device-Name']).toBeTruthy();
+    expect(kimi.headers?.['X-Msh-Device-Model']).toBeTruthy();
+    expect(kimi.headers?.['X-Msh-Os-Version']).toBeTruthy();
+    expect(Object.keys(kimi.headers ?? {}).some((key) => key.startsWith('x-kiki-'))).toBe(false);
+    expect(kimi.cacheKey).toBe('raw-session');
+
+    const thirdParty = project({ preset: 'kimi_code' });
+    expect(thirdParty.headers).toEqual({ 'User-Agent': 'kimi-code-cli/1.0.0' });
+    expect(thirdParty.cacheKey).toBe('raw-session');
   });
 
   it('round-trips snake-case public policy fields', () => {

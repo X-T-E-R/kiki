@@ -50,8 +50,6 @@ export function blankProviderDraft(): ProviderDraft {
     defaultModel: '',
     apiKey: '',
     clearApiKey: false,
-    requestAttribution: 'auto',
-    requestOriginator: '',
     requestIdentityChoice: 'auto',
     requestIdentityOverridesJson: '',
     models: [{ model: '', maxContextSize: 128000, displayName: '', capabilities: [], supportEfforts: [] }],
@@ -434,18 +432,7 @@ export function ProviderFields({
         </label>
         <Hint>{t('st.providers.requestIdentityHint')}</Hint>
       </div>
-      {draft.requestIdentityChoice.startsWith('legacy_') ? <div>
-        <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.originator')}
-          <input
-            className={`${INPUT} mt-1`}
-            value={draft.requestOriginator}
-            onChange={(event) => { onChange({ ...draft, requestOriginator: event.target.value }); }}
-            placeholder={t('st.providers.originatorPlaceholder')}
-          />
-        </label>
-        <Hint>{t('st.providers.originatorHint')}</Hint>
-      </div> : null}
-      {['codex_compatible', 'grok_build_compatible', 'kiki', 'none'].includes(draft.requestIdentityChoice) ? <div>
+      {['codex_compatible', 'grok_build_compatible', 'kimi_code', 'none'].includes(draft.requestIdentityChoice) ? <div>
         <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.requestIdentityAdvanced')}
           <textarea
             className={`${INPUT} mt-1 min-h-24 font-mono`}

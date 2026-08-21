@@ -18,6 +18,44 @@ describe('ProviderTypeSchema (free-form vendor identity)', () => {
 });
 
 describe('providers TOML transforms', () => {
+  it('rejects removed identity keys and purges them from valid rewrites', () => {
+    const removed = providersFromToml({
+      example: {
+        type: 'openai',
+        request_attribution: 'none',
+        request_originator: 'old-client',
+      },
+    });
+    const parsed = ProvidersSectionSchema.safeParse(removed);
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues.map((issue) => issue.path.join('.'))).toEqual([
+        'example.requestAttribution',
+        'example.requestOriginator',
+      ]);
+    }
+
+    expect(
+      providersToToml(
+        { example: { type: 'openai', requestIdentity: { preset: 'kimi_code' } } },
+        {
+          example: {
+            type: 'openai',
+            request_attribution: 'none',
+            request_originator: 'old-client',
+            unrelated_extension: 'preserved',
+          },
+        },
+      ),
+    ).toEqual({
+      example: {
+        type: 'openai',
+        request_identity: { preset: 'kimi_code' },
+        unrelated_extension: 'preserved',
+      },
+    });
+  });
+
   it('converts snake_case entries to camelCase and back', () => {
     const from = providersFromToml({
       'my-provider': {
@@ -25,6 +63,10 @@ describe('providers TOML transforms', () => {
         base_url: 'https://api.moonshot.ai/v1',
         custom_headers: { 'x-a': 'b' },
         default_model: 'kimi-k2',
+        request_identity: {
+          preset: 'kimi_code',
+          overrides: { client: { user_agent: 'kimi_code' } },
+        },
         oauth: { storage: 'file', key: 'k', oauth_host: 'example.com' },
       },
     }) as Record<string, Record<string, unknown>>;
@@ -33,8 +75,13 @@ describe('providers TOML transforms', () => {
       baseUrl: 'https://api.moonshot.ai/v1',
       customHeaders: { 'x-a': 'b' },
       defaultModel: 'kimi-k2',
+      requestIdentity: {
+        preset: 'kimi_code',
+        overrides: { client: { userAgent: 'kimi_code' } },
+      },
       oauth: { storage: 'file', key: 'k', oauthHost: 'example.com' },
     });
+    expect(ProvidersSectionSchema.parse(from)).toEqual(from);
 
     const back = providersToToml(from, undefined) as Record<string, Record<string, unknown>>;
     expect(back['my-provider']).toEqual({
@@ -42,6 +89,10 @@ describe('providers TOML transforms', () => {
       base_url: 'https://api.moonshot.ai/v1',
       custom_headers: { 'x-a': 'b' },
       default_model: 'kimi-k2',
+      request_identity: {
+        preset: 'kimi_code',
+        overrides: { client: { user_agent: 'kimi_code' } },
+      },
       oauth: { storage: 'file', key: 'k', oauth_host: 'example.com' },
     });
   });

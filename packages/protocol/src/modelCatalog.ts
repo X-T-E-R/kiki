@@ -19,12 +19,12 @@ export const providerCatalogStatusSchema = z.enum([
 export type ProviderCatalogStatus = z.infer<typeof providerCatalogStatusSchema>;
 
 export const requestIdentityPolicySchema = z.object({
-  preset: z.enum(['codex_compatible', 'grok_build_compatible', 'kiki', 'none']),
+  preset: z.enum(['codex_compatible', 'grok_build_compatible', 'kimi_code', 'none']),
   overrides: z
     .object({
       lineage: z
         .object({
-          format: z.enum(['codex', 'grok_build', 'kiki', 'none']).optional(),
+          format: z.enum(['codex', 'grok_build', 'kimi_code', 'none']).optional(),
           session_scope: z.enum(['shared_session', 'agent_session', 'none']).optional(),
           thread_identity: z.enum(['agent', 'none']).optional(),
           parent_thread: z.enum(['immediate_agent', 'none']).optional(),
@@ -42,7 +42,7 @@ export const requestIdentityPolicySchema = z.object({
               z.object({ mode: z.literal('custom'), value: z.string().min(1) }).strict(),
             ])
             .optional(),
-          user_agent: z.enum(['codex', 'grok_build', 'host', 'none']).optional(),
+          user_agent: z.enum(['codex', 'grok_build', 'kimi_code', 'host', 'none']).optional(),
         }).strict()
         .optional(),
       request: z
@@ -70,8 +70,6 @@ export const providerCatalogItemSchema = z.object({
   base_url: z.string().min(1).optional(),
   default_model: z.string().min(1).optional(),
   request_identity: requestIdentityPolicySchema.optional(),
-  request_attribution: z.enum(['codex', 'kimi', 'kiki', 'none']).optional(),
-  request_originator: z.string().optional(),
   has_api_key: z.boolean(),
   status: providerCatalogStatusSchema,
   models: z.array(z.string().min(1)).optional(),

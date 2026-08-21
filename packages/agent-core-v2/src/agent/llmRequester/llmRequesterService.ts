@@ -51,12 +51,16 @@ import type {
   ProviderConfig,
   ProvidersSection,
 } from '#/kosong/provider/provider';
+import { getProviderDefinition } from '#/kosong/provider/providerDefinition';
 import {
   REQUEST_IDENTITY_RESERVED_HEADERS,
   resolveProviderRequestIdentity,
   type ResolvedRequestIdentityPolicy,
 } from '#/kosong/requestIdentity/requestIdentityPolicy';
-import { projectRequestIdentity } from '#/kosong/requestIdentity/requestIdentityProjector';
+import {
+  preflightRequestIdentityProjection,
+  projectRequestIdentity,
+} from '#/kosong/requestIdentity/requestIdentityProjector';
 import type { ApiErrorEvent } from '#/app/telemetry/events';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import {
@@ -71,7 +75,11 @@ import {
 } from '#/session/sessionMetadata/sessionMetadata';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { WarningIssued } from '#/agent/profile/profileOps';
-import { IRequestIdentityRegistry } from '#/session/requestIdentity/requestIdentityRegistry';
+import {
+  IRequestIdentityRegistry,
+  type RequestIdentityDimensions,
+  type RequestIdentitySnapshot,
+} from '#/session/requestIdentity/requestIdentityRegistry';
 import { RequestIdentityErrors } from '#/kosong/requestIdentity/errors';
 
 import {
@@ -631,25 +639,35 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       this.config.get<ProvidersSection>(PROVIDERS_SECTION)?.[requester.model.providerName];
     const requestIdentity =
       turnConfig?.requestIdentity ??
-      resolveProviderRequestIdentity(providerConfig, requester.model.providerType);
-    validateRequestIdentityHeaderCollisions(providerConfig, requestIdentity);
+      resolveProviderRequestIdentity(providerConfig);
+    validateRequestIdentityHeaderCollisions(providerConfig);
+    preflightRequestIdentityProjection(requestIdentity, requester.model.protocol);
 
     const messages = overrides.messages ?? this.context.get();
     const parentAgentId = subagentParentAgentId(agentMeta);
     const spawnContext = requestIdentitySpawnContext(agentMeta);
-    const snapshot = await this.requestIdentities.snapshot({
-      agentId: this.agentContext.agentId,
-      turnKey: requestIdentityTurnKey(overrides.source),
-      parentAgentId,
-      ...spawnContext,
-      compactionWindow: messages.filter(
-        (message) =>
-          (message as Message & { readonly origin?: { readonly kind?: string } }).origin?.kind ===
-          'compaction_summary',
-      ).length,
-      logicalIdKind:
-        requestIdentity.lineage.format === 'codex' ? 'uuidv7' : 'uuidv4',
-    });
+    const isKimiProvider = isKimiProviderFamily(requester.model.providerType);
+    const dimensions = resolveRequestIdentityDimensions(
+      requestIdentity,
+      isKimiProvider,
+      this.bootstrap.args.requestHeaders,
+    );
+    const snapshot = hasRequestIdentityDimensions(dimensions)
+      ? await this.requestIdentities.snapshot({
+          agentId: this.agentContext.agentId,
+          turnKey: requestIdentityTurnKey(overrides.source),
+          parentAgentId,
+          ...spawnContext,
+          compactionWindow: messages.filter(
+            (message) =>
+              (message as Message & { readonly origin?: { readonly kind?: string } }).origin
+                ?.kind === 'compaction_summary',
+          ).length,
+          logicalIdKind:
+            requestIdentity.lineage.format === 'codex' ? 'uuidv7' : 'uuidv4',
+          dimensions,
+        })
+      : emptyRequestIdentitySnapshot();
     const identityProjection = projectRequestIdentity({
       policy: requestIdentity,
       protocol: requester.model.protocol,
@@ -663,10 +681,12 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
             ? 'agent'
             : 'swarm'
           : undefined,
+      isKimiProvider,
       snapshot,
       runtimeVersion: this.bootstrap.clientIdentity.version,
       platform: this.bootstrap.platform,
       arch: this.bootstrap.arch,
+      hostRequestHeaders: this.bootstrap.args.requestHeaders,
     });
     const resolvedSystemPrompt =
       overrides.systemPrompt ?? turnConfig?.systemPrompt ?? this.profile.getSystemPrompt();
@@ -684,7 +704,6 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         cacheKey: identityProjection.cacheKey,
         requestParams: stripRequestIdentityBodyParams(
           stripKikiReservedRequestParams(baseParams.requestParams),
-          requestIdentity,
         ),
         ...budgetParams,
         headers: identityProjection.headers,
@@ -720,10 +739,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         params: this.profile.resolveRequestParams(),
         systemPrompt: this.profile.getSystemPrompt(),
         providerConfig,
-        requestIdentity: resolveProviderRequestIdentity(
-          providerConfig,
-          requester.model.providerType,
-        ),
+        requestIdentity: resolveProviderRequestIdentity(providerConfig),
       };
       this.turnConfigs.set(turnId, snapshot);
     }
@@ -851,9 +867,7 @@ function requestIdentityTurnKey(source: AgentLLMRequestSource | undefined): stri
 
 function validateRequestIdentityHeaderCollisions(
   provider: ProviderConfig | undefined,
-  policy: ResolvedRequestIdentityPolicy,
 ): void {
-  if (policy.source !== 'new') return;
   for (const key of Object.keys(provider?.customHeaders ?? {})) {
     if (REQUEST_IDENTITY_RESERVED_HEADERS.has(key.toLowerCase())) {
       throw new Error2(
@@ -866,12 +880,56 @@ function validateRequestIdentityHeaderCollisions(
 
 function stripRequestIdentityBodyParams(
   params: ModelRequestParams['requestParams'],
-  policy: ResolvedRequestIdentityPolicy,
 ): ModelRequestParams['requestParams'] {
-  if (params === undefined || policy.source !== 'new') return params;
+  if (params === undefined) return params;
   const reserved = new Set(['prompt_cache_key', 'client_metadata', 'metadata', 'metadata.user_id']);
   const entries = Object.entries(params).filter(([key]) => !reserved.has(key.toLowerCase()));
   return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function isKimiProviderFamily(providerType: string | undefined): boolean {
+  return (
+    providerType === 'kimi' ||
+    (providerType !== undefined && getProviderDefinition(providerType)?.id === 'kimi')
+  );
+}
+
+function resolveRequestIdentityDimensions(
+  policy: ResolvedRequestIdentityPolicy,
+  isKimiProvider: boolean,
+  hostHeaders: Readonly<Record<string, string>>,
+): RequestIdentityDimensions {
+  const format = policy.lineage.format;
+  const hostHasDeviceIdentity = Object.entries(hostHeaders).some(([name, value]) => {
+    if (name.toLowerCase() !== 'x-msh-device-id') return false;
+    const cleaned = value.replaceAll(/[^\u0020-\u007E]/gu, '').trim();
+    return cleaned.length > 0 && cleaned !== 'unknown';
+  });
+  return {
+    installationIdentity:
+      policy.client.installationIdentity === 'persistent_local' &&
+      (format === 'codex' ||
+        format === 'grok_build' ||
+        (format === 'kimi_code' && isKimiProvider && !hostHasDeviceIdentity)),
+    sharedSessionIdentity:
+      policy.lineage.sessionScope === 'shared_session' && policy.preset !== 'kimi_code',
+    agentSessionIdentity: policy.lineage.sessionScope === 'agent_session',
+    threadIdentity:
+      policy.lineage.threadIdentity === 'agent' ||
+      policy.lineage.parentThread === 'immediate_agent',
+    logicalRequestIdentity:
+      policy.request.logicalId === 'turn' || policy.lineage.turnAncestry === 'spawn_context',
+    turnIndex: policy.request.turnIndex === 'agent_session',
+    turnState: policy.responsesMetadata === 'codex',
+  };
+}
+
+function hasRequestIdentityDimensions(dimensions: RequestIdentityDimensions): boolean {
+  return Object.values(dimensions).some(Boolean);
+}
+
+function emptyRequestIdentitySnapshot(): RequestIdentitySnapshot {
+  return { setTurnState: () => undefined };
 }
 
 function logFieldsForSource(source: AgentLLMRequestSource | undefined): AgentLLMRequestLogFields {

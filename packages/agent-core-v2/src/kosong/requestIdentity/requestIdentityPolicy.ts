@@ -1,5 +1,4 @@
 import type { ProviderConfig } from '#/kosong/provider/provider';
-import { getProviderDefinition } from '#/kosong/provider/providerDefinition';
 import { z } from 'zod';
 import { Error2 } from '#/_base/errors/errors';
 import { RequestIdentityErrors } from './errors';
@@ -7,7 +6,7 @@ import { RequestIdentityErrors } from './errors';
 export type RequestIdentityPreset =
   | 'codex_compatible'
   | 'grok_build_compatible'
-  | 'kiki'
+  | 'kimi_code'
   | 'none';
 
 export type RequestIdentityPolicy = {
@@ -17,7 +16,7 @@ export type RequestIdentityPolicy = {
 
 export type RequestIdentityOverrides = {
   lineage?: {
-    format?: 'codex' | 'grok_build' | 'kiki' | 'none';
+    format?: 'codex' | 'grok_build' | 'kimi_code' | 'none';
     sessionScope?: 'shared_session' | 'agent_session' | 'none';
     threadIdentity?: 'agent' | 'none';
     parentThread?: 'immediate_agent' | 'none';
@@ -30,7 +29,7 @@ export type RequestIdentityOverrides = {
       | { mode: 'none' }
       | { mode: 'codex_default' }
       | { mode: 'custom'; value: string };
-    userAgent?: 'codex' | 'grok_build' | 'host' | 'none';
+    userAgent?: 'codex' | 'grok_build' | 'kimi_code' | 'host' | 'none';
   };
   request?: {
     logicalId?: 'turn' | 'none';
@@ -54,12 +53,12 @@ const RequestIdentityOriginatorSchema = z.discriminatedUnion('mode', [
 ]);
 
 export const RequestIdentityPolicySchema: z.ZodType<RequestIdentityPolicy> = z.object({
-  preset: z.enum(['codex_compatible', 'grok_build_compatible', 'kiki', 'none']),
+  preset: z.enum(['codex_compatible', 'grok_build_compatible', 'kimi_code', 'none']),
   overrides: z
     .object({
       lineage: z
         .object({
-          format: z.enum(['codex', 'grok_build', 'kiki', 'none']).optional(),
+          format: z.enum(['codex', 'grok_build', 'kimi_code', 'none']).optional(),
           sessionScope: z.enum(['shared_session', 'agent_session', 'none']).optional(),
           threadIdentity: z.enum(['agent', 'none']).optional(),
           parentThread: z.enum(['immediate_agent', 'none']).optional(),
@@ -71,7 +70,7 @@ export const RequestIdentityPolicySchema: z.ZodType<RequestIdentityPolicy> = z.o
         .object({
           installationIdentity: z.enum(['persistent_local', 'none']).optional(),
           originator: RequestIdentityOriginatorSchema.optional(),
-          userAgent: z.enum(['codex', 'grok_build', 'host', 'none']).optional(),
+          userAgent: z.enum(['codex', 'grok_build', 'kimi_code', 'host', 'none']).optional(),
         }).strict()
         .optional(),
       request: z
@@ -93,12 +92,12 @@ export const RequestIdentityPolicySchema: z.ZodType<RequestIdentityPolicy> = z.o
 }).strict();
 
 export const RequestIdentityPolicyWireSchema = z.object({
-  preset: z.enum(['codex_compatible', 'grok_build_compatible', 'kiki', 'none']),
+  preset: z.enum(['codex_compatible', 'grok_build_compatible', 'kimi_code', 'none']),
   overrides: z
     .object({
       lineage: z
         .object({
-          format: z.enum(['codex', 'grok_build', 'kiki', 'none']).optional(),
+          format: z.enum(['codex', 'grok_build', 'kimi_code', 'none']).optional(),
           session_scope: z.enum(['shared_session', 'agent_session', 'none']).optional(),
           thread_identity: z.enum(['agent', 'none']).optional(),
           parent_thread: z.enum(['immediate_agent', 'none']).optional(),
@@ -110,7 +109,7 @@ export const RequestIdentityPolicyWireSchema = z.object({
         .object({
           installation_identity: z.enum(['persistent_local', 'none']).optional(),
           originator: RequestIdentityOriginatorSchema.optional(),
-          user_agent: z.enum(['codex', 'grok_build', 'host', 'none']).optional(),
+          user_agent: z.enum(['codex', 'grok_build', 'kimi_code', 'host', 'none']).optional(),
         }).strict()
         .optional(),
       request: z
@@ -220,7 +219,7 @@ export function requestIdentityFromWire(
 
 export type ResolvedRequestIdentityPolicy = {
   lineage: {
-    format: 'codex' | 'grok_build' | 'kiki' | 'none';
+    format: 'codex' | 'grok_build' | 'kimi_code' | 'none';
     sessionScope: 'shared_session' | 'agent_session' | 'none';
     threadIdentity: 'agent' | 'none';
     parentThread: 'immediate_agent' | 'none';
@@ -233,7 +232,7 @@ export type ResolvedRequestIdentityPolicy = {
       | { mode: 'none' }
       | { mode: 'codex_default' }
       | { mode: 'custom'; value: string };
-    userAgent: 'codex' | 'grok_build' | 'host' | 'none';
+    userAgent: 'codex' | 'grok_build' | 'kimi_code' | 'host' | 'none';
   };
   request: {
     logicalId: 'turn' | 'none';
@@ -245,11 +244,10 @@ export type ResolvedRequestIdentityPolicy = {
     messages: 'metadata_user_id' | 'none';
   };
   responsesMetadata: 'codex' | 'none';
-  source: 'new' | 'legacy';
-  preset?: RequestIdentityPreset;
+  preset: RequestIdentityPreset;
 };
 
-const PRESETS: Record<RequestIdentityPreset, Omit<ResolvedRequestIdentityPolicy, 'source' | 'preset'>> = {
+const PRESETS: Record<RequestIdentityPreset, Omit<ResolvedRequestIdentityPolicy, 'preset'>> = {
   codex_compatible: {
     lineage: {
       format: 'codex',
@@ -286,19 +284,19 @@ const PRESETS: Record<RequestIdentityPreset, Omit<ResolvedRequestIdentityPolicy,
     cache: { source: 'session', responses: 'prompt_cache_key', messages: 'none' },
     responsesMetadata: 'none',
   },
-  kiki: {
+  kimi_code: {
     lineage: {
-      format: 'kiki',
+      format: 'kimi_code',
       sessionScope: 'shared_session',
-      threadIdentity: 'agent',
-      parentThread: 'immediate_agent',
-      subagentMarker: 'enabled',
+      threadIdentity: 'none',
+      parentThread: 'none',
+      subagentMarker: 'none',
       turnAncestry: 'none',
     },
     client: {
-      installationIdentity: 'none',
+      installationIdentity: 'persistent_local',
       originator: { mode: 'none' },
-      userAgent: 'host',
+      userAgent: 'kimi_code',
     },
     request: { logicalId: 'none', turnIndex: 'none' },
     cache: { source: 'session', responses: 'prompt_cache_key', messages: 'metadata_user_id' },
@@ -337,27 +335,13 @@ export function resolveAuthoredRequestIdentity(
     base.responsesMetadata = overrides.responsesMetadata;
   }
   validateResolvedRequestIdentity(base);
-  return { ...base, source: 'new', preset: policy.preset };
+  return { ...base, preset: policy.preset };
 }
 
 export function resolveProviderRequestIdentity(
   provider: ProviderConfig | undefined,
-  providerType: string | undefined,
 ): ResolvedRequestIdentityPolicy {
-  const authored = provider?.requestIdentity;
-  const legacy = resolveLegacyRequestIdentity(provider, providerType);
-  if (authored === undefined) return legacy;
-  const resolved = resolveAuthoredRequestIdentity(authored);
-  if (provider?.requestAttribution !== undefined && !equivalentLegacyPolicy(resolved, legacy)) {
-    throw conflict('request_identity conflicts with request_attribution');
-  }
-  if (provider?.requestOriginator !== undefined) {
-    const originator = resolved.client.originator;
-    if (originator.mode !== 'custom' || originator.value !== provider.requestOriginator) {
-      throw conflict('request_identity conflicts with request_originator');
-    }
-  }
-  return resolved;
+  return resolveAuthoredRequestIdentity(provider?.requestIdentity ?? { preset: 'kimi_code' });
 }
 
 export function validateResolvedRequestIdentity(
@@ -372,8 +356,8 @@ export function validateResolvedRequestIdentity(
   if (policy.request.logicalId === 'turn' && !['codex', 'grok_build'].includes(policy.lineage.format)) {
     throw invalid('logicalId=turn requires a Codex or Grok Build projector');
   }
-  if (policy.cache.messages === 'metadata_user_id' && policy.lineage.format !== 'kiki') {
-    throw invalid('messages metadata_user_id is only supported by the Kiki projector');
+  if (policy.cache.messages === 'metadata_user_id' && policy.lineage.format !== 'kimi_code') {
+    throw invalid('messages metadata_user_id is only supported by the Kimi Code projector');
   }
   if (policy.responsesMetadata === 'codex' && policy.lineage.format !== 'codex') {
     throw invalid('responsesMetadata=codex requires the Codex projector');
@@ -388,8 +372,11 @@ export function validateResolvedRequestIdentity(
       throw invalid('the Grok Build projector does not support thread or parent lineage');
     }
   }
-  if (policy.client.originator.mode !== 'none' && !['codex', 'kiki'].includes(policy.lineage.format)) {
-    throw invalid('originator requires the Codex or Kiki projector');
+  if (
+    policy.client.originator.mode !== 'none' &&
+    !['codex', 'kimi_code'].includes(policy.lineage.format)
+  ) {
+    throw invalid('originator requires the Codex or Kimi Code projector');
   }
   if (policy.client.originator.mode === 'custom') validateOriginator(policy.client.originator.value);
 }
@@ -398,58 +385,6 @@ export function validateOriginator(value: string): void {
   if (value.length === 0 || /[\u0000-\u001F\u007F]/u.test(value)) {
     throw invalid('request originator must be non-empty and contain no control characters');
   }
-}
-
-function resolveLegacyRequestIdentity(
-  provider: ProviderConfig | undefined,
-  providerType: string | undefined,
-): ResolvedRequestIdentityPolicy {
-  const attribution =
-    provider?.requestAttribution ??
-    (providerType === 'kimi' ||
-    (providerType !== undefined && getProviderDefinition(providerType)?.id === 'kimi')
-      ? 'kimi'
-      : 'codex');
-  const originator =
-    provider?.requestOriginator === undefined
-      ? attribution === 'codex'
-        ? { mode: 'codex_default' as const }
-        : { mode: 'none' as const }
-      : { mode: 'custom' as const, value: provider.requestOriginator };
-  if (originator.mode === 'custom') validateOriginator(originator.value);
-  return {
-    lineage: {
-      format: attribution === 'codex' ? 'codex' : attribution === 'kiki' ? 'kiki' : 'none',
-      sessionScope: 'shared_session',
-      threadIdentity: attribution === 'codex' || attribution === 'kiki' ? 'agent' : 'none',
-      parentThread: attribution === 'codex' || attribution === 'kiki' ? 'immediate_agent' : 'none',
-      subagentMarker: attribution === 'codex' || attribution === 'kiki' ? 'enabled' : 'none',
-      turnAncestry: 'none',
-    },
-    client: {
-      installationIdentity: 'none',
-      originator,
-      userAgent: 'host',
-    },
-    request: { logicalId: 'none', turnIndex: 'none' },
-    cache: { source: 'session', responses: 'prompt_cache_key', messages: 'metadata_user_id' },
-    responsesMetadata: 'none',
-    source: 'legacy',
-  };
-}
-
-function equivalentLegacyPolicy(
-  authored: ResolvedRequestIdentityPolicy,
-  legacy: ResolvedRequestIdentityPolicy,
-): boolean {
-  const strip = (value: ResolvedRequestIdentityPolicy): unknown => ({
-    lineage: value.lineage,
-    client: value.client,
-    request: value.request,
-    cache: value.cache,
-    responsesMetadata: value.responsesMetadata,
-  });
-  return JSON.stringify(strip(authored)) === JSON.stringify(strip(legacy));
 }
 
 export const REQUEST_IDENTITY_RESERVED_HEADERS = new Set([
@@ -470,20 +405,18 @@ export const REQUEST_IDENTITY_RESERVED_HEADERS = new Set([
   'x-grok-client-identifier',
   'x-grok-client-version',
   'x-grok-model-override',
-  'x-kiki-session-id',
-  'x-kiki-agent-id',
-  'x-kiki-parent-agent-id',
-  'x-kiki-subagent',
+  'x-msh-platform',
+  'x-msh-version',
+  'x-msh-device-name',
+  'x-msh-device-model',
+  'x-msh-os-version',
+  'x-msh-device-id',
   'originator',
   'user-agent',
 ]);
 
 function invalid(message: string): Error2 {
   return new Error2(RequestIdentityErrors.codes.REQUEST_IDENTITY_INVALID, message);
-}
-
-function conflict(message: string): Error2 {
-  return new Error2(RequestIdentityErrors.codes.REQUEST_IDENTITY_CONFLICT, message);
 }
 
 function assignDefined<T extends object>(target: T, patch: Partial<T>): void {

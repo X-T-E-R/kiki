@@ -68,6 +68,11 @@ describe('model catalog schemas', () => {
     ).toBe(false);
   });
 
+  it('accepts kimi_code and rejects the removed kiki preset name', () => {
+    expect(requestIdentityPolicySchema.safeParse({ preset: 'kimi_code' }).success).toBe(true);
+    expect(requestIdentityPolicySchema.safeParse({ preset: 'kiki' }).success).toBe(false);
+  });
+
   it('round-trips list responses and set-default response', () => {
     expect(listModelsResponseSchema.parse({ items: [model] })).toEqual({
       items: [model],

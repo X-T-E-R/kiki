@@ -174,8 +174,6 @@ export class ModelsDevImportService implements IModelsDevImportService {
     provider.baseUrl = resolution.baseUrl;
     provider.apiKey = options.apiKey ?? existing?.apiKey;
     provider.requestIdentity = existing?.requestIdentity;
-    provider.requestAttribution = existing?.requestAttribution;
-    provider.requestOriginator = existing?.requestOriginator;
     await config.replace(PROVIDERS_SECTION, { ...providers, [targetId]: provider });
 
     const records = config.inspect<ModelsSection>(MODELS_SECTION).userValue ?? {};

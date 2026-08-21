@@ -21,25 +21,25 @@ interface RequestIdentityRegistryDocument {
 }
 
 interface TurnIdentity {
-  readonly logicalId: string;
-  readonly turnIndex: number;
+  readonly logicalId?: string;
+  readonly turnIndex?: number;
   readonly parentTurnId?: string;
   readonly rootTurnId?: string;
-  readonly threadId: string;
+  readonly threadId?: string;
   turnState?: string;
 }
 
 export interface RequestIdentitySnapshot {
-  readonly installationId: string;
-  readonly sharedSessionId: string;
-  readonly threadId: string;
-  readonly agentSessionId: string;
-  readonly logicalId: string;
-  readonly turnIndex: number;
+  readonly installationId?: string;
+  readonly sharedSessionId?: string;
+  readonly threadId?: string;
+  readonly agentSessionId?: string;
+  readonly logicalId?: string;
+  readonly turnIndex?: number;
   readonly parentTurnId?: string;
   readonly rootTurnId?: string;
   readonly parentThreadId?: string;
-  readonly windowId: string;
+  readonly windowId?: string;
   readonly turnState?: string;
   setTurnState(value: string): void;
 }
@@ -52,7 +52,7 @@ export interface IRequestIdentityInstallation {
 export const IRequestIdentityInstallation: ServiceIdentifier<IRequestIdentityInstallation> =
   createDecorator<IRequestIdentityInstallation>('requestIdentityInstallation');
 
-class RequestIdentityInstallation implements IRequestIdentityInstallation {
+export class RequestIdentityInstallation implements IRequestIdentityInstallation {
   declare readonly _serviceBrand: undefined;
 
   private current: Promise<string> | undefined;
@@ -89,8 +89,29 @@ export interface IRequestIdentityRegistry {
     readonly rootTurnKey?: string;
     readonly compactionWindow: number;
     readonly logicalIdKind: 'uuidv7' | 'uuidv4';
+    readonly dimensions?: RequestIdentityDimensions;
   }): Promise<RequestIdentitySnapshot>;
 }
+
+export interface RequestIdentityDimensions {
+  readonly installationIdentity: boolean;
+  readonly sharedSessionIdentity: boolean;
+  readonly agentSessionIdentity: boolean;
+  readonly threadIdentity: boolean;
+  readonly logicalRequestIdentity: boolean;
+  readonly turnIndex: boolean;
+  readonly turnState: boolean;
+}
+
+const ALL_IDENTITY_DIMENSIONS: RequestIdentityDimensions = {
+  installationIdentity: true,
+  sharedSessionIdentity: true,
+  agentSessionIdentity: true,
+  threadIdentity: true,
+  logicalRequestIdentity: true,
+  turnIndex: true,
+  turnState: true,
+};
 
 export const IRequestIdentityRegistry: ServiceIdentifier<IRequestIdentityRegistry> =
   createDecorator<IRequestIdentityRegistry>('requestIdentityRegistry');
@@ -120,95 +141,123 @@ export class RequestIdentityRegistry implements IRequestIdentityRegistry {
     readonly rootTurnKey?: string;
     readonly compactionWindow: number;
     readonly logicalIdKind: 'uuidv7' | 'uuidv4';
+    readonly dimensions?: RequestIdentityDimensions;
   }): Promise<RequestIdentitySnapshot> {
-    const installationId = await this.installation.get();
-    this.createdAt ??= this.metadata.read().then((meta) => meta.createdAt);
-    const sessionCreatedAt = await this.createdAt;
-    const sharedSessionId = stableUuid(installationId, this.session.sessionId, 'shared-session');
+    const dimensions = input.dimensions ?? ALL_IDENTITY_DIMENSIONS;
+    const installationId = dimensions.installationIdentity
+      ? await this.installation.get()
+      : undefined;
+    const identitySeed = installationId ?? this.session.sessionId;
+    const sessionCreatedAt =
+      dimensions.logicalRequestIdentity && input.logicalIdKind === 'uuidv7'
+        ? await (this.createdAt ??= this.metadata.read().then((meta) => meta.createdAt))
+        : 0;
+    const sharedSessionId = dimensions.sharedSessionIdentity
+      ? stableUuid(identitySeed, this.session.sessionId, 'shared-session')
+      : undefined;
     const threadId =
-      input.parentAgentId === undefined
-        ? sharedSessionId
-        : stableUuid(installationId, this.session.sessionId, 'thread', input.agentId);
-    const agentSessionId = stableUuid(
-      installationId,
-      this.session.sessionId,
-      'agent-session',
-      input.agentId,
-    );
-    let turns = this.turnByAgent.get(input.agentId);
-    if (turns === undefined) {
-      turns = new Map();
-      this.turnByAgent.set(input.agentId, turns);
-    }
-    let turn = turns.get(input.turnKey);
-    if (turn === undefined) {
-      const acceptedTurnIndex = await this.acceptedTurnIndex(input.agentId, input.turnKey);
-      const parent =
-        input.parentAgentId === undefined
-          ? undefined
-          : this.latestTurnByAgent.get(input.parentAgentId);
-      turn = {
-        logicalId: logicalTurnId(
-          input.logicalIdKind,
-          input.turnKey,
-          sessionCreatedAt,
-          installationId,
+      dimensions.threadIdentity
+        ? input.parentAgentId === undefined
+          ? (sharedSessionId ?? stableUuid(identitySeed, this.session.sessionId, 'thread', input.agentId))
+          : stableUuid(identitySeed, this.session.sessionId, 'thread', input.agentId)
+        : undefined;
+    const agentSessionId = dimensions.agentSessionIdentity
+      ? stableUuid(
+          identitySeed,
           this.session.sessionId,
+          'agent-session',
           input.agentId,
-        ),
-        turnIndex: acceptedTurnIndex,
-        parentTurnId:
-          input.parentAgentId !== undefined && input.parentTurnKey !== undefined
+        )
+      : undefined;
+    const needsTurn =
+      dimensions.logicalRequestIdentity || dimensions.turnIndex || dimensions.turnState;
+    let turn: TurnIdentity | undefined;
+    if (needsTurn) {
+      let turns = this.turnByAgent.get(input.agentId);
+      if (turns === undefined) {
+        turns = new Map();
+        this.turnByAgent.set(input.agentId, turns);
+      }
+      turn = turns.get(input.turnKey);
+      if (turn === undefined) {
+        const acceptedTurnIndex = dimensions.turnIndex
+          ? await this.acceptedTurnIndex(input.agentId, input.turnKey)
+          : undefined;
+        const parent =
+          input.parentAgentId === undefined
+            ? undefined
+            : this.latestTurnByAgent.get(input.parentAgentId);
+        turn = {
+          logicalId: dimensions.logicalRequestIdentity
             ? logicalTurnId(
                 input.logicalIdKind,
-                input.parentTurnKey,
+                input.turnKey,
                 sessionCreatedAt,
-                installationId,
+                identitySeed,
                 this.session.sessionId,
-                input.parentAgentId,
+                input.agentId,
               )
-            : parent?.logicalId,
-        rootTurnId:
-          input.rootAgentId !== undefined && input.rootTurnKey !== undefined
-            ? logicalTurnId(
-                input.logicalIdKind,
-                input.rootTurnKey,
-                sessionCreatedAt,
-                installationId,
-                this.session.sessionId,
-                input.rootAgentId,
-              )
-            : (parent?.rootTurnId ?? parent?.logicalId),
-        threadId,
-      };
-      turns.set(input.turnKey, turn);
-      this.latestTurnByAgent.set(input.agentId, turn);
+            : undefined,
+          turnIndex: acceptedTurnIndex,
+          parentTurnId:
+            dimensions.logicalRequestIdentity &&
+            input.parentAgentId !== undefined &&
+            input.parentTurnKey !== undefined
+              ? logicalTurnId(
+                  input.logicalIdKind,
+                  input.parentTurnKey,
+                  sessionCreatedAt,
+                  identitySeed,
+                  this.session.sessionId,
+                  input.parentAgentId,
+                )
+              : parent?.logicalId,
+          rootTurnId:
+            dimensions.logicalRequestIdentity &&
+            input.rootAgentId !== undefined &&
+            input.rootTurnKey !== undefined
+              ? logicalTurnId(
+                  input.logicalIdKind,
+                  input.rootTurnKey,
+                  sessionCreatedAt,
+                  identitySeed,
+                  this.session.sessionId,
+                  input.rootAgentId,
+                )
+              : (parent?.rootTurnId ?? parent?.logicalId),
+          threadId,
+        };
+        turns.set(input.turnKey, turn);
+        this.latestTurnByAgent.set(input.agentId, turn);
+      }
     }
     return {
-      installationId,
+      installationId: dimensions.installationIdentity ? installationId : undefined,
       sharedSessionId,
       threadId,
       agentSessionId,
-      logicalId: turn.logicalId,
-      turnIndex: turn.turnIndex,
-      parentTurnId: turn.parentTurnId,
-      rootTurnId: turn.rootTurnId,
+      logicalId: turn?.logicalId,
+      turnIndex: turn?.turnIndex,
+      parentTurnId: turn?.parentTurnId,
+      rootTurnId: turn?.rootTurnId,
       parentThreadId:
-        input.parentAgentId === undefined
+        !dimensions.threadIdentity || input.parentAgentId === undefined
           ? undefined
           : (this.latestTurnByAgent.get(input.parentAgentId)?.threadId ??
             (input.parentAgentId === 'main'
-              ? sharedSessionId
+              ? (sharedSessionId ??
+                stableUuid(identitySeed, this.session.sessionId, 'thread', input.parentAgentId))
               : stableUuid(
-                  installationId,
+                  identitySeed,
                   this.session.sessionId,
                   'thread',
                   input.parentAgentId,
                 ))),
-      windowId: `${threadId}:${String(input.compactionWindow + 1)}`,
-      turnState: turn.turnState,
+      windowId:
+        threadId === undefined ? undefined : `${threadId}:${String(input.compactionWindow + 1)}`,
+      turnState: turn?.turnState,
       setTurnState: (value) => {
-        turn.turnState = value;
+        if (turn !== undefined && dimensions.turnState) turn.turnState = value;
       },
     };
   }
