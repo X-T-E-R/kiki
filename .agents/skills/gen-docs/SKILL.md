@@ -1,89 +1,51 @@
 ---
 name: gen-docs
-description: Update Kimi Code CLI user documentation after meaningful code changes that affect product behavior or user experience.
+description: Update mirrored Kimi Code CLI user guides, configuration, and reference pages. Use when a coherent implementation candidate has confirmed user impact and selected exact non-changelog pages for catch-up. Do not use for release changelog synchronization.
 ---
 
 # Gen Docs
 
-## Overview
+Update the user-facing behavior views already selected by the documentation semantic owner. This workflow begins after implementation and claim-matched tests establish the behavior; it does not block early coding.
 
-This repository maintains bilingual user documentation under `docs/`. `docs/en/` and `docs/zh/` are mirrored pairs for most pages; update both in the same change. **Changelog is the exception** — English is the source, and Chinese is translated from English.
-
-Use this skill to update the corresponding documentation whenever the codebase has changes that affect product behavior or user experience.
-
-For a **full pre-release audit** of all pages (detecting hallucinations and coverage gaps), use the `audit-docs` skill instead.
+Release changelog curation is a separate post-release workflow owned by `sync-changelog`. Do not read or edit either locale's `release-notes/changelog.md` through this skill.
 
 ## Prerequisites
 
-This skill depends on the following being in place. If any are missing, stop and report to the user before continuing:
+Stop and report the missing input when any of these is absent:
 
-- `docs/` directory with `docs/zh/`, `docs/en/`, and `docs/.vitepress/config.ts` set up (VitePress site).
-- `docs/AGENTS.md` style guide — defines source-of-truth rules, terminology table, typography, and writing style.
-- `docs/scripts/sync-changelog.mjs` — auto-syncs root `CHANGELOG.md` to `docs/en/release-notes/changelog.md`.
-- `translate-docs` skill in `.agents/skills/` — handles bilingual synchronization.
+- a coherent candidate boundary and user-impact record from the documentation lifecycle;
+- owning implementation plus a claim-matched test for every behavior to document;
+- exact affected page paths or an accepted semantic packet that selects them;
+- `docs/en/`, `docs/zh/`, `docs/.vitepress/config.ts`, and the documentation directory's governing instructions;
+- the `translate-docs` skill for meaning-bearing bilingual synchronization.
 
 ## Workflow
 
-1. **Inspect changes**
-
-   - `git log main..HEAD --oneline` — commits on the current branch
-   - `git diff main..HEAD --stat` — file-level scope
-   - `ls .changeset/*.md` (excluding `README.md`) — pending changeset entries
-   - Read `CHANGELOG.md` and any subpackage `packages/*/CHANGELOG.md` for already-recorded entries.
-
-2. **Understand user-facing impact**
-
-   For each change, read the actual implementation when needed; **do not infer behavior from commit messages or PR titles alone**. Skip:
-
-   - Internal refactors with no externally visible behavior change
-   - Tests, CI, type-only changes
-   - Tooling / build-system changes that do not change how users invoke the CLI
-
-   If after the scan you conclude there is no user-facing impact, say so and stop.
-
-3. **Sync English changelog**
-
-   Run:
+1. **Fix scope and evidence.** Read the candidate diff, owning implementation, claim-matched tests, and the selected existing sections. Do not infer behavior from commit messages, PR titles, changesets, or changelog prose.
+2. **Confirm reader decisions.** For each selected page, state what the reader needs to act, choose, recover, or verify: supported behavior, prerequisites, defaults, configuration, compatibility, migration, observable limits, and failure recovery where applicable. Skip internal refactors, tests, CI, type-only changes, and build changes with no user decision.
+3. **Update the selected source view.** Follow the surrounding page structure and the terminology, typography, example-data, and Public-Facing Content rules owned by the documentation instructions. Weave changes into existing sections instead of creating a feature diary.
+4. **Produce and approve the mirror.** Use `translate-docs` to write the corresponding `docs/en/` or `docs/zh/` view. Preserve paths, heading levels, lists, code blocks, identifiers, examples, and link shapes. Translation is meaning-bearing work and must be reviewed before any frozen mechanical placement handoff.
+5. **Verify.** Read both locale sections, compare their reader-relevant claims, and run:
 
    ```bash
-   node docs/scripts/sync-changelog.mjs
+   pnpm docs:check-governance
+   pnpm -C docs run build
    ```
 
-   This updates `docs/en/release-notes/changelog.md` from the root `CHANGELOG.md`. Never edit the docs changelog by hand.
+   Inspect the bounded docs diff. The governance checker proves structure only; the claim-matched tests and semantic review establish behavioral accuracy, while bilingual review establishes translation quality.
+6. **Record completion.** Mark the selected `user` views completed, or keep each remaining user view classified as `user` with an accountable owner and a target no later than default-on or public release.
 
-4. **Update user docs**
+## Rules
 
-   Following the rules in `docs/AGENTS.md`, edit the affected pages in whichever locale you are working in, then sync the mirror. Match terminology with the term table in `docs/AGENTS.md` and the existing wording in surrounding pages.
+- Keep non-changelog pages mirrored under `docs/en/` and `docs/zh/`.
+- Update only pages and sections selected by the accepted semantic boundary.
+- Use neutral public examples such as `https://api.example.com/v1`, `example.test`, and `YOUR_API_KEY`; do not expose internal endpoints, keys, accounts, or service names.
+- Do not edit either changelog page. After a release succeeds, route changelog work to `sync-changelog`, whose upstream source is `apps/kimi-code/CHANGELOG.md`.
+- Do not claim that structural checks prove prose accuracy, completeness, lineage, or translation quality.
 
-   Cover all relevant sections:
+## Stop conditions
 
-   - Guides (getting-started, use cases, interaction, sessions, IDE integration)
-   - Customization (skills, agents, MCP, hooks, plugins, etc.)
-   - Configuration (config files, env vars, providers, data locations)
-   - Reference (CLI subcommands, slash commands, keyboard shortcuts)
-   - Release notes (`docs/zh/release-notes/breaking-changes.md` if a breaking change is involved)
-
-5. **Sync bilingual content**
-
-   Invoke the `translate-docs` skill. It will:
-
-   - Sync updated non-changelog pages between `docs/en/` and `docs/zh/`
-   - Translate the English changelog → Chinese under `docs/zh/release-notes/changelog.md`
-
-## Rules and conventions
-
-- **Locale sync**: Non-changelog pages stay mirrored between `docs/en/` and `docs/zh/`. Changelog flows English → Chinese.
-- **Terminology**: Use the term table in `docs/AGENTS.md` exactly. Do not invent new translations or use synonyms.
-- **Scope discipline**: Only update sections affected by the recent changes. Do not opportunistically rewrite unrelated docs.
-- **Public examples**: Never write real internal endpoints, key names, account names, or service names into docs. Use neutral placeholders such as `https://api.example.com/v1`, `https://registry.example.com/v1/models/api.json`, `example.test`, and `YOUR_API_KEY`.
-- **Breaking changes**: If any change is breaking, also update `docs/en/release-notes/breaking-changes.md` (under `## Unreleased`) with `**Affected**` + `**Migration**` subsections, and mirror it in `docs/zh/release-notes/breaking-changes.md`.
-- **Do not edit auto-synced files**: `docs/en/release-notes/changelog.md` is regenerated by the sync script; any manual edit will be overwritten.
-
-## Common mistakes
-
-- Describing what code changed instead of what the user can now do (or can no longer do).
-- Adding a new section heading per feature instead of weaving the change into existing prose.
-- Updating only one locale and leaving its mirror stale.
-- Editing only the mirror to fix wording that should be corrected in the locale you changed first.
-- Inventing new terminology that drifts from the `docs/AGENTS.md` term table.
-- Using real internal values in examples instead of neutral `example` placeholders.
+- The candidate, affected user view, behavior evidence, or claim-matched test is missing.
+- Source and tests disagree, or the selected page would contradict another canonical view.
+- A new page, navigation target, claim, or term requires a semantic decision that the accepted packet did not make.
+- The requested work is changelog synchronization or would cross the supplied write scope.

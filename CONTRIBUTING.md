@@ -86,7 +86,11 @@ This repo uses [changesets](https://github.com/changesets/changesets) to manage 
 
 Use the [PR template](.github/pull_request_template.md) when opening a feature pull request.
 
-PR titles must follow [Conventional Commits](#commit-convention); CI runs `pnpm lint`, `pnpm typecheck`, and `pnpm test` on every PR. Update user-facing docs in `docs/` when behavior changes — use the `gen-docs` skill when working with coding agents.
+PR titles must follow [Conventional Commits](#commit-convention); CI runs `pnpm lint`, `pnpm typecheck`, and `pnpm test` on every PR.
+
+After the implementation and tests form a coherent candidate, classify its documentation impact as exclusive `none`, or select every affected category from `generated`, `maintainer`, and `user`. Record completion separately as `completed` or `deferred`; `none` pairs with `completed`. Generated impact cannot be deferred and its projections stay exact in the same candidate. Every deferred maintainer or user record keeps all applicable categories and its affected view, names an accountable owner, and targets no later than the earliest applicable boundary: maintainer documentation before stable reuse or owner handoff, and bilingual user documentation before default-on or public release. See [the documentation lifecycle](docs/AGENTS.md#documentation-lifecycle) and use the `kiki-docs-catchup` skill when working with coding agents.
+
+This declaration is designed for future PR-based work and reviewer routing; it is not currently a semantic merge gate. The repository's documentation checker verifies structure only and does not decide whether the classification or prose is correct.
 
 ## Code Style
 
