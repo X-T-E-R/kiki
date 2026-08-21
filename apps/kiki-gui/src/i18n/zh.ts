@@ -774,7 +774,7 @@ export const zh: Record<I18nKey, string> = {
   'st.compat.hint': 'Kiki 直接在此 Kimi Home 中读写 OAuth 凭据。Kiki 自己的 config.toml、会话和运行时数据始终保存在 KIKI_HOME。',
   'st.compat.savedRestart': '已保存。重启服务器后使用此 Kimi Home。',
   'st.compat.configImportTitle': '导入模型配置',
-  'st.compat.configImportHint': '仅单向导入。同名提供商、模型与服务会由来源覆盖；Kiki 独有键及所有未列出的配置节保持不变。OAuth 永远不会导入。',
+  'st.compat.configImportHint': '仅单向导入。同名提供商、模型与服务会由来源覆盖；Kiki 独有键及所有未列出的配置节保持不变。OAuth 凭据文件不会被复制；导入的提供商与服务配置可以继续引用共享凭据。',
   'st.compat.configImportSource': '来源',
   'st.compat.configImportTarget': '目标',
   'st.compat.configImportCategories': '导入类别',

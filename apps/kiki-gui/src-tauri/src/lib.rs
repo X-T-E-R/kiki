@@ -540,11 +540,12 @@ fn validate_compatibility_settings(settings: &CompatibilitySettings) -> Result<(
 fn selected_compatibility_home(
     settings: &CompatibilitySettings,
     kimi_home: &Path,
-    _kiki_home: &Path,
+    kiki_home: &Path,
 ) -> Result<PathBuf, String> {
     validate_compatibility_settings(settings)?;
     match settings.home_kind {
-        CompatibilityHomeKind::Kimi | CompatibilityHomeKind::Kiki => Ok(kimi_home.to_path_buf()),
+        CompatibilityHomeKind::Kimi => Ok(kimi_home.to_path_buf()),
+        CompatibilityHomeKind::Kiki => Ok(kiki_home.to_path_buf()),
         CompatibilityHomeKind::Custom => Ok(PathBuf::from(
             settings.custom_home.as_deref().unwrap_or_default(),
         )),
@@ -1996,6 +1997,13 @@ mod tests {
         assert_eq!(custom_paths.oauth_home, custom_home);
         assert_eq!(custom_paths.user_skill_dir, kiki.join("skills"));
 
+        custom.compatibility.home_kind = CompatibilityHomeKind::Kiki;
+        custom.compatibility.custom_home = None;
+        let kiki_paths = resolve_runtime_paths_with_homes(&custom, &kimi, &kiki).unwrap();
+        assert_eq!(kiki_paths.oauth_home, kiki);
+        assert_eq!(kiki_paths.config_path, kiki.join("config.toml"));
+
+        custom.compatibility.home_kind = CompatibilityHomeKind::Custom;
         custom.compatibility.custom_home = Some("relative".to_string());
         assert!(resolve_runtime_paths_with_homes(&custom, &kimi, &kiki).is_err());
     }

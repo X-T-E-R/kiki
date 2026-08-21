@@ -788,7 +788,7 @@ export const en = {
   'st.compat.savedRestart': 'Saved. Restart the server to use this Kimi Home.',
   'st.compat.configImportTitle': 'Import model configuration',
   'st.compat.configImportHint':
-    'One-way import only. Matching provider, model, and service keys are replaced; Kiki-only keys and every non-listed config section stay unchanged. OAuth is never imported.',
+    'One-way import only. Matching provider, model, and service keys are replaced; Kiki-only keys and every non-listed config section stay unchanged. OAuth credential files are never copied; imported provider and service entries may keep references to the shared credentials.',
   'st.compat.configImportSource': 'Source',
   'st.compat.configImportTarget': 'Target',
   'st.compat.configImportCategories': 'Imported categories',

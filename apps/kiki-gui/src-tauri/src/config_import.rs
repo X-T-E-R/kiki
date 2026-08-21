@@ -322,6 +322,10 @@ default_provider = "shared"
 type = "openai"
 api_key = "SOURCE_SECRET"
 
+[providers.shared.oauth]
+storage = "file"
+key = "oauth/kimi-code"
+
 [providers.source_only]
 type = "kimi"
 
@@ -331,6 +335,10 @@ model = "source-model"
 
 [services.web]
 url = "https://source.example.test"
+
+[services.web.oauth]
+storage = "file"
+key = "oauth/kimi-code"
 
 [thinking]
 enabled = true
@@ -342,6 +350,12 @@ default_model = "shared/source-model"
 [mcp.secret]
 command = "do-not-import"
 "#,
+        )
+        .unwrap();
+        fs::create_dir_all(source_home.join("credentials")).unwrap();
+        fs::write(
+            source_home.join("credentials").join("kimi-code.json"),
+            "CREDENTIAL_FILE_MUST_NOT_BE_COPIED",
         )
         .unwrap();
         fs::write(
@@ -396,6 +410,9 @@ enabled = false
         assert!(imported.contains("[providers.source_only]"));
         assert!(imported.contains("SOURCE_SECRET"));
         assert!(!imported.contains("TARGET_SECRET"));
+        assert!(imported.contains("[providers.shared.oauth]"));
+        assert!(imported.contains("[services.web.oauth]"));
+        assert!(!target_home.join("credentials").exists());
         assert!(imported.contains("[models.kiki_only]"));
         assert!(imported.contains("source-model"));
         assert!(imported.contains("[mcp.kiki]"));
