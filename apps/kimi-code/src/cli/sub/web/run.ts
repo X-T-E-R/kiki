@@ -71,8 +71,7 @@ export interface ExternalCatalogSourceOptions {
 }
 
 export interface DesktopInheritanceSourceOptions {
-  readonly configPath?: string;
-  readonly modelAccountHomeDir?: string;
+  readonly oauthHomeDir?: string;
   readonly userSkillDir?: string;
 }
 
@@ -307,10 +306,10 @@ async function runServerInProcess(
     },
     logLevel: options.logLevel,
     logger,
-    configPath: externalCatalog?.configPath ?? desktopInheritance?.configPath,
+    configPath: externalCatalog?.configPath,
     configReadOnly: externalCatalog?.configReadOnly,
     userAgentProfileHomeDir: externalCatalog?.userAgentProfileHomeDir,
-    modelAccountHomeDir: desktopInheritance?.modelAccountHomeDir,
+    modelAccountHomeDir: desktopInheritance?.oauthHomeDir,
     userSkillDir: desktopInheritance?.userSkillDir,
     debugEndpoints: options.debugEndpoints,
     insecureNoTls: options.insecureNoTls,
@@ -386,22 +385,20 @@ export function externalCatalogSourceFromEnv(
 export function desktopInheritanceSourceFromEnv(
   env: NodeJS.ProcessEnv,
 ): DesktopInheritanceSourceOptions | undefined {
-  const configPath = env['KIKI_DESKTOP_CONFIG_PATH'];
-  const modelAccountHomeDir = env['KIKI_DESKTOP_MODEL_ACCOUNT_HOME'];
+  const oauthHomeDir = env['KIKI_DESKTOP_OAUTH_HOME'];
   const userSkillDir = env['KIKI_DESKTOP_USER_SKILL_DIR'];
-  if (configPath === undefined && modelAccountHomeDir === undefined && userSkillDir === undefined) {
+  if (oauthHomeDir === undefined && userSkillDir === undefined) {
     return undefined;
   }
   for (const [name, value] of [
-    ['KIKI_DESKTOP_CONFIG_PATH', configPath],
-    ['KIKI_DESKTOP_MODEL_ACCOUNT_HOME', modelAccountHomeDir],
+    ['KIKI_DESKTOP_OAUTH_HOME', oauthHomeDir],
     ['KIKI_DESKTOP_USER_SKILL_DIR', userSkillDir],
   ] as const) {
     if (value !== undefined && !isAbsolute(value)) {
       throw new Error(`${name} must be an absolute path.`);
     }
   }
-  return { configPath, modelAccountHomeDir, userSkillDir };
+  return { oauthHomeDir, userSkillDir };
 }
 
 /**

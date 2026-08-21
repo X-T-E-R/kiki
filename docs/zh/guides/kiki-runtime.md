@@ -89,6 +89,14 @@ Kiki 没有引入第二套后端。`@kiki/gui` 调用继承的 `kap-server` REST
 
 GUI package 在 `apps/kiki-gui/ATTRIBUTION.md` 中记录了改造自 codeg、AionUi、grok-build 和 LiveAgent 的内容。该文件把来源归到具体的改造行为，并列出已知依赖的许可证；它明确不把来源项目的许可证直接归给整个目标文件，也不表示已经形成完整的分发声明。
 
+## 分离 Kiki 数据与 Kimi OAuth
+
+桌面应用把 Kiki 自有数据保存在 `KIKI_HOME`（默认 `~/.kiki`）下。配置路径始终是 `KIKI_HOME/config.toml`；选择 Kimi Home 不会用 Kimi Code 的完整配置替换该文件。
+
+Kimi OAuth 则有意共享。所选 Kimi Home 可以是 Kimi Code 默认 Home，也可以是自定义绝对路径；Kiki 的登录、退出登录和刷新会直接使用 `<Kimi Home>/credentials/kimi-code.json`、`<Kimi Home>/device_id` 和 `<Kimi Home>/oauth/`。因此这些操作会影响同一份 Kimi Code 登录状态；Kiki 不会把 OAuth 凭据复制到 `KIKI_HOME`。
+
+会话和用户技能只把所选 Kimi Home 当作迁移来源。移动会话时，Kiki 会停止自有后端、重新计算计划，然后只重命名 `workspaces.json` 和 `sessions/`；如果目录重命名在目录已移动后失败，Kiki 会立即反向重命名目录，补偿也失败时则报告部分移动错误。复制用户技能会保留来源，也不会覆盖已有的 Kiki 目标。复制类迁移只停止并重启 Kiki 自有后端，不会停止或锁定外部 Kimi Code 进程，因此迁移前建议关闭这些进程。
+
 ## 从上游同步
 
 当前配置的 upstream 是 `MoonshotAI/kimi-code`，本指南以 `437a1b8` 为比较锚点。上游同步是一项需要明确执行的 Git 与集成操作；Kiki 名称、功能开关或 GUI 都不会自动导入后续上游变更。

@@ -111,8 +111,6 @@ describe('settings persistence and validation', () => {
       compatibility: {
         homeKind: 'kimi',
         customHome: undefined,
-        inheritModelsAccounts: true,
-        inheritUserSkills: true,
       },
     });
 
@@ -125,26 +123,20 @@ describe('settings persistence and validation', () => {
     expect(readDesktopPrefs().closeToTray).toBe(false);
   });
 
-  it('defaults and validates the persisted compatibility Home selection', () => {
+  it('defaults and validates the persisted Kimi Home selection', () => {
     expect(readDesktopPrefs().compatibility).toEqual({
       homeKind: 'kimi',
       customHome: undefined,
-      inheritModelsAccounts: true,
-      inheritUserSkills: true,
     });
     localStorage.setItem('kiki.desktopPrefs', JSON.stringify({
       compatibility: {
         homeKind: 'custom',
         customHome: 'C:\\compat-home',
-        inheritModelsAccounts: false,
-        inheritUserSkills: false,
       },
     }));
     expect(readDesktopPrefs().compatibility).toEqual({
       homeKind: 'custom',
       customHome: 'C:\\compat-home',
-      inheritModelsAccounts: false,
-      inheritUserSkills: false,
     });
     localStorage.setItem('kiki.desktopPrefs', JSON.stringify({
       compatibility: { homeKind: 'sessions' },

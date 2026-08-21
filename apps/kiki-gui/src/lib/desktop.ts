@@ -114,7 +114,22 @@ export async function writeNativeCompatibilitySettings(
   await invoke('write_desktop_prefs', { prefs: { compatibility } });
 }
 
-export type CompatibilityMigrationCategory = 'modelsAccounts' | 'userSkills';
+export interface KimiHomePaths {
+  readonly home: string;
+  readonly credentialPath: string;
+  readonly configPath: string;
+}
+
+export async function readNativeKimiHomePaths(): Promise<KimiHomePaths | null> {
+  if (!isTauri()) return null;
+  try {
+    return await invoke<KimiHomePaths>('read_kimi_home_paths');
+  } catch {
+    return null;
+  }
+}
+
+export type CompatibilityMigrationCategory = 'userSkills';
 
 export interface CompatibilityMigrationResult {
   readonly status: 'copied' | 'copiedActivationPending' | 'noop';
@@ -123,13 +138,16 @@ export interface CompatibilityMigrationResult {
   readonly target: string;
   readonly files: number;
   readonly activationError: string | null;
+  readonly restartError: string | null;
 }
 
 export async function migrateNativeCompatibilityCategory(
   category: CompatibilityMigrationCategory,
 ): Promise<CompatibilityMigrationResult> {
   if (!isTauri()) throw new Error('Compatibility migration requires the Kiki desktop app.');
-  return invoke<CompatibilityMigrationResult>('migrate_compatibility_category', { category });
+  const result = await invoke<CompatibilityMigrationResult>('migrate_compatibility_category', { category });
+  if (result.status === 'copied' && result.restartError === null) window.location.reload();
+  return result;
 }
 
 export type SessionsMigrationStatus = 'ready' | 'noop' | 'blocked' | 'moved';

@@ -89,6 +89,14 @@ Kiki does not introduce a second backend stack. `@kiki/gui` calls the inherited 
 
 The GUI package records adapted material from codeg, AionUi, grok-build, and LiveAgent in `apps/kiki-gui/ATTRIBUTION.md`. That file assigns provenance to specific adapted behavior and lists known dependency licenses; it explicitly does not assign a donor license to an entire target file or establish a complete distribution-notice set.
 
+## Keep Kiki data and Kimi OAuth separate
+
+The desktop app keeps Kiki-owned data under `KIKI_HOME` (by default `~/.kiki`). Its configuration is always `KIKI_HOME/config.toml`; selecting a Kimi Home never replaces that file with Kimi Code's full configuration.
+
+Kimi OAuth is intentionally shared. The selected Kimi Home may be the default Kimi Code Home or a custom absolute path, and Kiki login, logout, and refresh directly use `<Kimi Home>/credentials/kimi-code.json`, `<Kimi Home>/device_id`, and `<Kimi Home>/oauth/`. Those actions therefore affect the same Kimi Code login; Kiki never copies OAuth credentials into `KIKI_HOME`.
+
+Sessions and User Skills use the selected Kimi Home only as a migration source. A Sessions move stops Kiki's owned backend, recalculates the plan, then renames only `workspaces.json` and `sessions/`; if the second rename fails after the catalog moved, Kiki immediately renames the catalog back and reports a partial move if that compensation also fails. User Skills copy keeps the source and does not overwrite an occupied Kiki target. Copy migrations stop and restart only Kiki's owned backend; they do not stop or lock external Kimi Code processes, so close those processes before migrating.
+
 ## Sync from upstream
 
 The configured upstream is `MoonshotAI/kimi-code`, with `437a1b8` as this guide's comparison anchor. Upstream sync is a deliberate Git and integration operation; nothing in the Kiki name, feature flags, or GUI automatically imports later upstream changes.

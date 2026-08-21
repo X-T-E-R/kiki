@@ -19,6 +19,7 @@ import {
   isDesktopRuntime,
   migrateNativeCompatibilityCategory,
   readNativeDesktopPrefs,
+  readNativeKimiHomePaths,
   restartNativeServer,
   selectDirectoriesNative,
   writeNativeDesktopPrefs,
@@ -243,7 +244,8 @@ function GeneralSection() {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [compatibilityFeedback, setCompatibilityFeedback] = useState<Feedback>(null);
   const [compatibilityBusy, setCompatibilityBusy] = useState(false);
-  const [migrating, setMigrating] = useState<'modelsAccounts' | 'userSkills' | null>(null);
+  const [kimiHomePaths, setKimiHomePaths] = useState<{ home: string; credentialPath: string } | null>(null);
+  const [migrating, setMigrating] = useState<'userSkills' | null>(null);
   const [sessionsBusy, setSessionsBusy] = useState<'dryRun' | 'move' | null>(null);
   const [sessionsPlan, setSessionsPlan] = useState<SessionsMigrationPlan | null>(null);
   const [confirmSessionsMove, setConfirmSessionsMove] = useState(false);
@@ -273,12 +275,14 @@ function GeneralSection() {
 
   useEffect(() => {
     if (!isDesktop) return;
-    void readNativeDesktopPrefs().then((prefs) => {
-      if (prefs === null) return;
-      setDesktopPrefs(prefs);
-      setHomeKindDraft(prefs.compatibility.homeKind);
-      setCustomHome(prefs.compatibility.customHome ?? '');
-      writeDesktopPrefs(prefs);
+    void Promise.all([readNativeDesktopPrefs(), readNativeKimiHomePaths()]).then(([prefs, paths]) => {
+      if (prefs !== null) {
+        setDesktopPrefs(prefs);
+        setHomeKindDraft(prefs.compatibility.homeKind);
+        setCustomHome(prefs.compatibility.customHome ?? '');
+        writeDesktopPrefs(prefs);
+      }
+      setKimiHomePaths(paths);
     });
   }, [isDesktop]);
 
@@ -329,13 +333,14 @@ function GeneralSection() {
     setCompatibilityFeedback(null);
     try {
       await writeNativeCompatibilitySettings(next);
+      setKimiHomePaths(await readNativeKimiHomePaths());
       setSessionsPlan(null);
       setConfirmSessionsMove(false);
       const prefs = { ...desktopPrefs, compatibility: next };
       setDesktopPrefs(prefs);
       setHomeKindDraft(next.homeKind);
       writeDesktopPrefs(prefs);
-      markRestartRequired(['compatibility Home']);
+      markRestartRequired(['Kimi Home']);
       setCompatibilityFeedback({ tone: 'success', text: t('st.compat.savedRestart') });
     } catch (error) {
       setCompatibilityFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -344,38 +349,31 @@ function GeneralSection() {
     }
   };
 
-  const migrateCategory = async (category: 'modelsAccounts' | 'userSkills') => {
-    setMigrating(category);
+  const migrateCategory = async () => {
+    setMigrating('userSkills');
     setCompatibilityFeedback(null);
     try {
-      const result = await migrateNativeCompatibilityCategory(category);
+      const result = await migrateNativeCompatibilityCategory('userSkills');
       if (result.status === 'copied') {
-        const compatibility = {
-          ...desktopPrefs.compatibility,
-          inheritModelsAccounts:
-            category === 'modelsAccounts'
-              ? false
-              : desktopPrefs.compatibility.inheritModelsAccounts,
-          inheritUserSkills:
-            category === 'userSkills'
-              ? false
-              : desktopPrefs.compatibility.inheritUserSkills,
-        };
-        const prefs = { ...desktopPrefs, compatibility };
-        setDesktopPrefs(prefs);
-        writeDesktopPrefs(prefs);
-        markRestartRequired(['compatibility Home']);
         setCompatibilityFeedback({
-          tone: 'success',
-          text: t('st.compat.migrated', { count: result.files }),
+          tone: result.restartError === null ? 'success' : 'info',
+          text: result.restartError === null
+            ? t('st.compat.migrated', { count: result.files })
+            : t('st.compat.migratedRestartFailed', { count: result.files, error: result.restartError }),
         });
       } else if (result.status === 'copiedActivationPending') {
         setCompatibilityFeedback({
           tone: 'info',
-          text: t('st.compat.migrationActivationPending', {
-            count: result.files,
-            error: result.activationError ?? t('st.compat.migrationActivationUnknown'),
-          }),
+          text: result.restartError === null
+            ? t('st.compat.migrationActivationPending', {
+                count: result.files,
+                error: result.activationError ?? t('st.compat.migrationActivationUnknown'),
+              })
+            : t('st.compat.migrationActivationAndRestartPending', {
+                count: result.files,
+                error: result.activationError ?? t('st.compat.migrationActivationUnknown'),
+                restartError: result.restartError,
+              }),
         });
       } else {
         setCompatibilityFeedback({ tone: 'info', text: t('st.compat.migrationNoop') });
@@ -584,7 +582,6 @@ function GeneralSection() {
               }}
             >
               <option value="kimi">{t('st.compat.homeKimi')}</option>
-              <option value="kiki">{t('st.compat.homeKiki')}</option>
               <option value="custom">{t('st.compat.homeCustom')}</option>
             </select>
           </div>
@@ -613,39 +610,17 @@ function GeneralSection() {
               </button>
             </div>
           ) : null}
-          <Toggle
-            label={t('st.compat.inheritModelsAccounts')}
-            checked={desktopPrefs.compatibility.inheritModelsAccounts}
-            disabled={!isDesktop || compatibilityBusy || migrating !== null || homeKindDraft !== desktopPrefs.compatibility.homeKind}
-            onChange={(checked) => void persistCompatibility({
-              ...desktopPrefs.compatibility,
-              inheritModelsAccounts: checked,
-            })}
-          />
-          <Toggle
-            label={t('st.compat.inheritUserSkills')}
-            checked={desktopPrefs.compatibility.inheritUserSkills}
-            disabled={!isDesktop || compatibilityBusy || migrating !== null || homeKindDraft !== desktopPrefs.compatibility.homeKind}
-            onChange={(checked) => void persistCompatibility({
-              ...desktopPrefs.compatibility,
-              inheritUserSkills: checked,
-            })}
-          />
+          <div className="space-y-2">
+            <label className="block text-[11px] font-medium text-ink-soft">{t('st.compat.credentialPath')}</label>
+            <input className={`${INPUT} font-mono`} value={kimiHomePaths?.credentialPath ?? ''} readOnly />
+          </div>
           <Hint>{t('st.compat.hint')}</Hint>
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
               className={SECONDARY_BUTTON}
-              disabled={homeKindDraft !== desktopPrefs.compatibility.homeKind || desktopPrefs.compatibility.homeKind === 'kiki'}
-              onClick={() => void migrateCategory('modelsAccounts')}
-            >
-              {migrating === 'modelsAccounts' ? t('st.compat.migrating') : t('st.compat.migrateModelsAccounts')}
-            </button>
-            <button
-              type="button"
-              className={SECONDARY_BUTTON}
-              disabled={homeKindDraft !== desktopPrefs.compatibility.homeKind || desktopPrefs.compatibility.homeKind === 'kiki'}
-              onClick={() => void migrateCategory('userSkills')}
+              disabled={homeKindDraft !== desktopPrefs.compatibility.homeKind}
+              onClick={() => void migrateCategory()}
             >
               {migrating === 'userSkills' ? t('st.compat.migrating') : t('st.compat.migrateUserSkills')}
             </button>
@@ -660,7 +635,7 @@ function GeneralSection() {
               <button
                 type="button"
                 className={SECONDARY_BUTTON}
-                disabled={homeKindDraft !== desktopPrefs.compatibility.homeKind || desktopPrefs.compatibility.homeKind === 'kiki'}
+                disabled={homeKindDraft !== desktopPrefs.compatibility.homeKind}
                 onClick={() => void reviewSessionsMove()}
               >
                 {sessionsBusy === 'dryRun' ? t('st.compat.sessionsReviewing') : t('st.compat.sessionsReview')}
@@ -1196,6 +1171,7 @@ function ProvidersSection() {
             <button type="button" disabled={oauthBusy} onClick={() => void startOAuth()} className={PRIMARY_BUTTON}>{oauthBusy ? t('st.auth.working') : t('st.auth.signIn')}</button>
             <button type="button" disabled={oauthBusy} onClick={() => void logout()} className={SECONDARY_BUTTON}>{t('st.auth.signOut')}</button>
           </div>
+          <Hint>{t('st.auth.sharedHomeHint')}</Hint>
           <FeedbackLine feedback={oauthFeedback} />
           {authQuery.isError ? <InlineError error={authQuery.error} /> : null}
         </div>

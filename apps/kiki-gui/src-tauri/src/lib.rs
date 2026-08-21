@@ -316,11 +316,7 @@ impl BackendManager {
                         // ready line stays on stdout, which is never logged).
                         .args(["web", "--no-open", "--port", "0", "--log-level", "warn"])
                         .env("KIMI_CODE_HOME", &runtime.kiki_home)
-                        .env("KIKI_DESKTOP_CONFIG_PATH", &runtime.config_path)
-                        .env(
-                            "KIKI_DESKTOP_MODEL_ACCOUNT_HOME",
-                            &runtime.model_account_home,
-                        )
+                        .env("KIKI_DESKTOP_OAUTH_HOME", &runtime.oauth_home)
                         .env("KIKI_DESKTOP_USER_SKILL_DIR", &runtime.user_skill_dir);
                     let (events, child) = command.spawn().map_err(|error| {
                         DesktopStartupFailure::plain(format!(
@@ -493,8 +489,6 @@ enum CompatibilityHomeKind {
 struct CompatibilitySettings {
     home_kind: CompatibilityHomeKind,
     custom_home: Option<String>,
-    inherit_models_accounts: bool,
-    inherit_user_skills: bool,
 }
 
 impl Default for CompatibilitySettings {
@@ -502,8 +496,6 @@ impl Default for CompatibilitySettings {
         Self {
             home_kind: CompatibilityHomeKind::Kimi,
             custom_home: None,
-            inherit_models_accounts: true,
-            inherit_user_skills: true,
         }
     }
 }
@@ -511,8 +503,16 @@ impl Default for CompatibilitySettings {
 struct RuntimePaths {
     kiki_home: PathBuf,
     config_path: PathBuf,
-    model_account_home: PathBuf,
+    oauth_home: PathBuf,
     user_skill_dir: PathBuf,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KimiHomePaths {
+    home: String,
+    credential_path: String,
+    config_path: String,
 }
 
 fn validate_compatibility_settings(settings: &CompatibilitySettings) -> Result<(), String> {
@@ -537,12 +537,11 @@ fn validate_compatibility_settings(settings: &CompatibilitySettings) -> Result<(
 fn selected_compatibility_home(
     settings: &CompatibilitySettings,
     kimi_home: &Path,
-    kiki_home: &Path,
+    _kiki_home: &Path,
 ) -> Result<PathBuf, String> {
     validate_compatibility_settings(settings)?;
     match settings.home_kind {
-        CompatibilityHomeKind::Kimi => Ok(kimi_home.to_path_buf()),
-        CompatibilityHomeKind::Kiki => Ok(kiki_home.to_path_buf()),
+        CompatibilityHomeKind::Kimi | CompatibilityHomeKind::Kiki => Ok(kimi_home.to_path_buf()),
         CompatibilityHomeKind::Custom => Ok(PathBuf::from(
             settings.custom_home.as_deref().unwrap_or_default(),
         )),
@@ -560,27 +559,12 @@ fn resolve_runtime_paths_with_homes(
     kimi_home: &Path,
     kiki_home: &Path,
 ) -> Result<RuntimePaths, String> {
-    let selected = selected_compatibility_home(&settings.compatibility, kimi_home, kiki_home)?;
-    let kiki_model_account_home = kiki_home.join("models-and-accounts");
-    let model_account_home = if settings.compatibility.inherit_models_accounts
-        && settings.compatibility.home_kind != CompatibilityHomeKind::Kiki
-    {
-        selected.clone()
-    } else {
-        kiki_model_account_home
-    };
-    let user_skill_dir = if settings.compatibility.inherit_user_skills
-        && settings.compatibility.home_kind != CompatibilityHomeKind::Kiki
-    {
-        selected.join("skills")
-    } else {
-        kiki_home.join("skills")
-    };
+    let oauth_home = selected_compatibility_home(&settings.compatibility, kimi_home, kiki_home)?;
     Ok(RuntimePaths {
         kiki_home: kiki_home.to_path_buf(),
-        config_path: model_account_home.join("config.toml"),
-        model_account_home,
-        user_skill_dir,
+        config_path: kiki_home.join("config.toml"),
+        oauth_home,
+        user_skill_dir: kiki_home.join("skills"),
     })
 }
 
@@ -704,10 +688,24 @@ fn write_desktop_prefs(app: AppHandle, prefs: DesktopPrefsPatch) -> Result<(), S
     Ok(())
 }
 
+#[tauri::command]
+fn read_kimi_home_paths() -> Result<KimiHomePaths, String> {
+    let runtime = resolve_runtime_paths(&read_desktop_prefs_file())?;
+    Ok(KimiHomePaths {
+        credential_path: runtime
+            .oauth_home
+            .join("credentials")
+            .join("kimi-code.json")
+            .display()
+            .to_string(),
+        config_path: runtime.config_path.display().to_string(),
+        home: runtime.oauth_home.display().to_string(),
+    })
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 enum MigrationCategory {
-    ModelsAccounts,
     UserSkills,
 }
 
@@ -720,6 +718,7 @@ struct MigrationResult {
     target: String,
     files: usize,
     activation_error: Option<String>,
+    restart_error: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -746,11 +745,64 @@ struct SessionsMigrationPlan {
 
 #[tauri::command]
 async fn migrate_compatibility_category(
+    app: AppHandle,
+    manager: State<'_, BackendManager>,
     category: MigrationCategory,
 ) -> Result<MigrationResult, String> {
-    tauri::async_runtime::spawn_blocking(move || migrate_category(category))
-        .await
-        .map_err(|error| format!("Compatibility migration task failed: {error}"))?
+    let app = app.clone();
+    let manager = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let restart = manager.has_backend();
+        run_copy_migration_lifecycle(
+            || preflight_category(category),
+            || {
+                if restart {
+                    manager.shutdown();
+                }
+            },
+            || migrate_category(category),
+            || {
+                if restart {
+                    manager
+                        .connection(&app)
+                        .map(|_| ())
+                        .map_err(|error| error.message)
+                } else {
+                    Ok(())
+                }
+            },
+        )
+    })
+    .await
+    .map_err(|error| format!("Compatibility migration task failed: {error}"))?
+}
+
+fn run_copy_migration_lifecycle(
+    preflight: impl FnOnce() -> Result<bool, String>,
+    stop: impl FnOnce(),
+    migrate: impl FnOnce() -> Result<MigrationResult, String>,
+    restart: impl FnOnce() -> Result<(), String>,
+) -> Result<MigrationResult, String> {
+    if !preflight()? {
+        return migrate();
+    }
+    stop();
+    let result = migrate();
+    let restart_error = restart().err();
+    match result {
+        Ok(mut result) => {
+            result.restart_error = restart_error;
+            Ok(result)
+        }
+        Err(error) => Err(match restart_error {
+            Some(restart_error) => format!(
+                "User Skills were not copied and settings were not changed: {error}; Kiki also could not restart: {restart_error}"
+            ),
+            None => format!(
+                "User Skills were not copied and settings were not changed: {error}"
+            ),
+        }),
+    }
 }
 
 #[tauri::command]
@@ -803,7 +855,7 @@ fn plan_sessions_migration() -> Result<SessionsMigrationPlan, String> {
 }
 
 fn plan_sessions_migration_with_homes(
-    settings: &CompatibilitySettings,
+    _settings: &CompatibilitySettings,
     source_root: &Path,
     target_root: &Path,
 ) -> Result<SessionsMigrationPlan, String> {
@@ -839,9 +891,7 @@ fn plan_sessions_migration_with_homes(
         0
     };
     let total_bytes = sessions_bytes + workspace_bytes;
-    if settings.home_kind == CompatibilityHomeKind::Kiki
-        || paths_equivalent(source_root, target_root)
-    {
+    if paths_equivalent(source_root, target_root) {
         return Ok(SessionsMigrationPlan {
             status: "noop",
             source_root: source_root.display().to_string(),
@@ -933,11 +983,11 @@ fn execute_sessions_migration_with_homes(
             target_root.display()
         )
     })?;
-    if plan
+    let move_catalog = plan
         .planned_moves
         .iter()
-        .any(|planned| planned.entry == "workspaces.json")
-    {
+        .any(|planned| planned.entry == "workspaces.json");
+    if move_catalog {
         if workspaces_target.exists() {
             fs::remove_file(&workspaces_target).map_err(|error| {
                 format!(
@@ -962,13 +1012,28 @@ fn execute_sessions_migration_with_homes(
             )
         })?;
     }
-    rename(&sessions_source, &sessions_target).map_err(|error| {
-        format!(
+    if let Err(error) = rename(&sessions_source, &sessions_target) {
+        let original = format!(
             "Cannot move Sessions from {} to {} with filesystem rename: {error}; no copy was attempted",
             sessions_source.display(),
             sessions_target.display()
-        )
-    })?;
+        );
+        if move_catalog {
+            if let Err(compensation_error) = rename(&workspaces_target, &workspaces_source) {
+                return Err(format!(
+                    "Partial Sessions move: {original}; compensation rename from {} back to {} also failed: {compensation_error}",
+                    workspaces_target.display(),
+                    workspaces_source.display()
+                ));
+            }
+            return Err(format!(
+                "{original}; workspace catalog was restored from {} to {}",
+                workspaces_target.display(),
+                workspaces_source.display()
+            ));
+        }
+        return Err(original);
+    }
     plan.status = "moved";
     Ok(plan)
 }
@@ -1074,6 +1139,25 @@ fn read_dir(path: &Path, label: &str) -> Result<fs::ReadDir, String> {
     fs::read_dir(path).map_err(|error| format!("Cannot read {label} {}: {error}", path.display()))
 }
 
+fn preflight_category(category: MigrationCategory) -> Result<bool, String> {
+    let prefs = read_desktop_prefs_file();
+    let kimi_home = kimi_home_dir()?;
+    let kiki_home = kiki_home_dir()?;
+    let selected = selected_compatibility_home(&prefs.compatibility, &kimi_home, &kiki_home)?;
+    let (source, target) = category_paths(category, &selected, &kiki_home);
+    if migration_is_noop(&selected, &source, &target, &kiki_home) {
+        return Ok(false);
+    }
+    ensure_empty_target(&target)?;
+    if !source.is_dir() {
+        return Err(format!(
+            "The selected Kimi Home has no User Skills data to migrate at {}",
+            source.display()
+        ));
+    }
+    Ok(true)
+}
+
 fn migrate_category(category: MigrationCategory) -> Result<MigrationResult, String> {
     let prefs = read_desktop_prefs_file();
     let kimi_home = kimi_home_dir()?;
@@ -1088,27 +1172,23 @@ fn migrate_category(category: MigrationCategory) -> Result<MigrationResult, Stri
     )
 }
 
+fn category_paths(
+    _category: MigrationCategory,
+    selected: &Path,
+    kiki_home: &Path,
+) -> (PathBuf, PathBuf) {
+    (selected.join("skills"), kiki_home.join("skills"))
+}
+
 fn migrate_category_with(
     category: MigrationCategory,
-    mut prefs: DesktopPrefs,
+    prefs: DesktopPrefs,
     selected: &Path,
     kiki_home: &Path,
     write_prefs: impl FnOnce(&DesktopPrefs) -> Result<(), String>,
 ) -> Result<MigrationResult, String> {
-    let (source, target) = match category {
-        MigrationCategory::ModelsAccounts => (
-            selected.to_path_buf(),
-            kiki_home.join("models-and-accounts"),
-        ),
-        MigrationCategory::UserSkills => (selected.join("skills"), kiki_home.join("skills")),
-    };
-    if migration_is_noop(
-        &prefs.compatibility,
-        &selected,
-        &source,
-        &target,
-        &kiki_home,
-    ) {
+    let (source, target) = category_paths(category, selected, kiki_home);
+    if migration_is_noop(selected, &source, &target, kiki_home) {
         return Ok(MigrationResult {
             status: "noop",
             category,
@@ -1116,17 +1196,10 @@ fn migrate_category_with(
             target: target.display().to_string(),
             files: 0,
             activation_error: None,
+            restart_error: None,
         });
     }
-    let files = copy_category_to_target(category, &source, &target, &kiki_home)?;
-    match category {
-        MigrationCategory::ModelsAccounts => {
-            prefs.compatibility.inherit_models_accounts = false;
-        }
-        MigrationCategory::UserSkills => {
-            prefs.compatibility.inherit_user_skills = false;
-        }
-    }
+    let files = copy_category_to_target(category, &source, &target, kiki_home)?;
     let activation_error = write_prefs(&prefs).err();
     Ok(MigrationResult {
         status: if activation_error.is_some() {
@@ -1139,19 +1212,12 @@ fn migrate_category_with(
         target: target.display().to_string(),
         files,
         activation_error,
+        restart_error: None,
     })
 }
 
-fn migration_is_noop(
-    settings: &CompatibilitySettings,
-    selected: &Path,
-    source: &Path,
-    target: &Path,
-    kiki_home: &Path,
-) -> bool {
-    settings.home_kind == CompatibilityHomeKind::Kiki
-        || paths_equivalent(source, target)
-        || paths_equivalent(selected, kiki_home)
+fn migration_is_noop(selected: &Path, source: &Path, target: &Path, kiki_home: &Path) -> bool {
+    paths_equivalent(source, target) || paths_equivalent(selected, kiki_home)
 }
 
 fn copy_category_to_target(
@@ -1162,31 +1228,20 @@ fn copy_category_to_target(
 ) -> Result<usize, String> {
     ensure_empty_target(target)?;
     let stage = kiki_home.join(format!(
-        ".{}-migration-{}-{}",
-        match category {
-            MigrationCategory::ModelsAccounts => "models-and-accounts",
-            MigrationCategory::UserSkills => "skills",
-        },
+        ".skills-migration-{}-{}",
         std::process::id(),
         unix_epoch_millis()?
     ));
     fs::create_dir_all(&stage)
         .map_err(|error| format!("Cannot prepare migration staging directory: {error}"))?;
     let copied = match category {
-        MigrationCategory::ModelsAccounts => copy_model_account_category(&source, &stage),
-        MigrationCategory::UserSkills => copy_tree_contents(&source, &stage),
+        MigrationCategory::UserSkills => copy_tree_contents(source, &stage),
     };
     let files = match copied {
         Ok(files) if files > 0 => files,
         Ok(_) => {
             let _ = fs::remove_dir_all(&stage);
-            return Err(format!(
-                "The selected compatibility Home has no {} data to migrate",
-                match category {
-                    MigrationCategory::ModelsAccounts => "Models & Accounts",
-                    MigrationCategory::UserSkills => "User Skills",
-                }
-            ));
+            return Err("The selected Kimi Home has no User Skills data to migrate".to_string());
         }
         Err(error) => {
             let _ = fs::remove_dir_all(&stage);
@@ -1240,19 +1295,6 @@ fn ensure_empty_target(target: &Path) -> Result<(), String> {
         ));
     }
     Ok(())
-}
-
-fn copy_model_account_category(source: &Path, target: &Path) -> Result<usize, String> {
-    let mut files = 0;
-    for name in ["config.toml", "device_id", "credentials", "oauth"] {
-        let from = source.join(name);
-        if !from.exists() {
-            continue;
-        }
-        let to = target.join(name);
-        files += copy_path(&from, &to)?;
-    }
-    Ok(files)
 }
 
 fn copy_tree_contents(source: &Path, target: &Path) -> Result<usize, String> {
@@ -1741,6 +1783,7 @@ pub fn run() {
             cancel_desktop_startup,
             show_main_window,
             read_desktop_prefs,
+            read_kimi_home_paths,
             write_desktop_prefs,
             migrate_compatibility_category,
             dry_run_sessions_migration,
@@ -1813,15 +1856,13 @@ mod tests {
     }
 
     #[test]
-    fn compatibility_defaults_validation_and_runtime_resolution() {
+    fn kimi_home_oauth_and_kiki_config_runtime_resolution() {
         let defaults: DesktopPrefs = serde_json::from_str("{}").unwrap();
         assert_eq!(
             defaults.compatibility,
             CompatibilitySettings {
                 home_kind: CompatibilityHomeKind::Kimi,
                 custom_home: None,
-                inherit_models_accounts: true,
-                inherit_user_skills: true,
             }
         );
 
@@ -1832,51 +1873,23 @@ mod tests {
         };
         let kimi = root.join("kimi");
         let kiki = root.join("kiki");
-        let inherited = resolve_runtime_paths_with_homes(&defaults, &kimi, &kiki).unwrap();
-        assert_eq!(inherited.kiki_home, kiki);
-        assert_eq!(inherited.config_path, kimi.join("config.toml"));
-        assert_eq!(inherited.model_account_home, kimi);
-        assert_eq!(inherited.user_skill_dir, kimi.join("skills"));
+        let paths = resolve_runtime_paths_with_homes(&defaults, &kimi, &kiki).unwrap();
+        assert_eq!(paths.kiki_home, kiki);
+        assert_eq!(paths.config_path, kiki.join("config.toml"));
+        assert_eq!(paths.oauth_home, kimi);
+        assert_eq!(paths.user_skill_dir, kiki.join("skills"));
 
-        let mut local = defaults.clone();
-        local.compatibility.inherit_models_accounts = false;
-        local.compatibility.inherit_user_skills = false;
-        let local_paths = resolve_runtime_paths_with_homes(&local, &kimi, &kiki).unwrap();
-        assert_eq!(
-            local_paths.model_account_home,
-            kiki.join("models-and-accounts")
-        );
-        assert_eq!(local_paths.user_skill_dir, kiki.join("skills"));
-
-        let mut custom = defaults.clone();
+        let mut custom = defaults;
         custom.compatibility.home_kind = CompatibilityHomeKind::Custom;
         let custom_home = root.join("custom");
         custom.compatibility.custom_home = Some(custom_home.display().to_string());
         let custom_paths = resolve_runtime_paths_with_homes(&custom, &kimi, &kiki).unwrap();
-        assert_eq!(custom_paths.model_account_home, custom_home);
-        assert_eq!(
-            custom_paths.user_skill_dir,
-            root.join("custom").join("skills")
-        );
+        assert_eq!(custom_paths.config_path, kiki.join("config.toml"));
+        assert_eq!(custom_paths.oauth_home, custom_home);
+        assert_eq!(custom_paths.user_skill_dir, kiki.join("skills"));
 
         custom.compatibility.custom_home = Some("relative".to_string());
         assert!(resolve_runtime_paths_with_homes(&custom, &kimi, &kiki).is_err());
-
-        let mut kiki_selected = defaults;
-        kiki_selected.compatibility.home_kind = CompatibilityHomeKind::Kiki;
-        let kiki_paths = resolve_runtime_paths_with_homes(&kiki_selected, &kimi, &kiki).unwrap();
-        assert_eq!(
-            kiki_paths.model_account_home,
-            kiki.join("models-and-accounts")
-        );
-        assert_eq!(kiki_paths.user_skill_dir, kiki.join("skills"));
-        assert!(migration_is_noop(
-            &kiki_selected.compatibility,
-            &kiki,
-            &kiki.join("skills"),
-            &kiki.join("skills"),
-            &kiki,
-        ));
     }
 
     #[test]
@@ -1888,34 +1901,6 @@ mod tests {
         ));
         let source = root.join("source");
         let kiki = root.join("kiki");
-        fs::create_dir_all(source.join("credentials")).unwrap();
-        fs::create_dir_all(source.join("oauth")).unwrap();
-        fs::write(source.join("config.toml"), "default_model = 'example'").unwrap();
-        fs::write(source.join("device_id"), "device-example").unwrap();
-        fs::write(
-            source.join("credentials").join("account.json"),
-            "fixture-token",
-        )
-        .unwrap();
-        fs::write(source.join("oauth").join("kimi-code.lock"), "fixture-lock").unwrap();
-        let model_target = kiki.join("models-and-accounts");
-        let model_files = copy_category_to_target(
-            MigrationCategory::ModelsAccounts,
-            &source,
-            &model_target,
-            &kiki,
-        )
-        .unwrap();
-        assert_eq!(model_files, 4);
-        assert_eq!(
-            fs::read_to_string(model_target.join("config.toml")).unwrap(),
-            "default_model = 'example'"
-        );
-        assert_eq!(
-            fs::read_to_string(source.join("credentials").join("account.json")).unwrap(),
-            "fixture-token"
-        );
-
         fs::create_dir_all(source.join("skills").join("demo")).unwrap();
         fs::write(
             source.join("skills").join("demo").join("SKILL.md"),
@@ -1976,10 +1961,7 @@ mod tests {
             prefs,
             &source,
             &kiki,
-            |pending| {
-                assert!(!pending.compatibility.inherit_user_skills);
-                Err("desktop prefs are read-only".to_string())
-            },
+            |_pending| Err("desktop prefs are read-only".to_string()),
         )
         .unwrap();
 
@@ -1998,6 +1980,43 @@ mod tests {
             "fixture skill"
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn copy_migration_stops_copies_saves_and_restarts_in_order() {
+        use std::cell::RefCell;
+
+        let calls = RefCell::new(Vec::new());
+        let result = run_copy_migration_lifecycle(
+            || {
+                calls.borrow_mut().push("preflight");
+                Ok(true)
+            },
+            || calls.borrow_mut().push("stop"),
+            || {
+                calls.borrow_mut().push("copy+prefs");
+                Ok(MigrationResult {
+                    status: "copied",
+                    category: MigrationCategory::UserSkills,
+                    source: "source".to_string(),
+                    target: "target".to_string(),
+                    files: 1,
+                    activation_error: None,
+                    restart_error: None,
+                })
+            },
+            || {
+                calls.borrow_mut().push("restart");
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.status, "copied");
+        assert_eq!(
+            calls.into_inner(),
+            vec!["preflight", "stop", "copy+prefs", "restart"]
+        );
     }
 
     #[test]
@@ -2199,6 +2218,68 @@ mod tests {
             "source"
         );
         assert!(!failing_kiki.join("sessions").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sessions_second_rename_failure_compensates_catalog_or_reports_partial_move() {
+        let root = env::temp_dir().join(format!(
+            "kiki-sessions-compensation-test-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap()
+        ));
+        let settings = CompatibilitySettings::default();
+
+        for compensation_fails in [false, true] {
+            let suffix = if compensation_fails {
+                "partial"
+            } else {
+                "restored"
+            };
+            let source = root.join(format!("source-{suffix}"));
+            let target = root.join(format!("target-{suffix}"));
+            fs::create_dir_all(source.join("sessions/workspace/session")).unwrap();
+            fs::create_dir_all(&target).unwrap();
+            fs::write(
+                source.join("sessions/workspace/session/state.json"),
+                "source",
+            )
+            .unwrap();
+            fs::write(
+                source.join("workspaces.json"),
+                r#"{"workspaces":{"workspace":{"root":"C:/source","name":"source","created_at":"2026-01-01","last_opened_at":"2026-01-01"}}}"#,
+            )
+            .unwrap();
+            let mut call = 0;
+            let error =
+                execute_sessions_migration_with_homes(&settings, &source, &target, |from, to| {
+                    call += 1;
+                    match call {
+                        1 => fs::rename(from, to),
+                        2 => Err(io::Error::other("sessions rename failed")),
+                        3 if compensation_fails => {
+                            Err(io::Error::other("catalog compensation failed"))
+                        }
+                        3 => fs::rename(from, to),
+                        _ => unreachable!(),
+                    }
+                })
+                .unwrap_err();
+
+            assert!(error.contains("sessions rename failed"));
+            if compensation_fails {
+                assert!(error.contains("Partial Sessions move"));
+                assert!(error.contains("catalog compensation failed"));
+                assert!(error.contains(&target.join("workspaces.json").display().to_string()));
+                assert!(error.contains(&source.join("workspaces.json").display().to_string()));
+            } else {
+                assert!(error.contains("workspace catalog was restored"));
+                assert!(source.join("workspaces.json").is_file());
+                assert!(!target.join("workspaces.json").exists());
+            }
+            assert!(source.join("sessions").is_dir());
+            assert!(!target.join("sessions").exists());
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
