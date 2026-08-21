@@ -7,6 +7,8 @@
  * Kiki deliberately keeps only the single-child subset needed here and relies
  * on kap-server's own registry, token, and authenticated shutdown contracts.
  */
+pub mod config_import;
+
 use std::{
     collections::VecDeque,
     env, fs,
@@ -512,6 +514,7 @@ struct RuntimePaths {
 struct KimiHomePaths {
     home: String,
     credential_path: String,
+    source_config_path: String,
     config_path: String,
 }
 
@@ -698,9 +701,32 @@ fn read_kimi_home_paths() -> Result<KimiHomePaths, String> {
             .join("kimi-code.json")
             .display()
             .to_string(),
+        source_config_path: runtime.oauth_home.join("config.toml").display().to_string(),
         config_path: runtime.config_path.display().to_string(),
         home: runtime.oauth_home.display().to_string(),
     })
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KimiConfigImportResult {
+    status: &'static str,
+    source: String,
+    target: String,
+    updated_categories: Vec<String>,
+    restart_error: Option<String>,
+}
+
+impl From<config_import::ConfigImportResult> for KimiConfigImportResult {
+    fn from(result: config_import::ConfigImportResult) -> Self {
+        Self {
+            status: result.status,
+            source: result.source,
+            target: result.target,
+            updated_categories: result.updated_categories,
+            restart_error: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -741,6 +767,87 @@ struct SessionsMigrationPlan {
     target_conflict: bool,
     blocker: Option<String>,
     execution: &'static str,
+}
+
+fn current_config_import_plan() -> Result<config_import::ConfigImportPlan, String> {
+    let prefs = read_desktop_prefs_file();
+    let kimi_home = kimi_home_dir()?;
+    let kiki_home = kiki_home_dir()?;
+    let source_home = selected_compatibility_home(&prefs.compatibility, &kimi_home, &kiki_home)?;
+    config_import::plan_config_import_homes(&source_home, &kiki_home)
+}
+
+fn import_current_kimi_config() -> Result<config_import::ConfigImportResult, String> {
+    let prefs = read_desktop_prefs_file();
+    let kimi_home = kimi_home_dir()?;
+    let kiki_home = kiki_home_dir()?;
+    let source_home = selected_compatibility_home(&prefs.compatibility, &kimi_home, &kiki_home)?;
+    config_import::import_config_homes(&source_home, &kiki_home)
+}
+
+#[tauri::command]
+async fn import_kimi_config(
+    app: AppHandle,
+    manager: State<'_, BackendManager>,
+) -> Result<KimiConfigImportResult, String> {
+    let app = app.clone();
+    let manager = manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let plan = current_config_import_plan()?;
+        let has_changes = plan.has_changes();
+        let initial = KimiConfigImportResult::from(plan.result());
+        let restart = manager.has_backend();
+        run_kimi_config_import_lifecycle(
+            has_changes,
+            initial,
+            || {
+                if restart {
+                    manager.shutdown();
+                }
+            },
+            import_current_kimi_config,
+            || {
+                if restart {
+                    manager
+                        .connection(&app)
+                        .map(|_| ())
+                        .map_err(|error| error.message)
+                } else {
+                    Ok(())
+                }
+            },
+        )
+    })
+    .await
+    .map_err(|error| format!("Kimi config import task failed: {error}"))?
+}
+
+fn run_kimi_config_import_lifecycle(
+    has_changes: bool,
+    initial: KimiConfigImportResult,
+    stop: impl FnOnce(),
+    import: impl FnOnce() -> Result<config_import::ConfigImportResult, String>,
+    restart: impl FnOnce() -> Result<(), String>,
+) -> Result<KimiConfigImportResult, String> {
+    if !has_changes {
+        return Ok(initial);
+    }
+    stop();
+    let imported = import();
+    let restart_error = restart().err();
+    match imported {
+        Ok(result) => {
+            let mut result = KimiConfigImportResult::from(result);
+            result.restart_error = restart_error;
+            Ok(result)
+        }
+        Err(error) => Err(match restart_error {
+            Some(restart_error) => {
+                format!("{error}; Kiki also could not restart: {restart_error}")
+            }
+            None => error,
+        }),
+    }
 }
 
 #[tauri::command]
@@ -1785,6 +1892,7 @@ pub fn run() {
             read_desktop_prefs,
             read_kimi_home_paths,
             write_desktop_prefs,
+            import_kimi_config,
             migrate_compatibility_category,
             dry_run_sessions_migration,
             execute_sessions_migration,
@@ -2017,6 +2125,64 @@ mod tests {
             calls.into_inner(),
             vec!["preflight", "stop", "copy+prefs", "restart"]
         );
+    }
+
+    #[test]
+    fn config_import_noop_skips_backend_and_changes_stop_import_restart_in_order() {
+        use std::cell::RefCell;
+
+        let noop_calls = RefCell::new(Vec::new());
+        let noop = run_kimi_config_import_lifecycle(
+            false,
+            KimiConfigImportResult {
+                status: "noop",
+                source: "source/config.toml".to_string(),
+                target: "target/config.toml".to_string(),
+                updated_categories: Vec::new(),
+                restart_error: None,
+            },
+            || noop_calls.borrow_mut().push("stop"),
+            || {
+                noop_calls.borrow_mut().push("import");
+                unreachable!()
+            },
+            || {
+                noop_calls.borrow_mut().push("restart");
+                unreachable!()
+            },
+        )
+        .unwrap();
+        assert_eq!(noop.status, "noop");
+        assert!(noop_calls.into_inner().is_empty());
+
+        let calls = RefCell::new(Vec::new());
+        let imported = run_kimi_config_import_lifecycle(
+            true,
+            KimiConfigImportResult {
+                status: "imported",
+                source: "source/config.toml".to_string(),
+                target: "target/config.toml".to_string(),
+                updated_categories: vec!["providers".to_string()],
+                restart_error: None,
+            },
+            || calls.borrow_mut().push("stop"),
+            || {
+                calls.borrow_mut().push("import");
+                Ok(config_import::ConfigImportResult {
+                    status: "imported",
+                    source: "source/config.toml".to_string(),
+                    target: "target/config.toml".to_string(),
+                    updated_categories: vec!["providers".to_string()],
+                })
+            },
+            || {
+                calls.borrow_mut().push("restart");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(imported.status, "imported");
+        assert_eq!(calls.into_inner(), vec!["stop", "import", "restart"]);
     }
 
     #[test]

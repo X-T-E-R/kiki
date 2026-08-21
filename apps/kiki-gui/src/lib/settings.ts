@@ -1096,7 +1096,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'general', cardId: 'st-card-defaults', titleKey: 'st.defaults.title', keywordKeys: ['st.defaults.permissionMode', 'st.defaults.planMode', 'st.defaults.hint'] },
   { section: 'general', cardId: 'st-card-composer', titleKey: 'st.composer.title', keywordKeys: ['st.composer.sendShortcut', 'st.composer.persistDrafts'] },
   { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.notifications', 'st.desktop.tray', 'st.desktop.quit'] },
-  { section: 'general', cardId: 'st-card-compatibility-home', titleKey: 'st.compat.title', keywordKeys: ['st.compat.home', 'st.compat.credentialPath', 'st.compat.migrateUserSkills'] },
+  { section: 'general', cardId: 'st-card-compatibility-home', titleKey: 'st.compat.title', keywordKeys: ['st.compat.home', 'st.compat.credentialPath', 'st.compat.configImportTitle', 'st.compat.migrateUserSkills'] },
   { section: 'models', cardId: 'st-card-models', titleKey: 'st.models.defaultTitle', keywordKeys: ['st.models.providerLabel', 'st.models.searchPlaceholder'] },
   { section: 'models', cardId: 'st-card-thinking', titleKey: 'st.thinking.title', keywordKeys: ['st.thinking.enable', 'st.thinking.hint'] },
   { section: 'connection', cardId: 'st-card-conn-server', titleKey: 'st.conn.connectedTitle', keywordKeys: ['st.conn.version', 'st.conn.reconnect'] },

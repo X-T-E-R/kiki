@@ -117,6 +117,7 @@ export async function writeNativeCompatibilitySettings(
 export interface KimiHomePaths {
   readonly home: string;
   readonly credentialPath: string;
+  readonly sourceConfigPath: string;
   readonly configPath: string;
 }
 
@@ -127,6 +128,21 @@ export async function readNativeKimiHomePaths(): Promise<KimiHomePaths | null> {
   } catch {
     return null;
   }
+}
+
+export interface KimiConfigImportResult {
+  readonly status: 'imported' | 'noop';
+  readonly source: string;
+  readonly target: string;
+  readonly updatedCategories: readonly string[];
+  readonly restartError: string | null;
+}
+
+export async function importNativeKimiConfig(): Promise<KimiConfigImportResult> {
+  if (!isTauri()) throw new Error('Kimi config import requires the Kiki desktop app.');
+  const result = await invoke<KimiConfigImportResult>('import_kimi_config');
+  if (result.status === 'imported' && result.restartError === null) window.location.reload();
+  return result;
 }
 
 export type CompatibilityMigrationCategory = 'userSkills';

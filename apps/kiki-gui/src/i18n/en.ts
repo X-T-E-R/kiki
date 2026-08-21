@@ -786,6 +786,18 @@ export const en = {
   'st.compat.hint':
     'Kiki reads and updates OAuth credentials directly in this Kimi Home. Kiki keeps its own config.toml, sessions, and runtime data under KIKI_HOME.',
   'st.compat.savedRestart': 'Saved. Restart the server to use this Kimi Home.',
+  'st.compat.configImportTitle': 'Import model configuration',
+  'st.compat.configImportHint':
+    'One-way import only. Matching provider, model, and service keys are replaced; Kiki-only keys and every non-listed config section stay unchanged. OAuth is never imported.',
+  'st.compat.configImportSource': 'Source',
+  'st.compat.configImportTarget': 'Target',
+  'st.compat.configImportCategories': 'Imported categories',
+  'st.compat.configImport': 'Import from Kimi Code',
+  'st.compat.configImporting': 'Importing…',
+  'st.compat.configImported': 'Imported model configuration categories: {categories}. Kiki restarted.',
+  'st.compat.configImportNoop': 'Kiki config already matches the imported Kimi model configuration.',
+  'st.compat.configImportRestartFailed':
+    'Imported model configuration categories ({categories}), but Kiki could not restart: {error}',
   'st.compat.migrateUserSkills': 'Copy User Skills to Kiki Home',
   'st.compat.migrating': 'Copying…',
   'st.compat.migrationHint':

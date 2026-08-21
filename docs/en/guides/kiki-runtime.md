@@ -95,6 +95,14 @@ The desktop app keeps Kiki-owned data under `KIKI_HOME` (by default `~/.kiki`). 
 
 Kimi OAuth is intentionally shared. The selected Kimi Home may be the default Kimi Code Home or a custom absolute path, and Kiki login, logout, and refresh directly use `<Kimi Home>/credentials/kimi-code.json`, `<Kimi Home>/device_id`, and `<Kimi Home>/oauth/`. Those actions therefore affect the same Kimi Code login; Kiki never copies OAuth credentials into `KIKI_HOME`.
 
+The Settings card provides a repeatable one-way model-configuration import from the selected Kimi Home. It imports only `providers`, `models`, `services`, `default_model`, `default_provider`, `thinking`, and `secondary_model`. The three map categories merge by key: source entries replace matching aliases while Kiki-only aliases remain. The other categories replace the Kiki value only when they exist in the source. All other Kiki config sections and comments remain untouched, and repeating the same import is a no-op. The desktop action stops and restarts only Kiki's owned backend. For headless maintenance, stop that backend first, then run from `apps/kiki-gui`:
+
+```sh
+pnpm desktop:import-kimi-config
+```
+
+Pass `--source-home <absolute-path>` and `--target-home <absolute-path>` to override the default Homes. The command prints only status, paths, and category names; it does not read or move OAuth, Sessions, or Skills.
+
 Sessions and User Skills use the selected Kimi Home only as a migration source. A Sessions move stops Kiki's owned backend, recalculates the plan, then renames only `workspaces.json` and `sessions/`; if the second rename fails after the catalog moved, Kiki immediately renames the catalog back and reports a partial move if that compensation also fails. User Skills copy keeps the source and does not overwrite an occupied Kiki target. Copy migrations stop and restart only Kiki's owned backend; they do not stop or lock external Kimi Code processes, so close those processes before migrating.
 
 ## Sync from upstream

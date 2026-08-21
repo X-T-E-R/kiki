@@ -570,6 +570,7 @@ describe('settings search index', () => {
     expect(searchSettings(index, 'hard allowlist').some((hit) => hit.cardId === 'st-card-subagents')).toBe(true);
     expect(searchSettings(index, 'pinned model alias').some((hit) => hit.cardId === 'st-card-subagent-profiles')).toBe(true);
     expect(searchSettings(index, 'Main agents').some((hit) => hit.cardId === 'st-card-main-agents')).toBe(true);
+    expect(searchSettings(index, 'Import model configuration').some((hit) => hit.cardId === 'st-card-compatibility-home')).toBe(true);
     expect(searchSettings(index, 'subagent')[0]?.section).toBe('agents');
     expect(searchSettings(index, '  ')).toEqual([]);
     expect(searchSettings(index, 'zzzz-no-such-setting')).toEqual([]);

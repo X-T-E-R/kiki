@@ -95,6 +95,14 @@ GUI package 在 `apps/kiki-gui/ATTRIBUTION.md` 中记录了改造自 codeg、Aio
 
 Kimi OAuth 则有意共享。所选 Kimi Home 可以是 Kimi Code 默认 Home，也可以是自定义绝对路径；Kiki 的登录、退出登录和刷新会直接使用 `<Kimi Home>/credentials/kimi-code.json`、`<Kimi Home>/device_id` 和 `<Kimi Home>/oauth/`。因此这些操作会影响同一份 Kimi Code 登录状态；Kiki 不会把 OAuth 凭据复制到 `KIKI_HOME`。
 
+Settings 卡片提供可重复执行的单向模型配置导入，来源是所选 Kimi Home。导入范围只包括 `providers`、`models`、`services`、`default_model`、`default_provider`、`thinking` 和 `secondary_model`。前三个 map 类别按 key 合并：同名 alias 由来源覆盖，Kiki 独有 alias 保留；其余类别只在来源存在时替换 Kiki 值。所有其他 Kiki 配置节和注释保持不变，重复导入同一内容会返回 noop。桌面操作只停止并重启 Kiki 自有后端。使用 headless 维护入口前应先停止该后端，然后在 `apps/kiki-gui` 中运行：
+
+```sh
+pnpm desktop:import-kimi-config
+```
+
+可传入 `--source-home <绝对路径>` 和 `--target-home <绝对路径>` 覆盖默认 Home。该命令只输出状态、路径和类别名称，不读取或移动 OAuth、会话或技能。
+
 会话和用户技能只把所选 Kimi Home 当作迁移来源。移动会话时，Kiki 会停止自有后端、重新计算计划，然后只重命名 `workspaces.json` 和 `sessions/`；如果目录重命名在目录已移动后失败，Kiki 会立即反向重命名目录，补偿也失败时则报告部分移动错误。复制用户技能会保留来源，也不会覆盖已有的 Kiki 目标。复制类迁移只停止并重启 Kiki 自有后端，不会停止或锁定外部 Kimi Code 进程，因此迁移前建议关闭这些进程。
 
 ## 从上游同步

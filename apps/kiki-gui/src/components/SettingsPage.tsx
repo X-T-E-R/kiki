@@ -16,6 +16,7 @@ import type {
 import {
   dryRunNativeSessionsMigration,
   executeNativeSessionsMigration,
+  importNativeKimiConfig,
   isDesktopRuntime,
   migrateNativeCompatibilityCategory,
   readNativeDesktopPrefs,
@@ -244,7 +245,13 @@ function GeneralSection() {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [compatibilityFeedback, setCompatibilityFeedback] = useState<Feedback>(null);
   const [compatibilityBusy, setCompatibilityBusy] = useState(false);
-  const [kimiHomePaths, setKimiHomePaths] = useState<{ home: string; credentialPath: string } | null>(null);
+  const [kimiHomePaths, setKimiHomePaths] = useState<{
+    home: string;
+    credentialPath: string;
+    sourceConfigPath: string;
+    configPath: string;
+  } | null>(null);
+  const [configImporting, setConfigImporting] = useState(false);
   const [migrating, setMigrating] = useState<'userSkills' | null>(null);
   const [sessionsBusy, setSessionsBusy] = useState<'dryRun' | 'move' | null>(null);
   const [sessionsPlan, setSessionsPlan] = useState<SessionsMigrationPlan | null>(null);
@@ -346,6 +353,36 @@ function GeneralSection() {
       setCompatibilityFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally {
       setCompatibilityBusy(false);
+    }
+  };
+
+  const importKimiConfig = async () => {
+    setConfigImporting(true);
+    setCompatibilityFeedback(null);
+    try {
+      const result = await importNativeKimiConfig();
+      if (result.status === 'noop') {
+        setCompatibilityFeedback({ tone: 'info', text: t('st.compat.configImportNoop') });
+      } else if (result.restartError !== null) {
+        setCompatibilityFeedback({
+          tone: 'info',
+          text: t('st.compat.configImportRestartFailed', {
+            categories: result.updatedCategories.join(', '),
+            error: result.restartError,
+          }),
+        });
+      } else {
+        setCompatibilityFeedback({
+          tone: 'success',
+          text: t('st.compat.configImported', {
+            categories: result.updatedCategories.join(', '),
+          }),
+        });
+      }
+    } catch (error) {
+      setCompatibilityFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setConfigImporting(false);
     }
   };
 
@@ -557,7 +594,7 @@ function GeneralSection() {
       </SectionCard>
 
       <SectionCard id="st-card-compatibility-home" title={t('st.compat.title')} badge="desktop">
-        <fieldset disabled={!isDesktop || compatibilityBusy || migrating !== null || sessionsBusy !== null} className="space-y-4">
+        <fieldset disabled={!isDesktop || compatibilityBusy || configImporting || migrating !== null || sessionsBusy !== null} className="space-y-4">
           <div>
             <label htmlFor="compatibility-home-kind" className="mb-1.5 block text-[11px] font-medium text-ink-soft">
               {t('st.compat.home')}
@@ -615,6 +652,25 @@ function GeneralSection() {
             <input className={`${INPUT} font-mono`} value={kimiHomePaths?.credentialPath ?? ''} readOnly />
           </div>
           <Hint>{t('st.compat.hint')}</Hint>
+          <div className="space-y-3 border-t border-hairline pt-4">
+            <div>
+              <p className="text-[12.5px] font-medium text-ink">{t('st.compat.configImportTitle')}</p>
+              <Hint>{t('st.compat.configImportHint')}</Hint>
+            </div>
+            <dl className="grid gap-1 text-[11px] text-ink-soft">
+              <div><dt className="inline font-medium text-ink">{t('st.compat.configImportSource')}: </dt><dd className="inline break-all font-mono">{kimiHomePaths?.sourceConfigPath ?? ''}</dd></div>
+              <div><dt className="inline font-medium text-ink">{t('st.compat.configImportTarget')}: </dt><dd className="inline break-all font-mono">{kimiHomePaths?.configPath ?? ''}</dd></div>
+              <div><dt className="inline font-medium text-ink">{t('st.compat.configImportCategories')}: </dt><dd className="inline font-mono">providers, models, services, default_model, default_provider, thinking, secondary_model</dd></div>
+            </dl>
+            <button
+              type="button"
+              className={SECONDARY_BUTTON}
+              disabled={homeKindDraft !== desktopPrefs.compatibility.homeKind}
+              onClick={() => void importKimiConfig()}
+            >
+              {configImporting ? t('st.compat.configImporting') : t('st.compat.configImport')}
+            </button>
+          </div>
           <div className="flex flex-wrap gap-2">
             <button
               type="button"

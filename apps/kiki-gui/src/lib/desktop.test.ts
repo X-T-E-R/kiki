@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   dryRunNativeSessionsMigration,
   executeNativeSessionsMigration,
+  importNativeKimiConfig,
   migrateNativeCompatibilityCategory,
   type SessionsMigrationPlan,
 } from './desktop';
@@ -65,6 +66,40 @@ describe('native Sessions migration bridge', () => {
 
     await expect(executeNativeSessionsMigration()).resolves.toMatchObject({ status: 'blocked' });
     expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('reloads only after an imported config restarts successfully', async () => {
+    const reload = vi.fn();
+    vi.stubGlobal('window', { location: { reload } });
+    invoke.mockResolvedValueOnce({
+      status: 'imported',
+      source: 'C:/source-home/config.toml',
+      target: 'C:/kiki-home/config.toml',
+      updatedCategories: ['providers', 'default_model'],
+      restartError: null,
+    });
+    await expect(importNativeKimiConfig()).resolves.toMatchObject({ status: 'imported' });
+    expect(invoke).toHaveBeenCalledWith('import_kimi_config');
+    expect(reload).toHaveBeenCalledTimes(1);
+
+    invoke.mockResolvedValueOnce({
+      status: 'noop',
+      source: 'C:/source-home/config.toml',
+      target: 'C:/kiki-home/config.toml',
+      updatedCategories: [],
+      restartError: null,
+    });
+    await expect(importNativeKimiConfig()).resolves.toMatchObject({ status: 'noop' });
+
+    invoke.mockResolvedValueOnce({
+      status: 'imported',
+      source: 'C:/source-home/config.toml',
+      target: 'C:/kiki-home/config.toml',
+      updatedCategories: ['models'],
+      restartError: 'restart failed',
+    });
+    await expect(importNativeKimiConfig()).resolves.toMatchObject({ restartError: 'restart failed' });
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 
   it('surfaces a completed category copy whose activation setting is still pending', async () => {
