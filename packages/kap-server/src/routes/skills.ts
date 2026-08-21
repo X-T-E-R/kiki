@@ -289,10 +289,15 @@ async function listWorkspaceSkillsForRoot(
     config.get<MergeAllAvailableSkillsConfig>(MERGE_ALL_AVAILABLE_SKILLS_SECTION) ?? true;
   const explicitDirs = bootstrap.args.skillDirs ?? [];
   const useExplicitDirs = explicitDirs.length > 0;
+  const userSkillDir = bootstrap.args.userSkillDir;
   const rootOptions = { mergeAllAvailableSkills };
 
   const [userRootList, projectRootList, explicitRootList, extraRootList, pluginRootList] = await Promise.all([
-    useExplicitDirs ? Promise.resolve([]) : userRoots(bootstrap.homeDir, bootstrap.osHomeDir, rootOptions),
+    useExplicitDirs
+      ? Promise.resolve([])
+      : userSkillDir !== undefined
+        ? configuredRoots([userSkillDir], workDir, bootstrap.osHomeDir, 'user')
+        : userRoots(bootstrap.homeDir, bootstrap.osHomeDir, rootOptions),
     useExplicitDirs ? Promise.resolve([]) : projectRoots(workDir, rootOptions),
     useExplicitDirs
       ? configuredRoots(explicitDirs, workDir, bootstrap.osHomeDir, 'user')

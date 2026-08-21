@@ -169,12 +169,13 @@ function makeHost(
   pluginRoots: readonly SkillRoot[] = [],
   explicitDirs?: readonly string[],
   pluginReloadEmitter?: Emitter<ReloadSummary>,
+  userSkillDir?: string,
 ) {
   const config = configStub();
   const host = createScopedTestHost([
     stubPair(ISkillDiscovery, store),
     stubPair(IFlagService, stubFlag(true)),
-    stubPair(IBootstrapService, stubBootstrap('/home', {}, { skillDirs: explicitDirs })),
+    stubPair(IBootstrapService, stubBootstrap('/home', {}, { skillDirs: explicitDirs, userSkillDir })),
     stubPair(IConfigService, config),
     stubPair(IPluginService, pluginStub(pluginRoots, pluginReloadEmitter)),
     stubPair(IHostFsWatchService, fsWatchStub()),
@@ -363,6 +364,52 @@ describe('WorkspaceSkillCatalogService', () => {
     expect(catalog.catalog.getSkill('extra-only')?.description).toBe('from extra');
     expect(catalog.catalog.getSkill('plugin-only')?.description).toBe('from plugin');
     host.dispose();
+  });
+
+  it('uses one selected user skill root without disabling project discovery', async () => {
+    await withSkillCatalogWorkspace(async ({ workDir }) => {
+      const selectedUserRoot = join(workDir, 'selected-user-skills');
+      await mkdir(selectedUserRoot, { recursive: true });
+      const calls: SkillRoot[][] = [];
+      class RecordingDiscovery implements ISkillDiscovery {
+        declare readonly _serviceBrand: undefined;
+        async discover(roots: readonly SkillRoot[]) {
+          calls.push([...roots]);
+          return {
+            skills: roots.some((root) => root.source === 'project')
+              ? [stubSkill('project-only')]
+              : roots.some((root) => root.source === 'user')
+                ? [stubSkill('selected-user')]
+                : [],
+            skipped: [],
+            scannedRoots: [],
+            scannedDirectories: [],
+          };
+        }
+      }
+      const store = new RecordingDiscovery();
+      const ws = workspaceContextStub(workDir);
+      const { host, workspace } = makeHost(
+        store,
+        ws,
+        [],
+        undefined,
+        undefined,
+        selectedUserRoot,
+      );
+      try {
+        const catalog = workspace.accessor.get(IWorkspaceSkillCatalog);
+        await catalog.load();
+        expect(catalog.catalog.getSkill('selected-user')).toBeDefined();
+        expect(catalog.catalog.getSkill('project-only')).toBeDefined();
+        const userCall = calls.find((roots) => roots.some((root) => root.source === 'user'));
+        expect(userCall?.map((root) => root.path)).toEqual([
+          (await realpath(selectedUserRoot)).replaceAll('\\', '/'),
+        ]);
+      } finally {
+        host.dispose();
+      }
+    });
   });
 
   it('waits for config ready before loading extra skill dirs', async () => {

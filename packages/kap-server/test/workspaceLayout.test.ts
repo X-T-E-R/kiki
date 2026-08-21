@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rename, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -126,5 +126,46 @@ describe('local/local on-disk layout (byte compatibility)', () => {
       .split('\n')
       .map((line) => JSON.parse(line) as { sessionId: string });
     expect(indexAfter.map((entry) => entry.sessionId)).toEqual([sessionId, second.data.id]);
+  });
+
+  it('keeps moved sessions discoverable when their workspace catalog moves with them', async () => {
+    const created = await postJson<{ id: string; workspace_id: string }>('/api/v1/sessions', {
+      metadata: { cwd: workDir },
+    });
+    expect(created.code).toBe(0);
+    const sourceHome = home as string;
+    const targetHome = await mkdtemp(join(tmpdir(), 'kiki-layout-moved-home-'));
+    homes.push(targetHome);
+
+    await server!.close();
+    server = undefined;
+    await rename(join(sourceHome, 'workspaces.json'), join(targetHome, 'workspaces.json'));
+    await rename(join(sourceHome, 'sessions'), join(targetHome, 'sessions'));
+
+    server = await startServer({
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: targetHome,
+      logLevel: 'silent',
+      hostIdentity: TEST_HOST_IDENTITY,
+    });
+    base = `http://127.0.0.1:${server.port}`;
+    const headers = authHeaders(server);
+    const workspacesResponse = await fetch(`${base}/api/v1/workspaces`, { headers });
+    const workspaces = (await workspacesResponse.json()) as Envelope<{
+      items: { id: string; root: string }[];
+    }>;
+    expect(workspaces.code).toBe(0);
+    expect(workspaces.data.items).toContainEqual(
+      expect.objectContaining({ id: created.data.workspace_id, root: workDir }),
+    );
+
+    const snapshotResponse = await fetch(
+      `${base}/api/v1/sessions/${created.data.id}/snapshot`,
+      { headers },
+    );
+    const snapshot = (await snapshotResponse.json()) as Envelope<{ session: { id: string } }>;
+    expect(snapshot.code).toBe(0);
+    expect(snapshot.data.session.id).toBe(created.data.id);
   });
 });

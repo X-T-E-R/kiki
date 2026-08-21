@@ -25,6 +25,7 @@ import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
 export interface HostArgs {
   readonly agentFiles?: readonly string[];
   readonly skillDirs?: readonly string[];
+  readonly userSkillDir?: string;
   readonly requestHeaders: Readonly<Record<string, string>>;
   readonly displayName?: string;
   readonly replyStyleGuide?: string;
@@ -33,6 +34,7 @@ export interface HostArgs {
 export interface HostArgsInput {
   readonly agentFiles?: readonly string[];
   readonly skillDirs?: readonly string[];
+  readonly userSkillDir?: string;
   readonly requestHeaders?: Readonly<Record<string, string>>;
   readonly displayName?: string;
   readonly replyStyleGuide?: string;
@@ -42,6 +44,7 @@ export function resolveHostArgs(input: HostArgsInput | undefined): HostArgs {
   return {
     agentFiles: input?.agentFiles,
     skillDirs: input?.skillDirs,
+    userSkillDir: input?.userSkillDir,
     requestHeaders: input?.requestHeaders ?? {},
     displayName: input?.displayName,
     replyStyleGuide: input?.replyStyleGuide,
@@ -53,6 +56,7 @@ export interface IBootstrapOptions {
   readonly configPath: string;
   readonly configReadOnly: boolean;
   readonly userAgentProfileHomeDir: string;
+  readonly modelAccountHomeDir: string;
   readonly osHomeDir: string;
   readonly platform: NodeJS.Platform;
   readonly arch: string;
@@ -86,6 +90,7 @@ export interface IBootstrapService {
   readonly configPath: string;
   readonly configReadOnly: boolean;
   readonly userAgentProfileHomeDir: string;
+  readonly modelAccountHomeDir: string;
   readonly clientIdentity: KimiHostIdentity;
   readonly args: HostArgs;
   readonly sessionsDir: string;
@@ -106,6 +111,7 @@ export interface BootstrapInput {
   readonly configPath?: string;
   readonly configReadOnly?: boolean;
   readonly userAgentProfileHomeDir?: string;
+  readonly modelAccountHomeDir?: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly osHomeDir?: string;
   readonly platform?: NodeJS.Platform;
@@ -125,6 +131,7 @@ export function resolveBootstrapOptions(input: BootstrapInput): IBootstrapOption
     configPath,
     configReadOnly: input.configReadOnly ?? false,
     userAgentProfileHomeDir: input.userAgentProfileHomeDir ?? homeDir,
+    modelAccountHomeDir: input.modelAccountHomeDir ?? homeDir,
     osHomeDir,
     platform: input.platform ?? process.platform,
     arch: input.arch ?? process.arch,

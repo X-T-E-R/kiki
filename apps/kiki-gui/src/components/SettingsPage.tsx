@@ -14,10 +14,16 @@ import type {
 } from '@moonshot-ai/protocol';
 
 import {
+  dryRunNativeSessionsMigration,
+  executeNativeSessionsMigration,
   isDesktopRuntime,
+  migrateNativeCompatibilityCategory,
+  readNativeDesktopPrefs,
   restartNativeServer,
   selectDirectoriesNative,
   writeNativeDesktopPrefs,
+  writeNativeCompatibilitySettings,
+  type SessionsMigrationPlan,
 } from '../lib/desktop';
 import { useI18n } from '../i18n';
 import { errorText, issueText, type I18nKey, type Locale } from '../i18n/locale';
@@ -67,6 +73,7 @@ import {
   isRestartRequirementAcknowledged,
   type SendShortcut,
   type SettingsSearchEntry,
+  type CompatibilitySettings,
 } from '../lib/settings';
 import { formatTokens } from '../lib/time';
 import { filterWorkspaces, sortWorkspacesByRecency } from '../lib/sorting';
@@ -220,6 +227,10 @@ function useBusySessionCount(): number | undefined {
   return query.data;
 }
 
+function isAbsoluteHomePath(path: string): boolean {
+  return /^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+|\/)/.test(path);
+}
+
 function GeneralSection() {
   const { client } = useConnection();
   const { t, locale, setLocale } = useI18n();
@@ -230,6 +241,18 @@ function GeneralSection() {
   const [planMode, setPlanMode] = useState(false);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [compatibilityFeedback, setCompatibilityFeedback] = useState<Feedback>(null);
+  const [compatibilityBusy, setCompatibilityBusy] = useState(false);
+  const [migrating, setMigrating] = useState<'modelsAccounts' | 'userSkills' | null>(null);
+  const [sessionsBusy, setSessionsBusy] = useState<'dryRun' | 'move' | null>(null);
+  const [sessionsPlan, setSessionsPlan] = useState<SessionsMigrationPlan | null>(null);
+  const [confirmSessionsMove, setConfirmSessionsMove] = useState(false);
+  const [homeKindDraft, setHomeKindDraft] = useState(
+    desktopPrefs.compatibility.homeKind,
+  );
+  const [customHome, setCustomHome] = useState(
+    desktopPrefs.compatibility.customHome ?? '',
+  );
   const [tick, ping] = useSavedTick();
   const isDesktop = isDesktopRuntime();
 
@@ -247,6 +270,17 @@ function GeneralSection() {
   }, []);
 
   useEffect(() => { syncFromConfig(configQuery.data); }, [configQuery.data, syncFromConfig]);
+
+  useEffect(() => {
+    if (!isDesktop) return;
+    void readNativeDesktopPrefs().then((prefs) => {
+      if (prefs === null) return;
+      setDesktopPrefs(prefs);
+      setHomeKindDraft(prefs.compatibility.homeKind);
+      setCustomHome(prefs.compatibility.customHome ?? '');
+      writeDesktopPrefs(prefs);
+    });
+  }, [isDesktop]);
 
   // Server defaults apply on change: optimistic local state, echo confirms,
   // failure reverts to the last server-known config.
@@ -280,6 +314,119 @@ function GeneralSection() {
     const next = { ...settings, ...patch };
     setSettings(next);
     writeSettings(patch);
+  };
+
+  const persistCompatibility = async (next: CompatibilitySettings) => {
+    if (next.homeKind === 'custom') {
+      const path = next.customHome?.trim() ?? '';
+      if (!isAbsoluteHomePath(path)) {
+        setCompatibilityFeedback({ tone: 'error', text: t('st.compat.customInvalid') });
+        return;
+      }
+      next = { ...next, customHome: path };
+    }
+    setCompatibilityBusy(true);
+    setCompatibilityFeedback(null);
+    try {
+      await writeNativeCompatibilitySettings(next);
+      setSessionsPlan(null);
+      setConfirmSessionsMove(false);
+      const prefs = { ...desktopPrefs, compatibility: next };
+      setDesktopPrefs(prefs);
+      setHomeKindDraft(next.homeKind);
+      writeDesktopPrefs(prefs);
+      markRestartRequired(['compatibility Home']);
+      setCompatibilityFeedback({ tone: 'success', text: t('st.compat.savedRestart') });
+    } catch (error) {
+      setCompatibilityFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setCompatibilityBusy(false);
+    }
+  };
+
+  const migrateCategory = async (category: 'modelsAccounts' | 'userSkills') => {
+    setMigrating(category);
+    setCompatibilityFeedback(null);
+    try {
+      const result = await migrateNativeCompatibilityCategory(category);
+      if (result.status === 'copied') {
+        const compatibility = {
+          ...desktopPrefs.compatibility,
+          inheritModelsAccounts:
+            category === 'modelsAccounts'
+              ? false
+              : desktopPrefs.compatibility.inheritModelsAccounts,
+          inheritUserSkills:
+            category === 'userSkills'
+              ? false
+              : desktopPrefs.compatibility.inheritUserSkills,
+        };
+        const prefs = { ...desktopPrefs, compatibility };
+        setDesktopPrefs(prefs);
+        writeDesktopPrefs(prefs);
+        markRestartRequired(['compatibility Home']);
+        setCompatibilityFeedback({
+          tone: 'success',
+          text: t('st.compat.migrated', { count: result.files }),
+        });
+      } else if (result.status === 'copiedActivationPending') {
+        setCompatibilityFeedback({
+          tone: 'info',
+          text: t('st.compat.migrationActivationPending', {
+            count: result.files,
+            error: result.activationError ?? t('st.compat.migrationActivationUnknown'),
+          }),
+        });
+      } else {
+        setCompatibilityFeedback({ tone: 'info', text: t('st.compat.migrationNoop') });
+      }
+    } catch (error) {
+      setCompatibilityFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setMigrating(null);
+    }
+  };
+
+  const reviewSessionsMove = async () => {
+    setSessionsBusy('dryRun');
+    setCompatibilityFeedback(null);
+    try {
+      const plan = await dryRunNativeSessionsMigration();
+      setSessionsPlan(plan);
+      if (plan.status === 'blocked') {
+        setCompatibilityFeedback({ tone: 'error', text: t('st.compat.sessionsConflict') });
+      } else if (plan.status === 'noop') {
+        setCompatibilityFeedback({ tone: 'info', text: t('st.compat.sessionsNoop') });
+      }
+    } catch (error) {
+      setCompatibilityFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSessionsBusy(null);
+    }
+  };
+
+  const moveSessions = async () => {
+    setConfirmSessionsMove(false);
+    setSessionsBusy('move');
+    setCompatibilityFeedback(null);
+    try {
+      const result = await executeNativeSessionsMigration();
+      setSessionsPlan(result);
+      if (result.status === 'moved') {
+        setCompatibilityFeedback({
+          tone: 'success',
+          text: t('st.compat.sessionsMoved', { count: result.sessionCount }),
+        });
+      } else if (result.status === 'blocked') {
+        setCompatibilityFeedback({ tone: 'error', text: t('st.compat.sessionsConflict') });
+      } else {
+        setCompatibilityFeedback({ tone: 'info', text: t('st.compat.sessionsNoop') });
+      }
+    } catch (error) {
+      setCompatibilityFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSessionsBusy(null);
+    }
   };
 
   return (
@@ -408,6 +555,170 @@ function GeneralSection() {
             ))}
           </div>
         </fieldset>
+        {!isDesktop ? <Hint>{t('st.desktop.browserHint')}</Hint> : null}
+      </SectionCard>
+
+      <SectionCard id="st-card-compatibility-home" title={t('st.compat.title')} badge="desktop">
+        <fieldset disabled={!isDesktop || compatibilityBusy || migrating !== null || sessionsBusy !== null} className="space-y-4">
+          <div>
+            <label htmlFor="compatibility-home-kind" className="mb-1.5 block text-[11px] font-medium text-ink-soft">
+              {t('st.compat.home')}
+            </label>
+            <select
+              id="compatibility-home-kind"
+              className={SMALL_INPUT}
+              value={homeKindDraft}
+              onChange={(event) => {
+                const homeKind = event.target.value as CompatibilitySettings['homeKind'];
+                setSessionsPlan(null);
+                setConfirmSessionsMove(false);
+                setHomeKindDraft(homeKind);
+                if (homeKind === 'custom') {
+                  return;
+                }
+                void persistCompatibility({
+                  ...desktopPrefs.compatibility,
+                  homeKind,
+                  customHome: undefined,
+                });
+              }}
+            >
+              <option value="kimi">{t('st.compat.homeKimi')}</option>
+              <option value="kiki">{t('st.compat.homeKiki')}</option>
+              <option value="custom">{t('st.compat.homeCustom')}</option>
+            </select>
+          </div>
+          {homeKindDraft === 'custom' ? (
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input
+                className={INPUT}
+                value={customHome}
+                placeholder={t('st.compat.customPlaceholder')}
+                onChange={(event) => {
+                  setCustomHome(event.target.value);
+                  setSessionsPlan(null);
+                  setConfirmSessionsMove(false);
+                }}
+              />
+              <button
+                type="button"
+                className={PRIMARY_BUTTON}
+                onClick={() => void persistCompatibility({
+                  ...desktopPrefs.compatibility,
+                  homeKind: 'custom',
+                  customHome,
+                })}
+              >
+                {t('st.compat.useHome')}
+              </button>
+            </div>
+          ) : null}
+          <Toggle
+            label={t('st.compat.inheritModelsAccounts')}
+            checked={desktopPrefs.compatibility.inheritModelsAccounts}
+            disabled={!isDesktop || compatibilityBusy || migrating !== null || homeKindDraft !== desktopPrefs.compatibility.homeKind}
+            onChange={(checked) => void persistCompatibility({
+              ...desktopPrefs.compatibility,
+              inheritModelsAccounts: checked,
+            })}
+          />
+          <Toggle
+            label={t('st.compat.inheritUserSkills')}
+            checked={desktopPrefs.compatibility.inheritUserSkills}
+            disabled={!isDesktop || compatibilityBusy || migrating !== null || homeKindDraft !== desktopPrefs.compatibility.homeKind}
+            onChange={(checked) => void persistCompatibility({
+              ...desktopPrefs.compatibility,
+              inheritUserSkills: checked,
+            })}
+          />
+          <Hint>{t('st.compat.hint')}</Hint>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className={SECONDARY_BUTTON}
+              disabled={homeKindDraft !== desktopPrefs.compatibility.homeKind || desktopPrefs.compatibility.homeKind === 'kiki'}
+              onClick={() => void migrateCategory('modelsAccounts')}
+            >
+              {migrating === 'modelsAccounts' ? t('st.compat.migrating') : t('st.compat.migrateModelsAccounts')}
+            </button>
+            <button
+              type="button"
+              className={SECONDARY_BUTTON}
+              disabled={homeKindDraft !== desktopPrefs.compatibility.homeKind || desktopPrefs.compatibility.homeKind === 'kiki'}
+              onClick={() => void migrateCategory('userSkills')}
+            >
+              {migrating === 'userSkills' ? t('st.compat.migrating') : t('st.compat.migrateUserSkills')}
+            </button>
+          </div>
+          <Hint>{t('st.compat.migrationHint')}</Hint>
+          <div className="border-t border-hairline pt-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-[12.5px] font-medium text-ink">{t('st.compat.sessionsTitle')}</p>
+                <Hint>{t('st.compat.sessionsHint')}</Hint>
+              </div>
+              <button
+                type="button"
+                className={SECONDARY_BUTTON}
+                disabled={homeKindDraft !== desktopPrefs.compatibility.homeKind || desktopPrefs.compatibility.homeKind === 'kiki'}
+                onClick={() => void reviewSessionsMove()}
+              >
+                {sessionsBusy === 'dryRun' ? t('st.compat.sessionsReviewing') : t('st.compat.sessionsReview')}
+              </button>
+            </div>
+            {sessionsPlan !== null ? (
+              <div className="mt-3 space-y-2 rounded-lg border border-hairline bg-paper p-3 text-[11.5px] text-ink-soft">
+                <p>{t('st.compat.sessionsSummary', {
+                  count: sessionsPlan.sessionCount,
+                  bytes: sessionsPlan.totalBytes.toLocaleString(),
+                })}</p>
+                <p>{t('st.compat.sessionsMethod')}</p>
+                <dl className="grid gap-1">
+                  <div><dt className="inline font-medium text-ink">{t('st.compat.sessionsSource')}: </dt><dd className="inline break-all font-mono">{sessionsPlan.sourceRoot}</dd></div>
+                  <div><dt className="inline font-medium text-ink">{t('st.compat.sessionsTarget')}: </dt><dd className="inline break-all font-mono">{sessionsPlan.targetRoot}</dd></div>
+                </dl>
+                <ul className="space-y-1">
+                  {sessionsPlan.plannedMoves.map((move) => (
+                    <li key={`${move.source}:${move.target}`} className="break-all font-mono">
+                      {move.entry}: {move.source} → {move.target}
+                    </li>
+                  ))}
+                </ul>
+                {sessionsPlan.status === 'ready' ? (
+                  <button
+                    type="button"
+                    className={PRIMARY_BUTTON}
+                    onClick={() => { setConfirmSessionsMove(true); }}
+                  >
+                    {sessionsBusy === 'move' ? t('st.compat.sessionsMoving') : t('st.compat.sessionsMove')}
+                  </button>
+                ) : null}
+                {sessionsPlan.status === 'blocked' ? <p className="text-danger">{t('st.compat.sessionsConflict')}</p> : null}
+                {sessionsPlan.status === 'noop' ? <p>{t('st.compat.sessionsNoop')}</p> : null}
+              </div>
+            ) : null}
+          </div>
+          <FeedbackLine feedback={compatibilityFeedback} />
+        </fieldset>
+        <ConfirmDialog
+          open={confirmSessionsMove && sessionsPlan?.status === 'ready'}
+          title={t('st.compat.sessionsConfirmTitle')}
+          body={t('st.compat.sessionsConfirmBody')}
+          consequences={sessionsPlan === null ? undefined : [
+            t('st.compat.sessionsSummary', {
+              count: sessionsPlan.sessionCount,
+              bytes: sessionsPlan.totalBytes.toLocaleString(),
+            }),
+            ...sessionsPlan.plannedMoves.map(
+              (move) => `${move.entry}: ${move.source} → ${move.target}`,
+            ),
+            t('st.compat.sessionsMethod'),
+          ]}
+          confirmLabel={t('st.compat.sessionsMove')}
+          busy={sessionsBusy === 'move'}
+          onConfirm={() => void moveSessions()}
+          onCancel={() => { setConfirmSessionsMove(false); }}
+        />
         {!isDesktop ? <Hint>{t('st.desktop.browserHint')}</Hint> : null}
       </SectionCard>
     </div>

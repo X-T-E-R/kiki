@@ -14,7 +14,7 @@ import {
 } from '@tauri-apps/plugin-notification';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
-import type { DesktopNativePrefs } from './settings';
+import type { CompatibilitySettings, DesktopNativePrefs } from './settings';
 
 export function isDesktopRuntime(): boolean {
   return isTauri();
@@ -105,6 +105,63 @@ export async function readNativeDesktopPrefs(): Promise<DesktopNativePrefs | nul
 export async function restartNativeServer(): Promise<void> {
   if (!isTauri()) throw new Error('Server restart requires the Kiki desktop app.');
   await invoke('restart_server');
+}
+
+export async function writeNativeCompatibilitySettings(
+  compatibility: CompatibilitySettings,
+): Promise<void> {
+  if (!isTauri()) throw new Error('Compatibility settings require the Kiki desktop app.');
+  await invoke('write_desktop_prefs', { prefs: { compatibility } });
+}
+
+export type CompatibilityMigrationCategory = 'modelsAccounts' | 'userSkills';
+
+export interface CompatibilityMigrationResult {
+  readonly status: 'copied' | 'copiedActivationPending' | 'noop';
+  readonly category: CompatibilityMigrationCategory;
+  readonly source: string;
+  readonly target: string;
+  readonly files: number;
+  readonly activationError: string | null;
+}
+
+export async function migrateNativeCompatibilityCategory(
+  category: CompatibilityMigrationCategory,
+): Promise<CompatibilityMigrationResult> {
+  if (!isTauri()) throw new Error('Compatibility migration requires the Kiki desktop app.');
+  return invoke<CompatibilityMigrationResult>('migrate_compatibility_category', { category });
+}
+
+export type SessionsMigrationStatus = 'ready' | 'noop' | 'blocked' | 'moved';
+
+export interface SessionsMigrationMove {
+  readonly entry: 'sessions' | 'workspaces.json';
+  readonly source: string;
+  readonly target: string;
+}
+
+export interface SessionsMigrationPlan {
+  readonly status: SessionsMigrationStatus;
+  readonly sourceRoot: string;
+  readonly targetRoot: string;
+  readonly sessionCount: number;
+  readonly totalBytes: number;
+  readonly plannedMoves: readonly SessionsMigrationMove[];
+  readonly targetConflict: boolean;
+  readonly blocker: string | null;
+  readonly execution: 'filesystemRename';
+}
+
+export async function dryRunNativeSessionsMigration(): Promise<SessionsMigrationPlan> {
+  if (!isTauri()) throw new Error('Sessions migration requires the Kiki desktop app.');
+  return invoke<SessionsMigrationPlan>('dry_run_sessions_migration');
+}
+
+export async function executeNativeSessionsMigration(): Promise<SessionsMigrationPlan> {
+  if (!isTauri()) throw new Error('Sessions migration requires the Kiki desktop app.');
+  const result = await invoke<SessionsMigrationPlan>('execute_sessions_migration');
+  if (result.status === 'moved') window.location.reload();
+  return result;
 }
 
 export function onTrayNewSession(callback: () => void): () => void {

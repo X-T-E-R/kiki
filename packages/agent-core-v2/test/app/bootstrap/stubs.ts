@@ -37,6 +37,7 @@ export function stubBootstrap(
     configPath: `${homeDir}/config.toml`,
     configReadOnly: false,
     userAgentProfileHomeDir: homeDir,
+    modelAccountHomeDir: homeDir,
     configKey: 'config.toml',
     clientIdentity: stubClientIdentity,
     args: resolveHostArgs(args),

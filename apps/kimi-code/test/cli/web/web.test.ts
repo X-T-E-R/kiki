@@ -597,6 +597,32 @@ describe('Kiki MCP catalog source', () => {
   });
 });
 
+describe('Kiki desktop inheritance source', () => {
+  it('accepts independent absolute model/account and user-skill inputs', async () => {
+    const { desktopInheritanceSourceFromEnv } = await import('#/cli/sub/web/run');
+    expect(desktopInheritanceSourceFromEnv({})).toBeUndefined();
+    expect(desktopInheritanceSourceFromEnv({
+      KIKI_DESKTOP_CONFIG_PATH: '/compat/config.toml',
+      KIKI_DESKTOP_MODEL_ACCOUNT_HOME: '/compat',
+      KIKI_DESKTOP_USER_SKILL_DIR: '/skills',
+    })).toEqual({
+      configPath: '/compat/config.toml',
+      modelAccountHomeDir: '/compat',
+      userSkillDir: '/skills',
+    });
+    expect(desktopInheritanceSourceFromEnv({
+      KIKI_DESKTOP_USER_SKILL_DIR: '/skills',
+    })).toEqual({
+      configPath: undefined,
+      modelAccountHomeDir: undefined,
+      userSkillDir: '/skills',
+    });
+    expect(() => desktopInheritanceSourceFromEnv({
+      KIKI_DESKTOP_CONFIG_PATH: 'config.toml',
+    })).toThrow(/must be an absolute path/);
+  });
+});
+
 describe('server web asset directory resolution', () => {
   it('uses extracted SEA web assets when available', async () => {
     const { resolveServerWebAssetsDir } = await import('#/cli/sub/web/run');

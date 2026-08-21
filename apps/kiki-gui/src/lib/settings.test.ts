@@ -105,7 +105,16 @@ describe('settings persistence and validation', () => {
     localStorage.setItem('kiki.desktopPrefs', JSON.stringify({ notifications: false }));
     expect(readSettings().sendShortcut).toBe('enter');
     expect(readSettings().defaultPermissionMode).toBe('manual');
-    expect(readDesktopPrefs()).toEqual({ notifications: false, closeToTray: true });
+    expect(readDesktopPrefs()).toEqual({
+      notifications: false,
+      closeToTray: true,
+      compatibility: {
+        homeKind: 'kimi',
+        customHome: undefined,
+        inheritModelsAccounts: true,
+        inheritUserSkills: true,
+      },
+    });
 
     localStorage.setItem('kiki.desktopPrefs', '{not-json');
     expect(readDesktopPrefs().closeToTray).toBe(true);
@@ -114,6 +123,33 @@ describe('settings persistence and validation', () => {
   it('preserves an explicitly persisted quit choice', () => {
     writeDesktopPrefs({ closeToTray: false });
     expect(readDesktopPrefs().closeToTray).toBe(false);
+  });
+
+  it('defaults and validates the persisted compatibility Home selection', () => {
+    expect(readDesktopPrefs().compatibility).toEqual({
+      homeKind: 'kimi',
+      customHome: undefined,
+      inheritModelsAccounts: true,
+      inheritUserSkills: true,
+    });
+    localStorage.setItem('kiki.desktopPrefs', JSON.stringify({
+      compatibility: {
+        homeKind: 'custom',
+        customHome: 'C:\\compat-home',
+        inheritModelsAccounts: false,
+        inheritUserSkills: false,
+      },
+    }));
+    expect(readDesktopPrefs().compatibility).toEqual({
+      homeKind: 'custom',
+      customHome: 'C:\\compat-home',
+      inheritModelsAccounts: false,
+      inheritUserSkills: false,
+    });
+    localStorage.setItem('kiki.desktopPrefs', JSON.stringify({
+      compatibility: { homeKind: 'sessions' },
+    }));
+    expect(readDesktopPrefs().compatibility.homeKind).toBe('kimi');
   });
 
   it('persists restart-required fields until cleared after a verified restart', () => {
