@@ -300,6 +300,50 @@ describe('subagent lease read-only summary', () => {
     expect(summary.headline).toBe('explore');
     expect(summary.details).toEqual([]);
   });
+
+  it('marks a scoped source lease and surfaces its source path, status, and diagnostic', () => {
+    const ready = summarizeNamedAgentLease({
+      name: 'writer',
+      source: './_private/research/writer.md',
+      scope: 'private',
+      status: 'ready',
+      model_alias: 'fixture/kiki-lite',
+    });
+    expect(ready.headline).toBe('writer · fixture/kiki-lite');
+    expect(ready.scoped).toBe(true);
+    expect(ready.status).toBe('ready');
+    expect(ready.diagnostic).toBeUndefined();
+    expect(ready.details).toEqual([
+      { label: 'leaseSource', value: './_private/research/writer.md' },
+    ]);
+
+    const unavailable = summarizeNamedAgentLease({
+      name: 'archivist',
+      source: './_private/research/archivist.md',
+      scope: 'private',
+      status: 'unavailable',
+      diagnostic: 'source file missing: ./_private/research/archivist.md',
+    });
+    expect(unavailable.scoped).toBe(true);
+    expect(unavailable.status).toBe('unavailable');
+    expect(unavailable.diagnostic).toBe('source file missing: ./_private/research/archivist.md');
+    expect(unavailable.details).toEqual([
+      { label: 'leaseSource', value: './_private/research/archivist.md' },
+    ]);
+  });
+
+  it('ignores stray projection fields on a lease without private scope', () => {
+    const summary = summarizeNamedAgentLease({
+      name: 'explore',
+      source: './_private/research/writer.md',
+      status: 'unavailable',
+      diagnostic: 'should not surface',
+    });
+    expect(summary.scoped).toBe(false);
+    expect(summary.status).toBeUndefined();
+    expect(summary.diagnostic).toBeUndefined();
+    expect(summary.details).toEqual([]);
+  });
 });
 
 describe('model profile read-only summary', () => {

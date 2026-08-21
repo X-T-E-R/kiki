@@ -64,4 +64,29 @@ describe('buildAgentProfileOptions', () => {
     expect(options[0]?.hint).toBe('General-purpose.');
     expect(options[1]?.label).toBe('reviewer');
   });
+
+  it('never promotes a private scoped subagent lease to a selectable profile', () => {
+    // Dedicated subagents live only inside a parent profile's `subagents`
+    // lease list — they are not public catalog entries, so even a parent
+    // carrying a `scope: 'private'` lease yields no option for the child.
+    const options = buildAgentProfileOptions(
+      [
+        profile({
+          name: 'agent',
+          main: true,
+          subagents: [
+            'reviewer',
+            {
+              name: 'writer',
+              source: './_private/research/writer.md',
+              scope: 'private',
+              status: 'ready',
+            },
+          ],
+        }),
+      ],
+      ' · main',
+    );
+    expect(options.map((option) => option.value)).toEqual(['agent']);
+  });
 });

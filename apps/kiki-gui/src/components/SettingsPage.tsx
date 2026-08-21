@@ -1283,6 +1283,7 @@ const LEASE_DETAIL_LABEL_KEYS: Record<NamedAgentLeaseDetailLabel, I18nKey> = {
   prompt: 'st.namedAgents.prompt',
   requestParams: 'st.namedAgents.requestParams',
   modelProfile: 'st.namedAgents.modelProfile',
+  leaseSource: 'st.namedAgents.leaseSource',
 };
 
 const SUBAGENT_ISSUE_KEYS: Record<SubagentGovernanceIssue, I18nKey> = {
@@ -1755,7 +1756,23 @@ function NamedAgentProfileRow({
               const leaseSummary = summarizeNamedAgentLease(lease);
               return (
                 <div key={`${lease.name}:${index}`} className="space-y-1">
-                  <p>{t('st.namedAgents.subagentLease')}: {leaseSummary.headline}</p>
+                  <p>
+                    {t('st.namedAgents.subagentLease')}:
+                    {leaseSummary.scoped ? (
+                      <span className="mx-1 rounded-full border border-accent/40 bg-accent-soft px-1.5 py-px align-middle text-[9px] font-medium uppercase tracking-wide text-accent">
+                        {t('st.namedAgents.scopedBadge')}
+                      </span>
+                    ) : null}
+                    {' '}{leaseSummary.headline}
+                  </p>
+                  {leaseSummary.status !== undefined ? (
+                    <p className={`pl-3${leaseSummary.status === 'unavailable' ? ' text-danger' : ''}`}>
+                      {t('st.namedAgents.leaseStatus')}: {t(leaseSummary.status === 'unavailable' ? 'st.namedAgents.leaseUnavailable' : 'st.namedAgents.leaseReady')}
+                    </p>
+                  ) : null}
+                  {leaseSummary.diagnostic !== undefined ? (
+                    <p className="pl-3 text-danger">{leaseSummary.diagnostic}</p>
+                  ) : null}
                   {leaseSummary.details.map((detail, detailIndex) => (
                     <p key={`${detail.label}:${detailIndex}`} className="pl-3">
                       {t(LEASE_DETAIL_LABEL_KEYS[detail.label])}: {detail.value}

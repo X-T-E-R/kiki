@@ -1045,6 +1045,11 @@ export const en = {
   'st.namedAgents.deniedModels': 'denied models',
   'st.namedAgents.allowedEfforts': 'allowed efforts',
   'st.namedAgents.subagentLease': 'subagent',
+  'st.namedAgents.scopedBadge': 'Scoped',
+  'st.namedAgents.leaseSource': 'source',
+  'st.namedAgents.leaseStatus': 'status',
+  'st.namedAgents.leaseReady': 'ready',
+  'st.namedAgents.leaseUnavailable': 'unavailable',
   'st.namedAgents.projectionHint':
     'Read-only fields projected from the profile definition; edit them in the raw file.',
   'st.namedAgents.sourceFile': 'source file',

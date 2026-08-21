@@ -87,6 +87,7 @@ const STRINGS = {
     modelProfileLabel: 'model profile',
     promptModeLabel: 'prompt mode',
     delegationNoticeLabel: 'delegation notice',
+    scopedBadgeLabel: 'Scoped',
     addPoolModel: 'Add model',
     poolModelIdAria1: 'Subagent model 1 ID',
     poolModelIdAria2: 'Subagent model 2 ID',
@@ -207,6 +208,7 @@ const STRINGS = {
     modelProfileLabel: '模型档',
     promptModeLabel: '提示词模式',
     delegationNoticeLabel: '委派通知',
+    scopedBadgeLabel: '专用',
     addPoolModel: '添加模型',
     poolModelIdAria1: '子代理模型 1 ID',
     poolModelIdAria2: '子代理模型 2 ID',
@@ -1099,6 +1101,20 @@ async function scenarioSettingsAgents() {
   await page.waitForSelector(`[data-agent-profile="frontend"] >> text=${S.modelProfileLabel}`, { timeout: 5000 });
   await page.waitForSelector(`[data-agent-profile="frontend"] >> text=${S.promptModeLabel}`, { timeout: 5000 });
   await page.waitForSelector(`[data-agent-profile="frontend"] >> text=${S.delegationNoticeLabel}`, { timeout: 5000 });
+  // Dedicated (scoped) source leases carry the Scoped badge, the relative
+  // source path, and — when unavailable — the diagnostic in danger ink.
+  await page.waitForSelector(`[data-agent-profile="frontend"] >> text=${S.scopedBadgeLabel}`, { timeout: 5000 });
+  await page.waitForSelector('[data-agent-profile="frontend"] >> text=./_private/research/writer.md', { timeout: 5000 });
+  await page.waitForSelector('[data-agent-profile="frontend"] >> text=source file missing', { timeout: 5000 });
+  const diagnosticIsDanger = await page.evaluate(() => {
+    const row = document.querySelector('[data-agent-profile="frontend"]');
+    const node = Array.from(row?.querySelectorAll('p') ?? [])
+      .find((p) => p.textContent?.includes('source file missing'));
+    return node?.className.includes('text-danger') === true;
+  });
+  if (!diagnosticIsDanger) {
+    throw new Error('unavailable scoped lease diagnostic must render in danger ink');
+  }
   await page.locator('[data-agent-profile="frontend"]').scrollIntoViewIfNeeded();
   await page.waitForTimeout(200);
   await shot('settings-agents-lease-detail');

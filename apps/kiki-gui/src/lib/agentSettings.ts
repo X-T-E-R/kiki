@@ -194,13 +194,20 @@ export type NamedAgentLeaseDetailLabel =
   | 'subagents'
   | 'prompt'
   | 'requestParams'
-  | 'modelProfile';
+  | 'modelProfile'
+  | 'leaseSource';
 
 export interface NamedAgentLeaseSummary {
   /** `name · model_alias · thinking_effort`, skipping empty parts. */
   readonly headline: string;
   /** One entry per non-empty constraint/detail field, in contract order. */
   readonly details: readonly { readonly label: NamedAgentLeaseDetailLabel; readonly value: string }[];
+  /** Scoped source lease (dedicated subagent): badge + status rows apply. */
+  readonly scoped: boolean;
+  /** Resolution status projected by the server for a scoped source lease. */
+  readonly status?: 'ready' | 'unavailable';
+  /** Short reason a scoped source lease failed to resolve. */
+  readonly diagnostic?: string;
 }
 
 export interface NamedAgentModelProfileSummary {
@@ -236,7 +243,9 @@ export function summarizeNamedAgentLease(lease: NamedAgentSubagentLease): NamedA
   const nonEmpty = (value: string | undefined | null): value is string =>
     value !== undefined && value !== null && value !== '';
   const headline = [lease.name, lease.model_alias, lease.thinking_effort].filter(nonEmpty).join(' · ');
+  const scoped = lease.scope === 'private';
   const details: { readonly label: NamedAgentLeaseDetailLabel; readonly value: string }[] = [];
+  if (scoped && nonEmpty(lease.source)) details.push({ label: 'leaseSource', value: lease.source });
   if (nonEmpty(lease.description)) details.push({ label: 'description', value: lease.description });
   if (nonEmpty(lease.when_to_use)) details.push({ label: 'whenToUse', value: lease.when_to_use });
   if (lease.model_preference !== undefined) details.push({ label: 'modelPreference', value: lease.model_preference });
@@ -267,7 +276,13 @@ export function summarizeNamedAgentLease(lease: NamedAgentSubagentLease): NamedA
     details.push({ label: 'modelProfile', value: modelProfile.headline });
     details.push(...modelProfile.details);
   }
-  return { headline, details };
+  return {
+    headline,
+    details,
+    scoped,
+    status: scoped ? lease.status : undefined,
+    diagnostic: scoped && nonEmpty(lease.diagnostic) ? lease.diagnostic : undefined,
+  };
 }
 
 /** Compact workspace chip model: the first `max` ids plus an overflow count. */

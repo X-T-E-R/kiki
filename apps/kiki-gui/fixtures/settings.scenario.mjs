@@ -258,6 +258,22 @@ export default {
           disallowed_tools: ['Bash'],
           delegation_notice: 'off',
         },
+        // Dedicated (scoped) subagents: private children referenced by source
+        // path — one resolved, one unavailable with a diagnostic.
+        {
+          name: 'writer',
+          source: './_private/research/writer.md',
+          scope: 'private',
+          status: 'ready',
+          model_alias: 'fixture/kiki-lite',
+        },
+        {
+          name: 'archivist',
+          source: './_private/research/archivist.md',
+          scope: 'private',
+          status: 'unavailable',
+          diagnostic: 'source file missing: ./_private/research/archivist.md',
+        },
       ],
       routes: [],
     },
