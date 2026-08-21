@@ -22,6 +22,7 @@ export class BootstrapService implements IBootstrapService {
   readonly configPath: string;
   readonly configReadOnly: boolean;
   readonly userAgentProfileHomeDir: string;
+  readonly modelAccountHomeDir: string;
   readonly clientIdentity: KimiHostIdentity;
   readonly args: HostArgs;
   readonly sessionsDir: string;
@@ -44,6 +45,7 @@ export class BootstrapService implements IBootstrapService {
     this.configPath = options.configPath;
     this.configReadOnly = options.configReadOnly;
     this.userAgentProfileHomeDir = options.userAgentProfileHomeDir;
+    this.modelAccountHomeDir = options.modelAccountHomeDir;
     this.clientIdentity = options.clientIdentity;
     this.args = options.args;
     this.sessionsDir = join(options.homeDir, 'sessions');

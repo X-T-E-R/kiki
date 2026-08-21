@@ -11,7 +11,7 @@ import {
   type MergeAllAvailableSkillsConfig,
 } from './configSection';
 import { ISkillDiscovery } from './skillDiscovery';
-import { userRoots } from './skillRoots';
+import { configuredRoots, userRoots } from './skillRoots';
 import { SKILL_SOURCE_PRIORITY, type ISkillSource, type SkillContribution } from './skillSource';
 
 export interface IUserFileSkillSource extends ISkillSource {
@@ -45,6 +45,16 @@ export class UserFileSkillSource extends Disposable implements IUserFileSkillSou
   async load(): Promise<SkillContribution> {
     if ((this.bootstrap.args.skillDirs?.length ?? 0) > 0) {
       return { skills: [] };
+    }
+    if (this.bootstrap.args.userSkillDir !== undefined) {
+      return this.discovery.discover(
+        await configuredRoots(
+          [this.bootstrap.args.userSkillDir],
+          this.bootstrap.cwd,
+          this.bootstrap.osHomeDir,
+          'user',
+        ),
+      );
     }
     await this.config.ready;
     const mergeAllAvailableSkills =

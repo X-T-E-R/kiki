@@ -70,6 +70,12 @@ export interface ExternalCatalogSourceOptions {
   readonly userAgentProfileHomeDir: string;
 }
 
+export interface DesktopInheritanceSourceOptions {
+  readonly configPath?: string;
+  readonly modelAccountHomeDir?: string;
+  readonly userSkillDir?: string;
+}
+
 export interface StartForegroundHooks {
   /** Fires once the server is listening, before the foreground runner blocks. */
   onReady?: (origin: string) => void;
@@ -283,6 +289,7 @@ async function runServerInProcess(
     );
   }
   const externalCatalog = externalCatalogSourceFromEnv(process.env);
+  const desktopInheritance = desktopInheritanceSourceFromEnv(process.env);
   const v2 = await startServer({
     host: options.host,
     port: options.port,
@@ -300,9 +307,11 @@ async function runServerInProcess(
     },
     logLevel: options.logLevel,
     logger,
-    configPath: externalCatalog?.configPath,
+    configPath: externalCatalog?.configPath ?? desktopInheritance?.configPath,
     configReadOnly: externalCatalog?.configReadOnly,
     userAgentProfileHomeDir: externalCatalog?.userAgentProfileHomeDir,
+    modelAccountHomeDir: desktopInheritance?.modelAccountHomeDir,
+    userSkillDir: desktopInheritance?.userSkillDir,
     debugEndpoints: options.debugEndpoints,
     insecureNoTls: options.insecureNoTls,
     allowRemoteShutdown: options.allowRemoteShutdown,
@@ -372,6 +381,27 @@ export function externalCatalogSourceFromEnv(
     throw new Error(`Kiki MCP catalog source is misconfigured: ${problems.join(' ')}`);
   }
   return { configPath: configPath!, configReadOnly: true, userAgentProfileHomeDir: userAgentProfileHomeDir! };
+}
+
+export function desktopInheritanceSourceFromEnv(
+  env: NodeJS.ProcessEnv,
+): DesktopInheritanceSourceOptions | undefined {
+  const configPath = env['KIKI_DESKTOP_CONFIG_PATH'];
+  const modelAccountHomeDir = env['KIKI_DESKTOP_MODEL_ACCOUNT_HOME'];
+  const userSkillDir = env['KIKI_DESKTOP_USER_SKILL_DIR'];
+  if (configPath === undefined && modelAccountHomeDir === undefined && userSkillDir === undefined) {
+    return undefined;
+  }
+  for (const [name, value] of [
+    ['KIKI_DESKTOP_CONFIG_PATH', configPath],
+    ['KIKI_DESKTOP_MODEL_ACCOUNT_HOME', modelAccountHomeDir],
+    ['KIKI_DESKTOP_USER_SKILL_DIR', userSkillDir],
+  ] as const) {
+    if (value !== undefined && !isAbsolute(value)) {
+      throw new Error(`${name} must be an absolute path.`);
+    }
+  }
+  return { configPath, modelAccountHomeDir, userSkillDir };
 }
 
 /**

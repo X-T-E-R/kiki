@@ -114,6 +114,7 @@ export interface ServerStartOptions {
    */
   readonly pluginMarketplaceUrl?: string;
   readonly configPath?: string;
+  readonly modelAccountHomeDir?: string;
   readonly configReadOnly?: boolean;
   readonly userAgentProfileHomeDir?: string;
   /**
@@ -168,6 +169,7 @@ export interface ServerStartOptions {
    * all sessions the server hosts — for embedding hosts, not per-session use.
    */
   readonly skillDirs?: readonly string[];
+  readonly userSkillDir?: string;
   /**
    * Directory of the built Kimi web UI (`dist-web`). When set, `GET /` and the
    * `/*` SPA fallback serve these assets (auth-exempt, matching v1). Omit to run
@@ -263,12 +265,17 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     {
       homeDir,
       configPath,
+      modelAccountHomeDir: opts.modelAccountHomeDir,
       configReadOnly: opts.configReadOnly,
       userAgentProfileHomeDir: opts.userAgentProfileHomeDir,
       clientIdentity: opts.hostIdentity,
       args: {
-        requestHeaders: createKimiDefaultHeaders({ homeDir, ...opts.hostIdentity }),
+        requestHeaders: createKimiDefaultHeaders({
+          homeDir: opts.modelAccountHomeDir ?? homeDir,
+          ...opts.hostIdentity,
+        }),
         skillDirs: opts.skillDirs,
+        userSkillDir: opts.userSkillDir,
         displayName: opts.hostIdentity.displayName,
         replyStyleGuide: opts.hostIdentity.replyStyleGuide,
       },

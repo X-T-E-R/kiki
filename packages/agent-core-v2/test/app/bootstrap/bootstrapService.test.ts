@@ -40,6 +40,7 @@ describe('BootstrapService (scoped)', () => {
     expect(svc.configPath).toBe('/tmp/kimi-home/config.toml');
     expect(svc.configReadOnly).toBe(false);
     expect(svc.userAgentProfileHomeDir).toBe('/tmp/kimi-home');
+    expect(svc.modelAccountHomeDir).toBe('/tmp/kimi-home');
     expect(svc.scope('sessions')).toBe('sessions');
     host.dispose();
   });
@@ -94,6 +95,7 @@ describe('resolveBootstrapOptions', () => {
       configPath: '/active/config.toml',
       configReadOnly: true,
       userAgentProfileHomeDir: '/active',
+      modelAccountHomeDir: '/accounts',
       env: {},
       clientIdentity: stubClientIdentity,
     });
@@ -102,6 +104,7 @@ describe('resolveBootstrapOptions', () => {
       configPath: '/active/config.toml',
       configReadOnly: true,
       userAgentProfileHomeDir: '/active',
+      modelAccountHomeDir: '/accounts',
     });
   });
 });

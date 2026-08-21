@@ -390,6 +390,40 @@ describe('server-v2 /api/v1 skills', () => {
       expect(seeded?.description).toBe('explicit skill e2e-explicit');
     });
 
+    it('uses the selected user skill root without dropping project skills', async () => {
+      const workspaceDir = await makeWorkspaceDir();
+      await seedProjectSkill(workspaceDir, 'e2e-project');
+      const selectedUserDir = await makeWorkspaceDir();
+      await seedExplicitSkill(selectedUserDir, 'e2e-selected-user');
+      await seedExplicitSkill(join(home as string, 'skills'), 'e2e-default-user');
+
+      await server!.close();
+      server = undefined;
+      server = await startServer({
+        hostIdentity: TEST_HOST_IDENTITY,
+        host: '127.0.0.1',
+        port: 0,
+        homeDir: home,
+        logLevel: 'silent',
+        userSkillDir: selectedUserDir,
+      });
+      base = `http://127.0.0.1:${server.port}`;
+
+      const wid = await registerWorkspace(workspaceDir);
+      const sid = await createSession(workspaceDir);
+      const [workspaceResponse, sessionResponse] = await Promise.all([
+        getJson<{ skills: SkillWire[] }>(`/api/v1/workspaces/${wid}/skills`),
+        getJson<{ skills: SkillWire[] }>(`/api/v1/sessions/${sid}/skills`),
+      ]);
+      const workspaceSkills = listSkillsResponseSchema.parse(workspaceResponse.body.data).skills;
+      const sessionSkills = listSkillsResponseSchema.parse(sessionResponse.body.data).skills;
+      for (const skills of [workspaceSkills, sessionSkills]) {
+        expect(skills.find((skill) => skill.name === 'e2e-selected-user')?.source).toBe('user');
+        expect(skills.find((skill) => skill.name === 'e2e-project')?.source).toBe('project');
+        expect(skills.some((skill) => skill.name === 'e2e-default-user')).toBe(false);
+      }
+    });
+
     it('returns 40410 for an unknown workspace', async () => {
       const { body } = await getJson<null>(
         '/api/v1/workspaces/wd_does-not-exist_000000000000/skills',

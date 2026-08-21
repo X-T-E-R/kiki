@@ -27,6 +27,16 @@ export interface DesktopNativePrefs {
   closeToTray: boolean;
   /** UI locale mirrored to the native side (tray menu labels); frontend-owned. */
   locale?: string;
+  compatibility: CompatibilitySettings;
+}
+
+export type CompatibilityHomeKind = 'kimi' | 'kiki' | 'custom';
+
+export interface CompatibilitySettings {
+  homeKind: CompatibilityHomeKind;
+  customHome?: string;
+  inheritModelsAccounts: boolean;
+  inheritUserSkills: boolean;
 }
 
 export interface RestartRequirement {
@@ -207,6 +217,12 @@ const DEFAULTS: DesktopSettings = {
 const DESKTOP_PREFS_DEFAULTS: DesktopNativePrefs = {
   notifications: true,
   closeToTray: true,
+  compatibility: {
+    homeKind: 'kimi',
+    customHome: undefined,
+    inheritModelsAccounts: true,
+    inheritUserSkills: true,
+  },
 };
 
 function readObject(key: string): Record<string, unknown> {
@@ -390,6 +406,8 @@ export function writeLastSessionId(sessionId: string | undefined): void {
 
 export function readDesktopPrefs(): DesktopNativePrefs {
   const stored = readObject(DESKTOP_PREFS_KEY) as Partial<DesktopNativePrefs>;
+  const compatibility = stored.compatibility;
+  const homeKind = compatibility?.homeKind;
   return {
     notifications:
       typeof stored.notifications === 'boolean'
@@ -399,6 +417,23 @@ export function readDesktopPrefs(): DesktopNativePrefs {
       typeof stored.closeToTray === 'boolean'
         ? stored.closeToTray
         : DESKTOP_PREFS_DEFAULTS.closeToTray,
+    compatibility: {
+      homeKind: homeKind === 'kimi' || homeKind === 'kiki' || homeKind === 'custom'
+        ? homeKind
+        : DESKTOP_PREFS_DEFAULTS.compatibility.homeKind,
+      customHome:
+        typeof compatibility?.customHome === 'string' && compatibility.customHome.trim() !== ''
+          ? compatibility.customHome
+          : undefined,
+      inheritModelsAccounts:
+        typeof compatibility?.inheritModelsAccounts === 'boolean'
+          ? compatibility.inheritModelsAccounts
+          : DESKTOP_PREFS_DEFAULTS.compatibility.inheritModelsAccounts,
+      inheritUserSkills:
+        typeof compatibility?.inheritUserSkills === 'boolean'
+          ? compatibility.inheritUserSkills
+          : DESKTOP_PREFS_DEFAULTS.compatibility.inheritUserSkills,
+    },
   };
 }
 
@@ -1073,6 +1108,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'general', cardId: 'st-card-defaults', titleKey: 'st.defaults.title', keywordKeys: ['st.defaults.permissionMode', 'st.defaults.planMode', 'st.defaults.hint'] },
   { section: 'general', cardId: 'st-card-composer', titleKey: 'st.composer.title', keywordKeys: ['st.composer.sendShortcut', 'st.composer.persistDrafts'] },
   { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.notifications', 'st.desktop.tray', 'st.desktop.quit'] },
+  { section: 'general', cardId: 'st-card-compatibility-home', titleKey: 'st.compat.title', keywordKeys: ['st.compat.home', 'st.compat.inheritModelsAccounts', 'st.compat.inheritUserSkills'] },
   { section: 'models', cardId: 'st-card-models', titleKey: 'st.models.defaultTitle', keywordKeys: ['st.models.providerLabel', 'st.models.searchPlaceholder'] },
   { section: 'models', cardId: 'st-card-thinking', titleKey: 'st.thinking.title', keywordKeys: ['st.thinking.enable', 'st.thinking.hint'] },
   { section: 'connection', cardId: 'st-card-conn-server', titleKey: 'st.conn.connectedTitle', keywordKeys: ['st.conn.version', 'st.conn.reconnect'] },
