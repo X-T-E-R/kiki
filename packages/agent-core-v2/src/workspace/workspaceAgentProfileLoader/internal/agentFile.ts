@@ -1,3 +1,5 @@
+import { dirname } from 'pathe';
+
 import { CoreErrors } from '#/_base/errors/codes';
 import { Error2 } from '#/_base/errors/errors';
 import { FrontmatterError, parseFrontmatter } from '#/_base/text/frontmatter';
@@ -21,6 +23,9 @@ export interface ParseAgentFileOptions {
   readonly path: string;
   readonly source: AgentFileSource;
   readonly text: string;
+  readonly definitionId?: string;
+  readonly contributionRoot?: string;
+  readonly sourceProfile?: boolean;
   readonly warn?: (message: string) => void;
   readonly fallbackDescription?: string;
   readonly forceName?: string;
@@ -50,6 +55,14 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
   if (!isRecord(frontmatter)) {
     throw new AgentFileParseError(
       `Frontmatter in ${options.path} must be a mapping at the top level`,
+    );
+  }
+  if (
+    options.sourceProfile === true &&
+    (Object.hasOwn(frontmatter, 'main') || Object.hasOwn(frontmatter, 'override'))
+  ) {
+    throw new AgentFileParseError(
+      `Scoped source profile ${options.path} cannot declare "main" or "override"`,
     );
   }
 
@@ -92,6 +105,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
       ? true
       : parseBoolean(frontmatter['override'], 'override', options.path);
   const main = parseBoolean(frontmatter['main'], 'main', options.path);
+  const privateProfile = parseBoolean(frontmatter['private'], 'private', options.path);
   const delegationNotice = parseDelegationNotice(
     frontmatter['delegation_notice'],
     options.path,
@@ -171,6 +185,9 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
 
   return {
     name,
+    definitionId: options.definitionId ?? options.path,
+    contributionRoot: options.contributionRoot ?? dirname(options.path),
+    private: privateProfile,
     description,
     whenToUse: nonEmptyString(frontmatter['whenToUse']),
     override,

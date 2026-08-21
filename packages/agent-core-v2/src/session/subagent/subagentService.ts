@@ -8,6 +8,7 @@ import {
 } from '#/_base/di/scope';
 import { Emitter } from '#/_base/event';
 import type { AgentProfileSummaryPolicy } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { resolveSnapshotProfileDefinition } from '#/app/agentProfileCatalog/subagentDispatch';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { createHooks } from '#/hooks';
@@ -61,9 +62,17 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
   }
 
   private summaryPolicyFor(handle: IAgentScopeHandle): AgentProfileSummaryPolicy | undefined {
-    const profileName = handle.accessor.get(IAgentProfileService).data().profileName;
+    const data = handle.accessor.get(IAgentProfileService).data();
+    const profileName = data.profileName;
     if (profileName === undefined) return undefined;
-    return this.catalog.get(profileName)?.summaryPolicy;
+    if (data.profileDefinitionId === undefined) return this.catalog.get(profileName)?.summaryPolicy;
+    const snapshot = this.catalog.snapshot?.();
+    if (snapshot === undefined) return undefined;
+    return resolveSnapshotProfileDefinition(
+      snapshot,
+      data.profileDefinitionId,
+      profileName,
+    )?.summaryPolicy;
   }
 }
 

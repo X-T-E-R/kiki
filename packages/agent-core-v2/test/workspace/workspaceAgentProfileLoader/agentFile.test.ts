@@ -741,6 +741,9 @@ body
 describe('agentProfileFromFile', () => {
   const base: AgentFileDefinition = {
     name: 'reviewer',
+    definitionId: '/tmp/agents/reviewer.md',
+    contributionRoot: '/tmp/agents',
+    private: false,
     description: 'd',
     whenToUse: 'reviews',
     override: false,

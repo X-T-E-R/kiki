@@ -16,6 +16,7 @@ export const AgentProfileRouteErrors = {
     ROUTE_SWITCH_FORBIDDEN: 'agent_profile_route.switch_forbidden',
     ROUTE_INVALID_SIDECAR: 'agent_profile_route.invalid_sidecar',
     ROUTE_DUPLICATE: 'agent_profile_route.duplicate',
+    SCOPED_PROFILE_UNAVAILABLE: 'agent_profile_source.unavailable',
   },
 } as const satisfies ErrorDomain;
 

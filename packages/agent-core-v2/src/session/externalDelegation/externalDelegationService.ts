@@ -13,7 +13,7 @@ import { ulid } from 'ulid';
 import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
-import { Error2, ErrorCodes, toKimiErrorPayload } from '#/errors';
+import { Error2, ErrorCodes, isError2, toKimiErrorPayload } from '#/errors';
 import { IFlagService } from '#/app/flag/flag';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -28,11 +28,19 @@ import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMo
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
-import { subagentAllowlistFor } from '#/app/agentProfileCatalog/profile-shared';
+import {
+  resolveSnapshotProfileDefinition,
+  resolveSubagentDispatch,
+  subagentDispatchAllowed,
+  type SubagentDispatchSelection,
+} from '#/app/agentProfileCatalog/subagentDispatch';
 import {
   aliasIdentity,
   appliedDispatchProfile,
+  applyLease,
+  applySpawnPolicy,
   assertAutomaticDispatchPermitted,
   fillLeasePins,
   isDispatchBlocked,
@@ -172,14 +180,32 @@ export class SessionExternalDelegationService
     await this.profiles.ready;
     const main = this.requireMain();
     const own = main.accessor.get(IAgentProfileService).data();
-    const allowlist = subagentAllowlistFor(this.profiles, own);
-    const defaults = this.profiles.getDefault();
+    const snapshot = this.profiles.snapshot?.();
+    const defaults = snapshot?.defaultProfile ?? this.profiles.getDefault();
     const resolveId = aliasIdentity(this.models);
-    const dispatchables = this.profiles
+    const scopedProfiles = [...(
+      own.profileDefinitionId === undefined
+        ? []
+        : (snapshot?.scopedBindings.get(own.profileDefinitionId)?.values() ?? [])
+    )]
+      .filter((binding) => binding.status === 'ready' && binding.profile !== undefined)
+      .map((binding) =>
+        appliedDispatchProfile(binding.profile!, binding.alias, own, defaults, resolveId).profile,
+      )
+      .filter(
+        (profile) =>
+          subagentDispatchAllowed(this.profiles, own, profile.name) && !isDispatchBlocked(profile),
+      );
+    const scopedNames = new Set(scopedProfiles.map((profile) => profile.name));
+    const publicProfiles = this.profiles
       .list()
-      .filter((profile) => allowlist === undefined || allowlist.includes(profile.name))
+      .filter((profile) => !scopedNames.has(profile.name))
       .map((profile) => appliedDispatchProfile(profile, profile.name, own, defaults, resolveId).profile)
-      .filter((profile) => !isDispatchBlocked(profile))
+      .filter(
+        (profile) =>
+          subagentDispatchAllowed(this.profiles, own, profile.name) && !isDispatchBlocked(profile),
+      );
+    const dispatchables = [...scopedProfiles, ...publicProfiles]
       .map((profile) => ({ kind: 'named' as const, profileName: profile.name, description: profile.description }));
     return {
       version: 1,
@@ -345,22 +371,35 @@ export class SessionExternalDelegationService
     }
     const profileName = requireNonblank(rawProfileName, 'profile_name');
     await this.profiles.ready;
-    const profile = this.profiles.get(profileName);
-    if (profile === undefined) throw invalid('Unknown named-agent profile.');
     const main = this.requireMain();
     const mainProfile = main.accessor.get(IAgentProfileService);
     const mainData = mainProfile.data();
     if (mainData.modelAlias === undefined) throw invalid('Main agent has no configured model.');
-    const allowlist = subagentAllowlistFor(this.profiles, mainData);
-    if (allowlist !== undefined && !allowlist.includes(profileName)) throw invalid('Named-agent profile is not admitted.');
+    const snapshot = this.profiles.snapshot?.();
+    let selection: SubagentDispatchSelection;
+    try {
+      selection = resolveSubagentDispatch(this.profiles, mainData, {
+        profileName,
+        snapshot,
+      }).selection;
+    } catch (error) {
+      if (isError2(error) && error.code === ErrorCodes.PROFILE_UNKNOWN) {
+        throw invalid('Unknown named-agent profile.');
+      }
+      if (isError2(error) && error.code === ErrorCodes.AGENT_TYPE_NOT_ALLOWED) {
+        throw invalid('Named-agent profile is not admitted.');
+      }
+      throw error;
+    }
+    const profile = selection.profile;
     const dispatched = appliedDispatchProfile(
       profile,
-      profileName,
+      selection.baseProfile.name,
       mainData,
-      this.profiles.getDefault(),
+      snapshot?.defaultProfile ?? this.profiles.getDefault(),
       aliasIdentity(this.models),
     );
-    assertAutomaticDispatchPermitted(dispatched.profile, undefined, this.models);
+    assertAutomaticDispatchPermitted(dispatched.profile, selection.route, this.models);
     const filled = fillLeasePins(
       { modelAlias, thinkingEffort },
       dispatched.lease,
@@ -371,7 +410,10 @@ export class SessionExternalDelegationService
     try {
       const child = await this.agents.create({
         binding: {
-          profile: profile.name,
+          profile: selection.baseProfile.name,
+          route: selection.route?.id,
+          resolvedProfile: selection.baseProfile,
+          resolvedRoute: selection.route,
           model: filled.modelAlias ?? dispatched.profile.modelAlias ?? mainData.modelAlias,
           thinking: filled.thinkingEffort ?? dispatched.profile.thinkingEffort ?? mainData.thinkingLevel,
           strictThinking: filled.thinkingEffort !== undefined || dispatched.profile.thinkingEffort !== undefined,
@@ -387,7 +429,7 @@ export class SessionExternalDelegationService
       doc.children[taskName] = { taskName, agentId: child.id, profileName: profile.name, createdAt: Date.now() };
       await this.persist();
       this.names.commit(taskName, delegator);
-      return targetView(child, taskName, profile.name);
+      return targetView(child, taskName, profile.name, dispatched.profile);
     } catch (error) {
       this.names.release(taskName, delegator);
       throw error;
@@ -403,7 +445,31 @@ export class SessionExternalDelegationService
     const child = doc.children[taskName];
     if (child === undefined) throw invalid('Unknown named child.');
     const agent = await this.materialize(child.agentId, taskName);
-    return targetView(agent, taskName, child.profileName);
+    const profile = this.resolveTargetProfile(agent, child.profileName);
+    if (profile === undefined) throw invalid('Named-agent profile is unavailable.');
+    return targetView(agent, taskName, child.profileName, profile);
+  }
+
+  private resolveTargetProfile(
+    agent: IAgentScopeHandle,
+    fallbackProfileName: string,
+  ): AgentProfile | undefined {
+    const data = agent.accessor.get(IAgentProfileService).data();
+    const profileName = data.profileName ?? fallbackProfileName;
+    const snapshot = this.profiles.snapshot?.();
+    const base =
+      data.profileDefinitionId === undefined
+        ? this.profiles.get(profileName)
+        : snapshot === undefined
+          ? undefined
+          : resolveSnapshotProfileDefinition(snapshot, data.profileDefinitionId, profileName);
+    if (base === undefined) return undefined;
+    const resolveId = aliasIdentity(this.models);
+    return applySpawnPolicy(
+      applyLease(base, data.appliedLease, resolveId),
+      data.spawnPolicy,
+      resolveId,
+    );
   }
 
   private async materialize(agentId: string, taskName: string | undefined): Promise<IAgentScopeHandle> {
@@ -430,19 +496,15 @@ export class SessionExternalDelegationService
       throw invalid('The target is already running work.');
     }
     let message = rawMessage;
-    if (target.profileName !== undefined) {
+    if (target.profile !== undefined) {
       const lease = target.agent.accessor.get(IAgentRuntimeService).acquire(['process']);
       try {
         const view = new RuntimeWorkspaceView(lease.runtime, this.workspace);
-        message = await applyProfilePromptPrefix(
-          this.profiles.get(target.profileName)!,
-          rawMessage,
-          {
-            cwd: view.workDir,
-            process: lease.runtime.process!,
-            log: this.log,
-          },
-        );
+        message = await applyProfilePromptPrefix(target.profile, rawMessage, {
+          cwd: view.workDir,
+          process: lease.runtime.process!,
+          log: this.log,
+        });
       } finally {
         lease.dispose();
       }
@@ -664,6 +726,7 @@ interface DispatchTarget {
   readonly agent: IAgentScopeHandle;
   readonly taskName: string | undefined;
   readonly profileName: string | undefined;
+  readonly profile?: AgentProfile;
   readonly modelAlias: string;
   readonly thinkingEffort: string;
 }
@@ -672,6 +735,7 @@ function targetView(
   agent: IAgentScopeHandle,
   taskName: string | undefined,
   profileName: string | undefined,
+  profile?: AgentProfile,
 ): DispatchTarget {
   const binding = agent.accessor.get(IAgentProfileService).data();
   if (binding.modelAlias === undefined) throw invalid('Target agent has no configured model.');
@@ -679,6 +743,7 @@ function targetView(
     agent,
     taskName,
     profileName,
+    profile,
     modelAlias: binding.modelAlias,
     thinkingEffort: binding.thinkingLevel,
   };

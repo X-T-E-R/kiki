@@ -57,6 +57,7 @@ describe('SessionExternalDelegationService', () => {
   let nextRunHandleGate: Promise<void> | undefined;
   let runSignals: AbortSignal[];
   let runAgentIds: string[];
+  let runPrompts: string[];
   let createdWith: unknown[];
   let willClose: Emitter<SessionWillCloseEvent & IWaitUntil>;
   let logCalls: Array<{ msg: string; payload: unknown }>;
@@ -70,6 +71,7 @@ describe('SessionExternalDelegationService', () => {
     nextRunHandleGate = undefined;
     runSignals = [];
     runAgentIds = [];
+    runPrompts = [];
     createdWith = [];
     logCalls = [];
 
@@ -130,12 +132,13 @@ describe('SessionExternalDelegationService', () => {
       profileName: string,
       modelAlias = 'model',
       thinkingLevel = 'off',
+      profileDefinitionId?: string,
     ): IAgentScopeHandle => {
       const agent = new TestInstantiationService();
       disposables.add(agent);
       agent.stub(IAgentProfileService, {
         _serviceBrand: undefined,
-        data: () => ({ modelAlias, modelCapabilities: UNKNOWN_CAPABILITY, profileName, thinkingLevel, systemPrompt: '', subagents: ['coder'] }),
+        data: () => ({ modelAlias, modelCapabilities: UNKNOWN_CAPABILITY, profileName, profileDefinitionId, thinkingLevel, systemPrompt: '', subagents: ['coder'] }),
       });
       agent.stub(IAgentPermissionModeService, { mode: 'auto', setMode: () => {} });
       agent.stub(IAgentUserToolService, { inheritUserTools: () => {} });
@@ -165,6 +168,7 @@ describe('SessionExternalDelegationService', () => {
           opts?.binding?.profile ?? 'coder',
           opts?.binding?.model,
           opts?.binding?.thinking,
+          opts?.binding?.resolvedProfile?.definitionId,
         );
         handles.set(handle.id, handle);
         return handle;
@@ -172,8 +176,9 @@ describe('SessionExternalDelegationService', () => {
     });
     ix.stub(ISessionSubagentService, {
       _serviceBrand: undefined,
-      run: async (agentId, _request, opts) => {
+      run: async (agentId, request, opts) => {
         runAgentIds.push(agentId);
+        if (request.kind === 'prompt') runPrompts.push(request.prompt);
         runSignals.push(opts.signal);
         const gate = nextRunHandleGate;
         nextRunHandleGate = undefined;
@@ -285,6 +290,182 @@ describe('SessionExternalDelegationService', () => {
     });
     expect(repeated).toMatchObject({ modelAlias: 'grok-4.6', thinkingEffort: 'high' });
     expect(createdWith).toHaveLength(1);
+  });
+
+  it('binds a scoped named child from the main profile snapshot', async () => {
+    const publicWriter: AgentProfile = {
+      name: 'writer',
+      definitionId: 'public-writer',
+      description: 'Public writer',
+      systemPrompt: () => 'PUBLIC',
+      renderSystemPrompt: () => ({ text: 'PUBLIC', environment: { cwd: '', date: { disclosed: false } } }),
+      promptPrefix: async () => 'PUBLIC PREFIX',
+    };
+    const scopedWriter: AgentProfile = {
+      name: 'writer',
+      definitionId: 'private-writer',
+      description: 'Private writer',
+      systemPrompt: () => 'PRIVATE',
+      renderSystemPrompt: () => ({ text: 'PRIVATE', environment: { cwd: '', date: { disclosed: false } } }),
+      promptPrefix: async () => 'PRIVATE PREFIX',
+    };
+    const snapshot = {
+      publicProfiles: new Map([['writer', publicWriter]]),
+      defaultProfile: profile,
+      routes: new Map(),
+      scopedBindings: new Map([
+        [
+          'parent-definition',
+          new Map([
+            [
+              'writer',
+              {
+                parentDefinitionId: 'parent-definition',
+                alias: 'writer',
+                source: './_private/writer.md',
+                lease: { name: 'writer', source: './_private/writer.md' },
+                status: 'ready' as const,
+                sourceDefinitionId: 'private-writer',
+                profile: scopedWriter,
+              },
+            ],
+          ]),
+        ],
+      ]),
+      sourceDefinitions: new Map([['private-writer', scopedWriter]]),
+      dependencyIndex: new Map(),
+      diagnostics: [],
+    };
+    vi.spyOn(handles.get('main')!.accessor.get(IAgentProfileService), 'data').mockReturnValue({
+      modelAlias: 'model',
+      modelCapabilities: UNKNOWN_CAPABILITY,
+      profileName: 'agent',
+      profileDefinitionId: 'parent-definition',
+      thinkingLevel: 'off',
+      systemPrompt: '',
+      subagents: ['writer'],
+    });
+    ix.stub(ISessionAgentProfileCatalog, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      get: (name: string) => snapshot.publicProfiles.get(name),
+      getDefault: () => profile,
+      list: () => [...snapshot.publicProfiles.values()],
+      snapshot: () => snapshot,
+    });
+    const service = ix.get(ISessionExternalDelegationService);
+
+    const root = await service.list(authority);
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'private_writer',
+      profileName: 'writer',
+      message: 'write',
+    });
+
+    expect(root.dispatchables).toContainEqual({
+      kind: 'named',
+      profileName: 'writer',
+      description: 'Private writer',
+    });
+    expect(createdWith[0]).toMatchObject({
+      binding: {
+        profile: 'writer',
+        resolvedProfile: scopedWriter,
+      },
+    });
+    expect(dispatch.profileName).toBe('writer');
+    await vi.waitFor(() => {
+      expect(runPrompts).toEqual(['PRIVATE PREFIX\n\nwrite']);
+    });
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
+
+    await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'private_writer',
+      message: 'write again',
+    });
+
+    await vi.waitFor(() => {
+      expect(runPrompts).toEqual([
+        'PRIVATE PREFIX\n\nwrite',
+        'PRIVATE PREFIX\n\nwrite again',
+      ]);
+    });
+  });
+
+  it('starts a scoped named child without a same-name public profile', async () => {
+    const scopedWriter: AgentProfile = {
+      name: 'writer',
+      definitionId: 'private-only-writer',
+      description: 'Private-only writer',
+      systemPrompt: () => 'PRIVATE ONLY',
+      renderSystemPrompt: () => ({ text: 'PRIVATE ONLY', environment: { cwd: '', date: { disclosed: false } } }),
+      promptPrefix: async () => 'PRIVATE ONLY PREFIX',
+    };
+    const snapshot = {
+      publicProfiles: new Map([['coder', profile]]),
+      defaultProfile: profile,
+      routes: new Map(),
+      scopedBindings: new Map([
+        [
+          'parent-definition',
+          new Map([
+            [
+              'writer',
+              {
+                parentDefinitionId: 'parent-definition',
+                alias: 'writer',
+                source: './_private/writer.md',
+                lease: { name: 'writer', source: './_private/writer.md' },
+                status: 'ready' as const,
+                sourceDefinitionId: 'private-only-writer',
+                profile: scopedWriter,
+              },
+            ],
+          ]),
+        ],
+      ]),
+      sourceDefinitions: new Map([['private-only-writer', scopedWriter]]),
+      dependencyIndex: new Map(),
+      diagnostics: [],
+    };
+    vi.spyOn(handles.get('main')!.accessor.get(IAgentProfileService), 'data').mockReturnValue({
+      modelAlias: 'model',
+      modelCapabilities: UNKNOWN_CAPABILITY,
+      profileName: 'agent',
+      profileDefinitionId: 'parent-definition',
+      thinkingLevel: 'off',
+      systemPrompt: '',
+      subagents: ['writer'],
+    });
+    ix.stub(ISessionAgentProfileCatalog, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      get: (name: string) => snapshot.publicProfiles.get(name),
+      getDefault: () => profile,
+      list: () => [...snapshot.publicProfiles.values()],
+      snapshot: () => snapshot,
+    });
+    const service = ix.get(ISessionExternalDelegationService);
+
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'private_only_writer',
+      profileName: 'writer',
+      message: 'write',
+    });
+
+    expect(dispatch.status).toBe('queued');
+    await vi.waitFor(() => {
+      expect(runPrompts).toEqual(['PRIVATE ONLY PREFIX\n\nwrite']);
+    });
   });
 
   it('rejects named-child binding fields for a main dispatch', async () => {

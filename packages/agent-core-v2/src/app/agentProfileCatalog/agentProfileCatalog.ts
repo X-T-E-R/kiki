@@ -64,6 +64,7 @@ export interface SystemPromptRenderResult {
 
 export interface AgentProfile {
   readonly name: string;
+  readonly definitionId?: string;
   readonly routeId?: string;
   readonly description?: string;
   readonly sourcePath?: string;

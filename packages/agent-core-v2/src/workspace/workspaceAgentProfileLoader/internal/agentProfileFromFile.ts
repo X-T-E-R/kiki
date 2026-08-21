@@ -46,6 +46,7 @@ export function agentProfileFromFile(
     !(definition.disallowedTools ?? []).includes('Skill');
   return normalizeAgentProfile({
     name: definition.name,
+    definitionId: definition.definitionId,
     description: definition.description,
     sourcePath: definition.path,
     whenToUse: definition.whenToUse,
@@ -82,6 +83,41 @@ export function profilesFromDiscovery(
   basePrompt: (context: AgentProfileContext) => SystemPromptRenderResult,
   builtinPrompt?: (context: AgentProfileContext) => SystemPromptRenderResult,
 ): AgentProfileContribution {
+  const sourceDefinitions = new Map(
+    [...result.sourceDefinitions].map(([definitionId, definition]) => [
+      definitionId,
+      agentProfileFromFile(definition, basePrompt, builtinPrompt),
+    ]),
+  );
+  const scopedBindings = new Map(
+    [...result.scopedBindings].map(([parentDefinitionId, table]) => [
+      parentDefinitionId,
+      new Map(
+        [...table].map(([alias, binding]) => {
+          const sourceProfile =
+            binding.sourceDefinitionId === undefined
+              ? undefined
+              : sourceDefinitions.get(binding.sourceDefinitionId);
+          return [
+            alias,
+            {
+              parentDefinitionId: binding.parentDefinitionId,
+              alias: binding.alias,
+              source: binding.source,
+              lease: binding.lease,
+              status: binding.status,
+              sourceDefinitionId: binding.sourceDefinitionId,
+              profile:
+                sourceProfile === undefined
+                  ? undefined
+                  : normalizeAgentProfile({ ...sourceProfile, name: alias }),
+              diagnostic: binding.diagnostic,
+            },
+          ];
+        }),
+      ),
+    ]),
+  );
   return {
     profiles: result.agents.map((definition) =>
       agentProfileFromFile(definition, basePrompt, builtinPrompt),
@@ -89,5 +125,9 @@ export function profilesFromDiscovery(
     routes: result.routes,
     skipped: result.skipped,
     scannedRoots: result.scannedRoots,
+    scopedBindings,
+    sourceDefinitions,
+    dependencyIndex: result.dependencyIndex,
+    diagnostics: result.diagnostics,
   };
 }

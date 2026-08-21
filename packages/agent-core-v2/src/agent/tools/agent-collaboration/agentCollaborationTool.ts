@@ -21,7 +21,7 @@ import { roleConstraintsFromProfile } from '#/session/subagent/modelConstraints'
 import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
-import { subagentAllowlistFor, subagentTypeNotAllowedMessage } from '#/app/agentProfileCatalog/profile-shared';
+import { resolveSubagentDispatch } from '#/app/agentProfileCatalog/subagentDispatch';
 import {
   aliasIdentity,
   appliedDispatchProfile,
@@ -260,26 +260,22 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
       await this.catalog.ready;
       const profileName = optionalNonblank(args.agent_type, 'agent_type') ?? 'coder';
       const own = this.profile.data();
-      const allowlist = subagentAllowlistFor(this.catalog, own);
-      if (allowlist !== undefined && !allowlist.includes(profileName)) throw new Error2(ErrorCodes.AGENT_TYPE_NOT_ALLOWED, subagentTypeNotAllowedMessage(profileName, allowlist));
-      const selectedProfile = this.catalog.get(profileName);
-      if (selectedProfile === undefined) {
-        const available = this.catalog.list().map((item) => item.name).join(', ');
-        throw new Error2(
-          ErrorCodes.PROFILE_UNKNOWN,
-          `Unknown agent type: "${profileName}". Available agent types: ${available}`,
-          { details: { profileName, available } },
-        );
-      }
+      const snapshot = this.catalog.snapshot?.();
+      const selection = resolveSubagentDispatch(this.catalog, own, {
+        profileName,
+        snapshot,
+      }).selection;
+      const selectedProfile = selection.profile;
+      const baseProfileName = selection.baseProfile.name;
       if (own.modelAlias === undefined) throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'Caller agent has no model bound');
       const dispatched = appliedDispatchProfile(
         selectedProfile,
-        profileName,
+        baseProfileName,
         own,
-        this.catalog.getDefault(),
+        snapshot?.defaultProfile ?? this.catalog.getDefault(),
         aliasIdentity(this.models),
       );
-      assertAutomaticDispatchPermitted(dispatched.profile, undefined, this.models);
+      assertAutomaticDispatchPermitted(dispatched.profile, selection.route, this.models);
       const bindingRequest = fillLeasePins(
         {
           modelAlias: optionalNonblank(args.model, 'model'),
@@ -345,7 +341,9 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
 
       taskId = this.tasks.allocateTaskId?.('agent');
       if (taskId === undefined) throw new Error('Agent task service cannot allocate a transactional task id.');
-      created = await this.lifecycle.create({ binding: { profile: selectedProfile.name, model: binding.model,
+      created = await this.lifecycle.create({ binding: { profile: baseProfileName,
+        route: selection.route?.id, resolvedProfile: selection.baseProfile,
+        resolvedRoute: selection.route, model: binding.model,
         thinking: binding.thinking, strictThinking: binding.thinking !== undefined,
         lease: dispatched.lease, spawnPolicy: dispatched.spawnPolicy }, deferCreateEvent: true,
         runtimeId: runtimeLease.runtime.identity.runtimeId,

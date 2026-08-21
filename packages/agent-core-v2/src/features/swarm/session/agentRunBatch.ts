@@ -1,3 +1,4 @@
+import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
 import { isProviderRateLimitError } from '#/kosong/contract/errors';
 import { type TokenUsage } from '#/kosong/contract/usage';
 import * as retry from 'retry';
@@ -23,6 +24,7 @@ export interface AgentSpawnAttemptOptions extends AgentRunAttemptOptions {
   readonly profileName: string;
   readonly routeId?: string;
   readonly swarmItem?: string;
+  readonly catalogSnapshot?: AgentProfileCatalogSnapshot;
   readonly binding?: {
     readonly model: string;
     readonly thinking?: string;
@@ -298,6 +300,7 @@ export class AgentRunBatch<T> {
           profileName: task.profileName,
           routeId: task.routeId,
           swarmItem: task.swarmItem,
+          catalogSnapshot: task.catalogSnapshot,
           binding: task.binding,
           ...runOptions,
         };

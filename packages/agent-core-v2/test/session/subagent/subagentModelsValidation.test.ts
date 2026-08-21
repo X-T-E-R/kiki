@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
+import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { TestInstantiationService } from '#/_base/di/test';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { ErrorCodes, Error2, isError2 } from '#/errors';
@@ -13,6 +16,8 @@ import {
   SUBAGENT_SECTION,
 } from '#/session/subagent/configSection';
 import { SECONDARY_MODEL_FLAG_ID } from '#/session/subagent/flag';
+import { SessionSubagentService } from '#/session/subagent/subagentService';
+import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionSubagentModelsValidationService } from '#/session/subagent/subagentModelsValidation';
 import { SessionSubagentModelsValidationService } from '#/session/subagent/subagentModelsValidationService';
 
@@ -317,5 +322,79 @@ describe('SessionSubagentModelsValidationService', () => {
     expect(isError2(error)).toBe(true);
     expect((error as Error2).code).toBe(ErrorCodes.CONFIG_INVALID);
     expect((error as Error2).message).toContain('"provider/typo"');
+  });
+});
+
+describe('SessionSubagentService summary policy resolution', () => {
+  it('uses definition identity for same-name public and scoped profiles', () => {
+    const publicPolicy = {
+      minChars: 100,
+      continuationPrompt: 'PUBLIC CONTINUATION',
+      retries: 1,
+    };
+    const privatePolicy = {
+      minChars: 200,
+      continuationPrompt: 'PRIVATE CONTINUATION',
+      retries: 2,
+    };
+    const publicProfile = normalizeAgentProfile({
+      name: 'writer',
+      definitionId: 'public-writer',
+      summaryPolicy: publicPolicy,
+      systemPrompt: () => 'PUBLIC',
+    });
+    const privateProfile = normalizeAgentProfile({
+      name: 'writer',
+      definitionId: 'private-writer',
+      summaryPolicy: privatePolicy,
+      systemPrompt: () => 'PRIVATE',
+    });
+    const snapshot = {
+      publicProfiles: new Map([['writer', publicProfile]]),
+      defaultProfile: publicProfile,
+      routes: new Map(),
+      scopedBindings: new Map([
+        [
+          'parent-definition',
+          new Map([
+            [
+              'writer',
+              {
+                parentDefinitionId: 'parent-definition',
+                alias: 'writer',
+                source: './_private/writer.md',
+                lease: { name: 'writer', source: './_private/writer.md' },
+                status: 'ready' as const,
+                sourceDefinitionId: 'private-writer',
+                profile: privateProfile,
+              },
+            ],
+          ]),
+        ],
+      ]),
+      sourceDefinitions: new Map([['private-writer', privateProfile]]),
+      dependencyIndex: new Map(),
+      diagnostics: [],
+    };
+    const catalog = {
+      get: (name: string) => snapshot.publicProfiles.get(name),
+      snapshot: () => snapshot,
+    } as unknown as ISessionAgentProfileCatalog;
+    const service = new SessionSubagentService(undefined as never, catalog);
+    const summaryPolicyFor = (
+      service as unknown as {
+        summaryPolicyFor(handle: IAgentScopeHandle): typeof publicPolicy | undefined;
+      }
+    ).summaryPolicyFor.bind(service);
+    const handle = (profileDefinitionId: string): IAgentScopeHandle => ({
+      accessor: {
+        get: (() => ({
+          data: () => ({ profileName: 'writer', profileDefinitionId }),
+        })) as IAgentScopeHandle['accessor']['get'],
+      },
+    }) as IAgentScopeHandle;
+
+    expect(summaryPolicyFor(handle('public-writer'))).toEqual(publicPolicy);
+    expect(summaryPolicyFor(handle('private-writer'))).toEqual(privatePolicy);
   });
 });

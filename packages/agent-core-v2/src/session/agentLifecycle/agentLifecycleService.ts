@@ -225,10 +225,17 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   private async preflightRouteBinding(binding: CreateAgentOptions['binding']): Promise<void> {
     if (binding?.route === undefined) return;
     await this.profileCatalog.ready;
-    const selection = this.profileCatalog.resolveSelection({
-      profile: binding.profile,
-      route: binding.route,
-    });
+    const selection =
+      binding.resolvedProfile === undefined
+        ? this.profileCatalog.resolveSelection({
+            profile: binding.profile,
+            route: binding.route,
+          })
+        : {
+            profile: binding.resolvedRoute?.effectiveProfile ?? binding.resolvedProfile,
+            baseProfile: binding.resolvedProfile,
+            route: binding.resolvedRoute,
+          };
     const route = selection.route!;
     const canonicalRouteModelAlias =
       route.lockedModelAlias === undefined ? undefined : this.resolveModelId(route.lockedModelAlias);

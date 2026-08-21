@@ -40,11 +40,12 @@ import type {
   AgentRecommendedModel,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
-import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
+import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
 import {
-  subagentAllowlistFor,
-  subagentTypeNotAllowedMessage,
-} from '#/app/agentProfileCatalog/profile-shared';
+  resolveSubagentDispatch,
+  subagentDispatchAllowed,
+} from '#/app/agentProfileCatalog/subagentDispatch';
+import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
 import {
   aliasIdentity,
   appliedDispatchProfile,
@@ -146,6 +147,7 @@ export class SubagentTool implements ISubagentTool {
   private catalogReady = false;
   private frozenCatalogProfiles: readonly AgentProfile[] | undefined;
   private frozenCatalogRoutes: readonly AgentProfileRouteCatalogEntry[] | undefined;
+  private frozenCatalogSnapshot: AgentProfileCatalogSnapshot | undefined;
 
   constructor(
     @IAgentLifecycleService private readonly lifecycle: IAgentLifecycleService,
@@ -182,17 +184,33 @@ export class SubagentTool implements ISubagentTool {
       ? AGENT_BACKGROUND_DESCRIPTION
       : AGENT_BACKGROUND_DISABLED_DESCRIPTION;
     let description = `${AGENT_DESCRIPTION_BASE}\n\n${backgroundDescription}`;
-    const allowlist = subagentAllowlistFor(this.catalog, this.profile.data());
     const own = this.profile.data();
     const resolveId = aliasIdentity(this.models);
-    const defaults = this.catalog.getDefault();
-    const catalogProfiles = this.catalogProfiles()
+    const snapshot =
+      own.profileDefinitionId === undefined ? undefined : this.catalogSnapshot();
+    const defaults = snapshot?.defaultProfile ?? this.catalog.getDefault();
+    const scopedProfiles = [...(
+      own.profileDefinitionId === undefined
+        ? []
+        : (snapshot?.scopedBindings.get(own.profileDefinitionId)?.values() ?? [])
+    )]
+      .filter((binding) => binding.status === 'ready' && binding.profile !== undefined)
+      .map((binding) =>
+        appliedDispatchProfile(binding.profile!, binding.alias, own, defaults, resolveId).profile,
+      )
+      .filter(
+        (profile) =>
+          subagentDispatchAllowed(this.catalog, own, profile.name) && !isDispatchBlocked(profile),
+      );
+    const scopedNames = new Set(scopedProfiles.map((profile) => profile.name));
+    const publicProfiles = this.catalogProfiles()
+      .filter((profile) => !scopedNames.has(profile.name))
       .map((profile) => appliedDispatchProfile(profile, profile.name, own, defaults, resolveId).profile)
-      .filter((profile) => !isDispatchBlocked(profile));
-    const profiles =
-      allowlist === undefined
-        ? catalogProfiles
-        : catalogProfiles.filter((profile) => allowlist.includes(profile.name));
+      .filter(
+        (profile) =>
+          subagentDispatchAllowed(this.catalog, own, profile.name) && !isDispatchBlocked(profile),
+      );
+    const profiles = [...publicProfiles, ...scopedProfiles];
     const typeLines = buildProfileDescriptions(
       profiles,
       this.knownToolReferences(),
@@ -207,8 +225,8 @@ export class SubagentTool implements ISubagentTool {
     }
     const routeLines = buildRouteDescriptions(
       this.catalogRoutes().filter((route) => {
-        if (allowlist !== undefined && !allowlist.includes(route.profile)) return false;
-        const base = this.catalog.get(route.profile);
+        if (!subagentDispatchAllowed(this.catalog, own, route.profile)) return false;
+        const base = snapshot?.publicProfiles.get(route.profile) ?? this.catalog.get(route.profile);
         if (base === undefined) return false;
         const effective = appliedDispatchProfile(base, route.profile, own, defaults, resolveId).profile;
         return routePermittedByProfile(route, effective, this.models);
@@ -257,6 +275,21 @@ export class SubagentTool implements ISubagentTool {
     const routes = this.catalog.listRoutes?.() ?? [];
     if (this.catalogReady) this.frozenCatalogRoutes = routes;
     return routes;
+  }
+
+  private catalogSnapshot(): AgentProfileCatalogSnapshot {
+    if (this.frozenCatalogSnapshot !== undefined) return this.frozenCatalogSnapshot;
+    const snapshot = this.catalog.snapshot?.() ?? {
+      publicProfiles: new Map(this.catalog.list().map((profile) => [profile.name, profile])),
+      defaultProfile: this.catalog.getDefault(),
+      routes: new Map(),
+      scopedBindings: new Map(),
+      sourceDefinitions: new Map(),
+      dependencyIndex: new Map(),
+      diagnostics: [],
+    };
+    if (this.catalogReady) this.frozenCatalogSnapshot = snapshot;
+    return snapshot;
   }
 
   private knownToolReferences(): ToolReference[] {
@@ -313,6 +346,8 @@ export class SubagentTool implements ISubagentTool {
         ? this.resumeProfileName(resumeAgentId) ?? RESUMED_LABEL
         : requestedRoute ?? requestedProfileName ?? DEFAULT_PROFILE_NAME;
     const prefix = args.run_in_background === true ? 'Launching background' : 'Launching';
+    if (resumeAgentId === undefined || resumeAgentId.length === 0) await this.catalog.ready;
+    const snapshot = this.catalog.snapshot?.();
     return {
       description: `${prefix} ${profileNameForDisplay} agent: ${args.description}`,
       accesses: ToolAccesses.none(),
@@ -324,7 +359,7 @@ export class SubagentTool implements ISubagentTool {
       },
       approvalRule: this.name,
       matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, profileNameForDisplay),
-      execute: (ctx) => this.execution(args, ctx),
+      execute: (ctx) => this.execution(args, ctx, snapshot),
     };
   }
 
@@ -339,6 +374,7 @@ export class SubagentTool implements ISubagentTool {
     toolCallId: string,
     controller: AbortController,
     runtime: Runtime,
+    snapshot: AgentProfileCatalogSnapshot | undefined,
   ): Promise<SubagentHandle> {
     const modelAlias = normalizeSubagentBindingValue(args.model_alias, 'model_alias');
     const thinkingEffort = normalizeSubagentBindingValue(
@@ -410,35 +446,17 @@ export class SubagentTool implements ISubagentTool {
           : undefined;
       await this.catalog.ready;
       const own = this.profile.data();
-      const selection =
-        args.route === undefined
-          ? (() => {
-              const base = this.catalog.get(requestedProfileName!);
-              if (base === undefined) {
-                const available = this.catalog.list().map((item) => item.name).join(', ');
-                throw new Error2(
-                  ErrorCodes.PROFILE_UNKNOWN,
-                  `Unknown agent type: "${requestedProfileName}". Available agent types: ${available}`,
-                  { details: { profileName: requestedProfileName, available } },
-                );
-              }
-              return { profile: base, baseProfile: base, route: undefined };
-            })()
-          : this.catalog.resolveSelection({ profile: requestedProfileName, route: args.route });
+      const selection = resolveSubagentDispatch(this.catalog, own, {
+        profileName: requestedProfileName,
+        routeId: args.route,
+        snapshot,
+      }).selection;
       const baseProfileName = selection.baseProfile.name;
-      const allowlist = subagentAllowlistFor(this.catalog, own);
-      if (allowlist !== undefined && !allowlist.includes(baseProfileName)) {
-        throw new Error2(
-          ErrorCodes.AGENT_TYPE_NOT_ALLOWED,
-          subagentTypeNotAllowedMessage(baseProfileName, allowlist),
-          { details: { profileName: baseProfileName, allowlist } },
-        );
-      }
       const dispatched = appliedDispatchProfile(
         selection.profile,
         baseProfileName,
         own,
-        this.catalog.getDefault(),
+        snapshot?.defaultProfile ?? this.catalog.getDefault(),
         aliasIdentity(this.models),
       );
       const profile = dispatched.profile;
@@ -523,6 +541,8 @@ export class SubagentTool implements ISubagentTool {
           binding: {
             profile: baseProfileName,
             route: selection.route?.id,
+            resolvedProfile: selection.baseProfile,
+            resolvedRoute: selection.route,
             model: binding.model,
             thinking: binding.thinking,
             lease: dispatched.lease,
@@ -610,6 +630,7 @@ export class SubagentTool implements ISubagentTool {
   private async execution(
     args: SubagentToolInput,
     { toolCallId, signal }: ExecutableToolContext,
+    snapshot: AgentProfileCatalogSnapshot | undefined,
   ): Promise<ExecutableToolResult> {
     try {
       signal.throwIfAborted();
@@ -643,7 +664,7 @@ export class SubagentTool implements ISubagentTool {
 
       let handle: SubagentHandle;
       try {
-        handle = await this.launch(args, toolCallId, controller, runtimeLease.runtime);
+        handle = await this.launch(args, toolCallId, controller, runtimeLease.runtime, snapshot);
       } catch (error) {
         signal.removeEventListener('abort', abortBeforeRegister);
         this.log.warn('subagent launch failed', {

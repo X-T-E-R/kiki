@@ -531,6 +531,7 @@ export interface SessionStateSnapshot {
         inputCacheRead: number;
         inputCacheCreation: number;
       }>>;
+      readonly wireComplete?: boolean;
     };
   } | undefined;
   // src/session/sessionSkillCatalog/skillCatalogService.ts
@@ -1454,6 +1455,7 @@ export interface AgentStateSnapshot {
   'profile': /* ProfileModelState — packages/agent-core-v2/src/agent/profile/profileOps.ts */ {
     readonly modelAlias?: string;
     readonly profileName?: string;
+    readonly profileDefinitionId?: string;
     readonly routeId?: string;
     readonly lockedModelAlias?: string;
     readonly lockedThinkingEffort?: string;
@@ -1477,6 +1479,122 @@ export interface AgentStateSnapshot {
     readonly agentsMdPaths?: readonly string[];
     readonly disallowedTools?: readonly string[];
     readonly subagents?: readonly string[];
+    readonly subagentLeases?: Readonly<Record<string, /* SubagentLease — packages/agent-core-v2/src/app/agentProfileCatalog/subagentLease.ts */ /* NamedSubagentLease — packages/agent-core-v2/src/app/agentProfileCatalog/subagentLease.ts */ {
+      readonly source?: undefined;
+      readonly name: string;
+      readonly description?: string;
+      readonly whenToUse?: string;
+      readonly modelPreference?: 'primary' | 'secondary';
+      readonly modelAlias?: string;
+      readonly thinkingEffort?: string;
+      readonly allowedModels?: readonly string[];
+      readonly denyModels?: readonly string[];
+      readonly allowedEfforts?: readonly string[];
+      readonly tools?: readonly string[] | null;
+      readonly disallowedTools?: readonly string[];
+      readonly subagents?: readonly string[] | null;
+      readonly promptMode?: 'prepend' | 'append' | 'wrap';
+      readonly prompt?: string;
+      readonly delegationNotice?: 'off' | 'auto';
+      readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+      readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-core-v2/src/kosong/contract/provider.ts */ boolean | string | number>> | null;
+      readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-core-v2/src/app/agentProfileCatalog/agentProfileCatalog.ts */ {
+        readonly alias: string;
+        readonly when: string;
+        readonly thinkingEffort?: string;
+        readonly allowedEfforts?: readonly string[];
+        readonly promptMode?: 'prepend' | 'append' | 'wrap';
+        readonly prompt?: string;
+      }[];
+    } | /* SourceSubagentLease — packages/agent-core-v2/src/app/agentProfileCatalog/subagentLease.ts */ {
+      readonly source: string;
+      readonly name: string;
+      readonly description?: string;
+      readonly whenToUse?: string;
+      readonly modelPreference?: 'primary' | 'secondary';
+      readonly modelAlias?: string;
+      readonly thinkingEffort?: string;
+      readonly allowedModels?: readonly string[];
+      readonly denyModels?: readonly string[];
+      readonly allowedEfforts?: readonly string[];
+      readonly tools?: readonly string[] | null;
+      readonly disallowedTools?: readonly string[];
+      readonly subagents?: readonly string[] | null;
+      readonly promptMode?: 'prepend' | 'append' | 'wrap';
+      readonly prompt?: string;
+      readonly delegationNotice?: 'off' | 'auto';
+      readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+      readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-core-v2/src/kosong/contract/provider.ts */ boolean | string | number>> | null;
+      readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-core-v2/src/app/agentProfileCatalog/agentProfileCatalog.ts */ {
+        readonly alias: string;
+        readonly when: string;
+        readonly thinkingEffort?: string;
+        readonly allowedEfforts?: readonly string[];
+        readonly promptMode?: 'prepend' | 'append' | 'wrap';
+        readonly prompt?: string;
+      }[];
+    }>>;
+    readonly spawnPolicy?: /* SpawnConstraints — packages/agent-core-v2/src/app/agentProfileCatalog/subagentLease.ts */ {
+      readonly allowedModels?: readonly string[];
+      readonly denyModels?: readonly string[];
+      readonly allowedEfforts?: readonly string[];
+      readonly disallowedTools?: readonly string[];
+    };
+    readonly appliedLease?: /* NamedSubagentLease — packages/agent-core-v2/src/app/agentProfileCatalog/subagentLease.ts */ {
+      readonly source?: undefined;
+      readonly name: string;
+      readonly description?: string;
+      readonly whenToUse?: string;
+      readonly modelPreference?: 'primary' | 'secondary';
+      readonly modelAlias?: string;
+      readonly thinkingEffort?: string;
+      readonly allowedModels?: readonly string[];
+      readonly denyModels?: readonly string[];
+      readonly allowedEfforts?: readonly string[];
+      readonly tools?: readonly string[] | null;
+      readonly disallowedTools?: readonly string[];
+      readonly subagents?: readonly string[] | null;
+      readonly promptMode?: 'prepend' | 'append' | 'wrap';
+      readonly prompt?: string;
+      readonly delegationNotice?: 'off' | 'auto';
+      readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+      readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-core-v2/src/kosong/contract/provider.ts */ boolean | string | number>> | null;
+      readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-core-v2/src/app/agentProfileCatalog/agentProfileCatalog.ts */ {
+        readonly alias: string;
+        readonly when: string;
+        readonly thinkingEffort?: string;
+        readonly allowedEfforts?: readonly string[];
+        readonly promptMode?: 'prepend' | 'append' | 'wrap';
+        readonly prompt?: string;
+      }[];
+    } | /* SourceSubagentLease — packages/agent-core-v2/src/app/agentProfileCatalog/subagentLease.ts */ {
+      readonly source: string;
+      readonly name: string;
+      readonly description?: string;
+      readonly whenToUse?: string;
+      readonly modelPreference?: 'primary' | 'secondary';
+      readonly modelAlias?: string;
+      readonly thinkingEffort?: string;
+      readonly allowedModels?: readonly string[];
+      readonly denyModels?: readonly string[];
+      readonly allowedEfforts?: readonly string[];
+      readonly tools?: readonly string[] | null;
+      readonly disallowedTools?: readonly string[];
+      readonly subagents?: readonly string[] | null;
+      readonly promptMode?: 'prepend' | 'append' | 'wrap';
+      readonly prompt?: string;
+      readonly delegationNotice?: 'off' | 'auto';
+      readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+      readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-core-v2/src/kosong/contract/provider.ts */ boolean | string | number>> | null;
+      readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-core-v2/src/app/agentProfileCatalog/agentProfileCatalog.ts */ {
+        readonly alias: string;
+        readonly when: string;
+        readonly thinkingEffort?: string;
+        readonly allowedEfforts?: readonly string[];
+        readonly promptMode?: 'prepend' | 'append' | 'wrap';
+        readonly prompt?: string;
+      }[];
+    };
     readonly toolAllowPolicies?: readonly readonly string[][];
   };
   // replayable · durable — folds: ToolsSetActiveTools, ToolsResetActiveTools, ProfileBind

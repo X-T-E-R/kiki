@@ -1,8 +1,11 @@
 import { ILogService } from '#/_base/log/log';
-import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { dirname } from 'pathe';
+
 import { parseAgentFileText } from '#/workspace/workspaceAgentProfileLoader/internal/agentFile';
 import { AgentProfileLoaderBase } from '#/workspace/workspaceAgentProfileLoader/internal/agentProfileLoader';
-import { agentProfileFromFile } from '#/workspace/workspaceAgentProfileLoader/internal/agentProfileFromFile';
+import { profilesFromDiscovery } from '#/workspace/workspaceAgentProfileLoader/internal/agentProfileFromFile';
+import { agentProfileDefinitionId, resolveAgentSourceGraph } from '#/workspace/workspaceAgentProfileLoader/internal/agentSourceGraph';
+import type { AgentFileDefinition } from '#/workspace/workspaceAgentProfileLoader/internal/types';
 import {
   AGENT_PROFILE_SOURCE_PRIORITY,
   type AgentProfileContribution,
@@ -43,25 +46,35 @@ export class ExplicitAgentProfileLoaderService
   }
 
   protected async load(): Promise<AgentProfileContribution> {
-    const files = this.bootstrap.args.agentFiles ?? [];
-    const profiles: AgentProfile[] = [];
-    for (const file of files) {
-      const filePath = resolveAgentPath(file, this.workspace.cwd, this.bootstrap.osHomeDir);
-      const text = await this.fs.readText(filePath);
-      profiles.push(
-        agentProfileFromFile(
-          parseAgentFileText({
-            path: filePath,
-            source: 'explicit',
-            text,
-            warn: (message) => this.log.warn(message),
-          }),
-          (context) => this.user.getDefaultProfile().renderSystemPrompt(context),
-          (context) => this.user.getBuiltinDefault().renderSystemPrompt(context),
-        ),
+    const definitions: AgentFileDefinition[] = [];
+    for (const file of this.bootstrap.args.agentFiles ?? []) {
+      const lexicalPath = resolveAgentPath(file, this.workspace.cwd, this.bootstrap.osHomeDir);
+      const filePath = (await this.fs.realpath(lexicalPath)).replaceAll('\\', '/');
+      definitions.push(
+        parseAgentFileText({
+          path: filePath,
+          source: 'explicit',
+          text: await this.fs.readText(filePath),
+          definitionId: agentProfileDefinitionId(filePath),
+          contributionRoot: (await this.fs.realpath(dirname(filePath))).replaceAll('\\', '/'),
+          warn: (message) => this.log.warn(message),
+        }),
       );
     }
-    return { profiles };
+    const graph = await resolveAgentSourceGraph(this.fs, definitions, (message, error) => {
+      this.log.warn(message, error);
+    });
+    return profilesFromDiscovery(
+      {
+        agents: definitions,
+        routes: [],
+        skipped: [],
+        scannedRoots: definitions.map((definition) => definition.contributionRoot),
+        ...graph,
+      },
+      (context) => this.user.getDefaultProfile().renderSystemPrompt(context),
+      (context) => this.user.getBuiltinDefault().renderSystemPrompt(context),
+    );
   }
 }
 

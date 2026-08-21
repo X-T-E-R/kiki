@@ -10,13 +10,14 @@ import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { IModelService } from '#/kosong/model/model';
 import type { AgentProfileRouteCatalogEntry } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
+import {
+  resolveSubagentDispatch,
+  subagentDispatchAllowed,
+} from '#/app/agentProfileCatalog/subagentDispatch';
 import { ISessionSwarmService, type SessionSwarmTask } from '#/features/swarm/session/sessionSwarm';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { IAgentProfileService } from '#/agent/profile/profile';
-import {
-  subagentAllowlistFor,
-  subagentTypeNotAllowedMessage,
-} from '#/app/agentProfileCatalog/profile-shared';
 import {
   aliasIdentity,
   appliedDispatchProfile,
@@ -123,12 +124,11 @@ export class AgentSwarmTool implements IAgentSwarmTool {
     let description = modelLines === undefined
       ? AGENT_SWARM_DESCRIPTION
       : `${AGENT_SWARM_DESCRIPTION}\n\n${modelLines}`;
-    const allowlist = subagentAllowlistFor(this.catalog, this.profile.data());
     const own = this.profile.data();
     const defaults = this.catalog.getDefault();
     const resolveId = aliasIdentity(this.models);
     const routes = this.catalogRoutes().filter((route) => {
-      if (allowlist !== undefined && !allowlist.includes(route.profile)) return false;
+      if (!subagentDispatchAllowed(this.catalog, own, route.profile)) return false;
       const base = this.catalog.get(route.profile);
       if (base === undefined) return false;
       const effective = appliedDispatchProfile(base, route.profile, own, defaults, resolveId).profile;
@@ -205,40 +205,24 @@ export class AgentSwarmTool implements IAgentSwarmTool {
       (args.route === undefined ? DEFAULT_SUBAGENT_TYPE : undefined);
     let profileName = requestedProfileName ?? DEFAULT_SUBAGENT_TYPE;
     let routeId: string | undefined;
+    let catalogSnapshot: AgentProfileCatalogSnapshot | undefined;
     let binding: { model: string; thinking?: string } | undefined;
     if ((args.items?.length ?? 0) > 0) {
       await this.catalog.ready;
       const own = this.profile.data();
-      const selection =
-        args.route === undefined
-          ? (() => {
-              const base = this.catalog.get(requestedProfileName!);
-              if (base === undefined) {
-                const available = this.catalog.list().map((item) => item.name).join(', ');
-                throw new Error2(
-                  ErrorCodes.PROFILE_UNKNOWN,
-                  `Unknown agent type: "${requestedProfileName}". Available agent types: ${available}`,
-                  { details: { profileName: requestedProfileName, available } },
-                );
-              }
-              return { profile: base, baseProfile: base, route: undefined };
-            })()
-          : this.catalog.resolveSelection({ profile: requestedProfileName, route: args.route });
+      catalogSnapshot = this.catalog.snapshot?.();
+      const selection = resolveSubagentDispatch(this.catalog, own, {
+        profileName: requestedProfileName,
+        routeId: args.route,
+        snapshot: catalogSnapshot,
+      }).selection;
       profileName = selection.baseProfile.name;
       routeId = selection.route?.id;
-      const allowlist = subagentAllowlistFor(this.catalog, own);
-      if (allowlist !== undefined && !allowlist.includes(profileName)) {
-        throw new Error2(
-          ErrorCodes.AGENT_TYPE_NOT_ALLOWED,
-          subagentTypeNotAllowedMessage(profileName, allowlist),
-          { details: { profileName, allowlist } },
-        );
-      }
       const targetDispatched = appliedDispatchProfile(
         selection.profile,
         profileName,
         own,
-        this.catalog.getDefault(),
+        catalogSnapshot?.defaultProfile ?? this.catalog.getDefault(),
         aliasIdentity(this.models),
       );
       const targetProfile = targetDispatched.profile;
@@ -327,6 +311,7 @@ export class AgentSwarmTool implements IAgentSwarmTool {
       return {
         ...common,
         kind: 'spawn' as const,
+        catalogSnapshot,
         binding,
       };
     });

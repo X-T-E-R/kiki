@@ -15,7 +15,9 @@ import {
   FollowupTaskTool,
   ListAgentsTool,
   SpawnAgentInputSchema,
+  SpawnAgentTool,
 } from '#/agent/tools/agent-collaboration/agentCollaborationTool';
+import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import {
   COLLABORATION_AGENT_TYPE_LABEL,
@@ -173,6 +175,90 @@ describe('agent collaboration compatibility fixes', () => {
         fork_turns: '   ',
       }).success,
     ).toBe(false);
+  });
+
+  it('rejects a scoped alias excluded by the caller allowlist', async () => {
+    const publicProfile = normalizeAgentProfile({
+      name: 'writer',
+      definitionId: 'public-writer',
+      systemPrompt: () => 'PUBLIC',
+    });
+    const scopedProfile = normalizeAgentProfile({
+      name: 'writer',
+      definitionId: 'private-writer',
+      systemPrompt: () => 'PRIVATE',
+    });
+    const snapshot = {
+      publicProfiles: new Map([['writer', publicProfile]]),
+      defaultProfile: publicProfile,
+      routes: new Map(),
+      scopedBindings: new Map([
+        [
+          'parent-definition',
+          new Map([
+            [
+              'writer',
+              {
+                parentDefinitionId: 'parent-definition',
+                alias: 'writer',
+                source: './_private/writer.md',
+                lease: { name: 'writer', source: './_private/writer.md' },
+                status: 'ready' as const,
+                sourceDefinitionId: 'private-writer',
+                profile: scopedProfile,
+              },
+            ],
+          ]),
+        ],
+      ]),
+      sourceDefinitions: new Map([['private-writer', scopedProfile]]),
+      dependencyIndex: new Map(),
+      diagnostics: [],
+    };
+    const catalog = {
+      ready: Promise.resolve(),
+      get: (name: string) => snapshot.publicProfiles.get(name),
+      getDefault: () => publicProfile,
+      list: () => [...snapshot.publicProfiles.values()],
+      snapshot: () => snapshot,
+      resolveSelection: () => ({ profile: publicProfile, baseProfile: publicProfile }),
+    };
+    const tool = new SpawnAgentTool(
+      { create: vi.fn() } as never,
+      undefined as never,
+      catalog as never,
+      { agentId: 'main' } as never,
+      { list: () => [] } as never,
+      {
+        data: () => ({
+          profileName: 'parent',
+          profileDefinitionId: 'parent-definition',
+          modelAlias: 'model',
+          subagents: [],
+        }),
+      } as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      { get: () => undefined } as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      undefined as never,
+      { release: () => {} } as never,
+      undefined as never,
+    );
+
+    const result = await tool.run(
+      { task_name: 'writer_task', message: 'Write', agent_type: 'writer' },
+      { toolCallId: 'call-1', signal: new AbortController().signal } as never,
+    );
+
+    expect(result).toMatchObject({ isError: true });
+    expect(result.output).toContain('not allowed');
   });
 
   it('reports a missing latest task as unknown instead of errored', async () => {

@@ -1,5 +1,6 @@
 import { collection } from '#/_base/di/collection';
 import type { AgentProfile, AgentProfileRouteDefinition } from './agentProfileCatalog';
+import type { AgentProfileDiagnostic, ScopedAgentProfileBinding } from './scopedAgentProfile';
 
 export interface SkippedAgentFile {
   readonly path: string;
@@ -12,6 +13,10 @@ export interface AgentProfileContribution {
   readonly routes?: readonly AgentProfileRouteDefinition[];
   readonly skipped?: readonly SkippedAgentFile[];
   readonly scannedRoots?: readonly string[];
+  readonly scopedBindings?: ReadonlyMap<string, ReadonlyMap<string, ScopedAgentProfileBinding>>;
+  readonly sourceDefinitions?: ReadonlyMap<string, AgentProfile>;
+  readonly dependencyIndex?: ReadonlyMap<string, readonly string[]>;
+  readonly diagnostics?: readonly AgentProfileDiagnostic[];
 }
 
 export interface AgentProfileContributionRecord {

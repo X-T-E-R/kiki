@@ -19,6 +19,7 @@ const RequestParamsSchema = z.record(
 export interface ProfileModelState {
   readonly modelAlias?: string;
   readonly profileName?: string;
+  readonly profileDefinitionId?: string;
   readonly routeId?: string;
   readonly lockedModelAlias?: string;
   readonly lockedThinkingEffort?: string;
@@ -40,6 +41,7 @@ export interface ProfileModelState {
 const profileBindSchema = z.object({
   modelAlias: z.string().optional(),
   profileName: z.string().optional(),
+  profileDefinitionId: z.string().optional(),
   routeId: z.string().optional(),
   lockedModelAlias: z.string().optional(),
   lockedThinkingEffort: z.string().optional(),
@@ -127,6 +129,7 @@ export const profileKey = defineState(
   .on(ProfileBind, (s, e) => ({
     modelAlias: e.modelAlias ?? s.modelAlias,
     profileName: e.profileName ?? s.profileName,
+    profileDefinitionId: e.profileDefinitionId,
     routeId: e.routeId,
     lockedModelAlias: e.lockedModelAlias,
     lockedThinkingEffort: e.lockedThinkingEffort,

@@ -16,6 +16,7 @@ import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { Event2 } from '#/app/event/event2';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
+import { resolveSubagentDispatch } from '#/app/agentProfileCatalog/subagentDispatch';
 import {
   aliasIdentity,
   appliedDispatchProfile,
@@ -146,23 +147,13 @@ export class SessionSwarmService implements ISessionSwarmService {
     options.signal.throwIfAborted();
     const caller = this.requireHandle(callerAgentId, 'Caller agent');
     await this.catalog.ready;
-    const selection =
-      options.routeId === undefined
-        ? (() => {
-            const base = this.catalog.get(options.profileName);
-            if (base === undefined) {
-              const available = this.catalog.list().map((item) => item.name).join(', ');
-              throw new Error2(
-                ErrorCodes.PROFILE_UNKNOWN,
-                `Unknown agent type: "${options.profileName}". Available agent types: ${available}`,
-                { details: { profileName: options.profileName, available } },
-              );
-            }
-            return { profile: base, baseProfile: base, route: undefined };
-          })()
-        : this.catalog.resolveSelection({ profile: options.profileName, route: options.routeId });
-    const profile = selection.profile;
     const callerData = caller.accessor.get(IAgentProfileService).data();
+    const selection = resolveSubagentDispatch(this.catalog, callerData, {
+      profileName: options.profileName,
+      routeId: options.routeId,
+      snapshot: options.catalogSnapshot,
+    }).selection;
+    const profile = selection.profile;
     const callerRuntime = caller.accessor.get(IAgentRuntimeBindingService).current;
     if (callerData.modelAlias === undefined) {
       throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'Caller agent has no model bound', {
@@ -173,7 +164,7 @@ export class SessionSwarmService implements ISessionSwarmService {
       profile,
       selection.baseProfile.name,
       callerData,
-      this.catalog.getDefault(),
+      options.catalogSnapshot?.defaultProfile ?? this.catalog.getDefault(),
       aliasIdentity(this.models),
     );
     assertAutomaticDispatchPermitted(dispatched.profile, selection.route, this.models);
@@ -247,6 +238,8 @@ export class SessionSwarmService implements ISessionSwarmService {
         binding: {
           profile: selection.baseProfile.name,
           route: selection.route?.id,
+          resolvedProfile: selection.baseProfile,
+          resolvedRoute: selection.route,
           model: binding.model,
           thinking: binding.thinking,
           lease: dispatched.lease,

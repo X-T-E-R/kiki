@@ -263,4 +263,76 @@ describe('delegation context at bind', () => {
     expect(profile.getSystemPrompt()).toContain('LEASE PREPEND');
     expect(profile.getSystemPrompt()).toContain('CHILD BODY');
   });
+
+  it('restores a scoped definition exactly with its lease and spawn policy', async () => {
+    const publicProfile = normalizeAgentProfile({
+      name: 'secret',
+      definitionId: 'public-secret',
+      systemPrompt: () => 'PUBLIC BODY',
+    });
+    const scopedProfile = normalizeAgentProfile({
+      name: 'secret',
+      definitionId: 'private-secret',
+      systemPrompt: () => 'PRIVATE BODY',
+    });
+    const catalog: ISessionAgentProfileCatalog = {
+      ...catalogWith(publicProfile),
+      snapshot: () => ({
+        publicProfiles: new Map([['secret', publicProfile]]),
+        defaultProfile: publicProfile,
+        routes: new Map(),
+        scopedBindings: new Map([
+          [
+            'parent-definition',
+            new Map([
+              [
+                'secret',
+                {
+                  parentDefinitionId: 'parent-definition',
+                  alias: 'secret',
+                  source: './_private/secret.md',
+                  lease: { name: 'secret', source: './_private/secret.md' },
+                  status: 'ready',
+                  sourceDefinitionId: 'private-secret',
+                  profile: scopedProfile,
+                },
+              ],
+            ]),
+          ],
+        ]),
+        sourceDefinitions: new Map([['private-secret', scopedProfile]]),
+        dependencyIndex: new Map(),
+        diagnostics: [],
+      }),
+    };
+    ctx = createTestAgent(
+      homeDirServices(homeDir),
+      sessionService(ISessionAgentProfileCatalog, catalog),
+    );
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({
+      profile: 'secret',
+      resolvedProfile: scopedProfile,
+      model: MOCK_MODEL,
+      delegationPosition: 'sub',
+      lease: {
+        name: 'secret',
+        promptMode: 'prepend',
+        prompt: 'LEASE PREPEND',
+      },
+      spawnPolicy: { disallowedTools: ['Bash'] },
+    });
+    const snapshot = profile.data();
+    profile.applyBindingSnapshot(snapshot);
+
+    await profile.refreshSystemPrompt();
+
+    expect(profile.getSystemPrompt()).toContain('LEASE PREPEND');
+    expect(profile.getSystemPrompt()).toContain('PRIVATE BODY');
+    expect(profile.getSystemPrompt()).not.toContain('PUBLIC BODY');
+    expect(
+      (profile as unknown as { activeProfile?: { disallowedTools?: readonly string[] } })
+        .activeProfile?.disallowedTools,
+    ).toContain('Bash');
+  });
 });

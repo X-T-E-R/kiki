@@ -34,6 +34,12 @@ import type {
   ResolvedAgentProfileRoute,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { resolveAgentProfileRoute } from '#/app/agentProfileCatalog/agentProfileRoute';
+import {
+  scopedBinding,
+  type AgentProfileCatalogSnapshot,
+  type AgentProfileDiagnostic,
+  type ScopedAgentProfileBinding,
+} from '#/app/agentProfileCatalog/scopedAgentProfile';
 import { AGENT_PROFILE_ROUTES_FLAG_ID } from '#/app/agentProfileCatalog/flag';
 import { IFlagService } from '#/app/flag/flag';
 import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfileCatalog';
@@ -76,6 +82,7 @@ export class SessionAgentProfileCatalogService
   private inspections = new Map<string, AgentProfileInspection>();
   private routes = new Map<string, ResolvedAgentProfileRoute>();
   private routeDiagnosticsValue: AgentProfileRouteDiagnostic[] = [];
+  private snapshotValue: AgentProfileCatalogSnapshot | undefined;
   private readonly readyPromise: Promise<void>;
   private readonly onDidChangeEmitter = this._register(new Emitter<string>());
   readonly onDidChange: Event<string> = this.onDidChangeEmitter.event;
@@ -149,6 +156,23 @@ export class SessionAgentProfileCatalogService
     return this.flags.enabled(AGENT_PROFILE_ROUTES_FLAG_ID)
       ? this.routeDiagnosticsValue
       : [];
+  }
+
+  diagnostics(): readonly AgentProfileDiagnostic[] {
+    return this.snapshot().diagnostics;
+  }
+
+  snapshot(): AgentProfileCatalogSnapshot {
+    const snapshot = this.snapshotValue;
+    if (snapshot === undefined) throw new BugIndicatingError('Agent profile catalog snapshot is unavailable');
+    return snapshot;
+  }
+
+  getScopedBinding(
+    parentDefinitionId: string | undefined,
+    alias: string,
+  ): ScopedAgentProfileBinding | undefined {
+    return scopedBinding(this.snapshot(), parentDefinitionId, alias);
   }
 
   resolveSelection(input: {
@@ -328,6 +352,54 @@ export class SessionAgentProfileCatalogService
     this.defaultBindingProfile = defaultBindingProfile;
     this.inspections = inspections;
     this.reprojectRoutes(entries, merged);
+    this.reprojectSnapshot(entries, merged, defaultBindingProfile);
+  }
+
+  private reprojectSnapshot(
+    entries: readonly AgentProfileRegistration[],
+    profiles: ReadonlyMap<string, AgentProfile>,
+    defaultBindingProfile: AgentProfile | undefined,
+  ): void {
+    const ordered = entries.toSorted((a, b) => b.priority - a.priority);
+    const scopedBindings = new Map<string, ReadonlyMap<string, ScopedAgentProfileBinding>>();
+    const sourceDefinitions = new Map<string, AgentProfile>();
+    const dependencyIndex = new Map<string, readonly string[]>();
+    const diagnostics: AgentProfileDiagnostic[] = [];
+    const visited = new Set<string>();
+    const visit = (definitionId: string): void => {
+      if (visited.has(definitionId)) return;
+      visited.add(definitionId);
+      for (const entry of ordered) {
+        const table = entry.contribution.scopedBindings?.get(definitionId);
+        if (table === undefined) continue;
+        scopedBindings.set(definitionId, new Map(table));
+        for (const binding of table.values()) {
+          if (binding.diagnostic !== undefined) diagnostics.push(binding.diagnostic);
+          if (binding.sourceDefinitionId === undefined) continue;
+          const source = entry.contribution.sourceDefinitions?.get(binding.sourceDefinitionId);
+          if (source !== undefined && !sourceDefinitions.has(binding.sourceDefinitionId)) {
+            sourceDefinitions.set(binding.sourceDefinitionId, source);
+          }
+          const owners = entry.contribution.dependencyIndex?.get(binding.sourceDefinitionId);
+          if (owners !== undefined) dependencyIndex.set(binding.sourceDefinitionId, [...owners]);
+          visit(binding.sourceDefinitionId);
+        }
+        return;
+      }
+    };
+    for (const profile of profiles.values()) {
+      if (profile.definitionId !== undefined) visit(profile.definitionId);
+    }
+    const defaultProfile = profiles.get(DEFAULT_AGENT_PROFILE_NAME) ?? defaultBindingProfile;
+    this.snapshotValue = {
+      publicProfiles: new Map(profiles),
+      defaultProfile,
+      routes: new Map(this.routes),
+      scopedBindings,
+      sourceDefinitions,
+      dependencyIndex,
+      diagnostics,
+    };
   }
 
   private reprojectRoutes(

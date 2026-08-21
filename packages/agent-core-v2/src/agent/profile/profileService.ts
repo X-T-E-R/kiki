@@ -78,6 +78,7 @@ import {
   intersectSpawnPolicy,
   spawnConstraintOrigin,
 } from '#/app/agentProfileCatalog/applySubagentLease';
+import { resolveSnapshotProfileDefinition } from '#/app/agentProfileCatalog/subagentDispatch';
 import {
   resolveMainModelCandidate,
   resolveMainThinkingCandidate,
@@ -184,6 +185,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   private activeProfile: ResolvedAgentProfile | undefined;
+  private activeProfileDefinitionId: string | undefined;
   private readonly emittedDeviationWarnings = new Set<string>();
   private delegationPosition: DelegationPosition = 'main';
 
@@ -295,6 +297,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       this.activeProfile?.name !== changed.profileName
     ) {
       this.activeProfile = undefined;
+      this.activeProfileDefinitionId = undefined;
     }
     if (Object.keys(configChanged).length > 0) {
       void this.dispatcher.dispatch(new ConfigUpdate(this.resolveConfigPayload(configChanged)));
@@ -307,6 +310,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   applyBindingSnapshot(snapshot: ProfileBindingSnapshot): void {
     this.activeProfile = undefined;
+    this.activeProfileDefinitionId = snapshot.profileDefinitionId;
     this.activeToolNamesOverlay = undefined;
     const agentsMdPaths =
       snapshot.agentsMdPaths ?? extractAgentsMdPathsFromSystemPrompt(snapshot.systemPrompt);
@@ -314,6 +318,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       new ProfileBind({
         modelAlias: snapshot.modelAlias,
         profileName: snapshot.profileName,
+        profileDefinitionId: snapshot.profileDefinitionId,
         routeId: snapshot.routeId,
         lockedModelAlias: snapshot.lockedModelAlias,
         lockedThinkingEffort: snapshot.lockedThinkingEffort,
@@ -357,25 +362,31 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       this.assertRouteBindable(input.route);
     }
     const selection =
-      input.route === undefined
-        ? (() => {
-            const base =
-              input.profile === DEFAULT_AGENT_PROFILE_NAME
-                ? this.catalog.getDefault()
-                : input.profile === undefined
-                  ? undefined
-                  : this.catalog.get(input.profile);
-            if (base === undefined) {
-              const available = this.catalog.list().map((item) => item.name).join(', ');
-              throw new ProfileError(
-                ProfileErrors.codes.PROFILE_UNKNOWN,
-                `Unknown agent profile: "${input.profile ?? ''}". Available profiles: ${available}`,
-                { profile: input.profile, available },
-              );
-            }
-            return { profile: base, baseProfile: base, route: undefined };
-          })()
-        : this.catalog.resolveSelection({ profile: input.profile, route: input.route });
+      input.resolvedProfile !== undefined
+        ? {
+            profile: input.resolvedRoute?.effectiveProfile ?? input.resolvedProfile,
+            baseProfile: input.resolvedProfile,
+            route: input.resolvedRoute,
+          }
+        : input.route === undefined
+          ? (() => {
+              const base =
+                input.profile === DEFAULT_AGENT_PROFILE_NAME
+                  ? this.catalog.getDefault()
+                  : input.profile === undefined
+                    ? undefined
+                    : this.catalog.get(input.profile);
+              if (base === undefined) {
+                const available = this.catalog.list().map((item) => item.name).join(', ');
+                throw new ProfileError(
+                  ProfileErrors.codes.PROFILE_UNKNOWN,
+                  `Unknown agent profile: "${input.profile ?? ''}". Available profiles: ${available}`,
+                  { profile: input.profile, available },
+                );
+              }
+              return { profile: base, baseProfile: base, route: undefined };
+            })()
+          : this.catalog.resolveSelection({ profile: input.profile, route: input.route });
     const resolveId = aliasIdentity(this.models);
     const leased = applyLease(selection.profile, input.lease, resolveId);
     const profile = applySpawnPolicy(leased, input.spawnPolicy, resolveId);
@@ -520,10 +531,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     }
 
     this.activeProfile = profile;
+    this.activeProfileDefinitionId = selection.baseProfile.definitionId;
     this.activeToolNamesOverlay = undefined;
     await this.dispatcher.dispatch(new ProfileBind({
       modelAlias: alias,
       profileName: selection.baseProfile.name,
+      profileDefinitionId: selection.baseProfile.definitionId,
       routeId: selection.route?.id,
       lockedModelAlias: canonicalRouteModelAlias,
       lockedThinkingEffort: selection.route?.lockedThinkingEffort,
@@ -664,6 +677,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   useProfile(profile: ResolvedAgentProfile, context: SystemPromptContext): void {
     this.activeProfile = profile;
+    this.activeProfileDefinitionId = profile.definitionId;
     const rendered = profile.renderSystemPrompt(context);
     this.update({
       profileName: profile.name,
@@ -678,6 +692,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   async applyProfile(profile: ResolvedAgentProfile, options?: ApplyProfileOptions): Promise<void> {
     const context = await this.buildSystemPromptContext(profile, options);
     this.activeProfile = profile;
+    this.activeProfileDefinitionId = profile.definitionId;
     const assembled = await this.assembleBoundSystemPrompt(
       profile,
       context,
@@ -836,6 +851,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       modelAlias: this.modelAlias,
       modelCapabilities: model?.capabilities ?? UNKNOWN_CAPABILITY,
       profileName: this.profileName,
+      profileDefinitionId: this.activeProfileDefinitionId ?? this.profileState.profileDefinitionId,
       routeId: this.routeId,
       lockedModelAlias: this.profileState.lockedModelAlias,
       lockedThinkingEffort: this.profileState.lockedThinkingEffort,
@@ -1173,15 +1189,21 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const profileName = this.profileName;
     if (profileName === undefined) return undefined;
     if (this.routeId !== undefined) return undefined;
+    const definitionId = this.profileState.profileDefinitionId;
     const catalogProfile =
-      profileName === DEFAULT_AGENT_PROFILE_NAME
-        ? this.catalog.getDefault()
-        : this.catalog.get(profileName);
+      definitionId === undefined
+        ? profileName === DEFAULT_AGENT_PROFILE_NAME
+          ? this.catalog.getDefault()
+          : this.catalog.get(profileName)
+        : this.catalog.snapshot === undefined
+          ? undefined
+          : resolveSnapshotProfileDefinition(this.catalog.snapshot(), definitionId, profileName);
     if (catalogProfile === undefined) return undefined;
-    return applyLease(
-      catalogProfile,
-      this.profileState.appliedLease,
-      aliasIdentity(this.models),
+    const resolveId = aliasIdentity(this.models);
+    return applySpawnPolicy(
+      applyLease(catalogProfile, this.profileState.appliedLease, resolveId),
+      this.profileState.spawnPolicy,
+      resolveId,
     );
   }
 

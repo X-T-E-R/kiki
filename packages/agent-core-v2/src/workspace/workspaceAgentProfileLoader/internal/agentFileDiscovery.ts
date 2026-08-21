@@ -5,6 +5,7 @@ import { HostFsError, OsFsErrors } from '#/os/interface/hostFsErrors';
 
 import { AgentFileParseError, parseAgentFileText } from './agentFile';
 import { parseAgentRouteFileText } from './agentRouteFile';
+import { agentProfileDefinitionId, resolveAgentSourceGraph } from './agentSourceGraph';
 import { isDirectoryPath, isFilePath } from './paths';
 import type {
   AgentFileDefinition,
@@ -45,14 +46,19 @@ export async function discoverAgentFiles(
 
   async function parseAndRegister(filePath: string, root: AgentFileRoot): Promise<void> {
     try {
-      const text = await fs.readText(filePath);
+      const [canonicalPath, contributionRoot] = (
+        await Promise.all([fs.realpath(filePath), fs.realpath(root.path)])
+      ).map((path) => path.replaceAll('\\', '/')) as [string, string];
+      const text = await fs.readText(canonicalPath);
       const agent = parseAgentFileText({
-        path: filePath,
+        path: canonicalPath,
         source: root.source,
         text,
+        definitionId: agentProfileDefinitionId(canonicalPath),
+        contributionRoot,
         warn: (message) => warn?.(message),
       });
-      if (!byName.has(agent.name)) {
+      if (!agent.private && !byName.has(agent.name)) {
         byName.set(agent.name, agent);
       }
     } catch (error) {
@@ -93,7 +99,7 @@ export async function discoverAgentFiles(
     }
 
     for (const entry of entries) {
-      if (entry.startsWith('.') || entry === 'node_modules') continue;
+      if (entry.startsWith('.') || entry === 'node_modules' || entry.toLowerCase() === '_private') continue;
       const entryPath = join(dirPath, entry);
       try {
         if (await isDirectoryPath(fs, entryPath)) {
@@ -196,11 +202,16 @@ export async function discoverAgentFiles(
     );
   }
 
+  const agents = [...byName.values()].toSorted((a, b) => a.name.localeCompare(b.name));
+  const graph = await resolveAgentSourceGraph(fs, agents, (message, error) => {
+    warnCapped(message, message, error);
+  });
   return {
-    agents: [...byName.values()].toSorted((a, b) => a.name.localeCompare(b.name)),
+    agents,
     routes: [...byRouteId.values()].toSorted((a, b) => a.id.localeCompare(b.id)),
     skipped,
     scannedRoots: roots.map((root) => root.path),
+    ...graph,
   };
 }
 

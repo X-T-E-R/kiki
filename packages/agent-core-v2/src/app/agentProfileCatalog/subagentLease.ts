@@ -14,7 +14,7 @@ export class SubagentLeaseParseError extends Error {
 
 export type SubagentLeasePromptMode = AgentModelProfilePromptMode;
 
-export interface SubagentLease {
+interface SubagentLeaseOverlay {
   readonly name: string;
   readonly description?: string;
   readonly whenToUse?: string;
@@ -35,6 +35,20 @@ export interface SubagentLease {
   readonly modelProfiles?: readonly AgentModelProfile[];
 }
 
+export interface NamedSubagentLease extends SubagentLeaseOverlay {
+  readonly source?: never;
+}
+
+export interface SourceSubagentLease extends SubagentLeaseOverlay {
+  readonly source: string;
+}
+
+export type SubagentLease = NamedSubagentLease | SourceSubagentLease;
+
+export function isSourceSubagentLease(lease: SubagentLease): lease is SourceSubagentLease {
+  return lease.source !== undefined;
+}
+
 export interface SpawnConstraints {
   readonly allowedModels?: readonly string[];
   readonly denyModels?: readonly string[];
@@ -51,6 +65,7 @@ const AGENT_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 const LEASE_KEYS = new Set([
   'name',
+  'source',
   'description',
   'whenToUse',
   'model_preference',
@@ -209,6 +224,7 @@ function parseLeaseMapping(
       `Frontmatter field "${prefix}.name" in ${filePath} must be kebab-case`,
     );
   }
+  const source = parseSourcePath(item['source'], `${prefix}.source`, filePath);
   const modelPreference = parseModelPreference(item['model_preference'], `${prefix}.model_preference`, filePath);
   const modelAlias = optionalString(item['model_alias'], `${prefix}.model_alias`, filePath);
   if (modelPreference !== undefined && modelAlias !== undefined) {
@@ -252,6 +268,7 @@ function parseLeaseMapping(
     rawSubagents === undefined ? undefined : rawSubagents.includes('*') ? null : rawSubagents;
   return {
     name,
+    ...(source === undefined ? {} : { source }),
     ...(description === undefined ? {} : { description }),
     ...(whenToUse === undefined ? {} : { whenToUse }),
     ...(modelPreference === undefined ? {} : { modelPreference }),
@@ -501,6 +518,29 @@ function splitCommaList(value: string): readonly string[] | undefined {
     .map((item) => item.trim())
     .filter((item) => item !== '');
   return names.length === 0 ? undefined : names;
+}
+
+function parseSourcePath(value: unknown, field: string, filePath: string): string | undefined {
+  const source = optionalString(value, field, filePath);
+  if (source === undefined) return undefined;
+  if (
+    source.startsWith('~') ||
+    source.startsWith('/') ||
+    source.startsWith('\\') ||
+    /^[a-zA-Z]:[\\/]/u.test(source) ||
+    /^[a-zA-Z][a-zA-Z0-9+.-]*:/u.test(source) ||
+    /\$(?:\{|[a-zA-Z_])|%[^%]+%/u.test(source)
+  ) {
+    throw new SubagentLeaseParseError(
+      `Frontmatter field "${field}" in ${filePath} must be a relative .md path without home, URI, or environment-variable expansion`,
+    );
+  }
+  if (!source.toLowerCase().endsWith('.md')) {
+    throw new SubagentLeaseParseError(
+      `Frontmatter field "${field}" in ${filePath} must be a relative .md path`,
+    );
+  }
+  return source.replaceAll('\\', '/');
 }
 
 function requiredString(value: unknown, field: string, filePath: string): string {

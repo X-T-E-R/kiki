@@ -13,7 +13,7 @@
  * test/workspace/workspaceAgentProfileLoader/agentProfileLoader.test.ts`.
  */
 
-import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
 import { join } from 'pathe';
@@ -74,6 +74,8 @@ import { IFlagService } from '#/app/flag/flag';
 import { AGENT_PROFILE_ROUTES_FLAG_ID } from '#/app/agentProfileCatalog/flag';
 import { isToolActive } from '#/agent/toolPolicy/evaluate';
 import { parseAgentRouteFileText } from '#/workspace/workspaceAgentProfileLoader/internal/agentRouteFile';
+import { resolveAgentSourceGraph } from '#/workspace/workspaceAgentProfileLoader/internal/agentSourceGraph';
+import type { AgentFileDefinition } from '#/workspace/workspaceAgentProfileLoader/internal/types';
 import { AgentProfileWriterService } from '#/workspace/workspaceAgentProfileLoader/agentProfileWriterService';
 import { AgentProfileWriteErrors } from '#/workspace/workspaceAgentProfileLoader/errors';
 
@@ -178,6 +180,20 @@ function recordingFsWatchStub(): {
 function agentMd(name: string, description: string, override = false): string {
   const overrideLine = override ? 'override: true\n' : '';
   return `---\nname: ${name}\ndescription: ${description}\n${overrideLine}---\n\nYou are ${name}.\n`;
+}
+
+function sourceParentMd(
+  name: string,
+  alias: string,
+  source: string,
+  extraLease = '',
+  extraProfile = '',
+): string {
+  return `---\nname: ${name}\ndescription: ${name}\n${extraProfile}subagents:\n  - \"*\"\n  - name: ${alias}\n    source: ${source}\n${extraLease}---\n\nYou are ${name}.\n`;
+}
+
+function privateAgentMd(name: string, description: string, extra = ''): string {
+  return `---\nname: ${name}\ndescription: ${description}\nprivate: true\n${extra}---\n\nYou are ${description}.\n`;
 }
 
 function routeMd(
@@ -1643,6 +1659,60 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
+  it('does not recanonicalize a contribution root while resolving one source binding', async () => {
+    await withFixture(async (fixture) => {
+      const agentsDir = join(fixture.homeDir, 'agents');
+      await mkdir(agentsDir, { recursive: true });
+      const root = (await realpath(agentsDir)).replaceAll('\\', '/');
+      const privateDir = join(root, '_private');
+      await mkdir(privateDir, { recursive: true });
+      await writeFile(
+        join(privateDir, 'writer.md'),
+        privateAgentMd('writer', 'private writer'),
+      );
+      const parent: AgentFileDefinition = {
+        name: 'parent',
+        definitionId: join(root, 'parent.md'),
+        contributionRoot: root,
+        private: false,
+        description: 'parent',
+        override: false,
+        subagents: undefined,
+        subagentLeases: {
+          writer: {
+            name: 'writer',
+            source: './_private/writer.md',
+          },
+        },
+        prompt: 'parent',
+        path: join(root, 'parent.md'),
+        source: 'user',
+      };
+      const base = new HostFileSystem();
+      let rootRealpathCalls = 0;
+      const hostFs = new Proxy(base, {
+        get(target, property) {
+          if (property === 'realpath') {
+            return async (path: string) => {
+              if (path === root) {
+                rootRealpathCalls += 1;
+                throw new Error('contribution root disappeared');
+              }
+              return target.realpath(path);
+            };
+          }
+          const value = Reflect.get(target, property);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+
+      const graph = await resolveAgentSourceGraph(hostFs, [parent]);
+
+      expect(rootRealpathCalls).toBe(0);
+      expect(graph.scopedBindings.get(parent.definitionId)?.get('writer')?.status).toBe('ready');
+    });
+  });
+
   it('withdraws a loader’s record (and re-projects the catalog) when the loader is disposed', async () => {
     await withFixture(async (fixture) => {
       await writeAgent(
@@ -1659,6 +1729,239 @@ describe('agent profile loaders + session catalog', () => {
         expect(stack.registry.entries().some((entry) => entry.sourceId === 'user')).toBe(false);
         expect(stack.catalog.get('user-only')).toBeUndefined();
         expect(stack.catalog.get(DEFAULT_AGENT_PROFILE_NAME)?.description).toBe('builtin default');
+      });
+    });
+  });
+
+  it('keeps private aliases scoped to each winning parent while wildcard remains public-only', async () => {
+    await withFixture(async (fixture) => {
+      const userRoot = join(fixture.homeDir, 'agents');
+      const workspaceRoot = join(fixture.workDir, '.kimi-code', 'agents');
+      await writeAgent(userRoot, 'user-team.md', sourceParentMd('user-team', 'writer', './_private/writer.md', '    model_alias: user-model\n'));
+      await writeAgent(join(userRoot, '_private'), 'writer.md', agentMd('shared-child-name', 'user writer'));
+      await writeAgent(workspaceRoot, 'workspace-team.md', sourceParentMd('workspace-team', 'writer', './_private/writer.md', '    model_alias: workspace-model\n'));
+      await writeAgent(join(workspaceRoot, '_private'), 'writer.md', agentMd('shared-child-name', 'workspace writer'));
+      await writeAgent(userRoot, 'public-helper.md', agentMd('public-helper', 'public helper'));
+
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const snapshot = stack.catalog.snapshot();
+        const userParent = stack.catalog.get('user-team')!;
+        const workspaceParent = stack.catalog.get('workspace-team')!;
+        const userWriter = stack.catalog.getScopedBinding(userParent.definitionId, 'writer')!;
+        const workspaceWriter = stack.catalog.getScopedBinding(workspaceParent.definitionId, 'writer')!;
+
+        expect(stack.catalog.list().map((profile) => profile.name)).toContain('public-helper');
+        expect(stack.catalog.get('writer')).toBeUndefined();
+        expect(stack.catalog.get('shared-child-name')).toBeUndefined();
+        expect(userWriter.profile?.description).toBe('user writer');
+        expect(workspaceWriter.profile?.description).toBe('workspace writer');
+        expect(userWriter.lease.modelAlias).toBe('user-model');
+        expect(workspaceWriter.lease.modelAlias).toBe('workspace-model');
+        expect(snapshot.scopedBindings.get(userParent.definitionId!)?.has('writer')).toBe(true);
+        expect(snapshot.scopedBindings.get(workspaceParent.definitionId!)?.has('writer')).toBe(true);
+        expect(stack.catalog.getScopedBinding(stack.catalog.get('public-helper')?.definitionId, 'writer')).toBeUndefined();
+      });
+    });
+  });
+
+  it('switches the entire private graph when a workspace profile overrides a user profile', async () => {
+    await withFixture(async (fixture) => {
+      const userRoot = join(fixture.homeDir, 'agents');
+      const workspaceRoot = join(fixture.workDir, '.kimi-code', 'agents');
+      await writeAgent(userRoot, 'team.md', sourceParentMd('team', 'user-writer', './_private/user-writer.md'));
+      await writeAgent(join(userRoot, '_private'), 'user-writer.md', privateAgentMd('writer', 'user writer'));
+      await writeAgent(workspaceRoot, 'team.md', sourceParentMd('team', 'workspace-writer', './_private/workspace-writer.md'));
+      await writeAgent(join(workspaceRoot, '_private'), 'workspace-writer.md', privateAgentMd('writer', 'workspace writer'));
+
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const winner = stack.catalog.get('team')!;
+        expect(winner.description).toBe('team');
+        expect(stack.catalog.getScopedBinding(winner.definitionId, 'workspace-writer')?.status).toBe('ready');
+        expect(stack.catalog.getScopedBinding(winner.definitionId, 'user-writer')).toBeUndefined();
+        expect(
+          [...stack.catalog.snapshot().scopedBindings.keys()].some((definitionId) =>
+            definitionId.includes('user-writer.md'),
+          ),
+        ).toBe(false);
+      });
+    });
+  });
+
+  it('fails closed for missing, invalid, non-private, forbidden, renamed, and orphaned source files', async () => {
+    await withFixture(async (fixture) => {
+      const root = join(fixture.workDir, '.kimi-code', 'agents');
+      const parentPath = await writeAgent(root, 'team.md', sourceParentMd('team', 'writer', './_private/writer.md'));
+      const childPath = await writeAgent(join(root, '_private'), 'writer.md', 'not yaml');
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        let parent = stack.catalog.get('team')!;
+        expect(stack.catalog.getScopedBinding(parent.definitionId, 'writer')?.status).toBe('unavailable');
+        expect(stack.catalog.get('writer')).toBeUndefined();
+
+        await writeFile(childPath, agentMd('writer', 'valid private by path'));
+        await stack.workspaceLoader.reload();
+        parent = stack.catalog.get('team')!;
+        expect(stack.catalog.getScopedBinding(parent.definitionId, 'writer')?.status).toBe('ready');
+
+        await rename(childPath, join(root, '_private', 'renamed.md'));
+        await stack.workspaceLoader.reload();
+        parent = stack.catalog.get('team')!;
+        expect(stack.catalog.getScopedBinding(parent.definitionId, 'writer')?.status).toBe('unavailable');
+        expect(stack.catalog.get('writer')).toBeUndefined();
+
+        await writeFile(parentPath, 'invalid parent');
+        await stack.workspaceLoader.reload();
+        expect(stack.catalog.get('team')).toBeUndefined();
+        expect(stack.catalog.get('writer')).toBeUndefined();
+      });
+
+      await writeAgent(root, 'outside.md', sourceParentMd('outside', 'writer', './writer.md'));
+      await writeAgent(root, 'writer.md', agentMd('writer', 'public writer'));
+      await writeAgent(root, 'forbidden.md', sourceParentMd('forbidden', 'writer', './_private/forbidden-writer.md'));
+      await writeAgent(join(root, '_private'), 'forbidden-writer.md', privateAgentMd('writer', 'forbidden', 'main: true\n'));
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        expect(stack.catalog.getScopedBinding(stack.catalog.get('outside')?.definitionId, 'writer')?.status).toBe('unavailable');
+        expect(stack.catalog.getScopedBinding(stack.catalog.get('forbidden')?.definitionId, 'writer')?.status).toBe('unavailable');
+        expect(stack.catalog.diagnostics().map((diagnostic) => diagnostic.code)).toEqual(
+          expect.arrayContaining(['agent_profile_source.not_private', 'agent_profile_source.invalid_profile']),
+        );
+      });
+    });
+  });
+
+  it('rejects lexical and symlink escapes and deduplicates repeated canonical sources', async () => {
+    await withFixture(async (fixture) => {
+      const root = join(fixture.workDir, '.kimi-code', 'agents');
+      const outside = await writeAgent(fixture.workDir, 'outside-writer.md', privateAgentMd('writer', 'outside'));
+      await writeAgent(root, 'escape.md', sourceParentMd('escape', 'writer', '../../outside-writer.md'));
+      await writeAgent(root, 'repeat.md', `---\nname: repeat\ndescription: repeat\nsubagents:\n  - name: writer-a\n    source: ./_private/writer.md\n    model_alias: model-a\n  - name: writer-b\n    source: ./_private/writer.md\n    model_alias: model-b\n---\n\nrepeat\n`);
+      await writeAgent(root, 'repeat-two.md', sourceParentMd('repeat-two', 'writer', './_private/writer.md', '    model_alias: model-c\n'));
+      await writeAgent(join(root, '_private'), 'writer.md', privateAgentMd('writer', 'shared'));
+      await mkdir(join(root, '_private'), { recursive: true });
+      const linkPath = join(root, '_private', 'linked.md');
+      try {
+        await symlink(outside, linkPath, 'file');
+      } catch {}
+      if (await readFile(linkPath, 'utf8').catch(() => undefined)) {
+        await writeAgent(root, 'symlink-parent.md', sourceParentMd('symlink-parent', 'linked', './_private/linked.md'));
+      }
+
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const repeat = stack.catalog.get('repeat')!;
+        const repeatTwo = stack.catalog.get('repeat-two')!;
+        const snapshot = stack.catalog.snapshot();
+        expect(stack.catalog.getScopedBinding(repeat.definitionId, 'writer-a')?.lease.modelAlias).toBe('model-a');
+        expect(stack.catalog.getScopedBinding(repeat.definitionId, 'writer-b')?.lease.modelAlias).toBe('model-b');
+        expect(stack.catalog.getScopedBinding(repeatTwo.definitionId, 'writer')?.lease.modelAlias).toBe('model-c');
+        expect(snapshot.sourceDefinitions.size).toBe(1);
+        expect(stack.catalog.getScopedBinding(stack.catalog.get('escape')?.definitionId, 'writer')?.status).toBe('unavailable');
+        if (stack.catalog.get('symlink-parent') !== undefined) {
+          expect(stack.catalog.getScopedBinding(stack.catalog.get('symlink-parent')?.definitionId, 'linked')?.status).toBe('unavailable');
+        }
+      });
+    });
+  });
+
+  it('detects source cycles and depth beyond eight edges', async () => {
+    await withFixture(async (fixture) => {
+      const root = join(fixture.homeDir, 'agents');
+      const privateRoot = join(root, '_private');
+      await writeAgent(root, 'cycle-parent.md', sourceParentMd('cycle-parent', 'a', './_private/a.md'));
+      await writeAgent(privateRoot, 'a.md', sourceParentMd('a', 'b', './b.md', '', 'private: true\n'));
+      await writeAgent(privateRoot, 'b.md', sourceParentMd('b', 'a', './a.md', '', 'private: true\n'));
+      await writeAgent(root, 'deep-parent.md', sourceParentMd('deep-parent', 'level-1', './_private/level-1.md'));
+      for (let level = 1; level <= 9; level += 1) {
+        const next = level === 9 ? '' : `subagents:\n  - name: level-${String(level + 1)}\n    source: ./level-${String(level + 1)}.md\n`;
+        await writeAgent(privateRoot, `level-${String(level)}.md`, `---\nname: level-${String(level)}\ndescription: level ${String(level)}\nprivate: true\n${next}---\n\nlevel ${String(level)}\n`);
+      }
+
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        expect(stack.catalog.diagnostics().map((diagnostic) => diagnostic.code)).toEqual(
+          expect.arrayContaining(['agent_profile_source.cycle', 'agent_profile_source.depth_exceeded']),
+        );
+      });
+    });
+  });
+
+  it('atomically refreshes a private child while an older snapshot keeps the prior definition', async () => {
+    await withFixture(async (fixture) => {
+      const root = join(fixture.workDir, '.kimi-code', 'agents');
+      await writeAgent(root, 'team.md', sourceParentMd('team', 'writer', './_private/writer.md'));
+      const childPath = await writeAgent(join(root, '_private'), 'writer.md', privateAgentMd('writer', 'before'));
+      await withStack(fixture, { fsWatch: new HostFsWatchService() }, async (stack) => {
+        await stack.ready();
+        const parent = stack.catalog.get('team')!;
+        const previous = stack.catalog.snapshot();
+        const refreshed = waitForEvent(stack.catalog.onDidChange);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await writeFile(childPath, privateAgentMd('writer', 'after'));
+        await Promise.race([
+          refreshed,
+          new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('private refresh timed out')), 10000)),
+        ]);
+        expect(previous.scopedBindings.get(parent.definitionId!)?.get('writer')?.profile?.description).toBe('before');
+        expect(stack.catalog.getScopedBinding(parent.definitionId, 'writer')?.profile?.description).toBe('after');
+      });
+    });
+  }, 15000);
+
+  it('resolves private:true sources after moving an intact bundle to a new contribution root', async () => {
+    await withFixture(async (fixture) => {
+      const firstRoot = join(fixture.extraDir, 'bundle-a');
+      const secondRoot = join(fixture.extraDir, 'bundle-b');
+      await writeAgent(firstRoot, 'team.md', sourceParentMd('team', 'writer', './writer.md'));
+      await writeAgent(firstRoot, 'writer.md', privateAgentMd('writer', 'portable writer'));
+      await withStack(fixture, { extraAgentDirs: [firstRoot] }, async (stack) => {
+        await stack.ready();
+        const parent = stack.catalog.get('team')!;
+        expect(stack.catalog.get('writer')).toBeUndefined();
+        expect(stack.catalog.getScopedBinding(parent.definitionId, 'writer')?.profile?.description).toBe('portable writer');
+      });
+
+      await rename(firstRoot, secondRoot);
+      await withStack(fixture, { extraAgentDirs: [secondRoot] }, async (stack) => {
+        await stack.ready();
+        const parent = stack.catalog.get('team')!;
+        expect(stack.catalog.getScopedBinding(parent.definitionId, 'writer')?.status).toBe('ready');
+      });
+    });
+  });
+
+  it.runIf(process.platform === 'win32')('deduplicates source paths across Windows casing', async () => {
+    await withFixture(async (fixture) => {
+      const root = join(fixture.workDir, '.kimi-code', 'agents');
+      await writeAgent(root, 'team.md', `---\nname: team\ndescription: team\nsubagents:\n  - name: writer-lower\n    source: ./_private/writer.md\n  - name: writer-upper\n    source: ./_PRIVATE/WRITER.md\n---\n\nteam\n`);
+      await writeAgent(join(root, '_Private'), 'writer.md', agentMd('writer', 'writer'));
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const parent = stack.catalog.get('team')!;
+        expect(stack.catalog.get('writer')).toBeUndefined();
+        expect(stack.catalog.getScopedBinding(parent.definitionId, 'writer-lower')?.status).toBe('ready');
+        expect(stack.catalog.getScopedBinding(parent.definitionId, 'writer-upper')?.status).toBe('ready');
+        expect(stack.catalog.snapshot().sourceDefinitions.size).toBe(1);
+      });
+    });
+  });
+
+  it('keeps private files unavailable by name while explicit file loading remains an escape hatch', async () => {
+    await withFixture(async (fixture) => {
+      const privatePath = await writeAgent(
+        join(fixture.homeDir, 'agents', '_private'),
+        'detached.md',
+        privateAgentMd('detached', 'detached private'),
+      );
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        expect(stack.catalog.get('detached')).toBeUndefined();
+      });
+      await withStack(fixture, { explicitFiles: [privatePath] }, async (stack) => {
+        await stack.ready();
+        expect(stack.catalog.get('detached')?.description).toBe('detached private');
       });
     });
   });

@@ -21,6 +21,11 @@ import type {
   AgentProfileRouteCatalogEntry,
   ResolvedAgentProfileRoute,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import type {
+  AgentProfileCatalogSnapshot,
+  AgentProfileDiagnostic,
+  ScopedAgentProfileBinding,
+} from '#/app/agentProfileCatalog/scopedAgentProfile';
 
 export interface AgentProfileRouteDiagnostic {
   readonly code: string;
@@ -59,6 +64,9 @@ export interface ISessionAgentProfileCatalog {
   list(): readonly AgentProfile[];
   listRoutes(): readonly AgentProfileRouteCatalogEntry[];
   routeDiagnostics(): readonly AgentProfileRouteDiagnostic[];
+  diagnostics?(): readonly AgentProfileDiagnostic[];
+  snapshot?(): AgentProfileCatalogSnapshot;
+  getScopedBinding?(parentDefinitionId: string | undefined, alias: string): ScopedAgentProfileBinding | undefined;
   resolveSelection(input: { readonly profile?: string; readonly route?: string }): AgentProfileSelection;
   inspect(name: string): AgentProfileInspection | undefined;
   load(): Promise<void>;

@@ -58,6 +58,7 @@ import { ISessionSwarmService, type SessionSwarmSpawnTask, type SessionSwarmTask
 import { Error2 } from '#/_base/errors/errors';
 import { ConfigErrors } from '#/app/config/errors';
 import { SessionSwarmService } from '#/features/swarm/session/sessionSwarmService';
+import { AgentSwarmTool } from '#/features/swarm/tools/agent-swarm/agentSwarmTool';
 
 import { stubLog } from '../../_base/log/stubs';
 import { stubFlag } from '../../app/flag/stubs';
@@ -873,6 +874,86 @@ describe('AgentRunBatch swarm item forwarding', () => {
   });
 });
 
+describe('AgentSwarmTool dispatch resolution', () => {
+  it('rejects a scoped alias excluded by the caller allowlist', async () => {
+    const publicProfile = normalizeAgentProfile({
+      name: 'writer',
+      definitionId: 'public-writer',
+      systemPrompt: () => 'PUBLIC',
+    });
+    const scopedProfile = normalizeAgentProfile({
+      name: 'writer',
+      definitionId: 'private-writer',
+      systemPrompt: () => 'PRIVATE',
+    });
+    const snapshot = {
+      publicProfiles: new Map([['writer', publicProfile]]),
+      defaultProfile: publicProfile,
+      routes: new Map(),
+      scopedBindings: new Map([
+        [
+          'parent-definition',
+          new Map([
+            [
+              'writer',
+              {
+                parentDefinitionId: 'parent-definition',
+                alias: 'writer',
+                source: './_private/writer.md',
+                lease: { name: 'writer', source: './_private/writer.md' },
+                status: 'ready' as const,
+                sourceDefinitionId: 'private-writer',
+                profile: scopedProfile,
+              },
+            ],
+          ]),
+        ],
+      ]),
+      sourceDefinitions: new Map([['private-writer', scopedProfile]]),
+      dependencyIndex: new Map(),
+      diagnostics: [],
+    };
+    const tool = new AgentSwarmTool(
+      undefined as never,
+      { agentId: 'main' } as never,
+      { enter: () => {} } as never,
+      { get: () => undefined } as never,
+      { enabled: () => false } as never,
+      {
+        ready: Promise.resolve(),
+        get: (name: string) => snapshot.publicProfiles.get(name),
+        getDefault: () => publicProfile,
+        list: () => [...snapshot.publicProfiles.values()],
+        snapshot: () => snapshot,
+        resolveSelection: () => ({ profile: publicProfile, baseProfile: publicProfile }),
+      } as never,
+      {
+        data: () => ({
+          profileName: 'parent',
+          profileDefinitionId: 'parent-definition',
+          modelAlias: 'model',
+          subagents: [],
+        }),
+      } as never,
+      { resolveId: (id: string) => id } as never,
+    );
+
+    const execution = tool.resolveExecution({
+      description: 'Write documents',
+      subagent_type: 'writer',
+      items: ['one'],
+    });
+    if (!('execute' in execution)) throw new Error('expected executable tool');
+    const result = await execution.execute({
+      toolCallId: 'call-1',
+      signal: new AbortController().signal,
+    } as never);
+
+    expect(result).toMatchObject({ isError: true });
+    expect(result.output).toContain('not allowed');
+  });
+});
+
 describe('SessionSwarmService metadata compatibility', () => {
   let disposables: DisposableStore;
   let ix: TestInstantiationService;
@@ -1063,17 +1144,91 @@ describe('SessionSwarmService metadata compatibility', () => {
 
     expect(createAgent).toHaveBeenCalledWith(
       expect.objectContaining({
-        binding: {
+        binding: expect.objectContaining({
           profile: 'coder',
           route: undefined,
           model: 'kimi-test',
           thinking: 'medium',
-        },
+        }),
         labels: {
           parentAgentId: 'main',
           swarmItem: 'src/a.ts',
           subagentBindingMode: 'inherit',
         },
+      }),
+    );
+  });
+
+  it('binds a scoped spawn from the queued catalog snapshot', async () => {
+    const publicProfile = normalizeAgentProfile({
+      name: 'writer',
+      definitionId: 'public-writer',
+      tools: [],
+      systemPrompt: () => 'PUBLIC',
+    });
+    const scopedProfile = normalizeAgentProfile({
+      name: 'writer',
+      definitionId: 'private-writer',
+      tools: [],
+      systemPrompt: () => 'PRIVATE',
+    });
+    const defaultProfile = normalizeAgentProfile({ name: 'agent', tools: [], systemPrompt: () => '' });
+    const snapshot = {
+      publicProfiles: new Map([['writer', publicProfile]]),
+      defaultProfile,
+      routes: new Map(),
+      scopedBindings: new Map([
+        [
+          'parent-definition',
+          new Map([
+            [
+              'writer',
+              {
+                parentDefinitionId: 'parent-definition',
+                alias: 'writer',
+                source: './_private/writer.md',
+                lease: { name: 'writer', source: './_private/writer.md' },
+                status: 'ready' as const,
+                sourceDefinitionId: 'private-writer',
+                profile: scopedProfile,
+              },
+            ],
+          ]),
+        ],
+      ]),
+      sourceDefinitions: new Map([['private-writer', scopedProfile]]),
+      dependencyIndex: new Map(),
+      diagnostics: [],
+    };
+    handles.set(
+      'main',
+      agentHandle('main', lifecycle, eventBus, {
+        profileDefinitionId: 'parent-definition',
+        subagents: ['writer'],
+      }),
+    );
+    ix.stub(ISessionAgentProfileCatalog, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      get: (name: string) => snapshot.publicProfiles.get(name),
+      getDefault: () => defaultProfile,
+      list: () => [...snapshot.publicProfiles.values()],
+      snapshot: () => snapshot,
+      resolveSelection: () => ({ profile: publicProfile, baseProfile: publicProfile }),
+    });
+    const service = ix.get(ISessionSwarmService);
+
+    await service.run({
+      callerAgentId: 'main',
+      tasks: [{ ...spawnSessionTask(), profileName: 'writer', catalogSnapshot: snapshot }],
+    });
+
+    expect(createAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        binding: expect.objectContaining({
+          profile: 'writer',
+          resolvedProfile: scopedProfile,
+        }),
       }),
     );
   });
@@ -1104,12 +1259,12 @@ describe('SessionSwarmService metadata compatibility', () => {
 
     expect(createAgent).toHaveBeenCalledWith(
       expect.objectContaining({
-        binding: {
+        binding: expect.objectContaining({
           profile: 'coder',
           route: undefined,
           model: 'kimi-test',
           thinking: 'medium',
-        },
+        }),
         labels: {
           parentAgentId: 'agent-parent',
           swarmItem: 'src/a.ts',
@@ -1288,11 +1443,11 @@ describe('SessionSwarmService metadata compatibility', () => {
 
     expect(createAgent).toHaveBeenCalledWith(
       expect.objectContaining({
-        binding: {
+        binding: expect.objectContaining({
           profile: 'coder',
           model: 'provider/pool',
           thinking: 'low',
-        },
+        }),
         userLabel: 'src/a.ts',
       }),
     );

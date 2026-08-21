@@ -2,6 +2,7 @@ import type {
   AgentProfile,
   AgentProfileContext,
   EnvironmentDisclosureSnapshot,
+  ResolvedAgentProfileRoute,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { SpawnConstraints, SubagentLease } from '#/app/agentProfileCatalog/subagentLease';
 import type { ModelCapability } from '#/kosong/contract/capability';
@@ -29,6 +30,7 @@ export interface AgentConfigData {
   modelAlias?: string;
   modelCapabilities: ModelCapability;
   profileName?: string;
+  profileDefinitionId?: string;
   routeId?: string;
   readonly lockedModelAlias?: string;
   readonly lockedThinkingEffort?: string;
@@ -79,6 +81,7 @@ export type ProfileUpdateData = Partial<{
 export interface ProfileBindingSnapshot {
   readonly modelAlias?: string;
   readonly profileName?: string;
+  readonly profileDefinitionId?: string;
   readonly routeId?: string;
   readonly lockedModelAlias?: string;
   readonly lockedThinkingEffort?: string;
@@ -124,6 +127,8 @@ export interface ProfileSetModelResult {
 export interface BindAgentInput {
   readonly profile?: string;
   readonly route?: string;
+  readonly resolvedProfile?: AgentProfile;
+  readonly resolvedRoute?: ResolvedAgentProfileRoute;
   readonly model?: string;
   readonly thinking?: string;
   readonly strictThinking?: boolean;

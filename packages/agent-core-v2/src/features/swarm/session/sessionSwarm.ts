@@ -1,3 +1,4 @@
+import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
@@ -20,6 +21,7 @@ type SessionSwarmTaskBase<T> = {
 export type SessionSwarmSpawnTask<T = unknown> = SessionSwarmTaskBase<T> & {
   readonly kind: 'spawn';
   readonly resumeAgentId?: undefined;
+  readonly catalogSnapshot?: AgentProfileCatalogSnapshot;
   readonly binding?: {
     readonly model: string;
     readonly thinking?: string;
