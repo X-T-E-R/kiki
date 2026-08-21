@@ -108,6 +108,21 @@ jobs:
       # timeout causes flaky failures. Give it more headroom.
       - run: pnpm run test -- --testTimeout=30000
 
+  docs-governance:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+
+      - name: Test documentation governance checker
+        run: node --test scripts/check-docs-governance.test.mjs
+      - name: Check documentation governance structure
+        run: node scripts/check-docs-governance.mjs
+
   lint:
     runs-on: ubuntu-latest
 

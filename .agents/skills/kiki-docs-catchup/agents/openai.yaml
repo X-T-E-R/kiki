@@ -1,0 +1,4 @@
+interface:
+  display_name: "Kiki Docs Catch-up"
+  short_description: "Catch documentation up after implementation"
+  default_prompt: "Use $kiki-docs-catchup to classify and complete documentation for this coherent implementation candidate."

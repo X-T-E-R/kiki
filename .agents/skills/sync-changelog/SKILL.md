@@ -335,7 +335,7 @@ Check:
 Then run the docs build:
 
 ```bash
-pnpm --filter docs run build
+pnpm -C docs run build
 ```
 
 ### 8. Human Review Checkpoint
@@ -397,8 +397,10 @@ Fill in `.github/pull_request_template.md`. For changelog sync PRs:
 
 - **Related Issue**: write `N/A — post-release docs maintenance` (no issue required).
 - **Problem**: the docs-site changelog is behind the published CLI release(s).
-- **What changed**: list synced version(s), note English source + Chinese translation, and mention verification (`pnpm --filter docs run build`).
-- **Checklist**: check CONTRIBUTING; explain no issue, no tests, no changeset, and that `gen-docs` is not needed because this is the dedicated changelog sync flow.
+- **What changed**: list synced version(s), note English source + Chinese translation, and mention verification (`pnpm -C docs run build`).
+- **Documentation impact**: select `User` only. The changelog pages are curated user views, not generated projections in this workflow.
+- **Documentation completion**: select `Completed`; do not leave a deferred record.
+- **Checklist**: check CONTRIBUTING; explain no issue, no tests, no changeset, and confirm the documentation impact and completion record.
 
 Example body:
 
@@ -415,7 +417,21 @@ The docs-site changelog has not yet been synced for `<version range>` after the 
 
 - Synced `<version range>` from `apps/kimi-code/CHANGELOG.md` into `docs/en/release-notes/changelog.md`
 - Translated the new English increment into `docs/zh/release-notes/changelog.md`
-- Verified with `pnpm --filter docs run build`
+- Verified with `pnpm -C docs run build`
+
+## Documentation impact
+
+- [ ] None — no generated, maintainer, or user-facing contract changed. Do not select another category.
+- [ ] Generated — one or more checked-in projections changed.
+- [ ] Maintainer — one or more owner, extension, recovery, verification, or stable internal views changed.
+- [x] User — one or more supported behavior, configuration, command, compatibility, migration, or reader-decision views changed.
+
+## Documentation completion
+
+- [x] Completed — all selected impact is complete for this candidate, or impact is None.
+- [ ] Deferred — generated work is complete; every remaining maintainer or user view is recorded below.
+
+Deferred records: N/A — completed in this PR.
 
 ## Checklist
 
@@ -423,7 +439,7 @@ The docs-site changelog has not yet been synced for `<version range>` after the 
 - [x] I have linked a related issue, or explained the problem above.
 - [ ] I have added tests that prove my feature works. (N/A — docs-only sync)
 - [x] Ran `gen-changesets` skill, or this PR needs no changeset. (No changeset — docs sync is out of bundle)
-- [x] Ran `gen-docs` skill, or this PR needs no doc update. (This PR is the dedicated changelog sync)
+- [x] I classified the documentation impact above and completed or deferred the due work for the stated boundary. (User impact completed in this PR)
 ```
 
 Return the PR URL to the user when done.

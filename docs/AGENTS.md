@@ -16,14 +16,34 @@ This repository uses VitePress for the documentation site. Most user-facing page
 ## Source of truth
 
 - **Changelog page**: The English version (`docs/en/release-notes/changelog.md`) is the source of truth; the Chinese changelog should be translated from it. The changelog is currently generated manually by a skill that syncs from the CLI package's `CHANGELOG.md` after each release.
-- **All other pages**: `docs/en/` and `docs/zh/` are mirrored pairs with the same paths, headings, and section structure. Edit whichever locale you are working in, and update the other locale in the same change.
+- **All other pages**: `docs/en/` and `docs/zh/` are mirrored pairs with the same paths, headings, and section structure. Edit whichever locale you are working in, then update the other locale through the catch-up process before the applicable boundary below.
 
 Keep both locales in sync before release. Machine-assisted translation is fine; review the locale you changed and its mirror for accuracy, terminology, and broken links.
+
+## Documentation lifecycle
+
+Documentation follows implementation instead of blocking exploration and early coding:
+
+1. Implement and test the behavior. Code and its claim-matched tests remain the source of truth for current behavior.
+2. When the implementation forms a coherent candidate, classify its documentation impact:
+   - **None** is exclusive and means no generated, maintainer, or user-facing contract changed.
+   - Otherwise select every affected category: **Generated** for checked-in projections, **Maintainer** for owners, extension seams, recovery procedures, verification, or stable internal contracts, and **User** for supported behavior, configuration, commands, compatibility, migration, or other reader decisions.
+3. Record completion separately as **Completed** or **Deferred**. `None` pairs with `Completed`; it cannot be deferred. Generated impact is never deferrable: every affected projection is regenerated and verified in the same candidate that changes its source. Each deferred maintainer or user view retains every applicable impact category and its exact path or heading, one accountable owner, and a target no later than its earliest applicable boundary:
+   - Maintainer documentation is current before stable reuse by another owner or an owner handoff.
+   - User documentation is current in both locales before a feature becomes default-on or is publicly released.
+   A view serving both audiences uses whichever boundary arrives first. A calendar date or vague "later" is not a target boundary. When a candidate has both generated impact and deferred prose, complete the generated work now and defer only the named maintainer or user views.
+4. Use `.agents/skills/kiki-docs-catchup/SKILL.md` for a coherent candidate or an explicit documentation-debt task. The skill records claims and evidence before it selects or edits views.
+5. Keep release ownership distinct:
+   - Release changelog curation remains a post-release task owned by `.agents/skills/sync-changelog/SKILL.md`; do not use it as the pre-release user-documentation gate.
+
+Classification is a small, observable routing decision, not a prose-completeness gate. Preserve every affected category and view even when their deadlines differ. Structural checks can detect mirror, navigation, link, and required-resource drift, but they do not establish semantic correctness.
+
+Canonical knowledge may live in this monorepo. Keep one fact home for each contract and link audience-specific views back to it instead of copying package facts into a portal or several guides. [`MAINTAINERS.md`](../MAINTAINERS.md) routes maintainers to the current owners, generated contracts, skills, and catch-up process; it is outside the VitePress source tree and is not a public docs page.
 
 ## Authoring workflow
 
 - Each page should keep the section ordering established by surrounding pages. Changelog is the exception because it is generated from release history.
-- For other pages: edit either locale, then update its mirror in the same change.
+- For other pages: edit either locale, then update its mirror before the applicable default-on or public-release boundary. A coherent early implementation candidate may defer named user views under the lifecycle above without losing their `user` impact classification.
 
 Before rewriting a page, always: (1) understand why the original is structured the way it is, (2) identify what the reader genuinely needs to know, (3) sketch the section structure, then (4) fill in the content. Skip step 1–3 and you will lose content while rearranging format.
 
