@@ -79,6 +79,14 @@ export interface ThinkingRequestOptions {
   readonly keep?: string;
 }
 
+export interface RequestIdentityWireOptions {
+  readonly suppressUserAgent?: boolean;
+  readonly suppressIdentity?: boolean;
+  readonly suppressMessagesMetadataUserId?: boolean;
+  readonly responsesClientMetadata?: Readonly<Record<string, string>>;
+  readonly onResponseHeaders?: (headers: Headers) => void;
+}
+
 export interface ToolCallIdPolicy {
   normalize: (id: string) => string;
   maxLength?: number;
@@ -112,6 +120,7 @@ export interface GenerateOptions {
   onRequestSent?: () => void;
   onStreamEnd?: (stats?: StreamDecodeStats) => void;
   onTraceId?: (traceId: string | null) => void;
+  requestIdentity?: RequestIdentityWireOptions;
 }
 
 export interface ChatProvider {

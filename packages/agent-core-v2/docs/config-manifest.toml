@@ -53,6 +53,10 @@ enabled = true
 # default_subagent_model: string
 # default_subagent_reasoning_effort: string
 
+# [agents.delegation]
+  # sub: string | false
+  # independent: string | false
+
 # ##########################################################################
 # background
 #   owner: src/agent/task/configSection.ts
@@ -345,8 +349,28 @@ merge_all_available_skills = true
   # base_url: string
   # custom_headers: record<string, string>
   # default_model: string
-  # request_attribution: "codex" | "kimi" | "kiki" | "none"
-  # request_originator: string
+  # request_identity: object
+    # preset: "codex_compatible" | "grok_build_compatible" | "kimi_code" | "none"
+    # overrides: object
+      # lineage: object
+        # format: "codex" | "grok_build" | "kimi_code" | "none"
+        # session_scope: "shared_session" | "agent_session" | "none"
+        # thread_identity: "agent" | "none"
+        # parent_thread: "immediate_agent" | "none"
+        # subagent_marker: "enabled" | "none"
+        # turn_ancestry: "spawn_context" | "none"
+      # client: object
+        # installation_identity: "persistent_local" | "none"
+        # originator: object | object | object
+        # user_agent: "codex" | "grok_build" | "kimi_code" | "host" | "none"
+      # request: object
+        # logical_id: "turn" | "none"
+        # turn_index: "agent_session" | "none"
+      # cache: object
+        # source: "session" | "none"
+        # responses: "prompt_cache_key" | "none"
+        # messages: "metadata_user_id" | "none"
+      # responses_metadata: "codex" | "none"
   # type: string
   # api_key: string
   # oauth: object

@@ -8,6 +8,7 @@ type SessionSwarmTaskBase<T> = {
   readonly profileName: string;
   readonly routeId?: string;
   readonly parentToolCallId: string;
+  readonly parentTurnId?: number;
   readonly parentToolCallUuid?: string;
   readonly prompt: string;
   readonly description: string;

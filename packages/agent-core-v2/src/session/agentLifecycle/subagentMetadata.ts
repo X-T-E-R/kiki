@@ -8,6 +8,10 @@
 
 import type { AgentMeta, DelegatorRef } from '#/session/sessionMetadata/sessionMetadata';
 
+const REQUEST_IDENTITY_PARENT_TURN_LABEL = 'requestIdentityParentTurn';
+const REQUEST_IDENTITY_ROOT_AGENT_LABEL = 'requestIdentityRootAgent';
+const REQUEST_IDENTITY_ROOT_TURN_LABEL = 'requestIdentityRootTurn';
+
 export function subagentLabels(
   parentAgentId: string,
   options: { readonly swarmItem?: string } = {},
@@ -17,6 +21,35 @@ export function subagentLabels(
     labels['swarmItem'] = options.swarmItem;
   }
   return labels;
+}
+
+export function requestIdentitySpawnLabels(
+  parentAgentId: string,
+  parentTurnId: number,
+  parentMeta: AgentMeta | undefined,
+): Readonly<Record<string, string>> {
+  return {
+    [REQUEST_IDENTITY_PARENT_TURN_LABEL]: String(parentTurnId),
+    [REQUEST_IDENTITY_ROOT_AGENT_LABEL]:
+      parentMeta?.labels?.[REQUEST_IDENTITY_ROOT_AGENT_LABEL] ?? parentAgentId,
+    [REQUEST_IDENTITY_ROOT_TURN_LABEL]:
+      parentMeta?.labels?.[REQUEST_IDENTITY_ROOT_TURN_LABEL] ?? String(parentTurnId),
+  };
+}
+
+export function requestIdentitySpawnContext(meta: AgentMeta | undefined): {
+  readonly parentTurnKey?: string;
+  readonly rootAgentId?: string;
+  readonly rootTurnKey?: string;
+} {
+  const parentTurn = meta?.labels?.[REQUEST_IDENTITY_PARENT_TURN_LABEL];
+  const rootAgentId = meta?.labels?.[REQUEST_IDENTITY_ROOT_AGENT_LABEL];
+  const rootTurn = meta?.labels?.[REQUEST_IDENTITY_ROOT_TURN_LABEL];
+  return {
+    parentTurnKey: parentTurn === undefined ? undefined : `turn:${parentTurn}`,
+    rootAgentId,
+    rootTurnKey: rootTurn === undefined ? undefined : `turn:${rootTurn}`,
+  };
 }
 
 export function delegatorRef(meta: AgentMeta | undefined): DelegatorRef | undefined {

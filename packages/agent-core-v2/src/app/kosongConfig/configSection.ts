@@ -24,6 +24,7 @@ import type {
 import type { ThinkingConfig } from '#/kosong/model/thinking';
 import type { OAuthRef, ProviderConfig, ProvidersSection } from '#/kosong/provider/provider';
 import { ProtocolSchema } from '#/kosong/protocol/protocol';
+import { RequestIdentityPolicySchema } from '#/kosong/requestIdentity/requestIdentityPolicy';
 
 export const PROVIDERS_SECTION = 'providers';
 
@@ -41,18 +42,15 @@ export const OAuthRefSchema = z.object({
 
 export const ModelSourceSchema = z.enum(['static', 'discover', 'oauth-catalog']);
 
-export const RequestAttributionSchema = z.enum(['codex', 'kimi', 'kiki', 'none']);
-
 const StringRecordSchema = z.record(z.string(), z.string());
 
-export const ProviderConfigSchema = z.object({
+const ProviderConfigObjectSchema = z.object({
   modelSource: ModelSourceSchema.optional(),
 
   baseUrl: z.string().optional(),
   customHeaders: StringRecordSchema.optional(),
   defaultModel: z.string().optional(),
-  requestAttribution: RequestAttributionSchema.optional(),
-  requestOriginator: z.string().optional(),
+  requestIdentity: RequestIdentityPolicySchema.optional(),
 
   type: ProviderTypeSchema.optional(),
   apiKey: z.string().optional(),
@@ -60,6 +58,21 @@ export const ProviderConfigSchema = z.object({
   env: StringRecordSchema.optional(),
   source: z.record(z.string(), z.unknown()).optional(),
 });
+
+export const ProviderConfigSchema = z.preprocess((value, ctx) => {
+  if (isPlainObject(value)) {
+    for (const removed of ['requestAttribution', 'requestOriginator'] as const) {
+      if (removed in value) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `${removed} was removed; use requestIdentity`,
+          path: [removed],
+        });
+      }
+    }
+  }
+  return value;
+}, ProviderConfigObjectSchema);
 
 export const ProvidersSectionSchema = z.record(z.string(), ProviderConfigSchema);
 
@@ -102,6 +115,8 @@ function providerEntryFromToml(data: Record<string, unknown>): Record<string, un
     const targetKey = snakeToCamel(key);
     if (targetKey === 'oauth') {
       out[targetKey] = isPlainObject(value) ? transformPlainObject(value) : value;
+    } else if (targetKey === 'requestIdentity') {
+      out[targetKey] = isPlainObject(value) ? deepSnakeToCamel(value) : value;
     } else if (targetKey === 'env' || targetKey === 'customHeaders') {
       out[targetKey] = isPlainObject(value) ? cloneRecord(value) : value;
     } else {
@@ -126,9 +141,13 @@ function providerEntryToToml(
   rawProvider: unknown,
 ): Record<string, unknown> {
   const out = cloneRecord(rawProvider);
+  delete out['request_attribution'];
+  delete out['request_originator'];
   for (const [key, value] of Object.entries(provider)) {
     if (key === 'oauth' && isPlainObject(value)) {
       out[camelToSnake(key)] = plainObjectToToml(value, undefined);
+    } else if (key === 'requestIdentity' && isPlainObject(value)) {
+      out[camelToSnake(key)] = deepCamelToSnake(value);
     } else if ((key === 'env' || key === 'customHeaders') && value !== undefined) {
       out[camelToSnake(key)] = cloneRecord(value);
     } else {
@@ -136,6 +155,24 @@ function providerEntryToToml(
     }
   }
   return out;
+}
+
+function deepSnakeToCamel(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [
+      snakeToCamel(key),
+      isPlainObject(entry) ? deepSnakeToCamel(entry) : entry,
+    ]),
+  );
+}
+
+function deepCamelToSnake(value: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(value).map(([key, entry]) => [
+      camelToSnake(key),
+      isPlainObject(entry) ? deepCamelToSnake(entry) : entry,
+    ]),
+  );
 }
 
 registerConfigSection(PROVIDERS_SECTION, ProvidersSectionSchema, {

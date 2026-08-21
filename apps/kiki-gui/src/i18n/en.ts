@@ -843,18 +843,17 @@ export const en = {
   'st.providers.idLabel': 'Provider ID',
   'st.providers.protocol': 'Protocol',
   'st.providers.baseUrl': 'Base URL',
-  'st.providers.attribution': 'Request attribution',
-  'st.providers.attribution.auto': 'Auto (provider family default)',
-  'st.providers.attribution.codex': 'Codex (session-id / thread-id)',
-  'st.providers.attribution.kimi': 'Kimi (no attribution headers)',
-  'st.providers.attribution.kiki': 'Kiki (x-kiki-* headers)',
-  'st.providers.attribution.none': 'None (no attribution headers)',
-  'st.providers.attributionHint':
-    'Which session/agent lineage headers the runtime adds to every request to this provider.',
-  'st.providers.originator': 'Originator header',
-  'st.providers.originatorPlaceholder': 'codex_cli_rs',
-  'st.providers.originatorHint':
-    'Sent as the originator request header. Codex attribution defaults to codex_cli_rs; other styles send it only when set here.',
+  'st.providers.requestIdentity': 'Request identity',
+  'st.providers.requestIdentity.auto': 'Auto (Kimi Code default)',
+  'st.providers.requestIdentity.codex_compatible': 'Codex-compatible (Responses only)',
+  'st.providers.requestIdentity.grok_build_compatible': 'Grok Build-compatible',
+  'st.providers.requestIdentity.kimi_code': 'Kimi Code',
+  'st.providers.requestIdentity.none': 'None (no request identity)',
+  'st.providers.requestIdentityHint':
+    'Select request identity semantics. Compatible presets emulate identity fields, not the client transport.',
+  'st.providers.requestIdentityAdvanced': 'Advanced overrides (JSON)',
+  'st.providers.requestIdentityAdvancedHint':
+    'Optional orthogonal policy overrides. Leave blank to use the complete preset.',
   'st.providers.apiKey': 'API key',
   'st.providers.keyStored': 'Stored key present — leave blank to keep it',
   'st.providers.keyNew': 'Paste a new key',
@@ -1217,6 +1216,7 @@ export const en = {
   'val.providerId':
     'Provider ID must start with a letter or digit and use only letters, digits, spaces, - or _.',
   'val.providerProtocol': 'Choose a supported provider protocol.',
+  'val.providerRequestIdentity': 'Request identity overrides must be a valid JSON object.',
   'val.baseUrlAbsolute': 'Base URL must be a valid absolute URL.',
   'val.baseUrlHttp': 'Base URL must use http or https.',
   'val.baseUrlEnv': 'Base URL cannot contain an environment-variable placeholder.',

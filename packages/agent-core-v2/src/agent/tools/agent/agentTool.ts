@@ -57,7 +57,6 @@ import {
 } from '#/app/agentProfileCatalog/applySubagentLease';
 import { ILogService } from '#/_base/log/log';
 import { IConfigService } from '#/app/config/config';
-import { IEventBus } from '#/app/event/eventBus';
 import { IFlagService } from '#/app/flag/flag';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
@@ -70,6 +69,7 @@ import {
   delegatorRef,
   isSubagentMeta,
   labelsFromAgentMeta,
+  requestIdentitySpawnLabels,
   subagentLabels,
   subagentParentAgentId,
 } from '#/session/agentLifecycle/subagentMetadata';
@@ -372,6 +372,7 @@ export class SubagentTool implements ISubagentTool {
   private async launch(
     args: SubagentToolInput,
     toolCallId: string,
+    parentTurnId: number,
     controller: AbortController,
     runtime: Runtime,
     snapshot: AgentProfileCatalogSnapshot | undefined,
@@ -537,6 +538,7 @@ export class SubagentTool implements ISubagentTool {
       }
       let created: IAgentScopeHandle;
       try {
+        const callerMeta = (await this.sessionMetadata.read()).agents?.[this.callerAgentId];
         created = await this.lifecycle.create({
           binding: {
             profile: baseProfileName,
@@ -549,7 +551,10 @@ export class SubagentTool implements ISubagentTool {
             spawnPolicy: dispatched.spawnPolicy,
           },
           labels: withSubagentBindingMode(
-            subagentLabels(this.callerAgentId),
+            {
+              ...subagentLabels(this.callerAgentId),
+              ...requestIdentitySpawnLabels(this.callerAgentId, parentTurnId, callerMeta),
+            },
             subagentBindingMode(binding),
           ),
           delegator: { kind: 'agent', agentId: this.callerAgentId },
@@ -629,7 +634,7 @@ export class SubagentTool implements ISubagentTool {
 
   private async execution(
     args: SubagentToolInput,
-    { toolCallId, signal }: ExecutableToolContext,
+    { toolCallId, signal, turnId }: ExecutableToolContext,
     snapshot: AgentProfileCatalogSnapshot | undefined,
   ): Promise<ExecutableToolResult> {
     try {
@@ -664,7 +669,7 @@ export class SubagentTool implements ISubagentTool {
 
       let handle: SubagentHandle;
       try {
-        handle = await this.launch(args, toolCallId, controller, runtimeLease.runtime, snapshot);
+        handle = await this.launch(args, toolCallId, turnId, controller, runtimeLease.runtime, snapshot);
       } catch (error) {
         signal.removeEventListener('abort', abortBeforeRegister);
         this.log.warn('subagent launch failed', {

@@ -29,6 +29,8 @@ import {
   parseRetryAfterMs,
   throwIfAbortError,
 } from '#/kosong/contract/errors';
+import { Error2 } from '#/_base/errors/errors';
+import { RequestIdentityErrors } from '#/kosong/requestIdentity/errors';
 import type {
   ContentPart,
   Message,
@@ -61,6 +63,7 @@ import { mergeConsecutiveUserMessages } from '../merge-user-messages';
 import {
   mergeProviderRequestAuth,
   mergeRequestHeaders,
+  requestIdentityFetch,
   resolveAuthBackedClient,
 } from '../request-auth';
 import { normalizeToolCallIdsForProvider, sanitizeToolCallId } from '../tool-call-id';
@@ -872,6 +875,11 @@ export class AnthropicChatProvider implements ChatProvider {
     let useBetaApi = this._betaApi;
 
     let metadata = this._metadata;
+    if (options?.requestIdentity?.suppressMessagesMetadataUserId === true && metadata !== undefined) {
+      metadata = { ...metadata };
+      delete metadata['user_id'];
+      if (Object.keys(metadata).length === 0) metadata = undefined;
+    }
     if (options?.cacheKey !== undefined) {
       metadata = { ...metadata, user_id: options.cacheKey };
     }
@@ -984,6 +992,15 @@ export class AnthropicChatProvider implements ChatProvider {
       createParams['betas'] = betas;
     }
 
+    if (
+      options?.requestIdentity?.suppressUserAgent === true &&
+      this._clientFactory !== undefined
+    ) {
+      throw new Error2(
+        RequestIdentityErrors.codes.REQUEST_IDENTITY_UNSUPPORTED,
+        'request identity none requires the final fetch suppression seam',
+      );
+    }
     const auth = mergeProviderRequestAuth(options?.auth, options?.headers);
     const requestOptions: Record<string, unknown> = {};
     const headers = mergeRequestHeaders(extraHeaders, undefined, auth?.headers);
@@ -1131,6 +1148,7 @@ export class AnthropicChatProvider implements ChatProvider {
       authToken: null,
       baseURL: this._baseUrl ?? null,
       defaultHeaders: this._buildDefaultHeaders(apiKey),
+      fetch: requestIdentityFetch,
       maxRetries: 0,
     });
   }

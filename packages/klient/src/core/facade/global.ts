@@ -424,10 +424,12 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
         if (typeof idOrConfig === 'string') {
           // Named provider — map ProviderInput to ProviderConfig wire shape.
           const config = maybeConfig!;
+          rejectRemovedProviderIdentityFields(config);
           const wire: ProviderConfig = {
             type: config.type,
             baseUrl: config.baseUrl,
             defaultModel: config.defaultModel,
+            requestIdentity: config.requestIdentity,
             apiKey: config.auth.method === 'api-key' ? config.auth.apiKey : '',
           };
           return call('providerService', 'set', [idOrConfig, wire]) as Promise<void>;
@@ -573,4 +575,13 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
 
     env,
   };
+}
+
+function rejectRemovedProviderIdentityFields(config: ProviderInput): void {
+  const input = config as unknown as Record<string, unknown>;
+  for (const removed of ['requestAttribution', 'requestOriginator'] as const) {
+    if (removed in input) {
+      throw new TypeError(`${removed} was removed; use requestIdentity`);
+    }
+  }
 }

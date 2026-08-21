@@ -260,12 +260,27 @@ export function defineKlientConformance(
 
       const name = '__klient_conformance__';
       try {
+        expect(() =>
+          target.klient.global.kosong.addProvider(name, {
+            type: 'openai',
+            auth: { method: 'api-key', apiKey: 'conf-key' },
+            requestAttribution: 'none',
+          } as never),
+        ).toThrow(/requestAttribution was removed/u);
         await target.klient.global.kosong.addProvider(name, {
           type: 'openai',
           auth: { method: 'api-key', apiKey: 'conf-key' },
+          requestIdentity: {
+            preset: 'kimi_code',
+            overrides: { client: { userAgent: 'kimi_code' } },
+          },
         });
         const got = await target.klient.global.kosong.getProvider(name);
         expect(got.has_api_key).toBe(true);
+        expect(got.request_identity).toEqual({
+          preset: 'kimi_code',
+          overrides: { client: { user_agent: 'kimi_code' } },
+        });
 
         await waitFor(
           () => events.some((event) => [...event.added, ...event.changed].includes(name)),

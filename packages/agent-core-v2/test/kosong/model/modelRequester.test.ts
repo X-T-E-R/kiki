@@ -154,6 +154,9 @@ describe('ModelRequesterImpl request execution', () => {
           maxCompletionTokens: 1024,
           usedContextTokens: 5000,
           maxContextTokens: 128000,
+          requestIdentity: {
+            responsesClientMetadata: { turn_id: '00000000-0000-7000-8000-000000000004' },
+          },
         },
       ),
     );
@@ -175,6 +178,9 @@ describe('ModelRequesterImpl request execution', () => {
     expect(options?.usedContextTokens).toBe(5000);
     expect(options?.maxContextTokens).toBe(128000);
     expect(options?.responseFormat).toEqual({ type: 'json_object' });
+    expect(options?.requestIdentity?.responsesClientMetadata).toEqual({
+      turn_id: '00000000-0000-7000-8000-000000000004',
+    });
   });
 
   it('omits the thinking intent when no effort is requested', async () => {
@@ -234,11 +240,23 @@ describe('ModelRequesterImpl request execution', () => {
       registryReturning(provider),
     );
 
-    const events = await collect(requester.request(INPUT));
+    const identity = {
+      responsesClientMetadata: { turn_id: '00000000-0000-7000-8000-000000000004' },
+    };
+    const params = {
+      cacheKey: '00000000-0000-4000-8000-000000000002',
+      headers: { 'x-grok-req-id': '00000000-0000-4000-8000-000000000004' },
+      requestIdentity: identity,
+    };
+    const events = await collect(requester.request(INPUT, undefined, params));
     expect(events.some((e) => e.type === 'finish')).toBe(true);
     expect(provider.calls).toHaveLength(2);
     expect(provider.calls[0]?.options?.auth).toEqual({ apiKey: 'tok-1' });
     expect(provider.calls[1]?.options?.auth).toEqual({ apiKey: 'tok-2' });
+    expect(provider.calls[0]?.options?.requestIdentity).toBe(identity);
+    expect(provider.calls[1]?.options?.requestIdentity).toBe(identity);
+    expect(provider.calls[0]?.options?.headers).toEqual(provider.calls[1]?.options?.headers);
+    expect(provider.calls[0]?.options?.cacheKey).toBe(provider.calls[1]?.options?.cacheKey);
     expect(authCalls).toEqual([{}, { force: true }]);
   });
 

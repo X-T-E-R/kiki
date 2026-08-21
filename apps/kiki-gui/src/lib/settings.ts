@@ -3,6 +3,7 @@ import type {
   ModelCatalogItem,
   PatchConfigRequest,
   ProviderCatalogItem,
+  RequestIdentityPolicyWire,
 } from '@moonshot-ai/protocol';
 
 import { LocalizedError, type I18nKey, type ValidationIssue } from '../i18n/locale';
@@ -153,15 +154,18 @@ export const PROVIDER_WIRE_TYPES: readonly ProviderWireType[] = [
   'vertexai',
 ];
 
-/** Per-provider request-attribution header style; 'auto' means unconfigured. */
-export type RequestAttributionStyle = 'codex' | 'kimi' | 'kiki' | 'none';
-export type RequestAttributionChoice = RequestAttributionStyle | 'auto';
+export type RequestIdentityChoice =
+  | 'auto'
+  | 'codex_compatible'
+  | 'grok_build_compatible'
+  | 'kimi_code'
+  | 'none';
 
-export const REQUEST_ATTRIBUTION_CHOICES: readonly RequestAttributionChoice[] = [
+export const REQUEST_IDENTITY_CHOICES: readonly RequestIdentityChoice[] = [
   'auto',
-  'codex',
-  'kimi',
-  'kiki',
+  'codex_compatible',
+  'grok_build_compatible',
+  'kimi_code',
   'none',
 ];
 
@@ -180,8 +184,8 @@ export interface ProviderDraft {
   defaultModel: string;
   apiKey: string;
   clearApiKey: boolean;
-  requestAttribution: RequestAttributionChoice;
-  requestOriginator: string;
+  requestIdentityChoice: RequestIdentityChoice;
+  requestIdentityOverridesJson: string;
   models: ProviderModelDraft[];
 }
 
@@ -792,8 +796,11 @@ export function providerDraftFromCatalog(
     defaultModel,
     apiKey: '',
     clearApiKey: false,
-    requestAttribution: provider.request_attribution ?? 'auto',
-    requestOriginator: provider.request_originator ?? '',
+    requestIdentityChoice: provider.request_identity?.preset ?? 'auto',
+    requestIdentityOverridesJson:
+      provider.request_identity?.overrides === undefined
+        ? ''
+        : JSON.stringify(provider.request_identity.overrides, null, 2),
     models: providerModels,
   };
 }
@@ -803,6 +810,13 @@ export function validateProviderDraft(draft: ProviderDraft): ValidationIssue | n
     return { key: 'val.providerId' };
   }
   if (!isProviderWireType(draft.type)) return { key: 'val.providerProtocol' };
+  if (isNewRequestIdentityChoice(draft.requestIdentityChoice)) {
+    try {
+      parseRequestIdentityOverrides(draft.requestIdentityOverridesJson);
+    } catch {
+      return { key: 'val.providerRequestIdentity' };
+    }
+  }
   if (draft.baseUrl !== '') {
     let url: URL;
     try {
@@ -886,8 +900,8 @@ export function providerDraftsEqual(a: ProviderDraft, b: ProviderDraft): boolean
   if (a.id !== b.id || a.type !== b.type || a.baseUrl !== b.baseUrl) return false;
   if (a.defaultModel !== b.defaultModel || a.apiKey !== b.apiKey) return false;
   if (a.clearApiKey !== b.clearApiKey) return false;
-  if (a.requestAttribution !== b.requestAttribution) return false;
-  if (a.requestOriginator !== b.requestOriginator) return false;
+  if (a.requestIdentityChoice !== b.requestIdentityChoice) return false;
+  if (a.requestIdentityOverridesJson !== b.requestIdentityOverridesJson) return false;
   if (a.models.length !== b.models.length) return false;
   return a.models.every((model, index) => {
     const other = b.models[index];
@@ -1192,15 +1206,14 @@ export async function deleteProvider(
 
 function providerBody(draft: ProviderDraft, includeId: boolean): Record<string, unknown> {
   const apiKey = draft.clearApiKey ? '' : draft.apiKey || undefined;
+  const requestIdentity = requestIdentityFromDraft(draft);
   return {
     id: includeId ? draft.id : undefined,
     type: draft.type,
     api_key: apiKey,
     base_url: draft.baseUrl || undefined,
     default_model: draft.defaultModel,
-    request_attribution:
-      draft.requestAttribution === 'auto' ? undefined : draft.requestAttribution,
-    request_originator: draft.requestOriginator.trim() || undefined,
+    request_identity: requestIdentity ?? (includeId ? undefined : null),
     models: draft.models.map((model) => ({
       model: model.model,
       max_context_size: model.maxContextSize,
@@ -1209,6 +1222,32 @@ function providerBody(draft: ProviderDraft, includeId: boolean): Record<string, 
       support_efforts: model.supportEfforts.length > 0 ? model.supportEfforts : undefined,
     })),
   };
+}
+
+function requestIdentityFromDraft(draft: ProviderDraft): RequestIdentityPolicyWire | undefined {
+  if (!isNewRequestIdentityChoice(draft.requestIdentityChoice)) return undefined;
+  return {
+    preset: draft.requestIdentityChoice,
+    overrides: parseRequestIdentityOverrides(draft.requestIdentityOverridesJson),
+  };
+}
+
+function parseRequestIdentityOverrides(
+  value: string,
+): RequestIdentityPolicyWire['overrides'] | undefined {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return undefined;
+  const parsed: unknown = JSON.parse(trimmed);
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('request identity overrides must be an object');
+  }
+  return parsed as RequestIdentityPolicyWire['overrides'];
+}
+
+function isNewRequestIdentityChoice(
+  value: RequestIdentityChoice,
+): value is RequestIdentityPolicyWire['preset'] {
+  return ['codex_compatible', 'grok_build_compatible', 'kimi_code', 'none'].includes(value);
 }
 
 async function serverRequest<T>(

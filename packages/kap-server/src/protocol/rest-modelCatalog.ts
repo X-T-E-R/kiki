@@ -5,6 +5,12 @@ import {
   modelCatalogItemSchema,
   providerCatalogItemSchema,
 } from '@moonshot-ai/agent-core-v2/kosong/model/catalog';
+import {
+  RequestIdentityPolicyWireSchema,
+  requestIdentityFromWire,
+  resolveProviderRequestIdentity,
+  type RequestIdentityPolicyWire,
+} from '@moonshot-ai/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 
 export const listModelsResponseSchema = z.object({
   items: z.array(modelCatalogItemSchema),
@@ -35,10 +41,6 @@ export const providerWireTypeSchema = z.enum([
 ]);
 export type ProviderWireType = z.infer<typeof providerWireTypeSchema>;
 
-/** The request-attribution header styles accepted by the create/replace routes. */
-export const requestAttributionSchema = z.enum(['codex', 'kimi', 'kiki', 'none']);
-export type RequestAttributionWire = z.infer<typeof requestAttributionSchema>;
-
 export const createProviderModelSchema = z.object({
   model: z.string().min(1),
   max_context_size: z.number().int().min(1),
@@ -51,7 +53,12 @@ export const createProviderModelSchema = z.object({
 export type CreateProviderModel = z.infer<typeof createProviderModelSchema>;
 
 function refineProviderForm(
-  value: { base_url?: string | undefined; models: Array<{ model: string }> },
+  value: {
+    type?: string;
+    base_url?: string | undefined;
+    models: Array<{ model: string }>;
+    request_identity?: RequestIdentityPolicyWire | null;
+  },
   ctx: z.RefinementCtx,
 ): void {
   if (value.base_url !== undefined && value.base_url.includes('${')) {
@@ -60,6 +67,19 @@ function refineProviderForm(
       message: 'base_url must not contain an environment variable placeholder',
       path: ['base_url'],
     });
+  }
+  if (value.request_identity !== undefined && value.request_identity !== null) {
+    try {
+      resolveProviderRequestIdentity({
+        requestIdentity: requestIdentityFromWire(value.request_identity),
+      });
+    } catch (error) {
+      ctx.addIssue({
+        code: 'custom',
+        message: error instanceof Error ? error.message : String(error),
+        path: ['request_identity'],
+      });
+    }
   }
   const seen = new Set<string>();
   for (const entry of value.models) {
@@ -90,10 +110,10 @@ export const createProviderRequestSchema = z
     api_key: z.string().optional(),
     base_url: z.string().trim().optional(),
     default_model: z.string().min(1).optional(),
-    request_attribution: requestAttributionSchema.optional(),
-    request_originator: z.string().optional(),
+    request_identity: RequestIdentityPolicyWireSchema.optional(),
     models: z.array(createProviderModelSchema).min(1),
   })
+  .strict()
   .superRefine((value, ctx) => {
     refineProviderForm(value, ctx);
     if (
@@ -127,10 +147,10 @@ export const replaceProviderRequestSchema = z
     api_key: z.string().optional(),
     base_url: z.string().trim().optional(),
     default_model: z.string().min(1).optional(),
-    request_attribution: requestAttributionSchema.optional(),
-    request_originator: z.string().optional(),
+    request_identity: RequestIdentityPolicyWireSchema.nullable().optional(),
     models: z.array(createProviderModelSchema).min(1),
   })
+  .strict()
   .superRefine((value, ctx) => {
     refineProviderForm(value, ctx);
     if (

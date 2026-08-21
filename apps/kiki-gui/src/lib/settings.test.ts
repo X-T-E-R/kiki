@@ -68,8 +68,8 @@ const providerDraft = (patch: Partial<ProviderDraft> = {}): ProviderDraft => ({
   defaultModel: 'chat',
   apiKey: '',
   clearApiKey: false,
-  requestAttribution: 'auto',
-  requestOriginator: '',
+  requestIdentityChoice: 'auto',
+  requestIdentityOverridesJson: '',
   models: [
     {
       model: 'chat',
@@ -296,8 +296,7 @@ describe('settings persistence and validation', () => {
         type: 'openai',
         base_url: 'https://api.example.test/v1',
         default_model: 'example/chat',
-        request_attribution: 'kiki',
-        request_originator: 'my-ide',
+        request_identity: { preset: 'kimi_code' },
         has_api_key: true,
         status: 'connected',
         models: ['example/chat'],
@@ -314,8 +313,58 @@ describe('settings persistence and validation', () => {
     expect(draft?.apiKey).toBe('');
     expect(draft?.defaultModel).toBe('chat');
     expect(draft?.models[0]?.model).toBe('chat');
-    expect(draft?.requestAttribution).toBe('kiki');
-    expect(draft?.requestOriginator).toBe('my-ide');
+    expect(draft?.requestIdentityChoice).toBe('kimi_code');
+  });
+
+  it('round-trips authored request identity presets and advanced overrides', async () => {
+    const draft = providerDraftFromCatalog(
+      {
+        id: 'example',
+        type: 'openai_responses',
+        request_identity: {
+          preset: 'codex_compatible',
+          overrides: { client: { user_agent: 'codex' } },
+        },
+        has_api_key: true,
+        status: 'connected',
+        models: ['example/chat'],
+      },
+      [{ provider: 'example', model: 'example/chat', max_context_size: 128000 }],
+    );
+    expect(draft?.requestIdentityChoice).toBe('codex_compatible');
+    expect(JSON.parse(draft?.requestIdentityOverridesJson ?? '')).toEqual({
+      client: { user_agent: 'codex' },
+    });
+
+    let body: Record<string, unknown> | undefined;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      body = JSON.parse(init?.body as string) as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        code: 0,
+        msg: 'success',
+        data: { provider: { id: 'example', type: 'openai_responses', has_api_key: true, status: 'connected' } },
+      }));
+    }));
+    await replaceProvider(
+      { url: 'http://127.0.0.1:8080', token: 'token' },
+      'example',
+      draft!,
+    );
+    expect(body?.['request_identity']).toEqual({
+      preset: 'codex_compatible',
+      overrides: { client: { user_agent: 'codex' } },
+    });
+  });
+
+  it('rejects malformed advanced request identity JSON without saving', () => {
+    expect(
+      validateProviderDraft(
+        providerDraft({
+          requestIdentityChoice: 'grok_build_compatible',
+          requestIdentityOverridesJson: '{',
+        }),
+      )?.key,
+    ).toBe('val.providerRequestIdentity');
   });
 
   it('uses the provider PUT wire and omits a blank write-once secret', async () => {
@@ -370,7 +419,7 @@ describe('settings persistence and validation', () => {
     );
   });
 
-  it('serializes request_attribution only when a style is chosen (auto omits)', async () => {
+  it('serializes request identity presets and resets edit forms to auto with null', async () => {
     const bodies: Record<string, unknown>[] = [];
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
       bodies.push(JSON.parse(init?.body as string) as Record<string, unknown>);
@@ -382,22 +431,19 @@ describe('settings persistence and validation', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     const connection = { url: 'http://127.0.0.1:8080', token: 'token' };
-    await replaceProvider(connection, 'example', providerDraft({ requestAttribution: 'codex' }));
-    await replaceProvider(connection, 'example', providerDraft({ requestOriginator: 'my-ide' }));
+    await replaceProvider(connection, 'example', providerDraft({ requestIdentityChoice: 'codex_compatible' }));
+    await replaceProvider(connection, 'example', providerDraft({ requestIdentityChoice: 'kimi_code' }));
     await replaceProvider(connection, 'example', providerDraft());
 
-    expect(bodies[0]?.['request_attribution']).toBe('codex');
-    expect(bodies[1]?.['request_originator']).toBe('my-ide');
-    expect(bodies[2]?.['request_attribution']).toBeUndefined();
-    expect('request_attribution' in (bodies[2] ?? {})).toBe(false);
-    expect(bodies[2]?.['request_originator']).toBeUndefined();
-    expect('request_originator' in (bodies[2] ?? {})).toBe(false);
+    expect(bodies[0]?.['request_identity']).toEqual({ preset: 'codex_compatible' });
+    expect(bodies[1]?.['request_identity']).toEqual({ preset: 'kimi_code' });
+    expect(bodies[2]?.['request_identity']).toBeNull();
   });
 
-  it('tracks request_attribution edits as dirty', () => {
+  it('tracks request identity edits as dirty', () => {
     const initial = providerDraft();
-    expect(isProviderDraftDirty(providerDraft({ requestAttribution: 'none' }), initial)).toBe(true);
-    expect(isProviderDraftDirty(providerDraft({ requestOriginator: 'my-ide' }), initial)).toBe(true);
+    expect(isProviderDraftDirty(providerDraft({ requestIdentityChoice: 'none' }), initial)).toBe(true);
+    expect(isProviderDraftDirty(providerDraft({ requestIdentityOverridesJson: '{"client":{"userAgent":"host"}}' }), initial)).toBe(true);
     expect(isProviderDraftDirty(providerDraft(), initial)).toBe(false);
   });
 });

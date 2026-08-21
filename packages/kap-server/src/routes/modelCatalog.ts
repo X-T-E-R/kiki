@@ -14,6 +14,7 @@ import {
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
 import { setDefaultModelResponseSchema } from '@moonshot-ai/agent-core-v2/kosong/model/catalog';
+import { requestIdentityFromWire } from '@moonshot-ai/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 import { refreshProviderModelsResponseSchema } from '@moonshot-ai/agent-core-v2/app/kosongConfig/discovery';
 import {
   DEFAULT_MODEL_SECTION,
@@ -262,11 +263,8 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         const provider: ProviderConfig = { type: req.body.type };
         if (req.body.api_key !== undefined) provider.apiKey = req.body.api_key;
         if (req.body.base_url !== undefined) provider.baseUrl = req.body.base_url;
-        if (req.body.request_attribution !== undefined) {
-          provider.requestAttribution = req.body.request_attribution;
-        }
-        if (req.body.request_originator !== undefined) {
-          provider.requestOriginator = req.body.request_originator;
+        if (req.body.request_identity !== undefined) {
+          provider.requestIdentity = requestIdentityFromWire(req.body.request_identity);
         }
         if (req.body.default_model !== undefined) {
           provider.defaultModel = `${id}/${req.body.default_model}`;
@@ -370,8 +368,13 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         const provider: ProviderConfig = { ...target, type: req.body.type };
         provider.apiKey = req.body.api_key ?? target.apiKey;
         provider.baseUrl = req.body.base_url;
-        provider.requestAttribution = req.body.request_attribution;
-        provider.requestOriginator = req.body.request_originator;
+        if (req.body.request_identity !== undefined) {
+          if (req.body.request_identity === null) {
+            delete provider.requestIdentity;
+          } else {
+            provider.requestIdentity = requestIdentityFromWire(req.body.request_identity);
+          }
+        }
         provider.defaultModel =
           req.body.default_model !== undefined
             ?
@@ -855,4 +858,3 @@ async function handleImportRegistry(
     throw err;
   }
 }
-
