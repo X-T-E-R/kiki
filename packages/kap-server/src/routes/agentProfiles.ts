@@ -8,6 +8,7 @@
  */
 
 import {
+  AgentProfileSourceDiagnosticCodes,
   AgentProfileWriteErrors,
   BUILTIN_AGENT_PROFILE_SOURCE_ID,
   DISABLED_BUILTIN_PROFILES_SECTION,
@@ -15,15 +16,20 @@ import {
   ErrorCodes,
   IAgentProfileRegistry,
   IConfigService,
+  ISessionAgentProfileCatalog,
+  ISessionContext,
+  ISessionManager,
   IWorkspaceInstanceManager,
   IWorkspaceService,
   isError2,
   type AgentProfile,
+  type AgentProfileCatalogSnapshot,
   type AgentProfileRegistration,
   type AgentProfileRouteDefinition,
   type DisabledBuiltinProfilesConfig,
   type DisabledNamedProfilesConfig,
   type Scope,
+  type ScopedAgentProfileBinding,
 } from '@moonshot-ai/agent-core-v2';
 import { z } from 'zod';
 
@@ -80,11 +86,13 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
       const disabledNamed = new Set(
         config.get<DisabledNamedProfilesConfig>(DISABLED_NAMED_PROFILES_SECTION) ?? [],
       );
+      const catalogs = await sessionAgentProfileCatalogs(core);
       const items = projectNamedAgentProfiles(
         registry.entries(),
         disabledBuiltins,
         disabledNamed,
         req.query.expand === true,
+        catalogs,
       );
       reply.send(okEnvelope({ items }, req.id));
     },
@@ -187,11 +195,32 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
   );
 }
 
+interface SessionAgentProfileCatalogProjection {
+  readonly catalog: ISessionAgentProfileCatalog;
+  readonly snapshot?: AgentProfileCatalogSnapshot;
+}
+
+async function sessionAgentProfileCatalogs(
+  core: Scope,
+): Promise<ReadonlyMap<string, SessionAgentProfileCatalogProjection>> {
+  const catalogs = new Map<string, SessionAgentProfileCatalogProjection>();
+  await Promise.all(core.accessor.get(ISessionManager).list().map(async (session) => {
+    const workspaceId = session.accessor.get(ISessionContext).workspaceId;
+    const catalog = session.accessor.get(ISessionAgentProfileCatalog);
+    await catalog.ready;
+    if (!catalogs.has(workspaceId)) {
+      catalogs.set(workspaceId, { catalog, snapshot: catalog.snapshot?.() });
+    }
+  }));
+  return catalogs;
+}
+
 function projectNamedAgentProfiles(
   entries: readonly AgentProfileRegistration[],
   disabledBuiltins: ReadonlySet<string>,
   disabledNamed: ReadonlySet<string>,
   expand: boolean,
+  catalogs: ReadonlyMap<string, SessionAgentProfileCatalogProjection> = new Map(),
 ): NamedAgentProfile[] {
   const registrations = entries.toSorted((a, b) =>
     b.priority - a.priority
@@ -202,7 +231,14 @@ function projectNamedAgentProfiles(
     return registrations
       .flatMap((registration) =>
         registration.contribution.profiles.map((profile) =>
-          toNamedAgentProfile(registration, profile, disabledBuiltins, disabledNamed),
+          toNamedAgentProfile(
+            registration,
+            profile,
+            disabledBuiltins,
+            disabledNamed,
+            undefined,
+            catalogForProfile(registration, profile, catalogs),
+          ),
         ))
       .toSorted(compareNamedAgentProfiles);
   }
@@ -247,8 +283,33 @@ function projectNamedAgentProfiles(
         disabledBuiltins,
         disabledNamed,
         workspaceIds.size === 0 ? undefined : [...workspaceIds].toSorted(),
+        catalogForProfile(registration, profile, catalogs),
       ))
     .toSorted(compareNamedAgentProfiles);
+}
+
+function catalogForProfile(
+  registration: AgentProfileRegistration,
+  profile: AgentProfile,
+  catalogs: ReadonlyMap<string, SessionAgentProfileCatalogProjection>,
+): SessionAgentProfileCatalogProjection | undefined {
+  const candidates = registration.workspaceKey === undefined
+    ? catalogs.values()
+    : [catalogs.get(registration.workspaceKey)].values();
+  for (const candidate of candidates) {
+    if (candidate === undefined) continue;
+    const publicProfile = candidate.snapshot?.publicProfiles.get(profile.name)
+      ?? candidate.catalog.get(profile.name);
+    if (sameProfileDefinition(publicProfile, profile)) return candidate;
+  }
+  return undefined;
+}
+
+function sameProfileDefinition(left: AgentProfile | undefined, right: AgentProfile): boolean {
+  if (left === right) return true;
+  return left?.definitionId !== undefined
+    && right.definitionId !== undefined
+    && left.definitionId === right.definitionId;
 }
 
 function compareNamedAgentProfiles(a: NamedAgentProfile, b: NamedAgentProfile): number {
@@ -264,6 +325,7 @@ function toNamedAgentProfile(
   disabledBuiltins: ReadonlySet<string> = new Set(),
   disabledNamed: ReadonlySet<string> = new Set(),
   workspaceIds?: readonly string[],
+  catalog?: SessionAgentProfileCatalogProjection,
 ): NamedAgentProfile {
   return {
     name: profile.name,
@@ -298,7 +360,10 @@ function toNamedAgentProfile(
         },
     subagents: profile.subagents?.map((name) => {
       const lease = profile.subagentLeases?.[name];
-      return lease === undefined ? name : toNamedAgentSubagentLease(lease);
+      const binding = lease?.source === undefined
+        ? undefined
+        : scopedBindingFor(catalog, registration, profile, name);
+      return lease === undefined ? name : toNamedAgentSubagentLease(lease, binding);
     }),
     disabled: registration.sourceId === BUILTIN_AGENT_PROFILE_SOURCE_ID
       ? disabledBuiltins.has(profile.name)
@@ -308,6 +373,27 @@ function toNamedAgentProfile(
       .map(toNamedAgentRoute)
       .toSorted((a, b) => a.id.localeCompare(b.id)),
   };
+}
+
+function scopedBindingFor(
+  projection: SessionAgentProfileCatalogProjection | undefined,
+  registration: AgentProfileRegistration,
+  profile: AgentProfile,
+  alias: string,
+): ScopedAgentProfileBinding | undefined {
+  if (projection !== undefined) {
+    const parent = projection.snapshot?.publicProfiles.get(profile.name)
+      ?? projection.catalog.get(profile.name);
+    const parentDefinitionId = parent?.definitionId;
+    const binding = parentDefinitionId === undefined
+      ? undefined
+      : projection.snapshot?.scopedBindings.get(parentDefinitionId)?.get(alias)
+        ?? projection.catalog.getScopedBinding?.(parentDefinitionId, alias);
+    if (binding !== undefined) return binding;
+  }
+  return profile.definitionId === undefined
+    ? undefined
+    : registration.contribution.scopedBindings?.get(profile.definitionId)?.get(alias);
 }
 
 function toNamedAgentModelProfile(
@@ -327,9 +413,15 @@ function toNamedAgentModelProfile(
 
 function toNamedAgentSubagentLease(
   lease: NonNullable<AgentProfile['subagentLeases']>[string],
+  binding?: ScopedAgentProfileBinding,
 ): Exclude<NonNullable<NamedAgentProfile['subagents']>[number], string> {
+  const status = lease.source === undefined ? undefined : binding?.status ?? 'unavailable';
   return {
     name: lease.name,
+    source: lease.source,
+    scope: lease.source === undefined ? undefined : 'private',
+    status,
+    diagnostic: scopedBindingDiagnostic(binding, status),
     description: lease.description,
     when_to_use: lease.whenToUse,
     model_preference: lease.modelPreference,
@@ -354,6 +446,35 @@ function toNamedAgentSubagentLease(
       : { ...lease.requestParams },
     model_profiles: lease.modelProfiles?.map(toNamedAgentModelProfile),
   };
+}
+
+function scopedBindingDiagnostic(
+  binding: ScopedAgentProfileBinding | undefined,
+  status: ScopedAgentProfileBinding['status'] | undefined,
+): string | undefined {
+  if (binding?.diagnostic === undefined) {
+    return status === 'unavailable' ? 'Source profile is unavailable' : undefined;
+  }
+  switch (binding.diagnostic.code) {
+    case AgentProfileSourceDiagnosticCodes.INVALID_PATH:
+      return 'Source path is invalid';
+    case AgentProfileSourceDiagnosticCodes.PATH_ESCAPE:
+      return 'Source path escapes its contribution root';
+    case AgentProfileSourceDiagnosticCodes.SYMLINK_ESCAPE:
+      return 'Source path resolves outside its contribution root';
+    case AgentProfileSourceDiagnosticCodes.NOT_PRIVATE:
+      return 'Source profile is not private';
+    case AgentProfileSourceDiagnosticCodes.UNAVAILABLE:
+      return 'Source profile is unavailable';
+    case AgentProfileSourceDiagnosticCodes.INVALID_PROFILE:
+      return 'Source profile is invalid';
+    case AgentProfileSourceDiagnosticCodes.CYCLE:
+      return 'Source profile dependency cycle detected';
+    case AgentProfileSourceDiagnosticCodes.DEPTH_EXCEEDED:
+      return 'Source profile dependency depth exceeded';
+    default:
+      return 'Source profile is unavailable';
+  }
 }
 
 function toNamedAgentRoute(route: AgentProfileRouteDefinition): NamedAgentProfile['routes'][number] {

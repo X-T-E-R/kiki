@@ -28,6 +28,10 @@ export type NamedAgentSpawnConstraints = z.infer<typeof namedAgentSpawnConstrain
 
 export const namedAgentSubagentLeaseSchema = z.object({
   name: z.string(),
+  source: z.string().optional(),
+  scope: z.literal('private').optional(),
+  status: z.enum(['ready', 'unavailable']).optional(),
+  diagnostic: z.string().optional(),
   description: z.string().optional(),
   when_to_use: z.string().optional(),
   model_preference: modelPreferenceSchema.optional(),

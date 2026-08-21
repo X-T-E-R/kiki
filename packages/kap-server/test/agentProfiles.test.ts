@@ -2,6 +2,12 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import {
+  AgentProfileSourceDiagnosticCodes,
+  IAgentProfileRegistry,
+  ISessionManager,
+  normalizeAgentProfile,
+} from '@moonshot-ai/agent-core-v2';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { listNamedAgentProfilesResponseSchema } from '../src/protocol/rest-agentProfile';
@@ -290,6 +296,176 @@ describe('GET /api/v1/agents', () => {
       }),
     });
     expect(((await mixedResponse.json()) as Envelope<null>).code).toBe(40001);
+  });
+
+  it('projects scoped source leases without exposing private definitions or absolute paths', async () => {
+    const agentsDir = join(home as string, 'agents');
+    const privateDir = join(agentsDir, '_private', 'research');
+    await mkdir(privateDir, { recursive: true });
+    const parentPath = join(agentsDir, 'research-lead.md');
+    const childPath = join(privateDir, 'writer.md');
+    await writeFile(
+      parentPath,
+      [
+        '---',
+        'name: research-lead',
+        'description: Coordinates research',
+        'subagents:',
+        '  - name: research-writer',
+        '    source: ./_private/research/writer.md',
+        '    description: Writes research summaries',
+        '  - name: missing-writer',
+        '    source: ./_private/research/missing.md',
+        '---',
+        '',
+        'Coordinate research.',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    await writeFile(
+      childPath,
+      [
+        '---',
+        'name: private-research-writer',
+        'description: Internal research writer',
+        '---',
+        '',
+        'Write the research summary.',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+    });
+    base = `http://127.0.0.1:${server.port}`;
+    const create = await authedFetch(server, base, '/api/v1/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: home } }),
+    });
+    expect(((await create.json()) as Envelope<{ id: string }>).code).toBe(0);
+
+    const response = await authedFetch(server, base, '/api/v1/agents');
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Envelope<unknown>;
+    expect(body.code).toBe(0);
+    const data = listNamedAgentProfilesResponseSchema.parse(body.data);
+    const parent = data.items.find((profile) =>
+      profile.name === 'research-lead' && profile.source === 'user'
+    );
+    expect(parent?.subagents).toEqual([
+      {
+        name: 'research-writer',
+        source: './_private/research/writer.md',
+        scope: 'private',
+        status: 'ready',
+        description: 'Writes research summaries',
+      },
+      {
+        name: 'missing-writer',
+        source: './_private/research/missing.md',
+        scope: 'private',
+        status: 'unavailable',
+        diagnostic: 'Source profile is unavailable',
+      },
+    ]);
+    expect(data.items.some((profile) => profile.name === 'private-research-writer')).toBe(false);
+    const projectedLeases = JSON.stringify(parent?.subagents);
+    expect(projectedLeases).not.toContain(childPath.replaceAll('\\', '/'));
+    expect(projectedLeases).not.toContain((home as string).replaceAll('\\', '/'));
+    expect(projectedLeases).not.toContain('sourceDefinitionId');
+  });
+
+  it('projects scoped source status from a loaded workspace without a live session', async () => {
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+    });
+    base = `http://127.0.0.1:${server.port}`;
+    const parentDefinitionId = 'definition:offline-lead';
+    const readyLease = { name: 'offline-writer', source: './_private/writer.md' } as const;
+    const unavailableLease = { name: 'missing-writer', source: './_private/missing.md' } as const;
+    const profile = normalizeAgentProfile({
+      name: 'offline-lead',
+      definitionId: parentDefinitionId,
+      subagents: [readyLease.name, unavailableLease.name],
+      subagentLeases: {
+        [readyLease.name]: readyLease,
+        [unavailableLease.name]: unavailableLease,
+      },
+      systemPrompt: () => 'Coordinate offline research.',
+    });
+    const registration = server.core.accessor.get(IAgentProfileRegistry).register({
+      sourceId: 'workspace',
+      priority: 30,
+      workspaceKey: 'wd_offline',
+      contribution: {
+        profiles: [profile],
+        scopedBindings: new Map([
+          [parentDefinitionId, new Map([
+            [readyLease.name, {
+              parentDefinitionId,
+              alias: readyLease.name,
+              source: readyLease.source,
+              lease: readyLease,
+              status: 'ready' as const,
+              sourceDefinitionId: 'C:/Users/private/_private/writer.md',
+            }],
+            [unavailableLease.name, {
+              parentDefinitionId,
+              alias: unavailableLease.name,
+              source: unavailableLease.source,
+              lease: unavailableLease,
+              status: 'unavailable' as const,
+              diagnostic: {
+                code: AgentProfileSourceDiagnosticCodes.UNAVAILABLE,
+                severity: 'error' as const,
+                message: 'Scoped source C:/Users/private/_private/missing.md is unavailable',
+                path: 'C:/Users/private/_private/missing.md',
+              },
+            }],
+          ])],
+        ]),
+      },
+    });
+    expect(server.core.accessor.get(ISessionManager).list()).toHaveLength(0);
+
+    const response = await authedFetch(server, base, '/api/v1/agents');
+    registration.dispose();
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as Envelope<unknown>;
+    const data = listNamedAgentProfilesResponseSchema.parse(body.data);
+    const parent = data.items.find((item) =>
+      item.name === 'offline-lead' && item.source === 'workspace'
+    );
+    expect(parent?.subagents).toEqual([
+      {
+        name: 'offline-writer',
+        source: './_private/writer.md',
+        scope: 'private',
+        status: 'ready',
+      },
+      {
+        name: 'missing-writer',
+        source: './_private/missing.md',
+        scope: 'private',
+        status: 'unavailable',
+        diagnostic: 'Source profile is unavailable',
+      },
+    ]);
+    const projectedLeases = JSON.stringify(parent?.subagents);
+    expect(projectedLeases).not.toContain('C:/Users/private');
+    expect(projectedLeases).not.toContain('sourceDefinitionId');
   });
 
   it('rejects writes to builtin profiles with a read-only business code', async () => {
