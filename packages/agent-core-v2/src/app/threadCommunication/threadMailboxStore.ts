@@ -1,10 +1,4 @@
-/**
- * `threadCommunication` domain — durable mailbox Store contract.
- *
- * Owns backend-neutral idempotent message acceptance, per-target sequencing,
- * fenced delivery attempts, activity sequencing, and persisted workspace
- * overrides. Bound at App scope.
- */
+import { createHash } from 'node:crypto';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 
@@ -37,6 +31,30 @@ export interface ThreadDeliveryAttempt {
   readonly attempt: number;
 }
 
+export interface ThreadDeliveryClaim {
+  readonly message: AcceptedThreadMessage;
+  readonly consumerId: string;
+  readonly fence: number;
+  readonly leaseUntil: number;
+  readonly hostEpoch: number;
+}
+
+export interface ThreadMailboxMutationOptions {
+  readonly requestId?: string;
+  readonly signal?: AbortSignal;
+}
+
+export function threadMailboxClaimRequestId(operation: string, claim: ThreadDeliveryClaim): string {
+  const digest = createHash('sha256').update(JSON.stringify({
+    messageId: claim.message.messageId,
+    consumerId: claim.consumerId,
+    fence: claim.fence,
+    leaseUntil: claim.leaseUntil,
+    hostEpoch: claim.hostEpoch,
+  })).digest('base64url');
+  return `mailbox-${operation}-${digest}`;
+}
+
 export interface StoredThreadActivity {
   readonly seq: number;
   readonly epoch: string;
@@ -61,11 +79,27 @@ export interface IThreadMailboxStore {
     readonly target: ThreadRef;
     readonly content: string;
     readonly idempotencyKey: string;
-  }): Promise<ThreadMessageAcceptance>;
-  beginDelivery(messageId: string): Promise<ThreadDeliveryAttempt | undefined>;
-  acknowledgeDelivery(messageId: string, attemptId: string): Promise<boolean>;
-  markUndeliverable(messageId: string, attemptId: string, reason: string): Promise<boolean>;
-  listPendingDeliveries(): Promise<readonly AcceptedThreadMessage[]>;
+    readonly pendingLimit?: number;
+  }, options?: ThreadMailboxMutationOptions): Promise<ThreadMessageAcceptance>;
+
+  claimNext(input: {
+    readonly target: ThreadRef;
+    readonly consumerId: string;
+    readonly leaseMs: number;
+  }, options?: ThreadMailboxMutationOptions): Promise<ThreadDeliveryClaim | undefined>;
+
+  acknowledgeDelivery(
+    claim: ThreadDeliveryClaim,
+    options?: ThreadMailboxMutationOptions,
+  ): Promise<boolean>;
+
+  markUndeliverable(
+    claim: ThreadDeliveryClaim,
+    reason: string,
+    options?: ThreadMailboxMutationOptions,
+  ): Promise<boolean>;
+
+  listPendingTargets(options?: ThreadMailboxMutationOptions): Promise<readonly ThreadRef[]>;
 
   appendActivity(input: {
     readonly target: ThreadRef;
@@ -73,12 +107,26 @@ export interface IThreadMailboxStore {
     readonly reason: string;
     readonly turnId?: number;
     readonly messageId?: string;
-  }): Promise<StoredThreadActivity>;
-  readActivity(target: ThreadRef, afterSeq: number, limit: number): Promise<ThreadActivityPage>;
+  }, options?: ThreadMailboxMutationOptions): Promise<StoredThreadActivity>;
+  readActivity(
+    target: ThreadRef,
+    afterSeq: number,
+    limit: number,
+    options?: ThreadMailboxMutationOptions,
+  ): Promise<ThreadActivityPage>;
 
-  getWorkspaceOverride(workspaceId: string): Promise<boolean | undefined>;
-  setWorkspaceOverride(workspaceId: string, enabled: boolean): Promise<void>;
-  clearWorkspaceOverride(workspaceId: string): Promise<void>;
+  getWorkspaceOverride(
+    workspaceId: string,
+    options?: ThreadMailboxMutationOptions,
+  ): Promise<boolean | undefined>;
+  setWorkspaceOverride(
+    workspaceId: string,
+    enabled: boolean,
+    options?: ThreadMailboxMutationOptions,
+  ): Promise<void>;
+  clearWorkspaceOverride(workspaceId: string, options?: ThreadMailboxMutationOptions): Promise<void>;
+
+  close(): Promise<void>;
 }
 
 export const IThreadMailboxStore: ServiceIdentifier<IThreadMailboxStore> =

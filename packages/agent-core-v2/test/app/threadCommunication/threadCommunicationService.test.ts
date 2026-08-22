@@ -1,12 +1,8 @@
-/**
- * Thread communication orchestration scenarios.
- */
-
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import type { ServiceIdentifier, ServicesAccessor } from '#/_base/di/instantiation';
@@ -17,6 +13,7 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { LifecycleScope } from '#/app/scopes';
 import type { IAgentScopeHandle, ISessionScopeHandle } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { HomeRuntimeError } from '#/app/runtimeHost/errors';
 import { IConfigService } from '#/app/config/config';
 import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
@@ -34,6 +31,7 @@ import {
 import {
   IThreadMailboxStore,
   type AcceptedThreadMessage,
+  type ThreadDeliveryClaim,
 } from '#/app/threadCommunication/threadMailboxStore';
 import { IAgentPromptService, type PromptHandle } from '#/agent/prompt/prompt';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
@@ -79,8 +77,9 @@ describe('ThreadCommunicationService', () => {
   let workspaceOverrides: Map<string, boolean>;
   let events: string[];
   let deliveredMessage: AcceptedThreadMessage | undefined;
+  let deliveryState: 'pending' | 'delivering' | 'delivered';
   let promptState: PromptHandle['state'];
-  let promptEnqueue: ReturnType<typeof vi.fn>;
+  let promptEnqueue: Mock<IAgentPromptService['enqueue']>;
   let promptInject: ReturnType<typeof vi.fn>;
   let resume: ReturnType<typeof vi.fn>;
   let activityEvents: Array<{
@@ -92,8 +91,9 @@ describe('ThreadCommunicationService', () => {
   }>;
   let wireRecords: WireRecord[];
   let acceptError: Error | undefined;
-  let listPendingDeliveries: ReturnType<
-    typeof vi.fn<IThreadMailboxStore['listPendingDeliveries']>
+  let mailboxClose: ReturnType<typeof vi.fn<() => Promise<void>>>;
+  let listPendingTargets: ReturnType<
+    typeof vi.fn<IThreadMailboxStore['listPendingTargets']>
   >;
 
   beforeEach(async () => {
@@ -106,8 +106,10 @@ describe('ThreadCommunicationService', () => {
     activityEvents = [];
     wireRecords = [];
     acceptError = undefined;
-    listPendingDeliveries = vi
-      .fn<IThreadMailboxStore['listPendingDeliveries']>()
+    deliveryState = 'delivered';
+    mailboxClose = vi.fn(async () => {});
+    listPendingTargets = vi
+      .fn<IThreadMailboxStore['listPendingTargets']>()
       .mockResolvedValue([]);
     promptState = 'running';
     promptInject = vi.fn();
@@ -190,6 +192,7 @@ describe('ThreadCommunicationService', () => {
           acceptedAt: 10,
           targetSeq: 1,
         };
+        deliveryState = 'pending';
         return {
           message: deliveredMessage,
           deduplicated: false,
@@ -197,17 +200,25 @@ describe('ThreadCommunicationService', () => {
           payloadConflict: false,
         };
       },
-      beginDelivery: async () => ({
-        message: deliveredMessage!,
-        attemptId: 'attempt-1',
-        attempt: 1,
-      }),
+      claimNext: async (input) => {
+        if (deliveredMessage === undefined || deliveryState !== 'pending') return undefined;
+        deliveryState = 'delivering';
+        return {
+          message: deliveredMessage,
+          consumerId: input.consumerId,
+          fence: 1,
+          leaseUntil: Date.now() + input.leaseMs,
+          hostEpoch: 1,
+        };
+      },
       acknowledgeDelivery: async () => {
+        if (deliveryState !== 'delivering') return false;
+        deliveryState = 'delivered';
         events.push('ack');
         return true;
       },
       markUndeliverable: async () => true,
-      listPendingDeliveries,
+      listPendingTargets,
       appendActivity: async (input) => {
         const activity = {
           seq: activityEvents.length + 1,
@@ -231,6 +242,7 @@ describe('ThreadCommunicationService', () => {
       clearWorkspaceOverride: async (workspaceId: string) => {
         workspaceOverrides.delete(workspaceId);
       },
+      close: mailboxClose,
     });
     ix.set(IThreadCommunicationService, new SyncDescriptor(ThreadCommunicationService));
   });
@@ -249,7 +261,7 @@ describe('ThreadCommunicationService', () => {
     const recoveryGate = new Promise<void>((resolve) => {
       releaseRecovery = resolve;
     });
-    listPendingDeliveries.mockImplementation(async () => {
+    listPendingTargets.mockImplementation(async () => {
       markRecoveryStarted();
       await recoveryGate;
       return [];
@@ -268,6 +280,20 @@ describe('ThreadCommunicationService', () => {
     await shutdown;
     expect(shutdownSettled).toBe(true);
     await expect(service.shutdown()).resolves.toBeUndefined();
+    expect(mailboxClose).not.toHaveBeenCalled();
+  });
+
+  it('retries transient startup recovery without poisoning public readiness', async () => {
+    listPendingTargets
+      .mockRejectedValueOnce(new HomeRuntimeError('runtime.timeout', 'startup timeout'))
+      .mockRejectedValueOnce(new HomeRuntimeError('runtime.connection_failed', 'owner transition'))
+      .mockResolvedValueOnce([]);
+    const service = ix.get(IThreadCommunicationService);
+
+    await expect(service.listThreads()).rejects.toMatchObject({ code: 'runtime.timeout' });
+    await expect(service.listThreads()).rejects.toMatchObject({ code: 'runtime.connection_failed' });
+    await expect(service.listThreads()).resolves.toMatchObject({ threads: expect.any(Array) });
+    expect(listPendingTargets).toHaveBeenCalledTimes(3);
   });
 
   it('persists before cross-workspace resume and enqueue without injection', async () => {
@@ -524,7 +550,7 @@ describe('ThreadCommunicationService', () => {
   });
 
   it('waits on long workspace and session identities without leaving teardown operations', async () => {
-    ix.stub(IThreadMailboxStore, new MiniDbMailboxBackend(join(homeDir, 'long-ref-mailbox')));
+    ix.stub(IThreadMailboxStore, mailboxFromBackend(new MiniDbMailboxBackend(join(homeDir, 'long-ref-mailbox'))));
     const service = ix.get(IThreadCommunicationService);
     const thread = ref(service.hostId, `workspace-${'w'.repeat(300)}`, `session-${'s'.repeat(300)}`);
 
@@ -544,7 +570,7 @@ describe('ThreadCommunicationService', () => {
     const mailbox = new MiniDbMailboxBackend(join(homeDir, 'stale-cursor-mailbox'), {
       activityBacklogLimit: 2,
     });
-    ix.stub(IThreadMailboxStore, mailbox);
+    ix.stub(IThreadMailboxStore, mailboxFromBackend(mailbox));
     const service = ix.get(IThreadCommunicationService);
     const thread = ref(service.hostId, 'workspace-b', 'target');
     const baseline = await service.waitThreads({ threads: [{ thread }], timeoutMs: 0 });
@@ -680,4 +706,60 @@ function accessor(
       throw new Error(`Unexpected service request: ${String(id)}`);
     },
   };
+}
+
+function mailboxFromBackend(backend: MiniDbMailboxBackend): IThreadMailboxStore {
+  const attempts = new Map<string, { readonly attemptId: string; readonly claim: ThreadDeliveryClaim }>();
+  return {
+    _serviceBrand: undefined,
+    acceptMessage: (input) => backend.acceptMessage(input),
+    claimNext: async (input) => {
+      const pending = (await backend.listPendingDeliveries())
+        .filter((message) => threadIdentity(message.target) === threadIdentity(input.target))
+        .toSorted((left, right) => left.targetSeq - right.targetSeq);
+      for (const message of pending) {
+        const attempt = await backend.beginDelivery(message.messageId);
+        if (attempt === undefined) continue;
+        const claim: ThreadDeliveryClaim = {
+          message: attempt.message,
+          consumerId: input.consumerId,
+          fence: attempt.attempt,
+          leaseUntil: Date.now() + input.leaseMs,
+          hostEpoch: 0,
+        };
+        attempts.set(message.messageId, { attemptId: attempt.attemptId, claim });
+        return claim;
+      }
+      return undefined;
+    },
+    acknowledgeDelivery: async (claim) => {
+      const attempt = attempts.get(claim.message.messageId);
+      if (attempt === undefined || attempt.claim !== claim) return false;
+      attempts.delete(claim.message.messageId);
+      return backend.acknowledgeDelivery(claim.message.messageId, attempt.attemptId);
+    },
+    markUndeliverable: async (claim, reason) => {
+      const attempt = attempts.get(claim.message.messageId);
+      if (attempt === undefined || attempt.claim !== claim) return false;
+      attempts.delete(claim.message.messageId);
+      return backend.markUndeliverable(claim.message.messageId, attempt.attemptId, reason);
+    },
+    listPendingTargets: async () => {
+      const targets = new Map<string, ThreadRef>();
+      for (const message of await backend.listPendingDeliveries()) {
+        targets.set(threadIdentity(message.target), message.target);
+      }
+      return [...targets.values()];
+    },
+    appendActivity: (input) => backend.appendActivity(input),
+    readActivity: (target, afterSeq, limit) => backend.readActivity(target, afterSeq, limit),
+    getWorkspaceOverride: (workspaceId) => backend.getWorkspaceOverride(workspaceId),
+    setWorkspaceOverride: (workspaceId, enabled) => backend.setWorkspaceOverride(workspaceId, enabled),
+    clearWorkspaceOverride: (workspaceId) => backend.clearWorkspaceOverride(workspaceId),
+    close: async () => {},
+  };
+}
+
+function threadIdentity(thread: ThreadRef): string {
+  return `${thread.hostId}\u0000${thread.workspaceId}\u0000${thread.sessionId}`;
 }

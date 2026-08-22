@@ -301,17 +301,14 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     return () => { socket.close(); };
   }, [socket]);
 
-  // Wake signals (liveagent's foreground-nudge pattern): on network recovery,
-  // tab focus, pageshow, and visibility restore, nudge the socket — it
-  // reconnects immediately when down and leaves a healthy stream untouched.
+  // Browser recovery events nudge a parked socket without adding periodic work.
   useEffect(() => {
     if (socket === null) return;
     const nudge = () => {
-      if (document.visibilityState === 'hidden') return;
       socket.nudge();
     };
     const onVisibility = () => {
-      if (document.visibilityState === 'visible') socket.nudge();
+      if (document.visibilityState === 'visible') nudge();
     };
     window.addEventListener('online', nudge);
     window.addEventListener('focus', nudge);

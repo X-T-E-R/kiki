@@ -1,14 +1,3 @@
-/**
- * `threadCommunication` domain — `IThreadCommunicationService` implementation.
- *
- * Lists persisted Sessions through `sessionIndex`, reads the main Agent's
- * durable wire without resuming cold Sessions, persists peer messages through
- * `threadMailboxStore` before resolving the target via `sessionManager`, and
- * enqueues them through the target `prompt` scheduler. Follows the App-level
- * session lifecycle and activity projections for durable wait notifications.
- * Bound at App scope.
- */
-
 import { createKimiDeviceId } from '@moonshot-ai/kimi-code-oauth';
 
 import { Disposable, DisposableStore, toDisposable } from '#/_base/di/lifecycle';
@@ -21,7 +10,6 @@ import { IConfigService } from '#/app/config/config';
 import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import type { ContentPart } from '#/kosong/contract/message';
-import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService, type PromptHandle } from '#/agent/prompt/prompt';
 import {
   USER_PROMPT_ORIGIN,
@@ -61,8 +49,11 @@ import {
 } from './threadCommunication';
 import {
   IThreadMailboxStore,
+  threadMailboxClaimRequestId,
   type AcceptedThreadMessage,
+  type ThreadDeliveryClaim,
   type ThreadMessageAcceptance,
+  type ThreadMessageProducer,
 } from './threadMailboxStore';
 import { ThreadActivityCursorExpiredError, ThreadMailboxBacklogError } from './mailboxErrors';
 import {
@@ -70,7 +61,6 @@ import {
   type IThreadPeerSendCapability,
   type SendPeerThreadMessageInput,
 } from './peerThreadCapability';
-import type { ThreadMessageProducer } from './threadMailboxStore';
 
 const DEFAULT_LIST_LIMIT = 50;
 const MAX_LIST_LIMIT = 100;
@@ -81,6 +71,7 @@ const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
 const MAX_WAIT_TIMEOUT_MS = 60_000;
 const WAIT_POLL_MS = 200;
 const WAIT_ACTIVITY_LIMIT = 64;
+const DELIVERY_LEASE_MS = 30_000;
 
 type CursorPayload = ListCursor | ReadCursor | ActivityCursor;
 
@@ -114,13 +105,21 @@ interface MutableTurn {
   readonly output: string[];
 }
 
+interface TargetDrainState {
+  readonly target: ThreadRef;
+  requested: boolean;
+  running?: Promise<SendThreadMessageResult['delivery']>;
+}
+
 export class ThreadCommunicationService extends Disposable implements IThreadCommunicationService, IThreadPeerSendCapability {
   declare readonly _serviceBrand: undefined;
   readonly hostId: string;
 
   private readonly observedSessions = new Map<string, DisposableStore>();
-  private readonly recovery: Promise<void>;
+  private recovery: Promise<void> | undefined;
   private readonly detached = new Set<Promise<void>>();
+  private readonly targetDrains = new Map<string, TargetDrainState>();
+  private readonly mailboxController = new AbortController();
   private readonly shutdownSignal: Promise<void>;
   private resolveShutdown!: () => void;
   private closing = false;
@@ -145,8 +144,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       this.observedSessions.clear();
     }));
     this._register(this.followLifecycle(this.sessionManager));
-    this.recovery = this.recoverPendingDeliveries();
-    void this.recovery.catch(() => {});
+    void this.ensureRecovery().catch(() => {});
   }
 
   shutdown(): Promise<void> {
@@ -156,16 +154,17 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
 
   private async doShutdown(): Promise<void> {
     this.closing = true;
+    this.mailboxController.abort(new Error('Thread communication is shutting down.'));
     this.resolveShutdown();
     this.dispose();
-    await this.recovery.catch(() => {});
+    await this.recovery?.catch(() => {});
     while (this.detached.size > 0) {
       await Promise.all(this.detached);
     }
   }
 
   async listThreads(input: ListThreadsInput = {}): Promise<ListThreadsResult> {
-    await this.recovery;
+    await this.ensureRecovery();
     if (!(await this.globalEnabled())) return { threads: [] };
     const limit = boundedLimit(input.limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
     const decoded = input.cursor === undefined ? undefined : decodeCursor(input.cursor, 'list');
@@ -210,7 +209,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   async readThread(input: ReadThreadInput): Promise<ReadThreadResult> {
-    await this.recovery;
+    await this.ensureRecovery();
     const summary = await this.requireThread(input.thread);
     const limit = boundedLimit(input.limit, DEFAULT_READ_LIMIT, MAX_READ_LIMIT);
     const decoded = input.cursor === undefined ? undefined : decodeCursor(input.cursor, 'read');
@@ -244,7 +243,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   async [SEND_PEER_THREAD_MESSAGE](input: SendPeerThreadMessageInput): Promise<SendThreadMessageResult> {
-    await this.recovery;
+    await this.ensureRecovery();
     validateSendInput(input);
     await this.requireThread(input.source);
     if (sameThread(input.source, input.target)) {
@@ -264,7 +263,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     readonly content: string;
     readonly idempotencyKey: string;
   }): Promise<SendThreadMessageResult> {
-    await this.recovery;
+    await this.ensureRecovery();
     validateSendInput(input);
     await this.requireThread(input.target);
     const storedInput = {
@@ -275,7 +274,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     };
     let accepted: ThreadMessageAcceptance;
     try {
-      accepted = await this.mailbox.acceptMessage(storedInput);
+      accepted = await this.mailbox.acceptMessage(storedInput, {
+        signal: this.mailboxController.signal,
+      });
     } catch (error) {
       if (error instanceof ThreadMailboxBacklogError) {
         throw new Error2(ErrorCodes.THREAD_LIMIT_EXCEEDED, error.message, {
@@ -305,7 +306,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   async waitThreads(input: WaitThreadsInput): Promise<WaitThreadsResult> {
-    await this.recovery;
+    await this.ensureRecovery();
     if (input.threads.length === 0 || input.threads.length > MAX_WAIT_THREADS) {
       throw new Error2(
         ErrorCodes.THREAD_LIMIT_EXCEEDED,
@@ -334,7 +335,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
           }
           return cursor;
         }
-        const page = await this.mailbox.readActivity(item.thread, Number.MAX_SAFE_INTEGER, 1);
+        const page = await this.mailbox.readActivity(item.thread, Number.MAX_SAFE_INTEGER, 1, {
+          signal: this.mailboxController.signal,
+        });
         return {
           v: 1,
           kind: 'activity',
@@ -363,25 +366,31 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   async getWorkspaceOverride(workspaceId: string): Promise<boolean | undefined> {
-    await this.recovery;
+    await this.ensureRecovery();
     requireNonEmpty(workspaceId, 'workspaceId');
-    return this.mailbox.getWorkspaceOverride(workspaceId);
+    return this.mailbox.getWorkspaceOverride(workspaceId, {
+      signal: this.mailboxController.signal,
+    });
   }
 
   async setWorkspaceOverride(workspaceId: string, enabled: boolean): Promise<void> {
-    await this.recovery;
+    await this.ensureRecovery();
     requireNonEmpty(workspaceId, 'workspaceId');
-    await this.mailbox.setWorkspaceOverride(workspaceId, enabled);
+    await this.mailbox.setWorkspaceOverride(workspaceId, enabled, {
+      signal: this.mailboxController.signal,
+    });
   }
 
   async clearWorkspaceOverride(workspaceId: string): Promise<void> {
-    await this.recovery;
+    await this.ensureRecovery();
     requireNonEmpty(workspaceId, 'workspaceId');
-    await this.mailbox.clearWorkspaceOverride(workspaceId);
+    await this.mailbox.clearWorkspaceOverride(workspaceId, {
+      signal: this.mailboxController.signal,
+    });
   }
 
   async isWorkspaceEnabled(workspaceId: string): Promise<boolean> {
-    await this.recovery;
+    await this.ensureRecovery();
     return this.globalEnabled().then(async (enabled) => enabled && this.workspaceEnabled(workspaceId));
   }
 
@@ -391,7 +400,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   private async workspaceEnabled(workspaceId: string): Promise<boolean> {
-    return (await this.mailbox.getWorkspaceOverride(workspaceId)) !== false;
+    return (await this.mailbox.getWorkspaceOverride(workspaceId, {
+      signal: this.mailboxController.signal,
+    })) !== false;
   }
 
   private requireLocalHost(ref: ThreadRef): void {
@@ -436,12 +447,75 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     };
   }
 
-  private async deliverMessage(
+  private deliverMessage(
     message: AcceptedThreadMessage,
   ): Promise<SendThreadMessageResult['delivery']> {
-    if (this.closing) return 'pending';
-    const attempt = await this.mailbox.beginDelivery(message.messageId);
-    if (attempt === undefined || this.closing) return 'pending';
+    return this.requestTargetDrain(message.target, message.messageId);
+  }
+
+  private requestTargetDrain(
+    target: ThreadRef,
+    observedMessageId?: string,
+  ): Promise<SendThreadMessageResult['delivery']> {
+    if (this.closing) return Promise.resolve('pending');
+    const key = threadIdentity(target);
+    let state = this.targetDrains.get(key);
+    if (state === undefined) {
+      state = { target, requested: false };
+      this.targetDrains.set(key, state);
+    }
+    state.requested = true;
+    if (state.running !== undefined) {
+      return state.running.then(() => 'pending');
+    }
+    const running = this.runTargetDrain(state, observedMessageId);
+    state.running = running;
+    void running.finally(() => {
+      if (state.running === running) state.running = undefined;
+      if (!state.requested || this.closing) this.targetDrains.delete(key);
+    }).catch(() => {});
+    return running;
+  }
+
+  private async runTargetDrain(
+    state: TargetDrainState,
+    observedMessageId?: string,
+  ): Promise<SendThreadMessageResult['delivery']> {
+    let observed: SendThreadMessageResult['delivery'] = 'pending';
+    do {
+      state.requested = false;
+      const delivery = await this.drainTarget(state.target, observedMessageId);
+      if (delivery !== 'pending') observed = delivery;
+    } while (state.requested && !this.closing);
+    return observed;
+  }
+
+  private async drainTarget(
+    target: ThreadRef,
+    observedMessageId?: string,
+  ): Promise<SendThreadMessageResult['delivery']> {
+    let observed: SendThreadMessageResult['delivery'] = 'pending';
+    for (;;) {
+      if (this.closing) return observed;
+      const claim = await this.mailbox.claimNext({
+        target,
+        consumerId: `thread-communication/${this.hostId}`,
+        leaseMs: DELIVERY_LEASE_MS,
+      }, {
+        signal: this.mailboxController.signal,
+      });
+      if (claim === undefined || this.closing) return observed;
+      const delivery = await this.deliverClaim(claim);
+      if (claim.message.messageId === observedMessageId) observed = delivery;
+      if (delivery === 'pending') return observed;
+    }
+  }
+
+  private async deliverClaim(
+    claim: ThreadDeliveryClaim,
+  ): Promise<SendThreadMessageResult['delivery']> {
+    const message = claim.message;
+    let handle: PromptHandle;
     try {
       await this.requireThread(message.target);
       const session = await this.sessionManager.resume(message.target.sessionId);
@@ -457,7 +531,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
             acceptedAt: message.acceptedAt,
           } satisfies PeerThreadOrigin
         : USER_PROMPT_ORIGIN;
-      const handle = await main.accessor.get(IAgentPromptService).enqueue({
+      handle = await main.accessor.get(IAgentPromptService).enqueue({
         id: message.messageId,
         message: {
           id: message.messageId,
@@ -467,23 +541,19 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
           origin,
         },
       });
-      if (handle.state === 'running' || isTerminalPromptState(handle.state)) {
-        if (this.closing) return 'pending';
-        const acknowledged = await this.mailbox.acknowledgeDelivery(message.messageId, attempt.attemptId);
-        return acknowledged ? 'delivered' : 'pending';
-      }
-      this.detach(this.acknowledgeWhenLaunched(message, attempt.attemptId, handle));
-      return 'pending';
     } catch (error) {
       if (this.closing) return 'pending';
-      await this.recordUndeliverable(message, attempt.attemptId, error);
-      return 'undeliverable';
+      return this.recordUndeliverable(claim, error);
     }
+    if (handle.state === 'running' || isTerminalPromptState(handle.state)) {
+      return this.acknowledgeClaim(claim);
+    }
+    this.detach(this.observePromptOutcome(claim, handle));
+    return 'pending';
   }
 
-  private async acknowledgeWhenLaunched(
-    message: AcceptedThreadMessage,
-    attemptId: string,
+  private async observePromptOutcome(
+    claim: ThreadDeliveryClaim,
     handle: PromptHandle,
   ): Promise<void> {
     try {
@@ -492,38 +562,65 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
         this.shutdownSignal.then(() => 'shutdown' as const),
       ]);
       if (outcome === 'shutdown' || this.closing) return;
-      await this.mailbox.acknowledgeDelivery(message.messageId, attemptId);
+      await this.acknowledgeClaim(claim);
     } catch (error) {
       if (this.closing) return;
-      await this.recordUndeliverable(message, attemptId, error);
+      await this.recordUndeliverable(claim, error);
     }
+    await this.requestTargetDrain(claim.message.target);
+  }
+
+  private async acknowledgeClaim(
+    claim: ThreadDeliveryClaim,
+  ): Promise<SendThreadMessageResult['delivery']> {
+    const changed = await this.mailbox.acknowledgeDelivery(claim, {
+      requestId: threadMailboxClaimRequestId('thread-ack', claim),
+      signal: this.mailboxController.signal,
+    });
+    return changed ? 'delivered' : 'pending';
   }
 
   private async recordUndeliverable(
-    message: AcceptedThreadMessage,
-    attemptId: string,
+    claim: ThreadDeliveryClaim,
     error: unknown,
-  ): Promise<void> {
-    if (this.closing) return;
+  ): Promise<SendThreadMessageResult['delivery']> {
     const reason = error instanceof Error ? error.message : String(error);
-    const changed = await this.mailbox.markUndeliverable(message.messageId, attemptId, reason);
-    if (!changed || this.closing) return;
+    const changed = await this.mailbox.markUndeliverable(claim, reason, {
+      requestId: threadMailboxClaimRequestId('thread-undeliverable', claim),
+      signal: this.mailboxController.signal,
+    });
+    if (!changed) return 'pending';
     await this.mailbox.appendActivity({
-      target: message.target,
+      target: claim.message.target,
       kind: 'message_undeliverable',
       reason,
-      messageId: message.messageId,
+      messageId: claim.message.messageId,
+    }, {
+      requestId: threadMailboxClaimRequestId('thread-undeliverable-activity', claim),
+      signal: this.mailboxController.signal,
     });
+    return 'undeliverable';
+  }
+
+  private ensureRecovery(): Promise<void> {
+    if (this.recovery !== undefined) return this.recovery;
+    const flight = this.recoverPendingDeliveries().catch((error) => {
+      if (this.recovery === flight) this.recovery = undefined;
+      throw error;
+    });
+    this.recovery = flight;
+    return flight;
   }
 
   private async recoverPendingDeliveries(): Promise<void> {
     await this.config.ready;
     if (this.closing) return;
-    const pending = await this.mailbox.listPendingDeliveries();
-    if (this.closing) return;
-    for (const message of pending) {
+    const targets = await this.mailbox.listPendingTargets({
+      signal: this.mailboxController.signal,
+    });
+    for (const target of targets) {
       if (this.closing || !(await this.globalEnabled())) return;
-      await this.deliverMessage(message);
+      await this.requestTargetDrain(target);
     }
   }
 
@@ -662,6 +759,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
             target: ref,
             kind: 'terminal',
             reason: event.state.lastTurnReason ?? 'failed',
+          }, {
+            signal: this.mailboxController.signal,
           }));
         }
         if (event.cause === 'interaction' && event.state.pendingInteraction !== 'none') {
@@ -669,6 +768,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
             target: ref,
             kind: 'attention',
             reason: event.state.pendingInteraction,
+          }, {
+            signal: this.mailboxController.signal,
           }));
         }
       }),
@@ -701,7 +802,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   private appendLifecycle(ref: ThreadRef, reason: string): Promise<unknown> {
-    return this.mailbox.appendActivity({ target: ref, kind: 'lifecycle', reason });
+    return this.mailbox.appendActivity({ target: ref, kind: 'lifecycle', reason }, {
+      signal: this.mailboxController.signal,
+    });
   }
 
   private async recordTerminalLifecycleChanges(refs: readonly ThreadRef[]): Promise<void> {
@@ -716,10 +819,14 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       if (reason === undefined) continue;
       let page;
       try {
-        page = await this.mailbox.readActivity(ref, 0, WAIT_ACTIVITY_LIMIT);
+        page = await this.mailbox.readActivity(ref, 0, WAIT_ACTIVITY_LIMIT, {
+          signal: this.mailboxController.signal,
+        });
       } catch (error) {
         if (!(error instanceof ThreadActivityCursorExpiredError)) throw error;
-        page = await this.mailbox.readActivity(ref, error.minSeq - 1, WAIT_ACTIVITY_LIMIT);
+        page = await this.mailbox.readActivity(ref, error.minSeq - 1, WAIT_ACTIVITY_LIMIT, {
+          signal: this.mailboxController.signal,
+        });
       }
       const alreadyRecorded = page.activities.some(
         (activity) => activity.kind === 'lifecycle' && activity.reason === reason,
@@ -731,7 +838,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   private async readWaitResult(ref: ThreadRef, cursor: ActivityCursor): Promise<WaitThreadResult> {
     let page;
     try {
-      page = await this.mailbox.readActivity(ref, cursor.seq, WAIT_ACTIVITY_LIMIT);
+      page = await this.mailbox.readActivity(ref, cursor.seq, WAIT_ACTIVITY_LIMIT, {
+        signal: this.mailboxController.signal,
+      });
     } catch (error) {
       if (!(error instanceof ThreadActivityCursorExpiredError)) throw error;
       throw new Error2(

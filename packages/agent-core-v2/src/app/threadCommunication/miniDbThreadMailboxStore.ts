@@ -1,54 +1,35 @@
-/**
- * `threadCommunication` domain — MiniDb-backed `IThreadMailboxStore` implementation.
- *
- * Roots the scope-agnostic mailbox backend under the App store directory.
- * Bound at App scope.
- */
-
 import { join } from 'pathe';
 
-import { LifecycleScope } from '#/app/scopes';
-import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 
 import { MiniDbMailboxBackend } from './miniDbMailboxBackend';
-import { IThreadMailboxStore } from './threadMailboxStore';
 
 export { MiniDbMailboxBackend } from './miniDbMailboxBackend';
 
-export class MiniDbThreadMailboxStore implements IThreadMailboxStore {
-  declare readonly _serviceBrand: undefined;
+export class MiniDbThreadMailboxStore {
   private readonly backend: MiniDbMailboxBackend;
 
   constructor(@IBootstrapService bootstrap: IBootstrapService) {
     this.backend = new MiniDbMailboxBackend(join(bootstrap.storeDir, 'thread-mailbox-v1'));
   }
 
-  acceptMessage: IThreadMailboxStore['acceptMessage'] = (input) => this.backend.acceptMessage(input);
-  beginDelivery: IThreadMailboxStore['beginDelivery'] = (messageId) =>
+  acceptMessage: MiniDbMailboxBackend['acceptMessage'] = (input) => this.backend.acceptMessage(input);
+  beginDelivery: MiniDbMailboxBackend['beginDelivery'] = (messageId) =>
     this.backend.beginDelivery(messageId);
-  acknowledgeDelivery: IThreadMailboxStore['acknowledgeDelivery'] = (messageId, attemptId) =>
+  acknowledgeDelivery: MiniDbMailboxBackend['acknowledgeDelivery'] = (messageId, attemptId) =>
     this.backend.acknowledgeDelivery(messageId, attemptId);
-  markUndeliverable: IThreadMailboxStore['markUndeliverable'] = (messageId, attemptId, reason) =>
+  markUndeliverable: MiniDbMailboxBackend['markUndeliverable'] = (messageId, attemptId, reason) =>
     this.backend.markUndeliverable(messageId, attemptId, reason);
-  listPendingDeliveries: IThreadMailboxStore['listPendingDeliveries'] = () =>
+  listPendingDeliveries: MiniDbMailboxBackend['listPendingDeliveries'] = () =>
     this.backend.listPendingDeliveries();
-  appendActivity: IThreadMailboxStore['appendActivity'] = (input) =>
+  appendActivity: MiniDbMailboxBackend['appendActivity'] = (input) =>
     this.backend.appendActivity(input);
-  readActivity: IThreadMailboxStore['readActivity'] = (target, afterSeq, limit) =>
+  readActivity: MiniDbMailboxBackend['readActivity'] = (target, afterSeq, limit) =>
     this.backend.readActivity(target, afterSeq, limit);
-  getWorkspaceOverride: IThreadMailboxStore['getWorkspaceOverride'] = (workspaceId) =>
+  getWorkspaceOverride: MiniDbMailboxBackend['getWorkspaceOverride'] = (workspaceId) =>
     this.backend.getWorkspaceOverride(workspaceId);
-  setWorkspaceOverride: IThreadMailboxStore['setWorkspaceOverride'] = (workspaceId, enabled) =>
+  setWorkspaceOverride: MiniDbMailboxBackend['setWorkspaceOverride'] = (workspaceId, enabled) =>
     this.backend.setWorkspaceOverride(workspaceId, enabled);
-  clearWorkspaceOverride: IThreadMailboxStore['clearWorkspaceOverride'] = (workspaceId) =>
+  clearWorkspaceOverride: MiniDbMailboxBackend['clearWorkspaceOverride'] = (workspaceId) =>
     this.backend.clearWorkspaceOverride(workspaceId);
 }
-
-registerScopedService(
-  LifecycleScope.App,
-  IThreadMailboxStore,
-  MiniDbThreadMailboxStore,
-  ScopeActivation.OnScopeCreated,
-  'threadCommunication',
-);
