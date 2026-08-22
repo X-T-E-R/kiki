@@ -12,7 +12,6 @@ import {
 import type { ThreadRef } from '#/app/threadCommunication/threadCommunication';
 
 import {
-  AGENT_MESSAGE_BACKLOG_LIMIT,
   AgentMessageMailboxFullError,
   IAgentCollaborationMessageStore,
   type AcceptedAgentMessage,
@@ -65,7 +64,6 @@ export class AgentCollaborationMessageStoreAdapter implements IAgentCollaboratio
         target: agentRef(input.sessionId, input.targetAgentId),
         content: JSON.stringify(envelope),
         idempotencyKey: input.idempotencyKey,
-        pendingLimit: AGENT_MESSAGE_BACKLOG_LIMIT,
       });
       return {
         message: toAgentMessage(accepted.message),

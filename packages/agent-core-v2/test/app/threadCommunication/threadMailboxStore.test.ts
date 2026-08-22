@@ -17,12 +17,12 @@ import {
   THREAD_MAILBOX_RUNTIME_METHODS,
   RuntimeThreadMailboxStore,
 } from '#/app/threadCommunication/runtimeThreadMailboxStore';
-import { MiniDbMailboxBackend } from '#/app/threadCommunication/miniDbThreadMailboxStore';
 import {
   ThreadMailboxBacklogError,
   ThreadMailboxLegacyWriterActiveError,
 } from '#/app/threadCommunication/mailboxErrors';
 import type { ThreadRef } from '#/app/threadCommunication/threadCommunication';
+import type { AcceptedThreadMessage } from '#/app/threadCommunication/threadMailboxStore';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 
 const source: ThreadRef = { hostId: 'host-a', workspaceId: 'workspace-a', sessionId: 'source' };
@@ -122,6 +122,59 @@ function openMailboxDb(homeDir: string): Promise<ClusterDb<Record<string, unknow
     lockPoolMaxShards: 16,
     crossShard: 'none',
   });
+}
+
+async function seedLegacyMailbox(homeDir: string): Promise<AcceptedThreadMessage> {
+  const message: AcceptedThreadMessage = {
+    ...acceptInput('legacy'),
+    messageId: 'legacy-message',
+    acceptedAt: 1,
+    targetSeq: 1,
+  };
+  const activity = {
+    seq: 1,
+    epoch: 'legacy-epoch',
+    kind: 'terminal' as const,
+    at: 2,
+    reason: 'completed',
+  };
+  const db = await MiniDb.open<Record<string, unknown>>({
+    dir: join(homeDir, 'store', 'thread-mailbox-v1'),
+    valueCodec: 'json',
+    valueMode: 'memory',
+    fsyncPolicy: 'always',
+    recovery: 'strict',
+    indexGenerations: false,
+    activeExpireIntervalMs: 0,
+  });
+  try {
+    await db.batch([
+      {
+        op: 'set',
+        key: `delivery/${message.messageId}`,
+        value: {
+          kind: 'delivery',
+          message,
+          idempotencyStorageKey: 'legacy-idempotency',
+          state: 'pending',
+          attempt: 0,
+        },
+      },
+      {
+        op: 'set',
+        key: 'activity/meta',
+        value: { kind: 'activity_meta', target, epoch: activity.epoch, nextSeq: 2, minSeq: 1 },
+      },
+      {
+        op: 'set',
+        key: 'activity/event/1',
+        value: { kind: 'activity_event', target, activity },
+      },
+    ]);
+  } finally {
+    await db.close();
+  }
+  return message;
 }
 
 function blockFirstTargetBatch(): {
@@ -265,30 +318,38 @@ describe('runtime thread mailbox', () => {
     }
   });
 
-  it('applies backlog limits in arrival order inside an accept microbatch', async () => {
+  it('enqueues beyond the legacy pending limit and rejects only at the hard guard', async () => {
     const item = harness(homeDir);
     open.push(item);
-    const gate = blockFirstTargetBatch();
+    const results = await Promise.all(
+      Array.from({ length: 513 }, (_, index) => item.store.acceptMessage({
+        ...acceptInput(`capacity-${index}`),
+        pendingLimit: 3,
+      })),
+    );
+    expect(results.at(-1)?.message.targetSeq).toBe(513);
+    await closeHarness(item, open);
+
+    const partition = mailboxPartition(target);
+    const db = await openMailboxDb(homeDir);
     try {
-      const resultsPromise = Promise.allSettled([
-        item.store.acceptMessage(acceptInput('seed')),
-        item.store.acceptMessage({ ...acceptInput('limited-1'), pendingLimit: 3 }),
-        item.store.acceptMessage({ ...acceptInput('limited-2'), pendingLimit: 3 }),
-        item.store.acceptMessage({ ...acceptInput('limited-3'), pendingLimit: 3 }),
-      ]);
-      await gate.entered;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      gate.release();
-      const results = await resultsPromise;
-      expect(results[0]).toMatchObject({ status: 'fulfilled', value: { message: { targetSeq: 1 } } });
-      expect(results[1]).toMatchObject({ status: 'fulfilled', value: { message: { targetSeq: 2 } } });
-      expect(results[2]).toMatchObject({ status: 'fulfilled', value: { message: { targetSeq: 3 } } });
-      expect(results[3]?.status).toBe('rejected');
-      expect((results[3] as PromiseRejectedResult).reason).toBeInstanceOf(ThreadMailboxBacklogError);
-      expect(gate.count()).toBe(2);
+      const metaKey = `${partition}/meta`;
+      const meta = await db.partitionGet(partition, metaKey);
+      if (meta === undefined) throw new Error('mailbox metadata is missing');
+      await db.partitionBatch(partition, [{
+        op: 'set',
+        key: metaKey,
+        value: { ...meta, pendingCount: 100_000 },
+      }]);
     } finally {
-      gate.restore();
+      await db.close();
     }
+
+    const reopened = harness(homeDir);
+    open.push(reopened);
+    const failure = await reopened.store.acceptMessage(acceptInput('hard-limit')).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ThreadMailboxBacklogError);
+    expect(failure).toMatchObject({ limit: 100_000 });
   });
 
   it('drains FIFO by durable head without scanning the message backlog', async () => {
@@ -645,9 +706,7 @@ describe('runtime thread mailbox', () => {
   });
 
   it('reopens an interrupted one-time legacy migration without duplicating records', async () => {
-    const legacy = new MiniDbMailboxBackend(join(homeDir, 'store', 'thread-mailbox-v1'));
-    const accepted = await legacy.acceptMessage(acceptInput('legacy'));
-    await legacy.appendActivity({ target, kind: 'terminal', reason: 'completed' });
+    const accepted = await seedLegacyMailbox(homeDir);
     const original = ClusterDb.prototype.partitionBatch;
     let interrupted = false;
     ClusterDb.prototype.partitionBatch = async function (...args: Parameters<typeof original>) {
@@ -675,10 +734,10 @@ describe('runtime thread mailbox', () => {
     const migrated = await reopened.store.acceptMessage(acceptInput('legacy'));
     expect(migrated).toMatchObject({
       deduplicated: true,
-      message: { messageId: accepted.message.messageId },
+      message: { messageId: accepted.messageId },
     });
     const claim = await reopened.store.claimNext({ target, consumerId: 'consumer', leaseMs: 10_000 });
-    expect(claim?.message.messageId).toBe(accepted.message.messageId);
+    expect(claim?.message.messageId).toBe(accepted.messageId);
     const page = await reopened.store.readActivity(target, 0, 8);
     expect(page.activities).toHaveLength(1);
   });

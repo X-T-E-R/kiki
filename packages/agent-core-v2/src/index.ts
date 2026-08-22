@@ -145,7 +145,6 @@ export * from '#/app/threadCommunication/configSection';
 export * from '#/app/threadCommunication/threadCommunication';
 export * from '#/app/threadCommunication/threadMailboxStore';
 export * from '#/app/threadCommunication/mailboxErrors';
-export * from '#/app/threadCommunication/miniDbThreadMailboxStore';
 export * from '#/app/threadCommunication/runtimeThreadMailboxStore';
 export * from '#/app/threadCommunication/threadCommunicationService';
 export * from '#/session/sessionMetadata/sessionMetadata';

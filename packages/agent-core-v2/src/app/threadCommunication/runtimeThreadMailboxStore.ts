@@ -32,7 +32,8 @@ import {
 
 const STORE_DIR = 'thread-mailbox-v3';
 const SHARD_COUNT = 16;
-const PENDING_LIMIT = 512;
+const MESSAGE_RETAINED_LIMIT = 512;
+const PENDING_HARD_LIMIT = 100_000;
 const ACTIVITY_RETAINED_LIMIT = 256;
 const MAX_DELIVERY_LEASE_MS = 600_000;
 const DELIVERY_HEAD_REPAIR_STEP_LIMIT = 32;
@@ -1084,9 +1085,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     const metaKey = targetMetaKey(partition);
     const meta = asTargetMeta(await read(metaKey)) ?? newTargetMeta(input.target);
     assertThreadIdentity(meta.target, input.target, metaKey);
-    const pendingLimit = Math.min(input.pendingLimit ?? PENDING_LIMIT, PENDING_LIMIT);
-    if (!Number.isSafeInteger(pendingLimit) || pendingLimit < 1) throw new TypeError('pendingLimit must be a positive integer.');
-    if (meta.pendingCount >= pendingLimit) throw new ThreadMailboxBacklogError(pendingLimit);
+    if (meta.pendingCount >= PENDING_HARD_LIMIT) throw new ThreadMailboxBacklogError(PENDING_HARD_LIMIT);
     const message: AcceptedThreadMessage = {
       messageId: randomUUID(),
       producer: input.producer,
@@ -1136,7 +1135,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       },
       this.receiptOp(receiptKey, method, ctx, input, result),
     ];
-    const pruneKey = targetMessageKey(partition, message.targetSeq - PENDING_LIMIT);
+    const pruneKey = targetMessageKey(partition, message.targetSeq - MESSAGE_RETAINED_LIMIT);
     const prune = asMessage(await read(pruneKey));
     if (prune !== undefined && isTerminalState(prune.state)) {
       ops.push({ op: 'del', key: pruneKey }, { op: 'del', key: prune.idempotencyStorageKey });

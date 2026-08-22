@@ -22,8 +22,10 @@ import {
   type ThreadRef,
 } from '#/app/threadCommunication/threadCommunication';
 import { ThreadCommunicationService } from '#/app/threadCommunication/threadCommunicationService';
-import { MiniDbMailboxBackend } from '#/app/threadCommunication/miniDbThreadMailboxStore';
-import { ThreadMailboxBacklogError } from '#/app/threadCommunication/mailboxErrors';
+import {
+  ThreadActivityCursorExpiredError,
+  ThreadMailboxBacklogError,
+} from '#/app/threadCommunication/mailboxErrors';
 import {
   SEND_PEER_THREAD_MESSAGE,
   peerSendCapability,
@@ -31,7 +33,7 @@ import {
 import {
   IThreadMailboxStore,
   type AcceptedThreadMessage,
-  type ThreadDeliveryClaim,
+  type StoredThreadActivity,
 } from '#/app/threadCommunication/threadMailboxStore';
 import { IAgentPromptService, type PromptHandle } from '#/agent/prompt/prompt';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
@@ -550,7 +552,7 @@ describe('ThreadCommunicationService', () => {
   });
 
   it('waits on long workspace and session identities without leaving teardown operations', async () => {
-    ix.stub(IThreadMailboxStore, mailboxFromBackend(new MiniDbMailboxBackend(join(homeDir, 'long-ref-mailbox'))));
+    ix.stub(IThreadMailboxStore, inMemoryMailbox());
     const service = ix.get(IThreadCommunicationService);
     const thread = ref(service.hostId, `workspace-${'w'.repeat(300)}`, `session-${'s'.repeat(300)}`);
 
@@ -567,10 +569,8 @@ describe('ThreadCommunicationService', () => {
   });
 
   it('rejects a wait cursor older than retained activity with a resync cursor', async () => {
-    const mailbox = new MiniDbMailboxBackend(join(homeDir, 'stale-cursor-mailbox'), {
-      activityBacklogLimit: 2,
-    });
-    ix.stub(IThreadMailboxStore, mailboxFromBackend(mailbox));
+    const mailbox = inMemoryMailbox({ activityRetainedLimit: 2 });
+    ix.stub(IThreadMailboxStore, mailbox);
     const service = ix.get(IThreadCommunicationService);
     const thread = ref(service.hostId, 'workspace-b', 'target');
     const baseline = await service.waitThreads({ threads: [{ thread }], timeoutMs: 0 });
@@ -708,54 +708,66 @@ function accessor(
   };
 }
 
-function mailboxFromBackend(backend: MiniDbMailboxBackend): IThreadMailboxStore {
-  const attempts = new Map<string, { readonly attemptId: string; readonly claim: ThreadDeliveryClaim }>();
+function inMemoryMailbox(options: { readonly activityRetainedLimit?: number } = {}): IThreadMailboxStore {
+  const retainedLimit = options.activityRetainedLimit ?? 256;
+  const activityByThread = new Map<string, {
+    readonly epoch: string;
+    readonly activities: StoredThreadActivity[];
+    nextSeq: number;
+    minSeq: number;
+  }>();
+  const overrides = new Map<string, boolean>();
+  const activityState = (target: ThreadRef) => {
+    const key = threadIdentity(target);
+    let state = activityByThread.get(key);
+    if (state === undefined) {
+      state = { epoch: `epoch-${activityByThread.size + 1}`, activities: [], nextSeq: 1, minSeq: 1 };
+      activityByThread.set(key, state);
+    }
+    return state;
+  };
   return {
     _serviceBrand: undefined,
-    acceptMessage: (input) => backend.acceptMessage(input),
-    claimNext: async (input) => {
-      const pending = (await backend.listPendingDeliveries())
-        .filter((message) => threadIdentity(message.target) === threadIdentity(input.target))
-        .toSorted((left, right) => left.targetSeq - right.targetSeq);
-      for (const message of pending) {
-        const attempt = await backend.beginDelivery(message.messageId);
-        if (attempt === undefined) continue;
-        const claim: ThreadDeliveryClaim = {
-          message: attempt.message,
-          consumerId: input.consumerId,
-          fence: attempt.attempt,
-          leaseUntil: Date.now() + input.leaseMs,
-          hostEpoch: 0,
-        };
-        attempts.set(message.messageId, { attemptId: attempt.attemptId, claim });
-        return claim;
+    acceptMessage: async () => { throw new Error('Unexpected mailbox accept.'); },
+    claimNext: async () => undefined,
+    acknowledgeDelivery: async () => false,
+    markUndeliverable: async () => false,
+    listPendingTargets: async () => [],
+    appendActivity: async (input) => {
+      const state = activityState(input.target);
+      const activity: StoredThreadActivity = {
+        seq: state.nextSeq,
+        epoch: state.epoch,
+        kind: input.kind,
+        at: Date.now(),
+        reason: input.reason,
+        turnId: input.turnId,
+        messageId: input.messageId,
+      };
+      state.nextSeq++;
+      state.activities.push(activity);
+      while (state.activities.length > retainedLimit) state.activities.shift();
+      state.minSeq = state.activities[0]?.seq ?? state.nextSeq;
+      return activity;
+    },
+    readActivity: async (target, afterSeq, limit) => {
+      const state = activityState(target);
+      if (afterSeq !== Number.MAX_SAFE_INTEGER && afterSeq < state.minSeq - 1) {
+        throw new ThreadActivityCursorExpiredError(state.epoch, state.minSeq, state.nextSeq - 1);
       }
-      return undefined;
+      return {
+        epoch: state.epoch,
+        latestSeq: state.nextSeq - 1,
+        activities: state.activities.filter((activity) => activity.seq > afterSeq).slice(0, limit),
+      };
     },
-    acknowledgeDelivery: async (claim) => {
-      const attempt = attempts.get(claim.message.messageId);
-      if (attempt === undefined || attempt.claim !== claim) return false;
-      attempts.delete(claim.message.messageId);
-      return backend.acknowledgeDelivery(claim.message.messageId, attempt.attemptId);
+    getWorkspaceOverride: async (workspaceId) => overrides.get(workspaceId),
+    setWorkspaceOverride: async (workspaceId, enabled) => {
+      overrides.set(workspaceId, enabled);
     },
-    markUndeliverable: async (claim, reason) => {
-      const attempt = attempts.get(claim.message.messageId);
-      if (attempt === undefined || attempt.claim !== claim) return false;
-      attempts.delete(claim.message.messageId);
-      return backend.markUndeliverable(claim.message.messageId, attempt.attemptId, reason);
+    clearWorkspaceOverride: async (workspaceId) => {
+      overrides.delete(workspaceId);
     },
-    listPendingTargets: async () => {
-      const targets = new Map<string, ThreadRef>();
-      for (const message of await backend.listPendingDeliveries()) {
-        targets.set(threadIdentity(message.target), message.target);
-      }
-      return [...targets.values()];
-    },
-    appendActivity: (input) => backend.appendActivity(input),
-    readActivity: (target, afterSeq, limit) => backend.readActivity(target, afterSeq, limit),
-    getWorkspaceOverride: (workspaceId) => backend.getWorkspaceOverride(workspaceId),
-    setWorkspaceOverride: (workspaceId, enabled) => backend.setWorkspaceOverride(workspaceId, enabled),
-    clearWorkspaceOverride: (workspaceId) => backend.clearWorkspaceOverride(workspaceId),
     close: async () => {},
   };
 }

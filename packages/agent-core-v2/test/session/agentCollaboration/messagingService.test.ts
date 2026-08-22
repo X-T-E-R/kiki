@@ -23,10 +23,7 @@ import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentLoopService, type IAgentLoopService as AgentLoop } from '#/agent/loop/loop';
 import { IAgentLifecycleService, type IAgentLifecycleService as AgentLifecycle } from '#/session/agentLifecycle/agentLifecycle';
 import { AgentCollaborationMessagingService } from '#/session/agentCollaboration/messagingService';
-import {
-  AGENT_MESSAGE_BACKLOG_LIMIT,
-  AgentMessageMailboxFullError,
-} from '#/session/agentCollaboration/messageMailbox';
+import { AgentMessageMailboxFullError } from '#/session/agentCollaboration/messageMailbox';
 import { AgentCollaborationMessageStoreAdapter } from '#/session/agentCollaboration/threadMailboxAdapter';
 import type { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IWireService, type IWireService as Wire } from '#/wire/wire';
@@ -80,9 +77,9 @@ describe('thread mailbox agent collaboration adapter', () => {
     });
   });
 
-  it('passes the named-agent backlog limit to the shared mailbox and reports the effective overflow limit', async () => {
+  it('does not request a normal backlog limit and reports hard-guard overflow', async () => {
     const acceptMessage = vi.fn<IThreadMailboxStore['acceptMessage']>(async () => {
-      throw new ThreadMailboxBacklogError(7);
+      throw new ThreadMailboxBacklogError(100_000);
     });
     const store = new AgentCollaborationMessageStoreAdapter({
       _serviceBrand: undefined,
@@ -91,9 +88,9 @@ describe('thread mailbox agent collaboration adapter', () => {
 
     const error = await store.accept(messageInput('overflow', 'overflow')).catch((reason: unknown) => reason);
     expect(error).toBeInstanceOf(AgentMessageMailboxFullError);
-    expect(error).toMatchObject({ limit: 7 });
-    expect(acceptMessage).toHaveBeenCalledWith(expect.objectContaining({
-      pendingLimit: AGENT_MESSAGE_BACKLOG_LIMIT,
+    expect(error).toMatchObject({ limit: 100_000 });
+    expect(acceptMessage).toHaveBeenCalledWith(expect.not.objectContaining({
+      pendingLimit: expect.anything(),
     }));
   });
 
