@@ -9,6 +9,9 @@ import {
   ModelsSectionSchema,
   modelsFromToml,
   modelsToToml,
+  REQUEST_IDENTITY_SECTION,
+  requestIdentityFromToml,
+  requestIdentityToToml,
 } from '#/app/kosongConfig/configSection';
 import { type ModelRecord } from '#/kosong/model/model';
 import { effectiveModelConfig } from '#/kosong/model/modelAuth';
@@ -185,6 +188,20 @@ describe('models config section', () => {
   it('self-registers the models section schema', () => {
     expect(new ConfigRegistry().getSection(MODELS_SECTION)).toBeDefined();
   });
+
+  it('registers an absent-distinguishable global request identity section', () => {
+    expect(new ConfigRegistry().getSection(REQUEST_IDENTITY_SECTION)).toMatchObject({
+      domain: REQUEST_IDENTITY_SECTION,
+      defaultValue: undefined,
+    });
+  });
+
+  it('deeply round-trips the global request identity TOML shape', () => {
+    const wire = { overrides: { client: { user_agent: 'host' } } };
+    const internal = { overrides: { client: { userAgent: 'host' } } };
+    expect(requestIdentityFromToml(wire)).toEqual(internal);
+    expect(requestIdentityToToml(internal)).toEqual(wire);
+  });
 });
 
 describe('models TOML transforms', () => {
@@ -200,6 +217,7 @@ describe('models TOML transforms', () => {
             max_context_size: 500,
             support_efforts: ['low', 'high'],
           },
+          request_identity: { overrides: { request: { logical_id: 'none' } } },
         },
       }),
     ).toEqual({
@@ -212,6 +230,7 @@ describe('models TOML transforms', () => {
           maxContextSize: 500,
           supportEfforts: ['low', 'high'],
         },
+        requestIdentity: { overrides: { request: { logicalId: 'none' } } },
       },
     });
   });
@@ -228,6 +247,7 @@ describe('models TOML transforms', () => {
               maxContextSize: 500,
               supportEfforts: ['low', 'high'],
             },
+            requestIdentity: { overrides: { request: { logicalId: 'none' } } },
           },
         },
         {},
@@ -241,6 +261,7 @@ describe('models TOML transforms', () => {
           max_context_size: 500,
           support_efforts: ['low', 'high'],
         },
+        request_identity: { overrides: { request: { logical_id: 'none' } } },
       },
     });
   });

@@ -74,6 +74,7 @@ export const modelCatalogItemSchema = z.object({
   capabilities: z.array(z.string()).optional(),
   support_efforts: z.array(z.string()).optional(),
   default_effort: z.string().optional(),
+  request_identity: RequestIdentityPolicyWireSchema.optional(),
 });
 export type ModelCatalogItem = z.infer<typeof modelCatalogItemSchema>;
 
@@ -120,6 +121,7 @@ export function toProtocolModel(
     capabilities: effectiveModelConfig(record, providerType ?? model.providerType).capabilities,
     support_efforts: model.supportEfforts === undefined ? undefined : [...model.supportEfforts],
     default_effort: model.defaultEffort,
+    request_identity: requestIdentityToWire(record.requestIdentity),
   };
 }
 
@@ -137,6 +139,7 @@ export function toProtocolModelFallback(
     capabilities: effective.capabilities,
     support_efforts: effective.supportEfforts,
     default_effort: effective.defaultEffort,
+    request_identity: requestIdentityToWire(record.requestIdentity),
   };
 }
 

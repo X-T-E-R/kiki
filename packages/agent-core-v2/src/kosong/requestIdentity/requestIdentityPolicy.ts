@@ -10,7 +10,7 @@ export type RequestIdentityPreset =
   | 'none';
 
 export type RequestIdentityPolicy = {
-  preset: RequestIdentityPreset;
+  preset?: RequestIdentityPreset;
   overrides?: RequestIdentityOverrides;
 };
 
@@ -43,6 +43,13 @@ export type RequestIdentityOverrides = {
   responsesMetadata?: 'codex' | 'none';
 };
 
+const RequestIdentityPresetSchema = z.enum([
+  'codex_compatible',
+  'grok_build_compatible',
+  'kimi_code',
+  'none',
+]);
+
 const RequestIdentityOriginatorSchema = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('none') }).strict(),
   z.object({ mode: z.literal('codex_default') }).strict(),
@@ -52,83 +59,99 @@ const RequestIdentityOriginatorSchema = z.discriminatedUnion('mode', [
   }).strict(),
 ]);
 
-export const RequestIdentityPolicySchema: z.ZodType<RequestIdentityPolicy> = z.object({
-  preset: z.enum(['codex_compatible', 'grok_build_compatible', 'kimi_code', 'none']),
-  overrides: z
-    .object({
-      lineage: z
-        .object({
-          format: z.enum(['codex', 'grok_build', 'kimi_code', 'none']).optional(),
-          sessionScope: z.enum(['shared_session', 'agent_session', 'none']).optional(),
-          threadIdentity: z.enum(['agent', 'none']).optional(),
-          parentThread: z.enum(['immediate_agent', 'none']).optional(),
-          subagentMarker: z.enum(['enabled', 'none']).optional(),
-          turnAncestry: z.enum(['spawn_context', 'none']).optional(),
-        }).strict()
-        .optional(),
-      client: z
-        .object({
-          installationIdentity: z.enum(['persistent_local', 'none']).optional(),
-          originator: RequestIdentityOriginatorSchema.optional(),
-          userAgent: z.enum(['codex', 'grok_build', 'kimi_code', 'host', 'none']).optional(),
-        }).strict()
-        .optional(),
-      request: z
-        .object({
-          logicalId: z.enum(['turn', 'none']).optional(),
-          turnIndex: z.enum(['agent_session', 'none']).optional(),
-        }).strict()
-        .optional(),
-      cache: z
-        .object({
-          source: z.enum(['session', 'none']).optional(),
-          responses: z.enum(['prompt_cache_key', 'none']).optional(),
-          messages: z.enum(['metadata_user_id', 'none']).optional(),
-        }).strict()
-        .optional(),
-      responsesMetadata: z.enum(['codex', 'none']).optional(),
-    }).strict()
-    .optional(),
-}).strict();
+const RequestIdentityOverridesSchema: z.ZodType<RequestIdentityOverrides> = z
+  .object({
+    lineage: z
+      .object({
+        format: z.enum(['codex', 'grok_build', 'kimi_code', 'none']).optional(),
+        sessionScope: z.enum(['shared_session', 'agent_session', 'none']).optional(),
+        threadIdentity: z.enum(['agent', 'none']).optional(),
+        parentThread: z.enum(['immediate_agent', 'none']).optional(),
+        subagentMarker: z.enum(['enabled', 'none']).optional(),
+        turnAncestry: z.enum(['spawn_context', 'none']).optional(),
+      }).strict()
+      .optional(),
+    client: z
+      .object({
+        installationIdentity: z.enum(['persistent_local', 'none']).optional(),
+        originator: RequestIdentityOriginatorSchema.optional(),
+        userAgent: z.enum(['codex', 'grok_build', 'kimi_code', 'host', 'none']).optional(),
+      }).strict()
+      .optional(),
+    request: z
+      .object({
+        logicalId: z.enum(['turn', 'none']).optional(),
+        turnIndex: z.enum(['agent_session', 'none']).optional(),
+      }).strict()
+      .optional(),
+    cache: z
+      .object({
+        source: z.enum(['session', 'none']).optional(),
+        responses: z.enum(['prompt_cache_key', 'none']).optional(),
+        messages: z.enum(['metadata_user_id', 'none']).optional(),
+      }).strict()
+      .optional(),
+    responsesMetadata: z.enum(['codex', 'none']).optional(),
+  })
+  .strict()
+  .refine(hasDefinedLeaf, { message: 'request identity overrides must contain a leaf value' });
 
-export const RequestIdentityPolicyWireSchema = z.object({
-  preset: z.enum(['codex_compatible', 'grok_build_compatible', 'kimi_code', 'none']),
-  overrides: z
-    .object({
-      lineage: z
-        .object({
-          format: z.enum(['codex', 'grok_build', 'kimi_code', 'none']).optional(),
-          session_scope: z.enum(['shared_session', 'agent_session', 'none']).optional(),
-          thread_identity: z.enum(['agent', 'none']).optional(),
-          parent_thread: z.enum(['immediate_agent', 'none']).optional(),
-          subagent_marker: z.enum(['enabled', 'none']).optional(),
-          turn_ancestry: z.enum(['spawn_context', 'none']).optional(),
-        }).strict()
-        .optional(),
-      client: z
-        .object({
-          installation_identity: z.enum(['persistent_local', 'none']).optional(),
-          originator: RequestIdentityOriginatorSchema.optional(),
-          user_agent: z.enum(['codex', 'grok_build', 'kimi_code', 'host', 'none']).optional(),
-        }).strict()
-        .optional(),
-      request: z
-        .object({
-          logical_id: z.enum(['turn', 'none']).optional(),
-          turn_index: z.enum(['agent_session', 'none']).optional(),
-        }).strict()
-        .optional(),
-      cache: z
-        .object({
-          source: z.enum(['session', 'none']).optional(),
-          responses: z.enum(['prompt_cache_key', 'none']).optional(),
-          messages: z.enum(['metadata_user_id', 'none']).optional(),
-        }).strict()
-        .optional(),
-      responses_metadata: z.enum(['codex', 'none']).optional(),
-    }).strict()
-    .optional(),
-}).strict();
+export const RequestIdentityPolicySchema: z.ZodType<RequestIdentityPolicy> = z
+  .object({
+    preset: RequestIdentityPresetSchema.optional(),
+    overrides: RequestIdentityOverridesSchema.optional(),
+  })
+  .strict()
+  .refine((policy) => policy.preset !== undefined || policy.overrides !== undefined, {
+    message: 'request identity policy must contain preset or overrides',
+  });
+
+const RequestIdentityOverridesWireSchema = z
+  .object({
+    lineage: z
+      .object({
+        format: z.enum(['codex', 'grok_build', 'kimi_code', 'none']).optional(),
+        session_scope: z.enum(['shared_session', 'agent_session', 'none']).optional(),
+        thread_identity: z.enum(['agent', 'none']).optional(),
+        parent_thread: z.enum(['immediate_agent', 'none']).optional(),
+        subagent_marker: z.enum(['enabled', 'none']).optional(),
+        turn_ancestry: z.enum(['spawn_context', 'none']).optional(),
+      }).strict()
+      .optional(),
+    client: z
+      .object({
+        installation_identity: z.enum(['persistent_local', 'none']).optional(),
+        originator: RequestIdentityOriginatorSchema.optional(),
+        user_agent: z.enum(['codex', 'grok_build', 'kimi_code', 'host', 'none']).optional(),
+      }).strict()
+      .optional(),
+    request: z
+      .object({
+        logical_id: z.enum(['turn', 'none']).optional(),
+        turn_index: z.enum(['agent_session', 'none']).optional(),
+      }).strict()
+      .optional(),
+    cache: z
+      .object({
+        source: z.enum(['session', 'none']).optional(),
+        responses: z.enum(['prompt_cache_key', 'none']).optional(),
+        messages: z.enum(['metadata_user_id', 'none']).optional(),
+      }).strict()
+      .optional(),
+    responses_metadata: z.enum(['codex', 'none']).optional(),
+  })
+  .strict()
+  .refine(hasDefinedLeaf, { message: 'request identity overrides must contain a leaf value' });
+
+export const RequestIdentityPolicyWireSchema = z
+  .object({
+    preset: RequestIdentityPresetSchema.optional(),
+    overrides: RequestIdentityOverridesWireSchema.optional(),
+  })
+  .strict()
+  .refine((policy) => policy.preset !== undefined || policy.overrides !== undefined, {
+    message: 'request identity policy must contain preset or overrides',
+  });
 
 export type RequestIdentityPolicyWire = z.infer<typeof RequestIdentityPolicyWireSchema>;
 
@@ -322,11 +345,43 @@ const PRESETS: Record<RequestIdentityPreset, Omit<ResolvedRequestIdentityPolicy,
   },
 };
 
+export function resolveRequestIdentityLayers(
+  ...layers: readonly (RequestIdentityPolicy | undefined)[]
+): ResolvedRequestIdentityPolicy {
+  let resolved: ResolvedRequestIdentityPolicy = {
+    ...structuredClone(PRESETS.kimi_code),
+    preset: 'kimi_code',
+  };
+  validateResolvedRequestIdentity(resolved);
+  for (const layer of layers) {
+    if (layer === undefined) continue;
+    resolved = applyRequestIdentityLayer(resolved, layer);
+    validateResolvedRequestIdentity(resolved);
+  }
+  return resolved;
+}
+
 export function resolveAuthoredRequestIdentity(
   policy: RequestIdentityPolicy,
 ): ResolvedRequestIdentityPolicy {
-  const base = structuredClone(PRESETS[policy.preset]);
-  const overrides = policy.overrides;
+  return resolveRequestIdentityLayers(policy);
+}
+
+export function resolveProviderRequestIdentity(
+  provider: ProviderConfig | undefined,
+): ResolvedRequestIdentityPolicy {
+  return resolveRequestIdentityLayers(provider?.requestIdentity);
+}
+
+function applyRequestIdentityLayer(
+  inherited: ResolvedRequestIdentityPolicy,
+  layer: RequestIdentityPolicy,
+): ResolvedRequestIdentityPolicy {
+  const base: ResolvedRequestIdentityPolicy =
+    layer.preset === undefined
+      ? structuredClone(inherited)
+      : { ...structuredClone(PRESETS[layer.preset]), preset: layer.preset };
+  const overrides = layer.overrides;
   if (overrides?.lineage !== undefined) assignDefined(base.lineage, overrides.lineage);
   if (overrides?.client !== undefined) assignDefined(base.client, overrides.client);
   if (overrides?.request !== undefined) assignDefined(base.request, overrides.request);
@@ -334,14 +389,7 @@ export function resolveAuthoredRequestIdentity(
   if (overrides?.responsesMetadata !== undefined) {
     base.responsesMetadata = overrides.responsesMetadata;
   }
-  validateResolvedRequestIdentity(base);
-  return { ...base, preset: policy.preset };
-}
-
-export function resolveProviderRequestIdentity(
-  provider: ProviderConfig | undefined,
-): ResolvedRequestIdentityPolicy {
-  return resolveAuthoredRequestIdentity(provider?.requestIdentity ?? { preset: 'kimi_code' });
+  return base;
 }
 
 export function validateResolvedRequestIdentity(
@@ -415,12 +463,22 @@ export const REQUEST_IDENTITY_RESERVED_HEADERS = new Set([
   'user-agent',
 ]);
 
+function hasDefinedLeaf(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (value === null || typeof value !== 'object') return true;
+  return Object.values(value).some(hasDefinedLeaf);
+}
+
 function invalid(message: string): Error2 {
   return new Error2(RequestIdentityErrors.codes.REQUEST_IDENTITY_INVALID, message);
 }
 
 function assignDefined<T extends object>(target: T, patch: Partial<T>): void {
   for (const [key, value] of Object.entries(patch)) {
-    if (value !== undefined) Reflect.set(target, key, value);
+    if (value !== undefined) Reflect.set(target, key, cloneAssignedValue(value));
   }
+}
+
+function cloneAssignedValue<T>(value: T): T {
+  return value !== null && typeof value === 'object' ? structuredClone(value) : value;
 }
