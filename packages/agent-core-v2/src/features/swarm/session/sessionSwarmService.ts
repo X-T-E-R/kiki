@@ -50,6 +50,7 @@ import { IRuntimeResolver } from '#/workspace/workspaceInstance/workspaceInstanc
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ILogService } from '#/_base/log/log';
 
+import { ISwarmConcurrencyRegistry } from '../swarmConcurrencyRegistry';
 import {
   ISessionSwarmService,
   type SessionSwarmRunArgs,
@@ -93,6 +94,8 @@ export class SessionSwarmService implements ISessionSwarmService {
     @ILogService private readonly log: ILogService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IModelService private readonly models: IModelService,
+    @ISwarmConcurrencyRegistry
+    private readonly concurrencyRegistry: ISwarmConcurrencyRegistry,
   ) {}
 
   async getSwarmItem(args: {
@@ -129,7 +132,10 @@ export class SessionSwarmService implements ISessionSwarmService {
       },
     };
     const maxConcurrency = resolveSwarmMaxConcurrency();
-    const promise = new AgentRunBatch(launcher, linkedTasks, { maxConcurrency }).run();
+    const promise = new AgentRunBatch(launcher, linkedTasks, {
+      maxConcurrency,
+      concurrencyRegistry: this.concurrencyRegistry,
+    }).run();
     void promise.finally(() => {
       for (const unlink of unlinks) unlink();
       if (this.inFlight.get(callerAgentId) === controller) this.inFlight.delete(callerAgentId);

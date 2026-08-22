@@ -6,6 +6,10 @@ import * as retry from 'retry';
 import { isUserCancellation } from '#/_base/utils/abort';
 import { setClampedTimeout } from '#/_base/utils/timer';
 import { BugIndicatingError, Error2, ErrorCodes } from '#/errors';
+import type {
+  ISwarmConcurrencyRegistry,
+  SwarmConcurrencyLease,
+} from '../swarmConcurrencyRegistry';
 import type { SessionSwarmRunResult, SessionSwarmTask } from './sessionSwarm';
 
 export interface AgentRunAttemptOptions {
@@ -98,6 +102,7 @@ type ActiveAttempt<T> = {
 
 export type AgentRunBatchOptions = {
   readonly maxConcurrency?: number;
+  readonly concurrencyRegistry?: ISwarmConcurrencyRegistry;
 };
 
 export class AgentRunBatch<T> {
@@ -109,6 +114,7 @@ export class AgentRunBatch<T> {
   private readonly batchSignal: AbortSignal | undefined;
   private readonly batchAbortListener: () => void;
   private readonly maxConcurrency: number;
+  private readonly concurrencyLease: SwarmConcurrencyLease | undefined;
   private rateLimitLaunchTimer: ReturnType<typeof setTimeout> | undefined;
   private resolve: ((results: Array<AgentRunResult<T>>) => void) | undefined;
   private reject: ((error: unknown) => void) | undefined;
@@ -129,6 +135,10 @@ export class AgentRunBatch<T> {
     options: AgentRunBatchOptions = {},
   ) {
     this.maxConcurrency = options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
+    this.concurrencyLease = options.concurrencyRegistry?.createLease(
+      this.maxConcurrency,
+      () => this.schedule(),
+    );
     this.states = tasks.map((task, index) => ({
       index,
       task,
@@ -188,6 +198,7 @@ export class AgentRunBatch<T> {
 
   private scheduleNormalLaunch(): void {
     while (this.pending.length > 0 && !this.rateLimitMode && !this.isAtConcurrencyLimit()) {
+      if (!this.tryAcquireConcurrencyPermit()) return;
       this.startAttempt(this.pending.shift()!);
     }
   }
@@ -215,7 +226,7 @@ export class AgentRunBatch<T> {
     }
 
     const pendingIndex = this.pending.findIndex((state) => state.retryReadyAt <= now);
-    if (pendingIndex === -1) return;
+    if (pendingIndex === -1 || !this.tryAcquireConcurrencyPermit()) return;
 
     const [state] = this.pending.splice(pendingIndex, 1);
     this.startAttempt(state!);
@@ -223,27 +234,39 @@ export class AgentRunBatch<T> {
     this.scheduleNextRateLimitWakeup(now);
   }
 
+  private tryAcquireConcurrencyPermit(): boolean {
+    return this.concurrencyLease?.tryAcquire() ?? true;
+  }
+
   private startAttempt(state: TaskState<T>): void {
-    if (this.finished || this.controller.signal.aborted) return;
+    if (this.finished || this.controller.signal.aborted) {
+      this.concurrencyLease?.release();
+      return;
+    }
 
-    const attempt: ActiveAttempt<T> = {
-      state,
-      controller: new AbortController(),
-      cleanup: () => {},
-      ready: false,
-      timedOut: false,
-    };
-    attempt.cleanup = this.linkAttemptSignals(attempt, state.task);
-    this.active.add(attempt);
+    try {
+      const attempt: ActiveAttempt<T> = {
+        state,
+        controller: new AbortController(),
+        cleanup: () => {},
+        ready: false,
+        timedOut: false,
+      };
+      attempt.cleanup = this.linkAttemptSignals(attempt, state.task);
+      this.active.add(attempt);
 
-    this.runAttempt(attempt).then(
-      (outcome) => {
-        this.handleAttemptOutcome(attempt, outcome);
-      },
-      (error) => {
-        this.handleAttemptError(attempt, error);
-      },
-    );
+      this.runAttempt(attempt).then(
+        (outcome) => {
+          this.handleAttemptOutcome(attempt, outcome);
+        },
+        (error) => {
+          this.handleAttemptError(attempt, error);
+        },
+      );
+    } catch (error) {
+      this.concurrencyLease?.release();
+      this.fail(error);
+    }
   }
 
   private async runAttempt(attempt: ActiveAttempt<T>): Promise<AttemptOutcome<T>> {
@@ -373,6 +396,7 @@ export class AgentRunBatch<T> {
   private releaseAttempt(attempt: ActiveAttempt<T>): boolean {
     if (!this.active.delete(attempt)) return false;
     attempt.cleanup();
+    this.concurrencyLease?.release();
     return true;
   }
 
@@ -557,6 +581,7 @@ export class AgentRunBatch<T> {
       attempt.cleanup();
     }
     this.active.clear();
+    this.concurrencyLease?.dispose();
   }
 
   private clearRateLimitTimer(): void {

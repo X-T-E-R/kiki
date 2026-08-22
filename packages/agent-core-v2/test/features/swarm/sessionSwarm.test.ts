@@ -58,6 +58,11 @@ import { ISessionSwarmService, type SessionSwarmSpawnTask, type SessionSwarmTask
 import { Error2 } from '#/_base/errors/errors';
 import { ConfigErrors } from '#/app/config/errors';
 import { SessionSwarmService } from '#/features/swarm/session/sessionSwarmService';
+import { ISwarmConcurrencyRegistry } from '#/features/swarm/swarmConcurrencyRegistry';
+import {
+  resolveSwarmGlobalMaxConcurrency,
+  SwarmConcurrencyRegistry,
+} from '#/features/swarm/swarmConcurrencyRegistryService';
 import { AgentSwarmTool } from '#/features/swarm/tools/agent-swarm/agentSwarmTool';
 
 import { stubLog } from '../../_base/log/stubs';
@@ -79,6 +84,218 @@ describe('resolveSwarmMaxConcurrency', () => {
     }
     expect(resolveSwarmMaxConcurrency({ KIMI_CODE_AGENT_SWARM_MAX_CONCURRENCY: '3' })).toBe(3);
     expect(resolveSwarmMaxConcurrency({ KIMI_CODE_AGENT_SWARM_MAX_CONCURRENCY: ' 8 ' })).toBe(8);
+  });
+});
+
+describe('swarm global concurrency permits', () => {
+  it('defaults to 32 and validates the global environment override', () => {
+    expect(resolveSwarmGlobalMaxConcurrency({})).toBe(32);
+    expect(
+      resolveSwarmGlobalMaxConcurrency({
+        KIMI_CODE_AGENT_SWARM_GLOBAL_MAX_CONCURRENCY: '   ',
+      }),
+    ).toBe(32);
+    for (const raw of ['0', '-1', '2.5', 'abc']) {
+      expect(() =>
+        resolveSwarmGlobalMaxConcurrency({
+          KIMI_CODE_AGENT_SWARM_GLOBAL_MAX_CONCURRENCY: raw,
+        }),
+      ).toThrow(/KIMI_CODE_AGENT_SWARM_GLOBAL_MAX_CONCURRENCY.*positive integer/);
+    }
+    expect(
+      resolveSwarmGlobalMaxConcurrency({
+        KIMI_CODE_AGENT_SWARM_GLOBAL_MAX_CONCURRENCY: '3',
+      }),
+    ).toBe(3);
+  });
+
+  it('keeps a single batch at its existing per-batch cap', async () => {
+    vi.useFakeTimers();
+    const registry = new SwarmConcurrencyRegistry({});
+    try {
+      const { runBatch, attempts } = createMockAgentRunBatchRunner({
+        concurrencyRegistry: registry,
+      });
+      const running = runBatch(
+        Array.from({ length: 10 }, (_, index) => queuedAgentRunTask(index + 1)),
+        { signal: new AbortController().signal },
+      );
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(attempts).toHaveLength(8);
+
+      attempts.forEach(resolveMockAttempt);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(attempts).toHaveLength(10);
+      attempts.slice(8).forEach(resolveMockAttempt);
+      await expect(running).resolves.toHaveLength(10);
+    } finally {
+      registry.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('shares the global budget fairly across concurrent batches', async () => {
+    vi.useFakeTimers();
+    const registry = new SwarmConcurrencyRegistry({
+      KIMI_CODE_AGENT_SWARM_GLOBAL_MAX_CONCURRENCY: '5',
+    });
+    try {
+      const runners = Array.from({ length: 3 }, () =>
+        createMockAgentRunBatchRunner({
+          maxConcurrency: 4,
+          concurrencyRegistry: registry,
+        }),
+      );
+      const running = runners.map((runner, batchIndex) =>
+        runner.runBatch(
+          Array.from({ length: 6 }, (_, index) =>
+            queuedAgentRunTask(batchIndex * 100 + index + 1),
+          ),
+          { signal: new AbortController().signal },
+        ),
+      );
+      const resolved = new Set<MockAgentRunAttemptRecord>();
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runners.map((runner) => runner.attempts.length)).toEqual([4, 1, 0]);
+
+      resolveMockAttempt(runners[0]!.attempts[0]!);
+      resolved.add(runners[0]!.attempts[0]!);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runners.map((runner) => runner.attempts.length)).toEqual([4, 2, 0]);
+
+      resolveMockAttempt(runners[0]!.attempts[1]!);
+      resolved.add(runners[0]!.attempts[1]!);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runners.map((runner) => runner.attempts.length)).toEqual([4, 2, 1]);
+
+      while (resolved.size < 18) {
+        const attempts = runners.flatMap((runner) => runner.attempts);
+        const active = attempts.filter((attempt) => !resolved.has(attempt));
+        expect(active.length).toBeLessThanOrEqual(5);
+        expect(active.length).toBeGreaterThan(0);
+        for (const attempt of active) {
+          resolved.add(attempt);
+          resolveMockAttempt(attempt);
+        }
+        await vi.advanceTimersByTimeAsync(0);
+      }
+
+      await expect(Promise.all(running)).resolves.toSatisfy(
+        (results: Array<Array<AgentRunResult<number>>>) => {
+          return results.every((batch) => batch.length === 6);
+        },
+      );
+    } finally {
+      registry.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('reclaims permits after cancellation and attempt errors', async () => {
+    vi.useFakeTimers();
+    const registry = new SwarmConcurrencyRegistry({
+      KIMI_CODE_AGENT_SWARM_GLOBAL_MAX_CONCURRENCY: '2',
+    });
+    try {
+      const cancelledController = new AbortController();
+      const cancelled = createMockAgentRunBatchRunner({
+        maxConcurrency: 2,
+        concurrencyRegistry: registry,
+      });
+      const errors = createMockAgentRunBatchRunner({
+        maxConcurrency: 2,
+        concurrencyRegistry: registry,
+      });
+      const cancelledRunning = cancelled.runBatch(
+        Array.from({ length: 4 }, (_, index) => queuedAgentRunTask(index + 1)),
+        { signal: cancelledController.signal },
+      );
+      const errorRunning = errors.runBatch(
+        Array.from({ length: 2 }, (_, index) => queuedAgentRunTask(index + 101)),
+        { signal: new AbortController().signal },
+      );
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(cancelled.attempts).toHaveLength(2);
+      expect(errors.attempts).toHaveLength(0);
+
+      cancelledController.abort(userCancellationReason());
+      await expect(cancelledRunning).resolves.toHaveLength(4);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(errors.attempts).toHaveLength(2);
+
+      const reclaimed = createMockAgentRunBatchRunner({
+        maxConcurrency: 2,
+        concurrencyRegistry: registry,
+      });
+      const reclaimedRunning = reclaimed.runBatch(
+        Array.from({ length: 2 }, (_, index) => queuedAgentRunTask(index + 201)),
+        { signal: new AbortController().signal },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(reclaimed.attempts).toHaveLength(0);
+
+      errors.attempts.forEach((attempt, index) => {
+        attempt.outcome.reject(new Error(`failed ${String(index + 1)}`));
+      });
+      await expect(errorRunning).resolves.toSatisfy(
+        (results: Array<AgentRunResult<number>>) => {
+          return results.every((result) => result.status === 'failed');
+        },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(reclaimed.attempts).toHaveLength(2);
+
+      reclaimed.attempts.forEach(resolveMockAttempt);
+      await expect(reclaimedRunning).resolves.toHaveLength(2);
+    } finally {
+      registry.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses the global environment override as the shared budget', async () => {
+    vi.useFakeTimers();
+    const registry = new SwarmConcurrencyRegistry({
+      KIMI_CODE_AGENT_SWARM_GLOBAL_MAX_CONCURRENCY: '2',
+    });
+    try {
+      const first = createMockAgentRunBatchRunner({ concurrencyRegistry: registry });
+      const second = createMockAgentRunBatchRunner({ concurrencyRegistry: registry });
+      const firstRunning = first.runBatch(
+        Array.from({ length: 4 }, (_, index) => queuedAgentRunTask(index + 1)),
+        { signal: new AbortController().signal },
+      );
+      const secondRunning = second.runBatch(
+        Array.from({ length: 4 }, (_, index) => queuedAgentRunTask(index + 101)),
+        { signal: new AbortController().signal },
+      );
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(first.attempts.length + second.attempts.length).toBe(2);
+
+      const resolved = new Set<MockAgentRunAttemptRecord>();
+      while (resolved.size < 8) {
+        const attempts = [...first.attempts, ...second.attempts];
+        const active = attempts.filter((attempt) => !resolved.has(attempt));
+        expect(active.length).toBeLessThanOrEqual(2);
+        for (const attempt of active) {
+          resolved.add(attempt);
+          resolveMockAttempt(attempt);
+        }
+        await vi.advanceTimersByTimeAsync(0);
+      }
+
+      await expect(Promise.all([firstRunning, secondRunning])).resolves.toSatisfy(
+        (results: Array<Array<AgentRunResult<number>>>) =>
+          results.every((batch) => batch.length === 4),
+      );
+    } finally {
+      registry.dispose();
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -866,6 +1083,7 @@ describe('SessionSwarmService metadata compatibility', () => {
         return { id: alias } as Model;
       },
     } as IModelCatalog);
+    ix.set(ISwarmConcurrencyRegistry, new SwarmConcurrencyRegistry({}));
     ix.set(ISessionSwarmService, new SyncDescriptor(SessionSwarmService));
   });
 
@@ -1590,6 +1808,7 @@ type MockAgentRunAttemptRecord = {
 type MockAgentRunBatchRunnerOptions = {
   readonly onSuspended?: (event: AgentRunSuspendedEvent) => void;
   readonly maxConcurrency?: number;
+  readonly concurrencyRegistry?: ISwarmConcurrencyRegistry;
 };
 
 function createMockAgentRunBatchRunner(
@@ -1659,11 +1878,10 @@ function createMockAgentRunBatchRunner(
         signal: task.signal ?? runOptions?.signal,
       }));
       const batchTasks = activeTasks as readonly QueuedAgentRunTask<T>[];
-      return options.maxConcurrency === undefined
-        ? new AgentRunBatch(launcher, batchTasks).run()
-        : new AgentRunBatch(launcher, batchTasks, {
-            maxConcurrency: options.maxConcurrency,
-          }).run();
+      return new AgentRunBatch(launcher, batchTasks, {
+        maxConcurrency: options.maxConcurrency,
+        concurrencyRegistry: options.concurrencyRegistry,
+      }).run();
     },
     attempts,
   };
