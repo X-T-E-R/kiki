@@ -20,7 +20,6 @@ import { registerFilesRoutes } from './files';
 import { registerFsRoutes } from './fs';
 import { registerGuiStoreRoutes } from './guiStore';
 import { registerMessagesRoutes } from './messages';
-import { registerMcpConfigRoutes } from './mcpConfig';
 import type { IGuiStoreService } from '../services/guiStore/guiStore';
 import { registerDebugRoutes } from '../transport/registerDebugRoutes';
 import { registerMetaRoute } from './meta';
@@ -200,10 +199,6 @@ export async function registerApiV1Routes(
       registerFsRoutes(apiV1 as unknown as Parameters<typeof registerFsRoutes>[0], core);
       registerGuiStoreRoutes(apiV1 as unknown as Parameters<typeof registerGuiStoreRoutes>[0], opts.guiStore);
       registerToolsRoutes(apiV1 as unknown as Parameters<typeof registerToolsRoutes>[0], core);
-      registerMcpConfigRoutes(
-        apiV1 as unknown as Parameters<typeof registerMcpConfigRoutes>[0],
-        core,
-      );
       if (opts.enableTerminals !== false) {
         registerTerminalsRoutes(
           apiV1 as unknown as Parameters<typeof registerTerminalsRoutes>[0],

@@ -14,20 +14,21 @@
  * files, the plugin registry, or the `[mcp]` config section themselves: the
  * global timeout preferences are exposed here as {@link tunables} too, so the
  * connection side has exactly one configuration dependency. The domain holds
- * no connection state and never talks to an MCP server; validated file writes
- * explicitly call {@link reload} to publish their changes. Bound at Workspace
- * scope.
+ * no connection state and never talks to an MCP server; management writes land
+ * through the App-scope MCP config store, whose `onDidWrite` republishes them
+ * without waiting for the watch debounce. Bound at Workspace scope.
  */
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
-import type { Event } from '#/_base/event';
-
+import type { Event, IWaitUntil } from '#/_base/event';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 
 export interface McpServersChange {
   readonly upsert: Readonly<Record<string, McpServerConfig>>;
   readonly remove: readonly string[];
 }
+
+export type McpServersChangeEvent = McpServersChange & IWaitUntil;
 
 export interface McpTunables {
   readonly startupTimeoutMs?: number;
@@ -43,9 +44,7 @@ export interface IWorkspaceMcpConfigService {
 
   tunables(): McpTunables;
 
-  reload(): Promise<void>;
-
-  readonly onDidChange: Event<McpServersChange>;
+  readonly onDidChange: Event<McpServersChangeEvent>;
 }
 
 export const IWorkspaceMcpConfigService: ServiceIdentifier<IWorkspaceMcpConfigService> =

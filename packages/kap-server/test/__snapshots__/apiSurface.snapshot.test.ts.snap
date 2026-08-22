@@ -45,6 +45,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
       "/api/v1/workspaces/{workspace_id}/thread-communication",
     ],
     [
+      "DELETE",
+      "/api/v2/mcp/servers/{name}",
+    ],
+    [
       "GET",
       "/api/v1/agents",
     ],
@@ -310,6 +314,18 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/v2/mcp/auth-statuses",
+    ],
+    [
+      "GET",
+      "/api/v2/mcp/servers",
+    ],
+    [
+      "GET",
+      "/api/v2/mcp/servers/{name}",
+    ],
+    [
+      "GET",
       "/api/v2/sessions",
     ],
     [
@@ -518,6 +534,34 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/v2/mcp/auth:begin",
+    ],
+    [
+      "POST",
+      "/api/v2/mcp/auth:cancel",
+    ],
+    [
+      "POST",
+      "/api/v2/mcp/auth:complete",
+    ],
+    [
+      "POST",
+      "/api/v2/mcp/auth:reset",
+    ],
+    [
+      "POST",
+      "/api/v2/mcp/servers",
+    ],
+    [
+      "POST",
+      "/api/v2/mcp/servers:inspect",
+    ],
+    [
+      "POST",
+      "/api/v2/mcp/servers:test",
+    ],
+    [
+      "POST",
       "/api/v2/sessions:archive",
     ],
     [
@@ -535,6 +579,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PUT",
       "/api/v1/workspaces/{workspace_id}/thread-communication",
+    ],
+    [
+      "PUT",
+      "/api/v2/mcp/servers/{name}",
     ],
   ],
 }

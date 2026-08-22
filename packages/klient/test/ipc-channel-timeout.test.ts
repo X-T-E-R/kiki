@@ -103,7 +103,7 @@ describe('IpcChannel call deadline', () => {
     const socket = netMock.current!;
     socket.emit('connect');
 
-    const call = channel.call({}, 'service', 'method', [], 70_000);
+    const call = channel.call({}, 'service', 'method', [], { timeoutMs: 70_000 });
     await vi.advanceTimersByTimeAsync(0);
 
     await vi.advanceTimersByTimeAsync(69_999);

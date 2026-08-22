@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { Emitter, Event } from '#/_base/event';
+import { AsyncEmitter, Emitter, Event } from '#/_base/event';
 import { atomicWrite } from '#/_base/utils/fs';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import type { ServiceIdentifier } from '#/_base/di/instantiation';
@@ -31,7 +31,7 @@ import {
   EXTRA_AGENT_DIRS_SECTION,
 } from '#/workspace/workspaceAgentProfileLoader/configSection';
 import { UserAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoaderService';
-import type { PluginAgentRoot, ReloadSummary } from '#/app/plugin/types';
+import type { PluginAgentRoot, PluginReloadEvent } from '#/app/plugin/types';
 import {
   DEFAULT_AGENT_PROFILE_NAME,
   normalizeAgentProfile,
@@ -255,7 +255,7 @@ function logStub(warnings?: string[]): ILogService {
 
 function pluginStub(
   agentRoots: readonly PluginAgentRoot[] = [],
-  reloadEmitter?: Emitter<ReloadSummary>,
+  reloadEmitter?: Emitter<PluginReloadEvent>,
 ): IPluginService {
   return {
     _serviceBrand: undefined,
@@ -277,6 +277,7 @@ function pluginStub(
     enabledSessionStarts: async () => [],
     enabledSystemPrompts: async () => [],
     enabledMcpServers: async () => ({}),
+    mcpServerEntries: async () => [],
     enabledHooks: async () => [],
     hasLoadedSnapshot: () => true,
   };
@@ -313,7 +314,7 @@ interface StackOptions {
   readonly disabledBuiltinProfiles?: readonly string[];
   readonly explicitFiles?: readonly string[];
   readonly pluginAgentRoots?: readonly PluginAgentRoot[];
-  readonly pluginReloadEmitter?: Emitter<ReloadSummary>;
+  readonly pluginReloadEmitter?: Emitter<PluginReloadEvent>;
   readonly hostFs?: HostFileSystem;
   readonly fsWatch?: IHostFsWatchService;
   readonly routesEnabled?: boolean;
@@ -1164,7 +1165,7 @@ describe('agent profile loaders + session catalog', () => {
     await withFixture(async (fixture) => {
       const pluginAgentsDir = join(fixture.extraDir, 'plugin-agents');
       await mkdir(pluginAgentsDir, { recursive: true });
-      const reloadEmitter = new Emitter<ReloadSummary>();
+      const reloadEmitter = new AsyncEmitter<PluginReloadEvent>();
       await withStack(
         fixture,
         {
@@ -1177,7 +1178,10 @@ describe('agent profile loaders + session catalog', () => {
 
           await writeAgent(pluginAgentsDir, 'late.md', agentMd('late', 'late plugin agent'));
           const changed = waitForEvent(stack.catalog.onDidChange);
-          reloadEmitter.fire({ added: [], removed: [], errors: [] });
+          await reloadEmitter.fireAsyncConcurrent(
+            { added: [], removed: [], errors: [] },
+            new AbortController().signal,
+          );
           await changed;
 
           expect(stack.catalog.get('late')?.description).toBe('late plugin agent');

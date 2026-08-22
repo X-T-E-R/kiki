@@ -88,6 +88,8 @@ export const ErrorCode = {
   SESSION_CURSOR_MISMATCH: 40937,
   PROMPT_ID_CONFLICT: 40938,
   SESSION_INDEX_BUILDING: 40939,
+  /** MCP OAuth flow failed, expired, or was cancelled */
+  MCP_OAUTH_FAILED: 40940,
 
   APPROVAL_EXPIRED: 41001,
   QUESTION_EXPIRED: 41002,

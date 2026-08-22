@@ -19,6 +19,11 @@ export class RPCError extends Error {
 
 const ENGINE_ERROR_CODES: Readonly<Record<string, number>> = {
   [ErrorCodes.REQUEST_INVALID]: 40001,
+  // MCP management plane: mirror the `/api/v2/mcp` wire codes so memory and
+  // ipc surface the same numbers as REST.
+  [ErrorCodes.CONFIG_INVALID]: 40001,
+  [ErrorCodes.MCP_SERVER_NOT_FOUND]: 40408,
+  [ErrorCodes.MCP_OAUTH_FAILED]: 40940,
   [ErrorCodes.THREAD_NOT_FOUND]: 40421,
   [ErrorCodes.THREAD_ARCHIVED]: 40927,
   [ErrorCodes.THREAD_DISABLED]: 40928,

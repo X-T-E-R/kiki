@@ -3,6 +3,7 @@ import { IConfigService } from '@moonshot-ai/agent-core-v2';
 import { IFlagService } from '@moonshot-ai/agent-core-v2/app/flag/flag';
 import { EXTERNAL_DELEGATION_FLAG_ID } from '@moonshot-ai/agent-core-v2/session/externalDelegation/flag';
 
+import { registerV2McpRoutes } from './v2/mcp';
 import { registerV2SessionsRoutes } from './v2/sessions';
 import { registerV2ExternalDelegationRoutes } from './v2/externalDelegation';
 
@@ -32,6 +33,7 @@ export async function registerApiV2Routes(
   await app.register(
     async (apiV2) => {
       registerV2SessionsRoutes(apiV2 as Parameters<typeof registerV2SessionsRoutes>[0], core);
+      registerV2McpRoutes(apiV2 as Parameters<typeof registerV2McpRoutes>[0], core);
       if (externalDelegationEnabled && externalDelegation !== undefined) {
         registerV2ExternalDelegationRoutes(
           apiV2 as Parameters<typeof registerV2ExternalDelegationRoutes>[0],

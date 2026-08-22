@@ -28,6 +28,7 @@ export interface IWorkspaceInstanceManager {
   acquire(ref: WorkspaceInstanceRef): Promise<WorkspaceInstanceLease>;
   get(workspaceId: string): WorkspaceInstance | undefined;
   findByRoot(root: string): WorkspaceInstance | undefined;
+  findContaining(cwd: string): WorkspaceInstance | undefined;
   list(): readonly WorkspaceInstance[];
   referenceCount(workspaceId: string): number;
   snapshot(): WorkspaceInstancesSnapshot;

@@ -10,6 +10,7 @@
 import { createConnection, type Socket } from 'node:net';
 
 import type {
+  CallOptions,
   EventSourceRef,
   IDisposable,
   KlientChannel,
@@ -105,11 +106,17 @@ export class IpcChannel implements KlientChannel {
     });
   }
 
-  async call(scope: ScopeRef, service: string, method: string, args: unknown[], timeoutMs?: number): Promise<unknown> {
+  async call(
+    scope: ScopeRef,
+    service: string,
+    method: string,
+    args: unknown[],
+    options?: CallOptions,
+  ): Promise<unknown> {
     await this.ready;
     if (this.closed) throw new Error('ipc closed');
     const id = this.nextId();
-    const deadlineMs = timeoutMs ?? this.callTimeoutMs;
+    const deadlineMs = options?.timeoutMs ?? this.callTimeoutMs;
     const promise = new Promise<unknown>((resolve, reject) => {
       const timer =
         deadlineMs > 0

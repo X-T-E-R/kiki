@@ -49,6 +49,7 @@ import { IAgentUsageService } from '@moonshot-ai/agent-core-v2/agent/usage/usage
 import { IAgentMcpService } from '@moonshot-ai/agent-core-v2/agent/mcp/mcp';
 import { IAgentFullCompactionService } from '@moonshot-ai/agent-core-v2/agent/fullCompaction/fullCompaction';
 import { IThreadCommunicationService } from '@moonshot-ai/agent-core-v2/app/threadCommunication/threadCommunication';
+import { IMcpManagementService } from '@moonshot-ai/agent-core-v2/app/mcpManagement/mcpManagement';
 
 /** Wire service name (decorator id string) → token. */
 export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>> = {
@@ -92,6 +93,7 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   agentTaskService: IAgentTaskService,
   agentMcpService: IAgentMcpService,
   agentFullCompactionService: IAgentFullCompactionService,
+  mcpManagementService: IMcpManagementService,
 };
 
 export { IEventService };

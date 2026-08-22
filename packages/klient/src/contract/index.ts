@@ -35,6 +35,7 @@ import { filesContract } from './global/files.js';
 import { flagsContract } from './global/flags.js';
 import { hostFsContract } from './global/hostFs.js';
 import { modelsContract } from './global/models.js';
+import { mcpManagementContract } from './global/mcpManagement.js';
 import { pluginsContract } from './global/plugins.js';
 import { providersContract } from './global/providers.js';
 import { sessionsContract } from './global/sessions.js';
@@ -66,6 +67,7 @@ export const globalContract: KlientContract = {
   bootstrapService: envContract,
   threadCommunicationService: threadsContract,
   fileService: filesContract,
+  mcpManagementService: mcpManagementContract,
   sessionManager: sessionManagerContract,
   // session scope
   sessionMetadata: sessionMetadataContract,
