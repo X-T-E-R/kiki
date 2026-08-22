@@ -8,6 +8,7 @@
  * engine type is `ModelRecord` — the contract-parity test pins that pairing.
  */
 
+import { RequestIdentityPolicySchema } from '@moonshot-ai/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 import { z } from 'zod';
 
 import { maybe, noResult } from '../helpers.js';
@@ -49,6 +50,7 @@ const modelBaseSchema = z.object({
   betaApi: z.boolean().optional(),
   supportEfforts: z.array(z.string()).optional(),
   defaultEffort: z.string().optional(),
+  requestIdentity: RequestIdentityPolicySchema.optional(),
 });
 
 const modelOverrideSchema = modelBaseSchema
@@ -63,6 +65,7 @@ const modelOverrideSchema = modelBaseSchema
     provider: true,
     model: true,
     betaApi: true,
+    requestIdentity: true,
   })
   .partial();
 

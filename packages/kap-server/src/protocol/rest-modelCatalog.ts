@@ -41,7 +41,7 @@ export const providerWireTypeSchema = z.enum([
 ]);
 export type ProviderWireType = z.infer<typeof providerWireTypeSchema>;
 
-export const createProviderModelSchema = z.object({
+const providerModelSchema = z.object({
   model: z.string().min(1),
   max_context_size: z.number().int().min(1),
   display_name: z.string().min(1).optional(),
@@ -50,7 +50,15 @@ export const createProviderModelSchema = z.object({
   support_efforts: z.array(z.string().min(1)).optional(),
   adaptive_thinking: z.boolean().optional(),
 });
+
+export const createProviderModelSchema = providerModelSchema.extend({
+  request_identity: RequestIdentityPolicyWireSchema.optional(),
+});
 export type CreateProviderModel = z.infer<typeof createProviderModelSchema>;
+
+export const replaceProviderModelSchema = providerModelSchema.extend({
+  request_identity: RequestIdentityPolicyWireSchema.nullable().optional(),
+});
 
 function refineProviderForm(
   value: {
@@ -150,7 +158,7 @@ export const replaceProviderRequestSchema = z
     base_url: z.string().trim().optional(),
     default_model: z.string().min(1).optional(),
     request_identity: RequestIdentityPolicyWireSchema.nullable().optional(),
-    models: z.array(createProviderModelSchema).min(1),
+    models: z.array(replaceProviderModelSchema).min(1),
   })
   .strict()
   .superRefine((value, ctx) => {

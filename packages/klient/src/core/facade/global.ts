@@ -37,7 +37,14 @@ import type { IModelCatalog } from '@moonshot-ai/agent-core-v2/kosong/model/cata
 import type { IProviderDiscoveryService } from '@moonshot-ai/agent-core-v2/app/kosongConfig/discovery';
 
 import type { McpServerConfig } from '../../contract/mcp.js';
-import type { AnonymousProviderInput, GenerateEvent, GenerateInput, GenerateParams, ProviderInput } from './kosong-types.js';
+import type {
+  AnonymousProviderInput,
+  GenerateEvent,
+  GenerateInput,
+  GenerateParams,
+  ProviderInput,
+  RequestIdentityPolicy,
+} from './kosong-types.js';
 import type {
   PluginCommandDef,
   PluginInfo,
@@ -141,10 +148,24 @@ export interface GlobalWorkspacesFacade {
 }
 
 export interface GlobalConfigFacade {
+  get(domain: 'requestIdentity'): Promise<RequestIdentityPolicy | undefined>;
   get<T = unknown>(domain: string): Promise<T>;
   getAll(): Promise<Record<string, unknown>>;
+  inspect(
+    domain: 'requestIdentity',
+  ): Promise<ConfigInspectValue<RequestIdentityPolicy | undefined>>;
   inspect<T = unknown>(domain: string): Promise<ConfigInspectValue<T>>;
+  set(input: {
+    domain: 'requestIdentity';
+    patch: RequestIdentityPolicy;
+    target?: ConfigTargetLiteral;
+  }): Promise<void>;
   set(input: { domain: string; patch: unknown; target?: ConfigTargetLiteral }): Promise<void>;
+  replace(input: {
+    domain: 'requestIdentity';
+    value: RequestIdentityPolicy | undefined;
+    target?: ConfigTargetLiteral;
+  }): Promise<void>;
   replace(input: {
     domain: string;
     value: unknown;
@@ -449,6 +470,7 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
           displayName: anon.displayName,
           maxContextSize: anon.maxContextSize,
           capabilities,
+          requestIdentity: anon.requestIdentity,
         };
         return call('modelService', 'set', [anon.id, wire]) as Promise<void>;
       }) as GlobalKosongFacade['addProvider'],

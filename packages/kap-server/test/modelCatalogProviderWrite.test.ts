@@ -263,11 +263,79 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     ]);
   });
 
-  it('round-trips request_identity and preserves it when replace omits the field', async () => {
+  it('creates model request identities and preserves or replaces them during provider rewrites', async () => {
+    await boot();
+    const firstIdentity = { overrides: { request: { logical_id: 'none' } } } as const;
+    const secondIdentity = { preset: 'none' } as const;
+    const created = await postJson<unknown>('/api/v1/providers', {
+      ...CREATE_BODY,
+      models: [
+        { ...CREATE_BODY.models[0], request_identity: firstIdentity },
+        CREATE_BODY.models[1],
+      ],
+    });
+    expect(created.status).toBe(201);
+
+    expect((await getJson<{ items: Array<Record<string, unknown>> }>('/api/v1/models')).body.data.items)
+      .toEqual([
+        {
+          provider: 'my-openai',
+          model: 'my-openai/gpt-4.1',
+          display_name: 'GPT-4.1',
+          max_context_size: 1047576,
+          capabilities: ['vision'],
+          request_identity: firstIdentity,
+        },
+        {
+          provider: 'my-openai',
+          model: 'my-openai/gpt-4o-mini',
+          display_name: 'gpt-4o-mini',
+          max_context_size: 128000,
+        },
+      ]);
+
+    await putJson('/api/v1/providers/my-openai', REPLACE_BODY);
+    expect((await readConfigToml())['models']).toMatchObject({
+      'my-openai/gpt-4.1': { request_identity: firstIdentity },
+    });
+
+    await putJson('/api/v1/providers/my-openai', {
+      ...REPLACE_BODY,
+      models: [
+        { ...REPLACE_BODY.models[0], request_identity: secondIdentity },
+        REPLACE_BODY.models[1],
+      ],
+    });
+    expect((await readConfigToml())['models']).toMatchObject({
+      'my-openai/gpt-4.1': { request_identity: secondIdentity },
+    });
+  });
+
+  it('clears model request_identity only on explicit null', async () => {
+    await boot();
+    await postJson('/api/v1/providers', {
+      ...CREATE_BODY,
+      models: [
+        { ...CREATE_BODY.models[0], request_identity: { preset: 'none' } },
+        CREATE_BODY.models[1],
+      ],
+    });
+
+    await putJson('/api/v1/providers/my-openai', {
+      ...REPLACE_BODY,
+      models: [
+        { ...REPLACE_BODY.models[0], request_identity: null },
+        REPLACE_BODY.models[1],
+      ],
+    });
+    const models = (await readConfigToml())['models'] as Record<string, Record<string, unknown>>;
+    expect(models['my-openai/gpt-4.1']).not.toHaveProperty('request_identity');
+  });
+
+  it('round-trips override-only provider request_identity and preserves it when replace omits the field', async () => {
     await boot();
     const requestIdentity = {
-      preset: 'kimi_code',
-      overrides: { client: { user_agent: 'kimi_code' } },
+      overrides: { client: { user_agent: 'host' } },
     } as const;
     const created = await postJson<{ request_identity?: unknown }>('/api/v1/providers', {
       ...CREATE_BODY,
@@ -277,12 +345,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     expect(created.status).toBe(201);
     expect(created.body.data.request_identity).toEqual(requestIdentity);
     expect((await readConfigToml())['providers']).toMatchObject({
-      'my-openai': {
-        request_identity: {
-          preset: 'kimi_code',
-          overrides: { client: { user_agent: 'kimi_code' } },
-        },
-      },
+      'my-openai': { request_identity: requestIdentity },
     });
 
     const replaced = await putJson<{ provider: { request_identity?: unknown } }>(
@@ -306,25 +369,35 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     );
     expect(cleared.status).toBe(200);
     expect(cleared.body.data.provider.request_identity).toBeUndefined();
-
+    const providers = (await readConfigToml())['providers'] as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(providers['my-openai']).not.toHaveProperty('request_identity');
   });
 
-  it('rejects unknown root and nested request_identity fields', async () => {
+  it('rejects invalid provider and model request_identity layers', async () => {
     await boot();
-    const unknownRoot = await postJson('/api/v1/providers', {
-      ...CREATE_BODY,
-      request_identity: { preset: 'none', future_root: true },
-    });
-    expect(unknownRoot.body.code).toBe(40001);
-
-    const unknownAxis = await postJson('/api/v1/providers', {
-      ...CREATE_BODY,
-      request_identity: {
-        preset: 'none',
-        overrides: { request: { future_axis: 'value' } },
+    for (const body of [
+      { ...CREATE_BODY, request_identity: {} },
+      { ...CREATE_BODY, request_identity: { preset: 'none', future_root: true } },
+      {
+        ...CREATE_BODY,
+        request_identity: {
+          preset: 'none',
+          overrides: { request: { future_axis: 'value' } },
+        },
       },
-    });
-    expect(unknownAxis.body.code).toBe(40001);
+      {
+        ...CREATE_BODY,
+        models: [
+          { ...CREATE_BODY.models[0], request_identity: { overrides: {} } },
+          CREATE_BODY.models[1],
+        ],
+      },
+    ]) {
+      expect((await postJson('/api/v1/providers', body)).body.code).toBe(40001);
+    }
   });
 
   it('rejects removed attribution fields on both create and replace', async () => {
