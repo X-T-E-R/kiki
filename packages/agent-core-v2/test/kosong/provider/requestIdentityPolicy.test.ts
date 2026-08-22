@@ -5,6 +5,7 @@ import {
   requestIdentityToWire,
   resolveAuthoredRequestIdentity,
   resolveProviderRequestIdentity,
+  resolveRequestIdentityLayers,
   RequestIdentityPolicySchema,
   RequestIdentityPolicyWireSchema,
   type RequestIdentityPolicy,
@@ -101,6 +102,126 @@ describe('request identity policy', () => {
   it('defaults an omitted policy to Kimi Code', () => {
     expect(resolveProviderRequestIdentity(undefined).preset).toBe('kimi_code');
   });
+
+  it('resolves no authored layers byte-for-byte as the built-in Kimi policy', () => {
+    expect(JSON.stringify(resolveRequestIdentityLayers())).toBe(
+      JSON.stringify(resolveAuthoredRequestIdentity({ preset: 'kimi_code' })),
+    );
+  });
+
+  it('accepts global-only presets and override-only layers', () => {
+    expect(resolveRequestIdentityLayers({ preset: 'codex_compatible' }).preset).toBe(
+      'codex_compatible',
+    );
+    const overridden = resolveRequestIdentityLayers({
+      overrides: { client: { originator: { mode: 'custom', value: 'global-client' } } },
+    });
+    expect(overridden.client.originator).toEqual({ mode: 'custom', value: 'global-client' });
+    expect(overridden.client.userAgent).toBe('kimi_code');
+  });
+
+  it('lets a provider preset reset the global layer completely', () => {
+    expect(
+      resolveRequestIdentityLayers(
+        { preset: 'codex_compatible' },
+        { preset: 'kimi_code' },
+      ),
+    ).toEqual(resolveAuthoredRequestIdentity({ preset: 'kimi_code' }));
+  });
+
+  it('lets an override-only provider inherit untouched global leaves', () => {
+    const resolved = resolveRequestIdentityLayers(
+      { preset: 'codex_compatible' },
+      { overrides: { cache: { responses: 'none' } } },
+    );
+    expect(resolved.preset).toBe('codex_compatible');
+    expect(resolved.lineage.format).toBe('codex');
+    expect(resolved.client.originator).toEqual({ mode: 'codex_default' });
+    expect(resolved.cache.responses).toBe('none');
+  });
+
+  it('treats originator as an atomic discriminated-union leaf', () => {
+    const resolved = resolveRequestIdentityLayers(
+      {
+        overrides: { client: { originator: { mode: 'custom', value: 'global-client' } } },
+      },
+      { overrides: { client: { originator: { mode: 'none' } } } },
+    );
+    expect(resolved.client.originator).toEqual({ mode: 'none' });
+    expect(resolved.client.originator).not.toHaveProperty('value');
+  });
+
+  it('isolates resolved originator references from authored input', () => {
+    const originator = { mode: 'custom' as const, value: 'authored-client' };
+    const authored: RequestIdentityPolicy = {
+      overrides: { client: { originator } },
+    };
+    const resolved = resolveRequestIdentityLayers(authored);
+
+    originator.value = 'mutated-authored';
+    expect(resolved.client.originator).toEqual({
+      mode: 'custom',
+      value: 'authored-client',
+    });
+
+    if (resolved.client.originator.mode !== 'custom') throw new Error('expected custom originator');
+    resolved.client.originator.value = 'mutated-resolved';
+    expect(originator).toEqual({ mode: 'custom', value: 'mutated-authored' });
+  });
+
+  it('lets a model preset reset global and provider layers', () => {
+    expect(
+      resolveRequestIdentityLayers(
+        { preset: 'codex_compatible' },
+        { overrides: { client: { userAgent: 'host' } } },
+        { preset: 'none' },
+      ),
+    ).toEqual(resolveAuthoredRequestIdentity({ preset: 'none' }));
+  });
+
+  it('lets an override-only model inherit provider and global leaves', () => {
+    const resolved = resolveRequestIdentityLayers(
+      { preset: 'codex_compatible' },
+      { overrides: { client: { userAgent: 'host' } } },
+      { overrides: { cache: { responses: 'none' } } },
+    );
+    expect(resolved.lineage.format).toBe('codex');
+    expect(resolved.client.userAgent).toBe('host');
+    expect(resolved.cache.responses).toBe('none');
+  });
+
+  it('validates every layer before applying a later preset', () => {
+    expect(() =>
+      resolveRequestIdentityLayers(
+        { overrides: { lineage: { sessionScope: 'none' } } },
+        { preset: 'none' },
+      ),
+    ).toThrow(/cache source/u);
+  });
+
+  it('keeps old explicit provider resolution exact', () => {
+    const policy: RequestIdentityPolicy = {
+      preset: 'grok_build_compatible',
+      overrides: { client: { userAgent: 'host' } },
+    };
+    expect(resolveProviderRequestIdentity({ requestIdentity: policy })).toEqual(
+      resolveAuthoredRequestIdentity(policy),
+    );
+  });
+
+  it.each([RequestIdentityPolicySchema, RequestIdentityPolicyWireSchema])(
+    'rejects recursively empty layers and accepts one override leaf',
+    (schema) => {
+      expect(schema.safeParse({}).success).toBe(false);
+      expect(schema.safeParse({ overrides: {} }).success).toBe(false);
+      expect(schema.safeParse({ overrides: { lineage: {}, client: {} } }).success).toBe(false);
+      const layer =
+        schema === RequestIdentityPolicySchema
+          ? { overrides: { client: { userAgent: 'host' } } }
+          : { overrides: { client: { user_agent: 'host' } } };
+      expect(schema.safeParse(layer).success).toBe(true);
+    },
+  );
 
   it('rejects the removed kiki preset name instead of treating it as an alias', () => {
     expect(RequestIdentityPolicySchema.safeParse({ preset: 'kiki' }).success).toBe(false);

@@ -112,6 +112,7 @@ import type {
   ReloadSummary,
 } from '@moonshot-ai/agent-core-v2/app/plugin/types';
 import type { ProviderConfig } from '@moonshot-ai/agent-core-v2/kosong/provider/provider';
+import type { RequestIdentityPolicy } from '@moonshot-ai/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 import type {
   SessionListQuery,
   SessionSummary,
@@ -146,6 +147,7 @@ import type {
   CompactionStartedEvent,
   PromptAbortedEvent,
   PromptCompletedEvent,
+  RequestIdentityPolicyWire,
   TaskInfo,
   ThinkingDeltaEvent,
   ToolCallDeltaEvent,
@@ -273,6 +275,7 @@ import {
 import {
   modelCatalogItemSchema,
   providerCatalogItemSchema,
+  requestIdentityPolicySchema as catalogRequestIdentityPolicySchema,
   setDefaultModelResponseSchema,
 } from '../src/contract/global/catalog.js';
 import {
@@ -305,7 +308,10 @@ import {
   setPluginEnabledInputSchema,
   setPluginMcpServerEnabledInputSchema,
 } from '../src/contract/global/plugins.js';
-import { providerConfigSchema } from '../src/contract/global/providers.js';
+import {
+  providerConfigSchema,
+  requestIdentityPolicySchema as providerRequestIdentityPolicySchema,
+} from '../src/contract/global/providers.js';
 import {
   sessionListQuerySchema,
   sessionSummarySchema,
@@ -409,6 +415,10 @@ const _capabilityInstallProgress: AssertWire<
 const _capabilityStatus: AssertWire<typeof capabilityStatusSchema, CapabilityStatus> = true;
 
 // providers.ts
+const _providerRequestIdentityPolicy: AssertWire<
+  typeof providerRequestIdentityPolicySchema,
+  RequestIdentityPolicy
+> = true;
 const _providerConfig: AssertWire<typeof providerConfigSchema, ProviderConfig> = true;
 
 // auth.ts
@@ -452,6 +462,10 @@ type RefreshProviderModelsOptions = NonNullable<
 type RefreshProviderModelsResponse = Awaited<
   ReturnType<IProviderDiscoveryService['refreshProviderModels']>
 >;
+const _catalogRequestIdentityPolicy: AssertWire<
+  typeof catalogRequestIdentityPolicySchema,
+  RequestIdentityPolicyWire
+> = true;
 const _modelCatalogItem: AssertWire<typeof modelCatalogItemSchema, ModelCatalogItem> = true;
 const _providerCatalogItem: AssertWire<typeof providerCatalogItemSchema, ProviderCatalogItem> =
   true;

@@ -286,6 +286,8 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
             alias.supportEfforts = [...entry.support_efforts];
           if (entry.adaptive_thinking !== undefined)
             alias.adaptiveThinking = entry.adaptive_thinking;
+          if (entry.request_identity !== undefined)
+            alias.requestIdentity = requestIdentityFromWire(entry.request_identity);
           aliases[`${id}/${entry.model}`] = alias;
         }
         await config.set(MODELS_SECTION, aliases);
@@ -389,7 +391,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         provider.baseUrl = req.body.base_url;
         if (req.body.request_identity !== undefined) {
           if (req.body.request_identity === null) {
-            delete provider.requestIdentity;
+            provider.requestIdentity = undefined;
           } else {
             provider.requestIdentity = requestIdentityFromWire(req.body.request_identity);
           }
@@ -454,6 +456,13 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
             entry.support_efforts !== undefined ? [...entry.support_efforts] : undefined;
           alias.adaptiveThinking =
             entry.adaptive_thinking !== undefined ? entry.adaptive_thinking : undefined;
+          if (entry.request_identity !== undefined) {
+            if (entry.request_identity === null) {
+              alias.requestIdentity = undefined;
+            } else {
+              alias.requestIdentity = requestIdentityFromWire(entry.request_identity);
+            }
+          }
           nextModels[`${newId}/${entry.model}`] = alias;
         }
         await config.replace(MODELS_SECTION, nextModels);

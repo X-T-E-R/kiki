@@ -51,6 +51,7 @@ import type {
   PatchConfigRequest,
   PermissionMode,
   PromptAbortResponse,
+  RequestIdentityPolicyWire,
   PromptListResponse,
   PromptSteerResult,
   PromptSubmission,
@@ -346,7 +347,11 @@ export interface RuntimeConfigPatch {
   readonly tools?: { readonly enabled?: string[]; readonly disabled?: string[] };
 }
 
-export type KikiConfigPatch = Omit<PatchConfigRequest, 'subagent' | 'replace_domains'> & RuntimeConfigPatch & {
+export type KikiConfigPatch = Omit<
+  PatchConfigRequest,
+  'subagent' | 'replace_domains' | 'request_identity'
+> & RuntimeConfigPatch & {
+  readonly request_identity?: RequestIdentityPolicyWire | null;
   readonly subagent?: NonNullable<PatchConfigRequest['subagent']> & {
     readonly deny_models?: string[];
   };

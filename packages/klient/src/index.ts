@@ -57,6 +57,7 @@ export type {
   GenerateParams,
   ProviderAuth,
   ProviderInput,
+  RequestIdentityPolicy,
 } from './core/facade/kosong-types.js';
 
 export type {

@@ -104,6 +104,7 @@ function fixtureModelsFromBody(providerId, models) {
     max_context_size: model.max_context_size,
     capabilities: model.capabilities,
     support_efforts: model.support_efforts,
+    request_identity: model.request_identity === null ? undefined : model.request_identity,
   }));
 }
 
@@ -783,7 +784,10 @@ class FixtureServer {
       });
     }
     if (path === '/config' && method === 'POST') {
-      this.config = { ...this.config, ...(body ?? {}) };
+      const patch = { ...(body ?? {}) };
+      if (patch.request_identity === null) delete patch.request_identity;
+      this.config = { ...this.config, ...patch };
+      if (body?.request_identity === null) delete this.config.request_identity;
       return this.envelope(res, this.config);
     }
     if (path === '/config') {

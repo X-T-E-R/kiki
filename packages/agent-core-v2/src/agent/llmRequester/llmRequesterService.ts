@@ -45,7 +45,11 @@ import type { ModelOverrides } from '#/kosong/model/model.types';
 import { IModelService } from '#/kosong/model/model';
 import { completionBudgetParams, resolveCompletionBudget } from '#/kosong/model/completionBudget';
 import { resolveThinkingKeep, type ThinkingConfig } from '#/kosong/model/thinking';
-import { PROVIDERS_SECTION, THINKING_SECTION } from '#/app/kosongConfig/configSection';
+import {
+  PROVIDERS_SECTION,
+  REQUEST_IDENTITY_SECTION,
+  THINKING_SECTION,
+} from '#/app/kosongConfig/configSection';
 import type { Protocol } from '#/kosong/protocol/protocol';
 import type {
   ProviderConfig,
@@ -54,7 +58,8 @@ import type {
 import { getProviderDefinition } from '#/kosong/provider/providerDefinition';
 import {
   REQUEST_IDENTITY_RESERVED_HEADERS,
-  resolveProviderRequestIdentity,
+  resolveRequestIdentityLayers,
+  type RequestIdentityPolicy,
   type ResolvedRequestIdentityPolicy,
 } from '#/kosong/requestIdentity/requestIdentityPolicy';
 import {
@@ -639,7 +644,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       this.config.get<ProvidersSection>(PROVIDERS_SECTION)?.[requester.model.providerName];
     const requestIdentity =
       turnConfig?.requestIdentity ??
-      resolveProviderRequestIdentity(providerConfig);
+      this.resolveRequestIdentityPolicy(resolved, providerConfig);
     validateRequestIdentityHeaderCollisions(providerConfig);
     preflightRequestIdentityProjection(requestIdentity, requester.model.protocol);
 
@@ -739,11 +744,24 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
         params: this.profile.resolveRequestParams(),
         systemPrompt: this.profile.getSystemPrompt(),
         providerConfig,
-        requestIdentity: resolveProviderRequestIdentity(providerConfig),
+        requestIdentity: this.resolveRequestIdentityPolicy(resolved, providerConfig),
       };
       this.turnConfigs.set(turnId, snapshot);
     }
     return snapshot;
+  }
+
+  private resolveRequestIdentityPolicy(
+    resolved: ProfileModelContext,
+    providerConfig: ProviderConfig | undefined,
+  ): ResolvedRequestIdentityPolicy {
+    const modelId = this.modelService.resolveId(resolved.modelAlias) ?? resolved.modelAlias;
+    const modelConfig = this.modelService.get(modelId);
+    return resolveRequestIdentityLayers(
+      this.config.get<RequestIdentityPolicy | undefined>(REQUEST_IDENTITY_SECTION),
+      providerConfig?.requestIdentity,
+      modelConfig?.requestIdentity,
+    );
   }
 
   private logRequest(input: LLMRequestLogInput): void {

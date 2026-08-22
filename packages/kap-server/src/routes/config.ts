@@ -1,9 +1,16 @@
 import {
   ConfigChanged,
+  ConfigTarget,
   IConfigService,
   IEventService,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
+import { REQUEST_IDENTITY_SECTION } from '@moonshot-ai/agent-core-v2/app/kosongConfig/configSection';
+import {
+  requestIdentityFromWire,
+  requestIdentityToWire,
+  type RequestIdentityPolicy,
+} from '@moonshot-ai/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
@@ -68,11 +75,13 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
       try {
         const config = core.accessor.get(IConfigService);
         await config.ready;
+        const requestIdentity = req.body.request_identity;
         const camelPatch = convertKeysSnakeToCamel(req.body) as Record<string, unknown>;
         const replaceDomains = new Set(
           ((camelPatch['replaceDomains'] as string[] | undefined) ?? []).map(snakeToCamel),
         );
         delete camelPatch['replaceDomains'];
+        delete camelPatch[REQUEST_IDENTITY_SECTION];
         if (camelPatch['yolo'] === true) {
           camelPatch['defaultPermissionMode'] = 'yolo';
         }
@@ -84,6 +93,13 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
           } else {
             await config.set(domain, camelPatch[domain]);
           }
+        }
+        if (requestIdentity !== undefined) {
+          await config.replace(
+            REQUEST_IDENTITY_SECTION,
+            requestIdentity === null ? null : requestIdentityFromWire(requestIdentity),
+            ConfigTarget.User,
+          );
         }
         const response = toConfigResponse(config.getAll());
         const changedFields = Object.keys(req.body as Record<string, unknown>).filter(
@@ -107,7 +123,13 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
 function toConfigResponse(resolved: Record<string, unknown>): ConfigResponse {
   const wire: Record<string, unknown> = {};
   for (const [domain, value] of Object.entries(resolved)) {
-    wire[camelToSnake(domain)] = domain === 'providers' ? toProviderResponses(value) : value;
+    if (domain === 'providers') {
+      wire['providers'] = toProviderResponses(value);
+    } else if (domain === REQUEST_IDENTITY_SECTION) {
+      wire['request_identity'] = requestIdentityToWire(value as RequestIdentityPolicy);
+    } else {
+      wire[camelToSnake(domain)] = value;
+    }
   }
   const defaultPermissionMode = resolved['defaultPermissionMode'];
   if (typeof defaultPermissionMode === 'string') {

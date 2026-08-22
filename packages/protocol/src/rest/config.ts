@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { requestIdentityPolicySchema } from '../modelCatalog';
+
 export const providerConfigResponseSchema = z.object({
   type: z.string(),
   base_url: z.string().optional(),
@@ -30,6 +32,7 @@ export const configResponseSchema = z.object({
   default_provider: z.string().optional(),
   default_model: z.string().optional(),
   models: z.record(z.string(), z.unknown()).optional(),
+  request_identity: requestIdentityPolicySchema.optional(),
   thinking: z.unknown().optional(),
   plan_mode: z.boolean().optional(),
   yolo: z.boolean().optional(),
@@ -59,6 +62,7 @@ export const patchConfigRequestSchema = z.object({
   default_provider: z.string().optional(),
   default_model: z.string().optional(),
   models: z.record(z.string(), z.unknown()).optional(),
+  request_identity: requestIdentityPolicySchema.nullable().optional(),
   thinking: z.unknown().optional(),
   plan_mode: z.boolean().optional(),
   yolo: z.boolean().optional(),

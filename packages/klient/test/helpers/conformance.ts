@@ -271,15 +271,13 @@ export function defineKlientConformance(
           type: 'openai',
           auth: { method: 'api-key', apiKey: 'conf-key' },
           requestIdentity: {
-            preset: 'kimi_code',
-            overrides: { client: { userAgent: 'kimi_code' } },
+            overrides: { client: { userAgent: 'host' } },
           },
         });
         const got = await target.klient.global.kosong.getProvider(name);
         expect(got.has_api_key).toBe(true);
         expect(got.request_identity).toEqual({
-          preset: 'kimi_code',
-          overrides: { client: { user_agent: 'kimi_code' } },
+          overrides: { client: { user_agent: 'host' } },
         });
 
         await waitFor(
@@ -297,6 +295,27 @@ export function defineKlientConformance(
       const all = await target.klient.global.config.getAll();
       expect(typeof all).toBe('object');
       expect(Array.isArray(await target.klient.global.config.diagnostics())).toBe(true);
+    });
+
+    it('config requestIdentity replaces and clears an authored global layer', async () => {
+      const config = target.klient.global.config;
+      const before = await config.inspect('requestIdentity');
+      try {
+        await config.replace({
+          domain: 'requestIdentity',
+          value: { overrides: { client: { userAgent: 'host' } } },
+        });
+        expect((await config.get('requestIdentity'))).toEqual({
+          overrides: { client: { userAgent: 'host' } },
+        });
+        expect((await config.inspect('requestIdentity')).userValue).toEqual({
+          overrides: { client: { userAgent: 'host' } },
+        });
+        await config.replace({ domain: 'requestIdentity', value: undefined });
+        expect((await config.inspect('requestIdentity')).userValue).toBeUndefined();
+      } finally {
+        await config.replace({ domain: 'requestIdentity', value: before.userValue });
+      }
     });
 
     it('config replaceSections writes several domains and clears undefined ones', async () => {
@@ -393,7 +412,10 @@ export function defineKlientConformance(
           protocol: 'openai',
           baseUrl: 'http://127.0.0.1:1',
           auth: { method: 'api-key', apiKey: 'conf-key' },
+          requestIdentity: { overrides: { request: { logicalId: 'none' } } },
         });
+        expect((await kosong.listModels()).find((model) => model.model === id)?.request_identity)
+          .toEqual({ overrides: { request: { logical_id: 'none' } } });
 
         await waitFor(
           () => events.some((event) => [...event.added, ...event.changed].includes(id)),

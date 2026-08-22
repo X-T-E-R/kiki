@@ -1012,6 +1012,7 @@ describe('wire projection (pure)', () => {
         capabilities: ['thinking'],
         support_efforts: undefined,
         default_effort: undefined,
+        request_identity: undefined,
       });
     } finally {
       host.dispose();
@@ -1034,6 +1035,19 @@ describe('wire projection (pure)', () => {
       capabilities: ['thinking'],
       support_efforts: undefined,
       default_effort: undefined,
+      request_identity: undefined,
+    });
+  });
+
+  it('projects an authored sparse model request identity without expansion', () => {
+    const record: ModelRecord = {
+      provider: 'kimi',
+      model: 'kimi-k2',
+      maxContextSize: 131072,
+      requestIdentity: { overrides: { client: { userAgent: 'host' } } },
+    };
+    expect(toProtocolModelFallback('k2', record, 'kimi').request_identity).toEqual({
+      overrides: { client: { user_agent: 'host' } },
     });
   });
 

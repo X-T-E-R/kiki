@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  configResponseSchema,
   getProviderResponseSchema,
   listModelsResponseSchema,
+  patchConfigRequestSchema,
   listProvidersResponseSchema,
   modelCatalogItemSchema,
   providerCatalogItemSchema,
@@ -20,6 +22,7 @@ describe('model catalog schemas', () => {
     display_name: 'Kimi K2',
     max_context_size: 131072,
     capabilities: ['thinking'],
+    request_identity: { overrides: { client: { user_agent: 'host' } } },
   };
 
   const provider: ProviderCatalogItem = {
@@ -68,9 +71,39 @@ describe('model catalog schemas', () => {
     ).toBe(false);
   });
 
+  it('rejects recursively empty layers and accepts one override leaf', () => {
+    expect(requestIdentityPolicySchema.safeParse({}).success).toBe(false);
+    expect(requestIdentityPolicySchema.safeParse({ overrides: {} }).success).toBe(false);
+    expect(
+      requestIdentityPolicySchema.safeParse({ overrides: { lineage: {}, client: {} } }).success,
+    ).toBe(false);
+    expect(
+      requestIdentityPolicySchema.safeParse({
+        overrides: { client: { user_agent: 'host' } },
+      }).success,
+    ).toBe(true);
+  });
+
   it('accepts kimi_code and rejects the removed kiki preset name', () => {
     expect(requestIdentityPolicySchema.safeParse({ preset: 'kimi_code' }).success).toBe(true);
     expect(requestIdentityPolicySchema.safeParse({ preset: 'kiki' }).success).toBe(false);
+  });
+
+  it('accepts an object to replace global request identity', () => {
+    const request_identity = { overrides: { client: { user_agent: 'host' as const } } };
+    expect(configResponseSchema.parse({ request_identity })).toMatchObject({ request_identity });
+    expect(patchConfigRequestSchema.parse({ request_identity })).toEqual({ request_identity });
+  });
+
+  it('accepts omission to keep global request identity', () => {
+    expect(patchConfigRequestSchema.parse({})).not.toHaveProperty('request_identity');
+  });
+
+  it('accepts null to clear global request identity', () => {
+    expect(patchConfigRequestSchema.parse({ request_identity: null })).toEqual({
+      request_identity: null,
+    });
+    expect(configResponseSchema.safeParse({ request_identity: null }).success).toBe(false);
   });
 
   it('round-trips list responses and set-default response', () => {

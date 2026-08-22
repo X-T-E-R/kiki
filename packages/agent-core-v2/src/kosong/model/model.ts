@@ -1,6 +1,7 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { Event, IWaitUntil } from '#/_base/event';
 import type { Protocol } from '#/kosong/protocol/protocol';
+import type { RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIdentityPolicy';
 
 import type { OAuthRef } from '../provider/provider';
 
@@ -56,6 +57,7 @@ export interface ModelRecord {
 
   overrides?: ModelOverride;
   cognition?: CognitionConfig;
+  requestIdentity?: RequestIdentityPolicy;
 
   [key: string]: unknown;
 }

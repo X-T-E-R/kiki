@@ -68,6 +68,8 @@ import {
   parseAdvancedServerConfig,
   readDesktopPrefs,
   readSettings,
+  requestIdentityLayerDraftFromPolicy,
+  requestIdentityPolicyFromDraft,
   searchSettings,
   serverFileSettingsFromConfig,
   serverFileSettingsPatch,
@@ -80,6 +82,7 @@ import {
   type SendShortcut,
   type SettingsSearchEntry,
   type CompatibilitySettings,
+  type RequestIdentityLayerDraft,
 } from '../lib/settings';
 import { formatTokens } from '../lib/time';
 import { filterWorkspaces, sortWorkspacesByRecency } from '../lib/sorting';
@@ -87,9 +90,10 @@ import { useConnection } from '../state/connection';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Dialog } from './Dialog';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from './controls';
-import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
+import { useDirtyGuard, useDirtyReporter, useGuardedNavigate } from './dirtyGuard';
 import { OAuthDeviceCard } from './OAuthDeviceCard';
 import { MsUnitInput, NewProviderWizard, ProviderEditor } from './ProviderFields';
+import { RequestIdentityLayerEditor } from './RequestIdentityLayerEditor';
 import { useRestartRequirement } from './RestartBanner';
 import { RuntimeConfigEditor } from './RuntimeConfigEditor';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
@@ -760,6 +764,74 @@ function GeneralSection() {
   );
 }
 
+function requestIdentityDraftsEqual(
+  a: RequestIdentityLayerDraft,
+  b: RequestIdentityLayerDraft,
+): boolean {
+  return a.requestIdentityChoice === b.requestIdentityChoice
+    && a.requestIdentityOverridesJson === b.requestIdentityOverridesJson;
+}
+
+function GlobalRequestIdentityCard() {
+  const { client } = useConnection();
+  const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState<RequestIdentityLayerDraft>(() =>
+    requestIdentityLayerDraftFromPolicy(undefined));
+  const [baseline, setBaseline] = useState<RequestIdentityLayerDraft>(() =>
+    requestIdentityLayerDraftFromPolicy(undefined));
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
+  const dirty = !requestIdentityDraftsEqual(draft, baseline);
+
+  useEffect(() => {
+    if (configQuery.data === undefined || dirty) return;
+    const next = requestIdentityLayerDraftFromPolicy(configQuery.data.request_identity);
+    setDraft(next);
+    setBaseline(next);
+  }, [configQuery.data, dirty]);
+
+  useDirtyReporter('global-request-identity', dirty);
+
+  const save = async () => {
+    setSaving(true);
+    setFeedback(null);
+    try {
+      const requestIdentity = requestIdentityPolicyFromDraft(draft);
+      const echoed = await client.patchConfig({ request_identity: requestIdentity ?? null });
+      queryClient.setQueryData(['config'], echoed);
+      const next = requestIdentityLayerDraftFromPolicy(echoed.request_identity);
+      setDraft(next);
+      setBaseline(next);
+      setFeedback({ tone: 'success', text: t('st.requestIdentity.saved') });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <SectionCard id="st-card-request-identity" title={t('st.requestIdentity.defaultTitle')}>
+      <div className="space-y-3">
+        <RequestIdentityLayerEditor
+          value={draft}
+          onChange={setDraft}
+          label={t('st.requestIdentity.defaultLabel')}
+          inheritLabel={t('st.requestIdentity.inheritBuiltin')}
+          hint={t('st.requestIdentity.defaultHint')}
+        />
+        <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
+          {saving ? t('common.saving') : t('common.save')}
+        </button>
+        {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
+        <FeedbackLine feedback={feedback} />
+      </div>
+    </SectionCard>
+  );
+}
+
 function ModelsSection() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
@@ -938,6 +1010,8 @@ function ModelsSection() {
           <FeedbackLine feedback={feedback} />
         </div>
       </SectionCard>
+
+      <GlobalRequestIdentityCard />
 
       <SectionCard id="st-card-thinking" title={t('st.thinking.title')}>
         <div className="space-y-3">

@@ -14,6 +14,7 @@ import {
   ExtraAgentDirsConfigSchema,
 } from '@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/configSection';
 import { WorkspaceInstanceConfigSchema } from '@moonshot-ai/agent-core-v2/workspace/workspaceInstance/configSection';
+import { RequestIdentityPolicyWireSchema } from '@moonshot-ai/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 import { z } from 'zod';
 
 const tokenCountingConfigSchema = TokenCountingConfigSchema as z.ZodType<TokenCountingConfig>;
@@ -64,6 +65,7 @@ const replaceableConfigDomainSchema = z.enum([
   'image',
   'task',
   'identity',
+  'request_identity',
   'extra_agent_dirs',
   'disabled_builtin_profiles',
   'disabled_named_profiles',
@@ -145,6 +147,7 @@ export const configResponseSchema = z.object({
   image: ImageConfigSchema.optional(),
   task: AgentTaskConfigSchema.optional(),
   identity: IdentityConfigSchema.optional(),
+  request_identity: RequestIdentityPolicyWireSchema.optional(),
   extra_agent_dirs: ExtraAgentDirsConfigSchema,
   disabled_builtin_profiles: DisabledBuiltinProfilesConfigSchema,
   disabled_named_profiles: DisabledNamedProfilesConfigSchema,
@@ -212,6 +215,7 @@ export const patchConfigRequestSchema = z.object({
   image: imageConfigRequestSchema.optional(),
   task: taskConfigRequestSchema.optional(),
   identity: IdentityConfigSchema.optional(),
+  request_identity: RequestIdentityPolicyWireSchema.nullable().optional(),
   extra_agent_dirs: ExtraAgentDirsConfigSchema,
   disabled_builtin_profiles: DisabledBuiltinProfilesConfigSchema,
   disabled_named_profiles: DisabledNamedProfilesConfigSchema,
