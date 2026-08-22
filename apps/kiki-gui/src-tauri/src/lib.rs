@@ -324,8 +324,7 @@ impl BackendManager {
                         .args(["web", "--no-open", "--port", "0", "--log-level", "warn"])
                         .env("KIMI_CODE_HOME", &runtime.kiki_home)
                         .env("KIKI_DESKTOP_BUNDLED", "1")
-                        .env("KIKI_DESKTOP_OAUTH_HOME", &runtime.oauth_home)
-                        .env("KIKI_DESKTOP_USER_SKILL_DIR", &runtime.user_skill_dir);
+                        .env("KIKI_DESKTOP_OAUTH_HOME", &runtime.oauth_home);
                     let (events, child) = command.spawn().map_err(|error| {
                         DesktopStartupFailure::plain(format!(
                             "Cannot start the packaged Kiki backend: {error}"
@@ -512,7 +511,6 @@ struct RuntimePaths {
     kiki_home: PathBuf,
     config_path: PathBuf,
     oauth_home: PathBuf,
-    user_skill_dir: PathBuf,
 }
 
 #[derive(Debug, Serialize)]
@@ -574,7 +572,6 @@ fn resolve_runtime_paths_with_homes(
         kiki_home: kiki_home.to_path_buf(),
         config_path: kiki_home.join("config.toml"),
         oauth_home,
-        user_skill_dir: kiki_home.join("skills"),
     })
 }
 
@@ -2172,7 +2169,6 @@ mod tests {
         assert_eq!(paths.kiki_home, kiki);
         assert_eq!(paths.config_path, kiki.join("config.toml"));
         assert_eq!(paths.oauth_home, kimi);
-        assert_eq!(paths.user_skill_dir, kiki.join("skills"));
 
         let mut custom = defaults;
         custom.compatibility.home_kind = CompatibilityHomeKind::Custom;
@@ -2181,7 +2177,6 @@ mod tests {
         let custom_paths = resolve_runtime_paths_with_homes(&custom, &kimi, &kiki).unwrap();
         assert_eq!(custom_paths.config_path, kiki.join("config.toml"));
         assert_eq!(custom_paths.oauth_home, custom_home);
-        assert_eq!(custom_paths.user_skill_dir, kiki.join("skills"));
 
         custom.compatibility.home_kind = CompatibilityHomeKind::Kiki;
         custom.compatibility.custom_home = None;
