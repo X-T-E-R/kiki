@@ -17,7 +17,7 @@ function Get-DefaultRuntimeRoot {
     if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
         throw 'LOCALAPPDATA is not set. Pass -RuntimeRoot with a writable Kiki runtime directory.'
     }
-    return [IO.Path]::Combine($env:LOCALAPPDATA, 'EasyAgent', 'Kiki')
+    return [IO.Path]::Combine($env:LOCALAPPDATA, 'EasyAgent', 'Kiki-Dev')
 }
 
 function Get-FullPath([string]$Path) {
@@ -233,9 +233,9 @@ function Install-KikiShortcuts([string]$Root, [string]$Candidate, [string]$Deskt
     $common = '-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $installedController
     $launchArguments = '-WindowStyle Hidden {0} -Action Launch -RuntimeRoot "{1}"' -f $common, $rootPath
     $promoteArguments = '{0} -Action Promote -RuntimeRoot "{1}" -WaitForUser' -f $common, $rootPath
-    New-KikiShortcut $shell (Join-Path $desktopFullPath 'Kiki GUI.lnk') $powerShellPath $launchArguments $controllerDirectory 'Launch the current promoted Kiki release'
-    New-KikiShortcut $shell (Join-Path $desktopFullPath 'Promote Kiki GUI.lnk') $powerShellPath $promoteArguments $controllerDirectory 'Promote the last successful Kiki desktop build'
-    Write-Output "Installed Kiki desktop shortcuts in: $desktopFullPath"
+    New-KikiShortcut $shell (Join-Path $desktopFullPath 'Kiki GUI (Dev).lnk') $powerShellPath $launchArguments $controllerDirectory 'Launch the current promoted Kiki development build'
+    New-KikiShortcut $shell (Join-Path $desktopFullPath 'Promote Kiki GUI (Dev).lnk') $powerShellPath $promoteArguments $controllerDirectory 'Promote the last successful Kiki development build'
+    Write-Output "Installed Kiki development shortcuts in: $desktopFullPath"
 }
 
 function Resolve-CandidateRoot {

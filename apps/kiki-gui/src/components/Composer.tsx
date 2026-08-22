@@ -95,16 +95,18 @@ export function resolveSelectedEffort(
 export const DEFAULT_AGENT_PROFILE = 'agent';
 
 /**
- * Profile picker options: disabled rows drop out (mirroring Settings), a
- * curated main profile gets the ` · main` suffix (same idiom as the model
- * select's session-default suffix), and the description rides the hint line.
+ * Profile picker options: disabled subagent profiles drop out (mirroring
+ * Settings), but a disabled main profile stays selectable — turning a main
+ * agent off only stops subagent calls; main sessions still run it. A main
+ * profile gets the ` · main` suffix (same idiom as the model select's
+ * session-default suffix), and the description rides the hint line.
  */
 export function buildAgentProfileOptions(
   items: readonly NamedAgentProfile[],
   mainSuffix: string,
 ): SearchableSelectOption[] {
   return items
-    .filter((item) => !item.disabled)
+    .filter((item) => !item.disabled || item.main === true)
     .map((item) => ({
       value: item.name,
       label: `${item.name}${item.main ? mainSuffix : ''}`,
@@ -120,6 +122,8 @@ type ComposerMenu =
 export function Composer({
   busy,
   disabled,
+  sendDisabled = false,
+  sendDisabledTitle,
   value,
   onChange,
   model,
@@ -164,7 +168,19 @@ export function Composer({
   autoFocus,
 }: {
   busy: boolean;
+  /**
+   * Locks the textarea — busy/loading phases only (turn in flight, session
+   * still loading, /new creation). Send-only gating belongs to sendDisabled.
+   */
   disabled: boolean;
+  /**
+   * Blocks sending without locking the textarea (default false): the /new
+   * page uses it while no workspace or absolute path is chosen yet, so the
+   * draft and the workspace pickers stay editable.
+   */
+  sendDisabled?: boolean;
+  /** Tooltip explaining why sending is blocked while `sendDisabled`. */
+  sendDisabledTitle?: string;
   /** Controlled text (App owns per-session drafts). */
   value: string;
   onChange: (text: string) => void;
@@ -424,7 +440,7 @@ export function Composer({
   );
 
   const canSend =
-    (text.trim() !== '' || attachments.length > 0) && !disabled && !pendingAttachments;
+    (text.trim() !== '' || attachments.length > 0) && !disabled && !sendDisabled && !pendingAttachments;
 
   const runAction = (action: SlashActionId) => {
     switch (action) {
@@ -1211,9 +1227,13 @@ export function Composer({
               type="button"
               onClick={send}
               disabled={!canSend}
-              title={busy
-                ? t(sendShortcut === 'cmd-enter' ? 'composer.queueTitleCmdEnter' : 'composer.queueTitle')
-                : t(sendShortcut === 'cmd-enter' ? 'composer.sendTitleCmdEnter' : 'composer.sendTitle')}
+              title={
+                sendDisabled && !disabled && sendDisabledTitle !== undefined
+                  ? sendDisabledTitle
+                  : busy
+                    ? t(sendShortcut === 'cmd-enter' ? 'composer.queueTitleCmdEnter' : 'composer.queueTitle')
+                    : t(sendShortcut === 'cmd-enter' ? 'composer.sendTitleCmdEnter' : 'composer.sendTitle')
+              }
               aria-label={busy ? t('composer.queueAria') : t('composer.sendAria')}
               className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-accent text-white transition-colors hover:bg-accent-deep disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
             >

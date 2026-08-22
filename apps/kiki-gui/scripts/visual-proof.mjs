@@ -65,6 +65,8 @@ const LOCALE = process.env.KIKI_PROOF_LOCALE === 'zh' ? 'zh' : 'en';
 const STRINGS = {
   en: {
     newSession: 'New session',
+    noTargetHint: 'to enable sending',
+    sendAria: 'Send message',
     working: 'working',
     approvalNeeded: 'Approval needed',
     approve: 'Approve',
@@ -82,6 +84,15 @@ const STRINGS = {
     planModeToggle: 'Start new sessions in plan mode',
     permissionModeAuto: 'auto',
     fetchModelsButton: 'Test connection & pull models',
+    providerBadgeKimiCode: 'Kimi',
+    providerBadgeNone: 'None',
+    providerBadgeNoneTitle: 'Request identity: None (no request identity)',
+    requestIdentityLabel: 'Request identity',
+    providerIdLabel: 'Provider ID',
+    providerProtocolLabel: 'Protocol',
+    saveProvider: 'Save provider',
+    dangerTitle: 'Danger zone',
+    disabledMainHint: 'Still available for main sessions',
     dirtyDiscard: 'Discard and leave',
     subagentGovernanceTitle: 'Subagent model governance',
     modelProfileLabel: 'model profile',
@@ -186,6 +197,8 @@ const STRINGS = {
   },
   zh: {
     newSession: '新会话',
+    noTargetHint: '才能发送',
+    sendAria: '发送消息',
     working: '工作中',
     approvalNeeded: '需要批准',
     approve: '批准',
@@ -203,6 +216,15 @@ const STRINGS = {
     planModeToggle: '新会话默认开启计划模式',
     permissionModeAuto: '自动',
     fetchModelsButton: '测试连接并拉取模型',
+    providerBadgeKimiCode: 'Kimi',
+    providerBadgeNone: '无',
+    providerBadgeNoneTitle: '请求身份: 无（不发送请求身份）',
+    requestIdentityLabel: '请求身份',
+    providerIdLabel: '提供商 ID',
+    providerProtocolLabel: '协议',
+    saveProvider: '保存提供商',
+    dangerTitle: '危险操作',
+    disabledMainHint: '仍可用于主会话',
     dirtyDiscard: '丢弃并离开',
     subagentGovernanceTitle: '子代理模型治理',
     modelProfileLabel: '模型档',
@@ -790,6 +812,31 @@ async function scenarioEmptyStates() {
   await shot('empty-states-created');
 }
 
+async function scenarioNewNoWorkspace() {
+  // Zero registered workspaces: the /new composer keeps the textarea
+  // editable but blocks sending, and the hero names the next step instead of
+  // showing a bare disabled button.
+  await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'domcontentloaded',
+  });
+  await page.waitForSelector('[data-phase="hero"]', { timeout: 15_000 });
+  await page.waitForSelector(`text=${S.noTargetHint}`, { timeout: 15_000 });
+  await page.fill('textarea', 'Still editable while no workspace is chosen.');
+  const textarea = page.locator('textarea[data-composer]');
+  if (await textarea.isDisabled()) {
+    throw new Error('textarea must stay editable when no workspace exists');
+  }
+  const sendButton = page.locator(`button[aria-label="${S.sendAria}"]`);
+  if (!(await sendButton.isDisabled())) {
+    throw new Error('send must stay blocked until a workspace or absolute path is chosen');
+  }
+  if ((await sendButton.getAttribute('title')) === null) {
+    throw new Error('the blocked send button must carry an explanatory tooltip');
+  }
+  await page.waitForTimeout(400);
+  await shot('new-no-workspace');
+}
+
 async function scenarioDraftFlow() {
   await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
@@ -939,6 +986,58 @@ async function scenarioSettings() {
   await page.waitForSelector('text=ABCD-EFGH', { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('settings-providers');
+
+  // Reload-proof: land on the providers route directly so a dev-server page
+  // reload during the walk cannot strand the assertions on the wrong tab.
+  await page.goto(`${WEB_URL}/settings/providers?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'domcontentloaded',
+  });
+  await page.waitForSelector('#st-card-providers', { timeout: 10_000 });
+
+  // Collapsed provider summaries always carry the request-identity badge:
+  // the configured preset on `fixture`, the explicit none on managed `alt`.
+  const providerSummary = (id) => page.locator('#st-card-providers details summary', { hasText: id });
+  await providerSummary('fixture').getByText(S.providerBadgeKimiCode, { exact: false }).waitFor({ timeout: 5000 });
+  await providerSummary('alt').getByText(S.providerBadgeNone, { exact: false }).waitFor({ timeout: 5000 });
+  // The short badge keeps the full label on its tooltip for clarity.
+  await providerSummary('alt').locator(`[title="${S.providerBadgeNoneTitle}"]`).waitFor({ timeout: 5000 });
+
+  // Expand the OAuth-managed provider: id/protocol stay locked, the request
+  // identity dropdown stays editable, the Save surface renders, and the
+  // credential field + danger zone stay hidden.
+  const managedEditor = page.locator('#st-card-providers details', { hasText: 'alt' });
+  await managedEditor.locator('summary').click();
+  const managedIdInput = managedEditor.getByLabel(S.providerIdLabel);
+  const managedProtocol = managedEditor.getByLabel(S.providerProtocolLabel);
+  if (!(await managedIdInput.isDisabled()) || !(await managedProtocol.isDisabled())) {
+    throw new Error('managed provider id/protocol inputs must be disabled');
+  }
+  // The identity select is the one carrying the kimi_code preset option; a
+  // label lookup cannot work here (the wrapping label's text includes every
+  // option, and the summary badge's aria-label shares the label prefix).
+  const managedIdentity = managedEditor.locator('select', {
+    has: page.locator('option[value="kimi_code"]'),
+  });
+  if (await managedIdentity.isDisabled()) {
+    throw new Error('managed provider request identity dropdown must stay editable');
+  }
+  if ((await managedIdentity.inputValue()) !== 'none') {
+    throw new Error(`managed provider request identity should echo the none preset, got ${await managedIdentity.inputValue()}`);
+  }
+  await managedEditor.getByRole('button', { name: S.saveProvider }).waitFor({ timeout: 5000 });
+  if ((await managedEditor.locator('input[type="password"]').count()) !== 0) {
+    throw new Error('managed provider must not render the API-key field');
+  }
+  if ((await managedEditor.getByText(S.dangerTitle, { exact: true }).count()) !== 0) {
+    throw new Error('managed provider must not render the danger zone');
+  }
+  // Frame the shot from the editor's top so the summary badge, the locked
+  // id/protocol fields, the identity dropdown, and the Save button all fit.
+  await managedEditor.evaluate((element) => { element.scrollIntoView({ block: 'start' }); });
+  await page.waitForTimeout(200);
+  await shot('settings-providers-managed');
+  // Fold it back so the wizard flow below sees the original layout.
+  await managedEditor.locator('summary').click();
 
   // New-provider wizard: pick the Anthropic template, point it at the fixture
   // server's mock upstream, and pull its model list through the browser fetch.
@@ -1126,7 +1225,32 @@ async function scenarioSettingsAgents() {
   await page.waitForSelector('[data-agent-profile="reviewer"] [role="switch"][aria-checked="false"]', { timeout: 5000 });
   await exploreSwitch().click();
   await page.waitForSelector('[data-agent-profile="explore"] [role="switch"][aria-checked="false"]', { timeout: 5000 });
+  // Let the switch's color transition settle before the shot.
+  await page.waitForTimeout(300);
   await shot('settings-agents-disabled');
+
+  // Disabled split semantics: a disabled SUBAGENT profile loses its
+  // new-session button, while a disabled MAIN profile keeps it — turning a
+  // main agent off only stops subagent calls; main sessions still run it.
+  const reviewerNewSession = page.locator('[data-agent-profile="reviewer"] [data-new-session-href]');
+  if (!(await reviewerNewSession.isDisabled())) {
+    throw new Error('disabled subagent profile must lose its new-session button');
+  }
+  const mainRow = page.locator('[data-agent-profile="agent"]');
+  await mainRow.locator('[role="switch"]').click();
+  await page.waitForSelector('[data-agent-profile="agent"] [role="switch"][aria-checked="false"]', { timeout: 5000 });
+  const mainNewSession = mainRow.locator('[data-new-session-href]');
+  if (await mainNewSession.isDisabled()) {
+    throw new Error('disabled main profile must keep its new-session button');
+  }
+  // …and the row explains why it is still usable.
+  await mainRow.getByText(S.disabledMainHint, { exact: false }).waitFor({ timeout: 5000 });
+  await mainRow.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(200);
+  await shot('settings-agents-main-disabled');
+  // Re-enable the main profile so the reload assertions below stay canonical.
+  await mainRow.locator('[role="switch"]').click();
+  await page.waitForSelector('[data-agent-profile="agent"] [role="switch"][aria-checked="true"]', { timeout: 5000 });
 
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-agent-profile="reviewer"] [role="switch"][aria-checked="false"]', { timeout: 10_000 });
@@ -2546,6 +2670,7 @@ const SCENARIOS = [
   ['session-pages', scenarioSessionPages],
   ['sidebar-organize', scenarioSidebarOrganize],
   ['empty-states', scenarioEmptyStates],
+  ['new-no-workspace', scenarioNewNoWorkspace],
   ['draft-flow', scenarioDraftFlow],
   ['hero-shell', scenarioHeroShell],
   ['settings', scenarioSettings],
@@ -2678,15 +2803,17 @@ async function main() {
     // The FIRST navigation right after a previous run's teardown can wedge
     // entirely (a half-recycled port answers waitForServer's plain fetch but
     // never serves the document): retry once with a fresh page before failing.
+    // Budgets are generous because a heavily loaded shared machine stretches
+    // vite's cold transform of the entry graph far past a minute.
     try {
-      await page.goto(deepLink, { waitUntil: 'domcontentloaded', timeout: 120_000 });
+      await page.goto(deepLink, { waitUntil: 'domcontentloaded', timeout: 240_000 });
     } catch (error) {
       console.log(`[proof] first navigation failed (${error.message}) — retrying on a fresh page`);
       await page.close().catch(() => undefined);
       page = await bootPage();
-      await page.goto(deepLink, { waitUntil: 'domcontentloaded', timeout: 150_000 });
+      await page.goto(deepLink, { waitUntil: 'domcontentloaded', timeout: 300_000 });
     }
-    await page.waitForSelector(`text=${S.newSession}`, { timeout: 60_000 });
+    await page.waitForSelector(`text=${S.newSession}`, { timeout: 120_000 });
     console.log('[proof] connected to fixture');
 
     for (const [name, run] of SCENARIOS) {

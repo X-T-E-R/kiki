@@ -33,6 +33,7 @@ import {
   type ProviderDraft,
   type ProviderModelDraft,
   type ProviderTemplate,
+  type RequestIdentityChoice,
   type ServerConnection,
 } from '../lib/settings';
 import { formatTokens } from '../lib/time';
@@ -407,10 +408,20 @@ export function ProviderFields({
     <div className="space-y-4">
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="text-[11px] font-medium text-ink-soft">{t('st.providers.idLabel')}
-          <input className={`${INPUT} mt-1`} value={draft.id} onChange={(event) => { onChange({ ...draft, id: event.target.value }); }} />
+          <input
+            className={`${INPUT} mt-1 disabled:cursor-not-allowed disabled:opacity-60`}
+            value={draft.id}
+            disabled={managed}
+            onChange={(event) => { onChange({ ...draft, id: event.target.value }); }}
+          />
         </label>
         <label className="text-[11px] font-medium text-ink-soft">{t('st.providers.protocol')}
-          <select className={`${INPUT} mt-1`} value={draft.type} onChange={(event) => { onChange({ ...draft, type: event.target.value as ProviderDraft['type'] }); }}>
+          <select
+            className={`${INPUT} mt-1 disabled:cursor-not-allowed disabled:opacity-60`}
+            value={draft.type}
+            disabled={managed}
+            onChange={(event) => { onChange({ ...draft, type: event.target.value as ProviderDraft['type'] }); }}
+          >
             {PROVIDER_WIRE_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
           </select>
         </label>
@@ -570,12 +581,24 @@ export function ProviderEditor({
       : provider.status === 'error' ? 'bg-danger'
         : 'bg-amber-rule';
 
+  // The collapsed summary always shows the effective request identity as a
+  // short badge — the preset when one is configured, the auto default
+  // otherwise; the full label rides the tooltip for clarity.
+  const requestIdentityChoice: RequestIdentityChoice = provider.request_identity?.preset ?? 'auto';
+  const requestIdentityFull = t(`st.providers.requestIdentity.${requestIdentityChoice}`);
+
   return (
     <details className="rounded-xl border border-hairline bg-paper p-3">
       <summary className="flex cursor-pointer flex-wrap items-center gap-2 text-[13px] font-semibold text-ink">
         <span aria-hidden className={`h-2 w-2 shrink-0 rounded-full ${statusDot}`} />
         {provider.id}
         <span className="rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[9.5px] font-normal text-ink-faint">{provider.type}</span>
+        <span
+          title={`${t('st.providers.requestIdentity')}: ${requestIdentityFull}`}
+          className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[9.5px] font-normal text-ink-faint"
+        >
+          {t(`st.providers.requestIdentityBadge.${requestIdentityChoice}`)}
+        </span>
         {provider.default_model !== undefined ? (
           <span className="truncate font-mono text-[10px] font-normal text-ink-faint">{provider.default_model}</span>
         ) : null}
@@ -595,36 +618,36 @@ export function ProviderEditor({
           refreshProviderId={provider.id}
           onRefreshed={onSaved}
         />
+        {/* OAuth-managed providers keep the save button for the editable
+            fields; the credential clear/delete danger zone stays hidden. */}
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
+            {saving ? t('common.saving') : t('st.providers.save')}
+          </button>
+          {dirty ? <span className="text-[10.5px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
+        </div>
         {managed ? null : (
-          <>
-            <div className="flex flex-wrap items-center gap-2">
-              <button type="button" className={PRIMARY_BUTTON} disabled={saving || !dirty} onClick={() => void save()}>
-                {saving ? t('common.saving') : t('st.providers.save')}
+          <div className="rounded-lg border border-danger/25 bg-danger/[0.03] p-3">
+            <p className="mb-2 text-[10.5px] font-semibold uppercase tracking-wide text-danger">{t('st.danger.title')}</p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className={DANGER_GHOST_BUTTON}
+                disabled={saving || !provider.has_api_key}
+                onClick={() => { setConfirming('clearKey'); }}
+              >
+                {t('st.danger.clearKey')}
               </button>
-              {dirty ? <span className="text-[10.5px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
+              <button
+                type="button"
+                className={DANGER_GHOST_BUTTON}
+                disabled={saving}
+                onClick={() => { setConfirming('remove'); }}
+              >
+                {t('st.danger.removeProvider')}
+              </button>
             </div>
-            <div className="rounded-lg border border-danger/25 bg-danger/[0.03] p-3">
-              <p className="mb-2 text-[10.5px] font-semibold uppercase tracking-wide text-danger">{t('st.danger.title')}</p>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  className={DANGER_GHOST_BUTTON}
-                  disabled={saving || !provider.has_api_key}
-                  onClick={() => { setConfirming('clearKey'); }}
-                >
-                  {t('st.danger.clearKey')}
-                </button>
-                <button
-                  type="button"
-                  className={DANGER_GHOST_BUTTON}
-                  disabled={saving}
-                  onClick={() => { setConfirming('remove'); }}
-                >
-                  {t('st.danger.removeProvider')}
-                </button>
-              </div>
-            </div>
-          </>
+          </div>
         )}
         <FeedbackLine feedback={feedback} />
       </div>

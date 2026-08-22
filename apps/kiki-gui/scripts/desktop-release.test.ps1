@@ -108,18 +108,18 @@ try {
     Assert-Equal ([IO.Path]::GetFullPath($candidateRoot)) ([string]$settings.candidateRoot) 'Installed controller did not retain the injected candidate path.'
 
     $shell = New-Object -ComObject WScript.Shell
-    $launchShortcut = $shell.CreateShortcut((Join-Path $desktopRoot 'Kiki GUI.lnk'))
-    $promoteShortcut = $shell.CreateShortcut((Join-Path $desktopRoot 'Promote Kiki GUI.lnk'))
+    $launchShortcut = $shell.CreateShortcut((Join-Path $desktopRoot 'Kiki GUI (Dev).lnk'))
+    $promoteShortcut = $shell.CreateShortcut((Join-Path $desktopRoot 'Promote Kiki GUI (Dev).lnk'))
     foreach ($shortcut in @($launchShortcut, $promoteShortcut)) {
         Assert-True ($shortcut.TargetPath.EndsWith('powershell.exe', [StringComparison]::OrdinalIgnoreCase)) 'A shortcut does not target Windows PowerShell.'
         Assert-True ($shortcut.Arguments.Contains($installedController)) 'A shortcut does not invoke the installed release controller.'
         Assert-True (-not ($shortcut.TargetPath -match 'target[\\/]debug')) 'A shortcut target points into target/debug.'
         Assert-True (-not ($shortcut.Arguments -match 'target[\\/]debug')) 'Shortcut arguments point into target/debug.'
     }
-    Assert-True ($launchShortcut.Arguments -match '-Action Launch') 'Kiki GUI.lnk does not select the Launch action.'
-    Assert-True ($launchShortcut.Arguments -match '-WindowStyle Hidden') 'Kiki GUI.lnk does not hide the controller window.'
-    Assert-True ($promoteShortcut.Arguments -match '-Action Promote') 'Promote Kiki GUI.lnk does not select the Promote action.'
-    Assert-True ($promoteShortcut.Arguments -match '-WaitForUser') 'Promote Kiki GUI.lnk does not keep its success or failure visible.'
+    Assert-True ($launchShortcut.Arguments -match '-Action Launch') 'Kiki GUI (Dev).lnk does not select the Launch action.'
+    Assert-True ($launchShortcut.Arguments -match '-WindowStyle Hidden') 'Kiki GUI (Dev).lnk does not hide the controller window.'
+    Assert-True ($promoteShortcut.Arguments -match '-Action Promote') 'Promote Kiki GUI (Dev).lnk does not select the Promote action.'
+    Assert-True ($promoteShortcut.Arguments -match '-WaitForUser') 'Promote Kiki GUI (Dev).lnk does not keep its success or failure visible.'
 
     $defaultRuntime = Join-Path $testRoot 'default-candidate-runtime'
     Invoke-Controller @(

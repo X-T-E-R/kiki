@@ -78,14 +78,18 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function fixtureProviderFromBody(id, body, previousHasKey = false) {
+function fixtureProviderFromBody(id, body, previousHasKey = false, previousRequestIdentity) {
   const hasApiKey = body.api_key === undefined ? previousHasKey : body.api_key !== '';
   const aliases = (body.models ?? []).map((model) => `${id}/${model.model}`);
+  const requestIdentity = body.request_identity === null
+    ? undefined
+    : (body.request_identity ?? previousRequestIdentity);
   return {
     id,
     type: body.type,
     base_url: body.base_url,
     default_model: body.default_model === undefined ? aliases[0] : `${id}/${body.default_model}`,
+    request_identity: requestIdentity,
     has_api_key: hasApiKey,
     status: hasApiKey || body.type === 'kimi' ? 'connected' : 'unconfigured',
     models: aliases,
@@ -865,7 +869,7 @@ class FixtureServer {
       const nextId = body.new_id ?? currentId;
       const current = this.providers.find((provider) => provider.id === currentId);
       if (current === undefined) return this.envelope(res, null, 40413, 'provider.not_found');
-      const provider = fixtureProviderFromBody(nextId, body, current.has_api_key);
+      const provider = fixtureProviderFromBody(nextId, body, current.has_api_key, current.request_identity);
       this.providers = this.providers.map((entry) => entry.id === currentId ? provider : entry);
       this.models = [
         ...this.models.filter((model) => model.provider !== currentId),

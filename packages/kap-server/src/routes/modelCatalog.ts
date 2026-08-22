@@ -43,6 +43,7 @@ import {
   listModelsResponseSchema,
   listProvidersResponseSchema,
   providerCollectionActionBodySchema,
+  providerIdSchema,
   replaceProviderRequestSchema,
   replaceProviderResponseSchema,
   type ProviderCollectionActionBody,
@@ -322,7 +323,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         [ErrorCode.PROVIDER_ALREADY_EXISTS]: {},
       },
       description:
-        'Replace a provider in one save (type + base_url + model list), optionally renaming it via `new_id` (the providers key, model aliases, default_provider and a default_model pointing at an old alias all migrate). `api_key` is tri-state: omitted keeps the stored key, "" clears it, any other value replaces it. The provider\'s model aliases are rebuilt from `models` — aliases no longer listed disappear from config.toml, other providers\' aliases are untouched. Beyond the rename migration, the global default pointers are never modified. Answers 200 with `{provider}`. OAuth-managed providers are rejected: log out via /oauth/logout instead.',
+        'Replace a provider in one save (type + base_url + model list), optionally renaming it via `new_id` (the providers key, model aliases, default_provider and a default_model pointing at an old alias all migrate). `api_key` is tri-state: omitted keeps the stored key, "" clears it, any other value replaces it. The provider\'s model aliases are rebuilt from `models` — aliases no longer listed disappear from config.toml, other providers\' aliases are untouched. Beyond the rename migration, the global default pointers are never modified. Answers 200 with `{provider}`. OAuth-managed providers may update base_url, default_model, models and request_identity only when the id and type stay unchanged and `api_key` is omitted; their OAuth and stored credential fields are preserved. Rename, type and api_key changes are rejected: log out via /oauth/logout instead.',
       tags: ['providers'],
       operationId: 'replaceProvider',
     },
@@ -342,7 +343,13 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
           );
           return;
         }
-        if (target.oauth !== undefined) {
+        const newId = req.body.new_id ?? provider_id;
+        if (
+          target.oauth !== undefined &&
+          (newId !== provider_id ||
+            req.body.type !== target.type ||
+            req.body.api_key !== undefined)
+        ) {
           reply.send(
             errEnvelope(
               ErrorCode.PROVIDER_OAUTH_MANAGED,
@@ -352,8 +359,20 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
           );
           return;
         }
+        if (newId !== provider_id) {
+          const parsedNewId = providerIdSchema.safeParse(newId);
+          if (!parsedNewId.success) {
+            reply.send(
+              errEnvelope(
+                ErrorCode.VALIDATION_FAILED,
+                `new_id: ${parsedNewId.error.issues[0]?.message ?? 'invalid provider id'}`,
+                req.id,
+              ),
+            );
+            return;
+          }
+        }
 
-        const newId = req.body.new_id ?? provider_id;
         if (newId !== provider_id && providers[newId] !== undefined) {
           reply.send(
             errEnvelope(
@@ -366,7 +385,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
         }
 
         const provider: ProviderConfig = { ...target, type: req.body.type };
-        provider.apiKey = req.body.api_key ?? target.apiKey;
+        if (req.body.api_key !== undefined) provider.apiKey = req.body.api_key;
         provider.baseUrl = req.body.base_url;
         if (req.body.request_identity !== undefined) {
           if (req.body.request_identity === null) {

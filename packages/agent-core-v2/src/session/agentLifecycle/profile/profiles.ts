@@ -105,6 +105,7 @@ const DEFAULT_SUMMARY_POLICY = {
 registerAgentProfile({
   name: 'agent',
   description: 'Default agent',
+  main: true,
   tools: AGENT_TOOLS,
   renderSystemPrompt: (context) =>
     renderSystemPromptResult('', context, { skillActive: skillActiveFor(AGENT_TOOLS) }),

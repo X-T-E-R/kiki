@@ -136,13 +136,15 @@ export type CreateProviderResponse = z.infer<typeof createProviderResponseSchema
  * The desktop "edit & save" payload: the whole provider form. `new_id`
  * renames the provider (the id in the path is the current identity) — the
  * providers key, all model aliases, default_provider and a default_model
- * pointing at an old alias are migrated to the new id. `api_key` is
- * tri-state so the edit form can leave the stored key untouched — absent
+ * pointing at an old alias are migrated to the new id. A `new_id` equal to
+ * the path identity is also accepted for existing ids outside the create-time
+ * id pattern; only an actual rename must match `providerIdSchema`. `api_key`
+ * is tri-state so the edit form can leave the stored key untouched — absent
  * keeps it, `""` clears it, anything else replaces it.
  */
 export const replaceProviderRequestSchema = z
   .object({
-    new_id: providerIdSchema.optional(),
+    new_id: z.string().min(1).optional(),
     type: providerWireTypeSchema,
     api_key: z.string().optional(),
     base_url: z.string().trim().optional(),

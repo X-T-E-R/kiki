@@ -112,5 +112,14 @@ fn main() {
         "cargo:rustc-env=KIKI_SIDECAR_SERVER_VERSION={}",
         manifest.server_version
     );
+    println!("cargo:rerun-if-env-changed=KIKI_UPDATER_PUBLIC_KEY");
+    if let Ok(public_key) = env::var("KIKI_UPDATER_PUBLIC_KEY") {
+        println!("cargo:rustc-env=KIKI_UPDATER_PUBLIC_KEY={}", public_key.trim());
+    }
+    println!("cargo:rerun-if-env-changed=KIKI_UPDATE_CHANNEL");
+    println!(
+        "cargo:rustc-env=KIKI_UPDATE_CHANNEL={}",
+        env::var("KIKI_UPDATE_CHANNEL").unwrap_or_else(|_| "stable".to_string())
+    );
     tauri_build::build();
 }

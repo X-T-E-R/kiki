@@ -225,6 +225,7 @@ async function runHandleUpgradeCommand(): Promise<number> {
 describe('main entry command handling', () => {
   afterEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
   });
 
   beforeEach(() => {
@@ -254,6 +255,19 @@ describe('main entry command handling', () => {
     expect(mocks.runUpdatePreflight.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.runShell.mock.invocationCallOrder[0]!,
     );
+    expect(runShell).toHaveBeenCalledWith(opts, '0.0.1-alpha.2');
+  });
+
+  it('skips update preflight for the bundled Kiki desktop sidecar', async () => {
+    vi.stubEnv('KIKI_DESKTOP_BUNDLED', '1');
+    const opts = defaultOpts();
+    mocks.validateOptions.mockReturnValue({ options: opts, uiMode: 'shell' });
+    mocks.runShell.mockResolvedValue(void 0);
+
+    const exitCode = await runHandleMainCommand(opts);
+
+    expect(exitCode).toBeNull();
+    expect(runUpdatePreflight).not.toHaveBeenCalled();
     expect(runShell).toHaveBeenCalledWith(opts, '0.0.1-alpha.2');
   });
 

@@ -46,6 +46,7 @@ import { TasksPage } from './components/TasksPage';
 import { Toasts } from './components/Toasts';
 import { UsagePage } from './components/UsagePage';
 import {
+  checkNativeDesktopUpdate,
   isDesktopRuntime,
   onTrayNewSession,
   readNativeDesktopPrefs,
@@ -63,6 +64,7 @@ import {
 } from './lib/sessionList';
 import { useLayoutPreferences, writeLayoutPreferences } from './lib/layoutPrefs';
 import { readLastSessionId, writeDesktopPrefs } from './lib/settings';
+import { pushToast } from './lib/toasts';
 import { anyOverlayOpen } from './lib/uiBusy';
 import { resolveWindowTitle, type WindowRoute } from './lib/windowTitle';
 import { useI18n } from './i18n';
@@ -140,6 +142,20 @@ export function App() {
     });
     return onTrayNewSession(() => void navigate('/new'));
   }, [navigate]);
+
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    const timer = window.setTimeout(() => {
+      void checkNativeDesktopUpdate()
+        .then((update) => {
+          if (update !== null) {
+            pushToast({ tone: 'info', text: t('st.about.updateAvailable', { version: update.version }) });
+          }
+        })
+        .catch(() => {});
+    }, 1_500);
+    return () => { window.clearTimeout(timer); };
+  }, [t]);
 
   // Keep the native side (tray menu labels) on the active UI locale.
   useEffect(() => {

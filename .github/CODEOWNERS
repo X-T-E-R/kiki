@@ -1,0 +1,7 @@
+# Kiki desktop release boundary
+/.github/CODEOWNERS @X-T-E-R
+/.github/workflows/kiki-desktop-*.yml @X-T-E-R
+/apps/kiki-gui/scripts/desktop-release-*.mjs @X-T-E-R
+/apps/kiki-gui/THIRD_PARTY_NOTICES* @X-T-E-R
+/docs/en/guides/kiki-desktop.md @X-T-E-R
+/docs/zh/guides/kiki-desktop.md @X-T-E-R

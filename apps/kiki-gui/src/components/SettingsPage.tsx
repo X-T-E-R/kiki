@@ -14,6 +14,7 @@ import type {
 } from '@moonshot-ai/protocol';
 
 import {
+  checkNativeDesktopUpdate,
   dryRunNativeSessionsMigration,
   executeNativeSessionsMigration,
   importNativeKimiConfig,
@@ -1810,16 +1811,25 @@ function NamedAgentProfileRow({
     profile.workspace_id !== undefined &&
     profile.source_file !== undefined &&
     (profile.source === 'user' || profile.source === 'workspace' || profile.source === 'extra');
-  // Both disable channels are user-facing now: built-in profiles write
-  // disabled_builtin_profiles, named profiles write disabled_named_profiles.
+  // Built-ins and named profiles toggle through different config lists, but
+  // the switch reads the same either way. For a main profile, "off" only
+  // stops subagent calls — main sessions keep working.
   const toggleTitle = profile.source === 'builtin'
-    ? profile.name === 'agent'
+    ? profile.main === true
       ? t('st.namedAgents.defaultToggleHint')
       : t('st.namedAgents.builtinToggleHint')
     : t('st.namedAgents.namedToggleHint');
   const workspaceIds = profile.workspace_ids ?? (profile.workspace_id === undefined ? [] : [profile.workspace_id]);
   const workspaceChips = workspaceChipDisplay(workspaceIds);
   const sessionHref = namedAgentSessionHref(profile, workspaceFallbackId);
+  // A disabled main profile keeps its new-session button (main sessions
+  // still run it); a disabled subagent profile loses it.
+  const newSessionBlocked = profile.disabled && profile.main !== true;
+  const newSessionTitle = newSessionBlocked
+    ? t('st.namedAgents.newSessionDisabled')
+    : profile.disabled
+      ? t('st.namedAgents.newSessionDisabledMain')
+      : t('st.namedAgents.newSession');
   // Read-only projections the structured editor cannot write (the PATCH
   // schema does not open them): surface them in the summary and point at the
   // raw file instead of silently hiding them.
@@ -1951,6 +1961,9 @@ function NamedAgentProfileRow({
               </span>
             ) : null}
           </p>
+          {profile.disabled && profile.main === true ? (
+            <p className="mt-0.5 text-[10.5px] text-ink-faint">{t('st.namedAgents.disabledMainHint')}</p>
+          ) : null}
           {!editing && profile.description !== undefined ? <p className="text-[11.5px] text-ink-soft">{profile.description}</p> : null}
           {workspaceChips.shown.length > 0 ? (
             <p className="mt-1 flex flex-wrap items-center gap-1">
@@ -1990,8 +2003,8 @@ function NamedAgentProfileRow({
           <button
             type="button"
             className={SECONDARY_BUTTON}
-            disabled={profile.disabled}
-            title={profile.disabled ? t('st.namedAgents.newSessionDisabled') : t('st.namedAgents.newSession')}
+            disabled={newSessionBlocked}
+            title={newSessionTitle}
             data-new-session-href={sessionHref}
             onClick={() => void navigate(sessionHref)}
           >
@@ -2871,14 +2884,83 @@ function AboutSection() {
   const { meta } = useConnection();
   const { t } = useI18n();
   const guiVersion = import.meta.env['VITE_APP_VERSION'] ?? '0.0.0-dev';
+  const buildSha = import.meta.env['VITE_BUILD_SHA'] as string | undefined;
+  const isDesktop = isDesktopRuntime();
+  const [channel, setChannel] = useState<'stable' | 'beta'>(() => readDesktopPrefs().updateChannel);
+  const [update, setUpdate] = useState<Awaited<ReturnType<typeof checkNativeDesktopUpdate>>>(null);
+  const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'installing'>('idle');
+  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+
+  const checkForUpdate = () => {
+    setUpdateStatus('checking');
+    setUpdateMessage(null);
+    void checkNativeDesktopUpdate()
+      .then((next) => {
+        setUpdate(next);
+        setUpdateMessage(next === null ? t('st.about.upToDate') : null);
+      })
+      .catch((error: unknown) => {
+        setUpdate(null);
+        setUpdateMessage(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => { setUpdateStatus('idle'); });
+  };
+
+  const installUpdate = () => {
+    if (update === null || !window.confirm(t('st.about.installConfirm', { version: update.version }))) return;
+    setUpdateStatus('installing');
+    setUpdateMessage(null);
+    void update.install().catch((error: unknown) => {
+      setUpdateStatus('idle');
+      setUpdateMessage(error instanceof Error ? error.message : String(error));
+    });
+  };
+
   return (
     <SectionCard id="st-card-about" title={t('st.about.title')}>
       <div className="space-y-2 text-[12.5px] text-ink-soft">
-        <p>Kiki GUI: <span className="font-mono text-ink">{guiVersion}</span></p>
+        <p>{t('st.about.desktopVersion')}: <span className="font-mono text-ink">{guiVersion}</span></p>
         <p>{t('st.about.serverVersion')}: <span className="font-mono text-ink">{meta.server_version}</span></p>
+        {buildSha !== undefined && buildSha !== '' ? <p>{t('st.about.build')}: <span className="font-mono text-ink">{buildSha.slice(0, 12)}</span></p> : null}
         <p>{t('st.about.serverId')}: <span className="font-mono text-ink">{meta.server_id}</span></p>
         <p>{t('st.about.backend')}: <span className="font-mono text-ink">{meta.backend ?? 'v1'}</span></p>
       </div>
+
+      {isDesktop ? (
+        <div className="mt-4 space-y-3 border-t border-hairline pt-4">
+          <label className="flex items-center justify-between gap-4 text-[12.5px] text-ink-soft">
+            <span>{t('st.about.channel')}</span>
+            <select
+              value={channel}
+              onChange={(event) => {
+                const next = event.target.value === 'beta' ? 'beta' : 'stable';
+                setChannel(next);
+                setUpdate(null);
+                setUpdateMessage(null);
+                writeDesktopPrefs({ updateChannel: next });
+                void writeNativeDesktopPrefs({ updateChannel: next });
+              }}
+              className="rounded-lg border border-hairline bg-paper px-2 py-1.5 text-[12px] text-ink outline-none focus:border-accent"
+            >
+              <option value="stable">{t('st.about.stable')}</option>
+              <option value="beta">{t('st.about.beta')}</option>
+            </select>
+          </label>
+          {channel === 'beta' ? <p className="text-[11.5px] text-amber-ink">{t('st.about.betaHint')}</p> : null}
+          <div className="flex flex-wrap items-center gap-2">
+            <button type="button" onClick={checkForUpdate} disabled={updateStatus !== 'idle'} className={SECONDARY_BUTTON}>
+              {updateStatus === 'checking' ? t('st.about.checking') : t('st.about.checkUpdate')}
+            </button>
+            {update !== null ? (
+              <button type="button" onClick={installUpdate} disabled={updateStatus !== 'idle'} className={PRIMARY_BUTTON}>
+                {updateStatus === 'installing' ? t('st.about.installing') : t('st.about.install', { version: update.version })}
+              </button>
+            ) : null}
+          </div>
+          {update?.notes !== undefined && update.notes !== '' ? <p className="whitespace-pre-wrap text-[11.5px] text-ink-soft">{update.notes}</p> : null}
+          {updateMessage !== null ? <p className="font-mono text-[11px] text-ink-soft">{updateMessage}</p> : null}
+        </div>
+      ) : null}
     </SectionCard>
   );
 }

@@ -175,6 +175,28 @@ describe('Composer agent profile picker', () => {
     expect(second.container.querySelector('#composer-agent-profile-select')).toBeNull();
   });
 
+  it('keeps a disabled main profile selectable while hiding disabled subagent profiles', async () => {
+    listNamedAgentProfiles.mockResolvedValue({
+      items: [
+        { name: 'agent', source: 'builtin', main: true, disabled: true, routes: [] },
+        { name: 'reviewer', source: 'workspace', main: false, disabled: true, routes: [] },
+      ] satisfies NamedAgentProfile[],
+    });
+    const { container } = await renderComposer({
+      agentProfile: 'agent',
+      onChangeAgentProfile: () => {},
+    });
+    const trigger = await waitForTrigger(container);
+    await act(async () => {
+      trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const options = [...container.querySelectorAll('[role="option"]')].map(
+      (row) => row.textContent ?? '',
+    );
+    expect(options.some((text) => text.includes('agent · main'))).toBe(true);
+    expect(options.some((text) => text.includes('reviewer'))).toBe(false);
+  });
+
   it('accents the pill while a switch is pending', async () => {
     const { container } = await renderComposer({
       agentProfile: 'reviewer',
@@ -184,5 +206,46 @@ describe('Composer agent profile picker', () => {
     const trigger = await waitForTrigger(container);
     expect(trigger.textContent).toContain('reviewer');
     expect(trigger.className).toContain('border-accent');
+  });
+});
+
+describe('Composer sendDisabled', () => {
+  it('blocks the send button without locking the textarea', async () => {
+    const { container } = await renderComposer({ value: 'hello', sendDisabled: true });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]');
+    const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]');
+    expect(textarea?.disabled).toBe(false);
+    expect(sendButton?.disabled).toBe(true);
+  });
+
+  it('explains the blocked send through the button tooltip', async () => {
+    const { container } = await renderComposer({
+      value: 'hello',
+      sendDisabled: true,
+      sendDisabledTitle: 'Pick a workspace first',
+    });
+    const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]');
+    expect(sendButton?.disabled).toBe(true);
+    expect(sendButton?.getAttribute('title')).toBe('Pick a workspace first');
+  });
+
+  it('swallows the send shortcut while sendDisabled', async () => {
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ value: 'hello', sendDisabled: true, onSend });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('sends on the send shortcut when sendDisabled stays at its default', async () => {
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ value: 'hello', onSend });
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(onSend).toHaveBeenCalledWith('hello', []);
   });
 });

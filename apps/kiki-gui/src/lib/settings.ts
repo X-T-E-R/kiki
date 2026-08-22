@@ -22,11 +22,14 @@ export interface DesktopSettings {
   closeToTray: boolean;
 }
 
+export type UpdateChannel = 'stable' | 'beta';
+
 export interface DesktopNativePrefs {
   notifications: boolean;
   closeToTray: boolean;
   /** UI locale mirrored to the native side (tray menu labels); frontend-owned. */
   locale?: string;
+  updateChannel: UpdateChannel;
   compatibility: CompatibilitySettings;
 }
 
@@ -215,6 +218,7 @@ const DEFAULTS: DesktopSettings = {
 const DESKTOP_PREFS_DEFAULTS: DesktopNativePrefs = {
   notifications: true,
   closeToTray: true,
+  updateChannel: import.meta.env['VITE_UPDATE_CHANNEL'] === 'beta' ? 'beta' : 'stable',
   compatibility: {
     homeKind: 'kimi',
     customHome: undefined,
@@ -413,6 +417,10 @@ export function readDesktopPrefs(): DesktopNativePrefs {
       typeof stored.closeToTray === 'boolean'
         ? stored.closeToTray
         : DESKTOP_PREFS_DEFAULTS.closeToTray,
+    updateChannel:
+      stored.updateChannel === 'stable' || stored.updateChannel === 'beta'
+        ? stored.updateChannel
+        : DESKTOP_PREFS_DEFAULTS.updateChannel,
     compatibility: {
       homeKind: homeKind === 'kimi' || homeKind === 'custom'
         ? homeKind

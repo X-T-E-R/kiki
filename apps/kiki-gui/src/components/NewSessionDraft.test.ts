@@ -50,19 +50,23 @@ describe('buildAgentProfileOptions', () => {
     ...overrides,
   });
 
-  it('drops disabled profiles and badges curated main profiles', () => {
+  it('drops disabled subagent profiles but keeps a disabled main profile selectable', () => {
     const options = buildAgentProfileOptions(
       [
         profile({ name: 'agent', main: true, description: 'General-purpose.' }),
         profile({ name: 'reviewer', source: 'workspace' }),
         profile({ name: 'legacy', disabled: true }),
+        // Turning a main profile off only stops subagent calls, so the
+        // picker must keep offering it for main sessions.
+        profile({ name: 'suspended-main', main: true, disabled: true }),
       ],
       ' · main',
     );
-    expect(options.map((option) => option.value)).toEqual(['agent', 'reviewer']);
+    expect(options.map((option) => option.value)).toEqual(['agent', 'reviewer', 'suspended-main']);
     expect(options[0]?.label).toBe('agent · main');
     expect(options[0]?.hint).toBe('General-purpose.');
     expect(options[1]?.label).toBe('reviewer');
+    expect(options[2]?.label).toBe('suspended-main · main');
   });
 
   it('never promotes a private scoped subagent lease to a selectable profile', () => {

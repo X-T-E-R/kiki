@@ -108,6 +108,7 @@ describe('settings persistence and validation', () => {
     expect(readDesktopPrefs()).toEqual({
       notifications: false,
       closeToTray: true,
+      updateChannel: 'stable',
       compatibility: {
         homeKind: 'kimi',
         customHome: undefined,
@@ -427,6 +428,34 @@ describe('settings persistence and validation', () => {
     );
     expect(saved.id).toBe('example');
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('managed-style save: id/type unchanged, secret untouched, non-credential fields on the wire', async () => {
+    let body: Record<string, unknown> | undefined;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      body = JSON.parse(init?.body as string) as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        code: 0,
+        msg: 'success',
+        data: { provider: { id: 'example', type: 'openai', has_api_key: true, status: 'connected' } },
+      }));
+    }));
+    // The managed editor locks id/protocol and hides the credential surface,
+    // so the draft it saves always has the unchanged id and a blank key.
+    await replaceProvider(
+      { url: 'http://127.0.0.1:8080', token: 'token' },
+      'example',
+      providerDraft({
+        id: 'example',
+        baseUrl: 'https://api.example.test/v2',
+        requestIdentityChoice: 'none',
+      }),
+    );
+    expect(body?.['new_id']).toBeUndefined();
+    expect(body?.['api_key']).toBeUndefined();
+    expect(body?.['type']).toBe('openai');
+    expect(body?.['base_url']).toBe('https://api.example.test/v2');
+    expect(body?.['request_identity']).toEqual({ preset: 'none' });
   });
 
   it('sends an explicit empty API key only when the user chooses clear', async () => {

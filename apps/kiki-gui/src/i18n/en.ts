@@ -606,6 +606,7 @@ export const en = {
   'new.recent': 'Recent sessions',
   'new.creating': 'Creating the session…',
   'new.recentMore': 'View all sessions →',
+  'new.noTargetHint': 'Pick a workspace above — or enter an absolute project path — to enable sending.',
 
   // ---- hero (/new conversation shell) ----
   'hero.chooseWorkspace': 'Choose workspace',
@@ -903,6 +904,13 @@ export const en = {
   'st.providers.requestIdentity.grok_build_compatible': 'Grok Build-compatible',
   'st.providers.requestIdentity.kimi_code': 'Kimi Code',
   'st.providers.requestIdentity.none': 'None (no request identity)',
+  // Short labels for the collapsed provider-summary badge; the full label
+  // above stays on the badge's tooltip.
+  'st.providers.requestIdentityBadge.auto': 'Auto',
+  'st.providers.requestIdentityBadge.codex_compatible': 'Codex',
+  'st.providers.requestIdentityBadge.grok_build_compatible': 'Grok',
+  'st.providers.requestIdentityBadge.kimi_code': 'Kimi',
+  'st.providers.requestIdentityBadge.none': 'None',
   'st.providers.requestIdentityHint':
     'Select request identity semantics. Compatible presets emulate identity fields, not the client transport.',
   'st.providers.requestIdentityAdvanced': 'Advanced overrides (JSON)',
@@ -936,7 +944,7 @@ export const en = {
   'st.fetchModels.serverSuccess': 'Server refreshed this provider — {count} new models.',
   'st.fetchModels.serverUnchanged': 'Server refreshed this provider — catalog unchanged.',
   'st.providers.managedHint':
-    'This provider is signed in through OAuth. API-key Save, Clear, and Delete are unavailable; use Sign in / Sign out above.',
+    'This provider is signed in through OAuth — its ID, protocol, and credentials follow the Sign in / Sign out controls above. Everything else below stays editable.',
   'st.chips.capabilities': 'Capabilities',
   'st.chips.efforts': 'Effort levels',
   'st.chips.addPlaceholder': 'custom value + Enter',
@@ -1086,7 +1094,9 @@ export const en = {
   'st.namedAgents.empty': 'No named agent profiles are currently loaded.',
   'st.namedAgents.mainBadge': 'main',
   'st.namedAgents.newSession': 'New session',
-  'st.namedAgents.newSessionDisabled': 'Enable this profile before starting a session with it.',
+  'st.namedAgents.newSessionDisabled': 'Enable this agent before starting a session with it.',
+  'st.namedAgents.newSessionDisabledMain':
+    'Start a main session with this agent — it just won’t be called as a subagent while off.',
   'st.namedAgents.modelProfile': 'model profile',
   'st.namedAgents.spawnConstraints': 'spawn constraints',
   'st.namedAgents.modelPreference': 'model preference',
@@ -1109,11 +1119,13 @@ export const en = {
   'st.namedAgents.builtin': 'built in (no source file)',
   'st.namedAgents.workspace': 'workspace',
   'st.namedAgents.enabled': 'Enabled',
-  'st.namedAgents.builtinToggleHint': 'Enable or disable this built-in profile through disabled_builtin_profiles.',
+  'st.namedAgents.builtinToggleHint': 'Turn this built-in agent on or off. While off, it won’t be called as a subagent.',
   'st.namedAgents.nonBuiltinToggleHint': 'Only built-in profiles can be enabled or disabled here.',
-  'st.namedAgents.defaultToggleHint': 'Disable “agent” for subagent discovery and dispatch; the main agent keeps its default binding.',
-  'st.namedAgents.namedToggleHint': 'Enable or disable this profile globally through disabled_named_profiles.',
+  'st.namedAgents.defaultToggleHint': 'Turning the default agent off only stops it from being called as a subagent — you can still run main sessions with it.',
+  'st.namedAgents.namedToggleHint': 'Turn this agent on or off everywhere. While off, it won’t be called as a subagent.',
   'st.namedAgents.disabledBadge': 'disabled',
+  'st.namedAgents.disabledMainHint':
+    'Still available for main sessions — it just won’t be called as a subagent.',
   'st.namedAgents.workspaces': 'workspaces',
   'st.namedAgents.modelPin': 'pinned model alias',
   'st.namedAgents.whenToUse': 'When to use',
@@ -1223,9 +1235,22 @@ export const en = {
   'st.workspaces.hint':
     'Workspace roots are discovered and managed by the server. Rename changes the display name; unregister only removes the catalog entry (files stay on disk).',
   'st.about.title': 'About',
+  'st.about.desktopVersion': 'Desktop version',
   'st.about.serverVersion': 'Server version',
+  'st.about.build': 'Build',
   'st.about.serverId': 'Server ID',
   'st.about.backend': 'Backend',
+  'st.about.channel': 'Update channel',
+  'st.about.stable': 'Stable',
+  'st.about.beta': 'Beta',
+  'st.about.betaHint': 'Beta builds may change more often and can be less stable.',
+  'st.about.checkUpdate': 'Check for updates',
+  'st.about.checking': 'Checking…',
+  'st.about.upToDate': 'Kiki is up to date.',
+  'st.about.install': 'Install {version}',
+  'st.about.installing': 'Installing…',
+  'st.about.installConfirm': 'Install Kiki {version}? Kiki and its running tasks will exit.',
+  'st.about.updateAvailable': 'Kiki {version} is available. Open Settings → About to install it.',
 
   // ---- connection provider ----
   'conn.desktopNoServer': 'The Kiki desktop backend did not register a local server.',

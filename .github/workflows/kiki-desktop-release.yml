@@ -1,0 +1,220 @@
+name: Kiki Desktop Release
+
+on:
+  push:
+    tags:
+      - 'kiki-v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kiki-desktop-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      channel: ${{ steps.release.outputs.channel }}
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+
+      - name: Validate release tag
+        id: release
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          if ($tag -notmatch '^kiki-v(?<version>(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-beta\.(0|[1-9]\d*))?)$') {
+            throw 'Kiki desktop tags must be kiki-v<major>.<minor>.<patch> or kiki-v<major>.<minor>.<patch>-beta.<number>.'
+          }
+          $channel = if ($Matches.version.Contains('-beta.')) { 'beta' } else { 'stable' }
+          "version=$($Matches.version)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "channel=$channel" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test release scripts
+        run: |
+          node --test apps/kiki-gui/scripts/desktop-version.test.mjs apps/kiki-gui/scripts/desktop-release-manifest.test.mjs apps/kiki-gui/scripts/desktop-release-feed.test.mjs
+          pnpm --filter @kiki/gui run desktop:version:check
+
+      - name: Build and smoke-test Windows x64 sidecar
+        run: |
+          pnpm --filter @moonshot-ai/kimi-code run build:native:sea
+          pnpm --filter @moonshot-ai/kimi-code run test:native:smoke
+
+      - name: Generate temporary updater key
+        shell: pwsh
+        run: |
+          $password = [guid]::NewGuid().ToString('N')
+          $keyPath = Join-Path $env:RUNNER_TEMP 'kiki-build-updater.key'
+          pnpm --filter @kiki/gui exec tauri signer generate --ci --password $password --write-keys $keyPath
+          $delimiter = "KIKI_SIGNING_KEY_$([guid]::NewGuid().ToString('N'))"
+          "TAURI_SIGNING_PRIVATE_KEY<<$delimiter" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          (Get-Content $keyPath -Raw).TrimEnd() | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $delimiter | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$password" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build versioned NSIS updater artifact
+        env:
+          KIKI_VERSION: ${{ steps.release.outputs.version }}
+          KIKI_BUILD_SHA: ${{ github.sha }}
+          KIKI_UPDATE_CHANNEL: ${{ steps.release.outputs.channel }}
+          KIKI_UPDATER_PUBLIC_KEY: ${{ vars.KIKI_UPDATER_PUBLIC_KEY }}
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:KIKI_UPDATER_PUBLIC_KEY)) { throw 'KIKI_UPDATER_PUBLIC_KEY repository variable is required.' }
+          $config = @{
+            version = $env:KIKI_VERSION
+            bundle = @{
+              createUpdaterArtifacts = $true
+              resources = @('../THIRD_PARTY_NOTICES.md')
+            }
+            plugins = @{
+              updater = @{
+                pubkey = $env:KIKI_UPDATER_PUBLIC_KEY
+              }
+            }
+          } | ConvertTo-Json -Compress -Depth 4
+          pnpm --filter @kiki/gui exec tauri build --ci --target x86_64-pc-windows-msvc --bundles nsis --config $config
+          $installers = @(Get-ChildItem 'apps/kiki-gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis' -Filter '*-setup.exe')
+          if ($installers.Count -ne 1) { throw "Expected one NSIS installer, found $($installers.Count)." }
+          if (-not (Test-Path -LiteralPath "$($installers[0].FullName).sig" -PathType Leaf)) {
+            throw 'Tauri did not create the temporary updater signature.'
+          }
+          $stage = Join-Path $env:RUNNER_TEMP 'kiki-release-candidate'
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item -LiteralPath $installers[0].FullName -Destination $stage
+
+      - name: Upload unsigned release candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: kiki-windows-x64-${{ steps.release.outputs.version }}
+          path: ${{ runner.temp }}/kiki-release-candidate/*.exe
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: build
+    runs-on: windows-2025
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: X-T-E-R/kiki
+      KIKI_TAG: ${{ github.ref_name }}
+      KIKI_VERSION: ${{ needs.build.outputs.version }}
+      KIKI_CHANNEL: ${{ needs.build.outputs.channel }}
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install signing tool
+        run: pnpm install --frozen-lockfile
+
+      - name: Download release candidate
+        uses: actions/download-artifact@v8
+        with:
+          name: kiki-windows-x64-${{ needs.build.outputs.version }}
+          path: release-candidate
+
+      - name: Create draft release
+        shell: pwsh
+        run: |
+          gh release view $env:KIKI_TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            throw "Release $env:KIKI_TAG already exists. Refusing to overwrite its assets."
+          }
+          $arguments = @('release', 'create', $env:KIKI_TAG, '--verify-tag', '--draft', '--generate-notes', '--title', "Kiki $env:KIKI_VERSION")
+          if ($env:KIKI_CHANNEL -eq 'beta') { $arguments += '--prerelease' }
+          gh @arguments
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to create the draft GitHub Release.' }
+
+      - name: Sign updater with production key
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $installers = @(Get-ChildItem 'release-candidate' -Filter '*.exe')
+          if ($installers.Count -ne 1) { throw "Expected one release candidate, found $($installers.Count)." }
+          pnpm --filter @kiki/gui exec tauri signer sign $installers[0].FullName
+          if (-not (Test-Path -LiteralPath "$($installers[0].FullName).sig" -PathType Leaf)) {
+            throw 'Production updater signing did not create a signature.'
+          }
+
+      - name: Create versioned release metadata
+        shell: pwsh
+        run: |
+          $installer = @(Get-ChildItem 'release-candidate' -Filter '*.exe')[0]
+          $publishedAt = [DateTime]::UtcNow.ToString('o')
+          $notes = "Kiki $env:KIKI_VERSION $env:KIKI_CHANNEL release. See the GitHub Release page for details."
+          node apps/kiki-gui/scripts/desktop-release-manifest.mjs `
+            --version $env:KIKI_VERSION `
+            --tag $env:KIKI_TAG `
+            --installer $installer.FullName `
+            --signature "$($installer.FullName).sig" `
+            --output 'release-candidate/latest.json' `
+            --sha256-output "$($installer.FullName).sha256" `
+            --pub-date $publishedAt `
+            --notes $notes
+
+      - name: Upload draft assets without replacement
+        shell: pwsh
+        run: |
+          $installer = @(Get-ChildItem 'release-candidate' -Filter '*.exe')[0]
+          gh release upload $env:KIKI_TAG `
+            $installer.FullName `
+            "$($installer.FullName).sig" `
+            "$($installer.FullName).sha256" `
+            'release-candidate/latest.json' `
+            'apps/kiki-gui/THIRD_PARTY_NOTICES.md'
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to upload draft release assets.' }
+
+      - name: Validate draft assets
+        shell: pwsh
+        run: |
+          $download = Join-Path $env:RUNNER_TEMP 'draft-assets'
+          New-Item -ItemType Directory -Path $download | Out-Null
+          gh release download $env:KIKI_TAG --dir $download
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to download draft assets for validation.' }
+          $installer = @(Get-ChildItem 'release-candidate' -Filter '*.exe')[0]
+          $names = @($installer.Name, "$($installer.Name).sig", "$($installer.Name).sha256", 'latest.json', 'THIRD_PARTY_NOTICES.md')
+          foreach ($name in $names) {
+            $local = if ($name -eq 'THIRD_PARTY_NOTICES.md') { Join-Path 'apps/kiki-gui' $name } else { Join-Path 'release-candidate' $name }
+            $remote = Join-Path $download $name
+            if (-not (Test-Path -LiteralPath $remote -PathType Leaf)) { throw "Draft asset is missing: $name" }
+            if ((Get-FileHash -Algorithm SHA256 $local).Hash -ne (Get-FileHash -Algorithm SHA256 $remote).Hash) {
+              throw "Draft asset differs from the validated local file: $name"
+            }
+          }
+
+      - name: Publish validated release
+        run: gh release edit "$env:KIKI_TAG" --draft=false

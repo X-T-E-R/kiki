@@ -1,9 +1,14 @@
+import { readFileSync } from 'node:fs';
+
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
 import { localServerPlugin } from './vite/localServer';
 
+const packageJson = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
+  version: string;
+};
 const webPort = Number(process.env['KIKI_GUI_PORT']) || 5177;
 // Where the dev proxy forwards server traffic. The app can also connect to an
 // arbitrary server URL typed into the connect screen (loopback cross-origin is
@@ -16,6 +21,9 @@ export default defineConfig({
   plugins: [react(), tailwindcss(), localServerPlugin({ proxyTarget: serverTarget })],
   define: {
     __KIKI_PROXY_TARGET__: JSON.stringify(serverTarget),
+    'import.meta.env.VITE_APP_VERSION': JSON.stringify(packageJson.version),
+    'import.meta.env.VITE_BUILD_SHA': JSON.stringify(process.env['KIKI_BUILD_SHA'] ?? ''),
+    'import.meta.env.VITE_UPDATE_CHANNEL': JSON.stringify(process.env['KIKI_UPDATE_CHANNEL'] ?? 'stable'),
   },
   server: {
     // Pin IPv4: a bare 'localhost' bind can land on ::1 only on dual-stack

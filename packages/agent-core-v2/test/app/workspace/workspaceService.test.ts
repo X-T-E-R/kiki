@@ -10,18 +10,32 @@ import {
   registerScopedService,
 } from '#/_base/di/scope';
 import { createScopedTestHost, stubPair } from '#/_base/di/test';
+import { ILogService } from '#/_base/log/log';
 import { encodeWorkDirKey, workspaceRootKey } from '#/_base/utils/workdir-slug';
-import { ErrorCodes, Error2 } from '#/errors';
-import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
-import { IHostFileSystem } from '#/os/interface/hostFileSystem';
-import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
-import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
-import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
-import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IFlagService } from '#/app/flag/flag';
+import { ISessionIndex, ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
+import { FileSessionIndex } from '#/app/sessionIndex/sessionIndexService';
+import { FileWorkspacePersistence } from '#/app/workspace/fileWorkspacePersistence';
 import { IWorkspaceService } from '#/app/workspace/workspace';
 import { WorkspaceService } from '#/app/workspace/workspaceService';
-import { FileWorkspacePersistence } from '#/app/workspace/fileWorkspacePersistence';
 import { IWorkspacePersistence, type PersistedWorkspaceEntry } from '#/app/workspace/workspacePersistence';
+import { ErrorCodes } from '#/errors';
+import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
+import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IQueryStore } from '#/persistence/interface/queryStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+
+import { stubLog } from '../../_base/log/stubs';
+import { stubQueryStore } from '../../persistence/interface/stubs';
+import { stubBootstrap } from '../bootstrap/stubs';
+import { stubFlag } from '../flag/stubs';
+import { stubSessionIndexMirror } from '../sessionIndex/stubs';
 
 interface SessionIndexLine {
   readonly sessionId: string;
@@ -44,6 +58,13 @@ describe('WorkspaceService (file-backed)', () => {
     );
     registerScopedService(
       LifecycleScope.App,
+      ISessionIndex,
+      FileSessionIndex,
+      ScopeActivation.OnDemand,
+      'sessionIndex',
+    );
+    registerScopedService(
+      LifecycleScope.App,
       IWorkspaceService,
       WorkspaceService,
       ScopeActivation.OnDemand,
@@ -63,6 +84,12 @@ describe('WorkspaceService (file-backed)', () => {
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
+      stubPair(IAppendLogStore, new AppendLogStore(fileStorage)),
+      stubPair(IBootstrapService, stubBootstrap(homeDir)),
+      stubPair(IQueryStore, stubQueryStore()),
+      stubPair(ISessionIndexMirror, stubSessionIndexMirror()),
+      stubPair(IFlagService, stubFlag(false)),
+      stubPair(ILogService, stubLog()),
       stubPair(IHostFileSystem, hostFs),
     ]);
     currentHost = host;
@@ -84,6 +111,16 @@ describe('WorkspaceService (file-backed)', () => {
   async function seedSessionIndex(entries: SessionIndexLine[]): Promise<void> {
     const text = `${entries.map((e) => JSON.stringify(e)).join('\n')}\n`;
     await fsp.writeFile(join(homeDir, 'session_index.jsonl'), text, 'utf8');
+  }
+
+  async function seedSessionState(
+    workspaceId: string,
+    sessionId: string,
+    state: Record<string, unknown>,
+  ): Promise<void> {
+    const dir = join(homeDir, 'sessions', workspaceId, sessionId);
+    await fsp.mkdir(dir, { recursive: true });
+    await fsp.writeFile(join(dir, 'state.json'), JSON.stringify(state), 'utf8');
   }
 
   async function writeWorkspacesJson(
@@ -149,8 +186,81 @@ describe('WorkspaceService (file-backed)', () => {
     );
   });
 
-  it('rebuilds empty when neither file exists', async () => {
+  it('rebuilds from paged authoritative session states when both indexes are absent', async () => {
+    const workA = join(homeDir, 'from-session-a');
+    const workB = join(homeDir, 'from-session-b');
+    const workspaceId = 'wd_authoritative';
+    for (let index = 0; index < 101; index += 1) {
+      await seedSessionState(workspaceId, `s-${index.toString().padStart(3, '0')}`, {
+        cwd: index === 100 ? workB : workA,
+        createdAt: 1_000 - index,
+        updatedAt: 1_000 - index,
+        archived: index % 2 === 0,
+      });
+    }
+    await seedSessionState(workspaceId, 's-relative', {
+      cwd: 'relative/path',
+      createdAt: 0,
+      updatedAt: 0,
+    });
+
+    const list = await build().list();
+
+    expect(list.map((workspace) => workspace.root).toSorted()).toEqual(
+      [workA, workB].toSorted(),
+    );
+    expect(Object.keys((await readWorkspacesJson()).workspaces).toSorted()).toEqual(
+      [encodeWorkDirKey(workA), encodeWorkDirKey(workB)].toSorted(),
+    );
+  });
+
+  it('self-heals an empty catalog from sessions without reviving deleted workspace ids', async () => {
+    const deleted = join(homeDir, 'deleted-session-root');
+    const fresh = join(homeDir, 'fresh-session-root');
+    const deletedWorkspaceId = 'wd_deleted_legacy';
+    await writeWorkspacesJson({}, { deleted_workspace_ids: [deletedWorkspaceId] });
+    await seedSessionState(deletedWorkspaceId, 'deleted-session', {
+      cwd: deleted,
+      createdAt: 2,
+      updatedAt: 2,
+    });
+    await seedSessionState('wd_fresh', 'fresh-session', {
+      cwd: fresh,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    const list = await build().list();
+
+    expect(list.map((workspace) => workspace.root)).toEqual([fresh]);
+    const saved = await readWorkspacesJson();
+    expect(saved.deleted_workspace_ids).toEqual([deletedWorkspaceId]);
+    expect(saved.workspaces[encodeWorkDirKey(deleted)]).toBeUndefined();
+    expect(saved.workspaces[encodeWorkDirKey(fresh)]?.root).toBe(fresh);
+  });
+
+  it('rebuilds empty when neither file nor session state exists', async () => {
     expect(await build().list()).toEqual([]);
+  });
+
+  it('does not use session-state recovery for a non-empty catalog', async () => {
+    const existing = join(homeDir, 'existing-catalog-root');
+    const sessionOnly = join(homeDir, 'session-only-root');
+    await writeWorkspacesJson({
+      [encodeWorkDirKey(existing)]: {
+        root: existing,
+        name: 'existing',
+        created_at: '2024-01-01T00:00:00.000Z',
+        last_opened_at: '2024-01-02T00:00:00.000Z',
+      },
+    });
+    await seedSessionState('wd_session_only', 'session-only', {
+      cwd: sessionOnly,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    expect((await build().list()).map((workspace) => workspace.root)).toEqual([existing]);
   });
 
   it('merges session-index workDirs into an existing catalog on load', async () => {
@@ -381,7 +491,7 @@ describe('WorkspaceService (file-backed)', () => {
     const real = join(homeDir, 'real-root');
     await fsp.mkdir(real, { recursive: true });
     const link = join(homeDir, 'link-root');
-    await fsp.symlink(real, link, 'dir');
+    await fsp.symlink(real, link, process.platform === 'win32' ? 'junction' : 'dir');
     const ws = await build().createOrTouch(link);
     expect(ws.root).toBe(link);
     expect(ws.id).toBe(encodeWorkDirKey(link));

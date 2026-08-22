@@ -2,6 +2,7 @@ import { basename, isAbsolute } from 'pathe';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { encodeWorkDirKey, workspaceRootKey } from '#/_base/utils/workdir-slug';
+import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { ErrorCodes, Error2, unwrapErrorCause } from '#/errors';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -25,6 +26,7 @@ export class WorkspaceService implements IWorkspaceService {
     @IWorkspacePersistence private readonly store: IWorkspacePersistence,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IHostFileSystem private readonly hostFs: IHostFileSystem,
+    @ISessionIndex private readonly sessionIndex: ISessionIndex,
   ) {}
 
   list(): Promise<readonly Workspace[]> {
@@ -151,13 +153,18 @@ export class WorkspaceService implements IWorkspaceService {
     const loaded = await this.store.load();
     if (loaded === undefined) {
       const rebuilt = await this.rebuildFromSessionIndex();
+      if (rebuilt.size === 0) await this.mergeFromSessions(rebuilt, new Set());
       await this.store.save({ workspaces: [...rebuilt.values()], deletedIds: [] });
       this.merged = true;
       return;
     }
     const byId = new Map(loaded.workspaces.map((ws) => [ws.id, ws]));
     const deletedIds = new Set(loaded.deletedIds);
-    if (await this.mergeFromSessionIndex(byId, deletedIds)) {
+    let changed = await this.mergeFromSessionIndex(byId, deletedIds);
+    if (loaded.workspaces.length === 0 && byId.size === 0) {
+      changed = (await this.mergeFromSessions(byId, deletedIds)) || changed;
+    }
+    if (changed) {
       await this.store.save({ workspaces: [...byId.values()], deletedIds: [...deletedIds] });
     }
     this.merged = true;
@@ -207,6 +214,51 @@ export class WorkspaceService implements IWorkspaceService {
       });
     }
     return result;
+  }
+
+  private async mergeFromSessions(
+    byId: Map<string, Workspace>,
+    deletedIds: ReadonlySet<string>,
+  ): Promise<boolean> {
+    let changed = false;
+    let before: string | undefined;
+    const now = Date.now();
+    const seenRootKeys = new Set(
+      [...byId.values()].map((workspace) => workspaceRootKey(workspace.root)),
+    );
+    do {
+      const page = await this.sessionIndex.listRecent({
+        includeArchived: true,
+        limit: 100,
+        before,
+      });
+      for (const session of page.items) {
+        const root = session.cwd;
+        if (root === undefined || !isAbsolute(root)) continue;
+        const id = encodeWorkDirKey(root);
+        const rootKey = workspaceRootKey(root);
+        if (
+          byId.has(id) ||
+          deletedIds.has(id) ||
+          deletedIds.has(session.workspaceId) ||
+          seenRootKeys.has(rootKey)
+        ) {
+          continue;
+        }
+        seenRootKeys.add(rootKey);
+        byId.set(id, {
+          id,
+          root,
+          name: basename(root),
+          createdAt: now,
+          lastOpenedAt: now,
+        });
+        changed = true;
+      }
+      if (page.nextCursor === before) break;
+      before = page.nextCursor;
+    } while (before !== undefined);
+    return changed;
   }
 
   private runExclusive<T>(op: () => Promise<T>): Promise<T> {

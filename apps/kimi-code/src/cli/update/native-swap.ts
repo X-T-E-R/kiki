@@ -26,6 +26,7 @@ import { gt } from 'semver';
 import { log } from '@moonshot-ai/kimi-code-sdk';
 
 import {
+  isKikiDesktopBundled,
   KIMI_CODE_NATIVE_STAGED_STATE_FILE_NAME,
   KIMI_CODE_UPDATE_REEXEC_ENV,
 } from '#/constant/app';
@@ -476,7 +477,7 @@ function reexec(
 export async function maybeRelaunchWithStagedNativeUpdate(
   deps: NativeSwapDeps,
 ): Promise<boolean> {
-  if (!deps.isNative) return false;
+  if (isKikiDesktopBundled(deps.env) || !deps.isNative) return false;
   const swapInProgress = await sweepStaleNativeUpdateArtifacts(deps.exePath);
   if (isTruthy(deps.env[KIMI_CODE_UPDATE_REEXEC_ENV])) {
     // Read-once guard: drop it so this session's children (and any nested

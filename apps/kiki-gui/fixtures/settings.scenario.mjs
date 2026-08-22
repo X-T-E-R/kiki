@@ -68,14 +68,19 @@ export default {
       has_api_key: true,
       status: 'connected',
       default_model: 'fixture/kiki-pro',
+      request_identity: { preset: 'kimi_code' },
       models: ['fixture/kiki-pro', 'fixture/kiki-lite'],
     },
     {
+      // The OAuth-managed provider: its collapsed summary still carries the
+      // request-identity badge, and its editor keeps the non-credential save
+      // surface while id/protocol/credentials stay locked.
       id: 'alt',
       type: 'anthropic',
       has_api_key: false,
       status: 'unconfigured',
       default_model: 'alt/claude-x',
+      request_identity: { preset: 'none' },
       models: ['alt/claude-x'],
     },
   ],
@@ -83,7 +88,7 @@ export default {
     ready: true,
     providers_count: 2,
     default_model: 'fixture/kiki-pro',
-    managed_provider: null,
+    managed_provider: { name: 'alt', status: 'authenticated' },
   },
   oauth: {
     flow_id: fid('oauth'),
@@ -190,7 +195,7 @@ export default {
     {
       name: 'agent',
       source: 'builtin',
-      description: 'General-purpose built-in agent for subagent dispatch.',
+      description: 'General-purpose built-in assistant.',
       main: true,
       subagents: ['explore', 'reviewer'],
       routes: [],

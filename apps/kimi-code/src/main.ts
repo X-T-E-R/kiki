@@ -38,7 +38,12 @@ import { runUpdatePreflight } from './cli/update/preflight';
 import { detectNativeInstall } from './cli/update/source';
 import { maybeRelaunchWithStagedNativeUpdate } from './cli/update/native-swap';
 import { createKimiCodeHostIdentity, getVersion } from './cli/version';
-import { CLI_SHUTDOWN_TIMEOUT_MS, CLI_UI_MODE, PROCESS_NAME } from './constant/app';
+import {
+  CLI_SHUTDOWN_TIMEOUT_MS,
+  CLI_UI_MODE,
+  isKikiDesktopBundled,
+  PROCESS_NAME,
+} from './constant/app';
 import { cleanupStaleNativeCacheForCurrent } from './native/native-assets';
 import { installMinidbTextBuildWorker } from './native/minidb-worker';
 import { installKapModelPricing } from './native/model-pricing';
@@ -74,14 +79,16 @@ export async function handleMainCommand(
     throw error;
   }
 
-  startupTrace('preflight:begin');
-  const preflightResult = await runUpdatePreflight(
-    version,
-    validated.uiMode === 'print' ? { track, isTTY: false } : { track },
-  );
-  startupTrace('preflight:end');
-  if (preflightResult === 'exit') {
-    process.exit(0);
+  if (!isKikiDesktopBundled()) {
+    startupTrace('preflight:begin');
+    const preflightResult = await runUpdatePreflight(
+      version,
+      validated.uiMode === 'print' ? { track, isTTY: false } : { track },
+    );
+    startupTrace('preflight:end');
+    if (preflightResult === 'exit') {
+      process.exit(0);
+    }
   }
 
   if (validated.uiMode === 'print') {

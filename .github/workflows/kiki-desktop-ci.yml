@@ -1,0 +1,94 @@
+name: Kiki Desktop Windows CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/kiki-desktop-*.yml'
+      - 'apps/kiki-gui/**'
+      - 'apps/kimi-code/dist-web/**'
+      - 'apps/kimi-code/scripts/native/**'
+      - 'packages/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.nvmrc'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-x64:
+    runs-on: windows-2025
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test desktop release scripts
+        shell: pwsh
+        run: |
+          pnpm --filter @kiki/gui run desktop:prepare:test
+          node --test apps/kiki-gui/scripts/desktop-version.test.mjs apps/kiki-gui/scripts/desktop-release-manifest.test.mjs apps/kiki-gui/scripts/desktop-release-feed.test.mjs
+          pnpm --filter @kiki/gui run desktop:version:check
+          pnpm --filter @kiki/gui run desktop:release:test
+
+      - name: Test GUI
+        run: |
+          pnpm --filter @kiki/gui run typecheck
+          pnpm --filter @kiki/gui run test
+
+      - name: Build and smoke-test Windows x64 sidecar
+        run: |
+          pnpm --filter @moonshot-ai/kimi-code run build:native:sea
+          pnpm --filter @moonshot-ai/kimi-code run test:native:smoke
+          pnpm --filter @kiki/gui run desktop:prepare -- --target x86_64-pc-windows-msvc
+
+      - name: Test Rust desktop crate
+        run: cargo test --manifest-path apps/kiki-gui/src-tauri/Cargo.toml
+
+      - name: Generate temporary updater key
+        shell: pwsh
+        run: |
+          $password = [guid]::NewGuid().ToString('N')
+          $keyPath = Join-Path $env:RUNNER_TEMP 'kiki-ci-updater.key'
+          pnpm --filter @kiki/gui exec tauri signer generate --ci --password $password --write-keys $keyPath
+          $publicKey = (Get-Content "$keyPath.pub" | Select-Object -Last 1).Trim()
+          $delimiter = "KIKI_SIGNING_KEY_$([guid]::NewGuid().ToString('N'))"
+          "TAURI_SIGNING_PRIVATE_KEY<<$delimiter" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          (Get-Content $keyPath -Raw).TrimEnd() | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $delimiter | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$password" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "KIKI_UPDATER_PUBLIC_KEY=$publicKey" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build NSIS updater artifact
+        shell: pwsh
+        run: |
+          $config = @{
+            bundle = @{
+              createUpdaterArtifacts = $true
+              resources = @('../THIRD_PARTY_NOTICES.md')
+            }
+            plugins = @{
+              updater = @{
+                pubkey = $env:KIKI_UPDATER_PUBLIC_KEY
+              }
+            }
+          } | ConvertTo-Json -Compress -Depth 4
+          pnpm --filter @kiki/gui exec tauri build --ci --target x86_64-pc-windows-msvc --bundles nsis --config $config
+          $installers = @(Get-ChildItem 'apps/kiki-gui/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis' -Filter '*-setup.exe')
+          if ($installers.Count -ne 1) { throw "Expected one NSIS installer, found $($installers.Count)." }
+          if (-not (Test-Path -LiteralPath "$($installers[0].FullName).sig" -PathType Leaf)) {
+            throw 'Tauri did not create the updater signature.'
+          }
