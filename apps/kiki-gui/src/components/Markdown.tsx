@@ -8,7 +8,7 @@
 
 import { memo, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { Streamdown, type Components } from 'streamdown';
+import { Streamdown, defaultRemarkPlugins, type Components } from 'streamdown';
 
 import {
   resolveFileHref,
@@ -141,7 +141,10 @@ export const Markdown = memo(function Markdown({
       <Streamdown
         mode="streaming"
         plugins={plugins}
-        remarkPlugins={REMARK_PLUGINS}
+        // The bare remarkPlugins prop REPLACES Streamdown's defaults, so
+        // spread them back in — dropping remark-gfm kills GFM tables,
+        // strikethrough, task-lists, and autolinks.
+        remarkPlugins={[...Object.values(defaultRemarkPlugins), ...REMARK_PLUGINS]}
         components={components}
         // kiki draws its own chrome; streamdown's built-in action rows stay off.
         controls={{ table: false, code: false, mermaid: false }}

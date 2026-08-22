@@ -38,6 +38,7 @@ import {
   resolveControlledFlag,
   resolveControlledValue,
   resolveProfileSwitchSubmission,
+  sessionHasStartedConversation,
   replaceQueuedPrompt,
   resolveSessionSeatPhase,
   SessionRouteView,
@@ -370,6 +371,21 @@ describe('resolveProfileSwitchSubmission', () => {
         thinking: 'low',
       }),
     ).toEqual({ profile: 'reviewer', model: 'provider/other', thinking: 'low' });
+  });
+});
+
+describe('sessionHasStartedConversation', () => {
+  it('treats a loaded transcript with no user messages as empty', () => {
+    expect(sessionHasStartedConversation([])).toBe(false);
+    expect(sessionHasStartedConversation([
+      { kind: 'notice', id: 'notice-1', text: 'ready', tone: 'neutral' },
+    ])).toBe(false);
+  });
+
+  it('treats any user message as a started conversation', () => {
+    expect(sessionHasStartedConversation([
+      { kind: 'user', id: 'user-1', text: 'hello', createdAt: '2026-08-23T00:00:00.000Z' },
+    ])).toBe(true);
   });
 });
 

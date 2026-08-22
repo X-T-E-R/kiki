@@ -1,7 +1,8 @@
 /**
- * Composer — floating rounded-2xl card: permission-mode pills above a
- * multiline input (send shortcut from settings), model selector fed from
- * the server catalog, accent send button; busy state swaps in Abort.
+ * Composer — floating rounded-2xl card: chips above a full-width multiline
+ * input (send shortcut from settings), a bottom toolbar with the permission
+ * mode dropdown, plan/swarm/goal toggles, model selector fed from the server
+ * catalog, and a round accent send button; busy state swaps in Abort.
  *
  * Batch B additions:
  *   - `/` opens a slash menu of REAL entries: skills from the session's
@@ -95,21 +96,21 @@ export function resolveSelectedEffort(
 export const DEFAULT_AGENT_PROFILE = 'agent';
 
 /**
- * Profile picker options: disabled subagent profiles drop out (mirroring
- * Settings), but a disabled main profile stays selectable — turning a main
- * agent off only stops subagent calls; main sessions still run it. A main
- * profile gets the ` · main` suffix (same idiom as the model select's
- * session-default suffix), and the description rides the hint line.
+ * Profile picker options: only main profiles (`main === true`) are listed —
+ * subagent profiles exist to be dispatched, not to headline a conversation.
+ * A disabled main profile stays selectable: turning a main agent off only
+ * stops subagent calls; main sessions still run it. Every listed profile is
+ * a main profile, so no badge or suffix marks them; the description rides
+ * the hint line.
  */
 export function buildAgentProfileOptions(
   items: readonly NamedAgentProfile[],
-  mainSuffix: string,
 ): SearchableSelectOption[] {
   return items
-    .filter((item) => !item.disabled || item.main === true)
+    .filter((item) => item.main === true)
     .map((item) => ({
       value: item.name,
-      label: `${item.name}${item.main ? mainSuffix : ''}`,
+      label: item.name,
       hint: item.description,
       title: item.name,
     }));
@@ -353,12 +354,8 @@ export function Composer({
     retry: false,
   });
   const agentProfileOptions: readonly SearchableSelectOption[] = useMemo(
-    () =>
-      buildAgentProfileOptions(
-        agentProfilesQuery.data?.items ?? [],
-        t('composer.agentProfileMainSuffix'),
-      ),
-    [agentProfilesQuery.data, t],
+    () => buildAgentProfileOptions(agentProfilesQuery.data?.items ?? []),
+    [agentProfilesQuery.data],
   );
 
   // The composer mount now survives route changes (the conversation shell owns
@@ -441,6 +438,15 @@ export function Composer({
 
   const canSend =
     (text.trim() !== '' || attachments.length > 0) && !disabled && !sendDisabled && !pendingAttachments;
+
+  // The chips band (quote/annotations/attachments/errors/typo guard) only
+  // exists with content; it gates the wrapper's top padding above the input.
+  const hasChips =
+    (quote !== undefined && quote !== null) ||
+    (annotations !== undefined && annotations.length > 0) ||
+    attachments.length > 0 ||
+    attachmentError !== null ||
+    slashConfirm !== null;
 
   const runAction = (action: SlashActionId) => {
     switch (action) {
@@ -765,165 +771,11 @@ export function Composer({
               <span className="text-[12px] font-medium text-accent">{t('composer.dropFiles')}</span>
             </div>
           ) : null}
-          <div className="flex flex-wrap items-center gap-1.5 px-3.5 pt-2.5">
-            {MODES.map((mode) => (
-              <button
-                key={mode.id}
-                type="button"
-                title={t(mode.hintKey)}
-                onClick={() => { onChangePermissionMode(mode.id); }}
-                className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
-                  permissionMode === mode.id
-                    ? 'border-accent bg-accent-soft text-accent'
-                    : 'border-hairline text-ink-soft hover:border-hairline-strong'
-                }`}
-              >
-                {t(mode.labelKey)}
-              </button>
-            ))}
-            <span className="mx-1 h-3 w-px bg-hairline" />
-            <button
-              type="button"
-              title={t('composer.planHint')}
-              aria-pressed={planMode}
-              onClick={() => { onChangePlanMode(!planMode); }}
-              className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
-                planMode
-                  ? 'border-accent bg-accent-soft text-accent'
-                  : 'border-hairline text-ink-soft hover:border-hairline-strong'
-              }`}
-            >
-              {t('composer.plan')}
-            </button>
-            <button
-              type="button"
-              title={t('composer.swarmHint')}
-              aria-pressed={swarmMode}
-              onClick={() => { onChangeSwarmMode(!swarmMode); }}
-              className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
-                swarmMode
-                  ? 'border-accent bg-accent-soft text-accent'
-                  : 'border-hairline text-ink-soft hover:border-hairline-strong'
-              }`}
-            >
-              {t('composer.swarm')}
-            </button>
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => { setGoalOpen((open) => !open); }}
-                aria-expanded={goalOpen}
-                className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
-                  goalOpen || goalObjective !== '' || goalStatus !== undefined
-                    ? 'border-accent bg-accent-soft text-accent'
-                    : 'border-hairline text-ink-soft hover:border-hairline-strong'
-                }`}
-              >
-                {t('composer.goal')}
-                {goalStatus !== undefined ? ` · ${t(`composer.goalStatus.${goalStatus}`)}` : ''}
-              </button>
-              {goalOpen ? (
-                <div className="anim-enter absolute bottom-7 left-0 z-30 w-72 rounded-xl border border-hairline bg-panel p-3 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]">
-                  <label className="text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-                    {t('composer.goalObjective')}
-                  </label>
-                  <input
-                    value={goalObjective}
-                    onChange={(event) => { onChangeGoalObjective(event.target.value); }}
-                    placeholder={t('composer.goalObjectivePlaceholder')}
-                    className="mt-1.5 w-full rounded-lg border border-hairline bg-paper px-2.5 py-1.5 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
-                  />
-                  <p className="mt-1.5 text-[10.5px] leading-relaxed text-ink-faint">
-                    {t('composer.goalNoteBefore')}
-                    <span className="font-mono">goal_objective</span>
-                    {t('composer.goalNoteAfter')}
-                  </p>
-                  {goalStatus !== undefined && goalStatus !== 'complete' ? (
-                    <div className="mt-2 flex gap-1.5 border-t border-hairline pt-2">
-                      {(goalStatus === 'paused' ? ['resume', 'cancel'] : ['pause', 'cancel']).map((control) => (
-                        <button
-                          key={control}
-                          type="button"
-                          onClick={() => {
-                            onChangeGoalControl(
-                              goalControl === control
-                                ? undefined
-                                : (control as 'pause' | 'resume' | 'cancel'),
-                            );
-                          }}
-                          className={`rounded-full border px-2 py-0.5 text-[10.5px] ${
-                            goalControl === control
-                              ? 'border-accent bg-accent-soft text-accent'
-                              : 'border-hairline text-ink-soft'
-                          }`}
-                        >
-                          {t(`composer.goalControl.${control as 'pause' | 'resume' | 'cancel'}`)}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-            {onChangeAgentProfile !== undefined && agentProfilesQuery.data !== undefined ? (
-              <SearchableSelect
-                id="composer-agent-profile-select"
-                options={agentProfileOptions}
-                value={agentProfile ?? DEFAULT_AGENT_PROFILE}
-                onChange={onChangeAgentProfile}
-                title={
-                  agentProfilePending
-                    ? t('composer.agentProfilePendingTitle')
-                    : t('composer.agentProfileTitle')
-                }
-                ariaLabel={t('composer.agentProfileAria')}
-                emptyText={t('composer.noAgentProfiles')}
-                placement="above"
-                panelClassName="anim-enter absolute z-40 bottom-full left-0 mb-1 w-72 max-w-[calc(100vw-48px)] overflow-hidden rounded-xl border border-hairline bg-panel shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
-                buttonClassName={`flex max-w-44 items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[11px] outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/30 ${
-                  agentProfilePending
-                    ? 'border-accent bg-accent-soft text-accent'
-                    : 'border-hairline bg-panel text-ink-soft hover:border-hairline-strong'
-                }`}
-              />
-            ) : null}
-            {models.length === 0 ? (
-              <span
-                className="max-w-56 truncate rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft"
-                title={t('composer.modelTitle', { source: t(`composer.modelSource.${modelSource}`) })}
-              >
-                {effectiveModel ?? t('composer.inheritDefault')}
-              </span>
-            ) : (
-              <SearchableSelect
-                id="composer-model-select"
-                options={modelOptions}
-                value={model ?? ''}
-                onChange={(next) => { onChangeModel(next === '' ? undefined : next); }}
-                title={t('composer.modelTitle', { source: t(`composer.modelSource.${modelSource}`) })}
-                ariaLabel={t('composer.modelAria')}
-                placement="above"
-                panelClassName="anim-enter absolute z-40 bottom-full left-0 mb-1 w-72 max-w-[calc(100vw-48px)] overflow-hidden rounded-xl border border-hairline bg-panel shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
-                buttonClassName="flex max-w-56 items-center gap-1 rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft outline-none transition-colors hover:border-hairline-strong focus:border-accent focus:ring-2 focus:ring-accent/30"
-              />
-            )}
-            {efforts !== undefined && efforts.length > 0 && effort !== undefined ? (
-              <select
-                className="rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft outline-none transition-colors hover:border-hairline-strong focus:border-accent"
-                value={effort}
-                onChange={(event) => { onChangeEffort(event.target.value); }}
-                title={t('composer.effortTitle')}
-              >
-                {efforts.map((level) => (
-                  <option key={level} value={level}>
-                    {level}
-                  </option>
-                ))}
-              </select>
-            ) : null}
-
-          </div>
-
+          {/* Chips ride above the input; the toolbar lives below it. The
+              wrapper only renders when at least one chip/banner exists so the
+              textarea keeps its comfortable top padding on an empty draft. */}
+          {hasChips ? (
+            <div className="pt-2">
           {quote !== undefined && quote !== null ? (
             <div
               data-quote-chip
@@ -1139,8 +991,10 @@ export function Composer({
               </span>
             </div>
           ) : null}
+            </div>
+          ) : null}
 
-          <div className="relative flex items-end gap-2 px-3.5 pt-1.5 pb-3">
+          <div className="relative px-3.5 pt-1.5">
             {menu !== null ? (
               <div
                 data-composer-menu
@@ -1208,45 +1062,194 @@ export function Composer({
                   ? (busyPlaceholder ?? t('composer.placeholderBusy'))
                   : t('composer.placeholder')
               }
-              className="max-h-[190px] min-h-[24px] flex-1 resize-none bg-transparent text-[14px] leading-relaxed text-ink outline-none placeholder:text-ink-faint disabled:opacity-60"
+              className="max-h-[190px] min-h-[24px] w-full resize-none bg-transparent py-0.5 text-[14px] leading-relaxed text-ink outline-none placeholder:text-ink-faint disabled:opacity-60"
             />
-            {busy && onAbort !== undefined ? (
+          </div>
+
+          {/* Bottom toolbar: option-class controls on the left (wrap if the
+              width demands it), the send cluster pinned to the right. */}
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1.5 rounded-b-2xl border-t border-hairline bg-paper/60 px-2.5 py-2">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+              <PermissionModeSelect value={permissionMode} onChange={onChangePermissionMode} />
               <button
                 type="button"
-                onClick={onAbort}
-                title={t('composer.abortTitle')}
-                aria-label={t('composer.abortTitle')}
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-danger/40 text-danger transition-colors hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none"
+                title={t('composer.planHint')}
+                aria-pressed={planMode}
+                onClick={() => { onChangePlanMode(!planMode); }}
+                className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
+                  planMode
+                    ? 'border-accent bg-accent-soft text-accent'
+                    : 'border-hairline bg-panel text-ink-soft hover:border-hairline-strong'
+                }`}
               >
-                <span aria-hidden className="text-[11px] font-bold">■</span>
+                {t('composer.plan')}
               </button>
-            ) : null}
-            {/* While busy, Send stays mounted beside Stop so a queued prompt
-                has a mouse path too (Enter works as before). */}
-            <button
-              type="button"
-              onClick={send}
-              disabled={!canSend}
-              title={
-                sendDisabled && !disabled && sendDisabledTitle !== undefined
-                  ? sendDisabledTitle
-                  : busy
-                    ? t(sendShortcut === 'cmd-enter' ? 'composer.queueTitleCmdEnter' : 'composer.queueTitle')
-                    : t(sendShortcut === 'cmd-enter' ? 'composer.sendTitleCmdEnter' : 'composer.sendTitle')
-              }
-              aria-label={busy ? t('composer.queueAria') : t('composer.sendAria')}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-accent text-white transition-colors hover:bg-accent-deep disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
-            >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
-                <path
-                  d="M2.5 8h10M9 3.5 13.5 8 9 12.5"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+              <button
+                type="button"
+                title={t('composer.swarmHint')}
+                aria-pressed={swarmMode}
+                onClick={() => { onChangeSwarmMode(!swarmMode); }}
+                className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
+                  swarmMode
+                    ? 'border-accent bg-accent-soft text-accent'
+                    : 'border-hairline bg-panel text-ink-soft hover:border-hairline-strong'
+                }`}
+              >
+                {t('composer.swarm')}
+              </button>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => { setGoalOpen((open) => !open); }}
+                  aria-expanded={goalOpen}
+                  className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
+                    goalOpen || goalObjective !== '' || goalStatus !== undefined
+                      ? 'border-accent bg-accent-soft text-accent'
+                      : 'border-hairline bg-panel text-ink-soft hover:border-hairline-strong'
+                  }`}
+                >
+                  {t('composer.goal')}
+                  {goalStatus !== undefined ? ` · ${t(`composer.goalStatus.${goalStatus}`)}` : ''}
+                </button>
+                {goalOpen ? (
+                  <div className="anim-enter absolute bottom-7 left-0 z-30 w-72 rounded-xl border border-hairline bg-panel p-3 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]">
+                    <label className="text-[10.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
+                      {t('composer.goalObjective')}
+                    </label>
+                    <input
+                      value={goalObjective}
+                      onChange={(event) => { onChangeGoalObjective(event.target.value); }}
+                      placeholder={t('composer.goalObjectivePlaceholder')}
+                      className="mt-1.5 w-full rounded-lg border border-hairline bg-paper px-2.5 py-1.5 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
+                    />
+                    <p className="mt-1.5 text-[10.5px] leading-relaxed text-ink-faint">
+                      {t('composer.goalNoteBefore')}
+                      <span className="font-mono">goal_objective</span>
+                      {t('composer.goalNoteAfter')}
+                    </p>
+                    {goalStatus !== undefined && goalStatus !== 'complete' ? (
+                      <div className="mt-2 flex gap-1.5 border-t border-hairline pt-2">
+                        {(goalStatus === 'paused' ? ['resume', 'cancel'] : ['pause', 'cancel']).map((control) => (
+                          <button
+                            key={control}
+                            type="button"
+                            onClick={() => {
+                              onChangeGoalControl(
+                                goalControl === control
+                                  ? undefined
+                                  : (control as 'pause' | 'resume' | 'cancel'),
+                              );
+                            }}
+                            className={`rounded-full border px-2 py-0.5 text-[10.5px] ${
+                              goalControl === control
+                                ? 'border-accent bg-accent-soft text-accent'
+                                : 'border-hairline text-ink-soft'
+                            }`}
+                          >
+                            {t(`composer.goalControl.${control as 'pause' | 'resume' | 'cancel'}`)}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+              {onChangeAgentProfile !== undefined && agentProfilesQuery.data !== undefined ? (
+                <SearchableSelect
+                  id="composer-agent-profile-select"
+                  options={agentProfileOptions}
+                  value={agentProfile ?? DEFAULT_AGENT_PROFILE}
+                  onChange={onChangeAgentProfile}
+                  title={
+                    agentProfilePending
+                      ? t('composer.agentProfilePendingTitle')
+                      : t('composer.agentProfileTitle')
+                  }
+                  ariaLabel={t('composer.agentProfileAria')}
+                  emptyText={t('composer.noAgentProfiles')}
+                  placement="above"
+                  panelClassName="anim-enter absolute z-40 bottom-full left-0 mb-1 w-72 max-w-[calc(100vw-48px)] overflow-hidden rounded-xl border border-hairline bg-panel shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
+                  buttonClassName={`flex max-w-44 items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[11px] outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/30 ${
+                    agentProfilePending
+                      ? 'border-accent bg-accent-soft text-accent'
+                      : 'border-hairline bg-panel text-ink-soft hover:border-hairline-strong'
+                  }`}
                 />
-              </svg>
-            </button>
+              ) : null}
+              {models.length === 0 ? (
+                <span
+                  className="max-w-56 truncate rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft"
+                  title={t('composer.modelTitle', { source: t(`composer.modelSource.${modelSource}`) })}
+                >
+                  {effectiveModel ?? t('composer.inheritDefault')}
+                </span>
+              ) : (
+                <SearchableSelect
+                  id="composer-model-select"
+                  options={modelOptions}
+                  value={model ?? ''}
+                  onChange={(next) => { onChangeModel(next === '' ? undefined : next); }}
+                  title={t('composer.modelTitle', { source: t(`composer.modelSource.${modelSource}`) })}
+                  ariaLabel={t('composer.modelAria')}
+                  placement="above"
+                  panelClassName="anim-enter absolute z-40 bottom-full left-0 mb-1 w-72 max-w-[calc(100vw-48px)] overflow-hidden rounded-xl border border-hairline bg-panel shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
+                  buttonClassName="flex max-w-56 items-center gap-1 rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft outline-none transition-colors hover:border-hairline-strong focus:border-accent focus:ring-2 focus:ring-accent/30"
+                />
+              )}
+              {efforts !== undefined && efforts.length > 0 && effort !== undefined ? (
+                <select
+                  className="rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft outline-none transition-colors hover:border-hairline-strong focus:border-accent"
+                  value={effort}
+                  onChange={(event) => { onChangeEffort(event.target.value); }}
+                  title={t('composer.effortTitle')}
+                >
+                  {efforts.map((level) => (
+                    <option key={level} value={level}>
+                      {level}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+            </div>
+            <div className="flex shrink-0 items-center gap-1.5">
+              {busy && onAbort !== undefined ? (
+                <button
+                  type="button"
+                  onClick={onAbort}
+                  title={t('composer.abortTitle')}
+                  aria-label={t('composer.abortTitle')}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-danger/40 text-danger transition-colors hover:bg-danger/10 focus-visible:ring-2 focus-visible:ring-danger/40 focus-visible:outline-none"
+                >
+                  <span aria-hidden className="text-[11px] font-bold">■</span>
+                </button>
+              ) : null}
+              {/* While busy, Send stays mounted beside Stop so a queued prompt
+                  has a mouse path too (Enter works as before). */}
+              <button
+                type="button"
+                onClick={send}
+                disabled={!canSend}
+                title={
+                  sendDisabled && !disabled && sendDisabledTitle !== undefined
+                    ? sendDisabledTitle
+                    : busy
+                      ? t(sendShortcut === 'cmd-enter' ? 'composer.queueTitleCmdEnter' : 'composer.queueTitle')
+                      : t(sendShortcut === 'cmd-enter' ? 'composer.sendTitleCmdEnter' : 'composer.sendTitle')
+                }
+                aria-label={busy ? t('composer.queueAria') : t('composer.sendAria')}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-white transition-colors hover:bg-accent-deep disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:outline-none"
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+                  <path
+                    d="M2.5 8h10M9 3.5 13.5 8 9 12.5"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
         <div className="mt-1.5 flex items-center gap-3">
@@ -1415,5 +1418,145 @@ function MentionMenuBody({
         );
       })}
     </>
+  );
+}
+
+/**
+ * PermissionModeSelect — the three approval-mode choices collapsed into one
+ * compact dropdown (the old three-pill row cost a full toolbar). The trigger
+ * is a small pill showing the current mode with a chevron; the panel pops
+ * upward from the bottom toolbar with one label + hint row per mode, the
+ * current one checked and accent-tinted.
+ *
+ * Keyboard/overlay contract: the trigger carries aria-haspopup/aria-expanded;
+ * opening moves focus to the current option, ↑/↓ cycles the option buttons,
+ * Enter/Space picks natively, Escape closes and refocuses the trigger, and a
+ * pointerdown anywhere outside dismisses. While open the panel registers as
+ * an overlay so the global Escape handler never aborts the turn out from
+ * under it.
+ */
+function PermissionModeSelect({
+  value,
+  onChange,
+}: {
+  value: PermissionMode;
+  onChange: (mode: PermissionMode) => void;
+}) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const current = MODES.find((mode) => mode.id === value) ?? MODES[0]!;
+
+  const close = (refocus = false) => {
+    setOpen(false);
+    if (refocus) triggerRef.current?.focus();
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const release = registerOverlay('composer-mode');
+    const onPointerDown = (event: PointerEvent) => {
+      if (rootRef.current !== null && !rootRef.current.contains(event.target as Node)) {
+        close();
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => {
+      release();
+      document.removeEventListener('pointerdown', onPointerDown);
+    };
+  }, [open]);
+
+  // Opening moves focus to the current mode's row so arrowing starts there.
+  useEffect(() => {
+    if (!open) return;
+    rootRef.current
+      ?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')
+      ?.focus();
+  }, [open]);
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!open) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      close(true);
+      return;
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const rows = [...(rootRef.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])];
+      if (rows.length === 0) return;
+      const index = rows.findIndex((row) => row === document.activeElement);
+      const delta = event.key === 'ArrowDown' ? 1 : -1;
+      rows[(index + delta + rows.length) % rows.length]?.focus();
+    }
+  };
+
+  return (
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Escape/arrow handling for the open panel
+    <div ref={rootRef} className="relative" data-mode-select onKeyDown={onKeyDown}>
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={t('composer.modeAria')}
+        title={t(current.hintKey)}
+        onClick={() => { setOpen((previous) => !previous); }}
+        className={`flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
+          open
+            ? 'border-accent bg-accent-soft text-accent'
+            : 'border-accent/70 bg-accent-soft/60 text-accent hover:border-accent'
+        }`}
+      >
+        {t(current.labelKey)}
+        <svg
+          width="9" height="9" viewBox="0 0 12 12" fill="none" aria-hidden
+          className={`shrink-0 opacity-70 transition-transform ${open ? 'rotate-180' : ''}`}
+        >
+          <path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {open ? (
+        <div
+          role="listbox"
+          aria-label={t('composer.modeAria')}
+          className="anim-enter absolute bottom-full left-0 z-30 mb-1.5 w-64 max-w-[calc(100vw-48px)] rounded-xl border border-hairline bg-panel p-1.5 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
+        >
+          {MODES.map((mode) => {
+            const isCurrent = mode.id === value;
+            return (
+              <button
+                key={mode.id}
+                type="button"
+                role="option"
+                aria-selected={isCurrent}
+                onClick={() => {
+                  onChange(mode.id);
+                  close(true);
+                }}
+                className={`flex w-full items-start gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+                  isCurrent ? 'bg-accent-soft' : 'hover:bg-paper'
+                }`}
+              >
+                <span className="min-w-0 flex-1">
+                  <span className={`block text-[12px] font-medium ${isCurrent ? 'text-accent' : 'text-ink'}`}>
+                    {t(mode.labelKey)}
+                  </span>
+                  <span className="mt-0.5 block text-[10.5px] leading-snug text-ink-faint">
+                    {t(mode.hintKey)}
+                  </span>
+                </span>
+                {isCurrent ? (
+                  <span aria-hidden className="shrink-0 text-[11px] leading-5 text-accent">✓</span>
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
   );
 }

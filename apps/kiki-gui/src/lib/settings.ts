@@ -1,5 +1,4 @@
 import type {
-  ConfigResponse,
   ModelCatalogItem,
   PatchConfigRequest,
   ProviderCatalogItem,
@@ -69,22 +68,49 @@ export interface ServerFileSettings {
   };
 }
 
-export function serverFileSettingsFromConfig(config: ConfigResponse): ServerFileSettings {
+export function configObjectOrEmpty(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/** Canonicalize config list projections without ever iterating a bare string. */
+export function normalizeConfigStringList(value: unknown): string[] {
+  if (value === undefined || value === null) return [];
+  if (typeof value === 'string') return [value];
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === 'string')) return [];
+  return [...new Set(value)];
+}
+
+export function serverFileSettingsFromConfig(config: unknown): ServerFileSettings {
+  const source = configObjectOrEmpty(config);
+  const subagent = configObjectOrEmpty(source['subagent']);
+  const agents = configObjectOrEmpty(source['agents']);
+  const modelCatalog = configObjectOrEmpty(source['model_catalog']);
   return {
     subagent: {
-      defaultModel: config.subagent?.defaultModel ?? '',
-      defaultEffort: config.subagent?.defaultEffort ?? '',
-      timeoutMs: config.subagent?.timeoutMs ?? 7_200_000,
+      defaultModel: typeof subagent['defaultModel'] === 'string' ? subagent['defaultModel'] : '',
+      defaultEffort: typeof subagent['defaultEffort'] === 'string' ? subagent['defaultEffort'] : '',
+      timeoutMs: typeof subagent['timeoutMs'] === 'number' ? subagent['timeoutMs'] : 7_200_000,
     },
     agents: {
-      enabled: config.agents?.enabled !== false,
-      defaultSubagentModel: config.agents?.defaultSubagentModel ?? '',
-      defaultSubagentReasoningEffort: config.agents?.defaultSubagentReasoningEffort ?? '',
+      enabled: agents['enabled'] !== false,
+      defaultSubagentModel:
+        typeof agents['defaultSubagentModel'] === 'string' ? agents['defaultSubagentModel'] : '',
+      defaultSubagentReasoningEffort:
+        typeof agents['defaultSubagentReasoningEffort'] === 'string'
+          ? agents['defaultSubagentReasoningEffort']
+          : '',
     },
-    builtinProductSkills: config.builtin_product_skills !== false,
+    builtinProductSkills: source['builtin_product_skills'] !== false,
     modelCatalog: {
-      refreshIntervalMs: config.model_catalog?.refreshIntervalMs ?? 0,
-      refreshOnStart: config.model_catalog?.refreshOnStart === true,
+      refreshIntervalMs:
+        typeof modelCatalog['refreshIntervalMs'] === 'number'
+          ? modelCatalog['refreshIntervalMs']
+          : 0,
+      refreshOnStart: modelCatalog['refreshOnStart'] === true,
     },
   };
 }
@@ -638,7 +664,8 @@ function optionalNumberDraft(value: number | null | undefined): string {
   return value === null ? 'null' : value === undefined ? '' : String(value);
 }
 
-export function runtimeConfigDraftFromConfig(config: KikiConfigResponse): RuntimeConfigDraft {
+export function runtimeConfigDraftFromConfig(value: unknown): RuntimeConfigDraft {
+  const config = configObjectOrEmpty(value) as unknown as KikiConfigResponse;
   const task = config.task;
   return {
     cron: {
@@ -667,12 +694,12 @@ export function runtimeConfigDraftFromConfig(config: KikiConfigResponse): Runtim
     },
     identityName: config.identity?.name ?? '',
     identitySlug: config.identity?.slug ?? '',
-    extraAgentDirs: [...(config.extra_agent_dirs ?? [])],
-    disabledBuiltinProfiles: [...(config.disabled_builtin_profiles ?? [])],
+    extraAgentDirs: normalizeConfigStringList(config.extra_agent_dirs),
+    disabledBuiltinProfiles: normalizeConfigStringList(config.disabled_builtin_profiles),
     mcpStartupTimeoutMs: optionalNumberDraft(config.mcp?.startupTimeoutMs),
     mcpToolTimeoutMs: optionalNumberDraft(config.mcp?.toolTimeoutMs),
-    toolsEnabled: [...(config.tools?.enabled ?? [])],
-    toolsDisabled: [...(config.tools?.disabled ?? [])],
+    toolsEnabled: normalizeConfigStringList(config.tools?.enabled),
+    toolsDisabled: normalizeConfigStringList(config.tools?.disabled),
   };
 }
 

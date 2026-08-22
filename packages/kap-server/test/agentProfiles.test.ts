@@ -468,6 +468,60 @@ describe('GET /api/v1/agents', () => {
     expect(projectedLeases).not.toContain('sourceDefinitionId');
   });
 
+  it('projects the override flag so clients can show which same-name profile wins', async () => {
+    const agentsDir = join(home as string, 'agents');
+    await mkdir(agentsDir, { recursive: true });
+    await writeFile(
+      join(agentsDir, 'explore.md'),
+      [
+        '---',
+        'name: explore',
+        'description: User-scoped exploration profile',
+        'override: true',
+        '---',
+        '',
+        'Explore carefully.',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    await writeFile(
+      join(agentsDir, 'reviewer.md'),
+      [
+        '---',
+        'name: reviewer',
+        'description: User reviewer without override',
+        '---',
+        '',
+        'Review carefully.',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+    });
+    base = `http://127.0.0.1:${server.port}`;
+    await authedFetch(server, base, '/api/v1/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: home } }),
+    });
+
+    const listed = (await (await authedFetch(server, base, '/api/v1/agents')).json()) as Envelope<unknown>;
+    const data = listNamedAgentProfilesResponseSchema.parse(listed.data);
+    const builtinExplore = data.items.find((profile) => profile.name === 'explore' && profile.source === 'builtin');
+    const userExplore = data.items.find((profile) => profile.name === 'explore' && profile.source === 'user');
+    expect(builtinExplore?.override).toBeUndefined();
+    expect(userExplore?.override).toBe(true);
+    const userReviewer = data.items.find((profile) => profile.name === 'reviewer' && profile.source === 'user');
+    expect(userReviewer?.override).toBeUndefined();
+  });
+
   it('rejects writes to builtin profiles with a read-only business code', async () => {
     const agentsDir = join(home as string, 'agents');
     await mkdir(agentsDir, { recursive: true });

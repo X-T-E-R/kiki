@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   disabledProfilePatch,
   experimentalFlagRows,
+  composerDefaultsForProfile,
   mergeNamedAgentProfiles,
+  namedAgentNewSessionBlocked,
+  namedAgentOverrideRelations,
   namedAgentSessionHref,
   partitionNamedAgentProfiles,
   subagentGovernanceFromConfig,
@@ -43,6 +46,23 @@ describe('subagent settings projection', () => {
       defaultModel: 'provider/fast',
       force: false,
       enforcePool: true,
+      denyModels: 'provider/blocked',
+    });
+  });
+
+  it('falls back safely for malformed roots and canonicalizes legacy deny lists', () => {
+    expect(subagentGovernanceFromConfig(null)).toEqual({
+      models: [],
+      defaultModel: '',
+      force: false,
+      enforcePool: false,
+      denyModels: '',
+    });
+    expect(subagentGovernanceFromConfig({
+      secondary_model: { models: { valid: 'description', ignored: 42 } },
+      subagent: { denyModels: 'provider/blocked' },
+    })).toMatchObject({
+      models: [{ id: 'valid', description: 'description' }],
       denyModels: 'provider/blocked',
     });
   });
@@ -200,6 +220,99 @@ describe('main/subagent partition', () => {
     ]);
     expect(buckets.main.map((profile) => profile.name)).toEqual(['agent', 'reviewer']);
     expect(buckets.sub.map((profile) => profile.name)).toEqual(['explore', 'frontend']);
+  });
+});
+
+describe('same-name override relations', () => {
+  const row = (overrides: Partial<NamedAgentProfile>): NamedAgentProfile => ({
+    name: 'explore',
+    source: 'builtin',
+    main: false,
+    disabled: false,
+    routes: [],
+    ...overrides,
+  });
+
+  it('marks an overriding file profile as effective and the built-in as overridden', () => {
+    const builtin = row({ name: 'explore', source: 'builtin' });
+    const file = row({
+      name: 'explore',
+      source: 'user',
+      override: true,
+      source_file: '/home/you/.kiki/agents/explore.md',
+    });
+    const relations = namedAgentOverrideRelations([builtin, file]);
+    expect(relations.get(file)).toEqual({ kind: 'overrides_builtin', builtinName: 'explore' });
+    expect(relations.get(builtin)).toEqual({
+      kind: 'overridden',
+      file: '/home/you/.kiki/agents/explore.md',
+    });
+  });
+
+  it('marks a non-override file profile as shadowed while the built-in stays canonical', () => {
+    const builtin = row({ name: 'explore', source: 'builtin' });
+    const file = row({ name: 'explore', source: 'workspace', source_file: '/repo/.kiki/agents/explore.md' });
+    const relations = namedAgentOverrideRelations([builtin, file]);
+    expect(relations.get(file)).toEqual({ kind: 'shadowed', builtinName: 'explore' });
+    expect(relations.has(builtin)).toBe(false);
+  });
+
+  it('annotates nothing when the built-in is disabled (the file profile wins outright)', () => {
+    const builtin = row({ name: 'explore', source: 'builtin', disabled: true });
+    const plain = row({ name: 'explore', source: 'user', source_file: '/a/explore.md' });
+    const flagged = row({ name: 'explore', source: 'workspace', override: true, source_file: '/b/explore.md' });
+    const relations = namedAgentOverrideRelations([builtin, plain, flagged]);
+    expect(relations.size).toBe(0);
+  });
+
+  it('annotates nothing when the file profile is disabled (the built-in wins again)', () => {
+    const builtin = row({ name: 'explore', source: 'builtin' });
+    const file = row({ name: 'explore', source: 'user', override: true, disabled: true });
+    expect(namedAgentOverrideRelations([builtin, file]).size).toBe(0);
+  });
+
+  it('leaves unrelated and builtin-free names alone, and handles several file rows per name', () => {
+    const solo = row({ name: 'reviewer', source: 'user', source_file: '/a/reviewer.md' });
+    const builtin = row({ name: 'explore', source: 'builtin' });
+    const overriding = row({ name: 'explore', source: 'user', override: true, source_file: '/a/explore.md' });
+    const plain = row({ name: 'explore', source: 'workspace', source_file: '/b/explore.md' });
+    const relations = namedAgentOverrideRelations([solo, builtin, overriding, plain]);
+    expect(relations.has(solo)).toBe(false);
+    expect(relations.get(overriding)?.kind).toBe('overrides_builtin');
+    expect(relations.get(plain)?.kind).toBe('shadowed');
+    expect(relations.get(builtin)).toEqual({ kind: 'overridden', file: '/a/explore.md' });
+  });
+
+  it('falls back to the profile name when the overriding file carries no source path', () => {
+    const builtin = row({ name: 'explore', source: 'builtin' });
+    const file = row({ name: 'explore', source: 'user', override: true });
+    expect(namedAgentOverrideRelations([builtin, file]).get(builtin)).toEqual({
+      kind: 'overridden',
+      file: 'explore',
+    });
+  });
+});
+
+describe('new-session button blocking', () => {
+  it('blocks a shadowed file profile even while it is enabled', () => {
+    // A session under its name would silently run the same-named built-in.
+    expect(namedAgentNewSessionBlocked(
+      { disabled: false, main: false },
+      { kind: 'shadowed', builtinName: 'explore' },
+    )).toBe(true);
+  });
+
+  it('keeps the button for an overriding file profile and for a disabled main profile', () => {
+    expect(namedAgentNewSessionBlocked(
+      { disabled: false, main: false },
+      { kind: 'overrides_builtin', builtinName: 'explore' },
+    )).toBe(false);
+    expect(namedAgentNewSessionBlocked({ disabled: true, main: true })).toBe(false);
+  });
+
+  it('blocks a disabled subagent profile without a relation', () => {
+    expect(namedAgentNewSessionBlocked({ disabled: true, main: false })).toBe(true);
+    expect(namedAgentNewSessionBlocked({ disabled: false, main: false })).toBe(false);
   });
 });
 
@@ -373,5 +486,33 @@ describe('model profile read-only summary', () => {
     });
     expect(summary.headline).toBe('fast → Quick tweaks');
     expect(summary.details).toEqual([]);
+  });
+});
+
+describe('composerDefaultsForProfile', () => {
+  const row = (overrides: Partial<NamedAgentProfile>): NamedAgentProfile => ({
+    name: 'agent',
+    source: 'builtin',
+    main: true,
+    disabled: false,
+    routes: [],
+    ...overrides,
+  });
+
+  it('returns the selected profile pins and omits blank fields', () => {
+    expect(composerDefaultsForProfile([
+      row({ name: 'grok-only', pinned_model_alias: 'grok-4.6', thinking_effort: 'high' }),
+      row({ name: 'agent' }),
+    ], 'grok-only')).toEqual({ model: 'grok-4.6', thinking: 'high' });
+    expect(composerDefaultsForProfile([
+      row({ name: 'agent', pinned_model_alias: '  ', thinking_effort: '' }),
+    ], 'agent')).toEqual({ model: undefined, thinking: undefined });
+  });
+
+  it('returns empty defaults when the named profile is missing', () => {
+    expect(composerDefaultsForProfile([row({ name: 'agent' })], 'missing')).toEqual({
+      model: undefined,
+      thinking: undefined,
+    });
   });
 });

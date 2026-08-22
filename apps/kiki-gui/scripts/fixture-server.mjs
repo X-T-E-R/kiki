@@ -380,7 +380,7 @@ class FixtureServer {
     this.sessions.clear();
     this.workspaces = structuredClone(data.workspaces ?? []);
     this.agentProfiles = structuredClone(data.agentProfiles ?? [
-      { name: 'agent', source: 'builtin', description: 'General-purpose built-in agent.', routes: [] },
+      { name: 'agent', source: 'builtin', description: 'General-purpose built-in agent.', main: true, routes: [] },
     ]);
     for (const session of data.sessions ?? []) {
       const bound = bind(session, session.id);

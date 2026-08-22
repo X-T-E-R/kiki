@@ -269,6 +269,34 @@ describe('settings persistence and validation', () => {
     expect(patch.replace_domains).not.toContain('cron');
   });
 
+  it('projects malformed config roots and lists to safe canonical defaults', () => {
+    expect(runtimeConfigDraftFromConfig(null)).toMatchObject({
+      extraAgentDirs: [],
+      disabledBuiltinProfiles: [],
+      toolsEnabled: [],
+      toolsDisabled: [],
+    });
+    expect(serverFileSettingsFromConfig('not-a-config')).toMatchObject({
+      subagent: { defaultModel: '', defaultEffort: '', timeoutMs: 7_200_000 },
+      agents: { enabled: true },
+    });
+
+    expect(() => runtimeConfigDraftFromConfig({
+      extra_agent_dirs: { path: 'C:/agents' },
+      disabled_builtin_profiles: 42,
+      tools: { enabled: 'Read', disabled: { Bash: true } },
+    })).not.toThrow();
+    const draft = runtimeConfigDraftFromConfig({
+      extra_agent_dirs: { path: 'C:/agents' },
+      disabled_builtin_profiles: 'reviewer',
+      tools: { enabled: 'Read', disabled: { Bash: true } },
+    });
+    expect(draft.extraAgentDirs).toEqual([]);
+    expect(draft.disabledBuiltinProfiles).toEqual(['reviewer']);
+    expect(draft.toolsEnabled).toEqual(['Read']);
+    expect(draft.toolsDisabled).toEqual([]);
+  });
+
   it('rejects invalid runtime integers before config writes', () => {
     const draft = runtimeConfigDraftFromConfig({ providers: {} });
     draft.imageMaxEdgePx = '0';

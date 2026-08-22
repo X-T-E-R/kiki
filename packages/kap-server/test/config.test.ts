@@ -302,6 +302,31 @@ describe('server-v2 /api/v1/config', () => {
     expect(persisted).not.toContain('"researcher"');
   });
 
+  it('PATCH a disabled list domain without replace_domains replaces the array atomically', async () => {
+    await boot([
+      'disabled_builtin_profiles = ["coder"]',
+      'disabled_named_profiles = ["critic"]',
+      '',
+    ].join('\n'));
+
+    const first = await patchConfig({ disabled_builtin_profiles: ['explore', 'agent'] });
+    expect(first.disabled_builtin_profiles).toEqual(['explore', 'agent']);
+    expect(first.disabled_named_profiles).toEqual(['critic']);
+
+    const second = await patchConfig({ disabled_builtin_profiles: ['agent'] });
+    expect(second.disabled_builtin_profiles).toEqual(['agent']);
+
+    const after = await getConfig();
+    expect(after.disabled_builtin_profiles).toEqual(['agent']);
+    expect(after.disabled_named_profiles).toEqual(['critic']);
+
+    const persisted = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(persisted).toContain('"agent"');
+    expect(persisted).toContain('"critic"');
+    expect(persisted).not.toContain('"coder"');
+    expect(persisted).not.toContain('"explore"');
+  });
+
   it('validates every runtime domain with the core schemas and rejects unknown top-level fields', async () => {
     await boot();
 

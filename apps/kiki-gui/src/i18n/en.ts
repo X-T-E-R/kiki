@@ -43,6 +43,8 @@ export const en = {
   'app.reconnecting': 'Connection lost — reconnecting…',
   'app.disconnected': 'Disconnected from the server. Events will resume on reconnect.',
   'app.closeSidebar': 'Close sidebar',
+  'app.unexpectedError': 'Kiki hit an unexpected error.',
+  'app.reload': 'Reload',
 
   // ---- sidebar ----
   'sidebar.newSession': 'New session',
@@ -118,7 +120,7 @@ export const en = {
   'profile.switchTitle': 'Switch to {profile}?',
   'profile.switchBody': 'The new agent profile takes effect from your next message in this session.',
   'profile.switchModelReset':
-    'Model and thinking effort reset to the new profile’s pins, unless you pick them again yourself after confirming.',
+    'The model and thinking effort on this page switch to the new profile’s defaults. You can still change them before sending.',
   'profile.switchSubagents': 'Subagent dispatch policy switches with the new profile.',
   'profile.switchConfirm': 'Switch profile',
   'rename.title': 'Rename session',
@@ -212,6 +214,7 @@ export const en = {
   'composer.mode.autoHint': 'Approve reads, ask for writes',
   'composer.mode.yolo': 'yolo',
   'composer.mode.yoloHint': 'Never ask',
+  'composer.modeAria': 'Permission mode',
   'composer.plan': 'plan',
   'composer.planHint': 'Plan mode — kiki proposes a plan before acting',
   'composer.swarm': 'swarm',
@@ -244,7 +247,6 @@ export const en = {
   'composer.agentProfileAria': 'Agent profile',
   'composer.agentProfileTitle': 'Agent profile — the persona and toolset this session runs as',
   'composer.agentProfilePendingTitle': 'Profile switch pending — applies from your next message',
-  'composer.agentProfileMainSuffix': ' · main',
   'composer.noAgentProfiles': '(no agent profiles)',
   'composer.placeholder': 'Ask kiki anything…',
   'composer.placeholderBusy': 'Steer kiki — this queues while it works…',
@@ -1092,9 +1094,15 @@ export const en = {
     'User, project, and extra file profiles are editable; other profile sources remain read-only.',
   'st.namedAgents.loading': 'Loading named agent profiles…',
   'st.namedAgents.empty': 'No named agent profiles are currently loaded.',
-  'st.namedAgents.mainBadge': 'main',
+  'st.namedAgents.technicalDetails': 'Technical details',
+  'st.namedAgents.overridesBuiltin': 'This profile overrides the built-in profile with the same name.',
+  'st.namedAgents.overriddenByFile': 'Built-in profile overridden by {file}',
+  'st.namedAgents.shadowedByBuiltin':
+    'Not in effect — the same-named built-in profile takes precedence. Set override: true in this file to use it instead.',
   'st.namedAgents.newSession': 'New session',
   'st.namedAgents.newSessionDisabled': 'Enable this agent before starting a session with it.',
+  'st.namedAgents.newSessionShadowed':
+    'Not in effect — a session with this name would run the same-named built-in profile instead. Set override: true in the file first.',
   'st.namedAgents.newSessionDisabledMain':
     'Start a main session with this agent — it just won’t be called as a subagent while off.',
   'st.namedAgents.modelProfile': 'model profile',
@@ -1117,7 +1125,6 @@ export const en = {
     'Read-only fields projected from the profile definition; edit them in the raw file.',
   'st.namedAgents.sourceFile': 'source file',
   'st.namedAgents.builtin': 'built in (no source file)',
-  'st.namedAgents.workspace': 'workspace',
   'st.namedAgents.enabled': 'Enabled',
   'st.namedAgents.builtinToggleHint': 'Turn this built-in agent on or off. While off, it won’t be called as a subagent.',
   'st.namedAgents.nonBuiltinToggleHint': 'Only built-in profiles can be enabled or disabled here.',

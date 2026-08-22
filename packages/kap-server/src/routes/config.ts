@@ -33,6 +33,8 @@ interface ConfigRouteHost {
   ): unknown;
 }
 
+const configResponseWireSchema = configResponseSchema.passthrough();
+
 export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
   const getRoute = defineRoute(
     {
@@ -114,7 +116,7 @@ function toConfigResponse(resolved: Record<string, unknown>): ConfigResponse {
   if (wire['providers'] === undefined) {
     wire['providers'] = {};
   }
-  return wire as ConfigResponse;
+  return configResponseWireSchema.parse(wire);
 }
 
 interface ProviderLike {

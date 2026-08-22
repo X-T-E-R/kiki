@@ -35,6 +35,8 @@ import {
   disabledProfilePatch,
   experimentalFlagRows,
   mergeNamedAgentProfiles,
+  namedAgentNewSessionBlocked,
+  namedAgentOverrideRelations,
   namedAgentSessionHref,
   partitionNamedAgentProfiles,
   subagentGovernanceFromConfig,
@@ -44,6 +46,7 @@ import {
   validateSubagentGovernance,
   workspaceChipDisplay,
   type NamedAgentLeaseDetailLabel,
+  type NamedAgentOverrideRelation,
   type SubagentGovernanceDraft,
   type SubagentGovernanceIssue,
 } from '../lib/agentSettings';
@@ -1794,12 +1797,14 @@ export function parseNamedAgentTools(value: string): readonly string[] | null {
 function NamedAgentProfileRow({
   profile,
   workspaceFallbackId,
+  overrideRelation,
   onUpdated,
   onToggleEnabled,
   toggleSaving,
 }: {
   profile: NamedAgentProfile;
   workspaceFallbackId?: string;
+  overrideRelation?: NamedAgentOverrideRelation;
   onUpdated: (profile: NamedAgentProfile) => void;
   onToggleEnabled: (profile: NamedAgentProfile, enabled: boolean) => Promise<void>;
   toggleSaving: boolean;
@@ -1823,13 +1828,18 @@ function NamedAgentProfileRow({
   const workspaceChips = workspaceChipDisplay(workspaceIds);
   const sessionHref = namedAgentSessionHref(profile, workspaceFallbackId);
   // A disabled main profile keeps its new-session button (main sessions
-  // still run it); a disabled subagent profile loses it.
-  const newSessionBlocked = profile.disabled && profile.main !== true;
-  const newSessionTitle = newSessionBlocked
-    ? t('st.namedAgents.newSessionDisabled')
-    : profile.disabled
-      ? t('st.namedAgents.newSessionDisabledMain')
-      : t('st.namedAgents.newSession');
+  // still run it); a disabled subagent profile loses it. A shadowed file
+  // profile loses it too: a session under its name would silently run the
+  // same-named built-in instead.
+  const shadowed = overrideRelation?.kind === 'shadowed';
+  const newSessionBlocked = namedAgentNewSessionBlocked(profile, overrideRelation);
+  const newSessionTitle = shadowed
+    ? t('st.namedAgents.newSessionShadowed')
+    : newSessionBlocked
+      ? t('st.namedAgents.newSessionDisabled')
+      : profile.disabled
+        ? t('st.namedAgents.newSessionDisabledMain')
+        : t('st.namedAgents.newSession');
   // Read-only projections the structured editor cannot write (the PATCH
   // schema does not open them): surface them in the summary and point at the
   // raw file instead of silently hiding them.
@@ -1941,20 +1951,49 @@ function NamedAgentProfileRow({
     }
   };
 
+  const overriddenBy = overrideRelation?.kind === 'overridden' ? overrideRelation : undefined;
+  const overrideState =
+    overrideRelation?.kind === 'overrides_builtin'
+      ? 'overrides'
+      : overrideRelation?.kind === 'shadowed'
+        ? 'shadowed'
+        : undefined;
+
+  // A built-in shadowed by an overriding same-name file profile collapses to
+  // a single muted line — rendering it as a normal enabled row would suggest
+  // two live profiles where only the file actually runs.
+  if (overriddenBy !== undefined) {
+    return (
+      <div
+        data-agent-profile={profile.name}
+        data-agent-source={profile.source}
+        data-override-state="overridden"
+        className="rounded-lg border border-hairline bg-panel px-3 py-2"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="font-mono text-[12.5px] text-ink-faint">{profile.name}</p>
+          <span className="rounded-full border border-hairline px-2 py-0.5 font-mono text-[9.5px] text-ink-faint">
+            {profile.source}
+          </span>
+          <span className="min-w-0 truncate text-[10.5px] text-ink-faint" title={overriddenBy.file}>
+            {t('st.namedAgents.overriddenByFile', { file: overriddenBy.file })}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       data-agent-profile={profile.name}
+      data-agent-source={profile.source}
+      data-override-state={overrideState}
       className={`rounded-lg border border-hairline bg-paper px-3 py-2 transition-opacity ${profile.disabled ? 'opacity-60' : ''}`}
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="font-mono text-[12.5px] font-medium text-ink">
             {profile.name}
-            {profile.main ? (
-              <span className="ml-2 rounded-full border border-accent/40 bg-accent-soft px-1.5 py-px align-middle text-[9px] font-medium uppercase tracking-wide text-accent">
-                {t('st.namedAgents.mainBadge')}
-              </span>
-            ) : null}
             {profile.disabled ? (
               <span className="ml-2 rounded-full border border-hairline bg-panel px-1.5 py-px align-middle text-[9px] font-medium uppercase tracking-wide text-ink-faint">
                 {t('st.namedAgents.disabledBadge')}
@@ -1965,22 +2004,11 @@ function NamedAgentProfileRow({
             <p className="mt-0.5 text-[10.5px] text-ink-faint">{t('st.namedAgents.disabledMainHint')}</p>
           ) : null}
           {!editing && profile.description !== undefined ? <p className="text-[11.5px] text-ink-soft">{profile.description}</p> : null}
-          {workspaceChips.shown.length > 0 ? (
-            <p className="mt-1 flex flex-wrap items-center gap-1">
-              {workspaceChips.shown.map((id) => (
-                <span key={id} title={id} className="max-w-40 truncate rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[9.5px] text-ink-faint">
-                  {id}
-                </span>
-              ))}
-              {workspaceChips.extra > 0 ? (
-                <span
-                  title={workspaceIds.join(', ')}
-                  className="rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[9.5px] text-ink-faint"
-                >
-                  +{workspaceChips.extra} {t('st.namedAgents.workspaces')}
-                </span>
-              ) : null}
-            </p>
+          {overrideRelation?.kind === 'overrides_builtin' ? (
+            <p className="mt-0.5 text-[10.5px] text-ink-faint">{t('st.namedAgents.overridesBuiltin')}</p>
+          ) : null}
+          {overrideRelation?.kind === 'shadowed' ? (
+            <p className="mt-0.5 text-[10.5px] text-danger">{t('st.namedAgents.shadowedByBuiltin')}</p>
           ) : null}
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2">
@@ -2077,9 +2105,29 @@ function NamedAgentProfileRow({
         </fieldset>
       ) : (
         <>
-          <div className="mt-2 space-y-1 break-all font-mono text-[10px] text-ink-faint">
+          <details className="mt-2 rounded-lg border border-hairline bg-panel px-2.5 py-1.5" data-technical-details>
+            <summary className="cursor-pointer select-none text-[10.5px] font-medium text-ink-faint hover:text-ink-soft">
+              {t('st.namedAgents.technicalDetails')}
+            </summary>
+            <div className="mt-2 space-y-1 break-all font-mono text-[10px] text-ink-faint">
             <p>{t('st.namedAgents.sourceFile')}: {profile.source_file ?? t('st.namedAgents.builtin')}</p>
-            {workspaceIds.length > 0 ? <p>{t('st.namedAgents.workspace')}: {workspaceIds.join(', ')}</p> : null}
+            {workspaceChips.shown.length > 0 ? (
+              <p className="flex flex-wrap items-center gap-1">
+                {workspaceChips.shown.map((id) => (
+                  <span key={id} title={id} className="max-w-40 truncate rounded-full border border-hairline bg-paper px-1.5 py-px font-mono text-[9.5px] text-ink-faint">
+                    {id}
+                  </span>
+                ))}
+                {workspaceChips.extra > 0 ? (
+                  <span
+                    title={workspaceIds.join(', ')}
+                    className="rounded-full border border-hairline bg-paper px-1.5 py-px font-mono text-[9.5px] text-ink-faint"
+                  >
+                    +{workspaceChips.extra} {t('st.namedAgents.workspaces')}
+                  </span>
+                ) : null}
+              </p>
+            ) : null}
             {profile.when_to_use !== undefined ? <p>{t('st.namedAgents.whenToUse')}: {profile.when_to_use}</p> : null}
             {profile.pinned_model_alias !== undefined ? <p>{t('st.namedAgents.modelPin')}: {profile.pinned_model_alias}</p> : null}
             {profile.thinking_effort !== undefined ? <p>{t('st.namedAgents.thinkingEffort')}: {profile.thinking_effort}</p> : null}
@@ -2137,8 +2185,9 @@ function NamedAgentProfileRow({
                 </div>
               );
             })}
-          </div>
-          {hasProjection ? <Hint>{t('st.namedAgents.projectionHint')}</Hint> : null}
+            </div>
+            {hasProjection ? <Hint>{t('st.namedAgents.projectionHint')}</Hint> : null}
+          </details>
         </>
       )}
       {profile.source_file !== undefined ? (
@@ -2243,12 +2292,17 @@ function NamedAgentProfilesCard() {
   // `main === true` lands in the main-agent card; everything else is a
   // subagent profile. Enabled toggle and edit affordances are identical.
   const buckets = useMemo(() => partitionNamedAgentProfiles(profiles), [profiles]);
+  // Same-name built-in/file override relations: an overriding file profile is
+  // the effective row, its built-in collapses to a shadow note, and a
+  // non-override same-name file row carries a not-in-effect warning.
+  const overrideRelations = useMemo(() => namedAgentOverrideRelations(profiles), [profiles]);
 
   const renderRow = (profile: NamedAgentProfile, index: number) => (
     <NamedAgentProfileRow
       key={`${profile.name}:${profile.source}:${profile.source_file ?? profile.workspace_id ?? ''}:${index}`}
       profile={profile}
       workspaceFallbackId={fallbackWorkspaceId}
+      overrideRelation={overrideRelations.get(profile)}
       onUpdated={updateEcho}
       onToggleEnabled={toggleEnabled}
       toggleSaving={toggleSaving !== null || configQuery.isLoading}

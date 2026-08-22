@@ -190,7 +190,10 @@ export default {
   // name+source+file across the workspaces) into one with workspace_ids.
   // `main` splits the settings agents section into the main-agent card and
   // the subagent-profiles card; `frontend` carries the read-only projection
-  // fields (model_profiles / spawn_constraints / subagents).
+  // fields (model_profiles / spawn_constraints / subagents). The two
+  // same-name pairs demonstrate the override rules: the user `explore.md`
+  // carries `override: true` and shadows the built-in explore, while the
+  // user `scout.md` lacks the flag and loses to the built-in scout.
   agentProfiles: [
     {
       name: 'agent',
@@ -204,6 +207,32 @@ export default {
       name: 'explore',
       source: 'builtin',
       description: 'Read-only codebase exploration agent.',
+      main: false,
+      routes: [],
+    },
+    {
+      name: 'explore',
+      source: 'user',
+      workspace_id: WSID,
+      source_file: 'C:/fixture/user/agents/explore.md',
+      description: 'Team-tuned read-only explorer replacing the built-in.',
+      override: true,
+      main: false,
+      routes: [],
+    },
+    {
+      name: 'scout',
+      source: 'builtin',
+      description: 'Fast first-pass triage agent.',
+      main: false,
+      routes: [],
+    },
+    {
+      name: 'scout',
+      source: 'user',
+      workspace_id: WSID,
+      source_file: 'C:/fixture/user/agents/scout.md',
+      description: 'Same-named file profile without the override flag.',
       main: false,
       routes: [],
     },
