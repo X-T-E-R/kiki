@@ -12,7 +12,10 @@ import {
   ISessionIndexMirror,
   ICapabilityService,
   IPluginService,
+  IHomeRuntimeService,
+  ISessionManager,
   IThreadCommunicationService,
+  IThreadMailboxStore,
   IWorkspaceService,
   KIMI_CODE_PLUGIN_MARKETPLACE_URL,
   PluginChanged,
@@ -230,9 +233,6 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const enableTerminals = exposureClass === 'loopback' || opts.allowRemoteTerminals === true;
   const debugEndpoints = exposureClass === 'loopback' && opts.debugEndpoints === true;
   const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
-  // External delegation is an opt-in narrow edge: a missing, incomplete, or
-  // invalid authority configuration must not take the whole server down.
-  // Resolve it best-effort and warn instead of refusing to boot.
   let externalDelegation: ExternalDelegationAuthorityConfig | undefined;
   try {
     externalDelegation = opts.externalDelegation ?? externalDelegationAuthorityFromEnv(process.env);
@@ -305,14 +305,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     core.accessor.get(IConfigService),
     logger,
   );
-  // App-scope pricing loads cache → vendored synchronously, then owns its
-  // fail-open background refresh timer for the server lifetime.
   core.accessor.get(IModelPricingService);
 
-  // Disk-backed catalog/index warmup is deliberately outside the listener's
-  // readiness path. Reads remain authoritative while the session read model is
-  // preparing, and workspace operations join the catalog service's serialized
-  // first-use merge, so serving traffic before this finishes is fail-open.
   let postListenWarmup: Promise<void> | undefined;
   const runPostListenWarmup = async (): Promise<void> => {
     try {
@@ -377,7 +371,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   }
 
   const shutdownController = new AbortController();
-  const close = async (): Promise<void> => {
+  const doClose = async (): Promise<void> => {
     shutdownController.abort();
     const closeErrors: unknown[] = [];
     let appClosing: Promise<void>;
@@ -391,13 +385,34 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       logger.warn({ err: error }, 'http listener close failed; continuing server cleanup');
       appClosing = Promise.resolve();
     }
+    await appClosing;
     try {
       await core.accessor.get(IThreadCommunicationService).shutdown();
     } catch (error) {
       closeErrors.push(error);
       logger.warn({ err: error }, 'thread communication shutdown failed; continuing server cleanup');
     }
-    await appClosing;
+    const sessionManager = core.accessor.get(ISessionManager);
+    for (const session of sessionManager.list()) {
+      try {
+        await sessionManager.close(session.id);
+      } catch (error) {
+        closeErrors.push(error);
+        logger.warn({ err: error, sessionId: session.id }, 'session close failed; continuing server cleanup');
+      }
+    }
+    try {
+      await core.accessor.get(IThreadMailboxStore).close();
+    } catch (error) {
+      closeErrors.push(error);
+      logger.warn({ err: error }, 'thread mailbox close failed; continuing server cleanup');
+    }
+    try {
+      await core.accessor.get(IHomeRuntimeService).close();
+    } catch (error) {
+      closeErrors.push(error);
+      logger.warn({ err: error }, 'home runtime close failed; continuing server cleanup');
+    }
     configWarningSubscription.dispose();
     pluginChangeSubscription.dispose();
     capabilityInstallSubscription.dispose();
@@ -433,6 +448,11 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     }
     if (closeErrors.length === 1) throw closeErrors[0];
     if (closeErrors.length > 1) throw new AggregateError(closeErrors, 'server close failed');
+  };
+  let closeFlight: Promise<void> | undefined;
+  const close = (): Promise<void> => {
+    closeFlight ??= doClose();
+    return closeFlight;
   };
 
   const connectionRegistry = new ConnectionRegistry();

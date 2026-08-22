@@ -25,6 +25,10 @@
 // are best-effort (atomic per shard, not globally). scan/prefix results are a
 // per-shard snapshot merged globally, so entries from different shards may
 // reflect different points in time.
+//
+// Partition affinity: partitionGet/partitionPrefix/partitionBatch route owned
+// keys through an explicit partition key. Batches validate every key before
+// committing one atomic WAL frame on the partition's shard.
 
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -232,6 +236,34 @@ export class ClusterDb<V = unknown> {
   async batch(ops: readonly BatchInputOp<V>[]): Promise<void> {
     this.ensureOpen();
     await this.coordinator.batch(ops);
+  }
+
+  private static assertPartitionOwns(partitionKey: string, key: string): void {
+    if (key !== partitionKey && !key.startsWith(`${partitionKey}/`)) {
+      throw new Error(`key "${key}" does not belong to partition "${partitionKey}"`);
+    }
+  }
+
+  /** Fetch a partition-owned key from the partition's shard. */
+  async partitionGet(partitionKey: string, key: string): Promise<V | undefined> {
+    this.ensureOpen();
+    ClusterDb.assertPartitionOwns(partitionKey, key);
+    return this.reader(this.router.shardFor(partitionKey), (db) => db.get(key));
+  }
+
+  /** Scan a partition-owned prefix on the partition's shard. */
+  async partitionPrefix(partitionKey: string, prefix: string, limit = Infinity): Promise<ScanEntry<V>[]> {
+    this.ensureOpen();
+    ClusterDb.assertPartitionOwns(partitionKey, prefix);
+    return this.reader(this.router.shardFor(partitionKey), (db) => db.prefix(prefix, limit));
+  }
+
+  /** Commit partition-owned mutations as one batch on the partition's shard. */
+  async partitionBatch(partitionKey: string, ops: readonly BatchInputOp<V>[]): Promise<void> {
+    this.ensureOpen();
+    for (const op of ops) ClusterDb.assertPartitionOwns(partitionKey, op.key);
+    if (ops.length === 0) return;
+    await this.writer(this.router.shardFor(partitionKey), (db) => db.batch(ops));
   }
 
   // ---- scans ----------------------------------------------------------------

@@ -103,6 +103,46 @@ function manualScheduler() {
   };
 }
 
+function fakeAnimationFrames() {
+  const pending = new Map<number, FrameRequestCallback>();
+  let nextHandle = 1;
+  const request = vi.fn((callback: FrameRequestCallback) => {
+    const handle = nextHandle;
+    nextHandle += 1;
+    pending.set(handle, callback);
+    return handle;
+  });
+  const cancel = vi.fn((handle: number) => {
+    pending.delete(handle);
+  });
+  return {
+    request,
+    cancel,
+    pending: () => pending.size,
+    flushOne() {
+      const entry = pending.entries().next().value;
+      if (entry === undefined) return;
+      pending.delete(entry[0]);
+      entry[1](performance.now());
+    },
+  };
+}
+
+function visibilityDocument(initial: 'hidden' | 'visible') {
+  const target = new EventTarget() as EventTarget & { readonly visibilityState: string };
+  let visibilityState = initial;
+  Object.defineProperty(target, 'visibilityState', {
+    get: () => visibilityState,
+  });
+  return {
+    target,
+    set(next: 'hidden' | 'visible') {
+      visibilityState = next;
+      target.dispatchEvent(new Event('visibilitychange'));
+    },
+  };
+}
+
 interface Harness {
   controller: SessionController;
   client: {
@@ -122,7 +162,7 @@ interface Harness {
   mainPublishes: () => number;
 }
 
-async function openController(): Promise<Harness> {
+async function openController(options: { defaultScheduler?: boolean } = {}): Promise<Harness> {
   const client = {
     snapshot: vi.fn(async () => snapshot()),
     listPrompts: vi.fn(async () => ({ active: null, queued: [] })),
@@ -159,7 +199,7 @@ async function openController(): Promise<Harness> {
     client as unknown as KikiClient,
     socket as unknown as KikiSocket,
     'session_test',
-    { scheduler },
+    options.defaultScheduler === true ? undefined : { scheduler },
   );
   let publishes = 0;
   controller.subscribe(() => {
@@ -331,6 +371,57 @@ describe('SessionController pipeline', () => {
       ).toMatchObject({ text: 'hidden', streaming: true });
     } finally {
       controller?.close();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('publishes hidden default-scheduler intake on bounded timers and returns to rAF', async () => {
+    vi.useFakeTimers();
+    const visibility = visibilityDocument('hidden');
+    const animationFrames = fakeAnimationFrames();
+    vi.stubGlobal('document', visibility.target);
+    vi.stubGlobal('requestAnimationFrame', animationFrames.request);
+    vi.stubGlobal('cancelAnimationFrame', animationFrames.cancel);
+    let controller: SessionController | undefined;
+    try {
+      const harness = await openController({ defaultScheduler: true });
+      controller = harness.controller;
+      for (let i = 0; i < 250; i += 1) {
+        controller.handleFrame(
+          frame({ type: 'session.meta.updated', title: `hidden-${i}` } as never, { seq: 11 + i }),
+        );
+      }
+
+      expect(animationFrames.request).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(999);
+      expect(harness.mainPublishes()).toBe(0);
+      vi.advanceTimersByTime(1);
+      expect(controller.getState().session?.title).toBe('hidden-199');
+      expect(harness.mainPublishes()).toBe(1);
+      vi.advanceTimersByTime(1000);
+      expect(controller.getState().session?.title).toBe('hidden-249');
+      expect(harness.mainPublishes()).toBe(2);
+      expect(harness.client.snapshot).toHaveBeenCalledTimes(1);
+
+      controller.handleFrame(
+        frame({ type: 'session.meta.updated', title: 'last-hidden' } as never, { seq: 261 }),
+      );
+      visibility.set('visible');
+      expect(animationFrames.pending()).toBe(1);
+      vi.advanceTimersByTime(5000);
+      expect(controller.getState().session?.title).toBe('hidden-249');
+      animationFrames.flushOne();
+      expect(controller.getState().session?.title).toBe('last-hidden');
+
+      controller.close();
+      const requestsAfterClose = animationFrames.request.mock.calls.length;
+      visibility.set('hidden');
+      vi.advanceTimersByTime(5000);
+      expect(animationFrames.request).toHaveBeenCalledTimes(requestsAfterClose);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      controller?.close();
+      vi.useRealTimers();
       vi.unstubAllGlobals();
     }
   });
@@ -984,12 +1075,11 @@ describe('SessionController pipeline', () => {
     controller.close();
   });
 
-  it('drops an overflowing hidden-tab buffer and resyncs instead of growing it', async () => {
+  it('drops an intake burst beyond 1000 frames and resyncs instead of growing it', async () => {
     const { controller, client, flushAll } = await openController();
     const snapshotCalls = () => client.snapshot.mock.calls.length;
     const before = snapshotCalls(); // open()
-    // 1001 durable frames exceed the inbound buffer's 1000-frame bound while
-    // the flush scheduler never runs (document hidden).
+    // The manual scheduler holds the burst so it exceeds the frame-count bound.
     for (let i = 0; i < 1001; i += 1) {
       controller.handleFrame(
         frame({ type: 'session.meta.updated', title: `t${i}` } as never, { seq: 11 + i }),
@@ -999,12 +1089,32 @@ describe('SessionController pipeline', () => {
     // The overflow discarded the buffer and demanded a snapshot resync.
     await waitFor(() => snapshotCalls() > before);
     await waitFor(() => !controller.getState().resyncing && !controller.getState().resyncFailed);
+    expect(snapshotCalls()).toBeGreaterThan(before);
+    expect(controller.getState().resyncFailed).toBe(false);
+    controller.close();
+  });
+
+  it('drops an intake burst beyond 2 MiB and resyncs', async () => {
+    const { controller, client } = await openController();
+    const snapshotCalls = () => client.snapshot.mock.calls.length;
+    const before = snapshotCalls();
+    const largeTitle = 'x'.repeat(600_000);
+    controller.handleFrame(
+      frame({ type: 'session.meta.updated', title: largeTitle } as never, { seq: 11 }),
+    );
+    controller.handleFrame(
+      frame({ type: 'session.meta.updated', title: largeTitle } as never, { seq: 12 }),
+    );
+    await waitFor(() => snapshotCalls() > before);
+    await waitFor(() => !controller.getState().resyncing && !controller.getState().resyncFailed);
+    expect(snapshotCalls()).toBeGreaterThan(before);
+    expect(controller.getState().resyncFailed).toBe(false);
     controller.close();
   });
 
   it('applies a large intake in bounded chunks, publishing once per tick', async () => {
     const { controller, mainPublishes } = await openController();
-    // 250 durable frames land while hidden (all below the overflow bound).
+    // 250 durable frames land before the manual scheduler runs.
     for (let i = 0; i < 250; i += 1) {
       controller.handleFrame(
         frame({ type: 'session.meta.updated', title: `t${i}` } as never, { seq: 11 + i }),

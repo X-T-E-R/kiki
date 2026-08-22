@@ -49,6 +49,7 @@ export * from '#/agent/runtimeBinding/runtimeBindingService';
 export * from '#/agent/runtimeBinding/agentRuntime';
 export * from '#/app/sessionManager/sessionManager';
 export * from '#/app/sessionManager/sessionManagerService';
+export * from '#/app/runtimeHost/index';
 
 export * from '#/_base/log/log';
 export * from '#/_base/log/logConfig';
@@ -145,6 +146,7 @@ export * from '#/app/threadCommunication/threadCommunication';
 export * from '#/app/threadCommunication/threadMailboxStore';
 export * from '#/app/threadCommunication/mailboxErrors';
 export * from '#/app/threadCommunication/miniDbThreadMailboxStore';
+export * from '#/app/threadCommunication/runtimeThreadMailboxStore';
 export * from '#/app/threadCommunication/threadCommunicationService';
 export * from '#/session/sessionMetadata/sessionMetadata';
 export * from '#/session/sessionMetadata/sessionMetadataService';

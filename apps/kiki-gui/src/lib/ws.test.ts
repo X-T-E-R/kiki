@@ -24,6 +24,7 @@ class FakeWebSocket {
 
   readyState = FakeWebSocket.CONNECTING;
   readonly sent: SentFrame[] = [];
+  deferCloseEvent = false;
   onopen: (() => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
   onclose: ((event: CloseEvent) => void) | null = null;
@@ -40,6 +41,10 @@ class FakeWebSocket {
   close(code = 1000): void {
     if (this.readyState === FakeWebSocket.CLOSED) return;
     this.readyState = FakeWebSocket.CLOSED;
+    if (!this.deferCloseEvent) this.emitClose(code);
+  }
+
+  emitClose(code = 1000): void {
     this.onclose?.({ code } as CloseEvent);
   }
 
@@ -82,6 +87,7 @@ describe('KikiSocket fatal recovery', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
     Reflect.deleteProperty(globalThis, 'WebSocket');
   });
 
@@ -101,36 +107,25 @@ describe('KikiSocket fatal recovery', () => {
   /** Burn the pending reconnect timer (jitter keeps the delay under step*1.25). */
   const fireReconnect = () => vi.advanceTimersByTime(11_000);
 
-  it('auto-reconnects a bounded number of times after a fatal frame, then waits for a manual nudge', () => {
+  it('bounds repeated fatal retries and lets a foreground nudge recover', () => {
     vi.useFakeTimers();
     const { socket, statuses } = statusSocket();
     const wire = FakeWebSocket.instances.at(-1)!;
     hello(wire);
-    expect(statuses.at(-1)).toBe('open');
 
     wire.receive({ type: 'error', payload: { fatal: true, msg: 'protocol too old' } });
-    expect(wire.readyState).toBe(FakeWebSocket.CLOSED);
-    expect(statuses.at(-1)).toBe('closed');
-    // The detached transport's own close must not double-schedule a reconnect.
-    expect(FakeWebSocket.instances).toHaveLength(1);
-
-    // Four bounded attempts, each failing at the transport layer.
     for (let attempt = 0; attempt < 4; attempt += 1) {
       fireReconnect();
       const retry = FakeWebSocket.instances.at(-1)!;
       expect(statuses.at(-1)).toBe('connecting');
-      retry.close(1006);
+      retry.receive({ type: 'error', payload: { fatal: true, msg: 'still incompatible' } });
       expect(statuses.at(-1)).toBe('closed');
     }
     expect(FakeWebSocket.instances).toHaveLength(5);
-    expect(socket.ready).toBe(false);
 
-    // Budget spent: further closes (or time) must not spawn a fifth retry.
-    fireReconnect();
     vi.advanceTimersByTime(60_000);
     expect(FakeWebSocket.instances).toHaveLength(5);
 
-    // Manual reconnect (the banner's button) gets a fresh bounded cycle.
     socket.nudge();
     expect(FakeWebSocket.instances).toHaveLength(6);
     expect(statuses.at(-1)).toBe('connecting');
@@ -168,6 +163,65 @@ describe('KikiSocket fatal recovery', () => {
     vi.advanceTimersByTime(60_000);
     socket.nudge();
     expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+});
+
+describe('KikiSocket transport watchdog', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances.length = 0;
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: FakeWebSocket,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    Reflect.deleteProperty(globalThis, 'WebSocket');
+  });
+
+  function statusSocket(): { socket: KikiSocket; statuses: WsStatus[] } {
+    const statuses: WsStatus[] = [];
+    const events: WsEvents = {
+      onStatus: (status) => { statuses.push(status); },
+      onFrame: () => {},
+      onResyncRequired: () => {},
+      onSubscribeAck: () => {},
+    };
+    const socket = new KikiSocket({ baseUrl: 'http://example.test', events });
+    socket.connect();
+    return { socket, statuses };
+  }
+
+  it('uses one creation-to-hello deadline and ignores the detached socket', () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const { socket, statuses } = statusSocket();
+    const first = FakeWebSocket.instances.at(-1)!;
+    first.deferCloseEvent = true;
+
+    vi.advanceTimersByTime(6000);
+    first.open();
+    vi.advanceTimersByTime(5999);
+    expect(statuses.at(-1)).toBe('connecting');
+    vi.advanceTimersByTime(1);
+    expect(statuses.at(-1)).toBe('closed');
+
+    first.emitClose(1006);
+    vi.advanceTimersByTime(500);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    const replacement = FakeWebSocket.instances.at(-1)!;
+    hello(replacement);
+
+    first.open();
+    first.emitClose(1006);
+    vi.advanceTimersByTime(60_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(statuses.at(-1)).toBe('open');
+    expect(socket.ready).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    socket.close();
   });
 });
 

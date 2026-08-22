@@ -53,6 +53,10 @@ enabled = true
 # default_subagent_model: string
 # default_subagent_reasoning_effort: string
 
+# [agents.delegation]
+  # sub: string | false
+  # independent: string | false
+
 # ##########################################################################
 # background
 #   owner: src/agent/task/configSection.ts

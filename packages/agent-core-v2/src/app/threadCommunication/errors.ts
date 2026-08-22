@@ -1,7 +1,3 @@
-/**
- * `threadCommunication` domain — coded peer-thread failures.
- */
-
 import { registerErrorDomain, type ErrorDomain } from '#/_base/errors/codes';
 
 export const ThreadCommunicationErrors = {
@@ -15,8 +11,9 @@ export const ThreadCommunicationErrors = {
     THREAD_IDEMPOTENCY_CONFLICT: 'thread.idempotency_conflict',
     THREAD_LIMIT_EXCEEDED: 'thread.limit_exceeded',
     THREAD_DELIVERY_FAILED: 'thread.delivery_failed',
+    MAILBOX_LEGACY_WRITER_ACTIVE: 'mailbox.legacy_writer_active',
   },
-  retryable: ['thread.delivery_failed'],
+  retryable: ['thread.delivery_failed', 'mailbox.legacy_writer_active'],
 } as const satisfies ErrorDomain;
 
 registerErrorDomain(ThreadCommunicationErrors);

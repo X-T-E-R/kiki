@@ -1,42 +1,47 @@
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Event, Emitter } from '#/_base/event';
-import type { ILogService } from '#/_base/log/log';
 import { LifecycleScope } from '#/app/scopes';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { HomeRuntimeError } from '#/app/runtimeHost/errors';
+import { HomeRuntimeHostService } from '#/app/runtimeHost/runtimeHostService';
+import { RuntimeThreadMailboxStore } from '#/app/threadCommunication/runtimeThreadMailboxStore';
+import { ThreadMailboxBacklogError } from '#/app/threadCommunication/mailboxErrors';
+import type {
+  IThreadMailboxStore,
+  ThreadDeliveryClaim,
+} from '#/app/threadCommunication/threadMailboxStore';
+import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { createHooks } from '#/hooks';
 import { IAgentContextMemoryService, type IAgentContextMemoryService as AgentContextMemory } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentLoopService, type IAgentLoopService as AgentLoop } from '#/agent/loop/loop';
-import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { IAgentLifecycleService, type IAgentLifecycleService as AgentLifecycle } from '#/session/agentLifecycle/agentLifecycle';
 import { AgentCollaborationMessagingService } from '#/session/agentCollaboration/messagingService';
 import {
   AGENT_MESSAGE_BACKLOG_LIMIT,
   AgentMessageMailboxFullError,
-  type IAgentCollaborationMessageStore,
 } from '#/session/agentCollaboration/messageMailbox';
 import { AgentCollaborationMessageStoreAdapter } from '#/session/agentCollaboration/threadMailboxAdapter';
 import type { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IWireService, type IWireService as Wire } from '#/wire/wire';
-import { stubLog } from '../../_base/log/stubs';
 
 const signal = new AbortController().signal;
 const tempDirs: string[] = [];
+const runtimeMailboxes: Array<{
+  readonly runtime: HomeRuntimeHostService;
+  readonly store: RuntimeThreadMailboxStore;
+}> = [];
 
-afterEach(() => {
+afterEach(async () => {
+  const mailboxes = runtimeMailboxes.splice(0);
+  await Promise.allSettled(mailboxes.map((item) => item.store.close()));
+  await Promise.allSettled(mailboxes.map((item) => item.runtime.close()));
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -59,12 +64,14 @@ describe('thread mailbox agent collaboration adapter', () => {
       deduplicated: true,
       payloadConflict: true,
     });
-    expect((await first.nextQueued('session-1', 'agent-target'))?.messageId).toBe(one.message.messageId);
-    expect(await first.markDelivered(one.message.messageId)).toBe(true);
+    const queuedOne = await first.nextQueued('session-1', 'agent-target');
+    expect(queuedOne?.message.messageId).toBe(one.message.messageId);
+    expect(await first.markDelivered(queuedOne!.claim)).toBe(true);
 
     const reopened = mailboxStore(homeDir);
-    expect((await reopened.nextQueued('session-1', 'agent-target'))?.messageId).toBe(two.message.messageId);
-    expect(await reopened.markDelivered(two.message.messageId)).toBe(true);
+    const queuedTwo = await reopened.nextQueued('session-1', 'agent-target');
+    expect(queuedTwo?.message.messageId).toBe(two.message.messageId);
+    expect(await reopened.markDelivered(queuedTwo!.claim)).toBe(true);
     expect(await reopened.nextQueued('session-1', 'agent-target')).toBeUndefined();
     expect(await reopened.accept(messageInput('one', 'idem-one'))).toMatchObject({
       message: { messageId: one.message.messageId },
@@ -73,45 +80,90 @@ describe('thread mailbox agent collaboration adapter', () => {
     });
   });
 
-  it('atomically rejects acceptance beyond the per-target queued backlog limit', async () => {
-    const store = mailboxStore(tempDir());
-    for (let index = 0; index < AGENT_MESSAGE_BACKLOG_LIMIT - 1; index++) {
-      await store.accept(messageInput(`message-${index}`, `idem-${index}`));
-    }
-
-    const results = await Promise.allSettled([
-      store.accept(messageInput('last-a', 'last-a')),
-      store.accept(messageInput('last-b', 'last-b')),
-    ]);
-
-    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
-    const rejected = results.find((result) => result.status === 'rejected');
-    expect(rejected).toMatchObject({
-      status: 'rejected',
-      reason: expect.any(AgentMessageMailboxFullError),
+  it('passes the named-agent backlog limit to the shared mailbox and reports the effective overflow limit', async () => {
+    const acceptMessage = vi.fn<IThreadMailboxStore['acceptMessage']>(async () => {
+      throw new ThreadMailboxBacklogError(7);
     });
-  }, 20_000);
+    const store = new AgentCollaborationMessageStoreAdapter({
+      _serviceBrand: undefined,
+      acceptMessage,
+    } as unknown as IThreadMailboxStore);
 
-  it('warns about a non-empty legacy mailbox without reading or changing it', async () => {
-    const homeDir = tempDir();
-    const legacyDir = join(homeDir, 'store', 'agent-collaboration-mailbox-v1');
-    const sentinel = join(legacyDir, 'legacy-data.json');
-    mkdirSync(legacyDir, { recursive: true });
-    writeFileSync(sentinel, '{"legacy":true}', 'utf8');
-    const warnings: WarningCall[] = [];
-    const store = mailboxStore(homeDir, warnings);
+    const error = await store.accept(messageInput('overflow', 'overflow')).catch((reason: unknown) => reason);
+    expect(error).toBeInstanceOf(AgentMessageMailboxFullError);
+    expect(error).toMatchObject({ limit: 7 });
+    expect(acceptMessage).toHaveBeenCalledWith(expect.objectContaining({
+      pendingLimit: AGENT_MESSAGE_BACKLOG_LIMIT,
+    }));
+  });
 
-    await vi.waitFor(() => expect(warnings).toEqual([
-      {
-        message: 'Legacy named-agent mailbox data is no longer used and can be deleted manually.',
-        payload: { path: legacyDir.replaceAll('\\', '/') },
+  it('reuses the per-target claim request id after a committed claim response is lost', async () => {
+    const target = {
+      hostId: 'agent-collaboration-v2',
+      workspaceId: 'session-1',
+      sessionId: 'agent-target',
+    };
+    const claim: ThreadDeliveryClaim = {
+      message: {
+        messageId: 'agent-claim',
+        producer: {
+          kind: 'peer_thread',
+          source: { ...target, sessionId: 'main' },
+        },
+        target,
+        content: JSON.stringify({
+          v: 1,
+          kind: 'agent_collaboration_message',
+          sourceTaskName: 'root',
+          targetTaskName: 'target',
+          content: 'response lost',
+        }),
+        idempotencyKey: 'agent-claim',
+        acceptedAt: 1,
+        targetSeq: 1,
       },
-    ]));
-    const accepted = await store.accept(messageInput('new mailbox', 'new-mailbox'));
+      consumerId: 'agent-collaboration/session-1/agent-target',
+      fence: 1,
+      leaseUntil: Date.now() + 30_000,
+      hostEpoch: 1,
+    };
+    let committedRequestId: string | undefined;
+    const calls: Array<{ readonly sessionId: string; readonly requestId: string }> = [];
+    const claimNext = vi.fn<IThreadMailboxStore['claimNext']>(async (input, options) => {
+      const requestId = options?.requestId ?? '';
+      calls.push({ sessionId: input.target.workspaceId, requestId });
+      if (input.target.workspaceId === 'session-2') return undefined;
+      if (committedRequestId === undefined) {
+        committedRequestId = requestId;
+        throw new HomeRuntimeError('runtime.connection_failed', 'simulated committed claim response loss');
+      }
+      return requestId === committedRequestId ? claim : undefined;
+    });
+    const store = new AgentCollaborationMessageStoreAdapter({
+      _serviceBrand: undefined,
+      claimNext,
+    } as unknown as IThreadMailboxStore);
+
+    await expect(store.nextQueued('session-1', 'agent-target')).rejects.toMatchObject({
+      code: 'runtime.connection_failed',
+    });
+    await expect(store.nextQueued('session-2', 'agent-target')).resolves.toBeUndefined();
+    await expect(store.nextQueued('session-1', 'agent-target')).resolves.toMatchObject({
+      message: { messageId: 'agent-claim' },
+      claim,
+    });
+    expect(calls[0]?.requestId).toBe(calls[2]?.requestId);
+    expect(calls[1]?.requestId).not.toBe(calls[0]?.requestId);
+  });
+
+  it('uses the injected thread mailbox without creating an agent collaboration backend', async () => {
+    const homeDir = tempDir();
+    const store = mailboxStore(homeDir);
+    const accepted = await store.accept(messageInput('shared mailbox', 'shared-mailbox'));
 
     expect(accepted.message.targetSeq).toBe(1);
-    expect(readFileSync(sentinel, 'utf8')).toBe('{"legacy":true}');
-    expect(existsSync(join(homeDir, 'store', 'agent-collaboration-mailbox-v2'))).toBe(true);
+    expect(existsSync(join(homeDir, 'store', 'agent-collaboration-mailbox-v2'))).toBe(false);
+    expect(existsSync(join(homeDir, 'store', 'thread-mailbox-v3'))).toBe(true);
   });
 });
 
@@ -144,50 +196,87 @@ describe('agent collaboration safe-boundary delivery', () => {
     service.dispose();
   });
 
-  it('recovers a crash after wire flush without double-applying the message origin', async () => {
-    const homeDir = tempDir();
-    const backend = mailboxStore(homeDir);
+  it('confirms a pending adapter ack before claiming again at the next safe step', async () => {
+    const targetRef = {
+      hostId: 'agent-collaboration-v2',
+      workspaceId: 'session-1',
+      sessionId: 'agent-target',
+    };
+    const claim: ThreadDeliveryClaim = {
+      message: {
+        messageId: 'pending-agent-ack',
+        producer: {
+          kind: 'peer_thread',
+          source: { ...targetRef, sessionId: 'main' },
+        },
+        target: targetRef,
+        content: JSON.stringify({
+          v: 1,
+          kind: 'agent_collaboration_message',
+          sourceTaskName: 'root',
+          targetTaskName: 'target',
+          content: 'pending ack',
+        }),
+        idempotencyKey: 'pending-agent-ack',
+        acceptedAt: 1,
+        targetSeq: 1,
+      },
+      consumerId: 'agent-collaboration/session-1/agent-target',
+      fence: 1,
+      leaseUntil: Date.now() + 30_000,
+      hostEpoch: 1,
+    };
+    const order: string[] = [];
+    const ackRequestIds: string[] = [];
+    let claimed = false;
+    let ackCommitted = false;
+    const threadStore = {
+      _serviceBrand: undefined,
+      claimNext: vi.fn<IThreadMailboxStore['claimNext']>(async () => {
+        order.push('claim');
+        if (claimed) return undefined;
+        claimed = true;
+        return claim;
+      }),
+      acknowledgeDelivery: vi.fn<IThreadMailboxStore['acknowledgeDelivery']>(async (_claim, options) => {
+        ackRequestIds.push(options?.requestId ?? '');
+        if (!ackCommitted) {
+          ackCommitted = true;
+          order.push('ack-committed');
+          throw new HomeRuntimeError('runtime.connection_failed', 'ack response lost');
+        }
+        order.push('ack-confirmed');
+        return true;
+      }),
+    } as unknown as IThreadMailboxStore;
+    const adapter = new AgentCollaborationMessageStoreAdapter(threadStore);
     const target = agentHandle('agent-target');
     const lifecycle = lifecycleHarness([target.handle]);
-    let failAcknowledgement = true;
-    const faultedStore: IAgentCollaborationMessageStore = {
-      _serviceBrand: undefined,
-      accept: (input) => backend.accept(input),
-      nextQueued: (sessionId, agentId) => backend.nextQueued(sessionId, agentId),
-      markDelivered: async (messageId) => {
-        if (failAcknowledgement) {
-          failAcknowledgement = false;
-          throw new Error('simulated crash after wire flush');
-        }
-        return backend.markDelivered(messageId);
-      },
-    };
-    const first = new AgentCollaborationMessagingService(faultedStore, lifecycle.service, sessionContext());
-    const accepted = await first.send(sendInput('once', 'call-once'));
-    await expect(target.loop.hooks.onWillBeginStep.run({ turnId: 1, step: 2, firstStepOfTurn: true, signal })).rejects.toThrow(
-      'simulated crash after wire flush',
-    );
-    expect(target.messages).toHaveLength(1);
-    first.dispose();
+    const service = new AgentCollaborationMessagingService(adapter, lifecycle.service, sessionContext());
 
-    const reopenedBackend = mailboxStore(homeDir);
-    const reopened = new AgentCollaborationMessagingService(reopenedBackend, lifecycle.service, sessionContext());
-    await target.loop.hooks.onWillBeginStep.run({ turnId: 2, step: 1, firstStepOfTurn: true, signal });
+    await expect(target.loop.hooks.onWillBeginStep.run({
+      turnId: 1,
+      step: 1,
+      firstStepOfTurn: true,
+      signal,
+    })).rejects.toMatchObject({ code: 'runtime.connection_failed' });
     expect(target.messages).toHaveLength(1);
-    expect(target.operations).toEqual(['append', 'flush', 'flush']);
-    expect(await reopenedBackend.accept(messageInput('once', 'call-once'))).toMatchObject({
-      message: { messageId: accepted.message.messageId },
-      deduplicated: true,
-      delivery: 'delivered',
+    expect(target.operations).toEqual(['append', 'flush']);
+
+    await target.loop.hooks.onWillBeginStep.run({
+      turnId: 1,
+      step: 2,
+      firstStepOfTurn: false,
+      signal,
     });
-    reopened.dispose();
+    expect(target.messages).toHaveLength(1);
+    expect(target.operations).toEqual(['append', 'flush']);
+    expect(order).toEqual(['claim', 'ack-committed', 'ack-confirmed', 'claim']);
+    expect(ackRequestIds).toHaveLength(2);
+    expect(new Set(ackRequestIds).size).toBe(1);
+    service.dispose();
   });
 });
-
-interface WarningCall {
-  readonly message: string;
-  readonly payload: unknown;
-}
 
 function tempDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'agent-message-mailbox-'));
@@ -195,29 +284,35 @@ function tempDir(): string {
   return dir;
 }
 
-function mailboxStore(
-  homeDir: string,
-  warnings: WarningCall[] = [],
-): AgentCollaborationMessageStoreAdapter {
-  return new AgentCollaborationMessageStoreAdapter(
-    bootstrap(homeDir),
-    new HostFileSystem(),
-    capturingLog(warnings),
-  );
+function mailboxStore(homeDir: string): AgentCollaborationMessageStoreAdapter {
+  const seed = bootstrap(homeDir);
+  const runtime = new HomeRuntimeHostService(seed);
+  const store = new RuntimeThreadMailboxStore(seed, runtime, new HostFileSystem());
+  runtimeMailboxes.push({ runtime, store });
+  return new AgentCollaborationMessageStoreAdapter(store);
 }
 
 function bootstrap(homeDir: string): IBootstrapService {
   return {
     _serviceBrand: undefined,
+    platform: process.platform,
+    arch: process.arch,
+    cwd: process.cwd(),
+    osHomeDir: tmpdir(),
     homeDir,
+    configPath: join(homeDir, 'config.toml'),
+    configReadOnly: false,
+    userAgentProfileHomeDir: homeDir,
+    configKey: 'config.toml',
+    clientIdentity: { productName: 'test', version: '0', platform: 'test' },
+    args: { requestHeaders: {} },
+    sessionsDir: join(homeDir, 'sessions'),
+    blobsDir: join(homeDir, 'blobs'),
     storeDir: join(homeDir, 'store'),
-  } as IBootstrapService;
-}
-
-function capturingLog(warnings: WarningCall[]): ILogService {
-  return {
-    ...stubLog(),
-    warn: (message, payload) => warnings.push({ message, payload }),
+    cacheDir: join(homeDir, 'cache'),
+    logsDir: join(homeDir, 'logs'),
+    getEnv: () => undefined,
+    scope: (name) => name,
   };
 }
 

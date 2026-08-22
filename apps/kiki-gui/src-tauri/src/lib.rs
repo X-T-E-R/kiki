@@ -289,14 +289,14 @@ impl BackendManager {
                     pid: backend.pid,
                     launched_at_ms: backend.launched_at_ms,
                     monitor: backend.monitor.clone(),
-                    home: kimi_home_dir()?,
+                    home: kiki_home_dir()?,
                 },
                 None => {
                     // Capture the epoch before spawn. A reused PID can make an
                     // old registry record look live, so PID alone is not
                     // sufficient to identify the child we just created.
                     let launched_at_ms = unix_epoch_millis()?;
-                    let home = kimi_home_dir()?;
+                    let home = kiki_home_dir()?;
                     let command = app
                         .shell()
                         .sidecar("kiki-server")
@@ -306,7 +306,8 @@ impl BackendManager {
                         // `warn` keeps the default silent behavior off so
                         // startup failures reach stderr (the token-bearing
                         // ready line stays on stdout, which is never logged).
-                        .args(["web", "--no-open", "--port", "0", "--log-level", "warn"]);
+                        .args(["web", "--no-open", "--port", "0", "--log-level", "warn"])
+                        .env("KIMI_CODE_HOME", &home);
                     let (events, child) = command
                         .spawn()
                         .map_err(|error| DesktopStartupFailure::plain(format!(
@@ -440,7 +441,7 @@ impl BackendManager {
 
         if let Some(connection) = backend.connection.as_ref() {
             let _ = shutdown_request(connection);
-            let home = kimi_home_dir().ok();
+            let home = kiki_home_dir().ok();
             let deadline = Instant::now() + SHUTDOWN_GRACE;
             while Instant::now() < deadline {
                 let registered = home
@@ -498,7 +499,7 @@ struct DesktopPrefsPatch {
 }
 
 fn desktop_prefs_path() -> Result<PathBuf, String> {
-    Ok(kimi_home_dir()?.join("kiki").join("desktop.json"))
+    Ok(kiki_home_dir()?.join("desktop.json"))
 }
 
 fn read_desktop_prefs_file() -> DesktopPrefs {
@@ -506,9 +507,15 @@ fn read_desktop_prefs_file() -> DesktopPrefs {
         Ok(path) => path,
         Err(_) => return DesktopPrefs::default(),
     };
-    match fs::read_to_string(&path) {
-        Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
-        Err(_) => DesktopPrefs::default(),
+    if let Ok(raw) = fs::read_to_string(&path) {
+        return serde_json::from_str(&raw).unwrap_or_default();
+    }
+    let legacy = kimi_home_dir()
+        .ok()
+        .map(|home| home.join("kiki").join("desktop.json"));
+    match legacy.and_then(|path| fs::read_to_string(path).ok()) {
+        Some(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+        None => DesktopPrefs::default(),
     }
 }
 
@@ -595,6 +602,15 @@ fn kimi_home_dir() -> Result<PathBuf, String> {
     dirs::home_dir()
         .map(|home| home.join(".kimi-code"))
         .ok_or_else(|| "Cannot resolve the current user's home directory".to_string())
+}
+
+fn kiki_home_dir() -> Result<PathBuf, String> {
+    if let Some(path) = env::var_os("KIKI_HOME").filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(path));
+    }
+    dirs::home_dir()
+        .map(|home| home.join(".kiki"))
+        .ok_or_else(|| "Cannot resolve Kiki Home for the current user".to_string())
 }
 
 fn unix_epoch_millis() -> Result<u64, String> {

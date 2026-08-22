@@ -39,8 +39,7 @@ export type AgentRunAttemptHandle = {
   }>;
 };
 
-const INITIAL_LAUNCH_LIMIT = 5;
-const INITIAL_LAUNCH_INTERVAL_MS = 700;
+const DEFAULT_MAX_CONCURRENCY = 8;
 const RATE_LIMIT_RETRY_BASE_MS = 3000;
 const RATE_LIMIT_RETRY_FACTOR = 2;
 const RATE_LIMIT_CAPACITY_SHRINK_INTERVAL_MS = 2000;
@@ -106,9 +105,7 @@ export class AgentRunBatch<T> {
   private readonly controller = new AbortController();
   private readonly batchSignal: AbortSignal | undefined;
   private readonly batchAbortListener: () => void;
-  private readonly maxConcurrency: number | undefined;
-  private normalLaunchCount = 0;
-  private normalLaunchTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly maxConcurrency: number;
   private rateLimitLaunchTimer: ReturnType<typeof setTimeout> | undefined;
   private resolve: ((results: Array<AgentRunResult<T>>) => void) | undefined;
   private reject: ((error: unknown) => void) | undefined;
@@ -128,7 +125,7 @@ export class AgentRunBatch<T> {
     tasks: readonly QueuedAgentRunTask<T>[],
     options: AgentRunBatchOptions = {},
   ) {
-    this.maxConcurrency = options.maxConcurrency;
+    this.maxConcurrency = options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
     this.states = tasks.map((task, index) => ({
       index,
       task,
@@ -187,37 +184,13 @@ export class AgentRunBatch<T> {
   }
 
   private scheduleNormalLaunch(): void {
-    while (
-      this.normalLaunchCount < INITIAL_LAUNCH_LIMIT &&
-      this.pending.length > 0 &&
-      !this.rateLimitMode &&
-      !this.isAtConcurrencyLimit()
-    ) {
+    while (this.pending.length > 0 && !this.rateLimitMode && !this.isAtConcurrencyLimit()) {
       this.startAttempt(this.pending.shift()!);
-      this.normalLaunchCount += 1;
     }
-
-    if (
-      this.pending.length === 0 ||
-      this.rateLimitMode ||
-      this.normalLaunchTimer !== undefined ||
-      this.isAtConcurrencyLimit()
-    ) {
-      return;
-    }
-
-    this.normalLaunchTimer = setTimeout(() => {
-      this.normalLaunchTimer = undefined;
-      if (this.finished || this.rateLimitMode || this.pending.length === 0) return;
-      if (this.isAtConcurrencyLimit()) return;
-      this.startAttempt(this.pending.shift()!);
-      this.normalLaunchCount += 1;
-      this.schedule();
-    }, INITIAL_LAUNCH_INTERVAL_MS);
   }
 
   private isAtConcurrencyLimit(): boolean {
-    return this.maxConcurrency !== undefined && this.active.size >= this.maxConcurrency;
+    return this.active.size >= this.maxConcurrency;
   }
 
   private scheduleRateLimitLaunch(): void {
@@ -226,7 +199,7 @@ export class AgentRunBatch<T> {
 
     const now = Date.now();
     this.recoverRateLimitCapacity(now);
-    if (this.active.size >= this.rateLimitCapacity) {
+    if (this.isAtRateLimitConcurrency()) {
       this.scheduleRateLimitWakeup(this.nextRateLimitCapacityRecoveryAt(), now);
       return;
     }
@@ -438,7 +411,6 @@ export class AgentRunBatch<T> {
   private enterRateLimitMode(now: number): void {
     if (!this.rateLimitMode) {
       this.rateLimitMode = true;
-      this.clearNormalTimer();
       this.rateLimitCapacity = Math.max(1, this.startedSuccessCount);
       this.nextRateLimitLaunchAt = Math.max(
         this.nextRateLimitLaunchAt,
@@ -468,9 +440,13 @@ export class AgentRunBatch<T> {
     const nextRecoveryAt = this.nextRateLimitCapacityRecoveryAt();
     if (nextRecoveryAt > now) return;
 
-    this.rateLimitCapacity += 1;
+    this.rateLimitCapacity = Math.min(this.maxConcurrency, this.rateLimitCapacity + 1);
     this.lastCapacityRecoveryAt = now;
     this.nextRateLimitLaunchAt = Math.min(this.nextRateLimitLaunchAt, now);
+  }
+
+  private isAtRateLimitConcurrency(): boolean {
+    return this.active.size >= Math.min(this.rateLimitCapacity, this.maxConcurrency);
   }
 
   private nextRateLimitCapacityRecoveryAt(): number {
@@ -497,7 +473,7 @@ export class AgentRunBatch<T> {
     if (this.pending.length === 0) return;
 
     const nextWakeupAt =
-      this.active.size >= this.rateLimitCapacity
+      this.isAtRateLimitConcurrency()
         ? this.nextRateLimitCapacityRecoveryAt()
         : Math.min(
             Math.max(this.nextRateLimitLaunchAt, this.nextPendingReadyAt()),
@@ -571,17 +547,11 @@ export class AgentRunBatch<T> {
 
   private cleanup(): void {
     this.batchSignal?.removeEventListener('abort', this.batchAbortListener);
-    this.clearNormalTimer();
     this.clearRateLimitTimer();
     for (const attempt of this.active.values()) {
       attempt.cleanup();
     }
     this.active.clear();
-  }
-
-  private clearNormalTimer(): void {
-    if (this.normalLaunchTimer !== undefined) clearTimeout(this.normalLaunchTimer);
-    this.normalLaunchTimer = undefined;
   }
 
   private clearRateLimitTimer(): void {
@@ -635,9 +605,9 @@ export class AgentRunBatch<T> {
 
 export function resolveSwarmMaxConcurrency(
   env: Readonly<Record<string, string | undefined>> = process.env,
-): number | undefined {
+): number {
   const raw = env[AGENT_SWARM_MAX_CONCURRENCY_ENV];
-  if (raw === undefined || raw.trim() === '') return undefined;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_MAX_CONCURRENCY;
   const value = Number(raw);
   if (!Number.isInteger(value) || value <= 0) {
     throw new Error2(
