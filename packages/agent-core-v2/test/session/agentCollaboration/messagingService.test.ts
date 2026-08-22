@@ -303,6 +303,7 @@ function bootstrap(homeDir: string): IBootstrapService {
     configPath: join(homeDir, 'config.toml'),
     configReadOnly: false,
     userAgentProfileHomeDir: homeDir,
+    modelAccountHomeDir: homeDir,
     configKey: 'config.toml',
     clientIdentity: { productName: 'test', version: '0', platform: 'test' },
     args: { requestHeaders: {} },
