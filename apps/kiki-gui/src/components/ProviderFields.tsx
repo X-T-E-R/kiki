@@ -27,13 +27,11 @@ import {
   PROVIDER_WIRE_TYPES,
   providerDraftFromCatalog,
   replaceProvider,
-  REQUEST_IDENTITY_CHOICES,
   validateProviderDraft,
   type MsUnit,
   type ProviderDraft,
   type ProviderModelDraft,
   type ProviderTemplate,
-  type RequestIdentityChoice,
   type ServerConnection,
 } from '../lib/settings';
 import { formatTokens } from '../lib/time';
@@ -41,6 +39,7 @@ import { ChipSelect } from './ChipSelect';
 import { ConfirmDialog } from './ConfirmDialog';
 import { FeedbackLine, Hint, type Feedback } from './controls';
 import { useDirtyReporter } from './dirtyGuard';
+import { RequestIdentityLayerEditor } from './RequestIdentityLayerEditor';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
 
 export function blankProviderDraft(): ProviderDraft {
@@ -51,14 +50,22 @@ export function blankProviderDraft(): ProviderDraft {
     defaultModel: '',
     apiKey: '',
     clearApiKey: false,
-    requestIdentityChoice: 'auto',
+    requestIdentityChoice: 'inherit',
     requestIdentityOverridesJson: '',
-    models: [{ model: '', maxContextSize: 128000, displayName: '', capabilities: [], supportEfforts: [] }],
+    models: [blankModel()],
   };
 }
 
 function blankModel(): ProviderModelDraft {
-  return { model: '', maxContextSize: 128000, displayName: '', capabilities: [], supportEfforts: [] };
+  return {
+    model: '',
+    maxContextSize: 128000,
+    displayName: '',
+    capabilities: [],
+    supportEfforts: [],
+    requestIdentityChoice: 'inherit',
+    requestIdentityOverridesJson: '',
+  };
 }
 
 // ---- unit-ed numeric inputs ----
@@ -233,6 +240,9 @@ function ModelDraftRow({
   const { t } = useI18n();
   const [open, setOpen] = useState(model.model === '');
   const n = index + 1;
+  const requestIdentitySummary = model.requestIdentityChoice === 'inherit'
+    ? 'inherit'
+    : model.requestIdentityChoice;
   return (
     <div className="rounded-lg border border-hairline bg-panel p-3">
       <div className="flex items-center gap-2">
@@ -264,6 +274,9 @@ function ModelDraftRow({
               {capability}
             </span>
           ))}
+          <span className="hidden shrink-0 rounded-full border border-hairline bg-paper px-1.5 py-px text-[9.5px] text-ink-faint sm:inline">
+            {t(`st.providers.requestIdentityBadge.${requestIdentitySummary}`)}
+          </span>
           <span aria-hidden className={`ml-auto shrink-0 text-[10px] text-ink-faint transition-transform ${open ? 'rotate-90' : ''}`}>▶</span>
         </button>
         <button
@@ -318,6 +331,15 @@ function ModelDraftRow({
               ariaLabel={t('st.providers.modelEffortsAria', { n })}
               addPlaceholder={t('st.chips.addPlaceholder')}
               removeLabel={(value) => t('st.chips.removeAria', { value })}
+            />
+          </div>
+          <div className="border-t border-hairline pt-3">
+            <RequestIdentityLayerEditor
+              value={model}
+              onChange={(identity) => { onChange(identity); }}
+              label={t('st.models.requestIdentity')}
+              inheritLabel={t('st.requestIdentity.inheritProvider')}
+              hint={t('st.models.requestIdentityHint')}
             />
           </div>
         </div>
@@ -429,31 +451,13 @@ export function ProviderFields({
       <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.baseUrl')}
         <input className={`${INPUT} mt-1`} value={draft.baseUrl} onChange={(event) => { onChange({ ...draft, baseUrl: event.target.value }); }} placeholder="https://api.example.com/v1" />
       </label>
-      <div>
-        <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.requestIdentity')}
-          <select
-            className={`${INPUT} mt-1`}
-            value={draft.requestIdentityChoice}
-            onChange={(event) => { onChange({ ...draft, requestIdentityChoice: event.target.value as ProviderDraft['requestIdentityChoice'], requestIdentityOverridesJson: '' }); }}
-          >
-            {REQUEST_IDENTITY_CHOICES.map((choice) => (
-              <option key={choice} value={choice}>{t(`st.providers.requestIdentity.${choice}`)}</option>
-            ))}
-          </select>
-        </label>
-        <Hint>{t('st.providers.requestIdentityHint')}</Hint>
-      </div>
-      {['codex_compatible', 'grok_build_compatible', 'kimi_code', 'none'].includes(draft.requestIdentityChoice) ? <div>
-        <label className="block text-[11px] font-medium text-ink-soft">{t('st.providers.requestIdentityAdvanced')}
-          <textarea
-            className={`${INPUT} mt-1 min-h-24 font-mono`}
-            value={draft.requestIdentityOverridesJson}
-            onChange={(event) => { onChange({ ...draft, requestIdentityOverridesJson: event.target.value }); }}
-            placeholder="{}"
-          />
-        </label>
-        <Hint>{t('st.providers.requestIdentityAdvancedHint')}</Hint>
-      </div> : null}
+      <RequestIdentityLayerEditor
+        value={draft}
+        onChange={(identity) => { onChange({ ...draft, ...identity }); }}
+        label={t('st.providers.requestIdentity')}
+        inheritLabel={t('st.requestIdentity.inheritGlobal')}
+        hint={t('st.providers.requestIdentityHint')}
+      />
       {managed ? (
         <Hint>{t('st.providers.managedHint')}</Hint>
       ) : (
@@ -581,11 +585,12 @@ export function ProviderEditor({
       : provider.status === 'error' ? 'bg-danger'
         : 'bg-amber-rule';
 
-  // The collapsed summary always shows the effective request identity as a
-  // short badge — the preset when one is configured, the auto default
-  // otherwise; the full label rides the tooltip for clarity.
-  const requestIdentityChoice: RequestIdentityChoice = provider.request_identity?.preset ?? 'auto';
-  const requestIdentityFull = t(`st.providers.requestIdentity.${requestIdentityChoice}`);
+  const requestIdentitySummary = provider.request_identity === undefined
+    ? 'inherit'
+    : (provider.request_identity.preset ?? 'custom_overrides');
+  const requestIdentityFull = requestIdentitySummary === 'inherit'
+    ? t('st.requestIdentity.inheritGlobal')
+    : t(`st.requestIdentity.option.${requestIdentitySummary}`);
 
   return (
     <details className="rounded-xl border border-hairline bg-paper p-3">
@@ -597,7 +602,7 @@ export function ProviderEditor({
           title={`${t('st.providers.requestIdentity')}: ${requestIdentityFull}`}
           className="rounded-full border border-hairline bg-panel px-1.5 py-px text-[9.5px] font-normal text-ink-faint"
         >
-          {t(`st.providers.requestIdentityBadge.${requestIdentityChoice}`)}
+          {t(`st.providers.requestIdentityBadge.${requestIdentitySummary}`)}
         </span>
         {provider.default_model !== undefined ? (
           <span className="truncate font-mono text-[10px] font-normal text-ink-faint">{provider.default_model}</span>

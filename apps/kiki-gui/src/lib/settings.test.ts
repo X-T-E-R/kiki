@@ -6,6 +6,7 @@ import {
   CAPABILITY_GROUPS,
   capabilityGroupForCard,
   clearRestartRequirement,
+  createProvider,
   fetchRemoteModels,
   humanizeMs,
   acknowledgeRestartRequirement,
@@ -23,6 +24,8 @@ import {
   readDesktopPrefs,
   readRestartRequirement,
   readSettings,
+  requestIdentityLayerDraftFromPolicy,
+  requestIdentityPolicyFromDraft,
   remoteModelsHeaders,
   remoteModelsUrl,
   replaceProvider,
@@ -68,7 +71,7 @@ const providerDraft = (patch: Partial<ProviderDraft> = {}): ProviderDraft => ({
   defaultModel: 'chat',
   apiKey: '',
   clearApiKey: false,
-  requestIdentityChoice: 'auto',
+  requestIdentityChoice: 'inherit',
   requestIdentityOverridesJson: '',
   models: [
     {
@@ -77,6 +80,8 @@ const providerDraft = (patch: Partial<ProviderDraft> = {}): ProviderDraft => ({
       displayName: 'Example Chat',
       capabilities: ['reasoning'],
       supportEfforts: ['low', 'high'],
+      requestIdentityChoice: 'inherit',
+      requestIdentityOverridesJson: '',
     },
   ],
   ...patch,
@@ -337,12 +342,14 @@ describe('settings persistence and validation', () => {
         max_context_size: 128000,
         capabilities: ['reasoning'],
         support_efforts: ['high'],
+        request_identity: { overrides: { client: { user_agent: 'host' } } },
       }],
     );
     expect(draft?.apiKey).toBe('');
     expect(draft?.defaultModel).toBe('chat');
     expect(draft?.models[0]?.model).toBe('chat');
     expect(draft?.requestIdentityChoice).toBe('kimi_code');
+    expect(draft?.models[0]?.requestIdentityChoice).toBe('custom_overrides');
   });
 
   it('round-trips authored request identity presets and advanced overrides', async () => {
@@ -358,9 +365,15 @@ describe('settings persistence and validation', () => {
         status: 'connected',
         models: ['example/chat'],
       },
-      [{ provider: 'example', model: 'example/chat', max_context_size: 128000 }],
+      [{
+        provider: 'example',
+        model: 'example/chat',
+        max_context_size: 128000,
+        request_identity: { overrides: { request: { logical_id: 'turn' } } },
+      }],
     );
     expect(draft?.requestIdentityChoice).toBe('codex_compatible');
+    expect(draft?.models[0]?.requestIdentityChoice).toBe('custom_overrides');
     expect(JSON.parse(draft?.requestIdentityOverridesJson ?? '')).toEqual({
       client: { user_agent: 'codex' },
     });
@@ -383,6 +396,11 @@ describe('settings persistence and validation', () => {
       preset: 'codex_compatible',
       overrides: { client: { user_agent: 'codex' } },
     });
+    expect(body?.['models']).toEqual([
+      expect.objectContaining({
+        request_identity: { overrides: { request: { logical_id: 'turn' } } },
+      }),
+    ]);
   });
 
   it('rejects malformed advanced request identity JSON without saving', () => {
@@ -393,7 +411,15 @@ describe('settings persistence and validation', () => {
           requestIdentityOverridesJson: '{',
         }),
       )?.key,
-    ).toBe('val.providerRequestIdentity');
+    ).toBe('val.requestIdentityJson');
+    expect(validateProviderDraft(providerDraft({
+      requestIdentityChoice: 'custom_overrides',
+      requestIdentityOverridesJson: '',
+    }))?.key).toBe('val.requestIdentityOverridesRequired');
+    expect(validateProviderDraft(providerDraft({
+      requestIdentityChoice: 'custom_overrides',
+      requestIdentityOverridesJson: '{}',
+    }))?.key).toBe('val.requestIdentityOverridesInvalid');
   });
 
   it('uses the provider PUT wire and omits a blank write-once secret', async () => {
@@ -404,7 +430,11 @@ describe('settings persistence and validation', () => {
       expect(init?.method).toBe('PUT');
       expect(body['api_key']).toBeUndefined();
       expect(body['models']).toEqual([
-        expect.objectContaining({ model: 'chat', max_context_size: 128000 }),
+        expect.objectContaining({
+          model: 'chat',
+          max_context_size: 128000,
+          request_identity: null,
+        }),
       ]);
       return new Response(JSON.stringify({
         code: 0,
@@ -476,7 +506,7 @@ describe('settings persistence and validation', () => {
     );
   });
 
-  it('serializes request identity presets and resets edit forms to auto with null', async () => {
+  it('serializes provider and model authored layers without inventing presets', async () => {
     const bodies: Record<string, unknown>[] = [];
     const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
       bodies.push(JSON.parse(init?.body as string) as Record<string, unknown>);
@@ -488,19 +518,83 @@ describe('settings persistence and validation', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     const connection = { url: 'http://127.0.0.1:8080', token: 'token' };
-    await replaceProvider(connection, 'example', providerDraft({ requestIdentityChoice: 'codex_compatible' }));
-    await replaceProvider(connection, 'example', providerDraft({ requestIdentityChoice: 'kimi_code' }));
+    const custom = providerDraft({
+      requestIdentityChoice: 'custom_overrides',
+      requestIdentityOverridesJson: '{"client":{"user_agent":"host"}}',
+    });
+    custom.models[0] = {
+      ...custom.models[0]!,
+      requestIdentityChoice: 'none',
+      requestIdentityOverridesJson: '{"request":{"logical_id":"turn"}}',
+    };
+    await replaceProvider(connection, 'example', custom);
     await replaceProvider(connection, 'example', providerDraft());
 
-    expect(bodies[0]?.['request_identity']).toEqual({ preset: 'codex_compatible' });
-    expect(bodies[1]?.['request_identity']).toEqual({ preset: 'kimi_code' });
-    expect(bodies[2]?.['request_identity']).toBeNull();
+    expect(bodies[0]?.['request_identity']).toEqual({
+      overrides: { client: { user_agent: 'host' } },
+    });
+    expect(bodies[0]?.['models']).toEqual([
+      expect.objectContaining({
+        request_identity: {
+          preset: 'none',
+          overrides: { request: { logical_id: 'turn' } },
+        },
+      }),
+    ]);
+    expect(bodies[1]?.['request_identity']).toBeNull();
+    expect(bodies[1]?.['models']).toEqual([
+      expect.objectContaining({ request_identity: null }),
+    ]);
   });
 
-  it('tracks request identity edits as dirty', () => {
+  it('omits inherited provider and model layers when creating', async () => {
+    let body: Record<string, unknown> | undefined;
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      body = JSON.parse(init?.body as string) as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        code: 0,
+        msg: 'success',
+        data: { id: 'example', type: 'openai', has_api_key: false, status: 'unconfigured' },
+      }));
+    }));
+    await createProvider(
+      { url: 'http://127.0.0.1:8080', token: 'token' },
+      providerDraft(),
+    );
+    expect(body?.['request_identity']).toBeUndefined();
+    expect(body?.['models']).toEqual([
+      expect.not.objectContaining({ request_identity: expect.anything() }),
+    ]);
+  });
+
+  it('maps global authored layers and rejects empty override-only layers', () => {
+    const overrideOnly = requestIdentityLayerDraftFromPolicy({
+      overrides: { cache: { source: 'session' } },
+    });
+    expect(overrideOnly.requestIdentityChoice).toBe('custom_overrides');
+    expect(requestIdentityPolicyFromDraft(overrideOnly)).toEqual({
+      overrides: { cache: { source: 'session' } },
+    });
+    expect(requestIdentityLayerDraftFromPolicy(undefined)).toEqual({
+      requestIdentityChoice: 'inherit',
+      requestIdentityOverridesJson: '',
+    });
+    expect(() => requestIdentityPolicyFromDraft({
+      requestIdentityChoice: 'custom_overrides',
+      requestIdentityOverridesJson: '{}',
+    })).toThrow(/supported leaf/);
+  });
+
+  it('tracks provider and model request identity edits as dirty', () => {
     const initial = providerDraft();
     expect(isProviderDraftDirty(providerDraft({ requestIdentityChoice: 'none' }), initial)).toBe(true);
-    expect(isProviderDraftDirty(providerDraft({ requestIdentityOverridesJson: '{"client":{"userAgent":"host"}}' }), initial)).toBe(true);
+    expect(isProviderDraftDirty(providerDraft({
+      requestIdentityChoice: 'custom_overrides',
+      requestIdentityOverridesJson: '{"client":{"user_agent":"host"}}',
+    }), initial)).toBe(true);
+    const modelEdited = providerDraft();
+    modelEdited.models[0]!.requestIdentityChoice = 'kimi_code';
+    expect(isProviderDraftDirty(modelEdited, initial)).toBe(true);
     expect(isProviderDraftDirty(providerDraft(), initial)).toBe(false);
   });
 });

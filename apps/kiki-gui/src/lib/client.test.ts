@@ -78,6 +78,31 @@ describe('KikiClient.patchConfig', () => {
     expect(result.model_catalog?.refreshOnStart).toBe(true);
     vi.unstubAllGlobals();
   });
+
+  it('sends explicit global request identity replacement and clear payloads', async () => {
+    const bodies: unknown[] = [];
+    const fetchMock = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      bodies.push(JSON.parse(init?.body as string));
+      return new Response(JSON.stringify({
+        code: 0,
+        msg: 'success',
+        data: { providers: {} },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+
+    await client.patchConfig({
+      request_identity: { overrides: { client: { user_agent: 'host' } } },
+    });
+    await client.patchConfig({ request_identity: null });
+
+    expect(bodies).toEqual([
+      { request_identity: { overrides: { client: { user_agent: 'host' } } } },
+      { request_identity: null },
+    ]);
+    vi.unstubAllGlobals();
+  });
 });
 
 describe('KikiClient.listNamedAgentProfiles', () => {

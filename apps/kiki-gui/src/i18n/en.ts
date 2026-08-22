@@ -898,24 +898,38 @@ export const en = {
   'st.providers.idLabel': 'Provider ID',
   'st.providers.protocol': 'Protocol',
   'st.providers.baseUrl': 'Base URL',
-  'st.providers.requestIdentity': 'Request identity',
-  'st.providers.requestIdentity.auto': 'Auto (Kimi Code default)',
-  'st.providers.requestIdentity.codex_compatible': 'Codex-compatible (Responses only)',
-  'st.providers.requestIdentity.grok_build_compatible': 'Grok Build-compatible',
-  'st.providers.requestIdentity.kimi_code': 'Kimi Code',
-  'st.providers.requestIdentity.none': 'None (no request identity)',
-  // Short labels for the collapsed provider-summary badge; the full label
-  // above stays on the badge's tooltip.
-  'st.providers.requestIdentityBadge.auto': 'Auto',
+  'st.requestIdentity.defaultTitle': 'Default request identity',
+  'st.requestIdentity.defaultLabel': 'Default request identity',
+  'st.requestIdentity.defaultHint':
+    'Controls request identity fields for all providers and models. Inherit uses the system built-in Kimi Code identity; this is separate from the runtime display name and slug.',
+  'st.requestIdentity.saved': 'Default request identity saved.',
+  'st.requestIdentity.inheritBuiltin': 'Inherit system built-in (Kimi Code)',
+  'st.requestIdentity.inheritGlobal': 'Inherit global default',
+  'st.requestIdentity.inheritProvider': 'Inherit provider',
+  'st.requestIdentity.option.custom_overrides': 'Custom overrides only',
+  'st.requestIdentity.option.codex_compatible': 'Codex-compatible (Responses only)',
+  'st.requestIdentity.option.grok_build_compatible': 'Grok Build-compatible',
+  'st.requestIdentity.option.kimi_code': 'Kimi Code',
+  'st.requestIdentity.option.none': 'None (no request identity)',
+  'st.requestIdentity.overrides': 'Advanced overrides (JSON)',
+  'st.requestIdentity.overridesPlaceholder': '{\n  "client": { "user_agent": "host" }\n}',
+  'st.requestIdentity.overridesRequiredHint':
+    'Override-only layers require a non-empty object containing at least one supported leaf.',
+  'st.requestIdentity.overridesOptionalHint':
+    'Optional sparse overrides are applied on top of the selected preset. Changing presets keeps this JSON.',
+  'st.requestIdentity.clearLayer': 'Clear layer',
+  'st.providers.requestIdentity': 'Provider request identity',
+  'st.providers.requestIdentityHint':
+    'Inherit uses the authored global layer. Compatible presets reset lower identity layers before applying these optional overrides; they do not emulate client transport.',
+  'st.providers.requestIdentityBadge.inherit': 'Inherited',
+  'st.providers.requestIdentityBadge.custom_overrides': 'Custom overrides',
   'st.providers.requestIdentityBadge.codex_compatible': 'Codex',
   'st.providers.requestIdentityBadge.grok_build_compatible': 'Grok',
   'st.providers.requestIdentityBadge.kimi_code': 'Kimi',
   'st.providers.requestIdentityBadge.none': 'None',
-  'st.providers.requestIdentityHint':
-    'Select request identity semantics. Compatible presets emulate identity fields, not the client transport.',
-  'st.providers.requestIdentityAdvanced': 'Advanced overrides (JSON)',
-  'st.providers.requestIdentityAdvancedHint':
-    'Optional orthogonal policy overrides. Leave blank to use the complete preset.',
+  'st.models.requestIdentity': 'Model request identity',
+  'st.models.requestIdentityHint':
+    'Inherit uses the provider layer. A model preset resets lower layers; override-only adds sparse values without inventing a preset.',
   'st.providers.apiKey': 'API key',
   'st.providers.keyStored': 'Stored key present — leave blank to keep it',
   'st.providers.keyNew': 'Paste a new key',
@@ -1295,7 +1309,11 @@ export const en = {
   'val.providerId':
     'Provider ID must start with a letter or digit and use only letters, digits, spaces, - or _.',
   'val.providerProtocol': 'Choose a supported provider protocol.',
-  'val.providerRequestIdentity': 'Request identity overrides must be a valid JSON object.',
+  'val.requestIdentityJson': 'Request identity overrides must be valid JSON.',
+  'val.requestIdentityOverridesRequired': 'Custom overrides require a non-empty JSON object.',
+  'val.requestIdentityOverridesInvalid':
+    'Request identity overrides must contain at least one supported leaf and no unsupported fields.',
+  'val.modelRequestIdentity': 'Model {model} has invalid or empty request identity overrides.',
   'val.baseUrlAbsolute': 'Base URL must be a valid absolute URL.',
   'val.baseUrlHttp': 'Base URL must use http or https.',
   'val.baseUrlEnv': 'Base URL cannot contain an environment-variable placeholder.',

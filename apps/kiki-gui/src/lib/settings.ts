@@ -1,9 +1,10 @@
-import type {
-  ConfigResponse,
-  ModelCatalogItem,
-  PatchConfigRequest,
-  ProviderCatalogItem,
-  RequestIdentityPolicyWire,
+import {
+  requestIdentityPolicySchema,
+  type ConfigResponse,
+  type ModelCatalogItem,
+  type PatchConfigRequest,
+  type ProviderCatalogItem,
+  type RequestIdentityPolicyWire,
 } from '@moonshot-ai/protocol';
 
 import { LocalizedError, type I18nKey, type ValidationIssue } from '../i18n/locale';
@@ -165,22 +166,28 @@ export const PROVIDER_WIRE_TYPES: readonly ProviderWireType[] = [
   'vertexai',
 ];
 
+export type RequestIdentityPreset = NonNullable<RequestIdentityPolicyWire['preset']>;
+
 export type RequestIdentityChoice =
-  | 'auto'
-  | 'codex_compatible'
-  | 'grok_build_compatible'
-  | 'kimi_code'
-  | 'none';
+  | 'inherit'
+  | 'custom_overrides'
+  | RequestIdentityPreset;
 
 export const REQUEST_IDENTITY_CHOICES: readonly RequestIdentityChoice[] = [
-  'auto',
+  'inherit',
+  'custom_overrides',
   'codex_compatible',
   'grok_build_compatible',
   'kimi_code',
   'none',
 ];
 
-export interface ProviderModelDraft {
+export interface RequestIdentityLayerDraft {
+  requestIdentityChoice: RequestIdentityChoice;
+  requestIdentityOverridesJson: string;
+}
+
+export interface ProviderModelDraft extends RequestIdentityLayerDraft {
   model: string;
   maxContextSize: number;
   displayName: string;
@@ -188,15 +195,13 @@ export interface ProviderModelDraft {
   supportEfforts: string[];
 }
 
-export interface ProviderDraft {
+export interface ProviderDraft extends RequestIdentityLayerDraft {
   id: string;
   type: ProviderWireType;
   baseUrl: string;
   defaultModel: string;
   apiKey: string;
   clearApiKey: boolean;
-  requestIdentityChoice: RequestIdentityChoice;
-  requestIdentityOverridesJson: string;
   models: ProviderModelDraft[];
 }
 
@@ -800,6 +805,67 @@ export function validateDesktopConfigDraft(input: {
   return null;
 }
 
+export function requestIdentityLayerDraftFromPolicy(
+  policy: RequestIdentityPolicyWire | undefined,
+): RequestIdentityLayerDraft {
+  return {
+    requestIdentityChoice:
+      policy?.preset ?? (policy?.overrides === undefined ? 'inherit' : 'custom_overrides'),
+    requestIdentityOverridesJson:
+      policy?.overrides === undefined ? '' : JSON.stringify(policy.overrides, null, 2),
+  };
+}
+
+export function requestIdentityPolicyFromDraft(
+  draft: RequestIdentityLayerDraft,
+): RequestIdentityPolicyWire | undefined {
+  if (draft.requestIdentityChoice === 'inherit') return undefined;
+
+  const trimmed = draft.requestIdentityOverridesJson.trim();
+  if (draft.requestIdentityChoice === 'custom_overrides' && trimmed === '') {
+    throw new LocalizedError({ key: 'val.requestIdentityOverridesRequired' });
+  }
+
+  let overrides: RequestIdentityPolicyWire['overrides'];
+  if (trimmed !== '') {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      throw new LocalizedError({ key: 'val.requestIdentityJson' });
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new LocalizedError({ key: 'val.requestIdentityOverridesInvalid' });
+    }
+    overrides = parsed as RequestIdentityPolicyWire['overrides'];
+  }
+
+  const candidate = {
+    preset: isRequestIdentityPreset(draft.requestIdentityChoice)
+      ? draft.requestIdentityChoice
+      : undefined,
+    overrides,
+  };
+  const result = requestIdentityPolicySchema.safeParse(candidate);
+  if (!result.success) {
+    throw new LocalizedError({ key: 'val.requestIdentityOverridesInvalid' });
+  }
+  return result.data;
+}
+
+export function validateRequestIdentityLayerDraft(
+  draft: RequestIdentityLayerDraft,
+): ValidationIssue | null {
+  try {
+    requestIdentityPolicyFromDraft(draft);
+    return null;
+  } catch (error) {
+    return error instanceof LocalizedError
+      ? error.issue
+      : { key: 'val.requestIdentityOverridesInvalid' };
+  }
+}
+
 export function providerDraftFromCatalog(
   provider: ProviderCatalogItem,
   models: readonly ModelCatalogItem[],
@@ -815,6 +881,7 @@ export function providerDraftFromCatalog(
       displayName: model.display_name ?? '',
       capabilities: model.capabilities ?? [],
       supportEfforts: model.support_efforts ?? [],
+      ...requestIdentityLayerDraftFromPolicy(model.request_identity),
     }));
   if (providerModels.length === 0) return null;
   const defaultModel = provider.default_model?.startsWith(`${provider.id}/`)
@@ -827,11 +894,7 @@ export function providerDraftFromCatalog(
     defaultModel,
     apiKey: '',
     clearApiKey: false,
-    requestIdentityChoice: provider.request_identity?.preset ?? 'auto',
-    requestIdentityOverridesJson:
-      provider.request_identity?.overrides === undefined
-        ? ''
-        : JSON.stringify(provider.request_identity.overrides, null, 2),
+    ...requestIdentityLayerDraftFromPolicy(provider.request_identity),
     models: providerModels,
   };
 }
@@ -841,13 +904,8 @@ export function validateProviderDraft(draft: ProviderDraft): ValidationIssue | n
     return { key: 'val.providerId' };
   }
   if (!isProviderWireType(draft.type)) return { key: 'val.providerProtocol' };
-  if (isNewRequestIdentityChoice(draft.requestIdentityChoice)) {
-    try {
-      parseRequestIdentityOverrides(draft.requestIdentityOverridesJson);
-    } catch {
-      return { key: 'val.providerRequestIdentity' };
-    }
-  }
+  const providerIdentityIssue = validateRequestIdentityLayerDraft(draft);
+  if (providerIdentityIssue !== null) return providerIdentityIssue;
   if (draft.baseUrl !== '') {
     let url: URL;
     try {
@@ -871,6 +929,10 @@ export function validateProviderDraft(draft: ProviderDraft): ValidationIssue | n
     if (model.model.trim() === '') return { key: 'val.modelIdEmpty' };
     if (!Number.isInteger(model.maxContextSize) || model.maxContextSize < 1) {
       return { key: 'val.modelContextSize', params: { model: model.model || '(unnamed)' } };
+    }
+    const modelIdentityIssue = validateRequestIdentityLayerDraft(model);
+    if (modelIdentityIssue !== null) {
+      return { key: 'val.modelRequestIdentity', params: { model: model.model || '(unnamed)' } };
     }
     if (seen.has(model.model)) return { key: 'val.modelDuplicate', params: { model: model.model } };
     seen.add(model.model);
@@ -940,6 +1002,8 @@ export function providerDraftsEqual(a: ProviderDraft, b: ProviderDraft): boolean
       && model.model === other.model
       && model.maxContextSize === other.maxContextSize
       && model.displayName === other.displayName
+      && model.requestIdentityChoice === other.requestIdentityChoice
+      && model.requestIdentityOverridesJson === other.requestIdentityOverridesJson
       && stringArraysEqual(model.capabilities, other.capabilities)
       && stringArraysEqual(model.supportEfforts, other.supportEfforts);
   });
@@ -1057,6 +1121,8 @@ export async function fetchRemoteModels(probe: RemoteModelsProbe): Promise<Provi
     displayName: '',
     capabilities: [],
     supportEfforts: [],
+    requestIdentityChoice: 'inherit',
+    requestIdentityOverridesJson: '',
   }));
 }
 
@@ -1106,6 +1172,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.notifications', 'st.desktop.tray', 'st.desktop.quit'] },
   { section: 'general', cardId: 'st-card-compatibility-home', titleKey: 'st.compat.title', keywordKeys: ['st.compat.home', 'st.compat.credentialPath', 'st.compat.configImportTitle', 'st.compat.migrateUserSkills'] },
   { section: 'models', cardId: 'st-card-models', titleKey: 'st.models.defaultTitle', keywordKeys: ['st.models.providerLabel', 'st.models.searchPlaceholder'] },
+  { section: 'models', cardId: 'st-card-request-identity', titleKey: 'st.requestIdentity.defaultTitle', keywordKeys: ['st.requestIdentity.defaultLabel', 'st.requestIdentity.defaultHint'] },
   { section: 'models', cardId: 'st-card-thinking', titleKey: 'st.thinking.title', keywordKeys: ['st.thinking.enable', 'st.thinking.hint'] },
   { section: 'connection', cardId: 'st-card-conn-server', titleKey: 'st.conn.connectedTitle', keywordKeys: ['st.conn.version', 'st.conn.reconnect'] },
   { section: 'connection', cardId: 'st-card-conn-owned', titleKey: 'st.conn.ownedTitle', keywordKeys: ['st.conn.ownedBody', 'st.conn.restart'] },
@@ -1238,7 +1305,7 @@ export async function deleteProvider(
 
 function providerBody(draft: ProviderDraft, includeId: boolean): Record<string, unknown> {
   const apiKey = draft.clearApiKey ? '' : draft.apiKey || undefined;
-  const requestIdentity = requestIdentityFromDraft(draft);
+  const requestIdentity = requestIdentityPolicyFromDraft(draft);
   return {
     id: includeId ? draft.id : undefined,
     type: draft.type,
@@ -1246,39 +1313,21 @@ function providerBody(draft: ProviderDraft, includeId: boolean): Record<string, 
     base_url: draft.baseUrl || undefined,
     default_model: draft.defaultModel,
     request_identity: requestIdentity ?? (includeId ? undefined : null),
-    models: draft.models.map((model) => ({
-      model: model.model,
-      max_context_size: model.maxContextSize,
-      display_name: model.displayName || undefined,
-      capabilities: model.capabilities.length > 0 ? model.capabilities : undefined,
-      support_efforts: model.supportEfforts.length > 0 ? model.supportEfforts : undefined,
-    })),
+    models: draft.models.map((model) => {
+      const modelRequestIdentity = requestIdentityPolicyFromDraft(model);
+      return {
+        model: model.model,
+        max_context_size: model.maxContextSize,
+        display_name: model.displayName || undefined,
+        capabilities: model.capabilities.length > 0 ? model.capabilities : undefined,
+        support_efforts: model.supportEfforts.length > 0 ? model.supportEfforts : undefined,
+        request_identity: modelRequestIdentity ?? (includeId ? undefined : null),
+      };
+    }),
   };
 }
 
-function requestIdentityFromDraft(draft: ProviderDraft): RequestIdentityPolicyWire | undefined {
-  if (!isNewRequestIdentityChoice(draft.requestIdentityChoice)) return undefined;
-  return {
-    preset: draft.requestIdentityChoice,
-    overrides: parseRequestIdentityOverrides(draft.requestIdentityOverridesJson),
-  };
-}
-
-function parseRequestIdentityOverrides(
-  value: string,
-): RequestIdentityPolicyWire['overrides'] | undefined {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) return undefined;
-  const parsed: unknown = JSON.parse(trimmed);
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('request identity overrides must be an object');
-  }
-  return parsed as RequestIdentityPolicyWire['overrides'];
-}
-
-function isNewRequestIdentityChoice(
-  value: RequestIdentityChoice,
-): value is RequestIdentityPolicyWire['preset'] {
+function isRequestIdentityPreset(value: RequestIdentityChoice): value is RequestIdentityPreset {
   return ['codex_compatible', 'grok_build_compatible', 'kimi_code', 'none'].includes(value);
 }
 

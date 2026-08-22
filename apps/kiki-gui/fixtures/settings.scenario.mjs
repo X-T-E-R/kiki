@@ -20,6 +20,9 @@ export default {
     default_model: 'fixture/kiki-pro',
     default_permission_mode: 'manual',
     default_plan_mode: false,
+    request_identity: {
+      overrides: { client: { user_agent: 'host' } },
+    },
     thinking: { enabled: true, effort: 'high' },
     merge_all_available_skills: true,
     extra_skill_dirs: ['C:/fixture/skills'],
@@ -45,6 +48,9 @@ export default {
       support_efforts: ['low', 'medium', 'high'],
       default_effort: 'high',
       capabilities: ['reasoning', 'vision'],
+      request_identity: {
+        overrides: { request: { logical_id: 'turn' } },
+      },
     },
     {
       provider: 'fixture',
