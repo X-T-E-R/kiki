@@ -9,6 +9,7 @@ import {
   assistantDeltaEventSchema,
   eventSchema,
   shellCompletedEventSchema,
+  thinkingDeltaEventSchema,
   toolCallStartedEventSchema,
 } from '../events';
 import type { Event } from '../events';
@@ -98,6 +99,53 @@ describe('events / display re-exports', () => {
     ).toBe(true);
   });
 
+  it('preserves legacy and step-owned assistant and thinking deltas', () => {
+    expect(
+      assistantDeltaEventSchema.parse({
+        type: 'assistant.delta',
+        turnId: 1,
+        delta: 'legacy',
+      }),
+    ).toEqual({ type: 'assistant.delta', turnId: 1, delta: 'legacy' });
+    expect(
+      assistantDeltaEventSchema.parse({
+        type: 'assistant.delta',
+        turnId: 1,
+        step: 2,
+        stepId: 'step-2',
+        delta: 'owned',
+      }),
+    ).toEqual({
+      type: 'assistant.delta',
+      turnId: 1,
+      step: 2,
+      stepId: 'step-2',
+      delta: 'owned',
+    });
+    expect(
+      thinkingDeltaEventSchema.parse({
+        type: 'thinking.delta',
+        turnId: 1,
+        delta: 'legacy thought',
+      }),
+    ).toEqual({ type: 'thinking.delta', turnId: 1, delta: 'legacy thought' });
+    expect(
+      thinkingDeltaEventSchema.parse({
+        type: 'thinking.delta',
+        turnId: 1,
+        step: 2,
+        stepId: 'step-2',
+        delta: 'owned thought',
+      }),
+    ).toEqual({
+      type: 'thinking.delta',
+      turnId: 1,
+      step: 2,
+      stepId: 'step-2',
+      delta: 'owned thought',
+    });
+  });
+
   it('rejects unknown event types through the full agent event union', () => {
     expect(
       agentEventSchema.safeParse({
@@ -137,6 +185,49 @@ describe('events / display re-exports', () => {
     expect(parsed.type).toBe('prompt.submitted');
     expect((parsed as { promptId: string }).promptId).toBe('prompt_1');
     expect((parsed as { status: string }).status).toBe('blocked');
+  });
+
+  it('validates queued prompt lifecycle events', () => {
+    const queued = eventSchema.parse({
+      type: 'prompt.queued',
+      agentId: 'main',
+      sessionId: 'sess_1',
+      promptId: 'prompt_1',
+      content: [{ type: 'text', text: 'queued' }],
+      queueLength: 2,
+    });
+    const replaced = eventSchema.parse({
+      type: 'prompt.replaced',
+      agentId: 'main',
+      sessionId: 'sess_1',
+      promptId: 'prompt_1',
+      content: [{ type: 'text', text: 'replacement' }],
+      replacedAt: '2026-06-11T00:00:01.000Z',
+    });
+
+    expect(queued.type).toBe('prompt.queued');
+    expect(replaced.type).toBe('prompt.replaced');
+  });
+
+  it('accepts legacy and timestamped agent.disposed lifecycle events', () => {
+    const legacy = eventSchema.parse({
+      type: 'agent.disposed',
+      agentId: 'agent-1',
+      sessionId: 'sess_1',
+    });
+    const timestamped = eventSchema.parse({
+      type: 'agent.disposed',
+      agentId: 'agent-1',
+      sessionId: 'sess_1',
+      time: 1_717_000_000_000,
+    });
+
+    expect(legacy).toMatchObject({ type: 'agent.disposed', agentId: 'agent-1' });
+    expect(timestamped).toMatchObject({
+      type: 'agent.disposed',
+      agentId: 'agent-1',
+      time: 1_717_000_000_000,
+    });
   });
 
   it('preserves detached on task events', () => {

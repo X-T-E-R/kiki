@@ -1,12 +1,25 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import { isVolatileEventType, VOLATILE_EVENT_TYPES } from '../events';
 import {
   inFlightTurnSchema,
   sessionSnapshotResponseSchema,
+  snapshotSubagentSchema,
 } from '../rest/snapshot';
 
 const TS = '2026-06-11T10:30:00.000Z';
+const PRE_C_SNAPSHOT_SUBAGENT_SCHEMA = z
+  .object({
+    id: z.string().min(1),
+    session_id: z.string().min(1),
+    kind: z.enum(['subagent', 'bash', 'tool']),
+    description: z.string(),
+    status: z.enum(['running', 'completed', 'failed', 'cancelled']),
+    created_at: z.string(),
+    subagent_phase: z.enum(['queued', 'working', 'suspended', 'completed', 'failed']).optional(),
+  })
+  .passthrough();
 
 const SESSION = {
   id: 'sess_1',
@@ -33,7 +46,7 @@ const SESSION = {
 };
 
 describe('rest/snapshot — session snapshot', () => {
-  it('parses a full snapshot with an in-flight turn', () => {
+  it('parses a full snapshot with step-owned in-flight text', () => {
     const result = sessionSnapshotResponseSchema.safeParse({
       as_of_seq: 12,
       epoch: 'ep_01ABC',
@@ -52,6 +65,8 @@ describe('rest/snapshot — session snapshot', () => {
       },
       in_flight_turn: {
         turn_id: 3,
+        step: 2,
+        step_id: 'step_01KV589KCS5PG9ZYDNP8KFDQHZ',
         assistant_text: 'partial answer…',
         thinking_text: '',
         running_tools: [
@@ -67,6 +82,12 @@ describe('rest/snapshot — session snapshot', () => {
       pending_questions: [],
     });
     expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.in_flight_turn).toMatchObject({
+        step: 2,
+        step_id: 'step_01KV589KCS5PG9ZYDNP8KFDQHZ',
+      });
+    }
   });
 
   it('parses an idle snapshot (no in-flight turn)', () => {
@@ -103,6 +124,8 @@ describe('rest/snapshot — session snapshot', () => {
       expect(result.data.in_flight_turn?.current_prompt_id).toBe(
         'prompt_01KV589KCS5PG9ZYDNP8KFDQHZ',
       );
+      expect(result.data.in_flight_turn?.step).toBeUndefined();
+      expect(result.data.in_flight_turn?.step_id).toBeUndefined();
     }
   });
 
@@ -140,16 +163,54 @@ describe('rest/snapshot — session snapshot', () => {
           subagent_phase: 'completed',
           swarm_index: 1,
         },
+        {
+          id: 'agent_3',
+          session_id: 'sess_1',
+          kind: 'subagent',
+          description: 'cancelled task',
+          status: 'cancelled',
+          created_at: TS,
+          completed_at: TS,
+        },
       ],
       pending_approvals: [],
       pending_questions: [],
     });
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.subagents).toHaveLength(2);
+      expect(result.data.subagents).toHaveLength(3);
       expect(result.data.subagents?.[0]?.parent_tool_call_id).toBe('call_1');
       expect(result.data.subagents?.[1]?.subagent_phase).toBe('completed');
+      expect(result.data.subagents?.[2]?.status).toBe('cancelled');
+      expect(result.data.subagents?.[2]?.subagent_phase).toBeUndefined();
+      for (const row of result.data.subagents ?? []) {
+        expect(PRE_C_SNAPSHOT_SUBAGENT_SCHEMA.safeParse(row).success).toBe(true);
+      }
     }
+  });
+
+  it('rejects unnegotiated unknown and cancelled phase enum values', () => {
+    const base = {
+      id: 'agent_1',
+      session_id: 'sess_1',
+      kind: 'subagent' as const,
+      description: 'legacy relation',
+      created_at: TS,
+    };
+    expect(
+      snapshotSubagentSchema.safeParse({
+        ...base,
+        status: 'unknown',
+        subagent_phase: 'unknown',
+      }).success,
+    ).toBe(false);
+    expect(
+      snapshotSubagentSchema.safeParse({
+        ...base,
+        status: 'cancelled',
+        subagent_phase: 'cancelled',
+      }).success,
+    ).toBe(false);
   });
 
   it('rejects a snapshot missing the watermark', () => {

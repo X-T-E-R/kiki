@@ -66,6 +66,14 @@ export type PromptListResponse = z.infer<typeof promptListResponseSchema>;
 export const promptSubmitResultSchema = promptItemSchema;
 export type PromptSubmitResult = z.infer<typeof promptSubmitResultSchema>;
 
+export const promptReplaceRequestSchema = z.object({
+  content: z.array(messageContentSchema).min(1),
+});
+export type PromptReplaceRequest = z.infer<typeof promptReplaceRequestSchema>;
+
+export const promptReplaceResultSchema = promptItemSchema;
+export type PromptReplaceResult = z.infer<typeof promptReplaceResultSchema>;
+
 export const promptSteerRequestSchema = z.object({
   prompt_ids: z.array(z.string().min(1)).min(1),
 });

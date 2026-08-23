@@ -26,6 +26,8 @@ export type InFlightToolCall = z.infer<typeof inFlightToolCallSchema>;
 
 export const inFlightTurnSchema = z.object({
   turn_id: z.number().int().nonnegative(),
+  step: z.number().int().positive().optional(),
+  step_id: z.string().min(1).optional(),
   assistant_text: z.string(),
   thinking_text: z.string(),
   running_tools: z.array(inFlightToolCallSchema),
@@ -33,11 +35,6 @@ export const inFlightTurnSchema = z.object({
 });
 export type InFlightTurn = z.infer<typeof inFlightTurnSchema>;
 
-/**
- * A subagent task projected at the snapshot watermark. Live rows retain their
- * phase; a cold-recovery row is rebuilt from persisted agent metadata and its
- * transcript tool frames.
- */
 export const snapshotSubagentSchema = taskSchema.extend({
   subagent_phase: z.enum(['queued', 'working', 'suspended', 'completed', 'failed']).optional(),
   subagent_type: z.string().optional(),

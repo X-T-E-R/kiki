@@ -15,10 +15,9 @@
  * (volatile deltas are not replayable; this is how a reconnecting client
  * recovers mid-turn assistant/thinking text and running tool calls).
  *
- * The server reads the watermark, assembles the snapshot, then re-reads the
- * watermark and retries assembly if a durable event landed in between
- * (bounded retries). Durable events are low-frequency (turn/tool boundaries,
- * not deltas), so this converges almost immediately.
+ * The server enters the session event queue once to freeze the cursor,
+ * committed context projection, and volatile ownership state. Blob references
+ * are rehydrated outside that barrier from the immutable captured context.
  */
 
 import { z } from 'zod';
@@ -49,6 +48,8 @@ export type InFlightToolCall = z.infer<typeof inFlightToolCallSchema>;
 
 export const inFlightTurnSchema = z.object({
   turn_id: z.number().int().nonnegative(),
+  step: z.number().int().positive().optional(),
+  step_id: z.string().min(1).optional(),
   /** Assistant text accumulated from `assistant.delta` in the current step (reset on `turn.step.started`; earlier steps are in `messages`). */
   assistant_text: z.string(),
   /** Thinking text accumulated from `thinking.delta` in the current step (reset on `turn.step.started`). */
@@ -61,14 +62,17 @@ export const inFlightTurnSchema = z.object({
 export type InFlightTurn = z.infer<typeof inFlightTurnSchema>;
 
 /**
- * A live subagent task as of the snapshot watermark. Extends the base task
- * wire shape with the swarm identity metadata that otherwise only rides the
+ * A subagent relation or task as of the snapshot watermark. Extends the base
+ * task wire shape with identity metadata that otherwise only rides the
  * (non-replayed) `subagent.spawned` WS event.
  */
 export const snapshotSubagentSchema = taskSchema.extend({
   subagent_phase: z.enum(['queued', 'working', 'suspended', 'completed', 'failed']).optional(),
   subagent_type: z.string().optional(),
+  parent_agent_id: z.string().optional(),
   parent_tool_call_id: z.string().optional(),
+  label: z.string().optional(),
+  tool_call_count: z.number().int().nonnegative().optional(),
   suspended_reason: z.string().optional(),
   swarm_index: z.number().int().nonnegative().optional(),
   run_in_background: z.boolean().optional(),
