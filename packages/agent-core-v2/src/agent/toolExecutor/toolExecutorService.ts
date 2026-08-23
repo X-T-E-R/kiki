@@ -12,7 +12,10 @@ import {
   type JsonType,
   type ToolArgsValidator,
 } from '#/tool/args-validator';
-import { parseToolCallArguments } from '#/tool/tool-args-parse';
+import {
+  formatToolArgsTruncationRejection,
+  parseToolCallArguments,
+} from '#/tool/tool-args-parse';
 import { PathSecurityError } from '#/tool/path-access';
 import { isAbortError, isUserCancellation } from '#/_base/utils/abort';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -730,13 +733,19 @@ function preflightToolCall(
 ): PreflightedToolCall {
   const toolName = toolCall.name;
   const parsedArgs = parseToolCallArguments(toolCall.arguments);
-  if (parsedArgs.parseFailed) {
-    log?.debug('tool args JSON parse failed', {
-      toolName,
-      toolCallId: toolCall.id,
-      rawLength: typeof toolCall.arguments === 'string' ? toolCall.arguments.length : 0,
-      error: parsedArgs.error,
-    });
+  if (parsedArgs.parseFailed || parsedArgs.repaired === true) {
+    log?.warn(
+      parsedArgs.parseFailed ? 'tool args JSON parse failed' : 'tool args JSON repaired',
+      {
+        toolName,
+        toolCallId: toolCall.id,
+        rawLength: typeof toolCall.arguments === 'string' ? toolCall.arguments.length : 0,
+        kind: parsedArgs.truncation?.kind,
+        offset: parsedArgs.truncation?.offset,
+        field: parsedArgs.truncation?.field,
+        error: parsedArgs.error,
+      },
+    );
   }
   const tool = toolRegistry.resolve(toolName);
   if (tool === undefined) {
@@ -767,6 +776,20 @@ function preflightToolCall(
       toolName,
       args: parsedArgs.data,
       output: unavailable,
+    };
+  }
+  if (parsedArgs.truncation !== undefined && parsedArgs.parseFailed) {
+    return {
+      kind: 'rejected',
+      toolCall,
+      toolName,
+      args: parsedArgs.data,
+      output: formatToolArgsTruncationRejection(
+        toolName,
+        toolCall.arguments,
+        parsedArgs.truncation,
+        false,
+      ),
     };
   }
   const validationError = validateExecutableToolArgs(tool, parsedArgs.data);

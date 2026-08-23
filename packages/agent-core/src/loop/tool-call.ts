@@ -27,7 +27,7 @@ import { PathSecurityError } from '../tools/policies/path-access';
 import { isUserCancellation } from '../utils/abort';
 import { errorMessage, isAbortError } from './errors';
 import type { LoopEventDispatcher, LoopToolCallEvent } from './events';
-import { parseToolCallArguments } from './tool-args-parse';
+import { formatToolArgsTruncationRejection, parseToolCallArguments } from './tool-args-parse';
 import type { LLM, LLMChatResponse, LLMRequestTrace } from './llm';
 import { ToolAccesses } from './tool-access';
 import { ToolScheduler, type ToolCallTask } from './tool-scheduler';
@@ -202,14 +202,21 @@ export async function recordUnexecutedToolCalls(
 ): Promise<void> {
   for (const toolCall of response.toolCalls) {
     const parsedArgs = parseToolCallArguments(toolCall.arguments);
-    if (parsedArgs.parseFailed) {
-      step.log?.debug('recording unexecuted tool call with unparseable arguments', {
+    if (parsedArgs.parseFailed || parsedArgs.repaired === true) {
+      step.log?.warn('recording unexecuted tool call with truncated or unparseable arguments', {
         toolName: toolCall.name,
         toolCallId: toolCall.id,
         rawLength: toolCall.arguments?.length ?? 0,
+        kind: parsedArgs.truncation?.kind,
+        offset: parsedArgs.truncation?.offset,
+        field: parsedArgs.truncation?.field,
         error: parsedArgs.error,
       });
     }
+    const output =
+      parsedArgs.truncation === undefined
+        ? UNEXECUTED_TOOL_CALL_OUTPUT
+        : formatToolArgsTruncationRejection(toolCall.name, toolCall.arguments, parsedArgs.truncation, true);
     await step.dispatchEvent({
       type: 'tool.call',
       uuid: toolCall.id,
@@ -226,7 +233,7 @@ export async function recordUnexecutedToolCalls(
       type: 'tool.result',
       parentUuid: toolCall.id,
       toolCallId: toolCall.id,
-      result: { output: UNEXECUTED_TOOL_CALL_OUTPUT, isError: true },
+      result: { output, isError: true },
       traceId: step.trace.traceId,
     });
   }
@@ -253,13 +260,34 @@ function preflightToolCall(
     };
   }
 
-  if (parsedArgs.parseFailed) {
-    step.log?.debug('tool args JSON parse failed', {
+  if (parsedArgs.parseFailed || parsedArgs.repaired === true) {
+    step.log?.warn(
+      parsedArgs.parseFailed ? 'tool args JSON parse failed' : 'tool args JSON repaired',
+      {
+        toolName,
+        toolCallId: toolCall.id,
+        rawLength: toolCall.arguments?.length ?? 0,
+        kind: parsedArgs.truncation?.kind,
+        offset: parsedArgs.truncation?.offset,
+        field: parsedArgs.truncation?.field,
+        error: parsedArgs.error,
+      },
+    );
+  }
+
+  if (parsedArgs.parseFailed && parsedArgs.truncation !== undefined) {
+    return {
+      kind: 'rejected',
+      toolCall,
       toolName,
-      toolCallId: toolCall.id,
-      rawLength: toolCall.arguments?.length ?? 0,
-      error: parsedArgs.error,
-    });
+      args: parsedArgs.data,
+      output: formatToolArgsTruncationRejection(
+        toolName,
+        toolCall.arguments,
+        parsedArgs.truncation,
+        false,
+      ),
+    };
   }
 
   const validationError = validateExecutableToolArgs(tool, parsedArgs.data);
