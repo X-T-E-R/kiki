@@ -3,8 +3,9 @@
  * global search, settings entry, and the session list (polled every 5s).
  *
  * The search box queries `POST /search` (global full-text index); results
- * replace the list while a query is active. Hits carry no message id — only
- * session_id + turn — so navigation opens the session.
+ * stand in for the session list while a query is active, and "load more"
+ * appends later pages to the current results. Hits carry no message id —
+ * only session_id + turn — so navigation opens the session.
  *
  * The session row menu opens from the hover ⋯ button or a right-click
  * anywhere on the row; the undo confirmation and rename dialog build on the
@@ -12,11 +13,12 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { Session, Workspace } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../i18n';
+import type { SearchMessageHit, SearchMessagesResponse } from '../lib/client';
 import { clampOverlayPosition } from '../lib/overlayPosition';
 import { groupSearchHits, isSearchable, SEARCH_DEBOUNCE_MS } from '../lib/search';
 import {
@@ -84,6 +86,28 @@ function sessionLabel(session: Session, untitled: string): string {
   return untitled;
 }
 
+/** Concatenate pages in server order, keeping every page's `items` verbatim —
+ * duplicates re-ranked across a page boundary are kept, never collapsed.
+ * Later pages append; they never replace. */
+export function mergeSearchPages(
+  pages: readonly SearchMessagesResponse[],
+): SearchMessageHit[] {
+  const hits: SearchMessageHit[] = [];
+  for (const page of pages) {
+    for (const hit of page.items) {
+      hits.push(hit);
+    }
+  }
+  return hits;
+}
+
+/** Next-page cursor; the server omits `page_token` on the final page. */
+export function searchNextPageParam(
+  lastPage: SearchMessagesResponse,
+): string | undefined {
+  return lastPage.has_more ? lastPage.page_token : undefined;
+}
+
 export function Sidebar({
   activeSessionId,
   sessions,
@@ -138,7 +162,6 @@ export function Sidebar({
 
   const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchPageToken, setSearchPageToken] = useState<string | undefined>(undefined);
 
   // Local panel-layout prefs: the sidebar owns its own width (screen readers
   // prefer explicit resize handles as buttons, but we keep the drag-only
@@ -182,26 +205,46 @@ export function Sidebar({
     return () => { clearTimeout(timer); };
   }, [searchInput]);
   const searchActive = isSearchable(searchQuery);
-  const searchResultsQuery = useQuery({
-    queryKey: ['global-search', searchQuery, searchPageToken ?? 'first'],
-    queryFn: ({ signal }) =>
+  // `useInfiniteQuery` accumulates pages under one key, so loading more
+  // appends to the current results instead of replacing them; a changed
+  // `searchQuery` swaps the key and starts again from the first page.
+  const searchResultsQuery = useInfiniteQuery({
+    queryKey: ['global-search', searchQuery],
+    queryFn: ({ signal, pageParam }) =>
       client.searchMessages(
-        { query: searchQuery, page_size: 30, sort: 'score', page_token: searchPageToken },
+        { query: searchQuery, page_size: 30, sort: 'score', page_token: pageParam },
         signal,
       ),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: searchNextPageParam,
     enabled: searchActive,
     staleTime: 15_000,
   });
-  const searchGroups = useMemo(
-    () => groupSearchHits(searchResultsQuery.data?.items ?? []),
+  const searchHits = useMemo(
+    () => mergeSearchPages(searchResultsQuery.data?.pages ?? []),
     [searchResultsQuery.data],
   );
-
-  // Reset the page cursor whenever the query changes so a fresh search starts
-  // from the top instead of appending to the previous query's tail.
-  useEffect(() => {
-    setSearchPageToken(undefined);
-  }, [searchQuery]);
+  const searchGroups = useMemo(
+    () => groupSearchHits(searchHits),
+    [searchHits],
+  );
+  // Only the initial fetch (no successful page yet) warrants the full-screen
+  // error card; a failed "load more" keeps the pages already rendered and the
+  // retry affordance below the list.
+  const searchHasNoPages = searchResultsQuery.data === undefined;
+  const searchInitialError = searchResultsQuery.isError && searchHasNoPages;
+  const searchAppendError = searchResultsQuery.isFetchNextPageError;
+  // A shortfall on any loaded page keeps the warning visible; `building` wins
+  // the copy so the indexed-count line stays meaningful for the whole query.
+  const searchBuildingPage =
+    searchResultsQuery.data?.pages.findLast(
+      (page) => page.index_state.state === 'building',
+    );
+  const searchIncomplete =
+    searchResultsQuery.data?.pages.some(
+      (page) => page.incomplete !== undefined,
+    ) === true;
+  const searchIndexNotice = searchBuildingPage !== undefined || searchIncomplete;
 
   const togglePin = (session: Session) => {
     setMenu(null);
@@ -412,7 +455,7 @@ export function Sidebar({
               <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
               {t('sidebar.searching')}
             </div>
-          ) : searchResultsQuery.isError ? (
+          ) : searchInitialError ? (
             <div className="mx-1 mt-2 rounded-md border border-danger/30 bg-danger/5 p-2">
               <p className="text-[11.5px] font-medium text-danger">{t('sidebar.searchFailed')}</p>
               <p className="font-mono text-[10px] text-danger/80">
@@ -455,28 +498,42 @@ export function Sidebar({
                   ))}
                 </div>
               ))}
-              {searchResultsQuery.data !== undefined &&
-              (searchResultsQuery.data.index_state.state === 'building' ||
-                searchResultsQuery.data.incomplete !== undefined) ? (
+              {searchIndexNotice ? (
                 <p className="px-2 pt-1 text-center font-mono text-[9.5px] text-ink-faint">
-                  {searchResultsQuery.data.index_state.state === 'building'
+                  {searchBuildingPage !== undefined
                     ? t('sidebar.indexBuilding', {
-                        indexed: searchResultsQuery.data.index_state.indexed_sessions,
-                        total: searchResultsQuery.data.index_state.total_sessions,
+                        indexed: searchBuildingPage.index_state.indexed_sessions,
+                        total: searchBuildingPage.index_state.total_sessions,
                       })
                     : t('sidebar.indexIncomplete')}
                 </p>
               ) : null}
-              {searchResultsQuery.data?.has_more === true ? (
+              {searchResultsQuery.hasNextPage ? (
                 <button
                   type="button"
                   data-search-load-more
-                  disabled={searchResultsQuery.isFetching}
-                  onClick={() => { setSearchPageToken(searchResultsQuery.data?.page_token); }}
+                  disabled={searchResultsQuery.isFetchingNextPage || searchResultsQuery.isFetching}
+                  onClick={() => { void searchResultsQuery.fetchNextPage(); }}
                   className="mt-2 w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-center text-[11px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-60"
                 >
-                  {searchResultsQuery.isFetching ? t('sidebar.loadingMore') : t('sidebar.searchLoadMore')}
+                  {searchResultsQuery.isFetchingNextPage
+                    ? t('sidebar.loadingMore')
+                    : t('sidebar.searchLoadMore')}
                 </button>
+              ) : null}
+              {searchAppendError ? (
+                <div className="mx-1 mt-2 rounded-md border border-danger/30 bg-danger/5 p-2">
+                  <p className="text-[11.5px] font-medium text-danger">{t('sidebar.searchFailed')}</p>
+                  <button
+                    type="button"
+                    data-search-retry
+                    disabled={searchResultsQuery.isFetchingNextPage}
+                    onClick={() => { void searchResultsQuery.fetchNextPage(); }}
+                    className="mt-1.5 text-[11px] font-medium text-danger underline"
+                  >
+                    {t('common.retry')}
+                  </button>
+                </div>
               ) : null}
             </>
           )}

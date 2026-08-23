@@ -29,6 +29,7 @@ import {
 } from '../lib/desktop';
 import { useI18n } from '../i18n';
 import { errorText, issueText, type I18nKey, type Locale } from '../i18n/locale';
+import { useBusySessionCount } from '../lib/busySessions';
 import { clearStoredDrafts } from '../lib/drafts';
 import {
   disabledProfilePatch,
@@ -211,22 +212,6 @@ function useSavedTick(): [boolean, () => void] {
     timer.current = setTimeout(() => { setNonce(0); }, 2500);
   }, []);
   return [nonce > 0, ping];
-}
-
-/**
- * Busy-session count for restart confirm dialogs. A dedicated first-page
- * query (short stale window) — restart kills the server process, so the
- * confirm names exactly how many running turns it would terminate.
- */
-function useBusySessionCount(): number | undefined {
-  const { client } = useConnection();
-  const query = useQuery({
-    queryKey: ['sessions', 'restart-confirm'],
-    queryFn: () => client.listSessions({ page_size: 100 }),
-    staleTime: 10_000,
-    select: (page) => page.items.filter((session) => session.busy).length,
-  });
-  return query.data;
 }
 
 function isAbsoluteHomePath(path: string): boolean {

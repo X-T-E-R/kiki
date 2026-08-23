@@ -250,6 +250,47 @@ describe('server-v2 /api/v1 prompts', () => {
     expect(Array.isArray(list.body.data.queued)).toBe(true);
   });
 
+  it('steers a queued prompt with model and thinking bindings without rebinding the active turn', async () => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+
+    const active = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'active' }],
+      model: 'stub',
+      thinking: 'low',
+    });
+    expect(active.body.code).toBe(0);
+    expect(active.body.data.status).toBe('running');
+
+    const session = getLiveSessionById(server!.core.accessor, id);
+    const main = session!.accessor.get(IAgentLifecycleService).get('main');
+    const prompt = main!.accessor.get(IAgentPromptService);
+    const profile = main!.accessor.get(IAgentProfileService);
+    const activeBinding = profile.data();
+    const queued = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'append now' }],
+      model: 'stub-alt',
+      thinking: 'high',
+    });
+    expect(queued.body.code).toBe(0);
+    expect(queued.body.data.status).toBe('queued');
+    expect(profile.data()).toEqual(activeBinding);
+
+    const steered = await call<{ steered: true; prompt_ids: string[] }>(
+      'POST',
+      `/api/v1/sessions/${id}/prompts/${queued.body.data.prompt_id}:steer`,
+    );
+
+    expect(steered.body.code, JSON.stringify(steered.body)).toBe(0);
+    expect(steered.body.data).toEqual({
+      steered: true,
+      prompt_ids: [queued.body.data.prompt_id],
+    });
+    expect(profile.data()).toEqual(activeBinding);
+    expect(prompt.list().pending.map((item) => item.id)).not.toContain(queued.body.data.prompt_id);
+    prompt.abort(active.body.data.prompt_id);
+  });
+
   it('submits a bundled skill prompt through the skills field', async () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
@@ -1027,6 +1068,118 @@ describe('server-v2 /api/v1 prompts', () => {
     expect(dirname(attachedPath).replaceAll('\\', '/').endsWith('/attachments')).toBe(true);
     expect((await realpath(attachedPath)).startsWith(await realpath(home as string))).toBe(true);
     expect(await readFile(attachedPath)).toEqual(scriptBytes);
+  });
+
+  it('replaces a queued prompt in place while preserving identity, order, and attachments', async () => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+    const session = getLiveSessionById(server!.core.accessor, id);
+    const main = session!.accessor.get(IAgentLifecycleService).get('main');
+    const prompt = main!.accessor.get(IAgentPromptService);
+    const first = {
+      id: 'prompt-first',
+      userMessageId: 'prompt-first',
+      createdAt: '2026-01-01T00:00:01.000Z',
+      state: 'pending' as const,
+      message: {
+        id: 'prompt-first',
+        role: 'user' as const,
+        content: [
+          { type: 'text' as const, text: 'old text' },
+          { type: 'image_url' as const, imageUrl: { url: 'https://example.com/queued.png' } },
+        ],
+        toolCalls: [],
+        origin: { kind: 'user' as const },
+      },
+      launched: Promise.resolve(undefined),
+      completion: new Promise<never>(() => undefined),
+    };
+    const second = {
+      id: 'prompt-second',
+      userMessageId: 'prompt-second',
+      createdAt: '2026-01-01T00:00:02.000Z',
+      state: 'pending' as const,
+      message: {
+        id: 'prompt-second',
+        role: 'user' as const,
+        content: [{ type: 'text' as const, text: 'second queued' }],
+        toolCalls: [],
+        origin: { kind: 'user' as const },
+      },
+    };
+    vi.spyOn(prompt, 'list').mockImplementation(() => ({ active: undefined, pending: [first, second] }));
+    const replace = vi.spyOn(prompt, 'replace').mockImplementation((promptId, content) => {
+      expect(promptId).toBe(first.id);
+      expect(content).toEqual([{ type: 'text', text: 'new text' }]);
+      first.message.content = [
+        ...content,
+        { type: 'image_url', imageUrl: { url: 'https://example.com/queued.png' } },
+      ] as never;
+      return first;
+    });
+    const abort = vi.spyOn(prompt, 'abort');
+
+    const replaced = await call<PromptItemWire>(
+      'POST',
+      `/api/v1/sessions/${id}/prompts/${first.id}:replace`,
+      { content: [{ type: 'text', text: 'new text' }] },
+    );
+    expect(replaced.body.code).toBe(0);
+    expect(replaced.body.data).toMatchObject({
+      prompt_id: first.id,
+      user_message_id: first.userMessageId,
+      status: 'queued',
+      created_at: first.createdAt,
+    });
+    expect(replaced.body.data.content).toEqual([
+      { type: 'text', text: 'new text' },
+      { type: 'image', source: { kind: 'url', url: 'https://example.com/queued.png' } },
+    ]);
+    expect(replace).toHaveBeenCalledOnce();
+    expect(abort).not.toHaveBeenCalled();
+    expect(prompt.list().pending.map((item) => item.id)).toEqual([first.id, second.id]);
+
+    const list = await call<{ active: PromptItemWire | null; queued: PromptItemWire[] }>(
+      'GET',
+      `/api/v1/sessions/${id}/prompts`,
+    );
+    expect(list.body.data.queued[0]).toEqual(replaced.body.data);
+  });
+
+  it('rejects replacement of a non-queued prompt without aborting or changing it', async () => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+    const session = getLiveSessionById(server!.core.accessor, id);
+    const main = session!.accessor.get(IAgentLifecycleService).get('main');
+    const prompt = main!.accessor.get(IAgentPromptService);
+    const active = {
+      id: 'prompt-active',
+      userMessageId: 'prompt-active',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      state: 'running' as const,
+      message: {
+        id: 'prompt-active',
+        role: 'user' as const,
+        content: [{ type: 'text' as const, text: 'active text' }],
+        toolCalls: [],
+        origin: { kind: 'user' as const },
+      },
+    };
+    vi.spyOn(prompt, 'list').mockImplementation(() => ({ active, pending: [] }));
+    const abort = vi.spyOn(prompt, 'abort');
+
+    const replaced = await call<null>(
+      'POST',
+      `/api/v1/sessions/${id}/prompts/${active.id}:replace`,
+      { content: [{ type: 'text', text: 'must not apply' }] },
+    );
+
+    expect(replaced.body.code).toBe(40402);
+    expect(abort).not.toHaveBeenCalled();
+    expect(prompt.list().active).toEqual(active);
+    expect(prompt.list().active?.message.content).toEqual([
+      { type: 'text', text: 'active text' },
+    ]);
   });
 
   it('returns 40402 when aborting a prompt that already settled', async () => {

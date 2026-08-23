@@ -1456,6 +1456,13 @@ function sendMappedError(
       case 'request.invalid':
       case 'validation.failed':
       case ErrorCodes.CONFIG_INVALID:
+      case ErrorCodes.MODEL_NOT_CONFIGURED:
+      case ErrorCodes.MODEL_CONFIG_INVALID:
+      case ErrorCodes.THINKING_ALIAS_CONFLICT:
+      case ErrorCodes.PROFILE_UNKNOWN:
+      case ErrorCodes.ROUTE_BINDING_CONFLICT:
+      case ErrorCodes.ROUTE_MODEL_ALIAS_MISSING:
+      case ErrorCodes.ROUTE_SWITCH_FORBIDDEN:
         reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack));
         return;
     }

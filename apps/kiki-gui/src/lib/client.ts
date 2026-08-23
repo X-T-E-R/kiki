@@ -52,6 +52,8 @@ import type {
   PermissionMode,
   PromptAbortResponse,
   PromptListResponse,
+  PromptReplaceRequest,
+  PromptReplaceResult,
   PromptSteerResult,
   PromptSubmission,
   PromptSubmitResult,
@@ -851,6 +853,18 @@ export class KikiClient {
     return this.request<PromptSubmitResult>(
       'POST',
       `/sessions/${encodeURIComponent(sessionId)}/prompts`,
+      { body },
+    );
+  }
+
+  replacePrompt(
+    sessionId: string,
+    promptId: string,
+    body: PromptReplaceRequest,
+  ): Promise<PromptReplaceResult> {
+    return this.request<PromptReplaceResult>(
+      'POST',
+      `/sessions/${encodeURIComponent(sessionId)}/prompts/${encodeURIComponent(promptId)}:replace`,
       { body },
     );
   }

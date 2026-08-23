@@ -42,6 +42,8 @@ import { projectPromptContentParts } from '../services/messages/messageProjectio
 import {
   promptAbortResponseSchema,
   promptListResponseSchema,
+  promptReplaceRequestSchema,
+  promptReplaceResultSchema,
   promptSteerRequestSchema,
   promptSteerResultSchema,
   promptSubmissionSchema,
@@ -390,28 +392,76 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
     {
       method: 'POST',
       path: '/sessions/{session_id}/prompts/{tail}',
-      success: { data: z.union([promptAbortResponseSchema, promptSteerResultSchema]) },
+      body: z.union([z.undefined(), z.object({}).strict(), promptReplaceRequestSchema]),
+      success: {
+        data: z.union([promptAbortResponseSchema, promptReplaceResultSchema, promptSteerResultSchema]),
+      },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: {},
         [ErrorCode.SESSION_NOT_FOUND]: {},
         [ErrorCode.PROMPT_NOT_FOUND]: {},
         [ErrorCode.PROMPT_ALREADY_COMPLETED]: { dataSchema: z.object({ aborted: z.literal(false) }) },
       },
-      description: 'Abort a running prompt or steer a queued prompt',
+      description: 'Abort, replace, or steer a prompt',
       tags: ['prompts'],
       operationId: 'promptAction',
     },
     async (req, reply) => {
+      let preparedMedia: PromptMediaPreparation | undefined;
+      let replaced = false;
       try {
         const { session_id, tail } = req.params as { session_id: string; tail: string };
         const parsed = parseActionSuffix({
           tail,
-          allowedActions: ['abort', 'steer'] as const,
+          allowedActions: ['abort', 'replace', 'steer'] as const,
           resourceLabel: 'prompt',
         });
         if (parsed.kind !== 'action') {
           const message = parsed.kind === 'invalid' ? parsed.reason : `unsupported action: ${tail}`;
           reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, message, req.id));
+          return;
+        }
+        if (parsed.action === 'replace') {
+          const replacement = promptReplaceRequestSchema.safeParse(req.body);
+          if (!replacement.success) {
+            throw new Error2(ErrorCodes.REQUEST_INVALID, 'replacement content is required');
+          }
+          await assertPromptFileRefs(replacement.data.content, core.accessor.get(IFileService));
+          const session = await resolveSession(core, session_id);
+          await assertPromptSessionMediaRefs(
+            replacement.data.content,
+            session.accessor.get(ISessionMediaStore),
+          );
+          const resolved = await resolvePromptFromSession(session);
+          preparedMedia = await resolvePromptMediaFiles(
+            replacement.data.content,
+            core.accessor.get(IFileService),
+            core.accessor.get(IBootstrapService).cacheDir,
+            {
+              telemetry: core.accessor.get(ITelemetryService).withContext({ sessionId: session_id }),
+              resolveOriginalsDir: async () => {
+                const current = await resumeSessionById(core.accessor, session_id);
+                if (current === undefined) return undefined;
+                return sessionMediaOriginalsDir(current.accessor.get(ISessionContext).sessionDir);
+              },
+              resolveAttachmentsDir: async () => {
+                const current = await resumeSessionById(core.accessor, session_id);
+                if (current === undefined) return undefined;
+                return join(current.accessor.get(ISessionContext).sessionDir, 'attachments');
+              },
+            },
+          );
+          const handle = resolved.prompt.replace(
+            parsed.id,
+            contentToCoreParts(preparedMedia.content),
+          );
+          replaced = true;
+          const staging = preparedMedia;
+          void Promise.race([handle.launched, handle.completion]).then(
+            () => staging?.discard(),
+            () => staging?.discard(),
+          );
+          reply.send(okEnvelope(projectPromptHandle(handle), req.id));
           return;
         }
         const resolved = await resolvePrompt(core, session_id);
@@ -424,6 +474,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           reply.send(okEnvelope({ steered: true, prompt_ids: [parsed.id] }, req.id));
         }
       } catch (error) {
+        if (!replaced) await preparedMedia?.discard();
         sendMappedError(reply, req, error);
       }
     },
