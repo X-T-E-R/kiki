@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   IAgentLifecycleService,
   IAgentLoopService,
+  IAgentPromptService,
   IAgentTaskService,
   IEventBus,
   ISessionIndex,
@@ -24,9 +25,11 @@ import {
 import {
   AgentTranscript,
   TranscriptStore,
+  foldWireRecordFacts,
   type AgentTranscriptSnapshot,
   type AppendOp,
   type FrameUpsertOp,
+  type HistoryWireRecord,
   type InteractionUpsertOp,
   type TranscriptFrame,
   type TranscriptOperation,
@@ -64,6 +67,31 @@ function turnOps(turnId: string, items: ReturnType<AgentTranscript['getItems']>)
 }
 
 describe('AgentTranscriptProjector', () => {
+  it('maps queued and replaced prompts onto prompt.upsert facts', () => {
+    const projector = new AgentTranscriptProjector('main');
+    const queued = projector.map(
+      ev({ type: 'prompt.queued', promptId: 'p1', content: [{ type: 'text', text: 'later' }], queueLength: 1 }),
+    );
+    expect(queued).toEqual([
+      expect.objectContaining({
+        op: 'prompt.upsert',
+        prompt: expect.objectContaining({ promptId: 'p1', status: 'queued' }),
+      }),
+    ]);
+    const replaced = projector.map(
+      ev({
+        type: 'prompt.replaced',
+        promptId: 'p1',
+        content: [{ type: 'text', text: 'now' }],
+        replacedAt: '2026-01-01T00:00:01.000Z',
+      }),
+    );
+    expect(replaced[0]).toMatchObject({
+      op: 'prompt.upsert',
+      prompt: { promptId: 'p1', status: 'queued' },
+    });
+  });
+
   it('projects a full turn: headers, delta appends, flush, tool frames', () => {
     const projector = new AgentTranscriptProjector('main');
     const tx = new AgentTranscript('main');
@@ -1456,6 +1484,75 @@ describe('AgentTranscriptProjector', () => {
     expect(tx.listPendingInteractions()).toEqual([]);
   });
 
+  it('keeps live projection and cold history folds in parity for interaction outcomes', () => {
+    const cases = [
+      { id: 'q-null', kind: 'question', response: null },
+      {
+        id: 'q-turn-ended',
+        kind: 'question',
+        response: { cancelled: true, reason: 'turn_ended' },
+      },
+      { id: 'q-empty-text', kind: 'question', response: '' },
+      { id: 'q-empty-array', kind: 'question', response: [] },
+      {
+        id: 'q-structured',
+        kind: 'question',
+        response: { answers: { q_0: { option_ids: [], other_text: '' } } },
+      },
+      {
+        id: 'a-turn-ended',
+        kind: 'approval',
+        response: { cancelled: true, reason: 'turn_ended' },
+      },
+      {
+        id: 'a-approved',
+        kind: 'approval',
+        response: { decision: 'approved', scope: 'session' },
+      },
+      {
+        id: 'a-rejected',
+        kind: 'approval',
+        response: { decision: 'rejected', feedback: '' },
+      },
+    ] as const;
+    const projector = new AgentTranscriptProjector('main');
+    const live = new AgentTranscript('main');
+    const records: HistoryWireRecord[] = [];
+
+    for (const entry of cases) {
+      const request =
+        entry.kind === 'question'
+          ? { questions: [{ question: 'Pick', options: [] }] }
+          : { toolName: 'Bash', action: 'run' };
+      live.apply(
+        projector.mapInteractionRequested({
+          id: entry.id,
+          kind: entry.kind,
+          payload: request,
+          origin: { agentId: 'main', turnId: 1 },
+        }),
+      );
+      live.apply(projector.mapInteractionResolved(entry.id, entry.response));
+      records.push(
+        { type: 'interaction.request', id: entry.id, kind: entry.kind, request },
+        { type: 'interaction.resolved', id: entry.id, response: entry.response },
+      );
+    }
+
+    const cold = foldWireRecordFacts(records, new AgentTranscript('main').snapshot());
+    expect(cold.interactions).toEqual(live.snapshot().interactions);
+    expect(cold.interactions.map(({ interactionId, state }) => [interactionId, state])).toEqual([
+      ['q-null', 'dismissed'],
+      ['q-turn-ended', 'dismissed'],
+      ['q-empty-text', 'answered'],
+      ['q-empty-array', 'answered'],
+      ['q-structured', 'answered'],
+      ['a-turn-ended', 'cancelled'],
+      ['a-approved', 'approved'],
+      ['a-rejected', 'rejected'],
+    ]);
+  });
+
   it('surfaces a mid-turn task notification as a user input frame linked to the task', () => {
     const projector = new AgentTranscriptProjector('main');
     const tx = new AgentTranscript('main');
@@ -1959,7 +2056,7 @@ describe('bindSessionTranscript', () => {
       this.disposeHandlers.add(cb);
       return { dispose: () => this.disposeHandlers.delete(cb) };
     }
-    add(id: string, opts?: { loopStatus?: unknown; tasks?: readonly unknown[] }): FakeAgentHandle {
+    add(id: string, opts?: { loopStatus?: unknown; tasks?: readonly unknown[]; prompts?: { active?: unknown; pending?: readonly unknown[] } }): FakeAgentHandle {
       const bus = new FakeBus();
       const handle: FakeAgentHandle = {
         id,
@@ -1972,6 +2069,9 @@ describe('bindSessionTranscript', () => {
             }
             if (token === IAgentTaskService) {
               return { list: () => opts?.tasks ?? [] };
+            }
+            if (token === IAgentPromptService) {
+              return { list: () => ({ active: opts?.prompts?.active, pending: opts?.prompts?.pending ?? [] }) };
             }
             return undefined;
           },
@@ -2091,6 +2191,9 @@ describe('bindSessionTranscript', () => {
       agentId: 'agent-1',
     });
 
+    binding.seedRunningTasks('main');
+    expect(store.getAgent('main')?.getTask('task-9')?.state).toBe('running');
+
     agents.get('main')!.bus.emit(ev({ type: 'subagent.completed', subagentId: 'agent-1', resultSummary: 'done' }));
 
     expect(store.getAgent('main')?.getTask('task-9')).toMatchObject({
@@ -2100,6 +2203,67 @@ describe('bindSessionTranscript', () => {
     });
     expect(store.getAgent('main')?.getTask('agent-1')).toBeUndefined();
     binding.dispose();
+  });
+
+  it('seeds active and queued prompts from the prompt service on attach', () => {
+    const agents = new FakeAgents();
+    agents.add('main', {
+      prompts: {
+        active: {
+          id: 'p-run',
+          userMessageId: 'm-run',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          state: 'running',
+          message: { role: 'user', content: [{ type: 'text', text: 'go' }] },
+        },
+        pending: [
+          {
+            id: 'p-queue',
+            userMessageId: 'm-queue',
+            createdAt: '2026-01-01T00:00:01.000Z',
+            state: 'pending',
+            message: { role: 'user', content: [{ type: 'text', text: 'later' }] },
+          },
+        ],
+      },
+    });
+    const store = new TranscriptStore('s1');
+    const binding = bindSessionTranscript(
+      store,
+      fakeSession(new SessionInteractionService(new TestSessionStateService()), agents),
+    );
+    binding.seedPrompts('main');
+    expect(store.getAgent('main')?.getPrompt('p-run')).toMatchObject({
+      promptId: 'p-run',
+      status: 'running',
+    });
+    expect(store.getAgent('main')?.getPrompt('p-queue')).toMatchObject({
+      promptId: 'p-queue',
+      status: 'queued',
+    });
+    binding.dispose();
+  });
+
+  it('flattens interactions, todos and prompts in snapshotToOps', () => {
+    const ops = snapshotToOps({
+      items: [],
+      tasks: [],
+      interactions: [
+        { interactionId: 'apr-1', interactionKind: 'approval', state: 'approved' },
+      ],
+      attachments: [],
+      todos: [{ todoId: 'todo', items: [{ title: 'x', status: 'done' }] }],
+      prompts: [
+        { promptId: 'p1', status: 'queued', createdAt: '2026-01-01T00:00:00.000Z' },
+      ],
+      meta: {},
+    });
+    expect(ops.map((op) => op.op)).toEqual([
+      'interaction.upsert',
+      'todo.upsert',
+      'prompt.upsert',
+      'meta.merge',
+    ]);
   });
 
   const SHOT_PNG_UPLOAD = {
@@ -2447,6 +2611,28 @@ describe('bindSessionTranscript', () => {
     return home;
   }
 
+  async function seedWireHomeWithRunningSubagentTask(): Promise<string> {
+    const home = await mkdtemp(join(tmpdir(), 'transcript-backfill-task-'));
+    const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+    await mkdir(wireDir, { recursive: true });
+    const record = {
+      type: 'task.started',
+      info: {
+        taskId: 'task-9',
+        kind: 'agent',
+        agentId: 'agent-1',
+        description: 'Inspect',
+        status: 'running',
+        detached: true,
+        startedAt: 1_000,
+        endedAt: null,
+      },
+      time: 1_000,
+    };
+    await writeFile(join(wireDir, 'wire.jsonl'), `${JSON.stringify(record)}\n`);
+    return home;
+  }
+
   async function waitFor(condition: () => boolean, timeoutMs = 2000): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while (!condition()) {
@@ -2488,6 +2674,44 @@ describe('bindSessionTranscript', () => {
       expect(store?.getAgent('main')?.getTurn('t0')).toMatchObject({
         state: 'running',
         prompt: 'hi',
+      });
+      service.dropSession('s1');
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('omits a cold uncertain subagent task without overwriting live terminal evidence', async () => {
+    const home = await seedWireHomeWithRunningSubagentTask();
+    try {
+      const liveTask = {
+        taskId: 'task-9',
+        kind: 'agent',
+        agentId: 'agent-1',
+        description: 'Inspect',
+        status: 'running',
+        detached: true,
+        startedAt: 1_000,
+        endedAt: null as number | null,
+      };
+      const agents = new FakeAgents();
+      agents.add('main', { tasks: [liveTask] });
+      const service = new TranscriptService({
+        homeDir: home,
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+      });
+      expect((await service.readColdSnapshot('s1', 'main'))?.tasks).toEqual([]);
+      const store = service.forSessionLive('s1');
+      liveTask.status = 'killed';
+      liveTask.endedAt = 2_000;
+      agents.get('main')!.bus.emit(
+        ev({ type: 'task.terminated', info: { ...liveTask, stopReason: 'cancelled' } }),
+      );
+
+      await service.whenReady('s1');
+      expect(store?.getAgent('main')?.getTask('task-9')).toMatchObject({
+        state: 'killed',
+        endedAt: new Date(2_000).toISOString(),
       });
       service.dropSession('s1');
     } finally {
@@ -2690,7 +2914,30 @@ describe('bindSessionTranscript', () => {
       expect(service.getOpsSince('s1', 'sub-1', 0)?.batches.map((batch) => batch.seq)).toEqual([1]);
 
       expect(service.getSeqWatermark('s1', 'nope')).toBe(0);
-      expect(service.getOpsSince('nope-session', 'main', 0)).toBeUndefined();
+      expect(service.getOpsSince('nope-session', 'main', base)).toBeUndefined();
+      service.dropSession('s1');
+    });
+
+    it('starts a fresh numeric seq after the live transcript store is rebuilt', async () => {
+      const agents = new FakeAgents();
+      const main = agents.add('main');
+      const service = new TranscriptService({
+        homeDir: '/nonexistent-home',
+        core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+      });
+      service.forSessionLive('s1');
+      await service.whenReady('s1');
+      main.bus.emit(ev({ type: 'turn.started', turnId: 0, origin: { kind: 'user' } }));
+      const oldSeq = service.getSeqWatermark('s1', 'main');
+
+      service.dropSession('s1');
+      service.forSessionLive('s1');
+      await service.whenReady('s1');
+      main.bus.emit(ev({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } }));
+      const currentSeq = service.getSeqWatermark('s1', 'main');
+
+      expect(currentSeq).toBe(oldSeq);
+      expect(service.getOpsSince('s1', 'main', 0)?.complete).toBe(true);
       service.dropSession('s1');
     });
 

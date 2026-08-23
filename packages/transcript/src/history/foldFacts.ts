@@ -1,4 +1,7 @@
-import type { TranscriptInteraction } from '../model/interaction';
+import {
+  projectInteractionEndState,
+  type TranscriptInteraction,
+} from '../model/interaction';
 import type { TranscriptItem, TranscriptMarker, TranscriptTaskRef } from '../model/item';
 import type { GoalMeta, GoalStatus, TranscriptMeta } from '../model/meta';
 import type { TranscriptTask } from '../model/task';
@@ -106,18 +109,6 @@ const TASK_STATES = new Set<TranscriptTask['state']>([
 ]);
 
 const GOAL_STATUSES = new Set<GoalStatus>(['active', 'paused', 'blocked', 'complete']);
-
-function mapInteractionEndState(
-  kind: TranscriptInteraction['interactionKind'],
-  response: unknown,
-): TranscriptInteraction['state'] {
-  if (kind === 'question') return response === null ? 'dismissed' : 'answered';
-  const decision = (response as { decision?: unknown } | null | undefined)?.decision;
-  if (decision === 'approved' || decision === 'rejected' || decision === 'cancelled') {
-    return decision;
-  }
-  return 'cancelled';
-}
 
 function mapTurnEndReason(reason: unknown): TranscriptTurn['state'] | undefined {
   switch (reason) {
@@ -399,7 +390,7 @@ export function foldWireRecordFacts(
         if (entity === undefined) break;
         interactions.set(payload.id, {
           ...entity,
-          state: mapInteractionEndState(entity.interactionKind, payload.response),
+          state: projectInteractionEndState(entity.interactionKind, payload.response),
           response: payload.response,
         });
         break;
@@ -427,12 +418,16 @@ export function foldWireRecordFacts(
     }
   }
 
+  const hiddenOrdinals = [...hiddenTurnIds].sort((a, b) => a - b);
   const endedByOrdinal = new Map<number, HistoryWireRecord>();
-  for (const [turnId, record] of endedTurns) {
+  let hiddenIndex = 0;
+  const sortedEnded = [...endedTurns.entries()].sort((a, b) => a[0] - b[0]);
+  for (const [turnId, record] of sortedEnded) {
     if (hiddenTurnIds.has(turnId)) continue;
-    let hidden = 0;
-    for (const id of hiddenTurnIds) if (id < turnId) hidden += 1;
-    endedByOrdinal.set(turnId - hidden, record);
+    while (hiddenIndex < hiddenOrdinals.length && hiddenOrdinals[hiddenIndex]! < turnId) {
+      hiddenIndex += 1;
+    }
+    endedByOrdinal.set(turnId - hiddenIndex, record);
   }
 
   const items =
@@ -474,7 +469,9 @@ export function foldWireRecordFacts(
   return {
     ...base,
     items: appended.length > 0 ? [...items, ...appended] : items,
-    tasks: [...tasks.values()],
+    tasks: [...tasks.values()].filter(
+      (task) => task.kind !== 'subagent' || task.state !== 'running',
+    ),
     interactions: [...interactions.values()],
     todos: todo !== undefined ? [todo] : base.todos,
     meta,

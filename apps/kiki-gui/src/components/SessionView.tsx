@@ -80,46 +80,29 @@ import {
   terminalCapabilityAvailable,
   TerminalManager,
 } from '../state/terminalManager';
-import {
-  agentPath,
-  applyNewestAgentPage,
-  blockTurnId,
-  mergeAgentTranscript,
-  prependOlderAgentPage,
-  type AgentHistoryCache,
-} from '../state/agentTree';
+import { agentPath } from '../state/agentTree';
 import {
   MAIN_AGENT_ID,
-  agentBusyFromMeta,
-  agentTranscriptPageFromResponse,
-  agentTranscriptToBlocks,
   assistantMessageIdFromBlockId,
-  countToolBlocks,
   createViewState,
   filterBlocksToDirectChildren,
-  oldestTurnIdFromResponse,
   pendingQuestionCount,
   queuedPromptPreviews,
-  resolveSpawnInstruction,
-  sessionAgentForestFromTranscript,
+  sessionAgentForest,
   type ApprovalBlock,
   type AssistantBlock,
   type Block,
-  type NoticeBlock,
   type SessionViewState,
   type SubagentBlock,
   type UserBlock,
 } from '../state/transcript';
 
-/** Queue edit wire fallback: remove the old prompt, then resubmit at the tail. */
 export async function replaceQueuedPrompt(
   promptId: string,
   text: string,
-  abort: (id: string) => Promise<void>,
-  resend: (replacement: string) => Promise<void>,
+  replace: (id: string, replacement: string) => Promise<void>,
 ): Promise<void> {
-  await abort(promptId);
-  await resend(text);
+  await replace(promptId, text);
 }
 
 function useActiveController(sessionId: string | undefined): SessionController | null {
@@ -730,12 +713,10 @@ export function shouldCloseSessionChromeOnEscape(input: {
   return true;
 }
 
-export function agentTranscriptPoll(input: {
+export function agentTranscriptPoll(_input: {
   selectedAgentId: string | undefined;
-}): { pageSize: number; refetchInterval: number } {
-  return input.selectedAgentId === undefined
-    ? { pageSize: 1, refetchInterval: 5000 }
-    : { pageSize: 100, refetchInterval: 1500 };
+}): { pageSize: number; refetchInterval: false } {
+  return { pageSize: 20, refetchInterval: false };
 }
 
 export interface AgentOlderFetchGate {
@@ -1180,35 +1161,9 @@ export function SessionView({
     return () => { clearTimeout(timer); };
   }, [loadError, sessionId, navigate, t]);
 
-  const rosterAgentId = selectedAgentId ?? MAIN_AGENT_ID;
-  const agentPoll = agentTranscriptPoll({ selectedAgentId });
-  const agentTranscriptQuery = useQuery({
-    queryKey: ['agent-transcript', sessionId, rosterAgentId, agentPoll.pageSize],
-    queryFn: () => client.getAgentTranscript(sessionId, rosterAgentId, { pageSize: agentPoll.pageSize }),
-    refetchInterval: agentPoll.refetchInterval,
-  });
-  const [agentHistory, setAgentHistory] = useState<(AgentHistoryCache & { blocks: readonly Block[] }) | null>(null);
-  const agentHistoryRef = useRef(agentHistory);
-  agentHistoryRef.current = agentHistory;
-  const [loadingOlderAgent, setLoadingOlderAgent] = useState(false);
-  const agentOlderFetchGateRef = useRef<AgentOlderFetchGate>(INITIAL_AGENT_OLDER_FETCH_GATE);
-  const [agentOlderError, setAgentOlderError] = useState<string | undefined>(undefined);
   useEffect(() => {
-    agentOlderFetchGateRef.current = resetAgentOlderFetchGate(agentOlderFetchGateRef.current);
-    setAgentHistory(null);
-    setLoadingOlderAgent(false);
-    setAgentOlderError(undefined);
-  }, [selectedAgentId, sessionId]);
-  useEffect(() => {
-    if (selectedAgentId === undefined || agentTranscriptQuery.data === undefined) return;
-    const response = agentTranscriptQuery.data;
-    const serverBlocks = agentTranscriptToBlocks(response);
-    const newestPage = agentTranscriptPageFromResponse(response, serverBlocks);
-    setAgentHistory((current) => {
-      const next = applyNewestAgentPage(current, selectedAgentId, newestPage);
-      return { ...next, blocks: next.page.blocks as readonly Block[] };
-    });
-  }, [agentTranscriptQuery.data, selectedAgentId]);
+    controller?.setFocusedAgent(selectedAgentId);
+  }, [controller, selectedAgentId]);
 
   // Live per-agent channel: child-agent frames land in their own sub-store, so
   // an open agent page re-renders from here without the main transcript
@@ -1526,17 +1481,7 @@ export function SessionView({
         replaceQueuedPrompt(
           promptId,
           text,
-          (id) => controller.abortPrompt(id),
-          (replacement) => controller.sendPrompt({
-            text: replacement,
-            model: effectiveModel,
-            thinking: effectiveEffort,
-            permissionMode,
-            planMode,
-            swarmMode,
-            goalObjective,
-            goalControl,
-          }),
+          (id, replacement) => controller.replaceQueued(id, replacement),
         ).catch((error: unknown) => {
           pushToast({
             tone: 'error',
@@ -1676,7 +1621,7 @@ export function SessionView({
   // publish, re-registering TopEdge's scroll listener and defeating the
   // memoized block components.
   const handleLoadOlder = useCallback(
-    () => controller?.loadOlderMessages() ?? Promise.resolve(false),
+    () => controller?.loadOlderMessages(MAIN_AGENT_ID) ?? Promise.resolve(false),
     [controller],
   );
 
@@ -1782,58 +1727,9 @@ export function SessionView({
     [navigate, sessionId],
   );
   const handleLoadOlderAgent = useCallback(async (): Promise<boolean> => {
-    if (selectedAgentId === undefined) return false;
-    const currentHistory = agentHistoryRef.current;
-    const cursor = currentHistory?.agentId === selectedAgentId ? currentHistory.page.oldestTurnId : undefined;
-    const started = beginAgentOlderFetch({
-      selectedAgentId,
-      sessionId,
-      oldestTurnId: cursor,
-      hasMore: currentHistory?.page.hasMore === true,
-      gate: agentOlderFetchGateRef.current,
-    });
-    if (started === undefined) return false;
-    agentOlderFetchGateRef.current = started.gate;
-    setLoadingOlderAgent(true);
-    setAgentOlderError(undefined);
-    const settled = await settleAgentOlderFetch({
-      getGate: () => agentOlderFetchGateRef.current,
-      setGate: (next) => {
-        agentOlderFetchGateRef.current = next;
-        if (next.generation === started.request.generation) {
-          setLoadingOlderAgent(next.inFlight);
-        }
-      },
-      request: started.request,
-      current: () => ({
-        sessionId: sessionIdRef.current,
-        selectedAgentId: selectedAgentIdRef.current,
-      }),
-      work: async () => {
-        const older = await client.getAgentTranscript(sessionId, selectedAgentId, { beforeTurn: cursor });
-        const olderBlocks = agentTranscriptToBlocks(older);
-        return { olderBlocks, olderPage: agentTranscriptPageFromResponse(older, olderBlocks) };
-      },
-      onSuccess: ({ olderBlocks, olderPage }) => {
-        setAgentHistory((current) => {
-          if (current === null || current.agentId !== selectedAgentId) {
-            return { agentId: selectedAgentId, page: olderPage, blocks: olderBlocks };
-          }
-          const nextPage = prependOlderAgentPage(current.page, olderPage);
-          return {
-            agentId: selectedAgentId,
-            page: nextPage,
-            blocks: nextPage.blocks as readonly Block[],
-          };
-        });
-        setAgentOlderError(undefined);
-      },
-      onError: (error) => {
-        setAgentOlderError(agentOlderErrorText(error));
-      },
-    });
-    return settled.committed && (settled.value?.olderBlocks.length ?? 0) > 0;
-  }, [client, selectedAgentId, sessionId]);
+    if (selectedAgentId === undefined || controller === null) return false;
+    return controller.loadOlderMessages(selectedAgentId);
+  }, [controller, selectedAgentId]);
   const handleResolveApproval = useCallback(
     (approvalId: string, decision: 'approved' | 'rejected' | 'cancelled', scope?: 'session') =>
       controller?.resolveApproval(approvalId, decision, scope) ?? Promise.resolve(),
@@ -2082,8 +1978,11 @@ export function SessionView({
   // The app-level sidebar renders its own backdrop from App.
   const showBackdrop = railIsOverlay && railOpen;
   const forestRaw = useMemo(
-    () => sessionAgentForestFromTranscript(state, agentTranscriptQuery.data),
-    [state, agentTranscriptQuery.data],
+    () =>
+      controller?.timelineMode === 'transcript'
+        ? (controller.getForest() ?? sessionAgentForest(state))
+        : sessionAgentForest(state),
+    [controller, state],
   );
   // Content-stabilized forest: rebuilt per publish above, but identical in
   // content across streaming deltas — keep the previous object so downstream
@@ -2111,102 +2010,8 @@ export function SessionView({
   );
 
   if (selectedAgentId !== undefined) {
-    const historyForAgent = agentHistory?.agentId === selectedAgentId ? agentHistory : null;
-    const serverPage =
-      historyForAgent?.page ??
-      (agentTranscriptQuery.data === undefined
-        ? {
-            blocks: [],
-            hasMore: false,
-            oldestTurnId: oldestTurnIdFromResponse(agentTranscriptQuery.data),
-          }
-        : agentTranscriptPageFromResponse(
-            agentTranscriptQuery.data,
-            agentTranscriptToBlocks(agentTranscriptQuery.data),
-          ));
-    const liveLoaded = agentLiveState.loaded && agentLiveState.blocks.length > 0;
-    const liveBlocks = agentLiveState.blocks;
-    const fallbackBlocks = selectedSubagent?.transcript ?? [];
-    const merged = mergeAgentTranscript(
-      serverPage,
-      {
-        blocks: liveBlocks,
-        model: agentLiveState.model,
-        thinkingEffort: agentLiveState.thinkingEffort,
-        contextTokens: agentLiveState.contextTokens,
-        maxContextTokens: agentLiveState.maxContextTokens,
-        usage: agentLiveState.usage,
-        busy: liveLoaded ? agentLiveState.busy : undefined,
-        toolCallCount: liveLoaded ? countToolBlocks(liveBlocks) : undefined,
-      },
-      {
-        blocks: fallbackBlocks,
-        toolCallCount: selectedSubagent?.toolCallCount,
-      },
-    );
-    const capturedBlocks = merged.blocks as Block[];
-    // Pre-patch transcripts may lack the initial subagent turn prompt. Keep the
-    // spawn tool input as a conversation-flow fallback, but prefer real turn
-    // prompts so initial and follow-up parent messages preserve turn order.
-    const spawnInstruction = resolveSpawnInstruction({
-      response: agentTranscriptQuery.data,
-      blocks: state.blocks,
-      agentId: selectedAgentId,
-      parentToolCallId: selectedSubagent?.parentToolCallId,
-    });
-    const spawnTurnId =
-      spawnInstruction?.turnId === undefined
-        ? undefined
-        : blockTurnId({ id: '', kind: 'user', turnId: spawnInstruction.turnId });
-    const hasEquivalentSpawnPrompt = capturedBlocks.some((block) => {
-      if (block.kind !== 'user') return false;
-      const turnId = blockTurnId(block);
-      return turnId !== undefined && (spawnTurnId === undefined || turnId === spawnTurnId);
-    });
-    const spawnFallbackBlock: UserBlock | undefined =
-      spawnInstruction?.source === 'spawn-call' && !hasEquivalentSpawnPrompt
-        ? {
-            kind: 'user',
-            id: `user-agent-spawn-${selectedAgentId}`,
-            text: spawnInstruction.text,
-            createdAt: selectedNode?.startedAt ?? selectedSubagent?.startedAt ?? '',
-            turnId: spawnInstruction.turnId,
-          }
-        : undefined;
-    const historyKey =
-      agentTranscriptQuery.data !== undefined || historyForAgent !== null
-        ? merged.hasMore
-          ? 'sv.agentHistoryMore'
-          : 'sv.agentHistoryLive'
-        : agentTranscriptQuery.isError
-          ? 'sv.agentHistoryUnavailable'
-          : 'sv.agentHistoryLoading';
-    const historyNotice: NoticeBlock = {
-      kind: 'notice',
-      id: `subagent-history-${selectedAgentId}`,
-      text: t(historyKey),
-      tone: 'neutral',
-      i18n: { key: historyKey },
-    };
-    const includesReport =
-      selectedSubagent?.summary !== undefined &&
-      capturedBlocks.some(
-        (block) => block.kind === 'assistant' && block.text.includes(selectedSubagent.summary ?? ''),
-      );
-    const reportBlock: AssistantBlock | undefined =
-      selectedSubagent?.summary !== undefined && !includesReport
-        ? {
-            kind: 'assistant',
-            id: `subagent-report-${selectedAgentId}`,
-            text: selectedSubagent.summary,
-            streaming: false,
-            createdAt: selectedSubagent.endedAt,
-          }
-        : undefined;
-    const headerBusy =
-      selectedNode?.busy === true ||
-      merged.busy ||
-      agentBusyFromMeta(agentTranscriptQuery.data) === true;
+    const capturedBlocks = agentLiveState.blocks;
+    const headerBusy = selectedNode?.busy === true || agentLiveState.busy;
     const statusLabel =
       selectedNode !== undefined
         ? t(`subagent.status.${selectedNode.status}` as I18nKey)
@@ -2214,12 +2019,12 @@ export function SessionView({
           ? t(`subagent.status.${selectedSubagent.status}` as I18nKey)
           : t('sv.historyUnavailable');
     const displayName = selectedNode?.label ?? selectedSubagent?.name ?? selectedAgentId;
-    const displayModel = merged.model ?? selectedNode?.model ?? selectedSubagent?.model;
+    const displayModel = agentLiveState.model ?? selectedNode?.model ?? selectedSubagent?.model;
     const displayEffort =
-      merged.thinkingEffort ?? selectedNode?.thinkingEffort ?? selectedSubagent?.thinkingEffort;
-    const displayContextTokens = merged.contextTokens ?? selectedNode?.contextTokens;
-    const displayMaxContextTokens = merged.maxContextTokens ?? selectedNode?.maxContextTokens;
-    const displayUsage = merged.usage ?? selectedNode?.usage;
+      agentLiveState.thinkingEffort ?? selectedNode?.thinkingEffort ?? selectedSubagent?.thinkingEffort;
+    const displayContextTokens = agentLiveState.contextTokens ?? selectedNode?.contextTokens;
+    const displayMaxContextTokens = agentLiveState.maxContextTokens ?? selectedNode?.maxContextTokens;
+    const displayUsage = agentLiveState.usage ?? selectedNode?.usage;
     const totalUsage = displayUsage?.total;
     const cumulativeTokens =
       totalUsage === undefined
@@ -2229,13 +2034,11 @@ export function SessionView({
           totalUsage.inputCacheCreation +
           totalUsage.output;
     const agentState: SessionViewState = {
-      ...state,
-      blocks: [
-        historyNotice,
-        ...(spawnFallbackBlock === undefined ? [] : [spawnFallbackBlock]),
-        ...filterBlocksToDirectChildren(capturedBlocks, forest, selectedAgentId),
-        ...(reportBlock === undefined ? [] : [reportBlock]),
-      ],
+      ...agentLiveState,
+      session: state.session,
+      blocks: filterBlocksToDirectChildren(capturedBlocks, forest, selectedAgentId),
+      loaded: agentLiveState.loaded || state.loaded,
+      loadError: agentLiveState.loadError ?? state.loadError,
       busy: headerBusy,
       model: displayModel,
       thinkingEffort: displayEffort,
@@ -2244,10 +2047,6 @@ export function SessionView({
       contextBreakdown: undefined,
       usage: displayUsage,
       pendingInteraction: 'none',
-      hasMoreHistory: merged.hasMore,
-      loadingOlder: loadingOlderAgent,
-      fetchedOlder: historyForAgent !== null && historyForAgent.page.oldestTurnId !== undefined,
-      olderError: agentOlderError,
     };
     return (
       <MediaPreviewProvider cwd={state.session?.metadata?.cwd}>

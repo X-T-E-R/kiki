@@ -64,12 +64,16 @@ interface TranscriptContract {
   meta: Record<string, unknown>;
   agents: { agentId: string; type?: string }[];
   pending_interactions: string[];
+  prompts?: unknown[];
   seq?: number;
 }
 
 interface OpsCatchupContract {
   agent_id: string;
-  batches: { seq: number; ops: { op: string }[] }[];
+  batches: {
+    seq: number;
+    ops: { op: string }[];
+  }[];
   latest_seq: number;
   complete: boolean;
 }
@@ -793,7 +797,7 @@ describe('server-v2 /api/v1/sessions/{sid}/transcript', () => {
     expect(body.code).toBe(40001);
   });
 
-  it('carries the op-batch watermark on the live transcript response', async () => {
+  it('carries the numeric seq watermark on the live transcript response', async () => {
     const id = await createSession();
     await ensureMainAgent(id);
 
@@ -807,9 +811,10 @@ describe('server-v2 /api/v1/sessions/{sid}/transcript', () => {
 
     const after = await getJson<TranscriptContract>(`/api/v1/sessions/${id}/transcript?agent_id=main`);
     expect(after.body.data.seq).toBeGreaterThan(base);
+    expect(Array.isArray(after.body.data.prompts)).toBe(true);
   });
 
-  it('serves catch-up batches with seq > since_seq on the ops route', async () => {
+  it('serves catch-up only for a covered numeric since_seq', async () => {
     const id = await createSession();
     await ensureMainAgent(id);
 

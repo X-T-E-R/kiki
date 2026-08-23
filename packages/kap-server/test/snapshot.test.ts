@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  AGENT_WIRE_RECORD_KEY,
   type Event2,
   IAgentBlobService,
   IAgentContextMemoryService,
@@ -11,7 +12,6 @@ import {
   IEventBus,
   IAgentLifecycleService,
   IAgentProfileService,
-  IAgentPromptService,
   IAgentUsageService,
   ISessionInteractionService,
   ISessionContext,
@@ -27,10 +27,14 @@ import {
   type ContextMessage,
 } from '@moonshot-ai/agent-core-v2';
 import { sessionSnapshotResponseSchema } from '../src/protocol/rest-snapshot';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { registerSnapshotRoutes } from '../src/routes/snapshot';
 import { type RunningServer, startServer } from '../src/start';
+import {
+  type EventEnvelope,
+  SessionEventJournal,
+} from '../src/transport/ws/v1/sessionEventJournal';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 
@@ -46,22 +50,23 @@ function fakeAccessor(entries: ReadonlyArray<readonly [unknown, unknown]>) {
   };
 }
 
+function deferred(): { readonly promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 describe('server-v2 snapshot route enrichment', () => {
-  it('attaches current_prompt_id to an in-flight turn from prompt active state', async () => {
+  it('attaches current_prompt_id from the captured prompt state', async () => {
     const sessionId = 'sess_snapshot';
     const promptId = 'msg_snapshot_prompt';
     const workspaceId = 'wd_snapshot_012345abcdef';
     const now = Date.parse('2026-01-01T00:00:00.000Z');
     const main = {
       accessor: fakeAccessor([
-        [IAgentContextMemoryService, { get: () => [] }],
         [IAgentProfileService, { getModel: () => 'provider/session-model' }],
-        [
-          IAgentPromptService,
-          { list: () => ({ active: { id: promptId }, pending: [] }) },
-        ],
-        [IWireService, { flush: async () => {} }],
-        [IAgentScopeContext, { scope: () => 'scope/sess_snapshot' }],
         [IAgentBlobService, { loadParts: async (parts: unknown) => parts }],
       ]),
     };
@@ -124,12 +129,6 @@ describe('server-v2 snapshot route enrichment', () => {
         ],
         [IWorkspaceService, { get: async () => ({ root: '/workspace' }) }],
         [ITelemetryService, { withContext: () => ({ track2: () => {} }) }],
-        [
-          IAppendLogStore,
-          {
-            read: async function* () {},
-          },
-        ],
       ]),
     };
     const broadcaster = {
@@ -137,6 +136,9 @@ describe('server-v2 snapshot route enrichment', () => {
       getSnapshotState: async () => ({
         seq: 1,
         epoch: 'ep_snapshot',
+        contextMessages: [],
+        contextMessageTimes: [],
+        currentPromptId: promptId,
         inFlightTurn: {
           turn_id: 7,
           assistant_text: 'Hello',
@@ -273,7 +275,7 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
     const snap = await snapshot(sid);
 
     expect(snap.session.id).toBe(sid);
-    expect(snap.as_of_seq).toBe(1);
+    expect(snap.as_of_seq).toBe(2);
     expect(snap.epoch).toMatch(/^ep_/);
     expect(snap.messages.items).toEqual([]);
     expect(snap.in_flight_turn).toBeNull();
@@ -282,6 +284,202 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
     expect(snap.context_breakdown).toBeUndefined();
     expect(snap.pending_approvals).toEqual([]);
     expect(snap.pending_questions).toEqual([]);
+  });
+
+  it('matches the messages route projection for captured message identity and time', async () => {
+    const sid = await createSession();
+    await ensureMainAgent(sid);
+    await snapshot(sid);
+    const session = getLiveSessionById(server!.core.accessor, sid);
+    const main = session?.accessor.get(IAgentLifecycleService).get('main');
+    if (main === undefined) throw new Error('expected a live main agent');
+    main.accessor.get(IAgentContextMemoryService).append({
+      id: 'msg_snapshot_parity',
+      role: 'user',
+      content: [{ type: 'text', text: 'timestamp parity' }],
+      toolCalls: [],
+      origin: { kind: 'user' },
+    });
+
+    const snap = await snapshot(sid);
+    const res = await fetch(`${base}/api/v1/sessions/${sid}/messages?page_size=100`, {
+      headers: authHeaders(server as RunningServer),
+    } as never);
+    const body = (await res.json()) as {
+      code: number;
+      data: { items: Array<{ id: string; content: unknown; created_at: string }> };
+    };
+    expect(body.code).toBe(0);
+    const snapshotMessage = snap.messages.items.find((message) => message.id === 'msg_snapshot_parity');
+    const routeMessage = body.data.items.find((message) => message.id === 'msg_snapshot_parity');
+    expect(snapshotMessage).toBeDefined();
+    expect(routeMessage).toBeDefined();
+    expect(snapshotMessage).toMatchObject({
+      id: routeMessage?.id,
+      content: routeMessage?.content,
+      created_at: routeMessage?.created_at,
+    });
+  });
+
+  it('keeps frozen messages and volatile ownership while append-log read crosses the barrier', async () => {
+    const sid = await createSession();
+    await ensureMainAgent(sid);
+    await snapshot(sid);
+    const session = getLiveSessionById(server!.core.accessor, sid);
+    const main = session?.accessor.get(IAgentLifecycleService).get('main');
+    if (main === undefined) throw new Error('expected a live main agent');
+    const context = main.accessor.get(IAgentContextMemoryService);
+    const stepId = 'step-capture-boundary';
+    const answer = 'future durable answer';
+
+    emit(sid, {
+      type: 'turn.started',
+      turnId: 11,
+      origin: { kind: 'user' },
+    } as unknown as Event2<any>);
+    emit(sid, {
+      type: 'turn.step.started',
+      turnId: 11,
+      step: 1,
+      stepId,
+    } as unknown as Event2<any>);
+    context.appendLoopEvent({ type: 'step.begin', uuid: stepId, turnId: '11', step: 1 });
+    emit(sid, {
+      type: 'assistant.delta',
+      turnId: 11,
+      step: 1,
+      stepId,
+      delta: answer,
+    } as unknown as Event2<any>);
+
+    const boundary = await snapshot(sid);
+    expect(boundary.in_flight_turn).toMatchObject({
+      turn_id: 11,
+      step: 1,
+      step_id: stepId,
+      assistant_text: answer,
+    });
+
+    const appendLog = server!.core.accessor.get(IAppendLogStore);
+    const mainScope = main.accessor.get(IAgentScopeContext).scope();
+    const readEntered = deferred();
+    const releaseRead = deferred();
+    const futureAppended = deferred();
+    const originalRead = appendLog.read.bind(appendLog) as typeof appendLog.read;
+    const originalAppend = appendLog.append.bind(appendLog) as typeof appendLog.append;
+    let shouldPause = true;
+    const readSpy = vi.spyOn(appendLog, 'read').mockImplementation(<R>(scope: string, key: string) => {
+      const source = originalRead<R>(scope, key);
+      return (async function* (): AsyncIterableIterator<R> {
+        if (shouldPause && scope === mainScope && key === AGENT_WIRE_RECORD_KEY) {
+          shouldPause = false;
+          readEntered.resolve();
+          await releaseRead.promise;
+        }
+        yield* source;
+      })();
+    });
+    const appendSpy = vi
+      .spyOn(appendLog, 'append')
+      .mockImplementation(<R>(
+        scope: string,
+        key: string,
+        record: R,
+        options?: { readonly onError?: (error: unknown) => void },
+      ) => {
+        originalAppend(scope, key, record, options);
+        const candidate = record as { type?: unknown; event?: { uuid?: unknown } };
+        if (
+          scope === mainScope &&
+          key === AGENT_WIRE_RECORD_KEY &&
+          candidate.type === 'context.append_loop_event' &&
+          candidate.event?.uuid === 'part-capture-boundary'
+        ) {
+          futureAppended.resolve();
+        }
+      });
+    const originalJournalAppend = SessionEventJournal.prototype.append;
+    let advancedSeq: number | undefined;
+    const journalSpy = vi
+      .spyOn(SessionEventJournal.prototype, 'append')
+      .mockImplementation(function (
+        this: SessionEventJournal,
+        seq: number,
+        envelope: EventEnvelope,
+      ): void {
+        originalJournalAppend.call(this, seq, envelope);
+        if (envelope.session_id === sid && envelope.type === 'turn.step.completed') {
+          advancedSeq = seq;
+        }
+      });
+
+    const currentPromise = snapshot(sid);
+    await readEntered.promise;
+    context.appendLoopEvent({
+      type: 'content.part',
+      uuid: 'part-capture-boundary',
+      turnId: '11',
+      step: 1,
+      stepUuid: stepId,
+      part: { type: 'text', text: answer },
+    });
+    await futureAppended.promise;
+    emit(sid, {
+      type: 'turn.step.completed',
+      turnId: 11,
+      step: 1,
+      stepId,
+    } as unknown as Event2<any>);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const seqBeforeReadRelease = advancedSeq;
+    releaseRead.resolve();
+    const current = await currentPromise;
+    journalSpy.mockRestore();
+    appendSpy.mockRestore();
+    readSpy.mockRestore();
+
+    expect(seqBeforeReadRelease).toBeGreaterThan(boundary.as_of_seq);
+    expect(current.as_of_seq).toBe(boundary.as_of_seq);
+    expect(current.messages).toEqual(boundary.messages);
+    expect(current.in_flight_turn).toEqual(boundary.in_flight_turn);
+
+    const next = await snapshot(sid);
+    expect(
+      next.messages.items
+        .flatMap((message) => message.content)
+        .some((part) => part.type === 'text' && part.text === answer),
+    ).toBe(true);
+    expect(next.in_flight_turn).toMatchObject({
+      turn_id: 11,
+      step: 1,
+      step_id: stepId,
+      assistant_text: '',
+    });
+    const messageResponse = await fetch(`${base}/api/v1/sessions/${sid}/messages?page_size=100`, {
+      headers: authHeaders(server as RunningServer),
+    } as never);
+    const messageBody = (await messageResponse.json()) as {
+      code: number;
+      data: {
+        items: Array<{
+          id: string;
+          content: Array<{ type: string; text?: string }>;
+          created_at: string;
+        }>;
+      };
+    };
+    expect(messageBody.code).toBe(0);
+    const snapshotMessage = next.messages.items.find((message) =>
+      message.content.some((part) => part.type === 'text' && part.text === answer),
+    );
+    const routeMessage = messageBody.data.items.find((message) =>
+      message.content.some((part) => part.type === 'text' && part.text === answer),
+    );
+    expect(snapshotMessage).toMatchObject({
+      id: routeMessage?.id,
+      content: routeMessage?.content,
+      created_at: routeMessage?.created_at,
+    });
   });
 
   it('projects live usage into the snapshot session', async () => {
@@ -395,6 +593,146 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
     });
   });
 
+  it('transfers assistant ownership after content.part before turn.ended', async () => {
+    const sid = await createSession();
+    await ensureMainAgent(sid);
+    await snapshot(sid);
+    const session = getLiveSessionById(server!.core.accessor, sid);
+    const main = session?.accessor.get(IAgentLifecycleService).get('main');
+    if (main === undefined) throw new Error('expected a live main agent');
+    const context = main.accessor.get(IAgentContextMemoryService);
+    const stepId = 'step-owned-1';
+
+    emit(sid, {
+      type: 'turn.started',
+      turnId: 1,
+      origin: { kind: 'user' },
+    } as unknown as Event2<any>);
+    emit(sid, {
+      type: 'turn.step.started',
+      turnId: 1,
+      step: 1,
+      stepId,
+    } as unknown as Event2<any>);
+    context.appendLoopEvent({ type: 'step.begin', uuid: stepId, turnId: '1', step: 1 });
+    emit(sid, {
+      type: 'assistant.delta',
+      turnId: 1,
+      step: 1,
+      stepId,
+      delta: 'committed answer',
+    } as unknown as Event2<any>);
+    context.appendLoopEvent({
+      type: 'content.part',
+      uuid: 'part-owned-1',
+      turnId: '1',
+      step: 1,
+      stepUuid: stepId,
+      part: { type: 'text', text: 'committed answer' },
+    });
+
+    const snap = await snapshot(sid);
+    const assistantText = snap.messages.items
+      .filter((message) => message.role === 'assistant')
+      .flatMap((message) =>
+        message.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])),
+      );
+    expect(assistantText).toContain('committed answer');
+    expect(snap.in_flight_turn).toMatchObject({
+      step: 1,
+      step_id: stepId,
+      assistant_text: '',
+    });
+  });
+
+  it('keeps a running tool overlay without retaining committed assistant text', async () => {
+    const sid = await createSession();
+    await ensureMainAgent(sid);
+    await snapshot(sid);
+    const session = getLiveSessionById(server!.core.accessor, sid);
+    const main = session?.accessor.get(IAgentLifecycleService).get('main');
+    if (main === undefined) throw new Error('expected a live main agent');
+    const context = main.accessor.get(IAgentContextMemoryService);
+    const stepId = 'step-tool-1';
+
+    emit(sid, {
+      type: 'turn.started',
+      turnId: 2,
+      origin: { kind: 'user' },
+    } as unknown as Event2<any>);
+    emit(sid, {
+      type: 'turn.step.started',
+      turnId: 2,
+      step: 1,
+      stepId,
+    } as unknown as Event2<any>);
+    context.appendLoopEvent({ type: 'step.begin', uuid: stepId, turnId: '2', step: 1 });
+    emit(sid, {
+      type: 'assistant.delta',
+      turnId: 2,
+      step: 1,
+      stepId,
+      delta: 'running a tool',
+    } as unknown as Event2<any>);
+    context.appendLoopEvent({
+      type: 'content.part',
+      uuid: 'part-tool-1',
+      turnId: '2',
+      step: 1,
+      stepUuid: stepId,
+      part: { type: 'text', text: 'running a tool' },
+    });
+    emit(sid, {
+      type: 'tool.call.started',
+      turnId: 2,
+      toolCallId: 'call-tool-1',
+      name: 'Bash',
+      args: { command: 'sleep 5' },
+    } as unknown as Event2<any>);
+    context.appendLoopEvent({
+      type: 'tool.call',
+      uuid: 'tool-owned-1',
+      turnId: '2',
+      step: 1,
+      stepUuid: stepId,
+      toolCallId: 'call-tool-1',
+      name: 'Bash',
+      args: { command: 'sleep 5' },
+    });
+
+    const running = await snapshot(sid);
+    expect(running.in_flight_turn?.assistant_text).toBe('');
+    expect(running.in_flight_turn?.running_tools).toEqual([
+      expect.objectContaining({ tool_call_id: 'call-tool-1', name: 'Bash' }),
+    ]);
+    expect(
+      running.messages.items
+        .flatMap((message) => message.content)
+        .some((part) => part.type === 'tool_use' && part.tool_call_id === 'call-tool-1'),
+    ).toBe(true);
+
+    emit(sid, {
+      type: 'tool.result',
+      turnId: 2,
+      toolCallId: 'call-tool-1',
+      output: 'done',
+    } as unknown as Event2<any>);
+    context.appendLoopEvent({
+      type: 'tool.result',
+      parentUuid: 'tool-owned-1',
+      toolCallId: 'call-tool-1',
+      result: { output: 'done' },
+    });
+
+    const completed = await snapshot(sid);
+    expect(completed.in_flight_turn?.running_tools).toEqual([]);
+    expect(
+      completed.messages.items
+        .flatMap((message) => message.content)
+        .some((part) => part.type === 'tool_result' && part.tool_call_id === 'call-tool-1'),
+    ).toBe(true);
+  });
+
   it('returns 404 for an unknown session', async () => {
     const res = await fetch(`${base}/api/v1/sessions/sess_does_not_exist/snapshot`, {
       headers: authHeaders(server as RunningServer),
@@ -461,7 +799,7 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
     expect(snap.epoch).toMatch(/^ep_/);
   });
 
-  it('rebuilds persisted subagents with names and transcript tool counts', async () => {
+  it('omits persisted subagent relations without running or terminal evidence', async () => {
     const sid = await createSession();
     await ensureMainAgent(sid);
     const session = getLiveSessionById(server!.core.accessor, sid);
@@ -516,18 +854,7 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
     expect(getLiveSessionById(server!.core.accessor, sid)).toBeUndefined();
 
     const snap = await snapshot(sid);
-    expect(snap.subagents).toEqual([
-      expect.objectContaining({
-        id: 'agent-1',
-        description: 'Research API limits',
-        subagent_type: 'explore',
-        parent_agent_id: 'main',
-        label: 'Research API limits',
-        model: 'provider/subagent-model',
-        thinking_effort: 'high',
-        tool_call_count: 1,
-      }),
-    ]);
+    expect(snap.subagents).toEqual([]);
   });
 
   it('serves a v1-layout session (ISO timestamps, no id field) without crashing', async () => {

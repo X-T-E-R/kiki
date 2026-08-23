@@ -21,6 +21,8 @@ export const metaCapabilitiesSchema = z.object({
   terminal: z.literal(true).optional(),
   /** Present only on servers that expose peer-thread communication (v2). */
   thread_communication: z.literal(true).optional(),
+  /** Present only on servers that expose the transcript WS/REST protocol. */
+  transcript: z.literal(true).optional(),
 });
 
 export type MetaCapabilities = z.infer<typeof metaCapabilitiesSchema>;

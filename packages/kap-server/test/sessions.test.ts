@@ -13,12 +13,20 @@ import {
   IOAuthService,
   type Event2,
   type IOAuthService as IOAuthServiceType,
+  type ISessionScopeHandle,
   IAgentConversationUndoService,
   IAgentGoalService,
   IAgentLifecycleService,
   IAgentUsageService,
+  IAppendLogStore,
+  IAtomicDocumentStore,
   IEventBus,
   IEventService,
+  ISessionIndex,
+  ISessionIndexMirror,
+  ISessionManager,
+  ISessionMetadata,
+  ISessionToolPolicy,
   MAIN_AGENT_ID,
   MINIDB_QUERY_STORE_SUBDIR,
   closeSessionById,
@@ -28,6 +36,7 @@ import {
   type ServiceIdentifier,
   type ScopeSeed,
 } from '@moonshot-ai/agent-core-v2';
+import { Event, type IWaitUntil } from '@moonshot-ai/agent-core-v2/_base/event';
 import { TurnStarted } from '@moonshot-ai/agent-core-v2/agent/loop/turnEvents';
 import { sessionWarningsResponseSchema } from '@moonshot-ai/agent-core-v2/app/sessionLegacy/sessionProtocol';
 import { encodeWorkDirKey } from '@moonshot-ai/agent-core-v2/_base/utils/workdir-slug';
@@ -355,7 +364,7 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(Number.isNaN(Date.parse(body.data.created_at))).toBe(false);
   });
 
-  it('binds the default profile when create supplies only a thinking effort', async () => {
+  it('allows the create profile/model/thinking capability combination', async () => {
     await (server as RunningServer).close();
     server = undefined;
     await writeFile(
@@ -390,7 +399,7 @@ describe('server-v2 /api/v1/sessions', () => {
 
     const created = await postJson<SessionWire>('/api/v1/sessions', {
       metadata: { cwd: home as string },
-      agent_config: { thinking: 'high' },
+      agent_config: { profile: 'agent', model: 'stub', thinking: 'high' },
     });
     expect(created.body.code, JSON.stringify(created.body)).toBe(0);
     expect(created.body.data.agent_config).toEqual({ model: 'stub', profile: 'agent' });
@@ -400,6 +409,54 @@ describe('server-v2 /api/v1/sessions', () => {
     );
     expect(status.body.code).toBe(0);
     expect(status.body.data).toMatchObject({ model: 'stub', thinking_level: 'high' });
+
+    const updated = await postJson<SessionWire>(
+      `/api/v1/sessions/${created.body.data.id}/profile`,
+      { agent_config: { model: 'stub', thinking: 'low' } },
+    );
+    expect(updated.body.code).toBe(0);
+    const updatedStatus = await getJson<{ model: string; thinking_level: string }>(
+      `/api/v1/sessions/${created.body.data.id}/status`,
+    );
+    expect(updatedStatus.body.data).toMatchObject({ model: 'stub', thinking_level: 'low' });
+  });
+
+  it('accepts schema-valid create agent_config fields without an extra route gate', async () => {
+    const created = await postJson<SessionWire>('/api/v1/sessions', {
+      metadata: { cwd: home as string },
+      agent_config: {
+        system_prompt: 'custom prompt',
+        tools: ['Read'],
+        mcp_servers: ['example'],
+        permission_mode: 'yolo',
+        plan_mode: true,
+        swarm_mode: true,
+        goal_objective: 'ship it',
+        goal_control: 'pause',
+      },
+    });
+
+    expect(created.body.code, JSON.stringify(created.body)).toBe(0);
+    expect(created.body.details).toBeUndefined();
+    expect(created.body.data.agent_config).toEqual({ model: '' });
+  });
+
+  it('lets lifecycle creation reject an unknown profile without announcing a session', async () => {
+    const manager = (server as RunningServer).core.accessor.get(ISessionManager);
+    let announcements = 0;
+    const subscription = manager.onDidCreateSession?.(() => { announcements += 1; });
+    const created = await postJson<null>('/api/v1/sessions', {
+      metadata: { cwd: home as string },
+      agent_config: { profile: 'missing-profile' },
+    });
+    subscription?.dispose();
+
+    expect(created.body.code).toBe(40001);
+    expect(created.body.msg).toContain('Unknown agent profile');
+    expect(announcements).toBe(0);
+    expect(manager.list()).toEqual([]);
+    const sessions = await getJson<PageWire>('/api/v1/sessions');
+    expect(sessions.body.data.items).toEqual([]);
   });
 
   it('rejects create without cwd or workspace_id (40001)', async () => {
@@ -1575,6 +1632,40 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(second.body.data.metadata.cwd).toBe(cwd);
   });
 
+  it('accepts schema-valid profile fields without an extra route gate', async () => {
+    const created = await postJson<SessionWire>('/api/v1/sessions', {
+      metadata: { cwd: home as string },
+    });
+    const updated = await postJson<SessionWire>(
+      `/api/v1/sessions/${created.body.data.id}/profile`,
+      {
+        title: 'updated',
+        metadata: { accepted: true },
+        agent_config: {
+          profile: 'agent',
+          system_prompt: 'custom prompt',
+          tools: ['Read'],
+          mcp_servers: ['example'],
+        },
+        permission_rules: [
+          {
+            id: 'rule-1',
+            tool_name: 'Read',
+            decision: 'approved',
+            created_at: '2026-01-01T00:00:00.000Z',
+            created_by: 'user',
+          },
+        ],
+      },
+    );
+
+    expect(updated.body.code, JSON.stringify(updated.body)).toBe(0);
+    expect(updated.body.details).toBeUndefined();
+    expect(updated.body.data.title).toBe('updated');
+    expect(updated.body.data.metadata['accepted']).toBe(true);
+    expect(updated.body.data.permission_rules).toEqual([]);
+  });
+
   it('applies agent_config.permission_mode via profile idempotently', async () => {
     const cwd = home as string;
     const created = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });
@@ -1936,6 +2027,271 @@ describe('server-v2 /api/v1/sessions (minidb read model)', () => {
     base = `http://127.0.0.1:${server.port}`;
     const relisted = await getJson<PageWire>('/api/v1/sessions?include_archive=true');
     expect(relisted.body.data.items.map((s) => s.id)).toEqual([id]);
+  });
+
+  it('rolls back a new-session materialization failure after metadata is durable', async () => {
+    const running = server as RunningServer;
+    const manager = running.core.accessor.get(ISessionManager);
+    const index = running.core.accessor.get(ISessionIndex);
+    const mirror = running.core.accessor.get(ISessionIndexMirror);
+    await index.prepare();
+    const source = await postJson<SessionWire>('/api/v1/sessions', {
+      metadata: { cwd: home as string },
+    });
+    const targetId = 'session_materialize_rollback';
+    const targetDir = sessionDirOf(
+      running.core.accessor.get(IBootstrapService).homeDir,
+      `sessions/${source.body.data.workspace_id}`,
+      targetId,
+    );
+
+    let rejectPolicy: (reason?: unknown) => void = () => {};
+    let notifyPolicyRead: (() => void) | undefined;
+    const policyRead = new Promise<void>((resolve) => {
+      notifyPolicyRead = resolve;
+    });
+    const policyGate = new Promise<void>((_resolve, reject) => {
+      rejectPolicy = reject;
+    });
+    const subscription = manager.onWillCreateSession?.((event) => {
+      if (event.sessionId !== targetId) return;
+      event.contributeSeed(ISessionToolPolicy, {
+        _serviceBrand: undefined,
+        get ready(): Promise<void> {
+          notifyPolicyRead?.();
+          return policyGate;
+        },
+        onDidChange: Event.None as Event<IWaitUntil>,
+        disabledTools: () => [],
+        setDisabledTools: async () => {},
+      });
+    });
+    const record = vi.spyOn(mirror, 'record');
+
+    const creating = manager.create({
+      sessionId: targetId,
+      workspaceId: source.body.data.workspace_id,
+      workDir: home as string,
+    });
+    await policyRead;
+    expect(record.mock.calls.some(([summary]) => summary.id === targetId)).toBe(true);
+    await expect(readdir(targetDir)).resolves.toBeDefined();
+    rejectPolicy(new Error('injected post-metadata materialization failure'));
+    await expect(creating).rejects.toThrow('injected post-metadata materialization failure');
+    subscription?.dispose();
+    await expect(readdir(targetDir)).rejects.toBeDefined();
+
+    const before = {
+      got: await index.get(targetId),
+      ids: (await index.listRecent({ includeArchived: true })).items.map((item) => item.id),
+      count: await index.count({ includeArchived: true }),
+    };
+    await mirror.drain();
+    const after = {
+      got: await index.get(targetId),
+      ids: (await index.listRecent({ includeArchived: true })).items.map((item) => item.id),
+      count: await index.count({ includeArchived: true }),
+    };
+    expect(before).toEqual({ got: undefined, ids: [source.body.data.id], count: 1 });
+    expect(after).toEqual(before);
+  });
+
+  it('waits for an in-flight metadata write before rollback deletes authority', async () => {
+    const running = server as RunningServer;
+    const manager = running.core.accessor.get(ISessionManager);
+    const index = running.core.accessor.get(ISessionIndex);
+    const documents = running.core.accessor.get(IAtomicDocumentStore);
+    await index.prepare();
+    const source = await postJson<SessionWire>('/api/v1/sessions', {
+      metadata: { cwd: home as string },
+    });
+    const sessionId = 'session_metadata_drain';
+    const handle = await manager.create({
+      sessionId,
+      workspaceId: source.body.data.workspace_id,
+      workDir: home as string,
+    });
+    const sessionDir = sessionDirOf(
+      running.core.accessor.get(IBootstrapService).homeDir,
+      `sessions/${source.body.data.workspace_id}`,
+      sessionId,
+    );
+    const metadata = handle.accessor.get(ISessionMetadata);
+    const realSet = documents.set.bind(documents);
+    let releaseWrite: () => void = () => {};
+    let notifyWrite: (() => void) | undefined;
+    const writeEntered = new Promise<void>((resolve) => {
+      notifyWrite = resolve;
+    });
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const set = vi.spyOn(documents, 'set').mockImplementation(async (scope, key, value) => {
+      if (scope.endsWith(`/${sessionId}`) && key === 'state.json') {
+        notifyWrite?.();
+        await writeGate;
+      }
+      return realSet(scope, key, value);
+    });
+
+    metadata.recordUsage('stub', {
+      inputOther: 1,
+      output: 1,
+      inputCacheRead: 0,
+      inputCacheCreation: 0,
+    });
+    await writeEntered;
+    type RollbackController = {
+      rollbackSession(
+        id: string,
+        target: ISessionScopeHandle | undefined,
+        dir: string | undefined,
+        error: unknown,
+      ): Promise<never>;
+    };
+    const managerState = manager as unknown as {
+      owners: Map<string, RollbackController>;
+      sessions: Map<string, ISessionScopeHandle>;
+    };
+    const controller = managerState.owners.get(sessionId)!;
+    const rollingBack = controller.rollbackSession(
+      sessionId,
+      handle,
+      sessionDir,
+      new Error('injected rollback'),
+    );
+    let settled = false;
+    void rollingBack.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const crossedWrite = settled;
+    const directoryStillExists = await readdir(sessionDir).then(
+      () => true,
+      () => false,
+    );
+    releaseWrite();
+    await expect(rollingBack).rejects.toThrow('injected rollback');
+    expect(crossedWrite).toBe(false);
+    expect(directoryStillExists).toBe(true);
+    await drainSessionMetadataWrites();
+    set.mockRestore();
+    managerState.sessions.delete(sessionId);
+    managerState.owners.delete(sessionId);
+    await expect(readdir(sessionDir)).rejects.toBeDefined();
+    await expect(index.get(sessionId)).resolves.toBeUndefined();
+    await expect(index.listRecent({ includeArchived: true })).resolves.toMatchObject({
+      items: [{ id: source.body.data.id }],
+    });
+    await expect(index.count({ includeArchived: true })).resolves.toBe(1);
+  });
+
+  it('preserves an existing session when resume materialization fails', async () => {
+    const running = server as RunningServer;
+    const manager = running.core.accessor.get(ISessionManager);
+    const index = running.core.accessor.get(ISessionIndex);
+    const created = await postJson<SessionWire>('/api/v1/sessions', {
+      metadata: { cwd: home as string },
+    });
+    const sessionId = created.body.data.id;
+    const sessionDir = sessionDirOf(
+      running.core.accessor.get(IBootstrapService).homeDir,
+      `sessions/${created.body.data.workspace_id}`,
+      sessionId,
+    );
+    await closeSessionById(running.core.accessor, sessionId);
+
+    let rejectPolicy: (reason?: unknown) => void = () => {};
+    let notifyPolicyRead: (() => void) | undefined;
+    const policyRead = new Promise<void>((resolve) => {
+      notifyPolicyRead = resolve;
+    });
+    const policyGate = new Promise<void>((_resolve, reject) => {
+      rejectPolicy = reject;
+    });
+    const subscription = manager.onWillCreateSession?.((event) => {
+      if (event.sessionId !== sessionId) return;
+      event.contributeSeed(ISessionToolPolicy, {
+        _serviceBrand: undefined,
+        get ready(): Promise<void> {
+          notifyPolicyRead?.();
+          return policyGate;
+        },
+        onDidChange: Event.None as Event<IWaitUntil>,
+        disabledTools: () => [],
+        setDisabledTools: async () => {},
+      });
+    });
+
+    const resuming = manager.resume(sessionId);
+    await policyRead;
+    rejectPolicy(new Error('injected resume materialization failure'));
+    await expect(resuming).rejects.toThrow('injected resume materialization failure');
+    subscription?.dispose();
+
+    await expect(readdir(sessionDir)).resolves.toBeDefined();
+    await expect(index.get(sessionId)).resolves.toMatchObject({ id: sessionId });
+    await expect(manager.resume(sessionId)).resolves.toBeDefined();
+  });
+
+  it('invalidates the index when managed creation rolls back after metadata is durable', async () => {
+    const running = server as RunningServer;
+    await running.core.accessor.get(ISessionIndex).prepare();
+    const source = await postJson<SessionWire>('/api/v1/sessions', {
+      metadata: { cwd: home as string },
+    });
+    const targetId = 'session_create_rollback';
+    await expect(
+      running.core.accessor.get(ISessionManager).create({
+        sessionId: targetId,
+        workspaceId: source.body.data.workspace_id,
+        workDir: home as string,
+        mainAgentBinding: { profile: 'missing-profile' },
+      }),
+    ).rejects.toThrow();
+    await running.core.accessor.get(ISessionIndexMirror).drain();
+
+    const fetched = await getJson<null>(`/api/v1/sessions/${targetId}`);
+    expect(fetched.body.code).toBe(40401);
+    const listed = await getJson<PageWire>('/api/v1/sessions?include_archive=true');
+    expect(listed.body.data.items.map((item) => item.id)).toEqual([source.body.data.id]);
+  });
+
+  it('invalidates the index when fork rolls back after target metadata is durable', async () => {
+    const running = server as RunningServer;
+    await running.core.accessor.get(ISessionIndex).prepare();
+    const source = await postJson<SessionWire>('/api/v1/sessions', {
+      metadata: { cwd: home as string },
+    });
+    const appendLog = running.core.accessor.get(IAppendLogStore);
+    const realFlush = appendLog.flush.bind(appendLog);
+    let fail = true;
+    const flush = vi.spyOn(appendLog, 'flush').mockImplementation(async () => {
+      if (fail) {
+        fail = false;
+        throw new Error('injected fork index failure');
+      }
+      return realFlush();
+    });
+    const targetId = 'session_fork_rollback';
+    await expect(
+      running.core.accessor.get(ISessionManager).fork({
+        sourceSessionId: source.body.data.id,
+        newSessionId: targetId,
+      }),
+    ).rejects.toThrow('injected fork index failure');
+    flush.mockRestore();
+    await running.core.accessor.get(ISessionIndexMirror).drain();
+
+    const fetched = await getJson<null>(`/api/v1/sessions/${targetId}`);
+    expect(fetched.body.code).toBe(40401);
+    const listed = await getJson<PageWire>('/api/v1/sessions?include_archive=true');
+    expect(listed.body.data.items.map((item) => item.id)).toEqual([source.body.data.id]);
   });
 
   it('serves session routes from the authoritative store when the read model cannot open', async () => {

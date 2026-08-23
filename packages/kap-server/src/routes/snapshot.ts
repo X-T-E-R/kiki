@@ -1,7 +1,6 @@
 import {
   ensureMainAgent,
   IAgentProfileService,
-  IAgentPromptService,
   ISessionContext,
   ISessionInteractionService,
   ISessionMetadata,
@@ -23,10 +22,8 @@ import {
   type SessionSnapshotResponse,
   type SnapshotSubagent,
 } from '../protocol/rest-snapshot';
-import { readLegacyStatus } from '../services/legacyStatus/legacyStatus';
-import { loadMessageHistory } from '../services/messages/messageHistory';
+import { loadCapturedMessageHistory } from '../services/messages/messageHistory';
 import {
-  isPersistedSubagent,
   resolveSubagentDisplayName,
   subagentParentAgentId,
   subagentUserLabel,
@@ -109,8 +106,6 @@ async function assembleSnapshot(
     throw new SnapshotNotFoundError(sessionId);
   }
 
-  const snapState = await broadcaster.getSnapshotState(sessionId);
-
   const workspaceId = handle.accessor.get(ISessionContext).workspaceId;
   const workspace = await core.accessor.get(IWorkspaceService).get(workspaceId);
   const cwd = workspace?.root ?? '';
@@ -120,6 +115,7 @@ async function assembleSnapshot(
   // the snapshot is projected. Unlike the list placeholder, this single-session
   // surface can therefore carry the authoritative session-bound model.
   const main = await ensureMainAgent(handle);
+  const snapState = await broadcaster.getSnapshotState(sessionId);
   const projected = toWireSession(
     { ...meta, workspaceId },
     cwd,
@@ -128,25 +124,28 @@ async function assembleSnapshot(
   const model = readBoundModel(main);
   const session =
     model === undefined ? projected : { ...projected, agent_config: { ...projected.agent_config, model } };
-  const subagentCandidates = snapshotSubagentCandidates(
-    snapState.subagents,
-    meta.agents,
-    sessionId,
-    meta.createdAt,
-  );
+  const subagentCandidates = [...snapState.subagents];
   const toolCallCounts = await broadcaster.getTranscriptToolCallCounts(
     sessionId,
     subagentCandidates.map((subagent) => subagent.id),
   );
   const subagents = enrichSnapshotSubagents(subagentCandidates, meta.agents, toolCallCounts);
-  const status = readSnapshotStatus(main);
+  const status = snapState.status;
 
-  const all = await loadMessageHistory(core, main, sessionId, meta.createdAt);
+  const all = await loadCapturedMessageHistory(
+    main,
+    sessionId,
+    meta.createdAt,
+    snapState.contextMessages,
+    snapState.contextMessageTimes,
+  );
   const hasMore = all.length > SNAPSHOT_MESSAGE_PAGE_SIZE;
   const items = all.slice(-SNAPSHOT_MESSAGE_PAGE_SIZE);
 
-  const currentPromptId = snapState.inFlightTurn === null ? undefined : readCurrentPromptId(main);
-  const inFlightTurn = attachCurrentPromptIdToInFlight(snapState.inFlightTurn, currentPromptId);
+  const inFlightTurn = attachCurrentPromptIdToInFlight(
+    snapState.inFlightTurn,
+    snapState.currentPromptId,
+  );
 
   const interaction = handle.accessor.get(ISessionInteractionService);
   const pendingApprovals = interaction
@@ -183,45 +182,6 @@ function readBoundModel(main: IAgentScopeHandle): string | undefined {
   }
 }
 
-function readSnapshotStatus(main: IAgentScopeHandle): ReturnType<typeof readLegacyStatus> {
-  try {
-    return readLegacyStatus(main);
-  } catch {
-    // Partially materialized legacy agents can still serve the base snapshot.
-    return undefined;
-  }
-}
-
-function snapshotSubagentCandidates(
-  liveSubagents: readonly SnapshotSubagent[],
-  agents: Readonly<Record<string, AgentMeta>> | undefined,
-  sessionId: string,
-  sessionCreatedAt: number,
-): SnapshotSubagent[] {
-  if (liveSubagents.length > 0) return [...liveSubagents];
-  return Object.entries(agents ?? {}).flatMap(([agentId, meta]) => {
-    if (!isPersistedSubagent(agentId, meta)) return [];
-    const userLabel = subagentUserLabel(meta);
-    return [
-      {
-        id: agentId,
-        session_id: sessionId,
-        kind: 'subagent' as const,
-        description: resolveSubagentDisplayName(userLabel, meta.displayName, agentId),
-        status: 'completed' as const,
-        subagent_phase: 'completed' as const,
-        subagent_type: meta.displayName,
-        parent_agent_id: subagentParentAgentId(meta),
-        label: userLabel,
-        model: meta.model,
-        thinking_effort: meta.thinkingEffort,
-        tool_call_count: 0,
-        created_at: new Date(sessionCreatedAt).toISOString(),
-      },
-    ];
-  });
-}
-
 function enrichSnapshotSubagents(
   subagents: readonly SnapshotSubagent[],
   agents: Readonly<Record<string, AgentMeta>> | undefined,
@@ -247,15 +207,6 @@ function enrichSnapshotSubagents(
 
 function firstNonEmpty(...values: readonly (string | undefined)[]): string | undefined {
   return values.find((value) => value !== undefined && value.length > 0);
-}
-
-function readCurrentPromptId(main: IAgentScopeHandle | undefined): string | undefined {
-  if (main === undefined) return undefined;
-  try {
-    return main.accessor.get(IAgentPromptService).list().active?.id;
-  } catch {
-    return undefined;
-  }
 }
 
 function attachCurrentPromptIdToInFlight(

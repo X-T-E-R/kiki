@@ -12,6 +12,7 @@ export const metaCapabilitiesSchema = z.object({
   tasks: z.literal(true),
   terminal: z.literal(true).optional(),
   thread_communication: z.literal(true),
+  transcript: z.literal(true).optional(),
 });
 
 export type MetaCapabilities = z.infer<typeof metaCapabilitiesSchema>;

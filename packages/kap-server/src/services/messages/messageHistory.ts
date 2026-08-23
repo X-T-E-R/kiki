@@ -156,6 +156,20 @@ async function loadMessages(core: Scope, sessionId: string): Promise<Message[]> 
  * strictly increasing. Shared by the `messages` routes and the `snapshot`
  * route so all history-serving surfaces agree.
  */
+export interface CapturedContextMessageHistory {
+  readonly messages: readonly ContextMessage[];
+  readonly times: readonly (number | undefined)[];
+}
+
+export async function captureContextMessageHistory(
+  core: Scope,
+  agent: IAgentScopeHandle,
+  contextMessages: readonly ContextMessage[],
+): Promise<CapturedContextMessageHistory> {
+  const transcript = await readTranscript(core, agent);
+  return alignFrozenContextHistory(transcript, contextMessages);
+}
+
 export async function loadMessageHistory(
   core: Scope,
   agent: IAgentScopeHandle,
@@ -163,16 +177,49 @@ export async function loadMessageHistory(
   sessionCreatedAtMs: number,
 ): Promise<Message[]> {
   const transcript = await readTranscript(core, agent);
-  const contextMessages = agent.accessor.get(IAgentContextMemoryService).get();
-  const merged = mergeLiveTail(transcript, contextMessages);
-  const entries = await rehydrate(agent, merged.messages);
+  const merged = mergeLiveTail(
+    transcript,
+    agent.accessor.get(IAgentContextMemoryService).get(),
+  );
+  return projectMessageHistory(
+    agent,
+    sessionId,
+    sessionCreatedAtMs,
+    merged.messages,
+    merged.times,
+  );
+}
 
+export async function loadCapturedMessageHistory(
+  agent: IAgentScopeHandle,
+  sessionId: string,
+  sessionCreatedAtMs: number,
+  contextMessages: readonly ContextMessage[],
+  contextMessageTimes: readonly (number | undefined)[],
+): Promise<Message[]> {
+  return projectMessageHistory(
+    agent,
+    sessionId,
+    sessionCreatedAtMs,
+    contextMessages,
+    contextMessageTimes,
+  );
+}
+
+async function projectMessageHistory(
+  agent: IAgentScopeHandle,
+  sessionId: string,
+  sessionCreatedAtMs: number,
+  contextMessages: readonly ContextMessage[],
+  contextMessageTimes: readonly (number | undefined)[],
+): Promise<Message[]> {
+  const entries = await rehydrate(agent, contextMessages);
   let previousMs = Number.NEGATIVE_INFINITY;
-  return entries.map((msg, index) => {
-    const baseMs = merged.times[index] ?? sessionCreatedAtMs + index;
+  return entries.map((message, index) => {
+    const baseMs = contextMessageTimes[index] ?? sessionCreatedAtMs + index;
     const createdAtMs = Math.max(previousMs + 1, baseMs);
     previousMs = createdAtMs;
-    return toProtocolMessage(sessionId, index, msg, sessionCreatedAtMs, createdAtMs);
+    return toProtocolMessage(sessionId, index, message, sessionCreatedAtMs, createdAtMs);
   });
 }
 
@@ -205,6 +252,55 @@ async function readTranscript(core: Scope, agent: IAgentScopeHandle): Promise<Co
     reducer.add(record);
   }
   return reducer.result();
+}
+
+function alignFrozenContextHistory(
+  transcript: ContextTranscript,
+  contextMessages: readonly ContextMessage[],
+): CapturedContextMessageHistory {
+  const candidates = new Map<
+    string,
+    { readonly time: number | undefined; unique: boolean }
+  >();
+  for (let index = 0; index < transcript.entries.length; index++) {
+    const identity = contextMessageIdentity(transcript.entries[index]!);
+    if (identity === undefined) continue;
+    const existing = candidates.get(identity);
+    if (existing === undefined) {
+      candidates.set(identity, { time: transcript.times[index], unique: true });
+    } else {
+      existing.unique = false;
+    }
+  }
+  const directPrefix =
+    transcript.entries.length === transcript.foldedLength &&
+    contextMessages.length <= transcript.foldedLength;
+  const times = contextMessages.map((message, index) => {
+    const identity = contextMessageIdentity(message);
+    if (identity !== undefined) {
+      const candidate = candidates.get(identity);
+      return candidate?.unique === true ? candidate.time : undefined;
+    }
+    const transcriptMessage = transcript.entries[index];
+    if (
+      directPrefix &&
+      transcriptMessage !== undefined &&
+      contextMessageIdentity(transcriptMessage) === undefined &&
+      transcriptMessage.role === message.role
+    ) {
+      return transcript.times[index];
+    }
+    return undefined;
+  });
+  return { messages: contextMessages, times };
+}
+
+function contextMessageIdentity(message: ContextMessage): string | undefined {
+  if (message.id !== undefined) return `message:${message.id}`;
+  if (message.role === 'tool' && message.toolCallId !== undefined) {
+    return `tool:${message.toolCallId}`;
+  }
+  return undefined;
 }
 
 function mergeLiveTail(

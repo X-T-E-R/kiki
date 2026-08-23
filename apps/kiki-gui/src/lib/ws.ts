@@ -15,8 +15,26 @@
  */
 
 import type { SessionCursor } from '@moonshot-ai/protocol';
+import {
+  transcriptOpsEventSchema,
+  transcriptResetEventSchema,
+  type TranscriptEvent,
+  type TranscriptGradeSpec,
+} from '@moonshot-ai/transcript';
 
 import type { ResyncRequiredPayload, SessionEventFrame } from './types';
+
+export type TimelineMode = 'transcript' | 'legacy';
+
+export const DEFAULT_TRANSCRIPT_GRADES: TranscriptGradeSpec = {
+  '*': 'turn',
+  main: 'delta',
+};
+
+export function transcriptGradesForFocus(focusedAgentId: string | undefined): TranscriptGradeSpec {
+  if (focusedAgentId === undefined || focusedAgentId === 'main') return DEFAULT_TRANSCRIPT_GRADES;
+  return { '*': 'turn', main: 'delta', [focusedAgentId]: 'delta' };
+}
 
 export type WsStatus = 'connecting' | 'open' | 'closed';
 
@@ -47,9 +65,10 @@ export interface TerminalAttachResult {
 }
 
 export interface WsEvents {
-  onStatus(status: WsStatus, detail?: string): void;
-  onFrame(frame: SessionEventFrame): void;
-  onResyncRequired(payload: ResyncRequiredPayload): void;
+  onStatus(status: WsStatus, detail?: string, generation?: number): void;
+  onFrame(frame: SessionEventFrame, generation?: number): void;
+  onTranscript?(event: TranscriptEvent, generation?: number): void;
+  onResyncRequired(payload: ResyncRequiredPayload, generation?: number): void;
   /** subscribe ack: server-side current cursor per accepted session.
    * `reconnected` is true when the subscribe rode the hello of a re-established
    * socket (as opposed to the first connect or an explicit resubscribe). */
@@ -58,6 +77,7 @@ export interface WsEvents {
     resyncRequired: readonly string[],
     cursors: Record<string, SessionCursor> | undefined,
     reconnected: boolean,
+    generation?: number,
   ): void;
 }
 
@@ -102,15 +122,25 @@ function terminalKey(sessionId: string, terminalId: string): string {
 
 let clientCounter = 0;
 
+interface DesiredSubscription {
+  cursor: SessionCursor;
+  grades: TranscriptGradeSpec;
+}
+
 export class KikiSocket {
   private ws: WebSocket | null = null;
   private readonly url: string;
   private readonly token: string | undefined;
   private readonly events: WsEvents;
+  private mode: TimelineMode;
+  private readonly resolveTimelineMode?: () => Promise<TimelineMode>;
+  private readonly onTimelineModeChange?: (mode: TimelineMode, generation: number) => void;
+  private opening = false;
+  private generation = 0;
   private readonly clientId = `kiki-gui-${Date.now().toString(36)}-${(clientCounter += 1)}`;
 
   /** Desired subscriptions and the cursor to resume each from. */
-  private readonly desired = new Map<string, SessionCursor>();
+  private readonly desired = new Map<string, DesiredSubscription>();
   private manuallyClosed = false;
   private reconnectAttempts = 0;
   /**
@@ -140,12 +170,30 @@ export class KikiSocket {
    * does not currently advertise one; see docs/server-heartbeat.md). */
   private serverHeartbeatMs: number | undefined;
 
-  constructor(options: { baseUrl: string; token?: string; events: WsEvents }) {
+  constructor(options: {
+    baseUrl: string;
+    token?: string;
+    events: WsEvents;
+    timelineMode?: TimelineMode;
+    resolveTimelineMode?: () => Promise<TimelineMode>;
+    onTimelineModeChange?: (mode: TimelineMode, generation: number) => void;
+  }) {
     const root =
       options.baseUrl === '' ? window.location.origin : options.baseUrl.replace(/\/+$/, '');
     this.url = `${root.replace(/^http/, 'ws')}/api/v1/ws`;
     this.token = options.token !== undefined && options.token !== '' ? options.token : undefined;
     this.events = options.events;
+    this.mode = options.timelineMode ?? 'legacy';
+    this.resolveTimelineMode = options.resolveTimelineMode;
+    this.onTimelineModeChange = options.onTimelineModeChange;
+  }
+
+  get timelineMode(): TimelineMode {
+    return this.mode;
+  }
+
+  get connectionGeneration(): number {
+    return this.generation;
   }
 
   connect(): void {
@@ -159,7 +207,7 @@ export class KikiSocket {
     this.manuallyClosed = true;
     this.clearReconnectTimer();
     this.detachTransport();
-    this.events.onStatus('closed');
+    this.events.onStatus('closed', undefined, this.generation);
   }
 
   /** Tear the current transport down without touching the reconnect policy. */
@@ -177,11 +225,30 @@ export class KikiSocket {
   }
 
   /** Upsert a subscription. Takes effect immediately when open, else on reconnect. */
-  subscribe(sessionId: string, cursor: SessionCursor): void {
-    this.desired.set(sessionId, cursor);
+  subscribe(sessionId: string, cursor: SessionCursor, grades?: TranscriptGradeSpec): void {
+    const existing = this.desired.get(sessionId);
+    this.desired.set(sessionId, {
+      cursor,
+      grades: grades ?? existing?.grades ?? DEFAULT_TRANSCRIPT_GRADES,
+    });
     if (this.isReady()) {
       this.sendSubscribe([sessionId]);
     }
+  }
+
+  setTranscriptGrades(sessionId: string, grades: TranscriptGradeSpec): void {
+    const existing = this.desired.get(sessionId);
+    if (existing === undefined) return;
+    this.desired.set(sessionId, { cursor: existing.cursor, grades });
+    if (this.isReady() && this.timelineMode === 'transcript') {
+      this.sendSubscribeV2(sessionId, grades);
+    }
+  }
+
+  restartGeneration(): void {
+    if (this.manuallyClosed) return;
+    this.detachTransport();
+    this.openSocket();
   }
 
   unsubscribe(sessionId: string): void {
@@ -197,8 +264,9 @@ export class KikiSocket {
 
   /** Update the resume cursor for a session (called for every durable event). */
   updateCursor(sessionId: string, cursor: SessionCursor): void {
-    if (this.desired.has(sessionId)) {
-      this.desired.set(sessionId, cursor);
+    const existing = this.desired.get(sessionId);
+    if (existing !== undefined) {
+      this.desired.set(sessionId, { cursor, grades: existing.grades });
     }
   }
 
@@ -370,45 +438,69 @@ export class KikiSocket {
   }
 
   private openSocket(): void {
-    this.events.onStatus('connecting');
-    this.helloReceived = false;
-    this.lastInboundAt = 0;
-    this.serverHeartbeatMs = undefined;
-    const protocols = this.token !== undefined ? [`kimi-code.bearer.${this.token}`] : undefined;
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(this.url, protocols);
-    } catch (error) {
-      this.events.onStatus('closed', error instanceof Error ? error.message : String(error));
-      this.scheduleReconnect();
-      return;
-    }
-    this.ws = ws;
-
-    ws.onopen = () => {
-      // Wait for server_hello before client_hello.
-    };
-    ws.onmessage = (event: MessageEvent) => {
-      this.handleMessage(typeof event.data === 'string' ? event.data : '');
-    };
-    ws.onclose = (event) => {
-      const wasCurrent = this.ws === ws;
-      if (wasCurrent) this.ws = null;
-      this.helloReceived = false;
-      // Attach waiters must not hang until their timeout when the socket dies.
-      this.failPendingTerminalControls('socket closed before the attach ack arrived');
-      // A transport that was already replaced or detached (fatal frame,
-      // manual close) has its own reconnect decision — never double-schedule.
-      if (!wasCurrent) return;
-      this.events.onStatus('closed', `code ${event.code}`);
-      this.scheduleReconnect();
-    };
-    ws.onerror = () => {
-      // onclose follows and drives the reconnect.
-    };
+    if (this.opening) return;
+    this.opening = true;
+    void this.openSocketGeneration();
   }
 
-  private handleMessage(raw: string): void {
+  private async openSocketGeneration(): Promise<void> {
+    try {
+      const resolved = this.resolveTimelineMode === undefined ? this.mode : await this.resolveTimelineMode();
+      if (this.manuallyClosed) return;
+      if (resolved !== this.mode) {
+        const previousGeneration = this.generation;
+        this.manuallyClosed = true;
+        this.clearReconnectTimer();
+        this.detachTransport();
+        this.onTimelineModeChange?.(resolved, previousGeneration);
+        return;
+      }
+      this.generation += 1;
+      const generation = this.generation;
+      this.events.onStatus('connecting', undefined, generation);
+      this.helloReceived = false;
+      this.lastInboundAt = 0;
+      this.serverHeartbeatMs = undefined;
+      const protocols = this.token !== undefined ? [`kimi-code.bearer.${this.token}`] : undefined;
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(this.url, protocols);
+      } catch (error) {
+        this.events.onStatus(
+          'closed',
+          error instanceof Error ? error.message : String(error),
+          generation,
+        );
+        this.scheduleReconnect();
+        return;
+      }
+      this.ws = ws;
+
+      ws.onopen = () => {
+        // Wait for server_hello before client_hello.
+      };
+      ws.onmessage = (event: MessageEvent) => {
+        if (this.generation !== generation || this.ws !== ws) return;
+        this.handleMessage(typeof event.data === 'string' ? event.data : '', generation);
+      };
+      ws.onclose = (event) => {
+        const wasCurrent = this.ws === ws && this.generation === generation;
+        if (wasCurrent) this.ws = null;
+        this.helloReceived = false;
+        this.failPendingTerminalControls('socket closed before the attach ack arrived');
+        if (!wasCurrent) return;
+        this.events.onStatus('closed', `code ${event.code}`, generation);
+        this.scheduleReconnect();
+      };
+      ws.onerror = () => {
+        // onclose follows and drives the reconnect.
+      };
+    } finally {
+      this.opening = false;
+    }
+  }
+
+  private handleMessage(raw: string, generation: number): void {
     if (raw === '') return;
     this.lastInboundAt = Date.now();
     let message: WireMessage;
@@ -445,7 +537,7 @@ export class KikiSocket {
           id: this.nextId(),
           payload: { client_id: this.clientId },
         });
-        this.events.onStatus('open');
+        this.events.onStatus('open', undefined, generation);
         if (this.desired.size > 0) {
           this.subscribeFromReconnect = this.helloCount > 1;
           this.sendSubscribe([...this.desired.keys()]);
@@ -480,17 +572,23 @@ export class KikiSocket {
         return;
       }
       case 'ack': {
-        this.handleAck(message);
+        this.handleAck(message, generation);
+        return;
+      }
+      case 'transcript.reset':
+      case 'transcript.ops': {
+        if (this.timelineMode !== 'transcript') return;
+        this.handleTranscriptFrame(message, generation);
         return;
       }
       case 'resync_required': {
-        this.events.onResyncRequired(message.payload as ResyncRequiredPayload);
+        this.events.onResyncRequired(message.payload as ResyncRequiredPayload, generation);
         return;
       }
       case 'error': {
         const payload = message.payload as { msg?: string; fatal?: boolean } | undefined;
         if (payload?.fatal === true) {
-          this.events.onStatus('closed', payload.msg ?? 'fatal ws error');
+          this.events.onStatus('closed', payload.msg ?? 'fatal ws error', generation);
           // A fatal frame used to park the socket as manually closed — no
           // auto recovery and no way back in. Instead: retry on the normal
           // backoff but only a bounded number of times (scheduleReconnect
@@ -554,7 +652,7 @@ export class KikiSocket {
         if (typeof message.type === 'string' && message.payload !== undefined) {
           const frame = message as unknown as SessionEventFrame;
           if (typeof frame.seq === 'number') {
-            this.events.onFrame(frame);
+            this.events.onFrame(frame, generation);
             return;
           }
         }
@@ -563,7 +661,16 @@ export class KikiSocket {
     }
   }
 
-  private handleAck(message: WireMessage): void {
+  private handleTranscriptFrame(message: WireMessage, generation: number): void {
+    const parsed =
+      message.type === 'transcript.reset'
+        ? transcriptResetEventSchema.safeParse(message.payload)
+        : transcriptOpsEventSchema.safeParse(message.payload);
+    if (!parsed.success) return;
+    this.events.onTranscript?.(parsed.data, generation);
+  }
+
+  private handleAck(message: WireMessage, generation: number): void {
     // Terminal control acks correlate by frame id; everything else falls
     // through to the legacy subscribe-ack handling.
     if (message.id !== undefined) {
@@ -611,23 +718,37 @@ export class KikiSocket {
     if (accepted.length > 0 || resyncRequired.length > 0) {
       const reconnected = this.subscribeFromReconnect;
       this.subscribeFromReconnect = false;
-      this.events.onSubscribeAck(accepted, resyncRequired, payload.cursors, reconnected);
+      this.events.onSubscribeAck(accepted, resyncRequired, payload.cursors, reconnected, generation);
     }
   }
 
   private sendSubscribe(sessionIds: readonly string[]): void {
     const cursors: Record<string, SessionCursor> = {};
     for (const sessionId of sessionIds) {
-      const cursor = this.desired.get(sessionId);
-      if (cursor !== undefined) cursors[sessionId] = cursor;
+      const desired = this.desired.get(sessionId);
+      if (desired !== undefined) cursors[sessionId] = desired.cursor;
     }
     this.send({
       type: 'subscribe',
       id: this.nextId(),
-      // Omit agent_filter to receive the session's complete agent stream. The
-      // transcript reducer scopes main vs. child presentation client-side while
-      // preserving the existing session cursor/resync contract.
       payload: { session_ids: sessionIds, cursors },
+    });
+    if (this.timelineMode === 'transcript') {
+      for (const sessionId of sessionIds) {
+        const desired = this.desired.get(sessionId);
+        if (desired !== undefined) this.sendSubscribeV2(sessionId, desired.grades);
+      }
+    }
+  }
+
+  private sendSubscribeV2(sessionId: string, grades: TranscriptGradeSpec): void {
+    this.send({
+      type: 'subscribe_v2',
+      id: this.nextId(),
+      payload: {
+        session_id: sessionId,
+        transcript: grades,
+      },
     });
   }
 

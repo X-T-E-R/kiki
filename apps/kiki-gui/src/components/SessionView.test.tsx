@@ -194,28 +194,18 @@ describe('QueueStrip', () => {
 });
 
 describe('queued prompt editing', () => {
-  it('removes the old prompt before resubmitting the replacement at the tail', async () => {
-    const calls: string[] = [];
-    await replaceQueuedPrompt(
-      'p1',
-      'replacement',
-      async (id) => { calls.push(`abort:${id}`); },
-      async (text) => { calls.push(`send:${text}`); },
-    );
-    expect(calls).toEqual(['abort:p1', 'send:replacement']);
+  it('uses the atomic replace action with the same prompt identity', async () => {
+    const replace = vi.fn(async () => undefined);
+    await replaceQueuedPrompt('p1', 'replacement', replace);
+    expect(replace).toHaveBeenCalledExactlyOnceWith('p1', 'replacement');
   });
 
-  it('does not resubmit when removing the old queued prompt fails', async () => {
-    const resend = vi.fn();
-    await expect(
-      replaceQueuedPrompt(
-        'p1',
-        'replacement',
-        async () => { throw new Error('abort failed'); },
-        resend,
-      ),
-    ).rejects.toThrow('abort failed');
-    expect(resend).not.toHaveBeenCalled();
+  it('surfaces replace failure without falling back to abort or resend', async () => {
+    const replace = vi.fn(async () => { throw new Error('replace failed'); });
+    await expect(replaceQueuedPrompt('p1', 'replacement', replace)).rejects.toThrow(
+      'replace failed',
+    );
+    expect(replace).toHaveBeenCalledOnce();
   });
 });
 
@@ -518,14 +508,14 @@ describe('shouldCloseSessionChromeOnEscape', () => {
 });
 
 describe('agent transcript poll', () => {
-  it('uses a light main roster page and a full selected-agent page', () => {
+  it('does not poll REST transcript pages in the live GUI path', () => {
     expect(agentTranscriptPoll({ selectedAgentId: undefined })).toEqual({
-      pageSize: 1,
-      refetchInterval: 5000,
+      pageSize: 20,
+      refetchInterval: false,
     });
     expect(agentTranscriptPoll({ selectedAgentId: 'agent-1' })).toEqual({
-      pageSize: 100,
-      refetchInterval: 1500,
+      pageSize: 20,
+      refetchInterval: false,
     });
   });
 });

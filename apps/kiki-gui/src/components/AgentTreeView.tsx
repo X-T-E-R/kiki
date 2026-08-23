@@ -15,6 +15,7 @@ import {
 } from '../state/agentTree';
 
 const STATUS_I18N: Record<AgentStatus, I18nKey> = {
+  unknown: 'subagent.status.unknown',
   running: 'subagent.status.running',
   suspended: 'subagent.status.suspended',
   completed: 'subagent.status.completed',
@@ -33,6 +34,7 @@ function statusDot(status: AgentStatus): string {
     case 'failed':
       return 'bg-danger';
     case 'cancelled':
+    case 'unknown':
       return 'bg-ink-faint';
     case 'suspended':
       return 'bg-amber-rule';

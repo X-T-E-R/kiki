@@ -1,6 +1,7 @@
 import {
   IAgentLifecycleService,
   IAgentActivityView,
+  IAgentPromptService,
   IAgentTaskService,
   IEventBus,
   ISessionMetadata,
@@ -11,9 +12,16 @@ import {
   type IAgentScopeHandle,
   type Interaction,
   type ISessionScopeHandle,
+  type PromptSnapshot,
 } from '@moonshot-ai/agent-core-v2';
-import type { AgentDescriptor, TranscriptChangeEvent, TranscriptStore } from '@moonshot-ai/transcript';
+import type {
+  AgentDescriptor,
+  TranscriptChangeEvent,
+  TranscriptPrompt,
+  TranscriptStore,
+} from '@moonshot-ai/transcript';
 
+import { projectPromptContentParts } from '../messages/messageProjection';
 import {
   resolveSubagentDisplayName,
   subagentParentAgentId,
@@ -44,6 +52,8 @@ export interface TranscriptBinding extends IDisposable {
    * before its own history is replayed).
    */
   seedPendingInteractions(agentId?: string): void;
+  seedRunningTasks(agentId?: string): void;
+  seedPrompts(agentId?: string): void;
 }
 
 export function bindSessionTranscript(
@@ -131,6 +141,48 @@ export function bindSessionTranscript(
       projectors.set(agentId, projector);
     }
     return projector;
+  };
+
+  const seedPrompts = (agentId?: string): void => {
+    for (const agent of agents.list()) {
+      if (agentId !== undefined && agent.id !== agentId) continue;
+      const projector = projectorFor(agent.id);
+      let snapshot: ReturnType<IAgentPromptService['list']>;
+      try {
+        snapshot = agent.accessor.get(IAgentPromptService).list();
+      } catch {
+        continue;
+      }
+      const ops: ReturnType<AgentTranscriptProjector['seedPrompt']> = [];
+      if (snapshot.active !== undefined) {
+        ops.push(...projector.seedPrompt(promptFromSnapshot(snapshot.active, 'running')));
+      }
+      for (const pending of snapshot.pending) {
+        ops.push(...projector.seedPrompt(promptFromSnapshot(pending, 'queued')));
+      }
+      applyOps(agent.id, ops);
+    }
+  };
+
+  const seedRunningTasks = (agentId?: string): void => {
+    for (const agent of agents.list()) {
+      if (agentId !== undefined && agent.id !== agentId) continue;
+      const projector = projectorFor(agent.id);
+      for (const info of agent.accessor.get(IAgentTaskService)?.list(true) ?? []) {
+        if (info.kind !== 'agent' || info.agentId === undefined || info.agentId === '') continue;
+        applyOps(
+          agent.id,
+          projector.seedSubagentTask({
+            taskId: info.taskId,
+            agentId: info.agentId,
+            description: info.description,
+            status: info.status,
+            detached: info.detached ?? false,
+            startedAt: info.startedAt,
+          }),
+        );
+      }
+    }
   };
 
   const subscribeAgent = (handle: IAgentScopeHandle): void => {
@@ -261,6 +313,8 @@ export function bindSessionTranscript(
 
   return {
     seedPendingInteractions,
+    seedRunningTasks,
+    seedPrompts,
     dispose: () => {
       for (const d of disposables) d.dispose();
       for (const list of agentDisposables.values()) {
@@ -273,6 +327,19 @@ export function bindSessionTranscript(
       unseeded.clear();
       earlyResolves.clear();
     },
+  };
+}
+
+function promptFromSnapshot(
+  snapshot: PromptSnapshot,
+  status: Extract<TranscriptPrompt['status'], 'running' | 'queued'>,
+): TranscriptPrompt {
+  return {
+    promptId: snapshot.id,
+    status,
+    userMessageId: snapshot.userMessageId,
+    content: projectPromptContentParts(snapshot.message.content),
+    createdAt: snapshot.createdAt,
   };
 }
 

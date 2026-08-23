@@ -71,6 +71,12 @@ function hello(wire: FakeWebSocket): void {
   wire.receive({ type: 'server_hello', payload: {} });
 }
 
+async function flushSocket(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
 describe('KikiSocket fatal recovery', () => {
   beforeEach(() => {
     FakeWebSocket.instances.length = 0;
@@ -320,6 +326,157 @@ describe('KikiSocket terminal channel', () => {
       terminalId: 'term_a',
     });
     socket.terminalDetach('sess_a', 'term_a');
+    socket.close();
+  });
+});
+
+describe('KikiSocket timeline mode', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances.length = 0;
+    Object.defineProperty(globalThis, 'WebSocket', {
+      configurable: true,
+      value: FakeWebSocket,
+    });
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, 'WebSocket');
+  });
+
+  it('pins timelineMode for the connection generation and drops stale frames', () => {
+    const frames: unknown[] = [];
+    const transcripts: unknown[] = [];
+    const events: WsEvents = {
+      onStatus: () => {},
+      onFrame: (frame) => { frames.push(frame); },
+      onTranscript: (event) => { transcripts.push(event); },
+      onResyncRequired: () => {},
+      onSubscribeAck: () => {},
+    };
+    const socket = new KikiSocket({
+      baseUrl: 'http://example.test',
+      events,
+      timelineMode: 'transcript',
+    });
+    socket.connect();
+    const first = FakeWebSocket.instances.at(-1)!;
+    hello(first);
+    socket.subscribe('sess_1', { seq: 0, epoch: 'e1' });
+    expect(first.sent.some((frame) => frame.type === 'subscribe')).toBe(true);
+    expect(first.sent.some((frame) => frame.type === 'subscribe_v2')).toBe(true);
+    first.receive({
+      type: 'transcript.reset',
+      seq: 0,
+      payload: {
+        type: 'transcript.reset',
+        agent_id: 'main',
+        snapshot: { items: [], tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {} },
+        has_more_older: false,
+        seq: 0,
+      },
+    });
+    expect(transcripts).toHaveLength(1);
+
+    const firstGeneration = socket.connectionGeneration;
+    socket.restartGeneration();
+    const second = FakeWebSocket.instances.at(-1)!;
+    expect(socket.connectionGeneration).toBeGreaterThan(firstGeneration);
+    first.receive({
+      type: 'transcript.ops',
+      seq: 0,
+      payload: { type: 'transcript.ops', agent_id: 'main', ops: [], seq: 1 },
+    });
+    expect(transcripts).toHaveLength(1);
+    hello(second);
+    second.receive({
+      type: 'session_event',
+      seq: 12,
+      payload: { type: 'assistant.delta', turnId: 1, delta: 'stale' },
+    });
+    expect(frames).toHaveLength(1);
+    socket.close();
+  });
+
+  it('does not mix transcript and legacy modes on the same connection', () => {
+    const socket = new KikiSocket({
+      baseUrl: 'http://example.test',
+      events: {
+        onStatus: () => {},
+        onFrame: () => {},
+        onResyncRequired: () => {},
+        onSubscribeAck: () => {},
+      },
+      timelineMode: 'transcript',
+    });
+    expect(socket.timelineMode).toBe('transcript');
+    socket.connect();
+    const first = FakeWebSocket.instances.at(-1)!;
+    hello(first);
+    first.receive({
+      type: 'transcript.reset',
+      seq: 0,
+      payload: {
+        type: 'transcript.reset',
+        agent_id: 'main',
+        snapshot: { items: [], tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {} },
+        has_more_older: false,
+      },
+    });
+    expect(socket.timelineMode).toBe('transcript');
+    socket.close();
+  });
+
+  it('re-resolves capability before a new generation and hands off on mode change', async () => {
+    const modes: string[] = [];
+    let capability: 'transcript' | 'legacy' = 'transcript';
+    const socket = new KikiSocket({
+      baseUrl: 'http://example.test',
+      events: {
+        onStatus: () => {},
+        onFrame: () => {},
+        onResyncRequired: () => {},
+        onSubscribeAck: () => {},
+      },
+      timelineMode: 'transcript',
+      resolveTimelineMode: async () => capability,
+      onTimelineModeChange: (mode) => { modes.push(mode); },
+    });
+    socket.connect();
+    await flushSocket();
+    const first = FakeWebSocket.instances.at(-1)!;
+    hello(first);
+    expect(socket.timelineMode).toBe('transcript');
+    first.close(1006);
+    capability = 'legacy';
+    socket.nudge();
+    await flushSocket();
+    expect(modes).toEqual(['legacy']);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it('keeps the same-mode reconnect on the same socket instance', async () => {
+    const modes: string[] = [];
+    const socket = new KikiSocket({
+      baseUrl: 'http://example.test',
+      events: {
+        onStatus: () => {},
+        onFrame: () => {},
+        onResyncRequired: () => {},
+        onSubscribeAck: () => {},
+      },
+      timelineMode: 'legacy',
+      resolveTimelineMode: async () => 'legacy',
+      onTimelineModeChange: (mode) => { modes.push(mode); },
+    });
+    socket.connect();
+    await flushSocket();
+    const first = FakeWebSocket.instances.at(-1)!;
+    hello(first);
+    first.close(1006);
+    socket.nudge();
+    await flushSocket();
+    expect(modes).toEqual([]);
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(1);
     socket.close();
   });
 });

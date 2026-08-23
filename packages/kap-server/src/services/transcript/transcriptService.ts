@@ -61,23 +61,22 @@ interface AgentOpsJournal {
   batches: { seq: number; ops: TranscriptOperation[] }[];
 }
 
-/** Retained op batches per agent; older batches evict (catch-up turns incomplete). */
+type TranscriptOpsListener = (event: TranscriptChangeEvent, seq: number) => void;
+
 export const TRANSCRIPT_OPS_JOURNAL_CAPACITY = 2000;
 
-/** Catch-up view over one agent's journal: batches with seq > sinceSeq, oldest first. */
 export interface TranscriptOpsCatchup {
-  readonly batches: readonly { seq: number; ops: readonly TranscriptOperation[] }[];
+  readonly batches: readonly {
+    readonly seq: number;
+    readonly ops: readonly TranscriptOperation[];
+  }[];
   readonly latestSeq: number;
-  /** false when the journal no longer reaches back to sinceSeq — the caller must do a full refresh. */
   readonly complete: boolean;
 }
 
 export class TranscriptService {
   private readonly live = new Map<string, LiveEntry>();
-  private readonly opsListeners = new Map<
-    string,
-    Set<(event: TranscriptChangeEvent, seq: number) => void>
-  >();
+  private readonly opsListeners = new Map<string, Set<TranscriptOpsListener>>();
   /** Debounced post-turn heals: `${sessionId}:${agentId}` → pending ordinals + timer. */
   private readonly healTimers = new Map<string, { ordinals: Set<number>; timer: NodeJS.Timeout }>();
 
@@ -127,7 +126,9 @@ export class TranscriptService {
       ready: (async () => {
         await this.backfillMain(sessionId, store);
         if (this.live.get(sessionId)?.store === store) {
+          binding.seedRunningTasks(MAIN_AGENT_ID);
           binding.seedPendingInteractions(MAIN_AGENT_ID);
+          binding.seedPrompts(MAIN_AGENT_ID);
         }
       })(),
       agentBackfills: new Map(),
@@ -165,7 +166,9 @@ export class TranscriptService {
     }
     await backfill;
     if (this.live.get(sessionId)?.store === entry.store) {
+      entry.binding.seedRunningTasks(agentId);
       entry.binding.seedPendingInteractions(agentId);
+      entry.binding.seedPrompts(agentId);
     }
   }
 
@@ -240,10 +243,7 @@ export class TranscriptService {
    * registered listener cannot observe). Returns `undefined` when the session
    * is not live (caller skips streaming for cold sessions).
    */
-  onSessionOps(
-    sessionId: string,
-    listener: (event: TranscriptChangeEvent, seq: number) => void,
-  ): IDisposable | undefined {
+  onSessionOps(sessionId: string, listener: TranscriptOpsListener): IDisposable | undefined {
     if (this.forSessionLive(sessionId) === undefined) return undefined;
     let listeners = this.opsListeners.get(sessionId);
     if (listeners === undefined) {
@@ -263,6 +263,7 @@ export class TranscriptService {
 
   private dispatchOps(sessionId: string, event: TranscriptChangeEvent): void {
     const seq = this.journalOps(sessionId, event);
+    if (seq === undefined) return;
     const listeners = this.opsListeners.get(sessionId);
     if (listeners === undefined) return;
     for (const listener of listeners) {
@@ -273,15 +274,9 @@ export class TranscriptService {
     }
   }
 
-  /**
-   * Append one dispatched batch to its agent's journal and assign the next
-   * consecutive seq. Journaling happens before the fan-out (and regardless of
-   * listeners), so the watermark always covers every dispatched batch. Returns
-   * 0 when the session has no live entry — the journal dies with the store.
-   */
-  private journalOps(sessionId: string, event: TranscriptChangeEvent): number {
+  private journalOps(sessionId: string, event: TranscriptChangeEvent): number | undefined {
     const entry = this.live.get(sessionId);
-    if (entry === undefined) return 0;
+    if (entry === undefined) return undefined;
     let journal = entry.opsJournals.get(event.agentId);
     if (journal === undefined) {
       journal = { nextSeq: 1, batches: [] };
@@ -293,37 +288,31 @@ export class TranscriptService {
     return seq;
   }
 
-  /**
-   * Watermark for one agent: the seq of its latest dispatched op batch (0 when
-   * nothing was dispatched — or the session is not live, cold sessions having
-   * no journal).
-   */
   getSeqWatermark(sessionId: string, agentId: string): number {
-    const journal = this.live.get(sessionId)?.opsJournals.get(agentId);
+    const entry = this.live.get(sessionId);
+    if (entry === undefined) return 0;
+    const journal = entry.opsJournals.get(agentId);
     return journal === undefined ? 0 : journal.nextSeq - 1;
   }
 
-  /**
-   * Point-to-point catch-up: the journaled batches with seq > `sinceSeq`,
-   * oldest first. `complete` is true only when every batch in
-   * (sinceSeq, latestSeq] is retained — a sinceSeq ahead of the watermark
-   * (stale cursor from a dead journal incarnation) or one the bounded journal
-   * has already evicted yields `complete: false`, telling the caller to fall
-   * back to a full refresh. Returns `undefined` when the session is not live
-   * (cold sessions have no journal).
-   */
-  getOpsSince(
-    sessionId: string,
-    agentId: string,
-    sinceSeq: number,
-  ): TranscriptOpsCatchup | undefined {
+  getOpsSince(sessionId: string, agentId: string, since: number): TranscriptOpsCatchup | undefined {
     if (this.forSessionLive(sessionId) === undefined) return undefined;
-    const journal = this.live.get(sessionId)?.opsJournals.get(agentId);
+    const entry = this.live.get(sessionId);
+    if (entry === undefined) return undefined;
+    const journal = entry.opsJournals.get(agentId);
     const latestSeq = journal === undefined ? 0 : journal.nextSeq - 1;
-    if (sinceSeq > latestSeq) return { batches: [], latestSeq, complete: false };
-    const batches = journal?.batches.filter((batch) => batch.seq > sinceSeq) ?? [];
+    if (since > latestSeq) {
+      return { batches: [], latestSeq, complete: false };
+    }
+    const retained = journal?.batches.filter((batch) => batch.seq > since) ?? [];
     const oldest = journal?.batches[0]?.seq;
-    const complete = batches.length === 0 || (oldest !== undefined && oldest <= sinceSeq + 1);
+    const complete =
+      since === latestSeq ||
+      (retained.length > 0 && oldest !== undefined && oldest <= since + 1);
+    const batches = retained.map((batch) => ({
+      seq: batch.seq,
+      ops: batch.ops,
+    }));
     return { batches, latestSeq, complete };
   }
 
@@ -611,6 +600,15 @@ export function snapshotToOps(
   }
   for (const task of snapshot.tasks) {
     ops.push({ op: 'task.upsert', task });
+  }
+  for (const interaction of snapshot.interactions) {
+    ops.push({ op: 'interaction.upsert', interaction });
+  }
+  for (const todo of snapshot.todos) {
+    ops.push({ op: 'todo.upsert', todo });
+  }
+  for (const prompt of snapshot.prompts) {
+    ops.push({ op: 'prompt.upsert', prompt });
   }
   ops.push({ op: 'meta.merge', meta: snapshot.meta });
   return ops;

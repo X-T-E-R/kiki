@@ -550,8 +550,9 @@ function subagentStatusTone(status: AgentTreeNode['status'] | SubagentBlock['sta
     case 'failed':
       return 'bg-danger';
     case 'cancelled':
+    case 'unknown':
       return 'bg-ink-faint';
-    default:
+    case 'suspended':
       return 'bg-amber-rule';
   }
 }
@@ -729,7 +730,7 @@ const SubagentCard = memo(function SubagentCard({
 
 function syntheticChildBlock(node: AgentTreeNode): SubagentBlock {
   const status: SubagentBlock['status'] =
-    node.status === 'cancelled' || node.status === 'background' ? 'completed' : node.status;
+    node.status === 'background' ? 'running' : node.status;
   return {
     kind: 'subagent',
     id: `subagent-${node.agentId}`,
