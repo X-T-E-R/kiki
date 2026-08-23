@@ -20,7 +20,7 @@ const READ_MODEL_FLAG = 'persistence_minidb_readmodel';
 
 const FLUSH_INTERVAL_MS = 100;
 const FLUSH_BATCH_SIZE = 500;
-const MAX_PENDING = 10_000;
+const MAX_PENDING = FLUSH_BATCH_SIZE;
 const MAX_CONSECUTIVE_FAILURES = 5;
 
 const pendingDrains = new Set<Promise<void>>();
@@ -34,10 +34,14 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
 
   private readonly pendingMap = new Map<string, SessionSummary>();
   private readonly timer = this._register(new IntervalTimer({ unref: true }));
+  private exclusiveTail: Promise<void> = Promise.resolve();
   private flushing: Promise<void> | undefined;
   private consecutiveFailures = 0;
+  private mutationEpochValue = 0;
+  private dirtyEpochValue = 0;
+  private settledDirtyEpoch = 0;
+  private lastReadModelEnabled: boolean;
   private disposed = false;
-  private overflowLogged = false;
 
   constructor(
     @IQueryStore private readonly queryStore: IQueryStore,
@@ -45,6 +49,7 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
     @ILogService private readonly log: ILogService,
   ) {
     super();
+    this.lastReadModelEnabled = this.flags.enabled(READ_MODEL_FLAG);
     this._register(
       toDisposable(() => {
         this.disposed = true;
@@ -56,17 +61,17 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
   }
 
   record(summary: SessionSummary): void {
-    if (this.disposed || !this.flags.enabled(READ_MODEL_FLAG)) return;
-    if (this.pendingMap.size >= MAX_PENDING && !this.pendingMap.has(summary.id)) {
-      if (!this.overflowLogged) {
-        this.overflowLogged = true;
-        this.log.warn('session index mirror queue full; dropping summaries until it drains', {
-          pending: this.pendingMap.size,
-        });
-      }
+    if (this.disposed) return;
+    const enabled = this.observeReadModelFlag();
+    this.mutationEpochValue += 1;
+    if (!enabled || this.isDirty()) {
+      this.markDirty();
       return;
     }
-    this.overflowLogged = false;
+    if (!this.pendingMap.has(summary.id) && this.pendingMap.size >= MAX_PENDING) {
+      this.markDirty();
+      return;
+    }
     this.pendingMap.set(summary.id, summary);
     if (this.pendingMap.size >= FLUSH_BATCH_SIZE) {
       void this.flush();
@@ -75,18 +80,65 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
     }
   }
 
+  epoch(): number {
+    this.observeReadModelFlag();
+    return this.mutationEpochValue;
+  }
+
+  dirtyEpoch(): number | undefined {
+    this.observeReadModelFlag();
+    return this.isDirty() ? this.dirtyEpochValue : undefined;
+  }
+
+  settleDirty(epoch: number): void {
+    if (!this.observeReadModelFlag()) return;
+    this.settledDirtyEpoch = Math.max(
+      this.settledDirtyEpoch,
+      Math.min(epoch, this.dirtyEpochValue),
+    );
+    if (!this.isDirty()) this.consecutiveFailures = 0;
+  }
+
+  invalidate(id: string): void {
+    if (this.disposed) return;
+    const enabled = this.observeReadModelFlag();
+    this.mutationEpochValue += 1;
+    this.pendingMap.delete(id);
+    if (this.pendingMap.size === 0) this.timer.cancel();
+    if (!enabled || this.isDirty()) this.markDirty();
+  }
+
   pending(): readonly SessionSummary[] {
+    if (!this.observeReadModelFlag() || this.isDirty()) return [];
     return [...this.pendingMap.values()];
   }
 
+  acknowledge(summaries: readonly SessionSummary[]): void {
+    if (!this.observeReadModelFlag() || this.isDirty()) return;
+    for (const summary of summaries) {
+      if (this.pendingMap.get(summary.id) === summary) this.pendingMap.delete(summary.id);
+    }
+    if (this.pendingMap.size === 0) this.timer.cancel();
+  }
+
+  runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.exclusiveTail.then(operation, operation);
+    this.exclusiveTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
   async evict(id: string): Promise<void> {
-    this.pendingMap.delete(id);
-    await this.flushing;
-    this.pendingMap.delete(id);
+    await this.runExclusive(async () => {
+      this.invalidate(id);
+    });
   }
 
   async drain(): Promise<void> {
     this.timer.cancel();
+    if (!this.observeReadModelFlag() || this.isDirty()) return;
     while (this.pendingMap.size > 0) {
       const before = this.pendingMap.size;
       await this.flush();
@@ -99,23 +151,65 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
     }
   }
 
+  private observeReadModelFlag(): boolean {
+    const enabled = this.flags.enabled(READ_MODEL_FLAG);
+    if (enabled === this.lastReadModelEnabled) return enabled;
+    this.lastReadModelEnabled = enabled;
+    if (!enabled) {
+      if (this.pendingMap.size > 0) this.markDirty();
+      else this.timer.cancel();
+    }
+    return enabled;
+  }
+
+  private isDirty(): boolean {
+    return this.dirtyEpochValue > this.settledDirtyEpoch;
+  }
+
+  private markDirty(): void {
+    this.dirtyEpochValue = Math.max(this.dirtyEpochValue, this.mutationEpochValue);
+    this.pendingMap.clear();
+    this.timer.cancel();
+  }
+
   private flush(): Promise<void> {
-    this.flushing ??= this.flushChunk().finally(() => {
+    if (this.flushing !== undefined) return this.flushing;
+    if (!this.observeReadModelFlag() || this.isDirty()) return Promise.resolve();
+    this.flushing = this.runExclusive(() => this.flushChunk()).finally(() => {
       this.flushing = undefined;
-      if (this.pendingMap.size > 0 && this.consecutiveFailures < MAX_CONSECUTIVE_FAILURES) {
+      if (
+        this.observeReadModelFlag() &&
+        !this.isDirty() &&
+        this.pendingMap.size > 0 &&
+        this.consecutiveFailures < MAX_CONSECUTIVE_FAILURES
+      ) {
         this.timer.cancelAndSet(() => void this.flush(), FLUSH_INTERVAL_MS);
       }
     });
     return this.flushing;
   }
 
+  private registerFlushFailure(): boolean {
+    this.consecutiveFailures += 1;
+    if (this.consecutiveFailures < MAX_CONSECUTIVE_FAILURES) return false;
+    this.markDirty();
+    return true;
+  }
+
   private async flushChunk(): Promise<void> {
+    if (!this.observeReadModelFlag() || this.isDirty()) return;
     const chunk = [...this.pendingMap.entries()].slice(0, FLUSH_BATCH_SIZE);
     if (chunk.length === 0) return;
     try {
       const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
       if (manifest === undefined) {
-        this.consecutiveFailures += 1;
+        const pending = this.pendingMap.size;
+        if (this.registerFlushFailure()) {
+          this.log.warn('session index mirror switching to authoritative catch-up', {
+            pending,
+            failures: this.consecutiveFailures,
+          });
+        }
         return;
       }
       const collection = sessionCollection(manifest.seq);
@@ -163,20 +257,20 @@ export class SessionIndexMirror extends Disposable implements ISessionIndexMirro
         }),
       ];
       await this.queryStore.batch(ops);
-      for (const [id, summary] of chunk) {
-        if (this.pendingMap.get(id) === summary) this.pendingMap.delete(id);
-      }
+      this.acknowledge(chunk.map(([, summary]) => summary));
       this.consecutiveFailures = 0;
     } catch (error) {
-      this.consecutiveFailures += 1;
+      const pending = this.pendingMap.size;
+      const dirty = this.registerFlushFailure();
       this.log.warn('failed to flush session index mirror chunk', {
-        pending: this.pendingMap.size,
+        pending,
         failures: this.consecutiveFailures,
         error: String(error),
       });
-      if (this.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-        this.log.warn('session index mirror giving up until the next record; reconciliation will heal', {
-          pending: this.pendingMap.size,
+      if (dirty) {
+        this.log.warn('session index mirror switching to authoritative catch-up', {
+          pending,
+          failures: this.consecutiveFailures,
         });
       }
     }

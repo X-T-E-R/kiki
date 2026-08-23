@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Session, SessionSnapshotResponse } from '@moonshot-ai/protocol';
 
 import { resolveSelectedEffort } from '../components/Composer';
-import type { KikiClient } from '../lib/client';
+import type { AgentTranscriptResponse, KikiClient } from '../lib/client';
 import type { SessionEventFrame } from '../lib/types';
 import type { KikiSocket } from '../lib/ws';
 import { assertSessionWritable, RESYNC_PAUSED_ERROR, SessionController } from './sessionController';
@@ -150,6 +150,7 @@ interface Harness {
     listPrompts: ReturnType<typeof vi.fn>;
     listMessages: ReturnType<typeof vi.fn>;
     submitPrompt: ReturnType<typeof vi.fn>;
+    replacePrompt: ReturnType<typeof vi.fn>;
     abortPrompt: ReturnType<typeof vi.fn>;
     steerPrompt: ReturnType<typeof vi.fn>;
     editMessage: ReturnType<typeof vi.fn>;
@@ -170,6 +171,7 @@ async function openController(options: { defaultScheduler?: boolean } = {}): Pro
     getSessionGoal: vi.fn(async () => null),
     listMessages: vi.fn(async () => ({ items: [], has_more: false })),
     submitPrompt: vi.fn(),
+    replacePrompt: vi.fn(),
     abortPrompt: vi.fn(async () => ({ aborted: true, at_seq: 1 })),
     steerPrompt: vi.fn(async () => ({ steered: true as const, prompt_ids: [] as string[] })),
     editMessage: vi.fn(async () => ({
@@ -193,6 +195,9 @@ async function openController(options: { defaultScheduler?: boolean } = {}): Pro
     unsubscribe: vi.fn(),
     updateCursor: vi.fn(),
     abort: vi.fn(),
+    timelineMode: 'legacy' as const,
+    setTranscriptGrades: vi.fn(),
+    restartGeneration: vi.fn(),
   };
   const { scheduler, flushAll } = manualScheduler();
   const controller = new SessionController(
@@ -476,6 +481,7 @@ describe('SessionController pipeline', () => {
       .blocks.find((b): b is ToolBlock => b.kind === 'tool');
     expect(tool?.toolCallId).toBe('c1');
     expect(tool?.argsText).toContain('chunk-49');
+    expect(controller.getAgentState('agent-x').loaded).toBe(true);
     // No subagent card was minted on the main transcript for a bare delta.
     expect(controller.getState().blocks.some((b) => b.kind === 'subagent')).toBe(false);
     controller.close();
@@ -731,7 +737,66 @@ describe('SessionController pipeline', () => {
     controller.close();
   });
 
-  it('steers a queued prompt into the running turn, then clears the rest', async () => {
+  it('atomically replaces a queued prompt without aborting or resubmitting', async () => {
+    const { controller, client } = await openController();
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: 'p2',
+      user_message_id: 'm2',
+      status: 'queued',
+      content: [{ type: 'text', text: 'old text' }],
+      created_at: '2026-01-01T00:00:03.000Z',
+    });
+    await controller.sendPrompt({ text: 'old text', permissionMode: 'manual' });
+    client.replacePrompt.mockResolvedValue({
+      prompt_id: 'p2',
+      user_message_id: 'm2',
+      status: 'queued',
+      content: [{ type: 'text', text: 'new text' }],
+      created_at: '2026-01-01T00:00:03.000Z',
+    });
+
+    await controller.replaceQueued('p2', 'new text');
+
+    expect(client.replacePrompt).toHaveBeenCalledExactlyOnceWith('session_test', 'p2', {
+      content: [{ type: 'text', text: 'new text' }],
+    });
+    expect(client.submitPrompt).toHaveBeenCalledOnce();
+    expect(client.abortPrompt).not.toHaveBeenCalled();
+    const users = controller.getState().blocks.filter(
+      (block): block is UserBlock => block.kind === 'user',
+    );
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({
+      promptId: 'p2',
+      userMessageId: 'm2',
+      promptStatus: 'queued',
+      text: 'new text',
+    });
+    controller.close();
+  });
+
+  it('keeps the original queued block when replacement fails', async () => {
+    const { controller, client } = await openController();
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: 'p2',
+      user_message_id: 'm2',
+      status: 'queued',
+      content: [{ type: 'text', text: 'old text' }],
+      created_at: '2026-01-01T00:00:03.000Z',
+    });
+    await controller.sendPrompt({ text: 'old text', permissionMode: 'manual' });
+    client.replacePrompt.mockRejectedValue(new Error('replace failed'));
+
+    await expect(controller.replaceQueued('p2', 'new text')).rejects.toThrow('replace failed');
+
+    expect(client.abortPrompt).not.toHaveBeenCalled();
+    expect(controller.getState().blocks.filter((block) => block.kind === 'user')).toEqual([
+      expect.objectContaining({ promptId: 'p2', promptStatus: 'queued', text: 'old text' }),
+    ]);
+    controller.close();
+  });
+
+  it('submits bound prompts, queues them, and steers one into the running turn', async () => {
     const { controller, client, flushAll } = await openController();
     const item = (
       promptId: string,
@@ -749,9 +814,15 @@ describe('SessionController pipeline', () => {
       .mockResolvedValueOnce(item('p1', 'A', 'running', 2))
       .mockResolvedValueOnce(item('p2', 'B', 'queued', 3))
       .mockResolvedValueOnce(item('p3', 'C', 'queued', 4));
-    await controller.sendPrompt({ text: 'A', permissionMode: 'manual' });
-    await controller.sendPrompt({ text: 'B', permissionMode: 'manual' });
-    await controller.sendPrompt({ text: 'C', permissionMode: 'manual' });
+    const execution = { model: 'stub', thinking: 'high', permissionMode: 'manual' as const };
+    await controller.sendPrompt({ text: 'A', ...execution });
+    await controller.sendPrompt({ text: 'B', ...execution });
+    await controller.sendPrompt({ text: 'C', ...execution });
+    expect(client.submitPrompt).toHaveBeenNthCalledWith(
+      2,
+      'session_test',
+      expect.objectContaining({ model: 'stub', thinking: 'high', profile: undefined }),
+    );
     controller.handleFrame(
       frame(
         { type: 'assistant.delta', turnId: 1, delta: 'working' } as never,
@@ -1345,6 +1416,877 @@ describe('SessionController message closure', () => {
     expect(client.editMessage).not.toHaveBeenCalled();
     held.resolve(snapshot());
     await waitFor(() => !controller.getState().resyncing && !controller.getState().resyncFailed);
+    controller.close();
+  });
+});
+
+describe('SessionController transcript authority', () => {
+  async function openTranscriptController() {
+    const client = {
+      snapshot: vi.fn(async () => snapshot()),
+      listPrompts: vi.fn(async () => ({ active: null, queued: [] })),
+      listTasks: vi.fn(async () => ({ items: [] })),
+      getSessionGoal: vi.fn(async () => null),
+      listMessages: vi.fn(async () => ({ items: [], has_more: false })),
+      getAgentTranscript: vi.fn(async (): Promise<AgentTranscriptResponse> => ({
+        agent_id: 'main',
+        items: [],
+        has_more: false,
+        tasks: [],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        meta: {},
+      })),
+      submitPrompt: vi.fn(),
+      replacePrompt: vi.fn(),
+    };
+    const socket = {
+      subscribe: vi.fn(),
+      unsubscribe: vi.fn(),
+      updateCursor: vi.fn(),
+      abort: vi.fn(),
+      timelineMode: 'transcript' as const,
+      setTranscriptGrades: vi.fn(),
+      restartGeneration: vi.fn(),
+    };
+    const { scheduler, flushAll } = manualScheduler();
+    const controller = new SessionController(
+      client as unknown as KikiClient,
+      socket as unknown as KikiSocket,
+      'session_test',
+      { scheduler },
+    );
+    await controller.open();
+    return { controller, client, socket, flushAll };
+  }
+
+  it('does not adopt snapshot messages or in-flight text on open', async () => {
+    const { controller, client, socket } = await openTranscriptController();
+    expect(client.listMessages).not.toHaveBeenCalled();
+    expect(socket.subscribe).toHaveBeenCalledWith(
+      'session_test',
+      { seq: 10, epoch: 'epoch-1' },
+      expect.objectContaining({ '*': 'turn', main: 'delta' }),
+    );
+    expect(controller.getState().blocks).toEqual([]);
+    controller.close();
+  });
+
+  it('converges reset then ops once and does not mix legacy timeline frames', async () => {
+    const { controller, socket, flushAll } = await openTranscriptController();
+    controller.handleTranscript({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      has_more_older: false,
+      seq: 1,
+      snapshot: {
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't1',
+            ordinal: 1,
+            state: 'running',
+            origin: { kind: 'user' },
+            prompt: 'hi',
+            steps: [
+              {
+                kind: 'step',
+                stepId: 't1.1',
+                turnId: 't1',
+                ordinal: 1,
+                state: 'running',
+                frames: [{ kind: 'text', frameId: 'f1', role: 'assistant', text: 'Hello' }],
+              },
+            ],
+          },
+        ],
+        tasks: [],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        meta: {},
+      },
+    });
+    controller.handleTranscript({
+      type: 'transcript.ops',
+      agent_id: 'main',
+      seq: 2,
+      ops: [
+        {
+          op: 'frame.upsert',
+          turnId: 't1',
+          stepId: 't1.1',
+          frame: { kind: 'text', frameId: 'f1', role: 'assistant', text: 'Hello world' },
+        },
+      ],
+    });
+    flushAll();
+    const assistants = controller.getState().blocks.filter((block) => block.kind === 'assistant');
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]).toMatchObject({ id: 'agent-frame-f1', text: 'Hello world' });
+
+    controller.handleFrame(
+      frame({ type: 'assistant.delta', turnId: 1, delta: ' extra' } as never, { volatile: true, offset: 11 }),
+    );
+    flushAll();
+    expect(controller.getState().blocks.filter((block) => block.kind === 'assistant')).toHaveLength(1);
+    expect(socket.restartGeneration).not.toHaveBeenCalled();
+    controller.close();
+  });
+
+  it('keeps a running child running until a terminal task op arrives', async () => {
+    const { controller, flushAll } = await openTranscriptController();
+    controller.handleTranscript({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      has_more_older: false,
+      seq: 1,
+      snapshot: {
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't1',
+            ordinal: 1,
+            state: 'running',
+            origin: { kind: 'user' },
+            steps: [
+              {
+                kind: 'step',
+                stepId: 't1.1',
+                turnId: 't1',
+                ordinal: 1,
+                state: 'running',
+                frames: [
+                  {
+                    kind: 'tool',
+                    frameId: 'spawn',
+                    toolCallId: 'tc-agent',
+                    name: 'Agent',
+                    state: 'running',
+                    agentRefs: [{ agentId: 'child-1', role: 'child' }],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        tasks: [
+          {
+            taskId: 'task-1',
+            kind: 'subagent',
+            state: 'running',
+            detached: false,
+            agentId: 'child-1',
+            outputTail: '',
+            description: 'child-1',
+          },
+        ],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        meta: {},
+      },
+    });
+    const forest = controller.getForest();
+    expect(forest?.byId['child-1']?.status).toBe('running');
+    expect(
+      controller.getState().blocks.find((block) => block.kind === 'tool' && block.toolCallId === 'tc-agent'),
+    ).toMatchObject({ agentRefs: [{ agentId: 'child-1', role: 'child' }] });
+
+    controller.handleTranscript({
+      type: 'transcript.ops',
+      agent_id: 'main',
+      seq: 2,
+      ops: [
+        {
+          op: 'task.upsert',
+          task: {
+            taskId: 'task-1',
+            kind: 'subagent',
+            state: 'completed',
+            detached: false,
+            agentId: 'child-1',
+            outputTail: '',
+            description: 'child-1',
+          },
+        },
+      ],
+    });
+    flushAll();
+    expect(controller.getForest()?.byId['child-1']?.status).toBe('completed');
+    controller.close();
+  });
+
+  it('does not paint queued replace/steer as aborted or stopped', async () => {
+    const { controller } = await openTranscriptController();
+    controller.handleTranscript({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      has_more_older: false,
+      seq: 1,
+      snapshot: {
+        items: [],
+        tasks: [],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [
+          {
+            promptId: 'p-queued',
+            status: 'queued',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            content: [{ type: 'text', text: 'later' }],
+          },
+        ],
+        meta: {},
+      },
+    });
+    expect(controller.getState().queuedPromptIds).toEqual(['p-queued']);
+    expect(controller.getState().blocks.some((block) => 'stopped' in block && block.stopped === true)).toBe(false);
+    expect(controller.getState().blocks.some((block) => block.kind === 'notice' && block.text.includes('aborted'))).toBe(false);
+    expect(controller.getState().blocks.find((block) => block.kind === 'user')).toMatchObject({
+      text: 'later',
+      promptId: 'p-queued',
+      promptStatus: 'queued',
+    });
+    controller.close();
+  });
+
+  it('prepends older pages by entity id and clears them on reset', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      has_more_older: true,
+      seq: 1,
+      snapshot: {
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't2',
+            ordinal: 2,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'new',
+            steps: [],
+          },
+        ],
+        tasks: [],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        meta: {},
+        hasMoreOlder: true,
+      },
+    });
+    const olderPage = {
+      agent_id: 'main',
+      has_more: true,
+      items: [
+        {
+          kind: 'turn' as const,
+          turnId: 't1',
+          ordinal: 1,
+          state: 'completed' as const,
+          origin: { kind: 'user' as const },
+          prompt: 'old',
+          steps: [],
+        },
+        {
+          kind: 'turn' as const,
+          turnId: 't2',
+          ordinal: 2,
+          state: 'completed' as const,
+          origin: { kind: 'user' as const },
+          prompt: 'new',
+          steps: [],
+        },
+      ],
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [],
+      meta: {},
+    };
+    client.getAgentTranscript.mockResolvedValueOnce(olderPage);
+    client.getAgentTranscript.mockResolvedValueOnce(olderPage);
+    await expect(controller.loadOlderMessages('main')).resolves.toBe(true);
+    const firstIds = controller.getState().blocks.map((block) => block.id);
+    await expect(controller.loadOlderMessages('main')).resolves.toBe(true);
+    expect(controller.getState().blocks.map((block) => block.id)).toEqual(firstIds);
+
+    controller.handleTranscript({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      has_more_older: false,
+      seq: 3,
+      snapshot: {
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't9',
+            ordinal: 9,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'fresh',
+            steps: [],
+          },
+        ],
+        tasks: [],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        meta: {},
+      },
+    });
+    expect(controller.getState().blocks.some((block) => block.id.includes('t1'))).toBe(false);
+    expect(controller.getState().blocks.some((block) => block.id.includes('t9'))).toBe(true);
+    controller.close();
+  });
+
+  it('coalesces high-frequency appends into one publication and skips forest rebuilds', async () => {
+    const { controller, flushAll } = await openTranscriptController();
+    controller.handleTranscript({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      has_more_older: false,
+      seq: 1,
+      snapshot: {
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't1',
+            ordinal: 1,
+            state: 'running',
+            origin: { kind: 'user' },
+            steps: [
+              {
+                kind: 'step',
+                stepId: 't1.1',
+                turnId: 't1',
+                ordinal: 1,
+                state: 'running',
+                frames: [{ kind: 'text', frameId: 'f1', role: 'assistant', text: '' }],
+              },
+            ],
+          },
+        ],
+        tasks: [],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        meta: {},
+      },
+    });
+    const forests = controller.forestPublishCount;
+    let publishes = 0;
+    controller.subscribe(() => {
+      publishes += 1;
+    });
+    for (let i = 0; i < 8; i += 1) {
+      controller.handleTranscript({
+        type: 'transcript.ops',
+        agent_id: 'main',
+        seq: 2 + i,
+        ops: [
+          {
+            op: 'append',
+            target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' },
+            offset: i,
+            text: 'x',
+          },
+        ],
+      });
+    }
+    expect(publishes).toBe(0);
+    flushAll();
+    expect(publishes).toBe(1);
+    expect(controller.forestPublishCount).toBe(forests);
+    controller.close();
+  });
+
+  it('clears plan/swarm/queue/active/pending from the current AgentState', async () => {
+    const { controller } = await openTranscriptController();
+    controller.handleTranscript({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      has_more_older: false,
+      seq: 1,
+      snapshot: {
+        items: [],
+        tasks: [],
+        interactions: [
+          { interactionId: 'apr-1', interactionKind: 'approval', state: 'pending' },
+        ],
+        attachments: [],
+        todos: [],
+        prompts: [
+          { promptId: 'p-run', status: 'running', createdAt: '2026-01-01T00:00:00.000Z' },
+          { promptId: 'p-q', status: 'queued', createdAt: '2026-01-01T00:00:01.000Z' },
+        ],
+        meta: { modes: { plan: {}, swarm: {} }, agent: { permission: 'yolo' } },
+      },
+    });
+    expect(controller.getState()).toMatchObject({
+      planMode: true,
+      swarmMode: true,
+      queuedPromptIds: ['p-q'],
+      activePromptId: 'p-run',
+      pendingInteraction: 'approval',
+      permissionMode: 'yolo',
+    });
+    controller.handleTranscript({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      has_more_older: false,
+      seq: 2,
+      snapshot: {
+        items: [],
+        tasks: [],
+        interactions: [
+          { interactionId: 'apr-1', interactionKind: 'approval', state: 'approved' },
+        ],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        meta: { modes: {}, agent: {} },
+      },
+    });
+    expect(controller.getState()).toMatchObject({
+      planMode: false,
+      swarmMode: false,
+      queuedPromptIds: [],
+      activePromptId: undefined,
+      pendingInteraction: 'none',
+    });
+    controller.close();
+  });
+
+  it('ignores an older page that lands after a reset', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      has_more_older: true,
+      seq: 1,
+      snapshot: {
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't2',
+            ordinal: 2,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'new',
+            steps: [],
+          },
+        ],
+        tasks: [],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        meta: {},
+        hasMoreOlder: true,
+      },
+    });
+    let release!: (value: AgentTranscriptResponse) => void;
+    client.getAgentTranscript.mockReturnValueOnce(
+      new Promise<AgentTranscriptResponse>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const pending = controller.loadOlderMessages('main');
+    controller.handleTranscript({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      has_more_older: false,
+      seq: 2,
+      snapshot: {
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't9',
+            ordinal: 9,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'fresh',
+            steps: [],
+          },
+        ],
+        tasks: [],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        meta: {},
+      },
+    });
+    release({
+      agent_id: 'main',
+      has_more: false,
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't1',
+          prompt: 'stale',
+          steps: [],
+        },
+      ],
+      attachments: [],
+    });
+    await expect(pending).resolves.toBe(false);
+    expect(controller.getState().blocks.some((block) => block.id.includes('t1'))).toBe(false);
+    expect(controller.getState().blocks.some((block) => block.id.includes('t9'))).toBe(true);
+    controller.close();
+  });
+
+  it('publishes tool completion, interaction resolve, and equal-length text replacement', async () => {
+    const { controller, flushAll } = await openTranscriptController();
+    controller.handleTranscript({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      has_more_older: false,
+      seq: 1,
+      snapshot: {
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't1',
+            ordinal: 1,
+            state: 'running',
+            origin: { kind: 'user' },
+            steps: [
+              {
+                kind: 'step',
+                stepId: 't1.1',
+                turnId: 't1',
+                ordinal: 1,
+                state: 'running',
+                frames: [
+                  { kind: 'text', frameId: 'f1', role: 'assistant', text: 'abcd' },
+                  {
+                    kind: 'tool',
+                    frameId: 'tool-1',
+                    toolCallId: 'tc-1',
+                    name: 'Read',
+                    state: 'running',
+                    input: { path: 'a.ts' },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        tasks: [],
+        interactions: [{ interactionId: 'apr-1', interactionKind: 'approval', state: 'pending' }],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        meta: {},
+      },
+    });
+    expect(controller.getState().blocks.find((block) => block.kind === 'tool')).toMatchObject({
+      status: 'running',
+    });
+    expect(controller.getState().pendingInteraction).toBe('approval');
+
+    controller.handleTranscript({
+      type: 'transcript.ops',
+      agent_id: 'main',
+      seq: 2,
+      ops: [
+        {
+          op: 'frame.upsert',
+          turnId: 't1',
+          stepId: 't1.1',
+          frame: {
+            kind: 'tool',
+            frameId: 'tool-1',
+            toolCallId: 'tc-1',
+            name: 'Read',
+            state: 'done',
+            output: 'file contents',
+          },
+        },
+        {
+          op: 'interaction.upsert',
+          interaction: { interactionId: 'apr-1', interactionKind: 'approval', state: 'approved' },
+        },
+        {
+          op: 'frame.upsert',
+          turnId: 't1',
+          stepId: 't1.1',
+          frame: { kind: 'text', frameId: 'f1', role: 'assistant', text: 'wxyz' },
+        },
+      ],
+    });
+    flushAll();
+    expect(controller.getState().blocks.find((block) => block.kind === 'tool')).toMatchObject({
+      status: 'done',
+      output: 'file contents',
+    });
+    expect(controller.getState().pendingInteraction).toBe('none');
+    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({
+      text: 'wxyz',
+    });
+    controller.close();
+  });
+
+  it('closes pagination loading after a successful older page and a mid-flight reset', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      has_more_older: true,
+      seq: 1,
+      snapshot: {
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't2',
+            ordinal: 2,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'new',
+            steps: [],
+          },
+        ],
+        tasks: [],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        meta: {},
+        hasMoreOlder: true,
+      },
+    });
+    client.getAgentTranscript.mockResolvedValueOnce({
+      agent_id: 'main',
+      has_more: true,
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't1',
+          prompt: 'old',
+          steps: [],
+        },
+      ],
+      attachments: [],
+    });
+    await expect(controller.loadOlderMessages('main')).resolves.toBe(true);
+    expect(controller.getState()).toMatchObject({
+      loadingOlder: false,
+      fetchedOlder: true,
+      olderError: undefined,
+      hasMoreHistory: true,
+    });
+    client.getAgentTranscript.mockResolvedValueOnce({
+      agent_id: 'main',
+      has_more: true,
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't0',
+          prompt: 'oldest',
+          steps: [],
+        },
+      ],
+      attachments: [],
+    });
+    await expect(controller.loadOlderMessages('main')).resolves.toBe(true);
+    expect(controller.getState().loadingOlder).toBe(false);
+    expect(controller.getState().blocks.some((block) => block.id.includes('t0'))).toBe(true);
+
+    let release!: (value: AgentTranscriptResponse) => void;
+    client.getAgentTranscript.mockReturnValueOnce(
+      new Promise<AgentTranscriptResponse>((resolve) => {
+        release = resolve;
+      }),
+    );
+    const pending = controller.loadOlderMessages('main');
+    expect(controller.getState().loadingOlder).toBe(true);
+    controller.handleTranscript({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      has_more_older: false,
+      seq: 3,
+      snapshot: {
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't9',
+            ordinal: 9,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'fresh',
+            steps: [],
+          },
+        ],
+        tasks: [],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        meta: {},
+      },
+    });
+    expect(controller.getState().loadingOlder).toBe(false);
+    release({
+      agent_id: 'main',
+      has_more: false,
+      items: [{ kind: 'turn', turnId: 't1', prompt: 'stale', steps: [] }],
+      attachments: [],
+    });
+    await expect(pending).resolves.toBe(false);
+    expect(controller.getState().blocks.some((block) => block.id.includes('t1'))).toBe(false);
+    controller.close();
+  });
+
+  it('keeps local prompt echo until the matching prompt op lands and updates replaced content', async () => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    client.submitPrompt = vi.fn(async () => ({
+      prompt_id: 'p-local',
+      user_message_id: 'um-local',
+      status: 'queued',
+      content: [{ type: 'text', text: 'echo' }],
+      created_at: '2026-01-01T00:00:00.000Z',
+    }));
+    client.replacePrompt = vi.fn(async () => ({
+      prompt_id: 'p-local',
+      user_message_id: 'um-local',
+      status: 'queued',
+      content: [{ type: 'text', text: 'replaced' }],
+      created_at: '2026-01-01T00:00:00.000Z',
+    }));
+    await controller.sendPrompt({ text: 'echo', permissionMode: 'manual' });
+    expect(controller.getState().blocks.find((block) => block.kind === 'user')).toMatchObject({
+      text: 'echo',
+      promptId: 'p-local',
+    });
+    controller.handleTranscript({
+      type: 'transcript.ops',
+      agent_id: 'main',
+      seq: 1,
+      ops: [
+        {
+          op: 'prompt.upsert',
+          prompt: {
+            promptId: 'p-local',
+            status: 'queued',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            userMessageId: 'um-local',
+            content: [{ type: 'text', text: 'echo' }],
+          },
+        },
+      ],
+    });
+    flushAll();
+    expect(controller.getState().blocks.filter((block) => block.kind === 'user')).toHaveLength(1);
+    await controller.replaceQueued('p-local', 'replaced');
+    expect(controller.getState().blocks.find((block) => block.kind === 'user')).toMatchObject({
+      text: 'replaced',
+    });
+    controller.close();
+  });
+
+  it('marks live assistant streaming during appends and clears it on a terminal step upsert', async () => {
+    const { controller, flushAll } = await openTranscriptController();
+    controller.handleTranscript({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      has_more_older: false,
+      seq: 1,
+      snapshot: {
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't1',
+            ordinal: 1,
+            state: 'running',
+            origin: { kind: 'user' },
+            steps: [
+              {
+                kind: 'step',
+                stepId: 't1.1',
+                turnId: 't1',
+                ordinal: 1,
+                state: 'running',
+                frames: [{ kind: 'text', frameId: 'f1', role: 'assistant', text: 'He' }],
+              },
+            ],
+          },
+        ],
+        tasks: [],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        meta: {
+          agent: {
+            phase: {
+              kind: 'streaming',
+              turnId: 1,
+              step: 1,
+              stepId: 't1.1',
+              stream: 'assistant',
+              since: 0,
+            },
+          },
+        },
+      },
+    });
+    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({
+      streaming: true,
+    });
+    controller.handleTranscript({
+      type: 'transcript.ops',
+      agent_id: 'main',
+      seq: 2,
+      ops: [
+        {
+          op: 'append',
+          target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 'f1' },
+          offset: 2,
+          text: 'llo',
+        },
+      ],
+    });
+    flushAll();
+    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({
+      streaming: true,
+      text: 'Hello',
+    });
+    controller.handleTranscript({
+      type: 'transcript.ops',
+      agent_id: 'main',
+      seq: 3,
+      ops: [
+        {
+          op: 'step.upsert',
+          turnId: 't1',
+          step: { kind: 'step', stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'completed' },
+        },
+        {
+          op: 'turn.upsert',
+          turn: { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' } },
+        },
+        { op: 'meta.merge', meta: { agent: { phase: { kind: 'idle' } } } },
+      ],
+    });
+    flushAll();
+    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({
+      streaming: false,
+      text: 'Hello',
+    });
     controller.close();
   });
 });

@@ -6,6 +6,9 @@ import type { SessionEventFrame } from '../lib/types';
 import {
   agentTranscriptPageFromResponse,
   agentTranscriptToBlocks,
+  applyTranscriptShell,
+  liveSourcesFromAgentSnapshots,
+  prependOlderTranscriptSnapshot,
   applyAgentFrame,
   applyDelta,
   applyFrame,
@@ -26,6 +29,7 @@ import {
   filterBlocksToDirectChildren,
   preserveCapturedSteers,
   preserveCapturedSubagents,
+  projectAgentTranscriptView,
   queuedPromptPreviews,
   reconcilePromptList,
   resolveActiveFloorId,
@@ -213,6 +217,101 @@ describe('applySnapshot', () => {
       label: 'API researcher',
       toolCallCount: 4,
     });
+  });
+
+  it('keeps cancelled snapshot evidence and synthesizes uncertain descriptor status only in the forest', () => {
+    const state = applySnapshot(
+      'session_test',
+      snapshot({
+        subagents: [
+          {
+            id: 'agent-cancelled',
+            session_id: 'session_test',
+            kind: 'subagent',
+            description: 'Cancelled child',
+            status: 'cancelled',
+            parent_agent_id: 'main',
+            created_at: '2026-01-01T00:00:00.000Z',
+            completed_at: '2026-01-01T00:00:05.000Z',
+          },
+        ],
+      }),
+    );
+
+    const cards = state.blocks.filter(
+      (block): block is import('./transcript').SubagentBlock => block.kind === 'subagent',
+    );
+    expect(cards.map((card) => [card.subagentId, card.status])).toEqual([
+      ['agent-cancelled', 'cancelled'],
+    ]);
+
+    const forest = sessionAgentForestFromTranscript(state, {
+      agent_id: 'main',
+      items: [],
+      has_more: false,
+      agents: [
+        { agentId: 'main', type: 'main' },
+        { agentId: 'agent-uncertain', type: 'sub', parentAgentId: 'main' },
+        { agentId: 'agent-cancelled', type: 'sub', parentAgentId: 'main' },
+      ],
+      tasks: [],
+      meta: {},
+      pending_interactions: [],
+    });
+    expect(forest.byId['agent-uncertain']).toMatchObject({ status: 'unknown', busy: false });
+    expect(forest.byId['agent-cancelled']).toMatchObject({ status: 'cancelled', busy: false });
+  });
+
+  it('uses descriptor disposal as an active-generation boundary', () => {
+    const state = applySnapshot('session_test', snapshot());
+    const response = {
+      agent_id: 'main',
+      items: [],
+      has_more: false,
+      agents: [
+        { agentId: 'main', type: 'main' as const },
+        {
+          agentId: 'agent-1',
+          type: 'sub' as const,
+          parentAgentId: 'main',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          disposedAt: '2026-01-01T00:02:00.000Z',
+        },
+      ],
+      meta: {},
+      pending_interactions: [],
+    };
+    const stale = sessionAgentForestFromTranscript(state, {
+      ...response,
+      tasks: [
+        {
+          taskId: 'task-old',
+          kind: 'subagent' as const,
+          state: 'running' as const,
+          detached: true,
+          agentId: 'agent-1',
+          outputTail: '',
+          startedAt: '2026-01-01T00:01:00.000Z',
+        },
+      ],
+    });
+    expect(stale.byId['agent-1']).toMatchObject({ status: 'unknown', busy: false });
+
+    const resumed = sessionAgentForestFromTranscript(state, {
+      ...response,
+      tasks: [
+        {
+          taskId: 'task-new',
+          kind: 'subagent' as const,
+          state: 'running' as const,
+          detached: true,
+          agentId: 'agent-1',
+          outputTail: '',
+          startedAt: '2026-01-01T00:03:00.000Z',
+        },
+      ],
+    });
+    expect(resumed.byId['agent-1']).toMatchObject({ status: 'background', busy: true });
   });
 
   it('echoes the bound agent profile from the snapshot, and a profile-less record cannot clobber it', () => {
@@ -417,6 +516,106 @@ describe('applySnapshot', () => {
     expect((state.blocks[1] as ToolBlock).status).toBe('running');
     expect(pendingApprovalCount(state)).toBe(1);
     expect(state.activePromptId).toBe('p1');
+  });
+
+  it('overlays a running tool by tool_call_id without appending a duplicate block', () => {
+    const state = applySnapshot(
+      'session_test',
+      snapshot({
+        messages: {
+          items: [
+            {
+              id: 'm-tool-owner',
+              session_id: 'session_test',
+              role: 'assistant',
+              content: [
+                { type: 'text', text: 'Running it.' },
+                {
+                  type: 'tool_use',
+                  tool_call_id: 'call-shared',
+                  tool_name: 'Agent',
+                  input: { prompt: 'inspect' },
+                },
+              ],
+              created_at: '2026-01-01T00:00:00.000Z',
+            },
+          ],
+          has_more: false,
+        },
+        in_flight_turn: {
+          turn_id: 4,
+          assistant_text: '',
+          thinking_text: '',
+          running_tools: [
+            {
+              tool_call_id: 'call-shared',
+              name: 'Agent',
+              args: { prompt: 'inspect' },
+              last_progress: { kind: 'status', text: 'working' },
+            },
+          ],
+        },
+        subagents: [
+          {
+            id: 'child-shared',
+            session_id: 'session_test',
+            kind: 'subagent',
+            description: 'Inspect',
+            status: 'running',
+            subagent_phase: 'working',
+            subagent_type: 'explore',
+            parent_agent_id: 'main',
+            parent_tool_call_id: 'call-shared',
+            created_at: '2026-01-01T00:00:01.000Z',
+          },
+        ],
+      }),
+    );
+
+    const tools = state.blocks.filter((block): block is ToolBlock => block.kind === 'tool');
+    expect(tools).toHaveLength(1);
+    expect(tools[0]).toMatchObject({
+      toolCallId: 'call-shared',
+      status: 'running',
+      startedAt: Date.parse('2026-01-01T00:00:00.000Z'),
+      progressText: 'working',
+    });
+    expect(state.blocks.map((block) => block.kind)).toEqual(['assistant', 'tool', 'subagent']);
+  });
+
+  it('keeps equal assistant text from distinct source identities', () => {
+    const state = applySnapshot(
+      'session_test',
+      snapshot({
+        messages: {
+          items: [
+            {
+              id: 'm-source-a',
+              session_id: 'session_test',
+              role: 'assistant',
+              content: [{ type: 'text', text: 'same answer' }],
+              created_at: '2026-01-01T00:00:00.000Z',
+            },
+            {
+              id: 'm-source-b',
+              session_id: 'session_test',
+              role: 'assistant',
+              content: [{ type: 'text', text: 'same answer' }],
+              created_at: '2026-01-01T00:00:01.000Z',
+            },
+          ],
+          has_more: false,
+        },
+      }),
+    );
+
+    const assistants = state.blocks.filter(
+      (block): block is AssistantBlock => block.kind === 'assistant',
+    );
+    expect(assistants.map((block) => [block.id, block.text])).toEqual([
+      ['assistant-m-source-a-0', 'same answer'],
+      ['assistant-m-source-b-0', 'same answer'],
+    ]);
   });
 });
 
@@ -700,9 +899,218 @@ describe('agentTranscriptToBlocks', () => {
     expect(blocks[0]).toMatchObject({ i18n: { key: 'transcript.marker.hook' } });
     expect(blocks[1]).toMatchObject({ i18n: { key: 'transcript.marker.compaction' } });
   });
+
+  it('marks only the open live assistant/thinking frame as streaming', () => {
+    const live = agentTranscriptToBlocks({
+      agent_id: 'main',
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't1',
+          ordinal: 1,
+          state: 'running',
+          origin: { kind: 'user' },
+          steps: [
+            {
+              kind: 'step',
+              stepId: 't1.1',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'running',
+              frames: [
+                { kind: 'thinking', frameId: 'th1', text: 'hmm' },
+                { kind: 'text', frameId: 'a1', role: 'assistant', text: 'Hello' },
+              ],
+            },
+          ],
+        },
+      ],
+      meta: {
+        agent: {
+          phase: {
+            kind: 'streaming',
+            turnId: 1,
+            step: 1,
+            stepId: 't1.1',
+            stream: 'assistant',
+            since: 0,
+          },
+        },
+      },
+    });
+    expect(live.find((block) => block.kind === 'assistant')).toMatchObject({
+      id: 'agent-frame-a1',
+      streaming: true,
+    });
+    expect(live.find((block) => block.kind === 'thinking')).toMatchObject({ streaming: false });
+
+    const settled = agentTranscriptToBlocks({
+      agent_id: 'main',
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't1',
+          ordinal: 1,
+          state: 'completed',
+          origin: { kind: 'user' },
+          steps: [
+            {
+              kind: 'step',
+              stepId: 't1.1',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed',
+              frames: [{ kind: 'text', frameId: 'a1', role: 'assistant', text: 'Hello' }],
+            },
+          ],
+        },
+      ],
+      meta: { agent: { phase: { kind: 'idle' } } },
+    });
+    expect(settled.find((block) => block.kind === 'assistant')).toMatchObject({ streaming: false });
+  });
+
+  it('projects queued prompt content and dedupes a materialized userMessageId', () => {
+    const previous = createViewState('session_test');
+    const queued = projectAgentTranscriptView(previous, 'main', {
+      items: [],
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [
+        {
+          promptId: 'p-q',
+          status: 'queued',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          userMessageId: 'um-q',
+          content: [{ type: 'text', text: 'queued hello' }],
+        },
+      ],
+      meta: {},
+    });
+    expect(queued.queuedPromptIds).toEqual(['p-q']);
+    expect(queued.blocks.filter((block) => block.kind === 'user')).toHaveLength(1);
+    expect(queued.blocks.find((block) => block.kind === 'user')).toMatchObject({
+      text: 'queued hello',
+      promptId: 'p-q',
+      userMessageId: 'um-q',
+      promptStatus: 'queued',
+    });
+
+    const materialized = projectAgentTranscriptView(previous, 'main', {
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't1',
+          ordinal: 1,
+          state: 'running',
+          origin: { kind: 'user', payload: { kind: 'user', promptId: 'p-run', userMessageId: 'um-run' } },
+          prompt: 'go',
+          steps: [],
+        },
+      ],
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [
+        {
+          promptId: 'p-run',
+          status: 'running',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          userMessageId: 'um-run',
+          content: [{ type: 'text', text: 'go' }],
+        },
+      ],
+      meta: {},
+    });
+    expect(materialized.blocks.filter((block) => block.kind === 'user')).toHaveLength(1);
+    expect(materialized.blocks.find((block) => block.kind === 'user')).toMatchObject({
+      promptId: 'p-run',
+      userMessageId: 'um-run',
+    });
+  });
+
+  it('projects usage from AgentState meta and clears it when missing', () => {
+    const previous = createViewState('session_test');
+    const withUsage = projectAgentTranscriptView(previous, 'main', {
+      items: [],
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [],
+      meta: {
+        agent: {
+          usage: {
+            total: { inputOther: 3, output: 4, inputCacheRead: 1, inputCacheCreation: 2 },
+            currentTurn: { inputOther: 1, output: 2, inputCacheRead: 0, inputCacheCreation: 0 },
+          },
+        },
+      },
+    });
+    expect(withUsage.usage).toEqual({
+      byModel: undefined,
+      currentTurn: { inputOther: 1, output: 2, inputCacheRead: 0, inputCacheCreation: 0 },
+      total: { inputOther: 3, output: 4, inputCacheRead: 1, inputCacheCreation: 2 },
+    });
+    const cleared = projectAgentTranscriptView(withUsage, 'main', {
+      items: [],
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [],
+      meta: {},
+    });
+    expect(cleared.usage).toBeUndefined();
+  });
 });
 
 describe('applyFrame', () => {
+  it('keeps subagent identity on task lifecycle updates so terminal task truth reaches the tree', () => {
+    let state = applySnapshot('session_test', snapshot());
+    const running = {
+      taskId: 'task-agent-1',
+      kind: 'agent' as const,
+      agentId: 'agent-1',
+      subagentType: 'explore',
+      description: 'Inspect the repository',
+      status: 'running' as const,
+      detached: true,
+      startedAt: 1_000,
+      endedAt: null,
+    };
+
+    state = applyFrame(state, frame({ type: 'task.started', info: running }, { seq: 11 })).state;
+    expect(state.tasks[0]).toMatchObject({
+      id: 'task-agent-1',
+      agent_id: 'agent-1',
+      status: 'running',
+    });
+    expect(sessionAgentForestFromTranscript(state, undefined).byId['agent-1']).toMatchObject({
+      status: 'running',
+      busy: true,
+    });
+
+    state = applyFrame(
+      state,
+      frame(
+        {
+          type: 'task.terminated',
+          info: { ...running, status: 'killed', endedAt: 2_000, stopReason: 'cancelled' },
+        },
+        { seq: 12 },
+      ),
+    ).state;
+    expect(state.tasks[0]).toMatchObject({ agent_id: 'agent-1', status: 'cancelled' });
+    expect(sessionAgentForestFromTranscript(state, undefined).byId['agent-1']).toMatchObject({
+      status: 'cancelled',
+      busy: false,
+    });
+  });
+
   it('streams assistant deltas with cumulative offsets and finalizes on turn end', () => {
     let state = applySnapshot('session_test', snapshot());
     const d1 = applyFrame(
@@ -885,6 +1293,54 @@ describe('applyFrame', () => {
     expect(state.blocks.filter((b) => b.kind === 'user')).toHaveLength(1);
     expect(state.activePromptId).toBe('p1');
     expect(state.busy).toBe(true);
+  });
+
+  it('projects queued and replaced events onto one queued user block', () => {
+    let state = applySnapshot('session_test', snapshot());
+    const queued = frame(
+      {
+        type: 'prompt.queued',
+        promptId: 'p1',
+        content: [{ type: 'text', text: 'old text' }],
+        queueLength: 1,
+      },
+      { seq: 11, timestamp: '2026-01-01T00:00:01.000Z' },
+    );
+    state = applyFrame(state, queued).state;
+    state = applyFrame(state, { ...queued, seq: 12 }).state;
+    state = applyFrame(
+      state,
+      frame(
+        {
+          type: 'prompt.replaced',
+          promptId: 'p1',
+          content: [{ type: 'text', text: 'new text' }],
+          replacedAt: '2026-01-01T00:00:02.000Z',
+        },
+        { seq: 13, timestamp: '2026-01-01T00:00:02.000Z' },
+      ),
+    ).state;
+
+    const users = state.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({
+      promptId: 'p1',
+      userMessageId: 'p1',
+      promptStatus: 'queued',
+      text: 'new text',
+    });
+    expect(state.queuedPromptIds).toEqual(['p1']);
+    expect(state.blocks.some((block) => block.kind === 'notice' && block.text === 'Prompt aborted'))
+      .toBe(false);
+
+    state = applyFrame(
+      state,
+      frame(
+        { type: 'turn.started', turnId: 7, origin: { kind: 'user' }, prompt: 'new text' },
+        { seq: 14 },
+      ),
+    ).state;
+    expect(state.blocks.filter((block) => block.kind === 'user')).toHaveLength(1);
   });
 
   it('reconciles the real v2 turn.started-before-REST sequence by stable prompt identity', () => {
@@ -1071,7 +1527,43 @@ describe('applyFrame', () => {
     expect(texts).toEqual(['step one text', 'step two']);
   });
 
-  it('matches a spawned subagent to the finalized parent tool UUID first', () => {
+  it('keeps the parent tool before a subagent anchored by parentToolCallId', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = applyFrame(
+      state,
+      frame(
+        {
+          type: 'tool.call.started',
+          turnId: 1,
+          toolCallId: 'call-stream-id',
+          name: 'Agent',
+          args: { prompt: 'inspect' },
+        },
+        { seq: 11, timestamp: '2026-01-01T00:00:01.000Z' },
+      ),
+    ).state;
+    const spawned = frame(
+      {
+        type: 'subagent.spawned',
+        subagentId: 'child-id',
+        subagentName: 'Explorer',
+        parentToolCallId: 'call-stream-id',
+        runInBackground: false,
+      },
+      { seq: 12, timestamp: '2026-01-01T00:00:02.000Z' },
+    );
+    state = applyFrame(state, spawned).state;
+    state = applyFrame(state, { ...spawned, seq: 13 }).state;
+
+    expect(state.blocks.map((block) => block.kind)).toEqual(['tool', 'subagent']);
+    expect(state.blocks.filter((block) => block.kind === 'subagent')).toHaveLength(1);
+    expect(state.blocks[1]).toMatchObject({
+      subagentId: 'child-id',
+      parentToolCallId: 'call-stream-id',
+    });
+  });
+
+  it('keeps the finalized parent tool before a subagent anchored by parentToolCallUuid', () => {
     let state = applySnapshot('session_test', snapshot());
     state = applyFrame(
       state,
@@ -1086,23 +1578,23 @@ describe('applyFrame', () => {
         { seq: 11, timestamp: '2026-01-01T00:00:01.000Z' },
       ),
     ).state;
-    state = applyFrame(
-      state,
-      frame(
-        {
-          type: 'subagent.spawned',
-          subagentId: 'child-uuid',
-          subagentName: 'Explorer',
-          parentToolCallId: 'call-stream-id',
-          parentToolCallUuid: 'call-final-uuid',
-          runInBackground: false,
-        },
-        { seq: 12, timestamp: '2026-01-01T00:00:02.000Z' },
-      ),
-    ).state;
+    const spawned = frame(
+      {
+        type: 'subagent.spawned',
+        subagentId: 'child-uuid',
+        subagentName: 'Explorer',
+        parentToolCallId: 'call-stream-id',
+        parentToolCallUuid: 'call-final-uuid',
+        runInBackground: false,
+      },
+      { seq: 12, timestamp: '2026-01-01T00:00:02.000Z' },
+    );
+    state = applyFrame(state, spawned).state;
+    state = applyFrame(state, { ...spawned, seq: 13 }).state;
 
-    expect(state.blocks.map((block) => block.kind)).toEqual(['subagent']);
-    expect(state.blocks[0]).toMatchObject({
+    expect(state.blocks.map((block) => block.kind)).toEqual(['tool', 'subagent']);
+    expect(state.blocks.filter((block) => block.kind === 'subagent')).toHaveLength(1);
+    expect(state.blocks[1]).toMatchObject({
       subagentId: 'child-uuid',
       parentToolCallId: 'call-stream-id',
       parentToolCallUuid: 'call-final-uuid',
@@ -1529,6 +2021,38 @@ describe('prompt queue', () => {
     state = reconcilePromptList(state, { active: null, queued: [] });
     expect(state.activePromptId).toBeUndefined();
     expect(state.blocks.find((b): b is UserBlock => b.kind === 'user')?.promptStatus).toBeUndefined();
+  });
+
+  it('refreshes queued text from the cold prompt-list authority without duplicating the block', () => {
+    let state = applySnapshot('session_test', snapshot());
+    state = appendLocalUserMessage(state, {
+      userMessageId: 'm3',
+      promptId: 'p3',
+      text: 'stale text',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      status: 'queued',
+    });
+
+    state = reconcilePromptList(state, {
+      active: null,
+      queued: [{
+        prompt_id: 'p3',
+        user_message_id: 'm3',
+        status: 'queued',
+        content: [{ type: 'text', text: 'fresh text' }],
+        created_at: '2026-01-01T00:00:00.000Z',
+      }],
+    });
+
+    const users = state.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({
+      promptId: 'p3',
+      userMessageId: 'm3',
+      promptStatus: 'queued',
+      text: 'fresh text',
+    });
+    expect(queuedPromptPreviews(state)).toEqual([{ promptId: 'p3', text: 'fresh text' }]);
   });
 
   it('keeps a stable block identity when the prompt status is unchanged', () => {
@@ -1981,6 +2505,7 @@ describe('turn.started classification', () => {
     expect(state.blocks).toMatchObject([
       { kind: 'user', text: 'Continue the child task.', turnId: '4' },
     ]);
+    expect(state.loaded).toBe(true);
   });
 });
 
@@ -2928,5 +3453,129 @@ describe('preserveCapturedSubagents orphan marking', () => {
     expect(
       remarked.blocks.find((b): b is import('./transcript').SubagentBlock => b.kind === 'subagent'),
     ).toBe(card);
+  });
+});
+
+describe('transcript authority projection', () => {
+  it('does not adopt snapshot messages or in-flight text in the transcript shell', () => {
+    const state = applyTranscriptShell('session_test', {
+      as_of_seq: 4,
+      epoch: 'e1',
+      session,
+      messages: {
+        items: [
+          {
+            id: 'm1',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'should not appear' }],
+            created_at: '2026-01-01T00:00:00.000Z',
+          } as Message,
+        ],
+        has_more: true,
+      },
+      in_flight_turn: {
+        turn_id: 1,
+        assistant_text: 'live',
+        thinking_text: 'think',
+        running_tools: [],
+      } as SessionSnapshotResponse['in_flight_turn'],
+      pending_approvals: [],
+      pending_questions: [],
+    });
+    expect(state.blocks).toEqual([]);
+    expect(state.cursor).toEqual({ seq: 4, epoch: 'e1' });
+  });
+
+  it('prepends older pages by entity id and stays idempotent', () => {
+    const current = {
+      items: [
+        { kind: 'turn' as const, turnId: 't2', ordinal: 2, state: 'completed' as const, origin: { kind: 'user' as const }, steps: [] },
+      ],
+      tasks: [],
+      interactions: [],
+      attachments: [{ attachmentId: 'a2', mediaType: 'text/plain' }],
+      todos: [],
+      prompts: [],
+      meta: {},
+      hasMoreOlder: true,
+    };
+    const older = {
+      items: [
+        { kind: 'turn' as const, turnId: 't1', ordinal: 1, state: 'completed' as const, origin: { kind: 'user' as const }, steps: [] },
+        { kind: 'turn' as const, turnId: 't2', ordinal: 2, state: 'completed' as const, origin: { kind: 'user' as const }, steps: [] },
+      ],
+      attachments: [
+        { attachmentId: 'a1', mediaType: 'text/plain' },
+        { attachmentId: 'a2', mediaType: 'text/plain' },
+      ],
+      has_more: false,
+    };
+    const first = prependOlderTranscriptSnapshot(current, older);
+    const second = prependOlderTranscriptSnapshot(first, older);
+    expect(first.items.map((item) => (item.kind === 'turn' ? item.turnId : item.kind))).toEqual(['t1', 't2']);
+    expect(second.items).toEqual(first.items);
+    expect(first.attachments.map((attachment) => attachment.attachmentId)).toEqual(['a1', 'a2']);
+  });
+
+  it('anchors Agent/AgentSwarm entries on the real tool frame agentRefs', () => {
+    const snapshots = new Map([
+      [
+        'main',
+        {
+          items: [
+            {
+              kind: 'turn' as const,
+              turnId: 't1',
+              ordinal: 1,
+              state: 'running' as const,
+              origin: { kind: 'user' as const },
+              steps: [
+                {
+                  kind: 'step' as const,
+                  stepId: 't1.1',
+                  turnId: 't1',
+                  ordinal: 1,
+                  state: 'running' as const,
+                  frames: [
+                    {
+                      kind: 'tool' as const,
+                      frameId: 'spawn',
+                      toolCallId: 'tc-agent',
+                      name: 'Agent',
+                      state: 'running' as const,
+                      agentRefs: [{ agentId: 'child-1', role: 'child' as const }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+          tasks: [
+            {
+              taskId: 'task-1',
+              kind: 'subagent' as const,
+              state: 'running' as const,
+              detached: false,
+              agentId: 'child-1',
+              outputTail: '',
+            },
+          ],
+          interactions: [],
+          attachments: [],
+          todos: [],
+          prompts: [],
+          meta: {},
+        },
+      ],
+    ]);
+    const live = liveSourcesFromAgentSnapshots(snapshots);
+    expect(live).toEqual([
+      expect.objectContaining({
+        subagentId: 'child-1',
+        parentAgentId: 'main',
+        parentToolCallId: 'tc-agent',
+        status: 'running',
+      }),
+    ]);
   });
 });

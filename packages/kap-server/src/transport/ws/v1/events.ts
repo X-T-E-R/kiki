@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 
+import type { ContextMessage, LoopRecordedEvent } from '@moonshot-ai/agent-core-v2';
 import type { agentEventSchema } from '../../../protocol/events-zod';
 import type { MessageContent } from '../../../protocol/message';
 import type { PermissionMode } from '@moonshot-ai/agent-core-v2/agent/permissionPolicy/types';
@@ -220,8 +221,22 @@ export interface BackgroundTaskTerminatedEvent {
 
 type CoreStreamEvent = z.infer<typeof agentEventSchema>;
 
+export interface ContextAppendLoopEvent {
+  readonly type: 'context.append_loop_event';
+  readonly event: LoopRecordedEvent;
+}
+
+export interface ContextSplicedEvent {
+  readonly type: 'context.spliced';
+  readonly start: number;
+  readonly deleteCount: number;
+  readonly messages: readonly ContextMessage[];
+}
+
 export type AgentEvent =
   | CoreStreamEvent
+  | ContextAppendLoopEvent
+  | ContextSplicedEvent
   | AgentStatusUpdatedEvent
   | AgentCreatedEvent
   | AgentDisposedEvent
@@ -242,7 +257,13 @@ export type AgentEvent =
   | BackgroundTaskStartedEvent
   | BackgroundTaskTerminatedEvent;
 
-export type Event = AgentEvent & { agentId: string; sessionId: string; readonly time?: number };
+export type Event = AgentEvent & {
+  agentId: string;
+  sessionId: string;
+  readonly time?: number;
+  readonly step?: number;
+  readonly stepId?: string;
+};
 
 export const VOLATILE_EVENT_TYPES = [
   'assistant.delta',

@@ -55,6 +55,7 @@ export function registerMetaRoute(app: RouteHost, opts: MetaRouteOptions): void 
     tasks: true as const,
     terminal: opts.enableTerminals ? (true as const) : undefined,
     thread_communication: true as const,
+    transcript: true as const,
   };
   const staticData = Object.freeze({
     server_version: opts.serverVersion,

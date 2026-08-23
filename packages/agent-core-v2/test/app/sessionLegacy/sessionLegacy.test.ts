@@ -71,7 +71,13 @@ function stubSessionChain(ix: TestInstantiationService, session: ISessionScopeHa
   ix.stub(ISessionIndexMirror, {
     _serviceBrand: undefined,
     record: () => {},
+    epoch: () => 0,
+    dirtyEpoch: () => undefined,
+    settleDirty: () => {},
+    invalidate: () => {},
     pending: () => [],
+    acknowledge: () => {},
+    runExclusive: (operation) => operation(),
     evict: () => Promise.resolve(),
     drain: () => Promise.resolve(),
   });

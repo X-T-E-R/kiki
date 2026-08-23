@@ -7,10 +7,8 @@
  *       Send now — steer: the server injects the prompt into the RUNNING turn
  *                    immediately (wire `:steer`), it does not wait for the turn
  *                    to end;
- *       Edit     — inline editor (Enter saves, Esc cancels) when the parent
- *                    wires `onEdit`; the wire has no positional edit verb, so a
- *                    save is abort + resubmit and the prompt re-queues at the
- *                    tail;
+ *       Edit     — inline editor (Enter saves, Esc cancels) that atomically
+ *                    replaces the queued prompt in place;
  *       Remove   — abort the queued prompt; its transcript block stays.
  *   - with more than one parked prompt the list defaults to a collapsed count
  *     header (deepseek-harness's QueueDock, MIT); the header toggles
@@ -43,11 +41,7 @@ export function QueueStrip({
   readonly onSendNow: (promptId: string) => Promise<void> | void;
   readonly onRemove: (promptId: string) => Promise<void> | void;
   readonly onClearAll: () => void;
-  /**
-   * Inline edit save. Optional: the row edit affordance only appears when the
-   * parent wires a handler (the wire has no edit verb — a save is abort +
-   * resubmit, landing at the queue tail).
-   */
+  /** Inline edit save. Optional: the row edit affordance only appears when wired. */
   readonly onEdit?: (promptId: string, text: string) => Promise<void> | void;
   /** Steer is a send-equivalent; disable it while the session is resyncing. */
   readonly sendNowDisabled?: boolean;
@@ -87,7 +81,7 @@ export function QueueStrip({
     if (editing === null || onEdit === undefined) return;
     const text = editing.text.trim();
     const current = items.find((item) => item.promptId === editing.id);
-    // Blank or unchanged text cancels instead of burning an abort+resubmit.
+    // Blank or unchanged text cancels without sending a replacement.
     if (text === '' || current === undefined || text === current.text) {
       setEditing(null);
       return;

@@ -138,7 +138,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   /** Set when the user cancels; keeps the kill's rejection from overwriting the card. */
   const desktopCancelledRef = useRef(false);
   const [wsStatus, setWsStatus] = useState<WsStatus>('closed');
+  const [socketEpoch, setSocketEpoch] = useState(0);
   const controllersRef = useRef(new Set<SessionController>());
+  const liveSocketRef = useRef<KikiSocket | null>(null);
+  const desiredModeRef = useRef<'transcript' | 'legacy' | null>(null);
 
   // The desktop shell owns its backend. Resolve that connection before
   // considering browser handoffs or persisted remote connections, and keep
@@ -249,38 +252,48 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, [client, config, selection?.persist]);
 
   // One socket per connection; frames route to registered session controllers.
+  const connected = config !== null && meta !== null && client !== null;
   const socket = useMemo(() => {
-    if (config === null || meta === null) return null;
-    return new KikiSocket({
+    if (!connected || config === null || client === null || meta === null) return null;
+    const initialMode =
+      desiredModeRef.current ?? (meta.capabilities.transcript === true ? 'transcript' : 'legacy');
+    desiredModeRef.current = initialMode;
+    const instance = new KikiSocket({
       baseUrl: config.url.trim().replace(/\/+$/, ''),
       token: config.token.trim(),
       events: {
-        onStatus: (status) => {
-          // A drop mid-turn loses volatile deltas permanently (they are never
-          // journaled or replayed); controllers mark themselves for resync.
+        onStatus: (status, _detail, generation) => {
+          if (liveSocketRef.current !== instance) return;
+          if (generation !== undefined && generation !== instance.connectionGeneration) return;
           if (status !== 'open') {
             for (const controller of controllersRef.current) controller.handleWsDrop();
           }
           setWsStatus(status);
         },
-        onFrame: (frame) => {
+        onFrame: (frame, generation) => {
+          if (liveSocketRef.current !== instance) return;
+          if (generation !== undefined && generation !== instance.connectionGeneration) return;
           for (const controller of controllersRef.current) controller.handleFrame(frame);
         },
-        onResyncRequired: (payload) => {
+        onTranscript: (event, generation) => {
+          if (liveSocketRef.current !== instance) return;
+          if (generation !== undefined && generation !== instance.connectionGeneration) return;
+          for (const controller of controllersRef.current) controller.handleTranscript(event);
+        },
+        onResyncRequired: (payload, generation) => {
+          if (liveSocketRef.current !== instance) return;
+          if (generation !== undefined && generation !== instance.connectionGeneration) return;
           for (const controller of controllersRef.current) {
             controller.handleResyncRequired(payload);
           }
         },
-        onSubscribeAck: (accepted, resyncRequired, cursors, reconnected) => {
+        onSubscribeAck: (accepted, resyncRequired, cursors, reconnected, generation) => {
+          if (liveSocketRef.current !== instance) return;
+          if (generation !== undefined && generation !== instance.connectionGeneration) return;
           for (const controller of controllersRef.current) {
             if (!accepted.includes(controller.sessionId)) continue;
             if (reconnected) controller.handleReconnectAck();
             const offered = cursors?.[controller.sessionId];
-            // Identity change: the journal epoch the server reports no longer
-            // matches ours — rebuild from a fresh snapshot and resubscribe
-            // (the ack's seq watermark itself is never adopted: replayed
-            // frames advance our cursor, so adopting a newer seq here could
-            // skip unapplied events after a later reconnect).
             const localEpoch = controller.getState().cursor.epoch;
             const epochChanged =
               offered?.epoch !== undefined &&
@@ -292,13 +305,32 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
           }
         },
       },
+      timelineMode: initialMode,
+      resolveTimelineMode: async () => {
+        try {
+          const nextMeta = await client.meta();
+          setMeta(nextMeta);
+          return nextMeta.capabilities.transcript === true ? 'transcript' : 'legacy';
+        } catch {
+          return desiredModeRef.current ?? initialMode;
+        }
+      },
+      onTimelineModeChange: (mode) => {
+        desiredModeRef.current = mode;
+        setSocketEpoch((epoch) => epoch + 1);
+      },
     });
-  }, [config, meta]);
+    return instance;
+  }, [client, config, connected, socketEpoch]);
 
   useEffect(() => {
+    liveSocketRef.current = socket;
     if (socket === null) return;
     socket.connect();
-    return () => { socket.close(); };
+    return () => {
+      if (liveSocketRef.current === socket) liveSocketRef.current = null;
+      socket.close();
+    };
   }, [socket]);
 
   // Browser recovery events nudge a parked socket without adding periodic work.

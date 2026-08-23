@@ -200,7 +200,10 @@ describe('WsConnectionV1 transcript subscriptions (subscribe_v2)', () => {
     sessionId: string;
     filter: unknown;
     grades: unknown;
-    opts?: { deferTranscriptReset?: boolean; transcriptSince?: Record<string, number> };
+    opts?: {
+      deferTranscriptReset?: boolean;
+      transcriptSince?: Record<string, number>;
+    };
   }
 
   function makeCapturingBroadcaster(): {
@@ -216,7 +219,10 @@ describe('WsConnectionV1 transcript subscriptions (subscribe_v2)', () => {
         _target: unknown,
         filter: unknown,
         grades: unknown,
-        opts?: { deferTranscriptReset?: boolean; transcriptSince?: Record<string, number> },
+        opts?: {
+          deferTranscriptReset?: boolean;
+          transcriptSince?: Record<string, number>;
+        },
       ) => {
         calls.push({ sessionId, filter, grades, opts });
         return true;
@@ -260,7 +266,9 @@ describe('WsConnectionV1 transcript subscriptions (subscribe_v2)', () => {
     expect(calls[0]).toMatchObject({
       sessionId: 's1',
       grades: { '*': 'delta' },
-      opts: { transcriptSince: { main: 7, '*': 3 } },
+      opts: {
+        transcriptSince: { main: 7, '*': 3 },
+      },
     });
     expect(conn.subscriptions.get('s1')).toEqual({
       agentFilter: undefined,

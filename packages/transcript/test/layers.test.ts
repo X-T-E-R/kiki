@@ -7,10 +7,14 @@ import { ViewRegistry } from '#/view/registry';
 import { groupMessagesIntoSnapshot, type HistoryContentPart } from '#/history/groupTurns';
 import { foldWireRecordFacts, type HistoryWireRecord } from '#/history/foldFacts';
 import {
-  transcriptOperationSchema,
-  transcriptQuerySchema,
-  transcriptResponseSchema,
   transcriptGradeSpecSchema,
+  transcriptOperationSchema,
+  transcriptOpsCatchupResponseSchema,
+  transcriptOpsPayloadSchema,
+  transcriptQuerySchema,
+  transcriptResetPayloadSchema,
+  transcriptResponseSchema,
+  transcriptSubscribeV2PayloadSchema,
 } from '#/contract/schema';
 import type { TranscriptItem } from '#/model/item';
 import type { AgentTranscriptSnapshot, TranscriptOperation } from '#/ops/operation';
@@ -248,6 +252,48 @@ describe('ViewRegistry', () => {
 });
 
 describe('contract schemas', () => {
+  it('accepts numeric transcript_since and seq watermarks across REST and WS shapes', () => {
+    expect(
+      transcriptSubscribeV2PayloadSchema.parse({
+        session_id: 's1',
+        transcript: { '*': 'delta' },
+        transcript_since: { main: 7, '*': 3 },
+      }).transcript_since,
+    ).toEqual({ main: 7, '*': 3 });
+    const snapshot = {
+      items: [],
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [],
+      meta: {},
+    };
+    expect(
+      transcriptResetPayloadSchema.safeParse({
+        agent_id: 'main',
+        snapshot,
+        has_more_older: false,
+        seq: 7,
+      }).success,
+    ).toBe(true);
+    expect(
+      transcriptOpsPayloadSchema.safeParse({
+        agent_id: 'main',
+        ops: [],
+        seq: 7,
+      }).success,
+    ).toBe(true);
+    expect(
+      transcriptOpsCatchupResponseSchema.safeParse({
+        agent_id: 'main',
+        batches: [{ seq: 7, ops: [] }],
+        latest_seq: 7,
+        complete: true,
+      }).success,
+    ).toBe(true);
+  });
+
   it('roundtrips every op kind', () => {
     const ops: TranscriptOperation[] = [
       { op: 'reset', agentId: 'main', snapshot: { items: [], tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, hasMoreOlder: true } },
@@ -1051,7 +1097,7 @@ describe('foldWireRecordFacts (cold facts)', () => {
     expect(reentered.meta.modes).toEqual({ plan: {} });
   });
 
-  it('folds task records into task entities and timeline taskrefs', () => {
+  it('folds task records while omitting uncertain running subagent entities', () => {
     const base = baseWithMarker();
     const folded = foldWireRecordFacts(
       [
@@ -1109,17 +1155,6 @@ describe('foldWireRecordFacts (cold facts)', () => {
         outputTail: '42 passed',
         startedAt: new Date(1000).toISOString(),
         endedAt: new Date(5000).toISOString(),
-      },
-      {
-        taskId: 'task_2',
-        kind: 'subagent',
-        state: 'running',
-        detached: false,
-        description: 'scan the repo',
-        agentId: 'sub-1',
-        outputTail: '',
-        startedAt: new Date(2000).toISOString(),
-        endedAt: undefined,
       },
     ]);
     const refs = folded.items.filter((item) => item.kind === 'taskref');
@@ -1194,6 +1229,68 @@ describe('foldWireRecordFacts (cold facts)', () => {
         response: null,
       },
     ]);
+  });
+
+  it('folds question and approval cancellation outcomes without losing real answers', () => {
+    const base = baseWithMarker();
+    const cases = [
+      { id: 'q-null', kind: 'question', response: null, state: 'dismissed' },
+      {
+        id: 'q-turn-ended',
+        kind: 'question',
+        response: { cancelled: true, reason: 'turn_ended' },
+        state: 'dismissed',
+      },
+      { id: 'q-empty-text', kind: 'question', response: '', state: 'answered' },
+      { id: 'q-empty-array', kind: 'question', response: [], state: 'answered' },
+      {
+        id: 'q-structured',
+        kind: 'question',
+        response: { answers: { q_0: { option_ids: [], other_text: '' } } },
+        state: 'answered',
+      },
+      {
+        id: 'a-turn-ended',
+        kind: 'approval',
+        response: { cancelled: true, reason: 'turn_ended' },
+        state: 'cancelled',
+      },
+      {
+        id: 'a-approved',
+        kind: 'approval',
+        response: { decision: 'approved', scope: 'session' },
+        state: 'approved',
+      },
+      {
+        id: 'a-rejected',
+        kind: 'approval',
+        response: { decision: 'rejected', feedback: '' },
+        state: 'rejected',
+      },
+    ] as const;
+    const records: HistoryWireRecord[] = [];
+    for (const entry of cases) {
+      records.push(
+        {
+          type: 'interaction.request',
+          id: entry.id,
+          kind: entry.kind,
+          request: entry.kind === 'question' ? { questions: [] } : { toolName: 'Bash' },
+        },
+        { type: 'interaction.resolved', id: entry.id, response: entry.response },
+      );
+    }
+
+    const folded = foldWireRecordFacts(records, base);
+    expect(
+      folded.interactions.map(({ interactionId, state, response }) => ({
+        interactionId,
+        state,
+        response,
+      })),
+    ).toEqual(
+      cases.map(({ id, state, response }) => ({ interactionId: id, state, response })),
+    );
   });
 
   it('cancels interactions still pending at the end of the scan (crash == cancelled)', () => {
@@ -1346,5 +1443,26 @@ describe('foldWireRecordFacts (cold facts)', () => {
     if (second?.kind !== 'turn') throw new Error('expected turn');
     expect(second.state).toBe('failed');
     expect(second.error).toBe('boom');
+  });
+
+  it('maps hidden turn ordinals in linear time', () => {
+    const hidden: number[] = [];
+    const records: HistoryWireRecord[] = [];
+    for (let i = 0; i < 40; i += 1) {
+      const origin = i % 2 === 0 ? { kind: 'user' } : { kind: 'system_trigger' };
+      records.push({ type: 'turn.prompt', origin, time: i });
+      if (i % 2 === 1) hidden.push(i);
+      if (i % 2 === 0) records.push({ type: 'turn.ended', turnId: i, reason: 'completed', time: i + 0.5 });
+    }
+    const base = groupMessagesIntoSnapshot(
+      Array.from({ length: 20 }, (_, i) => ({
+        role: i % 2 === 0 ? ('user' as const) : ('assistant' as const),
+        content: [{ type: 'text' as const, text: `${i}` }],
+        toolCalls: [],
+        origin: { kind: 'user' as const },
+      })),
+    );
+    const folded = foldWireRecordFacts(records, base);
+    expect(folded.items.filter((item) => item.kind === 'turn').length).toBeGreaterThan(0);
   });
 });

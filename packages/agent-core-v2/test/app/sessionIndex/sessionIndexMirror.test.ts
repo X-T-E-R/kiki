@@ -144,14 +144,33 @@ describe('SessionIndexMirror', () => {
     expect(counters.get(WORKSPACE)).toEqual({ active: 0, archived: 1 });
   });
 
-  it('is a no-op when the read-model flag is off', async () => {
+  it('keeps no per-summary queue when the read-model flag is off', async () => {
     build(false);
-    mirror.record(summary('a'));
+    for (let index = 0; index < 600; index++) {
+      mirror.record(summary(`s${index}`, { updatedAt: index }));
+    }
     expect(mirror.pending()).toEqual([]);
     await mirror.drain();
+    expect(mirror.pending()).toEqual([]);
+    await mirror.evict('s0');
+    expect(mirror.pending()).toEqual([]);
   });
 
-  it('never blocks record on the query store', async () => {
+  it('acknowledges only the exact pending version that was observed', () => {
+    build(true);
+    const observed = summary('a', { title: 'observed', updatedAt: 2 });
+    const latest = summary('a', { title: 'latest', updatedAt: 3 });
+    mirror.record(observed);
+    const snapshot = mirror.pending();
+    mirror.record(latest);
+
+    mirror.acknowledge(snapshot);
+    expect(mirror.pending()).toEqual([latest]);
+    mirror.acknowledge([latest]);
+    expect(mirror.pending()).toEqual([]);
+  });
+
+  it('keeps record non-blocking and bounds the pending window', async () => {
     const host = createScopedTestHost([
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
       stubPair(ILogService, stubLog()),
@@ -174,7 +193,8 @@ describe('SessionIndexMirror', () => {
     }
     const elapsed = performance.now() - t0;
     expect(elapsed).toBeLessThan(500);
-    expect(mirror.pending().length).toBe(600);
+    expect(mirror.pending().length).toBeLessThanOrEqual(500);
+    expect(mirror.dirtyEpoch()).toBeDefined();
   }, 10_000);
 
   it('keeps entries queued when no generation is published yet', async () => {
@@ -182,6 +202,20 @@ describe('SessionIndexMirror', () => {
     mirror.record(summary('a'));
     await mirror.drain();
     expect(mirror.pending().map((s) => s.id)).toEqual(['a']);
+  });
+
+  it('switches to dirty authority after sustained flush failures', async () => {
+    build();
+    await publishGeneration();
+    queryStore.batch = async () => {
+      throw new Error('persistent flush failure');
+    };
+
+    mirror.record(summary('a', { updatedAt: 7 }));
+    for (let attempt = 0; attempt < 5; attempt++) await mirror.drain();
+
+    expect(mirror.pending()).toEqual([]);
+    expect(mirror.dirtyEpoch()).toBeDefined();
   });
 
   it('retries a failed flush instead of dropping entries', async () => {

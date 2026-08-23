@@ -17,6 +17,7 @@ import type {
   ApprovalRequest,
   GoalSnapshot,
   Message,
+  MessageContent,
   PermissionMode,
   PromptItem,
   PromptListResponse,
@@ -28,9 +29,17 @@ import type {
   SessionSnapshotResponse,
   Task,
   TaskInfo,
+  TokenUsage,
   ToolInputDisplay,
   UsageStatus,
 } from '@moonshot-ai/protocol';
+
+import type {
+  AgentState,
+  AgentTranscriptSnapshot,
+  TranscriptItem,
+  TranscriptPrompt,
+} from '@moonshot-ai/transcript';
 
 import type {
   AgentTranscriptAgent,
@@ -206,7 +215,7 @@ export interface SubagentBlock {
   readonly description: string | undefined;
   readonly model: string | undefined;
   readonly thinkingEffort: string | undefined;
-  readonly status: 'running' | 'suspended' | 'completed' | 'failed';
+  readonly status: 'unknown' | 'running' | 'suspended' | 'completed' | 'failed' | 'cancelled';
   readonly summary: string | undefined;
   readonly error: string | undefined;
   readonly startedAt: string;
@@ -1228,9 +1237,36 @@ function markerToBlock(item: {
   };
 }
 
-export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Block[] {
+export type AgentTranscriptProjectionSource = {
+  readonly agent_id: string;
+  readonly items: readonly TranscriptItem[] | AgentTranscriptResponse['items'];
+  readonly interactions?: readonly AgentTranscriptInteraction[];
+  readonly meta?: AgentTranscriptSnapshot['meta'] | AgentTranscriptResponse['meta'];
+  readonly prompts?: readonly TranscriptPrompt[];
+};
+
+export function agentStateToProjectionSource(
+  agentId: string,
+  state: AgentState | AgentTranscriptSnapshot,
+): AgentTranscriptProjectionSource {
+  return {
+    agent_id: agentId,
+    items: state.items,
+    interactions: Array.isArray(state.interactions)
+      ? state.interactions
+      : [...state.interactions.values()],
+    meta: state.meta,
+    prompts: Array.isArray(state.prompts) ? state.prompts : [...state.prompts.values()],
+  };
+}
+
+export function agentTranscriptToBlocks(
+  response: AgentTranscriptProjectionSource | AgentTranscriptResponse,
+): Block[] {
   const blocks: Block[] = [];
   const subagentPromptAsUser = response.agent_id !== MAIN_AGENT_ID;
+  const phase = response.meta?.agent?.phase;
+  const prompts = response.prompts ?? [];
   for (const item of response.items) {
     if (item.kind === 'marker') {
       const marker = markerToBlock(item);
@@ -1240,6 +1276,7 @@ export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Bloc
     if (item.kind !== 'turn') continue;
     if (item.prompt !== undefined && item.prompt.trim() !== '') {
       const origin = originFromTurnItem(item) ?? { kind: 'task', taskId: response.agent_id };
+      const identity = identityFromTurnOrigin(origin);
       blocks.push(
         ...classifiedTextToBlocks({
           id: `agent-turn-${item.turnId}-prompt`,
@@ -1251,6 +1288,8 @@ export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Bloc
           }),
           createdAt: item.startedAt ?? '',
           turnId: item.turnId,
+          promptId: identity.promptId,
+          userMessageId: identity.userMessageId,
         }),
       );
     }
@@ -1296,7 +1335,7 @@ export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Bloc
               kind: 'assistant',
               id: `agent-frame-${frame.frameId}`,
               text: frame.text,
-              streaming: false,
+              streaming: isLiveStreamingFrame(item, step, frame, phase),
               createdAt: step.endedAt ?? item.endedAt,
               turnId: item.turnId,
             });
@@ -1306,7 +1345,7 @@ export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Bloc
               kind: 'thinking',
               id: `agent-frame-${frame.frameId}`,
               text: frame.text,
-              streaming: false,
+              streaming: isLiveStreamingFrame(item, step, frame, phase),
               createdAt: step.endedAt ?? item.endedAt,
               turnId: item.turnId,
             });
@@ -1354,7 +1393,152 @@ export function agentTranscriptToBlocks(response: AgentTranscriptResponse): Bloc
       blocks.push(block);
     }
   }
-  return blocks;
+  return mergeTranscriptPromptBlocks(blocks, prompts);
+}
+
+function identityFromTurnOrigin(origin: PromptOriginLike | undefined): {
+  promptId?: string;
+  userMessageId?: string;
+} {
+  const unwrapped = unwrapOrigin(origin);
+  const payload =
+    unwrapped !== undefined && typeof unwrapped.payload === 'object' && unwrapped.payload !== null
+      ? (unwrapped.payload as Record<string, unknown>)
+      : unwrapped !== undefined
+        ? (unwrapped as unknown as Record<string, unknown>)
+        : undefined;
+  const promptId = typeof payload?.['promptId'] === 'string' ? payload['promptId'] : undefined;
+  const userMessageId =
+    typeof payload?.['userMessageId'] === 'string'
+      ? payload['userMessageId']
+      : typeof payload?.['user_message_id'] === 'string'
+        ? payload['user_message_id']
+        : undefined;
+  return { promptId, userMessageId };
+}
+
+function isLiveStreamingFrame(
+  item: { readonly turnId: string; readonly state?: string },
+  step: { readonly stepId: string; readonly state?: string; readonly frames: readonly { readonly frameId: string; readonly kind: string }[] },
+  frame: { readonly frameId: string; readonly kind: string },
+  phase: AgentTranscriptSnapshot['meta']['agent'] extends { phase?: infer P } ? P : unknown,
+): boolean {
+  if (item.state !== 'running' && item.state !== 'queued') return false;
+  if (step.state !== 'running') return false;
+  if (frame.kind !== 'text' && frame.kind !== 'thinking') return false;
+  const lastOpen = [...step.frames].reverse().find((candidate) => candidate.kind === frame.kind);
+  if (lastOpen?.frameId !== frame.frameId) return false;
+  if (phase === undefined || typeof phase !== 'object' || phase === null) {
+    return true;
+  }
+  const live = phase as { kind?: string; turnId?: number; stepId?: string; stream?: string };
+  if (live.kind !== 'streaming') return false;
+  if (live.stepId !== undefined && live.stepId !== step.stepId) return false;
+  if (typeof live.turnId === 'number' && `t${live.turnId}` !== item.turnId) return false;
+  if (live.stream === 'assistant') return frame.kind === 'text';
+  if (live.stream === 'thinking') return frame.kind === 'thinking';
+  return false;
+}
+
+function isPromptContentPart(value: unknown): value is MessageContent {
+  if (typeof value !== 'object' || value === null || !('type' in value)) return false;
+  const type = (value as { type?: unknown }).type;
+  return (
+    type === 'text' ||
+    type === 'image' ||
+    type === 'video' ||
+    type === 'file' ||
+    type === 'thinking' ||
+    type === 'tool_use' ||
+    type === 'tool_result'
+  );
+}
+
+function promptContentParts(content: unknown): MessageContent[] {
+  if (!Array.isArray(content)) return [];
+  return content.filter(isPromptContentPart);
+}
+
+function mergeTranscriptPromptBlocks(
+  blocks: Block[],
+  prompts: readonly TranscriptPrompt[],
+): Block[] {
+  let next = blocks;
+  for (const prompt of prompts) {
+    if (prompt.status !== 'queued' && prompt.status !== 'blocked' && prompt.status !== 'running') {
+      continue;
+    }
+    const parts = promptContentParts(prompt.content);
+    const projection = projectMessageContent(parts);
+    if (prompt.status === 'running') {
+      next = stampRunningPromptIdentity(next, prompt);
+      if (parts.length === 0) continue;
+    }
+    if (parts.length === 0 && prompt.userMessageId === undefined) continue;
+    const item: PromptItem = {
+      prompt_id: prompt.promptId,
+      user_message_id: prompt.userMessageId ?? prompt.promptId,
+      status: prompt.status,
+      content: parts.length > 0 ? parts : [{ type: 'text', text: projection.text }],
+      created_at: prompt.createdAt,
+    };
+    next = [...upsertPromptItemBlocks(next, item, projection.media.length > 0 ? projection.media : undefined)];
+  }
+  return next;
+}
+
+function retainPendingPromptBlocks(previous: readonly Block[], next: Block[]): Block[] {
+  const known = new Set<string>();
+  for (const block of next) {
+    if (block.kind !== 'user' && block.kind !== 'steer') continue;
+    if (block.promptId !== undefined) known.add(`p:${block.promptId}`);
+    if (block.userMessageId !== undefined) known.add(`u:${block.userMessageId}`);
+  }
+  const extras = previous.filter((block) => {
+    if (block.kind === 'steer') {
+      if (block.promptId !== undefined && known.has(`p:${block.promptId}`)) return false;
+      if (block.userMessageId !== undefined && known.has(`u:${block.userMessageId}`)) return false;
+      return block.promptId !== undefined || block.userMessageId !== undefined;
+    }
+    if (block.kind !== 'user') return false;
+    if (block.promptStatus !== 'queued' && block.promptStatus !== 'blocked' && block.promptStatus !== 'running') {
+      return false;
+    }
+    if (block.promptId !== undefined && known.has(`p:${block.promptId}`)) return false;
+    if (block.userMessageId !== undefined && known.has(`u:${block.userMessageId}`)) return false;
+    return block.promptId !== undefined || block.userMessageId !== undefined;
+  });
+  return extras.length === 0 ? next : [...next, ...extras];
+}
+
+function stampRunningPromptIdentity(blocks: readonly Block[], prompt: TranscriptPrompt): Block[] {
+  if (
+    blocks.some(
+      (block) =>
+        (block.kind === 'user' || block.kind === 'steer') &&
+        (block.promptId === prompt.promptId ||
+          (prompt.userMessageId !== undefined && block.userMessageId === prompt.userMessageId)),
+    )
+  ) {
+    return [...blocks];
+  }
+  const index = blocks.findLastIndex(
+    (block): block is UserBlock =>
+      block.kind === 'user' &&
+      block.turnId !== undefined &&
+      block.promptId === undefined &&
+      block.userMessageId === undefined,
+  );
+  if (index < 0) return [...blocks];
+  const existing = blocks[index] as UserBlock;
+  const next = blocks.slice();
+  next[index] = {
+    ...existing,
+    promptId: prompt.promptId,
+    userMessageId: prompt.userMessageId ?? existing.userMessageId,
+    promptStatus: 'running',
+  };
+  return next;
 }
 
 /**
@@ -1580,18 +1764,18 @@ function insertSubagentBlocks(
   for (let index = 0; index < source.length; index += 1) {
     const candidate = source[index]!;
     if (candidate.kind === 'subagent') continue;
+    blocks.push(candidate);
     if (candidate.kind === 'tool') {
       const anchored = byParentTool.get(candidate.toolCallId);
       if (anchored !== undefined) {
         for (const subagent of anchored) {
+          if (inserted.has(subagent.subagentId)) continue;
           const parentTurnId = nearestParentTurn(source, subagent, index);
           blocks.push(parentTurnId === undefined ? subagent : { ...subagent, parentTurnId });
           inserted.add(subagent.subagentId);
         }
-        continue;
       }
     }
-    blocks.push(candidate);
   }
 
   for (const subagent of sorted) {
@@ -1666,6 +1850,24 @@ export function applySnapshot(
       });
     }
     for (const tool of inFlight.running_tools) {
+      const existingIndex = blocks.findIndex(
+        (block) => block.kind === 'tool' && block.toolCallId === tool.tool_call_id,
+      );
+      if (existingIndex >= 0) {
+        const existing = blocks[existingIndex] as ToolBlock;
+        blocks[existingIndex] = {
+          ...existing,
+          name: tool.name,
+          args: tool.args,
+          display: tool.display as ToolInputDisplay | undefined,
+          description: tool.description,
+          status: 'running',
+          output: undefined,
+          isError: undefined,
+          progressText: tool.last_progress?.text,
+        };
+        continue;
+      }
       blocks.push({
         kind: 'tool',
         id: `tool-${tool.tool_call_id}`,
@@ -1696,11 +1898,13 @@ export function applySnapshot(
     const status =
       subagent.subagent_phase === 'failed' || subagent.status === 'failed'
         ? 'failed'
-        : subagent.subagent_phase === 'suspended'
-          ? 'suspended'
-          : subagent.subagent_phase === 'completed' || subagent.status === 'completed'
-            ? 'completed'
-            : 'running';
+        : subagent.status === 'cancelled'
+          ? 'cancelled'
+          : subagent.subagent_phase === 'suspended'
+            ? 'suspended'
+            : subagent.subagent_phase === 'completed' || subagent.status === 'completed'
+              ? 'completed'
+              : 'running';
     const prior = previousSubagents.get(subagent.id);
     restoredBlocks.push({
       kind: 'subagent',
@@ -1961,6 +2165,7 @@ function taskInfoToTask(info: TaskInfo, sessionId: string): Task {
     created_at: new Date(info.startedAt).toISOString(),
     started_at: new Date(info.startedAt).toISOString(),
     completed_at: info.endedAt !== null ? new Date(info.endedAt).toISOString() : undefined,
+    agent_id: info.kind === 'agent' ? info.agentId : undefined,
   };
 }
 
@@ -2149,6 +2354,25 @@ export function preserveCapturedSteers(
   };
 }
 
+function sameMedia(
+  left: readonly MediaRef[] | undefined,
+  right: readonly MediaRef[] | undefined,
+): boolean {
+  if (left === right) return true;
+  if (left === undefined || right === undefined || left.length !== right.length) return false;
+  return left.every((item, index) => {
+    const other = right[index];
+    return other !== undefined &&
+      item.kind === other.kind &&
+      item.url === other.url &&
+      item.path === other.path &&
+      item.name === other.name &&
+      item.mime === other.mime &&
+      item.size === other.size &&
+      item.fileId === other.fileId;
+  });
+}
+
 function upsertPromptItemBlocks(
   blocks: readonly Block[],
   item: PromptItem,
@@ -2157,6 +2381,7 @@ function upsertPromptItemBlocks(
   const projection = projectMessageContent(item.content);
   const text = projection.text;
   const media = mediaOverride ?? projection.media;
+  const nextMedia = media.length === 0 ? undefined : media;
   if (blocks.some((block) => block.kind === 'steer' && isPromptIdentity(block, item.prompt_id, item.user_message_id))) {
     return blocks;
   }
@@ -2167,13 +2392,20 @@ function upsertPromptItemBlocks(
   );
   if (stableIndex >= 0) {
     const existing = blocks[stableIndex] as UserBlock;
-    // The local echo has no media; the first content-carrying upsert
-    // (prompt.submitted / reconcile) fills it in.
-    const nextMedia =
-      media.length > 0 && existing.media === undefined ? media : existing.media;
-    if (existing.promptStatus === item.status && nextMedia === existing.media) return blocks;
+    if (
+      existing.promptStatus === item.status &&
+      existing.text === text &&
+      sameMedia(existing.media, nextMedia)
+    ) {
+      return blocks;
+    }
     const next = blocks.slice();
-    next[stableIndex] = { ...existing, promptStatus: item.status, media: nextMedia };
+    next[stableIndex] = {
+      ...existing,
+      text,
+      promptStatus: item.status,
+      media: nextMedia,
+    };
     return next;
   }
   const split = splitSystemReminders(text);
@@ -2215,7 +2447,9 @@ export function applyFrame(state: SessionViewState, frame: SessionEventFrame): A
 
 /** Child-agent scoped reducer used by SessionController's per-agent store. */
 export function applyAgentFrame(state: SessionViewState, frame: SessionEventFrame): ApplyResult {
-  return applyFrameInternal(state, frame, false);
+  const result = applyFrameInternal(state, frame, false);
+  if (result.state === state || result.state.loaded) return result;
+  return { ...result, state: { ...result.state, loaded: true } };
 }
 
 function applyFrameInternal(
@@ -2702,6 +2936,24 @@ function applyFrameInternal(
       });
       break;
     }
+    case 'prompt.queued':
+    case 'prompt.replaced': {
+      const item: PromptItem = {
+        prompt_id: payload.promptId,
+        user_message_id: payload.promptId,
+        status: 'queued',
+        content: payload.content as Message['content'],
+        created_at: payload.type === 'prompt.replaced' ? payload.replacedAt : frame.timestamp,
+      };
+      const queuedPromptIds = next.queuedPromptIds.includes(item.prompt_id)
+        ? next.queuedPromptIds
+        : [...next.queuedPromptIds, item.prompt_id];
+      evolve({
+        blocks: upsertPromptItemBlocks(next.blocks, item),
+        queuedPromptIds,
+      });
+      break;
+    }
     case 'prompt.completed': {
       const blocks = finalizeStreaming(next.blocks, `end@${frame.seq}`).map((block) =>
         block.kind === 'user' && block.promptId === payload.promptId
@@ -3113,6 +3365,19 @@ export function setTasks(state: SessionViewState, tasks: readonly Task[]): Sessi
   return { ...state, version: state.version + 1, tasks };
 }
 
+export function setGoal(
+  state: SessionViewState,
+  goal: GoalSnapshot | null,
+  updatedAt?: string,
+): SessionViewState {
+  return {
+    ...state,
+    version: state.version + 1,
+    goal,
+    goalUpdatedAt: updatedAt ?? state.goalUpdatedAt,
+  };
+}
+
 function subagentBlocksEqual(a: SubagentBlock, b: SubagentBlock): boolean {
   return (
     a.id === b.id &&
@@ -3193,19 +3458,6 @@ export function preserveCapturedSubagents(
     [...mergedById.values()].sort(compareSubagentTimeline),
   );
   return { ...rebuilt, version: rebuilt.version + 1, blocks };
-}
-
-export function setGoal(
-  state: SessionViewState,
-  goal: GoalSnapshot | null,
-  updatedAt?: string,
-): SessionViewState {
-  return {
-    ...state,
-    version: state.version + 1,
-    goal,
-    goalUpdatedAt: updatedAt ?? state.goalUpdatedAt,
-  };
 }
 
 /**
@@ -3369,9 +3621,9 @@ export function rosterFromTranscriptAgents(
       parentAgentId: agent.parentAgentId ?? parentFromDelegator,
       name: agent.label ?? agent.agentId,
       label: agent.label,
-      status: agent.disposedAt !== undefined ? 'completed' : undefined,
+      status: agent.agentId === MAIN_AGENT_ID ? undefined : 'unknown',
       startedAt: agent.createdAt,
-      endedAt: agent.disposedAt,
+      disposedAt: agent.disposedAt,
     };
   });
 }
@@ -3384,12 +3636,17 @@ export function rosterFromTranscriptResponse(
   const meta = response.meta?.agent;
   if (meta === undefined) return roster;
   const index = roster.findIndex((agent) => agent.agentId === response.agent_id);
+  const projectedStatus = agentStatusFromMeta(response);
   const statusFields = {
     model: meta.model,
     thinkingEffort: meta.thinkingEffort,
     contextTokens: meta.contextTokens,
     maxContextTokens: meta.maxContextTokens,
     usage: meta.usage,
+    status:
+      response.agent_id === MAIN_AGENT_ID && projectedStatus === 'unknown'
+        ? undefined
+        : projectedStatus,
     busy: agentBusyFromMeta(response),
   };
   if (index >= 0) {
@@ -3425,11 +3682,11 @@ export function taskItemsFromTranscriptTasks(
 
 export function taskItemsFromSessionTasks(tasks: readonly Task[]): readonly AgentTaskItem[] {
   return tasks.flatMap((task) => {
-    if (task.kind !== 'subagent') return [];
-    // Protocol `/tasks` has no agentId. Do not invent one from task.id.
+    if (task.kind !== 'subagent' || task.agent_id === undefined || task.agent_id === '') return [];
     return [
       {
         id: task.id,
+        agentId: task.agent_id,
         kind: task.kind,
         description: task.description,
         status: task.status,
@@ -3490,6 +3747,333 @@ export function sessionAgentForestFromTranscript(
   );
 }
 
+export function liveSourcesFromAgentSnapshots(
+  snapshots: ReadonlyMap<string, AgentState | AgentTranscriptSnapshot>,
+): readonly AgentLiveSource[] {
+  const byId = new Map<string, AgentLiveSource>();
+  for (const [parentAgentId, snapshot] of snapshots) {
+    const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : [...snapshot.tasks.values()];
+    for (const task of tasks) {
+      if (task.kind !== 'subagent' || task.agentId === undefined || task.agentId === '') continue;
+      byId.set(task.agentId, {
+        subagentId: task.agentId,
+        parentAgentId,
+        parentToolCallId: byId.get(task.agentId)?.parentToolCallId,
+        name: task.description ?? task.agentId,
+        status: task.state,
+        summary: task.resultSummary,
+        error: task.error,
+        startedAt: task.startedAt,
+        endedAt: task.endedAt,
+      });
+    }
+    for (const item of snapshot.items) {
+      if (item.kind !== 'turn') continue;
+      for (const step of item.steps) {
+        for (const frame of step.frames) {
+          if (frame.kind !== 'tool' || frame.agentRefs === undefined) continue;
+          for (const ref of frame.agentRefs) {
+            const existing = byId.get(ref.agentId);
+            byId.set(ref.agentId, {
+              subagentId: ref.agentId,
+              parentAgentId,
+              parentToolCallId: frame.toolCallId,
+              name: existing?.name ?? ref.agentId,
+              status: existing?.status ?? 'running',
+              summary: existing?.summary,
+              error: existing?.error,
+              startedAt: existing?.startedAt ?? step.startedAt ?? item.startedAt,
+              endedAt: existing?.endedAt,
+              toolCallCount: existing?.toolCallCount,
+            });
+          }
+        }
+      }
+    }
+  }
+  return [...byId.values()];
+}
+
+export function sessionAgentForestFromAgentSnapshots(
+  snapshots: ReadonlyMap<string, AgentState | AgentTranscriptSnapshot>,
+): AgentForest {
+  const live = liveSourcesFromAgentSnapshots(snapshots);
+  const tasks: AgentTaskItem[] = [];
+  const roster: AgentRosterDescriptor[] = [];
+  for (const [agentId, snapshot] of snapshots) {
+    const meta = snapshot.meta.agent;
+    roster.push({
+      agentId,
+      parentAgentId: live.find((entry) => entry.subagentId === agentId)?.parentAgentId,
+      parentToolCallId: live.find((entry) => entry.subagentId === agentId)?.parentToolCallId,
+      name: agentId,
+      model: meta?.model,
+      thinkingEffort: meta?.thinkingEffort,
+      contextTokens: meta?.contextTokens,
+      maxContextTokens: meta?.maxContextTokens,
+      usage: meta?.usage,
+      status: agentStatusFromMeta({
+        agent_id: agentId,
+        items: [],
+        has_more: false,
+        meta: snapshot.meta,
+      }),
+      busy: agentBusyFromMeta({
+        agent_id: agentId,
+        items: [],
+        has_more: false,
+        meta: snapshot.meta,
+      }),
+    });
+    const taskList = Array.isArray(snapshot.tasks) ? snapshot.tasks : [...snapshot.tasks.values()];
+    tasks.push(...taskItemsFromTranscriptTasks(taskList));
+  }
+  return buildAgentForest(live, roster, tasks);
+}
+
+export function applyTranscriptShell(
+  sessionId: string,
+  snapshot: KikiSessionSnapshot,
+  previous?: SessionViewState,
+): SessionViewState {
+  const base = previous ?? createViewState(sessionId);
+  return {
+    ...base,
+    version: base.version + 1,
+    session: snapshot.session,
+    cursor: { seq: snapshot.as_of_seq, epoch: snapshot.epoch },
+    busy: snapshot.session.busy,
+    model:
+      snapshot.session.agent_config.model !== ''
+        ? snapshot.session.agent_config.model
+        : base.model,
+    profile: snapshot.session.agent_config.profile ?? base.profile,
+    permissionMode: snapshot.session.agent_config.permission_mode ?? base.permissionMode,
+    planMode: snapshot.session.agent_config.plan_mode ?? base.planMode,
+    swarmMode: snapshot.session.agent_config.swarm_mode ?? base.swarmMode,
+    contextTokens: snapshot.context_tokens ?? base.contextTokens,
+    maxContextTokens: snapshot.max_context_tokens ?? base.maxContextTokens,
+    loaded: true,
+    loadError: undefined,
+    resyncFailed: false,
+    resyncAttempt: 0,
+  };
+}
+
+export function projectAgentTranscriptView(
+  previous: SessionViewState,
+  agentId: string,
+  snapshot: AgentState | AgentTranscriptSnapshot,
+  options: { readonly retainPendingPrompts?: boolean } = {},
+): SessionViewState {
+  const projected = agentTranscriptToBlocks(agentStateToProjectionSource(agentId, snapshot));
+  const blocks =
+    options.retainPendingPrompts === false
+      ? projected
+      : retainPendingPromptBlocks(previous.blocks, projected);
+  const firstTurn = snapshot.items.find((item) => item.kind === 'turn');
+  const meta = snapshot.meta.agent;
+  const prompts = Array.isArray(snapshot.prompts) ? snapshot.prompts : [...snapshot.prompts.values()];
+  const queuedPromptIds = prompts
+    .filter((prompt) => prompt.status === 'queued')
+    .map((prompt) => prompt.promptId);
+  const running = prompts.find((prompt) => prompt.status === 'running');
+  const interactions = Array.isArray(snapshot.interactions)
+    ? snapshot.interactions
+    : [...snapshot.interactions.values()];
+  const todos = Array.isArray(snapshot.todos) ? snapshot.todos : [...snapshot.todos.values()];
+  const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : [...snapshot.tasks.values()];
+  const pendingInteraction: SessionPendingInteraction = interactions.some(
+    (interaction) => interaction.interactionKind === 'approval' && interaction.state === 'pending',
+  )
+    ? 'approval'
+    : interactions.some(
+          (interaction) => interaction.interactionKind === 'question' && interaction.state === 'pending',
+        )
+      ? 'question'
+      : 'none';
+  const goal = snapshot.meta.goal;
+  return {
+    ...previous,
+    version: previous.version + 1,
+    blocks,
+    loaded: true,
+    loadError: undefined,
+    busy: agentBusyFromMeta({
+      agent_id: agentId,
+      items: [],
+      has_more: false,
+      meta: snapshot.meta,
+    }) === true,
+    model: meta?.model,
+    thinkingEffort: meta?.thinkingEffort,
+    contextTokens: meta?.contextTokens,
+    maxContextTokens: meta?.maxContextTokens,
+    usage: projectUsageStatus(meta?.usage),
+    permissionMode: mapTranscriptPermission(meta?.permission),
+    planMode: snapshot.meta.modes?.plan !== undefined,
+    swarmMode: snapshot.meta.modes?.swarm !== undefined,
+    queuedPromptIds,
+    activePromptId: running?.promptId,
+    pendingInteraction,
+    todos: todos.at(-1)?.items ?? [],
+    tasks: tasks.map(transcriptTaskToSessionTask),
+    goal: goal === undefined ? null : projectGoalSnapshot(goal),
+    hasMoreHistory: snapshot.hasMoreOlder === true,
+    oldestMessageId: firstTurn?.kind === 'turn' ? firstTurn.turnId : undefined,
+  };
+}
+
+function projectGoalSnapshot(goal: {
+  readonly objective: string;
+  readonly status: GoalSnapshot['status'];
+  readonly completionCriterion?: string;
+  readonly budgetUsed?: number;
+  readonly budgetLimit?: number;
+}): GoalSnapshot {
+  const tokenBudget = goal.budgetLimit ?? null;
+  const tokensUsed = goal.budgetUsed ?? 0;
+  return {
+    goalId: 'transcript',
+    objective: goal.objective,
+    completionCriterion: goal.completionCriterion,
+    status: goal.status,
+    turnsUsed: 0,
+    tokensUsed,
+    wallClockMs: 0,
+    budget: {
+      tokenBudget,
+      turnBudget: null,
+      wallClockBudgetMs: null,
+      remainingTokens: tokenBudget === null ? null : Math.max(0, tokenBudget - tokensUsed),
+      remainingTurns: null,
+      remainingWallClockMs: null,
+      tokenBudgetReached: tokenBudget !== null && tokensUsed >= tokenBudget,
+      turnBudgetReached: false,
+      wallClockBudgetReached: false,
+      overBudget: tokenBudget !== null && tokensUsed > tokenBudget,
+    },
+  };
+}
+
+function mapTranscriptPermission(
+  permission: 'manual' | 'yolo' | 'auto' | undefined,
+): PermissionMode | undefined {
+  if (permission === 'manual' || permission === 'yolo' || permission === 'auto') return permission;
+  return undefined;
+}
+
+function projectTokenUsage(usage: {
+  readonly inputOther: number;
+  readonly output: number;
+  readonly inputCacheRead: number;
+  readonly inputCacheCreation: number;
+}): TokenUsage {
+  return {
+    inputOther: usage.inputOther,
+    output: usage.output,
+    inputCacheRead: usage.inputCacheRead,
+    inputCacheCreation: usage.inputCacheCreation,
+  };
+}
+
+function projectUsageStatus(
+  usage:
+    | {
+        readonly byModel?: Record<string, {
+          readonly inputOther: number;
+          readonly output: number;
+          readonly inputCacheRead: number;
+          readonly inputCacheCreation: number;
+        }>;
+        readonly currentTurn?: {
+          readonly inputOther: number;
+          readonly output: number;
+          readonly inputCacheRead: number;
+          readonly inputCacheCreation: number;
+        };
+        readonly total?: {
+          readonly inputOther: number;
+          readonly output: number;
+          readonly inputCacheRead: number;
+          readonly inputCacheCreation: number;
+        };
+      }
+    | undefined,
+): UsageStatus | undefined {
+  if (usage === undefined) return undefined;
+  let byModel: Record<string, TokenUsage> | undefined;
+  if (usage.byModel !== undefined) {
+    const mapped: Record<string, TokenUsage> = {};
+    for (const [model, value] of Object.entries(usage.byModel)) {
+      mapped[model] = projectTokenUsage(value);
+    }
+    byModel = mapped;
+  }
+  return {
+    byModel,
+    currentTurn: usage.currentTurn === undefined ? undefined : projectTokenUsage(usage.currentTurn),
+    total: usage.total === undefined ? undefined : projectTokenUsage(usage.total),
+  };
+}
+
+function transcriptTaskToSessionTask(task: {
+  readonly taskId: string;
+  readonly kind: string;
+  readonly state: string;
+  readonly description?: string;
+  readonly agentId?: string;
+  readonly startedAt?: string;
+  readonly endedAt?: string;
+  readonly outputTail: string;
+}): Task {
+  const kind = task.kind === 'subagent' ? 'subagent' : task.kind === 'shell' ? 'bash' : 'tool';
+  const status =
+    task.state === 'running'
+      ? 'running'
+      : task.state === 'failed' || task.state === 'lost' || task.state === 'timed_out'
+        ? 'failed'
+        : task.state === 'killed'
+          ? 'cancelled'
+          : 'completed';
+  return {
+    id: task.taskId,
+    session_id: '',
+    kind,
+    description: task.description ?? '',
+    status,
+    created_at: task.startedAt ?? '',
+    started_at: task.startedAt,
+    completed_at: task.endedAt,
+    output_preview: task.outputTail,
+    agent_id: task.agentId,
+  };
+}
+
+function transcriptItemId(item: TranscriptItem): string {
+  if (item.kind === 'turn') return item.turnId;
+  if (item.kind === 'marker') return item.markerId;
+  return item.refId;
+}
+
+export function prependOlderTranscriptSnapshot(
+  current: AgentTranscriptSnapshot,
+  older: Pick<AgentTranscriptSnapshot, 'items' | 'attachments'> & { readonly hasMore?: boolean; readonly has_more?: boolean },
+): AgentTranscriptSnapshot {
+  const existingIds = new Set(current.items.map(transcriptItemId));
+  const prepended = older.items.filter((item) => !existingIds.has(transcriptItemId(item)));
+  const existingAttachments = new Set(current.attachments.map((attachment) => attachment.attachmentId));
+  const olderAttachments = older.attachments.filter(
+    (attachment) => !existingAttachments.has(attachment.attachmentId),
+  );
+  return {
+    ...current,
+    items: [...prepended, ...current.items],
+    attachments: [...olderAttachments, ...current.attachments],
+    hasMoreOlder: older.hasMore ?? older.has_more ?? current.hasMoreOlder,
+  };
+}
+
 export function agentTranscriptPageFromResponse(
   response: AgentTranscriptResponse,
   blocks: readonly Block[],
@@ -3519,6 +4103,39 @@ export function oldestTurnIdFromResponse(
 }
 
 export { countToolBlocks };
+
+export function agentStatusFromMeta(
+  response: AgentTranscriptResponse | undefined,
+): AgentRosterDescriptor['status'] {
+  const phase = response?.meta?.agent?.phase;
+  switch (phase?.kind) {
+    case 'running':
+    case 'streaming':
+    case 'tool_call':
+    case 'retrying':
+      return 'running';
+    case 'awaiting_approval':
+      return 'suspended';
+    case 'ended':
+      switch (phase['reason']) {
+        case 'completed':
+          return 'completed';
+        case 'cancelled':
+          return 'cancelled';
+        case 'failed':
+          return 'failed';
+        case 'blocked':
+          return 'suspended';
+        default:
+          return 'unknown';
+      }
+    case 'interrupted':
+      return phase['reason'] === 'aborted' ? 'cancelled' : 'failed';
+    case 'idle':
+    default:
+      return 'unknown';
+  }
+}
 
 export function agentBusyFromMeta(response: AgentTranscriptResponse | undefined): boolean | undefined {
   const kind = response?.meta?.agent?.phase?.kind;

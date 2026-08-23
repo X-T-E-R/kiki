@@ -187,6 +187,19 @@ describe('questionResponseSchema (SCHEMAS §6.2)', () => {
     });
     expect(Object.keys(parsed.answers)).toHaveLength(4);
   });
+
+  it('accepts empty free text and an empty optional selection list', () => {
+    const parsed = questionResponseSchema.parse({
+      answers: {
+        q_1: { kind: 'other', text: '' },
+        q_2: { kind: 'multi_with_other', option_ids: [], other_text: '' },
+      },
+    });
+    expect(parsed.answers).toEqual({
+      q_1: { kind: 'other', text: '' },
+      q_2: { kind: 'multi_with_other', option_ids: [], other_text: '' },
+    });
+  });
 });
 
 describe('questionResolveRequestSchema (REST §3.6)', () => {

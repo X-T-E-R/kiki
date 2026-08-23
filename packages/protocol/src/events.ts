@@ -554,6 +554,11 @@ export interface AgentStatusUpdatedEvent {
   readonly phase?: AgentPhase;
 }
 
+export interface AgentDisposedEvent {
+  readonly type: 'agent.disposed';
+  readonly time?: number;
+}
+
 export interface SessionMetaUpdatedEvent {
   readonly type: 'session.meta.updated';
   readonly title?: string;
@@ -770,6 +775,8 @@ export interface TurnStepInterruptedEvent {
 export interface AssistantDeltaEvent {
   readonly type: 'assistant.delta';
   readonly turnId: number;
+  readonly step?: number;
+  readonly stepId?: string;
   readonly delta: string;
 }
 
@@ -784,6 +791,8 @@ export interface HookResultEvent {
 export interface ThinkingDeltaEvent {
   readonly type: 'thinking.delta';
   readonly turnId: number;
+  readonly step?: number;
+  readonly stepId?: string;
   readonly delta: string;
 }
 
@@ -967,6 +976,20 @@ export interface PromptSubmittedEvent {
   readonly createdAt: string;
 }
 
+export interface PromptQueuedEvent {
+  readonly type: 'prompt.queued';
+  readonly promptId: string;
+  readonly content: readonly MessageContent[];
+  readonly queueLength: number;
+}
+
+export interface PromptReplacedEvent {
+  readonly type: 'prompt.replaced';
+  readonly promptId: string;
+  readonly content: readonly MessageContent[];
+  readonly replacedAt: string;
+}
+
 export interface PromptCompletedEvent {
   readonly type: 'prompt.completed';
   readonly promptId: string;
@@ -1013,6 +1036,7 @@ export type AgentEvent =
   | ErrorEvent
   | WarningEvent
   | AgentStatusUpdatedEvent
+  | AgentDisposedEvent
   | SessionMetaUpdatedEvent
   | SessionCreatedEvent
   | SessionHistoryRewrittenEvent
@@ -1061,6 +1085,8 @@ export type AgentEvent =
   | BackgroundTaskTerminatedEvent
   | CronFiredEvent
   | PromptSubmittedEvent
+  | PromptQueuedEvent
+  | PromptReplacedEvent
   | PromptCompletedEvent
   | PromptAbortedEvent
   | PromptSteeredEvent;
@@ -1559,6 +1585,11 @@ export const agentStatusUpdatedEventSchema = z.object({
   phase: agentPhaseSchema.optional(),
 }) satisfies z.ZodType<AgentStatusUpdatedEvent>;
 
+export const agentDisposedEventSchema = z.object({
+  type: z.literal('agent.disposed'),
+  time: z.number().optional(),
+}) satisfies z.ZodType<AgentDisposedEvent>;
+
 export const sessionMetaUpdatedEventSchema = z.object({
   type: z.literal('session.meta.updated'),
   title: z.string().optional(),
@@ -1743,6 +1774,8 @@ export const turnStepInterruptedEventSchema = z.object({
 export const assistantDeltaEventSchema = z.object({
   type: z.literal('assistant.delta'),
   turnId: z.number(),
+  step: z.number().optional(),
+  stepId: z.string().optional(),
   delta: z.string(),
 }) satisfies z.ZodType<AssistantDeltaEvent>;
 
@@ -1757,6 +1790,8 @@ export const hookResultEventSchema = z.object({
 export const thinkingDeltaEventSchema = z.object({
   type: z.literal('thinking.delta'),
   turnId: z.number(),
+  step: z.number().optional(),
+  stepId: z.string().optional(),
   delta: z.string(),
 }) satisfies z.ZodType<ThinkingDeltaEvent>;
 
@@ -1910,6 +1945,20 @@ export const promptSubmittedEventSchema = z.object({
   createdAt: isoDateTimeSchema,
 }) satisfies z.ZodType<PromptSubmittedEvent>;
 
+export const promptQueuedEventSchema = z.object({
+  type: z.literal('prompt.queued'),
+  promptId: z.string(),
+  content: z.array(messageContentSchema),
+  queueLength: z.number().int().nonnegative(),
+}) satisfies z.ZodType<PromptQueuedEvent>;
+
+export const promptReplacedEventSchema = z.object({
+  type: z.literal('prompt.replaced'),
+  promptId: z.string(),
+  content: z.array(messageContentSchema),
+  replacedAt: isoDateTimeSchema,
+}) satisfies z.ZodType<PromptReplacedEvent>;
+
 export const promptCompletedEventSchema = z.object({
   type: z.literal('prompt.completed'),
   promptId: z.string(),
@@ -1960,6 +2009,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   errorEventSchema,
   warningEventSchema,
   agentStatusUpdatedEventSchema,
+  agentDisposedEventSchema,
   sessionMetaUpdatedEventSchema,
   sessionCreatedEventSchema,
   sessionHistoryRewrittenEventSchema,
@@ -2007,6 +2057,8 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   backgroundTaskTerminatedEventSchema,
   cronFiredEventSchema,
   promptSubmittedEventSchema,
+  promptQueuedEventSchema,
+  promptReplacedEventSchema,
   promptCompletedEventSchema,
   promptAbortedEventSchema,
   promptSteeredEventSchema,

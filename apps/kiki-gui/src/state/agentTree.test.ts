@@ -332,7 +332,490 @@ describe('buildAgentForest', () => {
     expect(Object.keys(forest.byId)).toEqual([]);
   });
 
-  it('lets roster identity fields override a conflicting task when live is absent', () => {
+  it('orders unknown, active, and terminal evidence without inventing completion', () => {
+    const unknown = buildAgentForest(
+      [live({ subagentId: 'agent-1', status: 'unknown' })],
+      [roster({ agentId: 'agent-1', status: 'unknown' })],
+    );
+    expect(unknown.byId['agent-1']).toMatchObject({ status: 'unknown', busy: false });
+
+    const active = buildAgentForest(
+      [live({ subagentId: 'agent-1', status: 'unknown' })],
+      [roster({ agentId: 'agent-1', status: 'unknown' })],
+      [task({ agentId: 'agent-1', status: 'running', detached: true })],
+    );
+    expect(active.byId['agent-1']).toMatchObject({ status: 'background', busy: true });
+
+    const terminal = buildAgentForest(
+      [live({ subagentId: 'agent-1', status: 'running' })],
+      [roster({ agentId: 'agent-1', status: 'unknown' })],
+      [task({ agentId: 'agent-1', status: 'killed', detached: true })],
+    );
+    expect(terminal.byId['agent-1']).toMatchObject({ status: 'cancelled', busy: false });
+  });
+
+  it('invalidates stale active evidence at the disposal boundary', () => {
+    const disposedAt = '2026-01-01T00:02:00.000Z';
+    const startedAt = '2026-01-01T00:01:00.000Z';
+    const descriptor = roster({
+      agentId: 'agent-1',
+      status: 'unknown',
+      startedAt,
+      disposedAt,
+      busy: true,
+      toolCallCount: 5,
+    });
+    const fromTask = buildAgentForest(
+      [],
+      [descriptor],
+      [task({ agentId: 'agent-1', status: 'running', started_at: startedAt })],
+    );
+    const fromLive = buildAgentForest(
+      [live({ subagentId: 'agent-1', status: 'running', startedAt })],
+      [descriptor],
+    );
+
+    for (const forest of [fromTask, fromLive]) {
+      expect(forest.byId['agent-1']).toMatchObject({
+        status: 'unknown',
+        busy: false,
+        toolCallCount: 0,
+      });
+    }
+  });
+
+  it('treats a same-millisecond post-disposal task as unknown and accepts a strictly later run', () => {
+    const disposedAt = '2026-01-01T00:02:00.000Z';
+    const descriptor = roster({
+      agentId: 'agent-1',
+      status: 'unknown',
+      startedAt: '2026-01-01T00:01:00.000Z',
+      disposedAt,
+    });
+    const sameMillisecond = buildAgentForest(
+      [],
+      [descriptor],
+      [
+        task({
+          id: 'task-new',
+          agentId: 'agent-1',
+          status: 'running',
+          detached: true,
+          started_at: disposedAt,
+        }),
+      ],
+    );
+    expect(sameMillisecond.byId['agent-1']).toMatchObject({
+      status: 'unknown',
+      busy: false,
+      toolCallCount: 0,
+    });
+
+    const strictlyLater = '2026-01-01T00:02:00.001Z';
+    const resumed = buildAgentForest(
+      [],
+      [descriptor],
+      [
+        task({
+          id: 'task-newer',
+          agentId: 'agent-1',
+          status: 'running',
+          detached: true,
+          started_at: strictlyLater,
+        }),
+      ],
+    );
+    expect(resumed.byId['agent-1']).toMatchObject({
+      status: 'background',
+      busy: true,
+      startedAt: strictlyLater,
+    });
+  });
+
+  it('rejects untimed and same-millisecond live terminals for a newer task generation', () => {
+    const current = task({
+      id: 'task-current',
+      agentId: 'agent-1',
+      status: 'running',
+      detached: true,
+      started_at: '2026-01-01T00:03:00.000Z',
+      summary: 'current run',
+    });
+    const old = task({
+      id: 'task-old',
+      agentId: 'agent-1',
+      status: 'completed',
+      started_at: '2026-01-01T00:01:00.000Z',
+      completed_at: '2026-01-01T00:02:00.000Z',
+      summary: 'old task',
+    });
+    const staleTerminals = [
+      live({
+        subagentId: 'agent-1',
+        name: 'Live identity',
+        status: 'failed',
+        error: 'untimed stale failure',
+      }),
+      live({
+        subagentId: 'agent-1',
+        name: 'Live identity',
+        status: 'completed',
+        startedAt: '2026-01-01T00:01:00.000Z',
+        endedAt: '2026-01-01T00:03:00.000Z',
+        summary: 'same-millisecond stale completion',
+      }),
+    ];
+
+    for (const tasks of [[old, current], [current, old]]) {
+      for (const staleTerminal of staleTerminals) {
+        const node = buildAgentForest([staleTerminal], undefined, tasks).byId['agent-1']!;
+        expect(node).toMatchObject({
+          name: 'Live identity',
+          status: 'background',
+          busy: true,
+          startedAt: '2026-01-01T00:03:00.000Z',
+          summary: 'current run',
+        });
+        expect(node.endedAt).toBeUndefined();
+        expect(node.error).toBeUndefined();
+      }
+    }
+  });
+
+  it('requires matching task terminal evidence for a task-bound current generation', () => {
+    const current = task({
+      id: 'task-current',
+      agentId: 'agent-1',
+      status: 'running',
+      detached: true,
+      started_at: '2026-01-01T00:03:00.000Z',
+      model: 'current-model',
+      thinking_effort: 'high',
+      summary: 'current run',
+    });
+    const liveTerminal = live({
+      subagentId: 'agent-1',
+      name: 'Live identity',
+      status: 'failed',
+      startedAt: '2026-01-01T00:01:00.000Z',
+      endedAt: '2026-01-01T00:04:00.000Z',
+      model: 'stale-live-model',
+      thinkingEffort: 'low',
+      contextTokens: 999,
+      maxContextTokens: 1_000,
+      usage: {
+        total: { inputOther: 9, output: 9, inputCacheRead: 9, inputCacheCreation: 9 },
+      },
+      toolCallCount: 9,
+      error: 'late identity-free failure',
+    });
+    const rosterTerminal = roster({
+      agentId: 'agent-1',
+      parentAgentId: 'main',
+      name: 'Roster identity',
+      status: 'completed',
+      startedAt: '2026-01-01T00:01:00.000Z',
+      endedAt: '2026-01-01T00:04:00.000Z',
+      model: 'stale-roster-model',
+      thinkingEffort: 'low',
+      contextTokens: 888,
+      maxContextTokens: 2_000,
+      usage: {
+        total: { inputOther: 8, output: 8, inputCacheRead: 8, inputCacheCreation: 8 },
+      },
+      busy: false,
+      toolCallCount: 8,
+      summary: 'late identity-free completion',
+    });
+
+    const fromLive = buildAgentForest([liveTerminal], undefined, [current]).byId['agent-1']!;
+    const fromRoster = buildAgentForest([], [rosterTerminal], [current]).byId['agent-1']!;
+    for (const node of [fromLive, fromRoster]) {
+      expect(node).toMatchObject({
+        status: 'background',
+        busy: true,
+        model: 'current-model',
+        thinkingEffort: 'high',
+        toolCallCount: 0,
+        startedAt: '2026-01-01T00:03:00.000Z',
+        summary: 'current run',
+      });
+      expect(node.contextTokens).toBeUndefined();
+      expect(node.maxContextTokens).toBeUndefined();
+      expect(node.usage).toBeUndefined();
+      expect(node.endedAt).toBeUndefined();
+      expect(node.error).toBeUndefined();
+    }
+    expect(fromLive.name).toBe('Live identity');
+    expect(fromRoster.name).toBe('Roster identity');
+    expect(fromRoster.parentAgentId).toBe('main');
+
+    const legacy = buildAgentForest(
+      [
+        live({
+          subagentId: 'agent-legacy',
+          status: 'completed',
+          startedAt: '2026-01-01T00:01:00.000Z',
+          endedAt: '2026-01-01T00:04:00.000Z',
+          summary: 'legacy completion',
+        }),
+      ],
+      [
+        roster({
+          agentId: 'agent-legacy',
+          status: 'running',
+          startedAt: '2026-01-01T00:01:00.000Z',
+        }),
+      ],
+    );
+    expect(legacy.byId['agent-legacy']).toMatchObject({
+      status: 'completed',
+      busy: false,
+      summary: 'legacy completion',
+    });
+  });
+
+  it('merges only run fields from the accepted generation regardless of task order', () => {
+    const current = task({
+      id: 'task-current',
+      agentId: 'agent-1',
+      status: 'running',
+      detached: true,
+      started_at: '2026-01-01T00:03:00.000Z',
+      summary: 'current run',
+    });
+    const old = task({
+      id: 'task-old',
+      agentId: 'agent-1',
+      status: 'completed',
+      started_at: '2026-01-01T00:01:00.000Z',
+      completed_at: '2026-01-01T00:02:00.000Z',
+      summary: 'old task',
+    });
+    const oldDescriptor = roster({
+      agentId: 'agent-1',
+      parentAgentId: 'main',
+      name: 'Roster identity',
+      label: 'Roster label',
+      status: 'failed',
+      busy: false,
+      toolCallCount: 9,
+      startedAt: '2026-01-01T00:01:00.000Z',
+      endedAt: '2026-01-01T00:02:00.000Z',
+      summary: 'old descriptor',
+      error: 'old descriptor error',
+    });
+
+    for (const tasks of [[old, current], [current, old]]) {
+      const node = buildAgentForest([], [oldDescriptor], tasks).byId['agent-1']!;
+      expect(node).toMatchObject({
+        parentAgentId: 'main',
+        name: 'Roster identity',
+        label: 'Roster label',
+        status: 'background',
+        busy: true,
+        toolCallCount: 0,
+        startedAt: '2026-01-01T00:03:00.000Z',
+        summary: 'current run',
+      });
+      expect(node.endedAt).toBeUndefined();
+      expect(node.error).toBeUndefined();
+    }
+  });
+
+  it('clears terminal run fields atomically when live evidence starts a newer generation', () => {
+    const forest = buildAgentForest(
+      [
+        live({
+          subagentId: 'agent-1',
+          status: 'running',
+          startedAt: '2026-01-01T00:03:00.000Z',
+        }),
+      ],
+      [
+        roster({
+          agentId: 'agent-1',
+          status: 'failed',
+          model: 'old-model',
+          thinkingEffort: 'high',
+          contextTokens: 700,
+          maxContextTokens: 8_000,
+          usage: {
+            total: { inputOther: 7, output: 7, inputCacheRead: 7, inputCacheCreation: 7 },
+          },
+          busy: false,
+          toolCallCount: 7,
+          startedAt: '2026-01-01T00:01:00.000Z',
+          endedAt: '2026-01-01T00:02:00.000Z',
+          summary: 'old summary',
+          error: 'old error',
+        }),
+      ],
+    );
+
+    expect(forest.byId['agent-1']).toMatchObject({
+      status: 'running',
+      busy: true,
+      toolCallCount: 0,
+      startedAt: '2026-01-01T00:03:00.000Z',
+    });
+    expect(forest.byId['agent-1']!.model).toBeUndefined();
+    expect(forest.byId['agent-1']!.thinkingEffort).toBeUndefined();
+    expect(forest.byId['agent-1']!.contextTokens).toBeUndefined();
+    expect(forest.byId['agent-1']!.maxContextTokens).toBeUndefined();
+    expect(forest.byId['agent-1']!.usage).toBeUndefined();
+    expect(forest.byId['agent-1']!.endedAt).toBeUndefined();
+    expect(forest.byId['agent-1']!.summary).toBeUndefined();
+    expect(forest.byId['agent-1']!.error).toBeUndefined();
+  });
+
+  it('keeps terminal evidence across disposal and accepts only a newer active generation', () => {
+    const terminal = task({
+      id: 'task-old',
+      agentId: 'agent-1',
+      status: 'completed',
+      started_at: '2026-01-01T00:00:00.000Z',
+    });
+    const descriptor = roster({
+      agentId: 'agent-1',
+      status: 'unknown',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      disposedAt: '2026-01-01T00:02:00.000Z',
+    });
+
+    expect(buildAgentForest([], [descriptor], [terminal]).byId['agent-1']).toMatchObject({
+      status: 'completed',
+      busy: false,
+    });
+
+    const resumed = buildAgentForest(
+      [
+        live({
+          subagentId: 'agent-1',
+          status: 'running',
+          startedAt: '2026-01-01T00:03:00.000Z',
+        }),
+      ],
+      [descriptor],
+      [terminal],
+    );
+    expect(resumed.byId['agent-1']).toMatchObject({
+      status: 'running',
+      busy: true,
+      startedAt: '2026-01-01T00:03:00.000Z',
+    });
+    expect(resumed.byId['agent-1']!.endedAt).toBeUndefined();
+  });
+
+  it.each([false, true])(
+    'lets a live suspended state outrank same-run task activity (detached=%s)',
+    (detached) => {
+      const startedAt = '2026-01-01T00:01:00.000Z';
+      const forest = buildAgentForest(
+        [live({ subagentId: 'agent-1', status: 'suspended', startedAt })],
+        [roster({ agentId: 'agent-1', parentAgentId: 'main' })],
+        [task({ agentId: 'agent-1', status: 'running', detached, started_at: startedAt })],
+      );
+
+      expect(forest.byId['agent-1']).toMatchObject({ status: 'suspended', busy: true });
+    },
+  );
+
+  it('reopens a resumed agent only when the new run starts after terminal evidence', () => {
+    const completed = task({
+      id: 'task-old',
+      agentId: 'agent-1',
+      status: 'completed',
+      started_at: '2026-01-01T00:00:00.000Z',
+      completed_at: '2026-01-01T00:01:00.000Z',
+      summary: 'old result',
+    });
+    const resumed = task({
+      id: 'task-new',
+      agentId: 'agent-1',
+      status: 'running',
+      detached: true,
+      started_at: '2026-01-01T00:02:00.000Z',
+      summary: 'new run',
+    });
+
+    for (const tasks of [[completed, resumed], [resumed, completed]]) {
+      const forest = buildAgentForest([], undefined, tasks);
+      expect(forest.byId['agent-1']).toMatchObject({
+        status: 'background',
+        busy: true,
+        startedAt: '2026-01-01T00:02:00.000Z',
+        summary: 'new run',
+      });
+      expect(forest.byId['agent-1']!.endedAt).toBeUndefined();
+    }
+
+    const settled = task({
+      id: 'task-current',
+      agentId: 'agent-1',
+      status: 'killed',
+      started_at: '2026-01-01T00:02:00.000Z',
+      completed_at: '2026-01-01T00:03:00.000Z',
+    });
+    const staleRunning = task({
+      id: 'task-current',
+      agentId: 'agent-1',
+      status: 'running',
+      detached: true,
+      started_at: '2026-01-01T00:02:00.000Z',
+    });
+    for (const tasks of [[settled, staleRunning], [staleRunning, settled]]) {
+      expect(buildAgentForest([], undefined, tasks).byId['agent-1']).toMatchObject({
+        status: 'cancelled',
+        busy: false,
+      });
+    }
+
+    const liveResume = buildAgentForest(
+      [
+        live({
+          subagentId: 'agent-1',
+          status: 'running',
+          startedAt: '2026-01-01T00:02:00.000Z',
+        }),
+      ],
+      undefined,
+      [completed],
+    );
+    expect(liveResume.byId['agent-1']).toMatchObject({ status: 'running', busy: true });
+    expect(liveResume.byId['agent-1']!.endedAt).toBeUndefined();
+  });
+
+  it('uses a stable task-id tie-break for exact task lifecycle ties', () => {
+    const taskA = task({
+      id: 'task-a',
+      agentId: 'agent-1',
+      status: 'completed',
+      model: 'model-a',
+      started_at: '2026-01-01T00:01:00.000Z',
+      completed_at: '2026-01-01T00:02:00.000Z',
+      summary: 'result-a',
+    });
+    const taskB = task({
+      id: 'task-b',
+      agentId: 'agent-1',
+      status: 'completed',
+      model: 'model-b',
+      started_at: '2026-01-01T00:01:00.000Z',
+      completed_at: '2026-01-01T00:02:00.000Z',
+      summary: 'result-b',
+    });
+
+    for (const tasks of [[taskA, taskB], [taskB, taskA]]) {
+      expect(buildAgentForest([], undefined, tasks).byId['agent-1']).toMatchObject({
+        status: 'completed',
+        model: 'model-b',
+        summary: 'result-b',
+      });
+    }
+  });
+
+  it('lets rejected roster identity override without leaking run-scoped fields', () => {
     const forest = buildAgentForest(
       [],
       [
@@ -354,21 +837,21 @@ describe('buildAgentForest', () => {
           status: 'completed',
           model: 'task-model',
           thinking_effort: 'high',
-          started_at: '2026-01-01T00:00:00.000Z',
-          completed_at: '2026-01-01T01:00:00.000Z',
+          started_at: '2026-02-01T00:00:00.000Z',
+          completed_at: '2026-02-01T01:00:00.000Z',
           summary: 'task summary',
         }),
       ],
     );
     const node = forest.byId['agent-1']!;
     expect(node.parentAgentId).toBe('main');
-    expect(node.status).toBe('failed');
+    expect(node.status).toBe('completed');
     expect(node.busy).toBe(false);
-    expect(node.model).toBe('roster-model');
-    expect(node.thinkingEffort).toBe('low');
+    expect(node.model).toBe('task-model');
+    expect(node.thinkingEffort).toBe('high');
     expect(node.startedAt).toBe('2026-02-01T00:00:00.000Z');
     expect(node.endedAt).toBe('2026-02-01T01:00:00.000Z');
-    expect(node.summary).toBe('roster summary');
+    expect(node.summary).toBe('task summary');
   });
 
   it('synthesizes main from any parentAgentId=main source, but keeps ghost parents as orphans', () => {
@@ -466,20 +949,20 @@ describe('buildAgentForest', () => {
     expect(two.byId['agent-2']!.busy).toBe(false);
   });
 
-  it('lets live status override a stale roster busy flag', () => {
-    const running = buildAgentForest(
+  it('keeps terminal evidence over conflicting active hints', () => {
+    const rosterTerminal = buildAgentForest(
       [live({ subagentId: 'agent-1', name: 'Child', status: 'running' })],
       [roster({ agentId: 'agent-1', parentAgentId: 'main', status: 'completed', busy: false })],
     );
-    expect(running.byId['agent-1']!.status).toBe('running');
-    expect(running.byId['agent-1']!.busy).toBe(true);
+    expect(rosterTerminal.byId['agent-1']!.status).toBe('completed');
+    expect(rosterTerminal.byId['agent-1']!.busy).toBe(false);
 
-    const done = buildAgentForest(
+    const liveTerminal = buildAgentForest(
       [live({ subagentId: 'agent-1', name: 'Child', status: 'completed' })],
       [roster({ agentId: 'agent-1', parentAgentId: 'main', status: 'running', busy: true })],
     );
-    expect(done.byId['agent-1']!.status).toBe('completed');
-    expect(done.byId['agent-1']!.busy).toBe(false);
+    expect(liveTerminal.byId['agent-1']!.status).toBe('completed');
+    expect(liveTerminal.byId['agent-1']!.busy).toBe(false);
   });
 });
 

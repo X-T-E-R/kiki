@@ -433,43 +433,10 @@ export const transcriptOpBatchSchema = z.object({
 
 export const transcriptGradeSchema = z.enum(['off', 'turn', 'block', 'delta']);
 
-/**
- * Transcript op-batch sequence number. Semantics (the protocol contract all
- * peers implement against):
- *
- *  - Scope: per (session, agent). Starts at 1; the server increments it once
- *    per DISPATCHED OP BATCH (not per op), so batch seqs are consecutive.
- *  - Watermark: a `seq` on `transcript.reset` or on the REST transcript
- *    response means "this state includes every batch with seq <= N".
- *  - Catch-up: a client holding watermark N asks for batches with seq > N
- *    (`GET .../transcript/ops?since_seq=N`, or the `transcript_since`
- *    subscription cursor). A `complete: false` catch-up response means the
- *    server's journal no longer reaches back to N — the client MUST fall
- *    back to a full REST refresh.
- *  - Legacy: seq is optional on every shape. A peer that omits it speaks the
- *    pre-seq protocol; consumers fall back to loss-signal-driven refreshes.
- */
 export const transcriptSeqSchema = z.number().int().nonnegative();
 
-/**
- * Per-session grade map: `'*'` is the default, explicit agent ids override.
- * Record<agentId|'*', grade>.
- */
 export const transcriptGradeSpecSchema = z.record(z.string(), transcriptGradeSchema);
 
-/**
- * Wire payload of the v1 WS `subscribe_v2` control frame — the ONLY carrier of
- * transcript subscriptions: one session, its grade map, and the optional
- * per-agent op-batch seq cursor. This contract is owned by THIS package
- * (transcript types never live in `@moonshot-ai/protocol`); the v1 connection
- * layer validates the payload with this schema and answers malformed frames
- * with an ack error.
- *
- * `transcript_since`: `Record<agentId|'*', seq>` — the caller's last applied
- * op-batch seq per agent. When present and the server's journal still covers
- * it, the server replays the missing batches instead of sending a baseline
- * `transcript.reset`; otherwise it falls back to the reset.
- */
 export const transcriptSubscribeV2PayloadSchema = z.object({
   session_id: z.string().min(1),
   transcript: transcriptGradeSpecSchema,
@@ -540,16 +507,13 @@ export const transcriptResponseSchema = z.object({
   seq: transcriptSeqSchema.optional(),
 });
 
-/**
- * `GET /v1/sessions/{session_id}/transcript/ops` response: journaled op
- * batches with seq > `since_seq`, oldest first. `complete: false` means the
- * journal does not reach back to `since_seq` (or the session is not live) —
- * the caller must fall back to a full transcript refresh.
- */
 export const transcriptOpsCatchupResponseSchema = z.object({
   agent_id: agentIdSchema,
   batches: z.array(
-    z.object({ seq: transcriptSeqSchema, ops: z.array(transcriptOperationSchema) }),
+    z.object({
+      seq: transcriptSeqSchema,
+      ops: z.array(transcriptOperationSchema),
+    }),
   ),
   latest_seq: transcriptSeqSchema,
   complete: z.boolean(),

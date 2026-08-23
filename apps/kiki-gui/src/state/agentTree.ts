@@ -7,16 +7,22 @@
 export const MAIN_AGENT_ID = 'main';
 
 /**
- * `running | suspended | completed | failed` match `SubagentBlock.status`.
- * `cancelled` and `background` are roster/task adapter extensions.
+ * Snapshot/live states plus the detached-task `background` presentation state.
  */
 export type AgentStatus =
+  | 'unknown'
   | 'running'
   | 'suspended'
   | 'completed'
   | 'failed'
   | 'cancelled'
   | 'background';
+
+const STATUS_AUTHORITY = {
+  roster: 1,
+  live: 2,
+  task: 3,
+} as const;
 
 export interface AgentTokenUsage {
   readonly inputOther: number;
@@ -75,6 +81,7 @@ export interface AgentRosterDescriptor {
   readonly toolCallCount?: number;
   readonly startedAt?: string;
   readonly endedAt?: string;
+  readonly disposedAt?: string;
   readonly summary?: string;
   readonly error?: string;
 }
@@ -201,6 +208,11 @@ interface DraftNode {
   maxContextTokens: number | undefined;
   usage: AgentUsageSummary | undefined;
   status: AgentStatus | undefined;
+  statusAuthority: number;
+  statusStartedAt: number | undefined;
+  statusEndedAt: number | undefined;
+  taskId: string | undefined;
+  disposedAt: number | undefined;
   busy: boolean | undefined;
   toolCallCount: number;
   startedAt: string | undefined;
@@ -387,9 +399,8 @@ export function buildAgentForest(
 ): AgentForest {
   const drafts = new Map<string, DraftNode>();
 
-  for (const task of taskItems ?? []) {
-    const agentId = taskAgentId(task);
-    if (agentId === undefined) continue;
+  for (const task of latestTasksByAgent(taskItems ?? [])) {
+    const agentId = taskAgentId(task)!;
     const draft = ensureDraft(drafts, agentId);
     applyTaskFallback(draft, task);
   }
@@ -454,7 +465,7 @@ export function buildAgentForest(
   for (const draft of drafts.values()) {
     const parentAgentId = parentOf.get(draft.agentId);
     const name = present(draft.name) ? draft.name : draft.agentId;
-    const status = draft.status ?? (draft.endedAt !== undefined ? 'completed' : 'running');
+    const status = draft.status ?? 'unknown';
     const node: AgentTreeNode = {
       agentId: draft.agentId,
       parentAgentId,
@@ -660,6 +671,11 @@ function ensureDraft(drafts: Map<string, DraftNode>, agentId: string): DraftNode
     maxContextTokens: undefined,
     usage: undefined,
     status: undefined,
+    statusAuthority: 0,
+    statusStartedAt: undefined,
+    statusEndedAt: undefined,
+    taskId: undefined,
+    disposedAt: undefined,
     busy: undefined,
     toolCallCount: 0,
     startedAt: undefined,
@@ -673,16 +689,25 @@ function ensureDraft(drafts: Map<string, DraftNode>, agentId: string): DraftNode
 
 function applyTaskFallback(draft: DraftNode, task: AgentTaskItem): void {
   const status = normalizeStatus(task.status, task.detached === true);
+  const startedAt = firstPresent(task.startedAt, task.started_at);
+  const endedAt = firstPresent(task.endedAt, task.completed_at);
   draft.parentAgentId = draft.parentAgentId ?? cleanId(task.parentAgentId ?? task.parent_agent_id);
   draft.parentToolCallId =
     draft.parentToolCallId ?? cleanId(task.parentToolCallId ?? task.parent_tool_call_id);
   draft.name = draft.name ?? firstPresent(task.name, task.description);
-  draft.model = draft.model ?? firstPresent(task.model);
-  draft.thinkingEffort = draft.thinkingEffort ?? firstPresent(task.thinkingEffort, task.thinking_effort);
-  draft.status = draft.status ?? status;
-  draft.startedAt = draft.startedAt ?? firstPresent(task.startedAt, task.started_at);
-  draft.endedAt = draft.endedAt ?? firstPresent(task.endedAt, task.completed_at);
+  const accepted =
+    status === undefined
+      ? draft.status === undefined && draft.disposedAt === undefined
+      : applyStatus(draft, status, STATUS_AUTHORITY.task, startedAt, endedAt).accepted;
+  if (!accepted) return;
+  draft.model = firstPresent(task.model) ?? draft.model;
+  draft.thinkingEffort = firstPresent(task.thinkingEffort, task.thinking_effort) ?? draft.thinkingEffort;
+  draft.startedAt ??= startedAt;
+  draft.endedAt ??= endedAt;
   draft.summary = draft.summary ?? firstPresent(task.summary, task.output_preview);
+  if (status !== undefined && status !== 'unknown') {
+    draft.taskId = cleanId(task.id) ?? draft.taskId;
+  }
   if (task.detached === true && draft.busy === undefined && status === 'background') {
     draft.busy = true;
   }
@@ -695,19 +720,38 @@ function applyRoster(draft: DraftNode, entry: AgentRosterDescriptor): void {
   draft.parentToolCallId = firstPresent(entry.parentToolCallId) ?? draft.parentToolCallId;
   draft.name = firstPresent(entry.name, entry.label) ?? draft.name;
   draft.label = firstPresent(entry.label) ?? draft.label;
-  // Roster is the authority over task fallback when it actually has a value.
+  const disposedAt = parseStatusTimestamp(entry.disposedAt);
+  if (disposedAt !== undefined && (draft.disposedAt === undefined || disposedAt > draft.disposedAt)) {
+    draft.disposedAt = disposedAt;
+    if (
+      draft.status !== undefined &&
+      isActiveStatus(draft.status) &&
+      (draft.statusStartedAt === undefined || draft.statusStartedAt <= disposedAt)
+    ) {
+      draft.status = 'unknown';
+      draft.statusAuthority = STATUS_AUTHORITY.roster;
+      clearRunFields(draft);
+      draft.busy = false;
+    }
+  }
+  const status = normalizeStatus(entry.status);
+  const accepted =
+    status === undefined
+      ? draft.status === undefined && draft.disposedAt === undefined
+      : applyStatus(draft, status, STATUS_AUTHORITY.roster, entry.startedAt, entry.endedAt)
+          .accepted;
+  if (!accepted) return;
   draft.model = firstPresent(entry.model) ?? draft.model;
   draft.thinkingEffort = firstPresent(entry.thinkingEffort) ?? draft.thinkingEffort;
   draft.contextTokens = entry.contextTokens ?? draft.contextTokens;
   draft.maxContextTokens = entry.maxContextTokens ?? draft.maxContextTokens;
   draft.usage = entry.usage ?? draft.usage;
-  draft.status = normalizeStatus(entry.status) ?? draft.status;
   if (entry.busy !== undefined) draft.busy = entry.busy;
   if (entry.toolCallCount !== undefined) {
     draft.toolCallCount = Math.max(draft.toolCallCount, entry.toolCallCount);
   }
-  draft.startedAt = firstPresent(entry.startedAt) ?? draft.startedAt;
-  draft.endedAt = firstPresent(entry.endedAt) ?? draft.endedAt;
+  draft.startedAt ??= firstPresent(entry.startedAt);
+  draft.endedAt ??= firstPresent(entry.endedAt);
   draft.summary = firstPresent(entry.summary) ?? draft.summary;
   draft.error = firstPresent(entry.error) ?? draft.error;
 }
@@ -717,22 +761,24 @@ function applyLiveBlock(draft: DraftNode, block: AgentLiveSource): void {
   draft.parentToolCallId = firstPresent(block.parentToolCallId) ?? draft.parentToolCallId;
   draft.name = firstPresent(block.name) ?? draft.name;
   draft.label = firstPresent(block.label) ?? draft.label;
+  const status = normalizeStatus(block.status);
+  const accepted =
+    status === undefined
+      ? draft.status === undefined && draft.disposedAt === undefined
+      : applyStatus(draft, status, STATUS_AUTHORITY.live, block.startedAt, block.endedAt)
+          .accepted;
+  if (!accepted) return;
   draft.model = firstPresent(block.model) ?? draft.model;
   draft.thinkingEffort = firstPresent(block.thinkingEffort) ?? draft.thinkingEffort;
   draft.contextTokens = block.contextTokens ?? draft.contextTokens;
   draft.maxContextTokens = block.maxContextTokens ?? draft.maxContextTokens;
   draft.usage = block.usage ?? draft.usage;
-  const status = normalizeStatus(block.status);
-  if (status !== undefined) {
-    draft.status = status;
-    // Live status is authoritative over a stale roster/task busy bit.
-    draft.busy = isActiveStatus(status);
-  }
+  if (status !== undefined) draft.busy = isActiveStatus(status);
   if (block.toolCallCount !== undefined) {
     draft.toolCallCount = Math.max(draft.toolCallCount, block.toolCallCount);
   }
-  draft.startedAt = firstPresent(block.startedAt) ?? draft.startedAt;
-  draft.endedAt = firstPresent(block.endedAt) ?? draft.endedAt;
+  draft.startedAt ??= firstPresent(block.startedAt);
+  draft.endedAt ??= firstPresent(block.endedAt);
   draft.summary = firstPresent(block.summary) ?? draft.summary;
   draft.error = firstPresent(block.error) ?? draft.error;
 }
@@ -772,11 +818,90 @@ function taskAgentId(task: AgentTaskItem): string | undefined {
   return cleanId(task.agentId);
 }
 
+function latestTasksByAgent(tasks: readonly AgentTaskItem[]): readonly AgentTaskItem[] {
+  const latest = new Map<string, AgentTaskItem>();
+  for (const task of tasks) {
+    const agentId = taskAgentId(task);
+    if (agentId === undefined) continue;
+    const current = latest.get(agentId);
+    if (current === undefined || taskRunIsNewer(task, current)) {
+      latest.set(agentId, task);
+    }
+  }
+  return [...latest.values()];
+}
+
+function taskRunIsNewer(candidate: AgentTaskItem, current: AgentTaskItem): boolean {
+  const candidateStartedAt = parseStatusTimestamp(firstPresent(candidate.startedAt, candidate.started_at));
+  const currentStartedAt = parseStatusTimestamp(firstPresent(current.startedAt, current.started_at));
+  const candidateEndedAt = parseStatusTimestamp(firstPresent(candidate.endedAt, candidate.completed_at));
+  const currentEndedAt = parseStatusTimestamp(firstPresent(current.endedAt, current.completed_at));
+  const candidateId = cleanId(candidate.id);
+  const currentId = cleanId(current.id);
+  const distinctTasks =
+    candidateId !== undefined && currentId !== undefined && candidateId !== currentId;
+  if (distinctTasks) {
+    if (candidateStartedAt !== undefined && currentEndedAt !== undefined && candidateStartedAt > currentEndedAt) {
+      return true;
+    }
+    if (currentStartedAt !== undefined && candidateEndedAt !== undefined && currentStartedAt > candidateEndedAt) {
+      return false;
+    }
+  }
+  if (candidateStartedAt !== currentStartedAt) {
+    if (candidateStartedAt === undefined) return false;
+    if (currentStartedAt === undefined) return true;
+    return candidateStartedAt > currentStartedAt;
+  }
+  const candidateStatus = normalizeStatus(candidate.status, candidate.detached === true);
+  const currentStatus = normalizeStatus(current.status, current.detached === true);
+  const candidateRank = candidateStatus === undefined ? -1 : statusRank(candidateStatus);
+  const currentRank = currentStatus === undefined ? -1 : statusRank(currentStatus);
+  if (candidateRank !== currentRank) return candidateRank > currentRank;
+  if (candidateEndedAt !== currentEndedAt) {
+    if (candidateEndedAt === undefined) return false;
+    if (currentEndedAt === undefined) return true;
+    return candidateEndedAt > currentEndedAt;
+  }
+  if (candidateId !== currentId) {
+    if (candidateId === undefined) return false;
+    if (currentId === undefined) return true;
+    return candidateId > currentId;
+  }
+  return taskTieKey(candidate) > taskTieKey(current);
+}
+
+function taskTieKey(task: AgentTaskItem): string {
+  return JSON.stringify([
+    cleanId(task.id) ?? '',
+    task.kind ?? '',
+    task.description ?? '',
+    task.name ?? '',
+    task.status ?? '',
+    task.model ?? '',
+    firstPresent(task.thinkingEffort, task.thinking_effort) ?? '',
+    firstPresent(task.startedAt, task.started_at) ?? '',
+    firstPresent(task.endedAt, task.completed_at) ?? '',
+    firstPresent(task.summary, task.output_preview) ?? '',
+    cleanId(task.parentAgentId ?? task.parent_agent_id) ?? '',
+    cleanId(task.parentToolCallId ?? task.parent_tool_call_id) ?? '',
+    task.detached === true,
+  ]);
+}
+
+function parseStatusTimestamp(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 function normalizeStatus(raw: string | undefined, detached = false): AgentStatus | undefined {
   if (!present(raw)) {
     return detached ? 'background' : undefined;
   }
   switch (raw) {
+    case 'unknown':
+      return 'unknown';
     case 'running':
     case 'queued':
     case 'working':
@@ -787,6 +912,8 @@ function normalizeStatus(raw: string | undefined, detached = false): AgentStatus
     case 'completed':
       return 'completed';
     case 'failed':
+    case 'timed_out':
+    case 'lost':
       return 'failed';
     case 'cancelled':
     case 'killed':
@@ -796,6 +923,105 @@ function normalizeStatus(raw: string | undefined, detached = false): AgentStatus
     default:
       return detached ? 'background' : undefined;
   }
+}
+
+function statusRank(status: AgentStatus): number {
+  if (status === 'unknown') return 0;
+  if (status === 'completed' || status === 'failed' || status === 'cancelled') return 2;
+  return 1;
+}
+
+function activeStatusSpecificity(status: AgentStatus): number {
+  return status === 'suspended' ? 2 : isActiveStatus(status) ? 1 : 0;
+}
+
+function sourceGenerationIsDisposed(
+  draft: DraftNode,
+  status: AgentStatus,
+  startedAt: string | undefined,
+): boolean {
+  if (statusRank(status) === 2 || draft.disposedAt === undefined) return false;
+  const sourceStartedAt = parseStatusTimestamp(startedAt);
+  return sourceStartedAt === undefined || sourceStartedAt <= draft.disposedAt;
+}
+
+function clearRunFields(draft: DraftNode): void {
+  draft.model = undefined;
+  draft.thinkingEffort = undefined;
+  draft.contextTokens = undefined;
+  draft.maxContextTokens = undefined;
+  draft.usage = undefined;
+  draft.busy = undefined;
+  draft.toolCallCount = 0;
+  draft.startedAt = undefined;
+  draft.endedAt = undefined;
+  draft.summary = undefined;
+  draft.error = undefined;
+}
+
+function applyStatus(
+  draft: DraftNode,
+  status: AgentStatus,
+  authority: number,
+  startedAt?: string,
+  endedAt?: string,
+): { readonly accepted: boolean; readonly newGeneration: boolean } {
+  const currentRank = draft.status === undefined ? -1 : statusRank(draft.status);
+  const nextRank = statusRank(status);
+  const nextStartedAt = parseStatusTimestamp(startedAt);
+  const nextEndedAt = parseStatusTimestamp(endedAt);
+  if (sourceGenerationIsDisposed(draft, status, startedAt)) {
+    return { accepted: false, newGeneration: false };
+  }
+  const comparableRuns = currentRank > 0 && nextRank > 0;
+  const startsAfterDisposal =
+    isActiveStatus(status) &&
+    nextStartedAt !== undefined &&
+    draft.disposedAt !== undefined &&
+    nextStartedAt > draft.disposedAt &&
+    (draft.statusStartedAt === undefined || draft.statusStartedAt <= draft.disposedAt);
+  const nextRunIsNewer =
+    startsAfterDisposal ||
+    (comparableRuns &&
+      nextStartedAt !== undefined &&
+      draft.statusEndedAt !== undefined &&
+      nextStartedAt > draft.statusEndedAt);
+  const identityFreeTerminalForTask =
+    authority < STATUS_AUTHORITY.task && nextRank === 2 && draft.taskId !== undefined;
+  if (identityFreeTerminalForTask) return { accepted: false, newGeneration: false };
+  const currentRunIsNewer =
+    comparableRuns &&
+    draft.statusStartedAt !== undefined &&
+    nextEndedAt !== undefined &&
+    draft.statusStartedAt >= nextEndedAt;
+  if (!nextRunIsNewer && currentRunIsNewer) {
+    return { accepted: false, newGeneration: false };
+  }
+  const currentSpecificity =
+    draft.status === undefined ? -1 : activeStatusSpecificity(draft.status);
+  const nextSpecificity = activeStatusSpecificity(status);
+  const equalRankIsLowerPriority =
+    nextRank === currentRank &&
+    (nextRank === 1
+      ? nextSpecificity < currentSpecificity ||
+        (nextSpecificity === currentSpecificity && authority < draft.statusAuthority)
+      : authority < draft.statusAuthority);
+  const lowerPriority = nextRank < currentRank || equalRankIsLowerPriority;
+  if (!nextRunIsNewer && lowerPriority) {
+    return { accepted: false, newGeneration: false };
+  }
+  if (nextRunIsNewer) {
+    clearRunFields(draft);
+    draft.taskId = undefined;
+    draft.statusStartedAt = nextStartedAt;
+    draft.statusEndedAt = nextEndedAt;
+  } else if (nextRank > 0) {
+    draft.statusStartedAt ??= nextStartedAt;
+    draft.statusEndedAt = nextEndedAt ?? draft.statusEndedAt;
+  }
+  draft.status = status;
+  draft.statusAuthority = authority;
+  return { accepted: true, newGeneration: nextRunIsNewer };
 }
 
 function isActiveStatus(status: AgentStatus): boolean {

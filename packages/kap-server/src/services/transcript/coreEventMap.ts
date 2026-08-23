@@ -24,6 +24,8 @@ import type { WarningIssued } from '@moonshot-ai/agent-core-v2/agent/profile/pro
 import type {
   PromptAborted,
   PromptCompleted,
+  PromptQueued,
+  PromptReplaced,
   PromptSteered,
 } from '@moonshot-ai/agent-core-v2/agent/prompt/promptService';
 import type {
@@ -53,26 +55,27 @@ import type {
   SubagentSpawned,
   SubagentStarted,
 } from '@moonshot-ai/agent-core-v2/session/subagent/mirrorAgentRun';
-import type {
-  AgentRef,
-  AgentUsageMeta,
-  StepHeader,
-  StepUsage,
-  TextFrame,
-  ToolCallFrame,
-  ToolFrameProgress,
-  TranscriptAttachment,
-  TranscriptFrame,
-  TranscriptInteraction,
-  TranscriptMarker,
-  TranscriptOperation,
-  TranscriptPrompt,
-  TranscriptTask,
-  TranscriptTodo,
-  TranscriptUsage,
-  TurnHeader,
-  TurnOrigin,
-  TurnState,
+import {
+  projectInteractionEndState,
+  type AgentRef,
+  type AgentUsageMeta,
+  type StepHeader,
+  type StepUsage,
+  type TextFrame,
+  type ToolCallFrame,
+  type ToolFrameProgress,
+  type TranscriptAttachment,
+  type TranscriptFrame,
+  type TranscriptInteraction,
+  type TranscriptMarker,
+  type TranscriptOperation,
+  type TranscriptPrompt,
+  type TranscriptTask,
+  type TranscriptTodo,
+  type TranscriptUsage,
+  type TurnHeader,
+  type TurnOrigin,
+  type TurnState,
 } from '@moonshot-ai/transcript';
 
 import { toLegacyPhase } from '../legacyStatus/legacyStatus';
@@ -92,6 +95,8 @@ type AgentActivityUpdatedEvent = { readonly type: 'agent.activity.updated' } & A
 type PromptCompletedEvent = { readonly type: 'prompt.completed' } & PromptCompleted;
 type PromptAbortedEvent = { readonly type: 'prompt.aborted' } & PromptAborted;
 type PromptSteeredEvent = { readonly type: 'prompt.steered' } & PromptSteered;
+type PromptQueuedEvent = { readonly type: 'prompt.queued' } & PromptQueued;
+type PromptReplacedEvent = { readonly type: 'prompt.replaced' } & PromptReplaced;
 
 export type ProjectorBusEvent =
   | PlanRevisionEvent
@@ -124,6 +129,8 @@ export type ProjectorBusEvent =
   | PromptCompletedEvent
   | PromptAbortedEvent
   | PromptSteeredEvent
+  | PromptQueuedEvent
+  | PromptReplacedEvent
   | ({ readonly type: 'hook.result' } & HookResult)
   | ({ readonly type: 'skill.activated' } & SkillActivated)
   | ({ readonly type: 'plugin_command.activated' } & PluginCommandActivated)
@@ -314,6 +321,10 @@ export class AgentTranscriptProjector {
         return this.onAgentActivityUpdated(event);
       case 'prompt.submitted':
         return this.onPromptSubmitted(event);
+      case 'prompt.queued':
+        return this.onPromptQueued(event);
+      case 'prompt.replaced':
+        return this.onPromptReplaced(event);
       case 'prompt.completed':
         return this.onPromptCompleted(event);
       case 'prompt.aborted':
@@ -1284,6 +1295,37 @@ export class AgentTranscriptProjector {
     return [{ op: 'prompt.upsert', prompt }];
   }
 
+  seedPrompt(prompt: TranscriptPrompt): TranscriptOperation[] {
+    this.prompts.set(prompt.promptId, prompt);
+    return [{ op: 'prompt.upsert', prompt }];
+  }
+
+  private onPromptQueued(event: PromptQueuedEvent): TranscriptOperation[] {
+    const prompt = this.upsertPrompt(event.promptId, (prev) => ({
+      promptId: event.promptId,
+      status: 'queued',
+      userMessageId: prev?.userMessageId,
+      content: projectPromptContentParts(event.content),
+      createdAt: prev?.createdAt ?? nowIso(),
+      finishedAt: prev?.finishedAt,
+      steeredAt: prev?.steeredAt,
+    }));
+    return [{ op: 'prompt.upsert', prompt }];
+  }
+
+  private onPromptReplaced(event: PromptReplacedEvent): TranscriptOperation[] {
+    const prompt = this.upsertPrompt(event.promptId, (prev) => ({
+      promptId: event.promptId,
+      status: prev?.status ?? 'queued',
+      userMessageId: prev?.userMessageId,
+      content: projectPromptContentParts(event.content),
+      createdAt: prev?.createdAt ?? event.replacedAt,
+      finishedAt: prev?.finishedAt,
+      steeredAt: prev?.steeredAt,
+    }));
+    return [{ op: 'prompt.upsert', prompt }];
+  }
+
   private onPromptCompleted(event: PromptCompletedEvent): TranscriptOperation[] {
     const prompt = this.upsertPrompt(event.promptId, (prev) => ({
       promptId: event.promptId,
@@ -1385,7 +1427,7 @@ export class AgentTranscriptProjector {
     const record = this.interactions.get(id);
     if (record === undefined) return [];
     this.interactions.delete(id);
-    const state = mapInteractionEndState(record.interactionKind, response);
+    const state = projectInteractionEndState(record.interactionKind, response);
     const ops: TranscriptOperation[] = [
       { op: 'interaction.upsert', interaction: { ...record, state, response } },
     ];
@@ -1469,18 +1511,6 @@ function mapTaskKind(kind: string): TranscriptTask['kind'] {
     default:
       return 'other';
   }
-}
-
-function mapInteractionEndState(
-  kind: 'approval' | 'question',
-  response: unknown,
-): TranscriptInteraction['state'] {
-  if (kind === 'question') return response === null ? 'dismissed' : 'answered';
-  const decision = (response as { decision?: unknown } | null | undefined)?.decision;
-  if (decision === 'approved' || decision === 'rejected' || decision === 'cancelled') {
-    return decision;
-  }
-  return 'cancelled';
 }
 
 const TODO_LIST_TOOL_NAME = 'TodoList';

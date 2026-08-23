@@ -59,6 +59,23 @@ describe('metaResponseSchema', () => {
     expect(metaResponseSchema.safeParse(bad).success).toBe(false);
   });
 
+  it('accepts an omitted transcript capability (old server) but rejects false', () => {
+    const parsed = metaResponseSchema.parse(sample);
+    expect(parsed.capabilities.transcript).toBeUndefined();
+
+    const withTranscript = metaResponseSchema.parse({
+      ...sample,
+      capabilities: { ...sample.capabilities, transcript: true },
+    });
+    expect(withTranscript.capabilities.transcript).toBe(true);
+
+    const bad = {
+      ...sample,
+      capabilities: { ...sample.capabilities, transcript: false },
+    };
+    expect(metaResponseSchema.safeParse(bad).success).toBe(false);
+  });
+
   it('normalizes started_at to UTC Z with millisecond precision', () => {
     const offsetForm = {
       ...sample,

@@ -9,5 +9,11 @@
     "types": ["node", "vite/client"],
     "noEmit": true
   },
-  "include": ["src", "vite", "vite.config.ts", "../../packages/protocol/src"]
+  "include": [
+    "src",
+    "vite",
+    "vite.config.ts",
+    "../../packages/protocol/src",
+    "../../packages/transcript/src"
+  ]
 }

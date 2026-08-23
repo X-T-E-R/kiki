@@ -1,6 +1,7 @@
 import type {
   AgentActivityState,
   ApprovalResponse,
+  ContextMessage,
   Event2,
   IAgentScopeHandle,
   IDisposable,
@@ -11,7 +12,10 @@ import type {
   SessionActivityState,
 } from '@moonshot-ai/agent-core-v2';
 import {
+  IAgentContextMemoryService,
   IAgentLifecycleService,
+  IAgentPromptService,
+  IAgentTaskService,
   IEventBus,
   IEventService,
   ISessionActivityView,
@@ -19,6 +23,7 @@ import {
   ISessionIndex,
   ISessionManager,
   MAIN_AGENT_ID,
+  foldLoopEvent,
   getLiveSessionById,
 } from '@moonshot-ai/agent-core-v2';
 import type {
@@ -36,6 +41,7 @@ import {
   filterOpsForGrade,
   gradeFor,
   needsResetOnTransition,
+  projectInteractionEndState,
   redactSnapshotForGrade,
   type AgentTranscript,
   type TranscriptGrade,
@@ -48,6 +54,7 @@ import {
 
 import { toWireApproval } from '../../../routes/approvals';
 import { toWireQuestion } from '../../../routes/questions';
+import { captureContextMessageHistory } from '../../../services/messages/messageHistory';
 import { projectPromptContentParts } from '../../../services/messages/messageProjection';
 import { readLegacyStatus, toLegacyPhase } from '../../../services/legacyStatus/legacyStatus';
 import type { TranscriptService } from '../../../services/transcript/transcriptService';
@@ -79,8 +86,12 @@ export interface BufferedSinceResult {
 export interface SessionSnapshotState {
   seq: number;
   epoch: string;
+  contextMessages: readonly ContextMessage[];
+  contextMessageTimes: readonly (number | undefined)[];
   inFlightTurn: InFlightTurn | null;
   subagents: SnapshotSubagent[];
+  currentPromptId?: string;
+  status?: NonNullable<ReturnType<typeof readLegacyStatus>>;
 }
 
 /** Internal transport lane: only subscription traffic enters the timed buffer. */
@@ -111,11 +122,23 @@ export type AgentFilter = ReadonlySet<string> | undefined;
 export interface TargetSubscription {
   readonly agentFilter?: AgentFilter;
   readonly transcriptGrades?: TranscriptGradeSpec;
+  readonly transcriptGeneration?: number;
 }
+
+export type TranscriptSince = Record<string, number>;
 
 interface TranscriptStream {
   readonly store: TranscriptStore;
   readonly knownAgents: Set<string>;
+}
+
+interface PendingTranscriptSeed {
+  readonly generation: number;
+  readonly spec: TranscriptGradeSpec;
+  readonly prev?: TranscriptGradeSpec;
+  readonly transcriptSince?: TranscriptSince;
+  readonly store: TranscriptStore;
+  readonly deferred: boolean;
 }
 
 interface SessionState {
@@ -123,6 +146,8 @@ interface SessionState {
   readonly journal: SessionEventJournal;
   readonly tracker: InFlightTurnTracker;
   readonly roster: SubagentRosterTracker;
+  mainAgent?: IAgentScopeHandle;
+  contextMessages: readonly ContextMessage[];
   deferredWork?: SessionActivityState;
   readonly tail: Array<{ seq: number; envelope: EventEnvelope }>;
   readonly targets: Map<BroadcastTarget, TargetSubscription>;
@@ -132,19 +157,18 @@ interface SessionState {
   readonly knownInteractions: Map<string, { readonly kind: InteractionKind; readonly agentId: string }>;
   transcriptStream?: TranscriptStream;
   readonly transcriptSeeded: Set<BroadcastTarget>;
-  readonly deferredTranscriptSeeds: Map<
-    BroadcastTarget,
-    { readonly spec: TranscriptGradeSpec; readonly transcriptSince?: Record<string, number> }
-  >;
+  readonly transcriptGenerations: WeakMap<BroadcastTarget, number>;
+  readonly pendingTranscriptSeeds: Map<BroadcastTarget, PendingTranscriptSeed>;
 }
 
 export const DEFAULT_MAX_BUFFER_SIZE = 1000;
 const GLOBAL_SESSION_ID = '__global__';
-const TRANSCRIPT_RESET_TAIL_TURNS = 0;
+const TRANSCRIPT_RESET_TAIL_TURNS = 20;
 
 async function disposeSessionState(state: SessionState): Promise<void> {
   for (const d of state.lifecycleDisposables) d.dispose();
   for (const d of state.agentDisposables.values()) d.dispose();
+  state.roster.clear(state.sessionId);
   await state.journal.close();
 }
 
@@ -256,34 +280,62 @@ export class SessionEventBroadcaster {
     target: BroadcastTarget,
     filter?: AgentFilter,
     transcriptGrades?: TranscriptGradeSpec,
-    opts?: { deferTranscriptReset?: boolean; transcriptSince?: Record<string, number> },
+    opts?: { deferTranscriptReset?: boolean; transcriptSince?: TranscriptSince },
   ): Promise<boolean> {
     const state = await this.ensureState(sessionId);
     if (state === undefined) return false;
     const prev = state.targets.get(target);
-    state.targets.set(target, { agentFilter: filter, transcriptGrades });
-    if (transcriptGrades !== undefined) {
-      if (opts?.deferTranscriptReset === true) {
-        state.transcriptSeeded.delete(target);
-        state.deferredTranscriptSeeds.set(target, {
-          spec: transcriptGrades,
-          transcriptSince: opts.transcriptSince,
-        });
-      } else {
-        state.deferredTranscriptSeeds.delete(target);
-        const gated = this.willSendTranscriptReset(state, transcriptGrades, prev);
-        if (gated) state.transcriptSeeded.delete(target);
-        await this.subscribeTranscript(
-          state,
-          target,
-          transcriptGrades,
-          prev?.transcriptGrades,
-          opts?.transcriptSince,
-        );
-        if (state.targets.has(target)) state.transcriptSeeded.add(target);
-      }
+    const generation = this.nextTranscriptGeneration(state, target);
+    state.targets.set(target, {
+      agentFilter: filter,
+      transcriptGrades,
+      transcriptGeneration: generation,
+    });
+    if (transcriptGrades === undefined) {
+      state.transcriptSeeded.delete(target);
+      return true;
     }
+    const deferred = opts?.deferTranscriptReset === true;
+    const liveStore = this.opts.transcriptService?.forSessionLive(sessionId);
+    const streamChanged = liveStore !== undefined && state.transcriptStream?.store !== liveStore;
+    const needsSeed =
+      deferred ||
+      streamChanged ||
+      opts?.transcriptSince !== undefined ||
+      !state.transcriptSeeded.has(target) ||
+      this.willSendTranscriptReset(state, transcriptGrades, prev);
+    if (!needsSeed) return true;
+    state.transcriptSeeded.delete(target);
+    if (liveStore === undefined) return true;
+    const seed: PendingTranscriptSeed = {
+      generation,
+      spec: transcriptGrades,
+      prev: deferred || streamChanged ? undefined : prev?.transcriptGrades,
+      transcriptSince: opts?.transcriptSince,
+      store: liveStore,
+      deferred,
+    };
+    state.pendingTranscriptSeeds.set(target, seed);
+    if (!deferred) await this.runTranscriptSeed(state, target, seed);
     return true;
+  }
+
+  private nextTranscriptGeneration(state: SessionState, target: BroadcastTarget): number {
+    state.pendingTranscriptSeeds.delete(target);
+    const generation = (state.transcriptGenerations.get(target) ?? 0) + 1;
+    state.transcriptGenerations.set(target, generation);
+    return generation;
+  }
+
+  private isTranscriptGeneration(
+    state: SessionState,
+    target: BroadcastTarget,
+    generation: number,
+  ): boolean {
+    return (
+      state.transcriptGenerations.get(target) === generation &&
+      state.targets.get(target)?.transcriptGeneration === generation
+    );
   }
 
   /**
@@ -322,19 +374,17 @@ export class SessionEventBroadcaster {
   async flushTranscriptSeed(sessionId: string, target: BroadcastTarget): Promise<void> {
     const state = this.sessions.get(sessionId);
     if (state === undefined) return;
-    const deferred = state.deferredTranscriptSeeds.get(target);
-    if (deferred === undefined) return;
-    state.deferredTranscriptSeeds.delete(target);
-    await this.subscribeTranscript(state, target, deferred.spec, undefined, deferred.transcriptSince);
-    if (state.targets.has(target)) state.transcriptSeeded.add(target);
+    const seed = state.pendingTranscriptSeeds.get(target);
+    if (seed === undefined || !seed.deferred) return;
+    await this.runTranscriptSeed(state, target, seed);
   }
 
   unsubscribe(sessionId: string, target: BroadcastTarget): void {
     const state = this.sessions.get(sessionId);
     if (state === undefined) return;
+    this.nextTranscriptGeneration(state, target);
     state.targets.delete(target);
     state.transcriptSeeded.delete(target);
-    state.deferredTranscriptSeeds.delete(target);
   }
 
   /**
@@ -357,103 +407,164 @@ export class SessionEventBroadcaster {
     if (state === undefined) return;
     const sub = state.targets.get(target);
     if (sub === undefined) return;
+    const wasSeeded = state.transcriptSeeded.has(target);
     const next =
       agentIds === undefined ? undefined : detachGrades(sub.transcriptGrades, agentIds);
-    if (next === undefined) {
-      state.targets.set(target, { agentFilter: sub.agentFilter, transcriptGrades: undefined });
-      state.transcriptSeeded.delete(target);
-      state.deferredTranscriptSeeds.delete(target);
-    } else {
-      state.targets.set(target, { agentFilter: sub.agentFilter, transcriptGrades: next });
-    }
+    const generation = this.nextTranscriptGeneration(state, target);
+    state.targets.set(target, {
+      agentFilter: sub.agentFilter,
+      transcriptGrades: next,
+      transcriptGeneration: generation,
+    });
+    if (next === undefined || !wasSeeded) state.transcriptSeeded.delete(target);
   }
 
-  /**
-   * Handle one connection's transcript subscription: attach the shared
-   * per-session stream on first use and send `transcript.reset` snapshots for
-   * every known agent admitted by `spec` that is an upgrade over the
-   * connection's previous grade. A cold session (not live in this process)
-   * silently skips streaming — cold transcripts stay REST-only. Live sessions
-   * first await the initial wire-records backfill, so the seeded resets carry
-   * the established main-agent transcript. Explicitly graded agents AND roster
-   * agents admitted via the wildcard get their persisted history replayed
-   * before their first reset — a roster agent whose `AgentTranscript` was
-   * never materialized has nothing to snapshot, so without the backfill its
-   * baseline is silently skipped. Grades are re-read from `state.targets`
-   * after the awaits: subscribe work runs asynchronously, and a newer
-   * subscribe/unsubscribe must not be answered with stale resets.
-   */
-  private async subscribeTranscript(
+  private async runTranscriptSeed(
     state: SessionState,
     target: BroadcastTarget,
-    spec: TranscriptGradeSpec,
-    prev: TranscriptGradeSpec | undefined,
-    transcriptSince?: Record<string, number>,
+    seed: PendingTranscriptSeed,
   ): Promise<void> {
     const service = this.opts.transcriptService;
-    if (service === undefined) return;
-    const store = service.forSessionLive(state.sessionId);
-    if (store === undefined) return;
-    await service.whenReady(state.sessionId);
-    const backfill = new Set(
-      Object.keys(spec).filter((agentId) => agentId !== '*' && gradeFor(spec, agentId) !== 'off'),
-    );
-    for (const descriptor of store.agents()) {
-      if (gradeFor(spec, descriptor.agentId) !== 'off') backfill.add(descriptor.agentId);
-    }
-    await Promise.all(
-      [...backfill].map((agentId) => service.ensureAgentHistory(state.sessionId, agentId)),
-    );
-    const current = state.targets.get(target);
-    if (current?.transcriptGrades === undefined) return;
-    const currentSpec = current.transcriptGrades;
-    this.ensureTranscriptStream(state, store);
-    for (const descriptor of store.agents()) {
-      const grade = gradeFor(currentSpec, descriptor.agentId);
-      if (grade === 'off') continue;
-      const transcript = store.getAgent(descriptor.agentId);
-      if (transcript === undefined) continue;
-      const since = transcriptSince?.[descriptor.agentId] ?? transcriptSince?.['*'];
-      if (since !== undefined) {
-        const catchup = service.getOpsSince(state.sessionId, descriptor.agentId, since);
-        if (catchup !== undefined && catchup.complete) {
-          this.replayTranscriptOps(state, target, descriptor.agentId, grade, catchup.batches);
+    try {
+      if (service === undefined || !this.isTranscriptGeneration(state, target, seed.generation)) return;
+      await service.whenReady(state.sessionId);
+      if (
+        !this.isTranscriptGeneration(state, target, seed.generation) ||
+        service.forSessionLive(state.sessionId) !== seed.store
+      ) {
+        return;
+      }
+      const backfill = new Set(
+        Object.keys(seed.spec).filter(
+          (agentId) => agentId !== '*' && gradeFor(seed.spec, agentId) !== 'off',
+        ),
+      );
+      for (const descriptor of seed.store.agents()) {
+        if (gradeFor(seed.spec, descriptor.agentId) !== 'off') backfill.add(descriptor.agentId);
+      }
+      await Promise.all(
+        [...backfill].map((agentId) => service.ensureAgentHistory(state.sessionId, agentId)),
+      );
+      if (
+        !this.isTranscriptGeneration(state, target, seed.generation) ||
+        service.forSessionLive(state.sessionId) !== seed.store
+      ) {
+        return;
+      }
+      this.ensureTranscriptStream(state, seed.store);
+      for (const descriptor of seed.store.agents()) {
+        if (!this.isTranscriptGeneration(state, target, seed.generation)) return;
+        const currentSpec = state.targets.get(target)?.transcriptGrades;
+        if (currentSpec === undefined) return;
+        const grade = gradeFor(currentSpec, descriptor.agentId);
+        if (grade === 'off') continue;
+        const transcript = seed.store.getAgent(descriptor.agentId);
+        if (transcript === undefined) continue;
+        const seq = service.getSeqWatermark(state.sessionId, descriptor.agentId);
+        const since =
+          seed.transcriptSince?.[descriptor.agentId] ?? seed.transcriptSince?.['*'];
+        const catchup =
+          since === undefined
+            ? undefined
+            : service.getOpsSince(state.sessionId, descriptor.agentId, since);
+        if (catchup?.complete === true) {
+          for (const batch of catchup.batches) {
+            if (!this.isTranscriptGeneration(state, target, seed.generation)) return;
+            if (
+              !this.sendTranscriptOps(
+                state,
+                target,
+                descriptor.agentId,
+                grade,
+                batch.ops,
+                batch.seq,
+                seed.generation,
+              )
+            ) {
+              return;
+            }
+          }
           continue;
         }
+        if (
+          since === undefined &&
+          !needsResetOnTransition(gradeFor(seed.prev, descriptor.agentId), grade)
+        ) {
+          continue;
+        }
+        if (!this.isTranscriptGeneration(state, target, seed.generation)) return;
+        if (
+          !this.sendTranscriptReset(
+            state,
+            target,
+            transcript,
+            grade,
+            seq,
+            seed.generation,
+          )
+        ) {
+          return;
+        }
       }
-      if (!needsResetOnTransition(gradeFor(prev, descriptor.agentId), grade)) {
-        continue;
+      if (
+        !this.isTranscriptGeneration(state, target, seed.generation) ||
+        service.forSessionLive(state.sessionId) !== seed.store
+      ) {
+        return;
       }
-      this.sendTranscriptReset(state, target, transcript, grade);
+      state.transcriptSeeded.add(target);
+    } finally {
+      if (state.pendingTranscriptSeeds.get(target) === seed) {
+        state.pendingTranscriptSeeds.delete(target);
+      }
     }
   }
 
-  /**
-   * Replay journaled op batches to one connection (the `transcript_since`
-   * catch-up path), grade-filtered like the live fan-out and stamped with
-   * their original batch seqs.
-   */
-  private replayTranscriptOps(
+  private sendTranscriptOps(
     state: SessionState,
     target: BroadcastTarget,
     agentId: string,
     grade: TranscriptGrade,
-    batches: readonly { seq: number; ops: readonly TranscriptOperation[] }[],
-  ): void {
-    for (const batch of batches) {
-      const filtered = filterOpsForGrade(grade, batch.ops);
-      if (filtered.length === 0) continue;
-      try {
-        target.send(
-          this.buildTranscriptEnvelope(state, 'transcript.ops', {
-            agent_id: agentId,
-            ops: filtered,
-            seq: batch.seq,
-          }),
-        );
-      } catch {
+    ops: readonly TranscriptOperation[],
+    seq: number,
+    generation?: number,
+  ): boolean {
+    const filtered = filterOpsForGrade(grade, ops);
+    if (filtered.length === 0) return true;
+    return this.sendTranscriptEnvelope(
+      state,
+      target,
+      this.buildTranscriptEnvelope(state, 'transcript.ops', {
+        agent_id: agentId,
+        ops: filtered,
+        seq,
+      }),
+      generation,
+    );
+  }
+
+  private sendTranscriptEnvelope(
+    state: SessionState,
+    target: BroadcastTarget,
+    envelope: EventEnvelope,
+    generation?: number,
+  ): boolean {
+    try {
+      target.send(envelope);
+    } catch (error) {
+      this.opts.logger?.warn(
+        { sessionId: state.sessionId, eventType: envelope.type, err: error },
+        'transcript frame send failed',
+      );
+      if (
+        generation !== undefined &&
+        this.isTranscriptGeneration(state, target, generation)
+      ) {
+        state.transcriptSeeded.delete(target);
       }
+      return false;
     }
+    return true;
   }
 
   /**
@@ -477,24 +588,23 @@ export class SessionEventBroadcaster {
     };
     state.transcriptStream = stream;
 
-    const opsDisposable = service.onSessionOps(state.sessionId, ({ agentId, ops }, seq) => {
-      for (const [target, sub] of state.targets) {
-        if (!state.transcriptSeeded.has(target)) continue;
-        const grade = gradeFor(sub.transcriptGrades, agentId);
-        const filtered = filterOpsForGrade(grade, ops);
-        if (filtered.length === 0) continue;
-        try {
-          target.send(
-            this.buildTranscriptEnvelope(state, 'transcript.ops', {
-              agent_id: agentId,
-              ops: filtered,
-              seq,
-            }),
+    const opsDisposable = service.onSessionOps(
+      state.sessionId,
+      ({ agentId, ops }, seq) => {
+        for (const [target, sub] of state.targets) {
+          if (!state.transcriptSeeded.has(target)) continue;
+          this.sendTranscriptOps(
+            state,
+            target,
+            agentId,
+            gradeFor(sub.transcriptGrades, agentId),
+            ops,
+            seq,
+            sub.transcriptGeneration,
           );
-        } catch {
         }
-      }
-    });
+      },
+    );
     if (opsDisposable !== undefined) state.lifecycleDisposables.push(opsDisposable);
 
     state.lifecycleDisposables.push(
@@ -504,14 +614,19 @@ export class SessionEventBroadcaster {
           stream.knownAgents.add(descriptor.agentId);
           const transcript = store.getAgent(descriptor.agentId);
           if (transcript === undefined) continue;
+          const seq = service.getSeqWatermark(state.sessionId, descriptor.agentId);
           for (const [target, sub] of state.targets) {
             if (!state.transcriptSeeded.has(target)) continue;
             const grade = gradeFor(sub.transcriptGrades, descriptor.agentId);
             if (grade === 'off') continue;
-            try {
-              this.sendTranscriptReset(state, target, transcript, grade);
-            } catch {
-            }
+            this.sendTranscriptReset(
+              state,
+              target,
+              transcript,
+              grade,
+              seq,
+              sub.transcriptGeneration,
+            );
           }
         }
       }),
@@ -519,27 +634,32 @@ export class SessionEventBroadcaster {
   }
 
   /**
-   * Volatile `transcript.reset` baseline: an items-empty snapshot (global
-   * state only, redacted to the target's grade) plus the seq watermark.
-   * History is paged over REST; live ops stream from the watermark.
+   * Volatile `transcript.reset` baseline: the newest 20 turns plus global
+   * state, redacted to the target's grade, plus the seq watermark. Older
+   * history pages in over REST; live ops stream from the watermark.
    */
   private sendTranscriptReset(
     state: SessionState,
     target: BroadcastTarget,
     transcript: AgentTranscript,
     grade: TranscriptGrade,
-  ): void {
+    seq: number,
+    generation?: number,
+  ): boolean {
     const snapshot = redactSnapshotForGrade(
       grade,
       transcript.snapshot({ tailTurns: TRANSCRIPT_RESET_TAIL_TURNS }),
     );
-    target.send(
+    return this.sendTranscriptEnvelope(
+      state,
+      target,
       this.buildTranscriptEnvelope(state, 'transcript.reset', {
         agent_id: transcript.agentId,
         snapshot,
         has_more_older: snapshot.hasMoreOlder ?? false,
-        seq: this.opts.transcriptService?.getSeqWatermark(state.sessionId, transcript.agentId),
+        seq,
       }),
+      generation,
     );
   }
 
@@ -680,21 +800,55 @@ export class SessionEventBroadcaster {
     );
   }
 
-  /** Atomic-at-queue watermark + in-flight turn, for the snapshot route. */
   async getSnapshotState(sessionId: string): Promise<SessionSnapshotState> {
     const state = await this.ensureState(sessionId);
     if (state === undefined) {
       const cold = await this.readColdWatermark(sessionId);
       return cold !== undefined
-        ? { ...cold, inFlightTurn: null, subagents: [] }
-        : { seq: 0, epoch: '', inFlightTurn: null, subagents: [] };
+        ? {
+            ...cold,
+            contextMessages: [],
+            contextMessageTimes: [],
+            inFlightTurn: null,
+            subagents: [],
+          }
+        : {
+            seq: 0,
+            epoch: '',
+            contextMessages: [],
+            contextMessageTimes: [],
+            inFlightTurn: null,
+            subagents: [],
+          };
     }
-    await state.queue;
+    const barrier = state.queue.then(() => {
+      const contextMessages = [...state.contextMessages];
+      const mainAgent = state.mainAgent;
+      return {
+        seq: state.journal.seq,
+        epoch: state.journal.epoch,
+        contextMessages,
+        mainAgent,
+        inFlightTurn: state.tracker.get(sessionId),
+        subagents: state.roster.get(sessionId),
+        currentPromptId: readCurrentPromptId(mainAgent),
+        status: readSnapshotStatus(mainAgent),
+      };
+    });
+    state.queue = barrier
+      .then(() => undefined)
+      .catch((error: unknown) => {
+        this.logDispatchDropped(sessionId, 'snapshot.capture', error);
+      });
+    const { mainAgent, contextMessages, ...base } = await barrier;
+    const history =
+      mainAgent === undefined
+        ? { messages: contextMessages, times: contextMessages.map(() => undefined) }
+        : await captureContextMessageHistory(this.opts.core, mainAgent, contextMessages);
     return {
-      seq: state.journal.seq,
-      epoch: state.journal.epoch,
-      inFlightTurn: state.tracker.get(sessionId),
-      subagents: state.roster.get(sessionId),
+      ...base,
+      contextMessages: history.messages,
+      contextMessageTimes: history.times,
     };
   }
 
@@ -799,6 +953,7 @@ export class SessionEventBroadcaster {
       journal,
       tracker: new InFlightTurnTracker(),
       roster: new SubagentRosterTracker(),
+      contextMessages: [],
       tail: [],
       targets: new Map(),
       queue: Promise.resolve(),
@@ -806,7 +961,8 @@ export class SessionEventBroadcaster {
       lifecycleDisposables: [],
       knownInteractions: new Map(),
       transcriptSeeded: new Set(),
-      deferredTranscriptSeeds: new Map(),
+      transcriptGenerations: new WeakMap(),
+      pendingTranscriptSeeds: new Map(),
     };
     this.sessions.set(sessionId, state);
     try {
@@ -847,6 +1003,7 @@ export class SessionEventBroadcaster {
       journal,
       tracker: new InFlightTurnTracker(),
       roster: new SubagentRosterTracker(),
+      contextMessages: [],
       tail: [],
       targets: new Map(),
       queue: Promise.resolve(),
@@ -854,7 +1011,8 @@ export class SessionEventBroadcaster {
       lifecycleDisposables: [],
       knownInteractions: new Map(),
       transcriptSeeded: new Set(),
-      deferredTranscriptSeeds: new Map(),
+      transcriptGenerations: new WeakMap(),
+      pendingTranscriptSeeds: new Map(),
     };
     this.sessions.set(GLOBAL_SESSION_ID, state);
     return state;
@@ -1013,6 +1171,13 @@ export class SessionEventBroadcaster {
     const agents = session.accessor.get(IAgentLifecycleService);
     const subscribeAgent = (handle: IAgentScopeHandle): void => {
       if (state.agentDisposables.has(handle.id)) return;
+      for (const info of handle.accessor.get(IAgentTaskService)?.list(false) ?? []) {
+        state.roster.seedTask(sessionId, handle.id, info);
+      }
+      if (handle.id === MAIN_AGENT_ID) {
+        state.mainAgent = handle;
+        state.contextMessages = readContextMessages(handle);
+      }
       state.agentDisposables.set(handle.id, this.attachAgent(sessionId, handle));
     };
     for (const handle of agents.list()) subscribeAgent(handle);
@@ -1034,6 +1199,7 @@ export class SessionEventBroadcaster {
             type: 'agent.disposed',
             agentId,
             sessionId,
+            time: Date.now(),
           });
         }
       }),
@@ -1083,6 +1249,16 @@ export class SessionEventBroadcaster {
     const state = this.sessions.get(sessionId);
     if (state === undefined) return;
 
+    if (event.type === 'context.append_loop_event') {
+      if (agentId === MAIN_AGENT_ID) {
+        this.enqueueContextLoopEvent(
+          state,
+          Object.assign({}, event, { agentId, sessionId }) as unknown as Event,
+        );
+      }
+      return;
+    }
+
     if (event.type === 'agent.activity.updated') {
       const snapshot = event as unknown as AgentActivityState;
       const phase = toLegacyPhase(snapshot);
@@ -1112,13 +1288,17 @@ export class SessionEventBroadcaster {
         promptAttachments?: unknown;
       };
       wireEvent = Object.assign({}, wireFields, { agentId, sessionId }) as unknown as Event;
-    } else if (event.type === 'prompt.steered' || event.type === 'prompt.queued') {
+    } else if (
+      event.type === 'prompt.steered' ||
+      event.type === 'prompt.queued' ||
+      event.type === 'prompt.replaced'
+    ) {
       const content = (event as unknown as { content: Parameters<typeof projectPromptContentParts>[0] }).content;
       wireEvent = Object.assign({}, event, {
         content: projectPromptContentParts(content),
         agentId,
         sessionId,
-      }) as unknown as Event;
+      }) as Event;
     } else {
       wireEvent = Object.assign({}, event, { agentId, sessionId }) as unknown as Event;
     }
@@ -1173,6 +1353,16 @@ export class SessionEventBroadcaster {
         }
       }),
     );
+  }
+
+  private enqueueContextLoopEvent(state: SessionState, event: Event): void {
+    state.queue = state.queue
+      .then(() => {
+        if (event.type !== 'context.append_loop_event') return;
+        state.contextMessages = foldLoopEvent(state.contextMessages, event.event);
+        state.tracker.apply(state.sessionId, event);
+      })
+      .catch((error: unknown) => this.logDispatchDropped(state.sessionId, event.type, error));
   }
 
   private enqueueDurable(state: SessionState, event: Event): void {
@@ -1235,8 +1425,16 @@ export class SessionEventBroadcaster {
 
   private async dispatch(state: SessionState, event: Event, volatile: boolean): Promise<void> {
     const { journal, tracker, roster, tail, targets, sessionId } = state;
+    if (event.agentId === MAIN_AGENT_ID && event.type === 'context.spliced') {
+      state.contextMessages = [
+        ...state.contextMessages.slice(0, event.start),
+        ...event.messages,
+        ...state.contextMessages.slice(event.start + event.deleteCount),
+      ];
+    }
     const annotation = tracker.apply(sessionId, event);
     roster.apply(sessionId, event);
+    if (annotation.disposition === 'rejected' || annotation.disposition === 'closed') return;
 
     let envelope: EventEnvelope;
     if (volatile) {
@@ -1299,6 +1497,34 @@ export class SessionEventBroadcaster {
     for (const state of this.sessions.values()) {
       for (const target of state.targets.keys()) yield target;
     }
+  }
+}
+
+function readContextMessages(agent: IAgentScopeHandle): readonly ContextMessage[] {
+  try {
+    return [...agent.accessor.get(IAgentContextMemoryService).get()];
+  } catch {
+    return [];
+  }
+}
+
+function readCurrentPromptId(agent: IAgentScopeHandle | undefined): string | undefined {
+  if (agent === undefined) return undefined;
+  try {
+    return agent.accessor.get(IAgentPromptService).list().active?.id;
+  } catch {
+    return undefined;
+  }
+}
+
+function readSnapshotStatus(
+  agent: IAgentScopeHandle | undefined,
+): NonNullable<ReturnType<typeof readLegacyStatus>> | undefined {
+  if (agent === undefined) return undefined;
+  try {
+    return readLegacyStatus(agent);
+  } catch {
+    return undefined;
   }
 }
 
@@ -1399,6 +1625,8 @@ const TRANSCRIPT_PROJECTED_EVENT_TYPES: ReadonlySet<string> = new Set([
   'prompt.completed',
   'prompt.aborted',
   'prompt.steered',
+  'prompt.queued',
+  'prompt.replaced',
   'event.question.requested',
   'event.question.dismissed',
   'event.question.answered',
@@ -1455,7 +1683,8 @@ function interactionResolvedEvent(
   const resolvedAt = new Date().toISOString();
   switch (kind) {
     case 'question': {
-      if (response === null) {
+      const resolution = projectQuestionResolution(response);
+      if (resolution.kind === 'dismissed') {
         return {
           type: 'event.question.dismissed',
           agentId,
@@ -1464,33 +1693,52 @@ function interactionResolvedEvent(
           dismissed_at: resolvedAt,
         } as unknown as Event;
       }
-      const answers = (response as { answers?: unknown }).answers ?? response;
       return {
         type: 'event.question.answered',
         agentId,
         sessionId,
         question_id: id,
-        answers,
+        answers: resolution.answers,
         resolved_at: resolvedAt,
       } as unknown as Event;
     }
     case 'approval': {
-      const r = response as Partial<ApprovalResponse>;
+      const r =
+        typeof response === 'object' && response !== null
+          ? (response as Partial<ApprovalResponse>)
+          : undefined;
       return {
         type: 'event.approval.resolved',
         agentId,
         sessionId,
         approval_id: id,
-        decision: r.decision,
-        scope: r.scope,
-        feedback: r.feedback,
-        selected_label: r.selectedLabel,
+        decision: projectInteractionEndState('approval', response),
+        scope: r?.scope,
+        feedback: r?.feedback,
+        selected_label: r?.selectedLabel,
         resolved_at: resolvedAt,
       } as unknown as Event;
     }
     default:
       return undefined;
   }
+}
+
+type QuestionResolutionProjection =
+  | { readonly kind: 'answered'; readonly answers: unknown }
+  | { readonly kind: 'dismissed' };
+
+function projectQuestionResolution(response: unknown): QuestionResolutionProjection {
+  if (projectInteractionEndState('question', response) === 'dismissed') {
+    return { kind: 'dismissed' };
+  }
+  if (typeof response === 'object' && response !== null && Object.hasOwn(response, 'answers')) {
+    return {
+      kind: 'answered',
+      answers: (response as { readonly answers: unknown }).answers,
+    };
+  }
+  return { kind: 'answered', answers: response };
 }
 
 function sessionMetaUpdatedPayload(

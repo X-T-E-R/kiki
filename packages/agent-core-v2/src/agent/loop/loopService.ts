@@ -728,6 +728,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     this.emitStepInterrupted(
       runtime.turnId,
       runtime.current?.number,
+      runtime.current?.uuid,
       'aborted',
       isUserCancellation(reason) ? undefined : toErrorMessage(reason),
     );
@@ -781,7 +782,13 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     const reason: LoopInterruptReason = isMaxStepsExceededError(error) ? 'max_steps' : 'error';
     const interruptedError =
       isError2(error) && error.code === ErrorCodes.INTERNAL && error.cause !== undefined ? error.cause : error;
-    this.emitStepInterrupted(runtime.turnId, runtime.current?.number, reason, toErrorMessage(interruptedError));
+    this.emitStepInterrupted(
+      runtime.turnId,
+      runtime.current?.number,
+      runtime.current?.uuid,
+      reason,
+      toErrorMessage(interruptedError),
+    );
     return { type: 'return', result: { type: 'failed', error, steps: runtime.steps } };
   }
 
@@ -814,7 +821,12 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     this.activeRequestTrace = undefined;
     await this.hooks.onWillBeginStep.run({ turnId, step: currentStep, firstStepOfTurn, signal });
     const markStepStarted = this.beginStep(turnId, signal, currentStep, stepUuid, onStarted);
-    const streamParts = this.createStreamPartHandler(turnId, markStepStarted);
+    const streamParts = this.createStreamPartHandler(
+      turnId,
+      currentStep,
+      stepUuid,
+      markStepStarted,
+    );
     const request = this.llmRequester.start(
       { source: { type: 'turn', turnId, step: currentStep } },
       streamParts.handle,
@@ -1113,6 +1125,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private emitStepInterrupted(
     turnId: number,
     activeStep: number | undefined,
+    stepId: string | undefined,
     reason: LoopInterruptReason,
     message?: string,
   ): void {
@@ -1121,6 +1134,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       new TurnStepInterrupted({
         turnId,
         step: activeStep,
+        stepId,
         reason,
         message,
       }),
@@ -1129,6 +1143,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
 
   private createStreamPartHandler(
     turnId: number,
+    step: number,
+    stepId: string,
     onResponseEvent: () => void,
   ): StreamPartCollector {
     const callsByIndex = new Map<number | string | undefined, { id: string; name: string }>();
@@ -1147,12 +1163,16 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           case 'text':
             onResponseEvent();
             accumulate(part);
-            void this.dispatcher.dispatch(new AssistantDelta({ turnId, delta: part.text }));
+            void this.dispatcher.dispatch(
+              new AssistantDelta({ turnId, step, stepId, delta: part.text }),
+            );
             return;
           case 'think':
             onResponseEvent();
             accumulate(part);
-            void this.dispatcher.dispatch(new ThinkingDelta({ turnId, delta: part.think }));
+            void this.dispatcher.dispatch(
+              new ThinkingDelta({ turnId, step, stepId, delta: part.think }),
+            );
             return;
           case 'image_url':
           case 'audio_url':

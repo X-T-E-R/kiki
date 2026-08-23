@@ -15,9 +15,11 @@ describe('InFlightTurnTracker', () => {
     t.apply(SID, ev({ type: 'turn.started', turnId: 1 }));
 
     expect(t.apply(SID, ev({ type: 'assistant.delta', turnId: 1, delta: 'Hello' }))).toEqual({
+      disposition: 'accepted',
       offset: 0,
     });
     expect(t.apply(SID, ev({ type: 'assistant.delta', turnId: 1, delta: ' world' }))).toEqual({
+      disposition: 'accepted',
       offset: 5,
     });
 
@@ -28,9 +30,11 @@ describe('InFlightTurnTracker', () => {
     const t = new InFlightTurnTracker();
     t.apply(SID, ev({ type: 'turn.started', turnId: 1 }));
     expect(t.apply(SID, ev({ type: 'thinking.delta', turnId: 1, delta: 'abc' }))).toEqual({
+      disposition: 'accepted',
       offset: 0,
     });
     expect(t.apply(SID, ev({ type: 'thinking.delta', turnId: 1, delta: 'de' }))).toEqual({
+      disposition: 'accepted',
       offset: 3,
     });
     expect(t.get(SID)).toMatchObject({ assistant_text: '', thinking_text: 'abcde' });
@@ -55,7 +59,9 @@ describe('InFlightTurnTracker', () => {
   it('ignores deltas for a mismatched turn', () => {
     const t = new InFlightTurnTracker();
     t.apply(SID, ev({ type: 'turn.started', turnId: 1 }));
-    expect(t.apply(SID, ev({ type: 'assistant.delta', turnId: 99, delta: 'stale' }))).toEqual({});
+    expect(t.apply(SID, ev({ type: 'assistant.delta', turnId: 99, delta: 'stale' }))).toEqual({
+      disposition: 'rejected',
+    });
     expect(t.get(SID)?.assistant_text).toBe('');
   });
 
@@ -92,11 +98,20 @@ describe('InFlightTurnTracker', () => {
     const t = new InFlightTurnTracker();
     t.apply(SID, ev({ type: 'turn.started', turnId: 1 }));
     t.apply(SID, ev({ type: 'turn.step.started', turnId: 1, step: 1 }));
-    expect(t.apply(SID, ev({ type: 'assistant.delta', turnId: 1, delta: 'ab' }))).toEqual({ offset: 0 });
-    expect(t.apply(SID, ev({ type: 'assistant.delta', turnId: 1, delta: 'cd' }))).toEqual({ offset: 2 });
+    expect(t.apply(SID, ev({ type: 'assistant.delta', turnId: 1, delta: 'ab' }))).toEqual({
+      disposition: 'accepted',
+      offset: 0,
+    });
+    expect(t.apply(SID, ev({ type: 'assistant.delta', turnId: 1, delta: 'cd' }))).toEqual({
+      disposition: 'accepted',
+      offset: 2,
+    });
 
     t.apply(SID, ev({ type: 'turn.step.started', turnId: 1, step: 2 }));
-    expect(t.apply(SID, ev({ type: 'assistant.delta', turnId: 1, delta: 'x' }))).toEqual({ offset: 0 });
+    expect(t.apply(SID, ev({ type: 'assistant.delta', turnId: 1, delta: 'x' }))).toEqual({
+      disposition: 'accepted',
+      offset: 0,
+    });
   });
 
   it('keeps running tools across step boundaries while resetting text', () => {
@@ -118,5 +133,219 @@ describe('InFlightTurnTracker', () => {
     t.apply(SID, ev({ type: 'assistant.delta', turnId: 1, delta: 'keep' }));
     t.apply(SID, ev({ type: 'turn.step.started', turnId: 99, step: 2 }));
     expect(t.get(SID)?.assistant_text).toBe('keep');
+  });
+
+  it('transfers text and thinking ownership independently by stepUuid', () => {
+    const t = new InFlightTurnTracker();
+    t.apply(SID, ev({ type: 'turn.started', turnId: 1 }));
+    t.apply(SID, ev({ type: 'turn.step.started', turnId: 1, step: 1, stepId: 'step-1' }));
+    t.apply(
+      SID,
+      ev({ type: 'assistant.delta', turnId: 1, step: 1, stepId: 'step-1', delta: 'answer' }),
+    );
+    t.apply(
+      SID,
+      ev({ type: 'thinking.delta', turnId: 1, step: 1, stepId: 'step-1', delta: 'thought' }),
+    );
+
+    t.apply(
+      SID,
+      ev({
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          uuid: 'part-text',
+          turnId: '1',
+          step: 1,
+          stepUuid: 'step-1',
+          part: { type: 'text', text: 'answer' },
+        },
+      }),
+    );
+    expect(t.get(SID)).toMatchObject({
+      step: 1,
+      step_id: 'step-1',
+      assistant_text: '',
+      thinking_text: 'thought',
+    });
+
+    t.apply(
+      SID,
+      ev({
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          uuid: 'part-wrong-turn',
+          turnId: '99',
+          step: 1,
+          stepUuid: 'step-1',
+          part: { type: 'think', think: 'thought' },
+        },
+      }),
+    );
+    expect(t.get(SID)?.thinking_text).toBe('thought');
+
+    t.apply(
+      SID,
+      ev({
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          uuid: 'part-wrong',
+          turnId: '1',
+          step: 2,
+          stepUuid: 'step-2',
+          part: { type: 'think', think: 'thought' },
+        },
+      }),
+    );
+    expect(t.get(SID)?.thinking_text).toBe('thought');
+
+    t.apply(
+      SID,
+      ev({
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          uuid: 'part-think',
+          turnId: '1',
+          step: 1,
+          stepUuid: 'step-1',
+          part: { type: 'think', think: 'thought' },
+        },
+      }),
+    );
+    expect(t.get(SID)).toMatchObject({ assistant_text: '', thinking_text: '' });
+  });
+
+  it('rejects a stale delta with a different step identity', () => {
+    const t = new InFlightTurnTracker();
+    t.apply(SID, ev({ type: 'turn.started', turnId: 1 }));
+    t.apply(SID, ev({ type: 'turn.step.started', turnId: 1, step: 2, stepId: 'step-2' }));
+    expect(
+      t.apply(
+        SID,
+        ev({ type: 'assistant.delta', turnId: 1, step: 1, stepId: 'step-1', delta: 'stale' }),
+      ),
+    ).toEqual({ disposition: 'rejected' });
+    expect(t.get(SID)?.assistant_text).toBe('');
+  });
+
+  it('reports delta disposition and does not reopen channels after durable handoff', () => {
+    const t = new InFlightTurnTracker();
+    t.apply(SID, ev({ type: 'turn.started', turnId: 1 }));
+    t.apply(SID, ev({ type: 'turn.step.started', turnId: 1, step: 1, stepId: 'step-1' }));
+
+    expect(
+      t.apply(
+        SID,
+        ev({ type: 'assistant.delta', turnId: 1, step: 1, stepId: 'step-1', delta: 'answer' }),
+      ),
+    ).toEqual({ disposition: 'accepted', offset: 0 });
+    expect(
+      t.apply(
+        SID,
+        ev({ type: 'thinking.delta', turnId: 1, step: 1, stepId: 'step-1', delta: 'thought' }),
+      ),
+    ).toEqual({ disposition: 'accepted', offset: 0 });
+
+    t.apply(
+      SID,
+      ev({
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          uuid: 'part-text',
+          turnId: '1',
+          step: 1,
+          stepUuid: 'step-1',
+          part: { type: 'text', text: 'answer' },
+        },
+      }),
+    );
+    expect(t.apply(SID, ev({ type: 'assistant.delta', turnId: 1, delta: 'late' }))).toEqual({
+      disposition: 'closed',
+    });
+    expect(t.get(SID)?.assistant_text).toBe('');
+    expect(
+      t.apply(
+        SID,
+        ev({ type: 'thinking.delta', turnId: 1, step: 1, stepId: 'step-1', delta: ' more' }),
+      ),
+    ).toEqual({ disposition: 'accepted', offset: 7 });
+
+    t.apply(
+      SID,
+      ev({
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          uuid: 'part-think',
+          turnId: '1',
+          step: 1,
+          stepUuid: 'step-1',
+          part: { type: 'think', think: 'thought more' },
+        },
+      }),
+    );
+    expect(
+      t.apply(
+        SID,
+        ev({ type: 'thinking.delta', turnId: 1, step: 1, stepId: 'step-1', delta: 'late' }),
+      ),
+    ).toEqual({ disposition: 'closed' });
+
+    t.apply(SID, ev({ type: 'turn.step.started', turnId: 1, step: 2, stepId: 'step-2' }));
+    expect(
+      t.apply(
+        SID,
+        ev({ type: 'assistant.delta', turnId: 1, step: 2, stepId: 'step-2', delta: 'next' }),
+      ),
+    ).toEqual({ disposition: 'accepted', offset: 0 });
+    expect(
+      t.apply(
+        SID,
+        ev({ type: 'assistant.delta', turnId: 1, step: 1, stepId: 'step-1', delta: 'stale' }),
+      ),
+    ).toEqual({ disposition: 'rejected' });
+  });
+
+  it('uses durable tool_call_id facts as an overlay fallback and release', () => {
+    const t = new InFlightTurnTracker();
+    t.apply(SID, ev({ type: 'turn.started', turnId: 1 }));
+    t.apply(SID, ev({ type: 'turn.step.started', turnId: 1, step: 1, stepId: 'step-1' }));
+    t.apply(
+      SID,
+      ev({
+        type: 'context.append_loop_event',
+        event: {
+          type: 'tool.call',
+          uuid: 'tool-1',
+          turnId: '1',
+          step: 1,
+          stepUuid: 'step-1',
+          toolCallId: 'call-1',
+          name: 'Bash',
+          args: { command: 'pwd' },
+        },
+      }),
+    );
+    expect(t.get(SID)?.running_tools).toEqual([
+      expect.objectContaining({ tool_call_id: 'call-1', name: 'Bash', args: { command: 'pwd' } }),
+    ]);
+
+    t.apply(
+      SID,
+      ev({
+        type: 'context.append_loop_event',
+        event: {
+          type: 'tool.result',
+          parentUuid: 'tool-1',
+          toolCallId: 'call-1',
+          result: { output: 'ok' },
+        },
+      }),
+    );
+    expect(t.get(SID)?.running_tools).toEqual([]);
   });
 });

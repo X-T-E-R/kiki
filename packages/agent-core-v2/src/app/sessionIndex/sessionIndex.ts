@@ -98,21 +98,27 @@ export interface ISessionIndexMirror {
   readonly _serviceBrand: undefined;
 
   /**
-   * Enqueue the latest summary of a session for mirroring into the read
-   * model. Synchronous, bounded, and coalescing (only the newest summary per
-   * session is kept); never throws — failures stay dirty and are healed by
-   * reconciliation.
+   * Enqueue the latest summary of a session for read-your-writes and eventual
+   * read-model mirroring. Synchronous and coalescing (only the newest summary
+   * per session is kept); never throws.
    */
   record(summary: SessionSummary): void;
+  epoch(): number;
+  dirtyEpoch(): number | undefined;
+  settleDirty(epoch: number): void;
+  invalidate(id: string): void;
   /** Summaries accepted but not yet flushed (read-your-writes window). */
   pending(): readonly SessionSummary[];
+  /** Forget only summaries that are still the exact observed pending versions. */
+  acknowledge(summaries: readonly SessionSummary[]): void;
+  runExclusive<T>(operation: () => Promise<T>): Promise<T>;
   /**
    * Forget a session on the delete path: drop any queued summary and wait
    * out an in-flight flush that may still carry it, so the caller's
    * follow-up query-store delete is not resurrected by the mirror.
    */
   evict(id: string): Promise<void>;
-  /** Flush everything currently queued; resolves with the queue empty. */
+  /** Flush queued summaries when the read model is enabled. */
   drain(): Promise<void>;
 }
 

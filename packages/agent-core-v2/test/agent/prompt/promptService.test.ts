@@ -12,7 +12,13 @@ import type { ContentPart } from '#/kosong/contract/message';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
-import { AgentPromptService, PromptQueued, PromptSteered } from '#/agent/prompt/promptService';
+import {
+  AgentPromptService,
+  PromptAborted,
+  PromptQueued,
+  PromptReplaced,
+  PromptSteered,
+} from '#/agent/prompt/promptService';
 import {
   IAgentProfileService,
   type BindAgentInput,
@@ -220,6 +226,109 @@ describe('AgentPromptService', () => {
     expect(prompt.list().pending.map((item) => item.id)).toEqual([first.id, second.id]);
   });
 
+  it('atomically replaces a queued prompt without changing identity, order, or terminal state', async () => {
+    const { prompt, context, eventBus, loop } = harness({ manualTurnResult: true });
+    const replaced: Array<{ promptId: string; content: ContentPart[] }> = [];
+    const aborted: string[] = [];
+    eventBus.subscribe(PromptReplaced, (event) => {
+      replaced.push({ promptId: event.promptId, content: event.content });
+    });
+    eventBus.subscribe(PromptAborted, (event) => aborted.push(event.promptId));
+    const active = await prompt.enqueue({ id: 'active', message: message('active') });
+    await active.launched;
+    const attachment = {
+      type: 'image_url',
+      imageUrl: { url: 'https://example.test/queued.png' },
+    } as const;
+    const queued = await prompt.enqueue({
+      id: 'queued',
+      message: bundledMessage('review', 'old text', [attachment]),
+    });
+    await prompt.enqueue({ id: 'later', message: message('later') });
+    const before = prompt.list().pending[0]!;
+
+    const returned = prompt.replace('queued', [{ type: 'text', text: 'new text' }]);
+
+    expect(returned).toBe(queued);
+    expect(returned.state).toBe('pending');
+    expect(returned.createdAt).toBe(before.createdAt);
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['queued', 'later']);
+    expect(prompt.list().pending[0]?.message.content).toEqual([
+      { type: 'text', text: '<skill>review</skill>' },
+      { type: 'text', text: 'new text' },
+      attachment,
+    ]);
+    expect(replaced).toEqual([
+      { promptId: 'queued', content: [{ type: 'text', text: 'new text' }, attachment] },
+    ]);
+    expect(aborted).toEqual([]);
+
+    loop.settleActive();
+    await queued.launched;
+    loop.drainNextBatch(context);
+    loop.drainNextBatch(context);
+    expect(context.get().find((entry) => entry.id === 'queued')?.content).toEqual([
+      { type: 'text', text: '<skill>review</skill>' },
+      { type: 'text', text: 'new text' },
+      attachment,
+    ]);
+  });
+
+  it('rejects replacing running, missing, and completed prompts without mutating the queue', async () => {
+    const { prompt, loop } = harness({ manualTurnResult: true });
+    const active = await prompt.enqueue({ id: 'active', message: message('active') });
+    await active.launched;
+    await prompt.enqueue({ id: 'queued', message: message('queued') });
+    const before = prompt.list();
+
+    expect(() => prompt.replace('active', [{ type: 'text', text: 'replacement' }])).toThrowError(
+      expect.objectContaining({ code: ErrorCodes.PROMPT_NOT_FOUND }),
+    );
+    expect(() => prompt.replace('missing', [{ type: 'text', text: 'replacement' }])).toThrowError(
+      expect.objectContaining({ code: ErrorCodes.PROMPT_NOT_FOUND }),
+    );
+    expect(prompt.list()).toEqual(before);
+
+    prompt.abort('queued');
+    loop.settleActive();
+    await active.completion;
+    expect(() => prompt.replace('active', [{ type: 'text', text: 'replacement' }])).toThrowError(
+      expect.objectContaining({ code: ErrorCodes.PROMPT_NOT_FOUND }),
+    );
+    expect(prompt.list()).toEqual({ active: undefined, pending: [] });
+  });
+
+  it('preserves a queued prompt execution binding across replacement', async () => {
+    const { prompt, profile, loop } = harness({ manualTurnResult: true });
+    const inputs: ContentPart[][] = [];
+    const enqueue = loop.enqueue.bind(loop);
+    vi.spyOn(loop, 'enqueue').mockImplementation((request, options) => {
+      if (request instanceof PromptStepRequest) inputs.push([...request.turnSeed.input]);
+      return enqueue(request, options);
+    });
+    const active = await prompt.enqueue({ id: 'active', message: message('active') });
+    await active.launched;
+    const queued = await prompt.enqueue({
+      id: 'queued',
+      message: message('old text'),
+      execution: { profile: 'A', model: 'replacement-model' },
+    });
+
+    prompt.replace('queued', [{ type: 'text', text: 'new text' }]);
+    expect(profile.bind).not.toHaveBeenCalled();
+
+    loop.settleActive();
+    await queued.launched;
+    expect(profile.bind).toHaveBeenCalledWith({
+      profile: 'A',
+      model: 'replacement-model',
+      thinking: undefined,
+      strictThinking: false,
+    });
+    expect(profile.setModel).toHaveBeenCalledWith('replacement-model');
+    expect(inputs[1]).toEqual([{ type: 'text', text: 'new text' }]);
+  });
+
   it('applies each queued execution binding only when its turn starts', async () => {
     const { prompt, profile, loop } = harness({ manualTurnResult: true });
     const turnBindings: ProfileData[] = [];
@@ -406,6 +515,55 @@ describe('AgentPromptService', () => {
     const queued = await prompt.enqueue({ message: message('one') });
     await expect(prompt.steer([queued.id, 'missing'])).rejects.toMatchObject({ code: 'prompt.not_found' });
     expect(prompt.list().pending.map((item) => item.id)).toEqual([queued.id]);
+  });
+
+  it('steers bound and ordinary prompts without rebinding the active turn', async () => {
+    const { prompt, profile, toolPolicy, loop } = harness({ manualTurnResult: true });
+    const active = await prompt.enqueue({ id: 'active', message: message('active') });
+    await active.launched;
+    const bound = await prompt.enqueue({
+      id: 'bound',
+      message: message('bound'),
+      execution: {
+        profile: 'A',
+        model: 'bound-model',
+        thinking: 'bound-thinking',
+      },
+      deferredDisabledTools: ['Bash'],
+    });
+    const ordinary = await prompt.enqueue({ id: 'ordinary', message: message('ordinary') });
+    const later = await prompt.enqueue({
+      id: 'later',
+      message: message('later'),
+      execution: {
+        profile: 'B',
+        model: 'later-model',
+        thinking: 'later-thinking',
+      },
+      deferredDisabledTools: ['Write'],
+    });
+    const activeBinding = structuredClone(profile.data());
+
+    const handles = await prompt.steer([ordinary.id, bound.id]);
+
+    expect(handles).toEqual([bound, ordinary]);
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['later']);
+    expect(profile.bind).not.toHaveBeenCalled();
+    expect(profile.setModel).not.toHaveBeenCalled();
+    expect(profile.setThinking).not.toHaveBeenCalled();
+    expect(profile.data()).toEqual(activeBinding);
+    expect(toolPolicy.setSessionDisabledTools).not.toHaveBeenCalled();
+
+    loop.settleActive();
+    await later.launched;
+    expect(profile.bind).toHaveBeenCalledWith({
+      profile: 'B',
+      model: 'later-model',
+      thinking: 'later-thinking',
+      strictThinking: true,
+    });
+    expect(profile.setModel).toHaveBeenCalledWith('later-model');
+    expect(toolPolicy.setSessionDisabledTools).toHaveBeenCalledExactlyOnceWith(['Write']);
   });
 
   it('steers selected prompts in FIFO order', async () => {
@@ -630,6 +788,9 @@ describe('AgentPromptService', () => {
     await prompt.enqueue({ id: 'b', message: message('b') });
 
     const steerPromise = prompt.steer(['a', 'b']);
+    expect(() => prompt.replace('a', [{ type: 'text', text: 'replacement' }])).toThrowError(
+      expect.objectContaining({ code: ErrorCodes.PROMPT_NOT_FOUND }),
+    );
     prompt.abort('a');
     releaseIntake();
 

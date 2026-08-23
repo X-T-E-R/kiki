@@ -26,7 +26,6 @@ export interface TranscriptResetEvent {
   readonly agent_id: string;
   readonly snapshot: AgentTranscriptSnapshot;
   readonly has_more_older: boolean;
-  /** Watermark: the snapshot includes every op batch with seq <= N. */
   readonly seq?: number;
 }
 
@@ -34,7 +33,6 @@ export interface TranscriptOpsEvent {
   readonly type: 'transcript.ops';
   readonly agent_id: string;
   readonly ops: readonly TranscriptOperation[];
-  /** This batch's sequence number (consecutive per agent). */
   readonly seq?: number;
 }
 

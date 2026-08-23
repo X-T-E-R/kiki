@@ -572,6 +572,7 @@ export const agentCreatedEventSchema = z.object({
 
 export const agentDisposedEventSchema = z.object({
   type: z.literal('agent.disposed'),
+  time: z.number().optional(),
 });
 
 export const sessionCreatedEventSchema = z.object({
@@ -774,6 +775,8 @@ export const turnStepInterruptedEventSchema = z.object({
 export const assistantDeltaEventSchema = z.object({
   type: z.literal('assistant.delta'),
   turnId: z.number(),
+  step: z.number().optional(),
+  stepId: z.string().optional(),
   delta: z.string(),
 }) satisfies z.ZodType<AssistantDeltaPayload>;
 
@@ -788,6 +791,8 @@ export const hookResultEventSchema = z.object({
 export const thinkingDeltaEventSchema = z.object({
   type: z.literal('thinking.delta'),
   turnId: z.number(),
+  step: z.number().optional(),
+  stepId: z.string().optional(),
   delta: z.string(),
 }) satisfies z.ZodType<ThinkingDeltaPayload>;
 
@@ -942,6 +947,20 @@ export const promptSubmittedEventSchema = z.object({
   createdAt: isoDateTimeSchema,
 });
 
+export const promptQueuedEventSchema = z.object({
+  type: z.literal('prompt.queued'),
+  promptId: z.string(),
+  content: z.array(messageContentSchema),
+  queueLength: z.number().int().nonnegative(),
+});
+
+export const promptReplacedEventSchema = z.object({
+  type: z.literal('prompt.replaced'),
+  promptId: z.string(),
+  content: z.array(messageContentSchema),
+  replacedAt: isoDateTimeSchema,
+});
+
 export const promptCompletedEventSchema = z.object({
   type: z.literal('prompt.completed'),
   promptId: z.string(),
@@ -1041,6 +1060,8 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   backgroundTaskTerminatedEventSchema,
   cronFiredEventSchema,
   promptSubmittedEventSchema,
+  promptQueuedEventSchema,
+  promptReplacedEventSchema,
   promptCompletedEventSchema,
   promptAbortedEventSchema,
   promptSteeredEventSchema,

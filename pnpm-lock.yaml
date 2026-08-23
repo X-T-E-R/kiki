@@ -104,6 +104,9 @@ importers:
       '@moonshot-ai/protocol':
         specifier: workspace:^
         version: link:../../packages/protocol
+      '@moonshot-ai/transcript':
+        specifier: workspace:^
+        version: link:../../packages/transcript
       '@streamdown/code':
         specifier: ^1.0.2
         version: 1.1.1(react@19.2.5)

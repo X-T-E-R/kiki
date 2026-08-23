@@ -44,6 +44,7 @@ import {
   type ResyncReason,
   type SessionEventBroadcaster,
   type TargetSubscription,
+  type TranscriptSince,
 } from './sessionEventBroadcaster';
 import { FsWatchBridge } from './fsWatchBridge';
 import { ErrorCode } from '../../../protocol/error-codes';
@@ -669,7 +670,7 @@ export class WsConnectionV1 implements BroadcastTarget {
     cursor: SessionCursor | undefined,
     filter: AgentFilter | undefined,
     transcriptGrades: TranscriptGradeSpec | undefined,
-    transcriptSince: Record<string, number> | undefined,
+    transcriptSince: TranscriptSince | undefined,
     collectors: {
       accepted: string[];
       resyncRequired: string[];

@@ -384,6 +384,7 @@ export const zh: Record<I18nKey, string> = {
   'preview.discard': '放弃修改',
 
   // ---- subagent cards ----
+  'subagent.status.unknown': '状态未知',
   'subagent.status.running': '运行中',
   'subagent.status.suspended': '已挂起',
   'subagent.status.completed': '已完成',
@@ -1352,6 +1353,10 @@ export const zh: Record<I18nKey, string> = {
   'st.restart.confirmBodyActive':
     '重启将终止 {count} 个运行中的会话任务。进行中的回合会被中断，会话记录本身保留。',
   'st.restart.confirmBodyIdle': '当前没有运行中的会话。服务器重启期间连接会短暂中断。',
+  'st.banner.confirmTitle': '立即重启以应用待生效的更改？',
+  'st.banner.confirmBodyUnknown': 'Kiki 无法确认是否存在运行中的会话。重启将终止进行中的回合。',
+  'st.banner.checking': '正在确认会话…',
+  'st.banner.confirm': '立即重启',
   'st.conn.urlLabel': 'URL',
   'st.conn.wsLabel': 'WebSocket',
   'st.conn.ws.open': '已连接',

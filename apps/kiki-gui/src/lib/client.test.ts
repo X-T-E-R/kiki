@@ -713,3 +713,38 @@ describe('KikiClient message-closure routes', () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe('KikiClient.replacePrompt', () => {
+  it('posts replacement content to the queued prompt action', async () => {
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      expect(String(url)).toBe(
+        'http://127.0.0.1:8080/api/v1/sessions/s1/prompts/prompt%20one:replace',
+      );
+      expect(init?.method).toBe('POST');
+      expect(JSON.parse(init?.body as string)).toEqual({
+        content: [{ type: 'text', text: 'replacement' }],
+      });
+      return new Response(JSON.stringify({
+        code: 0,
+        msg: 'success',
+        data: {
+          prompt_id: 'prompt one',
+          user_message_id: 'prompt one',
+          status: 'queued',
+          content: [{ type: 'text', text: 'replacement' }],
+          created_at: '2026-01-01T00:00:00.000Z',
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+
+    const result = await client.replacePrompt('s1', 'prompt one', {
+      content: [{ type: 'text', text: 'replacement' }],
+    });
+
+    expect(result.prompt_id).toBe('prompt one');
+    expect(result.status).toBe('queued');
+    vi.unstubAllGlobals();
+  });
+});

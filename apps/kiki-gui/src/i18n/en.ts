@@ -389,6 +389,7 @@ export const en = {
   'preview.discard': 'Discard',
 
   // ---- subagent cards ----
+  'subagent.status.unknown': 'status unknown',
   'subagent.status.running': 'running',
   'subagent.status.suspended': 'suspended',
   'subagent.status.completed': 'completed',
@@ -1396,6 +1397,11 @@ export const en = {
     'Restarting terminates {count} running session task(s). Running turns are interrupted; the sessions themselves are kept.',
   'st.restart.confirmBodyIdle':
     'No sessions are currently running. The connection drops briefly while the server restarts.',
+  'st.banner.confirmTitle': 'Restart to apply pending changes?',
+  'st.banner.confirmBodyUnknown':
+    'Kiki could not confirm whether any sessions are running. Restarting would terminate any running turns.',
+  'st.banner.checking': 'Checking sessions…',
+  'st.banner.confirm': 'Restart now',
   'st.conn.urlLabel': 'URL',
   'st.conn.wsLabel': 'WebSocket',
   'st.conn.ws.open': 'open',

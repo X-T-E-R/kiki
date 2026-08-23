@@ -1,17 +1,19 @@
 /**
- * App-global "restart required" banner — visible on every page once a
- * restart-gated setting changes. Restart rides the desktop sidecar bridge,
- * then the shared socket reconnects and queries refetch; no page reload.
- * "Later" dismisses for this app run only (a new change re-arms the banner).
- * In the browser, "Acknowledge" also hides for this app run — but keeps the
- * pending requirement intact, since only a desktop restart satisfies it.
+ * App-global "restart required" banner. Clicking "Restart now" first runs a
+ * fresh, complete busy-session scan; only a scan that ends with zero busy
+ * sessions restarts directly. A busy, unknown, or failed scan opens a confirm
+ * naming the count (or a conservative warning) instead. Cancel, "Later", and
+ * the browser "Acknowledge" leave the requirement armed; only a verified
+ * restart clears it, after which the socket reattaches and queries refetch
+ * (no page reload).
  */
 
-import { useState, useSyncExternalStore } from 'react';
+import { useRef, useState, useSyncExternalStore } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { useI18n } from '../i18n';
 import { errorText } from '../i18n/locale';
+import { fetchBusySessionCount, type BusySessionProbe } from '../lib/busySessions';
 import { isDesktopRuntime, restartNativeServer } from '../lib/desktop';
 import {
   acknowledgeRestartRequirement,
@@ -22,6 +24,7 @@ import {
   type RestartRequirement,
 } from '../lib/settings';
 import { useConnection } from '../state/connection';
+import { ConfirmDialog } from './ConfirmDialog';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 
 export function useRestartRequirement(): RestartRequirement {
@@ -30,10 +33,14 @@ export function useRestartRequirement(): RestartRequirement {
 
 export function RestartBanner() {
   const { t, locale } = useI18n();
-  const { socket } = useConnection();
+  const { client, socket } = useConnection();
   const queryClient = useQueryClient();
   const restart = useRestartRequirement();
+  const clickSeqRef = useRef(0);
   const [dismissedAt, setDismissedAt] = useState<string | undefined>(undefined);
+  const [checking, setChecking] = useState(false);
+  const [probe, setProbe] = useState<BusySessionProbe | null>(null);
+  const [confirmRestart, setConfirmRestart] = useState(false);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isDesktop = isDesktopRuntime();
@@ -52,12 +59,48 @@ export function RestartBanner() {
       // immediately and let every query refetch against the fresh process.
       socket.nudge();
       await queryClient.invalidateQueries();
-    } catch (error) {
-      setError(errorText(locale, error));
+    } catch (fail) {
+      // A failed restart must not clear the requirement.
+      setError(errorText(locale, fail));
     } finally {
       setWorking(false);
     }
   };
+
+  const onRestartClick = async () => {
+    if (checking || working) return;
+    // A new click supersedes any in-flight scan so a stale decision can never
+    // restart. A superseded scan neither opens the confirm nor restarts.
+    const clickSeq = clickSeqRef.current + 1;
+    clickSeqRef.current = clickSeq;
+    setChecking(true);
+    setError(null);
+    setConfirmRestart(false);
+    let next: BusySessionProbe;
+    try {
+      next = await fetchBusySessionCount(client);
+    } catch {
+      next = { kind: 'unknown' };
+    }
+    if (clickSeqRef.current !== clickSeq) return;
+    setChecking(false);
+    setProbe(next);
+    // Only an end-to-end scan that resolved zero busy sessions skips the
+    // confirm. Busy, unknown (scan failure / incomplete), and any thrown
+    // error all route through the confirm.
+    if (next.kind === 'idle') {
+      await applyRestart();
+    } else {
+      setConfirmRestart(true);
+    }
+  };
+
+  const confirmBody =
+    probe === null || probe.kind === 'unknown'
+      ? t('st.banner.confirmBodyUnknown')
+      : probe.kind === 'busy'
+        ? t('st.restart.confirmBodyActive', { count: probe.count })
+        : t('st.restart.confirmBodyIdle');
 
   return (
     <div
@@ -71,14 +114,19 @@ export function RestartBanner() {
       {error !== null ? <span role="alert" className="text-danger">{error}</span> : null}
       <span className="flex items-center gap-2">
         {isDesktop ? (
-          <button type="button" className={PRIMARY_BUTTON} disabled={working} onClick={() => void applyRestart()}>
-            {working ? t('st.restart.working') : t('st.restart.now')}
+          <button
+            type="button"
+            className={PRIMARY_BUTTON}
+            disabled={working || checking}
+            onClick={() => void onRestartClick()}
+          >
+            {working ? t('st.restart.working') : checking ? t('st.banner.checking') : t('st.restart.now')}
           </button>
         ) : (
           <button
             type="button"
             className={SECONDARY_BUTTON}
-            disabled={working}
+            disabled={working || checking}
             title={t('st.restart.desktopOnly')}
             onClick={() => { acknowledgeRestartRequirement(); }}
           >
@@ -88,12 +136,23 @@ export function RestartBanner() {
         <button
           type="button"
           className={SECONDARY_BUTTON}
-          disabled={working}
+          disabled={working || checking}
           onClick={() => { setDismissedAt(restart.changedAt); }}
         >
           {t('st.restart.later')}
         </button>
       </span>
+      <ConfirmDialog
+        open={confirmRestart}
+        overlayId="confirm-banner-restart"
+        title={t('st.banner.confirmTitle')}
+        body={confirmBody}
+        confirmLabel={t('st.banner.confirm')}
+        tone="danger"
+        busy={working}
+        onConfirm={() => { setConfirmRestart(false); void applyRestart(); }}
+        onCancel={() => { setConfirmRestart(false); }}
+      />
     </div>
   );
 }

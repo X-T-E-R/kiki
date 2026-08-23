@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   promptAbortResponseSchema,
   promptListResponseSchema,
+  promptReplaceRequestSchema,
+  promptReplaceResultSchema,
   promptSubmissionSchema,
   promptSubmitResultSchema,
   promptSteerRequestSchema,
@@ -212,6 +214,24 @@ describe('promptListResponseSchema', () => {
     });
     expect(parsed.active?.status).toBe('running');
     expect(parsed.queued[0]?.status).toBe('queued');
+  });
+});
+
+describe('promptReplaceSchema', () => {
+  it('requires non-empty replacement content and returns the same prompt item shape', () => {
+    expect(
+      promptReplaceRequestSchema.parse({ content: [{ type: 'text', text: 'replacement' }] }),
+    ).toEqual({ content: [{ type: 'text', text: 'replacement' }] });
+    expect(promptReplaceRequestSchema.safeParse({ content: [] }).success).toBe(false);
+    expect(
+      promptReplaceResultSchema.parse({
+        prompt_id: 'prompt_queued',
+        user_message_id: 'prompt_queued',
+        status: 'queued',
+        content: [{ type: 'text', text: 'replacement' }],
+        created_at: '2026-06-09T00:00:01.000Z',
+      }),
+    ).toMatchObject({ prompt_id: 'prompt_queued', status: 'queued' });
   });
 });
 
