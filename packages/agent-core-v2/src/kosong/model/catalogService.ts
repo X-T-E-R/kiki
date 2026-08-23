@@ -77,6 +77,11 @@ interface CatalogEntry {
   readonly trace: ResolutionTraceCollector;
 }
 
+interface CatalogModelOption {
+  readonly item: ModelCatalogItem;
+  readonly model: Model;
+}
+
 export class ModelCatalog extends Disposable implements IModelCatalog {
   declare readonly _serviceBrand: undefined;
 
@@ -172,14 +177,53 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
 
   async listModels(): Promise<readonly ModelCatalogItem[]> {
     const models = this.models.list();
-    return Object.entries(models).map(([modelId, record]) => {
+    const items: ModelCatalogItem[] = [];
+    const managedOptions = new Map<
+      string,
+      { readonly index: number; readonly option: CatalogModelOption }
+    >();
+    for (const [modelId, record] of Object.entries(models)) {
       const providerType = this.providerTypeOf(record);
       try {
-        return toProtocolModel(this.get(modelId), record, providerType);
+        const model = this.get(modelId);
+        const option = { item: toProtocolModel(model, record, providerType), model };
+        const identity = this.managedCatalogIdentity(model);
+        if (identity === undefined) {
+          items.push(option.item);
+          continue;
+        }
+        const existing = managedOptions.get(identity);
+        if (existing === undefined) {
+          managedOptions.set(identity, { index: items.length, option });
+          items.push(option.item);
+          continue;
+        }
+        if (this.compareManagedCatalogOptions(option, existing.option) < 0) {
+          managedOptions.set(identity, { index: existing.index, option });
+          items[existing.index] = option.item;
+        }
       } catch {
-        return toProtocolModelFallback(modelId, record, providerType);
+        items.push(toProtocolModelFallback(modelId, record, providerType));
       }
-    });
+    }
+    return items;
+  }
+
+  private managedCatalogIdentity(model: Model): string | undefined {
+    if (!model.providerName.startsWith('managed:')) return undefined;
+    return [model.providerName, model.protocol, model.baseUrl ?? '', model.name].join('\u0000');
+  }
+
+  private compareManagedCatalogOptions(a: CatalogModelOption, b: CatalogModelOption): number {
+    const defaultModel = this.models.getDefaultModel();
+    const rank = (option: CatalogModelOption): number => {
+      if (option.model.id === defaultModel) return 0;
+      const providerPrefix = option.model.providerName.slice('managed:'.length);
+      if (option.model.id === `${providerPrefix}/${option.model.name}`) return 1;
+      if (option.model.id === `${option.model.providerName}/${option.model.name}`) return 2;
+      return 3;
+    };
+    return rank(a) - rank(b) || a.model.id.localeCompare(b.model.id);
   }
 
   async listProviders(): Promise<readonly ProviderCatalogItem[]> {

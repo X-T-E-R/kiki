@@ -40,34 +40,55 @@ export const tomlDocumentCodec: DocumentCodec = {
 class AtomicDocumentStoreBase implements IAtomicDocumentStore {
   declare readonly _serviceBrand: undefined;
 
+  private readonly tails = new Map<string, Promise<void>>();
+
   constructor(
     private readonly storage: IFileSystemStorageService,
     private readonly codec: DocumentCodec,
   ) {}
 
+  private enqueue<T>(scope: string, key: string, operation: () => Promise<T>): Promise<T> {
+    const id = `${scope}\0${key}`;
+    const previous = this.tails.get(id) ?? Promise.resolve();
+    const result = previous.then(operation, operation);
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.tails.set(id, tail);
+    void tail.finally(() => {
+      if (this.tails.get(id) === tail) this.tails.delete(id);
+    });
+    return result;
+  }
+
   async get<T>(scope: string, key: string): Promise<T | undefined> {
-    const bytes = await this.storage.read(scope, key);
-    if (bytes === undefined) return undefined;
-    try {
-      return this.codec.decode(bytes) as T;
-    } catch (error) {
-      throw new StorageError(
-        StorageErrors.codes.STORAGE_DECODE_FAILED,
-        `failed to decode ${scope}/${key} as ${this.codec.format}`,
-        {
-          details: { scope, key, format: this.codec.format },
-          cause: error,
-        },
-      );
-    }
+    return this.enqueue(scope, key, async () => {
+      const bytes = await this.storage.read(scope, key);
+      if (bytes === undefined) return undefined;
+      try {
+        return this.codec.decode(bytes) as T;
+      } catch (error) {
+        throw new StorageError(
+          StorageErrors.codes.STORAGE_DECODE_FAILED,
+          `failed to decode ${scope}/${key} as ${this.codec.format}`,
+          {
+            details: { scope, key, format: this.codec.format },
+            cause: error,
+          },
+        );
+      }
+    });
   }
 
   async set<T>(scope: string, key: string, value: T): Promise<void> {
-    await this.storage.write(scope, key, this.codec.encode(value), { atomic: true });
+    await this.enqueue(scope, key, () =>
+      this.storage.write(scope, key, this.codec.encode(value), { atomic: true }),
+    );
   }
 
   async delete(scope: string, key: string): Promise<void> {
-    await this.storage.delete(scope, key);
+    await this.enqueue(scope, key, () => this.storage.delete(scope, key));
   }
 
   async list(scope: string, prefix?: string): Promise<readonly string[]> {

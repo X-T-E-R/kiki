@@ -38,12 +38,7 @@ import {
   type SessionWorkspaceCounts,
 } from './sessionIndexModel';
 import { SessionIndexProjector } from './sessionIndexProjector';
-import {
-  listSessionIds,
-  listWorkspaceIds,
-  readSessionSummary,
-  summaryMatchesChildOf,
-} from './sessionIndexSource';
+import { readSessionSummary, summaryMatchesChildOf } from './sessionIndexSource';
 
 const READ_MODEL_FLAG = 'persistence_minidb_readmodel';
 const RECONCILE_INTERVAL_MS = 60_000;
@@ -77,7 +72,8 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private degradedCount = 0;
   private nextPrepareRetryAt = 0;
   private prepareFlight: Promise<SessionIndexStatus> | undefined;
-  private projectFlight: Promise<void> | undefined;
+  private projectFlight: Promise<boolean> | undefined;
+  private catchUpFlight: Promise<boolean> | undefined;
   private readonly reconcileTimer = this._register(new IntervalTimer({ unref: true }));
   private readonly projector: SessionIndexProjector;
 
@@ -112,6 +108,10 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
 
   async prepare(options?: { deadlineMs?: number }): Promise<SessionIndexStatus> {
     if (!this.readModelEnabled()) return this.status();
+    if (this.mirror.dirtyEpoch() !== undefined) {
+      await this.ensureDirtyCatchUp();
+      return this.status();
+    }
     this.prepareFlight ??= this.doPrepare(options?.deadlineMs).finally(() => {
       this.prepareFlight = undefined;
     });
@@ -128,7 +128,11 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   }
 
   private async doPrepare(deadlineMs?: number): Promise<SessionIndexStatus> {
-    if (this.state === 'ready') return this.status();
+    if (this.state === 'ready') {
+      if (this.mirror.dirtyEpoch() !== undefined) await this.ensureDirtyCatchUp();
+      else await this.mirror.drain();
+      return this.status();
+    }
     this.state = 'preparing';
     try {
       const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
@@ -152,6 +156,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       if (published !== undefined) {
         this.generation = published.seq;
         this.markReady();
+        await this.mirror.drain();
       }
     } catch (error) {
       this.markDegraded('prepare failed', error);
@@ -159,20 +164,24 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     return this.status();
   }
 
-  private ensureProjection(): Promise<void> {
-    this.projectFlight ??= this.runProjection().finally(() => {
+  private ensureProjection(fresh = false): Promise<boolean> {
+    this.projectFlight ??= this.runProjection(fresh).finally(() => {
       this.projectFlight = undefined;
     });
     return this.projectFlight;
   }
 
-  private async runProjection(): Promise<void> {
+  private async runProjection(fresh: boolean): Promise<boolean> {
+    let projected = false;
     try {
-      const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-      const next = (manifest?.seq ?? 0) + 1;
-      const result = await this.projector.project(next);
+      const result = await this.mirror.runExclusive(async () => {
+        const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+        const next = (manifest?.seq ?? 0) + 1;
+        return this.projector.project(next, { fresh });
+      });
       this.generation = result.generation;
       this.markReady();
+      projected = true;
     } catch (error) {
       const published = await this.queryStore
         .getCheckpoint(SESSION_INDEX_MANIFEST)
@@ -188,15 +197,40 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         this.markDegraded('projection failed', error);
       }
     }
+    if (this.state === 'ready') await this.mirror.drain();
+    return projected;
+  }
+
+  private ensureDirtyCatchUp(): Promise<boolean> {
+    this.catchUpFlight ??= this.runDirtyCatchUp().finally(() => {
+      this.catchUpFlight = undefined;
+    });
+    return this.catchUpFlight;
+  }
+
+  private async runDirtyCatchUp(): Promise<boolean> {
+    if (!this.readModelEnabled()) return false;
+    if (this.mirror.dirtyEpoch() === undefined) return true;
+    const projection = this.projectFlight;
+    if (projection !== undefined) await projection.catch(() => false);
+    if (!this.readModelEnabled()) return false;
+    const dirty = this.mirror.dirtyEpoch();
+    if (dirty === undefined) return true;
+    const projected = await this.ensureProjection(true).catch(() => false);
+    if (!projected || !this.readModelEnabled()) return false;
+    this.mirror.settleDirty(dirty);
+    return this.mirror.dirtyEpoch() === undefined;
   }
 
   /** Test/ops hook: reconcile the published generation against disk now. */
   async reconcileNow(): Promise<void> {
     if (!this.readModelEnabled()) return;
-    const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-    if (manifest === undefined) return;
-    this.generation = manifest.seq;
-    await this.projector.reconcile(manifest.seq);
+    await this.mirror.runExclusive(async () => {
+      const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+      if (manifest === undefined) return;
+      this.generation = manifest.seq;
+      await this.projector.reconcile(manifest.seq);
+    });
   }
 
   /** Test/ops hook: project a fresh generation now (single-flight). */
@@ -219,14 +253,16 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     }
     if (this.state !== 'ready') return;
     try {
-      const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-      if (manifest === undefined) {
-        this.markDegraded('published generation lost');
-        void this.prepare();
-        return;
-      }
-      this.generation = manifest.seq;
-      await this.projector.reconcile(manifest.seq);
+      await this.mirror.runExclusive(async () => {
+        const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+        if (manifest === undefined) {
+          this.markDegraded('published generation lost');
+          void this.prepare();
+          return;
+        }
+        this.generation = manifest.seq;
+        await this.projector.reconcile(manifest.seq);
+      });
     } catch (error) {
       this.log.warn('session index reconciliation failed', { error: String(error) });
     }
@@ -279,27 +315,23 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     return this.withReadModel(
       (generation) => this.countFromReadModel(generation, query),
       () => this.countLegacy(query),
+      true,
     );
   }
 
-  /**
-   * Evict a deleted session's derived state so `get` / `listRecent` stop
-   * answering for the id immediately: the authoritative directory is deleted
-   * by the caller (`sessionLifecycle.delete`), and the next projection would
-   * drop the entry anyway — this closes the stale-read window in between. The
-   * mirror queue is evicted first (waiting out an in-flight flush): reads
-   * fold the queue in for read-your-writes, and a late flush would otherwise
-   * resurrect the entry after the store delete. With the read model off
-   * there is no derived state to evict beyond the queue.
-   */
   async remove(id: string): Promise<void> {
-    await this.mirror.evict(id);
-    await this.withReadModel(
-      async (generation) => {
-        await this.queryStore.delete(sessionCollection(generation), id);
-      },
-      () => Promise.resolve(),
-    );
+    await this.mirror.runExclusive(async () => {
+      this.mirror.invalidate(id);
+      try {
+        if (!this.readModelEnabled()) return;
+        const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+        if (manifest === undefined) return;
+        this.generation = manifest.seq;
+        await this.removeFromReadModel(manifest.seq, id);
+      } finally {
+        this.acknowledgePendingId(id);
+      }
+    });
   }
 
   /**
@@ -311,7 +343,19 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private async withReadModel<T>(
     op: (generation: number) => Promise<T>,
     legacy: () => Promise<T>,
+    exclusive = false,
   ): Promise<T> {
+    if (!this.readModelEnabled()) return legacy();
+    if (this.mirror.dirtyEpoch() !== undefined) {
+      const caughtUp = await this.ensureDirtyCatchUp().catch(() => false);
+      if (
+        !caughtUp ||
+        !this.readModelEnabled() ||
+        this.mirror.dirtyEpoch() !== undefined
+      ) {
+        return legacy();
+      }
+    }
     if (!this.readModelEnabled()) return legacy();
     if (this.state === 'uninitialized') {
       void this.prepare();
@@ -322,31 +366,37 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       if (Date.now() >= this.nextPrepareRetryAt) void this.prepare();
       return legacy();
     }
-    let manifest: Checkpoint | undefined;
-    try {
-      manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-    } catch (error) {
-      this.markDegraded('read model read failed', error);
-      return legacy();
-    }
-    if (manifest === undefined) {
-      this.markDegraded('published generation lost');
-      void this.prepare();
-      return legacy();
-    }
-    this.generation = manifest.seq;
-    try {
-      return await op(manifest.seq);
-    } catch (error) {
-      this.markDegraded('read model read failed', error);
-      return legacy();
-    }
+    const read = async (): Promise<T> => {
+      let manifest: Checkpoint | undefined;
+      try {
+        manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+      } catch (error) {
+        this.markDegraded('read model read failed', error);
+        return legacy();
+      }
+      if (manifest === undefined) {
+        this.markDegraded('published generation lost');
+        void this.prepare();
+        return legacy();
+      }
+      this.generation = manifest.seq;
+      try {
+        return await op(manifest.seq);
+      } catch (error) {
+        this.markDegraded('read model read failed', error);
+        return legacy();
+      }
+    };
+    return exclusive ? this.mirror.runExclusive(read) : read();
   }
 
   private async getFromReadModel(
     generation: number,
     id: string,
+    pending: readonly SessionSummary[] = this.mirror.pending(),
   ): Promise<SessionSummary | undefined> {
+    const queued = pending.find((summary) => summary.id === id);
+    if (queued !== undefined) return queued;
     const cached: unknown = await this.queryStore.get(sessionCollection(generation), id);
     if (isSessionSummaryShape(cached)) return stripRecencyField(generation, cached);
     const summary = await this.getLegacy(id);
@@ -358,9 +408,9 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     generation: number,
     query: SessionListQuery,
   ): Promise<Page<SessionSummary>> {
-    const collection = sessionCollection(generation);
+    const pending = this.mirror.pending();
     if (query.sessionId !== undefined) {
-      const summary = await this.getFromReadModel(generation, query.sessionId);
+      const summary = await this.getFromReadModel(generation, query.sessionId, pending);
       const items =
         summary !== undefined && (!summary.archived || query.includeArchived === true)
           ? [summary]
@@ -368,10 +418,17 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       return { items: query.limit !== undefined ? items.slice(0, query.limit) : items };
     }
 
-    const cursor = await this.resolveCursor(generation, query);
+    const collection = sessionCollection(generation);
+    const cursor = await this.resolveCursor(generation, query, pending);
     if (cursor === undefined) return { items: [] };
     const limit = query.limit ?? UNBOUNDED;
-    const filter = { ...this.baseFilter(query), ...cursor.filter };
+    const filter: QueryFilter = {
+      ...this.baseFilter(query),
+      ...cursor.filter,
+      ...(pending.length > 0
+        ? { id: { $nin: pending.map((summary) => summary.id) } }
+        : {}),
+    };
     const column = recencyColumn(generation);
     const strip = (records: SessionSummary[]): SessionSummary[] =>
       records.map((record) => stripRecencyField(generation, record));
@@ -406,36 +463,66 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
             cursor.bounds,
             limit,
           );
-    return this.mergePending(page, query, cursor.position);
+    return this.mergePending(page, query, pending, cursor.position);
   }
 
   private async countFromReadModel(
     generation: number,
     query: SessionCountQuery,
   ): Promise<number> {
-    const counters = sessionCountersCollection(generation);
     const restricted = query.workspaceIds;
+    const pending = this.mirror.pending();
+    const counters = sessionCountersCollection(generation);
     const workspaceIds = restricted ?? (await this.queryStore.listKeys(counters));
     const counts = await this.queryStore.getMany<SessionWorkspaceCounts>(counters, workspaceIds);
     let total = 0;
     for (const entry of counts.values()) {
       total += query.includeArchived === true ? entry.active + entry.archived : entry.active;
     }
-    const pending = this.mirror
-      .pending()
-      .filter((summary) => restricted === undefined || restricted.includes(summary.workspaceId));
     if (pending.length === 0) return total;
-    const stored = await this.queryStore.getMany<SessionSummary>(
+    const stored = await this.queryStore.getMany<unknown>(
       sessionCollection(generation),
       pending.map((summary) => summary.id),
     );
-    const weight = (archived: boolean): number =>
-      query.includeArchived === true || !archived ? 1 : 0;
+    const contribution = (summary: SessionSummary | undefined): number =>
+      summary !== undefined &&
+      (restricted === undefined || restricted.includes(summary.workspaceId)) &&
+      (query.includeArchived === true || !summary.archived)
+        ? 1
+        : 0;
     for (const summary of pending) {
-      const old = stored.get(summary.id);
-      total += weight(summary.archived) - (old === undefined ? 0 : weight(old.archived));
+      const oldValue = stored.get(summary.id);
+      const old = isSessionSummaryShape(oldValue) ? oldValue : undefined;
+      total += contribution(summary) - contribution(old);
     }
     return total;
+  }
+
+  private acknowledgePendingId(id: string): void {
+    this.mirror.acknowledge(this.mirror.pending().filter((summary) => summary.id === id));
+  }
+
+  private async removeFromReadModel(generation: number, id: string): Promise<void> {
+    const collection = sessionCollection(generation);
+    const storedValue: unknown = await this.queryStore.get(collection, id);
+    if (storedValue === undefined) return;
+    if (!isSessionSummaryShape(storedValue)) {
+      await this.queryStore.delete(collection, id);
+      return;
+    }
+    const counters = sessionCountersCollection(generation);
+    const current =
+      (await this.queryStore.get<SessionWorkspaceCounts>(counters, storedValue.workspaceId)) ?? {
+        active: 0,
+        archived: 0,
+      };
+    const value: SessionWorkspaceCounts = storedValue.archived
+      ? { active: current.active, archived: Math.max(0, current.archived - 1) }
+      : { active: Math.max(0, current.active - 1), archived: current.archived };
+    await this.queryStore.batch([
+      { kind: 'delete', collection, key: id },
+      { kind: 'put', collection: counters, key: storedValue.workspaceId, value },
+    ]);
   }
 
   /**
@@ -475,22 +562,21 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private mergePending(
     page: Page<SessionSummary>,
     query: SessionListQuery,
+    pendingSnapshot: readonly SessionSummary[],
     position?: { u: number; id: string; before: boolean },
   ): Page<SessionSummary> {
-    const pending = this.mirror
-      .pending()
-      .filter(
-        (summary) =>
-          (query.workspaceIds === undefined || query.workspaceIds.includes(summary.workspaceId)) &&
-          (query.includeArchived === true || !summary.archived) &&
-          summaryMatchesChildOf(summary, query.childOf) &&
-          (position === undefined ||
-            (position.before
-              ? summary.updatedAt < position.u ||
-                (summary.updatedAt === position.u && summary.id < position.id)
-              : summary.updatedAt > position.u ||
-                (summary.updatedAt === position.u && summary.id > position.id))),
-      );
+    const pending = pendingSnapshot.filter(
+      (summary) =>
+        (query.workspaceIds === undefined || query.workspaceIds.includes(summary.workspaceId)) &&
+        (query.includeArchived === true || !summary.archived) &&
+        summaryMatchesChildOf(summary, query.childOf) &&
+        (position === undefined ||
+          (position.before
+            ? summary.updatedAt < position.u ||
+              (summary.updatedAt === position.u && summary.id < position.id)
+            : summary.updatedAt > position.u ||
+              (summary.updatedAt === position.u && summary.id > position.id))),
+    );
     if (pending.length === 0) return page;
     const merged = new Map<string, SessionSummary>();
     for (const summary of pending) merged.set(summary.id, summary);
@@ -514,15 +600,17 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private async resolveCursor(
     generation: number,
     query: SessionListQuery,
+    pending: readonly SessionSummary[],
   ): Promise<
     | { filter: QueryFilter; bounds: ColumnBounds; position?: { u: number; id: string; before: boolean } }
     | undefined
   > {
     const id = query.before ?? query.after;
     if (id === undefined) return { filter: {}, bounds: {} };
+    const queued = pending.find((summary) => summary.id === id);
     const storedValue: unknown = await this.queryStore.get(sessionCollection(generation), id);
     const stored = isSessionSummaryShape(storedValue) ? storedValue : undefined;
-    const cursor = stored ?? this.mirror.pending().find((summary) => summary.id === id);
+    const cursor = queued ?? stored;
     if (cursor === undefined) return undefined;
     const u = cursor.updatedAt;
     if (query.before !== undefined) {
@@ -604,20 +692,32 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     };
   }
 
-  private async getLegacy(id: string): Promise<SessionSummary | undefined> {
-    for (const workspaceId of await listWorkspaceIds(this.storage, this.sessionsScope)) {
-      const sessionIds = await listSessionIds(this.storage, this.sessionsScope, workspaceId);
-      if (!sessionIds.includes(id)) continue;
-      const summary = await readSessionSummary(
-        this.docs,
-        this.appendLog,
-        this.sessionsScope,
-        workspaceId,
-        id,
-      );
-      if (summary !== undefined) return summary;
-    }
-    return undefined;
+  private getLegacy(id: string): Promise<SessionSummary | undefined> {
+    return this.readAuthoritativeWithRetry(async () => {
+      const pendingBefore = this.mirror.pending().find((summary) => summary.id === id);
+      let authoritative: SessionSummary | undefined;
+      const workspaceIds = await this.listStorage(this.sessionsScope);
+      if (workspaceIds !== undefined) {
+        for (const workspaceId of workspaceIds) {
+          const sessionIds = await this.listStorage(`${this.sessionsScope}/${workspaceId}`);
+          if (sessionIds === undefined || !sessionIds.includes(id)) continue;
+          const summary = await readSessionSummary(
+            this.docs,
+            this.appendLog,
+            this.sessionsScope,
+            workspaceId,
+            id,
+          );
+          if (summary !== undefined) {
+            authoritative = summary;
+            break;
+          }
+        }
+      }
+      if (!this.readModelEnabled()) return authoritative;
+      const pendingAfter = this.mirror.pending().find((summary) => summary.id === id);
+      return pendingAfter ?? pendingBefore ?? authoritative;
+    });
   }
 
   private async countLegacy(query: SessionCountQuery): Promise<number> {
@@ -628,57 +728,65 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     return count;
   }
 
-  /**
-   * Collect the authoritative summaries behind a legacy read. While the read
-   * model is enabled but not yet ready, the kicked initial projection is
-   * scanning the same authoritative set, so the read joins that in-flight
-   * scan (or drives the one the projection will reuse) instead of running a
-   * second full directory scan. Flag-off hosts and the degraded fallback
-   * keep the targeted per-workspace enumeration.
-   *
-   * Either way the mirror's pending queue is folded in by id (pending
-   * entries win): every queued summary was recorded only after its
-   * `state.json` is durable, and a scan/enumeration that started before the
-   * write may legitimately have passed the directory already — the fold is
-   * what keeps read-your-writes on this path too.
-   */
-  private async collectAuthoritative(
+  private collectAuthoritative(
     workspaceIds: readonly string[] | undefined,
   ): Promise<SessionSummary[]> {
-    let collected: SessionSummary[];
-    if (
-      this.readModelEnabled() &&
-      (this.state === 'uninitialized' || this.state === 'preparing')
-    ) {
-      const { summaries } = await this.projector.sharedScanForRead();
-      collected =
-        workspaceIds === undefined
-          ? summaries
-          : summaries.filter((summary) => workspaceIds.includes(summary.workspaceId));
-    } else {
-      const ids = workspaceIds ?? (await listWorkspaceIds(this.storage, this.sessionsScope));
-      collected = [];
-      for (const workspaceId of ids) {
-        for (const sessionId of await listSessionIds(this.storage, this.sessionsScope, workspaceId)) {
-          const summary = await readSessionSummary(
-            this.docs,
-            this.appendLog,
-            this.sessionsScope,
-            workspaceId,
-            sessionId,
-          );
-          if (summary !== undefined) collected.push(summary);
+    return this.readAuthoritativeWithRetry(async () => {
+      const pendingBefore = this.mirror.pending();
+      let collected: SessionSummary[];
+      if (
+        this.readModelEnabled() &&
+        (this.state === 'uninitialized' || this.state === 'preparing')
+      ) {
+        const { summaries } = await this.projector.sharedScanForRead();
+        collected =
+          workspaceIds === undefined
+            ? summaries
+            : summaries.filter((summary) => workspaceIds.includes(summary.workspaceId));
+      } else {
+        let ids = workspaceIds;
+        if (ids === undefined) ids = (await this.listStorage(this.sessionsScope)) ?? [];
+        collected = [];
+        for (const workspaceId of ids) {
+          const sessionIds = await this.listStorage(`${this.sessionsScope}/${workspaceId}`);
+          if (sessionIds === undefined) continue;
+          for (const sessionId of sessionIds) {
+            const summary = await readSessionSummary(
+              this.docs,
+              this.appendLog,
+              this.sessionsScope,
+              workspaceId,
+              sessionId,
+            );
+            if (summary !== undefined) collected.push(summary);
+          }
         }
       }
+      if (!this.readModelEnabled()) return collected;
+      const pendingAfter = this.mirror.pending();
+      if (pendingBefore.length === 0 && pendingAfter.length === 0) return collected;
+      const byId = new Map(collected.map((summary) => [summary.id, summary]));
+      for (const summary of [...pendingBefore, ...pendingAfter]) {
+        if (workspaceIds === undefined || workspaceIds.includes(summary.workspaceId)) {
+          byId.set(summary.id, summary);
+        }
+      }
+      return [...byId.values()];
+    });
+  }
+
+  private async readAuthoritativeWithRetry<T>(read: () => Promise<T>): Promise<T> {
+    const before = this.mirror.epoch();
+    const result = await read();
+    return this.mirror.epoch() === before ? result : read();
+  }
+
+  private async listStorage(scope: string): Promise<readonly string[] | undefined> {
+    try {
+      return await this.storage.list(scope);
+    } catch {
+      return undefined;
     }
-    const pending = this.mirror.pending();
-    if (pending.length === 0) return collected;
-    const byId = new Map(collected.map((summary) => [summary.id, summary]));
-    for (const summary of pending) {
-      if (workspaceIds !== undefined && !workspaceIds.includes(summary.workspaceId)) continue;
-      byId.set(summary.id, summary);
-    }
-    return [...byId.values()];
   }
 
   private readModelEnabled(): boolean {

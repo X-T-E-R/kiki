@@ -110,6 +110,8 @@ export interface IAgentPromptService {
   submit(payload: PromptPayload): Promise<PromptLaunchResult | undefined>;
   submitSteer(payload: SteerPayload): Promise<PromptLaunchResult | undefined>;
   list(): PromptQueueSnapshot;
+  /** Replaces caller-visible content in place; text-only edits retain existing non-text attachments. */
+  replace(promptId: string, content: readonly ContentPart[]): PromptHandle;
   steer(promptIds: readonly string[]): Promise<readonly PromptHandle[]>;
   abort(promptId: string, reason?: Error): boolean;
   drain(reason?: Error): Promise<void>;

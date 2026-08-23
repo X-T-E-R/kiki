@@ -1098,6 +1098,102 @@ describe('ModelCatalog enumeration', () => {
     }
   });
 
+  it('collapses managed legacy and canonical aliases without hiding distinct sources', async () => {
+    const sections: Record<string, unknown> = {
+      providers: {
+        'managed:kimi-code': {
+          type: 'kimi',
+          baseUrl: 'https://api.kimi.example/v1',
+          oauth: { storage: 'file', key: 'oauth/kimi-code' },
+        },
+        moonshot: { type: 'kimi', baseUrl: 'https://api.moonshot.example/v1', apiKey: 'test' },
+      },
+      models: {
+        'managed:kimi-code/kimi-k2': {
+          provider: 'managed:kimi-code',
+          model: 'kimi-k2',
+          displayName: 'Kimi K2',
+          maxContextSize: 131072,
+        },
+        'kimi-code/kimi-k2': {
+          provider: 'managed:kimi-code',
+          model: 'kimi-k2',
+          displayName: 'Kimi K2',
+          maxContextSize: 131072,
+        },
+        'managed-kimi-alt/kimi-k2': {
+          provider: 'managed:kimi-code',
+          baseUrl: 'https://alt.kimi.example/v1',
+          model: 'kimi-k2',
+          displayName: 'Kimi K2',
+          maxContextSize: 131072,
+        },
+        'moonshot/kimi-k2': {
+          provider: 'moonshot',
+          model: 'kimi-k2',
+          displayName: 'Kimi K2',
+          maxContextSize: 131072,
+        },
+      },
+      defaultModel: 'kimi-code/kimi-k2',
+    };
+    const { host, catalog } = createHost(sections);
+    try {
+      await expect(catalog.listModels()).resolves.toEqual([
+        expect.objectContaining({
+          provider: 'managed:kimi-code',
+          model: 'kimi-code/kimi-k2',
+          display_name: 'Kimi K2',
+        }),
+        expect.objectContaining({
+          provider: 'managed:kimi-code',
+          model: 'managed-kimi-alt/kimi-k2',
+          display_name: 'Kimi K2',
+        }),
+        expect.objectContaining({
+          provider: 'moonshot',
+          model: 'moonshot/kimi-k2',
+          display_name: 'Kimi K2',
+        }),
+      ]);
+    } finally {
+      host.dispose();
+    }
+  });
+
+  it('keeps the configured default alias when collapsing managed duplicates', async () => {
+    const sections: Record<string, unknown> = {
+      providers: {
+        'managed:kimi-code': {
+          type: 'kimi',
+          baseUrl: 'https://api.kimi.example/v1',
+          oauth: { storage: 'file', key: 'oauth/kimi-code' },
+        },
+      },
+      models: {
+        'kimi-code/kimi-k2': {
+          provider: 'managed:kimi-code',
+          model: 'kimi-k2',
+          maxContextSize: 131072,
+        },
+        'managed:kimi-code/kimi-k2': {
+          provider: 'managed:kimi-code',
+          model: 'kimi-k2',
+          maxContextSize: 131072,
+        },
+      },
+      defaultModel: 'managed:kimi-code/kimi-k2',
+    };
+    const { host, catalog } = createHost(sections);
+    try {
+      await expect(catalog.listModels()).resolves.toEqual([
+        expect.objectContaining({ model: 'managed:kimi-code/kimi-k2' }),
+      ]);
+    } finally {
+      host.dispose();
+    }
+  });
+
   it('projects support_efforts and default_effort from the model config', async () => {
     const sections = structuredClone(catalogSections);
     (sections['models'] as Record<string, ModelRecord>)['k2'] = {

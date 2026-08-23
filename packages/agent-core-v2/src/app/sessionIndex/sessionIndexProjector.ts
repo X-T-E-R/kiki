@@ -109,8 +109,8 @@ export class SessionIndexProjector {
   }
 
   /** Scan the authoritative set into a fresh generation and publish it. */
-  async project(generation: number): Promise<ProjectionResult> {
-    const scan = this.sharedScan();
+  async project(generation: number, options?: { fresh?: boolean }): Promise<ProjectionResult> {
+    const scan = options?.fresh === true ? this.startScan() : this.sharedScan();
     try {
       return await this.doProject(generation, scan);
     } finally {

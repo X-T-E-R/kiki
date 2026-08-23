@@ -104,6 +104,7 @@ import {
 
 type MaterializeSessionOptions = Omit<CreateSessionOptions, 'sessionId'> & {
   readonly sessionId: string;
+  readonly rollbackOnMaterializationFailure?: boolean;
 };
 
 const NO_ABORT = new AbortController().signal;
@@ -177,6 +178,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   private readonly resuming = new Map<string, Promise<ISessionScopeHandle | undefined>>();
   private readonly sessionLocks = new Map<string, IStorageLock>();
   private readonly lockReleases = new Map<string, Promise<void>>();
+  private readonly deferredSessionLockReleases = new Set<string>();
   private readonly resumeFailures = new Map<string, Error>();
 
   constructor(
@@ -257,6 +259,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   }
 
   private releaseSessionLock(sessionId: string): Promise<void> {
+    if (this.deferredSessionLockReleases.has(sessionId)) return Promise.resolve();
     const releasing = this.lockReleases.get(sessionId);
     if (releasing !== undefined) return releasing;
     const lock = this.sessionLocks.get(sessionId);
@@ -272,7 +275,11 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     await this.workspaceSkillCatalog
       .reloadSources(SESSION_CREATE_RELOAD_SKILL_SOURCES)
       .catch(() => undefined);
-    const handle = await this.materializeSession({ ...opts, sessionId });
+    const handle = await this.materializeSession({
+      ...opts,
+      sessionId,
+      rollbackOnMaterializationFailure: true,
+    });
     try {
       const main =
         opts.mainAgentBinding === undefined
@@ -288,12 +295,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       await this.appendSessionIndexEntry(sessionId, opts.workDir);
     } catch (error) {
       const sessionDir = handle.accessor.get(ISessionContext).sessionDir;
-      this.sessions.delete(sessionId);
-      await this.drainAgents(handle).catch(() => {});
-      handle.dispose();
-      await this.releaseSessionLock(sessionId);
-      await this.hostFs.remove(sessionDir).catch(() => {});
-      throw error;
+      return this.rollbackSession(sessionId, handle, sessionDir, error);
     }
     await this.announceCreated({ sessionId, handle, source: 'startup' });
     return handle;
@@ -383,9 +385,12 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         this.pluginAgentProfileLoader.ready,
       ]);
     } catch (error) {
+      void this.explicitAgentProfileLoader.reload().catch(() => undefined);
+      if (opts.rollbackOnMaterializationFailure === true) {
+        return this.rollbackSession(opts.sessionId, handle, sessionDir, error);
+      }
       handle.dispose();
       await this.releaseSessionLock(opts.sessionId);
-      void this.explicitAgentProfileLoader.reload().catch(() => undefined);
       throw error;
     }
     this.sessions.set(opts.sessionId, handle);
@@ -565,6 +570,60 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     }
   }
 
+  private async rollbackSession(
+    sessionId: string,
+    handle: ISessionScopeHandle | undefined,
+    sessionDir: string | undefined,
+    error: unknown,
+  ): Promise<never> {
+    this.sessions.delete(sessionId);
+    this.deferredSessionLockReleases.add(sessionId);
+    const cleanupErrors: unknown[] = [];
+    if (handle !== undefined) {
+      try {
+        await this.drainAgents(handle);
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    try {
+      await drainSessionMetadataWrites();
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    if (handle !== undefined) {
+      try {
+        handle.dispose();
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    if (sessionDir !== undefined) {
+      try {
+        await this.hostFs.remove(sessionDir);
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    try {
+      await this.index.remove(sessionId);
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    this.deferredSessionLockReleases.delete(sessionId);
+    try {
+      await this.releaseSessionLock(sessionId);
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError([error, ...cleanupErrors], `failed to roll back session ${sessionId}`, {
+        cause: error,
+      });
+    }
+    throw error;
+  }
+
   async fork(opts: ForkSessionOptions): Promise<ISessionScopeHandle> {
     const sourceId = opts.sourceSessionId;
 
@@ -714,20 +773,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       await this.announceCreated({ sessionId: targetId, handle: target, source: 'fork' });
       return target;
     } catch (error) {
-      if (targetId !== undefined) {
-        this.sessions.delete(targetId);
-      }
-      if (target !== undefined) {
-        try {
-          target.dispose();
-        } catch {
-        }
-      }
-      if (targetId !== undefined) await this.releaseSessionLock(targetId);
-      if (targetSessionDir !== undefined) {
-        await this.hostFs.remove(targetSessionDir).catch(() => {});
-      }
-      throw error;
+      if (targetId === undefined) throw error;
+      return this.rollbackSession(targetId, target, targetSessionDir, error);
     }
   }
 

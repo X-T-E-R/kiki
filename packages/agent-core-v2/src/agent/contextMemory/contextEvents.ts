@@ -25,6 +25,7 @@ export class ContextAppendLoopEvent extends Event2<
 > {
   static override readonly type = 'context.append_loop_event';
   static override readonly durable = true;
+  static override readonly observable = true;
   static override readonly schema = contextAppendLoopEventSchema;
 }
 export interface ContextAppendLoopEvent

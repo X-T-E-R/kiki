@@ -104,9 +104,22 @@ export class PromptQueued extends Event2<PromptQueuedPayload> {
 }
 export interface PromptQueued extends PromptQueuedPayload {}
 
+export interface PromptReplacedPayload {
+  readonly promptId: string;
+  readonly content: ContentPart[];
+  readonly replacedAt: string;
+}
+
+export class PromptReplaced extends Event2<PromptReplacedPayload> {
+  static override readonly type = 'prompt.replaced';
+  static override readonly observable = true;
+}
+export interface PromptReplaced extends PromptReplacedPayload {}
+
 interface Deferred<T> { readonly promise: Promise<T>; resolve(value: T): void; reject(reason: unknown): void }
 interface Record extends PromptSnapshot {
   state: PromptState;
+  message: ContextMessage;
   readonly execution?: PromptExecutionBinding;
   readonly deferredDisabledTools?: readonly string[];
   readonly alreadyMaterialized: boolean;
@@ -121,6 +134,27 @@ function bundledSkillBlockCount(message: ContextMessage): number {
 
 function stripBundledSkillBlocks(message: ContextMessage): ContentPart[] {
   return message.content.slice(bundledSkillBlockCount(message));
+}
+
+function replacePromptContent(
+  message: ContextMessage,
+  replacement: readonly ContentPart[],
+): ContentPart[] {
+  const skillBlockCount = bundledSkillBlockCount(message);
+  const skillBlocks = message.content.slice(0, skillBlockCount);
+  if (replacement.some((part) => part.type !== 'text')) return [...skillBlocks, ...replacement];
+  const content: ContentPart[] = [];
+  let replacedText = false;
+  for (const part of message.content.slice(skillBlockCount)) {
+    if (part.type !== 'text') {
+      content.push(part);
+    } else if (!replacedText) {
+      content.push(...replacement);
+      replacedText = true;
+    }
+  }
+  if (!replacedText) content.unshift(...replacement);
+  return [...skillBlocks, ...content];
 }
 
 function mergeSteerMessages(records: readonly Record[]): ContextMessage {
@@ -146,6 +180,7 @@ export class AgentPromptService implements IAgentPromptService {
   private readonly pending: Record[] = [];
   private readonly steered = new Map<string, Record[]>();
   private readonly reservedPromptIds = new Set<string>();
+  private readonly steeringPromptIds = new Set<string>();
   private steering = 0;
   private fullCompactionService: IAgentFullCompactionService | undefined;
   readonly hooks = { onBeforeSubmitPrompt: new OrderedHookSlot<PromptSubmitContext>() };
@@ -365,6 +400,26 @@ export class AgentPromptService implements IAgentPromptService {
     return { active: this.active === undefined ? undefined : snapshot(this.active), pending: this.pending.map(snapshot) };
   }
 
+  replace(promptId: string, content: readonly ContentPart[]): PromptHandle {
+    const item = this.pending.find((candidate) => candidate.id === promptId);
+    if (item === undefined || this.steeringPromptIds.has(promptId)) {
+      throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, `prompt ${promptId} is not replaceable`);
+    }
+    item.message = {
+      ...item.message,
+      id: item.id,
+      content: replacePromptContent(item.message, content),
+    };
+    void this.dispatcher.dispatch(
+      new PromptReplaced({
+        promptId: item.id,
+        content: stripBundledSkillBlocks(item.message),
+        replacedAt: new Date().toISOString(),
+      }),
+    );
+    return item.handle;
+  }
+
   async steer(promptIds: readonly string[]): Promise<readonly PromptHandle[]> {
     if (promptIds.length === 0) throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt_ids must not be empty');
     if (this.active === undefined) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'no active prompt to steer into');
@@ -373,43 +428,48 @@ export class AgentPromptService implements IAgentPromptService {
       throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are not pending');
     }
     const selected = this.pending.filter((item) => ids.has(item.id));
-    const activeAtEntry = this.active;
-    const { message: rerouted, captions } = this.extractCompressionCaptions(mergeSteerMessages(selected));
-    await this.materializeDaemonRefs(rerouted);
-    if (selected.some((item) => !this.pending.includes(item)) || this.active !== activeAtEntry) {
-      throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are no longer pending');
-    }
-    this.steering++;
-    const removed: { readonly item: Record; readonly index: number }[] = [];
-    for (const item of selected) {
-      const index = this.pending.indexOf(item);
-      removed.push({ item, index });
-      this.pending.splice(index, 1);
-    }
-    const request = new SteerStepRequest(rerouted, captions, this.reminders, (materialized) => {
-      void this.dispatcher.dispatch(
-        new TurnSteer({ input: materialized.content, origin: materialized.origin ?? USER_PROMPT_ORIGIN }),
-      );
-    }, () => {});
-    let turn: Turn | undefined;
+    for (const item of selected) this.steeringPromptIds.add(item.id);
     try {
-      turn = (await this.loop.enqueue(request).assigned).turn;
-    } catch {
-      turn = undefined;
+      const activeAtEntry = this.active;
+      const { message: rerouted, captions } = this.extractCompressionCaptions(mergeSteerMessages(selected));
+      await this.materializeDaemonRefs(rerouted);
+      if (selected.some((item) => !this.pending.includes(item)) || this.active !== activeAtEntry) {
+        throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are no longer pending');
+      }
+      this.steering++;
+      const removed: { readonly item: Record; readonly index: number }[] = [];
+      for (const item of selected) {
+        const index = this.pending.indexOf(item);
+        removed.push({ item, index });
+        this.pending.splice(index, 1);
+      }
+      const request = new SteerStepRequest(rerouted, captions, this.reminders, (materialized) => {
+        void this.dispatcher.dispatch(
+          new TurnSteer({ input: materialized.content, origin: materialized.origin ?? USER_PROMPT_ORIGIN }),
+        );
+      }, () => {});
+      let turn: Turn | undefined;
+      try {
+        turn = (await this.loop.enqueue(request).assigned).turn;
+      } catch {
+        turn = undefined;
+      } finally {
+        this.steering--;
+      }
+      if (turn === undefined || this.active !== activeAtEntry) {
+        for (const { item, index } of removed.reverse()) this.pending.splice(index, 0, item);
+        if (this.active === undefined) void this.startNext();
+        throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'no active turn to steer into');
+      }
+      for (const item of selected) { item.state = 'steered'; item.launchedDeferred.resolve(turn); }
+      this.steered.set(this.active.id, [...(this.steered.get(this.active.id) ?? []), ...selected]);
+      void this.dispatcher.dispatch(
+        new PromptSteered({ activePromptId: this.active.id, promptIds: selected.map((x) => x.id), content: selected.flatMap((item) => stripBundledSkillBlocks(item.message)), steeredAt: new Date().toISOString() }),
+      );
+      return selected.map((item) => item.handle);
     } finally {
-      this.steering--;
+      for (const item of selected) this.steeringPromptIds.delete(item.id);
     }
-    if (turn === undefined || this.active !== activeAtEntry) {
-      for (const { item, index } of removed.reverse()) this.pending.splice(index, 0, item);
-      if (this.active === undefined) void this.startNext();
-      throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'no active turn to steer into');
-    }
-    for (const item of selected) { item.state = 'steered'; item.launchedDeferred.resolve(turn); }
-    this.steered.set(this.active.id, [...(this.steered.get(this.active.id) ?? []), ...selected]);
-    void this.dispatcher.dispatch(
-      new PromptSteered({ activePromptId: this.active.id, promptIds: selected.map((x) => x.id), content: selected.flatMap((item) => stripBundledSkillBlocks(item.message)), steeredAt: new Date().toISOString() }),
-    );
-    return selected.map((item) => item.handle);
   }
 
   abort(promptId: string, reason: Error = userCancellationReason()): boolean {

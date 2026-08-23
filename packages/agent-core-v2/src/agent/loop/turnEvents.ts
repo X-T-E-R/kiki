@@ -127,6 +127,8 @@ export interface TurnStepInterrupted extends TurnStepInterruptedPayload {}
 
 export interface AssistantDeltaPayload {
   readonly turnId: number;
+  readonly step?: number;
+  readonly stepId?: string;
   readonly delta: string;
 }
 
@@ -138,6 +140,8 @@ export interface AssistantDelta extends AssistantDeltaPayload {}
 
 export interface ThinkingDeltaPayload {
   readonly turnId: number;
+  readonly step?: number;
+  readonly stepId?: string;
   readonly delta: string;
 }
 

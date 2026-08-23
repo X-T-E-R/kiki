@@ -45,6 +45,110 @@ describe('JsonAtomicDocumentStore', () => {
     expect(await config.get<State>('session', 'state.json')).toEqual({ title: 'new', count: 2 });
   });
 
+  it('serializes a read behind an in-flight replacement of the same document', async () => {
+    await config.set<State>('session', 'state.json', { title: 'old' });
+    const realWrite = storage.write.bind(storage);
+    let releaseWrite: () => void = () => {};
+    let notifyMissing: (() => void) | undefined;
+    const missing = new Promise<void>((resolve) => {
+      notifyMissing = resolve;
+    });
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    storage.write = async (scope, key, data, options) => {
+      await storage.delete(scope, key);
+      notifyMissing?.();
+      await writeGate;
+      return realWrite(scope, key, data, options);
+    };
+
+    const setting = config.set<State>('session', 'state.json', { title: 'new' });
+    await missing;
+    const reading = config.get<State>('session', 'state.json');
+    releaseWrite();
+
+    await expect(reading).resolves.toEqual({ title: 'new' });
+    await setting;
+  });
+
+  it('releases a document tail after an operation fails', async () => {
+    const realWrite = storage.write.bind(storage);
+    let fail = true;
+    storage.write = async (scope, key, data, options) => {
+      if (fail) {
+        fail = false;
+        throw new Error('injected write failure');
+      }
+      return realWrite(scope, key, data, options);
+    };
+
+    await expect(config.set('session', 'state.json', { title: 'failed' })).rejects.toThrow(
+      'injected write failure',
+    );
+    await expect(config.set('session', 'state.json', { title: 'recovered' })).resolves.toBeUndefined();
+    await expect(config.get<State>('session', 'state.json')).resolves.toEqual({ title: 'recovered' });
+  });
+
+  it('serializes delete behind an in-flight write of the same document', async () => {
+    const realWrite = storage.write.bind(storage);
+    const realDelete = storage.delete.bind(storage);
+    let releaseWrite: () => void = () => {};
+    let notifyWrite: (() => void) | undefined;
+    let deleteCalls = 0;
+    const writeEntered = new Promise<void>((resolve) => {
+      notifyWrite = resolve;
+    });
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    storage.write = async (scope, key, data, options) => {
+      notifyWrite?.();
+      await writeGate;
+      return realWrite(scope, key, data, options);
+    };
+    storage.delete = async (scope, key) => {
+      deleteCalls += 1;
+      return realDelete(scope, key);
+    };
+
+    const setting = config.set('session', 'state.json', { title: 'new' });
+    await writeEntered;
+    const deleting = config.delete('session', 'state.json');
+    await Promise.resolve();
+    expect(deleteCalls).toBe(0);
+    releaseWrite();
+    await Promise.all([setting, deleting]);
+    expect(deleteCalls).toBe(1);
+    await expect(config.get('session', 'state.json')).resolves.toBeUndefined();
+  });
+
+  it('allows different document keys to progress independently', async () => {
+    const realWrite = storage.write.bind(storage);
+    let releaseA: () => void = () => {};
+    let notifyA: (() => void) | undefined;
+    const aEntered = new Promise<void>((resolve) => {
+      notifyA = resolve;
+    });
+    const aGate = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    storage.write = async (scope, key, data, options) => {
+      if (key === 'a.json') {
+        notifyA?.();
+        await aGate;
+      }
+      return realWrite(scope, key, data, options);
+    };
+
+    const settingA = config.set('session', 'a.json', { title: 'A' });
+    await aEntered;
+    await expect(config.set('session', 'b.json', { title: 'B' })).resolves.toBeUndefined();
+    await expect(config.get<State>('session', 'b.json')).resolves.toEqual({ title: 'B' });
+    releaseA();
+    await settingA;
+  });
+
   it('keys are independent', async () => {
     await config.set<State>('session', 'a.json', { title: 'A' });
     await config.set<State>('session', 'b.json', { title: 'B' });
