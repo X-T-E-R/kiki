@@ -69,13 +69,20 @@ export function assertSessionWritable(state: Pick<SessionViewState, 'resyncing' 
 const RESYNC_BACKOFF_MS = [250, 500, 1000, 2000, 4000];
 const QUARANTINE_MAX_FRAMES = 1000;
 const QUARANTINE_MAX_BYTES = 2 * 1024 * 1024;
-/** Frames applied per flush tick. Restoring a hidden tab can hold the full
- * inbound bound; applying it in one synchronous pass would freeze the frame. */
+/** Frames applied per flush tick. Background publication remains bounded so a
+ * throttled window never returns to one large synchronous reducer pass. */
 const FLUSH_CHUNK_FRAMES = 200;
+const HIDDEN_FRAME_FLUSH_INTERVAL_MS = 1000;
 
 export interface PublicationScheduler {
   schedule(callback: () => void): unknown;
   cancel(handle: unknown): void;
+}
+
+interface VisibilityDocument {
+  readonly visibilityState?: string;
+  readonly addEventListener?: (type: string, listener: () => void) => void;
+  readonly removeEventListener?: (type: string, listener: () => void) => void;
 }
 
 const browserScheduler: PublicationScheduler = {
@@ -92,6 +99,10 @@ const browserScheduler: PublicationScheduler = {
   },
 };
 
+function browserVisibilityDocument(): VisibilityDocument | undefined {
+  return typeof document === 'undefined' ? undefined : document;
+}
+
 function childAgentId(frame: SessionEventFrame): string | undefined {
   const agentId = (frame.payload as { agentId?: string }).agentId;
   if (agentId === undefined || agentId === 'main' || frame.payload.type.startsWith('subagent.')) {
@@ -102,7 +113,7 @@ function childAgentId(frame: SessionEventFrame): string | undefined {
 
 function isVisibleThinkingDelta(frame: SessionEventFrame): boolean {
   if (frame.payload.type !== 'thinking.delta') return false;
-  return typeof document === 'undefined' || document.visibilityState !== 'hidden';
+  return browserVisibilityDocument()?.visibilityState !== 'hidden';
 }
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -121,13 +132,15 @@ export class SessionController {
   private publishedState: SessionViewState;
   private readonly listeners = new Set<Listener>();
   private readonly scheduler: PublicationScheduler;
+  private readonly usesBrowserScheduler: boolean;
+  private readonly visibilityDocument: VisibilityDocument | undefined;
   private frameHandle: unknown = null;
+  private hiddenFrameTimer: ReturnType<typeof setTimeout> | null = null;
   /** One microtask per JS turn keeps reasoning visibly incremental without
    * publishing once per frame in a synchronous high-frequency burst. */
   private thinkingFlushQueued = false;
-  /** Hidden-tab intake: while the document is hidden rAF never fires, so this
-   * buffer carries the whole blackout. Bounded by the quarantine limits —
-   * overflow drops the buffer and resyncs instead of growing without cap. */
+  /** Intake is bounded for burst safety. Hidden windows drain it in 200-frame
+   * chunks on a low-frequency timeout instead of waiting for foreground. */
   private readonly inboundFrames = new FrameBuffer({
     maxFrames: QUARANTINE_MAX_FRAMES,
     maxBytes: QUARANTINE_MAX_BYTES,
@@ -173,9 +186,12 @@ export class SessionController {
     this.sessionId = sessionId;
     this.scheduler = options.scheduler ?? browserScheduler;
     this.transcriptMode = socket.timelineMode === 'transcript';
+    this.usesBrowserScheduler = options.scheduler === undefined;
+    this.visibilityDocument = this.usesBrowserScheduler ? browserVisibilityDocument() : undefined;
     this.state = createViewState(sessionId);
     this.publishedState = this.state;
     this.emptyAgentState = createViewState(sessionId);
+    this.visibilityDocument?.addEventListener?.('visibilitychange', this.onVisibilityChange);
   }
 
   get timelineMode(): 'transcript' | 'legacy' {
@@ -183,6 +199,16 @@ export class SessionController {
   }
 
   getForest = (): AgentForest | undefined => this.publishedForest;
+
+  private readonly onVisibilityChange = (): void => {
+    if (this.closed) return;
+    if (this.isDocumentHidden()) {
+      this.cancelVisibleFrameFlush();
+    } else {
+      this.clearHiddenFrameTimer();
+    }
+    if (this.inboundFrames.length > 0) this.scheduleFrameFlush();
+  };
 
   getState = (): SessionViewState => this.publishedState;
 
@@ -225,8 +251,31 @@ export class SessionController {
     if (immediate) this.notifyMain();
   }
 
+  private isDocumentHidden(): boolean {
+    return this.usesBrowserScheduler && this.visibilityDocument?.visibilityState === 'hidden';
+  }
+
+  private cancelVisibleFrameFlush(): void {
+    if (this.frameHandle === null) return;
+    this.scheduler.cancel(this.frameHandle);
+    this.frameHandle = null;
+  }
+
+  private clearHiddenFrameTimer(): void {
+    if (this.hiddenFrameTimer === null) return;
+    clearTimeout(this.hiddenFrameTimer);
+    this.hiddenFrameTimer = null;
+  }
+
   private scheduleFrameFlush(): void {
-    if (this.frameHandle !== null || this.closed) return;
+    if (this.frameHandle !== null || this.hiddenFrameTimer !== null || this.closed) return;
+    if (this.isDocumentHidden()) {
+      this.hiddenFrameTimer = setTimeout(() => {
+        this.hiddenFrameTimer = null;
+        this.flushFrames();
+      }, HIDDEN_FRAME_FLUSH_INTERVAL_MS);
+      return;
+    }
     this.frameHandle = this.scheduler.schedule(() => {
       this.frameHandle = null;
       this.flushFrames();
@@ -239,10 +288,13 @@ export class SessionController {
     queueMicrotask(() => {
       this.thinkingFlushQueued = false;
       if (this.closed) return;
-      if (this.frameHandle !== null) {
-        this.scheduler.cancel(this.frameHandle);
-        this.frameHandle = null;
+      if (this.isDocumentHidden()) {
+        this.cancelVisibleFrameFlush();
+        this.scheduleFrameFlush();
+        return;
       }
+      this.cancelVisibleFrameFlush();
+      this.clearHiddenFrameTimer();
       this.flushFrames();
     });
   }
@@ -305,10 +357,11 @@ export class SessionController {
 
   close(): void {
     this.closed = true;
+    this.visibilityDocument?.removeEventListener?.('visibilitychange', this.onVisibilityChange);
     this.clearResyncTimer();
     if (this.promptRefreshTimer !== null) clearTimeout(this.promptRefreshTimer);
-    if (this.frameHandle !== null) this.scheduler.cancel(this.frameHandle);
-    this.frameHandle = null;
+    this.cancelVisibleFrameFlush();
+    this.clearHiddenFrameTimer();
     this.inboundFrames.clear();
     this.pendingFrames.clear();
     this.pendingTranscriptAgents.clear();
@@ -363,7 +416,7 @@ export class SessionController {
       return;
     }
     if (this.inboundFrames.push(frame).overflowed) {
-      // The hidden blackout exceeded the inbound bound (push already dropped
+      // A burst outran even the bounded background drain (push already dropped
       // the buffer): resync from a snapshot rather than apply a stream with
       // guaranteed holes.
       void this.resync();

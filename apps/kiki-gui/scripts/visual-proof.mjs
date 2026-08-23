@@ -65,6 +65,8 @@ const LOCALE = process.env.KIKI_PROOF_LOCALE === 'zh' ? 'zh' : 'en';
 const STRINGS = {
   en: {
     newSession: 'New session',
+    noTargetHint: 'to enable sending',
+    sendAria: 'Send message',
     working: 'working',
     approvalNeeded: 'Approval needed',
     approve: 'Approve',
@@ -82,6 +84,19 @@ const STRINGS = {
     planModeToggle: 'Start new sessions in plan mode',
     permissionModeAuto: 'auto',
     fetchModelsButton: 'Test connection & pull models',
+    providerBadgeKimiCode: 'Kimi',
+    providerBadgeNone: 'None',
+    providerBadgeNoneTitle: 'Provider request identity: None (no request identity)',
+    requestIdentityLabel: 'Request identity',
+    providerIdLabel: 'Provider ID',
+    providerProtocolLabel: 'Protocol',
+    saveProvider: 'Save provider',
+    dangerTitle: 'Danger zone',
+    disabledMainHint: 'Still available for main sessions',
+    technicalDetails: 'Technical details',
+    overriddenNote: 'Built-in profile overridden by',
+    overridesBuiltinNote: 'overrides the built-in profile',
+    shadowedNote: 'Not in effect',
     dirtyDiscard: 'Discard and leave',
     subagentGovernanceTitle: 'Subagent model governance',
     modelProfileLabel: 'model profile',
@@ -186,6 +201,8 @@ const STRINGS = {
   },
   zh: {
     newSession: '新会话',
+    noTargetHint: '才能发送',
+    sendAria: '发送消息',
     working: '工作中',
     approvalNeeded: '需要批准',
     approve: '批准',
@@ -203,6 +220,19 @@ const STRINGS = {
     planModeToggle: '新会话默认开启计划模式',
     permissionModeAuto: '自动',
     fetchModelsButton: '测试连接并拉取模型',
+    providerBadgeKimiCode: 'Kimi',
+    providerBadgeNone: '无',
+    providerBadgeNoneTitle: '提供商请求身份: 无（不发送请求身份）',
+    requestIdentityLabel: '请求身份',
+    providerIdLabel: '提供商 ID',
+    providerProtocolLabel: '协议',
+    saveProvider: '保存提供商',
+    dangerTitle: '危险操作',
+    disabledMainHint: '仍可用于主会话',
+    technicalDetails: '技术细节',
+    overriddenNote: '内置档已被',
+    overridesBuiltinNote: '已覆盖同名的内置档',
+    shadowedNote: '未生效',
     dirtyDiscard: '丢弃并离开',
     subagentGovernanceTitle: '子代理模型治理',
     modelProfileLabel: '模型档',
@@ -389,6 +419,17 @@ function killPort(port) {
 // ---------------------------------------------------------------------------
 
 let page;
+const pageErrors = [];
+let pageErrorCursor = 0;
+
+function throwOnPageErrors(context) {
+  const pending = pageErrors.slice(pageErrorCursor);
+  pageErrorCursor = pageErrors.length;
+  if (pending.length === 0) return;
+  const detail = pending.map((error) => error.stack ?? error.message ?? String(error)).join('\n\n');
+  throw new Error(`${context} emitted ${pending.length} pageerror event(s):\n${detail}`);
+}
+
 const shot = async (name) => {
   await page.screenshot({ path: join(SHOTS, `${name}.png`) });
   console.log(`[shot] ${name}.png`);
@@ -790,6 +831,31 @@ async function scenarioEmptyStates() {
   await shot('empty-states-created');
 }
 
+async function scenarioNewNoWorkspace() {
+  // Zero registered workspaces: the /new composer keeps the textarea
+  // editable but blocks sending, and the hero names the next step instead of
+  // showing a bare disabled button.
+  await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'domcontentloaded',
+  });
+  await page.waitForSelector('[data-phase="hero"]', { timeout: 15_000 });
+  await page.waitForSelector(`text=${S.noTargetHint}`, { timeout: 15_000 });
+  await page.fill('textarea', 'Still editable while no workspace is chosen.');
+  const textarea = page.locator('textarea[data-composer]');
+  if (await textarea.isDisabled()) {
+    throw new Error('textarea must stay editable when no workspace exists');
+  }
+  const sendButton = page.locator(`button[aria-label="${S.sendAria}"]`);
+  if (!(await sendButton.isDisabled())) {
+    throw new Error('send must stay blocked until a workspace or absolute path is chosen');
+  }
+  if ((await sendButton.getAttribute('title')) === null) {
+    throw new Error('the blocked send button must carry an explanatory tooltip');
+  }
+  await page.waitForTimeout(400);
+  await shot('new-no-workspace');
+}
+
 async function scenarioDraftFlow() {
   await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
@@ -820,6 +886,26 @@ async function scenarioHeroShell() {
   await page.waitForSelector('textarea:not([disabled])', { timeout: 15_000 });
   await page.waitForTimeout(600);
   await shot('hero-desktop');
+
+  // Agent picker: only main profiles are conversation partners — subagent
+  // profiles (reviewer) never list, and with every option a main profile the
+  // labels carry no ` · main` suffix.
+  await page.waitForSelector('#composer-agent-profile-select', { timeout: 10_000 });
+  const profileTrigger = page.locator('#composer-agent-profile-select');
+  const profileTriggerText = await profileTrigger.textContent();
+  if (profileTriggerText === null || !profileTriggerText.includes('agent') || /main|主档/.test(profileTriggerText)) {
+    throw new Error(`agent picker trigger must show the plain profile name, got "${profileTriggerText}"`);
+  }
+  await profileTrigger.click();
+  const profileOptions = await page.locator('[role="listbox"] [role="option"]').allTextContents();
+  if (
+    profileOptions.length !== 2
+    || !profileOptions.some((text) => text.includes('grok-only'))
+    || profileOptions.some((text) => text.includes('reviewer'))
+  ) {
+    throw new Error(`agent picker must list exactly the main profiles, got ${JSON.stringify(profileOptions)}`);
+  }
+  await page.keyboard.press('Escape');
 
   // The workspace chip opens the shared workspace/cwd fields as a popover.
   await page.click('[data-hero-workspace] > button');
@@ -939,6 +1025,58 @@ async function scenarioSettings() {
   await page.waitForSelector('text=ABCD-EFGH', { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('settings-providers');
+
+  // Reload-proof: land on the providers route directly so a dev-server page
+  // reload during the walk cannot strand the assertions on the wrong tab.
+  await page.goto(`${WEB_URL}/settings/providers?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'domcontentloaded',
+  });
+  await page.waitForSelector('#st-card-providers', { timeout: 10_000 });
+
+  // Collapsed provider summaries always carry the request-identity badge:
+  // the configured preset on `fixture`, the explicit none on managed `alt`.
+  const providerSummary = (id) => page.locator('#st-card-providers details summary', { hasText: id });
+  await providerSummary('fixture').getByText(S.providerBadgeKimiCode, { exact: false }).waitFor({ timeout: 5000 });
+  await providerSummary('alt').getByText(S.providerBadgeNone, { exact: false }).waitFor({ timeout: 5000 });
+  // The short badge keeps the full label on its tooltip for clarity.
+  await providerSummary('alt').locator(`[title="${S.providerBadgeNoneTitle}"]`).waitFor({ timeout: 5000 });
+
+  // Expand the OAuth-managed provider: id/protocol stay locked, the request
+  // identity dropdown stays editable, the Save surface renders, and the
+  // credential field + danger zone stay hidden.
+  const managedEditor = page.locator('#st-card-providers details', { hasText: 'alt' });
+  await managedEditor.locator('summary').click();
+  const managedIdInput = managedEditor.getByLabel(S.providerIdLabel);
+  const managedProtocol = managedEditor.getByLabel(S.providerProtocolLabel);
+  if (!(await managedIdInput.isDisabled()) || !(await managedProtocol.isDisabled())) {
+    throw new Error('managed provider id/protocol inputs must be disabled');
+  }
+  // The identity select is the one carrying the kimi_code preset option; a
+  // label lookup cannot work here (the wrapping label's text includes every
+  // option, and the summary badge's aria-label shares the label prefix).
+  const managedIdentity = managedEditor.locator('select', {
+    has: page.locator('option[value="kimi_code"]'),
+  });
+  if (await managedIdentity.isDisabled()) {
+    throw new Error('managed provider request identity dropdown must stay editable');
+  }
+  if ((await managedIdentity.inputValue()) !== 'none') {
+    throw new Error(`managed provider request identity should echo the none preset, got ${await managedIdentity.inputValue()}`);
+  }
+  await managedEditor.getByRole('button', { name: S.saveProvider }).waitFor({ timeout: 5000 });
+  if ((await managedEditor.locator('input[type="password"]').count()) !== 0) {
+    throw new Error('managed provider must not render the API-key field');
+  }
+  if ((await managedEditor.getByText(S.dangerTitle, { exact: true }).count()) !== 0) {
+    throw new Error('managed provider must not render the danger zone');
+  }
+  // Frame the shot from the editor's top so the summary badge, the locked
+  // id/protocol fields, the identity dropdown, and the Save button all fit.
+  await managedEditor.evaluate((element) => { element.scrollIntoView({ block: 'start' }); });
+  await page.waitForTimeout(200);
+  await shot('settings-providers-managed');
+  // Fold it back so the wizard flow below sees the original layout.
+  await managedEditor.locator('summary').click();
 
   // New-provider wizard: pick the Anthropic template, point it at the fixture
   // server's mock upstream, and pull its model list through the browser fetch.
@@ -1070,7 +1208,9 @@ async function scenarioSettingsAgents() {
   // The merged view (the fixture workspaces share one `reviewer` profile)
   // plus both disable channels — named profiles write
   // disabled_named_profiles, built-ins write disabled_builtin_profiles, and
-  // both survive a reload through the fixture config echo.
+  // both survive a reload through the fixture config echo. Same-name pairs
+  // prove the override rules: user `explore.md` (override: true) shadows the
+  // built-in explore, user `scout.md` (no flag) loses to the built-in scout.
   await page.goto(`${WEB_URL}/settings/agents?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
   });
@@ -1082,12 +1222,63 @@ async function scenarioSettingsAgents() {
   if (reviewerRows !== 1) {
     throw new Error(`merged view must render reviewer once, got ${reviewerRows} rows`);
   }
+  // Same-name override rendering: the built-in explore collapses to a muted
+  // "overridden by" line with NO switch (only the file profile is live), the
+  // overriding user file explains itself, and the flag-less user scout file
+  // carries a not-in-effect warning while the built-in scout stays canonical.
+  const builtinExplore = page.locator('[data-agent-profile="explore"][data-agent-source="builtin"]');
+  await builtinExplore.waitFor({ timeout: 5000 });
+  if ((await builtinExplore.getAttribute('data-override-state')) !== 'overridden') {
+    throw new Error('built-in explore must render in the overridden state');
+  }
+  await builtinExplore.getByText(S.overriddenNote, { exact: false }).waitFor({ timeout: 5000 });
+  await builtinExplore.getByText('explore.md', { exact: false }).waitFor({ timeout: 5000 });
+  const exploreSwitches = await page.locator('[data-agent-profile="explore"] [role="switch"]').count();
+  if (exploreSwitches !== 1) {
+    throw new Error(`only the overriding file row may carry a switch, got ${exploreSwitches}`);
+  }
+  const userExplore = page.locator('[data-agent-profile="explore"][data-agent-source="user"]');
+  if ((await userExplore.getAttribute('data-override-state')) !== 'overrides') {
+    throw new Error('the overriding user explore file must render in the overrides state');
+  }
+  await userExplore.getByText(S.overridesBuiltinNote, { exact: false }).waitFor({ timeout: 5000 });
+  const userScout = page.locator('[data-agent-profile="scout"][data-agent-source="user"]');
+  if ((await userScout.getAttribute('data-override-state')) !== 'shadowed') {
+    throw new Error('the flag-less user scout file must render in the shadowed state');
+  }
+  await userScout.getByText(S.shadowedNote, { exact: false }).waitFor({ timeout: 5000 });
+  // A shadowed file profile must not offer a new session — the session would
+  // silently run the same-named built-in instead — and the disabled button
+  // carries the reason as its tooltip.
+  const shadowedNewSession = userScout.locator('[data-new-session-href]');
+  if (!(await shadowedNewSession.isDisabled())) {
+    throw new Error('a shadowed file profile must lose its new-session button');
+  }
+  const shadowedNewSessionTitle = await shadowedNewSession.getAttribute('title');
+  if (shadowedNewSessionTitle === null || !shadowedNewSessionTitle.includes(S.shadowedNote)) {
+    throw new Error(`shadowed new-session tooltip mismatch: ${shadowedNewSessionTitle}`);
+  }
+  const shadowedIsDanger = await page.evaluate(() => {
+    const row = document.querySelector('[data-agent-profile="scout"][data-agent-source="user"]');
+    const node = Array.from(row?.querySelectorAll('p') ?? [])
+      .find((p) => p.textContent?.includes('override: true'));
+    return node?.className.includes('text-danger') === true;
+  });
+  if (!shadowedIsDanger) {
+    throw new Error('the not-in-effect warning must render in danger ink');
+  }
+  await page.waitForSelector('[data-agent-profile="scout"][data-agent-source="builtin"] [role="switch"][aria-checked="true"]', { timeout: 5000 });
+  await userExplore.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(200);
+  await shot('settings-agents-override');
+  // Workspace chips live inside the per-row technical-details disclosure now.
+  await page.locator('[data-agent-profile="reviewer"] [data-technical-details] summary').click();
   // Three workspace ids collapse into two chips + an overflow pill.
   await page.waitForSelector('[data-agent-profile="reviewer"] >> text=+1', { timeout: 5000 });
   // Every row carries a new-session deep link: the file-backed reviewer pins
   // its own workspace; the builtin main profile falls back to the most
   // recent workspace.
-  const hrefOf = (name) => page.locator(`[data-agent-profile="${name}"] [data-new-session-href]`).getAttribute('data-new-session-href');
+  const hrefOf = (name) => page.locator(`[data-agent-profile="${name}"] [data-new-session-href]`).first().getAttribute('data-new-session-href');
   const reviewerHref = await hrefOf('reviewer');
   if (reviewerHref !== '/new?workspace=wd_fixture_000000000000&agent=reviewer') {
     throw new Error(`reviewer new-session href mismatch: ${reviewerHref}`);
@@ -1096,8 +1287,10 @@ async function scenarioSettingsAgents() {
   if (mainHref !== '/new?workspace=wd_fixture_000000000000&agent=agent') {
     throw new Error(`main-agent new-session href mismatch: ${mainHref}`);
   }
-  // Read-only projection fields render in the summary (frontend fixture row),
-  // including the structured lease's nested constraint fields.
+  // Read-only projection fields render in the technical-details disclosure
+  // (frontend fixture row), including the structured lease's nested
+  // constraint fields.
+  await page.locator('[data-agent-profile="frontend"] [data-technical-details] summary').click();
   await page.waitForSelector(`[data-agent-profile="frontend"] >> text=${S.modelProfileLabel}`, { timeout: 5000 });
   await page.waitForSelector(`[data-agent-profile="frontend"] >> text=${S.promptModeLabel}`, { timeout: 5000 });
   await page.waitForSelector(`[data-agent-profile="frontend"] >> text=${S.delegationNoticeLabel}`, { timeout: 5000 });
@@ -1121,16 +1314,54 @@ async function scenarioSettingsAgents() {
   await shot('settings-agents-merged');
 
   const reviewerSwitch = () => page.locator('[data-agent-profile="reviewer"] [role="switch"]');
-  const exploreSwitch = () => page.locator('[data-agent-profile="explore"] [role="switch"]');
+  const scoutSwitch = () => page.locator('[data-agent-profile="scout"][data-agent-source="builtin"] [role="switch"]');
   await reviewerSwitch().click();
   await page.waitForSelector('[data-agent-profile="reviewer"] [role="switch"][aria-checked="false"]', { timeout: 5000 });
-  await exploreSwitch().click();
-  await page.waitForSelector('[data-agent-profile="explore"] [role="switch"][aria-checked="false"]', { timeout: 5000 });
+  await scoutSwitch().click();
+  await page.waitForSelector('[data-agent-profile="scout"][data-agent-source="builtin"] [role="switch"][aria-checked="false"]', { timeout: 5000 });
+  // Disabling the built-in scout lifts the shadow: the same-named file
+  // profile takes effect without needing the override flag — the warning
+  // clears and the new-session button comes back.
+  await page.waitForFunction(
+    (warning) => !document
+      .querySelector('[data-agent-profile="scout"][data-agent-source="user"]')
+      ?.textContent?.includes(warning),
+    S.shadowedNote,
+    { timeout: 5000 },
+  );
+  if (await userScout.locator('[data-new-session-href]').isDisabled()) {
+    throw new Error('the file profile must regain its new-session button once the built-in is disabled');
+  }
+  // Let the switch's color transition settle before the shot.
+  await page.waitForTimeout(300);
   await shot('settings-agents-disabled');
+
+  // Disabled split semantics: a disabled SUBAGENT profile loses its
+  // new-session button, while a disabled MAIN profile keeps it — turning a
+  // main agent off only stops subagent calls; main sessions still run it.
+  const reviewerNewSession = page.locator('[data-agent-profile="reviewer"] [data-new-session-href]');
+  if (!(await reviewerNewSession.isDisabled())) {
+    throw new Error('disabled subagent profile must lose its new-session button');
+  }
+  const mainRow = page.locator('[data-agent-profile="agent"]');
+  await mainRow.locator('[role="switch"]').click();
+  await page.waitForSelector('[data-agent-profile="agent"] [role="switch"][aria-checked="false"]', { timeout: 5000 });
+  const mainNewSession = mainRow.locator('[data-new-session-href]');
+  if (await mainNewSession.isDisabled()) {
+    throw new Error('disabled main profile must keep its new-session button');
+  }
+  // …and the row explains why it is still usable.
+  await mainRow.getByText(S.disabledMainHint, { exact: false }).waitFor({ timeout: 5000 });
+  await mainRow.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(200);
+  await shot('settings-agents-main-disabled');
+  // Re-enable the main profile so the reload assertions below stay canonical.
+  await mainRow.locator('[role="switch"]').click();
+  await page.waitForSelector('[data-agent-profile="agent"] [role="switch"][aria-checked="true"]', { timeout: 5000 });
 
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-agent-profile="reviewer"] [role="switch"][aria-checked="false"]', { timeout: 10_000 });
-  await page.waitForSelector('[data-agent-profile="explore"] [role="switch"][aria-checked="false"]', { timeout: 10_000 });
+  await page.waitForSelector('[data-agent-profile="scout"][data-agent-source="builtin"] [role="switch"][aria-checked="false"]', { timeout: 10_000 });
   // Re-enable so the merged row returns to full opacity for the next run.
   await reviewerSwitch().click();
   await page.waitForSelector('[data-agent-profile="reviewer"] [role="switch"][aria-checked="true"]', { timeout: 5000 });
@@ -2546,6 +2777,7 @@ const SCENARIOS = [
   ['session-pages', scenarioSessionPages],
   ['sidebar-organize', scenarioSidebarOrganize],
   ['empty-states', scenarioEmptyStates],
+  ['new-no-workspace', scenarioNewNoWorkspace],
   ['draft-flow', scenarioDraftFlow],
   ['hero-shell', scenarioHeroShell],
   ['settings', scenarioSettings],
@@ -2643,7 +2875,10 @@ async function main() {
     const browser = await chromium.launch({ args: ['--no-proxy-server'] });
     const bootPage = async () => {
       const next = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-      next.on('pageerror', (error) => console.error(`[pageerror] ${error}`));
+      next.on('pageerror', (error) => {
+        pageErrors.push(error);
+        console.error(`[pageerror] ${error}`);
+      });
       next.on('console', (message) => {
         if (message.type() === 'error') console.error(`[console:error] ${message.text()}`);
       });
@@ -2678,20 +2913,24 @@ async function main() {
     // The FIRST navigation right after a previous run's teardown can wedge
     // entirely (a half-recycled port answers waitForServer's plain fetch but
     // never serves the document): retry once with a fresh page before failing.
+    // Budgets are generous because a heavily loaded shared machine stretches
+    // vite's cold transform of the entry graph far past a minute.
     try {
-      await page.goto(deepLink, { waitUntil: 'domcontentloaded', timeout: 120_000 });
+      await page.goto(deepLink, { waitUntil: 'domcontentloaded', timeout: 240_000 });
     } catch (error) {
       console.log(`[proof] first navigation failed (${error.message}) — retrying on a fresh page`);
       await page.close().catch(() => undefined);
       page = await bootPage();
-      await page.goto(deepLink, { waitUntil: 'domcontentloaded', timeout: 150_000 });
+      await page.goto(deepLink, { waitUntil: 'domcontentloaded', timeout: 300_000 });
     }
-    await page.waitForSelector(`text=${S.newSession}`, { timeout: 60_000 });
+    await page.waitForSelector(`text=${S.newSession}`, { timeout: 120_000 });
     console.log('[proof] connected to fixture');
+    throwOnPageErrors('initial app boot');
 
     for (const [name, run] of SCENARIOS) {
       if (!wanted(name)) continue;
       console.log(`[scenario] ${name}`);
+      let failure = null;
       try {
         await control({ action: 'scenario', name });
         await page.reload({ waitUntil: 'domcontentloaded' });
@@ -2699,12 +2938,21 @@ async function main() {
         await page.waitForTimeout(900); // let the first sessions poll land
         await run();
       } catch (error) {
-        console.error(`[FAIL] scenario ${name}:`, error.message);
+        failure = error;
+      }
+      try {
+        throwOnPageErrors(`scenario ${name}`);
+      } catch (error) {
+        failure ??= error;
+      }
+      if (failure !== null) {
+        console.error(`[FAIL] scenario ${name}:`, failure.message);
         process.exitCode = 1;
         await shot(`${name}-FAIL`);
       }
     }
 
+    throwOnPageErrors('visual proof shutdown');
     await browser.close();
   } finally {
     await cleanup();

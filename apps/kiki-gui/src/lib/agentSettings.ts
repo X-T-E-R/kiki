@@ -1,4 +1,5 @@
 import type { KikiConfigPatch, KikiConfigResponse, NamedAgentModelProfile, NamedAgentProfile, NamedAgentSubagentLease } from './client';
+import { configObjectOrEmpty, normalizeConfigStringList } from './settings';
 
 export interface SecondaryModelDraftEntry {
   readonly id: string;
@@ -22,18 +23,20 @@ export type SubagentGovernanceIssue =
   | 'enforce_requires_pool'
   | 'enforce_force_conflict';
 
-export function subagentGovernanceFromConfig(
-  config: KikiConfigResponse,
-): SubagentGovernanceDraft {
+export function subagentGovernanceFromConfig(config: unknown): SubagentGovernanceDraft {
+  const source = configObjectOrEmpty(config);
+  const secondaryModel = configObjectOrEmpty(source['secondary_model']);
+  const models = configObjectOrEmpty(secondaryModel['models']);
+  const subagent = configObjectOrEmpty(source['subagent']);
   return {
-    models: Object.entries(config.secondary_model?.models ?? {}).map(([id, description]) => ({
-      id,
-      description,
-    })),
-    defaultModel: config.secondary_model?.defaultModel ?? '',
-    force: config.secondary_model?.force === true,
-    enforcePool: config.secondary_model?.enforcePool === true,
-    denyModels: (config.subagent?.denyModels ?? []).join('\n'),
+    models: Object.entries(models)
+      .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+      .map(([id, description]) => ({ id, description })),
+    defaultModel:
+      typeof secondaryModel['defaultModel'] === 'string' ? secondaryModel['defaultModel'] : '',
+    force: secondaryModel['force'] === true,
+    enforcePool: secondaryModel['enforcePool'] === true,
+    denyModels: normalizeConfigStringList(subagent['denyModels']).join('\n'),
   };
 }
 
@@ -162,6 +165,58 @@ export function partitionNamedAgentProfiles(
 }
 
 /**
+ * Same-name override relation between a built-in profile and file-backed
+ * profiles, mirroring the engine merge rules:
+ * - A file profile carrying `override: true` wins over an enabled built-in
+ *   of the same name: the file row is the effective one (`overrides_builtin`)
+ *   and the built-in collapses to a shadow note (`overridden`).
+ * - A file profile without `override` loses to an enabled same-name built-in
+ *   (`shadowed`) — the row stays visible with a not-in-effect warning.
+ * - A disabled built-in does not participate in the merge, so a same-name
+ *   file profile takes effect with no override flag and no annotation.
+ *   A disabled file profile overrides nothing either — the built-in row
+ *   returns to its plain enabled/disabled presentation.
+ */
+export type NamedAgentOverrideRelation =
+  | { readonly kind: 'overrides_builtin'; readonly builtinName: string }
+  | { readonly kind: 'overridden'; readonly file: string }
+  | { readonly kind: 'shadowed'; readonly builtinName: string };
+
+export function namedAgentOverrideRelations(
+  profiles: readonly NamedAgentProfile[],
+): ReadonlyMap<NamedAgentProfile, NamedAgentOverrideRelation> {
+  const relations = new Map<NamedAgentProfile, NamedAgentOverrideRelation>();
+  const builtinsByName = new Map<string, NamedAgentProfile>();
+  for (const profile of profiles) {
+    if (profile.source === 'builtin' && !builtinsByName.has(profile.name)) {
+      builtinsByName.set(profile.name, profile);
+    }
+  }
+  const overridingFileByName = new Map<string, NamedAgentProfile>();
+  for (const profile of profiles) {
+    if (profile.source === 'builtin' || profile.disabled) continue;
+    const builtin = builtinsByName.get(profile.name);
+    if (builtin === undefined || builtin.disabled) continue;
+    if (profile.override === true) {
+      relations.set(profile, { kind: 'overrides_builtin', builtinName: builtin.name });
+      if (!overridingFileByName.has(profile.name)) overridingFileByName.set(profile.name, profile);
+    } else {
+      relations.set(profile, { kind: 'shadowed', builtinName: builtin.name });
+    }
+  }
+  for (const [name, file] of overridingFileByName) {
+    const builtin = builtinsByName.get(name);
+    if (builtin !== undefined) {
+      relations.set(builtin, {
+        kind: 'overridden',
+        file: file.source_file ?? file.name,
+      });
+    }
+  }
+  return relations;
+}
+
+/**
  * /new deep link preselecting a named profile. Prefers the profile's own
  * workspace; workspace-less (builtin) profiles fall back to the most recent
  * workspace; with no workspace at all the link carries only the agent.
@@ -175,6 +230,22 @@ export function namedAgentSessionHref(
   if (workspace !== undefined) params.set('workspace', workspace);
   params.set('agent', profile.name);
   return `/new?${params.toString()}`;
+}
+
+/**
+ * Whether the row's new-session button must stay disabled. A shadowed file
+ * profile (same-named enabled built-in, no `override: true`) never runs under
+ * its name — the session would silently run the built-in instead, so the
+ * button is blocked rather than misleading. A disabled main profile keeps
+ * the button (main sessions still run it); a disabled subagent profile loses
+ * it.
+ */
+export function namedAgentNewSessionBlocked(
+  profile: Pick<NamedAgentProfile, 'disabled' | 'main'>,
+  relation?: NamedAgentOverrideRelation,
+): boolean {
+  if (relation?.kind === 'shadowed') return true;
+  return profile.disabled && profile.main !== true;
 }
 
 /** Semantic labels for the read-only lease detail rows; the component maps
@@ -291,4 +362,17 @@ export function workspaceChipDisplay(
   max = 2,
 ): { readonly shown: readonly string[]; readonly extra: number } {
   return { shown: ids.slice(0, max), extra: Math.max(0, ids.length - max) };
+}
+
+export function composerDefaultsForProfile(
+  profiles: readonly NamedAgentProfile[],
+  name: string,
+): { readonly model?: string; readonly thinking?: string } {
+  const profile = profiles.find((item) => item.name === name);
+  const model = profile?.pinned_model_alias?.trim();
+  const thinking = profile?.thinking_effort?.trim();
+  return {
+    model: model === undefined || model === '' ? undefined : model,
+    thinking: thinking === undefined || thinking === '' ? undefined : thinking,
+  };
 }

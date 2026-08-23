@@ -33,6 +33,7 @@ import {
   buildSkillActivation,
   type ComposerAttachment,
 } from '../lib/attachments';
+import { composerDefaultsForProfile } from '../lib/agentSettings';
 import { API_CODES, ApiError, isSessionNotFoundMessage } from '../lib/client';
 import { readComposerState, readDraft, writeComposerState, writeDraft } from '../lib/drafts';
 import { isMainWindowVisibleAndFocused, showDesktopNotification } from '../lib/desktop';
@@ -575,6 +576,10 @@ export function shouldClearModeOverride<T>(
  * own pins apply — unless the user explicitly re-picked them after
  * confirming, in which case those explicit choices win.
  */
+export function sessionHasStartedConversation(blocks: readonly Block[]): boolean {
+  return blocks.some((block) => block.kind === 'user');
+}
+
 export function resolveProfileSwitchSubmission(input: {
   pendingProfile: string | undefined;
   boundProfile: string;
@@ -1201,6 +1206,12 @@ export function SessionView({
     queryFn: () => client.listModels(),
     staleTime: 60_000,
   });
+  const agentProfilesQuery = useQuery({
+    queryKey: ['agentProfiles'],
+    queryFn: () => client.listNamedAgentProfiles(),
+    staleTime: 60_000,
+    retry: false,
+  });
 
   const sessionModel = state.model;
   // Server default first: the local mirror is a stale-prone echo of the same
@@ -1238,6 +1249,13 @@ export function SessionView({
     if (pendingProfile !== undefined) setProfileModelTouched(true);
   }, [pendingProfile]);
 
+  const applyPendingProfile = useCallback((name: string) => {
+    const defaults = composerDefaultsForProfile(agentProfilesQuery.data?.items ?? [], name);
+    setPendingProfile(name);
+    setModelOverride(defaults.model);
+    setEffortOverride(defaults.thinking);
+    setProfileModelTouched(false);
+  }, [agentProfilesQuery.data]);
   const handleAgentProfileChange = useCallback(
     (name: string) => {
       if (name === (pendingProfile ?? boundProfile)) return;
@@ -1247,16 +1265,19 @@ export function SessionView({
         setProfileModelTouched(false);
         return;
       }
+      if (state.loaded && !sessionHasStartedConversation(state.blocks)) {
+        applyPendingProfile(name);
+        return;
+      }
       setProfileSwitchConfirm(name);
     },
-    [pendingProfile, boundProfile],
+    [applyPendingProfile, boundProfile, pendingProfile, state.blocks, state.loaded],
   );
   const confirmProfileSwitchRun = useCallback(() => {
     if (profileSwitchConfirm === undefined) return;
-    setPendingProfile(profileSwitchConfirm);
-    setProfileModelTouched(false);
+    applyPendingProfile(profileSwitchConfirm);
     setProfileSwitchConfirm(undefined);
-  }, [profileSwitchConfirm]);
+  }, [applyPendingProfile, profileSwitchConfirm]);
 
   // Global y / n shortcut for the focused-or-unambiguous visible approval.
   useEffect(() => {

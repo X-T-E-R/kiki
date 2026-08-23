@@ -25,7 +25,7 @@ import {
   ToolResultEvent,
 } from '#/agent/toolExecutor/toolExecutorEvents';
 import { AgentToolExecutorService } from '#/agent/toolExecutor/toolExecutorService';
-import { parseToolCallArguments } from '#/tool/tool-args-parse';
+import { classifyToolArgsJson, parseToolCallArguments } from '#/tool/tool-args-parse';
 import { IAgentToolResultTruncationService } from '#/agent/toolResultTruncation/toolResultTruncation';
 import { makeAgentScopeContext, IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
@@ -387,6 +387,61 @@ describe('AgentToolExecutorService', () => {
       calls: ['call_malformed'],
       results: ['call_malformed'],
     });
+  });
+
+  it('repairs container-unclosed args when required fields are complete', async () => {
+    const tool = new TestTool('strict', {
+      parameters: {
+        type: 'object',
+        properties: { pattern: { type: 'string' }, path: { type: 'string' } },
+        required: ['pattern'],
+        additionalProperties: false,
+      },
+    });
+    registry.register(tool);
+
+    const results = await execute([
+      {
+        type: 'function',
+        id: 'call_unclosed',
+        name: 'strict',
+        arguments: '{"pattern":"foo","path":"src"',
+      },
+    ]);
+
+    expect(results).toEqual([expect.objectContaining({ stopTurn: false })]);
+    expect(tool.calls).toHaveLength(1);
+    expect(tool.calls[0]?.args).toEqual({ pattern: 'foo', path: 'src' });
+  });
+
+  it('rejects value-truncated args with offset and field name instead of a schema miss', async () => {
+    const tool = new TestTool('strict', {
+      parameters: {
+        type: 'object',
+        properties: { pattern: { type: 'string' }, path: { type: 'string' } },
+        required: ['pattern'],
+        additionalProperties: false,
+      },
+    });
+    registry.register(tool);
+
+    const results = await execute([
+      {
+        type: 'function',
+        id: 'call_cut_value',
+        name: 'strict',
+        arguments: '{"pattern":"foo","path":"sr',
+      },
+    ]);
+
+    expect(tool.calls).toEqual([]);
+    expect(results).toHaveLength(1);
+    const output = results[0]?.output;
+    expect(typeof output).toBe('string');
+    expect(output).toContain('truncated');
+    expect(output).toContain('byte 27');
+    expect(output).toContain('path');
+    expect(output).not.toContain('must have required property');
   });
 
   it('does not repair malformed tool args JSON with a trailing comma', async () => {
@@ -1009,6 +1064,52 @@ describe('parseToolCallArguments', () => {
       data: {},
       parseFailed: true,
       error: expect.any(String),
+    });
+  });
+
+  it('classifies truncated and complete tool-args JSON tails', () => {
+    const cases: Array<{
+      readonly raw: string;
+      readonly kind: 'complete' | 'container-unclosed' | 'value-truncated' | 'malformed';
+      readonly field?: string;
+    }> = [
+      { raw: '{"pattern":"foo","path":"src"', kind: 'container-unclosed', field: 'path' },
+      { raw: '{"pattern":"foo","path":"sr', kind: 'value-truncated', field: 'path' },
+      { raw: '{"pattern":"foo","count":12', kind: 'container-unclosed', field: 'count' },
+      { raw: '{"pattern":"foo","flag":tr', kind: 'value-truncated', field: 'flag' },
+      { raw: '{"a":{"b":[1,2', kind: 'container-unclosed', field: 'b' },
+      { raw: '{"pattern":"foo","nested":{"k":"v"}', kind: 'container-unclosed', field: 'nested' },
+      { raw: '{}{', kind: 'malformed' },
+      { raw: '{"a":1,}', kind: 'malformed' },
+      { raw: '{"pattern":"a}{b"}', kind: 'complete' },
+      { raw: '{"s":"tail \\" quote","x":1', kind: 'container-unclosed', field: 'x' },
+      { raw: '{"s":"\\u00e4","y":[1,', kind: 'value-truncated', field: 'y' },
+      { raw: '', kind: 'malformed' },
+      { raw: '   \n\t', kind: 'malformed' },
+    ];
+
+    for (const testCase of cases) {
+      const classified = classifyToolArgsJson(testCase.raw);
+      expect(classified.kind, testCase.raw).toBe(testCase.kind);
+      if (classified.kind === 'container-unclosed' || classified.kind === 'value-truncated') {
+        expect(classified.offset, testCase.raw).toBe(testCase.raw.length);
+        expect(classified.field, testCase.raw).toBe(testCase.field);
+      }
+    }
+  });
+
+  it('repairs only container-unclosed JSON and keeps truncated values failed', () => {
+    expect(parseToolCallArguments('{"pattern":"foo","path":"src"')).toEqual({
+      data: { pattern: 'foo', path: 'src' },
+      parseFailed: false,
+      repaired: true,
+      truncation: { kind: 'container-unclosed', offset: 29, field: 'path' },
+    });
+    expect(parseToolCallArguments('{"pattern":"foo","path":"sr')).toEqual({
+      data: {},
+      parseFailed: true,
+      error: expect.any(String),
+      truncation: { kind: 'value-truncated', offset: 27, field: 'path' },
     });
   });
 });

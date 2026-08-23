@@ -15,7 +15,16 @@ import {
   providerConfigSchema,
   requestIdentityPolicySchema as providerRequestIdentityPolicySchema,
 } from '../src/contract/global/providers.js';
-import { requestIdentityPolicySchema as catalogRequestIdentityPolicySchema } from '../src/contract/global/catalog.js';
+import {
+  modelCatalogItemSchema,
+  requestIdentityPolicySchema as catalogRequestIdentityPolicySchema,
+} from '../src/contract/global/catalog.js';
+import {
+  configReplaceInputSchema,
+  configReplaceSectionsInputSchema,
+  configSetInputSchema,
+} from '../src/contract/global/config.js';
+import { modelConfigSchema } from '../src/contract/global/models.js';
 
 type McpTimeoutField = 'startupTimeoutMs' | 'toolTimeoutMs';
 
@@ -113,4 +122,43 @@ describe('request identity contract validation', () => {
       expect(schema.safeParse({ preset: 'kiki' }).success).toBe(false);
     },
   );
+
+  it.each([providerRequestIdentityPolicySchema, catalogRequestIdentityPolicySchema])(
+    'accepts one override leaf and rejects recursively empty authored layers',
+    (schema) => {
+      expect(schema.safeParse({}).success).toBe(false);
+      expect(schema.safeParse({ overrides: {} }).success).toBe(false);
+      expect(schema.safeParse({ overrides: { client: {} } }).success).toBe(false);
+      const layer =
+        schema === providerRequestIdentityPolicySchema
+          ? { overrides: { client: { userAgent: 'host' } } }
+          : { overrides: { client: { user_agent: 'host' } } };
+      expect(schema.safeParse(layer).success).toBe(true);
+    },
+  );
+
+  it('validates global config, provider, model, and catalog identity contracts', () => {
+    const camel = { overrides: { client: { userAgent: 'host' as const } } };
+    const wire = { overrides: { client: { user_agent: 'host' as const } } };
+    expect(configSetInputSchema.safeParse(['requestIdentity', camel]).success).toBe(true);
+    expect(configReplaceInputSchema.safeParse(['requestIdentity', undefined]).success).toBe(true);
+    expect(
+      configReplaceSectionsInputSchema.safeParse([{ requestIdentity: camel }]).success,
+    ).toBe(true);
+    expect(configSetInputSchema.safeParse(['requestIdentity', {}]).success).toBe(false);
+    expect(providerConfigSchema.parse({ requestIdentity: camel })).toEqual({
+      requestIdentity: camel,
+    });
+    expect(modelConfigSchema.parse({ requestIdentity: camel })).toEqual({
+      requestIdentity: camel,
+    });
+    expect(
+      modelCatalogItemSchema.parse({
+        provider: 'example',
+        model: 'example/model',
+        max_context_size: 1024,
+        request_identity: wire,
+      }),
+    ).toMatchObject({ request_identity: wire });
+  });
 });

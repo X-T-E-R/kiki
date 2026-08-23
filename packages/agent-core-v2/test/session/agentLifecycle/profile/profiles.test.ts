@@ -22,6 +22,7 @@ describe('builtin agent profiles', () => {
       ]),
     );
     expect(agent.tools?.some((tool) => tool.startsWith('Tower'))).toBe(false);
+    expect(agent.main).toBe(true);
     expect(agent.subagents).toBeUndefined();
   });
 });

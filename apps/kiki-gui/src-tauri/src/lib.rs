@@ -26,13 +26,14 @@ use tauri::async_runtime::Receiver;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, RunEvent, State, WindowEvent, Wry,
+    AppHandle, Emitter, Manager, RunEvent, State, Url, WindowEvent, Wry,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent, TerminatedPayload},
     ShellExt,
 };
+use tauri_plugin_updater::UpdaterExt;
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -40,6 +41,10 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const MAX_HTTP_STATUS_LINE_BYTES: usize = 256;
 const MAX_META_RESPONSE_BYTES: usize = 64 * 1024;
 const EXPECTED_SIDECAR_SERVER_VERSION: &str = env!("KIKI_SIDECAR_SERVER_VERSION");
+const UPDATER_PUBLIC_KEY: Option<&str> = option_env!("KIKI_UPDATER_PUBLIC_KEY");
+const STABLE_UPDATE_ENDPOINT: &str =
+    "https://x-t-e-r.github.io/kiki/updater/stable/latest.json";
+const BETA_UPDATE_ENDPOINT: &str = "https://x-t-e-r.github.io/kiki/updater/beta/latest.json";
 const TRAY_ID: &str = "main-tray";
 /// Filename (under the kimi home) the desktop backend's stderr is appended to.
 const DESKTOP_BACKEND_LOG_FILE: &str = "desktop-backend.log";
@@ -318,8 +323,8 @@ impl BackendManager {
                         // ready line stays on stdout, which is never logged).
                         .args(["web", "--no-open", "--port", "0", "--log-level", "warn"])
                         .env("KIMI_CODE_HOME", &runtime.kiki_home)
-                        .env("KIKI_DESKTOP_OAUTH_HOME", &runtime.oauth_home)
-                        .env("KIKI_DESKTOP_USER_SKILL_DIR", &runtime.user_skill_dir);
+                        .env("KIKI_DESKTOP_BUNDLED", "1")
+                        .env("KIKI_DESKTOP_OAUTH_HOME", &runtime.oauth_home);
                     let (events, child) = command.spawn().map_err(|error| {
                         DesktopStartupFailure::plain(format!(
                             "Cannot start the packaged Kiki backend: {error}"
@@ -506,7 +511,6 @@ struct RuntimePaths {
     kiki_home: PathBuf,
     config_path: PathBuf,
     oauth_home: PathBuf,
-    user_skill_dir: PathBuf,
 }
 
 #[derive(Debug, Serialize)]
@@ -568,8 +572,31 @@ fn resolve_runtime_paths_with_homes(
         kiki_home: kiki_home.to_path_buf(),
         config_path: kiki_home.join("config.toml"),
         oauth_home,
-        user_skill_dir: kiki_home.join("skills"),
     })
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum UpdateChannel {
+    Stable,
+    Beta,
+}
+
+impl UpdateChannel {
+    fn build_default(value: Option<&str>) -> Self {
+        if value == Some("beta") {
+            Self::Beta
+        } else {
+            Self::Stable
+        }
+    }
+
+    fn endpoint(self) -> &'static str {
+        match self {
+            Self::Stable => STABLE_UPDATE_ENDPOINT,
+            Self::Beta => BETA_UPDATE_ENDPOINT,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -579,6 +606,7 @@ struct DesktopPrefs {
     close_to_tray: bool,
     /// UI locale mirrored from the frontend ("en"/"zh"); drives tray labels.
     locale: Option<String>,
+    update_channel: UpdateChannel,
     compatibility: CompatibilitySettings,
 }
 
@@ -588,6 +616,7 @@ impl Default for DesktopPrefs {
             notifications: true,
             close_to_tray: true,
             locale: None,
+            update_channel: UpdateChannel::build_default(option_env!("KIKI_UPDATE_CHANNEL")),
             compatibility: CompatibilitySettings::default(),
         }
     }
@@ -603,6 +632,7 @@ struct DesktopPrefsPatch {
     notifications: Option<bool>,
     close_to_tray: Option<bool>,
     locale: Option<String>,
+    update_channel: Option<UpdateChannel>,
     compatibility: Option<CompatibilitySettings>,
 }
 
@@ -678,6 +708,7 @@ fn write_desktop_prefs(app: AppHandle, prefs: DesktopPrefsPatch) -> Result<(), S
         notifications: prefs.notifications.unwrap_or(current.notifications),
         close_to_tray: prefs.close_to_tray.unwrap_or(current.close_to_tray),
         locale: prefs.locale.or(current.locale),
+        update_channel: prefs.update_channel.unwrap_or(current.update_channel),
         compatibility: prefs.compatibility.unwrap_or(current.compatibility),
     };
     validate_compatibility_settings(&next.compatibility)?;
@@ -690,6 +721,61 @@ fn write_desktop_prefs(app: AppHandle, prefs: DesktopPrefsPatch) -> Result<(), S
         }
     }
     Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DesktopUpdateInfo {
+    current_version: String,
+    version: String,
+    date: Option<String>,
+    notes: Option<String>,
+}
+
+fn desktop_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
+    let public_key = UPDATER_PUBLIC_KEY.ok_or_else(|| {
+        "Desktop updater is not configured in this build".to_string()
+    })?;
+    let endpoint = Url::parse(read_desktop_prefs_file().update_channel.endpoint())
+        .map_err(|error| error.to_string())?;
+    app.updater_builder()
+        .pubkey(public_key)
+        .endpoints(vec![endpoint])
+        .map_err(|error| error.to_string())?
+        .build()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn check_desktop_update(app: AppHandle) -> Result<Option<DesktopUpdateInfo>, String> {
+    Ok(desktop_updater(&app)?
+        .check()
+        .await
+        .map_err(|error| error.to_string())?
+        .map(|update| DesktopUpdateInfo {
+            current_version: update.current_version,
+            version: update.version,
+            date: update.date.map(|date| date.to_string()),
+            notes: update.body,
+        }))
+}
+
+#[tauri::command]
+async fn install_desktop_update(app: AppHandle) -> Result<(), String> {
+    let update = desktop_updater(&app)?
+        .check()
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "No desktop update is available".to_string())?;
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn prepare_for_update(manager: State<'_, BackendManager>) {
+    manager.shutdown();
 }
 
 #[tauri::command]
@@ -971,21 +1057,17 @@ fn plan_sessions_migration_with_homes(
     let sessions_target = target_root.join("sessions");
     let workspaces_source = source_root.join("workspaces.json");
     let workspaces_target = target_root.join("workspaces.json");
-    let sessions_move = SessionsMigrationMove {
-        entry: "sessions",
-        source: sessions_source.display().to_string(),
-        target: sessions_target.display().to_string(),
-    };
-    let workspaces_move = SessionsMigrationMove {
-        entry: "workspaces.json",
-        source: workspaces_source.display().to_string(),
-        target: workspaces_target.display().to_string(),
-    };
+    let index_source = source_root.join("session_index.jsonl");
+    let index_target = target_root.join("session_index.jsonl");
     let session_count = count_sessions(&sessions_source)?;
     let sessions_bytes = path_bytes(&sessions_source)?;
     let has_sessions_data = session_count > 0 || sessions_bytes > 0;
-    let has_workspace_catalog =
-        workspaces_source.exists() && !workspace_catalog_is_empty(&workspaces_source)?;
+    let index_bytes = session_index_bytes(&index_source)?;
+    let has_session_index = index_bytes > 0;
+    let has_owned_data = has_sessions_data || has_session_index;
+    let has_workspace_catalog = has_owned_data
+        && workspaces_source.exists()
+        && !workspace_catalog_is_empty(&workspaces_source)?;
     let workspace_bytes = if has_workspace_catalog {
         fs::metadata(&workspaces_source)
             .map_err(|error| {
@@ -998,7 +1080,7 @@ fn plan_sessions_migration_with_homes(
     } else {
         0
     };
-    let total_bytes = sessions_bytes + workspace_bytes;
+    let total_bytes = sessions_bytes + workspace_bytes + index_bytes;
     if paths_equivalent(source_root, target_root) {
         return Ok(SessionsMigrationPlan {
             status: "noop",
@@ -1013,11 +1095,11 @@ fn plan_sessions_migration_with_homes(
         });
     }
     let sessions_conflict = has_sessions_data && path_has_data(&sessions_target)?;
-    let workspaces_conflict = has_sessions_data
-        && has_workspace_catalog
-        && !workspace_catalog_is_empty(&workspaces_target)?;
-    let target_conflict = sessions_conflict || workspaces_conflict;
-    let (status, blocker) = if !has_sessions_data {
+    let workspaces_conflict =
+        has_workspace_catalog && !workspace_catalog_is_empty(&workspaces_target)?;
+    let index_conflict = has_session_index && session_index_target_has_data(&index_target)?;
+    let target_conflict = sessions_conflict || workspaces_conflict || index_conflict;
+    let (status, blocker) = if !has_owned_data {
         ("noop", None)
     } else if sessions_conflict {
         (
@@ -1035,17 +1117,42 @@ fn plan_sessions_migration_with_homes(
                 workspaces_target.display()
             )),
         )
+    } else if index_conflict {
+        (
+            "blocked",
+            Some(format!(
+                "Kiki session index target {} already contains data; no files were changed",
+                index_target.display()
+            )),
+        )
     } else {
         ("ready", None)
     };
     let planned_moves = if status == "noop" {
         Vec::new()
     } else {
-        let mut moves = Vec::with_capacity(if has_workspace_catalog { 2 } else { 1 });
+        let mut moves = Vec::with_capacity(3);
         if has_workspace_catalog {
-            moves.push(workspaces_move);
+            moves.push(SessionsMigrationMove {
+                entry: "workspaces.json",
+                source: workspaces_source.display().to_string(),
+                target: workspaces_target.display().to_string(),
+            });
         }
-        moves.push(sessions_move);
+        if has_session_index {
+            moves.push(SessionsMigrationMove {
+                entry: "session_index.jsonl",
+                source: index_source.display().to_string(),
+                target: index_target.display().to_string(),
+            });
+        }
+        if has_sessions_data {
+            moves.push(SessionsMigrationMove {
+                entry: "sessions",
+                source: sessions_source.display().to_string(),
+                target: sessions_target.display().to_string(),
+            });
+        }
         moves
     };
     Ok(SessionsMigrationPlan {
@@ -1081,69 +1188,106 @@ fn execute_sessions_migration_with_homes(
     if plan.status != "ready" {
         return Ok(plan);
     }
-    let sessions_source = source_root.join("sessions");
-    let sessions_target = target_root.join("sessions");
-    let workspaces_source = source_root.join("workspaces.json");
-    let workspaces_target = target_root.join("workspaces.json");
     fs::create_dir_all(target_root).map_err(|error| {
         format!(
             "Cannot prepare Kiki Home {} for the Sessions move: {error}",
             target_root.display()
         )
     })?;
-    let move_catalog = plan
+    let moves = plan
         .planned_moves
         .iter()
-        .any(|planned| planned.entry == "workspaces.json");
-    if move_catalog {
-        if workspaces_target.exists() {
-            fs::remove_file(&workspaces_target).map_err(|error| {
-                format!(
-                    "Cannot remove empty Kiki workspace catalog {} before the move: {error}",
-                    workspaces_target.display()
-                )
-            })?;
-        }
-        rename(&workspaces_source, &workspaces_target).map_err(|error| {
-            format!(
-                "Cannot move workspace catalog from {} to {} with filesystem rename: {error}; no copy was attempted",
-                workspaces_source.display(),
-                workspaces_target.display()
+        .map(|planned| {
+            (
+                planned.entry,
+                source_root.join(planned.entry),
+                target_root.join(planned.entry),
             )
-        })?;
-    }
-    if sessions_target.exists() {
-        fs::remove_dir_all(&sessions_target).map_err(|error| {
-            format!(
-                "Cannot remove empty Kiki Sessions target {} before the move: {error}",
-                sessions_target.display()
-            )
-        })?;
-    }
-    if let Err(error) = rename(&sessions_source, &sessions_target) {
-        let original = format!(
-            "Cannot move Sessions from {} to {} with filesystem rename: {error}; no copy was attempted",
-            sessions_source.display(),
-            sessions_target.display()
-        );
-        if move_catalog {
-            if let Err(compensation_error) = rename(&workspaces_target, &workspaces_source) {
-                return Err(format!(
-                    "Partial Sessions move: {original}; compensation rename from {} back to {} also failed: {compensation_error}",
-                    workspaces_target.display(),
-                    workspaces_source.display()
-                ));
-            }
-            return Err(format!(
-                "{original}; workspace catalog was restored from {} to {}",
-                workspaces_target.display(),
-                workspaces_source.display()
-            ));
+        })
+        .collect::<Vec<_>>();
+    let mut completed = Vec::new();
+    for (entry, source, target) in moves {
+        if let Err(error) = remove_empty_sessions_target(entry, &target) {
+            return compensate_sessions_moves(error, &completed, &mut rename);
         }
-        return Err(original);
+        if let Err(error) = rename(&source, &target) {
+            let label = match entry {
+                "sessions" => "Sessions",
+                "workspaces.json" => "workspace catalog",
+                "session_index.jsonl" => "session index",
+                _ => entry,
+            };
+            let original = format!(
+                "Cannot move {label} from {} to {} with filesystem rename: {error}; no copy was attempted",
+                source.display(),
+                target.display()
+            );
+            return compensate_sessions_moves(original, &completed, &mut rename);
+        }
+        completed.push((entry, source, target));
     }
     plan.status = "moved";
     Ok(plan)
+}
+
+fn remove_empty_sessions_target(entry: &str, target: &Path) -> Result<(), String> {
+    if !target.exists() {
+        return Ok(());
+    }
+    if entry == "sessions" {
+        fs::remove_dir_all(target).map_err(|error| {
+            format!(
+                "Cannot remove empty Kiki Sessions target {} before the move: {error}",
+                target.display()
+            )
+        })
+    } else {
+        fs::remove_file(target).map_err(|error| {
+            format!(
+                "Cannot remove empty Kiki {entry} target {} before the move: {error}",
+                target.display()
+            )
+        })
+    }
+}
+
+fn compensate_sessions_moves(
+    original: String,
+    completed: &[(&'static str, PathBuf, PathBuf)],
+    rename: &mut impl FnMut(&Path, &Path) -> io::Result<()>,
+) -> Result<SessionsMigrationPlan, String> {
+    if completed.is_empty() {
+        return Err(original);
+    }
+    let mut restored = Vec::new();
+    let mut failures = Vec::new();
+    for (entry, source, target) in completed.iter().rev() {
+        match rename(target, source) {
+            Ok(()) => restored.push(*entry),
+            Err(error) => failures.push(format!(
+                "compensation rename from {} back to {} for {entry} also failed: {error}",
+                target.display(),
+                source.display()
+            )),
+        }
+    }
+    if !failures.is_empty() {
+        return Err(format!(
+            "Partial Sessions move: {original}; {}",
+            failures.join("; ")
+        ));
+    }
+    if completed.len() == 1 && completed[0].0 == "workspaces.json" {
+        return Err(format!(
+            "{original}; workspace catalog was restored from {} to {}",
+            completed[0].2.display(),
+            completed[0].1.display()
+        ));
+    }
+    Err(format!(
+        "{original}; moved entries were restored in reverse order: {}",
+        restored.join(", ")
+    ))
 }
 
 fn count_sessions(sessions_root: &Path) -> Result<usize, String> {
@@ -1207,6 +1351,31 @@ fn path_has_data(path: &Path) -> Result<bool, String> {
         }
     }
     Ok(false)
+}
+
+fn session_index_bytes(path: &Path) -> Result<u64, String> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("Cannot inspect session index {}: {error}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "Session index source {} is not a file",
+            path.display()
+        ));
+    }
+    Ok(metadata.len())
+}
+
+fn session_index_target_has_data(path: &Path) -> Result<bool, String> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    if !path.is_file() {
+        return Ok(true);
+    }
+    Ok(session_index_bytes(path)? > 0)
 }
 
 fn workspace_catalog_is_empty(path: &Path) -> Result<bool, String> {
@@ -1885,6 +2054,11 @@ pub fn run() {
         )
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(
+            tauri_plugin_updater::Builder::new()
+                .pubkey(UPDATER_PUBLIC_KEY.unwrap_or_default())
+                .build(),
+        )
         .manage(manager)
         .invoke_handler(tauri::generate_handler![
             desktop_connection,
@@ -1893,6 +2067,9 @@ pub fn run() {
             read_desktop_prefs,
             read_kimi_home_paths,
             write_desktop_prefs,
+            check_desktop_update,
+            install_desktop_update,
+            prepare_for_update,
             import_kimi_config,
             migrate_compatibility_category,
             dry_run_sessions_migration,
@@ -1959,6 +2136,12 @@ mod tests {
         assert!(!partial.notifications);
         assert!(partial.close_to_tray);
         assert_eq!(partial.locale, None);
+        assert_eq!(partial.update_channel, UpdateChannel::Stable);
+        assert_eq!(UpdateChannel::build_default(Some("beta")), UpdateChannel::Beta);
+        assert_eq!(UpdateChannel::build_default(Some("stable")), UpdateChannel::Stable);
+
+        let beta: DesktopPrefs = serde_json::from_str(r#"{"updateChannel":"beta"}"#).unwrap();
+        assert_eq!(beta.update_channel, UpdateChannel::Beta);
 
         let corrupt = serde_json::from_str::<DesktopPrefs>("{not-json").unwrap_or_default();
         assert!(corrupt.close_to_tray);
@@ -1986,7 +2169,6 @@ mod tests {
         assert_eq!(paths.kiki_home, kiki);
         assert_eq!(paths.config_path, kiki.join("config.toml"));
         assert_eq!(paths.oauth_home, kimi);
-        assert_eq!(paths.user_skill_dir, kiki.join("skills"));
 
         let mut custom = defaults;
         custom.compatibility.home_kind = CompatibilityHomeKind::Custom;
@@ -1995,7 +2177,6 @@ mod tests {
         let custom_paths = resolve_runtime_paths_with_homes(&custom, &kimi, &kiki).unwrap();
         assert_eq!(custom_paths.config_path, kiki.join("config.toml"));
         assert_eq!(custom_paths.oauth_home, custom_home);
-        assert_eq!(custom_paths.user_skill_dir, kiki.join("skills"));
 
         custom.compatibility.home_kind = CompatibilityHomeKind::Kiki;
         custom.compatibility.custom_home = None;
@@ -2286,6 +2467,94 @@ mod tests {
     }
 
     #[test]
+    fn sessions_migration_handles_index_only_data_and_conflicts() {
+        let root = env::temp_dir().join(format!(
+            "kiki-session-index-migration-test-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap()
+        ));
+        let settings = CompatibilitySettings::default();
+        let blank_source = root.join("blank-source");
+        let blank_target = root.join("blank-target");
+        fs::create_dir_all(&blank_source).unwrap();
+        fs::write(blank_source.join("session_index.jsonl"), "").unwrap();
+
+        let blank =
+            plan_sessions_migration_with_homes(&settings, &blank_source, &blank_target).unwrap();
+        assert_eq!(blank.status, "noop");
+        assert_eq!(blank.total_bytes, 0);
+        assert!(blank.planned_moves.is_empty());
+
+        let source = root.join("source");
+        let target = root.join("target");
+        let index = "{\"sessionId\":\"session-1\",\"workspaceId\":\"workspace-1\"}\n";
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(source.join("session_index.jsonl"), index).unwrap();
+        fs::write(target.join("session_index.jsonl"), "").unwrap();
+
+        let ready = plan_sessions_migration_with_homes(&settings, &source, &target).unwrap();
+        assert_eq!(ready.status, "ready");
+        assert_eq!(ready.session_count, 0);
+        assert_eq!(ready.total_bytes, index.len() as u64);
+        assert_eq!(ready.planned_moves.len(), 1);
+        assert_eq!(ready.planned_moves[0].entry, "session_index.jsonl");
+        assert!(!ready.target_conflict);
+
+        let moved =
+            execute_sessions_migration_with_homes(&settings, &source, &target, |from, to| {
+                fs::rename(from, to)
+            })
+            .unwrap();
+        assert_eq!(moved.status, "moved");
+        assert!(!source.join("session_index.jsonl").exists());
+        assert_eq!(
+            fs::read_to_string(target.join("session_index.jsonl")).unwrap(),
+            index
+        );
+
+        let same_home = plan_sessions_migration_with_homes(&settings, &target, &target).unwrap();
+        assert_eq!(same_home.status, "noop");
+        assert_eq!(same_home.total_bytes, index.len() as u64);
+        assert!(same_home.planned_moves.is_empty());
+
+        let conflict_source = root.join("conflict-source");
+        let conflict_target = root.join("conflict-target");
+        fs::create_dir_all(&conflict_source).unwrap();
+        fs::create_dir_all(&conflict_target).unwrap();
+        fs::write(conflict_source.join("session_index.jsonl"), index).unwrap();
+        fs::write(
+            conflict_target.join("session_index.jsonl"),
+            "{\"sessionId\":\"existing\"}\n",
+        )
+        .unwrap();
+        let blocked =
+            plan_sessions_migration_with_homes(&settings, &conflict_source, &conflict_target)
+                .unwrap();
+        assert_eq!(blocked.status, "blocked");
+        assert!(blocked.target_conflict);
+        assert!(blocked.blocker.unwrap().contains("session index target"));
+        let blocked_execute = execute_sessions_migration_with_homes(
+            &settings,
+            &conflict_source,
+            &conflict_target,
+            |_, _| panic!("rename must not run for a non-empty session index target"),
+        )
+        .unwrap();
+        assert_eq!(blocked_execute.status, "blocked");
+        assert_eq!(
+            fs::read_to_string(conflict_source.join("session_index.jsonl")).unwrap(),
+            index
+        );
+        assert_eq!(
+            fs::read_to_string(conflict_target.join("session_index.jsonl")).unwrap(),
+            "{\"sessionId\":\"existing\"}\n"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn sessions_migration_blocks_conflicts_noops_for_kiki_and_surfaces_rename_failure() {
         let root = env::temp_dir().join(format!(
             "kiki-sessions-migration-guards-test-{}-{}",
@@ -2396,7 +2665,7 @@ mod tests {
     }
 
     #[test]
-    fn sessions_second_rename_failure_compensates_catalog_or_reports_partial_move() {
+    fn sessions_rename_failure_compensates_index_and_catalog_in_reverse_order() {
         let root = env::temp_dir().join(format!(
             "kiki-sessions-compensation-test-{}-{}",
             std::process::id(),
@@ -2424,17 +2693,23 @@ mod tests {
                 r#"{"workspaces":{"workspace":{"root":"C:/source","name":"source","created_at":"2026-01-01","last_opened_at":"2026-01-01"}}}"#,
             )
             .unwrap();
+            fs::write(
+                source.join("session_index.jsonl"),
+                "{\"sessionId\":\"session\"}\n",
+            )
+            .unwrap();
             let mut call = 0;
             let error =
                 execute_sessions_migration_with_homes(&settings, &source, &target, |from, to| {
                     call += 1;
                     match call {
                         1 => fs::rename(from, to),
-                        2 => Err(io::Error::other("sessions rename failed")),
-                        3 if compensation_fails => {
-                            Err(io::Error::other("catalog compensation failed"))
+                        2 => fs::rename(from, to),
+                        3 => Err(io::Error::other("sessions rename failed")),
+                        4 if compensation_fails => {
+                            Err(io::Error::other("index compensation failed"))
                         }
-                        3 => fs::rename(from, to),
+                        4 | 5 => fs::rename(from, to),
                         _ => unreachable!(),
                     }
                 })
@@ -2443,13 +2718,18 @@ mod tests {
             assert!(error.contains("sessions rename failed"));
             if compensation_fails {
                 assert!(error.contains("Partial Sessions move"));
-                assert!(error.contains("catalog compensation failed"));
-                assert!(error.contains(&target.join("workspaces.json").display().to_string()));
-                assert!(error.contains(&source.join("workspaces.json").display().to_string()));
-            } else {
-                assert!(error.contains("workspace catalog was restored"));
+                assert!(error.contains("index compensation failed"));
+                assert!(error.contains(&target.join("session_index.jsonl").display().to_string()));
+                assert!(error.contains(&source.join("session_index.jsonl").display().to_string()));
                 assert!(source.join("workspaces.json").is_file());
+                assert!(target.join("session_index.jsonl").is_file());
+            } else {
+                assert!(error
+                    .contains("restored in reverse order: session_index.jsonl, workspaces.json"));
+                assert!(source.join("workspaces.json").is_file());
+                assert!(source.join("session_index.jsonl").is_file());
                 assert!(!target.join("workspaces.json").exists());
+                assert!(!target.join("session_index.jsonl").exists());
             }
             assert!(source.join("sessions").is_dir());
             assert!(!target.join("sessions").exists());

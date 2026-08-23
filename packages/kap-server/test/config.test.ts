@@ -100,6 +100,68 @@ describe('server-v2 /api/v1/config', () => {
     expect(after.yolo).toBe(false);
   });
 
+  it('GET omits request_identity when no global layer is authored', async () => {
+    await boot();
+    expect(await getConfig()).not.toHaveProperty('request_identity');
+  });
+
+  it('GET returns the sparse authored global request_identity without expansion', async () => {
+    await boot([
+      '[request_identity.overrides.client]',
+      'user_agent = "host"',
+      '',
+    ].join('\n'));
+
+    expect((await getConfig()).request_identity).toEqual({
+      overrides: { client: { user_agent: 'host' } },
+    });
+  });
+
+  it('PATCH replaces, preserves on omission, and clears the authored global request_identity', async () => {
+    await boot();
+    const first = await patchConfig({
+      request_identity: { overrides: { client: { user_agent: 'host' } } },
+      replace_domains: ['request_identity'],
+    });
+    expect(first.request_identity).toEqual({
+      overrides: { client: { user_agent: 'host' } },
+    });
+
+    const omitted = await patchConfig({ telemetry: true });
+    expect(omitted.request_identity).toEqual(first.request_identity);
+
+    const replaced = await patchConfig({
+      request_identity: { overrides: { cache: { responses: 'none' } } },
+    });
+    expect(replaced.request_identity).toEqual({
+      overrides: { cache: { responses: 'none' } },
+    });
+
+    const persisted = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(persisted).toContain('[request_identity.overrides.cache]');
+    expect(persisted).not.toContain('user_agent');
+
+    const cleared = await patchConfig({ request_identity: null });
+    expect(cleared).not.toHaveProperty('request_identity');
+    expect(await getConfig()).not.toHaveProperty('request_identity');
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain(
+      '[request_identity',
+    );
+  });
+
+  it('rejects empty authored global request_identity layers', async () => {
+    await boot();
+    for (const request_identity of [{}, { overrides: {} }, { overrides: { client: {} } }]) {
+      const res = await authedFetch(server as RunningServer, base, '/api/v1/config', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ request_identity }),
+      });
+      const body = (await res.json()) as Envelope<null>;
+      expect(body.code).toBe(ErrorCode.VALIDATION_FAILED);
+    }
+  });
+
   it('POST persists GUI server settings through the config service without dropping other domains', async () => {
     await boot([
       'telemetry = true',
@@ -300,6 +362,31 @@ describe('server-v2 /api/v1/config', () => {
     expect(persisted).not.toContain('disabled = ["Bash"]');
     expect(persisted).not.toContain('/tmp/old-agents');
     expect(persisted).not.toContain('"researcher"');
+  });
+
+  it('PATCH a disabled list domain without replace_domains replaces the array atomically', async () => {
+    await boot([
+      'disabled_builtin_profiles = ["coder"]',
+      'disabled_named_profiles = ["critic"]',
+      '',
+    ].join('\n'));
+
+    const first = await patchConfig({ disabled_builtin_profiles: ['explore', 'agent'] });
+    expect(first.disabled_builtin_profiles).toEqual(['explore', 'agent']);
+    expect(first.disabled_named_profiles).toEqual(['critic']);
+
+    const second = await patchConfig({ disabled_builtin_profiles: ['agent'] });
+    expect(second.disabled_builtin_profiles).toEqual(['agent']);
+
+    const after = await getConfig();
+    expect(after.disabled_builtin_profiles).toEqual(['agent']);
+    expect(after.disabled_named_profiles).toEqual(['critic']);
+
+    const persisted = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(persisted).toContain('"agent"');
+    expect(persisted).toContain('"critic"');
+    expect(persisted).not.toContain('"coder"');
+    expect(persisted).not.toContain('"explore"');
   });
 
   it('validates every runtime domain with the core schemas and rejects unknown top-level fields', async () => {

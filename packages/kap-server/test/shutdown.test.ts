@@ -1,14 +1,12 @@
-/**
- * Shutdown route integration coverage — exercises the loopback HTTP success
- * path and waits for the real server lifecycle to release its listener and
- * instance registration.
- */
-
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { IThreadCommunicationService } from '@moonshot-ai/agent-core-v2';
+import {
+  IHomeRuntimeService,
+  IThreadCommunicationService,
+  IThreadMailboxStore,
+} from '@moonshot-ai/agent-core-v2';
 import { describe, expect, it, vi } from 'vitest';
 
 import { listLiveServerInstances } from '../src/instanceRegistry';
@@ -42,9 +40,23 @@ describe('POST /api/v1/shutdown', () => {
       });
       const running = server;
       const threadService = running.core.accessor.get(IThreadCommunicationService);
+      const mailbox = running.core.accessor.get(IThreadMailboxStore);
+      const runtime = running.core.accessor.get(IHomeRuntimeService);
+      const closeOrder: string[] = [];
       const realThreadShutdown = threadService.shutdown.bind(threadService);
+      const realMailboxClose = mailbox.close.bind(mailbox);
+      const realRuntimeClose = runtime.close.bind(runtime);
       const threadShutdown = vi.spyOn(threadService, 'shutdown').mockImplementation(async () => {
+        closeOrder.push('thread');
         await realThreadShutdown();
+      });
+      const mailboxClose = vi.spyOn(mailbox, 'close').mockImplementation(async () => {
+        closeOrder.push('mailbox');
+        await realMailboxClose();
+      });
+      const runtimeClose = vi.spyOn(runtime, 'close').mockImplementation(async () => {
+        closeOrder.push('runtime');
+        await realRuntimeClose();
       });
 
       const response = await authedFetch(
@@ -62,12 +74,68 @@ describe('POST /api/v1/shutdown', () => {
       });
 
       await waitForShutdown(running, home);
+      await running.close();
       expect(threadShutdown).toHaveBeenCalledOnce();
+      expect(mailboxClose).toHaveBeenCalledOnce();
+      expect(runtimeClose).toHaveBeenCalledOnce();
+      expect(closeOrder).toEqual(['thread', 'mailbox', 'runtime']);
+      expect(runtime.status()).toMatchObject({ role: 'idle', ready: false });
       expect(running.app.server.listening).toBe(false);
       expect(await listLiveServerInstances(home)).toEqual([]);
       server = undefined;
     } finally {
       if (!shutdownRequested) await server?.close();
+      await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it('keeps close idempotent and releases later resources after earlier close failures', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kap-shutdown-errors-'));
+    let server: RunningServer | undefined;
+    try {
+      server = await startServer({
+        hostIdentity: TEST_HOST_IDENTITY,
+        host: '127.0.0.1',
+        port: 0,
+        homeDir: home,
+        logLevel: 'silent',
+      });
+      const running = server;
+      const threadService = running.core.accessor.get(IThreadCommunicationService);
+      const mailbox = running.core.accessor.get(IThreadMailboxStore);
+      const runtime = running.core.accessor.get(IHomeRuntimeService);
+      const closeOrder: string[] = [];
+      const realThreadShutdown = threadService.shutdown.bind(threadService);
+      const realMailboxClose = mailbox.close.bind(mailbox);
+      const realRuntimeClose = runtime.close.bind(runtime);
+      const threadShutdown = vi.spyOn(threadService, 'shutdown').mockImplementation(async () => {
+        closeOrder.push('thread');
+        await realThreadShutdown();
+        throw new Error('simulated thread shutdown failure');
+      });
+      const mailboxClose = vi.spyOn(mailbox, 'close').mockImplementation(async () => {
+        closeOrder.push('mailbox');
+        await realMailboxClose();
+        throw new Error('simulated mailbox close failure');
+      });
+      const runtimeClose = vi.spyOn(runtime, 'close').mockImplementation(async () => {
+        closeOrder.push('runtime');
+        await realRuntimeClose();
+      });
+
+      const firstClose = running.close();
+      expect(running.close()).toBe(firstClose);
+      await expect(firstClose).rejects.toBeInstanceOf(AggregateError);
+      expect(threadShutdown).toHaveBeenCalledOnce();
+      expect(mailboxClose).toHaveBeenCalledOnce();
+      expect(runtimeClose).toHaveBeenCalledOnce();
+      expect(closeOrder).toEqual(['thread', 'mailbox', 'runtime']);
+      expect(runtime.status()).toMatchObject({ role: 'idle', ready: false });
+      expect(running.app.server.listening).toBe(false);
+      expect(await listLiveServerInstances(home)).toEqual([]);
+      server = undefined;
+    } finally {
+      await server?.close().catch(() => {});
       await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });

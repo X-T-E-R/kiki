@@ -41,7 +41,7 @@ export const providerWireTypeSchema = z.enum([
 ]);
 export type ProviderWireType = z.infer<typeof providerWireTypeSchema>;
 
-export const createProviderModelSchema = z.object({
+const providerModelSchema = z.object({
   model: z.string().min(1),
   max_context_size: z.number().int().min(1),
   display_name: z.string().min(1).optional(),
@@ -50,7 +50,15 @@ export const createProviderModelSchema = z.object({
   support_efforts: z.array(z.string().min(1)).optional(),
   adaptive_thinking: z.boolean().optional(),
 });
+
+export const createProviderModelSchema = providerModelSchema.extend({
+  request_identity: RequestIdentityPolicyWireSchema.optional(),
+});
 export type CreateProviderModel = z.infer<typeof createProviderModelSchema>;
+
+export const replaceProviderModelSchema = providerModelSchema.extend({
+  request_identity: RequestIdentityPolicyWireSchema.nullable().optional(),
+});
 
 function refineProviderForm(
   value: {
@@ -136,19 +144,21 @@ export type CreateProviderResponse = z.infer<typeof createProviderResponseSchema
  * The desktop "edit & save" payload: the whole provider form. `new_id`
  * renames the provider (the id in the path is the current identity) — the
  * providers key, all model aliases, default_provider and a default_model
- * pointing at an old alias are migrated to the new id. `api_key` is
- * tri-state so the edit form can leave the stored key untouched — absent
+ * pointing at an old alias are migrated to the new id. A `new_id` equal to
+ * the path identity is also accepted for existing ids outside the create-time
+ * id pattern; only an actual rename must match `providerIdSchema`. `api_key`
+ * is tri-state so the edit form can leave the stored key untouched — absent
  * keeps it, `""` clears it, anything else replaces it.
  */
 export const replaceProviderRequestSchema = z
   .object({
-    new_id: providerIdSchema.optional(),
+    new_id: z.string().min(1).optional(),
     type: providerWireTypeSchema,
     api_key: z.string().optional(),
     base_url: z.string().trim().optional(),
     default_model: z.string().min(1).optional(),
     request_identity: RequestIdentityPolicyWireSchema.nullable().optional(),
-    models: z.array(createProviderModelSchema).min(1),
+    models: z.array(replaceProviderModelSchema).min(1),
   })
   .strict()
   .superRefine((value, ctx) => {

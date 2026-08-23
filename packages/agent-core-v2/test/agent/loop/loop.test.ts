@@ -432,6 +432,56 @@ describe('Agent loop', () => {
   `);
   });
 
+  it('withholds truncated tool calls when the provider finish reason is truncated', async () => {
+    const lookupTool: ExecutableTool<{ query: string }> = {
+      name: 'Lookup',
+      description: 'Look up a short test value.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string' },
+        },
+        required: ['query'],
+        additionalProperties: false,
+      },
+      resolveExecution: () => ({
+        approvalRule: 'Lookup',
+        execute: async () => ({ output: 'lookup-result' }),
+      }),
+    };
+
+    const local = createTestAgent(permissionModeServices('yolo'));
+    try {
+      local.get(IAgentProfileService).update({ activeToolNames: ['Lookup'] });
+      local.get(IAgentToolRegistryService).register(lookupTool);
+      local.mockNextProviderResponse({
+        parts: [
+          {
+            type: 'function',
+            id: 'call_cut',
+            name: 'Lookup',
+            arguments: '{"query":"mo',
+          },
+        ],
+        finishReason: 'truncated',
+        rawFinishReason: 'length',
+      });
+      local.mockNextResponse({ type: 'text', text: 'retrying with a shorter query.' });
+      await local.rpc.prompt({ input: [{ type: 'text', text: 'Look up moon' }] });
+      await local.untilTurnEnd();
+
+      const toolMessage = local.contextData().history.find((message) => message.role === 'tool');
+      const output = toolMessage?.content.find((part) => part.type === 'text')?.text ?? '';
+      expect(output).toContain('not executed');
+      expect(output).toContain('truncated');
+      expect(output).toContain('query');
+      expect(output).toContain('byte 12');
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
   it('preserves tool call extras (Gemini thought_signature) through to context', async () => {
     const sigCall: ToolCall = {
       type: 'function',

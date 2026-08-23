@@ -58,6 +58,11 @@ import { ISessionSwarmService, type SessionSwarmSpawnTask, type SessionSwarmTask
 import { Error2 } from '#/_base/errors/errors';
 import { ConfigErrors } from '#/app/config/errors';
 import { SessionSwarmService } from '#/features/swarm/session/sessionSwarmService';
+import { ISwarmConcurrencyRegistry } from '#/features/swarm/swarmConcurrencyRegistry';
+import {
+  resolveSwarmGlobalMaxConcurrency,
+  SwarmConcurrencyRegistry,
+} from '#/features/swarm/swarmConcurrencyRegistryService';
 import { AgentSwarmTool } from '#/features/swarm/tools/agent-swarm/agentSwarmTool';
 
 import { stubLog } from '../../_base/log/stubs';
@@ -65,76 +70,266 @@ import { stubFlag } from '../../app/flag/stubs';
 import { StubConfigService } from '../../kosong/stubs';
 
 describe('resolveSwarmMaxConcurrency', () => {
-  it('returns undefined when the variable is unset', () => {
-    expect(resolveSwarmMaxConcurrency({})).toBeUndefined();
+  it('defaults to eight when the variable is unset or blank', () => {
+    expect(resolveSwarmMaxConcurrency({})).toBe(8);
+    expect(resolveSwarmMaxConcurrency({ KIMI_CODE_AGENT_SWARM_MAX_CONCURRENCY: '' })).toBe(8);
+    expect(resolveSwarmMaxConcurrency({ KIMI_CODE_AGENT_SWARM_MAX_CONCURRENCY: '   ' })).toBe(8);
   });
 
-  it('returns undefined for empty or whitespace-only values', () => {
-    expect(
-      resolveSwarmMaxConcurrency({ KIMI_CODE_AGENT_SWARM_MAX_CONCURRENCY: '' }),
-    ).toBeUndefined();
-    expect(
-      resolveSwarmMaxConcurrency({ KIMI_CODE_AGENT_SWARM_MAX_CONCURRENCY: '   ' }),
-    ).toBeUndefined();
-  });
-
-  it('throws for non-positive, non-integer, or non-numeric values', () => {
+  it('rejects invalid values and accepts a positive integer override', () => {
     for (const raw of ['0', '-1', '2.5', 'abc']) {
       expect(() =>
         resolveSwarmMaxConcurrency({ KIMI_CODE_AGENT_SWARM_MAX_CONCURRENCY: raw }),
       ).toThrow(/KIMI_CODE_AGENT_SWARM_MAX_CONCURRENCY.*positive integer/);
     }
-  });
-
-  it('returns the integer for a positive integer value', () => {
     expect(resolveSwarmMaxConcurrency({ KIMI_CODE_AGENT_SWARM_MAX_CONCURRENCY: '3' })).toBe(3);
     expect(resolveSwarmMaxConcurrency({ KIMI_CODE_AGENT_SWARM_MAX_CONCURRENCY: ' 8 ' })).toBe(8);
   });
 });
 
-describe('AgentRunBatch scheduling contract', () => {
-  it('normal phase starts five tasks immediately, then one task every 700ms', async () => {
+describe('swarm global concurrency permits', () => {
+  it('defaults to 32 and validates the global environment override', () => {
+    expect(resolveSwarmGlobalMaxConcurrency({})).toBe(32);
+    expect(
+      resolveSwarmGlobalMaxConcurrency({
+        KIMI_CODE_AGENT_SWARM_GLOBAL_MAX_CONCURRENCY: '   ',
+      }),
+    ).toBe(32);
+    for (const raw of ['0', '-1', '2.5', 'abc']) {
+      expect(() =>
+        resolveSwarmGlobalMaxConcurrency({
+          KIMI_CODE_AGENT_SWARM_GLOBAL_MAX_CONCURRENCY: raw,
+        }),
+      ).toThrow(/KIMI_CODE_AGENT_SWARM_GLOBAL_MAX_CONCURRENCY.*positive integer/);
+    }
+    expect(
+      resolveSwarmGlobalMaxConcurrency({
+        KIMI_CODE_AGENT_SWARM_GLOBAL_MAX_CONCURRENCY: '3',
+      }),
+    ).toBe(3);
+  });
+
+  it('keeps a single batch at its existing per-batch cap', async () => {
     vi.useFakeTimers();
+    const registry = new SwarmConcurrencyRegistry({});
     try {
-      const { runBatch, attempts } = createMockAgentRunBatchRunner();
+      const { runBatch, attempts } = createMockAgentRunBatchRunner({
+        concurrencyRegistry: registry,
+      });
       const running = runBatch(
-        Array.from({ length: 9 }, (_, index) => queuedAgentRunTask(index + 1)),
+        Array.from({ length: 10 }, (_, index) => queuedAgentRunTask(index + 1)),
         { signal: new AbortController().signal },
       );
 
       await vi.advanceTimersByTimeAsync(0);
-      expect(attempts).toHaveLength(5);
-
-      await vi.advanceTimersByTimeAsync(699);
-      expect(attempts).toHaveLength(5);
-
-      await vi.advanceTimersByTimeAsync(1);
-      expect(attempts).toHaveLength(6);
-
-      await vi.advanceTimersByTimeAsync(700);
-      expect(attempts).toHaveLength(7);
-
-      await vi.advanceTimersByTimeAsync(700);
       expect(attempts).toHaveLength(8);
 
-      await vi.advanceTimersByTimeAsync(700);
-      expect(attempts).toHaveLength(9);
+      attempts.forEach(resolveMockAttempt);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(attempts).toHaveLength(10);
+      attempts.slice(8).forEach(resolveMockAttempt);
+      await expect(running).resolves.toHaveLength(10);
+    } finally {
+      registry.dispose();
+      vi.useRealTimers();
+    }
+  });
 
-      await vi.advanceTimersByTimeAsync(700);
-      expect(attempts).toHaveLength(9);
+  it('shares the global budget fairly across concurrent batches', async () => {
+    vi.useFakeTimers();
+    const registry = new SwarmConcurrencyRegistry({
+      KIMI_CODE_AGENT_SWARM_GLOBAL_MAX_CONCURRENCY: '5',
+    });
+    try {
+      const runners = Array.from({ length: 3 }, () =>
+        createMockAgentRunBatchRunner({
+          maxConcurrency: 4,
+          concurrencyRegistry: registry,
+        }),
+      );
+      const running = runners.map((runner, batchIndex) =>
+        runner.runBatch(
+          Array.from({ length: 6 }, (_, index) =>
+            queuedAgentRunTask(batchIndex * 100 + index + 1),
+          ),
+          { signal: new AbortController().signal },
+        ),
+      );
+      const resolved = new Set<MockAgentRunAttemptRecord>();
 
-      attempts.forEach((attempt, index) => {
-        attempt.outcome.resolve({
-          task: attempt.task,
-          agentId: `agent-${String(index + 1)}`,
-          status: 'completed',
-          result: `result ${String(index + 1)}`,
-        });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runners.map((runner) => runner.attempts.length)).toEqual([4, 1, 0]);
+
+      resolveMockAttempt(runners[0]!.attempts[0]!);
+      resolved.add(runners[0]!.attempts[0]!);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runners.map((runner) => runner.attempts.length)).toEqual([4, 2, 0]);
+
+      resolveMockAttempt(runners[0]!.attempts[1]!);
+      resolved.add(runners[0]!.attempts[1]!);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runners.map((runner) => runner.attempts.length)).toEqual([4, 2, 1]);
+
+      while (resolved.size < 18) {
+        const attempts = runners.flatMap((runner) => runner.attempts);
+        const active = attempts.filter((attempt) => !resolved.has(attempt));
+        expect(active.length).toBeLessThanOrEqual(5);
+        expect(active.length).toBeGreaterThan(0);
+        for (const attempt of active) {
+          resolved.add(attempt);
+          resolveMockAttempt(attempt);
+        }
+        await vi.advanceTimersByTimeAsync(0);
+      }
+
+      await expect(Promise.all(running)).resolves.toSatisfy(
+        (results: Array<Array<AgentRunResult<number>>>) => {
+          return results.every((batch) => batch.length === 6);
+        },
+      );
+    } finally {
+      registry.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('reclaims permits after cancellation and attempt errors', async () => {
+    vi.useFakeTimers();
+    const registry = new SwarmConcurrencyRegistry({
+      KIMI_CODE_AGENT_SWARM_GLOBAL_MAX_CONCURRENCY: '2',
+    });
+    try {
+      const cancelledController = new AbortController();
+      const cancelled = createMockAgentRunBatchRunner({
+        maxConcurrency: 2,
+        concurrencyRegistry: registry,
       });
-      const results = await running;
+      const errors = createMockAgentRunBatchRunner({
+        maxConcurrency: 2,
+        concurrencyRegistry: registry,
+      });
+      const cancelledRunning = cancelled.runBatch(
+        Array.from({ length: 4 }, (_, index) => queuedAgentRunTask(index + 1)),
+        { signal: cancelledController.signal },
+      );
+      const errorRunning = errors.runBatch(
+        Array.from({ length: 2 }, (_, index) => queuedAgentRunTask(index + 101)),
+        { signal: new AbortController().signal },
+      );
 
-      expect(results).toHaveLength(9);
-      expect(results.every((result) => result.status === 'completed')).toBe(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(cancelled.attempts).toHaveLength(2);
+      expect(errors.attempts).toHaveLength(0);
+
+      cancelledController.abort(userCancellationReason());
+      await expect(cancelledRunning).resolves.toHaveLength(4);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(errors.attempts).toHaveLength(2);
+
+      const reclaimed = createMockAgentRunBatchRunner({
+        maxConcurrency: 2,
+        concurrencyRegistry: registry,
+      });
+      const reclaimedRunning = reclaimed.runBatch(
+        Array.from({ length: 2 }, (_, index) => queuedAgentRunTask(index + 201)),
+        { signal: new AbortController().signal },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(reclaimed.attempts).toHaveLength(0);
+
+      errors.attempts.forEach((attempt, index) => {
+        attempt.outcome.reject(new Error(`failed ${String(index + 1)}`));
+      });
+      await expect(errorRunning).resolves.toSatisfy(
+        (results: Array<AgentRunResult<number>>) => {
+          return results.every((result) => result.status === 'failed');
+        },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(reclaimed.attempts).toHaveLength(2);
+
+      reclaimed.attempts.forEach(resolveMockAttempt);
+      await expect(reclaimedRunning).resolves.toHaveLength(2);
+    } finally {
+      registry.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses the global environment override as the shared budget', async () => {
+    vi.useFakeTimers();
+    const registry = new SwarmConcurrencyRegistry({
+      KIMI_CODE_AGENT_SWARM_GLOBAL_MAX_CONCURRENCY: '2',
+    });
+    try {
+      const first = createMockAgentRunBatchRunner({ concurrencyRegistry: registry });
+      const second = createMockAgentRunBatchRunner({ concurrencyRegistry: registry });
+      const firstRunning = first.runBatch(
+        Array.from({ length: 4 }, (_, index) => queuedAgentRunTask(index + 1)),
+        { signal: new AbortController().signal },
+      );
+      const secondRunning = second.runBatch(
+        Array.from({ length: 4 }, (_, index) => queuedAgentRunTask(index + 101)),
+        { signal: new AbortController().signal },
+      );
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(first.attempts.length + second.attempts.length).toBe(2);
+
+      const resolved = new Set<MockAgentRunAttemptRecord>();
+      while (resolved.size < 8) {
+        const attempts = [...first.attempts, ...second.attempts];
+        const active = attempts.filter((attempt) => !resolved.has(attempt));
+        expect(active.length).toBeLessThanOrEqual(2);
+        for (const attempt of active) {
+          resolved.add(attempt);
+          resolveMockAttempt(attempt);
+        }
+        await vi.advanceTimersByTimeAsync(0);
+      }
+
+      await expect(Promise.all([firstRunning, secondRunning])).resolves.toSatisfy(
+        (results: Array<Array<AgentRunResult<number>>>) =>
+          results.every((batch) => batch.length === 4),
+      );
+    } finally {
+      registry.dispose();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('AgentRunBatch scheduling contract', () => {
+  it('defaults to eight active attempts, keeps ready attempts permitted, and refills after completion or error', async () => {
+    vi.useFakeTimers();
+    try {
+      const { runBatch, attempts } = createMockAgentRunBatchRunner();
+      const running = runBatch(
+        Array.from({ length: 10 }, (_, index) => queuedAgentRunTask(index + 1)),
+        { signal: new AbortController().signal },
+      );
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(attempts).toHaveLength(8);
+      attempts.forEach((attempt) => {
+        attempt.markReady();
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(attempts).toHaveLength(8);
+
+      resolveMockAttempt(attempts[0]!);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(attempts).toHaveLength(9);
+
+      attempts[1]!.outcome.reject(new Error('failed 2'));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(attempts).toHaveLength(10);
+
+      attempts.slice(2).forEach(resolveMockAttempt);
+      const results = await running;
+      expect(results).toHaveLength(10);
+      expect(results[1]).toMatchObject({ status: 'failed', error: 'failed 2' });
+      expect(results.filter((result) => result.status === 'completed')).toHaveLength(9);
     } finally {
       vi.useRealTimers();
     }
@@ -146,132 +341,63 @@ describe('AgentRunBatch scheduling contract', () => {
       const controller = new AbortController();
       const { runBatch, attempts } = createMockAgentRunBatchRunner();
       const running = runBatch(
-        Array.from({ length: 6 }, (_, index) => queuedAgentRunTask(index + 1)),
+        Array.from({ length: 10 }, (_, index) => queuedAgentRunTask(index + 1)),
         { signal: controller.signal },
       );
 
       await vi.advanceTimersByTimeAsync(0);
-      expect(attempts).toHaveLength(5);
-
-      attempts[0]!.outcome.resolve({
-        task: attempts[0]!.task,
-        agentId: 'agent-1',
-        status: 'completed',
-        result: 'completed 1',
-      });
+      expect(attempts).toHaveLength(8);
+      resolveMockAttempt(attempts[0]!);
       await vi.advanceTimersByTimeAsync(0);
+      expect(attempts).toHaveLength(9);
 
       controller.abort(userCancellationReason());
       const results = await running;
 
-      expect(
-        results.map((result) => ({
-          data: result.task.data,
-          agentId: result.agentId,
-          status: result.status,
-          state: result.state,
-          result: result.result,
-          error: result.error,
-        })),
-      ).toEqual([
-        {
-          data: 1,
-          agentId: 'agent-1',
-          status: 'completed',
-          state: undefined,
-          result: 'completed 1',
-          error: undefined,
-        },
-        {
-          data: 2,
-          agentId: 'agent-2',
-          status: 'aborted',
-          state: 'started',
-          result: undefined,
-          error: 'The user manually interrupted this subagent batch before this subagent finished.',
-        },
-        {
-          data: 3,
-          agentId: 'agent-3',
-          status: 'aborted',
-          state: 'started',
-          result: undefined,
-          error: 'The user manually interrupted this subagent batch before this subagent finished.',
-        },
-        {
-          data: 4,
-          agentId: 'agent-4',
-          status: 'aborted',
-          state: 'started',
-          result: undefined,
-          error: 'The user manually interrupted this subagent batch before this subagent finished.',
-        },
-        {
-          data: 5,
-          agentId: 'agent-5',
-          status: 'aborted',
-          state: 'started',
-          result: undefined,
-          error: 'The user manually interrupted this subagent batch before this subagent finished.',
-        },
-        {
-          data: 6,
-          agentId: undefined,
-          status: 'aborted',
-          state: 'not_started',
-          result: undefined,
-          error:
-            'The user manually interrupted this subagent batch before this subagent was started.',
-        },
-      ]);
+      expect(results[0]).toMatchObject({ status: 'completed', result: 'result 1' });
+      expect(results.slice(1, 9)).toSatisfy((items: AgentRunResult<number>[]) => {
+        return items.every((result) => result.status === 'aborted' && result.state === 'started');
+      });
+      expect(results[9]).toMatchObject({ status: 'aborted', state: 'not_started' });
+      expect(results[9]!.agentId).toBeUndefined();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('normal phase keeps processing completions while waiting for the next launch', async () => {
+  it('drains 32, 100, and 1000 tasks without a fixed-time ramp or exceeding a custom cap', async () => {
     vi.useFakeTimers();
     try {
-      const { runBatch, attempts } = createMockAgentRunBatchRunner();
-      const running = runBatch(
-        Array.from({ length: 6 }, (_, index) => queuedAgentRunTask(index + 1)),
-        { signal: new AbortController().signal },
-      );
+      for (const taskCount of [32, 100, 1000]) {
+        const { runBatch, attempts } = createMockAgentRunBatchRunner({ maxConcurrency: 7 });
+        const running = runBatch(
+          Array.from({ length: taskCount }, (_, index) => queuedAgentRunTask(index + 1)),
+          { signal: new AbortController().signal },
+        );
+        let completed = 0;
 
-      await vi.advanceTimersByTimeAsync(0);
-      expect(attempts).toHaveLength(5);
-      attempts[0]!.outcome.resolve({
-        task: attempts[0]!.task,
-        agentId: 'agent-1',
-        status: 'completed',
-        result: 'completed 1',
-      });
+        await vi.advanceTimersByTimeAsync(0);
+        while (completed < taskCount) {
+          const launched = attempts.length;
+          expect(launched - completed).toBeLessThanOrEqual(7);
+          expect(launched).toBeGreaterThan(completed);
+          attempts.slice(completed, launched).forEach(resolveMockAttempt);
+          completed = launched;
+          await vi.advanceTimersByTimeAsync(0);
+        }
 
-      await vi.advanceTimersByTimeAsync(699);
-      expect(attempts).toHaveLength(5);
-
-      await vi.advanceTimersByTimeAsync(1);
-      expect(attempts).toHaveLength(6);
-
-      attempts.slice(1).forEach((attempt, index) => {
-        attempt.outcome.resolve({
-          task: attempt.task,
-          agentId: `agent-${String(index + 2)}`,
-          status: 'completed',
-          result: `completed ${String(index + 2)}`,
-        });
-      });
-      await expect(running).resolves.toHaveLength(6);
+        await expect(running).resolves.toHaveLength(taskCount);
+      }
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('rate-limit phase starts when the first provider rate limit stops the normal ramp', async () => {
+  it('rate-limit phase starts when the first provider rate limit stops the normal queue', async () => {
     vi.useFakeTimers();
     try {
       const controller = new AbortController();
-      const { runBatch, attempts } = createMockAgentRunBatchRunner();
+      const { runBatch, attempts } = createMockAgentRunBatchRunner({ maxConcurrency: 5 });
       const running = runBatch(
         Array.from({ length: 9 }, (_, index) => queuedAgentRunTask(index + 1)),
         { signal: controller.signal },
@@ -313,7 +439,10 @@ describe('AgentRunBatch scheduling contract', () => {
     try {
       const controller = new AbortController();
       const onSuspended = vi.fn();
-      const { runBatch, attempts } = createMockAgentRunBatchRunner({ onSuspended });
+      const { runBatch, attempts } = createMockAgentRunBatchRunner({
+        onSuspended,
+        maxConcurrency: 5,
+      });
       const running = runBatch(
         Array.from({ length: 8 }, (_, index) => queuedAgentRunTask(index + 1)),
         { signal: controller.signal },
@@ -393,41 +522,31 @@ describe('AgentRunBatch scheduling contract', () => {
     }
   });
 
-  it('rate-limit capacity blocks launches while active attempts fill all slots', async () => {
+  it('rate-limit capacity blocks queued work until both delay and capacity allow a launch', async () => {
     vi.useFakeTimers();
     try {
       const controller = new AbortController();
-      const { runBatch, attempts } = createMockAgentRunBatchRunner();
+      const { runBatch, attempts } = createMockAgentRunBatchRunner({ maxConcurrency: 5 });
       const running = runBatch(
-        Array.from({ length: 12 }, (_, index) => queuedAgentRunTask(index + 1)),
+        Array.from({ length: 6 }, (_, index) => queuedAgentRunTask(index + 1)),
         { signal: controller.signal },
       );
       void running.catch(() => {});
 
       await vi.advanceTimersByTimeAsync(0);
       expect(attempts).toHaveLength(5);
-      attempts.slice(0, 5).forEach((attempt) => {
+      attempts.forEach((attempt) => {
         attempt.markReady();
       });
-
-      for (let count = 6; count <= 12; count += 1) {
-        await vi.advanceTimersByTimeAsync(700);
-        expect(attempts).toHaveLength(count);
-        attempts[count - 1]!.markReady();
-      }
-
-      attempts.slice(0, 12).forEach((attempt) => {
-        attempt.markReady();
-      });
-
-      attempts[0]!.outcome.resolve({
-        type: 'rate_limited',
-        agentId: 'agent-1',
-      });
-      await vi.advanceTimersByTimeAsync(0);
-
+      attempts[0]!.outcome.resolve({ type: 'rate_limited', agentId: 'agent-1' });
       await vi.advanceTimersByTimeAsync(3000);
-      expect(attempts).toHaveLength(12);
+      expect(attempts).toHaveLength(5);
+
+      resolveMockAttempt(attempts[1]!);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(attempts).toHaveLength(6);
+      expect(attempts[5]!.task.data).toBe(1);
+      expect(attempts[5]!.retryAgentId).toBe('agent-1');
 
       controller.abort();
       await expect(running).rejects.toThrow();
@@ -440,7 +559,7 @@ describe('AgentRunBatch scheduling contract', () => {
     vi.useFakeTimers();
     try {
       const controller = new AbortController();
-      const { runBatch, attempts } = createMockAgentRunBatchRunner();
+      const { runBatch, attempts } = createMockAgentRunBatchRunner({ maxConcurrency: 5 });
       const running = runBatch(
         Array.from({ length: 6 }, (_, index) => queuedAgentRunTask(index + 1)),
         { signal: controller.signal },
@@ -491,7 +610,7 @@ describe('AgentRunBatch scheduling contract', () => {
     vi.useFakeTimers();
     try {
       const controller = new AbortController();
-      const { runBatch, attempts } = createMockAgentRunBatchRunner();
+      const { runBatch, attempts } = createMockAgentRunBatchRunner({ maxConcurrency: 5 });
       const running = runBatch(
         Array.from({ length: 8 }, (_, index) => queuedAgentRunTask(index + 1)),
         { signal: controller.signal },
@@ -533,7 +652,7 @@ describe('AgentRunBatch scheduling contract', () => {
     vi.useFakeTimers();
     try {
       const controller = new AbortController();
-      const { runBatch, attempts } = createMockAgentRunBatchRunner();
+      const { runBatch, attempts } = createMockAgentRunBatchRunner({ maxConcurrency: 5 });
       const running = runBatch(
         Array.from({ length: 8 }, (_, index) => queuedAgentRunTask(index + 1)),
         { signal: controller.signal },
@@ -647,8 +766,7 @@ describe('AgentRunBatch scheduling contract', () => {
   it('does not spend task timeout while the task is queued', async () => {
     vi.useFakeTimers();
     try {
-      let settled = false;
-      const { runBatch, attempts } = createMockAgentRunBatchRunner();
+      const { runBatch, attempts } = createMockAgentRunBatchRunner({ maxConcurrency: 5 });
       const running = runBatch(
         [
           ...Array.from({ length: 5 }, (_, index) => queuedAgentRunTask(index + 1)),
@@ -656,30 +774,16 @@ describe('AgentRunBatch scheduling contract', () => {
         ],
         { signal: new AbortController().signal },
       );
-      void running.finally(() => {
-        settled = true;
-      });
 
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(attempts).toHaveLength(5);
+
+      resolveMockAttempt(attempts[0]!);
       await vi.advanceTimersByTimeAsync(0);
-      expect(attempts).toHaveLength(5);
-
-      await vi.advanceTimersByTimeAsync(699);
-      expect(attempts).toHaveLength(5);
-
-      await vi.advanceTimersByTimeAsync(1);
       expect(attempts).toHaveLength(6);
 
       await vi.advanceTimersByTimeAsync(999);
-      expect(settled).toBe(false);
-
-      attempts.slice(0, 5).forEach((attempt, index) => {
-        attempt.outcome.resolve({
-          task: attempt.task,
-          agentId: `agent-${String(index + 1)}`,
-          status: 'completed',
-          result: `completed ${String(index + 1)}`,
-        });
-      });
+      attempts.slice(1, 5).forEach(resolveMockAttempt);
       await vi.advanceTimersByTimeAsync(1);
 
       await expect(running).resolves.toMatchObject([
@@ -701,114 +805,39 @@ describe('AgentRunBatch scheduling contract', () => {
     }
   });
 
-  it('rate-limit phase continues launching after rate-limited attempts settle', async () => {
+  it('preserves spawn, resume, retry, and queued spawn launch order', async () => {
     vi.useFakeTimers();
     try {
-      const controller = new AbortController();
-      const { runBatch, attempts } = createMockAgentRunBatchRunner({
-        readyDelay: (attemptIndex) => (attemptIndex >= 7 ? 100 : undefined),
-      });
-
+      const { runBatch, attempts } = createMockAgentRunBatchRunner({ maxConcurrency: 2 });
       const running = runBatch(
-        Array.from({ length: 9 }, (_, index) => queuedAgentRunTask(index + 1)),
-        { signal: controller.signal },
+        [queuedAgentRunTask(1), queuedAgentResumeTask(2), queuedAgentRunTask(3)],
+        { signal: new AbortController().signal },
       );
-      void running.catch(() => {});
 
       await vi.advanceTimersByTimeAsync(0);
-      expect(attempts).toHaveLength(5);
-      attempts.slice(0, 5).forEach((attempt) => {
+      expect(attempts.map((attempt) => attempt.launchKind)).toEqual(['spawn', 'resume']);
+      attempts.forEach((attempt) => {
         attempt.markReady();
       });
 
-      await vi.advanceTimersByTimeAsync(700);
-      expect(attempts).toHaveLength(6);
+      attempts[0]!.outcome.resolve({ type: 'rate_limited', agentId: 'agent-1' });
+      resolveMockAttempt(attempts[1]!);
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(attempts).toHaveLength(2);
 
-      await vi.advanceTimersByTimeAsync(700);
-      expect(attempts).toHaveLength(7);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(attempts.map((attempt) => attempt.launchKind)).toEqual(['spawn', 'resume', 'retry']);
+      resolveMockAttempt(attempts[2]!);
 
-      attempts[5]!.outcome.resolve({ type: 'rate_limited', agentId: 'agent-6' });
-      attempts[6]!.outcome.resolve({ type: 'rate_limited', agentId: 'agent-7' });
-      attempts[0]!.outcome.resolve({
-        task: attempts[0]!.task,
-        agentId: 'agent-1',
-        status: 'completed',
-        result: 'completed 1',
-      });
-      attempts[1]!.outcome.resolve({
-        task: attempts[1]!.task,
-        agentId: 'agent-2',
-        status: 'completed',
-        result: 'completed 2',
-      });
-      await vi.advanceTimersByTimeAsync(12_000);
-      expect(attempts).toHaveLength(8);
-      expect(attempts[7]!.task.data).toBe(7);
-      expect(attempts[7]!.retryAgentId).toBe('agent-7');
-
-      controller.abort();
-      await expect(running).rejects.toThrow();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-});
-
-describe('AgentRunBatch max concurrency cap', () => {
-  it('caps in-flight tasks at maxConcurrency during the normal phase', async () => {
-    vi.useFakeTimers();
-    try {
-      const { runBatch, attempts } = createMockAgentRunBatchRunner({ maxConcurrency: 3 });
-      const running = runBatch(
-        Array.from({ length: 9 }, (_, index) => queuedAgentRunTask(index + 1)),
-        { signal: new AbortController().signal },
-      );
-      const resolved = new Set<number>();
-      const resolveOne = (index: number) => {
-        const attempt = attempts[index]!;
-        resolved.add(index);
-        attempt.outcome.resolve({
-          task: attempt.task,
-          agentId: `agent-${String(index + 1)}`,
-          status: 'completed',
-          result: `result ${String(index + 1)}`,
-        });
-      };
-      const inFlight = () => attempts.length - resolved.size;
-
-      await vi.advanceTimersByTimeAsync(0);
-      expect(attempts).toHaveLength(3);
-      expect(inFlight()).toBe(3);
-
-      await vi.advanceTimersByTimeAsync(700);
-      expect(attempts).toHaveLength(3);
-
-      resolveOne(0);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(attempts).toHaveLength(4);
-      expect(inFlight()).toBeLessThanOrEqual(3);
-
-      resolveOne(1);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(attempts).toHaveLength(5);
-      expect(inFlight()).toBeLessThanOrEqual(3);
-
-      resolveOne(2);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(attempts).toHaveLength(5);
-      await vi.advanceTimersByTimeAsync(700);
-      expect(attempts).toHaveLength(6);
-      expect(inFlight()).toBeLessThanOrEqual(3);
-
-      for (let index = 3; index < 9; index += 1) {
-        resolveOne(index);
-        await vi.advanceTimersByTimeAsync(700);
-        expect(inFlight()).toBeLessThanOrEqual(3);
-      }
-
-      const results = await running;
-      expect(results).toHaveLength(9);
-      expect(results.every((result) => result.status === 'completed')).toBe(true);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(attempts.map((attempt) => attempt.launchKind)).toEqual([
+        'spawn',
+        'resume',
+        'retry',
+        'spawn',
+      ]);
+      resolveMockAttempt(attempts[3]!);
+      await expect(running).resolves.toHaveLength(3);
     } finally {
       vi.useRealTimers();
     }
@@ -1054,6 +1083,7 @@ describe('SessionSwarmService metadata compatibility', () => {
         return { id: alias } as Model;
       },
     } as IModelCatalog);
+    ix.set(ISwarmConcurrencyRegistry, new SwarmConcurrencyRegistry({}));
     ix.set(ISessionSwarmService, new SyncDescriptor(SessionSwarmService));
   });
 
@@ -1769,6 +1799,7 @@ type MockAgentRunAttemptOutcome<T> =
 
 type MockAgentRunAttemptRecord = {
   readonly task: QueuedAgentRunTask<number>;
+  readonly launchKind: 'spawn' | 'resume' | 'retry';
   readonly retryAgentId?: string;
   readonly markReady: () => void;
   readonly outcome: ReturnType<typeof createControlledPromise<MockAgentRunAttemptOutcome<number>>>;
@@ -1776,8 +1807,8 @@ type MockAgentRunAttemptRecord = {
 
 type MockAgentRunBatchRunnerOptions = {
   readonly onSuspended?: (event: AgentRunSuspendedEvent) => void;
-  readonly readyDelay?: (attemptIndex: number) => number | undefined;
   readonly maxConcurrency?: number;
+  readonly concurrencyRegistry?: ISwarmConcurrencyRegistry;
 };
 
 function createMockAgentRunBatchRunner(
@@ -1796,6 +1827,7 @@ function createMockAgentRunBatchRunner(
     runOptions: AgentRunAttemptOptions,
     agentId: string,
     profileName: string,
+    launchKind: MockAgentRunAttemptRecord['launchKind'],
     retryAgentId?: string,
   ): AgentRunAttemptHandle => {
     const task = findMockAgentRunTask<T>(activeTasks, runOptions);
@@ -1803,16 +1835,13 @@ function createMockAgentRunBatchRunner(
     const markReady = () => {
       runOptions.onReady?.();
     };
-    const attemptIndex = attempts.length;
     attempts.push({
       task: task as unknown as QueuedAgentRunTask<number>,
+      launchKind,
       retryAgentId,
       markReady,
       outcome: outcome as unknown as MockAgentRunAttemptRecord['outcome'],
     });
-
-    const delay = options.readyDelay?.(attemptIndex);
-    if (delay !== undefined) setTimeout(markReady, delay);
 
     return {
       agentId,
@@ -1828,10 +1857,12 @@ function createMockAgentRunBatchRunner(
         spawnOptions,
         mockAgentRunId(task, attempts.length),
         spawnOptions.profileName,
+        'spawn',
       );
     },
-    resume: async (agentId, runOptions) => createHandle(runOptions, agentId, 'subagent'),
-    retry: async (agentId, runOptions) => createHandle(runOptions, agentId, 'subagent', agentId),
+    resume: async (agentId, runOptions) => createHandle(runOptions, agentId, 'subagent', 'resume'),
+    retry: async (agentId, runOptions) =>
+      createHandle(runOptions, agentId, 'subagent', 'retry', agentId),
     suspended: (event) => {
       options.onSuspended?.(event);
     },
@@ -1846,8 +1877,10 @@ function createMockAgentRunBatchRunner(
         ...task,
         signal: task.signal ?? runOptions?.signal,
       }));
-      return new AgentRunBatch(launcher, activeTasks as readonly QueuedAgentRunTask<T>[], {
+      const batchTasks = activeTasks as readonly QueuedAgentRunTask<T>[];
+      return new AgentRunBatch(launcher, batchTasks, {
         maxConcurrency: options.maxConcurrency,
+        concurrencyRegistry: options.concurrencyRegistry,
       }).run();
     },
     attempts,
@@ -1910,6 +1943,15 @@ function isMockAgentRunRateLimitOutcome<T>(
   return 'type' in outcome && outcome.type === 'rate_limited';
 }
 
+function resolveMockAttempt(attempt: MockAgentRunAttemptRecord): void {
+  attempt.outcome.resolve({
+    task: attempt.task,
+    agentId: `agent-${String(attempt.task.data)}`,
+    status: 'completed',
+    result: `result ${String(attempt.task.data)}`,
+  });
+}
+
 function queuedAgentRunTask(index: number): QueuedAgentRunTask<number> {
   return {
     kind: 'spawn',
@@ -1919,5 +1961,18 @@ function queuedAgentRunTask(index: number): QueuedAgentRunTask<number> {
     prompt: `Review item-${String(index)}`,
     description: `Review #${String(index)}`,
     runInBackground: false,
+  };
+}
+
+function queuedAgentResumeTask(index: number): QueuedAgentRunTask<number> {
+  return {
+    kind: 'resume',
+    data: index,
+    profileName: 'subagent',
+    parentToolCallId: 'call_swarm',
+    prompt: `Review item-${String(index)}`,
+    description: `Review #${String(index)}`,
+    runInBackground: false,
+    resumeAgentId: `agent-${String(index)}`,
   };
 }

@@ -1,4 +1,4 @@
-import { CLI_COMMAND_NAME } from '#/constant/app';
+import { CLI_COMMAND_NAME, isKikiDesktopBundled } from '#/constant/app';
 import { registerMigrateCommand } from '#/migration/index';
 import { Command, InvalidArgumentError, Option } from 'commander';
 
@@ -129,13 +129,16 @@ export function createProgram(
   registerDoctorCommand(program);
   registerVisCommand(program);
   registerMigrateCommand(program, onMigrate);
-  program
-    .command('upgrade')
-    .alias('update')
-    .description('Upgrade Kimi Code to the latest version.')
-    .action(async () => {
-      await onUpgrade();
-    });
+  const selfUpdateEnabled = !isKikiDesktopBundled();
+  if (selfUpdateEnabled) {
+    program
+      .command('upgrade')
+      .alias('update')
+      .description('Upgrade Kimi Code to the latest version.')
+      .action(async () => {
+        await onUpgrade();
+      });
+  }
 
   program
     .command('__plugin_run_node', { hidden: true })
@@ -146,16 +149,18 @@ export function createProgram(
       onPluginNodeRunner(entry, args);
     });
 
-  // Self-spawned worker for native staged updates (detached background
-  // download, or foreground from `kimi upgrade` — `--manual` marks the
-  // latter's stage as user-requested). Hidden: not user-facing.
-  program
-    .command('__update_download', { hidden: true })
-    .argument('<version>')
-    .option('--manual', 'the stage answers an explicit user-initiated upgrade')
-    .action((targetVersion: string, options: { manual?: boolean }) => {
-      onUpdateDownload(targetVersion, options.manual === true);
-    });
+  if (selfUpdateEnabled) {
+    // Self-spawned worker for native staged updates (detached background
+    // download, or foreground from `kimi upgrade` — `--manual` marks the
+    // latter's stage as user-requested). Hidden: not user-facing.
+    program
+      .command('__update_download', { hidden: true })
+      .argument('<version>')
+      .option('--manual', 'the stage answers an explicit user-initiated upgrade')
+      .action((targetVersion: string, options: { manual?: boolean }) => {
+        onUpdateDownload(targetVersion, options.manual === true);
+      });
+  }
 
   program.argument('[args...]').action((args: string[]) => {
     if (args.length > 0) {

@@ -3,6 +3,7 @@
  * `agent-core-v2/app/config/config.ts`.
  */
 
+import { RequestIdentityPolicySchema } from '@moonshot-ai/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
 import { z } from 'zod';
 
 import { noResult } from '../helpers.js';
@@ -23,20 +24,58 @@ export const configDiagnosticSchema = z.object({
   message: z.string(),
 });
 
+export const configSetInputSchema = z
+  .tuple([z.string(), z.unknown(), configTargetSchema.optional()])
+  .superRefine(([domain, value], ctx) => {
+    if (domain === 'requestIdentity') {
+      addRequestIdentityIssues(value, ctx, [1], false);
+    }
+  });
+
+export const configReplaceInputSchema = z
+  .tuple([z.string(), z.unknown(), configTargetSchema.optional()])
+  .superRefine(([domain, value], ctx) => {
+    if (domain === 'requestIdentity') {
+      addRequestIdentityIssues(value, ctx, [1], true);
+    }
+  });
+
+export const configReplaceSectionsInputSchema = z
+  .tuple([z.record(z.string(), z.unknown()), configTargetSchema.optional()])
+  .superRefine(([sections], ctx) => {
+    if (Object.hasOwn(sections, 'requestIdentity')) {
+      addRequestIdentityIssues(sections['requestIdentity'], ctx, [0, 'requestIdentity'], true);
+    }
+  });
+
+function addRequestIdentityIssues(
+  value: unknown,
+  ctx: z.RefinementCtx,
+  path: PropertyKey[],
+  allowClear: boolean,
+): void {
+  if (allowClear && (value === null || value === undefined)) return;
+  const parsed = RequestIdentityPolicySchema.safeParse(value);
+  if (parsed.success) return;
+  for (const issue of parsed.error.issues) {
+    ctx.addIssue({ ...issue, path: [...path, ...issue.path] });
+  }
+}
+
 export const configContract = {
   get: { input: z.tuple([z.string()]), output: z.unknown() },
   inspect: { input: z.tuple([z.string()]), output: configInspectValueSchema },
   getAll: { input: z.tuple([]), output: z.record(z.string(), z.unknown()) },
   set: {
-    input: z.tuple([z.string(), z.unknown(), configTargetSchema.optional()]),
+    input: configSetInputSchema,
     output: noResult,
   },
   replace: {
-    input: z.tuple([z.string(), z.unknown(), configTargetSchema.optional()]),
+    input: configReplaceInputSchema,
     output: noResult,
   },
   replaceSections: {
-    input: z.tuple([z.record(z.string(), z.unknown()), configTargetSchema.optional()]),
+    input: configReplaceSectionsInputSchema,
     output: noResult,
   },
   reload: { input: z.tuple([]), output: noResult },

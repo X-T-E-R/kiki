@@ -52,6 +52,7 @@ describe('provider config section helpers', () => {
           base_url: 'https://api.example.com/v1',
           custom_headers: { 'X-Test': '1' },
           oauth: { storage: 'file', key: 'token', oauth_host: 'https://auth.example.com' },
+          request_identity: { overrides: { client: { user_agent: 'host' } } },
         },
       }),
     ).toEqual({
@@ -61,6 +62,7 @@ describe('provider config section helpers', () => {
         baseUrl: 'https://api.example.com/v1',
         customHeaders: { 'X-Test': '1' },
         oauth: { storage: 'file', key: 'token', oauthHost: 'https://auth.example.com' },
+        requestIdentity: { overrides: { client: { userAgent: 'host' } } },
       },
     });
   });
@@ -75,6 +77,7 @@ describe('provider config section helpers', () => {
             baseUrl: 'https://api.example.com/v1',
             customHeaders: { 'X-Test': '1' },
             oauth: { storage: 'file', key: 'token', oauthHost: 'https://auth.example.com' },
+            requestIdentity: { overrides: { client: { userAgent: 'host' } } },
           },
         },
         {},
@@ -86,6 +89,7 @@ describe('provider config section helpers', () => {
         base_url: 'https://api.example.com/v1',
         custom_headers: { 'X-Test': '1' },
         oauth: { storage: 'file', key: 'token', oauth_host: 'https://auth.example.com' },
+        request_identity: { overrides: { client: { user_agent: 'host' } } },
       },
     });
   });

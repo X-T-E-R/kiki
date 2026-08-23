@@ -273,6 +273,55 @@ describe('runTurn — tool-call behaviour', () => {
     expect(output).not.toContain('Expected arguments schema:');
   });
 
+  it('repairs container-unclosed args when required fields are complete', async () => {
+    const echo = new EchoTool();
+    const { sink, context } = await runTurn({
+      tools: [echo],
+      responses: [
+        makeToolUseResponse([
+          {
+            type: 'function',
+            id: 'tc-1',
+            name: 'echo',
+            arguments: '{"text":"hi"',
+          },
+        ]),
+        makeEndTurnResponse('done'),
+      ],
+    });
+
+    expect(echo.calls).toHaveLength(1);
+    expect(echo.calls[0]?.args).toEqual({ text: 'hi' });
+    const results = sink.byType('tool.result');
+    expect(results[0]?.result.isError).not.toBe(true);
+    expect(context.toolResults()[0]?.result.output).toBe('hi');
+  });
+
+  it('rejects value-truncated args with offset and field name', async () => {
+    const echo = new EchoTool();
+    const { sink } = await runTurn({
+      tools: [echo],
+      responses: [
+        makeToolUseResponse([
+          {
+            type: 'function',
+            id: 'tc-1',
+            name: 'echo',
+            arguments: '{"text":"h',
+          },
+        ]),
+        makeEndTurnResponse('done'),
+      ],
+    });
+
+    expect(echo.calls).toHaveLength(0);
+    const output = expectTextOutput(sink.byType('tool.result')[0]?.result.output);
+    expect(output).toContain('truncated');
+    expect(output).toContain('byte 10');
+    expect(output).toContain('text');
+    expect(output).not.toContain('must have required property');
+  });
+
   it('does not repair malformed tool args JSON', async () => {
     const echo = new EchoTool();
     const { sink } = await runTurn({

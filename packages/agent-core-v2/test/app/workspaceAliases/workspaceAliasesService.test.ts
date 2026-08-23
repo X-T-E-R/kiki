@@ -11,6 +11,7 @@ import {
 } from '#/_base/di/scope';
 import { createScopedTestHost, stubPair } from '#/_base/di/test';
 import { encodeWorkDirKey } from '#/_base/utils/workdir-slug';
+import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
@@ -31,6 +32,18 @@ interface SessionIndexLine {
   readonly sessionId: string;
   readonly sessionDir: string;
   readonly workDir: string;
+}
+
+function emptySessionIndex(): ISessionIndex {
+  return {
+    _serviceBrand: undefined,
+    prepare: async () => ({ state: 'uninitialized', degradedCount: 0 }),
+    status: () => ({ state: 'uninitialized', degradedCount: 0 }),
+    get: async () => undefined,
+    listRecent: async () => ({ items: [] }),
+    count: async () => 0,
+    remove: async () => {},
+  };
 }
 
 describe('WorkspaceAliasesService (file-backed)', () => {
@@ -74,6 +87,7 @@ describe('WorkspaceAliasesService (file-backed)', () => {
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
+      stubPair(ISessionIndex, emptySessionIndex()),
       stubPair(IHostFileSystem, hostFs),
     ]);
     currentHost = host;

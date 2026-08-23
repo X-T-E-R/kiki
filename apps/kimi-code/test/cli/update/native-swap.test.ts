@@ -12,7 +12,7 @@ import {
   maybeRelaunchWithStagedNativeUpdate,
   type NativeSwapDeps,
 } from '#/cli/update/native-swap';
-import { KIMI_CODE_UPDATE_REEXEC_ENV } from '#/constant/app';
+import { KIKI_DESKTOP_BUNDLED_ENV, KIMI_CODE_UPDATE_REEXEC_ENV } from '#/constant/app';
 import { getNativeStagedStateFile, getNativeStagingDir } from '#/utils/paths';
 
 const fsMocks = vi.hoisted(() => ({
@@ -201,6 +201,22 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
     // Read-once: the guard is dropped so children of this session do not inherit it.
     expect(env[KIMI_CODE_UPDATE_REEXEC_ENV]).toBeUndefined();
     // Staged files untouched for the "real" next launch.
+    await expect(stat(getNativeStagedStateFile(exePath))).resolves.toBeDefined();
+    expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
+  });
+
+  it('does not apply a staged update for the bundled Kiki desktop sidecar', async () => {
+    await seedStagedUpdate(exePath, STAGED_VERSION);
+    const { calls, spawnImpl } = createSpawnMock({});
+    const relaunched = await maybeRelaunchWithStagedNativeUpdate(
+      makeDeps(exePath, {
+        spawnImpl,
+        env: { [KIKI_DESKTOP_BUNDLED_ENV]: '1' },
+      }),
+    );
+
+    expect(relaunched).toBe(false);
+    expect(calls).toHaveLength(0);
     await expect(stat(getNativeStagedStateFile(exePath))).resolves.toBeDefined();
     expect(await readFile(exePath, 'utf-8')).toBe('old-binary');
   });

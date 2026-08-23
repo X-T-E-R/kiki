@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  checkNativeDesktopUpdate,
   dryRunNativeSessionsMigration,
   executeNativeSessionsMigration,
   importNativeKimiConfig,
@@ -7,17 +8,37 @@ import {
   type SessionsMigrationPlan,
 } from './desktop';
 
-const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
+const { invoke, tauriRuntime } = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  tauriRuntime: { value: true },
+}));
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke,
-  isTauri: () => true,
+  isTauri: () => tauriRuntime.value,
 }));
 
-describe('native Sessions migration bridge', () => {
+describe('native desktop bridge', () => {
   beforeEach(() => {
     invoke.mockReset();
+    tauriRuntime.value = true;
     vi.unstubAllGlobals();
+  });
+
+  it('checks and installs a desktop update through native commands', async () => {
+    invoke.mockResolvedValueOnce({
+      currentVersion: '0.1.0-beta.1',
+      version: '0.1.0-beta.2',
+      date: '2026-08-21T00:00:00Z',
+      notes: 'Update notes',
+    });
+
+    const update = await checkNativeDesktopUpdate();
+    await update?.install();
+
+    expect(invoke).toHaveBeenNthCalledWith(1, 'check_desktop_update');
+    expect(invoke).toHaveBeenNthCalledWith(2, 'prepare_for_update');
+    expect(invoke).toHaveBeenNthCalledWith(3, 'install_desktop_update');
   });
 
   it('keeps dry-run and execution as separate native actions with structured facts', async () => {

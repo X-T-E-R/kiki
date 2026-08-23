@@ -17,7 +17,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Composer } from './Composer';
 import { ContextBreakdownProvider } from './ContextMeter';
 import { useConversationShell, useRegisterSeat, type ConversationSeat } from './ConversationShell';
-import { WorkspacePickerFields, useNewSessionDraft, type NewSessionDraftState } from './NewSessionDraft';
+import { isAbsoluteCwdPath, WorkspacePickerFields, useNewSessionDraft, type NewSessionDraftState } from './NewSessionDraft';
 import { Wordmark } from './Wordmark';
 import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
@@ -98,9 +98,14 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
   });
   const recentSessions = useMemo(() => recentQuery.data?.items ?? [], [recentQuery.data]);
 
-  const composerDisabled =
-    state.busy || state.workspacesLoading || state.effectiveWorkspace === undefined;
+  // Busy/loading locks the textarea; a missing workspace or absolute path
+  // only blocks sending so the draft and the pickers stay usable — a hint
+  // under the workspace chip and the send button's tooltip say what to do.
+  const composerDisabled = state.busy || state.workspacesLoading;
   const cwd = state.cwd.trim();
+  const sendDisabled =
+    state.effectiveWorkspace === undefined && (cwd === '' || !isAbsoluteCwdPath(cwd));
+  const showTargetHint = sendDisabled && !state.workspacesLoading;
   const mentionScopeKey = cwd !== '' ? `cwd:${cwd}` : `ws:${state.effectiveWorkspace?.id ?? ''}`;
 
   const fsSearch = useMemo(
@@ -135,6 +140,8 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
           <Composer
           busy={state.busy}
           disabled={composerDisabled}
+          sendDisabled={sendDisabled}
+          sendDisabledTitle={showTargetHint ? t('new.noTargetHint') : undefined}
           value={state.draft}
           onChange={state.updateDraft}
           model={state.modelOverride}
@@ -171,6 +178,8 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
     [
       state.busy,
       composerDisabled,
+      sendDisabled,
+      showTargetHint,
       state.draft,
       state.updateDraft,
       state.modelOverride,
@@ -231,6 +240,9 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
         <div className="mt-4 flex min-w-0 items-center justify-center self-stretch">
           <HeroWorkspaceChip state={state} />
         </div>
+        {showTargetHint ? (
+          <p className="mt-2 text-[11.5px] text-ink-faint">{t('new.noTargetHint')}</p>
+        ) : null}
       </div>
 
       {state.error !== null && slots.dock !== null

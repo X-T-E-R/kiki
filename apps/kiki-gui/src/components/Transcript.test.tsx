@@ -246,6 +246,30 @@ describe('splitPrefixSegments streaming differential', () => {
     await expectStreamingEquivalence(text);
   });
 
+  it('parses GFM constructs (table, strikethrough, task list) as elements', async () => {
+    // Regression: passing Streamdown's `remarkPlugins` prop replaces its
+    // default remark-gfm, so these used to render as raw pipe/tilde text.
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <Markdown
+        text={
+          '| col a | col b |\n| --- | --- |\n| 1 | 2 |\n\n' +
+          '~~gone~~\n\n' +
+          '- [x] done\n- [ ] todo\n'
+        }
+      />,
+    );
+    const cells = [...probe.container.querySelectorAll('td')].map((td) => td.textContent);
+    expect(cells).toEqual(['1', '2']);
+    expect(probe.container.querySelector('th')?.textContent).toBe('col a');
+    expect(probe.container.querySelector('del')?.textContent).toBe('gone');
+    const boxes = probe.container.querySelectorAll('input[type="checkbox"]');
+    expect(boxes).toHaveLength(2);
+    expect((boxes[0] as HTMLInputElement).checked).toBe(true);
+    expect((boxes[1] as HTMLInputElement).checked).toBe(false);
+  });
+
   it('keeps app-page links in the current router while external links open separately', async () => {
     const probe = makeRoot();
     await renderSettled(

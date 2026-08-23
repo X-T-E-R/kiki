@@ -1,11 +1,3 @@
-/**
- * `agentCollaboration` domain — safe-boundary named-agent message delivery.
- *
- * Persists before observing live state and only projects queued user messages
- * from Agent `onWillBeginStep` hooks. It never starts, steers, or interrupts a
- * turn.
- */
-
 import { Disposable, DisposableMap } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
@@ -66,8 +58,9 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     const memory = handle.accessor.get(IAgentContextMemoryService);
     const wire = handle.accessor.get(IWireService);
     for (;;) {
-      const message = await this.store.nextQueued(this.session.sessionId, handle.id);
-      if (message === undefined) return;
+      const queued = await this.store.nextQueued(this.session.sessionId, handle.id);
+      if (queued === undefined) return;
+      const { message, claim } = queued;
       const alreadyApplied = memory.get().some((entry) =>
         entry.origin?.kind === 'agent_message' && entry.origin.messageId === message.messageId,
       );
@@ -88,7 +81,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
         memory.append(contextMessage);
       }
       await wire.flush();
-      await this.store.markDelivered(message.messageId);
+      await this.store.markDelivered(claim);
     }
   }
 }

@@ -20,6 +20,9 @@ export default {
     default_model: 'fixture/kiki-pro',
     default_permission_mode: 'manual',
     default_plan_mode: false,
+    request_identity: {
+      overrides: { client: { user_agent: 'host' } },
+    },
     thinking: { enabled: true, effort: 'high' },
     merge_all_available_skills: true,
     extra_skill_dirs: ['C:/fixture/skills'],
@@ -45,6 +48,9 @@ export default {
       support_efforts: ['low', 'medium', 'high'],
       default_effort: 'high',
       capabilities: ['reasoning', 'vision'],
+      request_identity: {
+        overrides: { request: { logical_id: 'turn' } },
+      },
     },
     {
       provider: 'fixture',
@@ -68,14 +74,19 @@ export default {
       has_api_key: true,
       status: 'connected',
       default_model: 'fixture/kiki-pro',
+      request_identity: { preset: 'kimi_code' },
       models: ['fixture/kiki-pro', 'fixture/kiki-lite'],
     },
     {
+      // The OAuth-managed provider: its collapsed summary still carries the
+      // request-identity badge, and its editor keeps the non-credential save
+      // surface while id/protocol/credentials stay locked.
       id: 'alt',
       type: 'anthropic',
       has_api_key: false,
       status: 'unconfigured',
       default_model: 'alt/claude-x',
+      request_identity: { preset: 'none' },
       models: ['alt/claude-x'],
     },
   ],
@@ -83,7 +94,7 @@ export default {
     ready: true,
     providers_count: 2,
     default_model: 'fixture/kiki-pro',
-    managed_provider: null,
+    managed_provider: { name: 'alt', status: 'authenticated' },
   },
   oauth: {
     flow_id: fid('oauth'),
@@ -185,12 +196,15 @@ export default {
   // name+source+file across the workspaces) into one with workspace_ids.
   // `main` splits the settings agents section into the main-agent card and
   // the subagent-profiles card; `frontend` carries the read-only projection
-  // fields (model_profiles / spawn_constraints / subagents).
+  // fields (model_profiles / spawn_constraints / subagents). The two
+  // same-name pairs demonstrate the override rules: the user `explore.md`
+  // carries `override: true` and shadows the built-in explore, while the
+  // user `scout.md` lacks the flag and loses to the built-in scout.
   agentProfiles: [
     {
       name: 'agent',
       source: 'builtin',
-      description: 'General-purpose built-in agent for subagent dispatch.',
+      description: 'General-purpose built-in assistant.',
       main: true,
       subagents: ['explore', 'reviewer'],
       routes: [],
@@ -199,6 +213,32 @@ export default {
       name: 'explore',
       source: 'builtin',
       description: 'Read-only codebase exploration agent.',
+      main: false,
+      routes: [],
+    },
+    {
+      name: 'explore',
+      source: 'user',
+      workspace_id: WSID,
+      source_file: 'C:/fixture/user/agents/explore.md',
+      description: 'Team-tuned read-only explorer replacing the built-in.',
+      override: true,
+      main: false,
+      routes: [],
+    },
+    {
+      name: 'scout',
+      source: 'builtin',
+      description: 'Fast first-pass triage agent.',
+      main: false,
+      routes: [],
+    },
+    {
+      name: 'scout',
+      source: 'user',
+      workspace_id: WSID,
+      source_file: 'C:/fixture/user/agents/scout.md',
+      description: 'Same-named file profile without the override flag.',
       main: false,
       routes: [],
     },

@@ -44,8 +44,9 @@ import {
 import type { ThinkingEffort } from '#/kosong/contract/provider';
 import type { ModelCapability } from '#/kosong/contract/capability';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
-import { IModelService } from '#/kosong/model/model';
+import { IModelService, type ModelRecord } from '#/kosong/model/model';
 import type { ProvidersSection } from '#/kosong/provider/provider';
+import type { RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIdentityPolicy';
 import '#/kosong/provider/providers/kimi/kimi.contrib';
 import {
   type ModelRequestEvent,
@@ -181,6 +182,9 @@ function createService(
     readonly agentMeta?: AgentMeta;
     readonly requestParams?: ModelRequestParams;
     readonly providers?: ProvidersSection;
+    readonly models?: Record<string, ModelRecord>;
+    readonly modelAlias?: { value: string };
+    readonly globalRequestIdentity?: { value: RequestIdentityPolicy | undefined };
     readonly identitySnapshotCalls?: { value: number };
     readonly identityDimensions?: RequestIdentityDimensions[];
     readonly hostRequestHeaders?: Readonly<Record<string, string>>;
@@ -191,9 +195,10 @@ function createService(
   const sessionId = options.sessionId ?? 'session-test';
   const agentId = options.agentId ?? 'main';
   const agentMeta = options.agentMeta ?? { type: agentId === 'main' ? 'main' : 'sub' };
+  const selectedModelAlias = (): string => options.modelAlias?.value ?? 'm';
   const profile: Partial<IAgentProfileService> = {
     resolveModelContext: () => ({
-      modelAlias: 'm',
+      modelAlias: selectedModelAlias(),
       modelCapabilities: capabilities,
       maxOutputSize: undefined,
       alwaysThinking: undefined,
@@ -205,7 +210,7 @@ function createService(
     getSystemPrompt: () => 'system',
     data: () => ({
       cwd: '',
-      modelAlias: 'm',
+      modelAlias: selectedModelAlias(),
       modelCapabilities: capabilities,
       thinkingLevel,
       systemPrompt: 'system',
@@ -224,8 +229,11 @@ function createService(
   };
   const tools = { list: () => [] };
   const config: Partial<IConfigService> = {
-    get: ((section: string) =>
-      section === 'providers' ? options.providers : undefined) as IConfigService['get'],
+    get: ((section: string) => {
+      if (section === 'providers') return options.providers;
+      if (section === 'requestIdentity') return options.globalRequestIdentity?.value;
+      return undefined;
+    }) as IConfigService['get'],
   };
   const log = { info: () => undefined, warn: () => undefined };
   const telemetryRecords: TelemetryRecord[] = [];
@@ -313,8 +321,8 @@ function createService(
     findByName: () => [],
   });
   ix.stub(IModelService, {
-    resolveId: () => undefined,
-    get: () => undefined,
+    resolveId: (id) => (options.models?.[id] === undefined ? undefined : id),
+    get: (id) => options.models?.[id],
   });
   const records: WireRecord[] = [];
   registerTestAgentWire(ix, 'wire/llm-requester', {
@@ -501,6 +509,75 @@ describe('AgentLLMRequesterService request attribution headers', () => {
       turnIndex: true,
       turnState: false,
     }]);
+  });
+
+  it('reads an override-only global request identity layer', async () => {
+    const requester = createRequester({ value: 0 }, null, [], undefined, {
+      protocol: 'openai_responses',
+    });
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, {
+      globalRequestIdentity: {
+        value: {
+          overrides: { client: { originator: { mode: 'custom', value: 'global-client' } } },
+        },
+      },
+    });
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+
+    expect(captured[0]?.headers?.['originator']).toBe('global-client');
+    expect(captured[0]?.headers?.['User-Agent']).toBe('kimi-code-cli/1.0.0');
+  });
+
+  it('resolves two selected aliases on the same provider with different model layers', async () => {
+    const requester = createRequester({ value: 0 }, null, [], undefined, {
+      protocol: 'openai_responses',
+    });
+    const captured = captureRequestParams(requester);
+    const modelAlias = { value: 'a' };
+    const models: Record<string, ModelRecord> = {
+      a: { requestIdentity: { preset: 'grok_build_compatible' } },
+      b: { requestIdentity: { preset: 'none' } },
+    };
+    const { service } = createService(requester, undefined, { modelAlias, models });
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    modelAlias.value = 'b';
+    await service.request({ source: { type: 'turn', turnId: 2, step: 1 } });
+
+    expect(captured[0]?.headers).toHaveProperty('x-grok-conv-id');
+    expect(captured[1]?.headers).toEqual({
+      'x-kiki-internal-suppress-request-identity': '1',
+    });
+  });
+
+  it('freezes global and model policy changes until the next turn', async () => {
+    const requester = createRequester({ value: 0 }, null, [], undefined, {
+      protocol: 'openai_responses',
+    });
+    const captured = captureRequestParams(requester);
+    const globalRequestIdentity: { value: RequestIdentityPolicy | undefined } = {
+      value: { preset: 'grok_build_compatible' },
+    };
+    const models: Record<string, ModelRecord> = {
+      m: { requestIdentity: { overrides: { client: { userAgent: 'host' } } } },
+    };
+    const { service } = createService(requester, undefined, {
+      globalRequestIdentity,
+      models,
+    });
+
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    globalRequestIdentity.value = { preset: 'codex_compatible' };
+    models['m'] = { requestIdentity: { overrides: { cache: { responses: 'none' } } } };
+    await service.request({ source: { type: 'turn', turnId: 1, step: 2 } });
+    await service.request({ source: { type: 'turn', turnId: 2, step: 1 } });
+
+    expect(captured[1]?.headers).toEqual(captured[0]?.headers);
+    expect(captured[1]?.cacheKey).toBe(captured[0]?.cacheKey);
+    expect(captured[2]?.headers).toHaveProperty('session-id');
+    expect(captured[2]?.cacheKey).toBeUndefined();
   });
 
   it('snapshots policy and identity for every step in a turn', async () => {

@@ -5,7 +5,7 @@
  * Run: pnpm -C apps/kimi-code exec vitest run test/cli/options.test.ts
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createProgram } from '#/cli/commands';
 import type { CLIOptions } from '#/cli/options';
@@ -614,6 +614,23 @@ describe('CLI options parsing', () => {
         'migrate',
         'upgrade',
       ]);
+    });
+
+    it('does not register self-update commands for the bundled Kiki desktop sidecar', () => {
+      vi.stubEnv('KIKI_DESKTOP_BUNDLED', '1');
+      try {
+        const program = createProgram('0.0.0', () => {}, () => {});
+        const commandNames = program.commands.flatMap((command) => [
+          command.name(),
+          ...command.aliases(),
+        ]);
+
+        expect(commandNames).not.toContain('upgrade');
+        expect(commandNames).not.toContain('update');
+        expect(commandNames).not.toContain('__update_download');
+      } finally {
+        vi.unstubAllEnvs();
+      }
     });
 
   });

@@ -1,9 +1,9 @@
-import type {
-  ConfigResponse,
-  ModelCatalogItem,
-  PatchConfigRequest,
-  ProviderCatalogItem,
-  RequestIdentityPolicyWire,
+import {
+  requestIdentityPolicySchema,
+  type ModelCatalogItem,
+  type PatchConfigRequest,
+  type ProviderCatalogItem,
+  type RequestIdentityPolicyWire,
 } from '@moonshot-ai/protocol';
 
 import { LocalizedError, type I18nKey, type ValidationIssue } from '../i18n/locale';
@@ -22,11 +22,14 @@ export interface DesktopSettings {
   closeToTray: boolean;
 }
 
+export type UpdateChannel = 'stable' | 'beta';
+
 export interface DesktopNativePrefs {
   notifications: boolean;
   closeToTray: boolean;
   /** UI locale mirrored to the native side (tray menu labels); frontend-owned. */
   locale?: string;
+  updateChannel: UpdateChannel;
   compatibility: CompatibilitySettings;
 }
 
@@ -66,22 +69,49 @@ export interface ServerFileSettings {
   };
 }
 
-export function serverFileSettingsFromConfig(config: ConfigResponse): ServerFileSettings {
+export function configObjectOrEmpty(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/** Canonicalize config list projections without ever iterating a bare string. */
+export function normalizeConfigStringList(value: unknown): string[] {
+  if (value === undefined || value === null) return [];
+  if (typeof value === 'string') return [value];
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === 'string')) return [];
+  return [...new Set(value)];
+}
+
+export function serverFileSettingsFromConfig(config: unknown): ServerFileSettings {
+  const source = configObjectOrEmpty(config);
+  const subagent = configObjectOrEmpty(source['subagent']);
+  const agents = configObjectOrEmpty(source['agents']);
+  const modelCatalog = configObjectOrEmpty(source['model_catalog']);
   return {
     subagent: {
-      defaultModel: config.subagent?.defaultModel ?? '',
-      defaultEffort: config.subagent?.defaultEffort ?? '',
-      timeoutMs: config.subagent?.timeoutMs ?? 7_200_000,
+      defaultModel: typeof subagent['defaultModel'] === 'string' ? subagent['defaultModel'] : '',
+      defaultEffort: typeof subagent['defaultEffort'] === 'string' ? subagent['defaultEffort'] : '',
+      timeoutMs: typeof subagent['timeoutMs'] === 'number' ? subagent['timeoutMs'] : 7_200_000,
     },
     agents: {
-      enabled: config.agents?.enabled !== false,
-      defaultSubagentModel: config.agents?.defaultSubagentModel ?? '',
-      defaultSubagentReasoningEffort: config.agents?.defaultSubagentReasoningEffort ?? '',
+      enabled: agents['enabled'] !== false,
+      defaultSubagentModel:
+        typeof agents['defaultSubagentModel'] === 'string' ? agents['defaultSubagentModel'] : '',
+      defaultSubagentReasoningEffort:
+        typeof agents['defaultSubagentReasoningEffort'] === 'string'
+          ? agents['defaultSubagentReasoningEffort']
+          : '',
     },
-    builtinProductSkills: config.builtin_product_skills !== false,
+    builtinProductSkills: source['builtin_product_skills'] !== false,
     modelCatalog: {
-      refreshIntervalMs: config.model_catalog?.refreshIntervalMs ?? 0,
-      refreshOnStart: config.model_catalog?.refreshOnStart === true,
+      refreshIntervalMs:
+        typeof modelCatalog['refreshIntervalMs'] === 'number'
+          ? modelCatalog['refreshIntervalMs']
+          : 0,
+      refreshOnStart: modelCatalog['refreshOnStart'] === true,
     },
   };
 }
@@ -162,22 +192,28 @@ export const PROVIDER_WIRE_TYPES: readonly ProviderWireType[] = [
   'vertexai',
 ];
 
+export type RequestIdentityPreset = NonNullable<RequestIdentityPolicyWire['preset']>;
+
 export type RequestIdentityChoice =
-  | 'auto'
-  | 'codex_compatible'
-  | 'grok_build_compatible'
-  | 'kimi_code'
-  | 'none';
+  | 'inherit'
+  | 'custom_overrides'
+  | RequestIdentityPreset;
 
 export const REQUEST_IDENTITY_CHOICES: readonly RequestIdentityChoice[] = [
-  'auto',
+  'inherit',
+  'custom_overrides',
   'codex_compatible',
   'grok_build_compatible',
   'kimi_code',
   'none',
 ];
 
-export interface ProviderModelDraft {
+export interface RequestIdentityLayerDraft {
+  requestIdentityChoice: RequestIdentityChoice;
+  requestIdentityOverridesJson: string;
+}
+
+export interface ProviderModelDraft extends RequestIdentityLayerDraft {
   model: string;
   maxContextSize: number;
   displayName: string;
@@ -185,15 +221,13 @@ export interface ProviderModelDraft {
   supportEfforts: string[];
 }
 
-export interface ProviderDraft {
+export interface ProviderDraft extends RequestIdentityLayerDraft {
   id: string;
   type: ProviderWireType;
   baseUrl: string;
   defaultModel: string;
   apiKey: string;
   clearApiKey: boolean;
-  requestIdentityChoice: RequestIdentityChoice;
-  requestIdentityOverridesJson: string;
   models: ProviderModelDraft[];
 }
 
@@ -215,6 +249,7 @@ const DEFAULTS: DesktopSettings = {
 const DESKTOP_PREFS_DEFAULTS: DesktopNativePrefs = {
   notifications: true,
   closeToTray: true,
+  updateChannel: import.meta.env['VITE_UPDATE_CHANNEL'] === 'beta' ? 'beta' : 'stable',
   compatibility: {
     homeKind: 'kimi',
     customHome: undefined,
@@ -413,6 +448,10 @@ export function readDesktopPrefs(): DesktopNativePrefs {
       typeof stored.closeToTray === 'boolean'
         ? stored.closeToTray
         : DESKTOP_PREFS_DEFAULTS.closeToTray,
+    updateChannel:
+      stored.updateChannel === 'stable' || stored.updateChannel === 'beta'
+        ? stored.updateChannel
+        : DESKTOP_PREFS_DEFAULTS.updateChannel,
     compatibility: {
       homeKind: homeKind === 'kimi' || homeKind === 'custom'
         ? homeKind
@@ -630,7 +669,8 @@ function optionalNumberDraft(value: number | null | undefined): string {
   return value === null ? 'null' : value === undefined ? '' : String(value);
 }
 
-export function runtimeConfigDraftFromConfig(config: KikiConfigResponse): RuntimeConfigDraft {
+export function runtimeConfigDraftFromConfig(value: unknown): RuntimeConfigDraft {
+  const config = configObjectOrEmpty(value) as unknown as KikiConfigResponse;
   const task = config.task;
   return {
     cron: {
@@ -659,12 +699,12 @@ export function runtimeConfigDraftFromConfig(config: KikiConfigResponse): Runtim
     },
     identityName: config.identity?.name ?? '',
     identitySlug: config.identity?.slug ?? '',
-    extraAgentDirs: [...(config.extra_agent_dirs ?? [])],
-    disabledBuiltinProfiles: [...(config.disabled_builtin_profiles ?? [])],
+    extraAgentDirs: normalizeConfigStringList(config.extra_agent_dirs),
+    disabledBuiltinProfiles: normalizeConfigStringList(config.disabled_builtin_profiles),
     mcpStartupTimeoutMs: optionalNumberDraft(config.mcp?.startupTimeoutMs),
     mcpToolTimeoutMs: optionalNumberDraft(config.mcp?.toolTimeoutMs),
-    toolsEnabled: [...(config.tools?.enabled ?? [])],
-    toolsDisabled: [...(config.tools?.disabled ?? [])],
+    toolsEnabled: normalizeConfigStringList(config.tools?.enabled),
+    toolsDisabled: normalizeConfigStringList(config.tools?.disabled),
   };
 }
 
@@ -792,6 +832,67 @@ export function validateDesktopConfigDraft(input: {
   return null;
 }
 
+export function requestIdentityLayerDraftFromPolicy(
+  policy: RequestIdentityPolicyWire | undefined,
+): RequestIdentityLayerDraft {
+  return {
+    requestIdentityChoice:
+      policy?.preset ?? (policy?.overrides === undefined ? 'inherit' : 'custom_overrides'),
+    requestIdentityOverridesJson:
+      policy?.overrides === undefined ? '' : JSON.stringify(policy.overrides, null, 2),
+  };
+}
+
+export function requestIdentityPolicyFromDraft(
+  draft: RequestIdentityLayerDraft,
+): RequestIdentityPolicyWire | undefined {
+  if (draft.requestIdentityChoice === 'inherit') return undefined;
+
+  const trimmed = draft.requestIdentityOverridesJson.trim();
+  if (draft.requestIdentityChoice === 'custom_overrides' && trimmed === '') {
+    throw new LocalizedError({ key: 'val.requestIdentityOverridesRequired' });
+  }
+
+  let overrides: RequestIdentityPolicyWire['overrides'];
+  if (trimmed !== '') {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      throw new LocalizedError({ key: 'val.requestIdentityJson' });
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new LocalizedError({ key: 'val.requestIdentityOverridesInvalid' });
+    }
+    overrides = parsed as RequestIdentityPolicyWire['overrides'];
+  }
+
+  const candidate = {
+    preset: isRequestIdentityPreset(draft.requestIdentityChoice)
+      ? draft.requestIdentityChoice
+      : undefined,
+    overrides,
+  };
+  const result = requestIdentityPolicySchema.safeParse(candidate);
+  if (!result.success) {
+    throw new LocalizedError({ key: 'val.requestIdentityOverridesInvalid' });
+  }
+  return result.data;
+}
+
+export function validateRequestIdentityLayerDraft(
+  draft: RequestIdentityLayerDraft,
+): ValidationIssue | null {
+  try {
+    requestIdentityPolicyFromDraft(draft);
+    return null;
+  } catch (error) {
+    return error instanceof LocalizedError
+      ? error.issue
+      : { key: 'val.requestIdentityOverridesInvalid' };
+  }
+}
+
 export function providerDraftFromCatalog(
   provider: ProviderCatalogItem,
   models: readonly ModelCatalogItem[],
@@ -807,6 +908,7 @@ export function providerDraftFromCatalog(
       displayName: model.display_name ?? '',
       capabilities: model.capabilities ?? [],
       supportEfforts: model.support_efforts ?? [],
+      ...requestIdentityLayerDraftFromPolicy(model.request_identity),
     }));
   if (providerModels.length === 0) return null;
   const defaultModel = provider.default_model?.startsWith(`${provider.id}/`)
@@ -819,11 +921,7 @@ export function providerDraftFromCatalog(
     defaultModel,
     apiKey: '',
     clearApiKey: false,
-    requestIdentityChoice: provider.request_identity?.preset ?? 'auto',
-    requestIdentityOverridesJson:
-      provider.request_identity?.overrides === undefined
-        ? ''
-        : JSON.stringify(provider.request_identity.overrides, null, 2),
+    ...requestIdentityLayerDraftFromPolicy(provider.request_identity),
     models: providerModels,
   };
 }
@@ -833,13 +931,8 @@ export function validateProviderDraft(draft: ProviderDraft): ValidationIssue | n
     return { key: 'val.providerId' };
   }
   if (!isProviderWireType(draft.type)) return { key: 'val.providerProtocol' };
-  if (isNewRequestIdentityChoice(draft.requestIdentityChoice)) {
-    try {
-      parseRequestIdentityOverrides(draft.requestIdentityOverridesJson);
-    } catch {
-      return { key: 'val.providerRequestIdentity' };
-    }
-  }
+  const providerIdentityIssue = validateRequestIdentityLayerDraft(draft);
+  if (providerIdentityIssue !== null) return providerIdentityIssue;
   if (draft.baseUrl !== '') {
     let url: URL;
     try {
@@ -863,6 +956,10 @@ export function validateProviderDraft(draft: ProviderDraft): ValidationIssue | n
     if (model.model.trim() === '') return { key: 'val.modelIdEmpty' };
     if (!Number.isInteger(model.maxContextSize) || model.maxContextSize < 1) {
       return { key: 'val.modelContextSize', params: { model: model.model || '(unnamed)' } };
+    }
+    const modelIdentityIssue = validateRequestIdentityLayerDraft(model);
+    if (modelIdentityIssue !== null) {
+      return { key: 'val.modelRequestIdentity', params: { model: model.model || '(unnamed)' } };
     }
     if (seen.has(model.model)) return { key: 'val.modelDuplicate', params: { model: model.model } };
     seen.add(model.model);
@@ -932,6 +1029,8 @@ export function providerDraftsEqual(a: ProviderDraft, b: ProviderDraft): boolean
       && model.model === other.model
       && model.maxContextSize === other.maxContextSize
       && model.displayName === other.displayName
+      && model.requestIdentityChoice === other.requestIdentityChoice
+      && model.requestIdentityOverridesJson === other.requestIdentityOverridesJson
       && stringArraysEqual(model.capabilities, other.capabilities)
       && stringArraysEqual(model.supportEfforts, other.supportEfforts);
   });
@@ -1049,6 +1148,8 @@ export async function fetchRemoteModels(probe: RemoteModelsProbe): Promise<Provi
     displayName: '',
     capabilities: [],
     supportEfforts: [],
+    requestIdentityChoice: 'inherit',
+    requestIdentityOverridesJson: '',
   }));
 }
 
@@ -1098,6 +1199,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.notifications', 'st.desktop.tray', 'st.desktop.quit'] },
   { section: 'general', cardId: 'st-card-compatibility-home', titleKey: 'st.compat.title', keywordKeys: ['st.compat.home', 'st.compat.credentialPath', 'st.compat.configImportTitle', 'st.compat.migrateUserSkills'] },
   { section: 'models', cardId: 'st-card-models', titleKey: 'st.models.defaultTitle', keywordKeys: ['st.models.providerLabel', 'st.models.searchPlaceholder'] },
+  { section: 'models', cardId: 'st-card-request-identity', titleKey: 'st.requestIdentity.defaultTitle', keywordKeys: ['st.requestIdentity.defaultLabel', 'st.requestIdentity.defaultHint'] },
   { section: 'models', cardId: 'st-card-thinking', titleKey: 'st.thinking.title', keywordKeys: ['st.thinking.enable', 'st.thinking.hint'] },
   { section: 'connection', cardId: 'st-card-conn-server', titleKey: 'st.conn.connectedTitle', keywordKeys: ['st.conn.version', 'st.conn.reconnect'] },
   { section: 'connection', cardId: 'st-card-conn-owned', titleKey: 'st.conn.ownedTitle', keywordKeys: ['st.conn.ownedBody', 'st.conn.restart'] },
@@ -1230,7 +1332,7 @@ export async function deleteProvider(
 
 function providerBody(draft: ProviderDraft, includeId: boolean): Record<string, unknown> {
   const apiKey = draft.clearApiKey ? '' : draft.apiKey || undefined;
-  const requestIdentity = requestIdentityFromDraft(draft);
+  const requestIdentity = requestIdentityPolicyFromDraft(draft);
   return {
     id: includeId ? draft.id : undefined,
     type: draft.type,
@@ -1238,39 +1340,21 @@ function providerBody(draft: ProviderDraft, includeId: boolean): Record<string, 
     base_url: draft.baseUrl || undefined,
     default_model: draft.defaultModel,
     request_identity: requestIdentity ?? (includeId ? undefined : null),
-    models: draft.models.map((model) => ({
-      model: model.model,
-      max_context_size: model.maxContextSize,
-      display_name: model.displayName || undefined,
-      capabilities: model.capabilities.length > 0 ? model.capabilities : undefined,
-      support_efforts: model.supportEfforts.length > 0 ? model.supportEfforts : undefined,
-    })),
+    models: draft.models.map((model) => {
+      const modelRequestIdentity = requestIdentityPolicyFromDraft(model);
+      return {
+        model: model.model,
+        max_context_size: model.maxContextSize,
+        display_name: model.displayName || undefined,
+        capabilities: model.capabilities.length > 0 ? model.capabilities : undefined,
+        support_efforts: model.supportEfforts.length > 0 ? model.supportEfforts : undefined,
+        request_identity: modelRequestIdentity ?? (includeId ? undefined : null),
+      };
+    }),
   };
 }
 
-function requestIdentityFromDraft(draft: ProviderDraft): RequestIdentityPolicyWire | undefined {
-  if (!isNewRequestIdentityChoice(draft.requestIdentityChoice)) return undefined;
-  return {
-    preset: draft.requestIdentityChoice,
-    overrides: parseRequestIdentityOverrides(draft.requestIdentityOverridesJson),
-  };
-}
-
-function parseRequestIdentityOverrides(
-  value: string,
-): RequestIdentityPolicyWire['overrides'] | undefined {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) return undefined;
-  const parsed: unknown = JSON.parse(trimmed);
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('request identity overrides must be an object');
-  }
-  return parsed as RequestIdentityPolicyWire['overrides'];
-}
-
-function isNewRequestIdentityChoice(
-  value: RequestIdentityChoice,
-): value is RequestIdentityPolicyWire['preset'] {
+function isRequestIdentityPreset(value: RequestIdentityChoice): value is RequestIdentityPreset {
   return ['codex_compatible', 'grok_build_compatible', 'kimi_code', 'none'].includes(value);
 }
 

@@ -69,6 +69,7 @@ export const namedAgentProfileSchema = z.object({
   workspace_ids: z.array(z.string()).optional(),
   source_file: z.string().optional(),
   main: z.boolean(),
+  override: z.boolean().optional(),
   pinned_model_alias: z.string().optional(),
   thinking_effort: z.string().optional(),
   service_tier: serviceTierSchema.optional(),

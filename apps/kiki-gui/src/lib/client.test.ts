@@ -1,3 +1,4 @@
+import { QueryClient } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -47,7 +48,20 @@ describe('KikiClient.refreshProvider', () => {
   });
 });
 
-describe('KikiClient.patchConfig', () => {
+describe('KikiClient config responses', () => {
+  const stubConfigResponse = (data: unknown) => {
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ code: 0, msg: 'success', data }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    ));
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('sends server-file settings through the kap-server config API', async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       expect(String(url)).toBe('http://127.0.0.1:8080/api/v1/config');
@@ -76,6 +90,79 @@ describe('KikiClient.patchConfig', () => {
 
     expect(result.agents?.enabled).toBe(false);
     expect(result.model_catalog?.refreshOnStart).toBe(true);
+    expect(result.disabled_builtin_profiles).toEqual([]);
+    expect(result.disabled_named_profiles).toEqual([]);
+  });
+
+  it('rejects a null patch echo without replacing the existing config cache', async () => {
+    stubConfigResponse(null);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+    const queryClient = new QueryClient();
+    const cached = { providers: {}, disabled_builtin_profiles: ['explore'] };
+    queryClient.setQueryData(['config'], cached);
+
+    await expect(
+      client.patchConfig({ disabled_builtin_profiles: ['agent'] }).then((echoed) => {
+        queryClient.setQueryData(['config'], echoed);
+      }),
+    ).rejects.toBeInstanceOf(ApiError);
+    expect(queryClient.getQueryData(['config'])).toBe(cached);
+  });
+
+  it('rejects a string config root from GET', async () => {
+    stubConfigResponse('not-a-config');
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+    await expect(client.getConfig()).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it('normalizes legacy null and single-string list fields', async () => {
+    stubConfigResponse({
+      providers: {},
+      disabled_builtin_profiles: null,
+      disabled_named_profiles: 'reviewer',
+      extra_agent_dirs: 'C:/agents',
+      tools: { enabled: ['Read', 'Read'], disabled: null },
+      future_domain: { preserved: true },
+    });
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+
+    const result = await client.patchConfig({});
+
+    expect(result.disabled_builtin_profiles).toEqual([]);
+    expect(result.disabled_named_profiles).toEqual(['reviewer']);
+    expect(result.extra_agent_dirs).toEqual(['C:/agents']);
+    expect(result.tools).toEqual({ enabled: ['Read'], disabled: [] });
+    expect(result).toHaveProperty('future_domain', { preserved: true });
+  });
+
+  it('rejects object-valued disabled profile lists', async () => {
+    stubConfigResponse({ providers: {}, disabled_builtin_profiles: { explore: true } });
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+    await expect(client.patchConfig({})).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it('sends explicit global request identity replacement and clear payloads', async () => {
+    const bodies: unknown[] = [];
+    const fetchMock = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      bodies.push(JSON.parse(init?.body as string));
+      return new Response(JSON.stringify({
+        code: 0,
+        msg: 'success',
+        data: { providers: {} },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+
+    await client.patchConfig({
+      request_identity: { overrides: { client: { user_agent: 'host' } } },
+    });
+    await client.patchConfig({ request_identity: null });
+
+    expect(bodies).toEqual([
+      { request_identity: { overrides: { client: { user_agent: 'host' } } } },
+      { request_identity: null },
+    ]);
     vi.unstubAllGlobals();
   });
 });

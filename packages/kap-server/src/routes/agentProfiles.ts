@@ -336,6 +336,7 @@ function toNamedAgentProfile(
     workspace_ids: workspaceIds === undefined ? undefined : [...workspaceIds],
     source_file: profile.sourcePath,
     main: profile.main === true,
+    override: profile.override === true ? true : undefined,
     pinned_model_alias: profile.modelAlias,
     thinking_effort: profile.thinkingEffort,
     service_tier: profile.serviceTier,

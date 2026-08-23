@@ -51,6 +51,7 @@ import type {
   PatchConfigRequest,
   PermissionMode,
   PromptAbortResponse,
+  RequestIdentityPolicyWire,
   PromptListResponse,
   PromptReplaceRequest,
   PromptReplaceResult,
@@ -90,6 +91,7 @@ export class ApiError extends Error {
 }
 
 export const API_CODES = {
+  INVALID_RESPONSE: -3,
   TIMEOUT: -2,
   SUCCESS: 0,
   UNAUTHORIZED: 40101,
@@ -257,6 +259,64 @@ export type KikiConfigResponse = Omit<ConfigResponse, 'subagent'> & RuntimeConfi
   readonly secondary_model?: SecondaryModelSettings;
 };
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function parseConfigStringList(value: unknown, field: string): string[] {
+  if (value === undefined || value === null) return [];
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value) && value.every((entry) => typeof entry === 'string')) {
+    return [...new Set(value)];
+  }
+  throw new ApiError({
+    code: API_CODES.INVALID_RESPONSE,
+    msg: `Invalid config response: ${field} must be a string or string array`,
+    data: value,
+  });
+}
+
+/** Validate and canonicalize the config payload before it can reach shared UI caches. */
+export function parseKikiConfigResponse(data: unknown): KikiConfigResponse {
+  if (!isPlainObject(data)) {
+    throw new ApiError({
+      code: API_CODES.INVALID_RESPONSE,
+      msg: 'Invalid config response: data must be a plain object',
+      data,
+    });
+  }
+
+  const toolsValue = data['tools'];
+  if (toolsValue !== undefined && toolsValue !== null && !isPlainObject(toolsValue)) {
+    throw new ApiError({
+      code: API_CODES.INVALID_RESPONSE,
+      msg: 'Invalid config response: tools must be a plain object',
+      data: toolsValue,
+    });
+  }
+  const tools = toolsValue === undefined || toolsValue === null ? {} : toolsValue;
+
+  return {
+    ...data,
+    extra_agent_dirs: parseConfigStringList(data['extra_agent_dirs'], 'extra_agent_dirs'),
+    disabled_builtin_profiles: parseConfigStringList(
+      data['disabled_builtin_profiles'],
+      'disabled_builtin_profiles',
+    ),
+    disabled_named_profiles: parseConfigStringList(
+      data['disabled_named_profiles'],
+      'disabled_named_profiles',
+    ),
+    tools: {
+      ...tools,
+      enabled: parseConfigStringList(tools['enabled'], 'tools.enabled'),
+      disabled: parseConfigStringList(tools['disabled'], 'tools.disabled'),
+    },
+  } as KikiConfigResponse;
+}
+
 export interface RuntimeConfigPatch {
   readonly cron?: {
     readonly debug: boolean;
@@ -289,7 +349,11 @@ export interface RuntimeConfigPatch {
   readonly tools?: { readonly enabled?: string[]; readonly disabled?: string[] };
 }
 
-export type KikiConfigPatch = Omit<PatchConfigRequest, 'subagent' | 'replace_domains'> & RuntimeConfigPatch & {
+export type KikiConfigPatch = Omit<
+  PatchConfigRequest,
+  'subagent' | 'replace_domains' | 'request_identity'
+> & RuntimeConfigPatch & {
+  readonly request_identity?: RequestIdentityPolicyWire | null;
   readonly subagent?: NonNullable<PatchConfigRequest['subagent']> & {
     readonly deny_models?: string[];
   };
@@ -321,6 +385,8 @@ export interface NamedAgentProfile {
   readonly source_file?: string;
   /** Curated main-profile flag from the engine catalog. */
   readonly main: boolean;
+  /** File profile explicitly overriding the same-named built-in profile. */
+  readonly override?: boolean;
   readonly pinned_model_alias?: string;
   readonly thinking_effort?: string;
   readonly service_tier?: 'auto' | 'default' | 'flex' | 'priority';
@@ -1010,8 +1076,8 @@ export class KikiClient {
     return this.request<ListModelsResponse>('GET', '/models');
   }
 
-  getConfig(): Promise<KikiConfigResponse> {
-    return this.request<KikiConfigResponse>('GET', '/config');
+  async getConfig(): Promise<KikiConfigResponse> {
+    return parseKikiConfigResponse(await this.request<unknown>('GET', '/config'));
   }
 
   listNamedAgentProfiles(): Promise<ListNamedAgentProfilesResponse> {
@@ -1382,7 +1448,7 @@ export class KikiClient {
     return { blob: await response.blob(), filename };
   }
 
-  patchConfig(body: KikiConfigPatch): Promise<KikiConfigResponse> {
-    return this.request<KikiConfigResponse>('POST', '/config', { body });
+  async patchConfig(body: KikiConfigPatch): Promise<KikiConfigResponse> {
+    return parseKikiConfigResponse(await this.request<unknown>('POST', '/config', { body }));
   }
 }

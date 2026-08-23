@@ -78,14 +78,18 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function fixtureProviderFromBody(id, body, previousHasKey = false) {
+function fixtureProviderFromBody(id, body, previousHasKey = false, previousRequestIdentity) {
   const hasApiKey = body.api_key === undefined ? previousHasKey : body.api_key !== '';
   const aliases = (body.models ?? []).map((model) => `${id}/${model.model}`);
+  const requestIdentity = body.request_identity === null
+    ? undefined
+    : (body.request_identity ?? previousRequestIdentity);
   return {
     id,
     type: body.type,
     base_url: body.base_url,
     default_model: body.default_model === undefined ? aliases[0] : `${id}/${body.default_model}`,
+    request_identity: requestIdentity,
     has_api_key: hasApiKey,
     status: hasApiKey || body.type === 'kimi' ? 'connected' : 'unconfigured',
     models: aliases,
@@ -100,6 +104,7 @@ function fixtureModelsFromBody(providerId, models) {
     max_context_size: model.max_context_size,
     capabilities: model.capabilities,
     support_efforts: model.support_efforts,
+    request_identity: model.request_identity === null ? undefined : model.request_identity,
   }));
 }
 
@@ -376,7 +381,7 @@ class FixtureServer {
     this.sessions.clear();
     this.workspaces = structuredClone(data.workspaces ?? []);
     this.agentProfiles = structuredClone(data.agentProfiles ?? [
-      { name: 'agent', source: 'builtin', description: 'General-purpose built-in agent.', routes: [] },
+      { name: 'agent', source: 'builtin', description: 'General-purpose built-in agent.', main: true, routes: [] },
     ]);
     for (const session of data.sessions ?? []) {
       const bound = bind(session, session.id);
@@ -779,7 +784,10 @@ class FixtureServer {
       });
     }
     if (path === '/config' && method === 'POST') {
-      this.config = { ...this.config, ...(body ?? {}) };
+      const patch = { ...(body ?? {}) };
+      if (patch.request_identity === null) delete patch.request_identity;
+      this.config = { ...this.config, ...patch };
+      if (body?.request_identity === null) delete this.config.request_identity;
       return this.envelope(res, this.config);
     }
     if (path === '/config') {
@@ -865,7 +873,7 @@ class FixtureServer {
       const nextId = body.new_id ?? currentId;
       const current = this.providers.find((provider) => provider.id === currentId);
       if (current === undefined) return this.envelope(res, null, 40413, 'provider.not_found');
-      const provider = fixtureProviderFromBody(nextId, body, current.has_api_key);
+      const provider = fixtureProviderFromBody(nextId, body, current.has_api_key, current.request_identity);
       this.providers = this.providers.map((entry) => entry.id === currentId ? provider : entry);
       this.models = [
         ...this.models.filter((model) => model.provider !== currentId),

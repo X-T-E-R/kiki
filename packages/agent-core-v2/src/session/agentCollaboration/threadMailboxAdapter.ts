@@ -1,27 +1,17 @@
-/**
- * `agentCollaboration` domain — named-agent mailbox adapter.
- *
- * Maps session-local Agent addresses and versioned message envelopes onto the
- * durable `threadCommunication` MiniDb mailbox backend, rooted through
- * `bootstrap`. Checks the retired directory through `hostFs` and warns through
- * `log`; delivery remains owned by the Session-scoped messaging service. Bound
- * at App scope.
- */
-
-import { join } from 'pathe';
+import { randomUUID } from 'node:crypto';
 
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { ILogService } from '#/_base/log/log';
-import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { ThreadMailboxBacklogError } from '#/app/threadCommunication/mailboxErrors';
-import { MiniDbMailboxBackend } from '#/app/threadCommunication/miniDbMailboxBackend';
-import type { AcceptedThreadMessage } from '#/app/threadCommunication/threadMailboxStore';
+import {
+  IThreadMailboxStore,
+  threadMailboxClaimRequestId,
+  type AcceptedThreadMessage,
+  type ThreadDeliveryClaim,
+} from '#/app/threadCommunication/threadMailboxStore';
 import type { ThreadRef } from '#/app/threadCommunication/threadCommunication';
-import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 
 import {
-  AGENT_MESSAGE_BACKLOG_LIMIT,
   AgentMessageMailboxFullError,
   IAgentCollaborationMessageStore,
   type AcceptedAgentMessage,
@@ -29,10 +19,7 @@ import {
 } from './messageMailbox';
 
 const MAILBOX_HOST_ID = 'agent-collaboration-v2';
-const LEGACY_MAILBOX_DIR = 'agent-collaboration-mailbox-v1';
-const MAILBOX_DIR = 'agent-collaboration-mailbox-v2';
-const RECEIPT_BACKLOG_LIMIT = 256;
-const DELIVERY_EVENTS_PER_MESSAGE = 3;
+const CLAIM_LEASE_MS = 30_000;
 
 interface AgentMailboxEnvelopeV1 {
   readonly v: 1;
@@ -42,23 +29,18 @@ interface AgentMailboxEnvelopeV1 {
   readonly content: string;
 }
 
+interface AgentPendingAck {
+  readonly claim: ThreadDeliveryClaim;
+  readonly requestId: string;
+}
+
 export class AgentCollaborationMessageStoreAdapter implements IAgentCollaborationMessageStore {
   declare readonly _serviceBrand: undefined;
 
-  private readonly backend: MiniDbMailboxBackend;
-  private readonly attempts = new Map<string, string>();
+  private readonly claimRequestIds = new Map<string, string>();
+  private readonly pendingAcks = new Map<string, AgentPendingAck>();
 
-  constructor(
-    @IBootstrapService bootstrap: IBootstrapService,
-    @IHostFileSystem fs: IHostFileSystem,
-    @ILogService log: ILogService,
-  ) {
-    this.backend = new MiniDbMailboxBackend(join(bootstrap.storeDir, MAILBOX_DIR), {
-      mailboxBacklogLimit: RECEIPT_BACKLOG_LIMIT * DELIVERY_EVENTS_PER_MESSAGE,
-      pendingMessageLimit: AGENT_MESSAGE_BACKLOG_LIMIT,
-    });
-    void warnIfLegacyMailboxPresent(fs, log, join(bootstrap.storeDir, LEGACY_MAILBOX_DIR));
-  }
+  constructor(@IThreadMailboxStore private readonly mailbox: IThreadMailboxStore) {}
 
   async accept(input: {
     readonly sessionId: string;
@@ -77,51 +59,75 @@ export class AgentCollaborationMessageStoreAdapter implements IAgentCollaboratio
       content: input.content,
     };
     try {
-      const accepted = await this.backend.acceptMessage({
+      const accepted = await this.mailbox.acceptMessage({
         producer: { kind: 'peer_thread', source: agentRef(input.sessionId, input.sourceAgentId) },
         target: agentRef(input.sessionId, input.targetAgentId),
         content: JSON.stringify(envelope),
         idempotencyKey: input.idempotencyKey,
       });
-      const message = toAgentMessage(accepted.message);
       return {
-        message,
+        message: toAgentMessage(accepted.message),
         deduplicated: accepted.deduplicated,
         delivery: toAgentDelivery(accepted.delivery),
-        payloadConflict: message.content !== input.content,
+        payloadConflict: accepted.payloadConflict,
       };
     } catch (error) {
       if (error instanceof ThreadMailboxBacklogError) {
-        throw new AgentMessageMailboxFullError(AGENT_MESSAGE_BACKLOG_LIMIT);
+        throw new AgentMessageMailboxFullError(error.limit);
       }
       throw error;
     }
   }
 
-  async nextQueued(sessionId: string, targetAgentId: string): Promise<AcceptedAgentMessage | undefined> {
+  async nextQueued(sessionId: string, targetAgentId: string): Promise<{
+    readonly message: AcceptedAgentMessage;
+    readonly claim: ThreadDeliveryClaim;
+  } | undefined> {
     const target = agentRef(sessionId, targetAgentId);
-    const pending = (await this.backend.listPendingDeliveries())
-      .filter((message) => sameThread(message.target, target))
-      .toSorted((left, right) => left.targetSeq - right.targetSeq);
-    for (const message of pending) {
-      const attempt = await this.backend.beginDelivery(message.messageId);
-      if (attempt === undefined) continue;
-      this.attempts.set(message.messageId, attempt.attemptId);
-      return toAgentMessage(attempt.message);
-    }
-    return undefined;
+    const key = threadIdentity(target);
+    const pendingAck = this.pendingAcks.get(key);
+    if (pendingAck !== undefined) await this.completePendingAck(key, pendingAck);
+    const requestId = this.claimRequestIds.get(key) ?? randomUUID();
+    this.claimRequestIds.set(key, requestId);
+    const claim = await this.mailbox.claimNext({
+      target,
+      consumerId: `agent-collaboration/${sessionId}/${targetAgentId}`,
+      leaseMs: CLAIM_LEASE_MS,
+    }, {
+      requestId,
+    });
+    if (this.claimRequestIds.get(key) === requestId) this.claimRequestIds.delete(key);
+    return claim === undefined ? undefined : { message: toAgentMessage(claim.message), claim };
   }
 
-  async markDelivered(messageId: string): Promise<boolean> {
-    const attemptId = this.attempts.get(messageId);
-    if (attemptId === undefined) return false;
-    this.attempts.delete(messageId);
-    return this.backend.acknowledgeDelivery(messageId, attemptId);
+  markDelivered(claim: ThreadDeliveryClaim): Promise<boolean> {
+    const key = threadIdentity(claim.message.target);
+    let pending = this.pendingAcks.get(key);
+    if (pending === undefined) {
+      pending = {
+        claim,
+        requestId: threadMailboxClaimRequestId('agent-ack', claim),
+      };
+      this.pendingAcks.set(key, pending);
+    }
+    return this.completePendingAck(key, pending);
+  }
+
+  private async completePendingAck(key: string, pending: AgentPendingAck): Promise<boolean> {
+    const changed = await this.mailbox.acknowledgeDelivery(pending.claim, {
+      requestId: pending.requestId,
+    });
+    if (this.pendingAcks.get(key) === pending) this.pendingAcks.delete(key);
+    return changed;
   }
 }
 
 function agentRef(sessionId: string, agentId: string): ThreadRef {
   return { hostId: MAILBOX_HOST_ID, workspaceId: sessionId, sessionId: agentId };
+}
+
+function threadIdentity(target: ThreadRef): string {
+  return `${target.hostId}\u0000${target.workspaceId}\u0000${target.sessionId}`;
 }
 
 function toAgentMessage(message: AcceptedThreadMessage): AcceptedAgentMessage {
@@ -179,29 +185,6 @@ function toAgentDelivery(
   if (delivery === 'pending') return 'queued';
   if (delivery === 'delivered') return 'delivered';
   throw new Error('Named-agent mailbox message is undeliverable.');
-}
-
-function sameThread(left: ThreadRef, right: ThreadRef): boolean {
-  return left.hostId === right.hostId &&
-    left.workspaceId === right.workspaceId &&
-    left.sessionId === right.sessionId;
-}
-
-async function warnIfLegacyMailboxPresent(
-  fs: IHostFileSystem,
-  log: ILogService,
-  path: string,
-): Promise<void> {
-  let entries;
-  try {
-    entries = await fs.readdir(path);
-  } catch {
-    return;
-  }
-  if (entries.length === 0) return;
-  log.warn('Legacy named-agent mailbox data is no longer used and can be deleted manually.', {
-    path,
-  });
 }
 
 registerScopedService(

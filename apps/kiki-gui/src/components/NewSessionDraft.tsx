@@ -14,6 +14,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { PermissionMode, Workspace } from '@moonshot-ai/protocol';
 
 import { resolveSelectedEffort, DEFAULT_AGENT_PROFILE } from './Composer';
+import { composerDefaultsForProfile } from '../lib/agentSettings';
 import { useGuardedNavigate } from './dirtyGuard';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { useI18n } from '../i18n';
@@ -75,7 +76,7 @@ export function useNewSessionDraft({
   const [modelOverride, setModelOverride] = useState(() =>
     resolveSessionModelOverride(undefined),
   );
-  const [agentProfile, setAgentProfile] = useState(initialProfile ?? DEFAULT_AGENT_PROFILE);
+  const [agentProfile, setAgentProfileState] = useState(initialProfile ?? DEFAULT_AGENT_PROFILE);
   // The selected effort is the wire value. When the model catalog supplies a
   // visible default, sending without touching the select still submits it.
   const [effortOverride, setEffortOverride] = useState<string | undefined>(undefined);
@@ -107,6 +108,12 @@ export function useNewSessionDraft({
     queryFn: () => client.listModels(),
     staleTime: 60_000,
   });
+  const agentProfilesQuery = useQuery({
+    queryKey: ['agentProfiles'],
+    queryFn: () => client.listNamedAgentProfiles(),
+    staleTime: 60_000,
+    retry: false,
+  });
   // Server default first — the local mirror only fills in when the server
   // has not reported one (matches the session page).
   const inheritedDefault = serverDefaultModel ?? liveSettings.defaultModel;
@@ -128,6 +135,18 @@ export function useNewSessionDraft({
   useEffect(() => {
     setDraft(readDraft(DRAFT_KEY));
   }, []);
+
+  const appliedInitialProfileDefaults = useRef(false);
+  useEffect(() => {
+    if (appliedInitialProfileDefaults.current) return;
+    if (initialProfile === undefined) return;
+    const items = agentProfilesQuery.data?.items;
+    if (items === undefined) return;
+    appliedInitialProfileDefaults.current = true;
+    const defaults = composerDefaultsForProfile(items, initialProfile);
+    setModelOverride(defaults.model);
+    setEffortOverride(defaults.thinking);
+  }, [agentProfilesQuery.data, initialProfile]);
 
   const updateDraft = useCallback((text: string) => {
     setDraft(text);
@@ -217,6 +236,13 @@ export function useNewSessionDraft({
     setWorkspaceId(nextId);
     if (nextId !== '') setCwd('');
   }, []);
+
+  const setAgentProfile = useCallback((name: string) => {
+    const defaults = composerDefaultsForProfile(agentProfilesQuery.data?.items ?? [], name);
+    setAgentProfileState(name);
+    setModelOverride(defaults.model);
+    setEffortOverride(defaults.thinking);
+  }, [agentProfilesQuery.data]);
 
   return {
     draft,

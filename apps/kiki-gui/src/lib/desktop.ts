@@ -107,6 +107,34 @@ export async function restartNativeServer(): Promise<void> {
   await invoke('restart_server');
 }
 
+export interface DesktopUpdate {
+  readonly currentVersion: string;
+  readonly version: string;
+  readonly date?: string;
+  readonly notes?: string;
+  install(): Promise<void>;
+}
+
+interface DesktopUpdateInfo {
+  readonly currentVersion: string;
+  readonly version: string;
+  readonly date?: string;
+  readonly notes?: string;
+}
+
+export async function checkNativeDesktopUpdate(): Promise<DesktopUpdate | null> {
+  if (!isTauri()) return null;
+  const update = await invoke<DesktopUpdateInfo | null>('check_desktop_update');
+  if (update === null) return null;
+  return {
+    ...update,
+    async install() {
+      await invoke('prepare_for_update');
+      await invoke('install_desktop_update');
+    },
+  };
+}
+
 export async function writeNativeCompatibilitySettings(
   compatibility: CompatibilitySettings,
 ): Promise<void> {

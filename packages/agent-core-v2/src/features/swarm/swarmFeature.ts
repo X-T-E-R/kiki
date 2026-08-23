@@ -7,6 +7,8 @@ import { IAgentSwarmService } from './agent/swarm';
 import { AgentSwarmService } from './agent/swarmService';
 import { ISessionSwarmService } from './session/sessionSwarm';
 import { SessionSwarmService } from './session/sessionSwarmService';
+import { ISwarmConcurrencyRegistry } from './swarmConcurrencyRegistry';
+import { SwarmConcurrencyRegistry } from './swarmConcurrencyRegistryService';
 import { IAgentSwarmTool } from './tools/agent-swarm/agent-swarm';
 import { AgentSwarmTool } from './tools/agent-swarm/agentSwarmTool';
 
@@ -15,6 +17,12 @@ export class SwarmFeature extends Feature {
 
   constructor() {
     super();
+    this.contributeService(
+      LifecycleScope.App,
+      ISwarmConcurrencyRegistry,
+      SwarmConcurrencyRegistry,
+      { activation: ScopeActivation.OnScopeCreated },
+    );
     this.contributeAgentService(IAgentSwarmService, AgentSwarmService, {
       activation: ScopeActivation.OnScopeCreated,
     });

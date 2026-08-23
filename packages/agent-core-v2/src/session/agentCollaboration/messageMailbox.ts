@@ -1,11 +1,5 @@
-/**
- * `agentCollaboration` domain — durable named-agent message mailbox contracts.
- *
- * The App-scoped Store owns FIFO acceptance and durable consumption. The
- * Session-scoped service binds those records to live Agent step boundaries.
- */
-
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+import type { ThreadDeliveryClaim } from '#/app/threadCommunication/threadMailboxStore';
 
 export const AGENT_MESSAGE_BACKLOG_LIMIT = 128;
 
@@ -28,6 +22,11 @@ export interface AgentMessageAcceptance {
   readonly payloadConflict: boolean;
 }
 
+export interface QueuedAgentMessage {
+  readonly message: AcceptedAgentMessage;
+  readonly claim: ThreadDeliveryClaim;
+}
+
 export interface IAgentCollaborationMessageStore {
   readonly _serviceBrand: undefined;
 
@@ -40,8 +39,8 @@ export interface IAgentCollaborationMessageStore {
     readonly content: string;
     readonly idempotencyKey: string;
   }): Promise<AgentMessageAcceptance>;
-  nextQueued(sessionId: string, targetAgentId: string): Promise<AcceptedAgentMessage | undefined>;
-  markDelivered(messageId: string): Promise<boolean>;
+  nextQueued(sessionId: string, targetAgentId: string): Promise<QueuedAgentMessage | undefined>;
+  markDelivered(claim: ThreadDeliveryClaim): Promise<boolean>;
 }
 
 export const IAgentCollaborationMessageStore: ServiceIdentifier<IAgentCollaborationMessageStore> =

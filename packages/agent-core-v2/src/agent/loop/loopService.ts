@@ -11,10 +11,19 @@ import { toErrorMessage } from '#/_base/errors/errorMessage';
 import { IAgentLLMRequesterService, type AgentLLMRequestFinish } from '#/agent/llmRequester/llmRequester';
 import type { LLMRequestTrace } from '#/kosong/contract/requestTrace';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
+import {
+  formatToolArgsTruncationRejection,
+  parseToolCallArguments,
+} from '#/tool/tool-args-parse';
 import { IConfigService } from '#/app/config/config';
 import { AgentErrorEvent } from '#/agent/mcp/mcpEvents';
 import { type FinishReason } from '#/kosong/contract/provider';
-import { mergeInPlace, type ContentPart, type StreamedMessagePart } from '#/kosong/contract/message';
+import {
+  mergeInPlace,
+  type ContentPart,
+  type StreamedMessagePart,
+  type ToolCall,
+} from '#/kosong/contract/message';
 import { type TokenUsage } from '#/kosong/contract/usage';
 import { BugIndicatingError, ErrorCodes, Error2, isError2, toKimiErrorPayload } from '#/errors';
 import { OrderedHookSlot } from '#/hooks';
@@ -926,37 +935,96 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     if (response.message.toolCalls.length === 0) {
       return finishReason === 'tool_calls' ? 'other' : finishReason;
     }
+    const truncating = isTruncatingProviderFinishReason(response.providerFinishReason);
+    const batches: Array<
+      | { readonly kind: 'execute'; calls: ToolCall[] }
+      | {
+          readonly kind: 'withhold';
+          readonly call: ToolCall;
+          readonly args: unknown;
+          readonly output: string;
+        }
+    > = [];
+    for (const call of response.message.toolCalls) {
+      const parsed = parseToolCallArguments(call.arguments);
+      if (truncating && (parsed.parseFailed || parsed.repaired === true)) {
+        batches.push({
+          kind: 'withhold',
+          call,
+          args: parsed.data,
+          output:
+            parsed.truncation === undefined
+              ? UNEXECUTED_TOOL_CALL_OUTPUT
+              : formatToolArgsTruncationRejection(
+                  call.name,
+                  call.arguments,
+                  parsed.truncation,
+                  true,
+                ),
+        });
+        continue;
+      }
+      const last = batches.at(-1);
+      if (last?.kind === 'execute') {
+        last.calls.push(call);
+      } else {
+        batches.push({ kind: 'execute', calls: [call] });
+      }
+    }
     const toolCallUuids = new Map<string, string>();
     let stopTurn = false;
-    for await (const toolResult of this.toolExecutor.execute(response.message.toolCalls, {
-      signal,
-      turnId,
-      trace,
-      onToolCall: ({ toolCallId, name, args }) => {
+    for (const batch of batches) {
+      if (batch.kind === 'withhold') {
         const callUuid = randomUUID();
-        toolCallUuids.set(toolCallId, callUuid);
-        const extras = response.message.toolCalls.find((t) => t.id === toolCallId)?.extras;
         this.context.appendLoopEvent({
           type: 'tool.call',
           uuid: callUuid,
           turnId: String(turnId),
           step: currentStep,
           stepUuid,
-          toolCallId,
-          name,
-          args,
-          extras,
+          toolCallId: batch.call.id,
+          name: batch.call.name,
+          args: batch.args,
+          extras: batch.call.extras,
         });
-      },
-    })) {
-      const { result } = toolResult;
-      this.context.appendLoopEvent({
-        type: 'tool.result',
-        parentUuid: toolCallUuids.get(toolResult.toolCallId) ?? randomUUID(),
-        toolCallId: toolResult.toolCallId,
-        result: { output: result.output, isError: result.isError, note: result.note },
-      });
-      if (result.stopTurn === true) stopTurn = true;
+        this.context.appendLoopEvent({
+          type: 'tool.result',
+          parentUuid: callUuid,
+          toolCallId: batch.call.id,
+          result: { output: batch.output, isError: true },
+        });
+        continue;
+      }
+      for await (const toolResult of this.toolExecutor.execute(batch.calls, {
+        signal,
+        turnId,
+        trace,
+        onToolCall: ({ toolCallId, name, args }) => {
+          const callUuid = randomUUID();
+          toolCallUuids.set(toolCallId, callUuid);
+          const extras = response.message.toolCalls.find((t) => t.id === toolCallId)?.extras;
+          this.context.appendLoopEvent({
+            type: 'tool.call',
+            uuid: callUuid,
+            turnId: String(turnId),
+            step: currentStep,
+            stepUuid,
+            toolCallId,
+            name,
+            args,
+            extras,
+          });
+        },
+      })) {
+        const { result } = toolResult;
+        this.context.appendLoopEvent({
+          type: 'tool.result',
+          parentUuid: toolCallUuids.get(toolResult.toolCallId) ?? randomUUID(),
+          toolCallId: toolResult.toolCallId,
+          result: { output: result.output, isError: result.isError, note: result.note },
+        });
+        if (result.stopTurn === true) stopTurn = true;
+      }
     }
     finishReason = stopTurn ? 'completed' : 'tool_calls';
     return finishReason;
@@ -1157,6 +1225,15 @@ function normalizeFinishReason(reason: FinishReason): string {
   if (reason === 'truncated') return 'max_tokens';
   return reason;
 }
+
+function isTruncatingProviderFinishReason(reason: FinishReason | undefined): boolean {
+  return reason === 'truncated' || reason === 'paused' || reason === 'other';
+}
+
+const UNEXECUTED_TOOL_CALL_OUTPUT =
+  'This tool call was not executed: the model response ended before tool execution could start ' +
+  '(the provider stream was interrupted). Do not assume the tool ran — ' +
+  're-issue the call if it is still needed.';
 
 type MutableTurn = {
   -readonly [K in keyof Turn]: Turn[K];

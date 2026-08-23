@@ -263,11 +263,79 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     ]);
   });
 
-  it('round-trips request_identity and preserves it when replace omits the field', async () => {
+  it('creates model request identities and preserves or replaces them during provider rewrites', async () => {
+    await boot();
+    const firstIdentity = { overrides: { request: { logical_id: 'none' } } } as const;
+    const secondIdentity = { preset: 'none' } as const;
+    const created = await postJson<unknown>('/api/v1/providers', {
+      ...CREATE_BODY,
+      models: [
+        { ...CREATE_BODY.models[0], request_identity: firstIdentity },
+        CREATE_BODY.models[1],
+      ],
+    });
+    expect(created.status).toBe(201);
+
+    expect((await getJson<{ items: Array<Record<string, unknown>> }>('/api/v1/models')).body.data.items)
+      .toEqual([
+        {
+          provider: 'my-openai',
+          model: 'my-openai/gpt-4.1',
+          display_name: 'GPT-4.1',
+          max_context_size: 1047576,
+          capabilities: ['vision'],
+          request_identity: firstIdentity,
+        },
+        {
+          provider: 'my-openai',
+          model: 'my-openai/gpt-4o-mini',
+          display_name: 'gpt-4o-mini',
+          max_context_size: 128000,
+        },
+      ]);
+
+    await putJson('/api/v1/providers/my-openai', REPLACE_BODY);
+    expect((await readConfigToml())['models']).toMatchObject({
+      'my-openai/gpt-4.1': { request_identity: firstIdentity },
+    });
+
+    await putJson('/api/v1/providers/my-openai', {
+      ...REPLACE_BODY,
+      models: [
+        { ...REPLACE_BODY.models[0], request_identity: secondIdentity },
+        REPLACE_BODY.models[1],
+      ],
+    });
+    expect((await readConfigToml())['models']).toMatchObject({
+      'my-openai/gpt-4.1': { request_identity: secondIdentity },
+    });
+  });
+
+  it('clears model request_identity only on explicit null', async () => {
+    await boot();
+    await postJson('/api/v1/providers', {
+      ...CREATE_BODY,
+      models: [
+        { ...CREATE_BODY.models[0], request_identity: { preset: 'none' } },
+        CREATE_BODY.models[1],
+      ],
+    });
+
+    await putJson('/api/v1/providers/my-openai', {
+      ...REPLACE_BODY,
+      models: [
+        { ...REPLACE_BODY.models[0], request_identity: null },
+        REPLACE_BODY.models[1],
+      ],
+    });
+    const models = (await readConfigToml())['models'] as Record<string, Record<string, unknown>>;
+    expect(models['my-openai/gpt-4.1']).not.toHaveProperty('request_identity');
+  });
+
+  it('round-trips override-only provider request_identity and preserves it when replace omits the field', async () => {
     await boot();
     const requestIdentity = {
-      preset: 'kimi_code',
-      overrides: { client: { user_agent: 'kimi_code' } },
+      overrides: { client: { user_agent: 'host' } },
     } as const;
     const created = await postJson<{ request_identity?: unknown }>('/api/v1/providers', {
       ...CREATE_BODY,
@@ -277,12 +345,7 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     expect(created.status).toBe(201);
     expect(created.body.data.request_identity).toEqual(requestIdentity);
     expect((await readConfigToml())['providers']).toMatchObject({
-      'my-openai': {
-        request_identity: {
-          preset: 'kimi_code',
-          overrides: { client: { user_agent: 'kimi_code' } },
-        },
-      },
+      'my-openai': { request_identity: requestIdentity },
     });
 
     const replaced = await putJson<{ provider: { request_identity?: unknown } }>(
@@ -306,25 +369,35 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     );
     expect(cleared.status).toBe(200);
     expect(cleared.body.data.provider.request_identity).toBeUndefined();
-
+    const providers = (await readConfigToml())['providers'] as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(providers['my-openai']).not.toHaveProperty('request_identity');
   });
 
-  it('rejects unknown root and nested request_identity fields', async () => {
+  it('rejects invalid provider and model request_identity layers', async () => {
     await boot();
-    const unknownRoot = await postJson('/api/v1/providers', {
-      ...CREATE_BODY,
-      request_identity: { preset: 'none', future_root: true },
-    });
-    expect(unknownRoot.body.code).toBe(40001);
-
-    const unknownAxis = await postJson('/api/v1/providers', {
-      ...CREATE_BODY,
-      request_identity: {
-        preset: 'none',
-        overrides: { request: { future_axis: 'value' } },
+    for (const body of [
+      { ...CREATE_BODY, request_identity: {} },
+      { ...CREATE_BODY, request_identity: { preset: 'none', future_root: true } },
+      {
+        ...CREATE_BODY,
+        request_identity: {
+          preset: 'none',
+          overrides: { request: { future_axis: 'value' } },
+        },
       },
-    });
-    expect(unknownAxis.body.code).toBe(40001);
+      {
+        ...CREATE_BODY,
+        models: [
+          { ...CREATE_BODY.models[0], request_identity: { overrides: {} } },
+          CREATE_BODY.models[1],
+        ],
+      },
+    ]) {
+      expect((await postJson('/api/v1/providers', body)).body.code).toBe(40001);
+    }
   });
 
   it('rejects removed attribution fields on both create and replace', async () => {
@@ -566,11 +639,13 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     expect(providers.body.data.items).toEqual([]);
   });
 
-  it('rejects deleting an OAuth-managed provider with 40003', async () => {
+  it('rejects deleting an OAuth-managed provider with 40003 and leaves config unchanged', async () => {
     await boot(MANAGED_TOML);
+    const before = await readConfigToml();
     const { body } = await deleteJson<unknown>('/api/v1/providers/managed%3Akimi-code');
     expect(body?.code).toBe(40003);
     expect(body?.msg).toContain('/oauth/logout');
+    expect(await readConfigToml()).toEqual(before);
 
     const providers = await getJson<{ items: Array<{ id: string }> }>('/api/v1/providers');
     expect(providers.body.data.items.map((p) => p.id)).toEqual(['managed:kimi-code']);
@@ -845,6 +920,18 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     });
   });
 
+  it('rejects an invalid rename target with 40001 and leaves config unchanged', async () => {
+    await boot(KEEP_DEFAULT_TOML);
+    const before = await readConfigToml();
+    const { body } = await putJson<unknown>('/api/v1/providers/openai', {
+      ...REPLACE_BODY,
+      new_id: '../bad',
+    });
+    expect(body.code).toBe(40001);
+    expect(body.msg).toContain('new_id');
+    expect(await readConfigToml()).toEqual(before);
+  });
+
   it('rejects invalid replace bodies with 40001', async () => {
     await boot(KEEP_DEFAULT_TOML);
     const cases: Array<{ name: string; body: unknown; path?: string }> = [
@@ -869,19 +956,107 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     }
   });
 
-  it('rejects replacing an OAuth-managed provider with 40003', async () => {
+  it('safely replaces an OAuth-managed provider while preserving OAuth credentials', async () => {
     await boot(MANAGED_TOML);
-    const { body } = await putJson<unknown>(
+    const requestIdentity = {
+      preset: 'kimi_code',
+      overrides: { client: { user_agent: 'kimi_code' } },
+    } as const;
+    const { status, body } = await putJson<{ provider: Record<string, unknown> }>(
       '/api/v1/providers/managed%3Akimi-code',
-      REPLACE_BODY,
+      {
+        new_id: 'managed:kimi-code',
+        type: 'kimi',
+        base_url: 'https://api.changed.example.test/v1',
+        default_model: 'kimi-k2-thinking',
+        request_identity: requestIdentity,
+        models: [
+          { model: 'kimi-k2', max_context_size: 262144 },
+          { model: 'kimi-k2-thinking', max_context_size: 262144 },
+        ],
+      },
     );
+    expect(status).toBe(200);
+    expect(body.code).toBe(0);
+    expect(body.data.provider).toMatchObject({
+      id: 'managed:kimi-code',
+      type: 'kimi',
+      base_url: 'https://api.changed.example.test/v1',
+      default_model: 'managed:kimi-code/kimi-k2-thinking',
+      request_identity: requestIdentity,
+      has_api_key: false,
+      models: [
+        'managed:kimi-code/kimi-k2',
+        'managed:kimi-code/kimi-k2-thinking',
+      ],
+    });
+
+    const onDisk = await readConfigToml();
+    expect(onDisk['providers']).toEqual({
+      'managed:kimi-code': {
+        type: 'kimi',
+        api_key: '',
+        base_url: 'https://api.changed.example.test/v1',
+        oauth: { storage: 'file', key: 'oauth/kimi-code' },
+        default_model: 'managed:kimi-code/kimi-k2-thinking',
+        request_identity: requestIdentity,
+      },
+    });
+    expect(onDisk['models']).toEqual({
+      'managed:kimi-code/kimi-k2': {
+        provider: 'managed:kimi-code',
+        model: 'kimi-k2',
+        max_context_size: 262144,
+      },
+      'managed:kimi-code/kimi-k2-thinking': {
+        provider: 'managed:kimi-code',
+        model: 'kimi-k2-thinking',
+        max_context_size: 262144,
+      },
+    });
+
+    const fetched = await getJson<{ request_identity?: unknown }>(
+      '/api/v1/providers/managed%3Akimi-code',
+    );
+    expect(fetched.body.data.request_identity).toEqual(requestIdentity);
+  });
+
+  it('rejects renaming an OAuth-managed provider and leaves config unchanged', async () => {
+    await boot(MANAGED_TOML);
+    const before = await readConfigToml();
+    const { body } = await putJson<unknown>('/api/v1/providers/managed%3Akimi-code', {
+      new_id: 'renamed-managed',
+      type: 'kimi',
+      models: [{ model: 'kimi-k2', max_context_size: 131072 }],
+    });
     expect(body.code).toBe(40003);
     expect(body.msg).toContain('/oauth/logout');
+    expect(await readConfigToml()).toEqual(before);
+  });
 
-    const providers = await getJson<{ items: Array<{ id: string }> }>('/api/v1/providers');
-    expect(providers.body.data.items.map((p) => p.id)).toEqual(['managed:kimi-code']);
-    const models = await getJson<{ items: Array<{ model: string }> }>('/api/v1/models');
-    expect(models.body.data.items.map((m) => m.model)).toEqual(['managed:kimi-code/kimi-k2']);
+  it('rejects changing an OAuth-managed provider type and leaves config unchanged', async () => {
+    await boot(MANAGED_TOML);
+    const before = await readConfigToml();
+    const { body } = await putJson<unknown>('/api/v1/providers/managed%3Akimi-code', {
+      type: 'openai',
+      models: [{ model: 'kimi-k2', max_context_size: 131072 }],
+    });
+    expect(body.code).toBe(40003);
+    expect(body.msg).toContain('/oauth/logout');
+    expect(await readConfigToml()).toEqual(before);
+  });
+
+  it('rejects writing an OAuth-managed provider api_key and leaves config unchanged', async () => {
+    await boot(MANAGED_TOML);
+    const before = await readConfigToml();
+    const { body } = await putJson<unknown>('/api/v1/providers/managed%3Akimi-code', {
+      type: 'kimi',
+      api_key: 'replacement-secret',
+      models: [{ model: 'kimi-k2', max_context_size: 131072 }],
+    });
+    expect(body.code).toBe(40003);
+    expect(body.msg).toContain('/oauth/logout');
+    expect(await readConfigToml()).toEqual(before);
   });
 
   it('maps an unknown provider id to 40412 on replace', async () => {

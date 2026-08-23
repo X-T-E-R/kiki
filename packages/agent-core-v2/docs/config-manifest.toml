@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (30 sections · 2 overlay(s))
+# Index (31 sections · 2 overlay(s))
 #   agents                   src/session/agentCollaboration/configSection.ts
 #   background               src/agent/task/configSection.ts
 #   builtinProductSkills     src/app/skillCatalog/configSection.ts
@@ -30,6 +30,7 @@
 #   models                   src/app/kosongConfig/configSection.ts
 #   permission               src/agent/permissionRules/configSection.ts
 #   providers                src/app/kosongConfig/configSection.ts
+#   requestIdentity          src/app/kosongConfig/configSection.ts
 #   secondaryModel           src/session/subagent/configSection.ts
 #   services                 src/app/auth/configSection.ts
 #   subagent                 src/session/subagent/configSection.ts
@@ -315,6 +316,28 @@ merge_all_available_skills = true
     # overlay_mode: "append" | "prepend" | "wrap" | "persona" | "replace"
     # anchor_steps: integer
     # anchor_scope: "session" | "turn"
+  # request_identity: object
+    # preset: "codex_compatible" | "grok_build_compatible" | "kimi_code" | "none"
+    # overrides: object
+      # lineage: object
+        # format: "codex" | "grok_build" | "kimi_code" | "none"
+        # session_scope: "shared_session" | "agent_session" | "none"
+        # thread_identity: "agent" | "none"
+        # parent_thread: "immediate_agent" | "none"
+        # subagent_marker: "enabled" | "none"
+        # turn_ancestry: "spawn_context" | "none"
+      # client: object
+        # installation_identity: "persistent_local" | "none"
+        # originator: object | object | object
+        # user_agent: "codex" | "grok_build" | "kimi_code" | "host" | "none"
+      # request: object
+        # logical_id: "turn" | "none"
+        # turn_index: "agent_session" | "none"
+      # cache: object
+        # source: "session" | "none"
+        # responses: "prompt_cache_key" | "none"
+        # messages: "metadata_user_id" | "none"
+      # responses_metadata: "codex" | "none"
 
 # ##########################################################################
 # permission
@@ -379,6 +402,37 @@ merge_all_available_skills = true
     # oauth_host: string
   # env: record<string, string>
   # source: record<string, any>
+
+# ##########################################################################
+# requestIdentity (config.toml: request_identity)
+#   owner: src/app/kosongConfig/configSection.ts
+#   scope: core
+#   hooks: custom fromToml · custom toToml
+# ##########################################################################
+
+[request_identity]
+# preset: "codex_compatible" | "grok_build_compatible" | "kimi_code" | "none"
+
+# [request_identity.overrides]
+  # lineage: object
+    # format: "codex" | "grok_build" | "kimi_code" | "none"
+    # session_scope: "shared_session" | "agent_session" | "none"
+    # thread_identity: "agent" | "none"
+    # parent_thread: "immediate_agent" | "none"
+    # subagent_marker: "enabled" | "none"
+    # turn_ancestry: "spawn_context" | "none"
+  # client: object
+    # installation_identity: "persistent_local" | "none"
+    # originator: object | object | object
+    # user_agent: "codex" | "grok_build" | "kimi_code" | "host" | "none"
+  # request: object
+    # logical_id: "turn" | "none"
+    # turn_index: "agent_session" | "none"
+  # cache: object
+    # source: "session" | "none"
+    # responses: "prompt_cache_key" | "none"
+    # messages: "metadata_user_id" | "none"
+  # responses_metadata: "codex" | "none"
 
 # ##########################################################################
 # secondaryModel (config.toml: secondary_model)

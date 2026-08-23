@@ -183,6 +183,19 @@ registerConfigSection(PROVIDERS_SECTION, ProvidersSectionSchema, {
   toToml: providersToToml,
 });
 
+export const REQUEST_IDENTITY_SECTION = 'requestIdentity';
+
+export const requestIdentityFromToml = (rawSnake: unknown): unknown =>
+  isPlainObject(rawSnake) ? deepSnakeToCamel(rawSnake) : rawSnake;
+
+export const requestIdentityToToml = (value: unknown): unknown =>
+  isPlainObject(value) ? deepCamelToSnake(value) : value;
+
+registerConfigSection(REQUEST_IDENTITY_SECTION, RequestIdentityPolicySchema, {
+  fromToml: requestIdentityFromToml,
+  toToml: requestIdentityToToml,
+});
+
 export const MODELS_SECTION = 'models';
 
 export const DEFAULT_MODEL_SECTION = 'defaultModel';
@@ -244,6 +257,7 @@ export const CognitionConfigSchema = z.object({
 export const ModelRecordSchema = ModelBaseSchema.extend({
   overrides: ModelOverrideSchema.optional(),
   cognition: CognitionConfigSchema.optional(),
+  requestIdentity: RequestIdentityPolicySchema.optional(),
 }).passthrough();
 
 export const ModelsSectionSchema = z
@@ -278,6 +292,9 @@ export const modelsFromToml = (rawSnake: unknown): unknown => {
     if (isPlainObject(converted['cognition'])) {
       converted['cognition'] = transformPlainObject(converted['cognition']);
     }
+    if (isPlainObject(converted['requestIdentity'])) {
+      converted['requestIdentity'] = deepSnakeToCamel(converted['requestIdentity']);
+    }
     out[id] = converted;
   }
   return out;
@@ -300,6 +317,8 @@ export const modelsToToml = (value: unknown, rawSnake: unknown): unknown => {
         merged['overrides'] = modelOverridesToToml(field, merged['overrides']);
       } else if (key === 'cognition' && isPlainObject(field)) {
         merged['cognition'] = cognitionToToml(field, merged['cognition']);
+      } else if (key === 'requestIdentity' && isPlainObject(field)) {
+        merged['request_identity'] = deepCamelToSnake(field);
       } else {
         setDefined(merged, camelToSnake(key), field);
       }
