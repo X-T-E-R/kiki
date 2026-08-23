@@ -495,12 +495,15 @@ export class KikiSocket {
         this.handleMessage(typeof event.data === 'string' ? event.data : '', generation);
       };
       ws.onclose = (event) => {
-        const wasCurrent = this.ws === ws && this.generation === generation;
-        if (wasCurrent) this.ws = null;
+        // A transport that was already replaced or detached (fatal frame, mode
+        // switch, establishment timeout) has its own reconnect decision, and
+        // must not clobber the live socket's hello state.
+        if (this.ws !== ws || this.generation !== generation) return;
+        this.ws = null;
         this.helloReceived = false;
-        this.failPendingTerminalControls('socket closed before the attach ack arrived');
-        if (!wasCurrent) return;
         this.clearEstablishmentTimer();
+        // Attach waiters must not hang until their timeout when the socket dies.
+        this.failPendingTerminalControls('socket closed before the attach ack arrived');
         this.events.onStatus('closed', `code ${event.code}`, generation);
         this.scheduleReconnect();
       };
