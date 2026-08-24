@@ -307,6 +307,110 @@ describe('SessionController pipeline', () => {
     controller.close();
   });
 
+  it('keeps uploaded images and files in the optimistic prompt echo', async () => {
+    const { controller, client } = await openController();
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: 'p-media',
+      user_message_id: 'm-media',
+      status: 'running',
+      content: [
+        { type: 'text', text: 'inspect these' },
+        { type: 'image', source: { kind: 'session_media', file_id: 'f-image' } },
+        {
+          type: 'file',
+          file_id: 'f-report',
+          name: 'report.pdf',
+          media_type: 'application/pdf',
+          size: 4096,
+        },
+      ],
+      created_at: '2026-01-01T00:00:02.000Z',
+    });
+
+    await controller.sendPrompt({ text: 'inspect these', permissionMode: 'manual' });
+    expect(controller.getState().blocks.at(-1)).toMatchObject({
+      kind: 'user',
+      text: 'inspect these',
+      media: [
+        { kind: 'image', fileId: 'f-image' },
+        { kind: 'file', fileId: 'f-report', name: 'report.pdf', size: 4096 },
+      ],
+    });
+    controller.close();
+  });
+
+  it('publishes transcript updates queued while hidden after the tab becomes visible', async () => {
+    const visibility = visibilityDocument('hidden');
+    const animationFrames = fakeAnimationFrames();
+    vi.stubGlobal('document', visibility.target);
+    vi.stubGlobal('requestAnimationFrame', animationFrames.request);
+    vi.stubGlobal('cancelAnimationFrame', animationFrames.cancel);
+    let controller: SessionController | undefined;
+    try {
+      ({ controller } = await openController({ defaultScheduler: true }));
+      controller.handleTranscript(asTranscriptEvent({
+        type: 'transcript.reset',
+        agent_id: 'main',
+        seq: 1,
+        snapshot: {
+          items: [
+            {
+              kind: 'turn',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'running',
+              origin: { kind: 'user' },
+              steps: [
+                {
+                  kind: 'step',
+                  stepId: 't1.1',
+                  turnId: 't1',
+                  ordinal: 1,
+                  state: 'running',
+                  frames: [{ kind: 'text', frameId: 'f1', role: 'assistant', text: 'A' }],
+                },
+              ],
+            },
+          ],
+          tasks: [],
+          interactions: [],
+          attachments: [],
+          todos: [],
+          prompts: [],
+          meta: {},
+        },
+      }));
+      controller.handleTranscript(asTranscriptEvent({
+        type: 'transcript.ops',
+        agent_id: 'main',
+        seq: 2,
+        ops: [
+          {
+            op: 'frame.upsert',
+            turnId: 't1',
+            stepId: 't1.1',
+            frame: { kind: 'text', frameId: 'f1', role: 'assistant', text: 'AB' },
+          },
+        ],
+      }));
+
+      expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({
+        text: 'A',
+      });
+      expect(animationFrames.pending()).toBe(0);
+
+      visibility.set('visible');
+      expect(animationFrames.pending()).toBe(1);
+      animationFrames.flushOne();
+      expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({
+        text: 'AB',
+      });
+    } finally {
+      controller?.close();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('forwards the effort selected in Composer with the next prompt request', async () => {
     const { controller, client } = await openController();
     client.submitPrompt.mockResolvedValue({

@@ -1140,9 +1140,41 @@ export class KikiClient {
     return { bytes: new Uint8Array(await response.arrayBuffer()), mime };
   }
 
+  /** Read a canonical transcript attachment (or its staged-upload fallback). */
+  async readSessionMediaBytes(
+    sessionId: string,
+    fileId: string,
+  ): Promise<{ bytes: Uint8Array; mime: string; name?: string }> {
+    const url = new URL(
+      joinUrl(
+        this.baseUrl,
+        `/sessions/${encodeURIComponent(sessionId)}/media/${encodeURIComponent(fileId)}`,
+      ),
+    );
+    const response = await this.fetchRawFile(url, 'application/octet-stream');
+    const mime =
+      response.headers.get('content-type')?.split(';', 1)[0]?.trim() ||
+      'application/octet-stream';
+    const disposition = response.headers.get('content-disposition') ?? '';
+    const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
+    let name = match?.[1];
+    if (name !== undefined) {
+      try {
+        name = decodeURIComponent(name);
+      } catch {
+        // Keep the server-provided token when it is not URI encoded.
+      }
+    }
+    return { bytes: new Uint8Array(await response.arrayBuffer()), mime, name };
+  }
+
   private async fetchHostFile(path: string, accept: string): Promise<Response> {
     const url = new URL(joinUrl(this.baseUrl, '/fs:content'));
     url.searchParams.set('path', path);
+    return await this.fetchRawFile(url, accept);
+  }
+
+  private async fetchRawFile(url: URL, accept: string): Promise<Response> {
     const headers: Record<string, string> = { Accept: accept };
     if (this.token !== undefined) headers['Authorization'] = `Bearer ${this.token}`;
     const controller = new AbortController();

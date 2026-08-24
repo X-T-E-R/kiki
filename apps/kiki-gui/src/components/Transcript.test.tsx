@@ -370,6 +370,28 @@ describe('media preview wiring', () => {
     expect(probe.container.textContent).toContain('4.0 KB');
   });
 
+  it('opens file-id attachments through the session preview dialog', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="session_test">
+        <MediaPartList
+          media={[{ kind: 'file', fileId: 'upl_1', name: 'report.pdf', mime: 'application/pdf', size: 4096 }]}
+        />
+      </MediaPreviewProvider>,
+    );
+    const chip = [...probe.container.querySelectorAll('button')].find(
+      (button) => button.textContent?.includes('report.pdf') === true,
+    );
+    expect(chip).toBeDefined();
+    await act(async () => {
+      chip!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const preview = document.body.querySelector('[data-attachment-preview]');
+    expect(preview).not.toBeNull();
+    expect(preview?.closest('[role="dialog"]')?.getAttribute('aria-label')).toContain('report.pdf');
+  });
+
   it('opens the file preview pane from a workspace-relative markdown link', async () => {
     const probe = makeRoot();
     await renderSettled(
@@ -453,6 +475,31 @@ function rowActionButtons(row: Element): string[] {
 function click(element: Element): void {
   element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 }
+
+describe('skill transcript cards', () => {
+  it('keeps a loaded skill body collapsed and bounds the expanded detail', async () => {
+    const container = await renderTranscript([
+      {
+        kind: 'skill',
+        id: 'skill-loaded-review',
+        source: 'skill',
+        name: 'review',
+        text: 'full skill document\n'.repeat(1000),
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    ]);
+    const card = container.querySelector('[data-skill-card]');
+    expect(card).not.toBeNull();
+    expect(card?.querySelector('[data-skill-detail]')).toBeNull();
+    await act(async () => {
+      flushSync(() => { click(card!.querySelector('button')!); });
+    });
+    const detail = card?.querySelector('[data-skill-detail]');
+    expect(detail).not.toBeNull();
+    expect(detail?.className).toContain('max-h-[180px]');
+    expect(detail?.className).toContain('overflow-auto');
+  });
+});
 
 describe('message row actions', () => {
   it('shows edit/fork on settled user rows and regenerate/fork on the latest final reply only', async () => {

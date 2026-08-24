@@ -298,6 +298,32 @@ describe('KikiClient.readHostFileBytes', () => {
   });
 });
 
+describe('KikiClient.readSessionMediaBytes', () => {
+  it('reads canonical session media with auth, MIME, and server filename', async () => {
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const parsed = new URL(String(url));
+      expect(parsed.pathname).toBe('/api/v1/sessions/session%20one/media/file%2Fdiagram');
+      expect(init?.method).toBe('GET');
+      expect((init?.headers as Record<string, string>)['Authorization']).toBe('Bearer token');
+      return new Response(new Uint8Array([4, 5, 6]), {
+        status: 200,
+        headers: {
+          'content-type': 'image/png; charset=binary',
+          'content-disposition': 'inline; filename="diagram final.png"',
+        },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+
+    const result = await client.readSessionMediaBytes('session one', 'file/diagram');
+    expect(result.mime).toBe('image/png');
+    expect(result.name).toBe('diagram final.png');
+    expect([...result.bytes]).toEqual([4, 5, 6]);
+    vi.unstubAllGlobals();
+  });
+});
+
 describe('KikiClient MCP JSON management', () => {
   it('uses the list, upsert, and remove endpoints with workspace scope', async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {

@@ -6,13 +6,19 @@
 
 import { createContext, useContext } from 'react';
 
+import type { MediaRef } from '../lib/media';
+
 export interface MediaPreviewApi {
   /** Session workspace cwd; anchors relative file links. */
   readonly cwd: string | undefined;
+  /** Session owning canonical attachment ids. */
+  readonly sessionId: string | undefined;
   /** Open the fullscreen image lightbox for a ready URL (data:/blob:/http). */
   readonly openImage: (src: string, name?: string) => void;
-  /** Open (or activate) the file's tab in the preview workspace + focus it. */
+  /** Open (or activate) the host file's tab in the preview workspace + focus it. */
   readonly openFile: (path: string) => void;
+  /** Open an attachment backed by a canonical session media id. */
+  readonly openAttachment: (item: MediaRef) => void;
   /** Number of open preview tabs (0 → the header toggle hides itself). */
   readonly previewTabCount: number;
   /** Whether the preview workspace panel is currently expanded. */

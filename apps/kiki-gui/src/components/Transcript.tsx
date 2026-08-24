@@ -468,7 +468,11 @@ const SkillMessage = memo(function SkillMessage({ block }: { block: SkillBlock }
       ? t('transcript.skill.plugin', { name: block.name })
       : t('transcript.skill.skill', { name: block.name });
   return (
-    <div className="anim-enter max-w-[85%] rounded-xl border border-hairline bg-panel px-3 py-2" title={time.absoluteTime(block.createdAt)}>
+    <div
+      data-skill-card
+      className="anim-enter max-w-[85%] rounded-xl border border-hairline bg-panel px-3 py-2"
+      title={time.absoluteTime(block.createdAt)}
+    >
       <button
         type="button"
         onClick={() => { setOpen((value) => !value); }}
@@ -484,7 +488,10 @@ const SkillMessage = memo(function SkillMessage({ block }: { block: SkillBlock }
         ) : null}
       </button>
       {open && block.text !== '' ? (
-        <div className="mt-1.5 text-[12.5px] leading-relaxed whitespace-pre-wrap text-ink-soft">
+        <div
+          data-skill-detail
+          className="mt-1.5 max-h-[180px] overflow-auto border-t border-hairline pt-1.5 pr-2 text-[12.5px] leading-relaxed whitespace-pre-wrap text-ink-soft"
+        >
           {block.text}
         </div>
       ) : null}

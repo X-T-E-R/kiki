@@ -1,8 +1,8 @@
 /**
- * SessionController — one session's REST snapshot, ordered WS intake, bounded
- * resync quarantine, and user actions. Wire frames are coalesced and reduced on
- * an animation-frame cadence, with a microtask fast path for visible thinking;
- * React sees at most one publication per flush.
+ * SessionController — one session's REST shell, canonical transcript stores,
+ * ordered WS reconciliation, catch-up/resync, and user actions. Transcript
+ * publications are coalesced on an animation-frame cadence, with a microtask
+ * fast path for visible thinking; React sees at most one publication per flush.
  */
 
 import type {
@@ -27,7 +27,6 @@ import {
 import { API_CODES, ApiError, type KikiClient, type SessionCursor } from '../lib/client';
 import { isHistoryRewrittenEvent, type ResyncRequiredPayload, type SessionEventFrame } from '../lib/types';
 import { DEFAULT_TRANSCRIPT_GRADES, transcriptGradesForFocus, type KikiSocket } from '../lib/ws';
-import { FrameBuffer } from './framePipeline';
 import {
   MAIN_AGENT_ID,
   applyTranscriptShell,
@@ -61,8 +60,6 @@ export function assertSessionWritable(state: Pick<SessionViewState, 'resyncing' 
 }
 
 const RESYNC_BACKOFF_MS = [250, 500, 1000, 2000, 4000];
-const QUARANTINE_MAX_FRAMES = 1000;
-const QUARANTINE_MAX_BYTES = 2 * 1024 * 1024;
 const HIDDEN_FRAME_FLUSH_INTERVAL_MS = 1000;
 
 export interface PublicationScheduler {
@@ -102,6 +99,20 @@ function errorMessage(error: unknown, fallback: string): string {
       : fallback;
 }
 
+function hasThinkingAppend(
+  store: AgentTranscript,
+  ops: readonly TranscriptOperation[],
+): boolean {
+  for (const op of ops) {
+    if (op.op !== 'append' || op.target.type !== 'frame') continue;
+    const turn = store.getTurn(op.target.turnId);
+    const step = turn?.steps.find((candidate) => candidate.stepId === op.target.stepId);
+    const frame = step?.frames.find((candidate) => candidate.frameId === op.target.frameId);
+    if (frame?.kind === 'thinking') return true;
+  }
+  return false;
+}
+
 export class SessionController {
   private readonly client: KikiClient;
   private readonly socket: KikiSocket;
@@ -115,14 +126,8 @@ export class SessionController {
   private frameHandle: unknown = null;
   private hiddenFrameTimer: ReturnType<typeof setTimeout> | null = null;
   /** One microtask per JS turn keeps reasoning visibly incremental without
-   * publishing once per frame in a synchronous high-frequency burst. */
+   * publishing once per operation in a synchronous high-frequency burst. */
   private thinkingFlushQueued = false;
-  /** Intake is bounded for burst safety. Hidden windows drain it in 200-frame
-   * chunks on a low-frequency timeout instead of waiting for foreground. */
-  private readonly inboundFrames = new FrameBuffer({
-    maxFrames: QUARANTINE_MAX_FRAMES,
-    maxBytes: QUARANTINE_MAX_BYTES,
-  });
   private resyncInFlight = false;
   private resyncTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
@@ -174,7 +179,7 @@ export class SessionController {
     } else {
       this.clearHiddenFrameTimer();
     }
-    if (this.inboundFrames.length > 0) this.scheduleFrameFlush();
+    if (this.pendingTranscriptAgents.size > 0) this.scheduleFrameFlush();
   };
 
   getState = (): SessionViewState => this.publishedState;
@@ -277,7 +282,6 @@ export class SessionController {
         if (store !== undefined) this.publishProjectedAgent(agentId, store);
       }
     }
-    this.inboundFrames.drain();
   };
 
   /** Initial sync: snapshot shell → subscribe_v2 with per-agent grades. */
@@ -310,7 +314,6 @@ export class SessionController {
     this.clearResyncTimer();
     this.cancelVisibleFrameFlush();
     this.clearHiddenFrameTimer();
-    this.inboundFrames.clear();
     this.pendingTranscriptAgents.clear();
     for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
     this.historyGeneration.clear();
@@ -592,7 +595,11 @@ export class SessionController {
     this.socket.updateTranscriptSince(this.sessionId, agentId, cursor);
     if (opsAffectForest(ops)) this.forestDirtyAgents.add(agentId);
     this.pendingTranscriptAgents.add(agentId);
-    this.scheduleFrameFlush();
+    if (hasThinkingAppend(store, result.accepted)) {
+      this.scheduleThinkingFlush();
+    } else {
+      this.scheduleFrameFlush();
+    }
   }
 
   private catchUpAgent(agentId: string): Promise<void> {
@@ -755,13 +762,15 @@ export class SessionController {
           : undefined,
       goal_control: input.goalControl,
     });
+    const projection = projectMessageContent(result.content);
     this.setState(
       appendLocalUserMessage(this.state, {
         userMessageId: result.user_message_id,
         promptId: result.prompt_id,
-        text: input.text,
+        text: projection.text === '' ? input.text : projection.text,
         createdAt: result.created_at,
         status: result.status,
+        media: projection.media,
       }),
     );
   }

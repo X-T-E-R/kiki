@@ -237,10 +237,17 @@ function isLiveStreamingFrame(
   const lastOpen = [...step.frames].reverse().find((candidate) => candidate.kind === frame.kind);
   if (lastOpen?.frameId !== frame.frameId) return false;
   if (phase === undefined || typeof phase !== 'object' || phase === null) return true;
+
+  // The v1 compatibility projector cannot recover canonical step ids and emits
+  // an empty string. Treat compatibility fields as advisory: a non-empty id may
+  // narrow the open frame, but an empty one must not turn every live frame off.
   const live = phase as { kind?: string; turnId?: number; stepId?: string; stream?: string };
-  if (live.kind !== 'streaming') return false;
-  if (live.stepId !== undefined && live.stepId !== step.stepId) return false;
+  const phaseStepId = typeof live.stepId === 'string' ? live.stepId.trim() : '';
+  if (phaseStepId !== '' && phaseStepId !== step.stepId) return false;
   if (typeof live.turnId === 'number' && `t${live.turnId}` !== item.turnId) return false;
+
+  if (live.kind === 'running') return true;
+  if (live.kind !== 'streaming') return false;
   if (live.stream === 'assistant') return frame.kind === 'text';
   if (live.stream === 'thinking') return frame.kind === 'thinking';
   return false;
@@ -320,8 +327,19 @@ function originAgentFromInteraction(interaction: AgentTranscriptInteraction): st
   return undefined;
 }
 
+function interactionToolCallId(interaction: AgentTranscriptInteraction): string | undefined {
+  if (interaction.toolCallId !== undefined && interaction.toolCallId !== '') return interaction.toolCallId;
+  const anchor = interaction.anchor;
+  if (typeof anchor !== 'object' || anchor === null) return undefined;
+  const record = anchor as { readonly kind?: unknown; readonly toolCallId?: unknown };
+  return record.kind === 'tool_call' && typeof record.toolCallId === 'string' && record.toolCallId !== ''
+    ? record.toolCallId
+    : undefined;
+}
+
 function interactionToBlock(interaction: AgentTranscriptInteraction, agentId: string): Block | undefined {
   const originAgentId = originAgentFromInteraction(interaction);
+  const toolCallId = interactionToolCallId(interaction);
   if (interaction.interactionKind === 'approval') {
     const request = (interaction.request ?? {}) as {
       turnId?: number;
@@ -336,7 +354,7 @@ function interactionToBlock(interaction: AgentTranscriptInteraction, agentId: st
         approval_id: interaction.interactionId,
         session_id: '',
         turn_id: request.turnId,
-        tool_call_id: interaction.toolCallId ?? interaction.interactionId,
+        tool_call_id: toolCallId ?? interaction.interactionId,
         tool_name: request.toolName ?? 'tool',
         action: request.action ?? 'Approve the action',
         tool_input_display: request.display,
@@ -368,7 +386,7 @@ function interactionToBlock(interaction: AgentTranscriptInteraction, agentId: st
         question_id: interaction.interactionId,
         session_id: '',
         turn_id: request.turnId,
-        tool_call_id: interaction.toolCallId,
+        tool_call_id: toolCallId,
         questions: engineQuestionItems(request.questions),
         created_at: '',
       },
@@ -411,6 +429,18 @@ function markerToBlock(item: {
   payload?: unknown;
 }): Block | undefined {
   if (HIDDEN_SPLICE_MARKERS.has(item.marker)) return undefined;
+  const summaryKey = MARKER_SUMMARY_KEYS[item.marker as keyof typeof MARKER_SUMMARY_KEYS];
+  // Skill activation payloads may contain the complete loaded skill document.
+  // The timeline marker is status chrome, not a second copy of that document.
+  if (item.marker === 'skill' && summaryKey !== undefined) {
+    return {
+      kind: 'notice',
+      id: `agent-marker-${item.markerId}`,
+      text: item.marker,
+      tone: 'neutral',
+      i18n: { key: summaryKey },
+    };
+  }
   const payload = item.payload;
   const text =
     typeof payload === 'string'
@@ -425,7 +455,6 @@ function markerToBlock(item: {
   if (text !== undefined && text.trim() !== '') {
     return { kind: 'notice', id: `agent-marker-${item.markerId}`, text, tone: 'neutral' };
   }
-  const summaryKey = MARKER_SUMMARY_KEYS[item.marker as keyof typeof MARKER_SUMMARY_KEYS];
   if (summaryKey === undefined) {
     return {
       kind: 'notice',
@@ -560,7 +589,112 @@ function subagentBlocksFromSnapshot(
   return [...byAgent.values()];
 }
 
-function insertSubagentBlocks(source: readonly Block[], subagents: readonly SubagentBlock[]): Block[] {
+/**
+ * Reinsert locally retained/floating blocks at the same structural slot they
+ * occupied before reconciliation. Appending them all after canonical content
+ * makes queued prompts and unanchored entities visibly collect at the bottom.
+ */
+function reinsertAtPreviousPositions(
+  previous: readonly Block[],
+  next: readonly Block[],
+  extras: readonly Block[],
+): Block[] {
+  if (extras.length === 0) return [...next];
+  const pending = new Map(extras.map((block) => [block.id, block]));
+  const nextIds = new Set(next.map((block) => block.id));
+  const followingAnchors: (string | undefined)[] = Array.from({ length: previous.length });
+  let followingAnchor: string | undefined;
+  for (let index = previous.length - 1; index >= 0; index -= 1) {
+    followingAnchors[index] = followingAnchor;
+    const id = previous[index]!.id;
+    if (nextIds.has(id)) followingAnchor = id;
+  }
+
+  const before = new Map<string, Block[]>();
+  const after = new Map<string, Block[]>();
+  const tail: Block[] = [];
+  let precedingAnchor: string | undefined;
+  for (let index = 0; index < previous.length; index += 1) {
+    const id = previous[index]!.id;
+    if (nextIds.has(id)) {
+      precedingAnchor = id;
+      continue;
+    }
+    const replacement = pending.get(id);
+    if (replacement === undefined) continue;
+    const nextAnchor = followingAnchors[index];
+    if (nextAnchor !== undefined) {
+      const group = before.get(nextAnchor) ?? [];
+      group.push(replacement);
+      before.set(nextAnchor, group);
+    } else if (precedingAnchor !== undefined) {
+      const group = after.get(precedingAnchor) ?? [];
+      group.push(replacement);
+      after.set(precedingAnchor, group);
+    } else {
+      tail.push(replacement);
+    }
+    pending.delete(id);
+  }
+
+  const result: Block[] = [];
+  for (const block of next) {
+    result.push(...(before.get(block.id) ?? []), block, ...(after.get(block.id) ?? []));
+  }
+  // Truly new floating entities have no prior slot; keep the canonical fallback
+  // of placing them after the known timeline rather than inventing an anchor.
+  result.push(...tail, ...pending.values());
+  return result;
+}
+
+function interactionBlockToolCallId(block: Block): string | undefined {
+  if (block.kind === 'approval') return block.request.tool_call_id;
+  if (block.kind === 'question') return block.request.tool_call_id;
+  return undefined;
+}
+
+function insertInteractionBlocks(
+  source: readonly Block[],
+  interactions: readonly AgentTranscriptInteraction[],
+  agentId: string,
+  previous: readonly Block[],
+): Block[] {
+  const projected = interactions.flatMap((interaction) => {
+    const block = interactionToBlock(interaction, agentId);
+    return block === undefined ? [] : [block];
+  });
+  const ids = new Set(projected.map((block) => block.id));
+  const blocks = source.filter((block) => !ids.has(block.id));
+  const floating: Block[] = [];
+  const toolCallIds = new Set(
+    blocks.flatMap((block) => (block.kind === 'tool' ? [block.toolCallId] : [])),
+  );
+  const byToolCall = new Map<string, Block[]>();
+
+  for (const block of projected) {
+    const toolCallId = interactionBlockToolCallId(block);
+    if (toolCallId === undefined || toolCallId === '' || !toolCallIds.has(toolCallId)) {
+      floating.push(block);
+      continue;
+    }
+    const siblings = byToolCall.get(toolCallId) ?? [];
+    siblings.push(block);
+    byToolCall.set(toolCallId, siblings);
+  }
+
+  const anchored: Block[] = [];
+  for (const block of blocks) {
+    anchored.push(block);
+    if (block.kind === 'tool') anchored.push(...(byToolCall.get(block.toolCallId) ?? []));
+  }
+  return reinsertAtPreviousPositions(previous, anchored, floating);
+}
+
+function insertSubagentBlocks(
+  source: readonly Block[],
+  subagents: readonly SubagentBlock[],
+  previous: readonly Block[],
+): Block[] {
   if (subagents.length === 0) return source.filter((block) => block.kind !== 'subagent');
   const byParentTool = new Map<string, SubagentBlock[]>();
   for (const subagent of subagents) {
@@ -585,10 +719,8 @@ function insertSubagentBlocks(source: readonly Block[], subagents: readonly Suba
       }
     }
   }
-  for (const subagent of subagents) {
-    if (!inserted.has(subagent.subagentId)) blocks.push(subagent);
-  }
-  return blocks;
+  const floating = subagents.filter((subagent) => !inserted.has(subagent.subagentId));
+  return reinsertAtPreviousPositions(previous, blocks, floating);
 }
 
 function isPromptIdentity(block: Block, promptId: string, userMessageId?: string): boolean {
@@ -829,7 +961,7 @@ export function retainPendingPromptBlocks(previous: readonly Block[], next: Bloc
     if (block.userMessageId !== undefined && known.has(`u:${block.userMessageId}`)) continue;
     if (block.promptId !== undefined || block.userMessageId !== undefined) extras.push(block);
   }
-  return extras.length === 0 ? next : [...next, ...extras];
+  return reinsertAtPreviousPositions(previous, next, extras);
 }
 
 function turnTailFromItem(item: {
@@ -1031,12 +1163,18 @@ export function agentTranscriptToBlocks(
       }
     }
   }
-  for (const interaction of response.interactions ?? []) {
-    const block = interactionToBlock(interaction, response.agent_id);
-    if (block !== undefined && !blocks.some((existing) => existing.id === block.id)) blocks.push(block);
-  }
   const withPrompts = mergeTranscriptPromptBlocks(blocks, prompts, previous);
-  return insertSubagentBlocks(withPrompts, subagentBlocksFromSnapshot(response, response.agent_id));
+  const withSubagents = insertSubagentBlocks(
+    withPrompts,
+    subagentBlocksFromSnapshot(response, response.agent_id),
+    previous,
+  );
+  return insertInteractionBlocks(
+    withSubagents,
+    response.interactions ?? [],
+    response.agent_id,
+    previous,
+  );
 }
 
 export function latestFinalAssistantBlockId(blocks: readonly Block[]): string | undefined {
