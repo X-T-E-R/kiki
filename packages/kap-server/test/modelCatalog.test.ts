@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import {
   IConfigService,
+  IKosongConfigService,
   IModelCatalog,
   IOAuthService,
   IProviderDiscoveryService,
@@ -15,6 +16,7 @@ import {
 } from '@moonshot-ai/agent-core-v2';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { registerModelCatalogRoutes } from '../src/routes/modelCatalog';
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
@@ -123,6 +125,99 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
     } as never);
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
+
+  it('waits for Kosong hydration before listing models and providers', async () => {
+    let hydrated = false;
+    let releaseHydration!: () => void;
+    const hydration = new Promise<void>((resolve) => {
+      releaseHydration = () => {
+        hydrated = true;
+        resolve();
+      };
+    });
+    const models = [{ provider: 'kimi', model: 'k2' }];
+    const providers = [{ id: 'kimi', type: 'kimi' }];
+    const catalog = {
+      _serviceBrand: undefined,
+      get: () => undefined,
+      getRequester: () => undefined,
+      inspect: () => undefined,
+      ping: async () => undefined,
+      findByName: () => [],
+      listModels: vi.fn(async () => (hydrated ? models : [])),
+      listProviders: vi.fn(async () => (hydrated ? providers : [])),
+      getProvider: async () => undefined,
+      setDefaultModel: async () => undefined,
+    } as unknown as IModelCatalogType;
+    const config = { ready: Promise.resolve() };
+    const kosongConfig = { ready: hydration };
+    const core = {
+      accessor: {
+        get(token: unknown): unknown {
+          if (token === IConfigService) return config;
+          if (token === IKosongConfigService) return kosongConfig;
+          if (token === IModelCatalog) return catalog;
+          throw new Error('unexpected service');
+        },
+      },
+    };
+    type RouteHandler = (
+      req: { id: string; params: unknown },
+      reply: { send(payload: unknown): unknown },
+    ) => Promise<void> | void;
+    const handlers = new Map<string, RouteHandler>();
+    const app = {
+      get(path: string, _options: unknown, handler: RouteHandler): void {
+        handlers.set(`GET ${path}`, handler);
+      },
+      post(): void {},
+      put(): void {},
+      delete(): void {},
+    };
+    registerModelCatalogRoutes(app, core as never);
+
+    const modelsReply = { send: vi.fn() };
+    const providersReply = { send: vi.fn() };
+    const modelsRequest = handlers.get('GET /models');
+    const providersRequest = handlers.get('GET /providers');
+    if (modelsRequest === undefined || providersRequest === undefined) {
+      throw new Error('catalog list routes were not registered');
+    }
+    let modelsSettled = false;
+    let providersSettled = false;
+    const modelsPending = Promise.resolve(
+      modelsRequest({ id: 'models', params: {} }, modelsReply),
+    ).then(() => {
+      modelsSettled = true;
+    });
+    const providersPending = Promise.resolve(
+      providersRequest({ id: 'providers', params: {} }, providersReply),
+    ).then(() => {
+      providersSettled = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(modelsSettled).toBe(false);
+    expect(providersSettled).toBe(false);
+    expect(catalog.listModels).not.toHaveBeenCalled();
+    expect(catalog.listProviders).not.toHaveBeenCalled();
+
+    releaseHydration();
+    await Promise.all([modelsPending, providersPending]);
+    expect(catalog.listModels).toHaveBeenCalledOnce();
+    expect(catalog.listProviders).toHaveBeenCalledOnce();
+    expect(modelsReply.send).toHaveBeenCalledWith({
+      code: 0,
+      msg: 'success',
+      data: { items: models },
+      request_id: 'models',
+    });
+    expect(providersReply.send).toHaveBeenCalledWith({
+      code: 0,
+      msg: 'success',
+      data: { items: providers },
+      request_id: 'providers',
+    });
+  });
 
   it('lists configured models as selectable aliases', async () => {
     await boot(CATALOG_TOML);
