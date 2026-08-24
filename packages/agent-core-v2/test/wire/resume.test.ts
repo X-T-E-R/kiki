@@ -496,9 +496,10 @@ describe('Agent resume', () => {
       },
     ] as unknown as WireRecord[]);
     const homeDir = await mkdtemp(join(tmpdir(), 'kimi-bg-resume-delivered-'));
+    let ctx: ReturnType<typeof testAgent> | undefined;
     try {
       const backgroundPersistence = createAgentTaskPersistence(homeDir);
-      const ctx = testAgent(homeDirServices(homeDir), { autoConfigure: false, persistence });
+      ctx = testAgent(homeDirServices(homeDir), { autoConfigure: false, persistence });
       await backgroundPersistence.writeTask({
         taskId: 'agent-seen0000',
         kind: 'agent',
@@ -524,7 +525,8 @@ describe('Agent resume', () => {
 
       expect(steer).not.toHaveBeenCalled();
     } finally {
-      await rm(homeDir, { recursive: true, force: true });
+      await ctx?.dispose();
+      await rm(homeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 
@@ -588,9 +590,10 @@ describe('Agent resume', () => {
       },
     ] as unknown as WireRecord[]);
     const homeDir = await mkdtemp(join(tmpdir(), 'kimi-bg-resume-undelivered-'));
+    let ctx: ReturnType<typeof testAgent> | undefined;
     try {
       const backgroundPersistence = createAgentTaskPersistence(homeDir);
-      const ctx = testAgent(homeDirServices(homeDir), { autoConfigure: false, persistence });
+      ctx = testAgent(homeDirServices(homeDir), { autoConfigure: false, persistence });
       await backgroundPersistence.writeTask({
         taskId: 'agent-new00000',
         kind: 'agent',
@@ -626,7 +629,8 @@ describe('Agent resume', () => {
         }),
       );
     } finally {
-      await rm(homeDir, { recursive: true, force: true });
+      await ctx?.dispose();
+      await rm(homeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     }
   });
 

@@ -1,5 +1,6 @@
 import type { TranscriptFrame } from './frame';
 import type { AttachmentId, StepId, TaskId, TurnId } from './ids';
+import type { TranscriptMessageIdentity } from './identity';
 
 /**
  * What triggered this turn. Drives `inputRenderers` at the view layer. The
@@ -68,6 +69,7 @@ export interface TranscriptTurn {
   readonly ordinal: number;
   readonly state: TurnState;
   readonly origin: TurnOrigin;
+  readonly message?: TranscriptMessageIdentity;
   /** The raw prompt that opened the turn (user text, cron prompt, …). */
   readonly prompt?: string;
   /** Attachments carried by the turn-opening input (entities in `attachments`). */

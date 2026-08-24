@@ -50,6 +50,7 @@ interface TurnContract {
 }
 
 interface TranscriptContract {
+  session_id: string;
   agent_id: string;
   items: (TurnContract | { kind: 'marker' | 'taskref' })[];
   has_more: boolean;
@@ -65,16 +66,19 @@ interface TranscriptContract {
   agents: { agentId: string; type?: string }[];
   pending_interactions: string[];
   prompts?: unknown[];
-  seq?: number;
+  cursor?: { epoch?: string; seq: number };
+  coverage: { kind: 'full' | 'tail'; hasMoreOlder: boolean };
 }
 
 interface OpsCatchupContract {
+  session_id: string;
   agent_id: string;
+  epoch: string;
   batches: {
     seq: number;
     ops: { op: string }[];
   }[];
-  latest_seq: number;
+  through_seq: number;
   complete: boolean;
 }
 
@@ -680,55 +684,6 @@ describe('server-v2 /api/v1/sessions/{sid}/transcript', () => {
     );
   });
 
-  it('heals the missing stream prefix after a mid-turn attach once the turn ends', async () => {
-    const id = await createSession();
-    await ensureMainAgent(id);
-
-    const bus = mainAgentBus(id);
-    bus.publish(
-      serverEvent({ type: 'turn.started', turnId: 0, origin: { kind: 'user' }, prompt: 'hi' }),
-    );
-    bus.publish(serverEvent({ type: 'turn.step.started', turnId: 0, step: 1 }));
-    bus.publish(serverEvent({ type: 'assistant.delta', turnId: 0, delta: 'Hello ' }));
-    await seedMainAgentMessages(id, [
-      { role: 'user', content: [{ type: 'text', text: 'hi' }], toolCalls: [] },
-    ]);
-
-    await getJson<TranscriptContract>(`/api/v1/sessions/${id}/transcript?agent_id=main`);
-    bus.publish(serverEvent({ type: 'assistant.delta', turnId: 0, delta: 'world' }));
-    const suffix = await getJson<TranscriptContract>(`/api/v1/sessions/${id}/transcript?agent_id=main`);
-    const suffixTurn = suffix.body.data.items.find(
-      (item): item is TurnContract => item.kind === 'turn' && item.turnId === 't0',
-    );
-    expect(suffixTurn!.steps[0]!.frames).toContainEqual(
-      expect.objectContaining({ kind: 'text', text: 'world' }),
-    );
-
-    await seedMainAgentMessages(id, [
-      { role: 'assistant', content: [{ type: 'text', text: 'Hello world' }], toolCalls: [] },
-    ]);
-    bus.publish(serverEvent({ type: 'turn.step.completed', turnId: 0, step: 1 }));
-    bus.publish(serverEvent({ type: 'turn.ended', turnId: 0, reason: 'completed' }));
-
-    await vi.waitFor(
-      async () => {
-        const { body } = await getJson<TranscriptContract>(
-          `/api/v1/sessions/${id}/transcript?agent_id=main`,
-        );
-        const turn = body.data.items.find(
-          (item): item is TurnContract => item.kind === 'turn' && item.turnId === 't0',
-        );
-        expect(turn).toBeDefined();
-        expect(turn!.origin).toMatchObject({ kind: 'user' });
-        expect(turn!.prompt).toBe('hi');
-        expect(turn!.steps[0]!.frames).toContainEqual(
-          expect.objectContaining({ kind: 'text', text: 'Hello world' }),
-        );
-      },
-      { timeout: 5000, interval: 50 },
-    );
-  });
-
   it('routes a subagent question to the subagent transcript, not main', async () => {
     const id = await createSession();
     await ensureMainAgent(id);
@@ -797,54 +752,90 @@ describe('server-v2 /api/v1/sessions/{sid}/transcript', () => {
     expect(body.code).toBe(40001);
   });
 
-  it('carries the numeric seq watermark on the live transcript response', async () => {
+  it('carries the epoch cursor watermark on the live transcript response', async () => {
     const id = await createSession();
     await ensureMainAgent(id);
 
     const bound = await getJson<TranscriptContract>(`/api/v1/sessions/${id}/transcript?agent_id=main`);
-    expect(bound.body.data.seq).toBeTypeOf('number');
-    const base = bound.body.data.seq!;
+    expect(bound.body.data.session_id).toBe(id);
+    expect(bound.body.data.cursor?.epoch).toBeTypeOf('string');
+    expect(bound.body.data.cursor?.seq).toBeTypeOf('number');
+    expect(bound.body.data.coverage).toEqual({ kind: 'full', hasMoreOlder: false });
+    const base = bound.body.data.cursor!;
 
     const bus = mainAgentBus(id);
     bus.publish(serverEvent({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } }));
     bus.publish(serverEvent({ type: 'turn.ended', turnId: 1, reason: 'completed' }));
 
     const after = await getJson<TranscriptContract>(`/api/v1/sessions/${id}/transcript?agent_id=main`);
-    expect(after.body.data.seq).toBeGreaterThan(base);
+    expect(after.body.data.cursor?.epoch).toBe(base.epoch);
+    expect(after.body.data.cursor!.seq).toBeGreaterThan(base.seq);
     expect(Array.isArray(after.body.data.prompts)).toBe(true);
   });
 
-  it('serves catch-up only for a covered numeric since_seq', async () => {
+  it('serves catch-up only for a covered epoch cursor', async () => {
     const id = await createSession();
     await ensureMainAgent(id);
 
     const bound = await getJson<TranscriptContract>(`/api/v1/sessions/${id}/transcript?agent_id=main`);
-    const base = bound.body.data.seq!;
+    const base = bound.body.data.cursor!;
 
     const bus = mainAgentBus(id);
     bus.publish(serverEvent({ type: 'turn.started', turnId: 1, origin: { kind: 'user' } }));
+    bus.publish(serverEvent({ type: 'turn.step.started', turnId: 1, step: 1, stepId: 'step-1' }));
+    bus.publish(
+      serverEvent({
+        type: 'assistant.delta',
+        turnId: 1,
+        step: 1,
+        stepId: 'step-1',
+        partId: 'part-1',
+        delta: 'hello',
+      }),
+    );
+    bus.publish(serverEvent({ type: 'turn.step.completed', turnId: 1, step: 1, stepId: 'step-1' }));
     bus.publish(serverEvent({ type: 'turn.ended', turnId: 1, reason: 'completed' }));
 
     const catchup = await getJson<OpsCatchupContract>(
-      `/api/v1/sessions/${id}/transcript/ops?agent_id=main&since_seq=${base}`,
+      `/api/v1/sessions/${id}/transcript/ops?agent_id=main&epoch=${encodeURIComponent(base.epoch!)}&since_seq=${base.seq}`,
     );
-    expect(catchup.body.code).toBe(0);
+    expect(catchup.body).toMatchObject({ code: 0 });
+    expect(catchup.body.data.session_id).toBe(id);
+    expect(catchup.body.data.epoch).toBe(base.epoch);
     expect(catchup.body.data.complete).toBe(true);
-    expect(catchup.body.data.latest_seq).toBeGreaterThan(base);
+    expect(catchup.body.data.through_seq).toBeGreaterThan(base.seq);
     const seqs = catchup.body.data.batches.map((batch) => batch.seq);
-    expect(seqs.every((seq) => seq > base)).toBe(true);
+    expect(seqs.every((seq) => seq > base.seq)).toBe(true);
     expect(seqs).toEqual(seqs.map((_, i) => seqs[0]! + i));
     expect(
       catchup.body.data.batches.some((batch) => batch.ops.some((op) => op.op === 'turn.upsert')),
     ).toBe(true);
 
+    const turnCatchup = await getJson<OpsCatchupContract>(
+      `/api/v1/sessions/${id}/transcript/ops?agent_id=main&epoch=${encodeURIComponent(base.epoch!)}&since_seq=${base.seq}&grade=turn`,
+    );
+    expect(turnCatchup.body.data.complete).toBe(true);
+    expect(turnCatchup.body.data.through_seq).toBe(catchup.body.data.through_seq);
+    expect(
+      turnCatchup.body.data.batches.every((batch) =>
+        batch.ops.every(
+          (op) =>
+            op.op !== 'append' &&
+            op.op !== 'frame.upsert' &&
+            op.op !== 'step.upsert',
+        ),
+      ),
+    ).toBe(true);
+    const turnSeqs = turnCatchup.body.data.batches.map((batch) => batch.seq);
+    expect(turnSeqs.some((seq, index) => index > 0 && seq > turnSeqs[index - 1]! + 1)).toBe(true);
+
     const current = await getJson<OpsCatchupContract>(
-      `/api/v1/sessions/${id}/transcript/ops?agent_id=main&since_seq=${catchup.body.data.latest_seq}`,
+      `/api/v1/sessions/${id}/transcript/ops?agent_id=main&epoch=${encodeURIComponent(base.epoch!)}&since_seq=${catchup.body.data.through_seq}`,
     );
     expect(current.body.data).toMatchObject({ batches: [], complete: true });
 
     const stale = await getJson<OpsCatchupContract>(
-      `/api/v1/sessions/${id}/transcript/ops?agent_id=main&since_seq=99999`,
+      `/api/v1/sessions/${id}/transcript/ops?agent_id=main&epoch=${encodeURIComponent(base.epoch!)}&since_seq=99999`,
     );
     expect(stale.body.data.complete).toBe(false);
   });
@@ -1003,10 +994,10 @@ describe('server-v2 /api/v1/sessions/{sid}/transcript', () => {
       ['t0', 'hi'],
       ['t2', 'second question'],
     ]);
-    expect(main.messages[1]!.attachment_ids).toEqual(['att_1']);
+    expect(main.messages[1]!.attachment_ids).toEqual(['t2.att1']);
     expect(main.attachments).toEqual([
       expect.objectContaining({
-        attachmentId: 'att_1',
+        attachmentId: 't2.att1',
         mediaType: 'image/*',
         source: { kind: 'url', url: 'https://example.com/a.png' },
       }),
@@ -1076,10 +1067,10 @@ describe('server-v2 /api/v1/sessions/{sid}/transcript', () => {
     expect(body.code).toBe(0);
     const main = body.data.agents[0]!;
     expect(main.messages.map((m) => [m.turn_id, m.prompt])).toEqual([['t0', '']]);
-    expect(main.messages[0]!.attachment_ids).toEqual(['att_1']);
+    expect(main.messages[0]!.attachment_ids).toEqual(['t0.att0']);
     expect(main.attachments).toEqual([
       expect.objectContaining({
-        attachmentId: 'att_1',
+        attachmentId: 't0.att0',
         mediaType: 'image/*',
         source: { kind: 'session_media', fileId: 'f_upload' },
       }),

@@ -20,6 +20,7 @@ describe('events-zod stream identity', () => {
         turnId: 1,
         step: 2,
         stepId: 'step-2',
+        partId: 'part-2',
         delta: 'owned',
       }),
     ).toEqual({
@@ -27,6 +28,7 @@ describe('events-zod stream identity', () => {
       turnId: 1,
       step: 2,
       stepId: 'step-2',
+      partId: 'part-2',
       delta: 'owned',
     });
     expect(
@@ -42,6 +44,7 @@ describe('events-zod stream identity', () => {
         turnId: 1,
         step: 2,
         stepId: 'step-2',
+        partId: 'part-2',
         delta: 'owned thought',
       }),
     ).toEqual({
@@ -49,6 +52,7 @@ describe('events-zod stream identity', () => {
       turnId: 1,
       step: 2,
       stepId: 'step-2',
+      partId: 'part-2',
       delta: 'owned thought',
     });
   });

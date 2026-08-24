@@ -748,3 +748,62 @@ describe('KikiClient.replacePrompt', () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe('KikiClient transcript protocol', () => {
+  it('reads /meta.capabilities.transcript', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({
+        code: 0,
+        msg: 'success',
+        data: {
+          server_version: '0.31.1-fixture',
+          capabilities: {
+            websocket: true,
+            file_upload: true,
+            fs_query: true,
+            mcp: true,
+            tasks: true,
+            terminal: true,
+            transcript: true,
+          },
+          server_id: 'fixture-server',
+          started_at: '2026-01-01T00:00:00.000Z',
+          open_in_apps: [],
+          dangerous_bypass_auth: false,
+          backend: 'v2',
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+    const meta = await client.meta();
+    expect(meta.capabilities.transcript).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
+  it('exposes GET /sessions/{id}/transcript/ops catch-up', async () => {
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+    expect(client).toHaveProperty('getTranscriptOps');
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      expect(String(url)).toContain('/api/v1/sessions/s1/transcript/ops');
+      expect(String(url)).toContain('agent_id=main');
+      expect(String(url)).toContain('since_seq=3');
+      return new Response(JSON.stringify({
+        code: 0,
+        msg: 'success',
+        data: {
+          session_id: 's1',
+          agent_id: 'main',
+          epoch: 'e1',
+          batches: [],
+          through_seq: 3,
+          complete: true,
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await client.getTranscriptOps('s1', 'main', { seq: 3, epoch: 'e1' });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    vi.unstubAllGlobals();
+  });
+});

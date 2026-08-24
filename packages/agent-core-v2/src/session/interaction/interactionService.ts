@@ -157,6 +157,7 @@ export class SessionInteractionService extends Service implements ISessionIntera
         kind: interaction.kind,
         toolCallId: readPayloadToolCallId(interaction.payload),
         agentId: interaction.origin.agentId,
+        origin: interaction.origin,
         request: interaction.payload,
       }),
     );

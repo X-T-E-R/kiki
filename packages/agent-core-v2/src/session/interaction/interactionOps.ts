@@ -23,6 +23,7 @@ const interactionRequestSchema = z.object({
   kind: z.enum(['approval', 'question', 'user_tool']),
   toolCallId: z.string().optional(),
   agentId: z.string().optional(),
+  origin: z.object({ agentId: z.string().optional(), turnId: z.number().optional() }).optional(),
   request: z.unknown(),
 });
 

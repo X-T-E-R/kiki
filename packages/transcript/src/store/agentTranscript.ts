@@ -29,6 +29,7 @@ export interface Disposable {
 export class AgentTranscript {
   #state: AgentState = EMPTY_AGENT_STATE;
   readonly #listeners = new Set<TranscriptListener>();
+  readonly #appendDirty = new Set<string>();
 
   constructor(readonly agentId: AgentId) {}
 
@@ -52,9 +53,22 @@ export class AgentTranscript {
         gap = { target: (op as { target: AppendTarget }).target, ...result.gap };
         continue;
       }
-      if (!result.changed) continue;
+      const key = appendTargetKey(op);
+      if (!result.changed) {
+        if (
+          key !== undefined &&
+          (op.op === 'frame.upsert' || op.op === 'task.upsert') &&
+          this.#appendDirty.delete(key)
+        ) {
+          accepted.push(op);
+        }
+        continue;
+      }
       state = result.state;
       accepted.push(op);
+      if (op.op === 'append' && key !== undefined) this.#appendDirty.add(key);
+      else if (key !== undefined) this.#appendDirty.delete(key);
+      else if (op.op === 'reset' || op.op === 'items.remove') this.#appendDirty.clear();
     }
     this.#state = state;
     if (accepted.length > 0) {
@@ -166,4 +180,17 @@ export class AgentTranscript {
       hasMoreOlder,
     };
   }
+}
+
+function appendTargetKey(op: TranscriptOperation): string | undefined {
+  if (op.op === 'append') {
+    return op.target.type === 'frame'
+      ? `frame:${op.target.turnId}:${op.target.stepId}:${op.target.frameId}`
+      : `task:${op.target.taskId}`;
+  }
+  if (op.op === 'frame.upsert') {
+    return `frame:${op.turnId}:${op.stepId}:${op.frame.frameId}`;
+  }
+  if (op.op === 'task.upsert') return `task:${op.task.taskId}`;
+  return undefined;
 }

@@ -20,6 +20,7 @@ export interface TurnStartedPayload {
   readonly turnId: number;
   readonly origin: PromptOrigin;
   readonly prompt?: string;
+  readonly promptId?: string;
   readonly promptAttachments?: readonly { kind: 'image' | 'video' | 'audio'; fileId: string }[];
 }
 
@@ -129,6 +130,7 @@ export interface AssistantDeltaPayload {
   readonly turnId: number;
   readonly step?: number;
   readonly stepId?: string;
+  readonly partId?: string;
   readonly delta: string;
 }
 
@@ -142,6 +144,7 @@ export interface ThinkingDeltaPayload {
   readonly turnId: number;
   readonly step?: number;
   readonly stepId?: string;
+  readonly partId?: string;
   readonly delta: string;
 }
 
@@ -153,6 +156,8 @@ export interface ThinkingDelta extends ThinkingDeltaPayload {}
 
 export interface ToolCallDeltaPayload {
   readonly turnId: number;
+  readonly step?: number;
+  readonly stepId?: string;
   readonly toolCallId: string;
   readonly name?: string;
   readonly argumentsPart?: string;

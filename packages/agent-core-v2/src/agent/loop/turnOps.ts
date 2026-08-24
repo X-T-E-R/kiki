@@ -20,7 +20,17 @@ export interface TurnModelState {
   };
 }
 
+const turnLineageSchema = z.object({
+  replacesMessageId: z.string().optional(),
+  parentMessageId: z.string().optional(),
+  rewriteId: z.string().optional(),
+});
+
 const turnInputShape = {
+  turnId: z.number().int().nonnegative().optional(),
+  promptId: z.string().min(1).optional(),
+  revision: z.number().int().nonnegative().optional(),
+  lineage: turnLineageSchema.optional(),
   input: z.custom<readonly ContentPart[]>(),
   origin: z.custom<PromptOrigin>(),
 };
@@ -30,6 +40,7 @@ const turnPromptSchema = z.object(turnInputShape);
 export class TurnPrompt extends Event2<z.infer<typeof turnPromptSchema>> {
   static override readonly type = 'turn.prompt';
   static override readonly durable = true;
+  static override readonly observable = true;
   static override readonly schema = turnPromptSchema;
 }
 export interface TurnPrompt extends z.infer<typeof turnPromptSchema> {}
@@ -39,6 +50,7 @@ const turnSteerSchema = z.object(turnInputShape);
 export class TurnSteer extends Event2<z.infer<typeof turnSteerSchema>> {
   static override readonly type = 'turn.steer';
   static override readonly durable = true;
+  static override readonly observable = true;
   static override readonly schema = turnSteerSchema;
 }
 export interface TurnSteer extends z.infer<typeof turnSteerSchema> {}
@@ -107,7 +119,9 @@ export const turnKey = defineState(
     }
     if (next !== s) return next;
   })
-  .on(TurnPrompt, (s) => advanceTurnClock(s, s.nextTurnId + 1))
+  .on(TurnPrompt, (s, e) =>
+    advanceTurnClock(s, Math.max(s.nextTurnId, (e.turnId ?? s.nextTurnId) + 1)),
+  )
   .on(TurnSteer, () => {})
   .on(TurnCancel, (s, e) => {
     if (e.target === undefined || e.turnId === undefined) return;

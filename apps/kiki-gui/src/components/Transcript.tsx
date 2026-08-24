@@ -495,7 +495,7 @@ const SkillMessage = memo(function SkillMessage({ block }: { block: SkillBlock }
 const SteerMessage = memo(function SteerMessage({ block }: { block: SteerBlock }) {
   const { t, time } = useI18n();
   return (
-    <div className="anim-enter flex flex-col items-start" title={time.absoluteTime(block.createdAt)}>
+    <div data-steer className="anim-enter flex flex-col items-start" title={time.absoluteTime(block.createdAt)}>
       <span className="mb-1 flex items-baseline gap-1.5 pl-1">
         <span className="rounded-full border border-accent/30 bg-accent-soft px-1.5 py-px text-[10px] font-semibold tracking-wide text-accent uppercase">
           {t('transcript.steerChip')}
@@ -513,7 +513,7 @@ const SteerMessage = memo(function SteerMessage({ block }: { block: SteerBlock }
 const ShellMessage = memo(function ShellMessage({ block }: { block: ShellBlock }) {
   const { t } = useI18n();
   return (
-    <div className="anim-enter overflow-hidden rounded-lg bg-ink">
+    <div data-shell className="anim-enter overflow-hidden rounded-lg bg-ink">
       <div className="flex items-center gap-2 border-b border-white/10 px-3 py-1.5">
         <span className="font-mono text-[11px] font-semibold text-accent">shell</span>
         {!block.done ? <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" /> : null}

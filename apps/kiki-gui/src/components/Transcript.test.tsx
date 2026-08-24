@@ -28,7 +28,25 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
-import { createViewState, type Block, type SessionViewState } from '../state/transcript';
+import type { AgentTranscriptResponse, KikiClient } from '../lib/client';
+import type { KikiSocket } from '../lib/ws';
+import { SessionController } from '../state/sessionController';
+import { assistantMessageIdFromBlockId, createViewState, type Block, type SessionViewState } from '../state/transcript';
+import {
+  ASSISTANT_FRAME_ID,
+  CHILD_AGENT_ID,
+  PROMPT_ID,
+  USER_MESSAGE_ID,
+  appendOps,
+  childAppendOps,
+  childResetSnapshot,
+  completeTurnOps,
+  olderTurnSnapshot,
+  opsEvent,
+  resetEvent,
+  spawnChildOps,
+  userTurnSnapshot,
+} from '../state/__fixtures__/canonicalTranscript';
 import { Markdown } from './Markdown';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import {
@@ -481,6 +499,29 @@ describe('message row actions', () => {
     expect(rowActionButtons(rows[1]!)).toEqual(['copy']);
   });
 
+  it('keeps fork on a settled journal user even if a later regenerate prompt is still running', async () => {
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage: () => undefined,
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const container = await renderTranscript(
+      [
+        userBlock({
+          id: 'user-um-anchor',
+          text: 'First fixture question — edited resend.',
+          userMessageId: 'um-anchor',
+          promptId: 'p-regen',
+        }),
+        assistantBlock('agent-frame-asst-t1', 'REGENERATED-REPLY replaced the old tail.'),
+      ],
+      rowActions,
+    );
+    const rows = [...container.querySelectorAll('[data-block-id]')];
+    expect(rowActionButtons(rows[0]!)).toEqual(['copy', 'edit', 'fork']);
+  });
+
   it('hides all mutating actions when rowActions is absent (read-only surface)', async () => {
     const container = await renderTranscript([
       userBlock({ id: 'user-m1', text: 'question', userMessageId: 'm1' }),
@@ -607,6 +648,273 @@ describe('collapsible user message', () => {
     expect(content.className).not.toContain('collapsed-content-fade');
     expect(toggle?.getAttribute('aria-expanded')).toBe('true');
     restore();
+  });
+});
+
+function snapshotResponse() {
+  return {
+    as_of_seq: 0,
+    epoch: 'epoch-canonical',
+    session: {
+      id: 'session_test',
+      workspace_id: 'wd_test',
+      title: 'Canonical',
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+      busy: false,
+      metadata: { cwd: 'C:/tmp' },
+      agent_config: { model: '' },
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        total_cost_usd: 0,
+        context_tokens: 0,
+        context_limit: 0,
+        turn_count: 0,
+      },
+      permission_rules: [],
+      message_count: 0,
+      last_seq: 0,
+    },
+    messages: { items: [], has_more: false },
+    in_flight_turn: null,
+    pending_approvals: [],
+    pending_questions: [],
+  };
+}
+
+function emptyTranscriptPage(): AgentTranscriptResponse {
+  return {
+    agent_id: 'main',
+    items: [],
+    has_more: false,
+    tasks: [],
+    interactions: [],
+    attachments: [],
+    todos: [],
+    prompts: [],
+    meta: {},
+  };
+}
+
+async function openLiveTranscript() {
+  const client = {
+    snapshot: vi.fn(async () => snapshotResponse()),
+    listPrompts: vi.fn(async () => ({ active: null, queued: [] })),
+    listTasks: vi.fn(async () => ({ items: [] })),
+    getSessionGoal: vi.fn(async () => null),
+    getAgentTranscript: vi.fn(async () => emptyTranscriptPage()),
+    submitPrompt: vi.fn(),
+  };
+  const socket = {
+    subscribe: vi.fn(),
+    unsubscribe: vi.fn(),
+    updateCursor: vi.fn(),
+    abort: vi.fn(),
+    setTranscriptGrades: vi.fn(),
+    restartGeneration: vi.fn(),
+    updateTranscriptSince: vi.fn(),
+    clearTranscriptSince: vi.fn(),
+  };
+  const pending: (() => void)[] = [];
+  const controller = new SessionController(
+    client as unknown as KikiClient,
+    socket as unknown as KikiSocket,
+    'session_test',
+    {
+      scheduler: {
+        schedule(callback: () => void) {
+          pending.push(callback);
+          return pending.length;
+        },
+        cancel: () => {
+          pending.length = 0;
+        },
+      },
+    },
+  );
+  await controller.open();
+  return {
+    controller,
+    client,
+    flush() {
+      while (pending.length > 0) pending.shift()?.();
+    },
+  };
+}
+
+function transcriptTree(
+  controller: SessionController,
+  extras?: { forest?: ReturnType<SessionController['getForest']>; composer?: boolean },
+): ReactNode {
+  const composer = extras?.composer === true
+    ? (
+        <textarea
+          data-composer
+          defaultValue="keep focus"
+        />
+      )
+    : null;
+  return (
+    <>
+      <Transcript
+        state={controller.getState()}
+        forest={extras?.forest ?? controller.getForest()}
+        onLoadOlder={() => Promise.resolve(false)}
+        onResolveApproval={() => noopActions()}
+        onAnswerQuestion={() => noopActions()}
+        onDismissQuestion={() => noopActions()}
+        rowActions={{
+          disabled: false,
+          onEditMessage: () => undefined,
+          onRegenerate: () => undefined,
+          onFork: () => undefined,
+        }}
+      />
+      {composer}
+    </>
+  );
+}
+
+async function renderController(
+  controller: SessionController,
+  extras?: { forest?: ReturnType<SessionController['getForest']>; composer?: boolean },
+): Promise<{ root: Root; container: HTMLDivElement }> {
+  const { root, container } = makeRoot();
+  await renderSettled(root, transcriptTree(controller, extras));
+  return { root, container };
+}
+
+describe('canonical mount and key stability', () => {
+  it('keeps the same DOM node across consecutive deltas', async () => {
+    const { controller, flush } = await openLiveTranscript();
+    controller.handleTranscript(resetEvent('main', userTurnSnapshot({ streaming: true, assistantText: 'He' }), 1));
+    const { root, container } = await renderController(controller);
+    const before = container.querySelector(`[data-block-id="agent-frame-${ASSISTANT_FRAME_ID}"]`);
+    expect(before).not.toBeNull();
+    controller.handleTranscript(opsEvent('main', appendOps(2, 'llo'), 2));
+    flush();
+    await renderSettled(
+      root,
+      <Transcript
+        state={controller.getState()}
+        onLoadOlder={() => Promise.resolve(false)}
+        onResolveApproval={() => noopActions()}
+        onAnswerQuestion={() => noopActions()}
+        onDismissQuestion={() => noopActions()}
+      />,
+    );
+    const after = container.querySelector(`[data-block-id="agent-frame-${ASSISTANT_FRAME_ID}"]`);
+    expect(after).toBe(before);
+    expect(after?.textContent).toContain('Hello');
+    controller.close();
+  });
+
+  it('keeps the same DOM node from running to completed', async () => {
+    const { controller, flush } = await openLiveTranscript();
+    controller.handleTranscript(resetEvent('main', userTurnSnapshot({ streaming: true, assistantText: 'Hello' }), 1));
+    const { root, container } = await renderController(controller);
+    const before = container.querySelector(`[data-block-id="agent-frame-${ASSISTANT_FRAME_ID}"]`);
+    controller.handleTranscript(opsEvent('main', completeTurnOps(), 2));
+    flush();
+    await renderSettled(root, transcriptTree(controller));
+    const after = container.querySelector(`[data-block-id="agent-frame-${ASSISTANT_FRAME_ID}"]`);
+    expect(after).not.toBeNull();
+    expect(after?.getAttribute('data-block-id')).toBe(before?.getAttribute('data-block-id'));
+    controller.close();
+  });
+
+  it('keeps unchanged keys across reset/reconcile and prepend older', async () => {
+    const { controller, client } = await openLiveTranscript();
+    controller.handleTranscript(resetEvent('main', { ...userTurnSnapshot(), hasMoreOlder: true }, 1, true));
+    const { root, container } = await renderController(controller);
+    const live = container.querySelector(`[data-block-id="user-${USER_MESSAGE_ID}"]`);
+    expect(live).not.toBeNull();
+    controller.handleTranscript(resetEvent('main', { ...userTurnSnapshot(), hasMoreOlder: true }, 2, true));
+    await renderSettled(root, transcriptTree(controller));
+    expect(container.querySelector(`[data-block-id="user-${USER_MESSAGE_ID}"]`)).toBe(live);
+    client.getAgentTranscript.mockResolvedValueOnce({
+      agent_id: 'main',
+      has_more: false,
+      items: olderTurnSnapshot().items,
+      attachments: [],
+    });
+    await controller.loadOlderMessages('main');
+    await renderSettled(root, transcriptTree(controller));
+    expect(container.querySelector(`[data-block-id="user-${USER_MESSAGE_ID}"]`)).toBe(live);
+    expect(container.querySelector('[data-block-id="user-um-old"]')).not.toBeNull();
+    controller.close();
+  });
+
+  it('does not remount parent rows when only a child agent appends', async () => {
+    const { controller, flush } = await openLiveTranscript();
+    controller.handleTranscript(resetEvent('main', userTurnSnapshot({ streaming: true, assistantText: 'delegating' }), 1));
+    controller.handleTranscript(opsEvent('main', spawnChildOps(), 2));
+    controller.handleTranscript(resetEvent(CHILD_AGENT_ID, childResetSnapshot(), 1));
+    flush();
+    const { root, container } = await renderController(controller);
+    const parent = container.querySelector(`[data-block-id="agent-frame-${ASSISTANT_FRAME_ID}"]`);
+    const forests = controller.forestPublishCount;
+    controller.handleTranscript(opsEvent(CHILD_AGENT_ID, childAppendOps(), 2));
+    flush();
+    await renderSettled(
+      root,
+      <Transcript
+        state={controller.getState()}
+        forest={controller.getForest()}
+        onLoadOlder={() => Promise.resolve(false)}
+        onResolveApproval={() => noopActions()}
+        onAnswerQuestion={() => noopActions()}
+        onDismissQuestion={() => noopActions()}
+      />,
+    );
+    expect(container.querySelector(`[data-block-id="agent-frame-${ASSISTANT_FRAME_ID}"]`)).toBe(parent);
+    expect(controller.forestPublishCount).toBe(forests);
+    controller.close();
+  });
+
+  it('does not steal composer focus on a pure stream update', async () => {
+    const { controller, flush } = await openLiveTranscript();
+    controller.handleTranscript(resetEvent('main', userTurnSnapshot({ streaming: true, assistantText: 'He' }), 1));
+    const { root, container } = await renderController(controller, { composer: true });
+    const textarea = container.querySelector<HTMLTextAreaElement>('[data-composer]')!;
+    textarea.focus();
+    expect(document.activeElement).toBe(textarea);
+    controller.handleTranscript(opsEvent('main', appendOps(2, 'llo'), 2));
+    flush();
+    await renderSettled(
+      root,
+      <>
+        <Transcript
+          state={controller.getState()}
+          onLoadOlder={() => Promise.resolve(false)}
+          onResolveApproval={() => noopActions()}
+          onAnswerQuestion={() => noopActions()}
+          onDismissQuestion={() => noopActions()}
+        />
+        <textarea data-composer defaultValue="keep focus" />
+      </>,
+    );
+    expect(container.querySelector<HTMLTextAreaElement>('[data-composer]') === document.activeElement
+      || document.activeElement?.getAttribute('data-composer') === '').toBe(true);
+    controller.close();
+  });
+
+  it('exposes user identity for edit/fork and refuses assistant regenerate via parsed live ids', async () => {
+    const { controller } = await openLiveTranscript();
+    controller.handleTranscript(resetEvent('main', userTurnSnapshot(), 1));
+    const { container } = await renderController(controller);
+    const userRow = container.querySelector('[data-block-id="user-agent-turn-t1-prompt"]');
+    expect(userRow?.querySelector('[data-row-action="edit"]')).not.toBeNull();
+    expect(userRow?.querySelector('[data-row-action="fork"]')).not.toBeNull();
+    const user = controller.getState().blocks.find((block) => block.kind === 'user');
+    expect(user).toMatchObject({ userMessageId: USER_MESSAGE_ID, promptId: PROMPT_ID });
+    const assistant = controller.getState().blocks.find((block) => block.kind === 'assistant');
+    expect(assistant?.id).toBe(`agent-frame-${ASSISTANT_FRAME_ID}`);
+    expect(assistantMessageIdFromBlockId(assistant!.id)).toBeUndefined();
+    controller.close();
   });
 });
 

@@ -2,16 +2,18 @@
  * Main view — the conversation of the active session + agent, rendered from
  * the transcript surface (`/api/v1`):
  *
- *  - FULL state comes from the REST transcript API only: the initial load
- *    reads the newest page, a full refresh re-reads from the tail backwards
- *    until the previously loaded window is re-covered, and "Load earlier
- *    turns" pages further with a `before_turn` cursor.
- *  - The WS channel (`/api/v1/ws`) is a DELTA channel only: `transcript.ops`
- *    at `delta` grade; `transcript.reset` snapshots are ignored. Ops are
- *    buffered while a REST refresh is in flight and flushed onto the fresh
- *    pages — idempotent upserts and offset-placed appends make that converge.
- *  - Loss signals (`resync_required`, append gap, socket reconnect) trigger
- *    a full REST refresh; nothing is resynced from the socket itself.
+ *  - FULL state comes from the REST transcript API: the initial load reads
+ *    the newest page, a full refresh re-reads from the tail backwards until
+ *    the previously loaded window is re-covered, and older history pages
+ *    further with a `before_turn` cursor.
+ *  - The WS channel (`/api/v1/ws`) is incremental at `block` grade:
+ *    `transcript.ops` plus in-place `transcript.reset` (coverage-aware
+ *    reconcile — already-loaded older turns and unchanged node identity
+ *    survive). Ops are buffered while a REST reload / catch-up is in flight
+ *    and flushed onto the fresh pages.
+ *  - Reconnect / `resync_required` / append-offset gap first catch up from
+ *    the per-agent `{epoch?, seq}` cursor; only `complete: false` falls back
+ *    to a baseline reset. Grade-filtered seq jumps are not gaps.
  *
  * Rendering is turn-granular (turn → step → frame) and typed entirely by the
  * transcript data model. Prompts/cancels go through the `IAgentPromptService`
@@ -35,6 +37,7 @@ import {
   type NoticeFrame,
   type ToolCallFrame,
   type TranscriptAttachment,
+  type TranscriptCursor,
   type TranscriptFrame,
   type TranscriptInteraction,
   type TranscriptItem,
@@ -74,7 +77,7 @@ import {
   recoverLoadedWindow,
   TranscriptChatStore,
 } from '../transcript/store';
-import { TranscriptWs } from '../transcript/ws';
+import { TranscriptWs, type TranscriptFrameMeta } from '../transcript/ws';
 import { ActionButton, Badge, ErrorLine, JsonView, relTime } from '../ui';
 import { ChatSearchBar } from './ChatSearchBar';
 
@@ -136,23 +139,38 @@ function useTranscriptChannel(
     /** While a REST reload / catch-up is in flight, WS ops are buffered, then flushed. */
     let fetching = true;
     let buffer: TranscriptOperation[] = [];
-    /** Max batch seq seen while buffering (folded into the watermark on flush). */
-    let bufferedSeq: number | undefined;
+    /** Latest cursor seen while buffering (folded into the watermark on flush). */
+    let bufferedCursor: TranscriptCursor | undefined;
     /**
-     * Op-batch watermark: the store is known to include every batch with
-     * seq <= lastSeq. Sourced from REST page watermarks and applied batch
-     * seqs; `undefined` until a sequenced server provides one (legacy
-     * servers never do — every recovery then falls back to full refreshes).
+     * Per-agent watermark `{epoch?, seq}`. Grade filtering may skip batches, so
+     * `seq` is not required to be contiguous — a jump is not a gap.
      */
-    let lastSeq: number | undefined;
+    let lastCursor: TranscriptCursor | undefined;
     /** Cursor of the in-flight recover fetch, paired with `onPageApplied`. */
     let recoverBefore: string | undefined;
-    /** True once the initial page load succeeded (gates reset-driven catch-up). */
-    let seeded = false;
 
-    const noteSeq = (seq: number | undefined): void => {
-      if (seq === undefined) return;
-      lastSeq = lastSeq === undefined ? seq : Math.max(lastSeq, seq);
+    const noteCursor = (cursor: TranscriptCursor | undefined): void => {
+      if (cursor === undefined) return;
+      if (
+        lastCursor === undefined ||
+        (cursor.epoch !== undefined &&
+          lastCursor.epoch !== undefined &&
+          cursor.epoch !== lastCursor.epoch)
+      ) {
+        lastCursor = cursor;
+        return;
+      }
+      lastCursor = {
+        epoch: cursor.epoch ?? lastCursor.epoch,
+        seq: Math.max(lastCursor.seq, cursor.seq),
+      };
+    };
+
+    const cursorFromMeta = (meta: TranscriptFrameMeta | undefined): TranscriptCursor | undefined => {
+      if (meta === undefined) return undefined;
+      const seq = meta.throughSeq ?? meta.cursor?.seq;
+      if (seq === undefined) return undefined;
+      return { epoch: meta.cursor?.epoch, seq };
     };
 
     const flushBuffer = (): void => {
@@ -161,17 +179,14 @@ function useTranscriptChannel(
         const flushed = buffer;
         store.applyOps(flushed);
         trail.recordOps(flushed, 'flushed', undefined, store.getState());
-        noteSeq(bufferedSeq);
+        noteCursor(bufferedCursor);
       }
       buffer = [];
-      bufferedSeq = undefined;
+      bufferedCursor = undefined;
     };
 
-    /** Page (re)load body shared by the full refresh and the catch-up fallback. */
+    /** Page (re)load body shared by the initial load and incomplete-catch-up reset. */
     const reloadPages = async (): Promise<void> => {
-      // The window's oldest turn is the re-cover anchor: after a refresh the
-      // server window may have shifted, and only re-loading up to THIS turn
-      // preserves the previously loaded history.
       const prevOldest = oldestTurnId(store.getState().items);
       if (prevOldest !== undefined) captureAnchor();
       const newest = await fetchTranscriptPage({
@@ -184,9 +199,7 @@ function useTranscriptChannel(
       if (disposed) return;
       store.applyPage(newest, { replace: true });
       trail.recordRest({ pageSize: TRANSCRIPT_PAGE_SIZE }, 'replace', newest, store.getState());
-      lastSeq = newest.seq;
-      // Re-cover the previously loaded window for refreshes (a no-op on the
-      // initial load, where there is no previous oldest turn).
+      noteCursor(newest.cursor);
       await recoverLoadedWindow(
         store,
         prevOldest,
@@ -212,17 +225,16 @@ function useTranscriptChannel(
         },
       );
       if (!disposed) {
-        seeded = true;
         setLoaded(true);
         setLoadError(null);
       }
     };
 
-    /** Full-state (re)load: the legacy recovery path and the initial load. */
+    /** Full-state (re)load: the initial load and the incomplete-catch-up baseline. */
     const refresh = createCoalescedRunner(async (): Promise<void> => {
       fetching = true;
       buffer = [];
-      bufferedSeq = undefined;
+      bufferedCursor = undefined;
       try {
         await reloadPages();
       } catch (error) {
@@ -233,26 +245,26 @@ function useTranscriptChannel(
     });
 
     /**
-     * Targeted catch-up: fetch exactly the op batches after our watermark
-     * (`GET .../transcript/ops?since_seq=`). Falls back to a full page
-     * reload on a legacy server (no seq / endpoint missing), a journal that
-     * no longer covers the gap (`complete: false`), or a fetch failure.
+     * Targeted catch-up from the per-agent cursor. `complete: false` (epoch
+     * mismatch, truncated journal, cold session) is the only baseline-reset
+     * trigger. Filtered seq jumps are not gaps and never clear the store.
      */
     const catchUp = createCoalescedRunner(async (): Promise<void> => {
-      if (lastSeq === undefined) {
+      if (lastCursor === undefined) {
         refresh();
         return;
       }
       fetching = true;
       buffer = [];
-      bufferedSeq = undefined;
+      bufferedCursor = undefined;
       try {
         const res = await fetchTranscriptOps({
           baseUrl,
           token: authToken,
           sessionId,
           agentId,
-          sinceSeq: lastSeq,
+          cursor: lastCursor,
+          grade: 'block',
         });
         if (disposed) return;
         if (!res.complete) {
@@ -262,7 +274,7 @@ function useTranscriptChannel(
             store.applyOps(batch.ops);
             trail.recordOps(batch.ops, 'catchup', undefined, store.getState());
           }
-          noteSeq(res.latestSeq);
+          noteCursor({ epoch: res.epoch, seq: res.throughSeq });
         }
       } catch {
         try {
@@ -280,37 +292,26 @@ function useTranscriptChannel(
       token: authToken,
       sessionId,
       agentId,
-      getSince: () => lastSeq,
+      getSince: () => lastCursor,
       handlers: {
         onOps: (aid, ops, meta) => {
           if (aid !== agentId) return;
+          const cursor = cursorFromMeta(meta);
           if (fetching) {
             buffer.push(...ops);
-            if (meta?.seq !== undefined) {
-              bufferedSeq = Math.max(bufferedSeq ?? 0, meta.seq);
-            }
+            if (cursor !== undefined) bufferedCursor = cursor;
             trail.recordOps(ops, 'buffered', meta?.at, store.getState());
-            return;
-          }
-          // Seq gap: the store is behind by at least one batch. Catch up
-          // point-to-point instead of applying on a stale base (appends are
-          // offset-placed and would surface a gap anyway).
-          if (meta?.seq !== undefined && lastSeq !== undefined && meta.seq > lastSeq + 1) {
-            catchUp();
             return;
           }
           store.applyOps(ops);
           trail.recordOps(ops, 'live', meta?.at, store.getState());
-          noteSeq(meta?.seq);
+          noteCursor(cursor);
         },
-        onReset: (_aid, snapshot, hasMoreOlder, meta) => {
-          trail.recordReset(snapshot, hasMoreOlder, meta?.at, store.getState());
-          // Sequenced mode only: a reset after seeding means the server could
-          // not replay from our `transcript_since` cursor (journal truncated)
-          // — catch up, which itself falls back to a full reload when the seq
-          // window is gone. On legacy servers (no watermark) resets are
-          // routine per-subscribe noise and stay ignored, as before.
-          if (seeded && lastSeq !== undefined) catchUp();
+        onReset: (aid, snapshot, coverage, meta) => {
+          if (aid !== agentId) return;
+          store.applyReset(snapshot, coverage);
+          trail.recordReset(snapshot, coverage.hasMoreOlder, meta?.at, store.getState());
+          noteCursor(cursorFromMeta(meta));
         },
         onResyncRequired: () => {
           trail.recordEvent('resync', undefined, store.getState());

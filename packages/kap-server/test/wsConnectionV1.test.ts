@@ -267,7 +267,10 @@ describe('WsConnectionV1 transcript subscriptions (subscribe_v2)', () => {
       sessionId: 's1',
       grades: { '*': 'delta' },
       opts: {
-        transcriptSince: { main: 7, '*': 3 },
+        transcriptSince: {
+          main: { epoch: undefined, seq: 7 },
+          '*': { epoch: undefined, seq: 3 },
+        },
       },
     });
     expect(conn.subscriptions.get('s1')).toEqual({

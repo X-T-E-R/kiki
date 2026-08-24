@@ -1,8 +1,10 @@
 import { MAIN_AGENT_ID, type Scope } from '@moonshot-ai/agent-core-v2';
 import {
+  filterOpsForGrade,
   isPlainAgentId,
   paginateTurns,
   transcriptOpsCatchupResponseSchema,
+  transcriptOpsQuerySchema,
   transcriptPlanResponseSchema,
   transcriptResponseSchema,
   transcriptUserMessagesResponseSchema,
@@ -62,22 +64,6 @@ const transcriptQueryCoercion = z
   });
 
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
-
-const transcriptOpsQueryCoercion = z
-  .object({
-    agent_id: z.string().min(1),
-    since_seq: z.coerce.number().int().min(0),
-  })
-  .superRefine((value, ctx) => {
-    if (!isPlainAgentId(value.agent_id)) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'agent_id must be a plain agent id (no path separators)',
-        path: ['agent_id'],
-        params: { code: ErrorCode.VALIDATION_FAILED },
-      });
-    }
-  });
 
 const DEFAULT_PAGE_SIZE = 20;
 
@@ -153,6 +139,7 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
         reply.send(
           okEnvelope(
             {
+              session_id,
               agent_id: query.agent_id,
               items: page.items,
               has_more: page.hasMore,
@@ -164,7 +151,8 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
               meta: transcript.getMeta(),
               agents: store.agents(),
               pending_interactions: transcript.listPendingInteractions(),
-              seq: transcriptService.getSeqWatermark(session_id, query.agent_id),
+              cursor: transcriptService.getTranscriptCursor(session_id, query.agent_id),
+              coverage: coverageForItems(page.items, page.hasMore),
             },
             req.id,
           ),
@@ -191,6 +179,7 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
       reply.send(
         okEnvelope(
           {
+            session_id,
             agent_id: query.agent_id,
             items: page.items,
             has_more: page.hasMore,
@@ -202,6 +191,8 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
             meta: snapshot.meta,
             agents: roster,
             pending_interactions: [],
+            cursor: undefined,
+            coverage: coverageForItems(page.items, page.hasMore),
           },
           req.id,
         ),
@@ -215,7 +206,7 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
       method: 'GET',
       path: '/sessions/{session_id}/transcript/ops',
       params: sessionIdParamSchema,
-      querystring: transcriptOpsQueryCoercion,
+      querystring: transcriptOpsQuerySchema,
       success: { data: transcriptOpsCatchupResponseSchema },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
@@ -229,7 +220,10 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
       const { session_id } = req.params;
       const query = req.query;
 
-      const catchup = transcriptService.getOpsSince(session_id, query.agent_id, query.since_seq);
+      const catchup = transcriptService.getOpsSince(session_id, query.agent_id, {
+        epoch: query.epoch,
+        seq: query.since_seq,
+      });
       if (catchup === undefined) {
         const roster = await transcriptService.readColdRoster(session_id);
         if (roster === undefined) {
@@ -238,7 +232,14 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
         }
         reply.send(
           okEnvelope(
-            { agent_id: query.agent_id, batches: [], latest_seq: 0, complete: false },
+            {
+              session_id,
+              agent_id: query.agent_id,
+              epoch: query.epoch ?? `cold:${session_id}:${query.agent_id}`,
+              batches: [],
+              through_seq: 0,
+              complete: false,
+            },
             req.id,
           ),
         );
@@ -247,9 +248,13 @@ export function registerTranscriptRoutes(app: TranscriptRouteHost, deps: Transcr
       reply.send(
         okEnvelope(
           {
+            session_id,
             agent_id: query.agent_id,
-            batches: catchup.batches,
-            latest_seq: catchup.latestSeq,
+            epoch: catchup.epoch,
+            batches: catchup.batches
+              .map((batch) => ({ ...batch, ops: filterOpsForGrade(query.grade, batch.ops) }))
+              .filter((batch) => batch.ops.length > 0),
+            through_seq: catchup.throughSeq,
             complete: catchup.complete,
           },
           req.id,
@@ -417,6 +422,17 @@ function projectUserMessages(
     }
   }
   return { messages, attachments: [...attachments.values()] };
+}
+
+function coverageForItems(items: readonly TranscriptItem[], hasMoreOlder: boolean) {
+  if (!hasMoreOlder) return { kind: 'full' as const, hasMoreOlder: false as const };
+  const turns = items.filter((item) => item.kind === 'turn');
+  return {
+    kind: 'tail' as const,
+    fromTurnId: turns[0]?.turnId,
+    throughTurnId: turns.at(-1)?.turnId,
+    hasMoreOlder,
+  };
 }
 
 function sendSessionNotFound(

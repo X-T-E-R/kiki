@@ -12,6 +12,7 @@ import type {
   TranscriptInteraction,
   TranscriptItem,
   TranscriptMeta,
+  TranscriptPrompt,
   TranscriptTask,
   TranscriptTodo,
 } from '@moonshot-ai/transcript';
@@ -23,6 +24,7 @@ export interface SerializedAgentState {
   readonly interactions: Record<string, TranscriptInteraction>;
   readonly attachments: Record<string, TranscriptAttachment>;
   readonly todos: Record<string, TranscriptTodo>;
+  readonly prompts: Record<string, TranscriptPrompt>;
   readonly meta: TranscriptMeta;
   readonly pendingInteractions: readonly string[];
   readonly hasMoreOlder: boolean;
@@ -41,6 +43,7 @@ export function serializeState(state: AgentState): SerializedAgentState {
     interactions: mapToSortedObject(state.interactions),
     attachments: mapToSortedObject(state.attachments),
     todos: mapToSortedObject(state.todos),
+    prompts: mapToSortedObject(state.prompts),
     meta: state.meta,
     pendingInteractions: [...state.pendingInteractions].sort(),
     hasMoreOlder: state.hasMoreOlder,

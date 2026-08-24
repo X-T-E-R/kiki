@@ -44,3 +44,26 @@ test('unknown scenarios are rejected before returning an output selection', () =
     /unknown scenario\(s\): reconect/,
   );
 });
+
+test('canonical proof subset remains a known scenario list', () => {
+  const canonical = [
+    'basic-stream',
+    'queue',
+    'reconnect',
+    'reconnect-mid-turn',
+    'resync-hold',
+    'rewrite-flow',
+    'subagents',
+    'long-transcript',
+    'subagent-approval',
+    'attachments',
+  ];
+  for (const name of canonical) {
+    assert.equal(typeof name, 'string');
+    assert.notEqual(name.length, 0);
+  }
+  assert.deepEqual(
+    selectProofOutput(ROOT, ['--only=basic-stream,rewrite-flow'], [...canonical, 'reconnect']).only,
+    ['basic-stream', 'rewrite-flow'],
+  );
+});

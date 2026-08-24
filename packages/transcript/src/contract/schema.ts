@@ -6,6 +6,45 @@ export const frameIdSchema = z.string().min(1);
 export const taskIdSchema = z.string().min(1);
 export const agentIdSchema = z.string().min(1);
 
+export const transcriptProvenanceSchema = z.object({
+  source: z.enum(['engine', 'legacy-wire']),
+  recordOrdinal: z.number().int().nonnegative().optional(),
+  partOrdinal: z.number().int().nonnegative().optional(),
+});
+
+export const transcriptLineageSchema = z.object({
+  replacesMessageId: z.string().optional(),
+  parentMessageId: z.string().optional(),
+  rewriteId: z.string().optional(),
+});
+
+export const transcriptMessageIdentitySchema = z.object({
+  messageId: z.string().min(1),
+  role: z.enum(['user', 'assistant', 'tool', 'system']),
+  revision: z.number().int().nonnegative(),
+  provenance: transcriptProvenanceSchema,
+  lineage: transcriptLineageSchema.optional(),
+});
+
+export const transcriptPartIdentitySchema = z.object({
+  partId: z.string().min(1),
+  messageId: z.string().optional(),
+  revision: z.number().int().nonnegative(),
+  provenance: transcriptProvenanceSchema,
+});
+
+export const transcriptAnchorSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('turn'), turnId: turnIdSchema }),
+  z.object({ kind: z.literal('step'), turnId: turnIdSchema, stepId: stepIdSchema }),
+  z.object({
+    kind: z.literal('frame'),
+    turnId: turnIdSchema,
+    stepId: stepIdSchema,
+    frameId: frameIdSchema,
+  }),
+  z.object({ kind: z.literal('tool_call'), toolCallId: z.string().min(1) }),
+]);
+
 const AGENT_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 
 /**
@@ -72,6 +111,7 @@ export const stepStateSchema = z.enum(['running', 'completed', 'interrupted', 'f
 export const textFrameSchema = z.object({
   kind: z.literal('text'),
   frameId: frameIdSchema,
+  part: transcriptPartIdentitySchema.optional(),
   role: z.enum(['assistant', 'user']),
   text: z.string(),
   attachmentIds: z.array(z.string()).optional(),
@@ -84,6 +124,7 @@ export const textFrameSchema = z.object({
 export const thinkingFrameSchema = z.object({
   kind: z.literal('thinking'),
   frameId: frameIdSchema,
+  part: transcriptPartIdentitySchema.optional(),
   text: z.string(),
 });
 
@@ -103,6 +144,7 @@ export const toolFrameProgressSchema = z.object({
 export const toolCallFrameSchema = z.object({
   kind: z.literal('tool'),
   frameId: frameIdSchema,
+  part: transcriptPartIdentitySchema.optional(),
   toolCallId: z.string(),
   name: z.string(),
   view: z.string().optional(),
@@ -123,6 +165,8 @@ export const interactionSchema = z.object({
   interactionId: z.string(),
   interactionKind: z.enum(['approval', 'question']),
   toolCallId: z.string().optional(),
+  origin: z.unknown().optional(),
+  anchor: transcriptAnchorSchema.optional(),
   state: z.enum(['pending', 'approved', 'rejected', 'cancelled', 'answered', 'dismissed']),
   request: z.unknown().optional(),
   response: z.unknown().optional(),
@@ -131,6 +175,7 @@ export const interactionSchema = z.object({
 export const noticeFrameSchema = z.object({
   kind: z.literal('notice'),
   frameId: frameIdSchema,
+  part: transcriptPartIdentitySchema.optional(),
   level: z.enum(['error', 'warning', 'info']),
   source: z.string().optional(),
   message: z.string(),
@@ -167,6 +212,7 @@ export const transcriptTurnSchema = z.object({
   ordinal: z.number().int(),
   state: turnStateSchema,
   origin: turnOriginSchema,
+  message: transcriptMessageIdentitySchema.optional(),
   prompt: z.string().optional(),
   attachmentIds: z.array(z.string()).optional(),
   steps: z.array(transcriptStepSchema),
@@ -343,6 +389,7 @@ export const attachmentSchema = z.object({
       z.object({ kind: z.literal('session_media'), fileId: z.string() }),
     ])
     .optional(),
+  owner: transcriptAnchorSchema.optional(),
   placeholder: z.string().optional(),
 });
 
@@ -392,7 +439,23 @@ export const appendTargetSchema = z.discriminatedUnion('type', [
 ]);
 
 export const transcriptOperationSchema = z.discriminatedUnion('op', [
-  z.object({ op: z.literal('reset'), agentId: agentIdSchema, snapshot: agentTranscriptSnapshotSchema }),
+  z.object({
+    op: z.literal('reset'),
+    agentId: agentIdSchema,
+    snapshot: agentTranscriptSnapshotSchema,
+    grade: z.enum(['turn', 'block', 'delta']).optional(),
+    coverage: z
+      .discriminatedUnion('kind', [
+        z.object({ kind: z.literal('full'), hasMoreOlder: z.literal(false) }),
+        z.object({
+          kind: z.literal('tail'),
+          fromTurnId: turnIdSchema.optional(),
+          throughTurnId: turnIdSchema.optional(),
+          hasMoreOlder: z.boolean(),
+        }),
+      ])
+      .optional(),
+  }),
   z.object({ op: z.literal('turn.upsert'), turn: turnHeaderSchema }),
   z.object({ op: z.literal('step.upsert'), turnId: turnIdSchema, step: stepHeaderSchema }),
   z.object({
@@ -435,15 +498,52 @@ export const transcriptGradeSchema = z.enum(['off', 'turn', 'block', 'delta']);
 
 export const transcriptSeqSchema = z.number().int().nonnegative();
 
+export const transcriptCursorSchema = z.object({
+  epoch: z.string().min(1).optional(),
+  seq: transcriptSeqSchema,
+});
+
+export const transcriptCoverageSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('full'), hasMoreOlder: z.literal(false) }),
+  z.object({
+    kind: z.literal('tail'),
+    fromTurnId: turnIdSchema.optional(),
+    throughTurnId: turnIdSchema.optional(),
+    hasMoreOlder: z.boolean(),
+  }),
+]);
+
+const transcriptCursorInputSchema = z.preprocess(
+  (value) => (typeof value === 'number' ? { epoch: undefined, seq: value } : value),
+  transcriptCursorSchema,
+);
+
 export const transcriptGradeSpecSchema = z.record(z.string(), transcriptGradeSchema);
 
 export const transcriptSubscribeV2PayloadSchema = z.object({
   session_id: z.string().min(1),
   transcript: transcriptGradeSpecSchema,
-  transcript_since: z.record(z.string(), transcriptSeqSchema).optional(),
+  transcript_since: z.record(z.string(), transcriptCursorInputSchema).optional(),
 });
 
 export type TranscriptSubscribeV2Payload = z.infer<typeof transcriptSubscribeV2PayloadSchema>;
+
+export const transcriptOpsQuerySchema = z
+  .object({
+    agent_id: agentIdSchema,
+    epoch: z.string().min(1).optional(),
+    since_seq: z.coerce.number().int().min(0),
+    grade: z.enum(['turn', 'block', 'delta']).default('delta'),
+  })
+  .superRefine((value, ctx) => {
+    if (!isPlainAgentId(value.agent_id)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'agent_id must be a plain agent id (no path separators)',
+        path: ['agent_id'],
+      });
+    }
+  });
 
 /**
  * `GET /v1/sessions/{session_id}/transcript` contract shape, owned by this
@@ -493,6 +593,7 @@ export const agentDescriptorSchema = z.object({
 });
 
 export const transcriptResponseSchema = z.object({
+  session_id: z.string().min(1),
   agent_id: agentIdSchema,
   items: z.array(transcriptItemSchema),
   has_more: z.boolean(),
@@ -504,18 +605,21 @@ export const transcriptResponseSchema = z.object({
   meta: transcriptMetaSchema,
   agents: z.array(agentDescriptorSchema),
   pending_interactions: z.array(z.string()),
-  seq: transcriptSeqSchema.optional(),
+  cursor: transcriptCursorSchema.optional(),
+  coverage: transcriptCoverageSchema,
 });
 
 export const transcriptOpsCatchupResponseSchema = z.object({
+  session_id: z.string().min(1),
   agent_id: agentIdSchema,
+  epoch: z.string().min(1),
   batches: z.array(
     z.object({
       seq: transcriptSeqSchema,
       ops: z.array(transcriptOperationSchema),
     }),
   ),
-  latest_seq: transcriptSeqSchema,
+  through_seq: transcriptSeqSchema,
   complete: z.boolean(),
 });
 
@@ -593,14 +697,18 @@ export const transcriptPlanResponseSchema = z.object({
 });
 
 export const transcriptResetPayloadSchema = z.object({
+  session_id: z.string().min(1),
   agent_id: agentIdSchema,
   snapshot: agentTranscriptSnapshotSchema,
-  has_more_older: z.boolean(),
-  seq: transcriptSeqSchema.optional(),
+  grade: z.enum(['turn', 'block', 'delta']),
+  coverage: transcriptCoverageSchema,
+  cursor: transcriptCursorSchema,
 });
 
 export const transcriptOpsPayloadSchema = z.object({
+  session_id: z.string().min(1),
   agent_id: agentIdSchema,
   ops: z.array(transcriptOperationSchema),
-  seq: transcriptSeqSchema.optional(),
+  cursor: transcriptCursorSchema,
+  through_seq: transcriptSeqSchema,
 });

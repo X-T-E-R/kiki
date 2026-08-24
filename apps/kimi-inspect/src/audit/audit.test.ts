@@ -178,8 +178,10 @@ describe('AuditTrail', () => {
     interactions: [],
     attachments: [],
     todos: [],
+    prompts: [],
     meta: {},
     pendingInteractions: [],
+    coverage: { kind: 'full' as const, hasMoreOlder: false as const },
   };
 
   it('records entries with increasing indices, timestamps, and state references', () => {

@@ -323,6 +323,8 @@ export const en = {
   'transcript.marker.notice': 'Notice',
   'transcript.marker.cron': 'Scheduled job',
   'transcript.marker.goal': 'Goal updated',
+  'transcript.marker.plan': 'Plan updated',
+  'transcript.marker.swarm': 'Swarm',
   'transcript.failed': 'failed',
   'transcript.steps': 'Steps · {count}',
   'transcript.runningAria': 'running',

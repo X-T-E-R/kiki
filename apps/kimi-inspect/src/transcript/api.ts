@@ -5,12 +5,15 @@
  * This is the ONLY source of full transcript state: the initial load fetches
  * the newest page, a full refresh re-reads page by page from the tail
  * backwards, and "load earlier" pages further with a `before_turn` cursor.
- * (The WS channel, by contrast, carries incremental `transcript.ops` only.)
+ * (The WS channel, by contrast, carries incremental `transcript.ops` and
+ * in-place `transcript.reset` baselines.)
  *
  * Pages are turn-segment slices keyed by a turn-id cursor (`before_turn`
  * pages towards older turns). The response is validated with the
  * package-owned `transcriptResponseSchema` — the schema is the single source
  * of truth for the wire shape, local code consumes the domain model types.
+ * `session_id` is required on the wire and checked by the schema; this client
+ * already addresses one session via the URL, so the echo is not stored.
  */
 
 import {
@@ -19,10 +22,13 @@ import {
   transcriptResponseSchema,
   type AttachmentSource,
   type TranscriptAttachment,
+  type TranscriptCoverage,
+  type TranscriptCursor,
   type TranscriptInteraction,
   type TranscriptItem,
   type TranscriptMeta,
   type TranscriptOperation,
+  type TranscriptPrompt,
   type TranscriptTask,
   type TranscriptTodo,
 } from '@moonshot-ai/transcript';
@@ -75,10 +81,13 @@ export interface TranscriptPage {
   readonly interactions: readonly TranscriptInteraction[];
   readonly attachments: readonly TranscriptAttachment[];
   readonly todos: readonly TranscriptTodo[];
+  readonly prompts: readonly TranscriptPrompt[];
   readonly meta: TranscriptMeta;
   readonly pendingInteractions: readonly string[];
-  /** Op-batch watermark (state includes every batch with seq <= N); absent on legacy servers. */
-  readonly seq?: number | undefined;
+  /** Op-batch watermark for this agent; absent on cold sessions. */
+  readonly cursor?: TranscriptCursor | undefined;
+  /** Window the page covers; prepends ignore this (items-only merge). */
+  readonly coverage: TranscriptCoverage;
 }
 
 /** One turn per page: fine-grained paging — the viewport grows a turn at a time. */
@@ -126,16 +135,19 @@ export async function fetchTranscriptPage(
   const interactions: readonly TranscriptInteraction[] = parsed.data.interactions;
   const attachments: readonly TranscriptAttachment[] = parsed.data.attachments;
   const todos: readonly TranscriptTodo[] = parsed.data.todos;
+  const prompts: readonly TranscriptPrompt[] = parsed.data.prompts;
   return {
     items,
-    hasMoreOlder: parsed.data.has_more,
+    hasMoreOlder: parsed.data.coverage.hasMoreOlder,
     tasks,
     interactions,
     attachments,
     todos,
+    prompts,
     meta: parsed.data.meta,
     pendingInteractions: parsed.data.pending_interactions,
-    seq: parsed.data.seq,
+    cursor: parsed.data.cursor,
+    coverage: parsed.data.coverage,
   };
 }
 
@@ -148,9 +160,15 @@ export interface TranscriptOpBatch {
 }
 
 export interface TranscriptOpsCatchup {
+  readonly epoch: string;
   readonly batches: readonly TranscriptOpBatch[];
-  readonly latestSeq: number;
-  /** False = the journal cannot cover `sinceSeq`; the caller must full-refresh. */
+  /** Journal watermark (state includes every batch with seq <= N). */
+  readonly throughSeq: number;
+  /**
+   * False = the journal cannot cover the requested cursor (epoch mismatch,
+   * truncated window, or cold session). The caller must take a baseline reset
+   * rather than apply these batches.
+   */
   readonly complete: boolean;
 }
 
@@ -159,24 +177,31 @@ export interface FetchTranscriptOpsOptions {
   readonly token?: string | undefined;
   readonly sessionId: string;
   readonly agentId: string;
-  /** Return journaled batches with seq strictly greater than this watermark. */
-  readonly sinceSeq: number;
+  /** Return journaled batches with seq strictly greater than this cursor. */
+  readonly cursor: TranscriptCursor;
+  /**
+   * Catch-up grade. Inspect's live socket is `block`; omitting this would
+   * default the server to `delta` and leak per-token appends.
+   */
+  readonly grade?: 'turn' | 'block' | 'delta';
   /** Injectable for tests. */
   readonly fetchImpl?: typeof fetch;
 }
 
 /**
- * Point-to-point catch-up: `GET .../transcript/ops?agent_id=&since_seq=N`.
- * Available on sequenced servers; a 404/envelope error means the server
- * predates the endpoint and the caller should fall back to a full refresh.
+ * Point-to-point catch-up: `GET .../transcript/ops?agent_id=&since_seq=&epoch=`.
+ * `complete: false` means the journal cannot cover the cursor — the caller
+ * applies a baseline reset instead of these batches.
  */
 export async function fetchTranscriptOps(
   opts: FetchTranscriptOpsOptions,
 ): Promise<TranscriptOpsCatchup> {
   const params = new URLSearchParams({
     agent_id: opts.agentId,
-    since_seq: String(opts.sinceSeq),
+    since_seq: String(opts.cursor.seq),
+    grade: opts.grade ?? 'block',
   });
+  if (opts.cursor.epoch !== undefined) params.set('epoch', opts.cursor.epoch);
   const headers: Record<string, string> = {};
   if (opts.token !== undefined && opts.token !== '') {
     headers['authorization'] = `Bearer ${opts.token}`;
@@ -195,8 +220,9 @@ export async function fetchTranscriptOps(
     throw new Error('transcript ops: unexpected response shape');
   }
   return {
+    epoch: parsed.data.epoch,
     batches: parsed.data.batches,
-    latestSeq: parsed.data.latest_seq,
+    throughSeq: parsed.data.through_seq,
     complete: parsed.data.complete,
   };
 }

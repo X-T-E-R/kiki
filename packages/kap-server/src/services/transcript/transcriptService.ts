@@ -1,27 +1,26 @@
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 
 import {
-  IAgentLifecycleService,
   ISessionIndex,
   ISessionMetadata,
-  IAgentLoopService,
   followSessionLifecycles,
   getLiveSessionById,
-  reduceContextTranscript,
   type IDisposable,
   type Scope,
   type SessionMeta,
 } from '@moonshot-ai/agent-core-v2';
 import {
+  AgentTranscript,
+  TranscriptFactReducer,
   TranscriptStore,
-  foldWireRecordFacts,
-  groupMessagesIntoSnapshot,
+  TranscriptWireAdapter,
   isPlainAgentId,
   type AgentDescriptor,
-  type AgentTranscript,
   type AgentTranscriptSnapshot,
   type TranscriptChangeEvent,
+  type TranscriptCursor,
   type TranscriptMarker,
   type TranscriptOperation,
   type TranscriptTaskRef,
@@ -57,28 +56,28 @@ interface LiveEntry {
 }
 
 interface AgentOpsJournal {
+  epoch: string;
   nextSeq: number;
   batches: { seq: number; ops: TranscriptOperation[] }[];
 }
 
-type TranscriptOpsListener = (event: TranscriptChangeEvent, seq: number) => void;
+type TranscriptOpsListener = (event: TranscriptChangeEvent, cursor: TranscriptCursor) => void;
 
 export const TRANSCRIPT_OPS_JOURNAL_CAPACITY = 2000;
 
 export interface TranscriptOpsCatchup {
+  readonly epoch: string;
   readonly batches: readonly {
     readonly seq: number;
     readonly ops: readonly TranscriptOperation[];
   }[];
-  readonly latestSeq: number;
+  readonly throughSeq: number;
   readonly complete: boolean;
 }
 
 export class TranscriptService {
   private readonly live = new Map<string, LiveEntry>();
   private readonly opsListeners = new Map<string, Set<TranscriptOpsListener>>();
-  /** Debounced post-turn heals: `${sessionId}:${agentId}` → pending ordinals + timer. */
-  private readonly healTimers = new Map<string, { ordinals: Set<number>; timer: NodeJS.Timeout }>();
 
   constructor(private readonly deps: TranscriptServiceDeps) {
     followSessionLifecycles(deps.core.accessor, (service) => {
@@ -111,8 +110,12 @@ export class TranscriptService {
     const store = new TranscriptStore(sessionId);
     let binding: TranscriptBinding;
     try {
-      binding = bindSessionTranscript(store, session, this.deps.logger, (event) =>
-        this.handleLiveOps(sessionId, event),
+      binding = bindSessionTranscript(
+        store,
+        session,
+        this.deps.logger,
+        (event) => this.handleLiveOps(sessionId, event),
+        true,
       );
     } catch (error) {
       if (error instanceof Error && error.message === 'InstantiationService has been disposed') {
@@ -203,22 +206,17 @@ export class TranscriptService {
         'transcript: history backfill failed, continuing without it',
       );
     }
-    if (this.live.get(sessionId)?.store !== store) return;
+    const entry = this.live.get(sessionId);
+    if (entry?.store !== store) return;
     const transcript = store.ensureAgent(agentId);
     if (snapshot !== undefined) {
-      const superseded = supersededColdAttachmentIds(snapshot, transcript);
-      const ops = snapshotToOps(snapshot, (turn) =>
-        healTurnOps(turn, transcript.getTurn(turn.turnId)),
-      ).filter(
-        (op) => op.op !== 'attachment.upsert' || !superseded.has(op.attachment.attachmentId),
-      );
-      const overlay = this.liveTurnOverlay(sessionId, agentId, transcript, snapshot);
-      if (overlay !== undefined) ops.push(overlay);
-      const result = transcript.apply(ops);
+      const result = transcript.apply(snapshotToOps(snapshot));
       if (result.gap !== undefined) {
         this.deps.logger?.warn({ sessionId, agentId, gap: result.gap }, 'transcript: backfill append gap');
       }
-      this.dispatchOps(sessionId, { agentId, ops });
+      if (result.accepted.length > 0) {
+        this.dispatchOps(sessionId, { agentId, ops: result.accepted });
+      }
     }
     const existing = store.agents().find((d) => d.agentId === agentId);
     const hasContent =
@@ -232,17 +230,9 @@ export class TranscriptService {
         createdAt: existing?.createdAt,
       });
     }
+    entry.binding.finishReplay(agentId);
   }
 
-  /**
-   * Subscribe to the session's mapped-op stream (one shared subscription per
-   * session — the broadcaster fans grades out against it). These are the
-   * projector-mapped ops, not the store's accepted ops; see
-   * `bindSessionTranscript` for why. Each batch carries its per-agent seq
-   * (consecutive from 1; 0 only when the session has no live entry, which a
-   * registered listener cannot observe). Returns `undefined` when the session
-   * is not live (caller skips streaming for cold sessions).
-   */
   onSessionOps(sessionId: string, listener: TranscriptOpsListener): IDisposable | undefined {
     if (this.forSessionLive(sessionId) === undefined) return undefined;
     let listeners = this.opsListeners.get(sessionId);
@@ -262,177 +252,76 @@ export class TranscriptService {
   }
 
   private dispatchOps(sessionId: string, event: TranscriptChangeEvent): void {
-    const seq = this.journalOps(sessionId, event);
-    if (seq === undefined) return;
+    const cursor = this.journalOps(sessionId, event);
+    if (cursor === undefined) return;
     const listeners = this.opsListeners.get(sessionId);
     if (listeners === undefined) return;
     for (const listener of listeners) {
       try {
-        listener(event, seq);
+        listener(event, cursor);
       } catch {
       }
     }
   }
 
-  private journalOps(sessionId: string, event: TranscriptChangeEvent): number | undefined {
+  private journalFor(sessionId: string, agentId: string): AgentOpsJournal | undefined {
     const entry = this.live.get(sessionId);
     if (entry === undefined) return undefined;
-    let journal = entry.opsJournals.get(event.agentId);
+    let journal = entry.opsJournals.get(agentId);
     if (journal === undefined) {
-      journal = { nextSeq: 1, batches: [] };
-      entry.opsJournals.set(event.agentId, journal);
+      journal = { epoch: randomUUID(), nextSeq: 1, batches: [] };
+      entry.opsJournals.set(agentId, journal);
     }
+    return journal;
+  }
+
+  private journalOps(sessionId: string, event: TranscriptChangeEvent): TranscriptCursor | undefined {
+    if (event.ops.length === 0) return undefined;
+    const journal = this.journalFor(sessionId, event.agentId);
+    if (journal === undefined) return undefined;
     const seq = journal.nextSeq++;
     journal.batches.push({ seq, ops: [...event.ops] });
     if (journal.batches.length > TRANSCRIPT_OPS_JOURNAL_CAPACITY) journal.batches.shift();
-    return seq;
+    return { epoch: journal.epoch, seq };
+  }
+
+  getTranscriptCursor(sessionId: string, agentId: string): TranscriptCursor {
+    const journal = this.journalFor(sessionId, agentId);
+    return journal === undefined
+      ? { epoch: undefined, seq: 0 }
+      : { epoch: journal.epoch, seq: journal.nextSeq - 1 };
   }
 
   getSeqWatermark(sessionId: string, agentId: string): number {
-    const entry = this.live.get(sessionId);
-    if (entry === undefined) return 0;
-    const journal = entry.opsJournals.get(agentId);
-    return journal === undefined ? 0 : journal.nextSeq - 1;
+    return this.getTranscriptCursor(sessionId, agentId).seq;
   }
 
-  getOpsSince(sessionId: string, agentId: string, since: number): TranscriptOpsCatchup | undefined {
+  getOpsSince(
+    sessionId: string,
+    agentId: string,
+    sinceInput: TranscriptCursor | number,
+  ): TranscriptOpsCatchup | undefined {
     if (this.forSessionLive(sessionId) === undefined) return undefined;
-    const entry = this.live.get(sessionId);
-    if (entry === undefined) return undefined;
-    const journal = entry.opsJournals.get(agentId);
-    const latestSeq = journal === undefined ? 0 : journal.nextSeq - 1;
-    if (since > latestSeq) {
-      return { batches: [], latestSeq, complete: false };
+    const journal = this.journalFor(sessionId, agentId);
+    if (journal === undefined) return undefined;
+    const since = typeof sinceInput === 'number' ? { epoch: undefined, seq: sinceInput } : sinceInput;
+    const throughSeq = journal.nextSeq - 1;
+    if ((since.epoch !== undefined && since.epoch !== journal.epoch) || since.seq > throughSeq) {
+      return { epoch: journal.epoch, batches: [], throughSeq, complete: false };
     }
-    const retained = journal?.batches.filter((batch) => batch.seq > since) ?? [];
-    const oldest = journal?.batches[0]?.seq;
+    const retained = journal.batches.filter((batch) => batch.seq > since.seq);
+    const oldest = journal.batches[0]?.seq;
     const complete =
-      since === latestSeq ||
-      (retained.length > 0 && oldest !== undefined && oldest <= since + 1);
-    const batches = retained.map((batch) => ({
-      seq: batch.seq,
-      ops: batch.ops,
-    }));
-    return { batches, latestSeq, complete };
+      since.seq === throughSeq ||
+      (retained.length > 0 && oldest !== undefined && oldest <= since.seq + 1);
+    const batches = retained.map((batch) => ({ seq: batch.seq, ops: batch.ops }));
+    return { epoch: journal.epoch, batches, throughSeq, complete };
   }
 
-  /**
-   * Live (projector-mapped) op batches: fan out, then watch for terminal
-   * turns to heal. Backfill batches go through `dispatchOps` directly so a
-   * replayed history cannot retrigger heals.
-   */
   private handleLiveOps(sessionId: string, event: TranscriptChangeEvent): void {
     this.dispatchOps(sessionId, event);
-    for (const op of event.ops) {
-      if (op.op === 'turn.upsert' && TERMINAL_TURN_STATES.has(op.turn.state)) {
-        this.scheduleTurnHeal(sessionId, event.agentId, op.turn.ordinal);
-      }
-    }
   }
 
-  private scheduleTurnHeal(sessionId: string, agentId: string, ordinal: number): void {
-    const key = `${sessionId}:${agentId}`;
-    const existing = this.healTimers.get(key);
-    if (existing !== undefined) {
-      existing.ordinals.add(ordinal);
-      existing.timer.refresh();
-      return;
-    }
-    const ordinals = new Set([ordinal]);
-    const timer = setTimeout(() => {
-      this.healTimers.delete(key);
-      void this.healEndedTurns(sessionId, agentId, ordinals);
-    }, TURN_HEAL_DEBOUNCE_MS);
-    timer.unref();
-    this.healTimers.set(key, { ordinals, timer });
-  }
-
-  /**
-   * A backfill rebuilds every turn as 'completed' — the cold grouping cannot
-   * see in-flight work. When the agent's loop is actually mid-turn, re-assert
-   * the active turn's header as 'running' AFTER the snapshot ops (its cold
-   * 'completed' header would otherwise win, even over a live running header
-   * the projector already wrote). Live header fields win, then the
-   * snapshot's. Returns `undefined` only when the loop is idle.
-   */
-  private liveTurnOverlay(
-    sessionId: string,
-    agentId: string,
-    transcript: AgentTranscript,
-    snapshot: AgentTranscriptSnapshot,
-  ): TranscriptOperation | undefined {
-    const session = getLiveSessionById(this.deps.core.accessor, sessionId);
-    const agent = session?.accessor.get(IAgentLifecycleService).get(agentId);
-    const status = agent?.accessor.get(IAgentLoopService).status();
-    if (status?.state !== 'running' || status.activeTurnId === undefined) return undefined;
-    const ordinal = status.activeTurnId;
-    const turnId = `t${ordinal}`;
-    const existing = transcript.getTurn(turnId);
-    const snapshotTurn = snapshot.items.find(
-      (item): item is TranscriptTurn => item.kind === 'turn' && item.ordinal === ordinal,
-    );
-    return {
-      op: 'turn.upsert',
-      turn: {
-        kind: 'turn',
-        turnId,
-        ordinal,
-        state: 'running',
-        origin: existing?.origin ?? snapshotTurn?.origin ?? { kind: 'other' },
-        prompt: existing?.prompt ?? snapshotTurn?.prompt,
-        attachmentIds: existing?.attachmentIds ?? snapshotTurn?.attachmentIds,
-        startedAt: existing?.startedAt ?? snapshotTurn?.startedAt,
-      },
-    };
-  }
-
-  /**
-   * Re-read the agent's persisted history and merge the ended turn(s) back
-   * into the live store. The projector attaches to the bus at bind time, so
-   * text streamed (and persisted) before that is missing from its frames; by
-   * the time a turn ends, its records are complete on disk. The merge is
-   * deliberately conservative (`healTurnOps`): live state wins everywhere
-   * except the one regression being healed — truncated text/thinking frames.
-   */
-  private async healEndedTurns(
-    sessionId: string,
-    agentId: string,
-    ordinals: ReadonlySet<number>,
-  ): Promise<void> {
-    const entry = this.live.get(sessionId);
-    if (entry === undefined) return;
-    let snapshot: AgentTranscriptSnapshot | undefined;
-    try {
-      snapshot = await this.readColdSnapshot(sessionId, agentId);
-    } catch (error) {
-      this.deps.logger?.warn(
-        { sessionId, agentId, err: error instanceof Error ? error.message : error },
-        'transcript: post-turn heal failed, continuing without it',
-      );
-      return;
-    }
-    if (snapshot === undefined || this.live.get(sessionId)?.store !== entry.store) return;
-    const transcript = entry.store.getAgent(agentId);
-    if (transcript === undefined) return;
-    const turnOps: TranscriptOperation[] = [];
-    for (const item of snapshot.items) {
-      if (item.kind !== 'turn' || !ordinals.has(item.ordinal)) continue;
-      turnOps.push(...healTurnOps(item, transcript.getTurn(item.turnId)));
-    }
-    if (turnOps.length === 0) return;
-    const superseded = supersededColdAttachmentIds(snapshot, transcript);
-    const ops: TranscriptOperation[] = [
-      ...snapshot.attachments
-        .filter((attachment) => !superseded.has(attachment.attachmentId))
-        .map((attachment) => ({
-          op: 'attachment.upsert' as const,
-          attachment,
-        })),
-      ...turnOps,
-    ];
-    transcript.apply(ops);
-    this.dispatchOps(sessionId, { agentId, ops });
-  }
 
   async getAgentToolCallCounts(
     sessionId: string,
@@ -495,9 +384,7 @@ export class TranscriptService {
   ): Promise<AgentTranscriptSnapshot | undefined> {
     const summary = await this.deps.core.accessor.get(ISessionIndex).get(sessionId);
     if (summary === undefined) return undefined;
-    if (!isPlainAgentId(agentId)) {
-      return groupMessagesIntoSnapshot([]);
-    }
+    if (!isPlainAgentId(agentId)) return emptySnapshot();
     const wirePath = join(
       this.deps.homeDir,
       SESSIONS_ROOT,
@@ -511,27 +398,51 @@ export class TranscriptService {
     try {
       records = await readWireRecords(wirePath);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return groupMessagesIntoSnapshot([]);
-      }
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return emptySnapshot();
       throw error;
     }
-    const messages = [...reduceContextTranscript(records).entries];
-    const base = groupMessagesIntoSnapshot(messages, {
-      showSubagentPrompts: agentId !== MAIN_AGENT_ID,
+    const transcript = new AgentTranscript(agentId);
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter(agentId, {
+      turn: (turnId) => transcript.getTurn(turnId),
+      tool: (toolCallId) => {
+        for (const item of transcript.getItems()) {
+          if (item.kind !== 'turn') continue;
+          for (const step of item.steps) {
+            const frame = step.frames.find(
+              (candidate) => candidate.kind === 'tool' && candidate.toolCallId === toolCallId,
+            );
+            if (frame?.kind === 'tool') return { turnId: item.turnId, stepId: step.stepId, frame };
+          }
+        }
+        return undefined;
+      },
     });
-    return foldWireRecordFacts(records, base);
+    for (const record of records) reducer.apply(adapter.add(record));
+    reducer.apply(adapter.finish());
+    return transcript.snapshot();
+  }
+
+  async reconcileAfterRewrite(sessionId: string, agentId: string = MAIN_AGENT_ID): Promise<void> {
+    const entry = this.live.get(sessionId);
+    if (entry === undefined) return;
+    const snapshot = await this.readColdSnapshot(sessionId, agentId);
+    if (snapshot === undefined || this.live.get(sessionId) !== entry) return;
+    entry.store.ensureAgent(agentId).apply([
+      {
+        op: 'reset',
+        agentId,
+        grade: 'delta',
+        coverage: { kind: 'full', hasMoreOlder: false },
+        snapshot,
+      },
+    ]);
+    entry.opsJournals.set(agentId, { epoch: randomUUID(), nextSeq: 1, batches: [] });
   }
 
   /** Dispose the live store + binding for a session (session closed / server shutdown). */
   dropSession(sessionId: string): void {
     this.opsListeners.delete(sessionId);
-    for (const [key, pending] of this.healTimers) {
-      if (key.startsWith(`${sessionId}:`)) {
-        clearTimeout(pending.timer);
-        this.healTimers.delete(key);
-      }
-    }
     const entry = this.live.get(sessionId);
     if (entry === undefined) return;
     this.live.delete(sessionId);
@@ -629,122 +540,14 @@ export function snapshotTurnOps(turn: TranscriptTurn): TranscriptOperation[] {
   return ops;
 }
 
-const TURN_HEAL_DEBOUNCE_MS = 250;
-const TERMINAL_TURN_STATES: ReadonlySet<TranscriptTurn['state']> = new Set([
-  'completed',
-  'failed',
-  'cancelled',
-]);
-
-function supersededColdAttachmentIds(
-  snapshot: AgentTranscriptSnapshot,
-  transcript: AgentTranscript,
-): ReadonlySet<string> {
-  const superseded = new Set<string>();
-  for (const item of snapshot.items) {
-    if (item.kind !== 'turn' || item.attachmentIds === undefined) continue;
-    const live = transcript.getTurn(item.turnId);
-    if (live?.attachmentIds === undefined || live.attachmentIds.length === 0) continue;
-    for (const id of item.attachmentIds) superseded.add(id);
-  }
-  return superseded;
-}
-
-/**
- * Merge one persisted (snapshot) turn back into the live store after the turn
- * ended — the post-turn heal for mid-turn attaches:
- *   - turn the live store never saw: taken wholesale;
- *   - header: the snapshot is authoritative for origin/prompt (it reads the
- *     persisted user message, which a mid-turn-attached projector missed);
- *     the live header wins on state, timestamps, and attachment ids (its
- *     `{turnId}.att<N>` entities are already projected — swapping in the
- *     snapshot's cold `att_<n>` ids would churn the references and orphan
- *     the live entities);
- *   - steps the live turn never saw: taken wholesale from the snapshot;
- *   - existing steps: text/thinking frames are re-emitted only when the
- *     persisted text is longer and the kind matches (a fresh live frame may
- *     still be ahead of a lagging flush); tool frames are re-emitted when
- *     the live step lacks the frame or the live frame lacks the outcome the
- *     persisted one carries (a tool.result dropped in the attach race is
- *     otherwise unrecoverable until a cold rebuild) — live-only extras
- *     (display / agentRefs / approvalId) are preserved on the emitted frame;
- *   - interactions are never re-emitted: they are global entities (not step
- *     content), are not persisted as context messages, and the live kernel
- *     bridge is always richer.
- */
-export function healTurnOps(
-  snapshotTurn: TranscriptTurn,
-  liveTurn: TranscriptTurn | undefined,
-): TranscriptOperation[] {
-  const { steps, ...header } = snapshotTurn;
-  const ops: TranscriptOperation[] = [];
-  if (liveTurn === undefined) {
-    ops.push({ op: 'turn.upsert', turn: header });
-    for (const step of steps) {
-      const { frames, ...stepHeader } = step;
-      ops.push({ op: 'step.upsert', turnId: snapshotTurn.turnId, step: stepHeader });
-      for (const frame of frames) {
-        ops.push({ op: 'frame.upsert', turnId: snapshotTurn.turnId, stepId: step.stepId, frame });
-      }
-    }
-    return ops;
-  }
-  ops.push({
-    op: 'turn.upsert',
-    turn: {
-      ...header,
-      state: liveTurn.state,
-      prompt: liveTurn.prompt ?? header.prompt,
-      attachmentIds: liveTurn.attachmentIds ?? header.attachmentIds,
-      startedAt: liveTurn.startedAt ?? header.startedAt,
-      endedAt: liveTurn.endedAt ?? header.endedAt,
-    },
-  });
-  for (const step of steps) {
-    const liveStep = liveTurn.steps.find((entry) => entry.stepId === step.stepId);
-    const { frames, ...stepHeader } = step;
-    if (liveStep === undefined) {
-      ops.push({ op: 'step.upsert', turnId: snapshotTurn.turnId, step: stepHeader });
-      for (const frame of frames) {
-        ops.push({ op: 'frame.upsert', turnId: snapshotTurn.turnId, stepId: step.stepId, frame });
-      }
-      continue;
-    }
-    for (const frame of frames) {
-      const liveFrame = liveStep.frames.find((entry) => entry.frameId === frame.frameId);
-      if (frame.kind === 'tool') {
-        const liveTool = liveFrame?.kind === 'tool' ? liveFrame : undefined;
-        const liveHasOutcome =
-          liveTool !== undefined && (liveTool.output !== undefined || liveTool.error !== undefined);
-        const snapshotHasOutcome = frame.output !== undefined || frame.error !== undefined;
-        if (liveTool !== undefined && (liveHasOutcome || !snapshotHasOutcome)) continue;
-        ops.push({
-          op: 'frame.upsert',
-          turnId: snapshotTurn.turnId,
-          stepId: step.stepId,
-          frame:
-            liveTool === undefined
-              ? frame
-              : {
-                  ...frame,
-                  display: liveTool.display ?? frame.display,
-                  agentRefs: liveTool.agentRefs ?? frame.agentRefs,
-                  approvalId: liveTool.approvalId ?? frame.approvalId,
-                },
-        });
-        continue;
-      }
-      if (frame.kind !== 'text' && frame.kind !== 'thinking') continue;
-      if (
-        liveFrame !== undefined &&
-        liveFrame.kind === frame.kind &&
-        (liveFrame.kind === 'text' || liveFrame.kind === 'thinking') &&
-        liveFrame.text.length >= frame.text.length
-      ) {
-        continue;
-      }
-      ops.push({ op: 'frame.upsert', turnId: snapshotTurn.turnId, stepId: step.stepId, frame });
-    }
-  }
-  return ops;
+function emptySnapshot(): AgentTranscriptSnapshot {
+  return {
+    items: [],
+    tasks: [],
+    interactions: [],
+    attachments: [],
+    todos: [],
+    prompts: [],
+    meta: {},
+  };
 }

@@ -4,13 +4,15 @@ import { filterOpsForGrade, isAppendOnly, redactSnapshotForGrade } from '#/granu
 import { detachGrades, gradeFor, needsResetOnTransition } from '#/granularity/grade';
 import { paginateTurns } from '#/pagination/paginate';
 import { ViewRegistry } from '#/view/registry';
-import { groupMessagesIntoSnapshot, type HistoryContentPart } from '#/history/groupTurns';
-import { foldWireRecordFacts, type HistoryWireRecord } from '#/history/foldFacts';
+import { TranscriptFactReducer } from '#/facts/reducer';
+import { TranscriptWireAdapter, type TranscriptWireRecord } from '#/facts/wireAdapter';
+import { AgentTranscript } from '#/store/agentTranscript';
 import {
   transcriptGradeSpecSchema,
   transcriptOperationSchema,
   transcriptOpsCatchupResponseSchema,
   transcriptOpsPayloadSchema,
+  transcriptOpsQuerySchema,
   transcriptQuerySchema,
   transcriptResetPayloadSchema,
   transcriptResponseSchema,
@@ -252,14 +254,28 @@ describe('ViewRegistry', () => {
 });
 
 describe('contract schemas', () => {
-  it('accepts numeric transcript_since and seq watermarks across REST and WS shapes', () => {
+  it('normalizes legacy transcript cursors and emits epoch cursors with coverage', () => {
     expect(
       transcriptSubscribeV2PayloadSchema.parse({
         session_id: 's1',
         transcript: { '*': 'delta' },
-        transcript_since: { main: 7, '*': 3 },
+        transcript_since: { main: 7, '*': { epoch: 'e1', seq: 3 } },
       }).transcript_since,
-    ).toEqual({ main: 7, '*': 3 });
+    ).toEqual({ main: { epoch: undefined, seq: 7 }, '*': { epoch: 'e1', seq: 3 } });
+    expect(
+      transcriptOpsQuerySchema.parse({
+        agent_id: 'main',
+        epoch: 'e1',
+        since_seq: '7',
+      }),
+    ).toEqual({ agent_id: 'main', epoch: 'e1', since_seq: 7, grade: 'delta' });
+    expect(
+      transcriptOpsQuerySchema.safeParse({
+        agent_id: '../main',
+        since_seq: '0',
+        grade: 'turn',
+      }).success,
+    ).toBe(false);
     const snapshot = {
       items: [],
       tasks: [],
@@ -269,26 +285,34 @@ describe('contract schemas', () => {
       prompts: [],
       meta: {},
     };
+    const cursor = { epoch: 'e1', seq: 7 };
+    const coverage = { kind: 'tail' as const, hasMoreOlder: false };
     expect(
       transcriptResetPayloadSchema.safeParse({
+        session_id: 's1',
         agent_id: 'main',
         snapshot,
-        has_more_older: false,
-        seq: 7,
+        grade: 'delta',
+        coverage,
+        cursor,
       }).success,
     ).toBe(true);
     expect(
       transcriptOpsPayloadSchema.safeParse({
+        session_id: 's1',
         agent_id: 'main',
         ops: [],
-        seq: 7,
+        cursor,
+        through_seq: 9,
       }).success,
     ).toBe(true);
     expect(
       transcriptOpsCatchupResponseSchema.safeParse({
+        session_id: 's1',
         agent_id: 'main',
+        epoch: 'e1',
         batches: [{ seq: 7, ops: [] }],
-        latest_seq: 7,
+        through_seq: 9,
         complete: true,
       }).success,
     ).toBe(true);
@@ -421,6 +445,7 @@ describe('contract schemas', () => {
   it('rejects mutually exclusive cursors and bad grades', () => {
     expect(() => transcriptGradeSpecSchema.parse({ '*': 'stream' })).toThrow();
     const ok = transcriptResponseSchema.safeParse({
+      session_id: 's1',
       agent_id: 'main',
       items: [],
       has_more: false,
@@ -428,9 +453,11 @@ describe('contract schemas', () => {
       interactions: [],
       attachments: [],
       todos: [],
+      prompts: [],
       meta: {},
       agents: [{ agentId: 'main', type: 'main' }],
       pending_interactions: [],
+      coverage: { kind: 'full', hasMoreOlder: false },
     });
     expect(ok.success).toBe(true);
     expect(
@@ -457,1012 +484,495 @@ describe('contract schemas', () => {
   });
 });
 
-describe('groupMessagesIntoSnapshot (cold path)', () => {
-  const snapshotOf = (...parts: HistoryContentPart[]): AgentTranscriptSnapshot =>
-    groupMessagesIntoSnapshot([
-      { role: 'user', content: parts, toolCalls: [], origin: { kind: 'user' } },
-    ]);
+describe('TranscriptWireAdapter', () => {
+  const records: TranscriptWireRecord[] = [
+    {
+      type: 'turn.prompt',
+      turnId: 0,
+      promptId: 'prompt-1',
+      input: [{ type: 'text', text: 'run it' }],
+      origin: { kind: 'user' },
+      time: 1_000,
+    },
+    {
+      type: 'context.append_loop_event',
+      event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+      time: 2_000,
+    },
+    {
+      type: 'context.append_loop_event',
+      event: {
+        type: 'content.part',
+        turnId: 0,
+        stepUuid: 'step-1',
+        uuid: 'part-a',
+        part: { type: 'text', text: 'before' },
+      },
+      time: 3_000,
+    },
+    {
+      type: 'context.append_loop_event',
+      event: {
+        type: 'tool.call',
+        turnId: 0,
+        stepUuid: 'step-1',
+        uuid: 'part-tool',
+        toolCallId: 'call-1',
+        name: 'Bash',
+        args: { command: 'pwd' },
+      },
+      time: 4_000,
+    },
+    {
+      type: 'context.append_loop_event',
+      event: {
+        type: 'tool.result',
+        toolCallId: 'call-1',
+        result: { output: '/repo', isError: false },
+      },
+      time: 5_000,
+    },
+    {
+      type: 'context.append_loop_event',
+      event: {
+        type: 'content.part',
+        turnId: 0,
+        stepUuid: 'step-1',
+        uuid: 'part-b',
+        part: { type: 'text', text: 'after' },
+      },
+      time: 6_000,
+    },
+    {
+      type: 'context.append_loop_event',
+      event: {
+        type: 'step.end',
+        turnId: 0,
+        step: 1,
+        uuid: 'step-1',
+        usage: { inputOther: 2, output: 3, inputCacheRead: 4, inputCacheCreation: 5 },
+      },
+      time: 7_000,
+    },
+    { type: 'turn.ended', turnId: 0, reason: 'completed', time: 8_000 },
+  ];
 
-  it('groups flat messages into turns with folded tool results', () => {
-    const snapshot = groupMessagesIntoSnapshot([
-      { role: 'system', content: [{ type: 'text', text: 'sys' }] },
-      { role: 'user', content: [{ type: 'text', text: 'hello' }], toolCalls: [], origin: { kind: 'user' } },
-      {
-        role: 'assistant',
-        content: [{ type: 'think', think: 'hmm' }, { type: 'text', text: 'checking' }],
-        toolCalls: [{ id: 'c1', name: 'Read', arguments: '{"path":"/a"}' }],
+  const replay = (
+    all: readonly TranscriptWireRecord[],
+    agentId: string = 'main',
+  ): AgentTranscript => {
+    const transcript = new AgentTranscript(agentId);
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter(agentId, {
+      turn: (turnId) => transcript.getTurn(turnId),
+      tool: (toolCallId) => {
+        for (const item of transcript.getItems()) {
+          if (item.kind !== 'turn') continue;
+          for (const step of item.steps) {
+            const frame = step.frames.find(
+              (candidate) => candidate.kind === 'tool' && candidate.toolCallId === toolCallId,
+            );
+            if (frame?.kind === 'tool') return { turnId: item.turnId, stepId: step.stepId, frame };
+          }
+        }
+        return undefined;
       },
-      { role: 'tool', content: [{ type: 'text', text: 'file body' }], toolCallId: 'c1', toolCalls: [] },
-      {
-        role: 'assistant',
-        content: [{ type: 'text', text: 'done' }],
-        toolCalls: [],
-      },
-      { role: 'user', content: [{ type: 'text', text: 'next' }], toolCalls: [], origin: { kind: 'user' } },
-      {
-        role: 'user',
-        content: [{ type: 'text', text: 'summary of old' }],
-        toolCalls: [],
-        origin: { kind: 'compaction_summary' },
-      },
-      { role: 'user', content: [{ type: 'text', text: 'after' }], toolCalls: [], origin: { kind: 'user' } },
-    ]);
+    });
+    for (const record of all) reducer.apply(adapter.add(record));
+    reducer.apply(adapter.finish());
+    return transcript;
+  };
 
-    const kinds = snapshot.items.map((i) => i.kind);
-    expect(kinds).toEqual(['turn', 'turn', 'marker', 'turn']);
-    const firstTurn = snapshot.items[0];
-    if (firstTurn?.kind !== 'turn') throw new Error('expected turn');
-    expect(firstTurn.prompt).toBe('hello');
-    expect(firstTurn.steps).toHaveLength(2);
-    const tool = firstTurn.steps[0]?.frames.find((f) => f.kind === 'tool');
-    expect(tool?.kind === 'tool' && tool.output).toBe('file body');
-    expect(tool?.kind === 'tool' && tool.input).toEqual({ path: '/a' });
-    const marker = snapshot.items[2];
-    expect(marker?.kind === 'marker' && marker.marker).toBe('compaction');
+  it('produces identical cold and incremental snapshots with engine identities and stable order', () => {
+    const cold = replay(records);
+    const live = replay(records);
+    expect(live.snapshot()).toEqual(cold.snapshot());
+    const turn = live.getTurn('t0');
+    expect(turn?.message?.messageId).toBe('prompt-1');
+    expect(turn?.state).toBe('completed');
+    expect(turn?.usage).toEqual({ inputTokens: 7, outputTokens: 3, cachedTokens: 4 });
+    expect(turn?.steps[0]?.stepId).toBe('step-1');
+    expect(turn?.steps[0]?.frames.map((frame) => frame.frameId)).toEqual([
+      'part-a',
+      'step-1.call-1',
+      'part-b',
+    ]);
+    expect(turn?.steps[0]?.frames.find((frame) => frame.kind === 'tool')).toMatchObject({
+      state: 'done',
+      output: '/repo',
+    });
   });
 
-  it('expands a bundled prompt into per-skill markers and a caller-text turn', () => {
-    const snapshot = groupMessagesIntoSnapshot([
+  it('normalizes bundled skill prompts and gives media and markers stable identities', () => {
+    const transcript = replay([
       {
-        role: 'user',
-        content: [
-          { type: 'text', text: 'rendered review block' },
-          { type: 'text', text: 'rendered security block' },
-          { type: 'text', text: 'please /skill:review and /skill:security' },
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        revision: 2,
+        lineage: { replacesMessageId: 'old-1', rewriteId: 'rewrite-1' },
+        input: [
+          { type: 'text', text: '<skill>review</skill>' },
+          { type: 'text', text: '<skill>security</skill>' },
+          { type: 'text', text: 'inspect this' },
+          { type: 'image_url', imageUrl: { id: 'file-1' } },
         ],
-        toolCalls: [],
         origin: {
           kind: 'user',
           skillActivations: [
-            { activationId: 'act-1', skillName: 'review' },
-            { activationId: 'act-2', skillName: 'security', skillArgs: 'src/app.ts' },
+            { activationId: 'act-review', skillName: 'review' },
+            { activationId: 'act-security', skillName: 'security' },
           ],
-        } as { kind: string },
+        },
+        time: 1_000,
       },
-      { role: 'assistant', content: [{ type: 'text', text: 'done' }], toolCalls: [] },
     ]);
-
-    expect(snapshot.items.map((item) => item.kind)).toEqual(['marker', 'marker', 'turn']);
-    const first = snapshot.items[0];
-    expect(first?.kind === 'marker' && first.marker).toBe('skill');
-    expect(first?.kind === 'marker' && first.payload).toMatchObject({
-      text: 'rendered review block',
-      origin: { kind: 'skill_activation', trigger: 'user-slash', skillName: 'review' },
+    expect(transcript.getTurn('t0')).toMatchObject({
+      prompt: 'inspect this',
+      attachmentIds: ['t0.att1'],
+      message: {
+        messageId: 'prompt-1',
+        revision: 2,
+        lineage: { replacesMessageId: 'old-1', rewriteId: 'rewrite-1' },
+      },
     });
-    const second = snapshot.items[1];
-    expect(second?.kind === 'marker' && second.payload).toMatchObject({
-      text: 'rendered security block',
-      origin: { skillName: 'security', skillArgs: 'src/app.ts' },
+    expect(transcript.getAttachment('t0.att1')).toMatchObject({
+      source: { kind: 'session_media', fileId: 'file-1' },
     });
-    const turn = snapshot.items[2];
-    if (turn?.kind !== 'turn') throw new Error('expected turn');
-    expect(turn.prompt).toBe('please /skill:review and /skill:security');
-    expect(turn.steps).toHaveLength(1);
+    expect(
+      transcript.getItems().filter((item) => item.kind === 'marker').map((item) => item.markerId),
+    ).toEqual(['wire:v2:skill:act-review', 'wire:v2:skill:act-security']);
   });
 
-  it('maps media parts on the opening user message to attachment entities, dropping base64 bytes', () => {
-    const snapshot = groupMessagesIntoSnapshot([
+  it('keeps hidden legacy reservations sparse and projects canonical attachment ids', () => {
+    const transcript = replay([
       {
-        role: 'user',
-        content: [
-          { type: 'text', text: 'what is this? [Image #1]' },
-          { type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
-          { type: 'image', source: { kind: 'url', url: 'https://example.com/pic.png' } },
-          { type: 'file', file_id: 'file_9', name: 'notes.txt', media_type: 'text/plain', size: 128 },
-        ],
-        toolCalls: [],
-        origin: { kind: 'user' },
+        type: 'context.append_message',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'first' }],
+          origin: { kind: 'user' },
+        },
       },
-      { role: 'assistant', content: [{ type: 'text', text: 'a screenshot' }], toolCalls: [] },
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'hidden' }],
+          origin: { kind: 'system_trigger', name: 'subagent' },
+        },
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'third' },
+            { type: 'image_url', imageUrl: { id: 'file-1' } },
+          ],
+          origin: { kind: 'user' },
+        },
+      },
     ]);
-
-    expect(snapshot.attachments).toHaveLength(3);
-    expect(snapshot.attachments[0]).toMatchObject({
-      attachmentId: 'att_1',
-      mediaType: 'image/png',
-      source: undefined,
+    expect(
+      transcript.getItems().filter((item) => item.kind === 'turn').map((item) => item.turnId),
+    ).toEqual(['t0', 't2']);
+    expect(transcript.getTurn('t2')?.attachmentIds).toEqual(['t2.att1']);
+    expect(transcript.getAttachment('t2.att1')).toMatchObject({
+      source: { kind: 'session_media', fileId: 'file-1' },
+      owner: { kind: 'turn', turnId: 't2' },
     });
-    expect(snapshot.attachments[1]).toMatchObject({
-      attachmentId: 'att_2',
-      source: { kind: 'url', url: 'https://example.com/pic.png' },
-    });
-    expect(snapshot.attachments[2]).toMatchObject({
-      attachmentId: 'att_3',
-      mediaType: 'text/plain',
-      name: 'notes.txt',
-      source: { kind: 'file', fileId: 'file_9' },
-    });
-    const firstTurn = snapshot.items[0];
-    if (firstTurn?.kind !== 'turn') throw new Error('expected turn');
-    expect(firstTurn.attachmentIds).toEqual(['att_1', 'att_2', 'att_3']);
   });
 
-  it('maps persisted kimi-file media refs to attachments', () => {
-    const snapshot = groupMessagesIntoSnapshot([
+  it('maps undo and clear records to structural removals', () => {
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('main', {
+      turn: (turnId) => transcript.getTurn(turnId),
+    });
+    for (const record of [
       {
-        role: 'user',
-        content: [
-          {
-            type: 'video_url',
-            videoUrl: { url: 'kimi-file://file_1' },
-          } as HistoryContentPart,
-        ],
-        toolCalls: [],
-        origin: { kind: 'user' },
+        type: 'context.append_message',
+        message: { role: 'user', content: [{ type: 'text', text: 'one' }] },
       },
       {
-        role: 'user',
-        content: [
-          { type: 'text', text: 'what is this?' },
-          {
-            type: 'image_url',
-            imageUrl: { url: 'kimi-file://file_2?path=%2Fcache%2Fshot.png' },
-          } as HistoryContentPart,
-        ],
-        toolCalls: [],
-        origin: { kind: 'user' },
+        type: 'context.append_message',
+        message: { role: 'user', content: [{ type: 'text', text: 'two' }] },
       },
-    ]);
-
-    expect(snapshot.attachments).toEqual([
-      {
-        attachmentId: 'att_1',
-        mediaType: 'video/*',
-        source: { kind: 'session_media', fileId: 'file_1' },
-      },
-      {
-        attachmentId: 'att_2',
-        mediaType: 'image/*',
-        source: { kind: 'session_media', fileId: 'file_2' },
-      },
-    ]);
-    const videoTurn = snapshot.items[0];
-    const imageTurn = snapshot.items[1];
-    if (videoTurn?.kind !== 'turn' || imageTurn?.kind !== 'turn') {
-      throw new Error('expected turns');
+    ]) {
+      reducer.apply(adapter.add(record));
     }
-    expect(videoTurn.attachmentIds).toEqual(['att_1']);
-    expect(imageTurn.attachmentIds).toEqual(['att_2']);
-    expect(videoTurn.prompt).toBe('');
-    expect(imageTurn.prompt).toBe('what is this?');
+    const undo = reducer.apply(adapter.add({ type: 'context.undo', count: 1 }));
+    expect(undo.acceptedOperations).toEqual([{ op: 'items.remove', ids: ['t1'] }]);
+    expect(transcript.getItems().map((item) => item.kind === 'turn' && item.turnId)).toEqual(['t0']);
+    const clear = reducer.apply(adapter.add({ type: 'context.clear' }));
+    expect(clear.acceptedOperations).toEqual([{ op: 'items.remove', ids: ['t0'] }]);
+    expect(transcript.getItems()).toEqual([]);
   });
 
-  it('projects a daemon ref in a user-slash turn-opening input like a plain user turn', () => {
-    const snapshot = groupMessagesIntoSnapshot([
+  it('undoes the full suffix from the requested conversation anchor', () => {
+    const transcript = replay([
       {
-        role: 'user',
-        content: [
-          { type: 'text', text: '/gen-docs ' },
-          {
-            type: 'image_url',
-            imageUrl: { url: 'kimi-file://file_4?path=%2Fcache%2Fshot.png' },
-          } as HistoryContentPart,
-        ],
-        toolCalls: [],
-        origin: { kind: 'skill_activation', trigger: 'user-slash', skillName: 'gen-docs' } as {
-          kind: string;
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-old',
+        input: [{ type: 'text', text: 'old prompt' }],
+        origin: { kind: 'user' },
+      },
+      { type: 'turn.ended', turnId: 0, reason: 'failed' },
+      {
+        type: 'turn.prompt',
+        turnId: 1,
+        promptId: 'prompt-retry',
+        input: [{ type: 'text', text: 'retry continuation' }],
+        origin: { kind: 'retry' },
+      },
+      { type: 'turn.ended', turnId: 1, reason: 'completed' },
+      { type: 'context.undo', count: 1 },
+      {
+        type: 'turn.prompt',
+        turnId: 2,
+        promptId: 'prompt-old',
+        revision: 1,
+        lineage: { replacesMessageId: 'prompt-old' },
+        input: [{ type: 'text', text: 'replacement' }],
+        origin: { kind: 'user' },
+      },
+    ]);
+    expect(transcript.getTurn('t0')).toBeUndefined();
+    expect(transcript.getTurn('t1')).toBeUndefined();
+    expect(transcript.getTurn('t2')).toMatchObject({
+      prompt: 'replacement',
+      message: { messageId: 'prompt-old', revision: 1 },
+    });
+  });
+
+  it('projects legacy origins, injected frames, and child run prompts without collapsing ordinals', () => {
+    const transcript = replay([
+      {
+        type: 'context.append_message',
+        message: { role: 'user', content: [{ type: 'text', text: 'start' }], origin: { kind: 'user' } },
+      },
+      {
+        type: 'context.append_message',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'answer' }], toolCalls: [] },
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'mode reminder' }],
+          origin: { kind: 'injection', variant: 'permission_mode' },
+        },
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'hidden parent run' }],
+          origin: { kind: 'system_trigger', name: 'subagent' },
+        },
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'continue' }],
+          origin: { kind: 'system_trigger', name: 'goal_continuation' },
+        },
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'run report' }],
+          origin: { kind: 'cron_job', jobId: 'job-1' },
+        },
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'task output' }],
+          origin: { kind: 'background_task', taskId: 'task-1' },
         },
       },
     ]);
+    expect(
+      transcript.getItems().filter((item) => item.kind === 'turn').map((item) => item.turnId),
+    ).toEqual(['t0', 't2', 't3', 't4']);
+    expect(transcript.getTurn('t0')?.steps[0]?.frames.at(-1)).toMatchObject({
+      role: 'user',
+      text: 'mode reminder',
+    });
+    expect(transcript.getTurn('t2')).toMatchObject({ prompt: 'continue', origin: { kind: 'other' } });
+    expect(transcript.getTurn('t3')?.origin).toMatchObject({ kind: 'cron', taskId: 'job-1' });
+    expect(transcript.getTurn('t4')?.origin).toMatchObject({ kind: 'task', taskId: 'task-1' });
 
-    expect(snapshot.attachments).toEqual([
-      {
-        attachmentId: 'att_1',
-        mediaType: 'image/*',
-        source: { kind: 'session_media', fileId: 'file_4' },
-      },
-    ]);
-    expect(snapshot.items.map((item) => item.kind)).toEqual(['marker', 'turn']);
-    const marker = snapshot.items[0];
-    if (marker?.kind !== 'marker') throw new Error('expected marker');
-    expect((marker.payload as { text: string }).text).toBe('/gen-docs ');
-    const turn = snapshot.items[1];
-    if (turn?.kind !== 'turn') throw new Error('expected turn');
-    expect(turn.prompt).toBe('/gen-docs ');
-    expect(turn.attachmentIds).toEqual(['att_1']);
-  });
-
-  it('keeps a kimi-file ref as a nameless attachment and inline tags as user text', () => {
-    const snapshot = snapshotOf(
-      { type: 'text', text: 'open <image path="/tmp/other.png"></image> please' },
-      {
-        type: 'image_url',
-        imageUrl: { url: 'kimi-file://file_3' },
-      } as HistoryContentPart,
-    );
-
-    expect(snapshot.attachments).toEqual([
-      {
-        attachmentId: 'att_1',
-        mediaType: 'image/*',
-        source: { kind: 'session_media', fileId: 'file_3' },
-      },
-    ]);
-    const turn = snapshot.items[0];
-    if (turn?.kind !== 'turn') throw new Error('expected turn');
-    expect(turn.attachmentIds).toEqual(['att_1']);
-    expect(turn.prompt).toBe('open <image path="/tmp/other.png"></image> please');
-  });
-
-  it('keeps a legacy tag+ref pair as prompt text plus the ref-derived attachment', () => {
-    const snapshot = snapshotOf(
-      { type: 'text', text: '<image path="/cache/shot.png"></image>' },
-      {
-        type: 'image_url',
-        imageUrl: { url: 'kimi-file://file_5?path=%2Fcache%2Fshot.png' },
-      } as HistoryContentPart,
-    );
-
-    expect(snapshot.attachments).toEqual([
-      {
-        attachmentId: 'att_1',
-        mediaType: 'image/*',
-        source: { kind: 'session_media', fileId: 'file_5' },
-      },
-    ]);
-    const turn = snapshot.items[0];
-    if (turn?.kind !== 'turn') throw new Error('expected turn');
-    expect(turn.prompt).toBe('<image path="/cache/shot.png"></image>');
-    expect(turn.attachmentIds).toEqual(['att_1']);
-  });
-
-  it('keeps standalone <media path> tags as prompt text', () => {
-    const snapshot = snapshotOf(
-      { type: 'text', text: '<image path="/cache/shot.png">' },
-      { type: 'text', text: '<image path="/cache/shot.png" content_type="image/png"></image>' },
-      { type: 'text', text: '<video path="/cache/clip.mp4">' },
-    );
-
-    const turn = snapshot.items[0];
-    if (turn?.kind !== 'turn') throw new Error('expected turn');
-    expect(turn.prompt).toBe(
-      '<image path="/cache/shot.png"><image path="/cache/shot.png" content_type="image/png"></image><video path="/cache/clip.mp4">',
-    );
-    expect(turn.attachmentIds).toBeUndefined();
-    expect(snapshot.attachments).toEqual([]);
-  });
-
-  it('keeps cold tool calls running until a result is persisted', () => {
-    const pending = groupMessagesIntoSnapshot([
-      { role: 'user', content: [{ type: 'text', text: 'run it' }], toolCalls: [], origin: { kind: 'user' } },
-      { role: 'assistant', content: [], toolCalls: [{ id: 'c1', name: 'Bash', arguments: '{}' }] },
-    ]);
-    const pendingTurn = pending.items[0];
-    if (pendingTurn?.kind !== 'turn') throw new Error('expected turn');
-    const pendingTool = pendingTurn.steps[0]?.frames.find((f) => f.kind === 'tool');
-    expect(pendingTool?.kind === 'tool' && pendingTool.state).toBe('running');
-
-    const done = groupMessagesIntoSnapshot([
-      { role: 'user', content: [{ type: 'text', text: 'run it' }], toolCalls: [], origin: { kind: 'user' } },
-      { role: 'assistant', content: [], toolCalls: [{ id: 'c1', name: 'Bash', arguments: '{}' }] },
-      { role: 'tool', content: [{ type: 'text', text: 'done.txt' }], toolCallId: 'c1', toolCalls: [] },
-    ]);
-    const doneTurn = done.items[0];
-    if (doneTurn?.kind !== 'turn') throw new Error('expected turn');
-    const doneTool = doneTurn.steps[0]?.frames.find((f) => f.kind === 'tool');
-    expect(doneTool?.kind === 'tool' && doneTool.state).toBe('done');
-    expect(doneTool?.kind === 'tool' && doneTool.output).toBe('done.txt');
-  });
-
-  it('opens a turn for subagent run prompts recorded as system triggers', () => {
-    const snapshot = groupMessagesIntoSnapshot([
-      { role: 'user', content: [{ type: 'text', text: 'hi' }], toolCalls: [], origin: { kind: 'user' } },
-      { role: 'assistant', content: [{ type: 'text', text: 'answer' }], toolCalls: [] },
-      {
-        role: 'user',
-        content: [{ type: 'text', text: 'scan the repo' }],
-        toolCalls: [],
-        origin: { kind: 'system_trigger', name: 'subagent' } as { kind: string },
-      },
-      { role: 'assistant', content: [{ type: 'text', text: 'scanning' }], toolCalls: [] },
-    ], { showSubagentPrompts: true });
-
-    // A subagent's run prompt launches its own engine turn — the response
-    // must not fold into the previous turn. In the child conversation the
-    // prompt is the parent agent's visible message.
-    expect(snapshot.items.map((item) => item.kind)).toEqual(['turn', 'turn']);
-    const subTurn = snapshot.items[1];
-    if (subTurn?.kind !== 'turn') throw new Error('expected turn');
-    expect(subTurn.ordinal).toBe(1);
-    expect(subTurn.origin.kind).toBe('other');
-    expect(subTurn.prompt).toBe('scan the repo');
-    expect(subTurn.steps).toHaveLength(1);
-  });
-
-  it('starts a new turn for user-slash skill activations, keeps other triggers as markers only', () => {
-    const snapshot = groupMessagesIntoSnapshot([
-      { role: 'user', content: [{ type: 'text', text: 'hi' }], toolCalls: [], origin: { kind: 'user' } },
-      { role: 'assistant', content: [{ type: 'text', text: 'answer' }], toolCalls: [] },
-      {
-        role: 'user',
-        content: [{ type: 'text', text: 'skill body' }],
-        toolCalls: [],
-        origin: { kind: 'skill_activation', trigger: 'user-slash', skillName: 'gen-docs' } as {
-          kind: string;
-        },
-      },
-      { role: 'assistant', content: [{ type: 'text', text: 'docs done' }], toolCalls: [] },
-      {
-        role: 'user',
-        content: [{ type: 'text', text: 'nested skill body' }],
-        toolCalls: [],
-        origin: { kind: 'skill_activation', trigger: 'model-tool', skillName: 'x' } as {
-          kind: string;
-        },
-      },
-      { role: 'assistant', content: [{ type: 'text', text: 'still same turn' }], toolCalls: [] },
-    ]);
-
-    expect(snapshot.items.map((item) => item.kind)).toEqual(['turn', 'marker', 'turn', 'marker']);
-    const slashTurn = snapshot.items[2];
-    if (slashTurn?.kind !== 'turn') throw new Error('expected turn');
-    expect(slashTurn.ordinal).toBe(1);
-    expect(slashTurn.origin.kind).toBe('other');
-    expect(slashTurn.prompt).toBe('skill body');
-    expect(slashTurn.steps).toHaveLength(2);
-  });
-
-  it('starts a promptless turn for turn-opening system triggers (goal continuation)', () => {
-    const snapshot = groupMessagesIntoSnapshot([
-      { role: 'user', content: [{ type: 'text', text: 'hi' }], toolCalls: [], origin: { kind: 'user' } },
-      { role: 'assistant', content: [{ type: 'text', text: 'answer' }], toolCalls: [] },
-      {
-        role: 'user',
-        content: [{ type: 'text', text: 'continue the goal' }],
-        toolCalls: [],
-        origin: { kind: 'system_trigger', name: 'goal_continuation' } as { kind: string },
-      },
-      { role: 'assistant', content: [{ type: 'text', text: 'continued' }], toolCalls: [] },
-      {
-        role: 'user',
-        content: [{ type: 'text', text: 'mode reminder' }],
-        toolCalls: [],
-        origin: { kind: 'injection', variant: 'permission_mode' } as { kind: string },
-      },
-      { role: 'assistant', content: [{ type: 'text', text: 'still same turn' }], toolCalls: [] },
-    ]);
-
-    expect(snapshot.items.map((item) => item.kind)).toEqual(['turn', 'turn']);
-    const [first, second] = snapshot.items;
-    if (first?.kind !== 'turn' || second?.kind !== 'turn') throw new Error('expected turns');
-    expect(first.ordinal).toBe(0);
-    expect(first.steps.map((step) => step.frames.map((frame) => frame.kind))).toEqual([['text']]);
-    expect(second.ordinal).toBe(1);
-    expect(second.origin.kind).toBe('other');
-    expect(second.prompt).toBeUndefined();
-    expect(second.steps).toHaveLength(2);
-  });
-
-  it('hides injected user messages and maps cron origins', () => {
-    const snapshot = groupMessagesIntoSnapshot([
-      {
-        role: 'user',
-        content: [{ type: 'text', text: 'secret context' }],
-        toolCalls: [],
-        origin: { kind: 'injection' },
-      },
-      { role: 'user', content: [{ type: 'text', text: 'hi' }], toolCalls: [], origin: { kind: 'user' } },
-      {
-        role: 'user',
-        content: [{ type: 'text', text: 'run report' }],
-        toolCalls: [],
-        origin: { kind: 'cron_job', jobId: 'job1' } as { kind: string },
-      },
-    ]);
-    expect(snapshot.items).toHaveLength(2);
-    const cronTurn = snapshot.items[1];
-    expect(cronTurn?.kind === 'turn' && cronTurn.origin.kind).toBe('cron');
-  });
-
-  it('maps legacy background_task origins to task turns, preserving the taskId', () => {
-    const snapshot = groupMessagesIntoSnapshot([
-      { role: 'user', content: [{ type: 'text', text: 'hi' }], toolCalls: [], origin: { kind: 'user' } },
-      {
-        role: 'user',
-        content: [{ type: 'text', text: 'task done' }],
-        toolCalls: [],
-        origin: { kind: 'background_task', taskId: 'b83rhswvs' } as { kind: string },
-      },
-    ]);
-    const taskTurn = snapshot.items[1];
-    if (taskTurn?.kind !== 'turn') throw new Error('expected turn');
-    expect(taskTurn.origin).toMatchObject({ kind: 'task', taskId: 'b83rhswvs' });
-  });
-});
-
-describe('foldWireRecordFacts (cold facts)', () => {
-  const baseWithMarker = (): AgentTranscriptSnapshot =>
-    groupMessagesIntoSnapshot([
-      { role: 'user', content: [{ type: 'text', text: 'hi' }], toolCalls: [], origin: { kind: 'user' } },
-      { role: 'assistant', content: [{ type: 'text', text: 'answer' }], toolCalls: [] },
-      {
-        role: 'user',
-        content: [{ type: 'text', text: 'summary of old' }],
-        toolCalls: [],
-        origin: { kind: 'compaction_summary' },
-      },
-    ]);
-
-  it('returns the base snapshot unchanged when no fact records exist (old sessions)', () => {
-    const base = baseWithMarker();
-    const folded = foldWireRecordFacts(
+    const child = replay(
       [
-        { type: 'metadata', protocol_version: '1.5', created_at: 1 },
-        { type: 'context.append_message', message: { role: 'user' }, time: 1 },
-      ],
-      base,
-    );
-    expect(folded).toEqual(base);
-    expect(folded.items).toBe(base.items);
-  });
-
-  it('folds todo records into the global todo document, last write wins', () => {
-    const base = baseWithMarker();
-    const folded = foldWireRecordFacts(
-      [
-        { type: 'tools.update_store', key: 'todo', value: [{ title: 'old', status: 'pending' }], time: 1000 },
-        { type: 'tools.update_store', key: 'other', value: [{ title: 'ignored', status: 'done' }], time: 2000 },
         {
-          type: 'tools.update_store',
-          key: 'todo',
-          value: [
-            { title: 'write tests', status: 'in_progress' },
-            { title: 'ship', status: 'pending' },
-            { title: 'malformed' },
-          ],
-          time: 3000,
+          type: 'context.append_message',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: 'scan the repo' }],
+            origin: { kind: 'system_trigger', name: 'subagent' },
+          },
         },
       ],
-      base,
+      'child-1',
     );
-    expect(folded.todos).toEqual([
+    expect(child.getTurn('t0')).toMatchObject({ prompt: 'scan the repo', origin: { kind: 'other' } });
+  });
+
+  it('folds todo, goal, plan, swarm, task, and interruption facts through the shared reducer', () => {
+    const transcript = replay([
+      { type: 'tools.update_store', key: 'todo', value: [{ title: 'old', status: 'pending' }], time: 1 },
       {
-        todoId: 'todo',
-        items: [
-          { title: 'write tests', status: 'in_progress' },
+        type: 'tools.update_store',
+        key: 'todo',
+        value: [
+          { title: 'test', status: 'in_progress' },
           { title: 'ship', status: 'pending' },
+          { title: 'invalid' },
         ],
-        updatedAt: new Date(3000).toISOString(),
+        time: 2,
       },
+      { type: 'goal.create', goalId: 'goal-1', objective: 'ship', completionCriterion: 'green', time: 3 },
+      { type: 'goal.update', status: 'blocked', tokensUsed: 120, budgetLimits: { tokenBudget: 500 }, time: 4 },
+      { type: 'plan_mode.enter', id: 'plan-1', time: 5 },
+      { type: 'plan.revision', id: 'plan-1', path: 'agents/main/plan/v2.md', version: 2, time: 6 },
+      { type: 'swarm_mode.enter', time: 7 },
+      { type: 'swarm_mode.exit', time: 8 },
+      {
+        type: 'task.started',
+        info: { taskId: 'shell-1', kind: 'process', status: 'running', description: 'test', startedAt: 9 },
+        time: 9,
+      },
+      {
+        type: 'task.started',
+        info: { taskId: 'agent-1', kind: 'agent', status: 'running', agentId: 'child-1', startedAt: 10 },
+        time: 10,
+      },
+      {
+        type: 'task.terminated',
+        info: { taskId: 'shell-1', kind: 'process', status: 'completed', startedAt: 9, endedAt: 11 },
+        outputTail: 'passed',
+        time: 11,
+      },
+      { type: 'turn.cancel', turnId: 0, target: 'active', reason: 'user_cancelled', time: 12 },
     ]);
-    expect(folded.items).toBe(base.items);
-  });
-
-  it('folds goal create/update/clear into meta.goal with markers, last write wins', () => {
-    const base = baseWithMarker();
-    expect(base.items.some((item) => item.kind === 'marker' && item.markerId === 'm1')).toBe(true);
-
-    const folded = foldWireRecordFacts(
-      [
-        {
-          type: 'goal.create',
-          goalId: 'g1',
-          objective: 'fix the bug',
-          completionCriterion: 'tests pass',
-          time: 1000,
-        },
-        { type: 'goal.update', status: 'blocked', reason: 'stuck', tokensUsed: 1200, time: 2000 },
-        { type: 'goal.update', budgetLimits: { tokenBudget: 50000 }, time: 3000 },
+    expect(transcript.getTodos().get('todo')).toMatchObject({
+      items: [
+        { title: 'test', status: 'in_progress' },
+        { title: 'ship', status: 'pending' },
       ],
-      base,
-    );
-    expect(folded.meta.goal).toEqual({
-      objective: 'fix the bug',
-      status: 'blocked',
-      completionCriterion: 'tests pass',
-      budgetUsed: 1200,
-      budgetLimit: 50000,
+      updatedAt: new Date(2).toISOString(),
     });
-    const goalMarkers = folded.items.filter(
-      (item) => item.kind === 'marker' && item.marker === 'goal',
-    );
-    expect(goalMarkers.map((item) => item.kind === 'marker' && item.markerId)).toEqual([
-      'm2',
-      'm3',
-      'm4',
-    ]);
-    expect(goalMarkers[0]).toMatchObject({ at: new Date(1000).toISOString() });
-    expect(folded.items.slice(0, base.items.length)).toEqual(base.items);
-
-    const cleared = foldWireRecordFacts(
-      [
-        { type: 'goal.create', goalId: 'g1', objective: 'fix the bug', time: 1000 },
-        { type: 'goal.clear', time: 2000 },
-      ],
-      base,
-    );
-    expect(cleared.meta.goal).toBeUndefined();
-  });
-
-  it('marks user-cancelled turns with interruption markers, skipping unattributable cancels', () => {
-    const base = baseWithMarker();
-    const folded = foldWireRecordFacts(
-      [
-        { type: 'turn.cancel', turnId: 0, target: 'active', reason: 'user_cancelled', time: 1000 },
-        { type: 'turn.cancel', turnId: 0, target: 'active', reason: 'user_cancelled', time: 1500 },
-        { type: 'turn.cancel', turnId: 1, target: 'queued', reason: 'user_cancelled', time: 2000 },
-        { type: 'turn.cancel', turnId: 2, target: 'active', reason: 'aborted', time: 3000 },
-        { type: 'turn.cancel', turnId: 4, target: 'active', reason: 'aborted', time: 3500 },
-        { type: 'turn.cancel', turnId: 4, target: 'active', reason: 'user_cancelled', time: 3600 },
-        { type: 'turn.cancel', turnId: 3, target: 'active', time: 4000 },
-      ],
-      base,
-    );
-    expect(
-      folded.items.filter((item) => item.kind === 'marker' && item.marker === 'interruption'),
-    ).toEqual([
-      {
-        kind: 'marker',
-        markerId: 'm2',
-        marker: 'interruption',
-        payload: { turnId: 0, target: 'active', reason: 'user_cancelled' },
-        at: new Date(1000).toISOString(),
+    expect(transcript.getMeta()).toMatchObject({
+      goal: {
+        objective: 'ship',
+        status: 'blocked',
+        completionCriterion: 'green',
+        budgetUsed: 120,
+        budgetLimit: 500,
       },
-    ]);
-  });
-
-  it('folds plan/swarm mode records into meta.modes with enter/exit markers', () => {
-    const base = baseWithMarker();
-    const folded = foldWireRecordFacts(
-      [
-        { type: 'plan_mode.enter', id: 'plan-1', time: 1000 },
-        { type: 'swarm_mode.enter', trigger: { kind: 'task' }, time: 2000 },
-        { type: 'plan_mode.exit', id: 'plan-1', time: 3000 },
-      ],
-      base,
-    );
-    expect(folded.meta.modes).toEqual({ swarm: {} });
-    const markers = folded.items
-      .filter((item) => item.kind === 'marker')
-      .map((item) => item.kind === 'marker' && item.marker);
-    expect(markers).toEqual(['compaction', 'plan.enter', 'swarm.enter', 'plan.exit']);
-
-    const cancelled = foldWireRecordFacts(
-      [
-        { type: 'plan_mode.enter', id: 'plan-1', time: 1000 },
-        { type: 'plan_mode.cancel', time: 2000 },
-        { type: 'swarm_mode.enter', trigger: { kind: 'tool' }, time: 3000 },
-        { type: 'swarm_mode.exit', time: 4000 },
-      ],
-      base,
-    );
-    expect(cancelled.meta.modes).toEqual({});
-
-    const stillPlanning = foldWireRecordFacts(
-      [{ type: 'plan_mode.enter', id: 'plan-1', time: 1000 }],
-      base,
-    );
-    expect(stillPlanning.meta.modes).toEqual({ plan: {} });
-  });
-
-  it('folds plan.revision records into the plan badge and a timeline marker', () => {
-    const base = baseWithMarker();
-    const revision = {
-      type: 'plan.revision',
-      id: 'plan-1',
-      version: 2,
-      path: 'agents/main/plan/plan-1/v2.md',
-      sha256: 'deadbeef',
-      bytes: 512,
-      time: 2000,
-    };
-    const folded = foldWireRecordFacts(
-      [{ type: 'plan_mode.enter', id: 'plan-1', time: 1000 }, revision],
-      base,
-    );
-    expect(folded.meta.modes).toEqual({
-      plan: { reviewPath: 'agents/main/plan/plan-1/v2.md', version: 2 },
+      modes: { plan: { reviewPath: 'agents/main/plan/v2.md', version: 2 } },
     });
-    const revisionMarkers = folded.items.filter(
-      (item) => item.kind === 'marker' && item.marker === 'plan.revision',
-    );
-    expect(revisionMarkers).toEqual([
-      {
-        kind: 'marker',
-        markerId: 'm3',
-        marker: 'plan.revision',
-        payload: {
-          id: 'plan-1',
-          version: 2,
-          path: 'agents/main/plan/plan-1/v2.md',
-          sha256: 'deadbeef',
-          bytes: 512,
-        },
-        at: new Date(2000).toISOString(),
-      },
-    ]);
-
-    const exited = foldWireRecordFacts(
-      [
-        { type: 'plan_mode.enter', id: 'plan-1', time: 1000 },
-        revision,
-        { type: 'plan_mode.exit', id: 'plan-1', time: 3000 },
-      ],
-      base,
-    );
-    expect(exited.meta.modes?.plan).toBeUndefined();
+    expect(transcript.getTasks().get('shell-1')).toMatchObject({
+      kind: 'shell',
+      state: 'completed',
+      outputTail: 'passed',
+    });
+    expect(transcript.getTasks().has('agent-1')).toBe(false);
     expect(
-      exited.items.filter((item) => item.kind === 'marker' && item.marker === 'plan.revision'),
-    ).toHaveLength(1);
-
-    const reentered = foldWireRecordFacts(
-      [
-        { type: 'plan_mode.enter', id: 'plan-1', time: 1000 },
-        revision,
-        { type: 'plan_mode.exit', id: 'plan-1', time: 3000 },
-        { type: 'plan_mode.enter', id: 'plan-2', time: 4000 },
-      ],
-      base,
-    );
-    expect(reentered.meta.modes).toEqual({ plan: {} });
+      transcript.getItems().filter((item) => item.kind === 'taskref').map((item) => item.taskId),
+    ).toEqual(['shell-1', 'agent-1']);
+    expect(
+      transcript.getItems().filter((item) => item.kind === 'marker').map((item) => item.marker),
+    ).toEqual(['goal', 'goal', 'plan.enter', 'plan.revision', 'swarm.enter', 'swarm.exit', 'interruption']);
   });
 
-  it('folds task records while omitting uncertain running subagent entities', () => {
-    const base = baseWithMarker();
-    const folded = foldWireRecordFacts(
-      [
-        {
-          type: 'task.started',
-          info: {
-            taskId: 'task_1',
-            kind: 'process',
-            description: 'pnpm test',
-            status: 'running',
-            startedAt: 1000,
-            endedAt: null,
-          },
-          time: 1000,
-        },
-        {
-          type: 'task.started',
-          info: {
-            taskId: 'task_2',
-            kind: 'agent',
-            description: 'scan the repo',
-            status: 'running',
-            detached: false,
-            agentId: 'sub-1',
-            startedAt: 2000,
-            endedAt: null,
-          },
-          time: 2000,
-        },
-        {
-          type: 'task.terminated',
-          info: {
-            taskId: 'task_1',
-            kind: 'process',
-            description: 'pnpm test',
-            status: 'completed',
-            startedAt: 1000,
-            endedAt: 5000,
-          },
-          outputTail: '42 passed',
-          time: 5000,
-        },
-      ],
-      base,
-    );
-
-    expect(folded.tasks).toEqual([
+  it('resolves interaction outcomes and cancels pending interactions at cold replay completion', () => {
+    const transcript = replay([
       {
-        taskId: 'task_1',
-        kind: 'shell',
-        state: 'completed',
-        detached: true,
-        description: 'pnpm test',
-        agentId: undefined,
-        outputTail: '42 passed',
-        startedAt: new Date(1000).toISOString(),
-        endedAt: new Date(5000).toISOString(),
-      },
-    ]);
-    const refs = folded.items.filter((item) => item.kind === 'taskref');
-    expect(refs).toEqual([
-      { kind: 'taskref', refId: 'ref-task_1', taskId: 'task_1', at: new Date(1000).toISOString() },
-      { kind: 'taskref', refId: 'ref-task_2', taskId: 'task_2', at: new Date(2000).toISOString() },
-    ]);
-  });
-
-  it('maps unknown task kinds to other and survives malformed task records', () => {
-    const base = baseWithMarker();
-    const folded = foldWireRecordFacts(
-      [
-        {
-          type: 'task.started',
-          info: { taskId: 'task_q', kind: 'question', status: 'running', startedAt: 1000, endedAt: null },
-          time: 1000,
-        },
-        { type: 'task.started', time: 2000 },
-        { type: 'task.terminated', info: { kind: 'process' }, time: 3000 },
-      ],
-      base,
-    );
-    expect(folded.tasks).toHaveLength(1);
-    expect(folded.tasks[0]).toMatchObject({ taskId: 'task_q', kind: 'other', state: 'running' });
-  });
-
-  it('folds interaction request/resolved into entities with terminal states', () => {
-    const base = baseWithMarker();
-    const folded = foldWireRecordFacts(
-      [
-        {
-          type: 'interaction.request',
-          id: 'apr-1',
-          kind: 'approval',
-          toolCallId: 'call_1',
-          request: { toolName: 'Bash' },
-          time: 1000,
-        },
-        {
-          type: 'interaction.request',
-          id: 'q-1',
-          kind: 'question',
-          request: { questions: [] },
-          time: 2000,
-        },
-        {
-          type: 'interaction.resolved',
-          id: 'apr-1',
-          response: { decision: 'approved', scope: 'session' },
-          time: 3000,
-        },
-        { type: 'interaction.resolved', id: 'q-1', response: null, time: 4000 },
-      ],
-      base,
-    );
-    expect(folded.interactions).toEqual([
-      {
-        interactionId: 'apr-1',
-        interactionKind: 'approval',
-        toolCallId: 'call_1',
-        state: 'approved',
+        type: 'interaction.request',
+        id: 'approval-1',
+        kind: 'approval',
+        toolCallId: 'call-1',
         request: { toolName: 'Bash' },
+        origin: { agentId: 'main', turnId: 1 },
+      },
+      {
+        type: 'interaction.resolved',
+        id: 'approval-1',
         response: { decision: 'approved', scope: 'session' },
       },
       {
-        interactionId: 'q-1',
-        interactionKind: 'question',
-        toolCallId: undefined,
-        state: 'dismissed',
+        type: 'interaction.request',
+        id: 'question-1',
+        kind: 'question',
         request: { questions: [] },
-        response: null,
       },
+      { type: 'interaction.resolved', id: 'question-1', response: null },
+      {
+        type: 'interaction.request',
+        id: 'pending-1',
+        kind: 'approval',
+        request: { toolCallId: 'call-2', toolName: 'Write' },
+      },
+      { type: 'interaction.request', id: 'ignored-1', kind: 'user_tool', request: {} },
     ]);
-  });
-
-  it('folds question and approval cancellation outcomes without losing real answers', () => {
-    const base = baseWithMarker();
-    const cases = [
-      { id: 'q-null', kind: 'question', response: null, state: 'dismissed' },
-      {
-        id: 'q-turn-ended',
-        kind: 'question',
-        response: { cancelled: true, reason: 'turn_ended' },
-        state: 'dismissed',
-      },
-      { id: 'q-empty-text', kind: 'question', response: '', state: 'answered' },
-      { id: 'q-empty-array', kind: 'question', response: [], state: 'answered' },
-      {
-        id: 'q-structured',
-        kind: 'question',
-        response: { answers: { q_0: { option_ids: [], other_text: '' } } },
-        state: 'answered',
-      },
-      {
-        id: 'a-turn-ended',
-        kind: 'approval',
-        response: { cancelled: true, reason: 'turn_ended' },
-        state: 'cancelled',
-      },
-      {
-        id: 'a-approved',
-        kind: 'approval',
-        response: { decision: 'approved', scope: 'session' },
+    expect([...transcript.getInteractions().values()]).toEqual([
+      expect.objectContaining({
+        interactionId: 'approval-1',
         state: 'approved',
-      },
+        anchor: { kind: 'tool_call', toolCallId: 'call-1' },
+      }),
+      expect.objectContaining({ interactionId: 'question-1', state: 'dismissed', response: null }),
+      expect.objectContaining({
+        interactionId: 'pending-1',
+        state: 'cancelled',
+        anchor: { kind: 'tool_call', toolCallId: 'call-2' },
+      }),
+    ]);
+  });
+
+  it('updates known turns from turn.ended without materializing unknown turn ids', () => {
+    const transcript = replay([
+      { type: 'turn.prompt', turnId: 0, input: [{ type: 'text', text: 'run' }], origin: { kind: 'user' } },
       {
-        id: 'a-rejected',
-        kind: 'approval',
-        response: { decision: 'rejected', feedback: '' },
-        state: 'rejected',
+        type: 'turn.ended',
+        turnId: 0,
+        reason: 'failed',
+        durationMs: 25,
+        error: { message: 'boom' },
+        time: 20,
       },
-    ] as const;
-    const records: HistoryWireRecord[] = [];
-    for (const entry of cases) {
-      records.push(
-        {
-          type: 'interaction.request',
-          id: entry.id,
-          kind: entry.kind,
-          request: entry.kind === 'question' ? { questions: [] } : { toolName: 'Bash' },
-        },
-        { type: 'interaction.resolved', id: entry.id, response: entry.response },
-      );
-    }
-
-    const folded = foldWireRecordFacts(records, base);
-    expect(
-      folded.interactions.map(({ interactionId, state, response }) => ({
-        interactionId,
-        state,
-        response,
-      })),
-    ).toEqual(
-      cases.map(({ id, state, response }) => ({ interactionId: id, state, response })),
-    );
-  });
-
-  it('cancels interactions still pending at the end of the scan (crash == cancelled)', () => {
-    const base = baseWithMarker();
-    const folded = foldWireRecordFacts(
-      [
-        {
-          type: 'interaction.request',
-          id: 'apr-9',
-          kind: 'approval',
-          request: { toolCallId: 'call_9', toolName: 'Write' },
-          time: 1000,
-        },
-      ],
-      base,
-    );
-    expect(folded.interactions).toHaveLength(1);
-    expect(folded.interactions[0]).toMatchObject({
-      interactionId: 'apr-9',
-      state: 'cancelled',
-      toolCallId: 'call_9',
+      { type: 'turn.ended', turnId: 9, reason: 'cancelled', time: 30 },
+    ]);
+    expect(transcript.getTurn('t0')).toMatchObject({
+      state: 'failed',
+      durationMs: 25,
+      error: 'boom',
+      endedAt: new Date(20).toISOString(),
     });
-    expect(folded.interactions.every((entity) => entity.state !== 'pending')).toBe(true);
+    expect(transcript.getTurn('t9')).toBeUndefined();
   });
 
-  it('skips user_tool interactions like the live path', () => {
-    const base = baseWithMarker();
-    const folded = foldWireRecordFacts(
-      [
-        { type: 'interaction.request', id: 'ut-1', kind: 'user_tool', request: {}, time: 1000 },
-        { type: 'interaction.resolved', id: 'ut-1', response: {}, time: 2000 },
-      ] satisfies HistoryWireRecord[],
-      base,
-    );
-    expect(folded.interactions).toEqual([]);
-  });
-
-  it('folds turn.ended records into the matching turn items', () => {
-    const base = baseWithMarker();
-    const folded = foldWireRecordFacts(
-      [
-        {
-          type: 'turn.ended',
-          turnId: 0,
-          reason: 'failed',
-          error: { code: 'provider.overloaded', message: 'Overloaded', name: 'APIStatusError', retryable: true },
-          durationMs: 1234,
-          time: 5000,
-        },
-      ],
-      base,
-    );
-    const turn = folded.items[0];
-    if (turn?.kind !== 'turn') throw new Error('expected turn');
-    expect(turn.state).toBe('failed');
-    expect(turn.error).toBe('Overloaded');
-    expect(turn.durationMs).toBe(1234);
-    expect(turn.endedAt).toBe(new Date(5000).toISOString());
-    expect(folded.items).toHaveLength(base.items.length);
-  });
-
-  it('applies turn.ended records last-wins per turn and folds blocked into failed', () => {
-    const base = baseWithMarker();
-    const folded = foldWireRecordFacts(
-      [
-        { type: 'turn.ended', turnId: 0, reason: 'failed', error: { message: 'boom' }, time: 1000 },
-        { type: 'turn.ended', turnId: 0, reason: 'cancelled', durationMs: 10, time: 2000 },
-      ],
-      base,
-    );
-    const turn = folded.items[0];
-    if (turn?.kind !== 'turn') throw new Error('expected turn');
-    expect(turn.state).toBe('cancelled');
-    expect(turn.error).toBeUndefined();
-    expect(turn.durationMs).toBe(10);
-    expect(turn.endedAt).toBe(new Date(2000).toISOString());
-
-    const blocked = foldWireRecordFacts(
-      [{ type: 'turn.ended', turnId: 0, reason: 'blocked', time: 3000 }],
-      base,
-    );
-    const blockedTurn = blocked.items[0];
-    if (blockedTurn?.kind !== 'turn') throw new Error('expected turn');
-    expect(blockedTurn.state).toBe('failed');
-  });
-
-  it('ignores turn.ended records with unknown turn ids or malformed payloads', () => {
-    const base = baseWithMarker();
-    const folded = foldWireRecordFacts(
-      [
-        { type: 'turn.ended', turnId: 9, reason: 'cancelled', time: 1000 },
-        { type: 'turn.ended', reason: 'completed', time: 2000 },
-        { type: 'turn.ended', turnId: 0, reason: 'not-a-reason', time: 3000 },
-      ],
-      base,
-    );
-    const turn = folded.items[0];
-    if (turn?.kind !== 'turn') throw new Error('expected turn');
-    expect(turn.state).toBe('completed');
-    expect(turn.endedAt).toBe(new Date(3000).toISOString());
-    expect(folded.items).toHaveLength(base.items.length);
-  });
-
-  it('maps turn.ended around hidden retry turns replayed from the turn-clock records', () => {
-    const base = groupMessagesIntoSnapshot([
-      { role: 'user', content: [{ type: 'text', text: 'one' }], toolCalls: [], origin: { kind: 'user' } },
-      { role: 'assistant', content: [{ type: 'text', text: 'a1' }], toolCalls: [] },
-      { role: 'user', content: [{ type: 'text', text: 'two' }], toolCalls: [], origin: { kind: 'user' } },
-      { role: 'assistant', content: [{ type: 'text', text: 'a2' }], toolCalls: [] },
-    ]);
-    const folded = foldWireRecordFacts(
-      [
-        { type: 'turn.prompt', input: [{ type: 'text', text: 'one' }], origin: { kind: 'user' }, time: 1 },
-        { type: 'turn.ended', turnId: 0, reason: 'completed', time: 2 },
-        { type: 'turn.prompt', input: [], origin: { kind: 'retry' }, time: 3 },
-        { type: 'turn.ended', turnId: 1, reason: 'failed', error: { message: 'retry boom' }, time: 4 },
-        { type: 'turn.prompt', input: [{ type: 'text', text: 'two' }], origin: { kind: 'user' }, time: 5 },
-        { type: 'turn.ended', turnId: 2, reason: 'cancelled', durationMs: 20, time: 6 },
-      ],
-      base,
-    );
-    const first = folded.items[0];
-    if (first?.kind !== 'turn') throw new Error('expected turn');
-    expect(first.state).toBe('completed');
-    const second = folded.items[1];
-    if (second?.kind !== 'turn') throw new Error('expected turn');
-    expect(second.state).toBe('cancelled');
-    expect(second.error).toBeUndefined();
-    expect(second.durationMs).toBe(20);
-  });
-
-  it('maps turn.ended across queued-then-cancelled turn reservations', () => {
-    const base = groupMessagesIntoSnapshot([
-      { role: 'user', content: [{ type: 'text', text: 'one' }], toolCalls: [], origin: { kind: 'user' } },
-      { role: 'assistant', content: [{ type: 'text', text: 'a1' }], toolCalls: [] },
-      { role: 'user', content: [{ type: 'text', text: 'two' }], toolCalls: [], origin: { kind: 'user' } },
-      { role: 'assistant', content: [{ type: 'text', text: 'a2' }], toolCalls: [] },
-    ]);
-    const folded = foldWireRecordFacts(
-      [
-        { type: 'turn.prompt', input: [{ type: 'text', text: 'one' }], origin: { kind: 'user' }, time: 1 },
-        { type: 'turn.ended', turnId: 0, reason: 'completed', time: 2 },
-        { type: 'turn.cancel', turnId: 1, target: 'queued', time: 3 },
-        { type: 'turn.prompt', input: [{ type: 'text', text: 'two' }], origin: { kind: 'user' }, time: 4 },
-        { type: 'turn.ended', turnId: 2, reason: 'failed', error: { message: 'boom' }, time: 5 },
-      ],
-      base,
-    );
-    const second = folded.items[1];
-    if (second?.kind !== 'turn') throw new Error('expected turn');
-    expect(second.state).toBe('failed');
-    expect(second.error).toBe('boom');
-  });
-
-  it('maps hidden turn ordinals in linear time', () => {
-    const hidden: number[] = [];
-    const records: HistoryWireRecord[] = [];
-    for (let i = 0; i < 40; i += 1) {
-      const origin = i % 2 === 0 ? { kind: 'user' } : { kind: 'system_trigger' };
-      records.push({ type: 'turn.prompt', origin, time: i });
-      if (i % 2 === 1) hidden.push(i);
-      if (i % 2 === 0) records.push({ type: 'turn.ended', turnId: i, reason: 'completed', time: i + 0.5 });
-    }
-    const base = groupMessagesIntoSnapshot(
-      Array.from({ length: 20 }, (_, i) => ({
-        role: i % 2 === 0 ? ('user' as const) : ('assistant' as const),
-        content: [{ type: 'text' as const, text: `${i}` }],
-        toolCalls: [],
-        origin: { kind: 'user' as const },
-      })),
-    );
-    const folded = foldWireRecordFacts(records, base);
-    expect(folded.items.filter((item) => item.kind === 'turn').length).toBeGreaterThan(0);
+  it('deduplicates durable facts and reports changed ids from accepted operations', () => {
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const fact = {
+      factId: 'fact-1',
+      durability: 'durable' as const,
+      operations: [turnOp(0)],
+    };
+    const first = reducer.apply([fact]);
+    const duplicate = reducer.apply([fact]);
+    expect(first.acceptedOperations).toHaveLength(1);
+    expect(first.changedIds).toEqual(new Set(['t0']));
+    expect(duplicate.acceptedFacts).toHaveLength(0);
+    expect(duplicate.acceptedOperations).toHaveLength(0);
   });
 });

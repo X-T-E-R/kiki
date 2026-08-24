@@ -456,7 +456,16 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
 
   private startTurn(job: TurnJob): void {
     const origin = job.seed.origin;
-    void this.dispatcher.dispatch(new TurnPrompt({ input: job.seed.input, origin }));
+    void this.dispatcher.dispatch(
+      new TurnPrompt({
+        turnId: job.turn.id,
+        promptId: job.seed.promptId,
+        revision: undefined,
+        lineage: undefined,
+        input: job.seed.input,
+        origin,
+      }),
+    );
     job.turn.state = 'running';
     this.activeTurnJob = job;
     void this.dispatcher.dispatch(
@@ -464,6 +473,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         turnId: job.turn.id,
         origin,
         prompt: isDisplayablePromptOrigin(origin) ? turnPromptText(job.seed.input, origin) : undefined,
+        promptId: job.seed.promptId,
         promptAttachments: turnPromptAttachments(job.seed.input),
       }),
     );
@@ -841,7 +851,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       throw error;
     }
     this.lastRequestTraceId = request.trace.traceId;
-    this.appendResponseContent(turnId, currentStep, stepUuid, response);
+    this.appendResponseContent(turnId, currentStep, stepUuid, response, streamParts);
     const finishReason = await this.executeStepTools(
       turnId,
       signal,
@@ -890,15 +900,16 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     currentStep: number,
     stepUuid: string,
     response: AgentLLMRequestFinish,
+    streamParts: StreamPartCollector,
   ): void {
-    for (const part of response.message.content) {
+    for (const entry of streamParts.resolveContent(response.message.content)) {
       this.context.appendLoopEvent({
         type: 'content.part',
-        uuid: randomUUID(),
+        uuid: entry.id,
         turnId: String(turnId),
         step: currentStep,
         stepUuid,
-        part,
+        part: entry.part,
       });
     }
   }
@@ -911,14 +922,14 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     turnSignal: AbortSignal,
   ): void {
     if (!turnSignal.aborted) return;
-    for (const part of streamParts.drainInterruptedContent()) {
+    for (const entry of streamParts.drainInterruptedContent()) {
       this.context.appendLoopEvent({
         type: 'content.part',
-        uuid: randomUUID(),
+        uuid: entry.id,
         turnId: String(turnId),
         step: currentStep,
         stepUuid,
-        part,
+        part: entry.part,
       });
     }
   }
@@ -1148,32 +1159,38 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     onResponseEvent: () => void,
   ): StreamPartCollector {
     const callsByIndex = new Map<number | string | undefined, { id: string; name: string }>();
-    const partialContent: ContentPart[] = [];
+    const partialContent: Array<{ id: string; part: ContentPart }> = [];
     let forceContentPartBoundary = false;
-    const accumulate = (part: ContentPart): void => {
+    const accumulate = (part: ContentPart): string => {
       const last = partialContent.at(-1);
-      if (!forceContentPartBoundary && last !== undefined && mergeInPlace(last, part)) return;
+      if (!forceContentPartBoundary && last !== undefined && mergeInPlace(last.part, part)) {
+        return last.id;
+      }
       forceContentPartBoundary = false;
-      partialContent.push({ ...part });
+      const entry = { id: randomUUID(), part: { ...part } };
+      partialContent.push(entry);
+      return entry.id;
     };
 
     return {
       handle: (part) => {
         switch (part.type) {
-          case 'text':
+          case 'text': {
             onResponseEvent();
-            accumulate(part);
+            const partId = accumulate(part);
             void this.dispatcher.dispatch(
-              new AssistantDelta({ turnId, step, stepId, delta: part.text }),
+              new AssistantDelta({ turnId, step, stepId, partId, delta: part.text }),
             );
             return;
-          case 'think':
+          }
+          case 'think': {
             onResponseEvent();
-            accumulate(part);
+            const partId = accumulate(part);
             void this.dispatcher.dispatch(
-              new ThinkingDelta({ turnId, step, stepId, delta: part.think }),
+              new ThinkingDelta({ turnId, step, stepId, partId, delta: part.think }),
             );
             return;
+          }
           case 'image_url':
           case 'audio_url':
           case 'video_url':
@@ -1185,6 +1202,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             void this.dispatcher.dispatch(
               new ToolCallDelta({
                 turnId,
+                step,
+                stepId,
                 toolCallId: part.id,
                 name: part.name,
                 argumentsPart: part.arguments ?? undefined,
@@ -1200,6 +1219,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             void this.dispatcher.dispatch(
               new ToolCallDelta({
                 turnId,
+                step,
+                stepId,
                 toolCallId: toolCall.id,
                 name: toolCall.name,
                 argumentsPart: part.argumentsPart,
@@ -1213,8 +1234,17 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           }
         }
       },
+      resolveContent: (content) => {
+        const unused = [...partialContent];
+        return content.map((part) => {
+          const index = unused.findIndex((entry) => entry.part.type === part.type);
+          if (index === -1) return { id: randomUUID(), part };
+          const [entry] = unused.splice(index, 1);
+          return { id: entry!.id, part };
+        });
+      },
       drainInterruptedContent: () =>
-        partialContent.splice(0).filter((part) => !isVacuousContentPart(part)),
+        partialContent.splice(0).filter((entry) => !isVacuousContentPart(entry.part)),
     };
   }
 }
@@ -1284,7 +1314,8 @@ type BeginStepResult = { readonly step: StepRuntime } | { readonly result: LoopR
 
 interface StreamPartCollector {
   readonly handle: (part: StreamedMessagePart) => void;
-  drainInterruptedContent(): ContentPart[];
+  resolveContent(content: readonly ContentPart[]): Array<{ id: string; part: ContentPart }>;
+  drainInterruptedContent(): Array<{ id: string; part: ContentPart }>;
 }
 
 function cancelReasonFor(cancellation: unknown): 'user_cancelled' | 'aborted' {

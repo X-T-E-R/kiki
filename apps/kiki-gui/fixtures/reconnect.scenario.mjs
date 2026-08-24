@@ -19,6 +19,7 @@ const SID = 'session_fixture_reconnect';
 
 const SEGMENT_A = 'Segment A — this part streamed live before the drop.';
 const SEGMENT_B = 'Segment B — this part landed while the socket was down.';
+const FULL = `${SEGMENT_A} ${SEGMENT_B}`;
 
 export default {
   sessions: [sessionRecord(SID, { title: 'Fixture: reconnect' })],
@@ -30,8 +31,10 @@ export default {
     ...streamSteps('assistant.delta', 1, SEGMENT_A, { per: 14, delay: 90 }),
     { delay: 200 },
     commitAssistant('$SID', SEGMENT_A),
-    // Segment B streams slowly; the proof drops the WS somewhere in here.
-    ...streamSteps('assistant.delta', 1, SEGMENT_B, { per: 8, delay: 260 }),
+    // Segment B continues the same source string, including the separating
+    // space. The projector concatenates at the live length; it does not invent
+    // whitespace between independent streamSteps series.
+    ...streamSteps('assistant.delta', 1, FULL.slice(SEGMENT_A.length), { per: 8, delay: 260 }),
     commitAssistant('$SID', SEGMENT_B),
     { frame: { type: 'turn.step.completed', payload: { turnId: 1, step: 1 } } },
     turnEnd(1),

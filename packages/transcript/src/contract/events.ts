@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
-import type { AgentTranscriptSnapshot, TranscriptOperation } from '../ops/operation';
+import type {
+  AgentTranscriptSnapshot,
+  TranscriptCoverage,
+  TranscriptOperation,
+} from '../ops/operation';
 import { transcriptOpsPayloadSchema, transcriptResetPayloadSchema } from './schema';
 
 export const transcriptResetEventSchema = transcriptResetPayloadSchema.extend({
@@ -21,19 +25,28 @@ export const transcriptEventSchema = z.discriminatedUnion('type', [
  * (mutable, purely structural) — the schemas above validate WS payloads, the
  * types below are what server and client code actually exchange.
  */
+export interface TranscriptCursor {
+  readonly epoch?: string;
+  readonly seq: number;
+}
+
 export interface TranscriptResetEvent {
   readonly type: 'transcript.reset';
+  readonly session_id: string;
   readonly agent_id: string;
   readonly snapshot: AgentTranscriptSnapshot;
-  readonly has_more_older: boolean;
-  readonly seq?: number;
+  readonly grade: 'turn' | 'block' | 'delta';
+  readonly coverage: TranscriptCoverage;
+  readonly cursor: TranscriptCursor;
 }
 
 export interface TranscriptOpsEvent {
   readonly type: 'transcript.ops';
+  readonly session_id: string;
   readonly agent_id: string;
   readonly ops: readonly TranscriptOperation[];
-  readonly seq?: number;
+  readonly cursor: TranscriptCursor;
+  readonly through_seq: number;
 }
 
 export type TranscriptEvent = TranscriptResetEvent | TranscriptOpsEvent;

@@ -384,7 +384,7 @@ describe('KikiSocket terminal channel', () => {
   });
 });
 
-describe('KikiSocket timeline mode', () => {
+describe('KikiSocket transcript subscribe', () => {
   beforeEach(() => {
     FakeWebSocket.instances.length = 0;
     Object.defineProperty(globalThis, 'WebSocket', {
@@ -397,7 +397,7 @@ describe('KikiSocket timeline mode', () => {
     Reflect.deleteProperty(globalThis, 'WebSocket');
   });
 
-  it('pins timelineMode for the connection generation and drops stale frames', () => {
+  it('drops stale frames after restartGeneration', () => {
     const frames: unknown[] = [];
     const transcripts: unknown[] = [];
     const events: WsEvents = {
@@ -410,7 +410,6 @@ describe('KikiSocket timeline mode', () => {
     const socket = new KikiSocket({
       baseUrl: 'http://example.test',
       events,
-      timelineMode: 'transcript',
     });
     socket.connect();
     const first = FakeWebSocket.instances.at(-1)!;
@@ -423,10 +422,12 @@ describe('KikiSocket timeline mode', () => {
       seq: 0,
       payload: {
         type: 'transcript.reset',
+        session_id: 'sess_1',
         agent_id: 'main',
         snapshot: { items: [], tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {} },
-        has_more_older: false,
-        seq: 0,
+        grade: 'delta',
+        coverage: { kind: 'full', hasMoreOlder: false },
+        cursor: { seq: 0, epoch: 'e1' },
       },
     });
     expect(transcripts).toHaveLength(1);
@@ -438,7 +439,14 @@ describe('KikiSocket timeline mode', () => {
     first.receive({
       type: 'transcript.ops',
       seq: 0,
-      payload: { type: 'transcript.ops', agent_id: 'main', ops: [], seq: 1 },
+      payload: {
+        type: 'transcript.ops',
+        session_id: 'sess_1',
+        agent_id: 'main',
+        ops: [],
+        cursor: { seq: 1, epoch: 'e1' },
+        through_seq: 1,
+      },
     });
     expect(transcripts).toHaveLength(1);
     hello(second);
@@ -451,7 +459,7 @@ describe('KikiSocket timeline mode', () => {
     socket.close();
   });
 
-  it('does not mix transcript and legacy modes on the same connection', () => {
+  it('sends subscribe_v2 with per-agent grades and omits empty transcript_since', async () => {
     const socket = new KikiSocket({
       baseUrl: 'http://example.test',
       events: {
@@ -460,29 +468,33 @@ describe('KikiSocket timeline mode', () => {
         onResyncRequired: () => {},
         onSubscribeAck: () => {},
       },
-      timelineMode: 'transcript',
     });
-    expect(socket.timelineMode).toBe('transcript');
     socket.connect();
-    const first = FakeWebSocket.instances.at(-1)!;
-    hello(first);
-    first.receive({
-      type: 'transcript.reset',
-      seq: 0,
+    const wire = FakeWebSocket.instances.at(-1)!;
+    hello(wire);
+    socket.subscribe('sess_1', { seq: 4, epoch: 'e1' }, { '*': 'turn', main: 'delta', 'agent-research': 'delta' });
+    const v2 = wire.sent.find((frame) => frame.type === 'subscribe_v2');
+    expect(v2).toMatchObject({
+      type: 'subscribe_v2',
       payload: {
-        type: 'transcript.reset',
-        agent_id: 'main',
-        snapshot: { items: [], tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {} },
-        has_more_older: false,
+        session_id: 'sess_1',
+        transcript: { '*': 'turn', main: 'delta', 'agent-research': 'delta' },
       },
     });
-    expect(socket.timelineMode).toBe('transcript');
+    expect((v2?.payload as { transcript_since?: unknown } | undefined)?.transcript_since).toBeUndefined();
+    socket.updateTranscriptSince('sess_1', 'main', { seq: 4, epoch: 'e1' });
+    socket.subscribe('sess_1', { seq: 4, epoch: 'e1' }, { '*': 'turn', main: 'delta' });
+    const later = [...wire.sent].reverse().find((frame) => frame.type === 'subscribe_v2');
+    expect(later).toMatchObject({
+      payload: {
+        session_id: 'sess_1',
+        transcript_since: { main: { seq: 4, epoch: 'e1' } },
+      },
+    });
     socket.close();
   });
 
-  it('re-resolves capability before a new generation and hands off on mode change', async () => {
-    const modes: string[] = [];
-    let capability: 'transcript' | 'legacy' = 'transcript';
+  it('sends unsubscribe_v2 when detaching a transcript session', () => {
     const socket = new KikiSocket({
       baseUrl: 'http://example.test',
       events: {
@@ -491,46 +503,15 @@ describe('KikiSocket timeline mode', () => {
         onResyncRequired: () => {},
         onSubscribeAck: () => {},
       },
-      timelineMode: 'transcript',
-      resolveTimelineMode: async () => capability,
-      onTimelineModeChange: (mode) => { modes.push(mode); },
     });
     socket.connect();
-    await flushSocket();
-    const first = FakeWebSocket.instances.at(-1)!;
-    hello(first);
-    expect(socket.timelineMode).toBe('transcript');
-    first.close(1006);
-    capability = 'legacy';
-    socket.nudge();
-    await flushSocket();
-    expect(modes).toEqual(['legacy']);
-    expect(FakeWebSocket.instances).toHaveLength(1);
-  });
-
-  it('keeps the same-mode reconnect on the same socket instance', async () => {
-    const modes: string[] = [];
-    const socket = new KikiSocket({
-      baseUrl: 'http://example.test',
-      events: {
-        onStatus: () => {},
-        onFrame: () => {},
-        onResyncRequired: () => {},
-        onSubscribeAck: () => {},
-      },
-      timelineMode: 'legacy',
-      resolveTimelineMode: async () => 'legacy',
-      onTimelineModeChange: (mode) => { modes.push(mode); },
-    });
-    socket.connect();
-    await flushSocket();
-    const first = FakeWebSocket.instances.at(-1)!;
-    hello(first);
-    first.close(1006);
-    socket.nudge();
-    await flushSocket();
-    expect(modes).toEqual([]);
-    expect(FakeWebSocket.instances.length).toBeGreaterThan(1);
+    const wire = FakeWebSocket.instances.at(-1)!;
+    hello(wire);
+    socket.subscribe('sess_1', { seq: 0, epoch: 'e1' });
+    socket.unsubscribe('sess_1');
+    expect(wire.sent.some((frame) => frame.type === 'unsubscribe_v2')).toBe(true);
+    const v2 = wire.sent.find((frame) => frame.type === 'unsubscribe_v2');
+    expect(v2).toMatchObject({ payload: { session_id: 'sess_1' } });
     socket.close();
   });
 });

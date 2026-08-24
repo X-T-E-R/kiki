@@ -63,10 +63,14 @@ const AgentTreeRow = memo(function AgentTreeRow({
   const { t, tp } = useI18n();
   const children = agentChildren(forest, node.agentId);
   const hasActiveChild = children.some((child) => isActiveStatus(child.status));
-  const [expanded, setExpanded] = useState(() => isActiveStatus(node.status) || hasActiveChild);
+  // Session rail must list settled children without a click: a completed parent
+  // with two named kids is the proof surface. Only auto-expand, never collapse.
+  const [expanded, setExpanded] = useState(
+    () => children.length > 0 || isActiveStatus(node.status) || hasActiveChild,
+  );
   useEffect(() => {
-    if (hasActiveChild || isActiveStatus(node.status)) setExpanded(true);
-  }, [hasActiveChild, node.status]);
+    if (children.length > 0 || hasActiveChild || isActiveStatus(node.status)) setExpanded(true);
+  }, [children.length, hasActiveChild, node.status]);
 
   const selected = selectedAgentId === node.agentId;
   const indent = Math.min(depth, 6) * 12;

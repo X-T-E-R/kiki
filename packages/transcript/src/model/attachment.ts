@@ -1,4 +1,5 @@
 import type { AttachmentId } from './ids';
+import type { TranscriptAnchor } from './identity';
 
 /**
  * Where the frontend fetches the bytes. `file` addresses the process-global
@@ -19,6 +20,7 @@ export interface TranscriptAttachment {
   readonly name?: string;
   readonly size?: number;
   readonly source?: AttachmentSource;
+  readonly owner?: TranscriptAnchor;
   /** Inline position marker inside the carrier's text, e.g. '[Image #1]'. */
   readonly placeholder?: string;
 }

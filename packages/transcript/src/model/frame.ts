@@ -1,16 +1,19 @@
 import type { AgentId, AttachmentId, FrameId, InteractionId, TaskId, TodoId } from './ids';
+import type { TranscriptPartIdentity } from './identity';
 
 export type { InteractionKind, InteractionState } from './interaction';
 
 export type FrameRef = {
   readonly target: 'frame';
   readonly frameId: FrameId;
+  readonly part?: TranscriptPartIdentity;
 };
 
 /** Assistant / user visible text. L1 always holds the full text so far. */
 export interface TextFrame {
   readonly kind: 'text';
   readonly frameId: FrameId;
+  readonly part?: TranscriptPartIdentity;
   readonly role: 'assistant' | 'user';
   readonly text: string;
   /** Attachments carried by this message (entities in `attachments`). */
@@ -36,6 +39,7 @@ export interface TextFrame {
 export interface ThinkingFrame {
   readonly kind: 'thinking';
   readonly frameId: FrameId;
+  readonly part?: TranscriptPartIdentity;
   readonly text: string;
 }
 
@@ -62,6 +66,7 @@ export interface AgentRef {
 export interface ToolCallFrame {
   readonly kind: 'tool';
   readonly frameId: FrameId;
+  readonly part?: TranscriptPartIdentity;
   readonly toolCallId: string;
   /** Engine tool name, e.g. 'Read' / 'Bash' / 'Agent' / 'AgentSwarm'. */
   readonly name: string;
@@ -98,6 +103,7 @@ export interface ToolCallFrame {
 export interface NoticeFrame {
   readonly kind: 'notice';
   readonly frameId: FrameId;
+  readonly part?: TranscriptPartIdentity;
   readonly level: 'error' | 'warning' | 'info';
   /** Origin subsystem, e.g. 'mcp', 'hook', 'compaction'. */
   readonly source?: string;

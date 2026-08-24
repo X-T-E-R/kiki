@@ -81,7 +81,7 @@ import {
 import { toLegacyPhase } from '../legacyStatus/legacyStatus';
 import { projectPromptContentParts } from '../messages/messageProjection';
 
-export interface ProjectorInteraction {
+export interface LiveAdapterInteraction {
   readonly id: string;
   readonly kind: 'approval' | 'question';
   /** In-process `ApprovalRequest` / `QuestionRequest`, passed through as-is. */
@@ -98,7 +98,7 @@ type PromptSteeredEvent = { readonly type: 'prompt.steered' } & PromptSteered;
 type PromptQueuedEvent = { readonly type: 'prompt.queued' } & PromptQueued;
 type PromptReplacedEvent = { readonly type: 'prompt.replaced' } & PromptReplaced;
 
-export type ProjectorBusEvent =
+export type LiveAdapterBusEvent =
   | PlanRevisionEvent
   | ({ readonly type: 'turn.started' } & TurnStarted)
   | ({ readonly type: 'turn.ended' } & TurnEnded)
@@ -151,7 +151,7 @@ export type ProjectorBusEvent =
  * about a submission (REST prompt path, a future engine event) can project it
  * through the same entry point.
  */
-export interface ProjectorPromptSubmittedEvent {
+export interface LiveAdapterPromptSubmittedEvent {
   readonly type: 'prompt.submitted';
   readonly promptId: string;
   readonly userMessageId: string;
@@ -164,7 +164,7 @@ export interface ProjectorPromptSubmittedEvent {
  * Read access to one step's current frames (the producer store). Used for
  * mid-stream attach adoption — see `adoptStreamFrame`.
  */
-export type ProjectorFrameLookup = (
+export type LiveAdapterFrameLookup = (
   turnId: string,
   stepId: string,
 ) => readonly TranscriptFrame[] | undefined;
@@ -173,23 +173,23 @@ export type ProjectorFrameLookup = (
  * Locate a tool frame by its toolCallId across the producer store. Used for
  * mid-bind result adoption — see `adoptToolFrame`.
  */
-export type ProjectorToolFrameLookup = (toolCallId: string) => ToolFrameRecord | undefined;
+export type LiveAdapterToolFrameLookup = (toolCallId: string) => ToolFrameRecord | undefined;
 
 /**
  * The engine-reported current step ordinal for a turn (the activity view).
  * Used to place deltas correctly when the projector attached after
  * `turn.step.started` for a later step — see `ensureStep`.
  */
-export type ProjectorStepOrdinalLookup = (turnId: string) => number | undefined;
+export type LiveAdapterStepOrdinalLookup = (turnId: string) => number | undefined;
 
-export type ProjectorTurnLookup = (turnId: string) => TurnHeader | undefined;
+export type LiveAdapterTurnLookup = (turnId: string) => TurnHeader | undefined;
 
 /** Optional producer-store lookups that let the projector adopt seeded state. */
-export interface ProjectorLookups {
-  readonly stepFrames?: ProjectorFrameLookup;
-  readonly toolFrame?: ProjectorToolFrameLookup;
-  readonly stepOrdinal?: ProjectorStepOrdinalLookup;
-  readonly turn?: ProjectorTurnLookup;
+export interface LiveAdapterLookups {
+  readonly stepFrames?: LiveAdapterFrameLookup;
+  readonly toolFrame?: LiveAdapterToolFrameLookup;
+  readonly stepOrdinal?: LiveAdapterStepOrdinalLookup;
+  readonly turn?: LiveAdapterTurnLookup;
 }
 
 interface OpenTextFrame {
@@ -204,7 +204,7 @@ export interface ToolFrameRecord {
   readonly frame: ToolCallFrame;
 }
 
-export class AgentTranscriptProjector {
+export class AgentTranscriptLiveAdapter {
   /** Latest header of the in-flight (or most recent) turn; kept whole so terminal upserts preserve `origin` / `startedAt` by reference. */
   private currentTurn: TurnHeader | undefined;
   private currentStep: StepHeader | undefined;
@@ -264,10 +264,10 @@ export class AgentTranscriptProjector {
 
   constructor(
     readonly agentId: string,
-    private readonly lookups?: ProjectorLookups,
+    private readonly lookups?: LiveAdapterLookups,
   ) {}
 
-  map(event: ProjectorBusEvent | ProjectorPromptSubmittedEvent): TranscriptOperation[] {
+  map(event: LiveAdapterBusEvent | LiveAdapterPromptSubmittedEvent): TranscriptOperation[] {
     switch (event.type) {
       case 'plan.revision':
         return this.onPlanRevision(event);
@@ -284,9 +284,9 @@ export class AgentTranscriptProjector {
       case 'turn.step.retrying':
         return this.onStepRetrying(event);
       case 'assistant.delta':
-        return this.onTextDelta(event.turnId, 'assistant', event.delta);
+        return this.onTextDelta(event, 'assistant');
       case 'thinking.delta':
-        return this.onTextDelta(event.turnId, 'thinking', event.delta);
+        return this.onTextDelta(event, 'thinking');
       case 'tool.call.delta':
         return this.onToolCallDelta(event);
       case 'tool.progress':
@@ -364,10 +364,20 @@ export class AgentTranscriptProjector {
     turnId: number;
     origin: unknown;
     prompt?: string;
+    promptId?: string;
     promptAttachments?: readonly { kind: 'image' | 'video' | 'audio'; fileId: string }[];
   }): TranscriptOperation[] {
     const n = event.turnId;
     const turnId = `t${n}`;
+    const existing = this.lookups?.turn?.(turnId);
+    if (existing !== undefined) {
+      const current = existing.state === 'running' ? existing : { ...existing, state: 'running' as const };
+      this.currentTurn = current;
+      this.currentStep = undefined;
+      this.openText = undefined;
+      this.openThinking = undefined;
+      return current === existing ? [] : [{ op: 'turn.upsert', turn: current }];
+    }
     const ops: TranscriptOperation[] = [];
     const attachmentIds: string[] = [];
     for (const input of event.promptAttachments ?? []) {
@@ -375,6 +385,7 @@ export class AgentTranscriptProjector {
         attachmentId: `${turnId}.att${attachmentIds.length + 1}`,
         mediaType: `${input.kind}/*`,
         source: { kind: 'session_media', fileId: input.fileId },
+        owner: { kind: 'turn', turnId },
       };
       ops.push({ op: 'attachment.upsert', attachment });
       attachmentIds.push(attachment.attachmentId);
@@ -385,6 +396,15 @@ export class AgentTranscriptProjector {
       ordinal: n,
       state: 'running',
       origin: mapTurnOrigin(event.origin),
+      message:
+        event.promptId === undefined
+          ? undefined
+          : {
+              messageId: event.promptId,
+              role: 'user',
+              revision: 0,
+              provenance: { source: 'engine' },
+            },
       prompt: event.prompt,
       attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
       startedAt: nowIso(),
@@ -421,6 +441,7 @@ export class AgentTranscriptProjector {
       ordinal: event.turnId,
       state,
       origin: prev?.origin ?? { kind: 'other' },
+      message: prev?.message,
       prompt: prev?.prompt,
       attachmentIds: prev?.attachmentIds,
       startedAt: prev?.startedAt,
@@ -469,9 +490,9 @@ export class AgentTranscriptProjector {
     };
   }
 
-  private onStepStarted(event: { turnId: number; step: number }): TranscriptOperation[] {
+  private onStepStarted(event: { turnId: number; step: number; stepId?: string }): TranscriptOperation[] {
     const turnId = `t${event.turnId}`;
-    const stepId = `${turnId}.${event.step}`;
+    const stepId = event.stepId ?? `${turnId}.${event.step}`;
     this.stepOrdinals.set(turnId, event.step);
     this.currentStep = {
       kind: 'step',
@@ -490,6 +511,7 @@ export class AgentTranscriptProjector {
   private onStepCompleted(event: {
     turnId: number;
     step: number;
+    stepId?: string;
     usage?: StepUsage;
     finishReason?: string;
     rawFinishReason?: string;
@@ -504,7 +526,7 @@ export class AgentTranscriptProjector {
     const ops: TranscriptOperation[] = [];
     this.flushOpenFrames(ops);
     const turnId = `t${event.turnId}`;
-    const stepId = `${turnId}.${event.step}`;
+    const stepId = event.stepId ?? `${turnId}.${event.step}`;
     const prev = this.currentStep?.stepId === stepId ? this.currentStep : undefined;
     if (event.usage !== undefined) {
       const usages = this.stepUsageByTurn.get(turnId) ?? [];
@@ -538,13 +560,14 @@ export class AgentTranscriptProjector {
     type: 'turn.step.interrupted';
     turnId: number;
     step: number;
+    stepId?: string;
     reason: string;
     message?: string;
   }): TranscriptOperation[] {
     const ops: TranscriptOperation[] = [];
     this.flushOpenFrames(ops);
     const turnId = `t${event.turnId}`;
-    const stepId = `${turnId}.${event.step}`;
+    const stepId = event.stepId ?? `${turnId}.${event.step}`;
     const prev = this.currentStep?.stepId === stepId ? this.currentStep : undefined;
     this.currentStep = {
       kind: 'step',
@@ -570,6 +593,7 @@ export class AgentTranscriptProjector {
   private onStepRetrying(event: {
     turnId: number;
     step: number;
+    stepId?: string;
     failedAttempt: number;
     nextAttempt: number;
     maxAttempts: number;
@@ -580,7 +604,7 @@ export class AgentTranscriptProjector {
   }): TranscriptOperation[] {
     const ops: TranscriptOperation[] = [];
     const turnId = `t${event.turnId}`;
-    const stepId = `${turnId}.${event.step}`;
+    const stepId = event.stepId ?? `${turnId}.${event.step}`;
     const prev = this.currentStep?.stepId === stepId ? this.currentStep : undefined;
     this.currentStep = {
       kind: 'step',
@@ -604,36 +628,46 @@ export class AgentTranscriptProjector {
   }
 
   private onTextDelta(
-    turnNumber: number,
+    event: { turnId: number; step?: number; stepId?: string; partId?: string; delta: string },
     kind: 'assistant' | 'thinking',
-    delta: string,
   ): TranscriptOperation[] {
     const ops: TranscriptOperation[] = [];
-    const turnId = `t${turnNumber}`;
-    const step = this.ensureStep(turnId, ops);
+    const turnId = `t${event.turnId}`;
+    const step = this.ensureStep(turnId, ops, event.stepId, event.step);
     let open = kind === 'assistant' ? this.openText : this.openThinking;
-    open ??= this.adoptStreamFrame(turnId, step.stepId, kind);
+    const partId = event.partId ?? open?.frameId ?? `${step.stepId}.f${++this.frameOrdinal}`;
+    if (open !== undefined && open.frameId !== partId) {
+      this.flushOpenFrames(ops);
+      open = undefined;
+    }
+    open ??= this.adoptStreamFrame(turnId, step.stepId, kind, partId);
     if (open === undefined) {
-      const frameId = `${step.stepId}.f${++this.frameOrdinal}`;
+      const frameId = partId;
       open = { frameId, offset: 0, text: '' };
+      const part = {
+        partId: frameId,
+        messageId: step.stepId,
+        revision: 0,
+        provenance: { source: 'engine' as const },
+      };
       ops.push({
         op: 'frame.upsert',
         turnId,
         stepId: step.stepId,
         frame:
           kind === 'assistant'
-            ? { kind: 'text', frameId, role: 'assistant', text: '' }
-            : { kind: 'thinking', frameId, text: '' },
+            ? { kind: 'text', frameId, part, role: 'assistant', text: '' }
+            : { kind: 'thinking', frameId, part, text: '' },
       });
     }
     ops.push({
       op: 'append',
       target: { type: 'frame', turnId, stepId: step.stepId, frameId: open.frameId },
       offset: open.offset,
-      text: delta,
+      text: event.delta,
     });
-    open.offset += delta.length;
-    open.text += delta;
+    open.offset += event.delta.length;
+    open.text += event.delta;
     if (kind === 'assistant') this.openText = open;
     else this.openThinking = open;
     return ops;
@@ -657,24 +691,16 @@ export class AgentTranscriptProjector {
     turnId: string,
     stepId: string,
     kind: 'assistant' | 'thinking',
+    partId: string,
   ): OpenTextFrame | undefined {
-    const frames = this.lookups?.stepFrames?.(turnId, stepId);
-    if (frames === undefined || frames.length === 0) return undefined;
-    for (const frame of frames) {
-      const match = /\.f(\d+)$/.exec(frame.frameId);
-      if (match !== null) {
-        this.frameOrdinal = Math.max(this.frameOrdinal, Number(match[1]));
-      }
+    const frame = this.lookups
+      ?.stepFrames?.(turnId, stepId)
+      ?.find((candidate) => candidate.frameId === partId);
+    if (kind === 'assistant' && frame?.kind === 'text' && frame.role === 'assistant') {
+      return { frameId: frame.frameId, offset: frame.text.length, text: frame.text };
     }
-    for (let i = frames.length - 1; i >= 0; i -= 1) {
-      const frame = frames[i];
-      if (frame === undefined) continue;
-      if (kind === 'assistant' && frame.kind === 'text' && frame.role === 'assistant') {
-        return { frameId: frame.frameId, offset: frame.text.length, text: frame.text };
-      }
-      if (kind === 'thinking' && frame.kind === 'thinking') {
-        return { frameId: frame.frameId, offset: frame.text.length, text: frame.text };
-      }
+    if (kind === 'thinking' && frame?.kind === 'thinking') {
+      return { frameId: frame.frameId, offset: frame.text.length, text: frame.text };
     }
     return undefined;
   }
@@ -690,8 +716,29 @@ export class AgentTranscriptProjector {
         turnId: step.turnId,
         stepId: step.stepId,
         frame: isText
-          ? { kind: 'text', frameId: open.frameId, role: 'assistant', text: open.text }
-          : { kind: 'thinking', frameId: open.frameId, text: open.text },
+          ? {
+              kind: 'text',
+              frameId: open.frameId,
+              part: {
+                partId: open.frameId,
+                messageId: step.stepId,
+                revision: 0,
+                provenance: { source: 'engine' },
+              },
+              role: 'assistant',
+              text: open.text,
+            }
+          : {
+              kind: 'thinking',
+              frameId: open.frameId,
+              part: {
+                partId: open.frameId,
+                messageId: step.stepId,
+                revision: 0,
+                provenance: { source: 'engine' },
+              },
+              text: open.text,
+            },
       });
     }
     this.openText = undefined;
@@ -706,15 +753,24 @@ export class AgentTranscriptProjector {
    * still missing). Without the lookup a late attach at step ≥ 2 would
    * stream into the wrong step.
    */
-  private ensureStep(turnId: string, ops: TranscriptOperation[]): StepHeader {
-    if (this.currentStep !== undefined && this.currentStep.turnId === turnId) {
+  private ensureStep(
+    turnId: string,
+    ops: TranscriptOperation[],
+    stepIdHint?: string,
+    ordinalHint?: number,
+  ): StepHeader {
+    if (
+      this.currentStep !== undefined &&
+      this.currentStep.turnId === turnId &&
+      (stepIdHint === undefined || this.currentStep.stepId === stepIdHint)
+    ) {
       return this.currentStep;
     }
     const ordinal =
-      this.lookups?.stepOrdinal?.(turnId) ?? this.stepOrdinals.get(turnId) ?? 1;
+      ordinalHint ?? this.lookups?.stepOrdinal?.(turnId) ?? this.stepOrdinals.get(turnId) ?? 1;
     this.currentStep = {
       kind: 'step',
-      stepId: `${turnId}.${ordinal}`,
+      stepId: stepIdHint ?? `${turnId}.${ordinal}`,
       turnId,
       ordinal,
       state: 'running',
@@ -733,11 +789,14 @@ export class AgentTranscriptProjector {
    */
   private onToolCallDelta(event: {
     turnId: number;
+    step?: number;
+    stepId?: string;
     toolCallId: string;
     name?: string;
     argumentsPart?: string;
   }): TranscriptOperation[] {
     const ops: TranscriptOperation[] = [];
+    this.flushOpenFrames(ops);
     const prev = this.toolFrames.get(event.toolCallId);
     if (prev !== undefined) {
       const frame: ToolCallFrame = {
@@ -749,11 +808,17 @@ export class AgentTranscriptProjector {
       return ops;
     }
     const turnId = `t${event.turnId}`;
-    const step = this.ensureStep(turnId, ops);
+    const step = this.ensureStep(turnId, ops, event.stepId, event.step);
     const frameId = `${step.stepId}.${event.toolCallId}`;
     const frame: ToolCallFrame = {
       kind: 'tool',
       frameId,
+      part: {
+        partId: event.toolCallId,
+        messageId: step.stepId,
+        revision: 0,
+        provenance: { source: 'engine' },
+      },
       toolCallId: event.toolCallId,
       name: event.name ?? '',
       state: 'running',
@@ -800,9 +865,17 @@ export class AgentTranscriptProjector {
     const step = this.ensureStep(turnId, ops);
     const frameId = `${step.stepId}.${event.toolCallId}`;
     const input = parseToolArgs(event.args);
+    const previous = this.toolFrames.get(event.toolCallId)?.frame;
     const frame: ToolCallFrame = {
       kind: 'tool',
       frameId,
+      part:
+        previous?.part ?? {
+          partId: event.toolCallId,
+          messageId: step.stepId,
+          revision: 0,
+          provenance: { source: 'engine' },
+        },
       toolCallId: event.toolCallId,
       name: event.name,
       state: 'running',
@@ -888,9 +961,6 @@ export class AgentTranscriptProjector {
       role: 'user',
       text: `${event.title}\n${event.body}`.trim(),
       taskId: event.sourceId,
-      // Provenance for view-layer lane classification: without an origin the
-      // client falls back to the enclosing turn's origin (usually the user's)
-      // and mis-renders the notification as a right-side user bubble.
       origin: { kind: 'task', taskId: event.sourceId },
     };
     return [{ op: 'frame.upsert', turnId: turn.turnId, stepId: step.stepId, frame }];
@@ -1284,7 +1354,7 @@ export class AgentTranscriptProjector {
     return this.markerOp('notice', { level, message, event: eventPayload });
   }
 
-  private onPromptSubmitted(event: ProjectorPromptSubmittedEvent): TranscriptOperation[] {
+  private onPromptSubmitted(event: LiveAdapterPromptSubmittedEvent): TranscriptOperation[] {
     const prompt = this.upsertPrompt(event.promptId, () => ({
       promptId: event.promptId,
       status: event.status,
@@ -1404,13 +1474,15 @@ export class AgentTranscriptProjector {
    * when present and omitted otherwise; an unanchored interaction renders
    * floating in consumers.
    */
-  mapInteractionRequested(interaction: ProjectorInteraction): TranscriptOperation[] {
+  mapInteractionRequested(interaction: LiveAdapterInteraction): TranscriptOperation[] {
     const payload = interaction.payload as { toolCallId?: unknown };
     const toolCallId = typeof payload.toolCallId === 'string' ? payload.toolCallId : undefined;
     const entity: TranscriptInteraction = {
       interactionId: interaction.id,
       interactionKind: interaction.kind,
       toolCallId,
+      origin: interaction.origin,
+      anchor: toolCallId === undefined ? undefined : { kind: 'tool_call', toolCallId },
       state: 'pending',
       request: interaction.payload,
     };

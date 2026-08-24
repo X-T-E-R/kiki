@@ -12,25 +12,6 @@ export interface ExtractedWireMessage {
   readonly stepUuid?: string;
 }
 
-/**
- * How one wire record moves the 0-based turn counter (transcript groupTurns
- * rules):
- *   - `open`   — a user message that starts a new turn; `anchor` marks undo
- *     anchors (`isUndoAnchor`: no origin / kind 'user' / user-slash skill or
- *     plugin command), needed to replay `context.undo` on the counter;
- *   - `ensure` — assistant content; attaches to the current turn, opening a
- *     fallback turn when none exists yet (groupTurns' `ensureTurn`). Limited
- *     to the loop events whose folded assistant message SURVIVES settling
- *     (`content.part` with non-vacuous text, or `tool.call` — a tool.result
- *     folds to a tool message, and a vacuous step is dropped, so neither of
- *     those opens a turn);
- *   - `undo`   — `context.undo`: drop the last `count` anchor-opened turns;
- *   - `none`   — anything else. In particular `context.apply_compaction` and
- *     `context.clear` do NOT renumber: the transcript's cold replay keeps the
- *     full history (compaction appends a `compaction_summary` marker message,
- *     `clear` only raises a floor) and groupTurns numbers it continuously,
- *     matching the live TurnModel whose turn ids are monotonic.
- */
 export type TurnEffect =
   | { readonly kind: 'open'; readonly anchor: boolean }
   | { readonly kind: 'ensure' }

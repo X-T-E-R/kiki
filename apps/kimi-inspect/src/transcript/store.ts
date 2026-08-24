@@ -3,19 +3,21 @@
  *
  * A thin observable wrapper over the package's L1 convergence path
  * (`applyOperation` on an `AgentState`) — the reducer is NOT re-implemented
- * here. State arrives through exactly two channels:
+ * here. State arrives through three channels:
  *
- *  - REST pages (`applyPage`): the only source of FULL state. A `replace`
- *    page (initial load / full refresh) is the newest slice and replaces
- *    local state wholesale, globals included; a non-replace page is an older
- *    slice fetched with `before_turn` and prepended ahead of the loaded
- *    window (items only — globals stay with the fresher live state).
- *  - WS delta ops (`applyOps`): incremental `transcript.ops` only. Ops are
+ *  - REST pages (`applyPage`): a `replace` page (initial load / full refresh)
+ *    is applied as a coverage-aware `reset` so already-loaded older turns and
+ *    unchanged node identity survive; a non-replace page is an older slice
+ *    fetched with `before_turn` and prepended ahead of the loaded window
+ *    (items only — globals stay with the fresher live state).
+ *  - WS `transcript.reset` (`applyReset`): in-place reconcile via the same
+ *    L2 reset reducer (tail coverage keeps the older prefix).
+ *  - WS delta ops (`applyOps`): incremental `transcript.ops`. Ops are
  *    idempotent upserts plus offset-placed appends, so ops buffered while a
  *    REST refresh is in flight converge when flushed onto the fresh pages.
  *
- * `onGap` surfaces `append` placement gaps so the caller can trigger a full
- * REST refresh (the WS channel carries no snapshots to fall back on).
+ * `onGap` surfaces `append` placement gaps (offset beyond local length) so
+ * the caller can catch up. Filtered-grade seq jumps are NOT gaps.
  */
 
 import {
@@ -23,6 +25,8 @@ import {
   EMPTY_AGENT_STATE,
   itemId,
   type AgentState,
+  type AgentTranscriptSnapshot,
+  type TranscriptCoverage,
   type TranscriptItem,
   type TranscriptOperation,
 } from '@moonshot-ai/transcript';
@@ -118,31 +122,14 @@ export class TranscriptChatStore {
   };
 
   /**
-   * Merge one REST page. With `replace`, the page is the newest slice and
-   * becomes the whole state (initial load / full refresh); otherwise it is an
-   * older slice prepended ahead of the window (deduped by item id), updating
-   * only `items` and `hasMoreOlder`.
+   * Merge one REST page. With `replace`, the page is the newest slice and is
+   * applied as a coverage-aware reset (initial load / full refresh); otherwise
+   * it is an older slice prepended ahead of the window (deduped by item id),
+   * updating only `items` and `hasMoreOlder`.
    */
   applyPage(page: TranscriptPage, opts?: { replace?: boolean }): void {
     if (opts?.replace === true) {
-      this.state = {
-        items: page.items,
-        tasks: new Map(page.tasks.map((task) => [task.taskId, task])),
-        interactions: new Map(
-          page.interactions.map((interaction) => [interaction.interactionId, interaction]),
-        ),
-        attachments: new Map(
-          page.attachments.map((attachment) => [attachment.attachmentId, attachment]),
-        ),
-        todos: new Map(page.todos.map((todo) => [todo.todoId, todo])),
-        // The page contract carries no prompt slice yet; prompt.upsert ops
-        // still accumulate through the shared reducer between refreshes.
-        prompts: new Map(),
-        meta: page.meta,
-        pendingInteractions: new Set(page.pendingInteractions),
-        hasMoreOlder: page.hasMoreOlder,
-      };
-      this.notify();
+      this.applyReset(pageToSnapshot(page), page.coverage);
       return;
     }
     const existing = new Set(this.state.items.map(itemId));
@@ -154,6 +141,22 @@ export class TranscriptChatStore {
       hasMoreOlder: page.hasMoreOlder,
     };
     this.notify();
+  }
+
+  /**
+   * In-place baseline reconcile. Delegates to the package reset reducer so a
+   * tail snapshot keeps already-loaded older turns and unchanged nodes keep
+   * their identity.
+   */
+  applyReset(snapshot: AgentTranscriptSnapshot, coverage?: TranscriptCoverage): void {
+    this.applyOps([
+      {
+        op: 'reset',
+        agentId: '_',
+        snapshot,
+        coverage,
+      },
+    ]);
   }
 
   /** Apply incremental WS ops; notifies once per changed batch. */
@@ -172,4 +175,17 @@ export class TranscriptChatStore {
   private notify(): void {
     for (const listener of this.listeners) listener();
   }
+}
+
+function pageToSnapshot(page: TranscriptPage): AgentTranscriptSnapshot {
+  return {
+    items: page.items,
+    tasks: page.tasks,
+    interactions: page.interactions,
+    attachments: page.attachments,
+    todos: page.todos,
+    prompts: page.prompts,
+    meta: page.meta,
+    hasMoreOlder: page.hasMoreOlder,
+  };
 }

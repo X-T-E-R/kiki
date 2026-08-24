@@ -777,6 +777,7 @@ export const assistantDeltaEventSchema = z.object({
   turnId: z.number(),
   step: z.number().optional(),
   stepId: z.string().optional(),
+  partId: z.string().optional(),
   delta: z.string(),
 }) satisfies z.ZodType<AssistantDeltaPayload>;
 
@@ -793,12 +794,15 @@ export const thinkingDeltaEventSchema = z.object({
   turnId: z.number(),
   step: z.number().optional(),
   stepId: z.string().optional(),
+  partId: z.string().optional(),
   delta: z.string(),
 }) satisfies z.ZodType<ThinkingDeltaPayload>;
 
 export const toolCallDeltaEventSchema = z.object({
   type: z.literal('tool.call.delta'),
   turnId: z.number(),
+  step: z.number().optional(),
+  stepId: z.string().optional(),
   toolCallId: z.string(),
   name: z.string().optional(),
   argumentsPart: z.string().optional(),

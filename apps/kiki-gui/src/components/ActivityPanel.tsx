@@ -7,23 +7,23 @@
  * unanswered. Every row jumps to its session.
  *
  * Data: the polled session list (`busy` / `pending_interaction`) plus
- * per-busy-session `/prompts` and `/tasks` queries on the same 5s cadence.
- * The wire carries no turn-start field, so the timer anchors at the active
- * prompt's `created_at` when known, else at the moment this client first
- * observed the session busy (≤ one poll interval of optimism).
+ * per-busy-session `/tasks` queries. Queue depth for an open session comes from
+ * the same `queuedPromptIds` selector QueueStrip uses; REST `/prompts` is only
+ * the fallback for busy sessions that are not currently mounted.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQueries } from '@tanstack/react-query';
 
 import type { Session } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../i18n';
 import { buildActivityModel, formatElapsedClock, type ActivityEntry } from '../lib/activity';
-import { useConnection } from '../state/connection';
+import { useConnection, useOptionalControllerRegistry } from '../state/connection';
 import { useGuardedNavigate } from './dirtyGuard';
 
 const OPEN_STORAGE_KEY = 'kiki.activity.open';
+const noopSubscribe = () => () => {};
 
 function readOpen(): boolean {
   try {
@@ -125,9 +125,31 @@ function WaitingRow({ entry, onOpen }: { entry: ActivityEntry; onOpen: () => voi
 
 export function ActivityPanel({ sessions }: { sessions: readonly Session[] }) {
   const { client } = useConnection();
+  const registry = useOptionalControllerRegistry();
   const { t, tp } = useI18n();
   const navigate = useGuardedNavigate();
   const untitled = t('sidebar.untitled');
+  const [liveQueuedRevision, setLiveQueuedRevision] = useState(0);
+  const subscribeRegistry = useCallback(
+    (listener: () => void) => (registry === null ? noopSubscribe() : registry.subscribe(listener)),
+    [registry],
+  );
+  const registryGeneration = useSyncExternalStore(
+    subscribeRegistry,
+    () => registry?.snapshot() ?? 0,
+    () => 0,
+  );
+  useEffect(() => {
+    if (registry === null) return;
+    const bump = () => {
+      setLiveQueuedRevision((value) => value + 1);
+    };
+    const unsubscribers: Array<() => void> = [];
+    for (const controller of registry) unsubscribers.push(controller.subscribe(bump));
+    return () => {
+      for (const unsubscribe of unsubscribers) unsubscribe();
+    };
+  }, [registry, registryGeneration]);
 
   const busyIds = useMemo(
     () => sessions.filter((session) => session.busy).map((session) => session.id),
@@ -155,8 +177,14 @@ export function ActivityPanel({ sessions }: { sessions: readonly Session[] }) {
       busyIds.map((id, index) => [id, promptQueries[index]?.data]),
     );
     const tasks = Object.fromEntries(busyIds.map((id, index) => [id, taskQueries[index]?.data]));
-    return buildActivityModel({ sessions, prompts, tasks, untitled });
-  }, [sessions, busyIds, promptQueries, taskQueries, untitled]);
+    const liveQueuedCounts = Object.fromEntries(
+      [...(registry ?? [])].map((controller) => [
+        controller.sessionId,
+        controller.getState().queuedPromptIds.length,
+      ]),
+    );
+    return buildActivityModel({ sessions, prompts, tasks, untitled, liveQueuedCounts });
+  }, [sessions, busyIds, promptQueries, taskQueries, untitled, registry, liveQueuedRevision, registryGeneration]);
 
   // First-seen-busy anchors: the timer's fallback when the active prompt (and
   // its created_at) has not been fetched yet.

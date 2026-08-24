@@ -8,7 +8,7 @@ No comments — no file headers, no section banners, no statement-level narratio
 
 ## Cold rebuild
 
-The cold rebuild is a two-level fold over `wire.jsonl` as the single source of truth: `history/groupTurns.ts` (context messages → turn tree) plus `history/foldFacts.ts` (non-context records → tasks, interactions, todos, goal/plan/swarm meta, and end-appended markers/taskrefs; interactions left pending at shutdown fold to `cancelled`).
+The cold rebuild replays `wire.jsonl` through `TranscriptWireAdapter` and `TranscriptFactReducer`, the same durable fact path used by live binding. Context, turns, tasks, interactions, todos, goal/plan/swarm meta, markers, and taskrefs converge through the canonical store; interactions left pending at shutdown become `cancelled` when the adapter finishes.
 
 ## Plan content
 
@@ -16,7 +16,7 @@ Plan content is a recorded fact too: each ExitPlanMode review submission offload
 
 ## Op-batch sequencing contract
 
-Owned here (`transcriptSeqSchema` in `contract/schema.ts`): a per-(session, agent) monotonic batch `seq` on `transcript.ops` / `transcript.reset` / the REST transcript response, the numeric `transcript_since` subscription cursor, and the `GET .../transcript/ops` catch-up response shape — every field optional so pre-seq peers fall back to loss-signal-driven refreshes.
+Owned here by `TranscriptCursor` and the schemas in `contract/schema.ts`: each session-agent journal has an epoch and a monotonic operation-batch sequence. `transcript.reset` carries `cursor`; `transcript.ops` carries `cursor` and `through_seq`; REST transcript responses carry optional `cursor` plus required `coverage`; catch-up responses carry required `epoch`, `batches`, `through_seq`, and `complete`. Numeric `transcript_since` input remains accepted and normalizes to `{ epoch: undefined, seq }`.
 
 ## Wire-level detail
 

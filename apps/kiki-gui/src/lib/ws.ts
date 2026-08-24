@@ -18,13 +18,12 @@ import type { SessionCursor } from '@moonshot-ai/protocol';
 import {
   transcriptOpsEventSchema,
   transcriptResetEventSchema,
+  type TranscriptCursor,
   type TranscriptEvent,
   type TranscriptGradeSpec,
 } from '@moonshot-ai/transcript';
 
 import type { ResyncRequiredPayload, SessionEventFrame } from './types';
-
-export type TimelineMode = 'transcript' | 'legacy';
 
 export const DEFAULT_TRANSCRIPT_GRADES: TranscriptGradeSpec = {
   '*': 'turn',
@@ -126,6 +125,7 @@ let clientCounter = 0;
 interface DesiredSubscription {
   cursor: SessionCursor;
   grades: TranscriptGradeSpec;
+  transcriptSince: Record<string, TranscriptCursor>;
 }
 
 export class KikiSocket {
@@ -133,9 +133,6 @@ export class KikiSocket {
   private readonly url: string;
   private readonly token: string | undefined;
   private readonly events: WsEvents;
-  private mode: TimelineMode;
-  private readonly resolveTimelineMode?: () => Promise<TimelineMode>;
-  private readonly onTimelineModeChange?: (mode: TimelineMode, generation: number) => void;
   private opening = false;
   private generation = 0;
   private readonly clientId = `kiki-gui-${Date.now().toString(36)}-${(clientCounter += 1)}`;
@@ -176,22 +173,12 @@ export class KikiSocket {
     baseUrl: string;
     token?: string;
     events: WsEvents;
-    timelineMode?: TimelineMode;
-    resolveTimelineMode?: () => Promise<TimelineMode>;
-    onTimelineModeChange?: (mode: TimelineMode, generation: number) => void;
   }) {
     const root =
       options.baseUrl === '' ? window.location.origin : options.baseUrl.replace(/\/+$/, '');
     this.url = `${root.replace(/^http/, 'ws')}/api/v1/ws`;
     this.token = options.token !== undefined && options.token !== '' ? options.token : undefined;
     this.events = options.events;
-    this.mode = options.timelineMode ?? 'legacy';
-    this.resolveTimelineMode = options.resolveTimelineMode;
-    this.onTimelineModeChange = options.onTimelineModeChange;
-  }
-
-  get timelineMode(): TimelineMode {
-    return this.mode;
   }
 
   get connectionGeneration(): number {
@@ -239,6 +226,7 @@ export class KikiSocket {
     this.desired.set(sessionId, {
       cursor,
       grades: grades ?? existing?.grades ?? DEFAULT_TRANSCRIPT_GRADES,
+      transcriptSince: existing?.transcriptSince ?? {},
     });
     if (this.isReady()) {
       this.sendSubscribe([sessionId]);
@@ -248,10 +236,32 @@ export class KikiSocket {
   setTranscriptGrades(sessionId: string, grades: TranscriptGradeSpec): void {
     const existing = this.desired.get(sessionId);
     if (existing === undefined) return;
-    this.desired.set(sessionId, { cursor: existing.cursor, grades });
-    if (this.isReady() && this.timelineMode === 'transcript') {
-      this.sendSubscribeV2(sessionId, grades);
-    }
+    this.desired.set(sessionId, {
+      cursor: existing.cursor,
+      grades,
+      transcriptSince: existing.transcriptSince,
+    });
+    if (this.isReady()) this.sendSubscribeV2(sessionId, grades, existing.transcriptSince);
+  }
+
+  updateTranscriptSince(sessionId: string, agentId: string, cursor: TranscriptCursor): void {
+    const existing = this.desired.get(sessionId);
+    if (existing === undefined) return;
+    this.desired.set(sessionId, {
+      cursor: existing.cursor,
+      grades: existing.grades,
+      transcriptSince: { ...existing.transcriptSince, [agentId]: cursor },
+    });
+  }
+
+  clearTranscriptSince(sessionId: string): void {
+    const existing = this.desired.get(sessionId);
+    if (existing === undefined) return;
+    this.desired.set(sessionId, {
+      cursor: existing.cursor,
+      grades: existing.grades,
+      transcriptSince: {},
+    });
   }
 
   restartGeneration(): void {
@@ -268,6 +278,11 @@ export class KikiSocket {
         id: this.nextId(),
         payload: { session_ids: [sessionId] },
       });
+      this.send({
+        type: 'unsubscribe_v2',
+        id: this.nextId(),
+        payload: { session_id: sessionId },
+      });
     }
   }
 
@@ -275,7 +290,11 @@ export class KikiSocket {
   updateCursor(sessionId: string, cursor: SessionCursor): void {
     const existing = this.desired.get(sessionId);
     if (existing !== undefined) {
-      this.desired.set(sessionId, { cursor, grades: existing.grades });
+      this.desired.set(sessionId, {
+        cursor,
+        grades: existing.grades,
+        transcriptSince: existing.transcriptSince,
+      });
     }
   }
 
@@ -455,16 +474,7 @@ export class KikiSocket {
 
   private async openSocketGeneration(): Promise<void> {
     try {
-      const resolved = this.resolveTimelineMode === undefined ? this.mode : await this.resolveTimelineMode();
       if (this.manuallyClosed) return;
-      if (resolved !== this.mode) {
-        const previousGeneration = this.generation;
-        this.manuallyClosed = true;
-        this.clearReconnectTimer();
-        this.detachTransport();
-        this.onTimelineModeChange?.(resolved, previousGeneration);
-        return;
-      }
       this.generation += 1;
       const generation = this.generation;
       this.clearEstablishmentTimer();
@@ -600,7 +610,6 @@ export class KikiSocket {
       }
       case 'transcript.reset':
       case 'transcript.ops': {
-        if (this.timelineMode !== 'transcript') return;
         this.handleTranscriptFrame(message, generation);
         return;
       }
@@ -753,21 +762,24 @@ export class KikiSocket {
       id: this.nextId(),
       payload: { session_ids: sessionIds, cursors },
     });
-    if (this.timelineMode === 'transcript') {
-      for (const sessionId of sessionIds) {
-        const desired = this.desired.get(sessionId);
-        if (desired !== undefined) this.sendSubscribeV2(sessionId, desired.grades);
-      }
+    for (const sessionId of sessionIds) {
+      const desired = this.desired.get(sessionId);
+      if (desired !== undefined) this.sendSubscribeV2(sessionId, desired.grades, desired.transcriptSince);
     }
   }
 
-  private sendSubscribeV2(sessionId: string, grades: TranscriptGradeSpec): void {
+  private sendSubscribeV2(
+    sessionId: string,
+    grades: TranscriptGradeSpec,
+    transcriptSince: Record<string, TranscriptCursor>,
+  ): void {
     this.send({
       type: 'subscribe_v2',
       id: this.nextId(),
       payload: {
         session_id: sessionId,
         transcript: grades,
+        transcript_since: Object.keys(transcriptSince).length > 0 ? transcriptSince : undefined,
       },
     });
   }

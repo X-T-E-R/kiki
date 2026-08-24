@@ -84,7 +84,7 @@ import {
 import { agentPath } from '../state/agentTree';
 import {
   MAIN_AGENT_ID,
-  assistantMessageIdFromBlockId,
+  assistantMessageIdFromBlock,
   createViewState,
   filterBlocksToDirectChildren,
   pendingQuestionCount,
@@ -1662,22 +1662,14 @@ export function SessionView({
   );
 
   /**
-   * Wire message id behind an assistant row. Snapshot-derived block ids embed
-   * it; live-finalized ones don't, and while regenerate/fork is eligible (idle
-   * session, latest reply) the newest assistant message on the server IS that
-   * reply — resolve it with one messages fetch.
+   * Wire message id behind an assistant row. Canonical frames carry `messageId`;
+   * snapshot-derived block ids still embed it as a fallback.
    */
   const resolveAssistantMessageId = useCallback(
     async (block: AssistantBlock): Promise<string | undefined> => {
-      const fromBlock = assistantMessageIdFromBlockId(block.id);
-      if (fromBlock !== undefined) return fromBlock;
-      const page = await client.listMessages(sessionId, { page_size: 50 });
-      const assistants = page.items
-        .filter((message) => message.role === 'assistant')
-        .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
-      return assistants.at(-1)?.id;
+      return block.messageId ?? assistantMessageIdFromBlock(block);
     },
-    [client, sessionId],
+    [],
   );
 
   const handleRegenerate = useCallback(
@@ -1999,10 +1991,7 @@ export function SessionView({
   // The app-level sidebar renders its own backdrop from App.
   const showBackdrop = railIsOverlay && railOpen;
   const forestRaw = useMemo(
-    () =>
-      controller?.timelineMode === 'transcript'
-        ? (controller.getForest() ?? sessionAgentForest(state))
-        : sessionAgentForest(state),
+    () => controller?.getForest() ?? sessionAgentForest(state),
     [controller, state],
   );
   // Content-stabilized forest: rebuilt per publish above, but identical in

@@ -318,6 +318,8 @@ export const zh: Record<I18nKey, string> = {
   'transcript.marker.notice': '提示',
   'transcript.marker.cron': '定时任务',
   'transcript.marker.goal': '目标已更新',
+  'transcript.marker.plan': '计划已更新',
+  'transcript.marker.swarm': '集群',
   'transcript.failed': '失败',
   'transcript.steps': '步骤 · {count}',
   'transcript.runningAria': '运行中',

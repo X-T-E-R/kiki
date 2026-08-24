@@ -93,7 +93,7 @@ export async function editAndResendMessage(
     agent.accessor.get(IAgentContextMemoryService).append(replacement);
     await agent.accessor.get(IWireService).flush();
     await updateLastPrompt(deps.core, session, replacement);
-    deps.transcriptService.dropSession(session.id);
+    await deps.transcriptService.reconcileAfterRewrite(session.id);
     deps.broadcaster.refreshTranscriptAfterHistoryRewrite(session.id);
     const cursor = await deps.broadcaster.publishHistoryRewritten(
       session.id,
@@ -101,7 +101,7 @@ export async function editAndResendMessage(
       targetMessageId,
     );
     deps.broadcaster.broadcastHistoryResync(session.id, cursor);
-    return agent.accessor.get(IAgentPromptService).enqueue({
+    return await agent.accessor.get(IAgentPromptService).enqueue({
       id: targetMessageId,
       message: replacement,
       historyMutationLease: lease,
@@ -137,7 +137,7 @@ export async function regenerateMessage(
     agent.accessor.get(IAgentContextMemoryService).append(replacement);
     await agent.accessor.get(IWireService).flush();
     await updateLastPrompt(deps.core, session, replacement);
-    deps.transcriptService.dropSession(session.id);
+    await deps.transcriptService.reconcileAfterRewrite(session.id);
     deps.broadcaster.refreshTranscriptAfterHistoryRewrite(session.id);
     const cursor = await deps.broadcaster.publishHistoryRewritten(
       session.id,
@@ -145,7 +145,7 @@ export async function regenerateMessage(
       targetMessageId,
     );
     deps.broadcaster.broadcastHistoryResync(session.id, cursor);
-    return agent.accessor.get(IAgentPromptService).enqueue({
+    return await agent.accessor.get(IAgentPromptService).enqueue({
       id,
       message: replacement,
       historyMutationLease: lease,

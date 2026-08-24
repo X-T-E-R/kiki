@@ -124,6 +124,24 @@ describe('buildActivityModel', () => {
     expect(model.runningTaskTotal).toBe(1);
   });
 
+  it('lets live queuedPromptIds win over a stale REST prompt list', () => {
+    const busy = session('busy', { busy: true });
+    const model = buildActivityModel({
+      sessions: [busy],
+      prompts: {
+        busy: prompts(promptItem('p1', 'hold the floor', '2026-08-10T00:58:00.000Z'), [
+          promptItem('p2', 'steer me in', '2026-08-10T00:59:00.000Z', 'queued'),
+          promptItem('p3', 'clear me out', '2026-08-10T00:59:30.000Z', 'queued'),
+        ]),
+      },
+      tasks: {},
+      untitled: 'Untitled',
+      liveQueuedCounts: { busy: 1 },
+    });
+    expect(model.running[0]?.queuedCount).toBe(1);
+    expect(model.queuedTotal).toBe(1);
+  });
+
   it('falls back to the record last_prompt and zero counts without fetched data', () => {
     const model = buildActivityModel({
       sessions: [session('busy', { busy: true, last_prompt: 'ship it' })],

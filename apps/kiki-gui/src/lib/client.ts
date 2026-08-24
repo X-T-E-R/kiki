@@ -529,6 +529,8 @@ export interface AgentTranscriptInteraction {
   readonly interactionId: string;
   readonly interactionKind: 'approval' | 'question';
   readonly toolCallId?: string;
+  readonly origin?: unknown;
+  readonly anchor?: unknown;
   readonly state: 'pending' | 'approved' | 'rejected' | 'cancelled' | 'answered' | 'dismissed';
   readonly request?: unknown;
   readonly response?: unknown;
@@ -588,7 +590,8 @@ export interface AgentTranscriptAttachment {
   readonly size?: number;
   readonly source?:
     | { readonly kind: 'url'; readonly url: string }
-    | { readonly kind: 'file'; readonly fileId: string };
+    | { readonly kind: 'file'; readonly fileId: string }
+    | { readonly kind: 'session_media'; readonly fileId: string };
   readonly placeholder?: string;
 }
 
@@ -677,6 +680,8 @@ export interface AgentTranscriptResponse {
   /** Op-batch watermark: this state includes every batch with seq <= N. */
   readonly seq?: number;
   readonly attachments?: readonly AgentTranscriptAttachment[];
+  readonly origin?: unknown;
+  readonly anchor?: unknown;
 }
 
 /** Cursor / page options for {@link KikiClient.getAgentTranscript}. */
@@ -869,6 +874,33 @@ export class KikiClient {
     return this.request<GoalSnapshot | null>(
       'GET',
       `/sessions/${encodeURIComponent(sessionId)}/goal`,
+    );
+  }
+
+  getTranscriptOps(
+    sessionId: string,
+    agentId: string,
+    since: { readonly seq: number; readonly epoch?: string },
+    grade: 'turn' | 'block' | 'delta' = 'delta',
+  ): Promise<{
+    readonly session_id: string;
+    readonly agent_id: string;
+    readonly epoch: string;
+    readonly batches: readonly { readonly seq: number; readonly ops: readonly unknown[] }[];
+    readonly through_seq: number;
+    readonly complete: boolean;
+  }> {
+    return this.request(
+      'GET',
+      `/sessions/${encodeURIComponent(sessionId)}/transcript/ops`,
+      {
+        query: {
+          agent_id: agentId,
+          since_seq: since.seq,
+          epoch: since.epoch,
+          grade,
+        },
+      },
     );
   }
 

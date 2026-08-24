@@ -1,67 +1,64 @@
 /**
  * Minimal `/api/v1/ws` client for the transcript stream — **block grade**.
  *
- * The socket is used exclusively as an incremental channel, at the cheapest
- * grade that keeps the live view correct: 'block' drops the per-token
- * `append` frames (the bulk of transcript traffic) and still receives the
- * whole-state frame upserts at every flush point, so content converges
- * without a REST round-trip. After the
- * upgrade, the client sends `client_hello` with the session in
- * `subscriptions`, then a `subscribe_v2` frame carrying the opt-in
- * `transcript` grade map (plus the `transcript_since` cursor when a
- * watermark is known), and forwards every `transcript.ops` frame to the
- * consumer. Full state never comes from here:
- * `transcript.reset` snapshots are ignored by the store (they are surfaced
- * through the optional `onReset` handler for observers like the audit panel),
- * because complete data (initial load and any refresh) is read back from the
- * REST transcript API, paged from the tail backwards.
+ * The socket is used as an incremental channel, at the cheapest grade that
+ * keeps the live view correct: 'block' drops the per-token `append` frames
+ * (the bulk of transcript traffic) and still receives the whole-state frame
+ * upserts at every flush point. After the upgrade, the client sends
+ * `client_hello` with the session in `subscriptions`, then a `subscribe_v2`
+ * frame carrying the opt-in `transcript` grade map (plus the per-agent
+ * `{epoch?, seq}` `transcript_since` cursor when a watermark is known), and
+ * forwards `transcript.ops` plus `transcript.reset` to the consumer.
  *
- * Loss signals are surfaced, not repaired locally — transcript frames are
- * volatile by design (never journaled), so the consumer answers them with a
- * REST refresh: `resync_required` → `onResyncRequired`, and the
+ * `transcript.reset` is a baseline snapshot with `coverage` — the consumer
+ * reconciles it in place (preserving already-loaded older turns). Filtered
+ * grades may skip batches, so `cursor.seq` can jump; that is not a gap.
+ *
+ * Loss signals: `resync_required` → `onResyncRequired`, and the
  * `subscribe_v2` ack after every established socket → `onReconnected` (the
- * server attaches the stream only after processing `subscribe_v2`; ops
- * emitted between the REST page load and that point are missed).
- *
- * The bearer token is presented at the upgrade through the
- * `kimi-code.bearer.<token>` subprotocol (the only credential channel a
- * browser WebSocket has).
+ * consumer catch-up from its cursor; `complete: false` is the only baseline
+ * reset trigger). The bearer token is presented at the upgrade through the
+ * `kimi-code.bearer.<token>` subprotocol.
  */
 
 import {
   transcriptOpsEventSchema,
   transcriptResetEventSchema,
   type AgentTranscriptSnapshot,
+  type TranscriptCoverage,
+  type TranscriptCursor,
   type TranscriptOperation,
 } from '@moonshot-ai/transcript';
 
 import type { WsLike, WsLikeCtor } from '../channel/wsLike';
 
-/** Envelope/payload metadata carried alongside a transcript frame (for auditing + seq tracking). */
+/** Envelope/payload metadata carried alongside a transcript frame (for auditing + cursor tracking). */
 export interface TranscriptFrameMeta {
-  /** Envelope `timestamp` (server send time, ISO); absent on legacy servers. */
+  /** Envelope `timestamp` (server send time, ISO). */
   readonly at?: string | undefined;
-  /** Op-batch sequence number (payload `seq`); absent on legacy servers. */
-  readonly seq?: number | undefined;
+  /** Per-agent watermark on the frame (`{epoch?, seq}`). */
+  readonly cursor?: TranscriptCursor | undefined;
+  /** Ops frames only: journal watermark (may sit ahead of `cursor.seq` after grade filtering). */
+  readonly throughSeq?: number | undefined;
 }
 
 export interface TranscriptWsHandlers {
-  /** Incremental L2 op batch for the agent (the only data frame consumed). */
+  /** Incremental L2 op batch for the agent. */
   onOps: (agentId: string, ops: readonly TranscriptOperation[], meta?: TranscriptFrameMeta) => void;
   /**
-   * Baseline snapshot frame. The chat consumer deliberately ignores these
-   * (full state is REST-sourced) — the handler exists for observers such as
-   * the audit panel that want to record every frame on the wire.
+   * Baseline snapshot. The chat consumer reconciles this in place via the
+   * package reset reducer (coverage-aware: a tail reset keeps already-loaded
+   * older turns). Also recorded by the audit panel.
    */
   onReset?: (
     agentId: string,
     snapshot: AgentTranscriptSnapshot,
-    hasMoreOlder: boolean,
+    coverage: TranscriptCoverage,
     meta?: TranscriptFrameMeta,
   ) => void;
-  /** Server signalled desync for our session — consumer should REST-refresh. */
+  /** Server signalled desync for our session — consumer should catch up from its cursor. */
   onResyncRequired: () => void;
-  /** Socket re-established after a drop — volatile ops were missed meanwhile. */
+  /** Socket re-established after a drop — consumer catch-up from `transcript_since`. */
   onReconnected: () => void;
 }
 
@@ -73,11 +70,11 @@ export interface TranscriptWsOptions {
   readonly agentId: string;
   readonly handlers: TranscriptWsHandlers;
   /**
-   * Returns the caller's current op-batch watermark at (re)subscribe time;
-   * when defined it is sent as the `transcript_since` cursor so a sequenced
-   * server replays missed batches instead of sending a baseline reset.
+   * Returns the caller's current per-agent cursor at (re)subscribe time;
+   * when defined it is sent as `transcript_since` so the server replays
+   * missed batches instead of sending a baseline reset.
    */
-  readonly getSince?: (() => number | undefined) | undefined;
+  readonly getSince?: (() => TranscriptCursor | undefined) | undefined;
   /** WebSocket implementation; defaults to the global `WebSocket`. */
   readonly WebSocketImpl?: WsLikeCtor;
   /** Base delay (ms) for the reconnect backoff. Default `500`. */
@@ -100,7 +97,7 @@ export class TranscriptWs {
   private readonly sessionId: string;
   private readonly agentId: string;
   private readonly handlers: TranscriptWsHandlers;
-  private readonly getSince?: (() => number | undefined) | undefined;
+  private readonly getSince?: (() => TranscriptCursor | undefined) | undefined;
   private readonly WsCtor: WsLikeCtor;
   private readonly reconnectDelayMs: number;
 
@@ -218,24 +215,23 @@ export class TranscriptWs {
       case 'transcript.ops': {
         const parsed = transcriptOpsEventSchema.safeParse(frame.payload);
         if (!parsed.success) return;
+        if (parsed.data.session_id !== this.sessionId) return;
         this.handlers.onOps(parsed.data.agent_id, parsed.data.ops, {
           at: frame.timestamp,
-          seq: parsed.data.seq,
+          cursor: parsed.data.cursor,
+          throughSeq: parsed.data.through_seq,
         });
         return;
       }
       case 'transcript.reset': {
-        // Snapshots are deliberately ignored by the chat store: full state is
-        // REST-sourced. Surface them to optional observers (audit panel).
         if (this.handlers.onReset === undefined) return;
         const parsed = transcriptResetEventSchema.safeParse(frame.payload);
         if (!parsed.success) return;
-        this.handlers.onReset(
-          parsed.data.agent_id,
-          parsed.data.snapshot,
-          parsed.data.has_more_older,
-          { at: frame.timestamp, seq: parsed.data.seq },
-        );
+        if (parsed.data.session_id !== this.sessionId) return;
+        this.handlers.onReset(parsed.data.agent_id, parsed.data.snapshot, parsed.data.coverage, {
+          at: frame.timestamp,
+          cursor: parsed.data.cursor,
+        });
         return;
       }
       case 'ping': {

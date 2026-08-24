@@ -20,10 +20,21 @@ export type TurnHeader = Omit<TranscriptTurn, 'steps'>;
 /** Step header as carried in ops: frames always arrive via frame.upsert. */
 export type StepHeader = Omit<TranscriptStep, 'frames'>;
 
+export type TranscriptCoverage =
+  | { readonly kind: 'full'; readonly hasMoreOlder: false }
+  | {
+      readonly kind: 'tail';
+      readonly fromTurnId?: TurnId;
+      readonly throughTurnId?: TurnId;
+      readonly hasMoreOlder: boolean;
+    };
+
 export interface ResetOp {
   readonly op: 'reset';
   readonly agentId: AgentId;
   readonly snapshot: AgentTranscriptSnapshot;
+  readonly grade?: 'turn' | 'block' | 'delta';
+  readonly coverage?: TranscriptCoverage;
 }
 
 export interface TurnUpsertOp {

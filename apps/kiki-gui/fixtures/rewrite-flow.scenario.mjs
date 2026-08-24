@@ -46,12 +46,14 @@ export default {
       has_more: false,
     },
   },
-  onPrompt: (text) => {
-    const reply = text.includes('edited resend')
-      ? 'EDITED-REPLY landed after the rewrite.'
-      : text.includes('Tail question')
-        ? 'REGENERATED-REPLY replaced the old tail.'
-        : 'Plain fixture reply.';
+  onPrompt: (text, _sessionId, session) => {
+    const reply = session?.lastMessageAction?.action === 'regenerate'
+      ? 'REGENERATED-REPLY replaced the old tail.'
+      : text.includes('edited resend')
+        ? 'EDITED-REPLY landed after the rewrite.'
+        : text.includes('Tail question')
+          ? 'REGENERATED-REPLY replaced the old tail.'
+          : 'Plain fixture reply.';
     return [
       turnStart(1, text),
       workChanged(true),

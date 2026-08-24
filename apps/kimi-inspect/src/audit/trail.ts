@@ -134,7 +134,7 @@ export class AuditTrail {
       hasMoreOlder,
       envelopeAt,
       state,
-      summary: `reset snapshot (${snapshot.items.length} items) — ignored by chat store`,
+      summary: `reset snapshot (${snapshot.items.length} items, ${hasMoreOlder ? 'tail' : 'full'})`,
     });
   }
 
@@ -145,11 +145,11 @@ export class AuditTrail {
   ): void {
     const label =
       event === 'ack-refresh'
-        ? 'subscribe ack → REST refresh'
+        ? 'subscribe ack → cursor catch-up'
         : event === 'resync'
-          ? 'resync_required → REST refresh'
+          ? 'resync_required → cursor catch-up'
           : event === 'gap'
-            ? 'append gap → REST refresh'
+            ? 'append gap → cursor catch-up'
             : event === 'prompt'
               ? 'prompt sent'
               : 'cancel sent';

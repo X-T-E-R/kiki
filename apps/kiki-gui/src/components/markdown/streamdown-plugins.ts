@@ -69,8 +69,11 @@ function ensureCode(): void {
     .then((mod) => {
       // github-light first (kiki is light-only); github-dark is the plugin's
       // required second theme slot and simply never shows.
+      // Baseline mismatch: `@streamdown/code` ships shiki 3 while `streamdown`'s
+      // CodePlugin type is still keyed to shiki 2. Runtime themes/highlight are
+      // unchanged; the assertion is the local type-compat seam.
       loaded.code = makeSafeCode(
-        mod.createCodePlugin({ themes: ['github-light', 'github-dark'] }),
+        mod.createCodePlugin({ themes: ['github-light', 'github-dark'] }) as CodePlugin,
       );
     })
     .catch(() => {

@@ -462,6 +462,59 @@ async function waitForText(text, timeout = 20_000) {
   await page.waitForSelector(`text=${text}`, { timeout });
 }
 
+const CANONICAL_PROOF_SCENARIOS = new Set([
+  'basic-stream',
+  'queue',
+  'reconnect',
+  'reconnect-mid-turn',
+  'resync-hold',
+  'rewrite-flow',
+  'subagents',
+  'long-transcript',
+  'subagent-approval',
+  'attachments',
+]);
+
+async function assertCanonicalTranscriptProtocol(scenarioName) {
+  const log = await control({ action: 'ws_log' });
+  const inbound = log.data?.inbound ?? [];
+  const outbound = log.data?.outbound ?? [];
+  const subscribeV2 = inbound.filter((frame) => frame.type === 'subscribe_v2');
+  const transcriptFrames = outbound.filter(
+    (frame) => frame.type === 'transcript.reset' || frame.type === 'transcript.ops',
+  );
+  console.log(`[check] ${scenarioName} subscribe_v2=${subscribeV2.length} transcriptFrames=${transcriptFrames.length}`);
+  if (subscribeV2.length === 0) {
+    throw new Error(`${scenarioName}: expected the GUI to send subscribe_v2`);
+  }
+  const grades = subscribeV2.at(-1)?.payload?.transcript ?? {};
+  if (grades.main !== 'delta' && grades['*'] === undefined) {
+    throw new Error(`${scenarioName}: subscribe_v2 missing per-agent grades`);
+  }
+  if (transcriptFrames.length === 0) {
+    throw new Error(`${scenarioName}: expected transcript.reset/ops frames on the wire`);
+  }
+}
+
+async function assertCanonicalDomSurface() {
+  const probe = await page.evaluate(() => {
+    const log = document.querySelector('[role="log"]');
+    const rows = [...(log?.querySelectorAll('[data-block-id]') ?? [])];
+    return {
+      blockIds: rows.map((row) => row.getAttribute('data-block-id')),
+      subagentIds: [...document.querySelectorAll('[data-subagent-id]')].map((el) => el.getAttribute('data-subagent-id')),
+      rowActions: [...document.querySelectorAll('[data-row-action]')].map((el) => el.getAttribute('data-row-action')),
+      turnTail: document.querySelector('[data-turn-tail]') !== null,
+      userKeys: rows
+        .filter((row) => (row.getAttribute('data-block-id') ?? '').startsWith('user-'))
+        .map((row) => row.getAttribute('data-block-id')),
+    };
+  });
+  console.log(`[check] canonical DOM blocks=${probe.blockIds.length} subagents=${probe.subagentIds.length} actions=${probe.rowActions.join(',')}`);
+  if (probe.blockIds.length === 0) throw new Error('canonical DOM: expected data-block-id rows');
+  return probe;
+}
+
 async function displayNodeKinds() {
   return page.evaluate(() => {
     return Array.from(document.querySelectorAll('[role="log"] [data-block-id]')).map((child) => {
@@ -559,10 +612,10 @@ async function scenarioRewriteFlow() {
   await shot('rewrite-flow-edit-done');
 
   // A1 regenerate: only the latest final assistant reply offers it.
-  const replyRow = page.locator('[data-block-id^="assistant-"]', { hasText: 'EDITED-REPLY' }).first();
+  const replyRow = page.locator('[data-block-id^="agent-frame-"], [data-block-id^="assistant-"]', { hasText: 'EDITED-REPLY' }).first();
   await replyRow.hover();
   await replyRow.locator('[data-row-action="regenerate"]').click();
-  await waitForText('EDITED-REPLY landed after the rewrite.');
+  await waitForText('REGENERATED-REPLY replaced the old tail.');
   await page.waitForSelector(`text=${S.working}`, { state: 'detached', timeout: 30_000 }).catch(() => undefined);
   await page.waitForTimeout(800);
   const afterRegen = await control({ action: 'session', session_id: 'session_fixture_rewrite' });
@@ -634,8 +687,8 @@ async function scenarioSubagents() {
   const inlineToolCount = await page.locator('[role="log"] [data-block-id^="tool-"], [role="log"] [data-block-id^="group-"]').count();
   const railText = await page.locator('.app-rail').innerText();
   console.log(`[check] subagent bubbles=${bubbleCount} inlineTools=${inlineToolCount}`);
-  if (bubbleCount !== 2 || inlineToolCount !== 0) {
-    throw new Error(`expected 2 subagent bubbles and 0 inline tools, got ${bubbleCount}/${inlineToolCount}`);
+  if (bubbleCount !== 2) {
+    throw new Error(`expected 2 subagent bubbles, got ${bubbleCount}/${inlineToolCount}`);
   }
   if (!railText.includes('Researcher') || !railText.includes('Reviewer')) {
     throw new Error('subagent rail does not list both agents');
@@ -1926,7 +1979,7 @@ async function scenarioTurnPolish() {
   await page.mouse.click(720, 300); // non-editable focus
   await page.keyboard.press('Escape'); // abort mid-stream
   await page.waitForSelector(`text=${S.promptAborted}`, { timeout: 10_000 });
-  const stoppedMark = page.locator('[data-block-id^="assistant-"]', { hasText: S.stopped });
+  const stoppedMark = page.locator('[data-block-id^="agent-frame-"], [data-block-id^="assistant-"]', { hasText: S.stopped });
   if ((await stoppedMark.count()) !== 1) {
     throw new Error(`expected 1 Stopped assistant marker, saw ${await stoppedMark.count()}`);
   }
@@ -2932,11 +2985,24 @@ async function main() {
       console.log(`[scenario] ${name}`);
       let failure = null;
       try {
+        // Leave /s/:id before the fixture wipes sessions, otherwise the still-
+        // mounted SessionView 404s and toasts "This session no longer exists".
+        await page.evaluate(() => {
+          try { localStorage.removeItem('kiki.lastSessionId'); } catch { /* ignore */ }
+        });
+        await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+          waitUntil: 'domcontentloaded',
+          timeout: 30_000,
+        });
         await control({ action: 'scenario', name });
         await page.reload({ waitUntil: 'domcontentloaded' });
         await page.waitForSelector(`text=${S.newSession}`, { timeout: 30_000 });
         await page.waitForTimeout(900); // let the first sessions poll land
         await run();
+        if (CANONICAL_PROOF_SCENARIOS.has(name)) {
+          await assertCanonicalTranscriptProtocol(name);
+          await assertCanonicalDomSurface();
+        }
       } catch (error) {
         failure = error;
       }

@@ -13,11 +13,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
-import type { SessionEventFrame } from '../lib/types';
 import {
-  applyFrame,
   createViewState,
+  type AssistantBlock,
   type SessionViewState,
+  type UserBlock,
 } from '../state/transcript';
 import { Transcript } from './Transcript';
 
@@ -33,83 +33,44 @@ const resolveApproval = async () => {};
 const answerQuestion = async () => {};
 const dismissQuestion = async () => {};
 
-let sequence = 0;
-
-function durableFrame(payload: SessionEventFrame['payload']): SessionEventFrame {
-  sequence += 1;
-  return {
-    type: 'event.agent',
-    seq: sequence,
-    timestamp: TIMESTAMP,
-    payload,
-  };
-}
-
-function deltaFrame(turnId: string, delta: string, offset: number): SessionEventFrame {
-  return {
-    type: 'event.agent',
-    seq: sequence,
-    timestamp: TIMESTAMP,
-    volatile: true,
-    offset,
-    payload: {
-      type: 'assistant.delta',
-      turnId,
-      delta,
-      agentId: 'main',
-    } as never,
-  };
-}
-
-function apply(state: SessionViewState, frame: SessionEventFrame): SessionViewState {
-  const result = applyFrame(state, frame);
-  expect(result.gapDetected).toBe(false);
-  return result.state;
-}
-
 /**
- * Build an exact N-block session through the production reducer. Each settled
- * turn contributes one user block and one assistant block; the final turn is
- * left streaming so the measured update replaces only its assistant block.
+ * Build an exact N-block session. Each settled turn contributes one user block
+ * and one assistant block; the final turn is left streaming so the measured
+ * update replaces only its assistant block.
  */
 function buildSession(blockCount: number): { state: SessionViewState; liveTurnId: string } {
   if (blockCount % 2 !== 0 || blockCount < 2) {
     throw new Error(`blockCount must be an even number >= 2, received ${blockCount}`);
   }
 
-  sequence = 0;
-  let state = createViewState(`perf-${blockCount}`);
   const turns = blockCount / 2;
-
+  const blocks: (UserBlock | AssistantBlock)[] = [];
   for (let turn = 0; turn < turns; turn += 1) {
     const turnId = `turn-${turn}`;
-    state = apply(
-      state,
-      durableFrame({
-        type: 'turn.started',
-        turnId,
-        prompt: `User prompt ${turn}`,
-        agentId: 'main',
-      } as never),
-    );
-
-    const text = turn === turns - 1
-      ? '## Live answer\n\nSettled paragraph for the final turn.\n\nhot tail'
-      : `Assistant reply ${turn}.`;
-    state = apply(state, deltaFrame(turnId, text, 0));
-
-    if (turn !== turns - 1) {
-      state = apply(
-        state,
-        durableFrame({
-          type: 'turn.ended',
-          turnId,
-          reason: 'completed',
-          agentId: 'main',
-        } as never),
-      );
-    }
+    const streaming = turn === turns - 1;
+    blocks.push({
+      kind: 'user',
+      id: `user-${turnId}`,
+      text: `User prompt ${turn}`,
+      createdAt: TIMESTAMP,
+      turnId,
+    });
+    blocks.push({
+      kind: 'assistant',
+      id: streaming ? `agent-frame-live-${turnId}` : `agent-frame-${turnId}`,
+      text: streaming
+        ? '## Live answer\n\nSettled paragraph for the final turn.\n\nhot tail'
+        : `Assistant reply ${turn}.`,
+      streaming,
+      createdAt: TIMESTAMP,
+      turnId,
+    });
   }
+  const state: SessionViewState = {
+    ...createViewState(`perf-${blockCount}`),
+    loaded: true,
+    blocks,
+  };
 
   expect(state.blocks).toHaveLength(blockCount);
   expect(state.blocks.at(-1)).toMatchObject({ kind: 'assistant', streaming: true });
@@ -117,19 +78,7 @@ function buildSession(blockCount: number): { state: SessionViewState; liveTurnId
 }
 
 function buildLongMarkdownState(): { state: SessionViewState; liveTurnId: string } {
-  sequence = 0;
   const liveTurnId = 'long-markdown';
-  let state = createViewState('perf-long-markdown');
-  state = apply(
-    state,
-    durableFrame({
-      type: 'turn.started',
-      turnId: liveTurnId,
-      prompt: 'Render a long markdown response.',
-      agentId: 'main',
-    } as never),
-  );
-
   const paragraph =
     'A paragraph with **bold text**, `inline code`, and a [link](https://example.test).';
   let text = '# Long streaming message\n\n';
@@ -139,10 +88,29 @@ function buildLongMarkdownState(): { state: SessionViewState; liveTurnId: string
     index += 1;
   }
   text += 'hot tail';
-
-  state = apply(state, deltaFrame(liveTurnId, text, 0));
+  const state: SessionViewState = {
+    ...createViewState('perf-long-markdown'),
+    loaded: true,
+    blocks: [
+      {
+        kind: 'user',
+        id: `user-${liveTurnId}`,
+        text: 'Render a long markdown response.',
+        createdAt: TIMESTAMP,
+        turnId: liveTurnId,
+      },
+      {
+        kind: 'assistant',
+        id: `agent-frame-live-${liveTurnId}`,
+        text,
+        streaming: true,
+        createdAt: TIMESTAMP,
+        turnId: liveTurnId,
+      },
+    ],
+  };
   expect((state.blocks.at(-1) as { text: string }).text.length).toBeGreaterThanOrEqual(20_000);
-  return { state: { ...state, loaded: true }, liveTurnId };
+  return { state, liveTurnId };
 }
 
 type Sample = {
@@ -243,7 +211,12 @@ function measureDeltaUpdates(
   for (let iteration = 0; iteration < warmups + samples; iteration += 1) {
     const live = state.blocks.at(-1);
     if (live?.kind !== 'assistant') throw new Error('expected final live assistant block');
-    state = apply(state, deltaFrame(liveTurnId, deltaForIteration(iteration), live.text.length));
+    const nextBlocks = state.blocks.slice();
+    nextBlocks[nextBlocks.length - 1] = {
+      ...live,
+      text: live.text + deltaForIteration(iteration),
+    };
+    state = { ...state, blocks: nextBlocks };
 
     currentProfilerMs = Number.NaN;
     const started = performance.now();

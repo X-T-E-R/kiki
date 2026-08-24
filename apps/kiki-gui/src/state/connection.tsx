@@ -113,6 +113,50 @@ interface ConnectionValue {
   readonly disconnect: () => void;
 }
 
+export interface ControllerRegistry {
+  add(controller: SessionController): void;
+  delete(controller: SessionController): void;
+  [Symbol.iterator](): Iterator<SessionController>;
+  subscribe(listener: () => void): () => void;
+  snapshot(): number;
+}
+
+class LiveControllerRegistry implements ControllerRegistry {
+  private readonly controllers = new Set<SessionController>();
+  private readonly listeners = new Set<() => void>();
+  private generation = 0;
+
+  add(controller: SessionController): void {
+    this.controllers.add(controller);
+    this.emit();
+  }
+
+  delete(controller: SessionController): void {
+    if (!this.controllers.delete(controller)) return;
+    this.emit();
+  }
+
+  [Symbol.iterator](): Iterator<SessionController> {
+    return this.controllers.values();
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  snapshot(): number {
+    return this.generation;
+  }
+
+  private emit(): void {
+    this.generation += 1;
+    for (const listener of this.listeners) listener();
+  }
+}
+
 const ConnectionContext = createContext<ConnectionValue | null>(null);
 
 export function ConnectionProvider({ children }: { children: ReactNode }) {
@@ -138,10 +182,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   /** Set when the user cancels; keeps the kill's rejection from overwriting the card. */
   const desktopCancelledRef = useRef(false);
   const [wsStatus, setWsStatus] = useState<WsStatus>('closed');
-  const [socketEpoch, setSocketEpoch] = useState(0);
-  const controllersRef = useRef(new Set<SessionController>());
+  const controllersRef = useRef(new LiveControllerRegistry());
   const liveSocketRef = useRef<KikiSocket | null>(null);
-  const desiredModeRef = useRef<'transcript' | 'legacy' | null>(null);
 
   // The desktop shell owns its backend. Resolve that connection before
   // considering browser handoffs or persisted remote connections, and keep
@@ -255,9 +297,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const connected = config !== null && meta !== null && client !== null;
   const socket = useMemo(() => {
     if (!connected || config === null || client === null || meta === null) return null;
-    const initialMode =
-      desiredModeRef.current ?? (meta.capabilities.transcript === true ? 'transcript' : 'legacy');
-    desiredModeRef.current = initialMode;
     const instance = new KikiSocket({
       baseUrl: config.url.trim().replace(/\/+$/, ''),
       token: config.token.trim(),
@@ -278,7 +317,9 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         onTranscript: (event, generation) => {
           if (liveSocketRef.current !== instance) return;
           if (generation !== undefined && generation !== instance.connectionGeneration) return;
-          for (const controller of controllersRef.current) controller.handleTranscript(event);
+          for (const controller of controllersRef.current) {
+            if (controller.sessionId === event.session_id) controller.handleTranscript(event);
+          }
         },
         onResyncRequired: (payload, generation) => {
           if (liveSocketRef.current !== instance) return;
@@ -305,23 +346,9 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
           }
         },
       },
-      timelineMode: initialMode,
-      resolveTimelineMode: async () => {
-        try {
-          const nextMeta = await client.meta();
-          setMeta(nextMeta);
-          return nextMeta.capabilities.transcript === true ? 'transcript' : 'legacy';
-        } catch {
-          return desiredModeRef.current ?? initialMode;
-        }
-      },
-      onTimelineModeChange: (mode) => {
-        desiredModeRef.current = mode;
-        setSocketEpoch((epoch) => epoch + 1);
-      },
     });
     return instance;
-  }, [client, config, connected, socketEpoch]);
+  }, [client, config, connected]);
 
   useEffect(() => {
     liveSocketRef.current = socket;
@@ -416,12 +443,16 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   );
 }
 
-const ControllerRegistryContext = createContext<Set<SessionController> | null>(null);
+const ControllerRegistryContext = createContext<ControllerRegistry | null>(null);
 
-export function useControllerRegistry(): Set<SessionController> {
+export function useControllerRegistry(): ControllerRegistry {
   const value = useContext(ControllerRegistryContext);
   if (value === null) throw new Error('useControllerRegistry outside provider');
   return value;
+}
+
+export function useOptionalControllerRegistry(): ControllerRegistry | null {
+  return useContext(ControllerRegistryContext);
 }
 
 export function useConnection(): ConnectionValue {

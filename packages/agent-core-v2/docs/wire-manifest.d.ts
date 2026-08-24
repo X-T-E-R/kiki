@@ -260,6 +260,10 @@ interface InteractionRequestPayload {
   kind: 'approval' | 'question' | 'user_tool';
   toolCallId?: string;
   agentId?: string;
+  origin?: {
+    agentId?: string;
+    turnId?: number;
+  };
   request: any;
 }
 
@@ -423,6 +427,7 @@ interface ProfileBindPayload {
   _name: 'profile.bind';
   modelAlias?: string;
   profileName?: string;
+  profileDefinitionId?: string;
   routeId?: string;
   lockedModelAlias?: string;
   lockedThinkingEffort?: string;
@@ -442,6 +447,16 @@ interface ProfileBindPayload {
   toolAllowPolicies?: string[][];
   disallowedTools: string[];
   subagents?: string[];
+  subagentLeases?: Readonly<Record<string, SubagentLease>>;
+  /** SpawnConstraints */
+  spawnPolicy?: {
+    allowedModels?: string[];
+    denyModels?: string[];
+    allowedEfforts?: string[];
+    disallowedTools?: string[];
+  };
+  /** SubagentLease */
+  appliedLease?: { source?: never } | { source: string };
 }
 
 /**
@@ -679,6 +694,14 @@ interface TurnEndedPayload {
  */
 interface TurnPromptPayload {
   _name: 'turn.prompt';
+  turnId?: number;
+  promptId?: string;
+  revision?: number;
+  lineage?: {
+    replacesMessageId?: string;
+    parentMessageId?: string;
+    rewriteId?: string;
+  };
   input: readonly ContentPart[];
   /** PromptOrigin */
   origin: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message';
@@ -690,6 +713,14 @@ interface TurnPromptPayload {
  */
 interface TurnSteerPayload {
   _name: 'turn.steer';
+  turnId?: number;
+  promptId?: string;
+  revision?: number;
+  lineage?: {
+    replacesMessageId?: string;
+    parentMessageId?: string;
+    rewriteId?: string;
+  };
   input: readonly ContentPart[];
   /** PromptOrigin */
   origin: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'peer_thread' | 'agent_message';

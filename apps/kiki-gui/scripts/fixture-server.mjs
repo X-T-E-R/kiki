@@ -36,6 +36,14 @@
  *   { action: 'release', session_id }   resolve { waitFor: 'release' } steps
  *   { action: 'burst', session_id, count, frame? }  on-demand frame storm
  *   { action: 'list' }                  list scenario names + active one
+ *   { action: 'skip_seq', session_id, agent_id?, count? }  jump transcript seq
+ *   { action: 'emit_transcript', session_id, agent_id, ops }  inject ops
+ *   { action: 'rewrite', session_id, ids? }  transcript items.remove / reset
+ *
+ * Transcript protocol: `/meta.capabilities.transcript=true`. Scenario
+ * `session_event` steps still run; the server also journals `transcript.reset`
+ * / `transcript.ops` per agent and serves `subscribe_v2` / `unsubscribe_v2`
+ * plus `GET .../transcript/ops` catch-up. Legacy `subscribe` is unchanged.
  *
  * Terminals: `/sessions/{id}/terminals*` REST plus the `terminal_*` WS control
  * frames are served by FakeTerminal, a line-oriented echo shell (`echo`, `pwd`,
@@ -50,6 +58,15 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { WebSocketServer } from 'ws';
+
+import {
+  TranscriptProjector,
+  filterOpsForGrade,
+  gradeFor,
+  redactSnapshotForGrade,
+  seedMessages,
+  transcriptEnvelope,
+} from './fixture-transcript.mjs';
 
 export const FIXTURE_TOKEN = 'kiki-fixture-token';
 const DEFAULT_PORT = 58901;
@@ -175,6 +192,13 @@ class FixtureSession {
     this.inFlightTurn = scenarioData.in_flight_turn ?? null;
     this.subagents = [...(scenarioData.subagents ?? [])];
     this.agentTranscripts = scenarioData.agent_transcripts ?? {};
+    this.transcript = new TranscriptProjector(record.id, this.agentTranscripts, this.epoch);
+    if ((scenarioData.messages ?? []).length > 0 || (scenarioData.older ?? []).length > 0) {
+      seedMessages(this.transcript, this.messages, {
+        older: this.older,
+        hasMore: this.hasMore,
+      });
+    }
     this.goal = scenarioData.goal ?? null;
     this.lastPromptSubmission = null;
     this.lastSkillActivation = null; // {name, args, attachments} — walker assertions
@@ -361,6 +385,8 @@ class FixtureServer {
     this.workspaces = []; // mutable registered workspaces (PATCH/DELETE editable)
     this.agentProfiles = []; // expanded named-agent rows; GET /agents merges them
     this.oauthOverride = null; // mutable oauth flow state (POST/DELETE /oauth/login)
+    this.wsInbound = [];
+    this.wsOutbound = [];
     this.http = createServer((req, res) => void this.handleHttp(req, res));
     this.wss = new WebSocketServer({ noServer: true });
   }
@@ -394,6 +420,8 @@ class FixtureServer {
     this.lastSearchBody = null;
     this.lastFsWrite = null;
     this.oauthOverride = null;
+    this.wsInbound = [];
+    this.wsOutbound = [];
     console.log(`[fixture] scenario "${name}" loaded (${this.sessions.size} sessions)`);
   }
 
@@ -431,7 +459,10 @@ class FixtureServer {
   }
 
   // ------------------------------------------------------------- WS fan-out
-  sendFrame(connection, frame) {    if (connection.readyState === 1) connection.send(JSON.stringify(frame));
+  sendFrame(connection, frame) {
+    this.wsOutbound.push({ type: frame.type, payload: frame.payload, session_id: frame.session_id, seq: frame.seq });
+    if (this.wsOutbound.length > 400) this.wsOutbound.splice(0, this.wsOutbound.length - 400);
+    if (connection.readyState === 1) connection.send(JSON.stringify(frame));
   }
 
   /** Emit a session_event frame to every connection subscribed to the session. */
@@ -472,6 +503,13 @@ class FixtureServer {
     for (const connection of this.sockets) {
       if (connection.subscriptions?.has(sessionId)) this.sendFrame(connection, frame);
     }
+    // Rewrite routes ingest locally, reseed the journal user, start the new
+    // prompt, then fanout a single transcript.reset. Fanout here would push
+    // items.remove before that reset, wiping the GUI's previous user so the
+    // regenerate identity stamp cannot keep edit/fork settled.
+    if (partial.type !== 'event.session.history_rewritten') {
+      this.emitTranscriptFromFrame(session, frame);
+    }
     // keep the session record honest for the polling sidebar
     if (partial.type === 'event.session.work_changed') {
       Object.assign(session.record, {
@@ -482,12 +520,98 @@ class FixtureServer {
     }
   }
 
+  emitTranscriptFromFrame(session, frame, extras = {}) {
+    const active = session.activePrompt;
+    const merged = {
+      promptId: extras.promptId ?? active?.prompt_id,
+      userMessageId: extras.userMessageId ?? active?.user_message_id,
+      content: extras.content ?? active?.content,
+      ...extras,
+    };
+    const batches = session.transcript.ingestFrame(frame, merged) ?? [];
+    for (const batch of batches) this.fanoutTranscriptOps(session, batch.agentId, batch);
+  }
+
+  fanoutTranscriptOps(session, agentId, batch) {
+    for (const connection of this.sockets) {
+      const spec = connection.transcriptGrades?.get(session.record.id);
+      if (spec === undefined) continue;
+      const grade = gradeFor(spec, agentId);
+      if (grade === 'off') continue;
+      const ops = filterOpsForGrade(grade, batch.ops);
+      if (ops.length === 0) continue;
+      this.sendFrame(connection, transcriptEnvelope(
+        session.record.id,
+        session.transcript.opsEvent(agentId, { seq: batch.seq, ops }),
+        batch.seq,
+      ));
+    }
+  }
+
+  fanoutTranscriptReset(session, agentId) {
+    const payload = session.transcript.resetEvent(agentId);
+    for (const connection of this.sockets) {
+      const spec = connection.transcriptGrades?.get(session.record.id);
+      if (spec === undefined) continue;
+      const grade = gradeFor(spec, agentId);
+      if (grade === 'off') continue;
+      this.sendFrame(connection, transcriptEnvelope(
+        session.record.id,
+        { ...payload, grade, snapshot: redactSnapshotForGrade(grade, payload.snapshot) },
+        payload.cursor.seq,
+      ));
+    }
+  }
+
+  attachTranscript(connection, session, spec, since) {
+    connection.transcriptGrades ??= new Map();
+    connection.transcriptGrades.set(session.record.id, spec);
+    for (const agentId of session.transcript.agents.keys()) {
+      const grade = gradeFor(spec, agentId);
+      if (grade === 'off') continue;
+      const raw = since?.[agentId];
+      const cursorSeq = typeof raw === 'number' ? raw : raw?.seq;
+      if (cursorSeq === undefined) {
+        const payload = session.transcript.resetEvent(agentId, grade);
+        this.sendFrame(connection, transcriptEnvelope(
+          session.record.id,
+          { ...payload, snapshot: redactSnapshotForGrade(grade, payload.snapshot) },
+          payload.cursor.seq,
+        ));
+        continue;
+      }
+      const catchup = session.transcript.catchup(agentId, cursorSeq);
+      if (!catchup.complete) {
+        const payload = session.transcript.resetEvent(agentId, grade);
+        this.sendFrame(connection, transcriptEnvelope(
+          session.record.id,
+          { ...payload, snapshot: redactSnapshotForGrade(grade, payload.snapshot) },
+          payload.cursor.seq,
+        ));
+        continue;
+      }
+      for (const batch of catchup.batches) {
+        const ops = filterOpsForGrade(grade, batch.ops);
+        if (ops.length === 0) continue;
+        this.sendFrame(connection, transcriptEnvelope(
+          session.record.id,
+          session.transcript.opsEvent(agentId, { seq: batch.seq, ops }),
+          batch.seq,
+        ));
+      }
+    }
+  }
+
   // ------------------------------------------------------------- scripts
   /** Steps for a prompt: `onPrompt` may be a plain step list or a function of
    * the prompt text (queued prompts get their own script on promotion). */
   scriptFor(session, text) {
     const onPrompt = this.scenario?.data.onPrompt;
-    if (typeof onPrompt === 'function') return onPrompt(text, session.record.id);
+    if (typeof onPrompt === 'function') {
+      return onPrompt.length >= 3
+        ? onPrompt(text, session.record.id, session)
+        : onPrompt(text, session.record.id);
+    }
     return Array.isArray(onPrompt) ? onPrompt : null;
   }
 
@@ -496,6 +620,16 @@ class FixtureServer {
     this.debug(`promote/start ${item.prompt_id} ("${item.text}")`);
     session.activePrompt = item;
     session.record.busy = true;
+    this.emitTranscriptFromFrame(session, {
+      type: 'prompt.submitted',
+      payload: {
+        type: 'prompt.submitted',
+        promptId: item.prompt_id,
+        userMessageId: item.user_message_id,
+        content: item.content,
+        createdAt: item.created_at,
+      },
+    }, { promptId: item.prompt_id, userMessageId: item.user_message_id, content: item.content });
     const steps = this.scriptFor(session, item.text);
     if (steps !== null) {
       void this.runScript(session.record.id, bindPrompt(bind(steps, session.record.id), item.prompt_id));
@@ -542,8 +676,13 @@ class FixtureServer {
           continue;
         }
         if (step.commit !== undefined) {
-          session.messages.push({ ...step.commit, id: nextId('msg'), session_id: sessionId, created_at: now() });
+          const committed = { ...step.commit, id: nextId('msg'), session_id: sessionId, created_at: now() };
+          session.messages.push(committed);
           session.record.message_count += 1;
+          if (committed.role === 'assistant') {
+            const batch = session.transcript.bindAssistantMessageId('main', committed.id);
+            if (batch !== undefined) this.fanoutTranscriptOps(session, 'main', batch);
+          }
           continue;
         }
         if (step.spam !== undefined) {
@@ -775,7 +914,7 @@ class FixtureServer {
     if (path === '/meta') {
       return this.envelope(res, {
         server_version: '0.31.1-fixture',
-        capabilities: { websocket: true, file_upload: true, fs_query: true, mcp: true, tasks: true, terminal: true },
+        capabilities: { websocket: true, file_upload: true, fs_query: true, mcp: true, tasks: true, terminal: true, transcript: true },
         server_id: 'fixture-server',
         started_at: now(),
         open_in_apps: [],
@@ -1263,22 +1402,68 @@ class FixtureServer {
     }
     if (tail === '/transcript') {
       const agentId = query.get('agent_id');
-      const transcript = agentId === null ? undefined : session.agentTranscripts[agentId];
-      if (transcript === undefined) {
-        return this.envelope(res, null, 40402, 'agent.not_found');
-      }
-      // Keep interaction entities honest across resolves (the real transcript
-      // store folds resolve facts into the global interaction set).
-      if (Array.isArray(transcript.interactions) && session.resolvedInteractions.size > 0) {
-        return this.envelope(res, {
-          ...transcript,
-          interactions: transcript.interactions.map((interaction) => {
-            const outcome = session.resolvedInteractions.get(interaction.interactionId);
-            return outcome === undefined ? interaction : { ...interaction, state: outcome };
-          }),
+      if (agentId === null) return this.envelope(res, null, 40402, 'agent.not_found');
+      const live = session.transcript.snapshot(agentId);
+      const seeded = session.agentTranscripts[agentId];
+      const snapshot = live.items.length > 0 || seeded === undefined ? live : {
+        items: [...(seeded.items ?? [])],
+        tasks: [...(seeded.tasks ?? live.tasks)],
+        interactions: [...(seeded.interactions ?? live.interactions)],
+        attachments: [...(seeded.attachments ?? live.attachments)],
+        todos: [...(seeded.todos ?? live.todos)],
+        prompts: [...(seeded.prompts ?? live.prompts)],
+        meta: { ...(seeded.meta ?? live.meta) },
+        hasMoreOlder: seeded.has_more === true || live.hasMoreOlder,
+      };
+      if (Array.isArray(snapshot.interactions) && session.resolvedInteractions.size > 0) {
+        snapshot.interactions = snapshot.interactions.map((interaction) => {
+          const outcome = session.resolvedInteractions.get(interaction.interactionId);
+          return outcome === undefined ? interaction : { ...interaction, state: outcome };
         });
       }
-      return this.envelope(res, transcript);
+      const beforeTurn = query.get('before_turn');
+      const afterTurn = query.get('after_turn');
+      const pageSize = Math.min(Number(query.get('page_size') ?? 20), 100);
+      let items = snapshot.items;
+      if (beforeTurn !== null) {
+        const index = items.findIndex((item) => item.kind === 'turn' && item.turnId === beforeTurn);
+        items = index >= 0 ? items.slice(0, index) : items;
+      } else if (afterTurn !== null) {
+        const index = items.findIndex((item) => item.kind === 'turn' && item.turnId === afterTurn);
+        items = index >= 0 ? items.slice(index + 1) : items;
+      }
+      const turns = items.filter((item) => item.kind === 'turn');
+      const windowTurns = turns.slice(-pageSize);
+      const firstTurnId = windowTurns[0]?.turnId;
+      const start = firstTurnId === undefined
+        ? items.length
+        : items.findIndex((item) => item.kind === 'turn' && item.turnId === firstTurnId);
+      const page = items.slice(start);
+      return this.envelope(res, {
+        agent_id: agentId,
+        items: page,
+        has_more: start > 0,
+        tasks: snapshot.tasks,
+        interactions: snapshot.interactions,
+        attachments: snapshot.attachments,
+        todos: snapshot.todos,
+        prompts: snapshot.prompts,
+        meta: snapshot.meta,
+        agents: [...session.transcript.agents.keys()].map((id) => ({ agentId: id, type: id === 'main' ? 'main' : 'sub' })),
+        pending_interactions: snapshot.interactions.filter((i) => i.state === 'pending').map((i) => i.interactionId),
+        seq: session.transcript.latestSeq(agentId),
+      });
+    }
+    if (tail === '/transcript/ops') {
+      const agentId = query.get('agent_id');
+      if (agentId === null) return this.envelope(res, null, 40402, 'agent.not_found');
+      const since = Number(query.get('since_seq') ?? query.get('since') ?? 0);
+      const epoch = query.get('epoch');
+      const catchup = session.transcript.catchup(agentId, since);
+      if (epoch !== null && epoch !== '' && epoch !== catchup.epoch) {
+        return this.envelope(res, { ...catchup, complete: false, batches: [] });
+      }
+      return this.envelope(res, catchup);
     }
     // Message-closure routes: full-replacement edit of a user message, and
     // regenerate of an assistant reply. Both truncate the journal from the
@@ -1344,7 +1529,13 @@ class FixtureServer {
           created_at: createdAt,
           text: textOf(body.content),
         };
+        session.transcript.ingestFrame(
+          { type: 'event.session.history_rewritten', payload: { reason: 'edit_resend', target_message_id: messageId } },
+          { promptId, userMessageId: promptId },
+        );
+        seedMessages(session.transcript, session.messages, { older: session.older, hasMore: session.hasMore });
         this.startPrompt(session, item);
+        this.fanoutTranscriptReset(session, 'main');
         return this.envelope(res, {
           prompt_id: promptId,
           user_message_id: promptId,
@@ -1379,7 +1570,13 @@ class FixtureServer {
         created_at: regenAt,
         text: textOf(anchor.content),
       };
+      session.transcript.ingestFrame(
+        { type: 'event.session.history_rewritten', payload: { reason: 'regenerate', target_message_id: messageId } },
+        { promptId: regenPromptId, userMessageId: anchor.id },
+      );
+      seedMessages(session.transcript, session.messages, { older: session.older, hasMore: session.hasMore });
       this.startPrompt(session, regenItem);
+      this.fanoutTranscriptReset(session, 'main');
       return this.envelope(res, {
         prompt_id: regenPromptId,
         user_message_id: anchor.id,
@@ -1429,6 +1626,16 @@ class FixtureServer {
       if (session.scriptRunning || session.activePrompt !== null) {
         session.queuedPrompts.push(item);
         this.debug(`prompt "${text}" queued as ${promptId} (active=${session.activePrompt?.prompt_id ?? 'none'}, queue=${session.queuedPrompts.length})`);
+        this.emitTranscriptFromFrame(session, {
+          type: 'prompt.queued',
+          payload: {
+            type: 'prompt.queued',
+            promptId,
+            userMessageId,
+            content: body.content,
+            createdAt,
+          },
+        }, { promptId, userMessageId, content: body.content });
         return this.envelope(res, { prompt_id: promptId, user_message_id: userMessageId, status: 'queued', content: body.content, created_at: createdAt });
       }
       this.debug(`prompt "${text}" running as ${promptId}`);
@@ -1463,8 +1670,15 @@ class FixtureServer {
       const promptId = abortMatch[1];
       const queuedIndex = session.queuedPrompts.findIndex((item) => item.prompt_id === promptId);
       if (queuedIndex >= 0) {
-        session.queuedPrompts.splice(queuedIndex, 1);
-        this.emit(session.record.id, { type: 'prompt.aborted', payload: { promptId, abortedAt: now() } });
+        const [aborted] = session.queuedPrompts.splice(queuedIndex, 1);
+        this.emit(session.record.id, {
+          type: 'prompt.aborted',
+          payload: {
+            promptId,
+            userMessageId: aborted?.user_message_id ?? promptId,
+            abortedAt: now(),
+          },
+        });
         return this.envelope(res, { aborted: true, at_seq: session.seq });
       }
       if (session.activePrompt?.prompt_id === promptId || session.scriptRunning) {
@@ -1619,6 +1833,8 @@ class FixtureServer {
       }
       case 'state':
         return this.envelope(res, { last_search: this.lastSearchBody, last_file_upload: this.lastFileUpload, last_fs_write: this.lastFsWrite ?? null });
+      case 'ws_log':
+        return this.envelope(res, { inbound: this.wsInbound, outbound: this.wsOutbound });
       case 'drop_ws':
         for (const ws of this.sockets) {
           try { ws.terminate(); } catch { /* closing */ }
@@ -1673,6 +1889,7 @@ class FixtureServer {
         const session = this.sessions.get(body.session_id);
         if (session === undefined) return this.envelope(res, null, 40401, 'session.not_found');
         session.epoch = `ep_fixture_${Date.now().toString(36)}`;
+        session.transcript.epoch = session.epoch;
         for (const connection of this.sockets) {
           if (connection.subscriptions?.has(session.record.id)) {
             this.sendFrame(connection, {
@@ -1683,6 +1900,32 @@ class FixtureServer {
           }
         }
         return this.envelope(res, { epoch: session.epoch });
+      }
+      case 'skip_seq': {
+        const session = this.sessions.get(body.session_id);
+        if (session === undefined) return this.envelope(res, null, 40401, 'session.not_found');
+        const agentId = body.agent_id ?? 'main';
+        const seq = session.transcript.skipSeq(agentId, Number(body.count ?? 1));
+        return this.envelope(res, { agent_id: agentId, seq });
+      }
+      case 'emit_transcript': {
+        const session = this.sessions.get(body.session_id);
+        if (session === undefined) return this.envelope(res, null, 40401, 'session.not_found');
+        const agentId = body.agent_id ?? 'main';
+        const batch = session.transcript.commit(agentId, body.ops ?? []);
+        if (batch !== undefined) this.fanoutTranscriptOps(session, agentId, batch);
+        return this.envelope(res, { agent_id: agentId, seq: batch?.seq ?? session.transcript.latestSeq(agentId) });
+      }
+      case 'rewrite': {
+        const session = this.sessions.get(body.session_id);
+        if (session === undefined) return this.envelope(res, null, 40401, 'session.not_found');
+        const ids = body.ids ?? session.transcript.snapshot('main').items.map((item) => (
+          item.kind === 'turn' ? item.turnId : item.kind === 'marker' ? item.markerId : item.refId
+        ));
+        const batch = session.transcript.commit('main', ids.length > 0 ? [{ op: 'items.remove', ids }] : []);
+        if (batch !== undefined) this.fanoutTranscriptOps(session, 'main', batch);
+        this.fanoutTranscriptReset(session, 'main');
+        return this.envelope(res, { rewritten: ids });
       }
       default:
         return this.envelope(res, null, 40001, 'unknown control action');
@@ -1734,6 +1977,8 @@ class FixtureServer {
       } catch {
         return;
       }
+      this.wsInbound.push({ type: message.type, payload: message.payload, id: message.id });
+      if (this.wsInbound.length > 400) this.wsInbound.splice(0, this.wsInbound.length - 400);
       const ack = (payload) => this.sendFrame(ws, { type: 'ack', id: message.id, code: 0, msg: 'success', payload });
       switch (message.type) {
         case 'client_hello':
@@ -1788,9 +2033,47 @@ class FixtureServer {
           break;
         }
         case 'unsubscribe':
-          for (const id of message.payload?.session_ids ?? []) ws.subscriptions.delete(id);
+          for (const id of message.payload?.session_ids ?? []) {
+            ws.subscriptions.delete(id);
+            ws.transcriptGrades?.delete(id);
+          }
           ack({ accepted: [], not_found: [], resync_required: [], cursors: {} });
           break;
+        case 'subscribe_v2': {
+          const sessionId = message.payload?.session_id;
+          const session = this.sessions.get(sessionId);
+          if (session === undefined) {
+            ack({ accepted: [], not_found: [sessionId], resync_required: [], cursors: {} });
+            break;
+          }
+          ws.subscriptions.add(sessionId);
+          this.attachTranscript(ws, session, message.payload?.transcript ?? { '*': 'turn' }, message.payload?.transcript_since);
+          ack({
+            accepted: [sessionId],
+            not_found: [],
+            resync_required: [],
+            cursors: { [sessionId]: { seq: session.seq, epoch: session.epoch } },
+          });
+          break;
+        }
+        case 'unsubscribe_v2': {
+          const sessionId = message.payload?.session_id;
+          const agentIds = message.payload?.agent_ids;
+          const spec = ws.transcriptGrades?.get(sessionId);
+          if (spec === undefined) {
+            ack({ accepted: sessionId === undefined ? [] : [sessionId], not_found: [], resync_required: [], cursors: {} });
+            break;
+          }
+          if (agentIds === undefined || agentIds.length === 0) {
+            ws.transcriptGrades.delete(sessionId);
+          } else {
+            const next = { ...spec };
+            for (const agentId of agentIds) next[agentId] = 'off';
+            ws.transcriptGrades.set(sessionId, next);
+          }
+          ack({ accepted: [sessionId], not_found: [], resync_required: [], cursors: {} });
+          break;
+        }
         case 'abort': {
           const session = this.sessions.get(message.payload?.session_id);
           if (session !== undefined) {

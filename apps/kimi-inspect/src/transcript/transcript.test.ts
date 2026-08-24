@@ -6,7 +6,10 @@
 
 import {
   itemId,
+  type AgentTranscriptSnapshot,
   type StepHeader,
+  type TranscriptCoverage,
+  type TranscriptCursor,
   type TranscriptOperation,
   type TranscriptTurn,
   type TurnHeader,
@@ -109,9 +112,35 @@ const emptyPage = {
   interactions: [],
   attachments: [],
   todos: [],
+  prompts: [],
   meta: {},
   pendingInteractions: [],
+  coverage: { kind: 'full' as const, hasMoreOlder: false as const },
 } as const;
+
+const fullCoverage = { kind: 'full' as const, hasMoreOlder: false as const };
+const tailCoverage = (fromTurnId: string, throughTurnId: string): TranscriptCoverage => ({
+  kind: 'tail',
+  fromTurnId,
+  throughTurnId,
+  hasMoreOlder: true,
+});
+
+function snapshotOf(
+  items: readonly TranscriptTurn[],
+  hasMoreOlder = false,
+): AgentTranscriptSnapshot {
+  return {
+    items,
+    tasks: [],
+    interactions: [],
+    attachments: [],
+    todos: [],
+    prompts: [],
+    meta: {},
+    hasMoreOlder,
+  };
+}
 
 function okEnvelope(data: unknown) {
   return { code: 0, msg: 'success', data, request_id: 'r1' };
@@ -181,9 +210,15 @@ function makeWs(handlers: Partial<ConstructorParameters<typeof TranscriptWs>[0][
       agentId: string;
       ops: readonly TranscriptOperation[];
       at?: string;
-      seq?: number;
+      cursor?: TranscriptCursor;
+      throughSeq?: number;
     }[],
-    resets: [] as { agentId: string; hasMoreOlder: boolean; at?: string; seq?: number }[],
+    resets: [] as {
+      agentId: string;
+      coverage: TranscriptCoverage;
+      at?: string;
+      cursor?: TranscriptCursor;
+    }[],
     resyncs: 0,
     reconnects: 0,
   };
@@ -195,12 +230,18 @@ function makeWs(handlers: Partial<ConstructorParameters<typeof TranscriptWs>[0][
     WebSocketImpl: FakeWs,
     handlers: {
       onOps: (agentId, ops, meta) => {
-        seen.ops.push({ agentId, ops, at: meta?.at, seq: meta?.seq });
+        seen.ops.push({
+          agentId,
+          ops,
+          at: meta?.at,
+          cursor: meta?.cursor,
+          throughSeq: meta?.throughSeq,
+        });
         handlers.onOps?.(agentId, ops, meta);
       },
-      onReset: (agentId, _snapshot, hasMoreOlder, meta) => {
-        seen.resets.push({ agentId, hasMoreOlder, at: meta?.at, seq: meta?.seq });
-        handlers.onReset?.(agentId, _snapshot, hasMoreOlder, meta);
+      onReset: (agentId, _snapshot, coverage, meta) => {
+        seen.resets.push({ agentId, coverage, at: meta?.at, cursor: meta?.cursor });
+        handlers.onReset?.(agentId, _snapshot, coverage, meta);
       },
       onResyncRequired: () => {
         seen.resyncs += 1;
@@ -219,6 +260,7 @@ function makeWs(handlers: Partial<ConstructorParameters<typeof TranscriptWs>[0][
 
 describe('fetchTranscriptPage', () => {
   const pageData = {
+    session_id: 's 1',
     agent_id: 'main',
     items: [turnItem(1)],
     has_more: true,
@@ -228,10 +270,12 @@ describe('fetchTranscriptPage', () => {
     interactions: [],
     attachments: [],
     todos: [],
+    prompts: [],
     meta: { activity: 'turn' },
     agents: [],
     pending_interactions: ['apr-1'],
-    seq: 42,
+    cursor: { epoch: 'ep-1', seq: 42 },
+    coverage: { kind: 'tail', fromTurnId: 't1', throughTurnId: 't1', hasMoreOlder: true },
   };
 
   it('requests the endpoint with cursor params and bearer auth, unwraps the envelope', async () => {
@@ -255,7 +299,14 @@ describe('fetchTranscriptPage', () => {
     expect(page.tasks.map((task) => task.taskId)).toEqual(['bash-1']);
     expect(page.meta.activity).toBe('turn');
     expect(page.pendingInteractions).toEqual(['apr-1']);
-    expect(page.seq).toBe(42);
+    expect(page.cursor).toEqual({ epoch: 'ep-1', seq: 42 });
+    expect(page.coverage).toEqual({
+      kind: 'tail',
+      fromTurnId: 't1',
+      throughTurnId: 't1',
+      hasMoreOlder: true,
+    });
+    expect(page.prompts).toEqual([]);
   });
 
   it('throws on a non-zero envelope code', async () => {
@@ -277,56 +328,62 @@ describe('fetchTranscriptPage', () => {
 
 describe('fetchTranscriptOps', () => {
   const catchupData = {
+    session_id: 's1',
     agent_id: 'main',
+    epoch: 'ep-1',
     batches: [
       { seq: 6, ops: [{ op: 'meta.merge', meta: { activity: 'turn' } }] },
-      { seq: 7, ops: [{ op: 'turn.upsert', turn: turnHeader(7, 'running') }] },
+      { seq: 8, ops: [{ op: 'turn.upsert', turn: turnHeader(7, 'running') }] },
     ],
-    latest_seq: 7,
+    through_seq: 8,
     complete: true,
   };
 
-  it('requests the ops endpoint with since_seq and unwraps batches in order', async () => {
+  it('requests the ops endpoint with since_seq/epoch/grade and unwraps batches in order', async () => {
     const { calls, fetchImpl } = fakeFetch(okEnvelope(catchupData));
     const res = await fetchTranscriptOps({
       baseUrl: 'http://h:1',
       token: 'tok',
       sessionId: 's1',
       agentId: 'main',
-      sinceSeq: 5,
+      cursor: { epoch: 'ep-1', seq: 5 },
       fetchImpl,
     });
     expect(calls[0]!.url).toContain('/api/v1/sessions/s1/transcript/ops?');
     expect(calls[0]!.url).toContain('agent_id=main');
     expect(calls[0]!.url).toContain('since_seq=5');
+    expect(calls[0]!.url).toContain('epoch=ep-1');
+    expect(calls[0]!.url).toContain('grade=block');
     expect(res.complete).toBe(true);
-    expect(res.latestSeq).toBe(7);
-    expect(res.batches.map((batch) => batch.seq)).toEqual([6, 7]);
+    expect(res.epoch).toBe('ep-1');
+    expect(res.throughSeq).toBe(8);
+    expect(res.batches.map((batch) => batch.seq)).toEqual([6, 8]);
   });
 
   it('surfaces an incomplete catch-up (journal cannot cover)', async () => {
     const { fetchImpl } = fakeFetch(
-      okEnvelope({ ...catchupData, batches: [], latest_seq: 500, complete: false }),
+      okEnvelope({ ...catchupData, batches: [], through_seq: 500, complete: false }),
     );
     const res = await fetchTranscriptOps({
       baseUrl: 'http://h:1',
       sessionId: 's1',
       agentId: 'main',
-      sinceSeq: 5,
+      cursor: { epoch: 'ep-old', seq: 5 },
       fetchImpl,
     });
     expect(res.complete).toBe(false);
     expect(res.batches).toEqual([]);
+    expect(res.throughSeq).toBe(500);
   });
 
-  it('throws on a legacy server (envelope error) so callers fall back', async () => {
+  it('throws on a missing route (envelope error) so callers fall back', async () => {
     const { fetchImpl } = fakeFetch({ code: 40404, msg: 'unknown route', data: null });
     await expect(
       fetchTranscriptOps({
         baseUrl: 'http://h:1',
         sessionId: 's1',
         agentId: 'main',
-        sinceSeq: 5,
+        cursor: { seq: 5 },
         fetchImpl,
       }),
     ).rejects.toThrow('unknown route');
@@ -455,7 +512,7 @@ describe('TranscriptWs', () => {
     });
   });
 
-  it('forwards transcript.ops and surfaces transcript.reset via onReset, both with envelope meta', () => {
+  it('forwards transcript.ops and transcript.reset with cursor/coverage, dropping other sessions', () => {
     FakeWs.reset();
     const { seen } = makeWs();
     const sock = FakeWs.instances[0]!;
@@ -468,15 +525,22 @@ describe('TranscriptWs', () => {
       timestamp: '2026-01-01T00:00:00Z',
       payload: {
         type: 'transcript.reset',
+        session_id: 's1',
         agent_id: 'main',
         snapshot: { items: [], tasks: [], interactions: [], meta: {} },
-        has_more_older: true,
-        seq: 41,
+        grade: 'block',
+        coverage: { kind: 'tail', fromTurnId: 't10', throughTurnId: 't20', hasMoreOlder: true },
+        cursor: { epoch: 'ep-1', seq: 41 },
       },
     });
     expect(seen.ops).toHaveLength(0);
     expect(seen.resets).toEqual([
-      { agentId: 'main', hasMoreOlder: true, at: '2026-01-01T00:00:00Z', seq: 41 },
+      {
+        agentId: 'main',
+        coverage: { kind: 'tail', fromTurnId: 't10', throughTurnId: 't20', hasMoreOlder: true },
+        at: '2026-01-01T00:00:00Z',
+        cursor: { epoch: 'ep-1', seq: 41 },
+      },
     ]);
     sock.serverFrame({
       type: 'transcript.ops',
@@ -486,21 +550,37 @@ describe('TranscriptWs', () => {
       timestamp: '2026-01-01T00:00:01Z',
       payload: {
         type: 'transcript.ops',
+        session_id: 's1',
         agent_id: 'main',
         ops: [{ op: 'meta.merge', meta: { activity: 'turn' } }],
-        seq: 42,
+        cursor: { epoch: 'ep-1', seq: 44 },
+        through_seq: 44,
       },
     });
     expect(seen.ops).toHaveLength(1);
     expect(seen.ops[0]!.agentId).toBe('main');
     expect(seen.ops[0]!.at).toBe('2026-01-01T00:00:01Z');
-    expect(seen.ops[0]!.seq).toBe(42);
+    expect(seen.ops[0]!.cursor).toEqual({ epoch: 'ep-1', seq: 44 });
+    expect(seen.ops[0]!.throughSeq).toBe(44);
     expect(seen.ops[0]!.ops[0]).toMatchObject({ op: 'meta.merge' });
+    sock.serverFrame({
+      type: 'transcript.ops',
+      timestamp: '2026-01-01T00:00:02Z',
+      payload: {
+        type: 'transcript.ops',
+        session_id: 'other',
+        agent_id: 'main',
+        ops: [{ op: 'meta.merge', meta: { activity: 'idle' } }],
+        cursor: { seq: 99 },
+        through_seq: 99,
+      },
+    });
+    expect(seen.ops).toHaveLength(1);
   });
 
-  it('sends a clean client_hello and carries grades/transcript_since on subscribe_v2', async () => {
+  it('sends a clean client_hello and carries grades/transcript_since cursor on subscribe_v2', async () => {
     FakeWs.reset();
-    let watermark: number | undefined;
+    let watermark: TranscriptCursor | undefined;
     new TranscriptWs({
       url: 'http://h:1',
       sessionId: 's1',
@@ -524,7 +604,7 @@ describe('TranscriptWs', () => {
     expect(
       (sock.sentFrames()[1] as { payload: Record<string, unknown> }).payload['transcript_since'],
     ).toBeUndefined();
-    watermark = 42;
+    watermark = { epoch: 'ep-1', seq: 42 };
     sock.emit('close');
     await vi.waitFor(() => {
       expect(FakeWs.instances.length).toBeGreaterThan(1);
@@ -533,7 +613,7 @@ describe('TranscriptWs', () => {
     second.open();
     expect(second.sentFrames()[1]).toMatchObject({
       type: 'subscribe_v2',
-      payload: { session_id: 's1', transcript_since: { main: 42 } },
+      payload: { session_id: 's1', transcript_since: { main: { epoch: 'ep-1', seq: 42 } } },
     });
   });
 
@@ -560,9 +640,12 @@ describe('TranscriptWs', () => {
       timestamp: '2026-01-01T00:00:00Z',
       payload: {
         type: 'transcript.reset',
+        session_id: 's1',
         agent_id: 'main',
         snapshot: { items: [], tasks: [], interactions: [], meta: {} },
-        has_more_older: false,
+        grade: 'block',
+        coverage: { kind: 'full', hasMoreOlder: false },
+        cursor: { seq: 0 },
       },
     });
     expect(seen.ops).toBe(0);
@@ -641,7 +724,7 @@ describe('TranscriptWs', () => {
 // ---------------------------------------------------------------- store
 
 describe('TranscriptChatStore', () => {
-  it('applyPage(replace) installs the newest slice wholesale (items + globals)', () => {
+  it('applyPage(replace) installs the newest slice via coverage-aware reset (items + globals)', () => {
     const store = new TranscriptChatStore();
     store.applyOps([{ op: 'turn.upsert', turn: turnHeader(9, 'running') }]);
     store.applyPage(
@@ -652,8 +735,12 @@ describe('TranscriptChatStore', () => {
         tasks: [
           { taskId: 'bash-1', kind: 'shell', state: 'running', detached: false, outputTail: '' },
         ],
+        interactions: [
+          { interactionId: 'apr-1', interactionKind: 'approval', state: 'pending' },
+        ],
         meta: { activity: 'idle' },
         pendingInteractions: ['apr-1'],
+        coverage: tailCoverage('t1', 't2'),
       },
       { replace: true },
     );
@@ -668,7 +755,13 @@ describe('TranscriptChatStore', () => {
   it('prepends older pages ahead of the window, dedupes, keeps live globals', () => {
     const store = new TranscriptChatStore();
     store.applyPage(
-      { ...emptyPage, items: [turnItem(3)], hasMoreOlder: true, meta: { activity: 'idle' } },
+      {
+        ...emptyPage,
+        items: [turnItem(3)],
+        hasMoreOlder: true,
+        meta: { activity: 'idle' },
+        coverage: tailCoverage('t3', 't3'),
+      },
       { replace: true },
     );
     store.applyPage({
@@ -679,7 +772,6 @@ describe('TranscriptChatStore', () => {
     });
     expect(store.getState().items.map((item) => itemId(item))).toEqual(['t1', 't2', 't3']);
     expect(store.getState().hasMoreOlder).toBe(true);
-    // Globals from the older page do not clobber the fresher live state.
     expect(store.getState().meta.activity).toBe('idle');
     store.applyPage({ ...emptyPage, items: [turnItem(2)], hasMoreOlder: false });
     expect(store.getState().items.map((item) => itemId(item))).toEqual(['t1', 't2', 't3']);
@@ -757,6 +849,54 @@ describe('TranscriptChatStore', () => {
     store.applyOps([frameAppend('t1', 't1.1', 't1.1.f1', 0, 'x')]);
     expect(gaps).toBe(1);
   });
+
+  it('applyReset with tail coverage keeps already-loaded older turns', () => {
+    const store = new TranscriptChatStore();
+    store.applyPage(
+      {
+        ...emptyPage,
+        items: [turnItem(1), turnItem(2), turnItem(3)],
+        hasMoreOlder: false,
+        coverage: fullCoverage,
+      },
+      { replace: true },
+    );
+    const older = store.getState().items[0];
+    store.applyReset(snapshotOf([turnItem(3)], true), tailCoverage('t3', 't3'));
+    const state = store.getState();
+    expect(state.items.map((item) => itemId(item))).toEqual(['t1', 't2', 't3']);
+    expect(state.hasMoreOlder).toBe(true);
+    expect(state.items[0]).toBe(older);
+  });
+
+  it('applyReset preserves identity of unchanged overlapping nodes', () => {
+    const store = new TranscriptChatStore();
+    const t2 = turnItem(2);
+    store.applyPage(
+      { ...emptyPage, items: [turnItem(1), t2], hasMoreOlder: false, coverage: fullCoverage },
+      { replace: true },
+    );
+    const kept = store.getState().items.find((item) => itemId(item) === 't2');
+    store.applyReset(snapshotOf([turnItem(2), turnItem(3)]), fullCoverage);
+    const state = store.getState();
+    expect(state.items.map((item) => itemId(item))).toEqual(['t2', 't3']);
+    expect(state.items.find((item) => itemId(item) === 't2')).toBe(kept);
+  });
+
+  it('does not treat a skipped-seq ops batch as a store-clearing gap', () => {
+    const store = new TranscriptChatStore();
+    store.applyPage(
+      { ...emptyPage, items: [turnItem(1)], hasMoreOlder: false, coverage: fullCoverage },
+      { replace: true },
+    );
+    let gaps = 0;
+    store.onGap = () => {
+      gaps += 1;
+    };
+    store.applyOps([{ op: 'turn.upsert', turn: turnHeader(3, 'running') }]);
+    expect(gaps).toBe(0);
+    expect(store.getState().items.map((item) => itemId(item))).toEqual(['t1', 't3']);
+  });
 });
 
 describe('recoverLoadedWindow', () => {
@@ -766,6 +906,14 @@ describe('recoverLoadedWindow', () => {
     ...emptyPage,
     items,
     hasMoreOlder,
+    coverage: hasMoreOlder
+      ? {
+          kind: 'tail',
+          fromTurnId: items[0]?.turnId,
+          throughTurnId: items.at(-1)?.turnId,
+          hasMoreOlder: true,
+        }
+      : fullCoverage,
   });
 
   it('pages backwards until the previous oldest turn is re-covered', async () => {

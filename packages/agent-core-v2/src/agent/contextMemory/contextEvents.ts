@@ -36,6 +36,7 @@ const contextClearSchema = z.object({});
 export class ContextClear extends Event2<z.infer<typeof contextClearSchema>> {
   static override readonly type = 'context.clear';
   static override readonly durable = true;
+  static override readonly observable = true;
   static override readonly schema = contextClearSchema;
 }
 export interface ContextClear extends z.infer<typeof contextClearSchema> {}
@@ -76,6 +77,7 @@ export type ContextApplyCompactionPayload = z.infer<typeof contextApplyCompactio
 export class ContextApplyCompaction extends Event2<ContextApplyCompactionPayload> {
   static override readonly type = 'context.apply_compaction';
   static override readonly durable = true;
+  static override readonly observable = true;
   static override readonly schema = contextApplyCompactionSchema;
 }
 
@@ -86,6 +88,7 @@ const contextUndoSchema = z.object({
 export class ContextUndo extends Event2<z.infer<typeof contextUndoSchema>> {
   static override readonly type = 'context.undo';
   static override readonly durable = true;
+  static override readonly observable = true;
   static override readonly schema = contextUndoSchema;
 }
 export interface ContextUndo extends z.infer<typeof contextUndoSchema> {}

@@ -1,4 +1,5 @@
 import type { InteractionId } from './ids';
+import type { TranscriptAnchor } from './identity';
 
 export type InteractionKind = 'approval' | 'question';
 
@@ -54,6 +55,8 @@ export interface TranscriptInteraction {
    * interaction is unanchored and renders floating rather than inline.
    */
   readonly toolCallId?: string;
+  readonly origin?: unknown;
+  readonly anchor?: TranscriptAnchor;
   readonly state: InteractionState;
   /** Open content: engine ApprovalRequest / QuestionRequest payload. */
   readonly request?: unknown;

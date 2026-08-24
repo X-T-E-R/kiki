@@ -445,7 +445,14 @@ export class AgentPromptService implements IAgentPromptService {
       }
       const request = new SteerStepRequest(rerouted, captions, this.reminders, (materialized) => {
         void this.dispatcher.dispatch(
-          new TurnSteer({ input: materialized.content, origin: materialized.origin ?? USER_PROMPT_ORIGIN }),
+          new TurnSteer({
+            turnId: activeAtEntry.turn.id,
+            promptId: materialized.id,
+            revision: undefined,
+            lineage: undefined,
+            input: materialized.content,
+            origin: materialized.origin ?? USER_PROMPT_ORIGIN,
+          }),
         );
       }, () => {});
       let turn: Turn | undefined;
@@ -493,7 +500,14 @@ export class AgentPromptService implements IAgentPromptService {
     await this.materializeDaemonRefs(rerouted);
     const request = new SteerStepRequest(rerouted, captions, this.reminders, (materialized) => {
       void this.dispatcher.dispatch(
-        new TurnSteer({ input: materialized.content, origin: materialized.origin ?? USER_PROMPT_ORIGIN }),
+        new TurnSteer({
+          turnId: this.loop.status().activeTurnId ?? this.active?.turn.id ?? 0,
+          promptId: materialized.id,
+          revision: undefined,
+          lineage: undefined,
+          input: materialized.content,
+          origin: materialized.origin ?? USER_PROMPT_ORIGIN,
+        }),
       );
     }, () => {}, 'activeOrNewTurn');
     return (await this.loop.enqueue(request).assigned).turn;

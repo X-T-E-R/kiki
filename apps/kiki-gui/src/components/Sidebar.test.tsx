@@ -20,6 +20,7 @@ import {
 const searchMessages = vi.fn();
 
 vi.mock('../state/connection', () => ({
+  useOptionalControllerRegistry: () => null,
   useConnection: () => ({
     client: { searchMessages },
     meta: {

@@ -762,9 +762,11 @@ function friendlyZodExpr(expr: string, ownerFile: string, depth = 0): Sketch {
     }
     return truncate(`${typeName} = ${stringifySketch(summary)}`, 1024);
   }
-  if (/^z\.string\(\)$/.test(text)) return 'string';
-  if (/^z\.number\(\)$/.test(text)) return 'number';
-  if (/^z\.boolean\(\)$/.test(text)) return 'boolean';
+  if (/^z\.string\(\)(?:\.\w+\([^)]*\))*$/.test(text)) return 'string';
+  if (/^z\.number\(\)(?:\.\w+\([^)]*\))*$/.test(text)) {
+    return text.includes('.int()') ? 'integer' : 'number';
+  }
+  if (/^z\.boolean\(\)(?:\.\w+\([^)]*\))*$/.test(text)) return 'boolean';
   if (/^z\.(?:int|integer)\(\)$/.test(text)) return 'integer';
   const array = /^z\.array\((.+)\)$/.exec(text);
   if (array?.[1] !== undefined) {

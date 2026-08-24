@@ -6,7 +6,14 @@ import type { Session } from '@moonshot-ai/protocol';
 
 import { I18nProvider } from '../i18n';
 import { buildAgentForest } from '../state/agentTree';
-import { createViewState, type SubagentBlock } from '../state/transcript';
+import {
+  assistantMessageIdFromBlock,
+  createViewState,
+  projectAgentTranscriptView,
+  sessionAgentForestFromAgentSnapshots,
+  type SubagentBlock,
+} from '../state/transcript';
+import { capabilityMatrixSnapshot, CHILD_AGENT_ID, USER_MESSAGE_ID } from '../state/__fixtures__/canonicalTranscript';
 import {
   AgentBreadcrumb,
   AgentRelations,
@@ -943,6 +950,26 @@ describe('agent tree chrome', () => {
     expect(html).toContain('2 tools');
   });
 
+  it('lists settled child names in the rail tree without requiring a click', () => {
+    const settled = buildAgentForest(
+      [],
+      [
+        { agentId: 'main', name: 'main', status: 'completed' },
+        { agentId: 'agent-research', parentAgentId: 'main', name: 'Researcher', status: 'completed' },
+        { agentId: 'agent-review', parentAgentId: 'main', name: 'Reviewer', status: 'completed' },
+      ],
+    );
+    const html = renderToStaticMarkup(
+      <I18nProvider>
+        <AgentTreeView forest={settled} onOpen={() => {}} />
+      </I18nProvider>,
+    );
+    expect(html).toContain('Researcher');
+    expect(html).toContain('Reviewer');
+    expect(html).toContain('data-agent-id="agent-research"');
+    expect(html).toContain('data-agent-id="agent-review"');
+  });
+
   it('bounds sibling and child chips to the current parent while keeping a more entry', () => {
     const crowded = buildAgentForest(
       [],
@@ -1034,5 +1061,50 @@ describe('agent tree chrome', () => {
     expect(html).toContain('data-subagent-scroll');
     expect(html).toContain('max-h-80');
     expect(html).toContain('overflow-y-auto');
+  });
+});
+
+describe('canonical SessionView product gates', () => {
+  it('projects user identity for edit/fork and refuses assistant regenerate via last-message fallback', () => {
+    const state = projectAgentTranscriptView(createViewState('sess-1'), 'main', capabilityMatrixSnapshot());
+    const user = state.blocks.find((block) => block.kind === 'user');
+    expect(user).toMatchObject({ userMessageId: USER_MESSAGE_ID });
+    const assistant = state.blocks.find((block) => block.kind === 'assistant');
+    expect(assistant?.messageId).toBe('msg-asst-canonical');
+    expect(assistantMessageIdFromBlock(assistant!)).toBe('msg-asst-canonical');
+  });
+
+  it('renders subagent cards, row actions, origin-tagged child approval, and turn tail from the transcript chain', () => {
+    const snapshot = capabilityMatrixSnapshot();
+    const state = projectAgentTranscriptView(createViewState('sess-1'), 'main', snapshot);
+    const forest = sessionAgentForestFromAgentSnapshots(new Map([['main', snapshot], [CHILD_AGENT_ID, snapshot]]));
+    const html = renderToStaticMarkup(
+      <MemoryRouter>
+        <I18nProvider>
+          <Transcript
+            state={{ ...state, loaded: true, turnTail: { turnId: 't1', endedAt: '2026-01-01T00:00:02.000Z', durationMs: 1800, ttftMs: 120, usage: undefined, tokensPerSecond: undefined } }}
+            forest={forest}
+            onLoadOlder={async () => false}
+            onResolveApproval={async () => {}}
+            onAnswerQuestion={async () => {}}
+            onDismissQuestion={async () => {}}
+            rowActions={{
+              disabled: false,
+              onEditMessage: () => undefined,
+              onRegenerate: () => undefined,
+              onFork: () => undefined,
+            }}
+          />
+        </I18nProvider>
+      </MemoryRouter>,
+    );
+    expect(html).toContain(`data-subagent-id="${CHILD_AGENT_ID}"`);
+    expect(html).toContain('data-row-action="edit"');
+    expect(html).toContain('data-row-action="fork"');
+    expect(html).toContain('data-row-action="regenerate"');
+    expect(html).toContain('data-turn-tail');
+    expect(html.includes('from subagent') || html.includes('子代理')).toBe(true);
+    expect(html).toContain('data-steer');
+    expect(html).toContain('data-shell');
   });
 });

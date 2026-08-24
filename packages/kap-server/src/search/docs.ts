@@ -9,10 +9,6 @@ export interface MessageDoc {
   readonly role: 'user' | 'assistant';
   readonly text: string;
   readonly time: number;
-  /**
-   * 0-based turn ordinal in the transcript view (groupTurns numbering). Absent
-   * for docs indexed before turn tracking existed.
-   */
   readonly turn?: number;
   /**
    * Transcript step id (`t<turn>.<step>`, engine live numbering from the wire
@@ -42,7 +38,6 @@ export interface TurnOpener {
 export interface TurnCounterState {
   /** Ordinal the next opened turn will get (0-based). */
   readonly next: number;
-  /** Whether a turn is currently open (groupTurns' `ensureTurn` gate). */
   readonly hasTurn: boolean;
   /** Turn openers, in order — the replay stack for `context.undo`. */
   readonly openers: readonly TurnOpener[];

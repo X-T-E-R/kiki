@@ -141,6 +141,17 @@ describe('AgentTranscript', () => {
       { op: 'append', target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 't1.1.f1' }, offset: 6, text: 'world' },
     ]);
     expect(dup.accepted).toHaveLength(0);
+
+    const convergence = tx.apply([
+      {
+        op: 'frame.upsert',
+        turnId: 't1',
+        stepId: 't1.1',
+        frame: { kind: 'text', frameId: 't1.1.f1', role: 'assistant', text: 'hello world' },
+      },
+    ]);
+    expect(convergence.accepted).toHaveLength(1);
+    expect(tx.apply(convergence.accepted).accepted).toHaveLength(0);
   });
 
   it('appendAtOffset matches web alignDelta semantics', () => {
@@ -387,6 +398,100 @@ describe('AgentTranscript', () => {
     });
     tx.apply([turn1, turn1]);
     expect(seen).toEqual(['turn.upsert']);
+  });
+
+  it('rejects structurally equal facts and preserves unchanged references', () => {
+    const tx = new AgentTranscript('main');
+    tx.apply([
+      {
+        op: 'turn.upsert',
+        turn: {
+          ...turn1.turn,
+          origin: { kind: 'user', payload: { promptId: 'p1' } },
+          attachmentIds: ['a1'],
+          usage: { inputTokens: 1 },
+        },
+      },
+    ]);
+    const before = tx.getTurn('t1');
+    const accepted = tx.apply([
+      {
+        op: 'turn.upsert',
+        turn: {
+          ...turn1.turn,
+          origin: { kind: 'user', payload: { promptId: 'p1' } },
+          attachmentIds: ['a1'],
+          usage: { inputTokens: 1 },
+        },
+      },
+    ]);
+    expect(accepted.accepted).toEqual([]);
+    expect(tx.getTurn('t1')).toBe(before);
+  });
+
+  it('rejects structurally equal marker and taskref upserts without notifying', () => {
+    const tx = new AgentTranscript('main');
+    tx.apply([
+      {
+        op: 'marker.upsert',
+        item: { kind: 'marker', markerId: 'm1', marker: 'goal', payload: { status: 'active' } },
+      },
+      {
+        op: 'taskref.upsert',
+        item: { kind: 'taskref', refId: 'r1', taskId: 'task-1', at: '2026-01-01T00:00:00.000Z' },
+      },
+    ]);
+    const [marker, taskref] = tx.getItems();
+    const seen: TranscriptOperation[][] = [];
+    tx.onChange((event) => seen.push([...event.ops]));
+    const result = tx.apply([
+      {
+        op: 'marker.upsert',
+        item: { kind: 'marker', markerId: 'm1', marker: 'goal', payload: { status: 'active' } },
+      },
+      {
+        op: 'taskref.upsert',
+        item: { kind: 'taskref', refId: 'r1', taskId: 'task-1', at: '2026-01-01T00:00:00.000Z' },
+      },
+    ]);
+    expect(result.accepted).toEqual([]);
+    expect(tx.getItems()[0]).toBe(marker);
+    expect(tx.getItems()[1]).toBe(taskref);
+    expect(seen).toEqual([]);
+  });
+
+  it('reconciles a tail reset in place and clears detail on grade downgrade', () => {
+    const tx = new AgentTranscript('main');
+    tx.apply([
+      {
+        op: 'turn.upsert',
+        turn: { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' } },
+      },
+      turn1,
+      doneThinking,
+    ]);
+    const older = tx.getTurn('t0');
+    tx.apply([
+      {
+        op: 'reset',
+        agentId: 'main',
+        grade: 'turn',
+        coverage: { kind: 'tail', fromTurnId: 't1', throughTurnId: 't1', hasMoreOlder: true },
+        snapshot: {
+          items: [{ ...turn1.turn, kind: 'turn', steps: [] }],
+          tasks: [],
+          interactions: [],
+          attachments: [],
+          todos: [],
+          prompts: [],
+          meta: {},
+          hasMoreOlder: true,
+        },
+      },
+    ]);
+    expect(tx.getTurn('t0')).toBe(older);
+    expect(tx.getTurn('t1')?.steps).toEqual([]);
+    expect(tx.hasMoreOlder).toBe(true);
   });
 
   it('task upsert + append keeps output tail globally, detached flips freely', () => {

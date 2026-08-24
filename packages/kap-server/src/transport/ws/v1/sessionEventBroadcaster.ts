@@ -44,6 +44,7 @@ import {
   projectInteractionEndState,
   redactSnapshotForGrade,
   type AgentTranscript,
+  type TranscriptCursor,
   type TranscriptGrade,
   type TranscriptGradeSpec,
   type TranscriptOperation,
@@ -125,7 +126,7 @@ export interface TargetSubscription {
   readonly transcriptGeneration?: number;
 }
 
-export type TranscriptSince = Record<string, number>;
+export type TranscriptSince = Record<string, TranscriptCursor | number>;
 
 interface TranscriptStream {
   readonly store: TranscriptStore;
@@ -460,7 +461,7 @@ export class SessionEventBroadcaster {
         if (grade === 'off') continue;
         const transcript = seed.store.getAgent(descriptor.agentId);
         if (transcript === undefined) continue;
-        const seq = service.getSeqWatermark(state.sessionId, descriptor.agentId);
+        const cursor = service.getTranscriptCursor(state.sessionId, descriptor.agentId);
         const since =
           seed.transcriptSince?.[descriptor.agentId] ?? seed.transcriptSince?.['*'];
         const catchup =
@@ -468,8 +469,12 @@ export class SessionEventBroadcaster {
             ? undefined
             : service.getOpsSince(state.sessionId, descriptor.agentId, since);
         if (catchup?.complete === true) {
-          for (const batch of catchup.batches) {
+          const visible = catchup.batches
+            .map((batch) => ({ ...batch, ops: filterOpsForGrade(grade, batch.ops) }))
+            .filter((batch) => batch.ops.length > 0);
+          for (let index = 0; index < visible.length; index += 1) {
             if (!this.isTranscriptGeneration(state, target, seed.generation)) return;
+            const batch = visible[index]!;
             if (
               !this.sendTranscriptOps(
                 state,
@@ -477,7 +482,8 @@ export class SessionEventBroadcaster {
                 descriptor.agentId,
                 grade,
                 batch.ops,
-                batch.seq,
+                { epoch: catchup.epoch, seq: batch.seq },
+                index === visible.length - 1 ? catchup.throughSeq : batch.seq,
                 seed.generation,
               )
             ) {
@@ -499,7 +505,7 @@ export class SessionEventBroadcaster {
             target,
             transcript,
             grade,
-            seq,
+            cursor,
             seed.generation,
           )
         ) {
@@ -526,7 +532,8 @@ export class SessionEventBroadcaster {
     agentId: string,
     grade: TranscriptGrade,
     ops: readonly TranscriptOperation[],
-    seq: number,
+    cursor: TranscriptCursor,
+    throughSeq: number,
     generation?: number,
   ): boolean {
     const filtered = filterOpsForGrade(grade, ops);
@@ -535,9 +542,11 @@ export class SessionEventBroadcaster {
       state,
       target,
       this.buildTranscriptEnvelope(state, 'transcript.ops', {
+        session_id: state.sessionId,
         agent_id: agentId,
         ops: filtered,
-        seq,
+        cursor,
+        through_seq: throughSeq,
       }),
       generation,
     );
@@ -590,7 +599,7 @@ export class SessionEventBroadcaster {
 
     const opsDisposable = service.onSessionOps(
       state.sessionId,
-      ({ agentId, ops }, seq) => {
+      ({ agentId, ops }, cursor) => {
         for (const [target, sub] of state.targets) {
           if (!state.transcriptSeeded.has(target)) continue;
           this.sendTranscriptOps(
@@ -599,7 +608,8 @@ export class SessionEventBroadcaster {
             agentId,
             gradeFor(sub.transcriptGrades, agentId),
             ops,
-            seq,
+            cursor,
+            cursor.seq,
             sub.transcriptGeneration,
           );
         }
@@ -614,7 +624,7 @@ export class SessionEventBroadcaster {
           stream.knownAgents.add(descriptor.agentId);
           const transcript = store.getAgent(descriptor.agentId);
           if (transcript === undefined) continue;
-          const seq = service.getSeqWatermark(state.sessionId, descriptor.agentId);
+          const cursor = service.getTranscriptCursor(state.sessionId, descriptor.agentId);
           for (const [target, sub] of state.targets) {
             if (!state.transcriptSeeded.has(target)) continue;
             const grade = gradeFor(sub.transcriptGrades, descriptor.agentId);
@@ -624,7 +634,7 @@ export class SessionEventBroadcaster {
               target,
               transcript,
               grade,
-              seq,
+              cursor,
               sub.transcriptGeneration,
             );
           }
@@ -642,22 +652,34 @@ export class SessionEventBroadcaster {
     state: SessionState,
     target: BroadcastTarget,
     transcript: AgentTranscript,
-    grade: TranscriptGrade,
-    seq: number,
+    grade: Exclude<TranscriptGrade, 'off'>,
+    cursor: TranscriptCursor,
     generation?: number,
   ): boolean {
     const snapshot = redactSnapshotForGrade(
       grade,
       transcript.snapshot({ tailTurns: TRANSCRIPT_RESET_TAIL_TURNS }),
     );
+    const turns = snapshot.items.filter((item) => item.kind === 'turn');
+    const hasMoreOlder = snapshot.hasMoreOlder ?? false;
+    const coverage = hasMoreOlder
+      ? {
+          kind: 'tail' as const,
+          fromTurnId: turns[0]?.turnId,
+          throughTurnId: turns.at(-1)?.turnId,
+          hasMoreOlder,
+        }
+      : { kind: 'full' as const, hasMoreOlder: false as const };
     return this.sendTranscriptEnvelope(
       state,
       target,
       this.buildTranscriptEnvelope(state, 'transcript.reset', {
+        session_id: state.sessionId,
         agent_id: transcript.agentId,
         snapshot,
-        has_more_older: snapshot.hasMoreOlder ?? false,
-        seq,
+        grade,
+        coverage,
+        cursor,
       }),
       generation,
     );
@@ -769,9 +791,28 @@ export class SessionEventBroadcaster {
 
   refreshTranscriptAfterHistoryRewrite(sessionId: string): void {
     const state = this.sessions.get(sessionId);
-    const store = this.opts.transcriptService?.forSessionLive(sessionId);
-    if (state === undefined || store === undefined) return;
+    const service = this.opts.transcriptService;
+    const store = service?.forSessionLive(sessionId);
+    if (state === undefined || service === undefined || store === undefined) return;
     this.ensureTranscriptStream(state, store);
+    for (const descriptor of store.agents()) {
+      const transcript = store.getAgent(descriptor.agentId);
+      if (transcript === undefined) continue;
+      const cursor = service.getTranscriptCursor(sessionId, descriptor.agentId);
+      for (const [target, sub] of state.targets) {
+        if (!state.transcriptSeeded.has(target)) continue;
+        const grade = gradeFor(sub.transcriptGrades, descriptor.agentId);
+        if (grade === 'off') continue;
+        this.sendTranscriptReset(
+          state,
+          target,
+          transcript,
+          grade,
+          cursor,
+          sub.transcriptGeneration,
+        );
+      }
+    }
   }
 
   broadcastHistoryResync(
@@ -1248,6 +1289,7 @@ export class SessionEventBroadcaster {
   private onAgentEvent(sessionId: string, agentId: string, event: Event2<any>): void {
     const state = this.sessions.get(sessionId);
     if (state === undefined) return;
+    if (TRANSCRIPT_ONLY_STATE_EVENT_TYPES.has(event.type)) return;
 
     if (event.type === 'context.append_loop_event') {
       if (agentId === MAIN_AGENT_ID) {
@@ -1540,6 +1582,14 @@ const VOLATILE_SIGNAL_TYPES = [
 ] as const;
 
 const volatileSignalTypeSet: ReadonlySet<string> = new Set(VOLATILE_SIGNAL_TYPES);
+
+const TRANSCRIPT_ONLY_STATE_EVENT_TYPES: ReadonlySet<string> = new Set([
+  'turn.prompt',
+  'turn.steer',
+  'context.clear',
+  'context.apply_compaction',
+  'context.undo',
+]);
 
 function isVolatileSignal(type: string): boolean {
   return volatileSignalTypeSet.has(type);

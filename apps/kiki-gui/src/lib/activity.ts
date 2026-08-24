@@ -4,7 +4,8 @@
  *
  *   - running sessions come from the polled Session records (`busy`);
  *   - per-session prompt queues (`GET /sessions/{id}/prompts`) give the
- *     active prompt's start time + preview text and the queue depth;
+ *     active prompt's start time + preview text; queue depth prefers the
+ *     live `queuedPromptIds` selector when a session controller is mounted;
  *   - per-session tasks (`GET /sessions/{id}/tasks`) give running background
  *     task counts (subagent-kind tasks excluded, mirroring the right rail);
  *   - waiting sessions come from `pending_interaction` on the record.
@@ -60,6 +61,7 @@ function toEntry(
   prompts: PromptListResponse | undefined,
   tasks: readonly Task[] | undefined,
   untitled: string,
+  liveQueuedCount?: number,
 ): ActivityEntry {
   const activeText =
     prompts?.active !== null && prompts?.active !== undefined
@@ -73,7 +75,7 @@ function toEntry(
     pendingInteraction: pendingKindOf(session),
     turnStartedAt: prompts?.active?.created_at,
     promptPreview: activeText ?? (fallback !== undefined && fallback !== '' ? fallback : undefined),
-    queuedCount: prompts?.queued.length ?? 0,
+    queuedCount: liveQueuedCount !== undefined ? liveQueuedCount : (prompts?.queued.length ?? 0),
     runningTaskCount:
       tasks?.filter((task) => task.status === 'running' && task.kind !== 'subagent').length ?? 0,
     updatedAt: session.updated_at,
@@ -87,11 +89,24 @@ export function buildActivityModel(input: {
   /** Per-session task list; only busy sessions get queried. */
   tasks: Readonly<Record<string, readonly Task[] | undefined>>;
   untitled: string;
+  /**
+   * Canonical live queue depths keyed by session id. When present they win over
+   * REST `GET /prompts` so Activity and QueueStrip share one selector.
+   */
+  liveQueuedCounts?: Readonly<Record<string, number>>;
 }): ActivityModel {
   const byRecency = (a: ActivityEntry, b: ActivityEntry) => b.updatedAt.localeCompare(a.updatedAt);
   const running = input.sessions
     .filter((session) => session.busy)
-    .map((session) => toEntry(session, input.prompts[session.id], input.tasks[session.id], input.untitled))
+    .map((session) =>
+      toEntry(
+        session,
+        input.prompts[session.id],
+        input.tasks[session.id],
+        input.untitled,
+        input.liveQueuedCounts?.[session.id],
+      ),
+    )
     .toSorted(byRecency);
   const waiting = input.sessions
     .filter((session) => !session.busy && pendingKindOf(session) !== 'none')
