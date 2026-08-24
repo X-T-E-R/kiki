@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { Session, SessionSnapshotResponse } from '@moonshot-ai/protocol';
+import type { MessageContent, Session, SessionSnapshotResponse } from '@moonshot-ai/protocol';
 
 import { resolveSelectedEffort } from '../components/Composer';
 import type { AgentTranscriptResponse, KikiClient } from '../lib/client';
@@ -307,6 +307,46 @@ describe('SessionController pipeline', () => {
     controller.close();
   });
 
+  it('includes selected session media in the optimistic local prompt', async () => {
+    const { controller, client } = await openController();
+    const content: MessageContent[] = [
+      { type: 'text', text: 'look at this image' },
+      { type: 'image', source: { kind: 'session_media', file_id: 'img-1' } },
+      {
+        type: 'file',
+        file_id: 'file-1',
+        name: 'notes.txt',
+        media_type: 'text/plain',
+        size: 12,
+      },
+    ];
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: 'p-media',
+      user_message_id: 'm-media',
+      status: 'running',
+      content,
+      created_at: '2026-01-01T00:00:02.000Z',
+    });
+
+    await controller.sendPrompt({
+      text: 'look at this image',
+      content,
+      permissionMode: 'manual',
+    });
+
+    const user = controller.getState().blocks.at(-1);
+    expect(user).toMatchObject({
+      kind: 'user',
+      promptId: 'p-media',
+      text: 'look at this image',
+      media: [
+        { kind: 'image', fileId: 'img-1' },
+        { kind: 'file', fileId: 'file-1', name: 'notes.txt', mime: 'text/plain', size: 12 },
+      ],
+    });
+    controller.close();
+  });
+
   it('forwards the effort selected in Composer with the next prompt request', async () => {
     const { controller, client } = await openController();
     client.submitPrompt.mockResolvedValue({
@@ -345,6 +385,81 @@ describe('SessionController pipeline', () => {
       /resync/i,
     );
     controller.close();
+  });
+
+  it('publishes pending transcript ops after a hidden-visible transition', async () => {
+    const animationFrames = fakeAnimationFrames();
+    const visibility = visibilityDocument('visible');
+    vi.stubGlobal('requestAnimationFrame', animationFrames.request);
+    vi.stubGlobal('cancelAnimationFrame', animationFrames.cancel);
+    vi.stubGlobal('document', visibility.target);
+
+    let controller: SessionController | undefined;
+    try {
+      ({ controller } = await openController({ defaultScheduler: true }));
+      controller.handleTranscript(asTranscriptEvent({
+        type: 'transcript.reset',
+        agent_id: 'main',
+        seq: 1,
+        snapshot: {
+          items: [
+            {
+              kind: 'turn',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'running',
+              origin: { kind: 'user' },
+              prompt: 'hi',
+              steps: [
+                {
+                  kind: 'step',
+                  stepId: 't1.1',
+                  turnId: 't1',
+                  ordinal: 1,
+                  state: 'running',
+                  frames: [
+                    { kind: 'text', frameId: 'f-visible', role: 'assistant', text: 'A' },
+                  ],
+                },
+              ],
+            },
+          ],
+          tasks: [],
+          interactions: [],
+          attachments: [],
+          todos: [],
+          prompts: [],
+          meta: { activity: 'turn' },
+        },
+      }));
+      controller.handleTranscript(asTranscriptEvent({
+        type: 'transcript.ops',
+        agent_id: 'main',
+        seq: 2,
+        ops: [
+          {
+            op: 'frame.upsert',
+            turnId: 't1',
+            stepId: 't1.1',
+            frame: { kind: 'text', frameId: 'f-visible', role: 'assistant', text: 'AB' },
+          },
+        ],
+      }));
+      expect(animationFrames.pending()).toBe(1);
+
+      visibility.set('hidden');
+      expect(animationFrames.pending()).toBe(0);
+      visibility.set('visible');
+      expect(animationFrames.pending()).toBe(1);
+      animationFrames.flushOne();
+
+      expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({
+        text: 'AB',
+      });
+    } finally {
+      controller?.close();
+      vi.unstubAllGlobals();
+    }
   });
 
   it('resyncs after a reconnect ack only when the drop hit live work', async () => {

@@ -1140,9 +1140,31 @@ export class KikiClient {
     return { bytes: new Uint8Array(await response.arrayBuffer()), mime };
   }
 
+  /** Download session-canonical prompt media (also resolves staged uploads). */
+  async readSessionMediaBytes(
+    sessionId: string,
+    fileId: string,
+  ): Promise<{ bytes: Uint8Array; mime: string }> {
+    const url = new URL(
+      joinUrl(
+        this.baseUrl,
+        `/sessions/${encodeURIComponent(sessionId)}/media/${encodeURIComponent(fileId)}`,
+      ),
+    );
+    const response = await this.fetchBinaryUrl(url, 'application/octet-stream');
+    const mime =
+      response.headers.get('content-type')?.split(';', 1)[0]?.trim() ||
+      'application/octet-stream';
+    return { bytes: new Uint8Array(await response.arrayBuffer()), mime };
+  }
+
   private async fetchHostFile(path: string, accept: string): Promise<Response> {
     const url = new URL(joinUrl(this.baseUrl, '/fs:content'));
     url.searchParams.set('path', path);
+    return await this.fetchBinaryUrl(url, accept);
+  }
+
+  private async fetchBinaryUrl(url: URL, accept: string): Promise<Response> {
     const headers: Record<string, string> = { Accept: accept };
     if (this.token !== undefined) headers['Authorization'] = `Bearer ${this.token}`;
     const controller = new AbortController();

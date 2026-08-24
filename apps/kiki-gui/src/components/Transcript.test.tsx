@@ -454,6 +454,53 @@ function click(element: Element): void {
   element.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 }
 
+describe('live and event chrome', () => {
+  it('shows a working status instead of the blank-state screen before live blocks arrive', async () => {
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <Transcript
+        state={{ ...transcriptState([]), busy: true }}
+        onLoadOlder={() => Promise.resolve(false)}
+        onResolveApproval={() => noopActions()}
+        onAnswerQuestion={() => noopActions()}
+        onDismissQuestion={() => noopActions()}
+      />,
+    );
+
+    expect(container.querySelector('[data-turn-status]')).not.toBeNull();
+    expect(container.querySelector('[role="log"]')).not.toBeNull();
+  });
+
+  it('keeps loaded skills compact until their details are explicitly expanded', async () => {
+    const container = await renderTranscript([
+      {
+        kind: 'skill',
+        id: 'skill-1',
+        source: 'skill',
+        name: 'browser-audit',
+        args: '--deep',
+        text: 'Long implementation notes that should not occupy the transcript by default.',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    ]);
+    const skill = container.querySelector('[data-skill]');
+    const trigger = skill?.querySelector('button');
+
+    expect(skill).not.toBeNull();
+    expect(skill?.className).not.toContain('rounded-xl');
+    expect(skill?.className).not.toContain('bg-panel');
+    expect(trigger?.getAttribute('aria-expanded')).toBe('false');
+    expect(container.textContent).not.toContain('Long implementation notes');
+
+    await act(async () => {
+      flushSync(() => { click(trigger!); });
+    });
+    expect(trigger?.getAttribute('aria-expanded')).toBe('true');
+    expect(container.textContent).toContain('Long implementation notes');
+  });
+});
+
 describe('message row actions', () => {
   it('shows edit/fork on settled user rows and regenerate/fork on the latest final reply only', async () => {
     const rowActions: TranscriptRowActions = {

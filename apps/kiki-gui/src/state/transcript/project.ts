@@ -91,12 +91,18 @@ export function agentStateToProjectionSource(
   };
 }
 
-function reminderBlocks(id: string, createdAt: string | undefined, reminders: readonly string[]): SystemReminderBlock[] {
+function reminderBlocks(
+  id: string,
+  createdAt: string | undefined,
+  reminders: readonly string[],
+  turnId?: string,
+): SystemReminderBlock[] {
   return reminders.map((reminder, index) => ({
     kind: 'system-reminder',
     id: `reminder-${id}-${index}`,
     text: reminder,
     createdAt,
+    turnId,
   }));
 }
 
@@ -142,6 +148,7 @@ function classifiedTextToBlocks(input: {
         args: skill.args,
         text: classified.text,
         createdAt: input.createdAt,
+        turnId: input.turnId,
       } satisfies SkillBlock);
       break;
     }
@@ -158,6 +165,7 @@ function classifiedTextToBlocks(input: {
         output: shell.output,
         done: true,
         isError: shell.isError,
+        turnId: input.turnId,
       } satisfies ShellBlock);
       break;
     }
@@ -177,7 +185,7 @@ function classifiedTextToBlocks(input: {
     case 'reminder':
       break;
   }
-  blocks.push(...reminderBlocks(input.id, input.createdAt, classified.reminders));
+  blocks.push(...reminderBlocks(input.id, input.createdAt, classified.reminders, input.turnId));
   return blocks;
 }
 
@@ -237,10 +245,10 @@ function isLiveStreamingFrame(
   const lastOpen = [...step.frames].reverse().find((candidate) => candidate.kind === frame.kind);
   if (lastOpen?.frameId !== frame.frameId) return false;
   if (phase === undefined || typeof phase !== 'object' || phase === null) return true;
-  const live = phase as { kind?: string; turnId?: number; stepId?: string; stream?: string };
+  const live = phase as { kind?: string; turnId?: number | string; stepId?: string; stream?: string };
   if (live.kind !== 'streaming') return false;
   if (live.stepId !== undefined && live.stepId !== step.stepId) return false;
-  if (typeof live.turnId === 'number' && `t${live.turnId}` !== item.turnId) return false;
+  if (live.turnId !== undefined && !sameTurnId(String(live.turnId), item.turnId)) return false;
   if (live.stream === 'assistant') return frame.kind === 'text';
   if (live.stream === 'thinking') return frame.kind === 'thinking';
   return false;
@@ -320,28 +328,48 @@ function originAgentFromInteraction(interaction: AgentTranscriptInteraction): st
   return undefined;
 }
 
+function recordString(record: Record<string, unknown>, ...keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value !== '') return value;
+  }
+  return undefined;
+}
+
+function recordNumber(record: Record<string, unknown>, ...keys: readonly string[]): number | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value);
+  }
+  return undefined;
+}
+
 function interactionToBlock(interaction: AgentTranscriptInteraction, agentId: string): Block | undefined {
   const originAgentId = originAgentFromInteraction(interaction);
   if (interaction.interactionKind === 'approval') {
-    const request = (interaction.request ?? {}) as {
-      turnId?: number;
-      toolName?: string;
-      action?: string;
-      display?: ToolInputDisplay;
-    };
+    const request =
+      typeof interaction.request === 'object' && interaction.request !== null
+        ? (interaction.request as Record<string, unknown>)
+        : {};
+    const turnId = recordNumber(request, 'turnId', 'turn_id');
+    const toolCallId =
+      interaction.toolCallId ?? recordString(request, 'toolCallId', 'tool_call_id') ?? interaction.interactionId;
+    const createdAt = recordString(request, 'createdAt', 'created_at') ?? '';
+    const expiresAt = recordString(request, 'expiresAt', 'expires_at') ?? createdAt;
     return {
       kind: 'approval',
       id: `approval-${interaction.interactionId}`,
       request: {
         approval_id: interaction.interactionId,
-        session_id: '',
-        turn_id: request.turnId,
-        tool_call_id: interaction.toolCallId ?? interaction.interactionId,
-        tool_name: request.toolName ?? 'tool',
-        action: request.action ?? 'Approve the action',
-        tool_input_display: request.display,
-        created_at: '',
-        expires_at: '',
+        session_id: recordString(request, 'sessionId', 'session_id') ?? '',
+        turn_id: turnId,
+        tool_call_id: toolCallId,
+        tool_name: recordString(request, 'toolName', 'tool_name') ?? 'tool',
+        action: recordString(request, 'action') ?? 'Approve the action',
+        tool_input_display: request['display'] ?? request['toolInputDisplay'] ?? request['tool_input_display'],
+        created_at: createdAt,
+        expires_at: expiresAt,
       },
       resolution:
         interaction.state === 'pending'
@@ -353,32 +381,40 @@ function interactionToBlock(interaction: AgentTranscriptInteraction, agentId: st
                 interaction.state === 'cancelled'
                   ? interaction.state
                   : 'resolved_elsewhere',
-              resolvedAt: '',
+              resolvedAt:
+                typeof interaction.response === 'object' && interaction.response !== null
+                  ? recordString(interaction.response as Record<string, unknown>, 'resolvedAt', 'resolved_at') ?? createdAt
+                  : createdAt,
             },
       originAgentId,
       originUnknown: originAgentId === undefined && agentId === MAIN_AGENT_ID,
     } satisfies ApprovalBlock;
   }
   if (interaction.interactionKind === 'question') {
-    const request = (interaction.request ?? {}) as { turnId?: number; questions?: unknown };
+    const request =
+      typeof interaction.request === 'object' && interaction.request !== null
+        ? (interaction.request as Record<string, unknown>)
+        : {};
+    const turnId = recordNumber(request, 'turnId', 'turn_id');
+    const createdAt = recordString(request, 'createdAt', 'created_at') ?? '';
     return {
       kind: 'question',
       id: `question-${interaction.interactionId}`,
       request: {
         question_id: interaction.interactionId,
-        session_id: '',
-        turn_id: request.turnId,
-        tool_call_id: interaction.toolCallId,
-        questions: engineQuestionItems(request.questions),
-        created_at: '',
+        session_id: recordString(request, 'sessionId', 'session_id') ?? '',
+        turn_id: turnId,
+        tool_call_id: interaction.toolCallId ?? recordString(request, 'toolCallId', 'tool_call_id'),
+        questions: engineQuestionItems(request['questions']),
+        created_at: createdAt,
       },
       outcome:
         interaction.state === 'pending'
           ? undefined
           : interaction.state === 'answered'
-            ? { kind: 'answered', at: '' }
+            ? { kind: 'answered', at: createdAt }
             : interaction.state === 'dismissed'
-              ? { kind: 'dismissed', at: '' }
+              ? { kind: 'dismissed', at: createdAt }
               : { kind: 'expired' },
       originAgentId,
       originUnknown: originAgentId === undefined && agentId === MAIN_AGENT_ID,
@@ -496,6 +532,119 @@ function mapTaskState(state: string): SubagentBlock['status'] {
   return 'unknown';
 }
 
+function timestampMs(value: string | undefined): number | undefined {
+  if (value === undefined || value === '') return undefined;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+function blockTimelineMs(block: Block): number | undefined {
+  switch (block.kind) {
+    case 'user':
+    case 'steer':
+    case 'assistant':
+    case 'thinking':
+    case 'system':
+    case 'system-reminder':
+    case 'skill':
+      return timestampMs(block.createdAt);
+    case 'tool':
+      return block.startedAt > 0 ? block.startedAt : undefined;
+    case 'subagent':
+      return timestampMs(block.startedAt);
+    case 'approval':
+      return timestampMs(block.request.created_at);
+    case 'question':
+      return timestampMs(block.request.created_at);
+    case 'shell':
+    case 'notice':
+      return undefined;
+  }
+}
+
+function normalizeTurnId(value: unknown): string | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return `t${value}`;
+  if (typeof value !== 'string' || value === '') return undefined;
+  return value.startsWith('t') ? value : `t${value}`;
+}
+
+function sameTurnId(left: string | undefined, right: string | undefined): boolean {
+  if (left === undefined || right === undefined) return false;
+  return normalizeTurnId(left) === normalizeTurnId(right);
+}
+
+function blockTurnId(block: Block): string | undefined {
+  switch (block.kind) {
+    case 'user':
+    case 'assistant':
+    case 'thinking':
+    case 'system':
+    case 'system-reminder':
+    case 'skill':
+    case 'tool':
+    case 'shell':
+      return block.turnId;
+    case 'subagent':
+      return block.parentTurnId;
+    case 'approval':
+      return normalizeTurnId(block.request.turn_id);
+    case 'question':
+      return normalizeTurnId(block.request.turn_id);
+    case 'steer':
+    case 'notice':
+      return undefined;
+  }
+}
+
+function compareTimelineIds(left: string, right: string): number {
+  return left === right ? 0 : left < right ? -1 : 1;
+}
+
+function insertAtPreviousPosition(
+  blocks: Block[],
+  block: Block,
+  previous: readonly Block[],
+): boolean {
+  const previousIndex = previous.findIndex((candidate) => candidate.id === block.id);
+  if (previousIndex < 0) return false;
+  for (let index = previousIndex - 1; index >= 0; index -= 1) {
+    const anchorId = previous[index]?.id;
+    if (anchorId === undefined) continue;
+    const anchor = blocks.findLastIndex((candidate) => candidate.id === anchorId);
+    if (anchor >= 0) {
+      blocks.splice(anchor + 1, 0, block);
+      return true;
+    }
+  }
+  for (let index = previousIndex + 1; index < previous.length; index += 1) {
+    const anchorId = previous[index]?.id;
+    if (anchorId === undefined) continue;
+    const anchor = blocks.findIndex((candidate) => candidate.id === anchorId);
+    if (anchor >= 0) {
+      blocks.splice(anchor, 0, block);
+      return true;
+    }
+  }
+  return false;
+}
+
+function insertByTimeline(blocks: Block[], block: Block): void {
+  const at = blockTimelineMs(block);
+  if (at !== undefined) {
+    const insertionIndex = blocks.findIndex((candidate) => {
+      const candidateAt = blockTimelineMs(candidate);
+      if (candidateAt === undefined) return false;
+      if (candidateAt !== at) return candidateAt > at;
+      return compareTimelineIds(candidate.id, block.id) > 0;
+    });
+    if (insertionIndex >= 0) {
+      blocks.splice(insertionIndex, 0, block);
+      return;
+    }
+  }
+  blocks.push(block);
+}
+
 function subagentBlocksFromSnapshot(
   response: AgentTranscriptProjectionSource,
   parentAgentId: string,
@@ -560,33 +709,220 @@ function subagentBlocksFromSnapshot(
   return [...byAgent.values()];
 }
 
-function insertSubagentBlocks(source: readonly Block[], subagents: readonly SubagentBlock[]): Block[] {
-  if (subagents.length === 0) return source.filter((block) => block.kind !== 'subagent');
-  const byParentTool = new Map<string, SubagentBlock[]>();
-  for (const subagent of subagents) {
-    if (subagent.parentToolCallId === undefined) continue;
-    const siblings = byParentTool.get(subagent.parentToolCallId) ?? [];
-    siblings.push(subagent);
-    byParentTool.set(subagent.parentToolCallId, siblings);
-  }
-  const inserted = new Set<string>();
-  const blocks: Block[] = [];
-  for (const candidate of source) {
-    if (candidate.kind === 'subagent') continue;
-    blocks.push(candidate);
-    if (candidate.kind === 'tool') {
-      const anchored = byParentTool.get(candidate.toolCallId);
-      if (anchored !== undefined) {
-        for (const subagent of anchored) {
-          if (inserted.has(subagent.subagentId)) continue;
-          blocks.push(subagent);
-          inserted.add(subagent.subagentId);
-        }
-      }
+function compareSubagentTimeline(left: SubagentBlock, right: SubagentBlock): number {
+  const leftAt = blockTimelineMs(left);
+  const rightAt = blockTimelineMs(right);
+  if (leftAt !== undefined && rightAt !== undefined && leftAt !== rightAt) return leftAt - rightAt;
+  if (leftAt !== undefined) return -1;
+  if (rightAt !== undefined) return 1;
+  return compareTimelineIds(left.id, right.id);
+}
+
+function nearestParentTurn(
+  blocks: readonly Block[],
+  subagent: SubagentBlock,
+  beforeIndex?: number,
+): string | undefined {
+  if (subagent.parentTurnId !== undefined) return subagent.parentTurnId;
+  if (beforeIndex !== undefined) {
+    for (let index = beforeIndex - 1; index >= 0; index -= 1) {
+      const turnId = blocks[index] === undefined ? undefined : blockTurnId(blocks[index]!);
+      if (turnId !== undefined) return turnId;
     }
   }
-  for (const subagent of subagents) {
-    if (!inserted.has(subagent.subagentId)) blocks.push(subagent);
+  const startedAt = blockTimelineMs(subagent);
+  let nearest: { turnId: string; at: number } | undefined;
+  for (const candidate of blocks) {
+    const turnId = blockTurnId(candidate);
+    if (turnId === undefined) continue;
+    const at = blockTimelineMs(candidate);
+    if (at === undefined || (startedAt !== undefined && at > startedAt)) continue;
+    if (nearest === undefined || at >= nearest.at) nearest = { turnId, at };
+  }
+  return nearest?.turnId;
+}
+
+function insertSubagentByTimeline(blocks: Block[], block: SubagentBlock): void {
+  if (block.parentTurnId !== undefined) {
+    let anchor = -1;
+    for (let index = 0; index < blocks.length; index += 1) {
+      if (sameTurnId(blockTurnId(blocks[index]!), block.parentTurnId)) anchor = index;
+    }
+    if (anchor >= 0) {
+      while (
+        blocks[anchor + 1]?.kind === 'subagent' &&
+        sameTurnId((blocks[anchor + 1] as SubagentBlock).parentTurnId, block.parentTurnId) &&
+        compareSubagentTimeline(blocks[anchor + 1] as SubagentBlock, block) <= 0
+      ) {
+        anchor += 1;
+      }
+      blocks.splice(anchor + 1, 0, block);
+      return;
+    }
+  }
+  insertByTimeline(blocks, block);
+}
+
+function insertSubagentBlocks(source: readonly Block[], subagents: readonly SubagentBlock[]): Block[] {
+  if (subagents.length === 0) return source.filter((block) => block.kind !== 'subagent');
+  const sorted = [...subagents].sort(compareSubagentTimeline);
+  const byParentTool = new Map<string, SubagentBlock[]>();
+  for (const subagent of sorted) {
+    const aliases = new Set(
+      [subagent.parentToolCallId, subagent.parentToolCallUuid].filter(
+        (alias): alias is string => alias !== undefined && alias !== '',
+      ),
+    );
+    for (const alias of aliases) {
+      const siblings = byParentTool.get(alias) ?? [];
+      siblings.push(subagent);
+      byParentTool.set(alias, siblings);
+    }
+  }
+
+  const inserted = new Set<string>();
+  const blocks: Block[] = [];
+  for (let index = 0; index < source.length; index += 1) {
+    const candidate = source[index]!;
+    if (candidate.kind === 'subagent') continue;
+    blocks.push(candidate);
+    const toolCallId =
+      candidate.kind === 'tool'
+        ? candidate.toolCallId
+        : candidate.kind === 'shell'
+          ? candidate.commandId
+          : undefined;
+    if (toolCallId === undefined) continue;
+    const anchored = byParentTool.get(toolCallId);
+    if (anchored === undefined) continue;
+    for (const subagent of anchored) {
+      if (inserted.has(subagent.subagentId)) continue;
+      const parentTurnId = nearestParentTurn(source, subagent, index);
+      blocks.push(parentTurnId === undefined ? subagent : { ...subagent, parentTurnId });
+      inserted.add(subagent.subagentId);
+    }
+  }
+
+  for (const subagent of sorted) {
+    if (inserted.has(subagent.subagentId)) continue;
+    const parentTurnId = nearestParentTurn(blocks, subagent);
+    insertSubagentByTimeline(
+      blocks,
+      parentTurnId === undefined ? subagent : { ...subagent, parentTurnId },
+    );
+  }
+  return blocks;
+}
+
+type ProjectedInteraction = {
+  readonly block: ApprovalBlock | QuestionBlock;
+  readonly toolCallId?: string;
+  readonly turnId?: string;
+  readonly frameId?: string;
+};
+
+function interactionPlacement(
+  interaction: AgentTranscriptInteraction,
+  block: ApprovalBlock | QuestionBlock,
+): ProjectedInteraction {
+  const anchor =
+    typeof interaction.anchor === 'object' && interaction.anchor !== null
+      ? (interaction.anchor as Record<string, unknown>)
+      : undefined;
+  const origin =
+    typeof interaction.origin === 'object' && interaction.origin !== null
+      ? (interaction.origin as Record<string, unknown>)
+      : undefined;
+  const request =
+    typeof interaction.request === 'object' && interaction.request !== null
+      ? (interaction.request as Record<string, unknown>)
+      : undefined;
+  const anchorKind = anchor === undefined ? undefined : recordString(anchor, 'kind');
+  const toolCallId =
+    interaction.toolCallId ??
+    (anchorKind === 'tool_call' && anchor !== undefined ? recordString(anchor, 'toolCallId', 'tool_call_id') : undefined) ??
+    (request === undefined ? undefined : recordString(request, 'toolCallId', 'tool_call_id')) ??
+    block.request.tool_call_id;
+  const rawTurnId =
+    (anchorKind === 'turn' || anchorKind === 'step' || anchorKind === 'frame') && anchor !== undefined
+      ? anchor['turnId'] ?? anchor['turn_id']
+      : undefined;
+  const turnId =
+    normalizeTurnId(rawTurnId) ??
+    normalizeTurnId(origin?.['turnId'] ?? origin?.['turn_id']) ??
+    normalizeTurnId(request?.['turnId'] ?? request?.['turn_id']) ??
+    normalizeTurnId(block.request.turn_id);
+  const frameId =
+    anchorKind === 'frame' && anchor !== undefined
+      ? recordString(anchor, 'frameId', 'frame_id')
+      : undefined;
+  return { block, toolCallId, turnId, frameId };
+}
+
+function compareProjectedInteraction(left: ProjectedInteraction, right: ProjectedInteraction): number {
+  const leftAt = blockTimelineMs(left.block);
+  const rightAt = blockTimelineMs(right.block);
+  if (leftAt !== undefined && rightAt !== undefined && leftAt !== rightAt) return leftAt - rightAt;
+  if (leftAt !== undefined) return -1;
+  if (rightAt !== undefined) return 1;
+  return compareTimelineIds(left.block.id, right.block.id);
+}
+
+function insertAfterAnchor(blocks: Block[], anchor: number, block: ApprovalBlock | QuestionBlock): void {
+  let index = anchor + 1;
+  while (blocks[index]?.kind === 'approval' || blocks[index]?.kind === 'question') index += 1;
+  blocks.splice(index, 0, block);
+}
+
+function insertInteractionBlocks(
+  source: readonly Block[],
+  interactions: readonly AgentTranscriptInteraction[],
+  agentId: string,
+  previous: readonly Block[],
+): Block[] {
+  const blocks = source.filter((block) => block.kind !== 'approval' && block.kind !== 'question');
+  const projected = interactions
+    .flatMap((interaction): ProjectedInteraction[] => {
+      const block = interactionToBlock(interaction, agentId);
+      return block?.kind === 'approval' || block?.kind === 'question'
+        ? [interactionPlacement(interaction, block)]
+        : [];
+    })
+    .sort(compareProjectedInteraction);
+
+  for (const interaction of projected) {
+    if (blocks.some((candidate) => candidate.id === interaction.block.id)) continue;
+    if (interaction.frameId !== undefined) {
+      const anchor = blocks.findLastIndex(
+        (candidate) => candidate.id === `agent-frame-${interaction.frameId}`,
+      );
+      if (anchor >= 0) {
+        insertAfterAnchor(blocks, anchor, interaction.block);
+        continue;
+      }
+    }
+    if (interaction.toolCallId !== undefined) {
+      const anchor = blocks.findLastIndex(
+        (candidate) =>
+          (candidate.kind === 'tool' && candidate.toolCallId === interaction.toolCallId) ||
+          (candidate.kind === 'shell' && candidate.commandId === interaction.toolCallId),
+      );
+      if (anchor >= 0) {
+        insertAfterAnchor(blocks, anchor, interaction.block);
+        continue;
+      }
+    }
+    if (interaction.turnId !== undefined) {
+      const anchor = blocks.findLastIndex((candidate) =>
+        sameTurnId(blockTurnId(candidate), interaction.turnId),
+      );
+      if (anchor >= 0) {
+        insertAfterAnchor(blocks, anchor, interaction.block);
+        continue;
+      }
+    }
+    if (insertAtPreviousPosition(blocks, interaction.block, previous)) continue;
+    insertByTimeline(blocks, interaction.block);
   }
   return blocks;
 }
@@ -596,6 +932,27 @@ function isPromptIdentity(block: Block, promptId: string, userMessageId?: string
     return block.promptId === promptId || (userMessageId !== undefined && block.userMessageId === userMessageId);
   }
   return false;
+}
+
+function sameMedia(
+  left: readonly MediaRef[] | undefined,
+  right: readonly MediaRef[] | undefined,
+): boolean {
+  if (left === right) return true;
+  if (left === undefined || right === undefined || left.length !== right.length) return false;
+  return left.every((item, index) => {
+    const other = right[index];
+    return (
+      other !== undefined &&
+      item.kind === other.kind &&
+      item.url === other.url &&
+      item.path === other.path &&
+      item.name === other.name &&
+      item.mime === other.mime &&
+      item.size === other.size &&
+      item.fileId === other.fileId
+    );
+  });
 }
 
 function upsertPromptItemBlocks(
@@ -624,11 +981,28 @@ function upsertPromptItemBlocks(
     })
       ? undefined
       : item.status;
-    if (existing.promptStatus === nextStatus && existing.text === text) return blocks;
+    if (
+      existing.promptStatus === nextStatus &&
+      existing.text === text &&
+      sameMedia(existing.media, nextMedia)
+    ) {
+      return blocks;
+    }
     const next = blocks.slice();
     next[stableIndex] = { ...existing, text, promptStatus: nextStatus, media: nextMedia };
     return next;
   }
+  const split = splitSystemReminders(text);
+  const placeholderIndex =
+    item.status === 'running'
+      ? blocks.findLastIndex(
+          (block): block is UserBlock =>
+            block.kind === 'user' &&
+            block.userMessageId === undefined &&
+            block.promptId === undefined &&
+            block.text === split.text,
+        )
+      : -1;
   const additions = classifiedTextToBlocks({
     id: item.user_message_id,
     classified: classifyTranscriptText({ text, role: 'user', origin: { kind: 'user' } }),
@@ -638,6 +1012,11 @@ function upsertPromptItemBlocks(
     userMessageId: item.user_message_id,
     promptStatus: item.status,
   });
+  if (placeholderIndex >= 0 && additions[0]?.kind === 'user') {
+    const next = blocks.slice();
+    next.splice(placeholderIndex, 1, ...additions);
+    return next;
+  }
   return additions.length === 0 ? blocks : [...blocks, ...additions];
 }
 
@@ -829,7 +1208,13 @@ export function retainPendingPromptBlocks(previous: readonly Block[], next: Bloc
     if (block.userMessageId !== undefined && known.has(`u:${block.userMessageId}`)) continue;
     if (block.promptId !== undefined || block.userMessageId !== undefined) extras.push(block);
   }
-  return extras.length === 0 ? next : [...next, ...extras];
+  if (extras.length === 0) return next;
+  const merged = [...next];
+  for (const block of extras) {
+    if (insertAtPreviousPosition(merged, block, previous)) continue;
+    insertByTimeline(merged, block);
+  }
+  return merged;
 }
 
 function turnTailFromItem(item: {
@@ -997,7 +1382,9 @@ export function agentTranscriptToBlocks(
                 output: output === '' ? command : output,
                 done: frame.state !== 'running',
                 isError: frame.state === 'error',
+                turnId: item.turnId,
               });
+              break;
             }
             blocks.push({
               kind: 'tool',
@@ -1016,6 +1403,7 @@ export function agentTranscriptToBlocks(
                 Number.isNaN(startedAt) || Number.isNaN(endedAt) ? item.durationMs : Math.max(0, endedAt - startedAt),
               progressText: frame.progress?.text,
               agentRefs: frame.agentRefs,
+              turnId: item.turnId,
             });
             break;
           }
@@ -1031,12 +1419,17 @@ export function agentTranscriptToBlocks(
       }
     }
   }
-  for (const interaction of response.interactions ?? []) {
-    const block = interactionToBlock(interaction, response.agent_id);
-    if (block !== undefined && !blocks.some((existing) => existing.id === block.id)) blocks.push(block);
-  }
   const withPrompts = mergeTranscriptPromptBlocks(blocks, prompts, previous);
-  return insertSubagentBlocks(withPrompts, subagentBlocksFromSnapshot(response, response.agent_id));
+  const withSubagents = insertSubagentBlocks(
+    withPrompts,
+    subagentBlocksFromSnapshot(response, response.agent_id),
+  );
+  return insertInteractionBlocks(
+    withSubagents,
+    response.interactions ?? [],
+    response.agent_id,
+    previous,
+  );
 }
 
 export function latestFinalAssistantBlockId(blocks: readonly Block[]): string | undefined {
@@ -1238,7 +1631,7 @@ export function projectAgentTranscriptView(
     blocks,
     loaded: true,
     loadError: undefined,
-    busy: agentBusyFromMeta({ agent_id: agentId, items: [], has_more: false, meta: snapshot.meta }) === true,
+    busy: agentBusyFromMeta(source) === true,
     model: meta?.model,
     thinkingEffort: meta?.thinkingEffort,
     contextTokens: meta?.contextTokens,
@@ -1325,16 +1718,36 @@ export function prependOlderTranscriptSnapshot(
   };
 }
 
-export function agentBusyFromMeta(response: AgentTranscriptResponse | undefined): boolean | undefined {
-  const kind = response?.meta?.agent?.phase?.kind;
-  if (kind === undefined) return undefined;
-  return (
+export function agentBusyFromMeta(
+  response: AgentTranscriptProjectionSource | AgentTranscriptResponse | undefined,
+): boolean | undefined {
+  if (response === undefined) return undefined;
+  const kind = response.meta?.agent?.phase?.kind;
+  if (
     kind === 'running' ||
     kind === 'streaming' ||
     kind === 'tool_call' ||
     kind === 'retrying' ||
     kind === 'awaiting_approval'
-  );
+  ) {
+    return true;
+  }
+  if (kind === 'idle' || kind === 'ended' || kind === 'interrupted') return false;
+  if (response.meta?.activity === 'turn') return true;
+  if (response.meta?.activity === 'idle' || response.meta?.activity === 'disposing') return false;
+  if (response.prompts?.some((prompt) => prompt.status === 'running')) return true;
+  if (response.interactions?.some((interaction) => interaction.state === 'pending')) return true;
+  for (const item of response.items) {
+    if (item.kind !== 'turn') continue;
+    const itemState = 'state' in item ? item.state : undefined;
+    if (itemState === 'running' || itemState === 'queued') return true;
+    for (const step of item.steps) {
+      const stepState = 'state' in step ? step.state : undefined;
+      if (stepState === 'running') return true;
+      if (step.frames.some((frame) => frame.kind === 'tool' && frame.state === 'running')) return true;
+    }
+  }
+  return undefined;
 }
 
 export { isPromptContentArray };

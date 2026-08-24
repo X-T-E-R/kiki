@@ -1,8 +1,7 @@
 /**
- * SessionController — one session's REST snapshot, ordered WS intake, bounded
- * resync quarantine, and user actions. Wire frames are coalesced and reduced on
- * an animation-frame cadence, with a microtask fast path for visible thinking;
- * React sees at most one publication per flush.
+ * SessionController — one session's REST snapshot, ordered transcript intake,
+ * publication scheduling, resync, and user actions. Canonical transcript ops
+ * are applied immediately and projected to React at most once per flush.
  */
 
 import type {
@@ -27,7 +26,6 @@ import {
 import { API_CODES, ApiError, type KikiClient, type SessionCursor } from '../lib/client';
 import { isHistoryRewrittenEvent, type ResyncRequiredPayload, type SessionEventFrame } from '../lib/types';
 import { DEFAULT_TRANSCRIPT_GRADES, transcriptGradesForFocus, type KikiSocket } from '../lib/ws';
-import { FrameBuffer } from './framePipeline';
 import {
   MAIN_AGENT_ID,
   applyTranscriptShell,
@@ -61,8 +59,6 @@ export function assertSessionWritable(state: Pick<SessionViewState, 'resyncing' 
 }
 
 const RESYNC_BACKOFF_MS = [250, 500, 1000, 2000, 4000];
-const QUARANTINE_MAX_FRAMES = 1000;
-const QUARANTINE_MAX_BYTES = 2 * 1024 * 1024;
 const HIDDEN_FRAME_FLUSH_INTERVAL_MS = 1000;
 
 export interface PublicationScheduler {
@@ -114,15 +110,6 @@ export class SessionController {
   private readonly visibilityDocument: VisibilityDocument | undefined;
   private frameHandle: unknown = null;
   private hiddenFrameTimer: ReturnType<typeof setTimeout> | null = null;
-  /** One microtask per JS turn keeps reasoning visibly incremental without
-   * publishing once per frame in a synchronous high-frequency burst. */
-  private thinkingFlushQueued = false;
-  /** Intake is bounded for burst safety. Hidden windows drain it in 200-frame
-   * chunks on a low-frequency timeout instead of waiting for foreground. */
-  private readonly inboundFrames = new FrameBuffer({
-    maxFrames: QUARANTINE_MAX_FRAMES,
-    maxBytes: QUARANTINE_MAX_BYTES,
-  });
   private resyncInFlight = false;
   private resyncTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
@@ -174,7 +161,7 @@ export class SessionController {
     } else {
       this.clearHiddenFrameTimer();
     }
-    if (this.inboundFrames.length > 0) this.scheduleFrameFlush();
+    if (this.pendingTranscriptAgents.size > 0) this.scheduleFrameFlush();
   };
 
   getState = (): SessionViewState => this.publishedState;
@@ -249,23 +236,6 @@ export class SessionController {
     });
   }
 
-  private scheduleThinkingFlush(): void {
-    if (this.thinkingFlushQueued || this.closed) return;
-    this.thinkingFlushQueued = true;
-    queueMicrotask(() => {
-      this.thinkingFlushQueued = false;
-      if (this.closed) return;
-      if (this.isDocumentHidden()) {
-        this.cancelVisibleFrameFlush();
-        this.scheduleFrameFlush();
-        return;
-      }
-      this.cancelVisibleFrameFlush();
-      this.clearHiddenFrameTimer();
-      this.flushFrames();
-    });
-  }
-
   /** Public test seam and fallback for environments without an actual rAF. */
   flushFrames = (): void => {
     if (this.closed) return;
@@ -277,7 +247,6 @@ export class SessionController {
         if (store !== undefined) this.publishProjectedAgent(agentId, store);
       }
     }
-    this.inboundFrames.drain();
   };
 
   /** Initial sync: snapshot shell → subscribe_v2 with per-agent grades. */
@@ -310,7 +279,6 @@ export class SessionController {
     this.clearResyncTimer();
     this.cancelVisibleFrameFlush();
     this.clearHiddenFrameTimer();
-    this.inboundFrames.clear();
     this.pendingTranscriptAgents.clear();
     for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
     this.historyGeneration.clear();
@@ -741,8 +709,10 @@ export class SessionController {
     goalControl?: 'pause' | 'resume' | 'cancel';
   }): Promise<void> {
     assertSessionWritable(this.state);
+    const content = input.content ?? [{ type: 'text' as const, text: input.text }];
+    const projection = projectMessageContent(content);
     const result = await this.client.submitPrompt(this.sessionId, {
-      content: input.content ?? [{ type: 'text', text: input.text }],
+      content,
       profile: input.profile,
       model: input.model,
       thinking: input.thinking,
@@ -759,9 +729,10 @@ export class SessionController {
       appendLocalUserMessage(this.state, {
         userMessageId: result.user_message_id,
         promptId: result.prompt_id,
-        text: input.text,
+        text: projection.text === '' ? input.text : projection.text,
         createdAt: result.created_at,
         status: result.status,
+        media: projection.media,
       }),
     );
   }

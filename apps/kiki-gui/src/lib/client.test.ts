@@ -298,6 +298,28 @@ describe('KikiClient.readHostFileBytes', () => {
   });
 });
 
+describe('KikiClient.readSessionMediaBytes', () => {
+  it('downloads encoded session media with bearer authentication', async () => {
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const parsed = new URL(String(url));
+      expect(parsed.pathname).toBe('/api/v1/sessions/session%2Ftest/media/image%23one');
+      expect(init?.method).toBe('GET');
+      expect((init?.headers as Record<string, string>)['Authorization']).toBe('Bearer token');
+      return new Response(new Uint8Array([4, 5, 6]), {
+        status: 200,
+        headers: { 'content-type': 'image/webp; charset=binary' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
+
+    const result = await client.readSessionMediaBytes('session/test', 'image#one');
+    expect(result.mime).toBe('image/webp');
+    expect([...result.bytes]).toEqual([4, 5, 6]);
+    vi.unstubAllGlobals();
+  });
+});
+
 describe('KikiClient MCP JSON management', () => {
   it('uses the list, upsert, and remove endpoints with workspace scope', async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
