@@ -66,6 +66,7 @@ import { useLayoutPreferences, writeLayoutPreferences } from './lib/layoutPrefs'
 import { readLastSessionId, writeDesktopPrefs } from './lib/settings';
 import { pushToast } from './lib/toasts';
 import { anyOverlayOpen } from './lib/uiBusy';
+import { startVisiblePoll } from './lib/visiblePoll';
 import { resolveWindowTitle, type WindowRoute } from './lib/windowTitle';
 import { useI18n } from './i18n';
 import { useConnection } from './state/connection';
@@ -187,22 +188,20 @@ export function App() {
   // instead refresh on demand (load-more) or on invalidation.
   const queryClient = useQueryClient();
   useEffect(() => {
-    const timer = setInterval(() => {
-      void client
-        .listSessions({
+    return startVisiblePoll({
+      intervalMs: 5000,
+      task: async () => {
+        const first = await client.listSessions({
           page_size: 100,
           include_archive: showArchived || undefined,
           workspace_id: workspaceFilter,
-        })
-        .then((first) => {
-          queryClient.setQueryData(
-            ['sessions', showArchived, workspaceFilter],
-            (old: SessionListData | undefined) => mergeSessionFirstPage(old, first),
-          );
-        })
-        .catch(() => undefined);
-    }, 5000);
-    return () => { clearInterval(timer); };
+        });
+        queryClient.setQueryData(
+          ['sessions', showArchived, workspaceFilter],
+          (old: SessionListData | undefined) => mergeSessionFirstPage(old, first),
+        );
+      },
+    });
   }, [client, queryClient, showArchived, workspaceFilter]);
 
   const workspacesQuery = useQuery({

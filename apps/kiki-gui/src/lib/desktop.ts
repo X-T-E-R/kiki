@@ -235,8 +235,9 @@ export function onTrayNewSession(callback: () => void): () => void {
   void listen('kiki://new-session', () => {
     if (!unsubscribed) callback();
   }).then((fn) => {
-    unlisten = fn;
-  });
+    if (unsubscribed) fn();
+    else unlisten = fn;
+  }, () => undefined);
   return () => {
     unsubscribed = true;
     unlisten?.();

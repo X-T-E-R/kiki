@@ -96,6 +96,54 @@ describe('HostFileEditorController', () => {
     controller.dispose();
   });
 
+  it('keeps edits made during a save dirty and persists them in a follow-up save', async () => {
+    let releaseWrite!: () => void;
+    let signalWriteStarted!: () => void;
+    const writeStarted = new Promise<void>((resolve) => { signalWriteStarted = resolve; });
+    let writeCount = 0;
+    let diskRef!: { content: string };
+    let writesRef!: string[];
+    const fixture = makeController({
+      autosaveMs: 1000,
+      writeFile: async (_path, text) => {
+        writesRef.push(text);
+        writeCount += 1;
+        if (writeCount === 1) {
+          signalWriteStarted();
+          await new Promise<void>((resolve) => { releaseWrite = resolve; });
+        }
+        diskRef.content = text;
+      },
+    });
+    diskRef = fixture.disk;
+    writesRef = fixture.writes;
+    const { controller, disk, writes } = fixture;
+    await controller.load();
+    controller.setDraft('first edit');
+    const firstSave = controller.saveNow();
+    await writeStarted;
+    controller.setDraft('second edit');
+    releaseWrite();
+    await firstSave;
+
+    expect(controller.getState()).toMatchObject({
+      savedText: 'first edit',
+      draft: 'second edit',
+      dirty: true,
+      saving: false,
+    });
+    expect(disk.content).toBe('first edit');
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(writes).toEqual(['first edit', 'second edit']);
+    expect(controller.getState()).toMatchObject({
+      savedText: 'second edit',
+      dirty: false,
+      saving: false,
+    });
+    controller.dispose();
+  });
+
   it('saves on window blur while dirty', async () => {
     const { controller, writes } = makeController({ events: window });
     await controller.load();

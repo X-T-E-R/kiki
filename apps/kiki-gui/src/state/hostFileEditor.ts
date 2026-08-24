@@ -122,11 +122,7 @@ export class HostFileEditorController {
     const dirty = text !== this.snapshot.savedText;
     this.patch({ draft: text, dirty });
     this.clearAutosave();
-    if (dirty && this.editable) {
-      this.autosaveTimer = setTimeout(() => {
-        void this.saveNow();
-      }, this.options.autosaveMs ?? DEFAULT_AUTOSAVE_MS);
-    }
+    if (dirty) this.scheduleAutosave();
   }
 
   /**
@@ -137,23 +133,27 @@ export class HostFileEditorController {
   async saveNow(): Promise<void> {
     const snap = this.snapshot;
     if (!snap.dirty || snap.saving || snap.conflict || !this.editable || this.disposed) return;
+    const baseline = snap.savedText;
+    const textToSave = snap.draft;
     this.clearAutosave();
     this.patch({ saving: true });
     try {
       const current = await this.options.readFile(this.options.path);
       if (this.disposed) return;
-      if (current !== this.snapshot.savedText) {
+      if (current !== baseline) {
         this.patch({ saving: false, conflict: true });
         return;
       }
-      await this.options.writeFile!(this.options.path, this.snapshot.draft);
+      await this.options.writeFile!(this.options.path, textToSave);
       if (this.disposed) return;
+      const dirty = this.snapshot.draft !== textToSave;
       this.patch({
         saving: false,
-        savedText: this.snapshot.draft,
-        dirty: false,
+        savedText: textToSave,
+        dirty,
         lastSavedAt: Date.now(),
       });
+      if (dirty) this.scheduleAutosave();
     } catch (error) {
       if (this.disposed) return;
       this.patch({
@@ -180,16 +180,20 @@ export class HostFileEditorController {
       return;
     }
     // overwrite: the probe already ran — write unconditionally.
+    const textToSave = this.snapshot.draft;
+    this.clearAutosave();
     this.patch({ saving: true, conflict: false });
     try {
-      await this.options.writeFile!(this.options.path, this.snapshot.draft);
+      await this.options.writeFile!(this.options.path, textToSave);
       if (this.disposed) return;
+      const dirty = this.snapshot.draft !== textToSave;
       this.patch({
         saving: false,
-        savedText: this.snapshot.draft,
-        dirty: false,
+        savedText: textToSave,
+        dirty,
         lastSavedAt: Date.now(),
       });
+      if (dirty) this.scheduleAutosave();
     } catch (error) {
       if (this.disposed) return;
       this.patch({
@@ -228,6 +232,15 @@ export class HostFileEditorController {
       clearTimeout(this.autosaveTimer);
       this.autosaveTimer = undefined;
     }
+  }
+
+  private scheduleAutosave(): void {
+    if (!this.editable || this.disposed || !this.snapshot.dirty || this.snapshot.conflict) return;
+    this.clearAutosave();
+    this.autosaveTimer = setTimeout(() => {
+      this.autosaveTimer = undefined;
+      void this.saveNow();
+    }, this.options.autosaveMs ?? DEFAULT_AUTOSAVE_MS);
   }
 
   private patch(next: Partial<HostFileEditorSnapshot>): void {

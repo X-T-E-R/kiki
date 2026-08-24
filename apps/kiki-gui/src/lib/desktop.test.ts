@@ -5,11 +5,13 @@ import {
   executeNativeSessionsMigration,
   importNativeKimiConfig,
   migrateNativeCompatibilityCategory,
+  onTrayNewSession,
   type SessionsMigrationPlan,
 } from './desktop';
 
-const { invoke, tauriRuntime } = vi.hoisted(() => ({
+const { invoke, listen, tauriRuntime } = vi.hoisted(() => ({
   invoke: vi.fn(),
+  listen: vi.fn(),
   tauriRuntime: { value: true },
 }));
 
@@ -17,10 +19,12 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke,
   isTauri: () => tauriRuntime.value,
 }));
+vi.mock('@tauri-apps/api/event', () => ({ listen }));
 
 describe('native desktop bridge', () => {
   beforeEach(() => {
     invoke.mockReset();
+    listen.mockReset();
     tauriRuntime.value = true;
     vi.unstubAllGlobals();
   });
@@ -141,5 +145,20 @@ describe('native desktop bridge', () => {
     expect(invoke).toHaveBeenCalledWith('migrate_compatibility_category', {
       category: 'userSkills',
     });
+  });
+
+  it('unregisters a tray listener that resolves after its owner is disposed', async () => {
+    let resolveListen!: (unlisten: () => void) => void;
+    const unlisten = vi.fn();
+    listen.mockReturnValue(
+      new Promise<() => void>((resolve) => { resolveListen = resolve; }),
+    );
+
+    const stop = onTrayNewSession(() => {});
+    stop();
+    resolveListen(unlisten);
+    await Promise.resolve();
+
+    expect(unlisten).toHaveBeenCalledTimes(1);
   });
 });

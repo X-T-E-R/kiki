@@ -37,55 +37,25 @@ import { ApiError, KikiClient } from '../lib/client';
 import { detectLocalConnection, isDesktopRuntime } from '../lib/localServer';
 import { KikiSocket, type WsStatus } from '../lib/ws';
 import {
+  clearStoredConfig,
   readDeepLinkConfig,
   readStoredConfig,
   scrubConnectionUrl,
   selectInitialConnection,
+  writeStoredConfig,
   type ConnectionConfig,
   type ConnectionSelection,
 } from './connectionConfig';
+import {
+  normalizeDesktopFailure,
+  type DesktopBootStatus,
+  type DesktopFailureInfo,
+} from './desktopConnection';
 import type { SessionController } from './sessionController';
 
 export type { ConnectionConfig } from './connectionConfig';
 
-const STORAGE_KEY = 'kiki.connection';
 const DESKTOP_STAGE_EVENT = 'kiki://desktop-backend-stage';
-
-/** Boot phase of the desktop-owned backend, for the boot card's copy. */
-export type DesktopBootStage = 'spawning' | 'waiting';
-
-export interface DesktopBootStatus {
-  readonly stage: DesktopBootStage;
-  readonly startedAtMs: number;
-}
-
-/** Structured failure from the Rust shell (`DesktopStartupFailure`). */
-export interface DesktopFailureInfo {
-  readonly message: string;
-  readonly stderrTail: readonly string[];
-  readonly logPath: string | null;
-}
-
-/** Shape the desktop backend rejection into the failure card's input. */
-export function normalizeDesktopFailure(error: unknown): DesktopFailureInfo {
-  if (error !== null && typeof error === 'object' && 'message' in error) {
-    const raw = error as { message?: unknown; stderrTail?: unknown; logPath?: unknown };
-    if (typeof raw.message === 'string') {
-      return {
-        message: raw.message,
-        stderrTail: Array.isArray(raw.stderrTail)
-          ? raw.stderrTail.filter((line): line is string => typeof line === 'string')
-          : [],
-        logPath: typeof raw.logPath === 'string' ? raw.logPath : null,
-      };
-    }
-  }
-  return {
-    message: error instanceof Error ? error.message : String(error),
-    stderrTail: [],
-    logPath: null,
-  };
-}
 
 /**
  * Connect-screen error: client-authored text carries a dictionary key so it
@@ -100,7 +70,11 @@ function scrubUrl(): void {
   const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   const scrubbedUrl = scrubConnectionUrl(window.location);
   if (scrubbedUrl !== currentUrl) {
-    window.history.replaceState(null, '', scrubbedUrl);
+    try {
+      window.history.replaceState(null, '', scrubbedUrl);
+    } catch {
+      // Connection still succeeds when history mutation is unavailable.
+    }
   }
 }
 
@@ -265,11 +239,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     client.meta().then(
       (value) => {
         if (cancelled) return;
-        setMeta(value);
-        if (selection?.persist === true) {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
-        }
         scrubUrl();
+        if (selection?.persist === true && config !== null) {
+          writeStoredConfig(config);
+        }
+        setMeta(value);
       },
       (error: unknown) => {
         if (cancelled) return;
@@ -382,7 +356,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, [socket]);
 
   const disconnect = useCallback(() => {
-    localStorage.removeItem(STORAGE_KEY);
+    clearStoredConfig();
     setMeta(null);
     setSelection(null);
     setConnectError(null);

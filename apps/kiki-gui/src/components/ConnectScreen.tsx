@@ -11,8 +11,8 @@ import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 
 import { useI18n } from '../i18n';
 import { detectLocalConnection, isDesktopRuntime } from '../lib/localServer';
-import type { DesktopBootStatus, DesktopFailureInfo } from '../state/connection';
 import type { ConnectionConfig } from '../state/connectionConfig';
+import type { DesktopBootStatus, DesktopFailureInfo } from '../state/desktopConnection';
 import { Wordmark } from './Wordmark';
 
 declare const __KIKI_PROXY_TARGET__: string;

@@ -229,6 +229,31 @@ describe('KikiSocket transport watchdog', () => {
     expect(vi.getTimerCount()).toBe(0);
     socket.close();
   });
+
+  it('keeps connect idempotent while a transport is active', () => {
+    const { socket } = statusSocket();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    socket.connect();
+    socket.connect();
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    socket.close();
+  });
+
+  it('cancels a queued reconnect before an explicit generation restart', () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const { socket } = statusSocket();
+    const first = FakeWebSocket.instances.at(-1)!;
+    hello(first);
+    first.close(1006);
+
+    socket.restartGeneration();
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    hello(FakeWebSocket.instances.at(-1)!);
+    vi.advanceTimersByTime(60_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    socket.close();
+  });
 });
 
 describe('KikiSocket terminal channel', () => {
@@ -380,6 +405,42 @@ describe('KikiSocket terminal channel', () => {
       terminalId: 'term_a',
     });
     socket.terminalDetach('sess_a', 'term_a');
+    socket.close();
+  });
+
+  it('rejects an in-flight attach immediately when the socket closes', async () => {
+    const signals: TerminalSignal[] = [];
+    const { socket, wire } = makeSocket(signals);
+    hello(wire);
+    const attached = socket.terminalAttach('sess_a', 'term_pending');
+
+    socket.close();
+
+    await expect(attached).rejects.toThrow('socket closed before the terminal attach ack arrived');
+  });
+
+  it('rejects an in-flight attach before replacing the transport', async () => {
+    const signals: TerminalSignal[] = [];
+    const { socket, wire } = makeSocket(signals);
+    hello(wire);
+    const attached = socket.terminalAttach('sess_a', 'term_pending');
+
+    socket.restartGeneration();
+
+    await expect(attached).rejects.toThrow('socket restarted before the terminal attach ack arrived');
+    socket.terminalDetach('sess_a', 'term_pending');
+    socket.close();
+  });
+
+  it('rejects an in-flight attach when that terminal is detached', async () => {
+    const signals: TerminalSignal[] = [];
+    const { socket, wire } = makeSocket(signals);
+    hello(wire);
+    const attached = socket.terminalAttach('sess_a', 'term_pending');
+
+    socket.terminalDetach('sess_a', 'term_pending');
+
+    await expect(attached).rejects.toThrow('terminal detached before the attach ack arrived');
     socket.close();
   });
 });

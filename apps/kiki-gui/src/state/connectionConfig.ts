@@ -9,6 +9,8 @@ export interface ConnectionSelection {
   readonly source: 'desktop' | 'deep-link' | 'stored' | 'manual' | 'local-detection';
 }
 
+export const CONNECTION_STORAGE_KEY = 'kiki.connection';
+
 const CONNECTION_QUERY_PARAMS = ['server', 'url', 'token'] as const;
 
 export function scrubConnectionUrl(
@@ -49,16 +51,39 @@ export function readDeepLinkConfig(
 }
 
 export function readStoredConfig(
-  storage: Pick<Storage, 'getItem'> = localStorage,
+  storage?: Pick<Storage, 'getItem'>,
 ): ConnectionConfig | null {
   try {
-    const raw = storage.getItem('kiki.connection');
+    const raw = (storage ?? localStorage).getItem(CONNECTION_STORAGE_KEY);
     if (raw === null) return null;
     const parsed = JSON.parse(raw) as Partial<ConnectionConfig>;
     if (typeof parsed.url !== 'string' || typeof parsed.token !== 'string') return null;
     return { url: parsed.url, token: parsed.token };
   } catch {
     return null;
+  }
+}
+
+export function writeStoredConfig(
+  config: ConnectionConfig,
+  storage?: Pick<Storage, 'setItem'>,
+): boolean {
+  try {
+    (storage ?? localStorage).setItem(CONNECTION_STORAGE_KEY, JSON.stringify(config));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function clearStoredConfig(
+  storage?: Pick<Storage, 'removeItem'>,
+): boolean {
+  try {
+    (storage ?? localStorage).removeItem(CONNECTION_STORAGE_KEY);
+    return true;
+  } catch {
+    return false;
   }
 }
 

@@ -186,7 +186,9 @@ export class KikiSocket {
   }
 
   connect(): void {
+    if (this.ws !== null || this.opening) return;
     this.manuallyClosed = false;
+    this.clearReconnectTimer();
     this.reconnectAttempts = 0;
     this.fatalRetriesLeft = null;
     this.openSocket();
@@ -195,7 +197,7 @@ export class KikiSocket {
   close(): void {
     this.manuallyClosed = true;
     this.clearReconnectTimer();
-    this.detachTransport();
+    this.detachTransport('socket closed before the terminal attach ack arrived');
     this.events.onStatus('closed', undefined, this.generation);
   }
 
@@ -206,11 +208,12 @@ export class KikiSocket {
   }
 
   /** Tear the current transport down without touching the reconnect policy. */
-  private detachTransport(): void {
+  private detachTransport(pendingReason: string): void {
     const ws = this.ws;
     this.ws = null;
     this.helloReceived = false;
     this.clearEstablishmentTimer();
+    this.failPendingTerminalControls(pendingReason);
     if (ws !== null && ws.readyState !== WebSocket.CLOSED) {
       try {
         ws.close();
@@ -266,7 +269,8 @@ export class KikiSocket {
 
   restartGeneration(): void {
     if (this.manuallyClosed) return;
-    this.detachTransport();
+    this.clearReconnectTimer();
+    this.detachTransport('socket restarted before the terminal attach ack arrived');
     this.openSocket();
   }
 
@@ -316,7 +320,7 @@ export class KikiSocket {
         ws.close(4000, 'stale inbound stream');
       } catch {
         if (this.ws === ws) {
-          this.detachTransport();
+          this.detachTransport('stale socket was replaced before the terminal attach ack arrived');
           this.openSocket();
         }
       }
@@ -369,6 +373,11 @@ export class KikiSocket {
   /** Detach and stop tracking (no re-attach on the next reconnect). */
   terminalDetach(sessionId: string, terminalId: string): void {
     this.trackedTerminals.delete(terminalKey(sessionId, terminalId));
+    this.failPendingTerminalControlsForTerminal(
+      sessionId,
+      terminalId,
+      'terminal detached before the attach ack arrived',
+    );
     if (this.isReady()) {
       this.send({
         type: 'terminal_detach',
@@ -443,6 +452,19 @@ export class KikiSocket {
     this.pendingTerminalControls.clear();
   }
 
+  private failPendingTerminalControlsForTerminal(
+    sessionId: string,
+    terminalId: string,
+    reason: string,
+  ): void {
+    for (const [id, pending] of this.pendingTerminalControls) {
+      if (pending.sessionId !== sessionId || pending.terminalId !== terminalId) continue;
+      this.pendingTerminalControls.delete(id);
+      clearTimeout(pending.timer);
+      pending.reject(new Error(reason));
+    }
+  }
+
   get ready(): boolean {
     return this.isReady();
   }
@@ -467,7 +489,7 @@ export class KikiSocket {
   }
 
   private openSocket(): void {
-    if (this.opening) return;
+    if (this.opening || this.ws !== null || this.manuallyClosed) return;
     this.opening = true;
     void this.openSocketGeneration();
   }
@@ -523,8 +545,7 @@ export class KikiSocket {
       this.establishmentTimer = setTimeout(() => {
         if (this.ws !== ws || this.generation !== generation || this.manuallyClosed) return;
         const detail = 'WebSocket establishment timed out';
-        this.detachTransport();
-        this.failPendingTerminalControls(detail);
+        this.detachTransport(detail);
         this.events.onStatus('closed', detail, generation);
         this.scheduleReconnect();
       }, ESTABLISHMENT_TIMEOUT_MS);
@@ -587,7 +608,10 @@ export class KikiSocket {
             // listeners must not keep presenting this stream as live. A socket
             // close is different: SessionView marks streams attaching so input
             // can buffer through the reconnect.
-            if (!this.isReady()) return;
+            if (
+              !this.isReady() ||
+              !this.trackedTerminals.has(terminalKey(tracked.sessionId, tracked.terminalId))
+            ) return;
             this.emitTerminalSignal({
               kind: 'unavailable',
               sessionId: tracked.sessionId,
@@ -624,7 +648,7 @@ export class KikiSocket {
           // Fatal protocol errors get one bounded retry cycle. Repeated
           // pre-hello errors consume that cycle rather than replenishing it.
           this.fatalRetriesLeft ??= FATAL_RECONNECT_ATTEMPTS;
-          this.detachTransport();
+          this.detachTransport(payload.msg ?? 'fatal ws error before the terminal attach ack arrived');
           this.scheduleReconnect();
         }
         return;

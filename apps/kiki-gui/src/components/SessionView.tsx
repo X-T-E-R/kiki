@@ -1042,11 +1042,7 @@ export function SessionView({
 
   // Remember this session as the redirect target for `/`.
   useEffect(() => {
-    try {
-      localStorage.setItem('kiki.lastSessionId', sessionId);
-    } catch {
-      // ignore
-    }
+    writeLastSessionId(sessionId);
   }, [sessionId]);
 
   // Close the rail drawer on Escape (the app-level sidebar closes itself).

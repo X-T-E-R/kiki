@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  clearStoredConfig,
+  CONNECTION_STORAGE_KEY,
   readDeepLinkConfig,
   readStoredConfig,
   scrubConnectionUrl,
   selectInitialConnection,
+  writeStoredConfig,
 } from './connectionConfig';
 
 describe('connection config selection', () => {
@@ -62,5 +65,24 @@ describe('connection config readers', () => {
   it('rejects malformed stored values', () => {
     expect(readStoredConfig({ getItem: () => '{bad json' })).toBeNull();
     expect(readStoredConfig({ getItem: () => JSON.stringify({ url: 1, token: 'abc' }) })).toBeNull();
+  });
+
+  it('treats browser storage writes and clears as best-effort', () => {
+    const writes: Array<{ key: string; value: string }> = [];
+    expect(
+      writeStoredConfig(
+        { url: 'https://example.test', token: 'secret' },
+        { setItem: (key, value) => { writes.push({ key, value }); } },
+      ),
+    ).toBe(true);
+    expect(writes).toEqual([
+      {
+        key: CONNECTION_STORAGE_KEY,
+        value: JSON.stringify({ url: 'https://example.test', token: 'secret' }),
+      },
+    ]);
+
+    expect(writeStoredConfig({ url: '', token: '' }, { setItem: () => { throw new Error('full'); } })).toBe(false);
+    expect(clearStoredConfig({ removeItem: () => { throw new Error('blocked'); } })).toBe(false);
   });
 });

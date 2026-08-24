@@ -2,8 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
-import { normalizeDesktopFailure } from '../state/connection';
-import type { DesktopBootStatus } from '../state/connection';
+import { normalizeDesktopFailure, type DesktopBootStatus } from '../state/desktopConnection';
 import { ConnectScreen } from './ConnectScreen';
 
 // Copy assertions are English: pin the locale source (Node's built-in
