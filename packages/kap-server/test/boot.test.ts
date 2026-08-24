@@ -19,8 +19,10 @@ import {
   noopTelemetryService,
   type SessionIndexStatus,
 } from '@moonshot-ai/agent-core-v2';
+import { Event } from '@moonshot-ai/agent-core-v2/_base/event';
 
 import { listLiveServerInstances } from '../src/instanceRegistry';
+import { IGlobalSearchService } from '../src/search/searchService';
 import { createServerLogger } from '../src/services/pinoLoggerService';
 import { listenWithPortRetry, type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -46,7 +48,8 @@ function stubSessionIndex(prepare: ISessionIndex['prepare']): ISessionIndex {
   return {
     _serviceBrand: undefined,
     prepare,
-    status: () => ({ state: 'uninitialized', degradedCount: 0 }),
+    onDidChangeStatus: Event.None as ISessionIndex['onDidChangeStatus'],
+    status: () => ({ source: 'read-model', state: 'uninitialized', degradedCount: 0 }),
     get: async () => undefined,
     listRecent: async () => ({ items: [] }),
     count: async () => 0,
@@ -64,6 +67,27 @@ function stubWorkspaceService(list: IWorkspaceService['list']): IWorkspaceServic
     },
     update: async () => undefined,
     delete: async () => {},
+  };
+}
+
+function stubGlobalSearchService(
+  setLiveTranscriptSource: IGlobalSearchService['setLiveTranscriptSource'],
+): IGlobalSearchService {
+  return {
+    _serviceBrand: undefined,
+    search: async () => {
+      throw new Error('not used by boot test');
+    },
+    reindex: async () => ({ sessions: 0, documents: 0 }),
+    status: async () => ({
+      sessions: 0,
+      documents: 0,
+      lastIndexedAt: null,
+      generation: 0,
+      lifecycle: { state: 'stopped' },
+    }),
+    lifecycleReport: () => ({ state: 'stopped' }),
+    setLiveTranscriptSource,
   };
 }
 
@@ -165,21 +189,22 @@ describe('server-v2 boot', () => {
     expect(oauthBody.data).toBeNull();
   });
 
-  it('serves meta while workspace sync and session-index prepare warm in the background', async () => {
+  it('warms session index, workspace catalog, then global search after listen', async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-background-warmup-'));
     const workspaceSync = deferred<readonly []>();
     const prepareGate = deferred<SessionIndexStatus>();
-    const workspaceList = vi.fn(() => workspaceSync.promise);
-    const prepare = vi.fn(() => prepareGate.promise);
-    let prepareSettled = false;
-    void prepareGate.promise.then(
-      () => {
-        prepareSettled = true;
-      },
-      () => {
-        prepareSettled = true;
-      },
-    );
+    const order: string[] = [];
+    const workspaceList = vi.fn(() => {
+      order.push('workspace');
+      return workspaceSync.promise;
+    });
+    const prepare = vi.fn(() => {
+      order.push('index');
+      return prepareGate.promise;
+    });
+    const setLiveTranscriptSource = vi.fn(() => {
+      order.push('search');
+    });
 
     try {
       server = await withTimeout(
@@ -192,23 +217,28 @@ describe('server-v2 boot', () => {
           seeds: [
             [IWorkspaceService, stubWorkspaceService(workspaceList)],
             [ISessionIndex, stubSessionIndex(prepare)],
+            [IGlobalSearchService, stubGlobalSearchService(setLiveTranscriptSource)],
           ],
         }),
         2_000,
       );
 
       const base = `http://127.0.0.1:${server.port}`;
-      expect(workspaceList).toHaveBeenCalledOnce();
-      expect(prepare).not.toHaveBeenCalled();
+      expect(prepare).toHaveBeenCalledOnce();
+      expect(workspaceList).not.toHaveBeenCalled();
+      expect(setLiveTranscriptSource).not.toHaveBeenCalled();
       expect((await authedFetch(server, base, '/api/v1/meta')).status).toBe(200);
 
+      prepareGate.resolve({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 });
+      await vi.waitFor(() => expect(workspaceList).toHaveBeenCalledOnce());
+      expect(setLiveTranscriptSource).not.toHaveBeenCalled();
+
       workspaceSync.resolve([]);
-      await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
-      expect(prepareSettled).toBe(false);
-      expect((await authedFetch(server, base, '/api/v1/meta')).status).toBe(200);
+      await vi.waitFor(() => expect(setLiveTranscriptSource).toHaveBeenCalledOnce());
+      expect(order).toEqual(['index', 'workspace', 'search']);
     } finally {
+      prepareGate.resolve({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 });
       workspaceSync.resolve([]);
-      prepareGate.resolve({ state: 'ready', generation: 1, degradedCount: 0 });
     }
   });
 
@@ -250,7 +280,12 @@ describe('server-v2 boot', () => {
       await vi.waitFor(() => expect(prepareSettled).toBe(true));
       expect((await fetch(`${base}/api/v1/healthz`)).status).toBe(200);
     } finally {
-      prepareFailure.resolve({ state: 'degraded', reason: 'injected failure', degradedCount: 1 });
+      prepareFailure.resolve({
+        source: 'read-model',
+        state: 'degraded',
+        reason: 'injected failure',
+        degradedCount: 1,
+      });
     }
   });
 

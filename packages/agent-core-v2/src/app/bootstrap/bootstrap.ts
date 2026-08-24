@@ -192,6 +192,14 @@ class ReadOnlyAtomicDocumentStore implements IAtomicDocumentStore {
     return Promise.reject(readOnlyConfigError());
   }
 
+  update<T>(
+    _scope: string,
+    _key: string,
+    _updater: (current: T | undefined) => T | undefined,
+  ): Promise<T | undefined> {
+    return Promise.reject(readOnlyConfigError());
+  }
+
   delete(_scope: string, _key: string): Promise<void> {
     return Promise.reject(readOnlyConfigError());
   }

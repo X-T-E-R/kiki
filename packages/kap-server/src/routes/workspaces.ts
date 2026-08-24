@@ -70,6 +70,9 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope): 
       method: 'GET',
       path: '/workspaces',
       success: { data: listWorkspacesResponseSchema },
+      errors: {
+        [ErrorCode.SESSION_INDEX_BUILDING]: {},
+      },
       description: 'List registered workspaces',
       tags: ['workspaces'],
     },

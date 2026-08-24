@@ -22,6 +22,7 @@ import { basename, dirname, join, resolve } from 'pathe';
 import { open as openZip } from 'yauzl';
 
 import { Disposable, DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
+import { Event } from '#/_base/event';
 import {
   createServices,
   type ServiceRegistration,
@@ -876,8 +877,9 @@ function registerSessionExportServices(
   reg.defineInstance(ILogService, options.appLog ?? stubLog());
   reg.defineInstance(ISessionIndex, {
     _serviceBrand: undefined,
-    prepare: async () => ({ state: 'uninitialized' as const, degradedCount: 0 }),
-    status: () => ({ state: 'uninitialized' as const, degradedCount: 0 }),
+    prepare: async () => ({ source: 'authoritative' as const, state: 'uninitialized' as const, degradedCount: 0 }),
+    onDidChangeStatus: Event.None as ISessionIndex['onDidChangeStatus'],
+    status: () => ({ source: 'authoritative' as const, state: 'uninitialized' as const, degradedCount: 0 }),
     listRecent: async () => ({ items: options.summary === undefined ? [] : [options.summary] }),
     get: async () => options.summary,
     count: async () => (options.summary === undefined || options.summary.archived ? 0 : 1),

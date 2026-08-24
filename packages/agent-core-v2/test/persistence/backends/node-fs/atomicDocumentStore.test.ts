@@ -72,6 +72,46 @@ describe('JsonAtomicDocumentStore', () => {
     await setting;
   });
 
+  it('updates from the latest same-document value under the write queue', async () => {
+    await config.set<State>('session', 'state.json', { title: 'old', count: 1 });
+    const realWrite = storage.write.bind(storage);
+    let releaseWrite: () => void = () => {};
+    let notifyWrite: (() => void) | undefined;
+    const writeEntered = new Promise<void>((resolve) => {
+      notifyWrite = resolve;
+    });
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    let gateNextWrite = true;
+    storage.write = async (scope, key, data, options) => {
+      if (gateNextWrite) {
+        gateNextWrite = false;
+        notifyWrite?.();
+        await writeGate;
+      }
+      return realWrite(scope, key, data, options);
+    };
+
+    const setting = config.set<State>('session', 'state.json', { title: 'new', count: 1 });
+    await writeEntered;
+    let updaterCalls = 0;
+    const updating = config.update<State>('session', 'state.json', (current) => {
+      updaterCalls += 1;
+      return { ...current, count: (current?.count ?? 0) + 1 };
+    });
+    await Promise.resolve();
+    expect(updaterCalls).toBe(0);
+
+    releaseWrite();
+    await expect(updating).resolves.toEqual({ title: 'new', count: 2 });
+    await setting;
+    await expect(config.get<State>('session', 'state.json')).resolves.toEqual({
+      title: 'new',
+      count: 2,
+    });
+  });
+
   it('releases a document tail after an operation fails', async () => {
     const realWrite = storage.write.bind(storage);
     let fail = true;

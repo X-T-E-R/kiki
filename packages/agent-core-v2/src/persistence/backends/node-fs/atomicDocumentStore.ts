@@ -62,29 +62,45 @@ class AtomicDocumentStoreBase implements IAtomicDocumentStore {
     return result;
   }
 
+  private async readDocument<T>(scope: string, key: string): Promise<T | undefined> {
+    const bytes = await this.storage.read(scope, key);
+    if (bytes === undefined) return undefined;
+    try {
+      return this.codec.decode(bytes) as T;
+    } catch (error) {
+      throw new StorageError(
+        StorageErrors.codes.STORAGE_DECODE_FAILED,
+        `failed to decode ${scope}/${key} as ${this.codec.format}`,
+        {
+          details: { scope, key, format: this.codec.format },
+          cause: error,
+        },
+      );
+    }
+  }
+
   async get<T>(scope: string, key: string): Promise<T | undefined> {
-    return this.enqueue(scope, key, async () => {
-      const bytes = await this.storage.read(scope, key);
-      if (bytes === undefined) return undefined;
-      try {
-        return this.codec.decode(bytes) as T;
-      } catch (error) {
-        throw new StorageError(
-          StorageErrors.codes.STORAGE_DECODE_FAILED,
-          `failed to decode ${scope}/${key} as ${this.codec.format}`,
-          {
-            details: { scope, key, format: this.codec.format },
-            cause: error,
-          },
-        );
-      }
-    });
+    return this.enqueue(scope, key, () => this.readDocument<T>(scope, key));
   }
 
   async set<T>(scope: string, key: string, value: T): Promise<void> {
     await this.enqueue(scope, key, () =>
       this.storage.write(scope, key, this.codec.encode(value), { atomic: true }),
     );
+  }
+
+  async update<T>(
+    scope: string,
+    key: string,
+    updater: (current: T | undefined) => T | undefined,
+  ): Promise<T | undefined> {
+    return this.enqueue(scope, key, async () => {
+      const current = await this.readDocument<T>(scope, key);
+      const next = updater(current);
+      if (next === undefined || next === current) return current;
+      await this.storage.write(scope, key, this.codec.encode(next), { atomic: true });
+      return next;
+    });
   }
 
   async delete(scope: string, key: string): Promise<void> {

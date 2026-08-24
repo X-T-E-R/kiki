@@ -263,6 +263,17 @@ describe('AgentLifecycleService', () => {
       set: async <T>(scope: string, key: string, value: T): Promise<void> => {
         atomicDocs.set(`${scope}/${key}`, value);
       },
+      update: async <T>(
+        scope: string,
+        key: string,
+        updater: (current: T | undefined) => T | undefined,
+      ): Promise<T | undefined> => {
+        const id = `${scope}/${key}`;
+        const current = atomicDocs.get(id) as T | undefined;
+        const next = updater(current);
+        if (next !== undefined && next !== current) atomicDocs.set(id, next);
+        return next ?? current;
+      },
       delete: async (scope: string, key: string): Promise<void> => {
         atomicDocs.delete(`${scope}/${key}`);
       },

@@ -432,6 +432,7 @@ export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope):
       errors: {
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
         [ErrorCode.PAGE_TOKEN_MISMATCH]: {},
+        [ErrorCode.SESSION_INDEX_BUILDING]: {},
       },
       description:
         "List sessions with domain-grouped metadata (workspace / meta / activity; git via include=git). Paginate with the opaque page_token (binds the first page’s query conditions) or with the stateless 1-based page parameter; every page carries total. fields=id,archived trims each item to the lightweight ids projection (select-all-matching flows; page_size ceiling relaxed to 10000).",

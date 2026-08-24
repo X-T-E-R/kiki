@@ -10,6 +10,7 @@ import {
   registerScopedService,
 } from '#/_base/di/scope';
 import { createScopedTestHost, stubPair } from '#/_base/di/test';
+import { Event } from '#/_base/event';
 import { encodeWorkDirKey } from '#/_base/utils/workdir-slug';
 import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
@@ -37,8 +38,9 @@ interface SessionIndexLine {
 function emptySessionIndex(): ISessionIndex {
   return {
     _serviceBrand: undefined,
-    prepare: async () => ({ state: 'uninitialized', degradedCount: 0 }),
-    status: () => ({ state: 'uninitialized', degradedCount: 0 }),
+    prepare: async () => ({ source: 'authoritative', state: 'uninitialized', degradedCount: 0 }),
+    onDidChangeStatus: Event.None as ISessionIndex['onDidChangeStatus'],
+    status: () => ({ source: 'authoritative', state: 'uninitialized', degradedCount: 0 }),
     get: async () => undefined,
     listRecent: async () => ({ items: [] }),
     count: async () => 0,

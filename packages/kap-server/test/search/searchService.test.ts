@@ -10,8 +10,10 @@ import type {
   IFlagService,
   ILogService,
   ISessionIndex,
+  SessionIndexStatus,
   SessionSummary,
 } from '@moonshot-ai/agent-core-v2';
+import { Emitter, Event } from '@moonshot-ai/agent-core-v2/_base/event';
 import { MiniDb } from '@moonshot-ai/minidb';
 import { TranscriptStore, type TranscriptOperation } from '@moonshot-ai/transcript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -49,11 +51,20 @@ function makeBootstrap(home: string): IBootstrapService {
   } as unknown as IBootstrapService;
 }
 
-function makeSessionIndex(list: ISessionIndex['listRecent']): ISessionIndex {
+function makeSessionIndex(
+  list: ISessionIndex['listRecent'],
+  status: SessionIndexStatus = {
+    source: 'read-model',
+    state: 'ready',
+    generation: 1,
+    degradedCount: 0,
+  },
+): ISessionIndex {
   return {
     _serviceBrand: undefined,
-    prepare: async () => ({ state: 'uninitialized', degradedCount: 0 }),
-    status: () => ({ state: 'uninitialized', degradedCount: 0 }),
+    prepare: async () => status,
+    onDidChangeStatus: Event.None as Event<SessionIndexStatus>,
+    status: () => status,
     listRecent: list,
     get: async () => undefined,
     count: async () => 0,
@@ -131,15 +142,23 @@ function makeFlags(workerEnabled: boolean): IFlagService {
   } as unknown as IFlagService;
 }
 
+const noLiveSource: LiveTranscriptSource = {
+  forSessionLive: () => undefined,
+  whenReady: async () => {},
+  ensureAgentHistory: async () => {},
+};
+
 function makeService(home: string, index: ISessionIndex): GlobalSearchService {
   const service = new GlobalSearchService(index, makeBootstrap(home), noopLog, makeFlags(true));
   service.syncDebounceMs = 0;
+  service.setLiveTranscriptSource(noLiveSource);
   return service;
 }
 
 function makeInlineService(home: string, index: ISessionIndex): GlobalSearchService {
   const service = new GlobalSearchService(index, makeBootstrap(home), noopLog, makeFlags(false));
   service.syncDebounceMs = 0;
+  service.setLiveTranscriptSource(noLiveSource);
   return service;
 }
 
@@ -268,6 +287,196 @@ describe('GlobalSearchService', () => {
     services.push(service);
     return service;
   }
+
+  it('defers the initial sync until the live transcript source is wired', async () => {
+    const listRecent = vi.fn(async () => ({ items: [], nextCursor: undefined }));
+    const service = track(
+      new GlobalSearchService(
+        makeSessionIndex(listRecent),
+        makeBootstrap(home!),
+        noopLog,
+        makeFlags(false),
+      ),
+    );
+    service.syncDebounceMs = 0;
+
+    await flush();
+    expect(listRecent).not.toHaveBeenCalled();
+
+    service.setLiveTranscriptSource(noLiveSource);
+    await vi.waitFor(() => expect(listRecent).toHaveBeenCalledOnce());
+  });
+
+  it('syncs immediately from an authoritative session index', async () => {
+    const s1 = summary('s1', 'authoritative', T1);
+    await writeWire(home!, 's1', 'main', [userLine('苹果 authoritative', T1)]);
+    const listRecent = vi.fn(async () => ({ items: [s1], nextCursor: undefined }));
+    const authoritative: SessionIndexStatus = {
+      source: 'authoritative',
+      state: 'uninitialized',
+      degradedCount: 0,
+    };
+    const prepare = vi.fn(async () => authoritative);
+    const index = { ...makeSessionIndex(listRecent, authoritative), prepare };
+    const service = track(
+      new GlobalSearchService(index, makeBootstrap(home!), noopLog, makeFlags(false)),
+    );
+    service.syncDebounceMs = 0;
+    const backend = (service as unknown as { backend: SearchBackend }).backend;
+    const sync = vi.spyOn(backend, 'sync');
+
+    service.setLiveTranscriptSource(noLiveSource);
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(listRecent).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(sync).toHaveBeenCalledOnce());
+  });
+
+  it('waits for session-index prepare before enumerating sessions', async () => {
+    const listRecent = vi.fn(async () => ({ items: [], nextCursor: undefined }));
+    let currentStatus: SessionIndexStatus = {
+      source: 'read-model',
+      state: 'uninitialized',
+      degradedCount: 0,
+    };
+    let resolvePrepare: ((status: SessionIndexStatus) => void) | undefined;
+    const preparing = new Promise<SessionIndexStatus>((resolve) => {
+      resolvePrepare = resolve;
+    });
+    const prepare = vi.fn(() => preparing);
+    const index = {
+      ...makeSessionIndex(listRecent, currentStatus),
+      prepare,
+      status: () => currentStatus,
+    };
+    const service = track(
+      new GlobalSearchService(index, makeBootstrap(home!), noopLog, makeFlags(false)),
+    );
+    service.syncDebounceMs = 0;
+
+    const page = await service.search({ query: '苹果' });
+    expect(page.indexState.state).toBe('building');
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+    expect(listRecent).not.toHaveBeenCalled();
+
+    currentStatus = {
+      source: 'read-model',
+      state: 'ready',
+      generation: 1,
+      degradedCount: 0,
+    };
+    resolvePrepare?.(currentStatus);
+    await vi.waitFor(() => expect(listRecent).toHaveBeenCalledOnce());
+  });
+
+  it('does not enumerate sessions after degraded index preparation', async () => {
+    const listRecent = vi.fn(async () => ({ items: [], nextCursor: undefined }));
+    const degraded: SessionIndexStatus = {
+      source: 'read-model',
+      state: 'degraded',
+      reason: 'prepare failed',
+      degradedCount: 1,
+    };
+    const prepare = vi.fn(async () => degraded);
+    const { log, warnings } = recordingLog();
+    const index = { ...makeSessionIndex(listRecent, degraded), prepare };
+    const service = track(
+      new GlobalSearchService(index, makeBootstrap(home!), log, makeFlags(false)),
+    );
+    service.syncDebounceMs = 0;
+
+    const page = await service.search({ query: '苹果' });
+    expect(page.indexState.state).toBe('building');
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+    await internals(service).syncPromise;
+    expect(listRecent).not.toHaveBeenCalled();
+    expect(warnings).toEqual([]);
+  });
+
+  it('syncs once when degraded readiness transitions to ready', async () => {
+    const s1 = summary('s1', 'retry', T1);
+    await writeWire(home!, 's1', 'main', [userLine('苹果 retry', T1)]);
+    const listRecent = vi.fn(async () => ({ items: [s1], nextCursor: undefined }));
+    const degraded: SessionIndexStatus = {
+      source: 'read-model',
+      state: 'degraded',
+      reason: 'prepare failed',
+      degradedCount: 1,
+    };
+    const ready: SessionIndexStatus = { source: 'read-model', state: 'ready', generation: 1, degradedCount: 1 };
+    let currentStatus = degraded;
+    const statusEmitter = new Emitter<SessionIndexStatus>();
+    const prepare = vi.fn(async () => currentStatus);
+    const index = {
+      ...makeSessionIndex(listRecent, degraded),
+      prepare,
+      onDidChangeStatus: statusEmitter.event,
+      status: () => currentStatus,
+    };
+    const service = track(
+      new GlobalSearchService(index, makeBootstrap(home!), noopLog, makeFlags(false)),
+    );
+    service.syncDebounceMs = 0;
+    const backend = (service as unknown as { backend: SearchBackend }).backend;
+    const sync = vi.spyOn(backend, 'sync');
+
+    const page = await service.search({ query: '苹果' });
+    expect(page.indexState.state).toBe('building');
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+    expect(listRecent).not.toHaveBeenCalled();
+
+    statusEmitter.fire(degraded);
+    statusEmitter.fire({ ...degraded, degradedCount: 2 });
+    await flush();
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(listRecent).not.toHaveBeenCalled();
+
+    currentStatus = ready;
+    statusEmitter.fire(ready);
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(listRecent).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(sync).toHaveBeenCalledOnce());
+
+    statusEmitter.fire(ready);
+    await flush();
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(listRecent).toHaveBeenCalledOnce();
+    expect(sync).toHaveBeenCalledOnce();
+    statusEmitter.dispose();
+  });
+
+  it('does not sync after disposal while waiting for index readiness', async () => {
+    const listRecent = vi.fn(async () => ({ items: [], nextCursor: undefined }));
+    const degraded: SessionIndexStatus = {
+      source: 'read-model',
+      state: 'degraded',
+      reason: 'prepare failed',
+      degradedCount: 1,
+    };
+    const ready: SessionIndexStatus = { source: 'read-model', state: 'ready', generation: 1, degradedCount: 1 };
+    let currentStatus = degraded;
+    const statusEmitter = new Emitter<SessionIndexStatus>();
+    const prepare = vi.fn(async () => currentStatus);
+    const index = {
+      ...makeSessionIndex(listRecent, degraded),
+      prepare,
+      onDidChangeStatus: statusEmitter.event,
+      status: () => currentStatus,
+    };
+    const service = new GlobalSearchService(index, makeBootstrap(home!), noopLog, makeFlags(false));
+    service.syncDebounceMs = 0;
+
+    await service.search({ query: '苹果' });
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalledOnce());
+    await internals(service).syncPromise;
+    service.dispose();
+    currentStatus = ready;
+    statusEmitter.fire(ready);
+    await flush();
+
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(listRecent).not.toHaveBeenCalled();
+    statusEmitter.dispose();
+  });
 
   it('indexes user and assistant text and finds Chinese and English terms', async () => {
     const s1 = summary('s1', '搜索重构讨论', T1);
@@ -1513,8 +1722,19 @@ describe('GlobalSearchService', () => {
       const byId = new Map(summaries.map((s) => [s.id, s]));
       return {
         _serviceBrand: undefined,
-        prepare: async () => ({ state: 'uninitialized', degradedCount: 0 }),
-        status: () => ({ state: 'uninitialized', degradedCount: 0 }),
+        prepare: async () => ({
+          source: 'read-model',
+          state: 'ready',
+          generation: 1,
+          degradedCount: 0,
+        }),
+        onDidChangeStatus: Event.None as ISessionIndex['onDidChangeStatus'],
+        status: () => ({
+          source: 'read-model',
+          state: 'ready',
+          generation: 1,
+          degradedCount: 0,
+        }),
         listRecent: async () => ({ items: summaries, nextCursor: undefined }),
         get: async (id) => byId.get(id),
         count: async () => summaries.length,

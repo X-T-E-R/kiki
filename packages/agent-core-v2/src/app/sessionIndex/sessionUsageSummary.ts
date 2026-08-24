@@ -1,4 +1,4 @@
-import { addUsage, type TokenUsage } from '#/kosong/contract/usage';
+import { addUsage, emptyUsage, type TokenUsage } from '#/kosong/contract/usage';
 import type { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
 
@@ -16,7 +16,7 @@ export function addSessionUsage(
       ...current?.byModel,
       [model]: modelUsage === undefined ? { ...usage } : addUsage(modelUsage, usage),
     },
-    wireComplete: current === undefined ? true : current.wireComplete,
+    wireComplete: current?.wireComplete,
   };
 }
 
@@ -52,7 +52,9 @@ export async function readSessionUsageFromWires(
   return {
     usage:
       summary === undefined
-        ? undefined
+        ? complete
+          ? { total: emptyUsage(), wireComplete: true }
+          : undefined
         : { ...summary, wireComplete: complete ? true : undefined },
     complete,
   };
