@@ -468,23 +468,27 @@ const SkillMessage = memo(function SkillMessage({ block }: { block: SkillBlock }
       ? t('transcript.skill.plugin', { name: block.name })
       : t('transcript.skill.skill', { name: block.name });
   return (
-    <div className="anim-enter max-w-[85%] rounded-xl border border-hairline bg-panel px-3 py-2" title={time.absoluteTime(block.createdAt)}>
+    <div
+      data-skill
+      className="anim-enter max-w-full border-l-2 border-hairline-strong py-0.5 pl-2.5"
+      title={time.absoluteTime(block.createdAt)}
+    >
       <button
         type="button"
         onClick={() => { setOpen((value) => !value); }}
         aria-expanded={open}
-        className="flex w-full items-center gap-1.5 text-left text-[11.5px] font-medium text-ink-soft transition-colors hover:text-ink"
+        className="flex max-w-full items-center gap-1.5 text-left text-[11px] font-medium text-ink-faint transition-colors hover:text-ink-soft"
       >
-        <span aria-hidden className={`inline-block text-[10px] transition-transform duration-150 ${open ? 'rotate-90' : ''}`}>
+        <span aria-hidden className={`inline-block text-[9px] transition-transform duration-150 ${open ? 'rotate-90' : ''}`}>
           ▶
         </span>
         <span className="min-w-0 truncate">{title}</span>
         {block.args !== undefined && block.args !== '' ? (
-          <span className="min-w-0 truncate font-mono text-[10.5px] text-ink-faint">{block.args}</span>
+          <span className="min-w-0 truncate font-mono text-[10px] font-normal text-ink-faint/70">{block.args}</span>
         ) : null}
       </button>
       {open && block.text !== '' ? (
-        <div className="mt-1.5 text-[12.5px] leading-relaxed whitespace-pre-wrap text-ink-soft">
+        <div className="mt-1 max-h-36 overflow-auto pr-2 text-[11.5px] leading-relaxed whitespace-pre-wrap text-ink-faint">
           {block.text}
         </div>
       ) : null}
@@ -1483,7 +1487,7 @@ export function Transcript({
     );
   }
 
-  if (blocks.length === 0) {
+  if (blocks.length === 0 && !state.busy) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 opacity-70">
         <Wordmark size="lg" />

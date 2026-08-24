@@ -17,6 +17,7 @@ import {
 } from './__fixtures__/canonicalTranscript';
 
 import {
+  appendLocalUserMessage,
   applyTranscriptShell,
   assistantMessageIdFromBlock,
   assistantMessageIdFromBlockId,
@@ -306,6 +307,28 @@ describe('transcript authority projection', () => {
 });
 
 describe('canonical product gates via projectAgentTranscriptView', () => {
+  it('updates an optimistic prompt when only its media changes', () => {
+    const initial = appendLocalUserMessage(createViewState('session_test'), {
+      userMessageId: 'um-media',
+      promptId: 'p-media',
+      text: 'same caption',
+      createdAt: FIXED_AT,
+      status: 'running',
+      media: [{ kind: 'image', fileId: 'file-old', name: 'old.png' }],
+    });
+    const updated = appendLocalUserMessage(initial, {
+      userMessageId: 'um-media',
+      promptId: 'p-media',
+      text: 'same caption',
+      createdAt: FIXED_AT,
+      status: 'running',
+      media: [{ kind: 'image', fileId: 'file-new', name: 'new.png' }],
+    });
+    expect(updated.blocks.find((block) => block.kind === 'user')).toMatchObject({
+      media: [{ kind: 'image', fileId: 'file-new', name: 'new.png' }],
+    });
+  });
+
   it('keeps the real user message identity so edit/fork do not parse block ids', () => {
     const projected = projectAgentTranscriptView(
       createViewState('session_test'),
@@ -366,6 +389,9 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     ]);
     expect(kinds).toContain('steer');
     expect(kinds).toContain('shell');
+    expect(
+      projected.blocks.some((block) => block.kind === 'tool' && block.toolCallId === 'bash-1'),
+    ).toBe(false);
     expect(projected.turnTail).toMatchObject({ turnId: 't1', durationMs: 1800, ttftMs: 120 });
     expect(projected.blocks.find((block) => block.kind === 'approval')).toMatchObject({
       originAgentId: CHILD_AGENT_ID,
@@ -376,6 +402,137 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(projected.blocks.some((block) => block.id.includes(`ref-${CHILD_AGENT_ID}`))).toBe(true);
     expect(projected.planMode).toBe(true);
     expect(projected.swarmMode).toBe(true);
+  });
+
+  it('places a tool-anchored interaction inline instead of at the transcript bottom', () => {
+    const source = capabilityMatrixSnapshot();
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', {
+      ...source,
+      interactions: [
+        {
+          interactionId: 'apr-bash',
+          interactionKind: 'approval',
+          toolCallId: 'bash-1',
+          anchor: { kind: 'tool_call', toolCallId: 'bash-1' },
+          state: 'pending',
+          request: {
+            turnId: 1,
+            toolCallId: 'bash-1',
+            toolName: 'Bash',
+            action: 'Run ls',
+            createdAt: FIXED_AT_1,
+          },
+        },
+      ],
+    });
+    const shellIndex = projected.blocks.findIndex(
+      (block) => block.kind === 'shell' && block.commandId === 'bash-1',
+    );
+    const approvalIndex = projected.blocks.findIndex((block) => block.id === 'approval-apr-bash');
+    expect(shellIndex).toBeGreaterThanOrEqual(0);
+    expect(approvalIndex).toBe(shellIndex + 1);
+    expect(approvalIndex).toBeLessThan(projected.blocks.length - 1);
+  });
+
+  it('keeps an optimistic queued prompt at its previous timeline position during reconciliation', () => {
+    const snapshot = userTurnSnapshot();
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    const assistantIndex = projected.blocks.findIndex((block) => block.kind === 'assistant');
+    const queued: UserBlock = {
+      kind: 'user',
+      id: 'user-um-queued-local',
+      text: 'queued while the turn is active',
+      createdAt: FIXED_AT_1,
+      promptId: 'p-queued-local',
+      userMessageId: 'um-queued-local',
+      promptStatus: 'queued',
+    };
+    const previous = {
+      ...projected,
+      blocks: [
+        ...projected.blocks.slice(0, assistantIndex),
+        queued,
+        ...projected.blocks.slice(assistantIndex),
+      ],
+    };
+    const reconciled = projectAgentTranscriptView(previous, 'main', snapshot);
+    const queuedIndex = reconciled.blocks.findIndex((block) => block.id === queued.id);
+    const nextAssistantIndex = reconciled.blocks.findIndex((block) => block.kind === 'assistant');
+    expect(queuedIndex).toBe(nextAssistantIndex - 1);
+  });
+
+  it('places an unanchored subagent by timestamp before a later turn', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't1',
+            ordinal: 1,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'first',
+            startedAt: '2026-01-01T00:00:00.000Z',
+            endedAt: '2026-01-01T00:00:02.000Z',
+            steps: [
+              {
+                kind: 'step',
+                stepId: 't1.1',
+                turnId: 't1',
+                ordinal: 1,
+                state: 'completed',
+                endedAt: '2026-01-01T00:00:02.000Z',
+                frames: [{ kind: 'text', frameId: 'a1', role: 'assistant', text: 'first answer' }],
+              },
+            ],
+          },
+          {
+            kind: 'turn',
+            turnId: 't2',
+            ordinal: 2,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'second',
+            startedAt: '2026-01-01T00:00:10.000Z',
+            endedAt: '2026-01-01T00:00:12.000Z',
+            steps: [],
+          },
+        ],
+        tasks: [
+          {
+            taskId: 'task-orphan',
+            kind: 'subagent',
+            state: 'completed',
+            detached: false,
+            agentId: 'agent-orphan',
+            description: 'between turns',
+            outputTail: 'done',
+            startedAt: '2026-01-01T00:00:05.000Z',
+            endedAt: '2026-01-01T00:00:06.000Z',
+          },
+        ],
+      }),
+    );
+    const subagentIndex = projected.blocks.findIndex((block) => block.id === 'subagent-agent-orphan');
+    const secondTurnIndex = projected.blocks.findIndex(
+      (block) => block.kind === 'user' && block.turnId === 't2',
+    );
+    expect(subagentIndex).toBeGreaterThanOrEqual(0);
+    expect(subagentIndex).toBeLessThan(secondTurnIndex);
+  });
+
+  it('derives busy state from canonical running structures when phase metadata is missing', () => {
+    const source = userTurnSnapshot({ streaming: true });
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', {
+      ...source,
+      meta: {},
+    });
+    expect(projected.busy).toBe(true);
+    expect(projected.blocks.find((block) => block.kind === 'assistant')).toMatchObject({
+      streaming: true,
+    });
   });
 
   it('clears the queued chip when the matching prompt is aborted', () => {

@@ -7,6 +7,8 @@
 import { createContext, useContext } from 'react';
 
 export interface MediaPreviewApi {
+  /** Session owning canonical/staged media IDs. */
+  readonly sessionId: string | undefined;
   /** Session workspace cwd; anchors relative file links. */
   readonly cwd: string | undefined;
   /** Open the fullscreen image lightbox for a ready URL (data:/blob:/http). */

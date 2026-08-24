@@ -82,9 +82,11 @@ export function affectedByClose(state: PreviewTabsState, action: CloseAction): r
 }
 
 export function MediaPreviewProvider({
+  sessionId,
   cwd,
   children,
 }: {
+  sessionId?: string;
   cwd?: string;
   children: ReactNode;
 }) {
@@ -167,6 +169,7 @@ export function MediaPreviewProvider({
 
   const api = useMemo<MediaPreviewApi>(
     () => ({
+      sessionId,
       cwd,
       openImage: (src, name) => { setImage({ src, name }); },
       openFile,
@@ -174,7 +177,7 @@ export function MediaPreviewProvider({
       previewPanelOpen: panelOpen,
       togglePreviewPanel: togglePanel,
     }),
-    [cwd, openFile, tabsState.tabs.length, panelOpen, togglePanel],
+    [sessionId, cwd, openFile, tabsState.tabs.length, panelOpen, togglePanel],
   );
 
   const panel = panelOpen ? (
@@ -246,13 +249,21 @@ export function PreviewToggleButton({ className }: { className?: string }) {
 
 // ---------------------------------------------------------------------------
 
-function FileChip({ item }: { item: MediaRef }) {
+function FileChip({
+  item,
+  onActivate,
+  loading = false,
+}: {
+  item: MediaRef;
+  onActivate?: () => void;
+  loading?: boolean;
+}) {
   const { t } = useI18n();
   const preview = useMediaPreview();
   const label =
     item.name ?? (item.path !== undefined ? basenameOf(item.path) : t('media.attachment'));
   const detail = item.size !== undefined ? formatBytes(item.size) : item.mime;
-  const openable = item.path !== undefined && preview !== null;
+  const openable = onActivate !== undefined || (item.path !== undefined && preview !== null);
   const className = `inline-flex max-w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left ${
     openable
       ? 'border-hairline bg-paper transition-colors hover:border-accent'
@@ -261,7 +272,7 @@ function FileChip({ item }: { item: MediaRef }) {
   const body = (
     <>
       <span aria-hidden className="shrink-0 text-[11px] text-ink-faint">
-        ◧
+        {loading ? '…' : '◧'}
       </span>
       <span className="min-w-0 truncate font-mono text-[11.5px] text-ink">{label}</span>
       {detail !== undefined && detail !== '' ? (
@@ -280,12 +291,105 @@ function FileChip({ item }: { item: MediaRef }) {
     <button
       type="button"
       className={className}
-      title={item.path}
+      title={item.path ?? item.fileId}
+      disabled={loading}
+      aria-busy={loading}
       onClick={() => {
-        if (item.path !== undefined) preview.openFile(item.path);
+        if (onActivate !== undefined) {
+          onActivate();
+        } else if (item.path !== undefined) {
+          preview?.openFile(item.path);
+        }
       }}
     >
       {body}
+    </button>
+  );
+}
+
+function SessionFileChip({ item }: { item: MediaRef & { readonly fileId: string } }) {
+  const connection = useOptionalConnection();
+  const preview = useMediaPreview();
+  const [loading, setLoading] = useState(false);
+  const client = connection?.client;
+  const sessionId = preview?.sessionId;
+  const downloadable = client !== undefined && sessionId !== undefined;
+
+  const download = useCallback(() => {
+    if (client === undefined || sessionId === undefined || loading) return;
+    setLoading(true);
+    void client.readSessionMediaBytes(sessionId, item.fileId).then(
+      ({ bytes, mime }) => {
+        const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = item.name ?? item.fileId;
+        document.body.append(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => { URL.revokeObjectURL(url); }, 0);
+      },
+      () => undefined,
+    ).finally(() => { setLoading(false); });
+  }, [client, item.fileId, item.name, loading, sessionId]);
+
+  return <FileChip item={item} onActivate={downloadable ? download : undefined} loading={loading} />;
+}
+
+function SessionMediaThumb({ item }: { item: MediaRef & { readonly fileId: string } }) {
+  const { t } = useI18n();
+  const connection = useOptionalConnection();
+  const preview = useMediaPreview();
+  const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const client = connection?.client;
+  const sessionId = preview?.sessionId;
+
+  useEffect(() => {
+    setUrl(null);
+    setFailed(false);
+    if (client === undefined || sessionId === undefined) {
+      setFailed(true);
+      return;
+    }
+    let cancelled = false;
+    let objectUrl: string | undefined;
+    client.readSessionMediaBytes(sessionId, item.fileId).then(
+      ({ bytes, mime }) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
+        setUrl(objectUrl);
+      },
+      () => {
+        if (!cancelled) setFailed(true);
+      },
+    );
+    return () => {
+      cancelled = true;
+      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
+    };
+  }, [client, item.fileId, sessionId]);
+
+  if (failed) return <SessionFileChip item={item} />;
+  if (url === null) {
+    return (
+      <span className="flex h-28 w-40 items-center justify-center rounded-lg border border-hairline bg-paper text-[11px] text-ink-faint">
+        {t('preview.loading')}
+      </span>
+    );
+  }
+  if (item.kind === 'video') {
+    return <video src={url} controls className="max-h-52 rounded-lg border border-hairline" />;
+  }
+  const name = item.name ?? t('media.viewImage');
+  return (
+    <button
+      type="button"
+      title={name}
+      onClick={() => { preview?.openImage(url, item.name); }}
+      className="overflow-hidden rounded-lg border border-hairline transition-colors hover:border-accent"
+    >
+      <img src={url} alt={name} className="h-28 w-auto object-cover" />
     </button>
   );
 }
@@ -371,6 +475,7 @@ function MediaPart({ item }: { item: MediaRef }) {
       );
     }
     if (item.path !== undefined) return <HostImageThumb path={item.path} name={item.name} />;
+    if (item.fileId !== undefined) return <SessionMediaThumb item={{ ...item, fileId: item.fileId }} />;
     return <FileChip item={item} />;
   }
   if (item.kind === 'video') {
@@ -379,8 +484,10 @@ function MediaPart({ item }: { item: MediaRef }) {
         <video src={item.url} controls className="max-h-52 rounded-lg border border-hairline" />
       );
     }
+    if (item.fileId !== undefined) return <SessionMediaThumb item={{ ...item, fileId: item.fileId }} />;
     return <FileChip item={item} />;
   }
+  if (item.fileId !== undefined) return <SessionFileChip item={{ ...item, fileId: item.fileId }} />;
   return <FileChip item={item} />;
 }
 

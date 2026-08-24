@@ -35,6 +35,7 @@ export interface SystemReminderBlock {
   readonly id: string;
   readonly text: string;
   readonly createdAt: string | undefined;
+  readonly turnId?: string;
 }
 
 export type SystemVariant =
@@ -67,6 +68,7 @@ export interface SkillBlock {
   readonly args: string | undefined;
   readonly text: string;
   readonly createdAt: string | undefined;
+  readonly turnId?: string;
 }
 
 export interface SteerBlock {
@@ -124,6 +126,7 @@ export interface ToolBlock {
   readonly durationMs: number | undefined;
   readonly progressText: string | undefined;
   readonly agentRefs?: readonly ToolAgentRef[];
+  readonly turnId?: string;
 }
 
 export interface ShellBlock {
@@ -133,6 +136,7 @@ export interface ShellBlock {
   readonly output: string;
   readonly done: boolean;
   readonly isError: boolean | undefined;
+  readonly turnId?: string;
 }
 
 export interface SubagentBlock {

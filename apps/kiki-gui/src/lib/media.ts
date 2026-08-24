@@ -7,8 +7,8 @@
  * Wire facts (packages/protocol/src/message.ts, kap-server messageProjection):
  *   - message image/video parts carry `source: { kind: 'url' | 'base64' | 'file' }`;
  *     base64 data is bare (no data-URL prefix), url may itself be a data: URI.
- *   - file parts are daemon upload references (file_id + name + size), with no
- *     inline bytes and no download endpoint — they render as chips.
+ *   - file parts are daemon/session-media references (file_id + metadata);
+ *     the session media route resolves both canonical and staged uploads.
  *   - tool results with media keep the raw engine part array as `output`:
  *     `[{ type: 'text', text: '<image path="/abs/x.png">' },
  *       { type: 'image_url', imageUrl: { url: 'data:…' } }, …]`.
@@ -26,7 +26,7 @@ export interface MediaRef {
   readonly name?: string;
   readonly mime?: string;
   readonly size?: number;
-  /** Daemon upload id — the GUI has no fetch endpoint for these. */
+  /** Session-canonical or staged upload ID, resolved through the session media route. */
   readonly fileId?: string;
 }
 

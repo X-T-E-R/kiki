@@ -2055,7 +2055,7 @@ export function SessionView({
       pendingInteraction: 'none',
     };
     return (
-      <MediaPreviewProvider cwd={state.session?.metadata?.cwd}>
+      <MediaPreviewProvider sessionId={sessionId} cwd={state.session?.metadata?.cwd}>
         {slots.header !== null
           ? createPortal(
               <>
@@ -2253,7 +2253,7 @@ export function SessionView({
   }
 
   return (
-    <MediaPreviewProvider cwd={state.session?.metadata?.cwd}>
+    <MediaPreviewProvider sessionId={sessionId} cwd={state.session?.metadata?.cwd}>
       {slots.header !== null
         ? createPortal(
             <Header
