@@ -30,6 +30,7 @@ import {
 } from '../state/previewWorkspace';
 import { useOptionalConversationShell } from './ConversationShell';
 import { useDirtyReporter } from './dirtyGuard';
+import { Dialog } from './Dialog';
 import { MediaLightbox } from './MediaLightbox';
 import { PreviewCloseConfirm, PreviewWorkspace } from './PreviewWorkspace';
 import {
@@ -82,15 +83,16 @@ export function affectedByClose(state: PreviewTabsState, action: CloseAction): r
 }
 
 export function MediaPreviewProvider({
-  sessionId,
   cwd,
+  sessionId,
   children,
 }: {
-  sessionId?: string;
   cwd?: string;
+  sessionId?: string;
   children: ReactNode;
 }) {
   const [image, setImage] = useState<{ src: string; name?: string } | null>(null);
+  const [attachment, setAttachment] = useState<MediaRef | null>(null);
   const [tabsState, setTabsState] = useState<PreviewTabsState>(EMPTY_PREVIEW_TABS);
   const [panelOpen, setPanelOpen] = useState(false);
   const [width, setWidth] = useState(readStoredWidth);
@@ -169,15 +171,16 @@ export function MediaPreviewProvider({
 
   const api = useMemo<MediaPreviewApi>(
     () => ({
-      sessionId,
       cwd,
+      sessionId,
       openImage: (src, name) => { setImage({ src, name }); },
       openFile,
+      openAttachment: (item) => { setAttachment(item); },
       previewTabCount: tabsState.tabs.length,
       previewPanelOpen: panelOpen,
       togglePreviewPanel: togglePanel,
     }),
-    [sessionId, cwd, openFile, tabsState.tabs.length, panelOpen, togglePanel],
+    [cwd, sessionId, openFile, tabsState.tabs.length, panelOpen, togglePanel],
   );
 
   const panel = panelOpen ? (
@@ -210,6 +213,13 @@ export function MediaPreviewProvider({
           paths={confirmClose.dirty}
           onConfirm={confirmCloseRun}
           onCancel={() => { setConfirmClose(null); }}
+        />
+      ) : null}
+      {attachment !== null ? (
+        <AttachmentPreviewDialog
+          item={attachment}
+          sessionId={sessionId}
+          onClose={() => { setAttachment(null); }}
         />
       ) : null}
       {image !== null ? (
@@ -249,21 +259,232 @@ export function PreviewToggleButton({ className }: { className?: string }) {
 
 // ---------------------------------------------------------------------------
 
-function FileChip({
+type SessionMediaLoad =
+  | { readonly status: 'loading' }
+  | { readonly status: 'failed' }
+  | {
+      readonly status: 'ready';
+      readonly bytes: Uint8Array;
+      readonly mime: string;
+      readonly name?: string;
+      readonly url: string;
+    };
+
+function useSessionMedia(
+  item: MediaRef,
+  sessionId: string | undefined,
+  enabled = true,
+): SessionMediaLoad {
+  const client = useOptionalConnection()?.client;
+  const [load, setLoad] = useState<SessionMediaLoad>({ status: 'loading' });
+
+  useEffect(() => {
+    if (!enabled) {
+      setLoad({ status: 'loading' });
+      return;
+    }
+    if (client === undefined || sessionId === undefined || item.fileId === undefined) {
+      setLoad({ status: 'failed' });
+      return;
+    }
+    let cancelled = false;
+    let objectUrl: string | undefined;
+    setLoad({ status: 'loading' });
+    client.readSessionMediaBytes(sessionId, item.fileId).then(
+      ({ bytes, mime, name }) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
+        setLoad({ status: 'ready', bytes, mime, name, url: objectUrl });
+      },
+      () => {
+        if (!cancelled) setLoad({ status: 'failed' });
+      },
+    );
+    return () => {
+      cancelled = true;
+      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
+    };
+  }, [client, enabled, item.fileId, sessionId]);
+
+  return load;
+}
+
+function useVisibleOnce(): [(node: HTMLElement | null) => void, boolean] {
+  const [node, setNode] = useState<HTMLElement | null>(null);
+  const [visible, setVisible] = useState(() => typeof IntersectionObserver === 'undefined');
+
+  useEffect(() => {
+    if (visible || node === null || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        setVisible(true);
+        observer.disconnect();
+      },
+      { rootMargin: '400px 0px' },
+    );
+    observer.observe(node);
+    return () => { observer.disconnect(); };
+  }, [node, visible]);
+
+  return [setNode, visible];
+}
+
+function attachmentName(item: MediaRef, loadedName?: string): string {
+  return item.name ?? loadedName ?? item.fileId ?? item.path ?? 'attachment';
+}
+
+function isTextPreview(mime: string, name: string): boolean {
+  if (mime.startsWith('text/')) return true;
+  if (mime === 'application/json' || mime === 'application/xml' || mime.endsWith('+json')) return true;
+  return /\.(?:md|markdown|txt|log|json|jsonl|ya?ml|toml|ini|csv|tsv|xml|html?|css|jsx?|tsx?|py|rs|go|java|c|cc|cpp|h|hpp|sh|zsh|fish|ps1)$/i.test(name);
+}
+
+function downloadUrl(url: string, name: string): void {
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = name;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+}
+
+function AttachmentPreviewDialog({
   item,
-  onActivate,
-  loading = false,
+  sessionId,
+  onClose,
 }: {
   item: MediaRef;
-  onActivate?: () => void;
-  loading?: boolean;
+  sessionId: string | undefined;
+  onClose: () => void;
 }) {
+  const { t } = useI18n();
+  const load = useSessionMedia(item, sessionId);
+  const name = attachmentName(item, load.status === 'ready' ? load.name : undefined);
+  const title = t('preview.openFile', { name });
+  let body: ReactNode;
+
+  if (load.status === 'loading') {
+    body = <div className="flex min-h-48 items-center justify-center text-sm text-ink-faint">{t('preview.loading')}</div>;
+  } else if (load.status === 'failed') {
+    body = <div className="flex min-h-48 items-center justify-center text-sm text-danger">{t('preview.failed')}</div>;
+  } else if (load.mime.startsWith('image/')) {
+    body = <img src={load.url} alt={name} className="max-h-[72vh] max-w-full object-contain" />;
+  } else if (load.mime.startsWith('video/')) {
+    body = <video src={load.url} controls className="max-h-[72vh] max-w-full" />;
+  } else if (load.mime.startsWith('audio/')) {
+    body = <audio src={load.url} controls className="w-full" />;
+  } else if (load.mime === 'application/pdf' || name.toLowerCase().endsWith('.pdf')) {
+    body = <iframe src={load.url} title={name} className="h-[72vh] w-full rounded-lg border border-hairline bg-white" />;
+  } else if (isTextPreview(load.mime, name)) {
+    const limit = 1024 * 1024;
+    const shown = load.bytes.subarray(0, limit);
+    const text = new TextDecoder().decode(shown);
+    body = (
+      <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-hairline bg-paper p-3">
+        <pre className="font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink">{text}</pre>
+        {load.bytes.byteLength > shown.byteLength ? (
+          <p className="mt-3 text-[11px] text-ink-faint">{t('preview.truncated')}</p>
+        ) : null}
+      </div>
+    );
+  } else {
+    body = (
+      <div className="flex min-h-48 flex-col items-center justify-center gap-3 text-sm text-ink-faint">
+        <span>{t('preview.unsupported')}</span>
+        <button
+          type="button"
+          onClick={() => { downloadUrl(load.url, name); }}
+          className="rounded-lg border border-hairline px-3 py-1.5 text-ink-soft transition-colors hover:border-accent hover:text-accent"
+        >
+          {t('media.download')}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <Dialog
+      onClose={onClose}
+      ariaLabel={title}
+      overlayId="session-attachment-preview"
+      overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-ink/55 p-4"
+      panelClassName="anim-enter flex max-h-[92vh] w-full max-w-[min(94vw,1100px)] flex-col overflow-hidden rounded-2xl border border-hairline bg-panel p-4 shadow-[0_20px_60px_-20px_rgba(28,25,23,0.45)]"
+    >
+      <header className="mb-3 flex shrink-0 items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <h2 className="truncate text-sm font-semibold text-ink">{name}</h2>
+          {load.status === 'ready' ? (
+            <p className="truncate font-mono text-[10px] text-ink-faint">{load.mime} · {formatBytes(load.bytes.byteLength)}</p>
+          ) : null}
+        </div>
+        {load.status === 'ready' ? (
+          <button
+            type="button"
+            onClick={() => { downloadUrl(load.url, name); }}
+            className="rounded-lg border border-hairline px-2.5 py-1 text-[11px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
+          >
+            {t('media.download')}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          data-autofocus
+          onClick={onClose}
+          aria-label={t('common.close')}
+          className="rounded-lg border border-hairline px-2.5 py-1 text-[11px] text-ink-soft transition-colors hover:border-accent hover:text-accent"
+        >
+          ×
+        </button>
+      </header>
+      <div data-attachment-preview className="flex min-h-0 flex-1 items-center justify-center overflow-auto">
+        {body}
+      </div>
+    </Dialog>
+  );
+}
+
+function SessionMediaThumb({ item }: { item: MediaRef }) {
+  const { t } = useI18n();
+  const preview = useMediaPreview();
+  const [hostRef, visible] = useVisibleOnce();
+  const load = useSessionMedia(item, preview?.sessionId, visible);
+  const name = attachmentName(item, load.status === 'ready' ? load.name : undefined);
+
+  let body: ReactNode;
+  if (load.status === 'failed') {
+    body = <FileChip item={item} />;
+  } else if (load.status === 'loading') {
+    body = (
+      <span className="flex h-28 w-40 items-center justify-center rounded-lg border border-hairline bg-paper text-[11px] text-ink-faint">
+        {t('preview.loading')}
+      </span>
+    );
+  } else if (item.kind === 'video' || load.mime.startsWith('video/')) {
+    body = <video src={load.url} controls className="max-h-52 rounded-lg border border-hairline" />;
+  } else {
+    body = (
+      <button
+        type="button"
+        title={name}
+        onClick={() => { preview?.openImage(load.url, name); }}
+        className="overflow-hidden rounded-lg border border-hairline transition-colors hover:border-accent"
+      >
+        <img src={load.url} alt={name} className="h-28 w-auto object-cover" />
+      </button>
+    );
+  }
+
+  return <span ref={hostRef} className="inline-flex">{body}</span>;
+}
+
+function FileChip({ item }: { item: MediaRef }) {
   const { t } = useI18n();
   const preview = useMediaPreview();
   const label =
     item.name ?? (item.path !== undefined ? basenameOf(item.path) : t('media.attachment'));
   const detail = item.size !== undefined ? formatBytes(item.size) : item.mime;
-  const openable = onActivate !== undefined || (item.path !== undefined && preview !== null);
+  const openable = (item.path !== undefined || item.fileId !== undefined) && preview !== null;
   const className = `inline-flex max-w-full items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left ${
     openable
       ? 'border-hairline bg-paper transition-colors hover:border-accent'
@@ -272,7 +493,7 @@ function FileChip({
   const body = (
     <>
       <span aria-hidden className="shrink-0 text-[11px] text-ink-faint">
-        {loading ? '…' : '◧'}
+        ◧
       </span>
       <span className="min-w-0 truncate font-mono text-[11.5px] text-ink">{label}</span>
       {detail !== undefined && detail !== '' ? (
@@ -292,104 +513,12 @@ function FileChip({
       type="button"
       className={className}
       title={item.path ?? item.fileId}
-      disabled={loading}
-      aria-busy={loading}
       onClick={() => {
-        if (onActivate !== undefined) {
-          onActivate();
-        } else if (item.path !== undefined) {
-          preview?.openFile(item.path);
-        }
+        if (item.path !== undefined) preview.openFile(item.path);
+        else if (item.fileId !== undefined) preview.openAttachment(item);
       }}
     >
       {body}
-    </button>
-  );
-}
-
-function SessionFileChip({ item }: { item: MediaRef & { readonly fileId: string } }) {
-  const connection = useOptionalConnection();
-  const preview = useMediaPreview();
-  const [loading, setLoading] = useState(false);
-  const client = connection?.client;
-  const sessionId = preview?.sessionId;
-  const downloadable = client !== undefined && sessionId !== undefined;
-
-  const download = useCallback(() => {
-    if (client === undefined || sessionId === undefined || loading) return;
-    setLoading(true);
-    void client.readSessionMediaBytes(sessionId, item.fileId).then(
-      ({ bytes, mime }) => {
-        const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
-        const anchor = document.createElement('a');
-        anchor.href = url;
-        anchor.download = item.name ?? item.fileId;
-        document.body.append(anchor);
-        anchor.click();
-        anchor.remove();
-        setTimeout(() => { URL.revokeObjectURL(url); }, 0);
-      },
-      () => undefined,
-    ).finally(() => { setLoading(false); });
-  }, [client, item.fileId, item.name, loading, sessionId]);
-
-  return <FileChip item={item} onActivate={downloadable ? download : undefined} loading={loading} />;
-}
-
-function SessionMediaThumb({ item }: { item: MediaRef & { readonly fileId: string } }) {
-  const { t } = useI18n();
-  const connection = useOptionalConnection();
-  const preview = useMediaPreview();
-  const [url, setUrl] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-  const client = connection?.client;
-  const sessionId = preview?.sessionId;
-
-  useEffect(() => {
-    setUrl(null);
-    setFailed(false);
-    if (client === undefined || sessionId === undefined) {
-      setFailed(true);
-      return;
-    }
-    let cancelled = false;
-    let objectUrl: string | undefined;
-    client.readSessionMediaBytes(sessionId, item.fileId).then(
-      ({ bytes, mime }) => {
-        if (cancelled) return;
-        objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
-        setUrl(objectUrl);
-      },
-      () => {
-        if (!cancelled) setFailed(true);
-      },
-    );
-    return () => {
-      cancelled = true;
-      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
-    };
-  }, [client, item.fileId, sessionId]);
-
-  if (failed) return <SessionFileChip item={item} />;
-  if (url === null) {
-    return (
-      <span className="flex h-28 w-40 items-center justify-center rounded-lg border border-hairline bg-paper text-[11px] text-ink-faint">
-        {t('preview.loading')}
-      </span>
-    );
-  }
-  if (item.kind === 'video') {
-    return <video src={url} controls className="max-h-52 rounded-lg border border-hairline" />;
-  }
-  const name = item.name ?? t('media.viewImage');
-  return (
-    <button
-      type="button"
-      title={name}
-      onClick={() => { preview?.openImage(url, item.name); }}
-      className="overflow-hidden rounded-lg border border-hairline transition-colors hover:border-accent"
-    >
-      <img src={url} alt={name} className="h-28 w-auto object-cover" />
     </button>
   );
 }
@@ -475,7 +604,7 @@ function MediaPart({ item }: { item: MediaRef }) {
       );
     }
     if (item.path !== undefined) return <HostImageThumb path={item.path} name={item.name} />;
-    if (item.fileId !== undefined) return <SessionMediaThumb item={{ ...item, fileId: item.fileId }} />;
+    if (item.fileId !== undefined) return <SessionMediaThumb item={item} />;
     return <FileChip item={item} />;
   }
   if (item.kind === 'video') {
@@ -484,10 +613,9 @@ function MediaPart({ item }: { item: MediaRef }) {
         <video src={item.url} controls className="max-h-52 rounded-lg border border-hairline" />
       );
     }
-    if (item.fileId !== undefined) return <SessionMediaThumb item={{ ...item, fileId: item.fileId }} />;
+    if (item.fileId !== undefined) return <SessionMediaThumb item={item} />;
     return <FileChip item={item} />;
   }
-  if (item.fileId !== undefined) return <SessionFileChip item={{ ...item, fileId: item.fileId }} />;
   return <FileChip item={item} />;
 }
 

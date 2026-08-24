@@ -307,41 +307,41 @@ describe('SessionController pipeline', () => {
     controller.close();
   });
 
-  it('includes selected session media in the optimistic local prompt', async () => {
+  it('uses server-normalized session media in the optimistic local prompt', async () => {
     const { controller, client } = await openController();
-    const content: MessageContent[] = [
-      { type: 'text', text: 'look at this image' },
-      { type: 'image', source: { kind: 'session_media', file_id: 'img-1' } },
-      {
-        type: 'file',
-        file_id: 'file-1',
-        name: 'notes.txt',
-        media_type: 'text/plain',
-        size: 12,
-      },
-    ];
     client.submitPrompt.mockResolvedValue({
       prompt_id: 'p-media',
       user_message_id: 'm-media',
       status: 'running',
-      content,
+      content: [
+        { type: 'text', text: 'inspect these' },
+        { type: 'image', source: { kind: 'session_media', file_id: 'f-image' } },
+        {
+          type: 'file',
+          file_id: 'f-report',
+          name: 'report.pdf',
+          media_type: 'application/pdf',
+          size: 4096,
+        },
+      ],
       created_at: '2026-01-01T00:00:02.000Z',
     });
 
-    await controller.sendPrompt({
-      text: 'look at this image',
-      content,
-      permissionMode: 'manual',
-    });
+    await controller.sendPrompt({ text: 'inspect these', permissionMode: 'manual' });
 
-    const user = controller.getState().blocks.at(-1);
-    expect(user).toMatchObject({
+    expect(controller.getState().blocks.at(-1)).toMatchObject({
       kind: 'user',
       promptId: 'p-media',
-      text: 'look at this image',
+      text: 'inspect these',
       media: [
-        { kind: 'image', fileId: 'img-1' },
-        { kind: 'file', fileId: 'file-1', name: 'notes.txt', mime: 'text/plain', size: 12 },
+        { kind: 'image', fileId: 'f-image' },
+        {
+          kind: 'file',
+          fileId: 'f-report',
+          name: 'report.pdf',
+          mime: 'application/pdf',
+          size: 4096,
+        },
       ],
     });
     controller.close();

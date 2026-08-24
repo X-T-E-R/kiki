@@ -245,10 +245,18 @@ function isLiveStreamingFrame(
   const lastOpen = [...step.frames].reverse().find((candidate) => candidate.kind === frame.kind);
   if (lastOpen?.frameId !== frame.frameId) return false;
   if (phase === undefined || typeof phase !== 'object' || phase === null) return true;
+
+  // The v1 compatibility projector cannot always recover canonical step IDs
+  // and may emit an empty string. Compatibility metadata is advisory: a
+  // non-empty identifier may narrow the selected frame, but an empty one must
+  // not invalidate a canonical open frame.
   const live = phase as { kind?: string; turnId?: number | string; stepId?: string; stream?: string };
-  if (live.kind !== 'streaming') return false;
-  if (live.stepId !== undefined && live.stepId !== step.stepId) return false;
+  const phaseStepId = typeof live.stepId === 'string' ? live.stepId.trim() : '';
+  if (phaseStepId !== '' && phaseStepId !== step.stepId) return false;
   if (live.turnId !== undefined && !sameTurnId(String(live.turnId), item.turnId)) return false;
+
+  if (live.kind === 'running') return true;
+  if (live.kind !== 'streaming') return false;
   if (live.stream === 'assistant') return frame.kind === 'text';
   if (live.stream === 'thinking') return frame.kind === 'thinking';
   return false;
@@ -447,6 +455,20 @@ function markerToBlock(item: {
   payload?: unknown;
 }): Block | undefined {
   if (HIDDEN_SPLICE_MARKERS.has(item.marker)) return undefined;
+  const summaryKey = MARKER_SUMMARY_KEYS[item.marker as keyof typeof MARKER_SUMMARY_KEYS];
+
+  // Skill activation payloads may contain the complete loaded skill document.
+  // The marker is timeline chrome, not a second copy of that document.
+  if (item.marker === 'skill' && summaryKey !== undefined) {
+    return {
+      kind: 'notice',
+      id: `agent-marker-${item.markerId}`,
+      text: item.marker,
+      tone: 'neutral',
+      i18n: { key: summaryKey },
+    };
+  }
+
   const payload = item.payload;
   const text =
     typeof payload === 'string'
@@ -461,7 +483,6 @@ function markerToBlock(item: {
   if (text !== undefined && text.trim() !== '') {
     return { kind: 'notice', id: `agent-marker-${item.markerId}`, text, tone: 'neutral' };
   }
-  const summaryKey = MARKER_SUMMARY_KEYS[item.marker as keyof typeof MARKER_SUMMARY_KEYS];
   if (summaryKey === undefined) {
     return {
       kind: 'notice',

@@ -710,7 +710,6 @@ export class SessionController {
   }): Promise<void> {
     assertSessionWritable(this.state);
     const content = input.content ?? [{ type: 'text' as const, text: input.text }];
-    const projection = projectMessageContent(content);
     const result = await this.client.submitPrompt(this.sessionId, {
       content,
       profile: input.profile,
@@ -725,6 +724,7 @@ export class SessionController {
           : undefined,
       goal_control: input.goalControl,
     });
+    const projection = projectMessageContent(result.content);
     this.setState(
       appendLocalUserMessage(this.state, {
         userMessageId: result.user_message_id,

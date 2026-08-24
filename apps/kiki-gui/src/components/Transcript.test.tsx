@@ -370,6 +370,28 @@ describe('media preview wiring', () => {
     expect(probe.container.textContent).toContain('4.0 KB');
   });
 
+  it('opens file-id attachments through the session preview dialog', async () => {
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="session_test">
+        <MediaPartList
+          media={[{ kind: 'file', fileId: 'upl_1', name: 'report.pdf', mime: 'application/pdf', size: 4096 }]}
+        />
+      </MediaPreviewProvider>,
+    );
+    const chip = [...probe.container.querySelectorAll('button')].find(
+      (button) => button.textContent?.includes('report.pdf') === true,
+    );
+    expect(chip).toBeDefined();
+    await act(async () => {
+      chip!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const preview = document.body.querySelector('[data-attachment-preview]');
+    expect(preview).not.toBeNull();
+    expect(preview?.closest('[role="dialog"]')?.getAttribute('aria-label')).toContain('report.pdf');
+  });
+
   it('opens the file preview pane from a workspace-relative markdown link', async () => {
     const probe = makeRoot();
     await renderSettled(

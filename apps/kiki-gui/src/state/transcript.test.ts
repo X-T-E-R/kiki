@@ -357,6 +357,123 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(assistant!.id.startsWith('assistant-live-')).toBe(false);
   });
 
+  it('keeps a live frame streaming when the v1 compatibility phase has an empty step id', () => {
+    const base = userTurnSnapshot({ streaming: true });
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      {
+        ...base,
+        meta: {
+          ...base.meta,
+          agent: {
+            ...base.meta.agent,
+            phase: {
+              kind: 'streaming',
+              turnId: 1,
+              step: 1,
+              stepId: '',
+              stream: 'assistant',
+              since: 0,
+            },
+          },
+        },
+      },
+    );
+    expect(projected.blocks.find((block) => block.kind === 'assistant')).toMatchObject({
+      streaming: true,
+    });
+  });
+
+  it('anchors interaction cards directly after their tool instead of at the transcript bottom', () => {
+    const snapshot = applyOpsToSnapshot(userTurnSnapshot({ streaming: true }), [
+      ...spawnChildOps(),
+      {
+        op: 'interaction.upsert',
+        interaction: {
+          interactionId: 'apr-tool',
+          interactionKind: 'approval',
+          toolCallId: TOOL_CALL_ID,
+          anchor: { kind: 'tool_call', toolCallId: TOOL_CALL_ID },
+          state: 'pending',
+          request: { toolName: 'Agent', action: 'Spawn reviewer' },
+        },
+      },
+    ]);
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    const toolIndex = projected.blocks.findIndex(
+      (block) => block.kind === 'tool' && block.toolCallId === TOOL_CALL_ID,
+    );
+    const approvalIndex = projected.blocks.findIndex((block) => block.id === 'approval-apr-tool');
+    const subagentIndex = projected.blocks.findIndex(
+      (block) => block.kind === 'subagent' && block.parentToolCallId === TOOL_CALL_ID,
+    );
+    expect(approvalIndex).toBe(toolIndex + 1);
+    expect(subagentIndex).toBe(toolIndex + 2);
+  });
+
+  it('retains an optimistic queued prompt at its previous structural slot', () => {
+    const canonical = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      userTurnSnapshot({ streaming: true }),
+    );
+    const assistantIndex = canonical.blocks.findIndex((block) => block.kind === 'assistant');
+    const pending: UserBlock = {
+      kind: 'user',
+      id: 'user-um-queued-local',
+      text: 'queued while the turn is live',
+      createdAt: FIXED_AT_2,
+      promptId: 'p-queued-local',
+      userMessageId: 'um-queued-local',
+      promptStatus: 'queued',
+    };
+    const previous = {
+      ...canonical,
+      blocks: [
+        ...canonical.blocks.slice(0, assistantIndex),
+        pending,
+        ...canonical.blocks.slice(assistantIndex),
+      ],
+    };
+    const projected = projectAgentTranscriptView(
+      previous,
+      'main',
+      userTurnSnapshot({ streaming: true }),
+    );
+    const queuedIndex = projected.blocks.findIndex((block) => block.id === pending.id);
+    const nextAssistantIndex = projected.blocks.findIndex((block) => block.kind === 'assistant');
+    expect(queuedIndex).toBeGreaterThanOrEqual(0);
+    expect(queuedIndex).toBeLessThan(nextAssistantIndex);
+    expect(queuedIndex).not.toBe(projected.blocks.length - 1);
+  });
+
+  it('summarizes skill markers even when their payload contains the full loaded document', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'marker',
+            markerId: 'skill-loaded-1',
+            marker: 'skill',
+            payload: { text: 'full skill document\n'.repeat(1000) },
+            at: FIXED_AT,
+          },
+        ],
+      }),
+    );
+    expect(projected.blocks).toEqual([
+      expect.objectContaining({
+        kind: 'notice',
+        id: 'agent-marker-skill-loaded-1',
+        text: 'skill',
+        i18n: { key: 'transcript.marker.skill' },
+      }),
+    ]);
+  });
+
   it('places an inline subagent card after the parent tool with nested child facts', () => {
     const previous = projectAgentTranscriptView(
       createViewState('session_test'),

@@ -116,10 +116,11 @@ describe('session media preview', () => {
     );
   });
 
-  it('downloads a fileId attachment instead of rendering a dead chip', async () => {
+  it('opens and downloads a fileId attachment instead of rendering a dead chip', async () => {
     mocks.readSessionMediaBytes.mockResolvedValue({
       bytes: new Uint8Array([4, 5]),
       mime: 'text/plain',
+      name: 'notes.txt',
     });
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
     const { root, container } = makeRoot();
@@ -137,9 +138,18 @@ describe('session media preview', () => {
     await act(async () => {
       chip?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       await Promise.resolve();
+      await Promise.resolve();
     });
 
     expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session_test', 'file-1');
+    const dialog = document.body.querySelector('[role="dialog"]');
+    expect(dialog?.querySelector('[data-attachment-preview]')).not.toBeNull();
+    const download = dialog?.querySelector('button:not([aria-label])');
+    expect(download).not.toBeNull();
+    await act(async () => {
+      download?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
     expect(clickSpy).toHaveBeenCalledOnce();
   });
+
 });

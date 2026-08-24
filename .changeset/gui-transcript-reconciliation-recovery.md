@@ -2,4 +2,4 @@
 "@kiki/gui": patch
 ---
 
-Fix live transcript updates, chronological event placement, compact skill cards, and session media previews in the Kiki GUI.
+Fix live transcript publication and compatibility, stable chronological placement, busy empty states, compact skill notices, prompt media reconciliation, and authenticated session attachment previews with viewport-lazy loading.
