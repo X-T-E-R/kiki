@@ -1050,8 +1050,14 @@ describe('SessionController transcript authority', () => {
       }));
     }
     expect(publishes).toBe(0);
+    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({
+      text: '',
+    });
     flushAll();
     expect(publishes).toBe(1);
+    expect(controller.getState().blocks.find((block) => block.kind === 'assistant')).toMatchObject({
+      text: 'xxxxxxxx',
+    });
     expect(controller.forestPublishCount).toBe(forests);
     controller.close();
   });
@@ -1955,6 +1961,7 @@ describe('SessionController transcript authority', () => {
         },
       ],
     }));
+    flushAll();
     await waitFor(() => client.getTranscriptOps.mock.calls.length === 2);
     expect(client.getTranscriptOps).toHaveBeenCalledWith(
       'session_test',
@@ -2044,7 +2051,7 @@ describe('SessionController transcript authority', () => {
   });
 
   it('requests the focused child subscription grade on catchup', async () => {
-    const { controller, client } = await openTranscriptController();
+    const { controller, client, flushAll } = await openTranscriptController();
     const held = deferred<{
       session_id: string;
       agent_id: string;
@@ -2069,6 +2076,7 @@ describe('SessionController transcript authority', () => {
         },
       ],
     }));
+    flushAll();
     await waitFor(() => client.getTranscriptOps.mock.calls.length === 1);
     expect(client.getTranscriptOps).toHaveBeenCalledWith(
       'session_test',
@@ -2125,6 +2133,7 @@ describe('SessionController transcript authority', () => {
         },
       ],
     }));
+    flushAll();
     await waitFor(() => client.getTranscriptOps.mock.calls.length === 1);
     expect(client.getTranscriptOps).toHaveBeenCalledTimes(1);
     held.resolve({

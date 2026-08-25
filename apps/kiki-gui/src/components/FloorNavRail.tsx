@@ -4,11 +4,6 @@
  * reveals while the log is being scrolled or while hovered/focused and fades
  * back out after ~1.4s idle; the tick owning the viewport stays highlighted.
  * Clicking a tick smooth-scrolls the row into view.
- *
- * Rows are always mounted (the transcript paginates memoized pages, not a
- * windowing virtualizer), so positioning is plain DOM queries against
- * `[data-block-id]`. The floor model itself is pure (`buildFloorEntries` /
- * `resolveActiveFloorId` in state/transcript.ts) for unit tests.
  */
 
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -22,8 +17,9 @@ import {
 } from '../state/transcript';
 import type { Block } from '../state/transcript';
 
-/** Idle delay before the rail fades back out after the last scroll. */
 const REVEAL_IDLE_MS = 1400;
+
+type FloorPosition = { blockId: string; top: number };
 
 function findRowElement(content: HTMLElement | null, blockId: string): HTMLElement | null {
   if (content === null) return null;
@@ -33,62 +29,122 @@ function findRowElement(content: HTMLElement | null, blockId: string): HTMLEleme
   return content.querySelector<HTMLElement>(`[data-block-id="${escaped}"]`);
 }
 
+function sameFloorEntries(left: readonly FloorEntry[], right: readonly FloorEntry[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index];
+    const b = right[index];
+    if (a?.blockId !== b?.blockId || a?.preview !== b?.preview) return false;
+  }
+  return true;
+}
+
+function useStableFloorEntries(blocks: readonly Block[]): readonly FloorEntry[] {
+  const previous = useRef<readonly FloorEntry[]>([]);
+  return useMemo(() => {
+    const next = buildFloorEntries(blocks);
+    if (sameFloorEntries(previous.current, next)) return previous.current;
+    previous.current = next;
+    return next;
+  }, [blocks]);
+}
+
 export function FloorNavRail({ blocks }: { blocks: readonly Block[] }) {
   const { t } = useI18n();
   const { scrollRef, contentRef } = useStickToBottomContext();
-  const entries: FloorEntry[] = useMemo(() => buildFloorEntries(blocks), [blocks]);
+  const entries = useStableFloorEntries(blocks);
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
+  const positionsRef = useRef<readonly FloorPosition[]>([]);
   const [revealed, setRevealed] = useState(false);
   const [hovering, setHovering] = useState(false);
   const [activeId, setActiveId] = useState<string | undefined>(undefined);
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /** Viewport-relative row tops for the active-floor computation. ONE
-   * full-content scan per call: a per-entry querySelector is O(entries × DOM)
-   * and dominates mount time on long transcripts (jsdom nwsapi walks the
-   * whole tree per attribute query). */
-  const measure = useCallback((): { blockId: string; top: number }[] => {
+  const rebuildPositions = useCallback((): void => {
     const scroll = scrollRef.current;
     const content = contentRef.current;
-    if (scroll === null || content === null) return [];
-    const wanted = new Set(entries.map((entry) => entry.blockId));
-    const scrollTop = scroll.getBoundingClientRect().top;
-    const positions: { blockId: string; top: number }[] = [];
+    if (scroll === null || content === null) {
+      positionsRef.current = [];
+      return;
+    }
+    const wanted = new Set(entriesRef.current.map((entry) => entry.blockId));
+    const viewportTop = scroll.getBoundingClientRect().top;
+    const positions: FloorPosition[] = [];
     for (const row of content.querySelectorAll<HTMLElement>('[data-block-id]')) {
       const blockId = row.getAttribute('data-block-id');
       if (blockId !== null && wanted.has(blockId)) {
-        positions.push({ blockId, top: row.getBoundingClientRect().top - scrollTop });
+        positions.push({
+          blockId,
+          top: row.getBoundingClientRect().top - viewportTop + scroll.scrollTop,
+        });
       }
     }
-    return positions;
-  }, [entries, scrollRef, contentRef]);
-  // Read through a ref so the wiring effect below does not re-run on every
-  // streaming delta: a setState during the commit phase turns the Profiler
-  // phase into 'nested-update' and adds a commit per token.
-  const measureRef = useRef(measure);
-  measureRef.current = measure;
+    positionsRef.current = positions;
+    const next = resolveActiveFloorId(positions, scroll.scrollTop);
+    setActiveId((previous) => (previous === next ? previous : next));
+  }, [contentRef, scrollRef]);
 
-  // Layout effect, deliberately: the initial setActiveId must land inside the
-  // mount commit. A passive effect defers to the NEXT flushSync/commit, which
-  // would turn the first streaming delta's commit into a 'nested-update' (and
-  // costs an extra commit per mount).
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current;
+    if (scroll === null || entries.length < 2) {
+      positionsRef.current = [];
+      setActiveId(undefined);
+      return;
+    }
+    rebuildPositions();
+    const resizeObserver = typeof ResizeObserver === 'undefined'
+      ? undefined
+      : new ResizeObserver(rebuildPositions);
+    resizeObserver?.observe(scroll);
+    window.addEventListener('resize', rebuildPositions);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', rebuildPositions);
+    };
+  }, [entries, rebuildPositions, scrollRef]);
+
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
     if (scroll === null || entries.length < 2) return;
     const onScroll = () => {
       setRevealed(true);
-      setActiveId(resolveActiveFloorId(measureRef.current(), 0));
+      const next = resolveActiveFloorId(positionsRef.current, scroll.scrollTop);
+      setActiveId((previous) => (previous === next ? previous : next));
       if (idleTimer.current !== null) clearTimeout(idleTimer.current);
       idleTimer.current = setTimeout(() => { setRevealed(false); }, REVEAL_IDLE_MS);
     };
-    // Initial paint: land the highlight without revealing the rail.
-    const initial = resolveActiveFloorId(measureRef.current(), 0);
-    setActiveId((previous) => (previous === initial ? previous : initial));
     scroll.addEventListener('scroll', onScroll, { passive: true });
     return () => {
       scroll.removeEventListener('scroll', onScroll);
       if (idleTimer.current !== null) clearTimeout(idleTimer.current);
     };
-  }, [entries.length, scrollRef]);
+  }, [entries, scrollRef]);
+
+  const ticks = useMemo(
+    () => entries.map((entry, index) => {
+      const active = entry.blockId === activeId;
+      return (
+        <button
+          key={entry.blockId}
+          type="button"
+          data-floor-tick
+          data-floor-active={active || undefined}
+          title={entry.preview}
+          aria-label={t('transcript.floorTickAria', { index: index + 1, preview: entry.preview })}
+          onClick={() => {
+            setActiveId(entry.blockId);
+            findRowElement(contentRef.current, entry.blockId)
+              ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }}
+          className={`h-[3px] rounded-full transition-all duration-150 ${
+            active ? 'w-[18px] bg-accent' : 'w-[10px] bg-ink-faint/40 hover:bg-ink-faint/70'
+          }`}
+        />
+      );
+    }),
+    [activeId, contentRef, entries, t],
+  );
 
   if (entries.length < 2) return null;
   const visible = revealed || hovering;
@@ -104,27 +160,7 @@ export function FloorNavRail({ blocks }: { blocks: readonly Block[] }) {
         visible ? 'opacity-100' : 'pointer-events-none opacity-0'
       }`}
     >
-      {entries.map((entry, index) => {
-        const active = entry.blockId === activeId;
-        return (
-          <button
-            key={entry.blockId}
-            type="button"
-            data-floor-tick
-            data-floor-active={active || undefined}
-            title={entry.preview}
-            aria-label={t('transcript.floorTickAria', { index: index + 1, preview: entry.preview })}
-            onClick={() => {
-              setActiveId(entry.blockId);
-              findRowElement(contentRef.current, entry.blockId)
-                ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            }}
-            className={`h-[3px] rounded-full transition-all duration-150 ${
-              active ? 'w-[18px] bg-accent' : 'w-[10px] bg-ink-faint/40 hover:bg-ink-faint/70'
-            }`}
-          />
-        );
-      })}
+      {ticks}
     </nav>
   );
 }

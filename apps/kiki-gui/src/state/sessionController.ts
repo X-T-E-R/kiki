@@ -72,6 +72,11 @@ interface VisibilityDocument {
   readonly removeEventListener?: (type: string, listener: () => void) => void;
 }
 
+interface PendingTranscriptBatch {
+  readonly ops: TranscriptOperation[];
+  cursor: TranscriptCursor;
+}
+
 const browserScheduler: PublicationScheduler = {
   schedule(callback) {
     if (typeof requestAnimationFrame === 'function') return requestAnimationFrame(callback);
@@ -121,6 +126,7 @@ export class SessionController {
   private readonly agentTranscripts = new Map<string, AgentTranscript>();
   private readonly olderPages = new Map<string, AgentTranscriptSnapshot>();
   private readonly transcriptCursors = new Map<string, TranscriptCursor>();
+  private readonly pendingTranscriptBatches = new Map<string, PendingTranscriptBatch>();
   private readonly pendingTranscriptAgents = new Set<string>();
   private readonly forestDirtyAgents = new Set<string>();
   private readonly historyGeneration = new Map<string, number>();
@@ -161,7 +167,9 @@ export class SessionController {
     } else {
       this.clearHiddenFrameTimer();
     }
-    if (this.pendingTranscriptAgents.size > 0) this.scheduleFrameFlush();
+    if (this.pendingTranscriptAgents.size > 0 || this.pendingTranscriptBatches.size > 0) {
+      this.scheduleFrameFlush();
+    }
   };
 
   getState = (): SessionViewState => this.publishedState;
@@ -239,6 +247,7 @@ export class SessionController {
   /** Public test seam and fallback for environments without an actual rAF. */
   flushFrames = (): void => {
     if (this.closed) return;
+    this.flushPendingTranscriptBatches();
     if (this.pendingTranscriptAgents.size > 0) {
       const agents = [...this.pendingTranscriptAgents];
       this.pendingTranscriptAgents.clear();
@@ -279,6 +288,7 @@ export class SessionController {
     this.clearResyncTimer();
     this.cancelVisibleFrameFlush();
     this.clearHiddenFrameTimer();
+    this.pendingTranscriptBatches.clear();
     this.pendingTranscriptAgents.clear();
     for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
     this.historyGeneration.clear();
@@ -384,6 +394,9 @@ export class SessionController {
       const snapshot = await this.client.snapshot(this.sessionId);
       if (this.closed) return;
       for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
+      this.pendingTranscriptBatches.clear();
+      this.pendingTranscriptAgents.clear();
+      this.catchupReplay.clear();
       this.transcriptCursors.clear();
       this.socket.clearTranscriptSince(this.sessionId);
       this.setState(
@@ -460,7 +473,9 @@ export class SessionController {
   }
 
   private async loadOlderTranscript(agentId: string): Promise<boolean> {
+    if (!this.flushPendingTranscriptBatch(agentId)) return false;
     const store = this.ensureAgentTranscript(agentId);
+    if (this.pendingTranscriptAgents.delete(agentId)) this.publishProjectedAgent(agentId, store);
     const currentSnapshot = this.composeAgentSnapshot(agentId);
     const beforeTurn = currentSnapshot.items.find((item) => item.kind === 'turn')?.turnId;
     if (this.closed || !currentSnapshot.hasMoreOlder || beforeTurn === undefined) return false;
@@ -521,6 +536,9 @@ export class SessionController {
     coverage: TranscriptCoverage,
     cursor: TranscriptCursor,
   ): void {
+    this.pendingTranscriptBatches.delete(agentId);
+    this.pendingTranscriptAgents.delete(agentId);
+    this.catchupReplay.delete(agentId);
     const store = this.ensureAgentTranscript(agentId);
     this.bumpHistoryGeneration(agentId);
     if (coverage.kind === 'full') this.olderPages.delete(agentId);
@@ -540,32 +558,61 @@ export class SessionController {
     ops: readonly TranscriptOperation[],
     cursor: TranscriptCursor,
   ): void {
-    const last = this.transcriptCursors.get(agentId);
+    const pending = this.pendingTranscriptBatches.get(agentId);
+    const last = pending?.cursor ?? this.transcriptCursors.get(agentId);
     if (last?.epoch !== undefined && cursor.epoch !== undefined && cursor.epoch !== last.epoch) {
       void this.resync();
       return;
     }
-    const store = this.ensureAgentTranscript(agentId);
-    const result = store.apply(ops);
-    if (result.gap !== undefined) {
-      const pending = this.catchupReplay.get(agentId);
-      this.catchupReplay.set(agentId, {
-        ops: pending === undefined ? ops : [...pending.ops, ...ops],
-        cursor: pending === undefined || cursor.seq >= pending.cursor.seq ? cursor : pending.cursor,
-      });
-      void this.catchUpAgent(agentId);
-      return;
+    if (pending === undefined) {
+      this.pendingTranscriptBatches.set(agentId, { ops: [...ops], cursor });
+    } else {
+      pending.ops.push(...ops);
+      if (cursor.seq >= pending.cursor.seq) pending.cursor = cursor;
     }
-    this.transcriptCursors.set(agentId, cursor);
-    this.socket.updateTranscriptSince(this.sessionId, agentId, cursor);
-    if (opsAffectForest(ops)) this.forestDirtyAgents.add(agentId);
-    this.pendingTranscriptAgents.add(agentId);
     this.scheduleFrameFlush();
+  }
+
+  private flushPendingTranscriptBatches(): void {
+    if (this.pendingTranscriptBatches.size === 0) return;
+    const agentIds = [...this.pendingTranscriptBatches.keys()];
+    for (const agentId of agentIds) this.flushPendingTranscriptBatch(agentId);
+  }
+
+  private flushPendingTranscriptBatch(agentId: string, startCatchUp = true): boolean {
+    const batch = this.pendingTranscriptBatches.get(agentId);
+    if (batch === undefined) return true;
+    this.pendingTranscriptBatches.delete(agentId);
+    const store = this.ensureAgentTranscript(agentId);
+    const result = store.apply(batch.ops);
+    if (result.gap !== undefined) {
+      const replay = this.catchupReplay.get(agentId);
+      this.catchupReplay.set(agentId, {
+        ops: replay === undefined ? batch.ops : [...replay.ops, ...batch.ops],
+        cursor:
+          replay === undefined || batch.cursor.seq >= replay.cursor.seq
+            ? batch.cursor
+            : replay.cursor,
+      });
+      if (startCatchUp) void this.catchUpAgent(agentId);
+      return false;
+    }
+    this.transcriptCursors.set(agentId, batch.cursor);
+    this.socket.updateTranscriptSince(this.sessionId, agentId, batch.cursor);
+    if (result.accepted.length > 0) {
+      if (opsAffectForest(result.accepted)) this.forestDirtyAgents.add(agentId);
+      this.pendingTranscriptAgents.add(agentId);
+    }
+    return true;
   }
 
   private catchUpAgent(agentId: string): Promise<void> {
     const inFlight = this.catchupByAgent.get(agentId);
-    if (inFlight !== undefined) return inFlight;
+    if (inFlight !== undefined) {
+      this.flushPendingTranscriptBatch(agentId, false);
+      return inFlight;
+    }
+    this.flushPendingTranscriptBatch(agentId, false);
     const run = this.runCatchUpAgent(agentId).finally(() => {
       if (this.catchupByAgent.get(agentId) === run) this.catchupByAgent.delete(agentId);
     });
@@ -591,11 +638,18 @@ export class SessionController {
         return;
       }
       const store = this.ensureAgentTranscript(agentId);
+      const recoveredOps: TranscriptOperation[] = [];
       for (const batch of result.batches) {
-        const ops = batch.ops as readonly TranscriptOperation[];
-        store.apply(ops);
-        if (opsAffectForest(ops)) this.forestDirtyAgents.add(agentId);
+        recoveredOps.push(...(batch.ops as readonly TranscriptOperation[]));
       }
+      const recovered = store.apply(recoveredOps);
+      if (recovered.gap !== undefined) {
+        this.catchupReplay.delete(agentId);
+        await this.resync();
+        return;
+      }
+      let changed = recovered.accepted.length > 0;
+      if (opsAffectForest(recovered.accepted)) this.forestDirtyAgents.add(agentId);
       let cursor: TranscriptCursor = { seq: result.through_seq, epoch: result.epoch };
       const live = this.transcriptCursors.get(agentId);
       if (live !== undefined && live.epoch === result.epoch && live.seq > cursor.seq) {
@@ -605,15 +659,20 @@ export class SessionController {
       this.catchupReplay.delete(agentId);
       if (pending !== undefined) {
         const retry = store.apply(pending.ops);
-        if (retry.gap === undefined && pending.cursor.seq > cursor.seq) {
-          cursor = pending.cursor;
+        if (retry.gap !== undefined) {
+          await this.resync();
+          return;
         }
-        if (opsAffectForest(pending.ops)) this.forestDirtyAgents.add(agentId);
+        if (pending.cursor.seq > cursor.seq) cursor = pending.cursor;
+        if (retry.accepted.length > 0) changed = true;
+        if (opsAffectForest(retry.accepted)) this.forestDirtyAgents.add(agentId);
       }
       this.transcriptCursors.set(agentId, cursor);
       this.socket.updateTranscriptSince(this.sessionId, agentId, cursor);
-      this.pendingTranscriptAgents.add(agentId);
-      this.scheduleFrameFlush();
+      if (changed) {
+        this.pendingTranscriptAgents.add(agentId);
+        this.scheduleFrameFlush();
+      }
     } catch {
       this.catchupReplay.delete(agentId);
       if (!this.closed) await this.resync();

@@ -6,6 +6,7 @@ import type { Message, Session, SessionSnapshotResponse } from '@moonshot-ai/pro
 import {
   CHILD_AGENT_ID,
   FIXED_AT,
+  FIXED_AT_1,
   FIXED_AT_2,
   PROMPT_ID,
   TOOL_CALL_ID,
@@ -18,6 +19,7 @@ import {
 
 import {
   appendLocalUserMessage,
+  agentTranscriptToBlocks,
   applyTranscriptShell,
   assistantMessageIdFromBlock,
   assistantMessageIdFromBlockId,
@@ -306,6 +308,75 @@ describe('transcript authority projection', () => {
   });
 });
 
+
+describe('transcript projection cache', () => {
+  it('reuses blocks projected from unchanged settled transcript items', () => {
+    const item: AgentTranscriptSnapshot['items'][number] = {
+      kind: 'turn',
+      turnId: 't-cache',
+      ordinal: 1,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt: 'cached prompt',
+      startedAt: FIXED_AT,
+      endedAt: FIXED_AT_2,
+      steps: [
+        {
+          kind: 'step',
+          stepId: 't-cache.1',
+          turnId: 't-cache',
+          ordinal: 1,
+          state: 'completed',
+          frames: [
+            { kind: 'text', frameId: 'f-cache', role: 'assistant', text: 'cached answer' },
+          ],
+        },
+      ],
+    };
+
+    const first = agentTranscriptToBlocks({ agent_id: 'main', items: [item] });
+    const second = agentTranscriptToBlocks({ agent_id: 'main', items: [item] });
+
+    expect(second).not.toBe(first);
+    expect(second).toHaveLength(first.length);
+    for (let index = 0; index < first.length; index += 1) {
+      expect(second[index]).toBe(first[index]);
+    }
+  });
+
+  it('reprojects attachment-bearing items when attachment metadata changes', () => {
+    const item = {
+      kind: 'turn' as const,
+      turnId: 't-media',
+      ordinal: 1,
+      state: 'completed' as const,
+      origin: { kind: 'user' as const },
+      prompt: 'see attachment',
+      attachmentIds: ['att-1'],
+      startedAt: FIXED_AT,
+      steps: [],
+    };
+    const first = agentTranscriptToBlocks({
+      agent_id: 'main',
+      items: [item],
+      attachments: [
+        { attachmentId: 'att-1', mediaType: 'image/png', source: { kind: 'url', url: 'https://example.com/one.png' } },
+      ],
+    });
+    const second = agentTranscriptToBlocks({
+      agent_id: 'main',
+      items: [item],
+      attachments: [
+        { attachmentId: 'att-1', mediaType: 'image/png', source: { kind: 'url', url: 'https://example.com/two.png' } },
+      ],
+    });
+
+    expect(first[0]).toMatchObject({ kind: 'user', media: [{ url: 'https://example.com/one.png' }] });
+    expect(second[0]).toMatchObject({ kind: 'user', media: [{ url: 'https://example.com/two.png' }] });
+    expect(second[0]).not.toBe(first[0]);
+  });
+});
+
 describe('canonical product gates via projectAgentTranscriptView', () => {
   it('updates an optimistic prompt when only its media changes', () => {
     const initial = appendLocalUserMessage(createViewState('session_test'), {
@@ -519,6 +590,82 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(projected.blocks.some((block) => block.id.includes(`ref-${CHILD_AGENT_ID}`))).toBe(true);
     expect(projected.planMode).toBe(true);
     expect(projected.swarmMode).toBe(true);
+  });
+
+
+  it('preserves unchanged block identities across streaming projections', () => {
+    const snapshot = (tail: string): AgentTranscriptSnapshot => ({
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't1',
+          ordinal: 1,
+          state: 'completed',
+          origin: { kind: 'user' },
+          prompt: 'settled prompt',
+          startedAt: FIXED_AT,
+          steps: [
+            {
+              kind: 'step',
+              stepId: 't1.1',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed',
+              frames: [
+                { kind: 'text', frameId: 'f-settled', role: 'assistant', text: 'settled answer' },
+              ],
+            },
+          ],
+        },
+        {
+          kind: 'turn',
+          turnId: 't2',
+          ordinal: 2,
+          state: 'running',
+          origin: { kind: 'user' },
+          prompt: 'live prompt',
+          startedAt: FIXED_AT_2,
+          steps: [
+            {
+              kind: 'step',
+              stepId: 't2.1',
+              turnId: 't2',
+              ordinal: 1,
+              state: 'running',
+              frames: [{ kind: 'text', frameId: 'f-live', role: 'assistant', text: tail }],
+            },
+          ],
+        },
+      ],
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [],
+      meta: {},
+      hasMoreOlder: false,
+    });
+    const first = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot('a'));
+    const second = projectAgentTranscriptView(first, 'main', snapshot('ab'));
+
+    for (let index = 0; index < first.blocks.length - 1; index += 1) {
+      expect(second.blocks[index]).toBe(first.blocks[index]);
+    }
+    expect(second.blocks.at(-1)).not.toBe(first.blocks.at(-1));
+    expect(second.blocks.at(-1)).toMatchObject({ kind: 'assistant', text: 'ab' });
+    expect(projectAgentTranscriptView(second, 'main', snapshot('ab')).blocks).toBe(second.blocks);
+  });
+
+  it('reuses settled turn block objects across streaming projection refreshes', () => {
+    const snapshot = userTurnSnapshot();
+    const first = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    const firstAssistant = first.blocks.find((block) => block.kind === 'assistant');
+
+    const second = projectAgentTranscriptView(first, 'main', snapshot);
+    const secondAssistant = second.blocks.find((block) => block.kind === 'assistant');
+
+    expect(firstAssistant).toBeDefined();
+    expect(secondAssistant).toBe(firstAssistant);
   });
 
   it('places a tool-anchored interaction inline instead of at the transcript bottom', () => {

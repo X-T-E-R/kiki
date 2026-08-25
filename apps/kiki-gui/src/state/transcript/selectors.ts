@@ -129,12 +129,21 @@ export function resolveActiveFloorId(
   viewportTop: number,
   slack = 80,
 ): string | undefined {
-  let active: string | undefined;
-  for (const position of positions) {
-    if (position.top <= viewportTop + slack) active = position.blockId;
-    else break;
+  const threshold = viewportTop + slack;
+  let low = 0;
+  let high = positions.length - 1;
+  let active = -1;
+  while (low <= high) {
+    const middle = low + Math.floor((high - low) / 2);
+    const position = positions[middle];
+    if (position !== undefined && position.top <= threshold) {
+      active = middle;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
   }
-  return active;
+  return active < 0 ? undefined : positions[active]?.blockId;
 }
 
 export function visibleSubagentIdsForParent(forest: AgentForest, parentAgentId: string): ReadonlySet<string> {

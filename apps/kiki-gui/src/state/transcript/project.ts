@@ -13,6 +13,7 @@ import type {
   ToolInputDisplay,
   UsageStatus,
 } from '@moonshot-ai/protocol';
+import { transcriptValueEquals } from '@moonshot-ai/transcript';
 import type {
   AgentState,
   AgentTranscriptSnapshot,
@@ -235,15 +236,15 @@ function frameMessageId(frame: object): string | undefined {
 
 function isLiveStreamingFrame(
   item: { readonly turnId: string; readonly state?: string },
-  step: { readonly stepId: string; readonly state?: string; readonly frames: readonly { readonly frameId: string; readonly kind: string }[] },
+  step: { readonly stepId: string; readonly state?: string },
   frame: { readonly frameId: string; readonly kind: string },
+  lastOpenFrameId: string | undefined,
   phase: AgentTranscriptSnapshot['meta']['agent'] extends { phase?: infer P } ? P : unknown,
 ): boolean {
   if (item.state !== 'running' && item.state !== 'queued') return false;
   if (step.state !== 'running') return false;
   if (frame.kind !== 'text' && frame.kind !== 'thinking') return false;
-  const lastOpen = [...step.frames].reverse().find((candidate) => candidate.kind === frame.kind);
-  if (lastOpen?.frameId !== frame.frameId) return false;
+  if (lastOpenFrameId !== frame.frameId) return false;
   if (phase === undefined || typeof phase !== 'object' || phase === null) return true;
 
   // The v1 compatibility projector cannot always recover canonical step IDs
@@ -264,13 +265,12 @@ function isLiveStreamingFrame(
 
 function mediaFromAttachmentIds(
   ids: readonly string[] | undefined,
-  attachments: readonly AgentTranscriptAttachment[] | undefined,
+  attachmentsById: ReadonlyMap<string, AgentTranscriptAttachment> | undefined,
 ): readonly MediaRef[] | undefined {
-  if (ids === undefined || ids.length === 0 || attachments === undefined) return undefined;
-  const byId = new Map(attachments.map((attachment) => [attachment.attachmentId, attachment]));
+  if (ids === undefined || ids.length === 0 || attachmentsById === undefined) return undefined;
   const media: MediaRef[] = [];
   for (const id of ids) {
-    const attachment = byId.get(id);
+    const attachment = attachmentsById.get(id);
     if (attachment === undefined) continue;
     const source = attachment.source;
     media.push({
@@ -1238,6 +1238,27 @@ export function retainPendingPromptBlocks(previous: readonly Block[], next: Bloc
   return merged;
 }
 
+export function stabilizeProjectedBlocks(
+  previous: readonly Block[],
+  next: readonly Block[],
+): readonly Block[] {
+  if (previous.length === 0 || next.length === 0) return next;
+  let previousById: ReadonlyMap<string, Block> | undefined;
+  let allStable = previous.length === next.length;
+  const stable = next.map((block, index) => {
+    let candidate = previous[index];
+    if (candidate?.id !== block.id) {
+      allStable = false;
+      previousById ??= new Map(previous.map((item) => [item.id, item]));
+      candidate = previousById.get(block.id);
+    }
+    if (candidate !== undefined && transcriptValueEquals(candidate, block)) return candidate;
+    allStable = false;
+    return block;
+  });
+  return allStable ? previous : stable;
+}
+
 function turnTailFromItem(item: {
   readonly turnId: string;
   readonly state?: string;
@@ -1271,6 +1292,40 @@ function turnTailFromItem(item: {
   };
 }
 
+const terminalTurnProjectionCache = new WeakMap<object, Map<string, readonly Block[]>>();
+
+function isTerminalTurn(item: object): boolean {
+  const state = (item as { readonly state?: unknown }).state;
+  return state === 'completed' || state === 'failed' || state === 'cancelled';
+}
+
+function turnHasAttachments(item: {
+  readonly attachmentIds?: readonly string[];
+  readonly steps: readonly { readonly frames: readonly object[] }[];
+}): boolean {
+  if (item.attachmentIds !== undefined && item.attachmentIds.length > 0) return true;
+  for (const step of item.steps) {
+    for (const frame of step.frames) {
+      const attachmentIds = (frame as { readonly attachmentIds?: readonly string[] }).attachmentIds;
+      if (attachmentIds !== undefined && attachmentIds.length > 0) return true;
+    }
+  }
+  return false;
+}
+
+function cacheTerminalTurnBlocks(
+  item: object,
+  agentId: string,
+  blocks: readonly Block[],
+): void {
+  const existing = terminalTurnProjectionCache.get(item);
+  if (existing !== undefined) {
+    existing.set(agentId, blocks);
+    return;
+  }
+  terminalTurnProjectionCache.set(item, new Map([[agentId, blocks]]));
+}
+
 export function agentTranscriptToBlocks(
   response: AgentTranscriptProjectionSource | AgentTranscriptResponse,
   previous: readonly Block[] = [],
@@ -1280,6 +1335,10 @@ export function agentTranscriptToBlocks(
   const phase = response.meta?.agent?.phase;
   const prompts = response.prompts ?? [];
   const attachments = response.attachments ?? [];
+  const attachmentsById =
+    attachments.length === 0
+      ? undefined
+      : new Map(attachments.map((attachment) => [attachment.attachmentId, attachment]));
   for (const item of response.items) {
     if (item.kind === 'marker') {
       const marker = markerToBlock(item);
@@ -1296,6 +1355,15 @@ export function agentTranscriptToBlocks(
       continue;
     }
     if (item.kind !== 'turn') continue;
+    const terminal = isTerminalTurn(item);
+    if (terminal) {
+      const cached = terminalTurnProjectionCache.get(item)?.get(response.agent_id);
+      if (cached !== undefined) {
+        blocks.push(...cached);
+        continue;
+      }
+    }
+    const blockStart = blocks.length;
     if (item.prompt !== undefined && item.prompt.trim() !== '') {
       const origin = originFromTurnItem(item) ?? { kind: 'task', taskId: response.agent_id };
       const identity = identityFromTurnOrigin(origin);
@@ -1315,13 +1383,25 @@ export function agentTranscriptToBlocks(
           userMessageId,
           media: mediaFromAttachmentIds(
             (item as { attachmentIds?: readonly string[] }).attachmentIds,
-            attachments,
+            attachmentsById,
           ),
         }),
       );
     }
     const openingText = splitSystemReminders(item.prompt ?? '').text;
     for (const step of item.steps) {
+      let lastTextFrameId: string | undefined;
+      let lastThinkingFrameId: string | undefined;
+      for (let index = step.frames.length - 1; index >= 0; index -= 1) {
+        const candidate = step.frames[index]!;
+        if (lastTextFrameId === undefined && candidate.kind === 'text') {
+          lastTextFrameId = candidate.frameId;
+        }
+        if (lastThinkingFrameId === undefined && candidate.kind === 'thinking') {
+          lastThinkingFrameId = candidate.frameId;
+        }
+        if (lastTextFrameId !== undefined && lastThinkingFrameId !== undefined) break;
+      }
       for (const frame of step.frames) {
         switch (frame.kind) {
           case 'text':
@@ -1347,7 +1427,7 @@ export function agentTranscriptToBlocks(
                   userMessageId,
                   media: mediaFromAttachmentIds(
                     (frame as { attachmentIds?: readonly string[] }).attachmentIds,
-                    attachments,
+                    attachmentsById,
                   ),
                 }),
               );
@@ -1359,13 +1439,13 @@ export function agentTranscriptToBlocks(
                 kind: 'assistant',
                 id: `agent-frame-${frame.frameId}`,
                 text: frame.text,
-                streaming: isLiveStreamingFrame(item, step, frame, phase),
+                streaming: isLiveStreamingFrame(item, step, frame, lastTextFrameId, phase),
                 createdAt: step.endedAt ?? item.endedAt,
                 turnId: item.turnId,
                 messageId,
                 media: mediaFromAttachmentIds(
                   (frame as { attachmentIds?: readonly string[] }).attachmentIds,
-                  attachments,
+                  attachmentsById,
                 ),
               });
             }
@@ -1375,7 +1455,7 @@ export function agentTranscriptToBlocks(
               kind: 'thinking',
               id: `agent-frame-${frame.frameId}`,
               text: frame.text,
-              streaming: isLiveStreamingFrame(item, step, frame, phase),
+              streaming: isLiveStreamingFrame(item, step, frame, lastThinkingFrameId, phase),
               createdAt: step.endedAt ?? item.endedAt,
               turnId: item.turnId,
             });
@@ -1438,6 +1518,9 @@ export function agentTranscriptToBlocks(
             break;
         }
       }
+    }
+    if (terminal && !turnHasAttachments(item)) {
+      cacheTerminalTurnBlocks(item, response.agent_id, blocks.slice(blockStart));
     }
   }
   const withPrompts = mergeTranscriptPromptBlocks(blocks, prompts, previous);
@@ -1626,30 +1709,42 @@ export function projectAgentTranscriptView(
     options.retainPendingPrompts === false
       ? projected
       : retainPendingPromptBlocks(previous.blocks, projected);
-  const firstTurn = snapshot.items.find((item) => item.kind === 'turn');
-  const lastTurn = [...snapshot.items].reverse().find((item) => item.kind === 'turn');
+  const stableBlocks = stabilizeProjectedBlocks(previous.blocks, blocks);
+  let firstTurn: Extract<TranscriptItem, { kind: 'turn' }> | undefined;
+  let lastTurn: Extract<TranscriptItem, { kind: 'turn' }> | undefined;
+  for (const item of snapshot.items) {
+    if (item.kind !== 'turn') continue;
+    firstTurn ??= item;
+    lastTurn = item;
+  }
   const meta = snapshot.meta.agent;
   const prompts = Array.isArray(snapshot.prompts) ? snapshot.prompts : [...snapshot.prompts.values()];
-  const queuedPromptIds = prompts.filter((prompt) => prompt.status === 'queued').map((prompt) => prompt.promptId);
-  const running = prompts.find((prompt) => prompt.status === 'running');
+  const queuedPromptIds: string[] = [];
+  let running: TranscriptPrompt | undefined;
+  for (const prompt of prompts) {
+    if (prompt.status === 'queued') queuedPromptIds.push(prompt.promptId);
+    if (running === undefined && prompt.status === 'running') running = prompt;
+  }
   const interactions = Array.isArray(snapshot.interactions)
     ? snapshot.interactions
     : [...snapshot.interactions.values()];
   const todos = Array.isArray(snapshot.todos) ? snapshot.todos : [...snapshot.todos.values()];
   const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : [...snapshot.tasks.values()];
-  const pendingInteraction: SessionPendingInteraction = interactions.some(
-    (interaction) => interaction.interactionKind === 'approval' && interaction.state === 'pending',
-  )
-    ? 'approval'
-    : interactions.some((interaction) => interaction.interactionKind === 'question' && interaction.state === 'pending')
-      ? 'question'
-      : 'none';
+  let pendingInteraction: SessionPendingInteraction = 'none';
+  for (const interaction of interactions) {
+    if (interaction.state !== 'pending') continue;
+    if (interaction.interactionKind === 'approval') {
+      pendingInteraction = 'approval';
+      break;
+    }
+    if (interaction.interactionKind === 'question') pendingInteraction = 'question';
+  }
   const goal = snapshot.meta.goal;
-  const turnTail = lastTurn?.kind === 'turn' ? turnTailFromItem(lastTurn) : undefined;
+  const turnTail = lastTurn === undefined ? undefined : turnTailFromItem(lastTurn);
   return {
     ...previous,
     version: previous.version + 1,
-    blocks,
+    blocks: stableBlocks,
     loaded: true,
     loadError: undefined,
     busy: agentBusyFromMeta(source) === true,
@@ -1668,7 +1763,7 @@ export function projectAgentTranscriptView(
     tasks: tasks.map(transcriptTaskToSessionTask),
     goal: goal === undefined ? null : projectGoalSnapshot(goal),
     hasMoreHistory: snapshot.hasMoreOlder === true,
-    oldestMessageId: firstTurn?.kind === 'turn' ? firstTurn.turnId : undefined,
+    oldestMessageId: firstTurn?.turnId,
     turnTail: turnTail ?? previous.turnTail,
   };
 }
