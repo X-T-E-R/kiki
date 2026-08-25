@@ -21,10 +21,10 @@ import type { ResultRenderer } from './types';
 const DESCRIPTION_MAX = 72;
 const RUNNING_SAMPLES = 3;
 
-type WaitForStatus = 'completed' | 'timed_out' | 'no_tasks';
+type TaskWaitStatus = 'completed' | 'timed_out' | 'no_tasks';
 
-interface WaitForResultView {
-  readonly status: WaitForStatus;
+interface TaskWaitResultView {
+  readonly status: TaskWaitStatus;
   readonly waitedMs: number;
   readonly finishedTaskId?: string;
   readonly finishedStatus?: string;
@@ -34,9 +34,9 @@ interface WaitForResultView {
   readonly runningSamples: readonly string[];
 }
 
-export const waitForSummary: ResultRenderer = (toolCall, result, ctx) => {
+export const taskWaitSummary: ResultRenderer = (toolCall, result, ctx) => {
   if (result.is_error) return renderTruncated(toolCall, result, ctx);
-  const view = parseWaitForOutput(result.output);
+  const view = parseTaskWaitOutput(result.output);
   if (view === undefined) return renderTruncated(toolCall, result, ctx);
 
   const out: Component[] = [];
@@ -49,7 +49,7 @@ export const waitForSummary: ResultRenderer = (toolCall, result, ctx) => {
   return out;
 };
 
-export function buildWaitForHeader(options: {
+export function buildTaskWaitHeader(options: {
   readonly toolCall: ToolCallBlockData;
   readonly result: ToolResultBlockData | undefined;
   readonly bullet: string;
@@ -71,7 +71,7 @@ export function buildWaitForHeader(options: {
     return `${bullet}${currentTheme.boldFg('error', 'Could not wait for background task')}${argText}`;
   }
 
-  const status = parseWaitForOutput(result.output)?.status;
+  const status = parseTaskWaitOutput(result.output)?.status;
   if (status === 'timed_out') {
     return `${currentTheme.fg('warning', STATUS_BULLET)}${currentTheme.boldFg('warning', 'Wait timed out')}${argText}${chip}`;
   }
@@ -82,14 +82,14 @@ export function buildWaitForHeader(options: {
   return `${bullet}${currentTheme.boldFg('primary', label)}${argText}${chip}`;
 }
 
-export const waitForChip = (_toolCall: ToolCallBlockData, result: ToolResultBlockData): string => {
+export const taskWaitChip = (_toolCall: ToolCallBlockData, result: ToolResultBlockData): string => {
   if (result.is_error === true) return '';
-  const view = parseWaitForOutput(result.output);
+  const view = parseTaskWaitOutput(result.output);
   if (view === undefined || view.status === 'no_tasks') return '';
   return formatGoalElapsed(view.waitedMs);
 };
 
-function glanceLines(view: WaitForResultView): string[] {
+function glanceLines(view: TaskWaitResultView): string[] {
   switch (view.status) {
     case 'no_tasks':
       return [];
@@ -123,7 +123,7 @@ function pluralizeTasks(count: number): string {
   return `${String(count)} background task${count === 1 ? '' : 's'}`;
 }
 
-function parseWaitForOutput(output: string): WaitForResultView | undefined {
+function parseTaskWaitOutput(output: string): TaskWaitResultView | undefined {
   const status = field(output, 'wait_status');
   if (status !== 'completed' && status !== 'timed_out' && status !== 'no_tasks') return undefined;
   const waitedMs = Number(field(output, 'waited_ms') ?? 0);

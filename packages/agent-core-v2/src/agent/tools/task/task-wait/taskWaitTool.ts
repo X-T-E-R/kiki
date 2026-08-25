@@ -16,9 +16,9 @@ import { formatTaskList } from '#/agent/tools/task/task-list/taskListTool';
 import { IFlagService } from '#/app/flag/flag';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { abortError, linkAbortSignal } from '#/_base/utils/abort';
-import { WAIT_FOR_FLAG_ID } from './flag';
-import { IWaitForTool, WaitForInputSchema, type WaitForInput } from './task-wait';
-import WAIT_FOR_DESCRIPTION from './task-wait.md?raw';
+import { TASK_WAIT_FLAG_ID } from './flag';
+import { ITaskWaitTool, TaskWaitInputSchema, type TaskWaitInput } from './task-wait';
+import TASK_WAIT_DESCRIPTION from './task-wait.md?raw';
 
 const OUTPUT_PREVIEW_BYTES = 32 * 1024;
 
@@ -26,7 +26,7 @@ const PAGING_HINT_LINES = 300;
 
 const PROGRESS_INTERVAL_MS = 1_000;
 
-type WaitForOutcome = 'completed' | 'timed_out' | 'task_not_found' | 'aborted';
+type TaskWaitOutcome = 'completed' | 'timed_out' | 'task_not_found' | 'aborted';
 
 function terminalReason(info: AgentTaskInfo): 'timed_out' | 'stopped' | 'failed' | undefined {
   if (info.status === 'timed_out') return 'timed_out';
@@ -53,8 +53,8 @@ function fullOutputHint(output: AgentTaskOutputSnapshot): string | undefined {
   );
 }
 
-export function waitForProgressUpdate(
-  args: WaitForInput,
+export function taskWaitProgressUpdate(
+  args: TaskWaitInput,
   runningCount: number,
   startedAt: number,
   now: number,
@@ -85,20 +85,20 @@ function formatWaitSeconds(totalSeconds: number): string {
     : `${String(hours)}h ${remainingMinutes.toString().padStart(2, '0')}m`;
 }
 
-export interface WaitForProgressHandle {
+export interface TaskWaitProgressHandle {
   readonly stop: () => void;
   readonly tick: () => void;
 }
 
 export function startWaitProgress(
-  args: WaitForInput,
+  args: TaskWaitInput,
   tasks: Pick<IAgentTaskService, 'list'>,
   onUpdate: ((update: ToolUpdate) => void) | undefined,
   startedAt: number,
-): WaitForProgressHandle {
+): TaskWaitProgressHandle {
   if (onUpdate === undefined) return { stop: () => {}, tick: () => {} };
   const tick = (): void => {
-    onUpdate(waitForProgressUpdate(args, tasks.list(true).length, startedAt, Date.now()));
+    onUpdate(taskWaitProgressUpdate(args, tasks.list(true).length, startedAt, Date.now()));
   };
   tick();
   const interval = setInterval(tick, PROGRESS_INTERVAL_MS);
@@ -111,11 +111,11 @@ export function startWaitProgress(
   };
 }
 
-export class WaitForTool implements IWaitForTool {
+export class TaskWaitTool implements ITaskWaitTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'TaskWait' as const;
-  readonly description: string = WAIT_FOR_DESCRIPTION;
-  readonly parameters: Record<string, unknown> = toInputJsonSchema(WaitForInputSchema);
+  readonly description: string = TASK_WAIT_DESCRIPTION;
+  readonly parameters: Record<string, unknown> = toInputJsonSchema(TaskWaitInputSchema);
 
   constructor(
     @IAgentTaskService private readonly tasks: IAgentTaskService,
@@ -123,7 +123,7 @@ export class WaitForTool implements IWaitForTool {
     @IFlagService private readonly flags: IFlagService,
   ) {}
 
-  resolveExecution(args: WaitForInput): ToolExecution {
+  resolveExecution(args: TaskWaitInput): ToolExecution {
     return {
       description:
         args.task_id === undefined
@@ -136,13 +136,13 @@ export class WaitForTool implements IWaitForTool {
   }
 
   private async execute(
-    args: WaitForInput,
+    args: TaskWaitInput,
     ctx: ExecutableToolContext,
   ): Promise<ExecutableToolResult> {
-    if (!this.flags.enabled(WAIT_FOR_FLAG_ID)) {
+    if (!this.flags.enabled(TASK_WAIT_FLAG_ID)) {
       return {
         isError: true,
-        output: 'TaskWait is disabled: the wait_for experimental flag is off.',
+        output: 'TaskWait is disabled: the task_wait experimental flag is off.',
       };
     }
     const startedAt = Date.now();
@@ -237,7 +237,7 @@ export class WaitForTool implements IWaitForTool {
     return extras;
   }
 
-  private formatTimeout(args: WaitForInput, startedAt: number, timeoutMs: number): string {
+  private formatTimeout(args: TaskWaitInput, startedAt: number, timeoutMs: number): string {
     const lines = [
       formatPlainObject({
         waitStatus: 'timed_out',
@@ -315,13 +315,13 @@ export class WaitForTool implements IWaitForTool {
   }
 
   private track(
-    args: WaitForInput,
+    args: TaskWaitInput,
     startedAt: number,
     timeoutMs: number,
-    outcome: WaitForOutcome,
+    outcome: TaskWaitOutcome,
     extraCompletedCount: number,
   ): void {
-    this.telemetry.track2('wait_for_completed', {
+    this.telemetry.track2('task_wait_completed', {
       outcome,
       timeout_ms: timeoutMs,
       waited_ms: Date.now() - startedAt,
@@ -331,8 +331,8 @@ export class WaitForTool implements IWaitForTool {
   }
 }
 
-registerAgentToolService(IWaitForTool, WaitForTool, {
+registerAgentToolService(ITaskWaitTool, TaskWaitTool, {
   name: 'TaskWait',
   domain: 'agentTask',
-  when: (accessor) => accessor.get(IFlagService).enabled(WAIT_FOR_FLAG_ID),
+  when: (accessor) => accessor.get(IFlagService).enabled(TASK_WAIT_FLAG_ID),
 });

@@ -34,8 +34,8 @@ import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { ITelemetryService, noopTelemetryService } from '#/app/telemetry/telemetry';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { SubagentTask } from '#/agent/tools/agent/subagent-task';
-import { type WaitForInput } from '#/agent/tools/task/task-wait/task-wait';
-import { WaitForTool } from '#/agent/tools/task/task-wait/taskWaitTool';
+import { type TaskWaitInput } from '#/agent/tools/task/task-wait/task-wait';
+import { TaskWaitTool } from '#/agent/tools/task/task-wait/taskWaitTool';
 import { IWireService } from '#/wire/wire';
 import { WireService } from '#/wire/wireService';
 import { IEventBus } from '#/app/event/eventBus';
@@ -344,7 +344,7 @@ describe('AgentTaskService', () => {
     expect(delivered.map((message) => (message.origin as TaskOrigin).taskId)).toEqual([taskB]);
   });
 
-  function waitContext(toolCallId: string, args: WaitForInput) {
+  function waitContext(toolCallId: string, args: TaskWaitInput) {
     return { turnId: 0, toolCallId, args, signal: new AbortController().signal };
   }
 
@@ -376,8 +376,8 @@ describe('AgentTaskService', () => {
     const bytes = new InMemoryStorageService();
     const mainSvc = buildAgentIx('main', docs, bytes).get(IAgentTaskService);
     const childSvc = buildAgentIx('child-1', docs, bytes).get(IAgentTaskService);
-    const mainTool = new WaitForTool(mainSvc, noopTelemetryService, stubFlag(true));
-    const childTool = new WaitForTool(childSvc, noopTelemetryService, stubFlag(true));
+    const mainTool = new TaskWaitTool(mainSvc, noopTelemetryService, stubFlag(true));
+    const childTool = new TaskWaitTool(childSvc, noopTelemetryService, stubFlag(true));
 
     const leaf = pendingSubagentTask('agent-grandchild', 'leaf work');
     const taskC = childSvc.registerTask(leaf.task);
@@ -426,8 +426,8 @@ describe('AgentTaskService', () => {
     const bytes = new InMemoryStorageService();
     const mainSvc = buildAgentIx('main', docs, bytes).get(IAgentTaskService);
     const childSvc = buildAgentIx('child-1', docs, bytes).get(IAgentTaskService);
-    const mainTool = new WaitForTool(mainSvc, noopTelemetryService, stubFlag(true));
-    const childTool = new WaitForTool(childSvc, noopTelemetryService, stubFlag(true));
+    const mainTool = new TaskWaitTool(mainSvc, noopTelemetryService, stubFlag(true));
+    const childTool = new TaskWaitTool(childSvc, noopTelemetryService, stubFlag(true));
 
     const parent = pendingSubagentTask('agent-parent', 'parent work');
     const taskM = mainSvc.registerTask(parent.task);

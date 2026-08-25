@@ -15,7 +15,7 @@ export const SubagentToolInputSchema = z.preprocess(
     const record = input as Record<string, unknown>;
     const normalized = { ...record };
     const hasResumeId =
-      typeof normalized['agent'] === 'string' && normalized['agent'].trim().length > 0;
+      typeof normalized['resume'] === 'string' && normalized['resume'].trim().length > 0;
     const hasProfile =
       typeof normalized['profile'] === 'string' && normalized['profile'].length > 0;
     const hasRoute = typeof normalized['route'] === 'string' && normalized['route'].length > 0;
@@ -28,6 +28,7 @@ export const SubagentToolInputSchema = z.preprocess(
   },
   z.object({
     prompt: z.string().describe('Full task prompt for the subagent'),
+    description: z.string().describe('Short task description (3-5 words) for UI display'),
     profile: z
       .string()
       .optional()
@@ -48,9 +49,9 @@ export const SubagentToolInputSchema = z.preprocess(
       .min(1)
       .optional()
       .describe(
-        'Optional stable name for the new subagent, unique within this session (lowercase letters, digits, and underscores; "root" is reserved). Use it to address the same agent again with agent, AgentSend, or AgentList instead of tracking its generated ID. Rejected together with agent.',
+        'Optional stable name for the new subagent, unique within this session (lowercase letters, digits, and underscores; "root" is reserved). Use it to address the same agent again with resume, AgentSend, or AgentList instead of tracking its generated ID. Rejected together with resume.',
       ),
-    agent: z
+    resume: z
       .string()
       .optional()
       .describe(
@@ -66,7 +67,7 @@ export const SubagentToolInputSchema = z.preprocess(
       .string()
       .optional()
       .describe(
-        'Which model to run the new subagent on: one of the pool aliases listed under "Available models", or "primary" to freeze the caller model and thinking binding at spawn time. When omitted, the configured pool default is used; without an enabled pool the child inherits the caller binding. Rejected together with agent.',
+        'Which model to run the new subagent on: one of the pool aliases listed under "Available models", or "primary" to freeze the caller model and thinking binding at spawn time. When omitted, the configured pool default is used; without an enabled pool the child inherits the caller binding. Rejected together with resume.',
       ),
     model_alias: z
       .string()
@@ -90,7 +91,7 @@ export const SubagentToolInputSchema = z.preprocess(
       });
     }
     if (
-      args.agent?.trim() &&
+      args.resume?.trim() &&
       (args.route !== undefined || args.model !== undefined || args.model_alias !== undefined || args.effort !== undefined)
     ) {
       ctx.addIssue({
@@ -98,7 +99,7 @@ export const SubagentToolInputSchema = z.preprocess(
         message: 'Cannot set route, model, model_alias, or effort when continuing an existing agent',
       });
     }
-    if (args.agent?.trim() && args.name !== undefined) {
+    if (args.resume?.trim() && args.name !== undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: 'Cannot set name when continuing an existing agent; the name was fixed at creation',
@@ -114,28 +115,6 @@ export const SubagentToolInputSchema = z.preprocess(
 );
 
 export type SubagentToolInput = z.infer<typeof SubagentToolInputSchema>;
-
-const DERIVED_LABEL_MAX = 60;
-
-/**
- * The UI label the model used to supply as `description`. A name is already a
- * deliberate handle, so it wins; otherwise the opening line of the prompt is
- * the closest thing to a title the caller actually wrote.
- */
-export function deriveAgentRunLabel(args: {
-  readonly name?: string;
-  readonly prompt: string;
-}): string {
-  if (args.name !== undefined && args.name.trim().length > 0) return args.name.trim();
-  const firstLine = args.prompt
-    .split('\n')
-    .map((line) => line.replace(/^[\s>#*\-]+/u, '').trim())
-    .find((line) => line.length > 0);
-  if (firstLine === undefined) return 'subagent task';
-  return firstLine.length <= DERIVED_LABEL_MAX
-    ? firstLine
-    : `${firstLine.slice(0, DERIVED_LABEL_MAX - 1).trimEnd()}…`;
-}
 
 export const SubagentToolOutputSchema = z.object({
   result: z.string().describe('Aggregated text output from the subagent'),
@@ -154,7 +133,7 @@ export type SubagentToolOutput = z.infer<typeof SubagentToolOutputSchema>;
 export const BACKGROUND_AGENT_UNAVAILABLE =
   'Background agent execution is not available for this agent because TaskList, TaskOutput, and TaskStop are not enabled.';
 export const RESUME_WITH_TYPE_UNAVAILABLE =
-  'Cannot set profile when continuing an existing agent. Pass only agent with the name or agent id.';
+  'Cannot set profile when continuing an existing agent. Pass only resume with the name or agent id.';
 export const USER_INTERRUPTED_SUBAGENT_MESSAGE =
   'The subagent was stopped before it finished by user.';
 export const SUBAGENT_STOPPED_MESSAGE = 'The subagent was stopped before it finished.';

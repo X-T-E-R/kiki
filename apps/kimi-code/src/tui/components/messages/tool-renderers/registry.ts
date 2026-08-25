@@ -13,7 +13,7 @@
 import { readMediaSummary } from './media';
 import { shellExecutionResultRenderer } from '../shell-execution';
 import { goalSummary } from './goal';
-import { waitForSummary } from './wait-for';
+import { taskWaitSummary } from './task-wait';
 import {
   editSummary,
   fetchSummary,
@@ -65,8 +65,7 @@ export function pickResultRenderer(toolName: string): ResultRenderer {
     case 'UpdateGoal':
       return goalSummary;
     case 'TaskWait':
-    case 'WaitFor':
-      return waitForSummary;
+      return taskWaitSummary;
     default:
       return renderTruncated;
   }

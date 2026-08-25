@@ -1934,8 +1934,8 @@ describe('ToolCallComponent', () => {
     }
   });
 
-  describe('WaitFor header', () => {
-    const waitForCompletedOutput = [
+  describe('TaskWait header', () => {
+    const taskWaitCompletedOutput = [
       'wait_status: completed',
       'task_id: question-80w0h7nw',
       'waited_ms: 9607',
@@ -1952,7 +1952,7 @@ describe('ToolCallComponent', () => {
       const component = new ToolCallComponent(
         {
           id: 'call_wait_pending',
-          name: 'WaitFor',
+          name: 'TaskWait',
           args: { task_id: 'question-80w0h7nw', timeout: 300 },
         },
         undefined,
@@ -1968,7 +1968,7 @@ describe('ToolCallComponent', () => {
 
     it('falls back to "any background task" when no task id is given', () => {
       const component = new ToolCallComponent(
-        { id: 'call_wait_any', name: 'WaitFor', args: { timeout: 300 } },
+        { id: 'call_wait_any', name: 'TaskWait', args: { timeout: 300 } },
         undefined,
         stubTui(30),
       );
@@ -1982,12 +1982,12 @@ describe('ToolCallComponent', () => {
       const component = new ToolCallComponent(
         {
           id: 'call_wait_done',
-          name: 'WaitFor',
+          name: 'TaskWait',
           args: { task_id: 'question-80w0h7nw', timeout: 300 },
         },
         {
           tool_call_id: 'call_wait_done',
-          output: waitForCompletedOutput,
+          output: taskWaitCompletedOutput,
           is_error: false,
         },
       );
@@ -2001,7 +2001,7 @@ describe('ToolCallComponent', () => {
       const component = new ToolCallComponent(
         {
           id: 'call_wait_timeout',
-          name: 'WaitFor',
+          name: 'TaskWait',
           args: { task_id: 'question-80w0h7nw', timeout: 1 },
         },
         {
@@ -2020,7 +2020,7 @@ describe('ToolCallComponent', () => {
       const component = new ToolCallComponent(
         {
           id: 'call_wait_error',
-          name: 'WaitFor',
+          name: 'TaskWait',
           args: { task_id: 'bash-x', timeout: 300 },
         },
         {
@@ -2037,7 +2037,7 @@ describe('ToolCallComponent', () => {
 
     it('replaces the previous status block when progress arrives with replace', () => {
       const component = new ToolCallComponent(
-        { id: 'call_wait_replace', name: 'WaitFor', args: { timeout: 600 } },
+        { id: 'call_wait_replace', name: 'TaskWait', args: { timeout: 600 } },
         undefined,
         stubTui(30),
       );
@@ -2058,7 +2058,7 @@ describe('ToolCallComponent', () => {
 
     it('keeps appending status rows when replace is not set', () => {
       const component = new ToolCallComponent(
-        { id: 'call_wait_append', name: 'WaitFor', args: { timeout: 600 } },
+        { id: 'call_wait_append', name: 'TaskWait', args: { timeout: 600 } },
         undefined,
         stubTui(30),
       );
@@ -2086,7 +2086,7 @@ describe('ToolCallComponent', () => {
       });
       component.appendSubToolCall({
         id: 'sub_wait_1:wait',
-        name: 'WaitFor',
+        name: 'TaskWait',
         args: { timeout: 600 },
       });
 

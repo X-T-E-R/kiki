@@ -1,16 +1,16 @@
 import { type FlagDefinitionInput, registerFlagDefinition } from '#/app/flag/flagRegistry';
 
-export const WAIT_FOR_FLAG_ID = 'wait_for';
-export const WAIT_FOR_FLAG_ENV = 'KIMI_CODE_EXPERIMENTAL_WAIT_FOR';
+export const TASK_WAIT_FLAG_ID = 'task_wait';
+export const TASK_WAIT_FLAG_ENV = 'KIMI_CODE_EXPERIMENTAL_TASK_WAIT';
 
-export const waitForFlag: FlagDefinitionInput = {
-  id: WAIT_FOR_FLAG_ID,
+export const taskWaitFlag: FlagDefinitionInput = {
+  id: TASK_WAIT_FLAG_ID,
   title: 'TaskWait tool',
   description:
     'Give the model the TaskWait tool so it can wait for background tasks inside the current turn instead of ending the turn and being re-invoked.',
-  env: WAIT_FOR_FLAG_ENV,
+  env: TASK_WAIT_FLAG_ENV,
   default: true,
   surface: 'core',
 };
 
-registerFlagDefinition(waitForFlag);
+registerFlagDefinition(taskWaitFlag);

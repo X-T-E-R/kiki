@@ -251,7 +251,7 @@ describe('tool-result registry', () => {
     expect(out).toContain('... (');
   });
 
-  const waitForCompletedOutput = [
+  const taskWaitCompletedOutput = [
     'wait_status: completed',
     'task_id: question-80w0h7nw',
     'waited_ms: 9607',
@@ -259,7 +259,7 @@ describe('tool-result registry', () => {
     '',
     '[finished]',
     'task_id: question-80w0h7nw',
-    'description: Pick one so I can demonstrate WaitFor with background questions?',
+    'description: Pick one so I can demonstrate TaskWait with background questions?',
     'status: completed',
     'kind: question',
     '',
@@ -267,11 +267,11 @@ describe('tool-result registry', () => {
     '{"answers":{"Pick one":"Beta"}}',
   ].join('\n');
 
-  it('WaitFor completed renders the finished task instead of raw fields', () => {
-    const renderer = pickResultRenderer('WaitFor');
+  it('TaskWait completed renders the finished task instead of raw fields', () => {
+    const renderer = pickResultRenderer('TaskWait');
     const out = strip(
       joinRender(
-        renderer(call('WaitFor', { task_id: 'question-80w0h7nw' }), result(waitForCompletedOutput), ctx),
+        renderer(call('TaskWait', { task_id: 'question-80w0h7nw' }), result(taskWaitCompletedOutput), ctx),
       ),
     );
     expect(out).toContain('✓ question-80w0h7nw completed');
@@ -280,13 +280,13 @@ describe('tool-result registry', () => {
     expect(out).not.toContain('[finished]');
   });
 
-  it('WaitFor completed expands to the raw timeline output', () => {
-    const renderer = pickResultRenderer('WaitFor');
+  it('TaskWait completed expands to the raw timeline output', () => {
+    const renderer = pickResultRenderer('TaskWait');
     const out = strip(
       joinRender(
         renderer(
-          call('WaitFor', { task_id: 'question-80w0h7nw' }),
-          result(waitForCompletedOutput),
+          call('TaskWait', { task_id: 'question-80w0h7nw' }),
+          result(taskWaitCompletedOutput),
           expandedCtx,
         ),
       ),
@@ -295,7 +295,7 @@ describe('tool-result registry', () => {
     expect(out).toContain('waited_ms: 9607');
   });
 
-  it('WaitFor completed mentions extras and still-running counts', () => {
+  it('TaskWait completed mentions extras and still-running counts', () => {
     const output = [
       'wait_status: completed',
       'task_id: bash-a1',
@@ -322,14 +322,14 @@ describe('tool-result registry', () => {
       'description: another slow one',
       'status: running',
     ].join('\n');
-    const renderer = pickResultRenderer('WaitFor');
-    const out = strip(joinRender(renderer(call('WaitFor', { task_id: 'bash-a1' }), result(output), ctx)));
+    const renderer = pickResultRenderer('TaskWait');
+    const out = strip(joinRender(renderer(call('TaskWait', { task_id: 'bash-a1' }), result(output), ctx)));
     expect(out).toContain('✗ bash-a1 failed');
     expect(out).toContain('+1 more finished during wait');
     expect(out).toContain('2 background tasks still running');
   });
 
-  it('WaitFor timed_out lists the still-running tasks without an error tone', () => {
+  it('TaskWait timed_out lists the still-running tasks without an error tone', () => {
     const output = [
       'wait_status: timed_out',
       'task_id: bash-a1',
@@ -347,26 +347,26 @@ describe('tool-result registry', () => {
       'description: investigate flaky test',
       'status: running',
     ].join('\n');
-    const renderer = pickResultRenderer('WaitFor');
-    const out = strip(joinRender(renderer(call('WaitFor', { task_id: 'bash-a1' }), result(output), ctx)));
+    const renderer = pickResultRenderer('TaskWait');
+    const out = strip(joinRender(renderer(call('TaskWait', { task_id: 'bash-a1' }), result(output), ctx)));
     expect(out).toContain('2 background tasks still running');
     expect(out).toContain('bg sleep');
     expect(out).toContain('investigate flaky test');
     expect(out).not.toContain('waited_ms');
   });
 
-  it('WaitFor no_tasks renders no body in collapsed state', () => {
-    const renderer = pickResultRenderer('WaitFor');
+  it('TaskWait no_tasks renders no body in collapsed state', () => {
+    const renderer = pickResultRenderer('TaskWait');
     const output = 'wait_status: no_tasks\nwaited_ms: 0\ntimeout_ms: 30000';
-    const out = joinRender(renderer(call('WaitFor', { timeout: 30 }), result(output), ctx));
+    const out = joinRender(renderer(call('TaskWait', { timeout: 30 }), result(output), ctx));
     expect(out.trim()).toBe('');
   });
 
-  it('WaitFor errors fall back to the truncated renderer', () => {
-    const renderer = pickResultRenderer('WaitFor');
+  it('TaskWait errors fall back to the truncated renderer', () => {
+    const renderer = pickResultRenderer('TaskWait');
     const out = strip(
       joinRender(
-        renderer(call('WaitFor', { task_id: 'bash-x' }), result('Task not found: bash-x', true), ctx),
+        renderer(call('TaskWait', { task_id: 'bash-x' }), result('Task not found: bash-x', true), ctx),
       ),
     );
     expect(out).toContain('Task not found: bash-x');

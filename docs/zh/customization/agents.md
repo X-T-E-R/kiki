@@ -28,13 +28,13 @@ subagent 支持在后台运行：完成后结果自动回到 main agent，无需
 
 默认的 v2 引擎（Kiki 桌面端和 `kimi` CLI/TUI）会给主 `agent` profile 提供四个子 Agent 工具，不需要实验开关：`AgentRun`、`AgentSwarm`、`AgentList` 和 `AgentSend`。内置的 `coder` 与 `explore` profile 没有它们。每个调用方只能列出和发消息给自己直接创建的子 Agent；孙级或别人创建的子 Agent 都不是有效目标。
 
-`AgentRun` 用来启动新的子 Agent，或继续已有的。预计之后还要再找同一个子 Agent 时传入 `name`；名称必须匹配 `^[a-z0-9_]+$`，不能是 `root`，并且在会话内保持唯一。继续时把 `agent` 设成那个名称或它的 agent id——不要同时传 `name`、`profile`、`route`、`model`、`model_alias` 或 `effort`。界面标签从 `name` 或 `prompt` 的首行推导，没有 `description` 参数。
+`AgentRun` 用来启动新的子 Agent，或继续已有的。预计之后还要再找同一个子 Agent 时传入 `name`；名称必须匹配 `^[a-z0-9_]+$`，不能是 `root`，并且在会话内保持唯一。继续时把 `resume` 设成那个名称或它的 agent id——不要同时传 `name`、`profile`、`route`、`model`、`model_alias` 或 `effort`。必填的 `description` 是 3–5 个词的短任务描述，用于界面展示。
 
 `AgentList` 返回这些直属子 Agent，也包括 swarm 成员。默认 `include_finished=false` 列出运行中的，以及没有跟踪任务的；需要已经结束或失败的，再传 `true`。最多返回 50 条，运行中的排在前面。
 
 `AgentSend` 把消息排进邮箱，不会启动或中断 turn。空闲的子 Agent 会保持空闲，到下一步开始时才读这条消息。用 `name` 或 agent id 指定目标。
 
-`AgentSwarm` 名称不变。基于 item 的新派生使用 `profile`（默认 `coder`）和 `effort`；它仍然要求填写 `description`。
+`AgentSwarm` 名称不变。基于 item 的新派生使用 `profile`（默认 `coder`）和 `effort`；它要求填写 `description`。
 
 旧版 v1 引擎（`KIMI_CODE_LEGACY_FLAG=1`）仍保留由 5 个工具组成的 Codex 风格适配器：`spawn_agent`、`list_agents`、`wait_agent`、`followup_task` 和 `interrupt_agent`。用 `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION=1` 启用。在 v1 上，`[agents] enabled = false` 会在不改实验 flag 的情况下拿掉这组工具。v2 已经删除该适配器、flag id `agent-collaboration` 以及对应环境变量。v1 的 `Agent` 工具仍用原来的名字和参数（`description`、`subagent_type`、`run_in_background`、`resume`、`thinking_effort`）。这是 v1 上的一层适配器，并不代表完整兼容 Codex。
 
@@ -221,7 +221,7 @@ Route 若声明 `tools`、`disallowedTools` 或 `subagents`，该字段整体替
 
 `model_alias` 已是稳定的 profile 字段和 `AgentRun` / `AgentSwarm` 工具参数。Agent 文件里的 `thinking_effort` 同样稳定；v2 对应的工具参数是 `effort`。两者都不需要启用 `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL`。v2 新派生子 Agent 的模型与 effort 分别按以下顺序解析：工具参数 → profile 字段 → 调用方绑定。`[subagent]` 的 `default_model` / `default_effort` 仍可写在配置里，但 `AgentRun` / `AgentSwarm` 目前不会读。v1 只在次主力模型实验功能开启时，才在 profile 之后填这两项默认值。普通（非 route）profile 指定的 `model_alias` 不存在于 `[models]` 时，CLI 会告警并回退到调用方的模型与 effort；通过工具参数显式传入未知 alias 时则会报错。
 
-只有旧版工具参数 `model`（`primary` / `secondary`）、profile 字段 `model_preference` 和次主力 recipe 仍受次主力模型实验功能控制。启用后，次主力 recipe 会插在 profile 与调用方绑定之间。关闭时，profile 中的 `model_preference` 会被忽略并告警；显式传入 `model` 工具参数则会返回清晰错误。恢复或重试的子 Agent 保持已持久化的模型与 effort；`AgentRun` 用 `agent` 继续时传入绑定字段会被拒绝。`AgentSwarm` 混合调用只把这些字段应用到基于 item 的新派生项。
+只有旧版工具参数 `model`（`primary` / `secondary`）、profile 字段 `model_preference` 和次主力 recipe 仍受次主力模型实验功能控制。启用后，次主力 recipe 会插在 profile 与调用方绑定之间。关闭时，profile 中的 `model_preference` 会被忽略并告警；显式传入 `model` 工具参数则会返回清晰错误。恢复或重试的子 Agent 保持已持久化的模型与 effort；`AgentRun` 用 `resume` 继续时传入绑定字段会被拒绝。`AgentSwarm` 混合调用只把这些字段应用到基于 item 的新派生项。
 
 subagent 模型治理会先解析 `[models]` alias，再按规范模型身份比较。机器级 `[subagent] deny_models` 在所有派发入口拒绝名单内的模型。role 文件可以用 `allowed_models` 与 `deny_models` 再收紧这个集合；它们不能放宽机器已经禁止的模型，只含一项的 `allowed_models` 就是该 role 的硬钉死。`[secondary_model] enforce_pool = true` 把已配置池变成硬白名单，同时始终保留 `primary`；默认软白名单模式则继续允许精确的池外 `model_alias` 作为逃生通道。`[secondary_model] force = true` 仍是最强的整机单模型钉死策略，会把所有派生绑定到同一模型，且不能与 `enforce_pool` 同设。字段与校验规则见[配置参考](../configuration/config-files.md#secondary-model)。
 

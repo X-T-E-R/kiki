@@ -37,7 +37,7 @@ import { countNonEmptyLines, pickChip } from './tool-renderers/chip';
 import { buildGoalToolHeader } from './tool-renderers/goal';
 import { isGenericToolResult, pickResultRenderer } from './tool-renderers/registry';
 import { isAgentRunTool, isTaskWaitTool } from '#/tui/tool-names';
-import { buildWaitForHeader } from './tool-renderers/wait-for';
+import { buildTaskWaitHeader } from './tool-renderers/task-wait';
 
 const MAX_ARG_LENGTH = 60;
 const MAX_SUB_TOOL_CALLS_SHOWN = 4;
@@ -428,10 +428,9 @@ export function extractKeyArgument(
     Glob: ['pattern'],
     FetchURL: ['url'],
     WebSearch: ['query'],
-    // Prefer a short field so the header preview never spills a multi-line
-    // `prompt` into the TUI chrome. `AgentRun` dropped `description` in favour
-    // of the optional `name`; `Agent` stays for transcripts recorded earlier.
-    AgentRun: ['name', 'prompt'],
+    // Prefer the short `description` so the header preview never spills a
+    // multi-line `prompt` into the TUI chrome.
+    AgentRun: ['description', 'prompt'],
     Agent: ['description', 'prompt'],
   };
 
@@ -1313,10 +1312,9 @@ export class ToolCallComponent extends Container {
     return match?.[1];
   }
 
-  /** `args.description` from transcripts written before `AgentRun` derived its
-   *  own label, used as a resume-path fallback when the wire format also
-   *  pre-dates persisted subagent ids and the description is the only stable
-   *  cross-restart identifier. */
+  /** `args.description` for `AgentRun` tool calls, used as a resume-path
+   *  fallback when the wire format pre-dates persisted subagent ids and
+   *  the only stable cross-restart identifier is the description string. */
   getAgentToolDescription(): string | undefined {
     if (!isAgentRunTool(this.toolCall.name)) return undefined;
     const desc = this.toolCall.args['description'];
@@ -1521,13 +1519,13 @@ export class ToolCallComponent extends Container {
     });
     if (goalHeader !== undefined) return goalHeader;
 
-    const waitForHeader = buildWaitForHeader({
+    const taskWaitHeader = buildTaskWaitHeader({
       toolCall,
       result,
       bullet,
       chip: isFinished && result !== undefined ? this.buildHeaderChip(result) : '',
     });
-    if (waitForHeader !== undefined) return waitForHeader;
+    if (taskWaitHeader !== undefined) return taskWaitHeader;
 
     if (this.isSingleSubagentView()) {
       return this.buildSingleSubagentHeader();
@@ -1787,20 +1785,6 @@ export class ToolCallComponent extends Container {
     return this.subagentPhase;
   }
 
-  /**
-   * `AgentRun` no longer takes a model-written `description`, so the inline
-   * header falls back to the caller's `name` and then to the opening line of
-   * the prompt. Older transcripts still carry `args.description`.
-   */
-  private subagentHeaderLabel(): string {
-    const legacy = str(this.toolCall.args['description']);
-    if (legacy.length > 0) return legacy;
-    const name = str(this.toolCall.args['name']);
-    if (name.length > 0) return name;
-    const prompt = str(this.toolCall.args['prompt']);
-    return prompt.split('\n').find((line) => line.trim().length > 0)?.trim() ?? '';
-  }
-
   private buildSingleSubagentHeader(): string {
     const phase = this.getDerivedSubagentPhase();
     const isDone = phase === 'done';
@@ -1808,7 +1792,7 @@ export class ToolCallComponent extends Container {
     const labelText = formatSubagentLabel(this.subagentAgentName);
     const label = currentTheme.boldFg('primary', labelText);
     const status = this.formatSingleSubagentStatus(phase);
-    const rawDescription = this.subagentHeaderLabel();
+    const rawDescription = str(this.toolCall.args['description']);
     const description =
       rawDescription.length > MAX_SUBAGENT_DESCRIPTION_LENGTH
         ? `${rawDescription.slice(0, MAX_SUBAGENT_DESCRIPTION_LENGTH - 1)}…`

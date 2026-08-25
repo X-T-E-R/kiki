@@ -235,7 +235,7 @@ export interface BackgroundTaskCompletedEvent {
   status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost';
 }
 
-export interface WaitForCompletedEvent {
+export interface TaskWaitCompletedEvent {
   outcome: 'completed' | 'timed_out' | 'task_not_found' | 'aborted';
   timeout_ms: number;
   waited_ms: number;
@@ -691,9 +691,9 @@ export const telemetryEventDefinitions = {
       status: 'Terminal task status',
     },
   }),
-  wait_for_completed: defineAgentTelemetryEvent<WaitForCompletedEvent>({
+  task_wait_completed: defineAgentTelemetryEvent<TaskWaitCompletedEvent>({
     owner: 'kimi-code',
-    comment: 'A WaitFor tool call returns.',
+    comment: 'A TaskWait tool call returns.',
     properties: {
       outcome:
         'How the wait ended: the waited task finished, the wait timed out, the task id was unknown, or the wait was aborted',

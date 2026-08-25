@@ -9,7 +9,7 @@ id or name.
 
 Each entry carries:
 
-- `agent_id` — the generated id. Pass it to `AgentRun` `agent`, `AgentSend`,
+- `agent_id` — the generated id. Pass it to `AgentRun` `resume`, `AgentSend`,
   or `AgentSwarm` `resume_agent_ids`.
 - `name` — present only when the child was started with the `name`
   parameter of the `AgentRun` tool. Use that name in place of `agent_id`

@@ -103,7 +103,6 @@ import { resolveNestedSubagentDefaultContext } from '#/session/subagent/bindingC
 import {
   BACKGROUND_AGENT_UNAVAILABLE,
   DEFAULT_PROFILE_NAME,
-  deriveAgentRunLabel,
   ISubagentTool,
   RESUME_WITH_TYPE_UNAVAILABLE,
   RESUMED_LABEL,
@@ -284,7 +283,7 @@ export class SubagentTool implements ISubagentTool {
   async resolveExecution(args: SubagentToolInput): Promise<ToolExecution> {
     const requestedProfileName = args.profile?.length ? args.profile : undefined;
     const requestedRoute = args.route?.trim();
-    const resumeAgentId = args.agent?.trim();
+    const resumeAgentId = args.resume?.trim();
 
     if (
       resumeAgentId !== undefined &&
@@ -315,7 +314,7 @@ export class SubagentTool implements ISubagentTool {
     if (resumeAgentId === undefined || resumeAgentId.length === 0) await this.catalog.ready;
     const snapshot = this.catalog.snapshot?.();
     return {
-      description: `${prefix} ${profileNameForDisplay} agent: ${deriveAgentRunLabel(args)}`,
+      description: `${prefix} ${profileNameForDisplay} agent: ${args.description}`,
       accesses: ToolAccesses.none(),
       display: {
         kind: 'agent_call',
@@ -354,7 +353,7 @@ export class SubagentTool implements ISubagentTool {
       );
     }
 
-    const resumeRef = args.agent?.trim();
+    const resumeRef = args.resume?.trim();
     const isResume = resumeRef !== undefined && resumeRef.length > 0;
 
     let agentId: string;
@@ -535,7 +534,7 @@ export class SubagentTool implements ISubagentTool {
             subagentBindingMode(binding),
           ),
           delegator: { kind: 'agent', agentId: this.callerAgentId },
-          userLabel: deriveAgentRunLabel(args),
+          userLabel: args.description,
           runtimeId: runtime.identity.runtimeId,
         });
       } catch (error) {
@@ -629,10 +628,10 @@ export class SubagentTool implements ISubagentTool {
     try {
       signal.throwIfAborted();
       const runInBackground = args.background === true;
-      const runLabel = deriveAgentRunLabel(args);
+      const runLabel = args.description;
       const requestedProfileName = args.profile?.length ? args.profile : undefined;
       const requestedRoute = args.route?.trim();
-      const resumeAgentId = args.agent?.trim();
+      const resumeAgentId = args.resume?.trim();
       const isResume = resumeAgentId !== undefined && resumeAgentId.length > 0;
 
       if (isResume && requestedProfileName !== undefined) {
@@ -786,7 +785,7 @@ function formatBackgroundAgentResult(
     allowBackground
       ? `next_step: The completion arrives automatically in a later turn — do NOT wait, poll, or call TaskOutput on it; continue with other work or hand back to the user. (If you have nothing to do until it finishes, run such tasks in the foreground next time.)`
       : 'next_step: The completion arrives automatically in a later turn.',
-    `resume_hint: To continue or recover this same subagent later, call AgentRun(agent="${handle.agentId}", prompt="..."). The parameter is agent_id ("${handle.agentId}"), NOT task_id ("${taskId}") or source_id from a later <notification>. Recovery cases: a later <notification type="task.lost" | "task.failed" | "task.killed"> for this subagent — its conversation history is preserved across session restarts and resume will pick it up.`,
+    `resume_hint: To continue or recover this same subagent later, call AgentRun(resume="${handle.agentId}", prompt="..."). The parameter is agent_id ("${handle.agentId}"), NOT task_id ("${taskId}") or source_id from a later <notification>. Recovery cases: a later <notification type="task.lost" | "task.failed" | "task.killed"> for this subagent — its conversation history is preserved across session restarts and resume will pick it up.`,
   ].join('\n');
 }
 
@@ -815,7 +814,7 @@ function formatForegroundAgentFailure(
   ];
   if (timedOut) {
     lines.push(
-      `resume_hint: Continue with AgentRun(agent="${handle.agentId}", prompt="continue"). Use agent_id only; do not set profile. The subagent retains its prior context; redo any unfinished tool call if its result was lost.`,
+      `resume_hint: Continue with AgentRun(resume="${handle.agentId}", prompt="continue"). Use agent_id only; do not set profile. The subagent retains its prior context; redo any unfinished tool call if its result was lost.`,
     );
   }
   return lines.join('\n');

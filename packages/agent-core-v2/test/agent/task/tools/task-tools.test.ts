@@ -21,8 +21,8 @@ import { TaskOutputInputSchema } from '#/agent/tools/task/task-output/task-outpu
 import { TaskOutputTool } from '#/agent/tools/task/task-output/taskOutputTool';
 import { TaskStopInputSchema } from '#/agent/tools/task/task-stop/task-stop';
 import { TaskStopTool } from '#/agent/tools/task/task-stop/taskStopTool';
-import { WaitForInputSchema } from '#/agent/tools/task/task-wait/task-wait';
-import { WaitForTool, startWaitProgress, waitForProgressUpdate } from '#/agent/tools/task/task-wait/taskWaitTool';
+import { TaskWaitInputSchema } from '#/agent/tools/task/task-wait/task-wait';
+import { TaskWaitTool, startWaitProgress, taskWaitProgressUpdate } from '#/agent/tools/task/task-wait/taskWaitTool';
 import { abortError } from '#/_base/utils/abort';
 import type { ITaskHandle } from '#/app/task/task';
 import type { IHostProcess } from '#/os/interface/hostProcess';
@@ -30,7 +30,7 @@ import { compileToolArgsValidator, validateToolArgs } from '#/tool/args-validato
 import { ProcessTask, type ProcessTaskInfo } from '#/agent/tools/os/bash/process-task';
 import { SubagentTask } from '#/agent/tools/agent/subagent-task';
 import type { SubagentTaskInfo } from '#/agent/tools/agent/subagent-task';
-import { IWaitForTool } from '#/agent/tools/task/task-wait/task-wait';
+import { ITaskWaitTool } from '#/agent/tools/task/task-wait/task-wait';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { executeTool } from '../../../tools/fixtures/execute-tool';
 import { recordingTelemetry, type TelemetryRecord } from '../../../app/telemetry/stubs';
@@ -753,21 +753,21 @@ describe('TaskWait tool', () => {
   }
 
   function lastEvent(records: TelemetryRecord[]): TelemetryRecord | undefined {
-    return records.findLast((record) => record.event === 'wait_for_completed');
+    return records.findLast((record) => record.event === 'task_wait_completed');
   }
 
   it('has name and accepts the current schema', () => {
-    const tool = new WaitForTool(new FakeTaskService(), recordingTelemetry([]), stubFlag(true));
+    const tool = new TaskWaitTool(new FakeTaskService(), recordingTelemetry([]), stubFlag(true));
 
     expect(tool.name).toBe('TaskWait');
-    expect(WaitForInputSchema.safeParse({ timeout: 60 }).success).toBe(true);
-    expect(WaitForInputSchema.safeParse({ timeout: 60, task_id: 'bash-1' }).success).toBe(true);
-    expect(WaitForInputSchema.safeParse({ timeout: 600 }).success).toBe(true);
-    expect(WaitForInputSchema.safeParse({}).success).toBe(false);
-    expect(WaitForInputSchema.safeParse({ timeout: 0 }).success).toBe(false);
-    expect(WaitForInputSchema.safeParse({ timeout: -5 }).success).toBe(false);
-    expect(WaitForInputSchema.safeParse({ timeout: 601 }).success).toBe(false);
-    expect(WaitForInputSchema.safeParse({ timeout: 1.5 }).success).toBe(false);
+    expect(TaskWaitInputSchema.safeParse({ timeout: 60 }).success).toBe(true);
+    expect(TaskWaitInputSchema.safeParse({ timeout: 60, task_id: 'bash-1' }).success).toBe(true);
+    expect(TaskWaitInputSchema.safeParse({ timeout: 600 }).success).toBe(true);
+    expect(TaskWaitInputSchema.safeParse({}).success).toBe(false);
+    expect(TaskWaitInputSchema.safeParse({ timeout: 0 }).success).toBe(false);
+    expect(TaskWaitInputSchema.safeParse({ timeout: -5 }).success).toBe(false);
+    expect(TaskWaitInputSchema.safeParse({ timeout: 601 }).success).toBe(false);
+    expect(TaskWaitInputSchema.safeParse({ timeout: 1.5 }).success).toBe(false);
     expect(tool.parameters).toMatchObject({
       type: 'object',
       additionalProperties: false,
@@ -782,7 +782,7 @@ describe('TaskWait tool', () => {
   it('returns error and tracks task_not_found for an unknown task_id', async () => {
     const { records, telemetry } = waitTelemetry();
     const result = await executeTool(
-      new WaitForTool(new FakeTaskService(), telemetry, stubFlag(true)),
+      new TaskWaitTool(new FakeTaskService(), telemetry, stubFlag(true)),
       context('wait_unknown', { timeout: 10, task_id: 'bash-unknown0' }),
     );
 
@@ -799,7 +799,7 @@ describe('TaskWait tool', () => {
   it('returns immediately without waiting when no background tasks are running', async () => {
     const tasks = new FakeTaskService();
     const result = await executeTool(
-      new WaitForTool(tasks, recordingTelemetry([]), stubFlag(true)),
+      new TaskWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
       context('wait_none', { timeout: 10 }),
     );
     const output = outputString(result);
@@ -825,7 +825,7 @@ describe('TaskWait tool', () => {
 
     const { records, telemetry } = waitTelemetry();
     const result = await executeTool(
-      new WaitForTool(tasks, telemetry, stubFlag(true)),
+      new TaskWaitTool(tasks, telemetry, stubFlag(true)),
       context('wait_done', { timeout: 10, task_id: taskId }),
     );
     const output = outputString(result);
@@ -855,7 +855,7 @@ describe('TaskWait tool', () => {
 
     const { records, telemetry } = waitTelemetry();
     const result = await executeTool(
-      new WaitForTool(tasks, telemetry, stubFlag(true)),
+      new TaskWaitTool(tasks, telemetry, stubFlag(true)),
       context('wait_extras', { timeout: 10, task_id: 'bash-wait001' }),
     );
     const output = outputString(result);
@@ -888,7 +888,7 @@ describe('TaskWait tool', () => {
 
     const { records, telemetry } = waitTelemetry();
     const result = await executeTool(
-      new WaitForTool(tasks, telemetry, stubFlag(true)),
+      new TaskWaitTool(tasks, telemetry, stubFlag(true)),
       context('wait_any', { timeout: 10 }),
     );
     const output = outputString(result);
@@ -914,7 +914,7 @@ describe('TaskWait tool', () => {
 
     const { records, telemetry } = waitTelemetry();
     const result = await executeTool(
-      new WaitForTool(tasks, telemetry, stubFlag(true)),
+      new TaskWaitTool(tasks, telemetry, stubFlag(true)),
       context('wait_timeout', { timeout: 10, task_id: 'bash-running9' }),
     );
     const output = outputString(result);
@@ -943,7 +943,7 @@ describe('TaskWait tool', () => {
     const { records, telemetry } = waitTelemetry();
     const controller = new AbortController();
     const pending = executeTool(
-      new WaitForTool(tasks, telemetry, stubFlag(true)),
+      new TaskWaitTool(tasks, telemetry, stubFlag(true)),
       context('wait_abort', { timeout: 600, task_id: 'bash-abort01' }, controller.signal),
     );
     controller.abort();
@@ -964,7 +964,7 @@ describe('TaskWait tool', () => {
 
     const controller = new AbortController();
     const pending = executeTool(
-      new WaitForTool(tasks, recordingTelemetry([]), stubFlag(true)),
+      new TaskWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
       context('wait_abort_any', { timeout: 600 }, controller.signal),
     );
     controller.abort();
@@ -989,7 +989,7 @@ describe('TaskWait tool', () => {
 
     await expect(
       executeTool(
-        new WaitForTool(tasks, recordingTelemetry([]), stubFlag(true)),
+        new TaskWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
         context('wait_fmt_fail', { timeout: 10, task_id: taskId }),
       ),
     ).rejects.toThrow('snapshot read failed');
@@ -1011,7 +1011,7 @@ describe('TaskWait tool', () => {
     };
 
     const result = await executeTool(
-      new WaitForTool(tasks, recordingTelemetry([]), stubFlag(true)),
+      new TaskWaitTool(tasks, recordingTelemetry([]), stubFlag(true)),
       context('wait_losers', { timeout: 600 }),
     );
 
@@ -1019,37 +1019,37 @@ describe('TaskWait tool', () => {
     expect(signals.get('bash-lose001')?.aborted).toBe(true);
   });
 
-  it('rejects execution when the wait_for flag is off', async () => {
+  it('rejects execution when the task_wait flag is off', async () => {
     const tasks = new FakeTaskService();
     tasks.add(processTask({ taskId: 'bash-flagoff1' }));
 
     const result = await executeTool(
-      new WaitForTool(tasks, recordingTelemetry([]), stubFlag(false)),
+      new TaskWaitTool(tasks, recordingTelemetry([]), stubFlag(false)),
       context('wait_flag_off', { timeout: 10, task_id: 'bash-flagoff1' }),
     );
 
     expect(result.isError).toBe(true);
-    expect(outputString(result)).toContain('wait_for experimental flag is off');
+    expect(outputString(result)).toContain('task_wait experimental flag is off');
     expect(tasks.waitCalls).toEqual([]);
   });
 
   it('emits status progress updates while the wait is pending', async () => {
-    const update = waitForProgressUpdate({ timeout: 600 }, 2, 1_000, 31_000);
+    const update = taskWaitProgressUpdate({ timeout: 600 }, 2, 1_000, 31_000);
     expect(update).toMatchObject({
       kind: 'status',
       replace: true,
       text: 'Waiting 30s / 10m · 2 background tasks still running',
     });
-    expect(waitForProgressUpdate({ timeout: 600 }, 1, 1_000, 31_000).text).toContain(
+    expect(taskWaitProgressUpdate({ timeout: 600 }, 1, 1_000, 31_000).text).toContain(
       '1 background task still running',
     );
-    expect(waitForProgressUpdate({ timeout: 600 }, 0, 1_000, 31_000).text).toContain(
+    expect(taskWaitProgressUpdate({ timeout: 600 }, 0, 1_000, 31_000).text).toContain(
       '0 background tasks still running',
     );
-    expect(waitForProgressUpdate({ timeout: 600 }, 1, 1_000, 76_000).text).toContain(
+    expect(taskWaitProgressUpdate({ timeout: 600 }, 1, 1_000, 76_000).text).toContain(
       'Waiting 1m 15s / 10m',
     );
-    expect(waitForProgressUpdate({ timeout: 180 }, 1, 1_000, 61_000).text).toContain(
+    expect(taskWaitProgressUpdate({ timeout: 180 }, 1, 1_000, 61_000).text).toContain(
       'Waiting 1m / 3m',
     );
   });
@@ -1169,7 +1169,7 @@ describe('TaskWait tool (harness)', () => {
       expect(ctx.allEvents.some((event) => event.event === 'task.notified')).toBe(false);
       expect(ctx.llmCalls).toHaveLength(0);
       expect(
-        records.findLast((record) => record.event === 'wait_for_completed')?.properties,
+        records.findLast((record) => record.event === 'task_wait_completed')?.properties,
       ).toMatchObject({ outcome: 'completed', has_task_id: true, extra_completed_count: 0 });
     } finally {
       await ctx.dispose();
@@ -1222,7 +1222,7 @@ describe('TaskWait tool (harness)', () => {
     const ctx = createTestAgent();
     try {
       const tasks = ctx.get(IAgentTaskService);
-      const tool = ctx.get(IWaitForTool);
+      const tool = ctx.get(ITaskWaitTool);
       const taskId = tasks.registerTask(
         new SubagentTask(
           {

@@ -7,7 +7,8 @@ Writing the prompt:
 - Do not delegate understanding. If the task hinges on a file path or line number, find it yourself first and write it into the prompt.
 
 Usage notes:
-- When the task continues earlier work a subagent already did, pass that child's `name` or agent id as `agent` instead of spawning a fresh instance — the continued agent keeps its prior context.
+- `description` is a required short task description (3-5 words) for UI display.
+- When the task continues earlier work a subagent already did, pass that child's `name` or agent id as `resume` instead of spawning a fresh instance — the continued agent keeps its prior context.
 - Pass `name` when you expect to come back to the same child: a stable name is easier to carry across turns than a generated id, and `AgentList` and `AgentSend` accept it too.
 - A subagent's result is only visible to you, not to the user. When the user needs to see what a subagent produced, summarize the relevant parts yourself in your own reply.
 - Subagents use a fixed 2-hour timeout. If one times out, continue the same agent instead of starting over.

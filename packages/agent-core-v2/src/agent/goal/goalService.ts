@@ -13,7 +13,7 @@ import { isPlainRecord } from '#/_base/utils/canonical-args';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { ContextAppendMessage } from '#/agent/contextMemory/contextEvents';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
-import { GoalInjection, GOAL_WAIT_FOR_GUIDANCE } from '#/agent/goal/injection/goalInjection';
+import { GoalInjection, GOAL_TASK_WAIT_GUIDANCE } from '#/agent/goal/injection/goalInjection';
 import {
   IAgentLoopService,
   type AfterStepContext,
@@ -50,7 +50,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { defineState } from '#/state/state';
 
 import { IAgentGoalService, type GoalReasonInput, type ResumeGoalInput } from './goal';
-import { WAIT_FOR_FLAG_ID } from '#/agent/tools/task/task-wait/flag';
+import { TASK_WAIT_FLAG_ID } from '#/agent/tools/task/task-wait/flag';
 import { IGoalDeadlineScheduler } from './goalDeadlineScheduler';
 import {
   GoalClear,
@@ -298,7 +298,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
       new GoalInjection(
         {
           getGoal: () => this.getGoal().goal,
-          isWaitForEnabled: () => this.isWaitForAvailable(),
+          isTaskWaitEnabled: () => this.isTaskWaitAvailable(),
         },
         injector,
       ),
@@ -903,9 +903,9 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     } catch {}
   }
 
-  private isWaitForAvailable(): boolean {
+  private isTaskWaitAvailable(): boolean {
     return (
-      this.flags.enabled(WAIT_FOR_FLAG_ID) &&
+      this.flags.enabled(TASK_WAIT_FLAG_ID) &&
       this.toolRegistry.resolve('TaskWait') !== undefined &&
       this.toolPolicy.isToolActive('TaskWait')
     );
@@ -920,8 +920,8 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
       content: [
         {
           type: 'text',
-          text: this.isWaitForAvailable()
-            ? `${prompt} ${GOAL_WAIT_FOR_GUIDANCE}`
+          text: this.isTaskWaitAvailable()
+            ? `${prompt} ${GOAL_TASK_WAIT_GUIDANCE}`
             : prompt,
         },
       ],

@@ -66,7 +66,7 @@ describe('SubagentActivityStore', () => {
     const store = new SubagentActivityStore();
     store.ensureRecord(spawn());
     store.applyEvent(
-      ev({ type: 'tool.call.started', turnId: 1, toolCallId: 't1', name: 'WaitFor', args: { timeout: 600 } }),
+      ev({ type: 'tool.call.started', turnId: 1, toolCallId: 't1', name: 'TaskWait', args: { timeout: 600 } }),
     );
     store.applyEvent(
       ev({
