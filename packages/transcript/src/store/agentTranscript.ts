@@ -14,6 +14,7 @@ import {
 } from '../ops/apply';
 import type {
   AgentTranscriptSnapshot,
+  AppendOp,
   AppendTarget,
   AppliedOps,
   TranscriptChangeEvent,
@@ -24,6 +25,16 @@ export type TranscriptListener = (event: TranscriptChangeEvent) => void;
 
 export interface Disposable {
   dispose(): void;
+}
+
+const mapValuesCache = new WeakMap<object, readonly unknown[]>();
+
+function stableMapValues<K, V>(map: ReadonlyMap<K, V>): readonly V[] {
+  const cached = mapValuesCache.get(map as object);
+  if (cached !== undefined) return cached as readonly V[];
+  const values = Object.freeze([...map.values()]);
+  mapValuesCache.set(map as object, values);
+  return values;
 }
 
 export class AgentTranscript {
@@ -47,10 +58,15 @@ export class AgentTranscript {
     const accepted: TranscriptOperation[] = [];
     let gap: AppliedOps['gap'];
     let state = this.#state;
-    for (const op of ops) {
+    for (let index = 0; index < ops.length;) {
+      const first = ops[index];
+      if (first === undefined) break;
+      const run = coalesceAppendRun(state, ops, index);
+      const op = run.op;
       const result = applyOperation(state, op);
       if (result.gap) {
         gap = { target: (op as { target: AppendTarget }).target, ...result.gap };
+        index = run.nextIndex;
         continue;
       }
       const key = appendTargetKey(op);
@@ -60,15 +76,17 @@ export class AgentTranscript {
           (op.op === 'frame.upsert' || op.op === 'task.upsert') &&
           this.#appendDirty.delete(key)
         ) {
-          accepted.push(op);
+          accepted.push(...run.originals);
         }
+        index = run.nextIndex;
         continue;
       }
       state = result.state;
-      accepted.push(op);
+      accepted.push(...run.originals);
       if (op.op === 'append' && key !== undefined) this.#appendDirty.add(key);
       else if (key !== undefined) this.#appendDirty.delete(key);
       else if (op.op === 'reset' || op.op === 'items.remove') this.#appendDirty.clear();
+      index = run.nextIndex;
     }
     this.#state = state;
     if (accepted.length > 0) {
@@ -88,10 +106,11 @@ export class AgentTranscript {
   }
 
   getTurn(turnId: TurnId): TranscriptTurn | undefined {
-    const item = this.#state.items.find(
-      (entry) => entry.kind === 'turn' && entry.turnId === turnId,
-    );
-    return item?.kind === 'turn' ? item : undefined;
+    for (let i = this.#state.items.length - 1; i >= 0; i -= 1) {
+      const item = this.#state.items[i];
+      if (item?.kind === 'turn' && item.turnId === turnId) return item;
+    }
+    return undefined;
   }
 
   getTasks(): ReadonlyMap<TaskId, TranscriptTask> {
@@ -151,35 +170,113 @@ export class AgentTranscript {
     let items = this.#state.items;
     let hasMoreOlder = this.#state.hasMoreOlder;
     if (window !== undefined) {
-      const turnCount = items.reduce((n, entry) => (entry.kind === 'turn' ? n + 1 : n), 0);
-      if (turnCount > window.tailTurns) {
-        const skip = turnCount - window.tailTurns;
-        const kept: TranscriptItem[] = [];
-        let seen = 0;
-        for (const entry of items) {
-          if (entry.kind === 'turn') {
-            seen += 1;
-            if (seen <= skip) continue;
-            kept.push(entry);
-          } else if (seen > skip) {
-            kept.push(entry);
-          }
+      const tailTurns = Math.max(0, window.tailTurns);
+      let seen = 0;
+      let start = items.length;
+      let trimmed = false;
+      for (let i = items.length - 1; i >= 0; i -= 1) {
+        const entry = items[i];
+        if (entry?.kind !== 'turn') continue;
+        seen += 1;
+        if (seen <= tailTurns) start = i;
+        else {
+          trimmed = true;
+          break;
         }
-        items = kept;
+      }
+      if (trimmed) {
+        items = tailTurns === 0 ? [] : items.slice(start);
         hasMoreOlder = true;
       }
     }
     return {
       items,
-      tasks: [...this.#state.tasks.values()],
-      interactions: [...this.#state.interactions.values()],
-      attachments: [...this.#state.attachments.values()],
-      todos: [...this.#state.todos.values()],
-      prompts: [...this.#state.prompts.values()],
+      tasks: stableMapValues(this.#state.tasks),
+      interactions: stableMapValues(this.#state.interactions),
+      attachments: stableMapValues(this.#state.attachments),
+      todos: stableMapValues(this.#state.todos),
+      prompts: stableMapValues(this.#state.prompts),
       meta: this.#state.meta,
       hasMoreOlder,
     };
   }
+}
+
+interface CoalescedRun {
+  readonly op: TranscriptOperation;
+  readonly originals: readonly TranscriptOperation[];
+  readonly nextIndex: number;
+}
+
+function coalesceAppendRun(
+  state: AgentState,
+  ops: readonly TranscriptOperation[],
+  start: number,
+): CoalescedRun {
+  const first = ops[start];
+  if (first === undefined) throw new RangeError('operation index out of bounds');
+  if (
+    first.op !== 'append' ||
+    first.text.length === 0 ||
+    appendTargetLength(state, first.target) !== first.offset
+  ) {
+    return { op: first, originals: [first], nextIndex: start + 1 };
+  }
+  const originals: AppendOp[] = [first];
+  const chunks = [first.text];
+  let expectedOffset = first.offset + first.text.length;
+  let index = start + 1;
+  while (index < ops.length) {
+    const candidate = ops[index];
+    if (
+      candidate === undefined ||
+      candidate.op !== 'append' ||
+      candidate.text.length === 0 ||
+      !appendTargetsEqual(first.target, candidate.target) ||
+      candidate.offset !== expectedOffset
+    ) {
+      break;
+    }
+    originals.push(candidate);
+    chunks.push(candidate.text);
+    expectedOffset += candidate.text.length;
+    index += 1;
+  }
+  if (originals.length === 1) {
+    return { op: first, originals, nextIndex: index };
+  }
+  return {
+    op: { ...first, text: chunks.join('') },
+    originals,
+    nextIndex: index,
+  };
+}
+
+function appendTargetLength(state: AgentState, target: AppendTarget): number | undefined {
+  if (target.type === 'task') return state.tasks.get(target.taskId)?.outputTail?.length ?? 0;
+  let turn: TranscriptTurn | undefined;
+  for (let i = state.items.length - 1; i >= 0; i -= 1) {
+    const item = state.items[i];
+    if (item?.kind === 'turn' && item.turnId === target.turnId) {
+      turn = item;
+      break;
+    }
+  }
+  if (turn === undefined) return undefined;
+  const step = turn.steps.find((item) => item.stepId === target.stepId);
+  const frame = step?.frames.find((item) => item.frameId === target.frameId);
+  return frame?.kind === 'text' || frame?.kind === 'thinking' ? frame.text.length : undefined;
+}
+
+function appendTargetsEqual(left: AppendTarget, right: AppendTarget): boolean {
+  if (left.type !== right.type) return false;
+  if (left.type === 'task') return right.type === 'task' && left.taskId === right.taskId;
+  return (
+    right.type === 'frame' &&
+    left.turnId === right.turnId &&
+    left.stepId === right.stepId &&
+    left.frameId === right.frameId
+  );
 }
 
 function appendTargetKey(op: TranscriptOperation): string | undefined {

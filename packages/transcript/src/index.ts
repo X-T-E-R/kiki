@@ -12,6 +12,7 @@ export * from './model/prompt';
 export * from './ops/operation';
 export { EMPTY_AGENT_STATE, applyOperation, appendAtOffset } from './ops/apply';
 export type { AgentState, ApplyResult } from './ops/apply';
+export { transcriptValueEquals } from './ops/equality';
 export * from './store/agentTranscript';
 export * from './store/transcriptStore';
 export * from './facts/reducer';

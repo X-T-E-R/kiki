@@ -154,6 +154,65 @@ describe('AgentTranscript', () => {
     expect(tx.apply(convergence.accepted).accepted).toHaveLength(0);
   });
 
+  it('reuses unchanged entity arrays across text-only snapshots', () => {
+    const tx = new AgentTranscript('main');
+    tx.apply([
+      turn1,
+      {
+        op: 'frame.upsert',
+        turnId: 't1',
+        stepId: 't1.1',
+        frame: { kind: 'text', frameId: 't1.1.f1', role: 'assistant', text: '' },
+      },
+    ]);
+    const before = tx.snapshot();
+
+    tx.apply([
+      {
+        op: 'append',
+        target: { type: 'frame', turnId: 't1', stepId: 't1.1', frameId: 't1.1.f1' },
+        offset: 0,
+        text: 'x',
+      },
+    ]);
+    const after = tx.snapshot();
+
+    expect(after.items).not.toBe(before.items);
+    expect(after.tasks).toBe(before.tasks);
+    expect(after.interactions).toBe(before.interactions);
+    expect(after.attachments).toBe(before.attachments);
+    expect(after.todos).toBe(before.todos);
+    expect(after.prompts).toBe(before.prompts);
+  });
+
+  it('applies a large contiguous append burst as one convergent state transition', () => {
+    const tx = new AgentTranscript('main');
+    tx.apply([
+      turn1,
+      {
+        op: 'frame.upsert',
+        turnId: 't1',
+        stepId: 't1.1',
+        frame: { kind: 'text', frameId: 't1.1.f1', role: 'assistant', text: '' },
+      },
+    ]);
+    const chunks = Array.from({ length: 2_000 }, (_, offset) => ({
+      op: 'append' as const,
+      target: { type: 'frame' as const, turnId: 't1', stepId: 't1.1', frameId: 't1.1.f1' },
+      offset,
+      text: 'x',
+    }));
+    const events: TranscriptOperation[][] = [];
+    tx.onChange((event) => events.push([...event.ops]));
+
+    const result = tx.apply(chunks);
+
+    const frame = tx.getTurn('t1')?.steps[0]?.frames[0];
+    expect(frame?.kind === 'text' && frame.text).toBe('x'.repeat(2_000));
+    expect(result.accepted).toEqual(chunks);
+    expect(events).toEqual([chunks]);
+  });
+
   it('appendAtOffset matches web alignDelta semantics', () => {
     expect(appendAtOffset('abc', 3, 'd')).toEqual({ text: 'abcd', changed: true });
     expect(appendAtOffset('abc', 1, 'bc').changed).toBe(false);
