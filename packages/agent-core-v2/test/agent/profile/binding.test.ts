@@ -317,17 +317,17 @@ describe('AgentProfileService.bind', () => {
       'send_message',
     ];
 
-    for (const profileName of ['agent', 'coder']) {
+    const main = catalog.get('agent');
+    expect(main).toBeDefined();
+    expect(collaborationTools.filter((name) => isToolActive(main!, name))).toEqual(
+      collaborationTools,
+    );
+
+    for (const profileName of ['coder', 'explore']) {
       const profile = catalog.get(profileName);
       expect(profile).toBeDefined();
-      expect(collaborationTools.filter((name) => isToolActive(profile!, name))).toEqual(
-        collaborationTools,
-      );
+      expect(collaborationTools.filter((name) => isToolActive(profile!, name))).toEqual([]);
     }
-
-    const explore = catalog.get('explore');
-    expect(explore).toBeDefined();
-    expect(isToolActive(explore!, 'send_message')).toBe(false);
 
     catalog.dispose();
     container.dispose();

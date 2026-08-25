@@ -51,15 +51,6 @@ const AGENT_TOOLS = [
 
 const CODER_TOOLS = [
   'Bash',
-  'spawn_agent',
-  'list_agents',
-  'wait_agent',
-  'followup_task',
-  'interrupt_agent',
-  'send_message',
-  'CronCreate',
-  'CronDelete',
-  'CronList',
   'Edit',
   'EnterPlanMode',
   'ExitPlanMode',

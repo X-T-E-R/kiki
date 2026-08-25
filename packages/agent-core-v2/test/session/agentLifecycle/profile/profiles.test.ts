@@ -25,4 +25,26 @@ describe('builtin agent profiles', () => {
     expect(agent.main).toBe(true);
     expect(agent.subagents).toBeUndefined();
   });
+
+  it.each([
+    'Agent',
+    'AgentSwarm',
+    'spawn_agent',
+    'list_agents',
+    'wait_agent',
+    'followup_task',
+    'interrupt_agent',
+    'send_message',
+    'CronCreate',
+    'CronList',
+    'CronDelete',
+  ])('keeps the builtin coder from dispatching or scheduling via %s', (tool) => {
+    expect(profile('coder').tools).not.toContain(tool);
+  });
+
+  it('keeps the builtin coder able to do the delegated coding work', () => {
+    expect(profile('coder').tools).toEqual(
+      expect.arrayContaining(['Read', 'Edit', 'Write', 'Bash']),
+    );
+  });
 });
