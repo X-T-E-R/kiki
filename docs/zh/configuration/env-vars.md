@@ -135,6 +135,7 @@ kimi
 | `KIMI_CODE_TUI_FULL_SCREEN` | 启用实验性的 fullscreen alternate-screen 界面：可滚动的 transcript 视口、鼠标选择文本、可点击链接、Ctrl-Shift-F 搜索 | `1` 开启；其他值保持常规内联界面 |
 | `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL` | 仅启用旧版 `model` / `model_preference` 选择器与次主力模型 recipe；稳定的 `model_alias`、profile 的 `thinking_effort` 和 v2 工具参数 `effort` 不受影响。master `KIMI_CODE_EXPERIMENTAL_FLAG=1` 也会启用这些旧版行为 | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
 | `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION` | 仅旧版 v1（`KIMI_CODE_LEGACY_FLAG=1`）：启用由 5 个工具组成的 Codex 风格具名 Agent 适配器（`spawn_agent`、`list_agents`、`wait_agent`、`followup_task`、`interrupt_agent`）。在 v1 上，`[agents] enabled = false` 仍会关闭适配器。默认的 v2 引擎不注册这个 flag，也不提供那 5 个工具 | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
+| `KIMI_CODE_EXPERIMENTAL_WAIT_FOR` | 是否向模型提供 `TaskWait` 工具——它可以在当前轮次内等待后台任务，而不必结束这一轮（默认启用）。该变量及其 flag id 保留旧的 `wait_for` 拼写，以便已有配置继续生效，尽管工具现在叫 `TaskWait` | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
 | `KIMI_SECONDARY_MODEL` | 次主力模型；优先级高于 `config.toml` 的 [`[secondary_model] model`](./config-files.md#secondary-model)。次主力模型实验功能启用后，新派生的子 Agent（`AgentRun` / `AgentSwarm`）默认绑定该模型，而不再继承主 Agent 的模型 | `[models]` 中已配置条目的别名，如 `kimi-code/kimi-k2.5`；空白值被忽略 |
 | `KIMI_SECONDARY_EFFORT` | 次主力模型的 thinking effort；优先级高于 `config.toml` 的 `[secondary_model] default_effort`，仅在次主力模型及其实验功能均启用时生效 | effort 取值，如 `low`；空白值被忽略 |
 | `KIKI_MCP_CONFIG_PATH` | 供外部编排器注入的 MCP 配置文件路径，由 `kimi web` 启动的服务端只读加载。必须与 `KIKI_MCP_AGENT_PROFILE_HOME`、`KIKI_MCP_CONFIG_READ_ONLY` 同时设置，否则启动直接报错 | 绝对路径 |
