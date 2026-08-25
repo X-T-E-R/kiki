@@ -733,9 +733,9 @@ struct DesktopUpdateInfo {
 }
 
 fn desktop_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
-    let public_key = UPDATER_PUBLIC_KEY.ok_or_else(|| {
-        "Desktop updater is not configured in this build".to_string()
-    })?;
+    let public_key = UPDATER_PUBLIC_KEY
+        .filter(|key| !key.is_empty())
+        .ok_or_else(|| "Desktop updater is not configured in this build".to_string())?;
     let endpoint = Url::parse(read_desktop_prefs_file().update_channel.endpoint())
         .map_err(|error| error.to_string())?;
     app.updater_builder()
@@ -2053,12 +2053,24 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_notification::init())
-        .plugin(
+        .plugin(tauri_plugin_notification::init());
+
+    // Updater is optional. tauri-plugin-updater still deserializes
+    // `plugins.updater` as a Config struct (null panics the whole shell),
+    // so tauri.conf.json always carries a Config object. The plugin itself
+    // is only registered when a signing key was baked in at compile time;
+    // local promotes fail closed via desktop_updater() either way.
+    let app = if let Some(public_key) = UPDATER_PUBLIC_KEY.filter(|key| !key.is_empty()) {
+        app.plugin(
             tauri_plugin_updater::Builder::new()
-                .pubkey(UPDATER_PUBLIC_KEY.unwrap_or_default())
+                .pubkey(public_key)
                 .build(),
         )
+    } else {
+        app
+    };
+
+    let app = app
         .manage(manager)
         .invoke_handler(tauri::generate_handler![
             desktop_connection,

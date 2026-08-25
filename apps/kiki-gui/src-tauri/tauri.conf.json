@@ -41,5 +41,17 @@
         "installMode": "currentUser"
       }
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://x-t-e-r.github.io/kiki/updater/stable/latest.json",
+        "https://x-t-e-r.github.io/kiki/updater/beta/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
