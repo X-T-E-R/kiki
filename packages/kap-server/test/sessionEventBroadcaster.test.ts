@@ -1016,7 +1016,7 @@ describe('SessionEventBroadcaster', () => {
     );
   });
 
-  it.each(['prompt.steered', 'prompt.queued', 'prompt.replaced'])(
+  it.each(['prompt.steered', 'prompt.queued', 'prompt.replaced', 'prompt.submitted'])(
     'projects %s into schema-valid live and replay envelopes without daemon refs',
     async (type) => {
       const lc = new FakeLifecycle();
@@ -1030,7 +1030,14 @@ describe('SessionEventBroadcaster', () => {
           ? { activePromptId: 'p1', promptIds: ['p2'], steeredAt: '2026-01-01T00:00:02.000Z' }
           : type === 'prompt.replaced'
             ? { promptId: 'p2', replacedAt: '2026-01-01T00:00:02.000Z' }
-            : { promptId: 'p2', queueLength: 1 };
+            : type === 'prompt.submitted'
+              ? {
+                  promptId: 'p2',
+                  userMessageId: 'p2',
+                  status: 'queued',
+                  createdAt: '2026-01-01T00:00:01.000Z',
+                }
+              : { promptId: 'p2', queueLength: 1 };
       main.bus.emit(
         agentEvent(type, {
           ...ids,

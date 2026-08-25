@@ -1333,7 +1333,8 @@ export class SessionEventBroadcaster {
     } else if (
       event.type === 'prompt.steered' ||
       event.type === 'prompt.queued' ||
-      event.type === 'prompt.replaced'
+      event.type === 'prompt.replaced' ||
+      event.type === 'prompt.submitted'
     ) {
       const content = (event as unknown as { content: Parameters<typeof projectPromptContentParts>[0] }).content;
       wireEvent = Object.assign({}, event, {
@@ -1672,6 +1673,7 @@ const TRANSCRIPT_PROJECTED_EVENT_TYPES: ReadonlySet<string> = new Set([
   'agent.status.updated',
   'hook.result',
   'prompt.submitted',
+  'prompt.started',
   'prompt.completed',
   'prompt.aborted',
   'prompt.steered',

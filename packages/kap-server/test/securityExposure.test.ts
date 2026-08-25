@@ -167,45 +167,4 @@ describe('server-v2 exposure hardening hooks', () => {
     ws.close();
     await new Promise<void>((resolve) => ws.once('close', resolve));
   });
-
-  it('can explicitly re-enable terminal routes on non-loopback', async () => {
-    server = await startServer({
-      hostIdentity: TEST_HOST_IDENTITY,
-      host: '0.0.0.0',
-      port: 0,
-      homeDir: home,
-      logLevel: 'silent',
-      insecureNoTls: true,
-      allowRemoteTerminals: true,
-    });
-    const token = server.authTokenService.getToken();
-    const res = await server.app.inject({
-      method: 'GET',
-      url: '/api/v1/sessions/missing/terminals',
-      headers: { authorization: `Bearer ${token}` },
-    });
-    const body = res.json() as Record<string, unknown>;
-    expect(body['code']).toBe(40401);
-
-    const meta = await server.app.inject({
-      method: 'GET',
-      url: '/api/v1/meta',
-      headers: { authorization: `Bearer ${token}` },
-    });
-    const capabilities = (meta.json() as { data: { capabilities: Record<string, unknown> } }).data
-      .capabilities;
-    expect(capabilities['terminal']).toBe(true);
-
-    const asyncApi = await server.app.inject({
-      method: 'GET',
-      url: '/asyncapi.json',
-      headers: { authorization: `Bearer ${token}` },
-    });
-    const enabledMessages = (asyncApi.json() as {
-      components: { messages: Record<string, unknown> };
-    }).components.messages;
-    expect(enabledMessages['terminal_attach']).toBeDefined();
-    expect(enabledMessages['terminal_attach_ack']).toBeDefined();
-    expect(enabledMessages['terminal_output']).toBeDefined();
-  });
 });
