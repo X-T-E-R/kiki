@@ -98,7 +98,7 @@ class GammaTool extends StubTool {
 
 class AgentStubTool extends StubTool {
   constructor() {
-    super('Agent');
+    super('AgentRun');
   }
 }
 
@@ -247,7 +247,7 @@ describe('AgentToolActivationService', () => {
     );
 
     expect(requirements).toMatchObject({
-      Agent: ['process'],
+      AgentRun: ['process'],
       Read: ['fs'],
       Write: ['fs'],
       Edit: ['fs'],
@@ -257,9 +257,9 @@ describe('AgentToolActivationService', () => {
     });
   });
 
-  it('keeps Agent and runtime-independent tools on a process-only runtime', async () => {
+  it('keeps AgentRun and runtime-independent tools on a process-only runtime', async () => {
     runtimeData.capabilities.delete('fs');
-    const agentOptions = savedContributions.find((record) => record.options.name === 'Agent')!.options;
+    const agentOptions = savedContributions.find((record) => record.options.name === 'AgentRun')!.options;
     registerAgentToolService(IAlphaTool, AlphaTool, {
       name: 'Alpha',
       requiredRuntimeCapabilities: ['fs'],
@@ -272,26 +272,26 @@ describe('AgentToolActivationService', () => {
 
     const registry = ix.get(IAgentToolRegistryService);
     expect(registry.resolve('Alpha')).toBeUndefined();
-    expect(registry.resolve('Agent')).toBeInstanceOf(AgentStubTool);
+    expect(registry.resolve('AgentRun')).toBeInstanceOf(AgentStubTool);
     expect(registry.resolve('Gamma')).toBeInstanceOf(GammaTool);
     expect(alphaConstructions).toBe(0);
   });
 
-  it('withdraws Agent when process becomes unavailable and restores it later', async () => {
-    const agentOptions = savedContributions.find((record) => record.options.name === 'Agent')!.options;
+  it('withdraws AgentRun when process becomes unavailable and restores it later', async () => {
+    const agentOptions = savedContributions.find((record) => record.options.name === 'AgentRun')!.options;
     registerAgentToolService(IAgentStubTool, AgentStubTool, agentOptions);
     const ix = createActivationHost();
     const registry = ix.get(IAgentToolRegistryService);
     await ix.get(IAgentToolActivationService).activate();
-    expect(registry.resolve('Agent')).toBeInstanceOf(AgentStubTool);
+    expect(registry.resolve('AgentRun')).toBeInstanceOf(AgentStubTool);
 
     runtimeData.capabilities.delete('process');
     runtimeChangeEmitter.fire();
-    expect(registry.resolve('Agent')).toBeUndefined();
+    expect(registry.resolve('AgentRun')).toBeUndefined();
 
     runtimeData.capabilities.add('process');
     runtimeChangeEmitter.fire();
-    expect(registry.resolve('Agent')).toBeInstanceOf(AgentStubTool);
+    expect(registry.resolve('AgentRun')).toBeInstanceOf(AgentStubTool);
   });
 
   it('withdraws and restores only runtime-bound tools on capability and status changes', async () => {

@@ -305,7 +305,7 @@ describe('AgentProfileService.bind', () => {
     await expect(svc.setModel(MOCK_MODEL)).resolves.toMatchObject({ model: canonicalId });
   });
 
-  it('admits all six collaboration tools only in the intended builtin profile policies', () => {
+  it('does not admit deleted collaboration tools on any builtin profile', () => {
     const container = new InstantiationService(new ServiceCollection(), true);
     const catalog = new BuiltinAgentProfileLoaderService(container);
     const collaborationTools = [
@@ -317,13 +317,7 @@ describe('AgentProfileService.bind', () => {
       'send_message',
     ];
 
-    const main = catalog.get('agent');
-    expect(main).toBeDefined();
-    expect(collaborationTools.filter((name) => isToolActive(main!, name))).toEqual(
-      collaborationTools,
-    );
-
-    for (const profileName of ['coder', 'explore']) {
+    for (const profileName of ['agent', 'coder', 'explore']) {
       const profile = catalog.get(profileName);
       expect(profile).toBeDefined();
       expect(collaborationTools.filter((name) => isToolActive(profile!, name))).toEqual([]);

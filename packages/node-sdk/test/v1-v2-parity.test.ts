@@ -449,9 +449,11 @@ function projectResumedAgents(
  *   the engines (the subagent/cron docs embed engine-specific facts), and
  *   v1 additionally registers the `select_tools` meta tool v2 has no
  *   counterpart for — both are engine design, not resume data. v2's default
- *   profile also carries `TowerInit` (the tower-mode entry point) and
- *   `WaitFor` (the background-task wait primitive); both are v2-only, so the
- *   tools are projected out of both rosters. A model-less
+ *   profile also carries `TowerInit`, `AgentList`, and `AgentSend`, which are
+ *   v2-only and projected out of both rosters; v1's six-tool collaboration
+ *   adapter is v1-only and projected out the same way. Tools v2 renamed
+ *   (`Agent`, `WaitFor`) are normalized to their v2 names instead, since the
+ *   capability still exists on both sides. A model-less
  *   agent's roster is not compared at all (v1 initializes builtin tools
  *   only on a profiled agent; v2 exposes them unbound).
  */
@@ -462,9 +464,31 @@ function projectResumedAgents(
  */
 const V2_ONLY_TOOLS = new Set([
   'TowerInit',
-  'WaitFor',
   'AgentList',
   'AgentSend',
+]);
+
+/**
+ * v1-only tools: the six-tool named-agent collaboration adapter, which v2
+ * deleted once `AgentRun` / `AgentList` / `AgentSend` covered its capabilities.
+ */
+const V1_ONLY_TOOLS = new Set([
+  'spawn_agent',
+  'list_agents',
+  'wait_agent',
+  'followup_task',
+  'interrupt_agent',
+  'send_message',
+]);
+
+/**
+ * Tools that exist in both engines under different names, because v2 renamed
+ * them and v1 is frozen. Comparing the capability is still meaningful, so v1
+ * names are normalized to their v2 counterparts rather than projected out.
+ */
+const V1_TO_V2_TOOL_NAMES = new Map([
+  ['Agent', 'AgentRun'],
+  ['WaitFor', 'TaskWait'],
 ]);
 
 function projectResumedAgent(agent: ResumedAgentState, home: HomePair): unknown {
@@ -482,7 +506,12 @@ function projectResumedAgent(agent: ResumedAgentState, home: HomePair): unknown 
     projected['tools'] = tools
       .filter((tool) => tool['name'] !== 'select_tools')
       .filter((tool) => !V2_ONLY_TOOLS.has(String(tool['name'])))
-      .map((tool) => ({ name: tool['name'], active: tool['active'], source: tool['source'] }))
+      .filter((tool) => !V1_ONLY_TOOLS.has(String(tool['name'])))
+      .map((tool) => ({
+        name: V1_TO_V2_TOOL_NAMES.get(String(tool['name'])) ?? tool['name'],
+        active: tool['active'],
+        source: tool['source'],
+      }))
       .toSorted((a, b) => String(a.name).localeCompare(String(b.name)));
   }
   const context = projected['context'] as { readonly history: readonly unknown[] };

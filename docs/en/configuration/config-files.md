@@ -256,7 +256,7 @@ The three fields differ in how far they sit from the model's next token. `overla
 
 Anchoring is a per-request substitution, not a rewrite of the stored prompt. For the first `anchor_steps` requests of an anchored turn the model receives the `anchor` text as its entire system prompt; from the next step onward it receives the normal prompt, overlay included, for the rest of the session. Reach for it when a long profile prompt crowds out the conditioning you want at the moment the model plans, and the full prompt only matters once it starts calling tools. A system prompt passed explicitly by a caller is never replaced.
 
-Cognition binds to the alias rather than to the main agent, so a subagent that binds the same alias — through `model_alias`, [`[subagent] default_model`](#subagent), or inheritance from its caller — gets the same overlay, steering, and anchor. Switching aliases mid-session re-renders the overlay for the newly bound model.
+Cognition binds to the alias rather than to the main agent, so a subagent that binds the same alias — through `model_alias` or inheritance from its caller — gets the same overlay, steering, and anchor. On v1, [`[subagent] default_model`](#subagent) can also select that alias when the secondary-model experiment is on. Switching aliases mid-session re-renders the overlay for the newly bound model.
 
 The example below conditions a DeepSeek V4 model whose default habit is to narrate execution step by step instead of planning first. It pairs a short `anchor` — a thin persona that stands in for the profile prompt while the model plans — with `steering` that asks for a plan before action:
 
@@ -287,11 +287,11 @@ Treat that wording as a starting point rather than a setting. Which phrasing act
 
 The secondary model is a second model configuration alongside the main model — typically a cheaper one, for features that do not need the main model's capability. It remains the legacy fallback recipe for subagent spawning.
 
-Exact `model_alias` and `thinking_effort` bindings on agent profiles, `Agent`, and `AgentSwarm` are stable and do not require an experiment. Model precedence for a new subagent is tool `model_alias` → profile [`model_alias`](../customization/agents.md#agent-file-format) → `[subagent] default_model` → the immediate caller's model. An exact alias named `primary` or `secondary` remains literal.
+Exact `model_alias` bindings on agent profiles, `AgentRun`, and `AgentSwarm` are stable and do not require an experiment. Profile-file `thinking_effort` is likewise stable; the matching v2 tool parameter is `effort`. On v2, model precedence for a new subagent is tool `model_alias` → profile [`model_alias`](../customization/agents.md#agent-file-format) → the immediate caller's model. On v1, `[subagent] default_model` still fills after the profile when the secondary-model experiment is on. An exact alias named `primary` or `secondary` remains literal.
 
-Thinking effort resolves independently: tool `thinking_effort` → profile `thinking_effort` → `[subagent] default_effort` → caller effort when the complete caller binding is inherited. A concrete model alias without an effort uses the existing global `[thinking]` and selected-model defaults instead of carrying a stale caller effort.
+Thinking effort on v2 resolves independently: tool `effort` → profile `thinking_effort` → caller effort when the complete caller binding is inherited. On v1, `[subagent] default_effort` fills after the profile when that experiment is on. A concrete model alias without an effort uses the existing global `[thinking]` and selected-model defaults instead of carrying a stale caller effort.
 
-Only the legacy `model` tool selector (`"secondary"` / `"primary"`), the profile `model_preference` field, and this secondary recipe require `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` or the master `KIMI_CODE_EXPERIMENTAL_FLAG=1`. With the experiment enabled, this recipe is inserted between the `[subagent]` defaults and the caller binding; its `default_effort` is used only when the recipe supplied the model. The legacy `model` parameter and `model_alias` are mutually exclusive. With the experiment disabled, profile `model_preference` is ignored with a warning and an explicit `model` tool parameter is rejected with a clear error. The internal alias `__secondary__` is reserved and cannot be configured or selected directly. Resumed and retried subagents never re-resolve the current profile or defaults; their persisted binding is immutable.
+Only the legacy `model` tool selector (`"secondary"` / `"primary"`), the profile `model_preference` field, and this secondary recipe require `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` or the master `KIMI_CODE_EXPERIMENTAL_FLAG=1`. With the experiment enabled, this recipe is inserted before caller inheritance; its `default_effort` is used only when the recipe supplied the model. The legacy `model` parameter and `model_alias` are mutually exclusive. With the experiment disabled, profile `model_preference` is ignored with a warning and an explicit `model` tool parameter is rejected with a clear error. The internal alias `__secondary__` is reserved and cannot be configured or selected directly. Resumed and retried subagents never re-resolve the current profile or defaults; their persisted binding is immutable.
 
 A configured `[secondary_model.models]` table is a soft allowlist by default: the legacy `model` preference must use a pool key, but an exact `model_alias` may select another configured model. Set `enforce_pool = true` to make exact aliases obey the pool as well; the caller's `primary` model remains allowed. `enforce_pool` requires a non-empty explicit pool and cannot be combined with `force`. All pool keys and `default_model` must also stay outside `[subagent] deny_models`; comparisons use canonical model identities after alias resolution.
 
@@ -391,7 +391,7 @@ Retries only apply to transient failures — connection errors, timeouts, HTTP 4
 
 ## `background`
 
-`background` controls the concurrency behavior of background tasks (launched via the `Bash` tool or the `Agent` tool's `run_in_background=true` parameter).
+`background` controls the concurrency behavior of background tasks (launched via the `Bash` tool's `run_in_background=true` parameter or the `AgentRun` tool's `background=true` parameter).
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -410,26 +410,33 @@ In print mode (`kimi -p "<prompt>"`), Kimi Code stays alive after the main agent
 
 ## `subagent`
 
-`subagent` controls how spawned subagents (`Agent` / `AgentSwarm`) run.
+`subagent` controls how spawned subagents (`AgentRun` / `AgentSwarm`) run.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `default_model` | `string` | — | Fill-only exact `[models]` alias for new subagents, after tool and profile bindings and before caller inheritance |
-| `default_effort` | `string` | — | Fill-only thinking effort for new subagents, after tool and profile effort and before caller inheritance |
+| `default_model` | `string` | — | On v1, fill-only exact `[models]` alias for new `Agent` / `AgentSwarm` children after tool and profile bindings, when the secondary-model experiment is on. On v2 this key is accepted and currently unused by `AgentRun` / `AgentSwarm` |
+| `default_effort` | `string` | — | On v1, fill-only thinking effort after tool and profile effort, when the secondary-model experiment is on. On v2 this key is accepted and currently unused by `AgentRun` / `AgentSwarm` |
 | `deny_models` | `string[]` | — | Denylist applied to explicit subagent model choices after alias resolution. Pool keys and `default_model` may not resolve to a denied identity |
-| `timeout_ms` | `integer` | `7200000` (2 hours) | Maximum wall-clock time (milliseconds) a single subagent (`Agent` / `AgentSwarm`) is allowed to run before it is settled as `timed_out`. `0` means no timeout — the subagent runs until it finishes or the model stops it. This is the background-task manager's per-task timeout for each subagent task, so it applies to both foreground and background subagents. In print mode (`kimi -p`) the default is `0` unless explicitly set. Note: any value above `2147483647` (about 24.8 days) is clamped to roughly 24.8 days by the runtime |
+| `timeout_ms` | `integer` | `7200000` (2 hours) | Maximum wall-clock time (milliseconds) a single subagent (`AgentRun` / `AgentSwarm`) is allowed to run before it is settled as `timed_out`. `0` means no timeout — the subagent runs until it finishes or the model stops it. This is the background-task manager's per-task timeout for each subagent task, so it applies to both foreground and background subagents. In print mode (`kimi -p`) the default is `0` unless explicitly set. Note: any value above `2147483647` (about 24.8 days) is clamped to roughly 24.8 days by the runtime |
 
 `timeout_ms` can be overridden by the `KIMI_SUBAGENT_TIMEOUT_MS` environment variable, which takes higher priority than `config.toml`. There are no environment variables for `default_model`, `default_effort`, or `deny_models`.
 
 ## `agents`
 
-This strict section configures the experimental [Codex-style collaboration adapter](../customization/agents.md#codex-style-collaboration-adapter). Unknown keys are reported as configuration errors.
+This strict section is still parsed. Unknown keys are reported as configuration errors. On the default v2 engine it supplies [delegation-notice files](../customization/agents.md) for sub-agents and independent host invocations. On the legacy v1 engine it also gates the five-tool [collaboration adapter](../customization/agents.md#codex-style-collaboration-adapter).
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `enabled` | `boolean` | `true` | Enables the adapter when the `agent-collaboration` experiment is also enabled |
-| `default_subagent_model` | `string` | — | Exact configured `[models]` alias used when a spawn and its selected profile do not choose a model |
-| `default_subagent_reasoning_effort` | `string` | — | Nonblank reasoning effort used when a spawn and its selected profile do not choose one |
+| `enabled` | `boolean` | `true` | On v1, `false` removes the five-tool adapter even when the `agent-collaboration` experiment is on. On v2 this key is accepted and currently controls nothing |
+| `default_subagent_model` | `string` | — | Exact configured `[models]` alias used by the v1 named-agent spawn path when a spawn and its selected profile do not choose a model |
+| `default_subagent_reasoning_effort` | `string` | — | Nonblank reasoning effort used by the v1 named-agent spawn path when a spawn and its selected profile do not choose one |
+
+`[agents.delegation]` is a nested table. A string is a path relative to the Kiki home directory; `false` skips that notice. Omit a slot to keep the built-in text.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `sub` | `string \| false` | built-in sub-agent handoff | Notice injected when this profile runs as a dispatched sub-agent |
+| `independent` | `string \| false` | built-in independent-host notice | Notice injected for an MCP / SDK host invocation with no parent agent |
 
 ## `thread_communication`
 

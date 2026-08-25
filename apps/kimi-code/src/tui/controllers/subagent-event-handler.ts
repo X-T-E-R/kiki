@@ -21,6 +21,7 @@ import { formatBackgroundAgentTranscript } from '../utils/background-agent-statu
 import { argsRecord, serializeToolResultOutput } from '../utils/event-payload';
 import { formatHookResultPlain } from '../utils/hook-result-format';
 import { nextTranscriptId } from '../utils/transcript-id';
+import { AGENT_RUN_TOOL } from '../tool-names';
 import type { SessionEventHost } from './session-event-handler';
 import { SubagentActivityStore } from './subagent-activity-store';
 
@@ -705,10 +706,9 @@ export class SubAgentEventHandler {
     const { turnId, step } = this.host.streamingUI.getTurnContext();
     const toolCall: ToolCallBlockData = {
       id: event.parentToolCallId,
-      name: 'Agent',
+      name: AGENT_RUN_TOOL,
       args: {
-        description,
-        subagent_type: event.subagentName,
+        profile: event.subagentName,
       },
       description,
       step,

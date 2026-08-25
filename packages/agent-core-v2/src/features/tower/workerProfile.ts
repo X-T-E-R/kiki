@@ -12,7 +12,7 @@ import { TOWER_WORKER_PROFILE } from './tower';
 import TOWER_WORKER_ROLE_OVERLAY from './tower-worker-overlay.md?raw';
 
 const TOWER_WORKER_TOOLS = [
-  'Agent',
+  'AgentRun',
   'Bash',
   'TowerFinding',
   'TowerInbox',
@@ -35,7 +35,7 @@ const TOWER_WORKER_TOOLS = [
   'TaskOutput',
   'TaskStop',
   'TodoList',
-  'WaitFor',
+  'TaskWait',
   'WebSearch',
   'FetchURL',
   'Write',

@@ -155,7 +155,7 @@ export function resolveSubagentDispatch(
           .join(', ');
         throw new Error2(
           ErrorCodes.PROFILE_UNKNOWN,
-          `Unknown agent type: "${profileName}". Available agent types: ${available}`,
+          `Unknown agent profile: "${profileName}". Available agent profiles: ${available}`,
           { details: { profileName, available } },
         );
       }

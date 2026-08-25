@@ -122,7 +122,7 @@ describe('permissionRules/matchPermissionRule', () => {
           pathClass: 'posix',
         }),
     })).toBe(false);
-    expect(matches(rule('Agent(review-*)'), 'Agent', {
+    expect(matches(rule('AgentRun(review-*)'), 'AgentRun', {
       matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, 'review-code'),
     })).toBe(true);
     expect(matches(rule('mcp__github__*'), 'mcp__github__list_issues', noArgs)).toBe(true);

@@ -2,23 +2,23 @@ List the subagents this agent started, with their current status.
 
 Use this tool to discover which child agents exist and how to address
 them. It returns every direct child of the current agent — including
-children started with `Agent` or `AgentSwarm` — and never lists
+children started with `AgentRun` or `AgentSwarm` — and never lists
 grandchildren. After a context compaction, or whenever you are unsure
 which children are still around, call this tool instead of guessing an
 id or name.
 
 Each entry carries:
 
-- `agent_id` — the generated id. Pass it to `Agent` `resume`, `AgentSend`,
+- `agent_id` — the generated id. Pass it to `AgentRun` `agent`, `AgentSend`,
   or `AgentSwarm` `resume_agent_ids`.
 - `name` — present only when the child was started with the `name`
-  parameter of the `Agent` tool. Use that name in place of `agent_id`
+  parameter of the `AgentRun` tool. Use that name in place of `agent_id`
   when addressing the same child.
 - `profile` — the child's agent type.
 - `status` — `running` while a background task is in progress;
   `completed`, `interrupted`, or `errored` once that task has settled;
   `untracked` when no background task is tracking the child (the usual
-  case for `AgentSwarm` children and for foreground `Agent` calls);
+  case for `AgentSwarm` children and for foreground `AgentRun` calls);
   `unknown` when a task id is recorded but cannot be resolved.
 - `swarm_item` — present when the child was launched as an `AgentSwarm`
   item.

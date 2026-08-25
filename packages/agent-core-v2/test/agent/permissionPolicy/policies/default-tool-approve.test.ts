@@ -51,7 +51,7 @@ describe('DefaultToolApprovePermissionPolicyService', () => {
     ['CronList', {}],
     ['WebSearch', { query: 'kimi code' }],
     ['FetchURL', { url: 'https://example.com' }],
-    ['Agent', { prompt: 'review this' }],
+    ['AgentRun', { prompt: 'review this' }],
     [
       'AgentSwarm',
       {

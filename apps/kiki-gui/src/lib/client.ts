@@ -498,7 +498,7 @@ export type AgentTranscriptFrame =
       error?: string;
       inputText?: string;
       progress?: { text?: string };
-      /** Agents spawned by this call (Agent / AgentSwarm). */
+      /** Agents spawned by this call (AgentRun / AgentSwarm). */
       agentRefs?: readonly { readonly agentId: string; readonly role?: 'child' | 'member' }[];
     }
   | { kind: 'notice'; frameId: string; level: 'error' | 'warning' | 'info'; message: string };

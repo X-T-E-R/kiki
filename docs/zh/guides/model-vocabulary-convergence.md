@@ -29,7 +29,7 @@ Kiki 当前在旧版 `agent-core` 引擎、`agent-core-v2` 委派契约和 Agent
 | 表面 | 字段 | 当前语义 | 存在理由 |
 | --- | --- | --- | --- |
 | 旧版 `packages/agent-core` profile 与 Agent 文件 | `model_preference`、`model_alias` | `model_preference` 只接受 `primary` 或 `secondary`；`model_alias` 指向已配置模型。两者互斥，进入运行时后成为内部 `modelPreference` / `modelAlias` profile 字段。 | v1 profile 与 Agent 文件格式早于 v2 委派词汇，且可选的旧版引擎仍需要它。 |
-| `packages/agent-core-v2` 的 `Agent` / `AgentSwarm` 委派 | `model`、`model_alias` | `model` 是符号或已配置模型池选择器。`primary` 固定继承调用方绑定，其他可接受值来自已配置的子 Agent 模型池；`model_alias` 直接选择已配置模型。两者互斥。 | 这是当前面向模型的 v2 委派契约，可向工具暴露有界模型池，而不必把所有已配置模型都当作符号选项。 |
+| `packages/agent-core-v2` 的 `AgentRun` / `AgentSwarm` 委派 | `model`、`model_alias` | `model` 是符号或已配置模型池选择器。`primary` 固定继承调用方绑定，其他可接受值来自已配置的子 Agent 模型池；`model_alias` 直接选择已配置模型。两者互斥。 | 这是当前面向模型的 v2 委派契约，可向工具暴露有界模型池，而不必把所有已配置模型都当作符号选项。 |
 | v2 中的 Kiki Agent 文件与 profile route sidecar | `model_preference`、`model_alias` | `model_preference` 仍只接受 `primary` 或 `secondary`，解析时映射到 profile 的内部选择字段；`secondary` 表示已配置模型池的默认模型。`model_alias` 仍是直接选择已配置模型的字段。 | Kiki 在同步上游时保留了 Agent 文件特性。该写法属于持久化、由用户编写的 schema，不是 v2 工具参数。 |
 
 普通 Agent 文件会有意忽略未知 Frontmatter 字段，包括其他工具使用的 `model` 字段；profile route sidecar 使用严格解析，会拒绝未知字段。因此，把 Agent 文件字段改名为 `model` 不只是改拼写，还会同时改变兼容行为和报错行为。
@@ -80,7 +80,7 @@ v1 的 `resolveModelAlias` 与 v2 的 `ModelService.resolveId` 都遵循同一�
 
 ### 阶段 1：在 v2 输入边界规范化
 
-定义一种内部选择结构，明确区分符号 / 模型池选择与已配置模型选择。`Agent` / `AgentSwarm` 的 `model`、Agent 文件的 `model_preference` 和 `model_alias` 都先转换为该结构，再进入优先级计算。
+定义一种内部选择结构，明确区分符号 / 模型池选择与已配置模型选择。`AgentRun` / `AgentSwarm` 的 `model`、Agent 文件的 `model_preference` 和 `model_alias` 都先转换为该结构，再进入优先级计算。
 
 本阶段可以重命名内部 TypeScript 属性，但不得改变工具 schema、Frontmatter、配置文件、journal 数据或运行结果。
 
@@ -118,7 +118,7 @@ v1 可在合适时共享测试或 fixture，但它是兼容消费者，不再成
 - Agent 文件和 profile route sidecar 中的 `model_preference` 与 `model_alias` 继续互斥。
 - 字面值名为 `primary` 或 `secondary` 的已配置 alias，继续可通过 `model_alias` 寻址；符号选择不能截获它。
 - 精确已配置模型 key 优先于 bare ID 候选；未知的限定 ID 不做后缀匹配；有歧义的 bare ID 必须报错并列出候选。
-- `thinking_effort` 与模型选择器独立解析。
+- Agent 文件的 `thinking_effort` 与 v2 工具参数 `effort` 都与模型选择器独立解析。
 - 恢复或重试的子 Agent 保持已持久化的模型与 effort 绑定；resume 不得重新解释当前 profile 或默认值。
 - 次主力模型 feature gate 继续控制符号 / 模型池行为，但不能关闭稳定的 `model_alias` 绑定。
 - 只要两个引擎都加载 Agent 文件格式，该格式的变更就必须同步更新 v1 与 v2 解析器。

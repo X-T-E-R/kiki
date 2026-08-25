@@ -314,7 +314,7 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     expect(catalog.get('reviewer')).toBeUndefined();
     expect(catalog.get('coder')).toBe(coderProfile);
     expect(() => catalog.resolveSelection({ profile: 'reviewer' })).toThrow(
-      'Unknown agent type: "reviewer"',
+      'Unknown agent profile: "reviewer"',
     );
 
     const seen: string[] = [];
@@ -326,7 +326,7 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     expect(catalog.get('reviewer')).toBe(reviewerProfile);
     expect(catalog.get('coder')).toBeUndefined();
     expect(() => catalog.resolveSelection({ profile: 'coder' })).toThrow(
-      'Unknown agent type: "coder"',
+      'Unknown agent profile: "coder"',
     );
     expect(seen).toEqual(['catalog']);
     subscription.dispose();
@@ -348,7 +348,7 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     expect(catalog.list()).toEqual([coderProfile]);
     expect(catalog.inspect(DEFAULT_AGENT_PROFILE_NAME)).toBeUndefined();
     expect(() => catalog.resolveSelection({ profile: DEFAULT_AGENT_PROFILE_NAME })).toThrow(
-      `Unknown agent type: "${DEFAULT_AGENT_PROFILE_NAME}". Available agent types: coder`,
+      `Unknown agent profile: "${DEFAULT_AGENT_PROFILE_NAME}". Available agent profiles: coder`,
     );
     expect(warnings).toEqual([]);
     catalog.dispose();

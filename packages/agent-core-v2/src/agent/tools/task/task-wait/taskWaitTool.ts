@@ -113,7 +113,7 @@ export function startWaitProgress(
 
 export class WaitForTool implements IWaitForTool {
   declare readonly _serviceBrand: undefined;
-  readonly name = 'WaitFor' as const;
+  readonly name = 'TaskWait' as const;
   readonly description: string = WAIT_FOR_DESCRIPTION;
   readonly parameters: Record<string, unknown> = toInputJsonSchema(WaitForInputSchema);
 
@@ -142,7 +142,7 @@ export class WaitForTool implements IWaitForTool {
     if (!this.flags.enabled(WAIT_FOR_FLAG_ID)) {
       return {
         isError: true,
-        output: 'WaitFor is disabled: the wait_for experimental flag is off.',
+        output: 'TaskWait is disabled: the wait_for experimental flag is off.',
       };
     }
     const startedAt = Date.now();
@@ -245,7 +245,7 @@ export class WaitForTool implements IWaitForTool {
         waitedMs: Date.now() - startedAt,
         timeoutMs,
       }),
-      'The wait ended before the task finished — a timeout is not an error. Call WaitFor again to keep waiting, or continue with other work; completion also arrives via automatic notification.',
+      'The wait ended before the task finished — a timeout is not an error. Call TaskWait again to keep waiting, or continue with other work; completion also arrives via automatic notification.',
     ];
     const running = this.tasks.list(true);
     if (running.length > 0) {
@@ -332,7 +332,7 @@ export class WaitForTool implements IWaitForTool {
 }
 
 registerAgentToolService(IWaitForTool, WaitForTool, {
-  name: 'WaitFor',
+  name: 'TaskWait',
   domain: 'agentTask',
   when: (accessor) => accessor.get(IFlagService).enabled(WAIT_FOR_FLAG_ID),
 });

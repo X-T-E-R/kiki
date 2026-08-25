@@ -126,6 +126,7 @@ const REGISTRY: Record<string, ChipProvider> = {
   WebSearch: webSearchChip,
   CreateGoal: goalStatusOutputChip,
   GetGoal: goalStatusOutputChip,
+  TaskWait: waitForChip,
   WaitFor: waitForChip,
 };
 

@@ -13,13 +13,13 @@ export const AgentSwarmToolInputSchema = z
       .trim()
       .min(1)
       .describe('Short description for the whole swarm.'),
-    subagent_type: z
+    profile: z
       .string()
       .trim()
       .min(1)
       .optional()
       .describe(
-        'Subagent type used for every new subagent spawned from items; defaults to coder when omitted. Resumed subagents always keep their original type, so passing subagent_type together with resume_agent_ids is allowed — it only affects the item-based spawns.',
+        'Agent profile used for every new subagent spawned from items; defaults to coder when omitted. Resumed subagents always keep their original profile, so passing profile together with resume_agent_ids is allowed — it only affects the item-based spawns.',
       ),
     route: z
       .string()
@@ -27,7 +27,7 @@ export const AgentSwarmToolInputSchema = z
       .min(1)
       .optional()
       .describe(
-        'Named profile route used for every new item-spawned subagent. The base type is derived when subagent_type is omitted.',
+        'Named profile route used for every new item-spawned subagent. The base profile is derived when profile is omitted.',
       ),
     prompt_template: z
       .string()
@@ -64,7 +64,7 @@ export const AgentSwarmToolInputSchema = z
       .describe(
         'Exact configured [models] alias for every new item-spawned subagent. Literal "primary" and "secondary" values stay exact.',
       ),
-    thinking_effort: z
+    effort: z
       .string()
       .trim()
       .min(1)
@@ -82,11 +82,11 @@ export const AgentSwarmToolInputSchema = z
     if (
       (args.items?.length ?? 0) === 0 &&
       Object.keys(args.resume_agent_ids ?? {}).length > 0 &&
-      (args.route !== undefined || args.model !== undefined || args.model_alias !== undefined || args.thinking_effort !== undefined)
+      (args.route !== undefined || args.model !== undefined || args.model_alias !== undefined || args.effort !== undefined)
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'Cannot set route, model, model_alias, or thinking_effort for a resume-only swarm',
+        message: 'Cannot set route, model, model_alias, or effort for a resume-only swarm',
       });
     }
   });

@@ -769,7 +769,7 @@ export function buildSubagentModelDescriptions(
   if (aliases.length > 0) {
     lines.push(`Configured model aliases (pass an exact value via model_alias): ${aliases.join(', ')}`);
   }
-  lines.push('Pass thinking_effort to override the thinking effort for a new subagent.');
+  lines.push('Pass effort to override the thinking effort for a new subagent.');
   return lines.join('\n');
 }
 
@@ -840,7 +840,7 @@ function anyBindingFieldPresent(): Record<string, unknown> {
 
 export function normalizeSubagentBindingValue(
   value: string | undefined,
-  field: 'model_alias' | 'thinking_effort',
+  field: 'model_alias' | 'effort',
 ): string | undefined {
   if (value === undefined) return undefined;
   const normalizedValue = value.trim();

@@ -12,7 +12,7 @@ export interface GoalInjectionOptions {
 }
 
 export const GOAL_WAIT_FOR_GUIDANCE =
-  'If you are waiting for background sub-agents or bash tasks to finish, call WaitFor to wait for them inside this turn instead of ending the turn; ending the turn just gets you re-invoked again and again. You can also use the waiting time to do useful parallel work. Either way, make sure every goal turn is productive.';
+  'If you are waiting for background sub-agents or bash tasks to finish, call TaskWait to wait for them inside this turn instead of ending the turn; ending the turn just gets you re-invoked again and again. You can also use the waiting time to do useful parallel work. Either way, make sure every goal turn is productive.';
 
 export class GoalInjection extends Service {
   constructor(

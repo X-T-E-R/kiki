@@ -746,7 +746,7 @@ describe('TaskStopTool', () => {
   });
 });
 
-describe('WaitForTool', () => {
+describe('TaskWait tool', () => {
   function waitTelemetry(): { records: TelemetryRecord[]; telemetry: ReturnType<typeof recordingTelemetry> } {
     const records: TelemetryRecord[] = [];
     return { records, telemetry: recordingTelemetry(records) };
@@ -759,7 +759,7 @@ describe('WaitForTool', () => {
   it('has name and accepts the current schema', () => {
     const tool = new WaitForTool(new FakeTaskService(), recordingTelemetry([]), stubFlag(true));
 
-    expect(tool.name).toBe('WaitFor');
+    expect(tool.name).toBe('TaskWait');
     expect(WaitForInputSchema.safeParse({ timeout: 60 }).success).toBe(true);
     expect(WaitForInputSchema.safeParse({ timeout: 60, task_id: 'bash-1' }).success).toBe(true);
     expect(WaitForInputSchema.safeParse({ timeout: 600 }).success).toBe(true);
@@ -1073,7 +1073,7 @@ describe('WaitForTool', () => {
   });
 });
 
-describe('WaitForTool (harness)', () => {
+describe('TaskWait tool (harness)', () => {
   function immediateProcess(exitCode: number, stdoutText = ''): IHostProcess {
     return {
       _serviceBrand: undefined,
@@ -1143,7 +1143,7 @@ describe('WaitForTool (harness)', () => {
     );
     try {
       const tasks = ctx.get(IAgentTaskService);
-      const tool = ctx.get(IAgentToolRegistryService).resolve('WaitFor');
+      const tool = ctx.get(IAgentToolRegistryService).resolve('TaskWait');
       expect(tool).toBeDefined();
 
       const slow = controllableProcess();
@@ -1180,7 +1180,7 @@ describe('WaitForTool (harness)', () => {
     const ctx = createTestAgent();
     try {
       const tasks = ctx.get(IAgentTaskService);
-      const tool = ctx.get(IAgentToolRegistryService).resolve('WaitFor');
+      const tool = ctx.get(IAgentToolRegistryService).resolve('TaskWait');
       expect(tool).toBeDefined();
 
       const slow = controllableProcess();

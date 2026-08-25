@@ -17,9 +17,10 @@ The classification describes the origin and maintenance boundary of a surface, n
 | Kimi Code CLI, TUI (terminal user interface), and the `kimi` command | Inherited | Installation, login, sessions, configuration, and ordinary command behavior continue to use the existing Kimi Code CLI docs. |
 | `kap-server`, `@moonshot-ai/protocol`, and the session, configuration, and authentication contracts they expose | Inherited | Kiki clients consume these contracts instead of defining a separate server or protocol family. |
 | Model-binding areas in `agent-core` and `agent-core-v2` | Adapted | Kiki extends selected upstream agent-engine paths while preserving their existing session and task lifecycles. |
-| Explicit model-alias and thinking-effort binding for newly spawned subagents | Kiki-only | The binding behavior is a downstream addition implemented in both agent-engine paths; only the legacy symbolic-selector path is disabled by default, while the explicit binding itself is stable and always available. |
+| Explicit model-alias and thinking-effort binding for newly spawned subagents | Kiki-only | The binding behavior is a downstream addition implemented in both agent-engine paths; only the legacy symbolic-selector path is disabled by default, while the explicit binding itself is stable and always available. v2 tool parameters use `model_alias` and `effort`; Agent files still use `thinking_effort`. |
 | Per-model prompt conditioning via [`[models."<alias>".cognition]`](../configuration/config-files.md#model-cognition) | Kiki-only | Overlay, steering, and anchor prompt files attach to a model alias rather than an agent profile. The repository ships no default text for them; every file is read from the data root at runtime, and an undeclared field injects nothing. |
-| Six-tool Codex-style collaboration adapter | Kiki-only | The adapter adds `spawn_agent`, `list_agents`, `wait_agent`, `followup_task`, `interrupt_agent`, and `send_message`; it does not claim complete Codex compatibility. |
+| Direct-child tools `AgentList` and `AgentSend` | Kiki-only | Always on the v2 main `agent` profile. `AgentRun` is the v2 name of the former `Agent` tool (`WaitFor` became `TaskWait`). |
+| Five-tool Codex-style collaboration adapter | Kiki-only | Lives only on the legacy `agent-core` engine: `spawn_agent`, `list_agents`, `wait_agent`, `followup_task`, and `interrupt_agent`. The default v2 engine does not load these tools. |
 | Local peer-thread communication | Kiki-only | Main Agents can list, read, message, and wait on existing sessions across local workspaces; REST and Klient provide target-only external-client sends without peer attribution. |
 | Standalone `@kiki/gui` package | Kiki-only | The GUI is a downstream client of the inherited server and protocol surfaces. Some components adapt separately attributed donor material, so those components are classified as adapted within the Kiki-only package. |
 
@@ -40,15 +41,15 @@ The executable name and the agent engine are separate choices. Start with `kimi`
 
 ## Enable Kiki-only agent features
 
-The legacy model-selector and named-agent features below remain experimental and off by default. Prefer the feature-specific gate when you need only one behavior.
+The legacy model-selector feature below remains experimental and off by default. The five-tool named-agent adapter is also experimental, but only on the legacy v1 engine.
 
 | Feature | Enable with | Additional boundary |
 | --- | --- | --- |
-| Legacy subagent model selector and secondary recipe | `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` | Gates only the symbolic `model`/`model_preference` selectors and the `[secondary_model]` recipe; explicit `model_alias`/`thinking_effort` binding is stable and always available. Applies to new subagent spawns. Resumed or retried subagents retain their persisted binding. |
-| Six-tool named-agent adapter | `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION=1` | `[agents] enabled = false` still removes the adapter tools. `send_message` queues without waking an idle target, and spawning does not copy parent history. |
+| Legacy subagent model selector and secondary recipe | `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` | Gates only the symbolic `model`/`model_preference` selectors and the `[secondary_model]` recipe; explicit `model_alias` / profile `thinking_effort` / v2 tool `effort` binding is stable and always available. Applies to new subagent spawns. Resumed or retried subagents retain their persisted binding. |
+| Five-tool named-agent adapter (v1 only) | `KIMI_CODE_LEGACY_FLAG=1` and `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION=1` | `[agents] enabled = false` still removes the adapter tools on v1. The env var is ignored by v2, where `[agents] enabled` currently controls nothing. `spawn_agent` starts a named child with fresh context. `followup_task` starts a new turn on an idle named child; v1 does not queue a mailbox message. |
 | All registered experiments | `KIMI_CODE_EXPERIMENTAL_FLAG=1` | This is a broad master gate, not a runtime or product selector. |
 
-[Agents and subagents](../customization/agents.md) documents the binding precedence, lifecycle, and exact collaboration limits. [Configuration files](../configuration/config-files.md#subagent) documents the persistent subagent defaults.
+[Agents and subagents](../customization/agents.md) documents the binding precedence, lifecycle, and child-agent tools. [Configuration files](../configuration/config-files.md#subagent) documents `[subagent]` timeout, denylist, and the v1 fill defaults.
 
 ## Integrate peer-thread communication
 
@@ -84,7 +85,7 @@ Kiki does not introduce a second backend stack. `@kiki/gui` calls the inherited 
 | --- | --- | --- |
 | CLI/TUI command surface | Upstream Kimi Code baseline | Keep `kimi` behavior and the existing user docs as the default contract. |
 | Server, protocol, session, configuration, and authentication surface | Upstream Kimi Code baseline | A Kiki client change should adapt to this contract unless the contract itself is deliberately reclassified. |
-| Agent-engine integration delta | Kiki maintainers | Kiki owns model/effort binding and collaboration-adapter regressions introduced by the downstream delta. |
+| Agent-engine integration delta | Kiki maintainers | Kiki owns model/effort binding and child-agent regressions introduced by the downstream delta. |
 | `@kiki/gui` client, state, and presentation | Kiki maintainers | The package is a private repository workspace surface; its presence is not a public release or production-readiness claim. |
 
 The GUI package records adapted material from codeg, AionUi, grok-build, and LiveAgent in `apps/kiki-gui/ATTRIBUTION.md`. That file assigns provenance to specific adapted behavior and lists known dependency licenses; it explicitly does not assign a donor license to an entire target file or establish a complete distribution-notice set.
@@ -126,13 +127,14 @@ The following repository paths back the classifications in this guide:
 - **Inherited server and protocol**: `packages/kap-server/`, `packages/protocol/`, `packages/node-sdk/`, and `packages/oauth/`
 - **Adapted model-binding areas**: `packages/agent-core/src/session/subagent-binding.ts` and `packages/agent-core-v2/src/session/subagent/`
 - **Kiki-only per-model prompt conditioning**: `packages/agent-core-v2/src/agent/cognition/`, `packages/agent-core-v2/src/features/modelSteering/`, and the `cognition` schema in `packages/agent-core-v2/src/app/kosongConfig/configSection.ts`
-- **Kiki-only collaboration adapter**: `packages/agent-core/src/tools/builtin/collaboration/agent-collaboration.ts` and `packages/agent-core-v2/src/agent/tools/agent-collaboration/agentCollaborationTool.ts`
+- **Kiki-only v2 child-agent tools**: `packages/agent-core-v2/src/agent/tools/agent/`, `packages/agent-core-v2/src/agent/tools/agent-list/`, and `packages/agent-core-v2/src/agent/tools/agent-send/`
+- **Kiki-only v1 collaboration adapter**: `packages/agent-core/src/tools/builtin/collaboration/agent-collaboration.ts`
 - **Kiki-only peer-thread core and transport**: `packages/agent-core-v2/src/app/threadCommunication/`, `packages/kap-server/src/routes/threads.ts`, and `packages/klient/src/contract/global/threads.ts`
 - **Kiki-only GUI and its donor boundary**: `apps/kiki-gui/package.json`, `apps/kiki-gui/src/lib/client.ts`, and `apps/kiki-gui/ATTRIBUTION.md`
 
 ## Next steps
 
 - [Getting started](./getting-started.md) — install and run the inherited `kimi` command.
-- [Agents and subagents](../customization/agents.md) — configure model binding and use the collaboration adapter within its current limits.
+- [Agents and subagents](../customization/agents.md) — configure model binding and use the child-agent tools.
 - [Environment variables](../configuration/env-vars.md#runtime-switches) — compare engine selection and experimental feature gates.
 - [`kimi` command reference](../reference/kimi-command.md) — look up the current executable, flags, and subcommands.

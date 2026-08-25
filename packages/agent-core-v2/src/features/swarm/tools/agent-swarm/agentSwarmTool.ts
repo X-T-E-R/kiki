@@ -152,7 +152,7 @@ export class AgentSwarmTool implements IAgentSwarmTool {
       false,
     );
     if (typeLines.length > 0) {
-      description += `\n\nAvailable agent types (pass via subagent_type):\n${typeLines}`;
+      description += `\n\nAvailable agent profiles (pass via profile):\n${typeLines}`;
     }
     const routeLines = buildRouteDescriptions(targets.routes);
     if (routeLines.length > 0) {
@@ -238,10 +238,7 @@ export class AgentSwarmTool implements IAgentSwarmTool {
     turnId: number,
   ): Promise<string> {
     const modelAlias = normalizeSubagentBindingValue(args.model_alias, 'model_alias');
-    const thinkingEffort = normalizeSubagentBindingValue(
-      args.thinking_effort,
-      'thinking_effort',
-    );
+    const thinkingEffort = normalizeSubagentBindingValue(args.effort, 'effort');
     if (
       (args.items?.length ?? 0) === 0 &&
       Object.keys(args.resume_agent_ids ?? {}).length > 0 &&
@@ -249,11 +246,11 @@ export class AgentSwarmTool implements IAgentSwarmTool {
     ) {
       throw new Error2(
         ErrorCodes.VALIDATION_FAILED,
-        'Cannot set route, model, model_alias, or thinking_effort for a resume-only swarm.',
+        'Cannot set route, model, model_alias, or effort for a resume-only swarm.',
       );
     }
     const requestedProfileName =
-      normalizeOptionalString(args.subagent_type) ??
+      normalizeOptionalString(args.profile) ??
       (args.route === undefined ? DEFAULT_SUBAGENT_TYPE : undefined);
     let profileName = requestedProfileName ?? DEFAULT_SUBAGENT_TYPE;
     let routeId: string | undefined;

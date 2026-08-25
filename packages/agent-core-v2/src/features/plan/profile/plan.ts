@@ -16,7 +16,7 @@ const PLAN_TOOLS = [
 const PLAN_ROLE =
   'Before designing your implementation plan, consider whether you fully understand the codebase areas ' +
   'relevant to the task. If not, recommend the parent agent to use the explore agent ' +
-  '(subagent_type="explore") to investigate key questions first. In your response, clearly state:\n' +
+  '(profile="explore") to investigate key questions first. In your response, clearly state:\n' +
   '1. What you already know from the information provided\n' +
   '2. What questions remain unanswered that would benefit from explore agent investigation\n' +
   '3. Your implementation plan (either preliminary if questions remain, or final if sufficient context exists)\n\n' +

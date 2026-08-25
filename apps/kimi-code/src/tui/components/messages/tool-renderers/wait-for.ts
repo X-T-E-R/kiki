@@ -1,5 +1,5 @@
 /**
- * WaitFor renderer — the wait result is a timeline (header fields, then
+ * TaskWait renderer — the wait result is a timeline (header fields, then
  * `[finished]` / `[completed_during_wait]` / `[still_running]` sections),
  * so the collapsed body shows what the wait came back with instead of the
  * raw key-value dump: the finished task with its outcome, plus counts of
@@ -11,6 +11,7 @@ import { Text, type Component } from '@moonshot-ai/pi-tui';
 
 import { STATUS_BULLET } from '#/tui/constant/symbols';
 import { currentTheme } from '#/tui/theme';
+import { isTaskWaitTool } from '#/tui/tool-names';
 import type { ToolCallBlockData, ToolResultBlockData } from '#/tui/types';
 
 import { formatGoalElapsed } from '../goal-format';
@@ -55,7 +56,7 @@ export function buildWaitForHeader(options: {
   readonly chip: string;
 }): string | undefined {
   const { toolCall, result, bullet, chip } = options;
-  if (toolCall.name !== 'WaitFor') return undefined;
+  if (!isTaskWaitTool(toolCall.name)) return undefined;
 
   const taskId = typeof toolCall.args['task_id'] === 'string' ? toolCall.args['task_id'] : undefined;
   const argText =

@@ -906,8 +906,8 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
   private isWaitForAvailable(): boolean {
     return (
       this.flags.enabled(WAIT_FOR_FLAG_ID) &&
-      this.toolRegistry.resolve('WaitFor') !== undefined &&
-      this.toolPolicy.isToolActive('WaitFor')
+      this.toolRegistry.resolve('TaskWait') !== undefined &&
+      this.toolPolicy.isToolActive('TaskWait')
     );
   }
 

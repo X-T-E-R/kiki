@@ -29,7 +29,7 @@ The three spellings coexist because they belong to contracts with different comp
 | Surface | Fields | Current meaning | Why it exists |
 | --- | --- | --- | --- |
 | Legacy `packages/agent-core` profiles and Agent files | `model_preference`, `model_alias` | `model_preference` accepts `primary` or `secondary`; `model_alias` names a configured model. They are mutually exclusive and become the internal `modelPreference` / `modelAlias` profile fields. | The v1 profile and Agent-file format predates the v2 dispatch vocabulary and is still required by the selectable legacy engine. |
-| `packages/agent-core-v2` `Agent` / `AgentSwarm` dispatch | `model`, `model_alias` | `model` is the symbolic or configured-pool selector. `primary` freezes the caller binding; other accepted values come from the configured subagent model pool. `model_alias` selects the configured-model path directly. They are mutually exclusive. | This is the current model-facing v2 dispatch contract and lets the tool present a bounded model pool without exposing every configured model as a symbolic choice. |
+| `packages/agent-core-v2` `AgentRun` / `AgentSwarm` dispatch | `model`, `model_alias` | `model` is the symbolic or configured-pool selector. `primary` freezes the caller binding; other accepted values come from the configured subagent model pool. `model_alias` selects the configured-model path directly. They are mutually exclusive. | This is the current model-facing v2 dispatch contract and lets the tool present a bounded model pool without exposing every configured model as a symbolic choice. |
 | Kiki Agent files and profile-route sidecars in v2 | `model_preference`, `model_alias` | `model_preference` remains limited to `primary` or `secondary` and is mapped at parse time to the profile's internal selection field. `secondary` means the configured pool default. `model_alias` remains the direct configured-model field. | Kiki retained the Agent-file feature across the upstream sync. The spelling is persisted, user-authored schema rather than a v2 tool parameter. |
 
 Ordinary Agent files intentionally ignore unknown frontmatter fields, including another tool's `model` field. Profile-route sidecars are strict and reject unknown fields. Renaming the Agent-file field to `model` would therefore change both compatibility behavior and error behavior, not merely spelling.
@@ -80,7 +80,7 @@ Record the current fields, accepted values, precedence, feature-flag behavior, a
 
 ### Phase 1: normalize at v2 input boundaries
 
-Define one internal selector shape that distinguishes a symbolic/pool selection from a configured-model selection. Convert `Agent` / `AgentSwarm` `model`, Agent-file `model_preference`, and `model_alias` into that shape before precedence is evaluated.
+Define one internal selector shape that distinguishes a symbolic/pool selection from a configured-model selection. Convert `AgentRun` / `AgentSwarm` `model`, Agent-file `model_preference`, and `model_alias` into that shape before precedence is evaluated.
 
 This phase may rename internal TypeScript properties, but it must not change tool schemas, frontmatter, configuration files, journal data, or runtime results.
 
@@ -118,7 +118,7 @@ Every migration phase must preserve these contracts unless a separate breaking-c
 - `model_preference` and `model_alias` remain mutually exclusive in Agent files and profile-route sidecars.
 - A literal configured alias named `primary` or `secondary` remains addressable through `model_alias`; symbolic selection must not capture it.
 - Exact configured model keys win over bare-ID candidates, qualified unknown IDs are not suffix-matched, and ambiguous bare IDs fail with all candidates identified.
-- `thinking_effort` resolves independently from the model selector.
+- Profile-file `thinking_effort` and the v2 tool parameter `effort` resolve independently from the model selector.
 - Resumed and retried subagents keep their persisted model and effort binding; a resume must not reinterpret the current profile or defaults.
 - The secondary-model feature gate continues to control symbolic/pool behavior without disabling stable `model_alias` binding.
 - Agent-file format changes remain synchronized across the v1 and v2 parsers for as long as both engines load the format.

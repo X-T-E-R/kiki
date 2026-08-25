@@ -17,9 +17,10 @@
 | Kimi Code CLI、TUI（终端用户界面）和 `kimi` 命令 | 继承 | 安装、登录、会话、配置和常规命令行为继续使用现有的 Kimi Code CLI 文档。 |
 | `kap-server`、`@moonshot-ai/protocol`，以及它们提供的会话、配置和认证契约 | 继承 | Kiki 客户端使用这些契约，不另行定义一套服务端或协议。 |
 | `agent-core` 和 `agent-core-v2` 中的模型绑定区域 | 改造 | Kiki 扩展了选定的上游 Agent 引擎路径，同时保留原有的会话和任务生命周期。 |
-| 为新派生子 Agent 显式绑定模型 alias 和 thinking effort | Kiki 独有 | 绑定行为是下游新增功能，在两条 Agent 引擎路径中实现；只有其中的旧版符号选择器路径默认关闭，显式绑定本身是稳定能力，始终可用。 |
+| 为新派生子 Agent 显式绑定模型 alias 和 thinking effort | Kiki 独有 | 绑定行为是下游新增功能，在两条 Agent 引擎路径中实现；只有其中的旧版符号选择器路径默认关闭，显式绑定本身是稳定能力，始终可用。v2 工具参数用 `model_alias` 和 `effort`；Agent 文件仍用 `thinking_effort`。 |
 | 通过 [`[models."<alias>".cognition]`](../configuration/config-files.md#模型认知) 按模型做提示词调节 | Kiki 独有 | Overlay、steering 和 anchor 提示词文件挂到模型别名上，而不是 Agent profile 上。仓库不为它们附带任何默认正文；每个文件都在运行时从数据根读取，未声明的字段不会注入任何内容。 |
-| 由 6 个工具组成的 Codex 风格协作适配器 | Kiki 独有 | 适配器新增 `spawn_agent`、`list_agents`、`wait_agent`、`followup_task`、`interrupt_agent` 和 `send_message`，但不表示完整兼容 Codex。 |
+| 直属子 Agent 工具 `AgentList` 和 `AgentSend` | Kiki 独有 | 始终出现在 v2 主 `agent` profile 上。`AgentRun` 是旧 `Agent` 工具在 v2 上的名字（`WaitFor` 改名为 `TaskWait`）。 |
+| 由 5 个工具组成的 Codex 风格协作适配器 | Kiki 独有 | 只存在于旧版 `agent-core` 引擎：`spawn_agent`、`list_agents`、`wait_agent`、`followup_task` 和 `interrupt_agent`。默认的 v2 引擎不加载这些工具。 |
 | 本地 peer thread 通信 | Kiki 独有 | 主 Agent 可以跨本地工作区列出、读取、发送消息并等待现有会话；REST 和 Klient 只允许外部客户端指定目标，发送结果不带 peer 归属。 |
 | 独立的 `@kiki/gui` package | Kiki 独有 | GUI 是继承服务端和协议表面的下游客户端。部分组件改造自已单独标注来源的其他开源项目，因此这些组件在 Kiki 独有 package 内归类为改造。 |
 
@@ -40,15 +41,15 @@
 
 ## 启用 Kiki 独有的 Agent 功能
 
-下面的旧版模型选择器与具名 Agent 功能仍属于实验功能，默认关闭。只需要一种行为时，优先使用对应功能的独立开关。
+下面的旧版模型选择器仍属于实验功能，默认关闭。由 5 个工具组成的具名 Agent 适配器也是实验功能，但只存在于旧版 v1 引擎。
 
 | 功能 | 启用方式 | 额外边界 |
 | --- | --- | --- |
-| 旧版子 Agent 模型选择器与次主力配方 | `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` | 只门控符号化的 `model` / `model_preference` 选择器和 `[secondary_model]` 配方；显式 `model_alias` / `thinking_effort` 绑定是稳定能力，始终可用。只应用于新派生的子 Agent。恢复或重试的子 Agent 保持已持久化的绑定。 |
-| 由 6 个工具组成的具名 Agent 适配器 | `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION=1` | `[agents] enabled = false` 仍会移除适配器工具。`send_message` 不会唤醒空闲目标，派生时也不会复制父 Agent 的对话历史。 |
+| 旧版子 Agent 模型选择器与次主力配方 | `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` | 只门控符号化的 `model` / `model_preference` 选择器和 `[secondary_model]` 配方；显式 `model_alias`、profile 的 `thinking_effort`、v2 工具参数 `effort` 绑定是稳定能力，始终可用。只应用于新派生的子 Agent。恢复或重试的子 Agent 保持已持久化的绑定。 |
+| 由 5 个工具组成的具名 Agent 适配器（仅 v1） | `KIMI_CODE_LEGACY_FLAG=1` 且 `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION=1` | 在 v1 上，`[agents] enabled = false` 仍会移除适配器工具。v2 会忽略该环境变量，且 `[agents] enabled` 目前不控制任何行为。`spawn_agent` 用全新上下文启动一个具名子 Agent。`followup_task` 会在空闲的具名子 Agent 上开新 turn；v1 没有把消息排进邮箱、等下次再读的工具。 |
 | 所有已注册的实验功能 | `KIMI_CODE_EXPERIMENTAL_FLAG=1` | 这是宽范围的总开关，不是运行时或产品选择器。 |
 
-[Agent 与子 Agent](../customization/agents.md)说明绑定优先级、生命周期和协作限制；[配置文件](../configuration/config-files.md#subagent)说明持久化的子 Agent 默认值。
+[Agent 与子 Agent](../customization/agents.md)说明绑定优先级、生命周期和子 Agent 工具；[配置文件](../configuration/config-files.md#subagent)说明 `[subagent]` 的超时、黑名单，以及仅 v1 会填入的默认模型 / effort。
 
 ## 集成 peer thread 通信
 
@@ -84,7 +85,7 @@ Kiki 没有引入第二套后端。`@kiki/gui` 调用继承的 `kap-server` REST
 | --- | --- | --- |
 | CLI/TUI 命令表面 | 上游 Kimi Code 基线 | 继续把 `kimi` 行为和现有用户文档作为默认契约。 |
 | 服务端、协议、会话、配置和认证表面 | 上游 Kimi Code 基线 | 除非有意重新分类契约本身，否则 Kiki 客户端改动应适配这套契约。 |
-| Agent 引擎集成改动 | Kiki 维护者 | Kiki 负责下游改动引入的模型/effort 绑定与协作适配器回归问题。 |
+| Agent 引擎集成改动 | Kiki 维护者 | Kiki 负责下游改动引入的模型/effort 绑定与子 Agent 工具回归问题。 |
 | `@kiki/gui` 客户端、状态和呈现 | Kiki 维护者 | 该 package 是仓库中的私有 workspace 表面；它的存在不表示公开发布或生产就绪。 |
 
 GUI package 在 `apps/kiki-gui/ATTRIBUTION.md` 中记录了改造自 codeg、AionUi、grok-build 和 LiveAgent 的内容。该文件把来源归到具体的改造行为，并列出已知依赖的许可证；它明确不把来源项目的许可证直接归给整个目标文件，也不表示已经形成完整的分发声明。
@@ -126,13 +127,14 @@ pnpm desktop:import-kimi-config
 - **继承的服务端和协议**：`packages/kap-server/`、`packages/protocol/`、`packages/node-sdk/` 和 `packages/oauth/`
 - **改造过的模型绑定区域**：`packages/agent-core/src/session/subagent-binding.ts` 和 `packages/agent-core-v2/src/session/subagent/`
 - **Kiki 独有的按模型提示词调节**：`packages/agent-core-v2/src/agent/cognition/`、`packages/agent-core-v2/src/features/modelSteering/` 以及 `packages/agent-core-v2/src/app/kosongConfig/configSection.ts` 中的 `cognition` schema
-- **Kiki 独有的协作适配器**：`packages/agent-core/src/tools/builtin/collaboration/agent-collaboration.ts` 和 `packages/agent-core-v2/src/agent/tools/agent-collaboration/agentCollaborationTool.ts`
+- **Kiki 独有的 v2 子 Agent 工具**：`packages/agent-core-v2/src/agent/tools/agent/`、`packages/agent-core-v2/src/agent/tools/agent-list/` 和 `packages/agent-core-v2/src/agent/tools/agent-send/`
+- **Kiki 独有的 v1 协作适配器**：`packages/agent-core/src/tools/builtin/collaboration/agent-collaboration.ts`
 - **Kiki 独有的 peer thread 核心与传输层**：`packages/agent-core-v2/src/app/threadCommunication/`、`packages/kap-server/src/routes/threads.ts` 和 `packages/klient/src/contract/global/threads.ts`
 - **Kiki 独有 GUI 及其来源项目边界**：`apps/kiki-gui/package.json`、`apps/kiki-gui/src/lib/client.ts` 和 `apps/kiki-gui/ATTRIBUTION.md`
 
 ## 下一步
 
 - [开始使用](./getting-started.md) — 安装并运行继承的 `kimi` 命令。
-- [Agent 与子 Agent](../customization/agents.md) — 配置模型绑定，并在当前限制内使用协作适配器。
+- [Agent 与子 Agent](../customization/agents.md) — 配置模型绑定，并使用子 Agent 工具。
 - [环境变量](../configuration/env-vars.md#运行时开关) — 对比 Agent 引擎选择与实验功能开关。
 - [`kimi` 命令参考](../reference/kimi-command.md) — 查询当前可执行文件、flag 和子命令。

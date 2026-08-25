@@ -359,7 +359,7 @@ describe('TowerSpawnTool', () => {
 
     expect(result.isError).toBe(true);
     expect(result.output).toContain('already registered');
-    expect(result.output).toContain('Agent(resume="agent-old"');
+    expect(result.output).toContain('AgentRun(agent="agent-old"');
     expect(createAgent).not.toHaveBeenCalled();
   });
 });

@@ -64,6 +64,7 @@ export function pickResultRenderer(toolName: string): ResultRenderer {
     case 'SetGoalBudget':
     case 'UpdateGoal':
       return goalSummary;
+    case 'TaskWait':
     case 'WaitFor':
       return waitForSummary;
     default:

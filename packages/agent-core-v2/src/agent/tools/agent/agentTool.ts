@@ -103,6 +103,7 @@ import { resolveNestedSubagentDefaultContext } from '#/session/subagent/bindingC
 import {
   BACKGROUND_AGENT_UNAVAILABLE,
   DEFAULT_PROFILE_NAME,
+  deriveAgentRunLabel,
   ISubagentTool,
   RESUME_WITH_TYPE_UNAVAILABLE,
   RESUMED_LABEL,
@@ -115,7 +116,6 @@ import { SubagentTask, type SubagentHandle } from './subagent-task';
 import {
   buildProfileDescriptions,
   buildRouteDescriptions,
-  COLLABORATION_TOOL_NAMES,
 } from './subagentDescription';
 
 import AGENT_BACKGROUND_DISABLED_DESCRIPTION from './agent-background-disabled.md?raw';
@@ -130,7 +130,7 @@ export { buildProfileDescriptions } from './subagentDescription';
 
 export class SubagentTool implements ISubagentTool {
   declare readonly _serviceBrand: undefined;
-  readonly name: string = 'Agent';
+  readonly name: string = 'AgentRun';
 
   get parameters(): Record<string, unknown> {
     return exposesSubagentModelChoice(this.config, this.flags)
@@ -200,11 +200,11 @@ export class SubagentTool implements ISubagentTool {
       (profile, name, source) =>
         this.toolPolicy.isToolActiveForProfile(profile, name, source),
       true,
-      this.collaborationEnabled() ? undefined : COLLABORATION_TOOL_NAMES,
+      undefined,
       (alias) => this.isRecommendedModelAliasAvailable(alias),
     );
     if (typeLines) {
-      description += `\n\nAvailable agent types (pass via subagent_type):\n${typeLines}`;
+      description += `\n\nAvailable agent profiles (pass via profile):\n${typeLines}`;
     }
     const routeLines = buildRouteDescriptions(targets.routes);
     if (routeLines) {
@@ -269,9 +269,7 @@ export class SubagentTool implements ISubagentTool {
 
   private knownToolReferences(): ToolReference[] {
     const refs = new Map<string, ToolReference>();
-    const collaborationEnabled = this.collaborationEnabled();
     for (const contribution of this.contributions.items) {
-      if (!collaborationEnabled && COLLABORATION_TOOL_NAMES.has(contribution.options.name)) continue;
       refs.set(contribution.options.name, {
         name: contribution.options.name,
         source: contribution.options.source ?? 'builtin',
@@ -283,17 +281,10 @@ export class SubagentTool implements ISubagentTool {
     return [...refs.values()];
   }
 
-  private collaborationEnabled(): boolean {
-    return (
-      this.flags.enabled('agent-collaboration') &&
-      this.config.get<{ enabled?: boolean } | undefined>('agents')?.enabled !== false
-    );
-  }
-
   async resolveExecution(args: SubagentToolInput): Promise<ToolExecution> {
-    const requestedProfileName = args.subagent_type?.length ? args.subagent_type : undefined;
+    const requestedProfileName = args.profile?.length ? args.profile : undefined;
     const requestedRoute = args.route?.trim();
-    const resumeAgentId = args.resume?.trim();
+    const resumeAgentId = args.agent?.trim();
 
     if (
       resumeAgentId !== undefined &&
@@ -308,10 +299,10 @@ export class SubagentTool implements ISubagentTool {
     if (
       resumeAgentId !== undefined &&
       resumeAgentId.length > 0 &&
-      (args.model !== undefined || args.model_alias !== undefined || args.thinking_effort !== undefined)
+      (args.model !== undefined || args.model_alias !== undefined || args.effort !== undefined)
     ) {
       return {
-        output: 'Cannot set model, model_alias, or thinking_effort when resuming an existing agent.',
+        output: 'Cannot set model, model_alias, or effort when continuing an existing agent.',
         isError: true,
       };
     }
@@ -320,17 +311,17 @@ export class SubagentTool implements ISubagentTool {
       resumeAgentId !== undefined && resumeAgentId.length > 0
         ? this.resumeProfileName(resumeAgentId) ?? RESUMED_LABEL
         : requestedRoute ?? requestedProfileName ?? DEFAULT_PROFILE_NAME;
-    const prefix = args.run_in_background === true ? 'Launching background' : 'Launching';
+    const prefix = args.background === true ? 'Launching background' : 'Launching';
     if (resumeAgentId === undefined || resumeAgentId.length === 0) await this.catalog.ready;
     const snapshot = this.catalog.snapshot?.();
     return {
-      description: `${prefix} ${profileNameForDisplay} agent: ${args.description}`,
+      description: `${prefix} ${profileNameForDisplay} agent: ${deriveAgentRunLabel(args)}`,
       accesses: ToolAccesses.none(),
       display: {
         kind: 'agent_call',
         agent_name: profileNameForDisplay,
         prompt: args.prompt,
-        background: args.run_in_background,
+        background: args.background,
       },
       approvalRule: this.name,
       matchesRule: (ruleArgs) => matchesGlobRuleSubject(ruleArgs, profileNameForDisplay),
@@ -353,10 +344,7 @@ export class SubagentTool implements ISubagentTool {
     snapshot: AgentProfileCatalogSnapshot | undefined,
   ): Promise<SubagentHandle> {
     const modelAlias = normalizeSubagentBindingValue(args.model_alias, 'model_alias');
-    const thinkingEffort = normalizeSubagentBindingValue(
-      args.thinking_effort,
-      'thinking_effort',
-    );
+    const thinkingEffort = normalizeSubagentBindingValue(args.effort, 'effort');
     const requester = this.lifecycle.get(this.callerAgentId);
     if (requester === undefined) {
       throw new Error2(
@@ -366,7 +354,7 @@ export class SubagentTool implements ISubagentTool {
       );
     }
 
-    const resumeRef = args.resume?.trim();
+    const resumeRef = args.agent?.trim();
     const isResume = resumeRef !== undefined && resumeRef.length > 0;
 
     let agentId: string;
@@ -416,8 +404,8 @@ export class SubagentTool implements ISubagentTool {
           ? undefined
           : subagentDisplayModel(this.config, resumed.modelAlias);
     } else {
-      const requestedProfileName = args.subagent_type?.length
-        ? args.subagent_type
+      const requestedProfileName = args.profile?.length
+        ? args.profile
         : args.route === undefined
           ? DEFAULT_PROFILE_NAME
           : undefined;
@@ -547,7 +535,7 @@ export class SubagentTool implements ISubagentTool {
             subagentBindingMode(binding),
           ),
           delegator: { kind: 'agent', agentId: this.callerAgentId },
-          userLabel: requestedName ?? args.description,
+          userLabel: deriveAgentRunLabel(args),
           runtimeId: runtime.identity.runtimeId,
         });
       } catch (error) {
@@ -640,10 +628,11 @@ export class SubagentTool implements ISubagentTool {
   ): Promise<ExecutableToolResult> {
     try {
       signal.throwIfAborted();
-      const runInBackground = args.run_in_background === true;
-      const requestedProfileName = args.subagent_type?.length ? args.subagent_type : undefined;
+      const runInBackground = args.background === true;
+      const runLabel = deriveAgentRunLabel(args);
+      const requestedProfileName = args.profile?.length ? args.profile : undefined;
       const requestedRoute = args.route?.trim();
-      const resumeAgentId = args.resume?.trim();
+      const resumeAgentId = args.agent?.trim();
       const isResume = resumeAgentId !== undefined && resumeAgentId.length > 0;
 
       if (isResume && requestedProfileName !== undefined) {
@@ -694,7 +683,7 @@ export class SubagentTool implements ISubagentTool {
           signal: runInBackground ? undefined : signal,
         };
         taskId = this.tasks.registerTask(
-          new SubagentTask(handle, args.description, controller),
+          new SubagentTask(handle, runLabel, controller),
           registerOptions,
         );
         signal.removeEventListener('abort', abortBeforeRegister);
@@ -723,7 +712,7 @@ export class SubagentTool implements ISubagentTool {
         emitAgentRunSpawned(requester, handle.agentId, {
           profileName: handle.profileName,
           parentToolCallId: toolCallId,
-          description: args.description,
+          description: runLabel,
           runInBackground,
           model: handle.model,
           taskId,
@@ -735,14 +724,14 @@ export class SubagentTool implements ISubagentTool {
 
       if (runInBackground) {
         return {
-          output: formatBackgroundAgentResult(taskId, handle, args.description, allowBackground),
+          output: formatBackgroundAgentResult(taskId, handle, runLabel, allowBackground),
         };
       }
 
       const release = await this.tasks.waitForForegroundRelease(taskId);
       if (release === 'detached') {
         return {
-          output: formatBackgroundAgentResult(taskId, handle, args.description, allowBackground),
+          output: formatBackgroundAgentResult(taskId, handle, runLabel, allowBackground),
         };
       }
       return await this.formatForegroundResult(taskId, handle, timeoutMs);
@@ -774,7 +763,7 @@ export class SubagentTool implements ISubagentTool {
 }
 
 registerAgentToolService(ISubagentTool, SubagentTool, {
-  name: 'Agent',
+  name: 'AgentRun',
   domain: 'subagent',
   requiredRuntimeCapabilities: ['process'],
 });
@@ -797,7 +786,7 @@ function formatBackgroundAgentResult(
     allowBackground
       ? `next_step: The completion arrives automatically in a later turn — do NOT wait, poll, or call TaskOutput on it; continue with other work or hand back to the user. (If you have nothing to do until it finishes, run such tasks in the foreground next time.)`
       : 'next_step: The completion arrives automatically in a later turn.',
-    `resume_hint: To continue or recover this same subagent later, call Agent(resume="${handle.agentId}", prompt="..."). The parameter is agent_id ("${handle.agentId}"), NOT task_id ("${taskId}") or source_id from a later <notification>. Recovery cases: a later <notification type="task.lost" | "task.failed" | "task.killed"> for this subagent — its conversation history is preserved across session restarts and resume will pick it up.`,
+    `resume_hint: To continue or recover this same subagent later, call AgentRun(agent="${handle.agentId}", prompt="..."). The parameter is agent_id ("${handle.agentId}"), NOT task_id ("${taskId}") or source_id from a later <notification>. Recovery cases: a later <notification type="task.lost" | "task.failed" | "task.killed"> for this subagent — its conversation history is preserved across session restarts and resume will pick it up.`,
   ].join('\n');
 }
 
@@ -826,7 +815,7 @@ function formatForegroundAgentFailure(
   ];
   if (timedOut) {
     lines.push(
-      `resume_hint: Continue with Agent(resume="${handle.agentId}", prompt="continue"). Use agent_id only; do not set subagent_type. The subagent retains its prior context; redo any unfinished tool call if its result was lost.`,
+      `resume_hint: Continue with AgentRun(agent="${handle.agentId}", prompt="continue"). Use agent_id only; do not set profile. The subagent retains its prior context; redo any unfinished tool call if its result was lost.`,
     );
   }
   return lines.join('\n');

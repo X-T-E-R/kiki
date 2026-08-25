@@ -11,6 +11,7 @@ import { STREAMING_UI_FLUSH_MS } from '../constant/streaming';
 import { hasDispose } from '../utils/component-capabilities';
 import { appendStreamingArgsPreview, parseStreamingArgs } from '../utils/event-payload';
 import { notifyTerminalOnce } from '../utils/terminal-notification';
+import { AGENT_RUN_TOOL, isAgentRunTool } from '../tool-names';
 import { nextTranscriptId } from '../utils/transcript-id';
 import type { TodoItem } from '../components/chrome/todo-panel';
 import type {
@@ -316,7 +317,7 @@ export class StreamingUIController {
       existingComponent.updateToolCall(toolCall);
     } else if (existing === undefined) {
       this.finalizeLiveTextBuffers('tool');
-      if (toolCall.name !== 'Agent' && toolCall.name !== 'AgentSwarm') {
+      if (!isAgentRunTool(toolCall.name) && toolCall.name !== 'AgentSwarm') {
         this.onToolCallStart(toolCall);
       }
     }
@@ -671,7 +672,7 @@ export class StreamingUIController {
     if (state.toolOutputExpanded) tc.setExpanded(true);
     this._pendingToolComponents.set(toolCall.id, tc);
 
-    if (toolCall.name !== 'Agent') this._pendingAgentGroup = null;
+    if (!isAgentRunTool(toolCall.name)) this._pendingAgentGroup = null;
     if (toolCall.name !== 'Read') this._pendingReadGroup = null;
 
     let handled = this.tryAttachAgentToolCall(toolCall, tc);
@@ -786,14 +787,14 @@ export class StreamingUIController {
     const existingComponent = this._pendingToolComponents.get(id);
     if (existingComponent !== undefined) {
       existingComponent.updateToolCall(toolCall);
-    } else if (toolCall.name !== 'Agent' && toolCall.name !== 'AgentSwarm') {
+    } else if (!isAgentRunTool(toolCall.name) && toolCall.name !== 'AgentSwarm') {
       this.onToolCallStart(toolCall);
     }
   }
 
   private tryAttachAgentToolCall(toolCall: ToolCallBlockData, tc: ToolCallComponent): boolean {
     const { state } = this.host;
-    if (toolCall.name !== 'Agent') {
+    if (!isAgentRunTool(toolCall.name)) {
       this._pendingAgentGroup = null;
       return false;
     }

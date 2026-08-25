@@ -10,15 +10,6 @@ import type {
   AgentRecommendedModel,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 
-export const COLLABORATION_TOOL_NAMES: ReadonlySet<string> = new Set([
-  'spawn_agent',
-  'list_agents',
-  'wait_agent',
-  'followup_task',
-  'interrupt_agent',
-  'send_message',
-]);
-
 export function buildRouteDescriptions(
   routes: readonly AgentProfileRouteCatalogEntry[],
 ): string {

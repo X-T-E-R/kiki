@@ -1180,7 +1180,6 @@ export const en = {
   'st.sidecar.collabModel': 'Collaboration default model',
   'st.sidecar.collabEffort': 'Collaboration default effort',
   'st.sidecar.catalogInterval': 'Catalog refresh interval',
-  'st.sidecar.enableCollab': 'Enable agent collaboration',
   'st.sidecar.builtinSkills': 'Include built-in product skills',
   'st.sidecar.refreshOnStart': 'Refresh model catalog when the server starts',
   'st.sidecar.hint':

@@ -1149,7 +1149,6 @@ export const zh: Record<I18nKey, string> = {
   'st.sidecar.collabModel': '协作默认模型',
   'st.sidecar.collabEffort': '协作默认强度',
   'st.sidecar.catalogInterval': '目录刷新间隔',
-  'st.sidecar.enableCollab': '启用智能体协作',
   'st.sidecar.builtinSkills': '包含内置产品技能',
   'st.sidecar.refreshOnStart': '服务器启动时刷新模型目录',
   'st.sidecar.hint': '所有写入都经过 kap-server 的配置校验 API，并由配置服务串行落盘。需重启的字段会在服务器重启后生效。',

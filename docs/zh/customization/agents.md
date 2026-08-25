@@ -12,7 +12,7 @@ Kimi Code CLI 内置三种 subagent，开箱即用，分别面向不同任务形
 - **`explore`**：代码库探索专用，只做只读操作，不修改任何文件。适合在不改动文件的前提下快速搜索、阅读和总结仓库。
 - **`plan`**：实现规划与架构设计专用，连 Shell 命令都不提供，专注于"想清楚怎么做"而不是"动手做"。
 
-`coder` subagent 与 main agent 共享大部分工具集：可以在后台执行 Shell 命令、维护待办列表、进入 Plan 模式、调用 Agent Skills，也可以在任务自然拆解时继续派发自己的嵌套 subagent。如果它结束自己的轮次时仍有后台任务在运行，那么只有在这些后台任务全部落定后，这次运行才会回报完成——main agent 拿到结果时，背后的工作也已经真正完成。
+`coder` subagent 与 main agent 共享大部分工具集：可以在后台执行 Shell 命令、维护待办列表、进入 Plan 模式、调用 Agent Skills，也可以用 `TaskWait` 等待后台任务。它没有 `AgentRun`、`AgentSwarm`、`AgentList` 或 `AgentSend`；要嵌套派发，需要在自定义 profile 里显式列出这些工具。如果它结束自己的轮次时仍有后台任务在运行，那么只有在这些后台任务全部落定后，这次运行才会回报完成——main agent 拿到结果时，背后的工作也已经真正完成。
 
 顶层配置 [`disabled_builtin_profiles`](../configuration/config-files.md#顶层字段) 会从 subagent 发现与派发列表中移除指定的内置 profile（`agent`、`coder`、`explore` 或 `plan`）。禁用 `agent` 不会影响 main agent 使用默认绑定启动；文件 profile 与已禁用内置 profile 同名时，不再需要 `override: true`。
 
@@ -24,25 +24,23 @@ subagent 由 main agent 自动调度——根据任务复杂度、上下文消�
 
 subagent 支持在后台运行：完成后结果自动回到 main agent，无需手动轮询。也可以唤回已有的 subagent 实例继续推进同一任务。
 
-## Codex 风格协作适配器
+## 具名子 Agent {#codex-风格协作适配器}
 
-`agent-collaboration` 实验功能在同一套子 Agent 与后台任务生命周期之上增加一层 Codex 风格适配器。设置 `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION=1` 启用；`[agents] enabled = false` 可以在不改实验 flag 的情况下关闭它。这是一层适配器，并不代表完整兼容 Codex。
+默认的 v2 引擎（Kiki 桌面端和 `kimi` CLI/TUI）会给主 `agent` profile 提供四个子 Agent 工具，不需要实验开关：`AgentRun`、`AgentSwarm`、`AgentList` 和 `AgentSend`。内置的 `coder` 与 `explore` profile 没有它们。每个调用方只能列出和发消息给自己直接创建的子 Agent；孙级或别人创建的子 Agent 都不是有效目标。
 
-负责协调的 `agent` 与 `coder` profile 会获得 6 个 snake_case 工具：`spawn_agent`、`list_agents`、`wait_agent`、`followup_task`、`interrupt_agent` 和 `send_message`。`spawn_agent` 始终异步启动，并使用全新上下文；它只接受 `fork_turns = "none"`，不会复制父 Agent 的对话历史。名称必须匹配 `^[a-z0-9_]+$`，不能是 `root`，并且在会话生命周期内保持唯一。
+`AgentRun` 用来启动新的子 Agent，或继续已有的。预计之后还要再找同一个子 Agent 时传入 `name`；名称必须匹配 `^[a-z0-9_]+$`，不能是 `root`，并且在会话内保持唯一。继续时把 `agent` 设成那个名称或它的 agent id——不要同时传 `name`、`profile`、`route`、`model`、`model_alias` 或 `effort`。界面标签从 `name` 或 `prompt` 的首行推导，没有 `description` 参数。
 
-管理工具的 target 必须是精确的 `task_name` 或 `agent_id`，不支持相对路径或分层路径。每个调用方只能列出和管理自己直接创建的具名 Agent；同级 Agent 或其他调用方创建的子 Agent 都不是有效目标：
+`AgentList` 返回这些直属子 Agent，也包括 swarm 成员。默认 `include_finished=false` 列出运行中的，以及没有跟踪任务的；需要已经结束或失败的，再传 `true`。最多返回 50 条，运行中的排在前面。
 
-- `list_agents` 按 `task_name` 升序返回具名 Agent。
-- `wait_agent` 默认等待 30 秒，`timeout_ms` 可设置为 10 秒至 1 小时。
-- `followup_task` 只会在同一个空闲 Agent 身份上启动一轮新 turn。目标正在运行时会拒绝，不排队也不注入消息。
-- `interrupt_agent` 只停止当前具名 turn。之后仍可继续使用同一个 Agent。
-- `send_message` 会把消息持久排入具名 Agent 的队列，不会启动、steer 或中断其 turn。运行中的 Agent 会在下一个 step 边界收到排队消息；空闲 Agent 不会被唤醒，要等之后的 turn 到达该边界才会收到。
+`AgentSend` 把消息排进邮箱，不会启动或中断 turn。空闲的子 Agent 会保持空闲，到下一步开始时才读这条消息。用 `name` 或 agent id 指定目标。
 
-现有 `Agent` 与 `AgentSwarm` 工具保持不变。
+`AgentSwarm` 名称不变。基于 item 的新派生使用 `profile`（默认 `coder`）和 `effort`；它仍然要求填写 `description`。
+
+旧版 v1 引擎（`KIMI_CODE_LEGACY_FLAG=1`）仍保留由 5 个工具组成的 Codex 风格适配器：`spawn_agent`、`list_agents`、`wait_agent`、`followup_task` 和 `interrupt_agent`。用 `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION=1` 启用。在 v1 上，`[agents] enabled = false` 会在不改实验 flag 的情况下拿掉这组工具。v2 已经删除该适配器、flag id `agent-collaboration` 以及对应环境变量。v1 的 `Agent` 工具仍用原来的名字和参数（`description`、`subagent_type`、`run_in_background`、`resume`、`thinking_effort`）。这是 v1 上的一层适配器，并不代表完整兼容 Codex。
 
 ## Peer thread 通信
 
-Peer thread 通信让主 Agent 协调同一台本地主机上的现有 Kimi Code 会话，也可以跨工作区通信。它与上面的实验性具名 Agent 适配器相互独立，并且默认关闭。选择启用后，`list_threads`、`read_thread`、`send_message_to_thread` 和 `wait_threads` 这 4 个工具只提供给会话的主 Agent，不提供给子 Agent。
+Peer thread 通信让主 Agent 协调同一台本地主机上的现有 Kimi Code 会话，也可以跨工作区通信。它与上面的子 Agent 工具相互独立，并且默认关闭。选择启用后，`list_threads`、`read_thread`、`send_message_to_thread` 和 `wait_threads` 这 4 个工具只提供给会话的主 Agent，不提供给子 Agent。
 
 Thread 引用标识主机、工作区和会话。`list_threads` 返回后续调用所需的引用；`read_thread` 读取已完成的主 Agent turn，不会恢复冷会话；`send_message_to_thread` 从当前主 Agent 会话派生来源，并持久接收发往另一条 thread、带 peer 归属的消息；`wait_threads` 最多等待 8 条 thread 的活动，最长等待 60 秒。消息不能跨主机发送。
 
@@ -63,7 +61,7 @@ Thread 引用标识主机、工作区和会话。`list_threads` 返回后续调�
 
 ## 权限继承
 
-subagent 的权限规则继承自 main agent：main agent 通过 `/permission` 或在审批中接受的"始终允许"规则，会自动覆盖到它派发出的所有 subagent，subagent 不需要重新审批同类工具调用。`Agent` 工具本身默认放行，因此 main agent 可以在不打断用户的前提下完成多次委派。
+subagent 的权限规则继承自 main agent：main agent 通过 `/permission` 或在审批中接受的"始终允许"规则，会自动覆盖到它派发出的所有 subagent，subagent 不需要重新审批同类工具调用。`AgentRun` 工具本身默认放行，因此 main agent 可以在不打断用户的前提下完成多次委派。
 
 如果需要某类工具在 subagent 中始终不可用，应收紧 main agent 的权限规则。
 
@@ -91,7 +89,7 @@ Kimi 专属的用户 Agent 目录随 `KIMI_CODE_HOME` 移动，通用的 `~/.age
 extra_agent_dirs = ["~/team-agents", ".agents/team-agents"]
 ```
 
-用户、项目和 `extra_agent_dirs` 根目录下的 Agent Markdown 文件都会被文件系统监听。新增、修改或删除后，经过约 200 ms 去抖会自动重载，因此运行中的会话无需执行 `/reload` 或重启 CLI，就能派发新出现的角色。`$KIMI_CODE_HOME/SYSTEM.md` 也以相同方式监听。已经创建的 `Agent` 工具实例会保留角色描述列表的冻结快照，因此展示可能暂时滞后，但实际派发会立即使用重载后的 profile。
+用户、项目和 `extra_agent_dirs` 根目录下的 Agent Markdown 文件都会被文件系统监听。新增、修改或删除后，经过约 200 ms 去抖会自动重载，因此运行中的会话无需执行 `/reload` 或重启 CLI，就能派发新出现的角色。`$KIMI_CODE_HOME/SYSTEM.md` 也以相同方式监听。已经创建的 `AgentRun` 工具实例会保留角色描述列表的冻结快照，因此展示可能暂时滞后，但实际派发会立即使用重载后的 profile。
 
 **Plugin 级**：已启用 plugin 在其 manifest 的 `agents` 字段中声明的目录（省略时自动采用 plugin 根下的 `agents/` 目录），见[插件 Agent](./plugins.md#插件-agent)。Plugin Agent 优先级仅高于内置 Agent。
 
@@ -131,15 +129,15 @@ disallowedTools:
 | `description` | 是 | Agent 的用途。main agent 挑选 subagent 时会看到，请围绕委派决策来写 |
 | `whenToUse` | 否 | 补充说明何时应使用该 Agent |
 | `override` | 否 | 是否允许覆盖同名内置 Agent，默认 `false`。`--agent-file` 属于显式启动意图，无需设置此字段 |
-| `main` | 否 | 策展标记。为 `true` 时该 profile 可作为 main agent 候选，默认不出现在 `Agent` 工具的角色列表里。这不是授权门：`--agent`、`--agent-file`、MCP 和 SDK 仍可按名绑定目录中的任意 profile |
+| `main` | 否 | 策展标记。为 `true` 时该 profile 可作为 main agent 候选，默认不出现在 `AgentRun` 工具的角色列表里。这不是授权门：`--agent`、`--agent-file`、MCP 和 SDK 仍可按名绑定目录中的任意 profile |
 | `delegation_notice` | 否 | `auto`（默认）在该 profile 作为 subagent 或独立宿主 Agent 运行时注入按位置区分的委派说明；`off` 关闭。main agent 绑定从不注入 |
 | `model_preference` | 否 | 仅在次主力模型实验功能启用时可用的旧版符号选择器：`primary` 继承调用方的模型绑定，`secondary` 选择 [`[secondary_model] model`](../configuration/config-files.md#secondary-model)。与 `model_alias` 互斥 |
 | `model_alias` | 否 | `[models]` 中区分大小写的精确 alias。名为 `primary` 或 `secondary` 的 alias 仍按字面值处理，与符号字段 `model_preference` 不同 |
 | `thinking_effort` | 否 | 该 profile 作为新子 Agent 启动时请求的 thinking effort，与模型选择器独立解析 |
 | `allowed_models` | 否 | 该 role 允许绑定的模型 alias 白名单。写法与 `tools` 相同（YAML 列表或逗号分隔字符串）。字段存在且非空时，绑定结果必须是其中一员。比较走规范模型身份，因此裸 alias 与带 provider 前缀的名字可以互相匹配。这份名单只能**收紧**机器已经允许的集合，不能重新放行 `[subagent].deny_models` 或本文件 `deny_models` 禁止的模型。只写一项就是把该 role 钉死到那个 alias 的做法，不必再为“只改模型”单独建 route sidecar。省略字段或写成空列表表示不再额外限制 |
 | `deny_models` | 否 | 该 role 禁止绑定的模型 alias 名单，写法与 `allowed_models` 相同。自动派发会被拒绝；人类显式选择放行并给一次性提示。机器级 `[subagent].deny_models` 仍拒绝所有路径，包括人类 |
-| `allowed_efforts` | 否 | 该 role 允许的 thinking effort 白名单，写法与 `tools` 相同。角色级与匹配到的 `model_profiles` 条目求交。自动派发（Agent / AgentSwarm / `spawn_agent`）超出交集即拒绝；人类显式选择放行并给一次性提示 |
-| `model_profiles` | 否 | 该角色在某个模型上的跑法。只支持 YAML mapping 列表。必填 `alias` 与 `when`；可选 `thinking_effort`、`allowed_efforts`、`prompt_mode`（`prepend` / `append` / `wrap`）和 `prompt`。`when` 只给派发方看，渲进 `Agent` 工具说明，不写进子 Agent 自己的提示词。带 `prompt_mode` 的条目在角色正文之后、模型 cognition overlay 之前组合；`wrap` 要求正文恰好一次 `${parent_prompt}`（或其别名 `${base_prompt}`）。本机 `[models]` 表解析不到的 alias 既不出现在工具说明里，也不生效。重复 alias 会全部保留在文件里，overlay 只匹配第一条解析成功的。旧键 `recommended_models` 仍接受为弃用别名并在加载期 warn；两键同时出现时 `model_profiles` 胜 |
+| `allowed_efforts` | 否 | 该 role 允许的 thinking effort 白名单，写法与 `tools` 相同。角色级与匹配到的 `model_profiles` 条目求交。自动派发（`AgentRun` / `AgentSwarm`）超出交集即拒绝；人类显式选择放行并给一次性提示 |
+| `model_profiles` | 否 | 该角色在某个模型上的跑法。只支持 YAML mapping 列表。必填 `alias` 与 `when`；可选 `thinking_effort`、`allowed_efforts`、`prompt_mode`（`prepend` / `append` / `wrap`）和 `prompt`。`when` 只给派发方看，渲进 `AgentRun` 工具说明，不写进子 Agent 自己的提示词。带 `prompt_mode` 的条目在角色正文之后、模型 cognition overlay 之前组合；`wrap` 要求正文恰好一次 `${parent_prompt}`（或其别名 `${base_prompt}`）。本机 `[models]` 表解析不到的 alias 既不出现在工具说明里，也不生效。重复 alias 会全部保留在文件里，overlay 只匹配第一条解析成功的。旧键 `recommended_models` 仍接受为弃用别名并在加载期 warn；两键同时出现时 `model_profiles` 胜 |
 | `service_tier` | 否 | 该 profile 作为子 Agent 运行时每个 LLM 请求携带的服务档位：`auto`、`default`、`flex` 或 `priority`。目前只有 `openai_responses` 协议会把它编码进请求体，其他协议静默忽略 |
 | `request_params` | 否 | 附加请求参数，标量 map（值只允许字符串 / 数字 / 布尔值），该子 Agent 的每个请求都会携带。OpenAI 系协议展开进请求体（Kimi 经 `extra_body`），不会覆盖引擎生成的字段；Anthropic 协议静默忽略；与 `service_tier` 等一等字段冲突时一等字段优先。键名原样发送，provider 可能拒绝它不认识的键 |
 | `tools` | 否 | 工具名允许列表，如 `Read`、`Bash`；MCP 工具用 glob 匹配，如 `mcp__github__*`。支持 YAML 列表或逗号分隔字符串（`tools: Read, Grep`）两种写法。缺省表示允许全部工具；单独的 `*` 同样表示允许全部工具；空列表（`tools: []`）表示禁用全部工具 |
@@ -215,22 +213,22 @@ request_params:
 
 Route 若声明 `tools`、`disallowedTools` 或 `subagents`，该字段整体替换基础值；省略则继承基础。`subagents: []` 会让 route 成为叶子。调用方检查仍针对基础 role，因此 route 不能引入调用方原本不能派发的 role。需要另一个 role 身份时，应新建并 allowlist 一个基础 profile。
 
-请求字段省略时继承基础值。`service_tier: null` 清除基础 tier，其他值直接替换；`request_params: null` 清除基础 map，传入 map 时按标量 key 覆盖。Route 声明的 `model_alias` 或 `thinking_effort` 对自动派发锁定：Agent / AgentSwarm / `spawn_agent` 可以省略或重复同一值，冲突值会被拒绝。锁定的 alias 不存在时会在分配 Agent 之前报错，不会走普通 profile alias 的回退逻辑；所选模型无法精确执行锁定 effort 时，派发同样会失败。已经绑定的会话里，人类显式 `/model` 或切换 effort 会放行并给一次性提示，快照上的锁仍在。
+请求字段省略时继承基础值。`service_tier: null` 清除基础 tier，其他值直接替换；`request_params: null` 清除基础 map，传入 map 时按标量 key 覆盖。Route 声明的 `model_alias` 或 `thinking_effort` 对自动派发锁定：`AgentRun` / `AgentSwarm` 可以省略或重复同一值，冲突值会被拒绝。锁定的 alias 不存在时会在分配 Agent 之前报错，不会走普通 profile alias 的回退逻辑；所选模型无法精确执行锁定 effort 时，派发同样会失败。已经绑定的会话里，人类显式 `/model` 或切换 effort 会放行并给一次性提示，快照上的锁仍在。
 
-启用后，`Agent` 与 `AgentSwarm` 都会列出经调用方基础 role allowlist 过滤后的精简 route 条目。条目只包含 route ID、基础 role、描述 / 使用提示、模型与 effort 默认值、被覆盖的字段名，绝不包含提示词正文。调用时传入 `route: reviewer.ui-k3`；可以省略 `subagent_type` 让系统推导 `reviewer`，也可以显式传入这个匹配的基础 role。Role 不匹配会产生带 code 的错误。系统不会自动排序选择或静默回退。
+启用后，`AgentRun` 与 `AgentSwarm` 都会列出经调用方基础 role allowlist 过滤后的精简 route 条目。条目只包含 route ID、基础 role、描述 / 使用提示、模型与 effort 默认值、被覆盖的字段名，绝不包含提示词正文。调用时传入 `route: reviewer.ui-k3`；可以省略 `profile` 让系统推导 `reviewer`，也可以显式传入这个匹配的基础 role。Role 不匹配会产生带 code 的错误。系统不会自动排序选择或静默回退。
 
 恢复时不会重新选择或切换 route。Journal 会保存规范基础 role、route ID、渲染后的提示词、分层工具策略、denylist、子 Agent 限制、模型 / effort 锁、service tier 与请求参数。因此，即使后来关闭 flag，或 sidecar 被修改、删除、写坏，已有 routed Agent 仍从快照恢复；这些变化只影响新派发。旧 journal 继续兼容。混合 `AgentSwarm` 调用只把 `route` 应用于基于 item 的新 Agent，resume 条目保留原快照。
 
-`model_alias` 与 `thinking_effort` 已是稳定的 profile 字段和 `Agent` / `AgentSwarm` 工具参数，不需要启用 `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL`。新派生子 Agent 的模型与 effort 分别按以下顺序解析：工具参数 → profile 字段 → `[subagent]` 的 `default_model` / `default_effort` → 调用方绑定。普通（非 route）profile 指定的 `model_alias` 不存在于 `[models]` 时，CLI 会告警并回退到调用方的模型与 effort；通过工具参数显式传入未知 alias 时则会报错。
+`model_alias` 已是稳定的 profile 字段和 `AgentRun` / `AgentSwarm` 工具参数。Agent 文件里的 `thinking_effort` 同样稳定；v2 对应的工具参数是 `effort`。两者都不需要启用 `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL`。v2 新派生子 Agent 的模型与 effort 分别按以下顺序解析：工具参数 → profile 字段 → 调用方绑定。`[subagent]` 的 `default_model` / `default_effort` 仍可写在配置里，但 `AgentRun` / `AgentSwarm` 目前不会读。v1 只在次主力模型实验功能开启时，才在 profile 之后填这两项默认值。普通（非 route）profile 指定的 `model_alias` 不存在于 `[models]` 时，CLI 会告警并回退到调用方的模型与 effort；通过工具参数显式传入未知 alias 时则会报错。
 
-只有旧版工具参数 `model`（`primary` / `secondary`）、profile 字段 `model_preference` 和次主力 recipe 仍受次主力模型实验功能控制。启用后，次主力 recipe 会插在 `[subagent]` 默认值与调用方绑定之间。关闭时，profile 中的 `model_preference` 会被忽略并告警；显式传入 `model` 工具参数则会返回清晰错误。恢复或重试的子 Agent 保持已持久化的模型与 effort；`Agent` resume 传入绑定字段会被拒绝。`AgentSwarm` 混合调用只把这些字段应用到基于 item 的新派生项。
+只有旧版工具参数 `model`（`primary` / `secondary`）、profile 字段 `model_preference` 和次主力 recipe 仍受次主力模型实验功能控制。启用后，次主力 recipe 会插在 profile 与调用方绑定之间。关闭时，profile 中的 `model_preference` 会被忽略并告警；显式传入 `model` 工具参数则会返回清晰错误。恢复或重试的子 Agent 保持已持久化的模型与 effort；`AgentRun` 用 `agent` 继续时传入绑定字段会被拒绝。`AgentSwarm` 混合调用只把这些字段应用到基于 item 的新派生项。
 
 subagent 模型治理会先解析 `[models]` alias，再按规范模型身份比较。机器级 `[subagent] deny_models` 在所有派发入口拒绝名单内的模型。role 文件可以用 `allowed_models` 与 `deny_models` 再收紧这个集合；它们不能放宽机器已经禁止的模型，只含一项的 `allowed_models` 就是该 role 的硬钉死。`[secondary_model] enforce_pool = true` 把已配置池变成硬白名单，同时始终保留 `primary`；默认软白名单模式则继续允许精确的池外 `model_alias` 作为逃生通道。`[secondary_model] force = true` 仍是最强的整机单模型钉死策略，会把所有派生绑定到同一模型，且不能与 `enforce_pool` 同设。字段与校验规则见[配置参考](../configuration/config-files.md#secondary-model)。
 
 目录中发现的非法文件会被跳过并告警，不影响其他文件。通过 `--agent-file` 显式传入的文件必须合法 —— 否则 CLI 会报错并退出。
 
 ::: warning 注意
-`tools` 与 `disallowedTools` 不仅决定模型能"看到"哪些工具，还会在执行前再次强制检查。`subagents` 同样双重生效：`Agent` 工具的类型列表只包含允许委派的 subagent，`Agent` 与 `AgentSwarm` 在实际派发前都会强制校验；唤回已有 subagent 不受此限制。权限规则仍是独立的控制层，用于决定哪些操作需要审批。
+`tools` 与 `disallowedTools` 不仅决定模型能"看到"哪些工具，还会在执行前再次强制检查。`subagents` 同样双重生效：`AgentRun` 工具的类型列表只包含允许委派的 subagent，`AgentRun` 与 `AgentSwarm` 在实际派发前都会强制校验；继续已有 subagent 不受此限制。权限规则仍是独立的控制层，用于决定哪些操作需要审批。
 :::
 
 自定义 Agent 作为被派发的 subagent 运行时，Kimi 会注入一段简短的委派说明：最后一条消息就是交给调用方的完整交付。独立宿主调用（MCP / SDK）用另一段说明：没有父 Agent。main agent 绑定不注入。在正文里写 `${delegation_context}` 可指定位置，否则前置。profile 上设 `delegation_notice: off`，或在 `config.toml` 写 `[agents.delegation] sub = false` / `independent = false`，即可关闭。配置了路径就必须存在且非空，否则 bind 失败。

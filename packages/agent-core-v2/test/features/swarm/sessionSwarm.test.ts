@@ -969,7 +969,7 @@ describe('AgentSwarmTool dispatch resolution', () => {
 
     const execution = tool.resolveExecution({
       description: 'Write documents',
-      subagent_type: 'writer',
+      profile: 'writer',
       items: ['one'],
     });
     if (!('execute' in execution)) throw new Error('expected executable tool');

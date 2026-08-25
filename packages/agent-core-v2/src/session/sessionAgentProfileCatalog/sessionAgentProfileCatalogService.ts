@@ -185,7 +185,7 @@ export class SessionAgentProfileCatalogService
         const available = this.list().map((item) => item.name).join(', ');
         throw new Error2(
           ErrorCodes.PROFILE_UNKNOWN,
-          `Unknown agent type: "${input.profile ?? ''}". Available agent types: ${available}`,
+          `Unknown agent profile: "${input.profile ?? ''}". Available agent profiles: ${available}`,
           { details: { profileName: input.profile, available } },
         );
       }

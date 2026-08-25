@@ -91,22 +91,30 @@ Peer thread 通信只能在同一台主机内进行，可以跨工作区，并�
 
 只有来源 thread 的主 Agent 调用 `send_message_to_thread` 才会记录 peer 归属；REST 与 Klient 发送属于只指定目标的 user 来源输入。详见 [Agent 与子 Agent](../customization/agents.md#peer-thread-通信)。
 
-启用 `agent-collaboration` 实验功能后，`agent` 与 `coder` 还会提供 `spawn_agent`、`list_agents`、`wait_agent`、`followup_task`、`interrupt_agent` 和 `send_message`。这些工具通过精确的 `task_name` 或 `agent_id` 管理调用方直接拥有的具名异步子 Agent。
+默认的 v2 引擎（Kiki 桌面端和 `kimi` CLI/TUI）会给主 `agent` profile 始终提供 `AgentRun`、`AgentSwarm`、`AgentList` 和 `AgentSend`。这些工具只管理调用方的直属子 Agent——用 `AgentRun` 里可选的 `name`，或用 agent id。它们不需要实验开关。内置的 `coder` 与 `explore` profile 没有这组工具。
 
-适配器只支持全新派生（`fork_turns = "none"`），目标正在运行时会拒绝 follow-up。`send_message` 与 `followup_task` 不同：它把消息持久排入队列，不会启动或中断 turn，因此空闲目标会保持空闲，到之后的 turn 进入 step 边界时才收到消息。适配器不提供历史 fork。详见 [Agent 与子 Agent](../customization/agents.md#codex-风格协作适配器)。
+`AgentList` 返回这些直属子 Agent，包括由 `AgentRun` 或 `AgentSwarm` 启动的，不会列出孙级。`AgentSend` 把消息排进邮箱，不会启动或中断 turn，因此空闲的子 Agent 会保持空闲，到下一步开始时才读这条消息。
+
+`spawn_agent`、`list_agents`、`wait_agent`、`followup_task` 和 `interrupt_agent` 这 5 个 snake_case 工具只留在旧版 v1 引擎（`KIMI_CODE_LEGACY_FLAG=1`）上，由 `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION` 门控。v1 的 `Agent` 工具仍用原来的名字和参数（`description`、`subagent_type`、`run_in_background`、`resume`、`thinking_effort`）。详见 [Agent 与子 Agent](../customization/agents.md#codex-风格协作适配器)。
 
 协作类工具负责 Agent 间协作、用户交互和 Skill 调用。
 
 | 工具 | 默认审批 | 说明 |
 | --- | --- | --- |
-| `Agent` | 自动放行 | 派生 subagent 执行子任务 |
+| `AgentRun` | 自动放行 | 派生 subagent 执行子任务，或继续一个直属子 Agent |
 | `AgentSwarm` | swarm mode 中自动放行，否则需审批 | 启动基于 item 的 subagent，或恢复已有 subagent |
+| `AgentList` | 自动放行 | 列出调用方的直属子 Agent |
+| `AgentSend` | 自动放行 | 向直属子 Agent 的邮箱排队一条消息，不启动新 turn |
 | `AskUserQuestion` | 自动放行 | 向用户提问以获取结构化输入 |
 | `Skill` | 自动放行 | 调用已注册的 inline Skill |
 
-**`Agent`** 将子任务委托给子 Agent 执行。必填参数为 `prompt` 与 `description`；可选启动参数包括 `subagent_type`（默认 `coder`）、`run_in_background`（默认 false），以及稳定的 `model_alias` 和 `thinking_effort` 绑定。旧版符号参数 `model` 仅在启用 `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` 时可用，并与 `model_alias` 互斥。精确 alias `primary` 或 `secondary` 仍按字面值处理；旧版 `model: "primary"` 继承直接调用方绑定，`model: "secondary"` 选择次主力 recipe。新派生项的每个绑定按「工具参数 → profile 字段 → `[subagent]` 默认值 → 调用方绑定」解析；实验功能启用时，次主力 recipe 插在 `[subagent]` 默认值与调用方绑定之间。显式传入未知 `model_alias` 时会报错。`resume` 会继续已有 Agent，与 `subagent_type` 互斥，并拒绝所有绑定字段，因为已持久化绑定不可变。Agent 任务默认 2 小时超时，通过 `[subagent] timeout_ms` 或 `KIMI_SUBAGENT_TIMEOUT_MS` 配置全局限制（`0` 表示禁用），print 模式默认无超时；不提供单次调用 timeout 或任意供应商参数透传。前台模式下父 Agent 等待结果；后台模式立即返回任务 ID，结果会通过之后的合成 User 消息自动送达。TUI 会把同一步中的多个前台调用合并展示，并显示状态与耗时。完整 profile 与生命周期契约见 [Agent 与子 Agent](../customization/agents.md)。
+**`AgentRun`** 将子任务委托给子 Agent。必填参数只有 `prompt`。没有 `description` 参数——界面标签在有 `name` 时用 `name`，否则取 `prompt` 的首行。可选启动参数包括 `profile`（默认 `coder`）、`background`（默认 false）、`name`（会话内唯一的句柄，只含小写字母、数字和下划线，`root` 保留）、`route`，以及稳定的 `model_alias` 和 `effort` 绑定。旧版符号参数 `model` 仅在启用 `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` 时可用，并与 `model_alias` 互斥。精确 alias `primary` 或 `secondary` 仍按字面值处理；旧版 `model: "primary"` 继承直接调用方绑定，`model: "secondary"` 选择次主力 recipe。新派生项的每个绑定按「工具参数 → profile 字段 → 调用方绑定」解析；实验功能启用时，次主力 recipe 插在 profile 与调用方绑定之间。v2 的 `AgentRun` / `AgentSwarm` 不读取 `[subagent]` 的 `default_model` / `default_effort`。显式传入未知 `model_alias` 时会报错。`agent` 按名称或 agent id 继续已有直属子 Agent，与 `profile` 互斥，并拒绝 `name`、`route`、`model`、`model_alias` 和 `effort`，因为已持久化绑定不可变。Agent 任务默认 2 小时超时，通过 `[subagent] timeout_ms` 或 `KIMI_SUBAGENT_TIMEOUT_MS` 配置全局限制（`0` 表示禁用），print 模式默认无超时；不提供单次调用 timeout 或任意供应商参数透传。前台模式下父 Agent 等待结果；后台模式立即返回任务 ID，结果会通过之后的合成 User 消息自动送达。TUI 会把同一步中的多个前台调用合并展示，并显示状态与耗时。完整 profile 与生命周期契约见 [Agent 与子 Agent](../customization/agents.md)。
 
-**`AgentSwarm`** 可以从包含 `{{item}}` 的 `prompt_template` 与 `items` 启动新子 Agent，通过 `resume_agent_ids` 恢复已有子 Agent，或组合两者。`subagent_type`（默认 `coder`）、稳定的 `model_alias` 与稳定的 `thinking_effort` 只应用于基于 item 的新派生项；次主力模型实验功能启用时，旧版 `model` 参数也可应用于这些新派生项。恢复项保持已持久化的 profile、模型与 effort。仅恢复的 swarm 会拒绝绑定字段，混合 swarm 则会把它们用于新 item。绑定优先级、alias 校验和旧版实验门控与 `Agent` 一致。不传 `resume_agent_ids` 时至少需要 2 个展开后互不重复的 item prompt；含恢复项时可以继续一个或多个已有子 Agent。工具最多支持 128 项，会等待全部结果，并且必须是一次模型响应中的唯一工具调用。TUI 会在输入框上方显示前台 swarm 进度。在 `manual` 权限模式下，未处于 swarm mode 时会请求审批，除非规则已允许；权限规则只能匹配 `AgentSwarm` 工具名，不能匹配参数。初始提升阶段会立即启动 5 个子 Agent，之后每 700 毫秒再启动 1 个；`KIMI_CODE_AGENT_SWARM_MAX_CONCURRENCY` 可以限制并发数，非法值会立即失败。
+**`AgentSwarm`** 可以从包含 `{{item}}` 的 `prompt_template` 与 `items` 启动新子 Agent，通过 `resume_agent_ids` 恢复已有子 Agent，或组合两者。必填的 `description` 给整个 swarm 做标签。`profile`（默认 `coder`）、稳定的 `model_alias` 与稳定的 `effort` 只应用于基于 item 的新派生项；次主力模型实验功能启用时，旧版 `model` 参数也可应用于这些新派生项。恢复项保持已持久化的 profile、模型与 effort。仅恢复的 swarm 会拒绝 `route`、`model`、`model_alias` 和 `effort`；仍可传入 `profile`，且只影响基于 item 的新派生项。绑定优先级、alias 校验和旧版实验门控与 `AgentRun` 一致。不传 `resume_agent_ids` 时至少需要 2 个展开后互不重复的 item prompt；含恢复项时可以继续一个或多个已有子 Agent。工具最多支持 128 项，会等待全部结果，并且必须是一次模型响应中的唯一工具调用。TUI 会在输入框上方显示前台 swarm 进度。在 `manual` 权限模式下，未处于 swarm mode 时会请求审批，除非规则已允许；权限规则只能匹配 `AgentSwarm` 工具名，不能匹配参数。初始提升阶段会立即启动 5 个子 Agent，之后每 700 毫秒再启动 1 个；`KIMI_CODE_AGENT_SWARM_MAX_CONCURRENCY` 可以限制并发数，非法值会立即失败。
+
+**`AgentList`** 列出当前 Agent 的直属子 Agent。可选参数 `include_finished` 默认为 false：默认列表是运行中的子 Agent，以及没有跟踪任务的子 Agent（`untracked`，swarm 成员和前台 `AgentRun` 常见这种情况）。传 `true` 才会包含最近一次后台任务已经结束或失败的子 Agent。最多返回 50 条，运行中的排在前面；装不下的数量记在 `omitted`。每条记录含 `agent_id`、可选的 `name` 与 `profile`、`status`，以及 swarm 成员才有的 `swarm_item`。
+
+**`AgentSend`** 把非空的 `message` 排进直属子 Agent 的邮箱。`target` 可以是 `AgentRun` 当时传入的 `name`，也可以是 agent id。它不会启动、steer 或中断 turn。匹配到多个直属子 Agent、或一个都匹配不到时调用失败——先用 `AgentList` 再换成不含糊的值重试。邮箱满了说明未读排队消息太多，等子 Agent 消化一些再发。
 
 **`AskUserQuestion`** 以结构化多选题的形式向用户提问，适用于需要消歧或选择方案的场景。`questions` 参数接受 1–4 道题，每道题需提供 `question`（以 `?` 结尾）、`options`（2–4 个选项，每项含 `label` 和 `description`）以及可选的 `header`（最多 12 字符）和 `multi_select`（默认 false）。系统自动附加"其他"选项。`background` 为 true 时启动后台问题任务并立即返回任务 ID。宿主未实现交互式提问能力时返回失败提示，Agent 应改为在文本回复中直接提问。
 
@@ -114,14 +122,14 @@ Peer thread 通信只能在同一台主机内进行，可以跨工作区，并�
 
 ## 后台任务
 
-后台任务工具用于管理通过 `Bash`、`Agent` 或 `AskUserQuestion` 启动的后台任务。任务进入终止状态时会自动把状态和已保存的输出路径送回 Agent；如需提前检查进度，使用 `TaskOutput`；如果下一步必须等待某个任务的结果，使用 `WaitFor` 在当前轮次内等待。
+后台任务工具用于管理通过 `Bash`、`AgentRun` 或 `AskUserQuestion` 启动的后台任务。任务进入终止状态时会自动把状态和已保存的输出路径送回 Agent；如需提前检查进度，使用 `TaskOutput`；如果下一步必须等待某个任务的结果，使用 `TaskWait` 在当前轮次内等待。
 
 | 工具 | 默认审批 | 说明 |
 | --- | --- | --- |
 | `TaskList` | 自动放行 | 列出后台任务 |
 | `TaskOutput` | 自动放行 | 查看后台任务的输出 |
 | `TaskStop` | 需审批 | 停止正在运行的后台任务 |
-| `WaitFor` | 自动放行 | 等待后台任务结束 |
+| `TaskWait` | 自动放行 | 等待后台任务结束 |
 
 **`TaskList`** 返回后台任务列表。可选参数 `active_only`（默认 true，仅列出运行中的任务）和 `limit`（默认 20，取值范围 1–100）。
 
@@ -129,7 +137,7 @@ Peer thread 通信只能在同一台主机内进行，可以跨工作区，并�
 
 **`TaskStop`** 接受 `task_id` 和可选的 `reason`（默认 `Stopped by TaskStop`）。对已处于终止状态的任务也能安全调用。
 
-**`WaitFor`** 把当前轮次挂起，直到后台任务结束或超时。参数：`timeout`（必填，单位秒，上限 600）和可选的 `task_id`。不传 `task_id` 时，调用时刻运行中的任意一个后台任务结束即返回；当前没有运行中的后台任务时立即返回。超时不是错误——结果会列出仍在运行的任务，Agent 可以再次等待，也可以先处理其他工作。已通过 `WaitFor` 汇报结果的任务不会再推送自动完成通知。
+**`TaskWait`** 把当前轮次挂起，直到后台任务结束或超时。参数：`timeout`（必填，单位秒，上限 600）和可选的 `task_id`。不传 `task_id` 时，调用时刻运行中的任意一个后台任务结束即返回；当前没有运行中的后台任务时立即返回。超时不是错误——结果会列出仍在运行的任务，Agent 可以再次等待，也可以先处理其他工作。已通过 `TaskWait` 汇报结果的任务不会再推送自动完成通知。
 
 ## 定时任务
 
@@ -151,6 +159,6 @@ Peer thread 通信只能在同一台主机内进行，可以跨工作区，并�
 
 ## 下一步
 
-- [Agent 与 subagent](../customization/agents.md) — `Agent` 工具的调度机制与上下文隔离
+- [Agent 与 subagent](../customization/agents.md) — `AgentRun` 工具的调度机制与上下文隔离
 - [Hooks](../customization/hooks.md) — 在工具调用前后触发本地脚本
 - [斜杠命令](./slash-commands.md) — TUI 内置控制命令速查

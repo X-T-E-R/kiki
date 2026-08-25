@@ -36,6 +36,7 @@ import { ShellExecutionComponent } from './shell-execution';
 import { countNonEmptyLines, pickChip } from './tool-renderers/chip';
 import { buildGoalToolHeader } from './tool-renderers/goal';
 import { isGenericToolResult, pickResultRenderer } from './tool-renderers/registry';
+import { isAgentRunTool, isTaskWaitTool } from '#/tui/tool-names';
 import { buildWaitForHeader } from './tool-renderers/wait-for';
 
 const MAX_ARG_LENGTH = 60;
@@ -427,8 +428,10 @@ export function extractKeyArgument(
     Glob: ['pattern'],
     FetchURL: ['url'],
     WebSearch: ['query'],
-    // Prefer the short `description` so the header preview never spills a
-    // multi-line `prompt` into the TUI chrome.
+    // Prefer a short field so the header preview never spills a multi-line
+    // `prompt` into the TUI chrome. `AgentRun` dropped `description` in favour
+    // of the optional `name`; `Agent` stays for transcripts recorded earlier.
+    AgentRun: ['name', 'prompt'],
     Agent: ['description', 'prompt'],
   };
 
@@ -1028,16 +1031,16 @@ export class ToolCallComponent extends Container {
     this.streamingProgressTimer = undefined;
   }
 
-  /** Only foreground Bash/Agent calls can be detached via Ctrl+B. */
+  /** Only foreground Bash/AgentRun calls can be detached via Ctrl+B. */
   private isDetachHintEligible(): boolean {
-    return this.toolCall.name === 'Bash' || this.toolCall.name === 'Agent';
+    return this.toolCall.name === 'Bash' || isAgentRunTool(this.toolCall.name);
   }
 
   private startDetachHintTimer(): void {
     if (!this.isDetachHintEligible()) return;
     if (this.result !== undefined) return;
     if (this.ui === undefined) return;
-    if (this.toolCall.name === 'Agent') {
+    if (isAgentRunTool(this.toolCall.name)) {
       // Subagents are long-running by nature; advertise Ctrl+B immediately
       // instead of waiting out the delay used for short Bash commands.
       if (this.detachHintVisible) return;
@@ -1103,7 +1106,7 @@ export class ToolCallComponent extends Container {
 
   private finalizeSubagentElapsedIfNeeded(): void {
     if (
-      this.toolCall.name === 'Agent' &&
+      isAgentRunTool(this.toolCall.name) &&
       this.subagentStartedAtMs !== undefined &&
       this.subagentEndedAtMs === undefined
     ) {
@@ -1305,16 +1308,17 @@ export class ToolCallComponent extends Container {
    */
   getSubagentAgentId(): string | undefined {
     if (this.subagentAgentId !== undefined) return this.subagentAgentId;
-    if (this.toolCall.name !== 'Agent' || this.result === undefined) return undefined;
+    if (!isAgentRunTool(this.toolCall.name) || this.result === undefined) return undefined;
     const match = this.result.output.match(/^agent_id:\s*(agent-[A-Za-z0-9_-]+)/m);
     return match?.[1];
   }
 
-  /** `args.description` for `Agent` tool calls, used as a resume-path
-   *  fallback when the wire format pre-dates persisted subagent ids and
-   *  the only stable cross-restart identifier is the description string. */
+  /** `args.description` from transcripts written before `AgentRun` derived its
+   *  own label, used as a resume-path fallback when the wire format also
+   *  pre-dates persisted subagent ids and the description is the only stable
+   *  cross-restart identifier. */
   getAgentToolDescription(): string | undefined {
-    if (this.toolCall.name !== 'Agent') return undefined;
+    if (!isAgentRunTool(this.toolCall.name)) return undefined;
     const desc = this.toolCall.args['description'];
     return typeof desc === 'string' ? desc : undefined;
   }
@@ -1764,7 +1768,7 @@ export class ToolCallComponent extends Container {
   }
 
   private isSingleSubagentView(): boolean {
-    return this.toolCall.name === 'Agent' && this.hasSubagentState();
+    return isAgentRunTool(this.toolCall.name) && this.hasSubagentState();
   }
 
   private getDerivedSubagentPhase(): SubagentPhase | undefined {
@@ -1783,6 +1787,20 @@ export class ToolCallComponent extends Container {
     return this.subagentPhase;
   }
 
+  /**
+   * `AgentRun` no longer takes a model-written `description`, so the inline
+   * header falls back to the caller's `name` and then to the opening line of
+   * the prompt. Older transcripts still carry `args.description`.
+   */
+  private subagentHeaderLabel(): string {
+    const legacy = str(this.toolCall.args['description']);
+    if (legacy.length > 0) return legacy;
+    const name = str(this.toolCall.args['name']);
+    if (name.length > 0) return name;
+    const prompt = str(this.toolCall.args['prompt']);
+    return prompt.split('\n').find((line) => line.trim().length > 0)?.trim() ?? '';
+  }
+
   private buildSingleSubagentHeader(): string {
     const phase = this.getDerivedSubagentPhase();
     const isDone = phase === 'done';
@@ -1790,7 +1808,7 @@ export class ToolCallComponent extends Container {
     const labelText = formatSubagentLabel(this.subagentAgentName);
     const label = currentTheme.boldFg('primary', labelText);
     const status = this.formatSingleSubagentStatus(phase);
-    const rawDescription = str(this.toolCall.args['description']);
+    const rawDescription = this.subagentHeaderLabel();
     const description =
       rawDescription.length > MAX_SUBAGENT_DESCRIPTION_LENGTH
         ? `${rawDescription.slice(0, MAX_SUBAGENT_DESCRIPTION_LENGTH - 1)}…`
@@ -1902,7 +1920,7 @@ export class ToolCallComponent extends Container {
       current?.phase === 'ongoing' &&
       current.output !== undefined &&
       current.output.trim().length > 0 &&
-      (current.name === 'Bash' || current.name === 'WaitFor' || isGenericToolResult(current.name))
+      (current.name === 'Bash' || isTaskWaitTool(current.name) || isGenericToolResult(current.name))
     ) {
       return { text: current.output, tone: 'text' };
     }

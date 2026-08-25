@@ -553,7 +553,7 @@ describe('swarm context reconciliation', () => {
 });
 
 describe('AgentSwarmTool', () => {
-  it('applies one subagent_type across templated subagents', async () => {
+  it('applies one profile across templated subagents', async () => {
     const host = mockSwarmHost({
       run: vi.fn().mockResolvedValue([
         {
@@ -602,7 +602,7 @@ describe('AgentSwarmTool', () => {
       description: 'Review files',
       prompt_template: 'Review {{item}}',
       items: ['src/a.ts', 'src/b.ts'],
-      subagent_type: 'explore',
+      profile: 'explore',
     };
 
     expect(AgentSwarmToolInputSchema.safeParse(input).success).toBe(true);
@@ -621,7 +621,7 @@ describe('AgentSwarmTool', () => {
     expect(tool.parameters).toMatchObject({
       type: 'object',
       properties: {
-        subagent_type: { type: 'string' },
+        profile: { type: 'string' },
       },
     });
     expect(
@@ -630,56 +630,58 @@ describe('AgentSwarmTool', () => {
           string,
           { readonly description?: string }
         >
-      )['subagent_type']?.description,
+      )['profile']?.description,
     ).toBe(
-      'Subagent type used for every new subagent spawned from items; defaults to coder when omitted. Resumed subagents always keep their original type, so passing subagent_type together with resume_agent_ids is allowed — it only affects the item-based spawns.',
+      'Agent profile used for every new subagent spawned from items; defaults to coder when omitted. Resumed subagents always keep their original profile, so passing profile together with resume_agent_ids is allowed — it only affects the item-based spawns.',
     );
     expect(Object.keys(tool.parameters['properties'] as Record<string, unknown>).at(-1)).toBe(
-      'thinking_effort',
+      'effort',
     );
 
     const result = await executeTool(tool, context(input));
 
     expect(swarmMode.enter).toHaveBeenCalledWith('tool');
     expect(host.swarmService.run).toHaveBeenCalledTimes(1);
-    expect(host.swarmService.run).toHaveBeenCalledWith(expect.objectContaining({ tasks: [
-      {
+    const spawned = (host.swarmService.run as Mock).mock.calls[0]?.[0] as {
+      readonly tasks: readonly Record<string, unknown>[];
+    };
+    expect(spawned.tasks).toHaveLength(2);
+    expect(spawned.tasks[0]).toMatchObject({
+      kind: 'spawn',
+      data: {
         kind: 'spawn',
-        data: {
-          kind: 'spawn',
-          index: 1,
-          item: 'src/a.ts',
-          prompt: 'Review src/a.ts',
-        },
-        profileName: 'explore',
-        parentToolCallId: 'call_swarm',
+        index: 1,
+        item: 'src/a.ts',
         prompt: 'Review src/a.ts',
-        description: 'Review files #1 (explore)',
-        swarmIndex: 1,
-        swarmItem: 'src/a.ts',
-        runInBackground: false,
-        signal,
-        timeout: DEFAULT_SUBAGENT_TIMEOUT_MS,
       },
-      {
+      profileName: 'explore',
+      parentToolCallId: 'call_swarm',
+      prompt: 'Review src/a.ts',
+      description: 'Review files #1 (explore)',
+      swarmIndex: 1,
+      swarmItem: 'src/a.ts',
+      runInBackground: false,
+      signal,
+      timeout: DEFAULT_SUBAGENT_TIMEOUT_MS,
+    });
+    expect(spawned.tasks[1]).toMatchObject({
+      kind: 'spawn',
+      data: {
         kind: 'spawn',
-        data: {
-          kind: 'spawn',
-          index: 2,
-          item: 'src/b.ts',
-          prompt: 'Review src/b.ts',
-        },
-        profileName: 'explore',
-        parentToolCallId: 'call_swarm',
+        index: 2,
+        item: 'src/b.ts',
         prompt: 'Review src/b.ts',
-        description: 'Review files #2 (explore)',
-        swarmIndex: 2,
-        swarmItem: 'src/b.ts',
-        runInBackground: false,
-        signal,
-        timeout: DEFAULT_SUBAGENT_TIMEOUT_MS,
       },
-    ] }));
+      profileName: 'explore',
+      parentToolCallId: 'call_swarm',
+      prompt: 'Review src/b.ts',
+      description: 'Review files #2 (explore)',
+      swarmIndex: 2,
+      swarmItem: 'src/b.ts',
+      runInBackground: false,
+      signal,
+      timeout: DEFAULT_SUBAGENT_TIMEOUT_MS,
+    });
     expect(result.output).toBe(
       [
         '<agent_swarm_result>',
@@ -712,7 +714,7 @@ describe('AgentSwarmTool', () => {
     const tool = createAgentSwarmTool(host.swarmService, makeAgentScopeContext({ agentId: host.callerAgentId, agentScope: '' }), mockSwarmMode(), stubConfig(), stubFlag(true), stubSwarmCatalog(), stubCallerProfile());
     expect(tool.description).toContain('at least 2');
     expect(tool.description).toContain('{{item}}');
-    expect(tool.description).toContain('Available agent types');
+    expect(tool.description).toContain('Available agent profiles');
     expect(tool.description).toContain('- coder: test coder');
     expect(tool.description).toContain('- explore: test explorer');
   });
@@ -744,7 +746,7 @@ describe('AgentSwarmTool', () => {
         description: 'Review files',
         prompt_template: 'Review {{item}}',
         items: ['src/a.ts', 'src/b.ts'],
-        subagent_type: 'coder',
+        profile: 'coder',
       }),
     );
 
@@ -835,7 +837,7 @@ describe('AgentSwarmTool', () => {
     const tool = createAgentSwarmTool(host.swarmService, makeAgentScopeContext({ agentId: host.callerAgentId, agentScope: '' }), mockSwarmMode(), stubConfig(), stubFlag(true), stubSwarmCatalog(), stubCallerProfile());
     const input = {
       description: 'Finish review',
-      subagent_type: 'explore',
+      profile: 'explore',
       prompt_template: 'Review {{item}}',
       items: ['src/new.ts'],
       resume_agent_ids: {
@@ -862,66 +864,68 @@ describe('AgentSwarmTool', () => {
       callerAgentId: 'main',
       agentId: 'agent-old-2',
     });
-    expect(host.swarmService.run).toHaveBeenCalledWith(expect.objectContaining({ tasks: [
-      {
+    const resumed = (host.swarmService.run as Mock).mock.calls[0]?.[0] as {
+      readonly tasks: readonly Record<string, unknown>[];
+    };
+    expect(resumed.tasks).toHaveLength(3);
+    expect(resumed.tasks[0]).toMatchObject({
+      kind: 'resume',
+      data: {
         kind: 'resume',
-        data: {
-          kind: 'resume',
-          index: 1,
-          agentId: 'agent-old-1',
-          item: 'src/old-a.ts',
-          prompt: 'Continue previous review A',
-        },
-        profileName: 'subagent',
-        parentToolCallId: 'call_swarm',
+        index: 1,
+        agentId: 'agent-old-1',
+        item: 'src/old-a.ts',
         prompt: 'Continue previous review A',
-        description: 'Finish review #1 (resume)',
-        swarmIndex: 1,
-        swarmItem: 'src/old-a.ts',
-        runInBackground: false,
-        resumeAgentId: 'agent-old-1',
-        signal,
-        timeout: DEFAULT_SUBAGENT_TIMEOUT_MS,
       },
-      {
+      profileName: 'subagent',
+      parentToolCallId: 'call_swarm',
+      prompt: 'Continue previous review A',
+      description: 'Finish review #1 (resume)',
+      swarmIndex: 1,
+      swarmItem: 'src/old-a.ts',
+      runInBackground: false,
+      resumeAgentId: 'agent-old-1',
+      signal,
+      timeout: DEFAULT_SUBAGENT_TIMEOUT_MS,
+    });
+    expect(resumed.tasks[1]).toMatchObject({
+      kind: 'resume',
+      data: {
         kind: 'resume',
-        data: {
-          kind: 'resume',
-          index: 2,
-          agentId: 'agent-old-2',
-          item: 'src/old-b.ts',
-          prompt: 'Continue previous review B',
-        },
-        profileName: 'subagent',
-        parentToolCallId: 'call_swarm',
+        index: 2,
+        agentId: 'agent-old-2',
+        item: 'src/old-b.ts',
         prompt: 'Continue previous review B',
-        description: 'Finish review #2 (resume)',
-        swarmIndex: 2,
-        swarmItem: 'src/old-b.ts',
-        runInBackground: false,
-        resumeAgentId: 'agent-old-2',
-        signal,
-        timeout: DEFAULT_SUBAGENT_TIMEOUT_MS,
       },
-      {
+      profileName: 'subagent',
+      parentToolCallId: 'call_swarm',
+      prompt: 'Continue previous review B',
+      description: 'Finish review #2 (resume)',
+      swarmIndex: 2,
+      swarmItem: 'src/old-b.ts',
+      runInBackground: false,
+      resumeAgentId: 'agent-old-2',
+      signal,
+      timeout: DEFAULT_SUBAGENT_TIMEOUT_MS,
+    });
+    expect(resumed.tasks[2]).toMatchObject({
+      kind: 'spawn',
+      data: {
         kind: 'spawn',
-        data: {
-          kind: 'spawn',
-          index: 3,
-          item: 'src/new.ts',
-          prompt: 'Review src/new.ts',
-        },
-        profileName: 'explore',
-        parentToolCallId: 'call_swarm',
+        index: 3,
+        item: 'src/new.ts',
         prompt: 'Review src/new.ts',
-        description: 'Finish review #3 (explore)',
-        swarmIndex: 3,
-        swarmItem: 'src/new.ts',
-        runInBackground: false,
-        signal,
-        timeout: DEFAULT_SUBAGENT_TIMEOUT_MS,
       },
-    ] }));
+      profileName: 'explore',
+      parentToolCallId: 'call_swarm',
+      prompt: 'Review src/new.ts',
+      description: 'Finish review #3 (explore)',
+      swarmIndex: 3,
+      swarmItem: 'src/new.ts',
+      runInBackground: false,
+      signal,
+      timeout: DEFAULT_SUBAGENT_TIMEOUT_MS,
+    });
     expect(result.output).toBe(
       [
         '<agent_swarm_result>',
@@ -966,28 +970,30 @@ describe('AgentSwarmTool', () => {
       callerAgentId: 'main',
       agentId: 'agent-old-1',
     });
-    expect(host.swarmService.run).toHaveBeenCalledWith(expect.objectContaining({ tasks: [
-      {
+    const single = (host.swarmService.run as Mock).mock.calls[0]?.[0] as {
+      readonly tasks: readonly Record<string, unknown>[];
+    };
+    expect(single.tasks).toHaveLength(1);
+    expect(single.tasks[0]).toMatchObject({
+      kind: 'resume',
+      data: {
         kind: 'resume',
-        data: {
-          kind: 'resume',
-          index: 1,
-          agentId: 'agent-old-1',
-          item: 'src/old-a.ts',
-          prompt: 'Continue previous review A',
-        },
-        profileName: 'subagent',
-        parentToolCallId: 'call_swarm',
+        index: 1,
+        agentId: 'agent-old-1',
+        item: 'src/old-a.ts',
         prompt: 'Continue previous review A',
-        description: 'Resume review #1 (resume)',
-        swarmIndex: 1,
-        swarmItem: 'src/old-a.ts',
-        runInBackground: false,
-        resumeAgentId: 'agent-old-1',
-        signal,
-        timeout: DEFAULT_SUBAGENT_TIMEOUT_MS,
       },
-    ] }));
+      profileName: 'subagent',
+      parentToolCallId: 'call_swarm',
+      prompt: 'Continue previous review A',
+      description: 'Resume review #1 (resume)',
+      swarmIndex: 1,
+      swarmItem: 'src/old-a.ts',
+      runInBackground: false,
+      resumeAgentId: 'agent-old-1',
+      signal,
+      timeout: DEFAULT_SUBAGENT_TIMEOUT_MS,
+    });
     expect(result.output).toBe(
       [
         '<agent_swarm_result>',
