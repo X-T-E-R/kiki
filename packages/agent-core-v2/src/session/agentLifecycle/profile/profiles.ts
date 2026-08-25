@@ -32,6 +32,8 @@ const AGENT_TOOLS = [
   'WebSearch',
   'Agent',
   'AgentSwarm',
+  'AgentList',
+  'AgentSend',
   'spawn_agent',
   'list_agents',
   'wait_agent',

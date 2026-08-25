@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { createDecorator } from '#/_base/di/instantiation';
+import { agentNameIssue } from '#/session/agentCollaboration/directChildren';
 import { type AgentTool } from '#/tool/toolContract';
 
 export const DEFAULT_PROFILE_NAME = 'coder';
@@ -42,11 +43,19 @@ export const SubagentToolInputSchema = z.preprocess(
       .describe(
         'Named profile route for a new subagent. The base type is derived from the route when subagent_type is omitted.',
       ),
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe(
+        'Optional stable name for the new subagent, unique within this session (lowercase letters, digits, and underscores; "root" is reserved). Use it to address the same agent again with resume, AgentSend, or AgentList instead of tracking its generated ID. Rejected with resume.',
+      ),
     resume: z
       .string()
       .optional()
       .describe(
-        'Optional agent ID to resume instead of creating a new instance. When set, do not also pass subagent_type, route, model, model_alias, or thinking_effort; the resumed agent keeps its persisted binding.',
+        'Optional name or agent ID to resume instead of creating a new instance. When set, do not also pass name, subagent_type, route, model, model_alias, or thinking_effort; the resumed agent keeps its persisted binding.',
       ),
     run_in_background: z
       .boolean()
@@ -89,6 +98,18 @@ export const SubagentToolInputSchema = z.preprocess(
         code: z.ZodIssueCode.custom,
         message: 'Cannot set route, model, model_alias, or thinking_effort when resuming an existing agent',
       });
+    }
+    if (args.resume?.trim() && args.name !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Cannot set name when resuming an existing agent; the name was fixed at creation',
+      });
+    }
+    if (args.name !== undefined) {
+      const issue = agentNameIssue(args.name);
+      if (issue !== undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `name ${issue}`, path: ['name'] });
+      }
     }
   }),
 );

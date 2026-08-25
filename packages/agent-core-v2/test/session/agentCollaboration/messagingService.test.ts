@@ -181,8 +181,8 @@ describe('agent collaboration safe-boundary delivery', () => {
     await target.loop.hooks.onWillBeginStep.run({ turnId: 7, step: 1, firstStepOfTurn: true, signal });
 
     expect(target.messages.map((message) => message.content[0])).toEqual([
-      { type: 'text', text: 'Message from named agent "root" (main):\n\nfirst' },
-      { type: 'text', text: 'Message from named agent "root" (main):\n\nsecond' },
+      { type: 'text', text: 'Message from agent "root" (main):\n\nfirst' },
+      { type: 'text', text: 'Message from agent "root" (main):\n\nsecond' },
     ]);
     expect(target.messages.map((message) => message.origin)).toEqual([
       expect.objectContaining({ kind: 'agent_message', senderAgentId: 'main', senderTaskName: 'root' }),

@@ -455,6 +455,18 @@ function projectResumedAgents(
  *   agent's roster is not compared at all (v1 initializes builtin tools
  *   only on a profiled agent; v2 exposes them unbound).
  */
+/**
+ * v2-only tools, projected out of both rosters. v1 is the legacy CLI engine and
+ * is not tracking v2's subagent surface convergence, so these have no v1
+ * counterpart by design rather than by omission.
+ */
+const V2_ONLY_TOOLS = new Set([
+  'TowerInit',
+  'WaitFor',
+  'AgentList',
+  'AgentSend',
+]);
+
 function projectResumedAgent(agent: ResumedAgentState, home: HomePair): unknown {
   const projected = scrubHomePrefixes(agent, home) as Record<string, unknown>;
   const config = projected['config'] as Record<string, unknown>;
@@ -469,8 +481,7 @@ function projectResumedAgent(agent: ResumedAgentState, home: HomePair): unknown 
     const tools = projected['tools'] as readonly Record<string, unknown>[];
     projected['tools'] = tools
       .filter((tool) => tool['name'] !== 'select_tools')
-      .filter((tool) => tool['name'] !== 'TowerInit')
-      .filter((tool) => tool['name'] !== 'WaitFor')
+      .filter((tool) => !V2_ONLY_TOOLS.has(String(tool['name'])))
       .map((tool) => ({ name: tool['name'], active: tool['active'], source: tool['source'] }))
       .toSorted((a, b) => String(a.name).localeCompare(String(b.name)));
   }

@@ -91,7 +91,7 @@ function visibleAgentMessage(message: {
   readonly sourceTaskName: string;
   readonly content: string;
 }): string {
-  return `Message from named agent "${message.sourceTaskName}" (${message.sourceAgentId}):\n\n${message.content}`;
+  return `Message from agent "${message.sourceTaskName}" (${message.sourceAgentId}):\n\n${message.content}`;
 }
 
 registerScopedService(

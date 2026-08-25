@@ -41,6 +41,10 @@ import { runAgentTurn } from '#/session/subagent/runAgentTurn';
 import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import {
+  COLLABORATION_AGENT_TYPE_LABEL,
+  COLLABORATION_TASK_NAME_LABEL,
+} from '#/session/agentCollaboration/registry';
+import {
   type AgentRunHandle,
   type AgentRunRequest,
   type AgentTaskStopHookContext,
@@ -259,6 +263,10 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
           return {
             _serviceBrand: undefined,
             status: () => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false }),
+            hooks: {
+              onWillBeginStep: { register: () => ({ dispose: () => {} }) },
+              onDidFinishStep: { register: () => ({ dispose: () => {} }) },
+            },
           } as never;
         }
         if (serviceId === IAgentPermissionModeService) {
@@ -455,6 +463,16 @@ function subagentMeta(parentAgentId = 'main'): AgentMeta {
   };
 }
 
+function namedSubagentMeta(name: string, parentAgentId = 'main'): AgentMeta {
+  return {
+    labels: {
+      parentAgentId,
+      [COLLABORATION_TASK_NAME_LABEL]: name,
+      [COLLABORATION_AGENT_TYPE_LABEL]: 'explore',
+    },
+  };
+}
+
 describe('SubagentToolInputSchema', () => {
   it('accepts the snake_case background parameter', () => {
     const parsed = SubagentToolInputSchema.parse({
@@ -515,6 +533,38 @@ describe('SubagentToolInputSchema', () => {
       }).subagent_type,
     ).toBeUndefined();
   });
+
+  it('accepts a stable name for a new subagent', () => {
+    expect(
+      SubagentToolInputSchema.parse({
+        prompt: 'Investigate',
+        description: 'Find cause',
+        name: 'auth_probe',
+      }).name,
+    ).toBe('auth_probe');
+  });
+
+  it.each([
+    ['uppercase letters', 'AuthProbe'],
+    ['hyphens', 'auth-probe'],
+    ['spaces', 'auth probe'],
+    ['the reserved root name', 'root'],
+  ])('rejects a name with %s', (_label, name) => {
+    expect(() =>
+      SubagentToolInputSchema.parse({ prompt: 'Investigate', description: 'Find cause', name }),
+    ).toThrow(/name/);
+  });
+
+  it('rejects name together with resume', () => {
+    expect(() =>
+      SubagentToolInputSchema.parse({
+        prompt: 'Continue',
+        description: 'Continue work',
+        resume: 'auth_probe',
+        name: 'auth_probe',
+      }),
+    ).toThrow(/Cannot set name when resuming/);
+  });
 });
 
 describe('Agent tool description', () => {
@@ -538,6 +588,12 @@ describe('Agent tool description', () => {
 
     expect(description).toContain('Tools: Bash, Read, ReadMediaFile, Glob, Grep, WebSearch, FetchURL');
     expect(description).not.toContain('Tools: Agent, Bash, TowerFinding, TowerInbox, TowerMission');
+  });
+
+  it.each(['AgentList', 'AgentSend'])('registers %s on the main profile', (toolName) => {
+    ctx = createTestAgent();
+
+    expect(ctx.toolsData().map((entry) => entry.name)).toContain(toolName);
   });
 
   it('renders global tool restrictions in subagent type descriptions', () => {
@@ -1704,6 +1760,77 @@ describe('Agent tool execution contract', () => {
     expect(result.output).toContain('agent_id: agent-existing');
     expect(result.output).toContain('actual_subagent_type: explore');
     expect(result.output).toContain('resumed result');
+  });
+
+  it('stamps the requested name on the new subagent', async () => {
+    const lifecycle = createAgentLifecycleStub({ createAgentIds: ['agent-child'] });
+    const context = createAgentToolContext(lifecycle);
+
+    await executeAgentTool(context, {
+      prompt: 'Investigate',
+      description: 'Find cause',
+      name: 'auth_probe',
+    });
+
+    expect(lifecycle.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        labels: expect.objectContaining({
+          [COLLABORATION_TASK_NAME_LABEL]: 'auth_probe',
+          [COLLABORATION_AGENT_TYPE_LABEL]: 'coder',
+        }),
+        userLabel: 'auth_probe',
+      }),
+    );
+  });
+
+  it('resumes a subagent addressed by its name', async () => {
+    const lifecycle = createAgentLifecycleStub({
+      runCompletion: async () => ({ summary: 'resumed result' }),
+    });
+    const context = createAgentToolContext(
+      lifecycle,
+      sessionService(
+        ISessionMetadata,
+        sessionMetadataStub({ 'agent-existing': namedSubagentMeta('auth_probe') }),
+      ),
+    );
+    lifecycle.addHandle('agent-existing', 'explore');
+
+    const result = await executeAgentTool(context, {
+      prompt: 'Continue',
+      description: 'Continue work',
+      resume: 'auth_probe',
+    });
+
+    expect(lifecycle.create).not.toHaveBeenCalled();
+    expect(lifecycle.run).toHaveBeenCalledWith(
+      'agent-existing',
+      { kind: 'prompt', prompt: 'Continue' },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(result.output).toContain('agent_id: agent-existing');
+    expect(result.output).toContain('resumed result');
+  });
+
+  it('refuses a name already used in this session', async () => {
+    const lifecycle = createAgentLifecycleStub({ createAgentIds: ['agent-child'] });
+    const context = createAgentToolContext(
+      lifecycle,
+      sessionService(
+        ISessionMetadata,
+        sessionMetadataStub({ 'agent-existing': namedSubagentMeta('auth_probe') }),
+      ),
+    );
+
+    const result = await executeAgentTool(context, {
+      prompt: 'Investigate',
+      description: 'Find cause',
+      name: 'auth_probe',
+    });
+
+    expect(result).toMatchObject({ isError: true });
+    expect(result.output).toContain('already used in this session');
+    expect(lifecycle.create).not.toHaveBeenCalled();
   });
 
   it('rejects direct resume of a non-subagent', async () => {

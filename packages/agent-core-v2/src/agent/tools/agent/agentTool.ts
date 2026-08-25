@@ -51,6 +51,15 @@ import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import {
+  COLLABORATION_AGENT_TYPE_LABEL,
+  COLLABORATION_TASK_NAME_LABEL,
+  IAgentCollaborationRegistry,
+} from '#/session/agentCollaboration/registry';
+import {
+  directChildAgents,
+  findDirectChild,
+} from '#/session/agentCollaboration/directChildren';
+import {
   refreshInheritedSubagentBinding,
   withSubagentBindingMode,
 } from '#/session/agentLifecycle/agentLifecycleService';
@@ -154,6 +163,7 @@ export class SubagentTool implements ISubagentTool {
     @IFlagService private readonly flags: IFlagService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IModelService private readonly models: IModelService,
+    @IAgentCollaborationRegistry private readonly nameRegistry: IAgentCollaborationRegistry,
     @AgentToolContribution private readonly contributions: CollectionView<AgentToolContribution>,
   ) {
     this.callerAgentId = scopeContext.agentId;
@@ -356,14 +366,15 @@ export class SubagentTool implements ISubagentTool {
       );
     }
 
-    const resumeAgentId = args.resume?.trim();
-    const isResume = resumeAgentId !== undefined && resumeAgentId.length > 0;
+    const resumeRef = args.resume?.trim();
+    const isResume = resumeRef !== undefined && resumeRef.length > 0;
 
     let agentId: string;
     let profileName: string;
     let displayModel: string | undefined;
     let promptText = args.prompt;
     if (isResume) {
+      const resumeAgentId = await this.resolveResumeTarget(resumeRef);
       let target = this.lifecycle.get(resumeAgentId);
       if (target === undefined) {
         const persisted = (await this.sessionMetadata.read()).agents?.[resumeAgentId];
@@ -499,6 +510,15 @@ export class SubagentTool implements ISubagentTool {
       } catch (error) {
         throw wrapSubagentModelError(error, binding.model, own.modelAlias, bindingSource);
       }
+      const requestedName = args.name?.trim();
+      const nameOwner = { kind: 'agent' as const, agentId: this.callerAgentId };
+      if (requestedName !== undefined && !(await this.nameRegistry.reserve(requestedName, nameOwner))) {
+        throw new Error2(
+          ErrorCodes.AGENT_ALREADY_EXISTS,
+          `Agent name "${requestedName}" is already used in this session. Pick another name, or pass it to resume to continue that agent.`,
+          { details: { name: requestedName } },
+        );
+      }
       let created: IAgentScopeHandle;
       try {
         const callerMeta = (await this.sessionMetadata.read()).agents?.[this.callerAgentId];
@@ -517,16 +537,24 @@ export class SubagentTool implements ISubagentTool {
             {
               ...subagentLabels(this.callerAgentId),
               ...requestIdentitySpawnLabels(this.callerAgentId, parentTurnId, callerMeta),
+              ...(requestedName === undefined
+                ? {}
+                : {
+                    [COLLABORATION_TASK_NAME_LABEL]: requestedName,
+                    [COLLABORATION_AGENT_TYPE_LABEL]: baseProfileName,
+                  }),
             },
             subagentBindingMode(binding),
           ),
           delegator: { kind: 'agent', agentId: this.callerAgentId },
-          userLabel: args.description,
+          userLabel: requestedName ?? args.description,
           runtimeId: runtime.identity.runtimeId,
         });
       } catch (error) {
+        if (requestedName !== undefined) this.nameRegistry.release(requestedName, nameOwner);
         throw wrapSubagentModelError(error, binding.model, own.modelAlias, bindingSource);
       }
+      if (requestedName !== undefined) this.nameRegistry.commit(requestedName, nameOwner);
       created.accessor.get(IAgentPermissionModeService).setMode(this.permissionMode.mode);
       created.accessor
         .get(IAgentUserToolService)
@@ -566,6 +594,16 @@ export class SubagentTool implements ISubagentTool {
         .getEffectiveThinkingLevel(),
       completion: mirrored.then((r) => ({ result: r.summary, usage: r.usage })),
     };
+  }
+
+  /**
+   * `resume` accepts either the name given at creation or the generated agent
+   * ID. An unmatched value is passed through unchanged so an ID that exists but
+   * is not ours still reports why it was refused rather than "not found".
+   */
+  private async resolveResumeTarget(ref: string): Promise<string> {
+    const children = directChildAgents((await this.sessionMetadata.read()).agents, this.callerAgentId);
+    return findDirectChild(children, ref)?.agentId ?? ref;
   }
 
   private async ensureOwnedIdleSubagent(
