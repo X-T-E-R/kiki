@@ -9,21 +9,20 @@ import { toInputJsonSchema } from '#/tool/input-schema';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { IModelService } from '#/kosong/model/model';
-import type { AgentProfileRouteCatalogEntry } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import type {
+  AgentProfile,
+  AgentProfileRouteCatalogEntry,
+} from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
 import {
-  resolveSubagentDispatch,
-  subagentDispatchAllowed,
+  listAvailableSubagentTargets,
+  resolveSubagentTarget,
 } from '#/app/agentProfileCatalog/subagentDispatch';
 import { ISessionSwarmService, type SessionSwarmTask } from '#/features/swarm/session/sessionSwarm';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import {
-  aliasIdentity,
-  appliedDispatchProfile,
-  assertAutomaticDispatchPermitted,
   fillLeasePins,
-  routePermittedByProfile,
   spawnConstraintOrigin,
 } from '#/app/agentProfileCatalog/applySubagentLease';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -49,6 +48,10 @@ import {
   PROMPT_TEMPLATE_PLACEHOLDER,
   type AgentSwarmToolInput,
 } from './agent-swarm';
+import {
+  buildProfileDescriptions,
+  buildRouteDescriptions,
+} from '#/agent/tools/agent/subagentDescription';
 import AGENT_SWARM_DESCRIPTION from './agent-swarm.md?raw';
 
 const DEFAULT_SUBAGENT_TYPE = 'coder';
@@ -96,7 +99,9 @@ export class AgentSwarmTool implements IAgentSwarmTool {
 
   private readonly callerAgentId: string;
   private catalogReady = false;
+  private frozenCatalogProfiles: readonly AgentProfile[] | undefined;
   private frozenCatalogRoutes: readonly AgentProfileRouteCatalogEntry[] | undefined;
+  private frozenCatalogSnapshot: AgentProfileCatalogSnapshot | undefined;
 
   constructor(
     @ISessionSwarmService private readonly swarmService: ISessionSwarmService,
@@ -125,19 +130,42 @@ export class AgentSwarmTool implements IAgentSwarmTool {
       ? AGENT_SWARM_DESCRIPTION
       : `${AGENT_SWARM_DESCRIPTION}\n\n${modelLines}`;
     const own = this.profile.data();
-    const defaults = this.catalog.getDefault();
-    const resolveId = aliasIdentity(this.models);
-    const routes = this.catalogRoutes().filter((route) => {
-      if (!subagentDispatchAllowed(this.catalog, own, route.profile)) return false;
-      const base = this.catalog.get(route.profile);
-      if (base === undefined) return false;
-      const effective = appliedDispatchProfile(base, route.profile, own, defaults, resolveId).profile;
-      return routePermittedByProfile(route, effective, this.models);
-    });
-    if (routes.length > 0) {
-      description += `\n\nAvailable agent routes (pass via route):\n${formatRouteDescriptions(routes)}`;
+    const snapshot =
+      own.profileDefinitionId === undefined ? undefined : this.catalogSnapshot();
+    const targets = listAvailableSubagentTargets(
+      this.catalog,
+      own,
+      {
+        profiles: this.catalogProfiles(),
+        routes: this.catalogRoutes(),
+        snapshot,
+      },
+      this.models,
+    );
+    const typeLines = buildProfileDescriptions(
+      targets.profiles,
+      [],
+      () => true,
+      true,
+      undefined,
+      (alias) => this.isModelAliasAvailable(alias),
+      false,
+    );
+    if (typeLines.length > 0) {
+      description += `\n\nAvailable agent types (pass via subagent_type):\n${typeLines}`;
+    }
+    const routeLines = buildRouteDescriptions(targets.routes);
+    if (routeLines.length > 0) {
+      description += `\n\nAvailable agent routes (pass via route):\n${routeLines}`;
     }
     return description;
+  }
+
+  private catalogProfiles(): readonly AgentProfile[] {
+    if (this.frozenCatalogProfiles !== undefined) return this.frozenCatalogProfiles;
+    const profiles = this.catalog.list().filter((profile) => profile.main !== true);
+    if (this.catalogReady) this.frozenCatalogProfiles = profiles;
+    return profiles;
   }
 
   private catalogRoutes(): readonly AgentProfileRouteCatalogEntry[] {
@@ -145,6 +173,29 @@ export class AgentSwarmTool implements IAgentSwarmTool {
     const routes = this.catalog.listRoutes?.() ?? [];
     if (this.catalogReady) this.frozenCatalogRoutes = routes;
     return routes;
+  }
+
+  private catalogSnapshot(): AgentProfileCatalogSnapshot {
+    if (this.frozenCatalogSnapshot !== undefined) return this.frozenCatalogSnapshot;
+    const snapshot = this.catalog.snapshot?.() ?? {
+      publicProfiles: new Map(this.catalog.list().map((profile) => [profile.name, profile])),
+      defaultProfile: this.catalog.getDefault(),
+      routes: new Map(),
+      scopedBindings: new Map(),
+      sourceDefinitions: new Map(),
+      dependencyIndex: new Map(),
+      diagnostics: [],
+    };
+    if (this.catalogReady) this.frozenCatalogSnapshot = snapshot;
+    return snapshot;
+  }
+
+  private isModelAliasAvailable(alias: string): boolean {
+    try {
+      return this.models.resolveId(alias) !== undefined;
+    } catch {
+      return false;
+    }
   }
 
   resolveExecution(args: AgentSwarmToolInput): ToolExecution {
@@ -212,29 +263,27 @@ export class AgentSwarmTool implements IAgentSwarmTool {
       await this.catalog.ready;
       const own = this.profile.data();
       catalogSnapshot = this.catalog.snapshot?.();
-      const selection = resolveSubagentDispatch(this.catalog, own, {
-        profileName: requestedProfileName,
-        routeId: args.route,
-        snapshot: catalogSnapshot,
-      }).selection;
+      const target = resolveSubagentTarget(
+        this.catalog,
+        own,
+        {
+          profileName: requestedProfileName,
+          routeId: args.route,
+          snapshot: catalogSnapshot,
+        },
+        this.models,
+      );
+      const selection = target.selection;
       profileName = selection.baseProfile.name;
       routeId = selection.route?.id;
-      const targetDispatched = appliedDispatchProfile(
-        selection.profile,
-        profileName,
-        own,
-        catalogSnapshot?.defaultProfile ?? this.catalog.getDefault(),
-        aliasIdentity(this.models),
-      );
-      const targetProfile = targetDispatched.profile;
-      assertAutomaticDispatchPermitted(targetProfile, selection.route, this.models);
+      const targetProfile = target.effectiveProfile;
       const filled = fillLeasePins(
         {
           modelAlias,
           thinkingEffort,
           modelPreference: args.model,
         },
-        targetDispatched.lease,
+        target.lease,
         selection.route,
       );
       const filledSymbolic =
@@ -263,14 +312,14 @@ export class AgentSwarmTool implements IAgentSwarmTool {
               thinkingEffort: filled.thinkingEffort,
             },
             {
-              modelPreference: selection.profile.modelPreference,
-              modelAlias: selection.profile.modelAlias,
-              thinkingEffort: selection.profile.thinkingEffort,
+              modelPreference: targetProfile.modelPreference,
+              modelAlias: targetProfile.modelAlias,
+              thinkingEffort: targetProfile.thinkingEffort,
             },
             this.models,
             roleConstraintsFromProfile(
               targetProfile,
-              spawnConstraintOrigin(targetDispatched.lease, targetDispatched.spawnPolicy),
+              spawnConstraintOrigin(target.lease, target.spawnPolicy),
             ),
           ),
           this.models,
@@ -408,21 +457,6 @@ function hasMinimumAgentSwarmInputs(itemCount: number, resumeCount: number): boo
 
 function childDescription(swarmDescription: string, index: number, profileName: string): string {
   return `${swarmDescription} #${String(index)} (${profileName})`;
-}
-
-function formatRouteDescriptions(routes: readonly AgentProfileRouteCatalogEntry[]): string {
-  return routes
-    .map((route) => {
-      const details = [route.description, route.whenToUse].filter(Boolean).join(' ');
-      const bindings = [
-        route.modelPreference === undefined ? undefined : `model=${route.modelPreference}`,
-        route.modelAlias === undefined ? undefined : `model_alias=${route.modelAlias}`,
-        route.thinkingEffort === undefined ? undefined : `thinking_effort=${route.thinkingEffort}`,
-      ].filter((value): value is string => value !== undefined);
-      const fields = route.overriddenFields.join(',') || 'none';
-      return `- ${route.id} (base: ${route.profile}): ${details}\n  ${bindings.join(', ')}${bindings.length > 0 ? '; ' : ''}overrides=${fields}`;
-    })
-    .join('\n');
 }
 
 function renderSwarmResults(results: readonly SwarmRunResult[]): string {

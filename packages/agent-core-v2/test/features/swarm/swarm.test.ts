@@ -150,6 +150,7 @@ function stubConfig(section?: {
 const DEFAULT_CALLER_PROFILE: AgentProfile = normalizeAgentProfile({
   name: 'agent',
   description: 'test caller',
+  main: true,
   systemPrompt: () => 'caller',
 });
 
@@ -176,6 +177,8 @@ function stubSwarmCatalog(
     get: (name: string) =>
       [defaultProfile, ...targetProfiles].find((profile) => profile.name === name),
     getDefault: () => defaultProfile,
+    list: () => [defaultProfile, ...targetProfiles],
+    listRoutes: () => [],
   } as unknown as ISessionAgentProfileCatalog;
 }
 
@@ -706,9 +709,12 @@ describe('AgentSwarmTool', () => {
 
   it('description documents the {{item}} placeholder', () => {
     const host = mockSwarmHost();
-const tool = createAgentSwarmTool(host.swarmService, makeAgentScopeContext({ agentId: host.callerAgentId, agentScope: '' }), mockSwarmMode(), stubConfig(), stubFlag(true), stubSwarmCatalog(), stubCallerProfile());
+    const tool = createAgentSwarmTool(host.swarmService, makeAgentScopeContext({ agentId: host.callerAgentId, agentScope: '' }), mockSwarmMode(), stubConfig(), stubFlag(true), stubSwarmCatalog(), stubCallerProfile());
     expect(tool.description).toContain('at least 2');
     expect(tool.description).toContain('{{item}}');
+    expect(tool.description).toContain('Available agent types');
+    expect(tool.description).toContain('- coder: test coder');
+    expect(tool.description).toContain('- explore: test explorer');
   });
 
   it('uses the persisted caller allowlist instead of the current catalog profile', async () => {
@@ -728,6 +734,9 @@ const tool = createAgentSwarmTool(host.swarmService, makeAgentScopeContext({ age
       stubSwarmCatalog(caller),
       stubCallerProfile({ profileName: 'deleted-profile', subagents: ['explore'] }),
     );
+
+    expect(tool.description).toContain('- explore: test explorer');
+    expect(tool.description).not.toContain('- coder: test coder');
 
     const result = await executeTool(
       tool,

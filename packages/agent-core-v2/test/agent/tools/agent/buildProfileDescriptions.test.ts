@@ -117,4 +117,19 @@ describe('buildProfileDescriptions recommended models: advisory lines, catalog f
 
     expect(text).not.toContain('Allowed models');
   });
+
+  it('can omit tool details when only target availability is being described', () => {
+    const text = buildProfileDescriptions(
+      [profile()],
+      [],
+      () => true,
+      true,
+      undefined,
+      () => true,
+      false,
+    );
+
+    expect(text).not.toContain('Tools:');
+    expect(text).toContain('Model alias: gpt-5.6-sol');
+  });
 });

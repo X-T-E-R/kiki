@@ -482,6 +482,70 @@ describe('SessionExternalDelegationService', () => {
     expect(runAgentIds).toEqual([]);
   });
 
+  it('uses the same effective target list and lease as in-process delegation', async () => {
+    const mainProfile: AgentProfile = {
+      name: 'agent',
+      main: true,
+      description: 'Main profile',
+      systemPrompt: () => 'main',
+      renderSystemPrompt: () => ({ text: 'main', environment: { cwd: '', date: { disclosed: false } } }),
+    };
+    vi.spyOn(handles.get('main')!.accessor.get(IAgentProfileService), 'data').mockReturnValue({
+      modelAlias: 'model',
+      modelCapabilities: UNKNOWN_CAPABILITY,
+      profileName: 'agent',
+      thinkingLevel: 'off',
+      systemPrompt: '',
+      subagents: ['agent', 'coder'],
+      subagentLeases: {
+        coder: {
+          name: 'coder',
+          description: 'Leased code owner',
+          modelAlias: 'leased-model',
+        },
+      },
+    });
+    ix.stub(ISessionAgentProfileCatalog, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      get: (name: string) => name === profile.name ? profile : name === mainProfile.name ? mainProfile : undefined,
+      getDefault: () => mainProfile,
+      list: () => [mainProfile, profile],
+    } as unknown as ISessionAgentProfileCatalog);
+    const service = ix.get(ISessionExternalDelegationService);
+
+    const root = await service.list(authority);
+    expect(root.dispatchables).toEqual([
+      { kind: 'main' },
+      {
+        kind: 'named',
+        profileName: 'coder',
+        description: 'Leased code owner',
+      },
+    ]);
+
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'leased_coder',
+      profileName: 'coder',
+      message: 'work',
+    });
+
+    expect(dispatch.modelAlias).toBe('leased-model');
+    expect(createdWith[0]).toMatchObject({
+      binding: {
+        profile: 'coder',
+        model: 'leased-model',
+        lease: {
+          name: 'coder',
+          description: 'Leased code owner',
+          modelAlias: 'leased-model',
+        },
+      },
+    });
+  });
+
   it('keeps the external contract profile-only instead of advertising an unselectable route', async () => {
     ix.stub(ISessionAgentProfileCatalog, {
       _serviceBrand: undefined,

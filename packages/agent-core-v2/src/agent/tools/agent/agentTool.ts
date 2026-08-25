@@ -13,11 +13,6 @@ import {
   type RegisterAgentTaskOptions,
 } from '#/agent/task/task';
 import { IAgentProfileService } from '#/agent/profile/profile';
-import {
-  isToolActive as evaluateToolActive,
-  literalToolNames,
-  resolveActiveToolNames,
-} from '#/agent/toolPolicy/evaluate';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -37,22 +32,16 @@ import { IAgentToolRegistryService, type ToolReference } from '#/agent/toolRegis
 import type {
   AgentProfile,
   AgentProfileRouteCatalogEntry,
-  AgentRecommendedModel,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
 import {
-  resolveSubagentDispatch,
-  subagentDispatchAllowed,
+  listAvailableSubagentTargets,
+  resolveSubagentTarget,
 } from '#/app/agentProfileCatalog/subagentDispatch';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
 import {
-  aliasIdentity,
-  appliedDispatchProfile,
-  assertAutomaticDispatchPermitted,
   fillLeasePins,
-  isDispatchBlocked,
-  routePermittedByProfile,
   spawnConstraintOrigin,
 } from '#/app/agentProfileCatalog/applySubagentLease';
 import { ILogService } from '#/_base/log/log';
@@ -114,6 +103,11 @@ import {
   type SubagentToolInput,
 } from './agent';
 import { SubagentTask, type SubagentHandle } from './subagent-task';
+import {
+  buildProfileDescriptions,
+  buildRouteDescriptions,
+  COLLABORATION_TOOL_NAMES,
+} from './subagentDescription';
 
 import AGENT_BACKGROUND_DISABLED_DESCRIPTION from './agent-background-disabled.md?raw';
 import AGENT_BACKGROUND_DESCRIPTION from './agent-background-enabled.md?raw';
@@ -123,14 +117,7 @@ const SUBAGENT_TOOL_PARAMETERS = toInputJsonSchema(SubagentToolInputSchema, (sch
   addSubagentBindingSchemaConstraints(schema, 'agent');
 });
 const SUBAGENT_TOOL_PARAMETERS_NO_MODEL = stripSubagentModelParameter(SUBAGENT_TOOL_PARAMETERS);
-const COLLABORATION_TOOL_NAMES = new Set([
-  'spawn_agent',
-  'list_agents',
-  'wait_agent',
-  'followup_task',
-  'interrupt_agent',
-  'send_message',
-]);
+export { buildProfileDescriptions } from './subagentDescription';
 
 export class SubagentTool implements ISubagentTool {
   declare readonly _serviceBrand: undefined;
@@ -185,34 +172,20 @@ export class SubagentTool implements ISubagentTool {
       : AGENT_BACKGROUND_DISABLED_DESCRIPTION;
     let description = `${AGENT_DESCRIPTION_BASE}\n\n${backgroundDescription}`;
     const own = this.profile.data();
-    const resolveId = aliasIdentity(this.models);
     const snapshot =
       own.profileDefinitionId === undefined ? undefined : this.catalogSnapshot();
-    const defaults = snapshot?.defaultProfile ?? this.catalog.getDefault();
-    const scopedProfiles = [...(
-      own.profileDefinitionId === undefined
-        ? []
-        : (snapshot?.scopedBindings.get(own.profileDefinitionId)?.values() ?? [])
-    )]
-      .filter((binding) => binding.status === 'ready' && binding.profile !== undefined)
-      .map((binding) =>
-        appliedDispatchProfile(binding.profile!, binding.alias, own, defaults, resolveId).profile,
-      )
-      .filter(
-        (profile) =>
-          subagentDispatchAllowed(this.catalog, own, profile.name) && !isDispatchBlocked(profile),
-      );
-    const scopedNames = new Set(scopedProfiles.map((profile) => profile.name));
-    const publicProfiles = this.catalogProfiles()
-      .filter((profile) => !scopedNames.has(profile.name))
-      .map((profile) => appliedDispatchProfile(profile, profile.name, own, defaults, resolveId).profile)
-      .filter(
-        (profile) =>
-          subagentDispatchAllowed(this.catalog, own, profile.name) && !isDispatchBlocked(profile),
-      );
-    const profiles = [...publicProfiles, ...scopedProfiles];
+    const targets = listAvailableSubagentTargets(
+      this.catalog,
+      own,
+      {
+        profiles: this.catalogProfiles(),
+        routes: this.catalogRoutes(),
+        snapshot,
+      },
+      this.models,
+    );
     const typeLines = buildProfileDescriptions(
-      profiles,
+      targets.profiles,
       this.knownToolReferences(),
       (profile, name, source) =>
         this.toolPolicy.isToolActiveForProfile(profile, name, source),
@@ -223,15 +196,7 @@ export class SubagentTool implements ISubagentTool {
     if (typeLines) {
       description += `\n\nAvailable agent types (pass via subagent_type):\n${typeLines}`;
     }
-    const routeLines = buildRouteDescriptions(
-      this.catalogRoutes().filter((route) => {
-        if (!subagentDispatchAllowed(this.catalog, own, route.profile)) return false;
-        const base = snapshot?.publicProfiles.get(route.profile) ?? this.catalog.get(route.profile);
-        if (base === undefined) return false;
-        const effective = appliedDispatchProfile(base, route.profile, own, defaults, resolveId).profile;
-        return routePermittedByProfile(route, effective, this.models);
-      }),
-    );
+    const routeLines = buildRouteDescriptions(targets.routes);
     if (routeLines) {
       description += `\n\nAvailable agent routes (pass via route):\n${routeLines}`;
     }
@@ -447,21 +412,19 @@ export class SubagentTool implements ISubagentTool {
           : undefined;
       await this.catalog.ready;
       const own = this.profile.data();
-      const selection = resolveSubagentDispatch(this.catalog, own, {
-        profileName: requestedProfileName,
-        routeId: args.route,
-        snapshot,
-      }).selection;
-      const baseProfileName = selection.baseProfile.name;
-      const dispatched = appliedDispatchProfile(
-        selection.profile,
-        baseProfileName,
+      const target = resolveSubagentTarget(
+        this.catalog,
         own,
-        snapshot?.defaultProfile ?? this.catalog.getDefault(),
-        aliasIdentity(this.models),
+        {
+          profileName: requestedProfileName,
+          routeId: args.route,
+          snapshot,
+        },
+        this.models,
       );
-      const profile = dispatched.profile;
-      assertAutomaticDispatchPermitted(profile, selection.route, this.models);
+      const selection = target.selection;
+      const baseProfileName = selection.baseProfile.name;
+      const profile = target.effectiveProfile;
       if (own.modelAlias === undefined) {
         throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'Caller agent has no model bound', {
           details: { agentId: this.callerAgentId },
@@ -473,7 +436,7 @@ export class SubagentTool implements ISubagentTool {
           thinkingEffort,
           modelPreference: args.model,
         },
-        dispatched.lease,
+        target.lease,
         selection.route,
       );
       const filledSymbolic =
@@ -497,13 +460,13 @@ export class SubagentTool implements ISubagentTool {
         thinkingEffort: filled.thinkingEffort,
       };
       const profileBindingRequest = {
-        modelPreference: selection.profile.modelPreference,
-        modelAlias: selection.profile.modelAlias,
-        thinkingEffort: selection.profile.thinkingEffort,
+        modelPreference: profile.modelPreference,
+        modelAlias: profile.modelAlias,
+        thinkingEffort: profile.thinkingEffort,
       };
       const roleConstraints = roleConstraintsFromProfile(
         profile,
-        spawnConstraintOrigin(dispatched.lease, dispatched.spawnPolicy),
+        spawnConstraintOrigin(target.lease, target.spawnPolicy),
       );
       let binding = resolveSubagentBinding(
         this.config,
@@ -547,8 +510,8 @@ export class SubagentTool implements ISubagentTool {
             resolvedRoute: selection.route,
             model: binding.model,
             thinking: binding.thinking,
-            lease: dispatched.lease,
-            spawnPolicy: dispatched.spawnPolicy,
+            lease: target.lease,
+            spawnPolicy: target.spawnPolicy,
           },
           labels: withSubagentBindingMode(
             {
@@ -777,123 +740,6 @@ registerAgentToolService(ISubagentTool, SubagentTool, {
   domain: 'subagent',
   requiredRuntimeCapabilities: ['process'],
 });
-
-function buildRouteDescriptions(routes: readonly AgentProfileRouteCatalogEntry[]): string {
-  return routes
-    .map((route) => {
-      const details = [route.description, route.whenToUse].filter(Boolean).join(' ');
-      const bindings = [
-        route.modelPreference === undefined ? undefined : `model=${route.modelPreference}`,
-        route.modelAlias === undefined ? undefined : `model_alias=${route.modelAlias}`,
-        route.thinkingEffort === undefined ? undefined : `thinking_effort=${route.thinkingEffort}`,
-      ].filter((value): value is string => value !== undefined);
-      const suffix = [
-        bindings.length === 0 ? undefined : bindings.join(', '),
-        `overrides=${route.overriddenFields.join(',') || 'none'}`,
-      ]
-        .filter((value): value is string => value !== undefined)
-        .join('; ');
-      return `- ${route.id} (base: ${route.profile}): ${details}\n  ${suffix}`;
-    })
-    .join('\n');
-}
-
-
-export function buildProfileDescriptions(
-  profiles: readonly AgentProfile[],
-  tools: readonly ToolReference[],
-  isToolActive: (
-    profile: { readonly tools?: readonly string[]; readonly disallowedTools?: readonly string[] },
-    name: string,
-    source: ToolReference['source'],
-  ) => boolean,
-  showModelPreference: boolean,
-  externallyUnavailableTools: ReadonlySet<string> | undefined,
-  isModelAliasAvailable: (alias: string) => boolean,
-): string {
-  return profiles
-    .map((profile) => {
-      const details = [profile.description, profile.whenToUse].filter(
-        (part): part is string => part !== undefined && part.length > 0,
-      );
-      const header = details.length === 0 ? `- ${profile.name}` : `- ${profile.name}: ${details.join(' ')}`;
-      const bindingLines: string[] = [];
-      if (showModelPreference && profile.modelPreference !== undefined) {
-        bindingLines.push(`  Model preference: ${profile.modelPreference}`);
-      }
-      if (profile.modelAlias !== undefined) {
-        bindingLines.push(`  Model alias: ${profile.modelAlias}`);
-      }
-      if (profile.thinkingEffort !== undefined) {
-        bindingLines.push(`  Thinking effort: ${profile.thinkingEffort}`);
-      }
-      if (profile.allowedModels !== undefined && profile.allowedModels.length > 0) {
-        bindingLines.push(`  Allowed models: ${profile.allowedModels.join(', ')}`);
-      }
-      const alternativeModelsLine = formatAlternativeModelsLine(
-        profile.modelProfiles,
-        isModelAliasAvailable,
-      );
-      if (alternativeModelsLine !== undefined) {
-        bindingLines.push(alternativeModelsLine);
-      }
-      const headerLines =
-        bindingLines.length === 0 ? header : `${header}\n${bindingLines.join('\n')}`;
-      const activeTools = resolveActiveToolNames(profile);
-      const externallyRestricted =
-        literalToolNames(activeTools ?? []).some((name) => externallyUnavailableTools?.has(name)) ||
-        tools.some(
-          (tool) =>
-            evaluateToolActive(profile, tool.name, tool.source) &&
-            !isToolActive(profile, tool.name, tool.source),
-        );
-      if (externallyRestricted) {
-        const effectiveTools = tools
-          .filter((tool) => isToolActive(profile, tool.name, tool.source))
-          .map((tool) => tool.name);
-        if (effectiveTools.length === 0) {
-          return `${headerLines}\n  Tools: none`;
-        }
-        return `${headerLines}\n  Tools: ${effectiveTools.join(', ')}`;
-      }
-      if (activeTools === undefined) {
-        if ((profile.disallowedTools?.length ?? 0) > 0) {
-          return `${headerLines}\n  Tools: all except ${profile.disallowedTools!.join(', ')}`;
-        }
-        return `${headerLines}\n  Tools: all`;
-      }
-      if (activeTools.length === 0) {
-        return `${headerLines}\n  Tools: none`;
-      }
-      return `${headerLines}\n  Tools: ${activeTools.join(', ')}`;
-    })
-    .join('\n');
-}
-
-function formatAlternativeModelsLine(
-  entries: readonly AgentRecommendedModel[] | undefined,
-  isModelAliasAvailable: (alias: string) => boolean,
-): string | undefined {
-  if (entries === undefined || entries.length === 0) return undefined;
-  const parts: string[] = [];
-  for (const entry of entries) {
-    if (!isModelAliasAvailable(entry.alias)) continue;
-    const when = collapseWhitespace(entry.when);
-    const effort =
-      entry.thinkingEffort === undefined ? undefined : collapseWhitespace(entry.thinkingEffort);
-    parts.push(
-      effort === undefined
-        ? `${entry.alias} — ${when}`
-        : `${entry.alias} (thinking_effort=${effort}) — ${when}`,
-    );
-  }
-  if (parts.length === 0) return undefined;
-  return `  Alternative models: ${parts.join('; ')}`;
-}
-
-function collapseWhitespace(value: string): string {
-  return value.replaceAll(/\s+/gu, ' ').trim();
-}
 
 function formatBackgroundAgentResult(
   taskId: string,

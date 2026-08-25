@@ -1,9 +1,20 @@
 import { Error2, ErrorCodes } from '#/errors';
+import type { IModelService } from '#/kosong/model/model';
 
 import type {
   AgentProfile,
+  AgentProfileRouteCatalogEntry,
   ResolvedAgentProfileRoute,
 } from './agentProfileCatalog';
+import {
+  aliasIdentity,
+  appliedDispatchProfile,
+  assertAutomaticDispatchPermitted,
+  isDispatchBlocked,
+  routePermittedByProfile,
+  type CallerLeaseOwner,
+} from './applySubagentLease';
+import type { SpawnConstraints, SubagentLease } from './subagentLease';
 import {
   subagentAllowlistFor,
   subagentTypeNotAllowedMessage,
@@ -46,6 +57,17 @@ export interface ResolvedSubagentDispatch {
   readonly selection: SubagentDispatchSelection;
   readonly scoped: boolean;
   readonly snapshot?: AgentProfileCatalogSnapshot;
+}
+
+export interface ResolvedSubagentTarget extends ResolvedSubagentDispatch {
+  readonly effectiveProfile: AgentProfile;
+  readonly lease?: SubagentLease;
+  readonly spawnPolicy?: SpawnConstraints;
+}
+
+export interface AvailableSubagentTargets {
+  readonly profiles: readonly AgentProfile[];
+  readonly routes: readonly AgentProfileRouteCatalogEntry[];
 }
 
 export function subagentDispatchAllowed(
@@ -182,4 +204,88 @@ export function resolveSubagentDispatch(
   }
   assertSubagentDispatchAllowed(catalog, caller, selection.baseProfile.name);
   return { selection, scoped, snapshot };
+}
+
+export function resolveSubagentTarget(
+  catalog: SubagentDispatchCatalog,
+  caller: SubagentDispatchCaller & CallerLeaseOwner,
+  input: ResolveSubagentDispatchInput,
+  models: IModelService,
+): ResolvedSubagentTarget {
+  const resolved = resolveSubagentDispatch(catalog, caller, input);
+  const dispatched = appliedDispatchProfile(
+    resolved.selection.profile,
+    resolved.selection.baseProfile.name,
+    caller,
+    resolved.snapshot?.defaultProfile ?? catalog.getDefault(),
+    aliasIdentity(models),
+  );
+  assertAutomaticDispatchPermitted(dispatched.profile, resolved.selection.route, models);
+  return {
+    ...resolved,
+    effectiveProfile: dispatched.profile,
+    lease: dispatched.lease,
+    spawnPolicy: dispatched.spawnPolicy,
+  };
+}
+
+export function listAvailableSubagentTargets(
+  catalog: SubagentDispatchCatalog,
+  caller: SubagentDispatchCaller & CallerLeaseOwner,
+  input: {
+    readonly profiles: readonly AgentProfile[];
+    readonly routes: readonly AgentProfileRouteCatalogEntry[];
+    readonly snapshot?: AgentProfileCatalogSnapshot;
+  },
+  models: IModelService,
+): AvailableSubagentTargets {
+  const defaults = input.snapshot?.defaultProfile ?? catalog.getDefault();
+  const resolveId = aliasIdentity(models);
+  const scopedBindings = [...(
+    caller.profileDefinitionId === undefined
+      ? []
+      : (input.snapshot?.scopedBindings.get(caller.profileDefinitionId)?.values() ?? [])
+  )];
+  const scopedNames = new Set(scopedBindings.map((binding) => binding.alias));
+  const scopedProfiles = scopedBindings.flatMap((binding) => {
+    if (binding.status !== 'ready' || binding.profile === undefined) return [];
+    const profile = appliedDispatchProfile(
+      binding.profile,
+      binding.alias,
+      caller,
+      defaults,
+      resolveId,
+    ).profile;
+    if (
+      profile.main === true ||
+      !subagentDispatchAllowed(catalog, caller, binding.alias) ||
+      isDispatchBlocked(profile)
+    ) {
+      return [];
+    }
+    return [profile];
+  });
+  const publicProfiles = input.profiles
+    .filter((profile) => profile.main !== true && !scopedNames.has(profile.name))
+    .map((profile) =>
+      appliedDispatchProfile(profile, profile.name, caller, defaults, resolveId).profile,
+    )
+    .filter(
+      (profile) =>
+        subagentDispatchAllowed(catalog, caller, profile.name) && !isDispatchBlocked(profile),
+    );
+  const routes = input.routes.filter((route) => {
+    if (!subagentDispatchAllowed(catalog, caller, route.profile)) return false;
+    const base = input.snapshot?.publicProfiles.get(route.profile) ?? catalog.get(route.profile);
+    if (base === undefined) return false;
+    const effective = appliedDispatchProfile(
+      base,
+      route.profile,
+      caller,
+      defaults,
+      resolveId,
+    ).profile;
+    return routePermittedByProfile(route, effective, models);
+  });
+  return { profiles: [...publicProfiles, ...scopedProfiles], routes };
 }

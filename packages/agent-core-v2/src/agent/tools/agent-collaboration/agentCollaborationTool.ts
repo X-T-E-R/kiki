@@ -26,11 +26,8 @@ import { roleConstraintsFromProfile } from '#/session/subagent/modelConstraints'
 import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
-import { resolveSubagentDispatch } from '#/app/agentProfileCatalog/subagentDispatch';
+import { resolveSubagentTarget } from '#/app/agentProfileCatalog/subagentDispatch';
 import {
-  aliasIdentity,
-  appliedDispatchProfile,
-  assertAutomaticDispatchPermitted,
   fillLeasePins,
   spawnConstraintOrigin,
 } from '#/app/agentProfileCatalog/applySubagentLease';
@@ -266,28 +263,26 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
       const profileName = optionalNonblank(args.agent_type, 'agent_type') ?? 'coder';
       const own = this.profile.data();
       const snapshot = this.catalog.snapshot?.();
-      const selection = resolveSubagentDispatch(this.catalog, own, {
-        profileName,
-        snapshot,
-      }).selection;
-      const selectedProfile = selection.profile;
+      const target = resolveSubagentTarget(
+        this.catalog,
+        own,
+        {
+          profileName,
+          snapshot,
+        },
+        this.models,
+      );
+      const selection = target.selection;
+      const selectedProfile = target.effectiveProfile;
       const baseProfileName = selection.baseProfile.name;
       if (own.modelAlias === undefined) throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'Caller agent has no model bound');
-      const dispatched = appliedDispatchProfile(
-        selectedProfile,
-        baseProfileName,
-        own,
-        snapshot?.defaultProfile ?? this.catalog.getDefault(),
-        aliasIdentity(this.models),
-      );
-      assertAutomaticDispatchPermitted(dispatched.profile, selection.route, this.models);
       const bindingRequest = fillLeasePins(
         {
           modelAlias: optionalNonblank(args.model, 'model'),
           modelPreference: undefined,
           thinkingEffort: optionalNonblank(args.reasoning_effort, 'reasoning_effort'),
         },
-        dispatched.lease,
+        target.lease,
       );
       const profileBinding = {
         modelPreference:
@@ -300,8 +295,8 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
         thinkingEffort: selectedProfile.thinkingEffort,
       };
       const roleConstraints = roleConstraintsFromProfile(
-        dispatched.profile,
-        spawnConstraintOrigin(dispatched.lease, dispatched.spawnPolicy),
+        selectedProfile,
+        spawnConstraintOrigin(target.lease, target.spawnPolicy),
       );
       let binding = resolveAgentCollaborationBinding(
         this.config,
@@ -336,7 +331,7 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
       }
       runtimeLease = this.runtime.acquire(['process']);
       const view = new RuntimeWorkspaceView(runtimeLease.runtime, this.workspace);
-      const prompt = await applyProfilePromptPrefix(dispatched.profile, message, {
+      const prompt = await applyProfilePromptPrefix(selectedProfile, message, {
         cwd: view.workDir,
         process: runtimeLease.runtime.process!,
         log: this.log,
@@ -351,7 +346,7 @@ export class SpawnAgentTool extends AgentCollaborationToolBase<SpawnAgentInput> 
         route: selection.route?.id, resolvedProfile: selection.baseProfile,
         resolvedRoute: selection.route, model: binding.model,
         thinking: binding.thinking, strictThinking: binding.thinking !== undefined,
-        lease: dispatched.lease, spawnPolicy: dispatched.spawnPolicy }, deferCreateEvent: true,
+        lease: target.lease, spawnPolicy: target.spawnPolicy }, deferCreateEvent: true,
         runtimeId: runtimeLease.runtime.identity.runtimeId,
         delegator: { kind: 'agent', agentId: this.callerAgentId },
         labels: withSubagentBindingMode(

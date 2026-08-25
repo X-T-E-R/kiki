@@ -31,19 +31,16 @@ import { IAgentLoopService } from '#/agent/loop/loop';
 import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
 import {
+  listAvailableSubagentTargets,
   resolveSnapshotProfileDefinition,
-  resolveSubagentDispatch,
-  subagentDispatchAllowed,
-  type SubagentDispatchSelection,
+  resolveSubagentTarget,
+  type ResolvedSubagentTarget,
 } from '#/app/agentProfileCatalog/subagentDispatch';
 import {
   aliasIdentity,
-  appliedDispatchProfile,
   applyLease,
   applySpawnPolicy,
-  assertAutomaticDispatchPermitted,
   fillLeasePins,
-  isDispatchBlocked,
 } from '#/app/agentProfileCatalog/applySubagentLease';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
@@ -181,32 +178,21 @@ export class SessionExternalDelegationService
     const main = this.requireMain();
     const own = main.accessor.get(IAgentProfileService).data();
     const snapshot = this.profiles.snapshot?.();
-    const defaults = snapshot?.defaultProfile ?? this.profiles.getDefault();
-    const resolveId = aliasIdentity(this.models);
-    const scopedProfiles = [...(
-      own.profileDefinitionId === undefined
-        ? []
-        : (snapshot?.scopedBindings.get(own.profileDefinitionId)?.values() ?? [])
-    )]
-      .filter((binding) => binding.status === 'ready' && binding.profile !== undefined)
-      .map((binding) =>
-        appliedDispatchProfile(binding.profile!, binding.alias, own, defaults, resolveId).profile,
-      )
-      .filter(
-        (profile) =>
-          subagentDispatchAllowed(this.profiles, own, profile.name) && !isDispatchBlocked(profile),
-      );
-    const scopedNames = new Set(scopedProfiles.map((profile) => profile.name));
-    const publicProfiles = this.profiles
-      .list()
-      .filter((profile) => !scopedNames.has(profile.name))
-      .map((profile) => appliedDispatchProfile(profile, profile.name, own, defaults, resolveId).profile)
-      .filter(
-        (profile) =>
-          subagentDispatchAllowed(this.profiles, own, profile.name) && !isDispatchBlocked(profile),
-      );
-    const dispatchables = [...scopedProfiles, ...publicProfiles]
-      .map((profile) => ({ kind: 'named' as const, profileName: profile.name, description: profile.description }));
+    const available = listAvailableSubagentTargets(
+      this.profiles,
+      own,
+      {
+        profiles: this.profiles.list(),
+        routes: this.profiles.listRoutes?.() ?? [],
+        snapshot,
+      },
+      this.models,
+    );
+    const dispatchables = available.profiles.map((profile) => ({
+      kind: 'named' as const,
+      profileName: profile.name,
+      description: profile.description,
+    }));
     return {
       version: 1,
       delegationId: doc.delegationId,
@@ -376,12 +362,14 @@ export class SessionExternalDelegationService
     const mainData = mainProfile.data();
     if (mainData.modelAlias === undefined) throw invalid('Main agent has no configured model.');
     const snapshot = this.profiles.snapshot?.();
-    let selection: SubagentDispatchSelection;
+    let target: ResolvedSubagentTarget;
     try {
-      selection = resolveSubagentDispatch(this.profiles, mainData, {
-        profileName,
-        snapshot,
-      }).selection;
+      target = resolveSubagentTarget(
+        this.profiles,
+        mainData,
+        { profileName, snapshot },
+        this.models,
+      );
     } catch (error) {
       if (isError2(error) && error.code === ErrorCodes.PROFILE_UNKNOWN) {
         throw invalid('Unknown named-agent profile.');
@@ -391,18 +379,11 @@ export class SessionExternalDelegationService
       }
       throw error;
     }
-    const profile = selection.profile;
-    const dispatched = appliedDispatchProfile(
-      profile,
-      selection.baseProfile.name,
-      mainData,
-      snapshot?.defaultProfile ?? this.profiles.getDefault(),
-      aliasIdentity(this.models),
-    );
-    assertAutomaticDispatchPermitted(dispatched.profile, selection.route, this.models);
+    const selection = target.selection;
+    const profile = target.effectiveProfile;
     const filled = fillLeasePins(
       { modelAlias, thinkingEffort },
-      dispatched.lease,
+      target.lease,
     );
     const delegator = { kind: 'external' as const, delegationId: doc.delegationId };
     if (!(await this.names.reserve(taskName, delegator))) throw invalid('Named child task_name is already reserved.');
@@ -414,22 +395,25 @@ export class SessionExternalDelegationService
           route: selection.route?.id,
           resolvedProfile: selection.baseProfile,
           resolvedRoute: selection.route,
-          model: filled.modelAlias ?? dispatched.profile.modelAlias ?? mainData.modelAlias,
-          thinking: filled.thinkingEffort ?? dispatched.profile.thinkingEffort ?? mainData.thinkingLevel,
-          strictThinking: filled.thinkingEffort !== undefined || dispatched.profile.thinkingEffort !== undefined,
-          lease: dispatched.lease,
-          spawnPolicy: dispatched.spawnPolicy,
+          model: filled.modelAlias ?? profile.modelAlias ?? mainData.modelAlias,
+          thinking: filled.thinkingEffort ?? profile.thinkingEffort ?? mainData.thinkingLevel,
+          strictThinking: filled.thinkingEffort !== undefined || profile.thinkingEffort !== undefined,
+          lease: target.lease,
+          spawnPolicy: target.spawnPolicy,
         },
         runtimeId: runtimeLease.runtime.identity.runtimeId,
         delegator,
-        labels: { externalDelegationTaskName: taskName, externalDelegationProfile: profile.name },
+        labels: {
+          externalDelegationTaskName: taskName,
+          externalDelegationProfile: profile.name,
+        },
       });
       child.accessor.get(IAgentPermissionModeService).setMode(main.accessor.get(IAgentPermissionModeService).mode);
       child.accessor.get(IAgentUserToolService).inheritUserTools(main.accessor.get(IAgentUserToolService));
       doc.children[taskName] = { taskName, agentId: child.id, profileName: profile.name, createdAt: Date.now() };
       await this.persist();
       this.names.commit(taskName, delegator);
-      return targetView(child, taskName, profile.name, dispatched.profile);
+      return targetView(child, taskName, profile.name, profile);
     } catch (error) {
       this.names.release(taskName, delegator);
       throw error;

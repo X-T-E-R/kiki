@@ -1,13 +1,18 @@
 import { describe, expect, it } from 'vitest';
 
 import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
-import { resolveSubagentDispatch } from '#/app/agentProfileCatalog/subagentDispatch';
+import {
+  listAvailableSubagentTargets,
+  resolveSubagentDispatch,
+  resolveSubagentTarget,
+} from '#/app/agentProfileCatalog/subagentDispatch';
 import {
   parseSpawnConstraints,
   parseSubagentList,
   SubagentLeaseParseError,
 } from '#/app/agentProfileCatalog/subagentLease';
 import { ErrorCodes, isError2 } from '#/errors';
+import type { IModelService } from '#/kosong/model/model';
 
 const PATH = '/tmp/agents/grok-play.md';
 
@@ -239,6 +244,152 @@ describe('resolveSubagentDispatch', () => {
       if (!isError2(error)) return;
       expect(error.code).toBe(ErrorCodes.AGENT_TYPE_NOT_ALLOWED);
       expect(error.details).toEqual({ profileName: 'writer', allowlist: [] });
+    }
+  });
+});
+
+describe('resolved subagent targets', () => {
+  const models = {
+    resolveId: (id: string) => id,
+  } as unknown as IModelService;
+  const main = normalizeAgentProfile({
+    name: 'agent',
+    main: true,
+    systemPrompt: () => 'MAIN',
+  });
+  const worker = normalizeAgentProfile({
+    name: 'worker',
+    tools: ['Read', 'Write'],
+    modelAlias: 'base-model',
+    allowedModels: ['base-model', 'leased-model'],
+    systemPrompt: () => 'WORKER',
+  });
+  const reviewer = normalizeAgentProfile({
+    name: 'reviewer',
+    systemPrompt: () => 'REVIEWER',
+  });
+  const catalog = {
+    get: (name: string) => [main, worker, reviewer].find((profile) => profile.name === name),
+    getDefault: () => main,
+    list: () => [main, worker, reviewer],
+    resolveSelection: ({ profile }: { readonly profile?: string }) => {
+      const selected = [main, worker, reviewer].find((candidate) => candidate.name === profile);
+      if (selected === undefined) throw new Error('unknown test profile');
+      return { profile: selected, baseProfile: selected };
+    },
+  };
+
+  it('returns the effective profile after caller lease and spawn constraints', () => {
+    const lease = {
+      name: 'worker',
+      tools: ['Read'],
+      modelAlias: 'leased-model',
+    } as const;
+    const spawnPolicy = {
+      allowedModels: ['leased-model'],
+      disallowedTools: ['Bash'],
+    } as const;
+    const target = resolveSubagentTarget(
+      catalog,
+      {
+        profileName: 'parent',
+        subagents: ['worker'],
+        subagentLeases: { worker: lease },
+        spawnPolicy,
+      },
+      { profileName: 'worker' },
+      models,
+    );
+
+    expect(target.selection.profile).toBe(worker);
+    expect(target.effectiveProfile).toMatchObject({
+      name: 'worker',
+      tools: ['Read'],
+      modelAlias: 'leased-model',
+      allowedModels: ['leased-model'],
+      disallowedTools: ['Bash'],
+    });
+    expect(target.lease).toBe(lease);
+    expect(target.spawnPolicy).toBe(spawnPolicy);
+  });
+
+  it('uses the same effective target rules when describing available profiles and routes', () => {
+    const lease = { name: 'worker', tools: ['Read'] } as const;
+    const caller = {
+      profileName: 'parent',
+      subagents: ['worker'],
+      subagentLeases: { worker: lease },
+      spawnPolicy: { denyModels: ['route-model'] },
+    } as const;
+    const available = listAvailableSubagentTargets(
+      catalog,
+      caller,
+      {
+        profiles: catalog.list(),
+        routes: [
+          {
+            id: 'worker.route',
+            profile: 'worker',
+            description: 'Pinned route',
+            modelAlias: 'route-model',
+            overriddenFields: ['model_alias'],
+          },
+        ],
+      },
+      models,
+    );
+
+    expect(available.profiles).toHaveLength(1);
+    expect(available.profiles[0]).toMatchObject({ name: 'worker', tools: ['Read'] });
+    expect(available.routes).toEqual([]);
+  });
+
+  it('does not fall back to a public profile when a scoped alias is unavailable', () => {
+    const snapshot = {
+      publicProfiles: new Map([['worker', worker]]),
+      defaultProfile: main,
+      routes: new Map(),
+      scopedBindings: new Map([
+        [
+          'parent-definition',
+          new Map([
+            [
+              'worker',
+              {
+                parentDefinitionId: 'parent-definition',
+                alias: 'worker',
+                source: './_private/worker.md',
+                lease: { name: 'worker', source: './_private/worker.md' },
+                status: 'unavailable' as const,
+              },
+            ],
+          ]),
+        ],
+      ]),
+      sourceDefinitions: new Map(),
+      dependencyIndex: new Map(),
+      diagnostics: [],
+    };
+    const caller = {
+      profileName: 'parent',
+      profileDefinitionId: 'parent-definition',
+      subagents: ['worker'],
+    } as const;
+
+    const available = listAvailableSubagentTargets(
+      catalog,
+      caller,
+      { profiles: [worker], routes: [], snapshot },
+      models,
+    );
+    expect(available.profiles).toEqual([]);
+
+    try {
+      resolveSubagentTarget(catalog, caller, { profileName: 'worker', snapshot }, models);
+      throw new Error('expected scoped profile resolution to fail');
+    } catch (error) {
+      expect(isError2(error)).toBe(true);
+      if (isError2(error)) expect(error.code).toBe(ErrorCodes.SCOPED_PROFILE_UNAVAILABLE);
     }
   });
 });
