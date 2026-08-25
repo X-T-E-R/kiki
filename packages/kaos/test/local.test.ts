@@ -306,6 +306,24 @@ describe('LocalKaos', () => {
       await kaos.writeText(filePath, 'a\n\uFEFFb\n');
       await expect(collectRange(filePath, 2, 1)).resolves.toEqual(['\uFEFFb\n']);
     });
+
+    it('invalidates sparse line checkpoints when the file changes', async () => {
+      const filePath = join(tempDir, 'range-rewrite.txt');
+      await kaos.writeText(
+        filePath,
+        Array.from({ length: 700 }, (_, index) => `old-${String(index + 1)}`).join('\n'),
+      );
+      await expect(collectRange(filePath, 513, 2)).resolves.toEqual(['old-513\n', 'old-514\n']);
+
+      await kaos.writeText(
+        filePath,
+        Array.from({ length: 700 }, (_, index) => `new-value-${String(index + 1)}`).join('\n'),
+      );
+      await expect(collectRange(filePath, 513, 2)).resolves.toEqual([
+        'new-value-513\n',
+        'new-value-514\n',
+      ]);
+    });
   });
 
   describe('readTailLines', () => {

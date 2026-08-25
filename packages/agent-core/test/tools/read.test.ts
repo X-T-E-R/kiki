@@ -172,7 +172,9 @@ describe('ReadTool', () => {
 
     expect(result).toEqual({
       output: '2\tb\n3\tc',
-      note: readNote('2 lines read from file starting from line 2. Total lines in file: 5.'),
+      note: readNote(
+        '2 lines read from file starting from line 2. Total lines in file: at least 4. More lines are available. Continue with line_offset=4.',
+      ),
     });
   });
 
@@ -623,9 +625,10 @@ describe('ReadTool', () => {
     expect(result.isError).toBeFalsy();
     expect(output).toContain('1\tline 1');
     expect(output).toContain(`${String(MAX_LINES)}\tline ${String(MAX_LINES)}`);
-    expect(result.note).toContain(`Total lines in file: ${String(MAX_LINES + 5)}.`);
+    expect(result.note).toContain(`Total lines in file: at least ${String(MAX_LINES + 1)}.`);
     expect(result.note).toContain(`Max ${String(MAX_LINES)} lines reached.`);
-    expect(consumed).toBe(MAX_LINES + 5);
+    expect(result.note).toContain(`Continue with line_offset=${String(MAX_LINES + 1)}.`);
+    expect(consumed).toBe(MAX_LINES + 1);
     expect(readBytes).toHaveBeenCalledWith('/tmp/large.txt', MEDIA_SNIFF_BYTES);
     expect(readText).not.toHaveBeenCalled();
   });
@@ -669,9 +672,10 @@ describe('ReadTool', () => {
     expect(output).not.toContain('8\tline 8');
     expect(readLineRange).toHaveBeenCalledWith('/tmp/range.txt', {
       startLine: 5,
-      maxLines: 3,
+      maxLines: 4,
       errors: 'strict',
     });
+    expect(scanTextFile).not.toHaveBeenCalled();
     expect(readLines).not.toHaveBeenCalled();
   });
 
@@ -712,18 +716,16 @@ describe('ReadTool', () => {
     expect(readLines).not.toHaveBeenCalled();
   });
 
-  it('short-circuits on scan NUL before range read', async () => {
-    const readLineRange = vi.fn();
+  it('rejects a NUL encountered inside the bounded range without a full-file scan', async () => {
+    const readLineRange = vi.fn(async function* (): AsyncGenerator<string> {
+      yield 'text\u0000payload\n';
+    });
+    const scanTextFile = vi.fn();
     const tool = new ReadTool(
       createFakeKaos({
         stat: vi.fn<Kaos['stat']>().mockResolvedValue(REGULAR_FILE_STAT),
         readBytes: vi.fn<Kaos['readBytes']>().mockResolvedValue(Buffer.from('text')),
-        scanTextFile: vi.fn(async () => ({
-          totalLines: 1,
-          endsWithNewline: false,
-          hasNul: true,
-          lineEndingFlags: { hasCrLf: false, hasLf: false, hasLoneCr: false },
-        })),
+        scanTextFile,
         readLineRange,
       } as unknown as Partial<Kaos>),
       PERMISSIVE_WORKSPACE,
@@ -734,7 +736,8 @@ describe('ReadTool', () => {
 
     expect(result.isError).toBe(true);
     expect(output).toContain('is not readable as UTF-8 text');
-    expect(readLineRange).not.toHaveBeenCalled();
+    expect(readLineRange).toHaveBeenCalled();
+    expect(scanTextFile).not.toHaveBeenCalled();
   });
 
   it('caps default reads at MAX_LINES', async () => {

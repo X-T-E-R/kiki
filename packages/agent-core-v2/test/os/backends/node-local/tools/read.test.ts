@@ -262,7 +262,9 @@ describe('ReadTool', () => {
 
     expect(result).toEqual({
       output: '2\tb\n3\tc',
-      note: readNote('2 lines read from file starting from line 2. Total lines in file: 5.'),
+      note: readNote(
+        '2 lines read from file starting from line 2. Total lines in file: at least 4. More lines are available. Continue with line_offset=4.',
+      ),
     });
   });
 
@@ -359,6 +361,34 @@ describe('ReadTool', () => {
     });
     expect(readBytes).not.toHaveBeenCalled();
     expect(readLines).not.toHaveBeenCalled();
+  });
+
+
+  it('bounds small forward reads independently of the remaining file size', async () => {
+    let consumed = 0;
+    const readLines = vi.fn().mockImplementation(async function* (): AsyncGenerator<string> {
+      for (let i = 1; i <= 100_000; i += 1) {
+        consumed = i;
+        yield `line ${String(i)}\n`;
+      }
+    });
+    const fs = {
+      cwd: '/',
+      readBytes: vi.fn(async () => Buffer.from('line 1\n')),
+      readLines,
+      readText: vi.fn(async () => {
+        throw new Error('full readText should not be called');
+      }),
+      stat: vi.fn(async () => ({ isFile: true, isDirectory: false, size: 1_000_000 })),
+    } as unknown as IHostFileSystem;
+    const tool = createReadTool(fs, createTestEnv(), PERMISSIVE_WORKSPACE);
+
+    const result = await execute(tool, { path: '/tmp/huge.log', n_lines: 3 });
+
+    expect(result.output).toContain('3\tline 3');
+    expect(result.note).toContain('Total lines in file: at least 4.');
+    expect(result.note).toContain('More lines are available.');
+    expect(consumed).toBe(4);
   });
 
   it('returns a friendly error for directories before sniffing bytes', async () => {
@@ -683,11 +713,47 @@ describe('ReadTool', () => {
     expect(result.isError).toBeFalsy();
     expect(output).toContain('1\tline 1');
     expect(output).toContain(`${String(MAX_LINES)}\tline ${String(MAX_LINES)}`);
-    expect(result.note).toContain(`Total lines in file: ${String(MAX_LINES + 5)}.`);
+    expect(result.note).toContain(`Total lines in file: at least ${String(MAX_LINES + 1)}.`);
     expect(result.note).toContain(`Max ${String(MAX_LINES)} lines reached.`);
-    expect(consumed).toBe(MAX_LINES + 5);
+    expect(result.note).toContain(`Continue with line_offset=${String(MAX_LINES + 1)}.`);
+    expect(consumed).toBe(MAX_LINES + 1);
     expect(readBytes).toHaveBeenCalledWith('/tmp/large.txt', MEDIA_SNIFF_BYTES);
     expect(readText).not.toHaveBeenCalled();
+  });
+
+  it('uses the bounded range reader when available', async () => {
+    const content = Array.from({ length: 20 }, (_, i) => `line ${String(i + 1)}`).join('\n');
+    const bytes = Buffer.from(content, 'utf8');
+    const readLines = vi.fn();
+    const readLineRange = vi.fn(async function* (
+      _path: string,
+      options: { startLine: number; maxLines: number },
+    ): AsyncGenerator<string> {
+      for (let i = options.startLine; i < options.startLine + options.maxLines; i += 1) {
+        yield `line ${String(i)}\n`;
+      }
+    });
+    const fs = {
+      readBytes: vi.fn(async (_path: string, n?: number) =>
+        n === undefined ? bytes : bytes.subarray(0, n),
+      ),
+      readLines,
+      readLineRange,
+      stat: vi.fn(async () => ({ isFile: true, isDirectory: false, size: bytes.length })),
+    } as unknown as IHostFileSystem;
+    const tool = createReadTool(fs, createTestEnv(), PERMISSIVE_WORKSPACE);
+
+    const result = await execute(tool, { path: '/tmp/range.txt', line_offset: 5, n_lines: 3 });
+
+    expect(result.output).toBe('5\tline 5\n6\tline 6\n7\tline 7');
+    expect(result.note).toContain('Total lines in file: at least 8.');
+    expect(result.note).toContain('Continue with line_offset=8.');
+    expect(readLineRange).toHaveBeenCalledWith('/tmp/range.txt', {
+      startLine: 5,
+      maxLines: 4,
+      errors: 'strict',
+    });
+    expect(readLines).not.toHaveBeenCalled();
   });
 
   it('caps default reads at MAX_LINES', async () => {

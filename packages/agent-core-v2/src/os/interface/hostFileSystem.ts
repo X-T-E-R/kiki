@@ -32,6 +32,15 @@ export interface IHostFileSystem {
     path: string,
     options?: { encoding?: BufferEncoding; errors?: TextDecodeErrors },
   ): AsyncGenerator<string>;
+  readLineRange?(
+    path: string,
+    options: {
+      startLine: number;
+      maxLines: number;
+      encoding?: BufferEncoding;
+      errors?: TextDecodeErrors;
+    },
+  ): AsyncGenerator<string>;
   createExclusive(path: string, data: Uint8Array): Promise<boolean>;
   stat(path: string): Promise<HostFileStat>;
   lstat(path: string): Promise<HostFileStat>;

@@ -52,3 +52,38 @@ describe('HostFileSystem stat / lstat', () => {
     expect((await fs.lstat(link)).isSymbolicLink).toBe(true);
   });
 });
+
+describe('HostFileSystem readLineRange', () => {
+  async function collect(path: string, startLine: number, maxLines: number): Promise<string[]> {
+    const lines: string[] = [];
+    for await (const line of fs.readLineRange(path, { startLine, maxLines })) lines.push(line);
+    return lines;
+  }
+
+  it('reads a bounded window and preserves a BOM on non-first lines', async () => {
+    const path = join(dir, 'range.txt');
+    await writeFile(path, 'a\n\uFEFFb\nc\nd\n', 'utf-8');
+
+    await expect(collect(path, 2, 2)).resolves.toEqual(['\uFEFFb\n', 'c\n']);
+  });
+
+  it('invalidates sparse line checkpoints after a rewrite', async () => {
+    const path = join(dir, 'rewrite.txt');
+    await writeFile(
+      path,
+      Array.from({ length: 700 }, (_, index) => `old-${String(index + 1)}`).join('\n'),
+      'utf-8',
+    );
+    await expect(collect(path, 513, 2)).resolves.toEqual(['old-513\n', 'old-514\n']);
+
+    await writeFile(
+      path,
+      Array.from({ length: 700 }, (_, index) => `new-value-${String(index + 1)}`).join('\n'),
+      'utf-8',
+    );
+    await expect(collect(path, 513, 2)).resolves.toEqual([
+      'new-value-513\n',
+      'new-value-514\n',
+    ]);
+  });
+});

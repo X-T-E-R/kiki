@@ -10,6 +10,7 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
+import type { Stats } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, normalize } from 'pathe';
 import type { Readable, Writable } from 'node:stream';
@@ -24,6 +25,9 @@ import type { StatResult } from './types';
 
 const isWindows: boolean = process.platform === 'win32';
 const READ_CHUNK_SIZE = 64 * 1024;
+const LINE_CHECKPOINT_INTERVAL = 256;
+const MAX_LINE_INDEX_ENTRIES = 64;
+const MAX_LINE_CHECKPOINTS = 4096;
 
 type TextDecodeErrors = 'strict' | 'replace' | 'ignore';
 
@@ -38,6 +42,20 @@ interface TextFileScan {
   endsWithNewline: boolean;
   hasNul: boolean;
   lineEndingFlags: LineEndingFlags;
+}
+
+interface LineCheckpoint {
+  readonly line: number;
+  readonly offset: number;
+}
+
+interface LineIndexEntry {
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly ctimeMs: number;
+  readonly ino: number;
+  checkpointInterval: number;
+  checkpoints: LineCheckpoint[];
 }
 
 /**
@@ -190,6 +208,7 @@ export class LocalKaos implements Kaos {
   readonly osEnv: Environment;
   private _cwd: string;
   private readonly _envLayers: readonly Record<string, string>[];
+  private readonly _lineIndexes = new Map<string, LineIndexEntry>();
 
   private constructor(
     osEnv: Environment,
@@ -597,17 +616,21 @@ export class LocalKaos implements Kaos {
   ): AsyncGenerator<string> {
     const startLine = range?.startLine ?? 1;
     const maxLines = range?.maxLines ?? Number.POSITIVE_INFINITY;
+    if (maxLines <= 0) return;
     const fh = await open(resolved, 'r');
     try {
+      const stat = await fh.stat();
+      const index = this._lineIndex(resolved, stat);
+      const checkpoint = this._lineCheckpoint(index.checkpoints, startLine);
       const buf = Buffer.alloc(READ_CHUNK_SIZE);
       let pending: Buffer[] = [];
       let pendingOffset = 0;
-      let fileOffset = 0;
-      let lineNo = 1;
+      let fileOffset = checkpoint.offset;
+      let lineNo = checkpoint.line;
       let yielded = 0;
 
       while (true) {
-        const { bytesRead } = await fh.read(buf, 0, buf.length, null);
+        const { bytesRead } = await fh.read(buf, 0, buf.length, fileOffset);
         if (bytesRead === 0) break;
         const chunk = buf.subarray(0, bytesRead);
         let lineStart = 0;
@@ -618,14 +641,16 @@ export class LocalKaos implements Kaos {
           const piece = chunk.subarray(lineStart, i + 1);
           const lineOffset = pending.length === 0 ? fileOffset + lineStart : pendingOffset;
           const line = pending.length === 0 ? piece : Buffer.concat([...pending, piece]);
+          const nextLine = lineNo + 1;
+          this._recordLineCheckpoint(index, nextLine, fileOffset + i + 1);
+          pending = [];
+          lineStart = i + 1;
           if (lineNo >= startLine) {
             yield decodeTextWithErrors(line, 'utf-8', errors, lineOffset !== 0);
             yielded += 1;
             if (yielded >= maxLines) return;
           }
-          pending = [];
-          lineStart = i + 1;
-          lineNo += 1;
+          lineNo = nextLine;
         }
 
         if (lineStart < chunk.length) {
@@ -645,6 +670,67 @@ export class LocalKaos implements Kaos {
     } finally {
       await fh.close();
     }
+  }
+
+  private _lineIndex(path: string, stat: Stats): LineIndexEntry {
+    const current = this._lineIndexes.get(path);
+    if (
+      current !== undefined &&
+      current.size === stat.size &&
+      current.mtimeMs === stat.mtimeMs &&
+      current.ctimeMs === stat.ctimeMs &&
+      current.ino === stat.ino
+    ) {
+      this._lineIndexes.delete(path);
+      this._lineIndexes.set(path, current);
+      return current;
+    }
+    const next: LineIndexEntry = {
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      ctimeMs: stat.ctimeMs,
+      ino: stat.ino,
+      checkpointInterval: LINE_CHECKPOINT_INTERVAL,
+      checkpoints: [{ line: 1, offset: 0 }],
+    };
+    this._lineIndexes.set(path, next);
+    while (this._lineIndexes.size > MAX_LINE_INDEX_ENTRIES) {
+      const oldest = this._lineIndexes.keys().next().value;
+      if (oldest === undefined) break;
+      this._lineIndexes.delete(oldest);
+    }
+    return next;
+  }
+
+  private _lineCheckpoint(
+    checkpoints: readonly LineCheckpoint[],
+    startLine: number,
+  ): LineCheckpoint {
+    let low = 0;
+    let high = checkpoints.length - 1;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      const checkpoint = checkpoints[mid];
+      if (checkpoint !== undefined && checkpoint.line <= startLine) low = mid;
+      else high = mid - 1;
+    }
+    return checkpoints[low] ?? { line: 1, offset: 0 };
+  }
+
+  private _recordLineCheckpoint(
+    index: LineIndexEntry,
+    line: number,
+    offset: number,
+  ): void {
+    if ((line - 1) % index.checkpointInterval !== 0) return;
+    const last = index.checkpoints[index.checkpoints.length - 1];
+    if (last !== undefined && last.line >= line) return;
+    index.checkpoints.push({ line, offset });
+    if (index.checkpoints.length <= MAX_LINE_CHECKPOINTS) return;
+    index.checkpointInterval *= 2;
+    index.checkpoints = index.checkpoints.filter(
+      (checkpoint) => (checkpoint.line - 1) % index.checkpointInterval === 0,
+    );
   }
 
   async writeBytes(path: string, data: Buffer): Promise<number> {

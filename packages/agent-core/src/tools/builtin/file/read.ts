@@ -73,9 +73,12 @@ interface FinishReadResultInput {
   readonly truncatedLineNumbers: readonly number[];
   readonly maxLinesReached: boolean;
   readonly maxBytesReached: boolean;
+  readonly hasMore: boolean;
   readonly lineEndingStyle: LineEndingStyle;
   readonly startLine: number;
-  readonly totalLines: number;
+  readonly totalLines?: number;
+  readonly minimumTotalLines?: number;
+  readonly nextLine?: number;
   readonly requestedLines: number;
 }
 
@@ -330,81 +333,59 @@ export class ReadTool implements BuiltinTool<ReadInput> {
     requestedLines: number,
   ): Promise<ExecutableToolResult> {
     const rangeKaos = this.kaos as RangeReadKaos;
-    if (rangeKaos.scanTextFile !== undefined && rangeKaos.readLineRange !== undefined) {
-      const scan = await rangeKaos.scanTextFile(safePath);
-      if (scan.hasNul) {
-        return { isError: true, output: notReadableFileOutput(displayPath) };
-      }
-      const selectedEntries: ReadLineEntry[] = [];
-      let lineNo = lineOffset;
-      for await (const rawLine of rangeKaos.readLineRange(safePath, {
-        startLine: lineOffset,
-        maxLines: effectiveLimit,
-        errors: 'strict',
-      })) {
-        selectedEntries.push({ lineNo, rawContent: stripTrailingLf(rawLine) });
-        lineNo += 1;
-      }
-      const lineEndingStyle = lineEndingStyleFromFlags(scan.lineEndingFlags);
-      const rendered = renderEntries(selectedEntries, lineEndingStyle);
-      return this.finishReadResult({
-        renderedLines: rendered.renderedLines,
-        truncatedLineNumbers: rendered.truncatedLineNumbers,
-        maxLinesReached: effectiveLimit >= MAX_LINES && lineOffset + MAX_LINES <= scan.totalLines,
-        maxBytesReached: rendered.maxBytesReached,
-        lineEndingStyle,
-        startLine: selectedEntries.length > 0 ? lineOffset : 0,
-        totalLines: scan.totalLines,
-        requestedLines,
-      });
-    }
+    const lines =
+      rangeKaos.readLineRange !== undefined
+        ? rangeKaos.readLineRange(safePath, {
+            startLine: lineOffset,
+            maxLines: effectiveLimit + 1,
+            errors: 'strict',
+          })
+        : this.kaos.readLines(safePath, { errors: 'strict' });
+    const sourceStartLine = rangeKaos.readLineRange !== undefined ? lineOffset : 1;
 
     const selectedEntries: ReadLineEntry[] = [];
     const flags: LineEndingFlags = { hasCrLf: false, hasLf: false, hasLoneCr: false };
-    let currentLineNo = 0;
-    let maxLinesReached = false;
-    let collectionClosed = false;
+    let currentLineNo = sourceStartLine - 1;
+    let hasMoreSource = false;
 
-    for await (const rawLine of this.kaos.readLines(safePath, { errors: 'strict' })) {
+    for await (const rawLine of lines) {
       if (containsNulByte(rawLine)) {
         return { isError: true, output: notReadableFileOutput(displayPath) };
       }
       currentLineNo += 1;
       updateLineEndingFlags(flags, rawLine);
-      if (collectionClosed) {
-        if (effectiveLimit >= MAX_LINES && currentLineNo >= lineOffset) {
-          maxLinesReached = true;
-        }
-        continue;
-      }
       if (currentLineNo < lineOffset) continue;
       if (selectedEntries.length >= effectiveLimit) {
-        if (effectiveLimit >= MAX_LINES) {
-          maxLinesReached = true;
-        }
-        collectionClosed = true;
-        continue;
+        hasMoreSource = true;
+        break;
       }
       selectedEntries.push({
         lineNo: currentLineNo,
         rawContent: stripTrailingLf(rawLine),
       });
-      if (selectedEntries.length >= effectiveLimit) {
-        collectionClosed = true;
-      }
     }
 
     const lineEndingStyle = lineEndingStyleFromFlags(flags);
     const rendered = renderEntries(selectedEntries, lineEndingStyle);
+    const hasMoreRendered = rendered.renderedLines.length < selectedEntries.length;
+    const hasMore = hasMoreSource || hasMoreRendered;
+    const lastRendered = selectedEntries[rendered.renderedLines.length - 1];
+    const totalLines =
+      !hasMoreSource && (sourceStartLine === 1 || selectedEntries.length > 0)
+        ? currentLineNo
+        : undefined;
 
     return this.finishReadResult({
       renderedLines: rendered.renderedLines,
       truncatedLineNumbers: rendered.truncatedLineNumbers,
-      maxLinesReached,
+      maxLinesReached: hasMoreSource && effectiveLimit >= MAX_LINES,
       maxBytesReached: rendered.maxBytesReached,
+      hasMore,
       lineEndingStyle,
       startLine: selectedEntries.length > 0 ? lineOffset : 0,
-      totalLines: currentLineNo,
+      totalLines,
+      minimumTotalLines: hasMoreSource ? currentLineNo : undefined,
+      nextLine: hasMore && lastRendered !== undefined ? lastRendered.lineNo + 1 : undefined,
       requestedLines,
     });
   }
@@ -519,6 +500,7 @@ export class ReadTool implements BuiltinTool<ReadInput> {
       truncatedLineNumbers,
       maxLinesReached: false,
       maxBytesReached,
+      hasMore: false,
       lineEndingStyle,
       startLine: renderedCandidates[0]?.entry.lineNo ?? 0,
       totalLines: input.totalLines,
@@ -546,12 +528,19 @@ export class ReadTool implements BuiltinTool<ReadInput> {
           ]
         : ['No lines read from file.'];
 
-    parts.push(`Total lines in file: ${String(input.totalLines)}.`);
+    if (input.totalLines !== undefined) {
+      parts.push(`Total lines in file: ${String(input.totalLines)}.`);
+    } else if (input.minimumTotalLines !== undefined) {
+      parts.push(`Total lines in file: at least ${String(input.minimumTotalLines)}.`);
+    }
     if (input.maxLinesReached) {
       parts.push(`Max ${String(MAX_LINES)} lines reached.`);
     } else if (input.maxBytesReached) {
       parts.push(`Max ${String(MAX_BYTES)} bytes reached.`);
-    } else if (lineCount < input.requestedLines) {
+    }
+    if (input.hasMore && input.nextLine !== undefined) {
+      parts.push(`More lines are available. Continue with line_offset=${String(input.nextLine)}.`);
+    } else if (!input.maxBytesReached && lineCount < input.requestedLines) {
       parts.push('End of file reached.');
     }
     if (input.truncatedLineNumbers.length > 0) {
