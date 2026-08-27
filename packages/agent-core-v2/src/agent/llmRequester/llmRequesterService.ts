@@ -119,7 +119,6 @@ import {
   retryErrorFields,
   sleepForRetry,
 } from '#/_base/utils/retry';
-import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 
 const EMPTY_TOOL_PARAMETERS: Record<string, unknown> = {
   type: 'object',
