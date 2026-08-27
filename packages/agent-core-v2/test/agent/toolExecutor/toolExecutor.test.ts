@@ -1183,9 +1183,11 @@ describe('truncation pipeline', () => {
     expect(rendered).toMatch(/\[elided: chars \[4096, \d+\)\]/);
 
     const outputPath = renderedOutputPath(rendered);
-    expect(outputPath).toContain(
-      join(homeDir, 'sessions/workspace/session/agents/main/tool-results/noisy-call_noisy-'),
+    const expectedPrefix = join(
+      homeDir,
+      'sessions/workspace/session/agents/main/tool-results/noisy-call_noisy-',
     );
+    expect(toPosix(outputPath)).toContain(toPosix(expectedPrefix));
     expect(readFileSync(outputPath, 'utf8')).toBe(fullOutput);
   });
 
@@ -1270,6 +1272,11 @@ describe('truncation pipeline', () => {
     expect(result?.truncated).toBeUndefined();
   });
 });
+
+// Spill pointers render storage paths POSIX-style even on Windows.
+function toPosix(path: string): string {
+  return path.replaceAll('\\', '/');
+}
 
 function renderedOutputPath(output: string): string {
   const match = /^output_path: (.+)$/m.exec(output);
