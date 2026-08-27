@@ -11,6 +11,7 @@ import {
 } from '#/_base/di/scope';
 import { unwrapErrorCause } from '#/_base/errors/errors';
 import { AsyncEmitter, Emitter, type Event, type IWaitUntil } from '#/_base/event';
+import { ILogService } from '#/_base/log/log';
 import { drainLogCloses } from '#/_base/log/logService';
 import { DEFAULT_PLAN_MODE_SECTION } from '#/features/plan/configSection';
 import { IAgentPlanService } from '#/features/plan/plan';
@@ -31,7 +32,10 @@ import {
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { ErrorCodes, Error2, isError2 } from '#/errors';
 import { IHostFileSystem, type HostDirEntry } from '#/os/interface/hostFileSystem';
-import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import {
+  type AppendLogTruncation,
+  IAppendLogStore,
+} from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import {
   IFileSystemStorageService,
@@ -58,6 +62,7 @@ import {
   type WireRecord,
 } from '#/wire/record';
 import { addUsage, type TokenUsage } from '#/kosong/contract/usage';
+import { repairWireJournal } from '#/wire/repair';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IProviderService } from '#/kosong/provider/provider';
@@ -192,6 +197,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     @IAppendLogStore private readonly appendLogStore: IAppendLogStore,
     @IAtomicDocumentStore private readonly docs: IAtomicDocumentStore,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
+    @ILogService private readonly log: ILogService,
     @IHostFileSystem private readonly hostFs: IHostFileSystem,
     @ICronTaskPersistence private readonly cronStore: ICronTaskPersistence,
     @IEventService private readonly event: IEventService,
@@ -844,12 +850,30 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         await agentHandle.accessor.get(IEventDispatcher).flush();
       }
     }
-    return collect(
-      this.appendLogStore.read<WireRecord>(
-        agentScopeOf(sessionScopeOf(this.handlerScope, sourceSessionId), agentId),
-        AGENT_WIRE_RECORD_KEY,
-      ),
+    const scope = agentScopeOf(sessionScopeOf(this.handlerScope, sourceSessionId), agentId);
+    let truncation: AppendLogTruncation | undefined;
+    const records = await collect(
+      this.appendLogStore.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, {
+        onTruncate: (info) => {
+          truncation = info;
+        },
+      }),
     );
+    if (truncation !== undefined) {
+      await repairWireJournal(
+        {
+          appendLog: this.appendLogStore,
+          storage: this.storage,
+          log: this.log,
+          telemetry: this.telemetry,
+        },
+        scope,
+        AGENT_WIRE_RECORD_KEY,
+        records,
+        truncation,
+      );
+    }
+    return records;
   }
 
   private async pruneTruncatedForkFiles(

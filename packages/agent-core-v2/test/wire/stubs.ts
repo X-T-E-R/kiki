@@ -1,12 +1,16 @@
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { toDisposable } from '#/_base/di/lifecycle';
 import type { ServiceRegistration, TestInstantiationService } from '#/_base/di/test';
+import { ILogService } from '#/_base/log/log';
 import { IAgentBlobService } from '#/agent/blob/agentBlobService';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { IAgentScopeContext, type IAgentScopeContext as AgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IEventBus } from '#/app/event/eventBus';
+import { ITelemetryService, noopTelemetryService } from '#/app/telemetry/telemetry';
+import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { EventDispatcherService } from '#/state/eventDispatcherService';
 import {
@@ -20,6 +24,9 @@ interface TestAgentWireDependencies {
   readonly log?: IAppendLogStore;
   readonly blob?: IAgentBlobService;
   readonly eventBus?: IEventBus;
+  readonly storage?: IFileSystemStorageService;
+  readonly logger?: ILogService;
+  readonly telemetry?: ITelemetryService;
 }
 
 const noopLog: IAppendLogStore = {
@@ -46,6 +53,18 @@ const noopEventBus: IEventBus = {
   subscribe: () => toDisposable(() => {}),
 };
 
+export const noopLogger: ILogService = {
+  _serviceBrand: undefined,
+  level: 'off',
+  error: () => {},
+  warn: () => {},
+  info: () => {},
+  debug: () => {},
+  child: () => noopLogger,
+  setLevel: () => {},
+  flush: async () => {},
+};
+
 export function testWireScope(scope: string, journal: string): string {
   return `${scope}/${journal}`;
 }
@@ -68,6 +87,15 @@ export function registerTestAgentWire(
   ix.set(IAppendLogStore, dependencies.log ?? noopLog);
   ix.set(IAgentBlobService, dependencies.blob ?? noopBlob);
   ix.set(IEventBus, dependencies.eventBus ?? noopEventBus);
+  if (dependencies.storage !== undefined) {
+    ix.stub(IFileSystemStorageService, dependencies.storage);
+  }
+  if (dependencies.logger !== undefined) {
+    ix.stub(ILogService, dependencies.logger);
+  }
+  if (dependencies.telemetry !== undefined) {
+    ix.stub(ITelemetryService, dependencies.telemetry);
+  }
   ix.set(IWireService, new SyncDescriptor(WireService));
   return ix.get(IWireService);
 }
@@ -80,6 +108,9 @@ export function registerTestAgentWireServices(
   registration.defineInstance(IAppendLogStore, noopLog);
   registration.defineInstance(IAgentBlobService, noopBlob);
   registration.defineInstance(IEventBus, noopEventBus);
+  registration.defineInstance(IFileSystemStorageService, new InMemoryStorageService());
+  registration.defineInstance(ILogService, noopLogger);
+  registration.defineInstance(ITelemetryService, noopTelemetryService);
   registration.defineInstance(IAgentStateService, new AgentStateService());
   registration.define(IWireService, WireService);
   registration.define(IEventDispatcher, EventDispatcherService);
