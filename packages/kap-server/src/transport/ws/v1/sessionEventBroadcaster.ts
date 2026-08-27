@@ -1099,6 +1099,19 @@ export class SessionEventBroadcaster {
       );
       return;
     }
+    if (event.type === 'event.model_catalog.changed') {
+      const payload = modelCatalogChangedPayload(corePayload);
+      if (payload === undefined) return;
+      void this.dispatchGlobal({
+        type: 'event.model_catalog.changed',
+        ...payload,
+        agentId: 'main',
+        sessionId: GLOBAL_SESSION_ID,
+      } as Event).catch((error: unknown) =>
+        this.logDispatchError(GLOBAL_SESSION_ID, 'event.model_catalog.changed', error),
+      );
+      return;
+    }
     if (event.type === 'event.capability.changed') {
       const payload = capabilityChangedPayload(corePayload);
       if (payload === undefined) return;
@@ -1611,6 +1624,7 @@ function isGlobalEvent(type: string): boolean {
     type.startsWith('event.config.') ||
     type.startsWith('event.plugin.') ||
     type.startsWith('event.capability.') ||
+    type.startsWith('event.model_catalog.') ||
     type.startsWith('event.di.')
   );
 }
@@ -1869,6 +1883,21 @@ interface CapabilityChangedPayload {
     error?: string;
     note?: string;
   };
+}
+
+interface ModelCatalogChangedPayload {
+  changed: unknown[];
+  unchanged: unknown[];
+  failed: unknown[];
+}
+
+function modelCatalogChangedPayload(payload: unknown): ModelCatalogChangedPayload | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const { changed, unchanged, failed } = payload as Record<string, unknown>;
+  if (!Array.isArray(changed) || !Array.isArray(unchanged) || !Array.isArray(failed)) {
+    return undefined;
+  }
+  return { changed, unchanged, failed };
 }
 
 function capabilityChangedPayload(payload: unknown): CapabilityChangedPayload | undefined {

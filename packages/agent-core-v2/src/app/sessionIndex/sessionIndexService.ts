@@ -323,7 +323,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     this.emitStatusIfChanged();
     const detail =
       error instanceof Error ? error.message : typeof error === 'string' ? error : undefined;
-    this.log.warn('session index read model degraded; serving authoritative reads', {
+    this.log.warn('session index read model degraded; list/count fail closed until rebuilt', {
       reason,
       ...(detail !== undefined ? { error: detail } : {}),
       degradedCount: this.degradedCount,

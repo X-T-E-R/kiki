@@ -1406,6 +1406,11 @@ function sendMappedError(
       case ErrorCodes.STORAGE_LOCKED:
         reply.send(errEnvelope(ErrorCode.SESSION_LOCKED, err.message, requestId, err.stack));
         return;
+      case ErrorCodes.SESSION_INDEX_BUILDING:
+        reply.send(
+          errEnvelope(ErrorCode.SESSION_INDEX_BUILDING, err.message, requestId, err.stack),
+        );
+        return;
       case 'compaction.unable':
         reply.send(errEnvelope(ErrorCode.COMPACTION_UNABLE, err.message, requestId, err.stack));
         return;
