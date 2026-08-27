@@ -87,6 +87,7 @@ export const ErrorCode = {
   /** expected session event cursor no longer matches the current watermark */
   SESSION_CURSOR_MISMATCH: 40937,
   PROMPT_ID_CONFLICT: 40938,
+  SESSION_INDEX_BUILDING: 40939,
 
   APPROVAL_EXPIRED: 41001,
   QUESTION_EXPIRED: 41002,

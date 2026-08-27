@@ -71,6 +71,17 @@ function createAtomicDocumentStore(): AtomicDocumentStore {
     set: async <T>(scope: string, key: string, value: T) => {
       documents.set(documentKey(scope, key), structuredClone(value));
     },
+    update: async <T>(
+      scope: string,
+      key: string,
+      updater: (current: T | undefined) => T | undefined,
+    ) => {
+      const id = documentKey(scope, key);
+      const current = documents.get(id) as T | undefined;
+      const next = updater(current);
+      if (next !== undefined && next !== current) documents.set(id, structuredClone(next));
+      return next ?? current;
+    },
     delete: async (scope: string, key: string) => {
       documents.delete(documentKey(scope, key));
     },

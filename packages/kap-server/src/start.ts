@@ -328,6 +328,15 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   let postListenWarmup: Promise<void> | undefined;
   const runPostListenWarmup = async (): Promise<void> => {
     try {
+      await core.accessor.get(ISessionIndex).prepare();
+    } catch (error) {
+      logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        'session index prepare failed; list requests remain unavailable until recovery',
+      );
+    }
+
+    try {
       await core.accessor.get(IWorkspaceService).list();
     } catch (error) {
       logger.warn(
@@ -336,14 +345,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       );
     }
 
-    try {
-      await core.accessor.get(ISessionIndex).prepare();
-    } catch (error) {
-      logger.warn(
-        { err: error instanceof Error ? error.message : String(error) },
-        'session index prepare failed; falling back to on-demand reads',
-      );
-    }
+    core.accessor.get(IGlobalSearchService).setLiveTranscriptSource(transcriptService);
   };
 
   try {
@@ -478,7 +480,6 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
 
   const connectionRegistry = new ConnectionRegistry();
   const transcriptService = new TranscriptService({ homeDir, core, logger });
-  core.accessor.get(IGlobalSearchService).setLiveTranscriptSource(transcriptService);
   const broadcaster = new SessionEventBroadcaster({
     eventsDir: join(homeDir, 'server', 'events'),
     core,

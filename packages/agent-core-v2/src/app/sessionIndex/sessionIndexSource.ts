@@ -199,43 +199,61 @@ export async function listSessionIds(
   }
 }
 
+interface SessionMetadataEntry {
+  readonly base: string;
+  readonly scope: string;
+  readonly meta: Record<string, unknown>;
+}
+
 export async function readSessionSummary(
+  docs: IAtomicDocumentStore,
+  sessionsScope: string,
+  workspaceId: string,
+  sessionId: string,
+): Promise<SessionSummary | undefined> {
+  const entry = await readSessionMetadata(docs, sessionsScope, workspaceId, sessionId);
+  return entry === undefined ? undefined : summaryFromMetadata(entry.meta, workspaceId, sessionId);
+}
+
+export async function reconcileSessionSummary(
   docs: IAtomicDocumentStore,
   log: IAppendLogStore,
   sessionsScope: string,
   workspaceId: string,
   sessionId: string,
 ): Promise<SessionSummary | undefined> {
-  const base = `${sessionsScope}/${workspaceId}/${sessionId}`;
-  const meta = (await readMeta(docs, base)) ?? (await readMeta(docs, `${base}/${META_SCOPE}`));
-  if (meta === undefined) return undefined;
+  const entry = await readSessionMetadata(docs, sessionsScope, workspaceId, sessionId);
+  if (entry === undefined) return undefined;
+  const summary = summaryFromMetadata(entry.meta, workspaceId, sessionId);
+  if (summary.usage?.wireComplete === true) return summary;
+  const recoverableAgentIds = recoverableAgents(entry.meta);
+  if (recoverableAgentIds.length === 0) return summary;
+  const replay = await readSessionUsageFromWires(
+    log,
+    recoverableAgentIds.map((agentId) => `${entry.base}/agents/${agentId}`),
+  );
+  if (!replay.complete || replay.usage === undefined) return summary;
+  const baselineUsage = JSON.stringify(summary.usage);
+  const repaired = await docs.update<Record<string, unknown>>(entry.scope, META_KEY, (current) => {
+    if (current === undefined) return undefined;
+    const currentUsage = parseSessionUsageSummary(current['usage']);
+    if (currentUsage?.wireComplete === true) return current;
+    if (JSON.stringify(currentUsage) !== baselineUsage) return current;
+    return { ...current, usage: replay.usage };
+  });
+  return repaired === undefined ? undefined : summaryFromMetadata(repaired, workspaceId, sessionId);
+}
+
+function summaryFromMetadata(
+  meta: Record<string, unknown>,
+  workspaceId: string,
+  sessionId: string,
+): SessionSummary {
   const rawCustom = meta['custom'];
   const custom =
     rawCustom !== null && typeof rawCustom === 'object' && !Array.isArray(rawCustom)
       ? (rawCustom as Record<string, unknown>)
       : undefined;
-  const persistedUsage = parseSessionUsageSummary(meta['usage']);
-  const rawAgents = meta['agents'];
-  const agentIds =
-    rawAgents !== null && typeof rawAgents === 'object' && !Array.isArray(rawAgents)
-      ? Object.keys(rawAgents)
-      : [];
-  const hasConversation = typeof meta['lastPrompt'] === 'string' && meta['lastPrompt'].length > 0;
-  const recoverableAgentIds =
-    agentIds.length === 0 && !hasConversation ? [] : [...new Set(['main', ...agentIds])];
-  const replay =
-    persistedUsage?.wireComplete === true || recoverableAgentIds.length === 0
-      ? undefined
-      : await readSessionUsageFromWires(
-          log,
-          recoverableAgentIds.map((agentId) => `${base}/agents/${agentId}`),
-        );
-  const usage =
-    replay === undefined
-      ? persistedUsage
-      : replay.complete
-        ? replay.usage ?? persistedUsage
-        : persistedUsage ?? replay.usage;
   return buildSessionSummary({
     id: sessionId,
     workspaceId,
@@ -248,8 +266,32 @@ export async function readSessionSummary(
     archivedAt: meta['archivedAt'] === undefined ? undefined : parseTime(meta['archivedAt']),
     custom,
     lastTurnReason: parseTurnOutcome(meta['lastTurnReason']),
-    usage,
+    usage: parseSessionUsageSummary(meta['usage']),
   });
+}
+
+function recoverableAgents(meta: Record<string, unknown>): string[] {
+  const rawAgents = meta['agents'];
+  const agentIds =
+    rawAgents !== null && typeof rawAgents === 'object' && !Array.isArray(rawAgents)
+      ? Object.keys(rawAgents)
+      : [];
+  const hasConversation = typeof meta['lastPrompt'] === 'string' && meta['lastPrompt'].length > 0;
+  return agentIds.length === 0 && !hasConversation ? [] : [...new Set(['main', ...agentIds])];
+}
+
+async function readSessionMetadata(
+  docs: IAtomicDocumentStore,
+  sessionsScope: string,
+  workspaceId: string,
+  sessionId: string,
+): Promise<SessionMetadataEntry | undefined> {
+  const base = `${sessionsScope}/${workspaceId}/${sessionId}`;
+  const current = await readMeta(docs, base);
+  if (current !== undefined) return { base, scope: base, meta: current };
+  const scope = `${base}/${META_SCOPE}`;
+  const legacy = await readMeta(docs, scope);
+  return legacy === undefined ? undefined : { base, scope, meta: legacy };
 }
 
 async function readMeta(

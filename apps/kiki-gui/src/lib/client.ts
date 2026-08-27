@@ -111,7 +111,12 @@ export const API_CODES = {
   TERMINAL_NOT_FOUND: 40414,
   MESSAGE_ACTION_UNAVAILABLE: 40936,
   SESSION_CURSOR_MISMATCH: 40937,
+  SESSION_INDEX_BUILDING: 40939,
 } as const;
+
+export function isSessionIndexBuildingError(error: unknown): boolean {
+  return error instanceof ApiError && error.code === API_CODES.SESSION_INDEX_BUILDING;
+}
 
 /**
  * True when a human-readable load error (ApiError's `${msg} (code ${code})`

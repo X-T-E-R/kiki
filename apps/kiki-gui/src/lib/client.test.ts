@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ApiError,
+  isSessionIndexBuildingError,
   isSessionNotFoundMessage,
   KikiClient,
   type AgentTranscriptResponse,
@@ -22,6 +23,20 @@ describe('isSessionNotFoundMessage', () => {
     expect(isSessionNotFoundMessage('prompt.not_found (code 40402)')).toBe(false);
     expect(isSessionNotFoundMessage('request timed out (code -2)')).toBe(false);
     expect(isSessionNotFoundMessage('Could not load session')).toBe(false);
+  });
+});
+
+describe('isSessionIndexBuildingError', () => {
+  it('matches only the session index building business code', () => {
+    expect(
+      isSessionIndexBuildingError(
+        new ApiError({ code: 40939, msg: 'session index is building', data: null }),
+      ),
+    ).toBe(true);
+    expect(
+      isSessionIndexBuildingError(new ApiError({ code: 50001, msg: 'internal', data: null })),
+    ).toBe(false);
+    expect(isSessionIndexBuildingError(new Error('network'))).toBe(false);
   });
 });
 

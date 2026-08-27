@@ -6,6 +6,7 @@ import {
   registerScopedService,
 } from '#/_base/di/scope';
 import { createScopedTestHost, stubPair } from '#/_base/di/test';
+import { Event } from '#/_base/event';
 import {
   ISessionIndex,
   type SessionCountQuery,
@@ -22,6 +23,7 @@ import { WorkspaceSessionsService } from '#/app/workspaceSessions/workspaceSessi
 
 class FakeSessionIndex implements ISessionIndex {
   readonly _serviceBrand: undefined;
+  readonly onDidChangeStatus = Event.None as ISessionIndex['onDidChangeStatus'];
   lastListQuery: SessionListQuery | undefined;
   lastCountQuery: SessionCountQuery | undefined;
   items: readonly SessionSummary[] = [];
@@ -32,7 +34,7 @@ class FakeSessionIndex implements ISessionIndex {
   }
 
   status(): SessionIndexStatus {
-    return { state: 'uninitialized', degradedCount: 0 };
+    return { source: 'authoritative', state: 'uninitialized', degradedCount: 0 };
   }
 
   async listRecent(query: SessionListQuery) {

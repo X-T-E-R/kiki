@@ -6,12 +6,8 @@ import { ILogService } from '#/_base/log/log';
 import { defineState } from '#/state/state';
 import { ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
 import { buildSessionSummary } from '#/app/sessionIndex/sessionIndexSource';
-import {
-  addSessionUsage,
-  readSessionUsageFromWires,
-} from '#/app/sessionIndex/sessionUsageSummary';
+import { addSessionUsage } from '#/app/sessionIndex/sessionUsageSummary';
 import type { TokenUsage } from '#/kosong/contract/usage';
-import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionStateService } from '#/session/state/sessionState';
@@ -55,7 +51,6 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   constructor(
     @ISessionStateService private readonly states: ISessionStateService,
     @ISessionContext private readonly ctx: ISessionContext,
-    @IAppendLogStore private readonly logStore: IAppendLogStore,
     @IAtomicDocumentStore private readonly store: IAtomicDocumentStore,
     @ILogService private readonly log: ILogService,
     @ISessionIndexMirror private readonly mirror: ISessionIndexMirror,
@@ -214,33 +209,15 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     const existing = await this.store.get<SessionMeta>(this.scope, META_KEY);
     if (existing !== undefined) {
       this.data = normalizeSessionMeta(existing, this.ctx.sessionId);
-      const agentIds = [...new Set(['main', ...Object.keys(this.data.agents ?? {})])];
-      const replay =
-        this.data.usage?.wireComplete === true
-          ? undefined
-          : await readSessionUsageFromWires(
-              this.logStore,
-              agentIds.map((agentId) => this.ctx.scope(`agents/${agentId}`)),
-            );
-      const recoveredUsage =
-        replay === undefined
-          ? undefined
-          : replay.complete
-            ? replay.usage
-            : this.data.usage === undefined
-              ? replay.usage
-              : undefined;
       if (
         this.data.agents === undefined ||
         this.data.custom === undefined ||
-        sessionMetaTitleNeedsMigration(existing, this.data) ||
-        recoveredUsage !== undefined
+        sessionMetaTitleNeedsMigration(existing, this.data)
       ) {
         this.data = {
           ...this.data,
           agents: this.data.agents ?? {},
           custom: this.data.custom ?? {},
-          usage: recoveredUsage ?? this.data.usage,
         };
         await this.store.set(this.scope, META_KEY, encodeSessionMeta(this.data));
       }

@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { isEditableTarget } from './App';
+import { isEditableTarget, retryRootReadModelQuery } from './App';
 import { resolveFallbackPhase } from './components/ConversationShell';
+import { ApiError } from './lib/client';
 import { shouldGuardNavigation } from './components/dirtyGuard';
 
 // App pulls the whole route tree; only the SessionView branch needs xterm
@@ -60,6 +61,24 @@ describe('isEditableTarget', () => {
     expect(isEditableTarget(new FakePlainDiv())).toBe(false);
     expect(isEditableTarget(null)).toBe(false);
     expect(isEditableTarget({ ...eventTargetStub })).toBe(false);
+  });
+});
+
+describe('root read-model query retry', () => {
+  it('keeps loading only while the session index is building', () => {
+    expect(
+      retryRootReadModelQuery(
+        4,
+        new ApiError({ code: 40939, msg: 'session index is building', data: null }),
+      ),
+    ).toBe(true);
+    expect(
+      retryRootReadModelQuery(
+        0,
+        new ApiError({ code: 50001, msg: 'internal error', data: null }),
+      ),
+    ).toBe(false);
+    expect(retryRootReadModelQuery(0, new Error('network failed'))).toBe(false);
   });
 });
 
