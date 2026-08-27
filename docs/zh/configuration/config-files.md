@@ -295,6 +295,8 @@ v2 上 thinking effort 独立解析，优先级为：工具 `effort` → profile
 
 已配置的 `[secondary_model.models]` 默认是软白名单：旧版 `model` preference 必须使用池 key，但精确 `model_alias` 仍可选择其他已配置模型。设置 `enforce_pool = true` 后，精确 alias 也必须服从模型池，同时继续允许调用方的 `primary` 模型。`enforce_pool` 要求显式配置非空模型池，且不能与 `force` 同设。所有池 key 与 `default_model` 也必须避开 `[subagent] deny_models`；比较前会先解析 alias，以规范模型身份为准。
 
+池别名引用的是 `[models]` 表的当前内容：如果之后删除供应商、登出账号，或其刷新后的模型列表不再包含某个别名，会话启动时会报出指明失效别名的配置错误，修正或移除对应条目即可恢复。系统不会自动改写 `[secondary_model]` 节。
+
 在交互式 TUI 中，可以使用 [`/secondary_model`](../reference/slash-commands.md) 命令打开模型选择器来设置该配置：选择后会写入本小节配置，并在当前会话立即生效——之后派生的子 Agent 会直接绑定新的次主力模型。
 
 典型的软模型池会列出模型 alias，以及 main agent 选择时看到的说明：
