@@ -36,7 +36,7 @@ The default v2 engine (Kiki desktop and `kimi` CLI/TUI) gives the main `agent` p
 
 `AgentSwarm` keeps its name. New item-based spawns take `profile` (defaults to `coder`) and `effort`; it requires `description`.
 
-The legacy v1 engine (`KIMI_CODE_LEGACY_FLAG=1`) still has the five-tool Codex-style adapter: `spawn_agent`, `list_agents`, `wait_agent`, `followup_task`, and `interrupt_agent`. Enable it with `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION=1`. On v1, `[agents] enabled = false` removes those tools without clearing the flag. That adapter, the flag id `agent-collaboration`, and the env var are gone from v2. The v1 `Agent` tool keeps its original name and parameters (`description`, `subagent_type`, `run_in_background`, `resume`, `thinking_effort`). This is an adapter on v1, not complete Codex compatibility.
+The five-tool Codex-style adapter (`spawn_agent`, `list_agents`, `wait_agent`, `followup_task`, `interrupt_agent`), its flag id `agent-collaboration`, and `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION` are gone: they lived only on the removed v1 engine.
 
 ## Peer-thread communication
 

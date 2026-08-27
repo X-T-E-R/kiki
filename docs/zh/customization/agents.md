@@ -36,7 +36,7 @@ subagent 支持在后台运行：完成后结果自动回到 main agent，无需
 
 `AgentSwarm` 名称不变。基于 item 的新派生使用 `profile`（默认 `coder`）和 `effort`；它要求填写 `description`。
 
-旧版 v1 引擎（`KIMI_CODE_LEGACY_FLAG=1`）仍保留由 5 个工具组成的 Codex 风格适配器：`spawn_agent`、`list_agents`、`wait_agent`、`followup_task` 和 `interrupt_agent`。用 `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION=1` 启用。在 v1 上，`[agents] enabled = false` 会在不改实验 flag 的情况下拿掉这组工具。v2 已经删除该适配器、flag id `agent-collaboration` 以及对应环境变量。v1 的 `Agent` 工具仍用原来的名字和参数（`description`、`subagent_type`、`run_in_background`、`resume`、`thinking_effort`）。这是 v1 上的一层适配器，并不代表完整兼容 Codex。
+由 5 个工具组成的 Codex 风格适配器（`spawn_agent`、`list_agents`、`wait_agent`、`followup_task`、`interrupt_agent`）、flag id `agent-collaboration` 以及 `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION` 都已消失：它们只存在于已删除的 v1 引擎。
 
 ## Peer thread 通信
 

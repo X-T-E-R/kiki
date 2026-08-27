@@ -14,7 +14,6 @@ import {
 let dir: string;
 
 beforeEach(async () => {
-  vi.stubEnv('KIMI_CODE_LEGACY_FLAG', '');
   vi.stubEnv('KIMI_CODE_EXPERIMENTAL_FLAG', '');
   vi.stubEnv('KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL', '');
   dir = join(tmpdir(), `kimi-doctor-${Date.now()}-${Math.random().toString(36).slice(2)}`);

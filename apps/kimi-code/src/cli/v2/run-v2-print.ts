@@ -1,19 +1,17 @@
 /**
- * Native v2 `kimi -p` (print mode) runner.
+ * `kimi -p` (print mode) runner.
  *
- * Unlike the v1 path (and the former `V2PromptHarness` / `V2Session` shim), this
- * runner talks to agent-core-v2's native DI services directly — no
- * `PromptHarness`, no SDK-shaped session, no v2→v1 event translation. It:
+ * Unlike the former `V2PromptHarness` / `V2Session` shim, this runner talks to
+ * agent-core-v2's native DI services directly — no `PromptHarness`, no
+ * SDK-shaped session, no event translation. It:
  *   - `bootstrap()`s the app scope,
  *   - creates / resumes a session and its main agent via native services,
  *   - subscribes to the main agent's per-agent `IEventBus` and renders the
- *     native `Event2` stream (payloads are already v1-protocol-shaped),
+ *     native `Event2` stream (payloads are already protocol-shaped),
  *   - drives a turn through `IAgentPromptService.enqueue()` and awaits
  *     `Turn.result` for authoritative completion,
- *   - applies the print-mode background policy (config-driven, v1-aligned:
+ *   - applies the print-mode background policy (config-driven:
  *     `exit` / `drain` / `steer`) before exiting.
- *
- * Selected by `runPrompt` unless `KIMI_CODE_LEGACY_FLAG` is truthy.
  */
 
 import { readFile } from 'node:fs/promises';

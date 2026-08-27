@@ -1,4 +1,4 @@
-# Contributing to kimi-code
+﻿# Contributing to kimi-code
 
 Thanks for taking the time to contribute! This project moves quickly, and thoughtful contributions from the community are what keep it sharp. The guide below walks you through how we work so your PR has the best chance of landing smoothly.
 
@@ -30,7 +30,7 @@ This is a pnpm monorepo. The most relevant entry points are:
 - `apps/kimi-code` — CLI / TUI
 - `apps/vis` — session replay & debugging visualizer
 - `packages/node-sdk` — public TypeScript SDK (`@moonshot-ai/kimi-code-sdk`)
-- `packages/agent-core`, `kosong`, `kaos`, `oauth`, `telemetry` — internal engine packages
+- `packages/agent-core-v2`, `kosong`, `kaos`, `oauth`, `telemetry` — internal engine packages
 - `docs/` — VitePress bilingual docs site
 
 For the full project map, see [AGENTS.md](AGENTS.md).
@@ -60,12 +60,12 @@ All commits and PR titles must follow [Conventional Commits](https://www.convent
 
 | Type     | Use for                                     | Example                                   |
 |----------|---------------------------------------------|-------------------------------------------|
-| feat     | A new feature                               | feat(agent-core): add tool dedup          |
+| feat     | A new feature                               | feat(agent-core-v2): add tool dedup          |
 | fix      | A bug fix                                   | fix(tui): correct status bar alignment    |
 | docs     | Documentation only                          | docs: clarify install instructions        |
 | chore    | Tooling / housekeeping                      | chore: bump dependencies                  |
 | refactor | Internal refactor without behavior change   | refactor(kosong): extract retry helper    |
-| test     | Adding or improving tests                   | test(agent-core): cover skill resolver    |
+| test     | Adding or improving tests                   | test(agent-core-v2): cover skill resolver    |
 | ci       | CI / build pipeline changes                 | ci: cache pnpm store                      |
 | build    | Build system / artifact changes             | build(native): add win32-arm64 target     |
 | perf     | Performance improvement                     | perf(session): batch event flushes        |

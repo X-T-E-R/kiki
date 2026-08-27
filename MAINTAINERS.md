@@ -22,8 +22,7 @@ Start at the owner for the feature, then follow its links to implementation and 
 
 | Area | Maintainer entry | Stable or user-facing view |
 | --- | --- | --- |
-| Agent engine v1 | [`packages/agent-core/AGENTS.md`](packages/agent-core/AGENTS.md) | [`packages/agent-core/README.md`](packages/agent-core/README.md) |
-| Agent engine v2, scopes, services, features | [`packages/agent-core-v2/AGENTS.md`](packages/agent-core-v2/AGENTS.md) | [`packages/agent-core-v2/docs/features.md`](packages/agent-core-v2/docs/features.md), [`packages/agent-core-v2/docs/service-design.md`](packages/agent-core-v2/docs/service-design.md) |
+| Agent engine, scopes, services, features | [`packages/agent-core-v2/AGENTS.md`](packages/agent-core-v2/AGENTS.md) | [`packages/agent-core-v2/docs/features.md`](packages/agent-core-v2/docs/features.md), [`packages/agent-core-v2/docs/service-design.md`](packages/agent-core-v2/docs/service-design.md) |
 | kap-server REST, WebSocket, and debug surfaces | [`packages/kap-server/AGENTS.md`](packages/kap-server/AGENTS.md) | [`packages/kap-server/README.md`](packages/kap-server/README.md), [`docs/en/reference/server-api.md`](docs/en/reference/server-api.md) |
 | Klient contracts and transports | [`packages/klient/AGENTS.md`](packages/klient/AGENTS.md) | [`packages/klient/README.md`](packages/klient/README.md) |
 | Transcript contract and projections | [`packages/transcript/AGENTS.md`](packages/transcript/AGENTS.md) | [`docs/en/guides/sessions.md`](docs/en/guides/sessions.md) |

@@ -12,6 +12,10 @@ Kiki currently exposes related model-selection concepts through different field 
 This page is a design roadmap, not a deprecation notice. Existing configuration, Agent files, tool calls, and persisted subagent bindings keep their current behavior until a separately reviewed implementation changes them.
 :::
 
+::: danger Out of date
+Written while both engines existed. `packages/agent-core` (v1) has since been deleted, so every row and source path below that describes the v1 vocabulary is history, not current behavior. The convergence target itself still stands; this page is scheduled for a rebaseline.
+:::
+
 ## Separate the concepts first
 
 The current vocabulary becomes easier to reason about when three different concepts are kept distinct:

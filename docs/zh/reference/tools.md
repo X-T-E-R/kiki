@@ -91,12 +91,9 @@ Peer thread 通信只能在同一台主机内进行，可以跨工作区，并�
 
 只有来源 thread 的主 Agent 调用 `send_message_to_thread` 才会记录 peer 归属；REST 与 Klient 发送属于只指定目标的 user 来源输入。详见 [Agent 与子 Agent](../customization/agents.md#peer-thread-通信)。
 
-默认的 v2 引擎（Kiki 桌面端和 `kimi` CLI/TUI）会给主 `agent` profile 始终提供 `AgentRun`、`AgentSwarm`、`AgentList` 和 `AgentSend`。这些工具只管理调用方的直属子 Agent——用 `AgentRun` 里可选的 `name`，或用 agent id。它们不需要实验开关。内置的 `coder` 与 `explore` profile 没有这组工具。
+Kiki 桌面端和 `kimi` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRun`、`AgentSwarm`、`AgentList` 和 `AgentSend`。这些工具只管理调用方的直属子 Agent——用 `AgentRun` 里可选的 `name`，或用 agent id。它们不需要实验开关。内置的 `coder` 与 `explore` profile 没有这组工具。
 
 `AgentList` 返回这些直属子 Agent，包括由 `AgentRun` 或 `AgentSwarm` 启动的，不会列出孙级。`AgentSend` 把消息排进邮箱，不会启动或中断 turn，因此空闲的子 Agent 会保持空闲，到下一步开始时才读这条消息。
-
-`spawn_agent`、`list_agents`、`wait_agent`、`followup_task` 和 `interrupt_agent` 这 5 个 snake_case 工具只留在旧版 v1 引擎（`KIMI_CODE_LEGACY_FLAG=1`）上，由 `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION` 门控。v1 的 `Agent` 工具仍用原来的名字和参数（`description`、`subagent_type`、`run_in_background`、`resume`、`thinking_effort`）。详见 [Agent 与子 Agent](../customization/agents.md#codex-风格协作适配器)。
-
 协作类工具负责 Agent 间协作、用户交互和 Skill 调用。
 
 | 工具 | 默认审批 | 说明 |

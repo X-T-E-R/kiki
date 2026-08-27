@@ -212,7 +212,7 @@ kimi doctor
 Agent-profile diagnostics use three levels:
 
 - **ERROR**: The file cannot be parsed, its resolved `name` is invalid, its `model_alias` is absent from `[models]`, or its `subagents` allowlist references a role that does not exist.
-- **WARN**: The frontmatter contains an unknown key, the file shares a name with a built-in profile without `override: true`, `model_preference` is present while the secondary-model experiment is disabled, the `service_tier` field conflicts with `request_params.service_tier` (the nested value is ignored), or v2-only fields (`service_tier` / `request_params`) are present while the legacy engine is selected (`KIMI_CODE_LEGACY_FLAG=1`).
+- **WARN**: The frontmatter contains an unknown key, the file shares a name with a built-in profile without `override: true`, `model_preference` is present while the secondary-model experiment is disabled, or the `service_tier` field conflicts with `request_params.service_tier` (the nested value is ignored).
 - **SKIP**: No agent files were found. This is not a failure.
 
 When an explicit config path is passed, the file must exist. The command exits with `0` when all checks are valid, warnings, or skips, and `1` when a requested config file is missing or invalid or any agent profile produces an ERROR. When every remaining check is valid but warnings exist, the summary line reports the warning count (e.g. `All checked config files are valid, 1 warning.`).

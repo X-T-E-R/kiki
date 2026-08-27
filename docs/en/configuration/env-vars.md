@@ -133,8 +133,7 @@ Switches that control the behavior of subsystems such as telemetry, background t
 | `KIMI_CODE_IDENTITY_SLUG` | Protocol identifier for the `User-Agent` product token sent to third-party providers and the MCP client name; takes higher priority than `[identity] slug`. Derived from the name when unset | Any non-empty string; normalized to lowercase with non-alphanumeric runs folded to `-` |
 | `KIMI_CODE_BUILTIN_PRODUCT_SKILLS` | Whether the built-in skills documenting Kimi Code itself are offered to the model; takes higher priority than `builtin_product_skills` in `config.toml` (default enabled) | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
 | `KIMI_CODE_TUI_FULL_SCREEN` | Enable the experimental fullscreen alternate-screen UI: scrollable transcript viewport, mouse text selection, clickable links, and Ctrl-Shift-F transcript search | `1` enables it; anything else keeps the regular inline UI |
-| `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL` | Enable only the legacy `model` / `model_preference` selectors and the secondary-model recipe; stable `model_alias`, profile `thinking_effort`, and v2 tool `effort` are unaffected. The master `KIMI_CODE_EXPERIMENTAL_FLAG=1` also enables the legacy behavior | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
-| `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION` | Legacy v1 only (`KIMI_CODE_LEGACY_FLAG=1`): enable the five-tool Codex-style named-agent adapter (`spawn_agent`, `list_agents`, `wait_agent`, `followup_task`, `interrupt_agent`). On v1, `[agents] enabled = false` still disables the adapter. The default v2 engine does not register this flag or those tools | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
+| `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL` | Enable only the symbolic `model` / `model_preference` selectors and the secondary-model recipe; stable `model_alias`, profile `thinking_effort`, and tool `effort` are unaffected. The master `KIMI_CODE_EXPERIMENTAL_FLAG=1` also enables them | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
 | `KIMI_CODE_EXPERIMENTAL_TASK_WAIT` | Whether the model is given the `TaskWait` tool, which waits for background tasks inside the current turn instead of ending it (enabled by default) | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
 | `KIMI_SECONDARY_MODEL` | Secondary model; takes higher priority than [`[secondary_model] model`](./config-files.md#secondary-model) in `config.toml`. When the secondary-model experiment is enabled, newly spawned subagents (`AgentRun` / `AgentSwarm`) bind to it by default instead of inheriting the main agent's model | The alias of a configured `[models]` entry, e.g. `kimi-code/kimi-k2.5`; blank values are ignored |
 | `KIMI_SECONDARY_EFFORT` | Thinking effort for the secondary model; takes higher priority than `[secondary_model] default_effort` in `config.toml` and applies only when both the model and its experiment are enabled | An effort value, e.g. `low`; blank values are ignored |
@@ -151,8 +150,7 @@ Switches that control the behavior of subsystems such as telemetry, background t
 | `KIMI_WEB_SEARCH_API_KEY` | API key of the web search (`WebSearch`) service; replaces both the configured API key and OAuth credential when set | Non-blank string; blank values are ignored |
 | `KIMI_WEB_FETCH_BASE_URL` | API URL of the web fetch (`FetchURL`) service; takes higher priority than `[services.moonshot_fetch] base_url`. Persisted credentials and custom headers are not forwarded to an env-selected endpoint. Without an env or config endpoint, signed-in users try the managed Kimi OAuth fetch service before direct local requests | Non-blank string; blank values are ignored |
 | `KIMI_WEB_FETCH_API_KEY` | API key of the web fetch (`FetchURL`) service; replaces both the configured API key and OAuth credential when set | Non-blank string; blank values are ignored |
-| `KIMI_CODE_EXPERIMENTAL_FLAG` | Enable all registered experimental features for this process; it does not select the agent engine | `1`, `true`, `yes`, `on` |
-| `KIMI_CODE_LEGACY_FLAG` | Use the legacy `agent-core` engine for `kimi`, `kimi -p`, `kimi doctor`, `kimi acp`, `kimi export`, and `kimi provider`; these commands use `agent-core-v2` by default | `1`, `true`, `yes`, `on` |
+| `KIMI_CODE_EXPERIMENTAL_FLAG` | Enable all registered experimental features for this process | `1`, `true`, `yes`, `on` |
 | `KIMI_SHELL_PATH` | Override the Git Bash path on Windows (used when auto-detection fails) | Absolute path |
 | `KIMI_MODEL_MAX_COMPLETION_TOKENS` | Hard cap on `max_completion_tokens` per LLM step; applies to the `kimi` provider only | Positive integer; `0` or negative disables clamping |
 | `KIMI_MODEL_TEMPERATURE` | Sampling temperature for every request; applies to the `kimi` provider only (global — independent of `KIMI_MODEL_NAME`) | Number, e.g. `0.3` |
@@ -162,9 +160,7 @@ Switches that control the behavior of subsystems such as telemetry, background t
 | `KIMI_CODE_NO_AUTO_UPDATE` | Fully disable the update preflight — no check, background install, or prompt. Legacy alias `KIMI_CLI_NO_AUTO_UPDATE` is also honored | Truthy: `1`/`true`/`yes`/`on` |
 | `KIMI_DISABLE_CRON` | Disable the scheduled-task tool (`CronCreate` rejects new schedules; existing tasks do not fire) | `1` to disable |
 
-`[subagent] default_model` and `default_effort` have no environment-variable equivalents. On v1 they apply when the secondary-model experiment is on. On v2 they are accepted in `config.toml` and currently unused by `AgentRun` / `AgentSwarm`.
-
-The `KIMI_CODE_INFINITE_RETRY`, `KIMI_CODE_IDENTITY_*`, and `KIMI_CODE_BUILTIN_PRODUCT_SKILLS` variables are read by the default `agent-core-v2` engine. The legacy `kimi` / `kimi -p` path selected with `KIMI_CODE_LEGACY_FLAG=1` ignores them.
+`[subagent] default_model` and `default_effort` have no environment-variable equivalents. They are accepted in `config.toml` and currently unused by `AgentRun` / `AgentSwarm`.
 
 ## Diagnostic logs
 

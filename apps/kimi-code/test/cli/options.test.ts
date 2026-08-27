@@ -527,9 +527,9 @@ describe('CLI options parsing', () => {
       expect(validateOptions(opts, {}).uiMode).toBe('print');
     });
 
-    it('accepts the flags in prompt mode with the legacy engine flag', () => {
+    it('accepts --agent in prompt mode', () => {
       const opts = parse(['-p', 'hi', '--agent', 'reviewer']);
-      expect(validateOptions(opts, { KIMI_CODE_LEGACY_FLAG: '1' }).uiMode).toBe('print');
+      expect(validateOptions(opts, {}).uiMode).toBe('print');
     });
   });
 

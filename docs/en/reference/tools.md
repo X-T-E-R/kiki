@@ -91,12 +91,9 @@ Peer-thread communication is local to one host, can cross workspaces, and is con
 
 Only `send_message_to_thread`, called by the source thread's main Agent, records peer attribution; REST and Klient sends are target-only user-origin input. See [Agents and Sub-Agents](../customization/agents.md#peer-thread-communication).
 
-On the default v2 engine (Kiki desktop and `kimi` CLI/TUI), the main `agent` profile always receives `AgentRun`, `AgentSwarm`, `AgentList`, and `AgentSend`. These tools address only the caller's direct children — by the optional `name` passed to `AgentRun`, or by agent id. They are not behind an experiment. Built-in `coder` and `explore` profiles do not receive them.
+On Kiki desktop and the `kimi` CLI/TUI, the main `agent` profile always receives `AgentRun`, `AgentSwarm`, `AgentList`, and `AgentSend`. These tools address only the caller's direct children — by the optional `name` passed to `AgentRun`, or by agent id. They are not behind an experiment. Built-in `coder` and `explore` profiles do not receive them.
 
 `AgentList` returns those children, including ones started with `AgentRun` or `AgentSwarm`, and never lists grandchildren. `AgentSend` queues a mailbox message without starting or interrupting a turn, so an idle child stays idle and reads the message at the beginning of its next step.
-
-The five snake-case tools `spawn_agent`, `list_agents`, `wait_agent`, `followup_task`, and `interrupt_agent` remain only on the legacy v1 engine (`KIMI_CODE_LEGACY_FLAG=1`), gated by `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION`. That engine still exposes the `Agent` tool under its original name and parameters (`description`, `subagent_type`, `run_in_background`, `resume`, `thinking_effort`). See [Agents and Sub-Agents](../customization/agents.md#codex-style-collaboration-adapter).
-
 Collaboration tools handle inter-Agent coordination, user interaction, and Skill invocation.
 
 | Tool | Default Approval | Description |

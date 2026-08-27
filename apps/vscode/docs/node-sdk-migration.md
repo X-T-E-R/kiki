@@ -91,7 +91,7 @@ into runtime code or packaging scripts.
 ### Package boundaries
 
 - `apps/vscode` depends on `@moonshot-ai/kimi-code-sdk`.
-- `apps/vscode` must not depend directly on `@moonshot-ai/agent-core`.
+- `apps/vscode` must not depend directly on `@moonshot-ai/agent-core-v2`.
 - Core capabilities needed by released clients are exposed through the Node SDK
   and tested at that public boundary.
 - The Webview communicates only through the typed bridge in
@@ -234,38 +234,10 @@ and may require authorization after upgrade.
 
 ## Legacy migration
 
-Migration is opt-in and uses `@moonshot-ai/migration-legacy` for detection and
-translation. The extension coordinates prompts and reports but does not
-maintain another config/session translator.
-
-### Sources and target
-
-- default source: `~/.kimi`;
-- optional additional source: a valid legacy `KIMI_SHARE_DIR` from the removed
-  VS Code setting;
-- target: the SDK-resolved Kimi Code home.
-
-Migration covers the shared config, MCP config, user history, supported skills,
-and sessions. Existing target data wins according to the shared migration
-package's conflict rules. Migration is repeatable and does not delete the
-legacy source.
-
-On first launch, the extension detects work without mutating either home and
-offers **Migrate now** or **Later**. The command
-`Kimi Code: Migrate Legacy Data` remains available for manual runs and retries.
-
-The shared marker `.migrated-to-kimi-code` can contain multiple target homes.
-This prevents duplicate migration when the TUI migrated the same source first,
-while still allowing a different `KIMI_CODE_HOME` to be migrated later.
-
-Migrated sessions keep source metadata in `state.json.custom`, including the
-legacy source path and session identity. This metadata also supports legacy
-baseline fallback.
-
-OAuth and MCP OAuth credentials are intentionally not copied. Refresh tokens
-may rotate, so copying them can invalidate one installation or create ambiguous
-ownership. The upgrade flow and release notes must tell users to authorize
-again when needed.
+Removed. The `~/.kimi` importer, its `@moonshot-ai/migration-legacy` package,
+and the `Kimi Code: Migrate Legacy Data` command went with the v1 engine. Kiki
+cannot import a kimi-cli-era home; sessions migrated before the removal keep
+their `state.json.custom` source metadata and still work.
 
 ## File changes and baselines
 

@@ -2,7 +2,6 @@
  * Scenario: the VS Code host and another Node SDK client share one in-process Kimi home.
  * Responsibilities: outbound host identity, config/session interoperability, MCP credential/edit compatibility, and terminal provider failures.
  * Wiring: KimiRuntime, KimiHarness, core, storage, and HTTP provider adapter are real; only the remote provider is local.
- * The runtime harness follows the extension engine decision (v2 by default, the legacy v1 under KIMI_CODE_LEGACY_FLAG).
  * Run: pnpm --filter kimi-code exec vitest run test/kimi-harness.integration.test.ts
  */
 
