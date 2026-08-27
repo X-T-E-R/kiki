@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+﻿import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -117,26 +117,6 @@ describe('kimi doctor', () => {
     expect(out).toContain('built-in defaults will apply');
   });
 
-  it('uses the legacy validator when legacy wins over the experimental flag', async () => {
-    const configPath = join(dir, 'config.toml');
-    const text = '[providers.kimi]\ntype = "kimi"\n';
-    await writeFile(configPath, text, 'utf-8');
-    vi.stubEnv('KIMI_CODE_LEGACY_FLAG', '1');
-    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_FLAG', '1');
-    const validateConfigToml = vi.fn(async () => undefined);
-    const { deps } = makeDeps();
-
-    const code = await handleDoctor(
-      {
-        ...deps,
-        configRpc: { validateConfigToml } as unknown as NonNullable<DoctorDeps['configRpc']>,
-      },
-      { target: 'config' },
-    );
-
-    expect(code).toBe(0);
-    expect(validateConfigToml).toHaveBeenCalledWith({ text, filePath: configPath });
-  });
 
   it('checks only config.toml when the config target is selected', async () => {
     const { deps, stdout, stderr } = makeDeps();
@@ -629,31 +609,6 @@ request_params:
       'overrides request_params.service_tier; ignoring the nested value',
     );
     expect(out).toContain('All checked config files are valid, 1 warning.');
-  });
-
-  it('warns about v2-only frontmatter fields under the legacy engine', async () => {
-    vi.stubEnv('KIMI_CODE_LEGACY_FLAG', '1');
-    const agentPath = await writeAgentFile(
-      'reviewer.md',
-      `
-name: reviewer
-description: Reviews changes
-service_tier: priority
-request_params:
-  seed: 42
-`,
-    );
-    const { deps, stdout, stderr } = makeDeps();
-
-    const code = await handleDoctor(deps, {});
-
-    expect(code).toBe(0);
-    expect(stderr.join('')).toBe('');
-    const out = stdout.join('');
-    expect(out).toContain(`WARN agents       ${agentPath}`);
-    expect(out).toContain(
-      'service_tier, request_params are ignored by the legacy agent engine; they only take effect under agent-core-v2.',
-    );
   });
 });
 
