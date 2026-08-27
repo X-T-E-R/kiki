@@ -6,11 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createKimiConfigRpc, createKimiHarness, KimiError } from '#/index';
 
-import {
-  parseConfigString,
-  readConfigFile,
-  writeConfigFile,
-} from '../../agent-core/src/config';
+import { parseConfigString, readConfigFile, writeConfigFile } from '#/config';
 import { TEST_IDENTITY } from './test-identity';
 
 // node-sdk/agent-core normalize paths to forward slashes (pathe). Mirror that

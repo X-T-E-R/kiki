@@ -119,6 +119,10 @@ describe('Event public types', () => {
         case 'prompt.completed':
         case 'prompt.aborted':
         case 'prompt.steered':
+        case 'prompt.queued':
+        case 'prompt.replaced':
+        case 'agent.disposed':
+        case 'event.session.history_rewritten':
           return;
         default:
           assertNever(event);

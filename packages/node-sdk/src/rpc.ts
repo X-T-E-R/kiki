@@ -1,26 +1,27 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-import {
-  ErrorCodes,
-  KimiError,
-  makeErrorPayload,
-  type AgentContextData,
-  type ApprovalRequest,
-  type ApprovalResponse,
-  type BeginGlobalMcpServerAuthResult,
-  type CoreAPI,
-  type Event,
-  type ExperimentalFeatureState,
-  type GetCronTasksResult,
-  type QuestionRequest,
-  type QuestionResult,
-  type RPCMethods,
-  type SDKAPI,
-  type ToolCallRequest,
-  type ToolCallResponse,
-  type SwarmModeTrigger,
-} from '@moonshot-ai/agent-core';
+import type {
+  AgentContextData,
+  ExperimentalFeatureState,
+  SwarmModeTrigger,
+} from '@moonshot-ai/agent-core-v2';
 import type { Kaos } from '@moonshot-ai/kaos';
+import type { Event } from '@moonshot-ai/protocol';
+
+import { ErrorCodes, KimiError, makeErrorPayload } from '#/errors';
+import type {
+  ApprovalRequest,
+  ApprovalResponse,
+  BeginGlobalMcpServerAuthResult,
+  CoreAPI,
+  GetCronTasksResult,
+  QuestionRequest,
+  QuestionResult,
+  RPCMethods,
+  SDKAPI,
+  ToolCallRequest,
+  ToolCallResponse,
+} from '#/protocol';
 
 import type { ApprovalHandler, QuestionHandler } from '#/events';
 import type {
@@ -809,8 +810,8 @@ export abstract class SDKRpcClientBase {
     const hasUsage =
       usage.byModel !== undefined || usage.total !== undefined || usage.currentTurn !== undefined;
     return {
-      model: config.modelAlias ?? config.provider?.model,
-      thinkingEffort: config.thinkingEffort,
+      model: config.modelAlias,
+      thinkingEffort: config.thinkingLevel,
       permission: permission.mode,
       planMode: plan !== null,
       swarmMode,

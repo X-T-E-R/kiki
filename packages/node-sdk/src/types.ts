@@ -1,12 +1,12 @@
+import type { TelemetryContextPatch, TelemetryProperties } from '@moonshot-ai/agent-core-v2';
+import type { Kaos } from '@moonshot-ai/kaos';
+
 import type {
   ExportSessionManifest,
   ResumeSessionResult,
   ShellEnvironment,
   TelemetryClient,
-  TelemetryContextPatch,
-  TelemetryProperties,
-} from '@moonshot-ai/agent-core';
-import type { Kaos } from '@moonshot-ai/kaos';
+} from '#/protocol';
 import type { KimiHostIdentity, OAuthRefreshOutcome } from '@moonshot-ai/kimi-code-oauth';
 import type { ContentPart } from '@moonshot-ai/kosong';
 
@@ -23,44 +23,19 @@ export interface AgentRuntimeBinding {
 
 export type { CapabilityStatus } from '@moonshot-ai/agent-core-v2/app/capability/types';
 
+// Engine-shaped facts, straight from the v2 engine.
 export type {
-  AgentReplayRecord,
-  AgentBackgroundTaskInfo,
-  AppMcpServerAuthState,
-  AppMcpServerConfig,
-  AppMcpServerDescriptor,
-  AppMcpServerInspection,
-  BackgroundConfig,
-  BackgroundTaskInfo,
-  BackgroundTaskStatus,
-  ConfigDiagnostics,
   ContextMessage,
-  CronTaskSnapshot,
   ExperimentalFeatureState,
   ExperimentalFlagMap,
   ExperimentalFlagSource,
-  ExportSessionManifest,
   GoalBudgetLimits,
   GoalBudgetReport,
   GoalChange,
   GoalChangeStats,
-  GetCronTasksResult,
   GoalSnapshot,
   GoalStatus,
   GoalToolResult,
-  GlobalMcpServerAuthState,
-  GlobalMcpServerAuthStatus,
-  KimiConfig,
-  KimiConfigPatch,
-  LoopControl,
-  McpManagedServerInfo,
-  McpServerInfo,
-  McpServerLocator,
-  McpServerSource,
-  McpStartupMetrics,
-  ModelAlias,
-  MoonshotServiceConfig,
-  OAuthRef,
   PluginCommandDef,
   PluginGithubMetadata,
   PluginGithubRef,
@@ -68,21 +43,55 @@ export type {
   PluginMcpServerInfo,
   PluginSource,
   PluginSummary,
-  ProcessBackgroundTaskInfo,
   PromptOrigin,
-  ProviderConfig,
-  ProviderType,
-  QuestionBackgroundTaskInfo,
   ReloadSummary,
+  ToolInfo,
+} from '@moonshot-ai/agent-core-v2';
+
+// The SDK's own RPC contract and the value types it carries.
+export type {
+  AgentBackgroundTaskInfo,
+  AgentReplayRecord,
+  AppMcpServerAuthState,
+  AppMcpServerConfig,
+  AppMcpServerDescriptor,
+  AppMcpServerInspection,
+  BackgroundTaskInfo,
+  BackgroundTaskStatus,
+  ConfigDiagnostics,
+  CronTaskSnapshot,
+  ExportSessionManifest,
+  GetCronTasksResult,
+  GlobalMcpServerAuthState,
+  GlobalMcpServerAuthStatus,
+  McpManagedServerInfo,
+  McpServerInfo,
+  McpServerLocator,
+  McpServerSource,
+  McpStartupMetrics,
+  ProcessBackgroundTaskInfo,
+  QuestionBackgroundTaskInfo,
   ResumedAgentState,
-  ServicesConfig,
   ShellEnvironment,
   SkillSummary,
-  ThinkingConfig,
-  ToolInfo,
   GlobalMcpServerConfig as McpServerConfig,
   GlobalMcpServerTestResult as McpTestResult,
-} from '@moonshot-ai/agent-core';
+} from '#/protocol';
+
+// The `config.toml` document model the SDK reads and patches.
+export type {
+  BackgroundConfig,
+  KimiConfig,
+  KimiConfigPatch,
+  LoopControl,
+  ModelAlias,
+  MoonshotServiceConfig,
+  OAuthRef,
+  ProviderConfig,
+  ProviderType,
+  ServicesConfig,
+  ThinkingConfig,
+} from '#/config';
 
 export type { KimiHostIdentity, OAuthRefreshOutcome };
 export type { TelemetryClient, TelemetryContextPatch, TelemetryProperties };

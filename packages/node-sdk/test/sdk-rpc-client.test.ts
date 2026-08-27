@@ -21,13 +21,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   buildDaemonFileUrl,
-  createKimiHarnessV2,
+  createKimiHarness,
   ErrorCodes,
   isDaemonFileUrl,
   isKimiError,
   KimiHarness,
   removeProviderFromConfig,
-  SDKRpcClientV2,
+  SDKRpcClient,
   toKimiErrorPayload,
   type Event,
   type KimiConfig,
@@ -49,7 +49,7 @@ import {
   OsProcessErrors,
 } from '@moonshot-ai/agent-core-v2';
 
-import { McpOAuthService } from '../../agent-core/src/mcp/oauth/service';
+import { createFileMcpOAuthService } from './mcp-oauth-store';
 import { McpOAuthService as McpOAuthServiceV2 } from '@moonshot-ai/agent-core-v2/mcpCore/oauth/service';
 
 import { TEST_IDENTITY } from './test-identity';
@@ -99,7 +99,7 @@ function stubProcessPlatform(platform: NodeJS.Platform): () => void {
 async function makeHarness(): Promise<{ harness: KimiHarness; homeDir: string }> {
   const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
   tempDirs.push(homeDir);
-  return { harness: createKimiHarnessV2({ homeDir, identity: TEST_IDENTITY }), homeDir };
+  return { harness: createKimiHarness({ homeDir, identity: TEST_IDENTITY }), homeDir };
 }
 
 /** Whether the persisted session directory exists under `<home>/sessions/<bucket>/<id>`. */
@@ -121,7 +121,7 @@ async function sessionDirExists(homeDir: string, sessionId: string): Promise<boo
   return false;
 }
 
-describe('SDKRpcClientV2 (agent-core-v2 wiring)', () => {
+describe('SDKRpcClient (agent-core-v2 wiring)', () => {
   it('exposes the validated runtime binding through Session', async () => {
     const { harness } = await makeHarness();
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
@@ -144,7 +144,7 @@ describe('SDKRpcClientV2 (agent-core-v2 wiring)', () => {
     const implicitOAuthUrl = 'https://implicit-oauth.example.test/mcp';
     const authorizedUrl = 'https://authorized.example.test/mcp';
     const requiredUrl = 'https://required.example.test/mcp';
-    const externalOAuth = new McpOAuthService({ kimiHomeDir: homeDir });
+    const externalOAuth = createFileMcpOAuthService(homeDir);
     await externalOAuth
       .getProvider('oauth-authorized', authorizedUrl)
       .saveTokens({ access_token: 'test-access-token', token_type: 'Bearer' });
@@ -179,7 +179,7 @@ describe('SDKRpcClientV2 (agent-core-v2 wiring)', () => {
       }),
       'utf-8',
     );
-    const harness = createKimiHarnessV2({ homeDir, identity: TEST_IDENTITY });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await expect(harness.listMcpServerAuthStatuses({ verify: false })).resolves.toEqual([
@@ -216,7 +216,7 @@ describe('SDKRpcClientV2 (agent-core-v2 wiring)', () => {
   it('restates engine MCP management Error2s as KimiError, undeclared codes as internal', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
     tempDirs.push(homeDir);
-    const client = new SDKRpcClientV2({ homeDir, identity: TEST_IDENTITY });
+    const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
     try {
       const management = client.engineAccessor.get(IMcpManagementService);
       const listSpy = vi.spyOn(management, 'listServers');
@@ -274,7 +274,7 @@ describe('SDKRpcClientV2 (agent-core-v2 wiring)', () => {
   it('close() awaits the MCP OAuth service shutdown', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
     tempDirs.push(homeDir);
-    const client = new SDKRpcClientV2({ homeDir, identity: TEST_IDENTITY });
+    const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
     // Activate the OnDemand OAuth service, then gate its shutdown behind a
     // manual release: close() alone (no manual service.shutdown()) must
     // trigger and await that shutdown, so a host removing homeDir right after
@@ -312,7 +312,7 @@ describe('SDKRpcClientV2 (agent-core-v2 wiring)', () => {
   it('close() resolves promptly when the MCP OAuth service was never used', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
     tempDirs.push(homeDir);
-    const client = new SDKRpcClientV2({ homeDir, identity: TEST_IDENTITY });
+    const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
     // Nothing touched IMcpOAuthService: close() force-activates the OnDemand
     // service only to shut it down, and that activate-then-shutdown cycle
     // must be a clean no-op (the proactive-refresh sweep bows out on the
@@ -323,7 +323,7 @@ describe('SDKRpcClientV2 (agent-core-v2 wiring)', () => {
   it('seeds the host request headers (User-Agent + X-Msh-*) into the engine', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
     tempDirs.push(homeDir);
-    const client = new SDKRpcClientV2({ homeDir, identity: TEST_IDENTITY });
+    const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
     try {
       // Without this seed the managed vendors go out with the SDK's default
       // User-Agent and no X-Msh-* — the interactive-v2 path's identity bug.
@@ -343,7 +343,7 @@ describe('SDKRpcClientV2 (agent-core-v2 wiring)', () => {
     try {
       const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
       tempDirs.push(homeDir);
-      const harness = createKimiHarnessV2({ homeDir, identity: TEST_IDENTITY });
+      const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
       try {
         await expect(harness.ensureConfigFile()).rejects.toBeInstanceOf(HostProcessError);
         await expect(harness.ensureConfigFile()).rejects.toMatchObject({
@@ -364,7 +364,7 @@ describe('SDKRpcClientV2 (agent-core-v2 wiring)', () => {
     try {
       const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
       tempDirs.push(homeDir);
-      const harness = createKimiHarnessV2({ homeDir, identity: TEST_IDENTITY });
+      const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
       try {
         await expect(harness.ensureConfigFile()).resolves.toBeUndefined();
       } finally {
@@ -478,7 +478,7 @@ key = "${titleOAuthRef.key}"
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
-    const harness = createKimiHarnessV2({ homeDir, identity: TEST_IDENTITY });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       const session = await harness.createSession({ id: 'ses_generated_title_event', workDir });
@@ -589,7 +589,7 @@ key = "${titleOAuthRef.key}"
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
-    const client = new SDKRpcClientV2({ homeDir, identity: TEST_IDENTITY });
+    const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await client.createSession({ id: 'ses_title_race', workDir });
@@ -811,7 +811,7 @@ key = "${titleOAuthRef.key}"
     await writeSkill(join(homeDir, 'skills', 'demo-user-skill'), 'demo-user-skill');
     await writeSkill(join(workDir, '.kimi-code', 'skills', 'demo-project-skill'), 'demo-project-skill');
     await writeSkill(join(explicitDir, 'demo-explicit-skill'), 'demo-explicit-skill');
-    const harness = createKimiHarnessV2({
+    const harness = createKimiHarness({
       homeDir,
       identity: TEST_IDENTITY,
       skillDirs: [explicitDir],
@@ -842,7 +842,7 @@ key = "${titleOAuthRef.key}"
   it('serves the plugin catalog from the v2 engine on an empty home', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
     tempDirs.push(homeDir);
-    const rpc = new SDKRpcClientV2({ homeDir, identity: TEST_IDENTITY });
+    const rpc = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
     try {
       expect(await rpc.listPlugins()).toEqual([]);
       expect(await rpc.reloadPlugins()).toEqual({ added: [], removed: [], errors: [] });
@@ -1003,7 +1003,7 @@ key = "${titleOAuthRef.key}"
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
-    const client = new SDKRpcClientV2({ homeDir, identity: TEST_IDENTITY });
+    const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
     try {
       await client.createSession({ id: 'ses_todos', workDir });
       expect(await client.getTodos({ sessionId: 'ses_todos' })).toEqual([]);
@@ -1034,7 +1034,7 @@ key = "${titleOAuthRef.key}"
   });
 });
 
-describe('SDKRpcClientV2 workspace trust', () => {
+describe('SDKRpcClient workspace trust', () => {
   it('reports an untrusted workspace with the project MCP servers it gates', async () => {
     const { harness } = await makeHarness();
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
@@ -1115,13 +1115,13 @@ describe('SDKRpcClientV2 workspace trust', () => {
   });
 });
 
-describe('SDKRpcClientV2 createSession profile binding', () => {
+describe('SDKRpcClient createSession profile binding', () => {
   it('applies create-time thinking and permission without a model source', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
-    const harness = createKimiHarnessV2({ homeDir, identity: TEST_IDENTITY });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
     try {
       const session = await harness.createSession({
         id: 'ses_thinking_permission_no_model',
@@ -1168,7 +1168,7 @@ max_context_size = 1000
       '---\nname: reviewer\ndescription: Reviews code.\nsubagents:\n  - explore\n---\n\nReview the requested change.\n',
       'utf-8',
     );
-    const client = new SDKRpcClientV2({ homeDir, identity: TEST_IDENTITY });
+    const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
     try {
       await client.createSession({
         id: 'ses_named_profile',
@@ -1191,7 +1191,7 @@ max_context_size = 1000
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
     tempDirs.push(workDir);
-    const harness = createKimiHarnessV2({ homeDir, identity: TEST_IDENTITY });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
     try {
       await expect(
         harness.createSession({
@@ -1279,14 +1279,14 @@ describe('foldAgentWireReplay', () => {
   });
 });
 
-describe('SDKRpcClientV2 engine telemetry', () => {
+describe('SDKRpcClient engine telemetry', () => {
   it('forwards engine-side events to the host-supplied telemetry client', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-tel-'));
     tempDirs.push(homeDir);
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-tel-work-'));
     tempDirs.push(workDir);
     const records: TelemetryRecord[] = [];
-    const harness = createKimiHarnessV2({
+    const harness = createKimiHarness({
       homeDir,
       identity: TEST_IDENTITY,
       telemetry: recordingTelemetry(records),
@@ -1308,7 +1308,7 @@ describe('SDKRpcClientV2 engine telemetry', () => {
     tempDirs.push(workDir);
     await writeFile(join(homeDir, 'config.toml'), 'telemetry = false\n', 'utf-8');
     const records: TelemetryRecord[] = [];
-    const harness = createKimiHarnessV2({
+    const harness = createKimiHarness({
       homeDir,
       identity: TEST_IDENTITY,
       telemetry: recordingTelemetry(records),

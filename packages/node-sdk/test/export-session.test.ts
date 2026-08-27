@@ -11,11 +11,10 @@ import {
   KimiError,
   type SessionSummary,
 } from '#/index';
-import { resolveGlobalLogPath } from '../../agent-core/src/logging/logger';
-import {
-  WIRE_PROTOCOL_VERSION,
-  exportSessionDirectory,
-} from '../../agent-core/src/session/export';
+import { exportSessionDirectory } from '@moonshot-ai/agent-core-v2/app/sessionExport/sessionExportService';
+import { WIRE_PROTOCOL_VERSION } from '@moonshot-ai/agent-core-v2/wire/migration/migration';
+
+import { resolveGlobalLogPath } from '#/logging';
 import { recordingTelemetry, type TelemetryRecord } from './telemetry';
 import { TEST_IDENTITY } from './test-identity';
 
@@ -229,7 +228,7 @@ describe('exportSessionDirectory', () => {
     const result = await exportSessionDirectory({
       request: { sessionId: sid, outputPath, includeGlobalLog: true, version: '1.0.0-test' },
       summary: makeSummary({ id: sid, sessionDir, workDir: tmp }),
-      homeDir,
+      globalLogPath: resolveGlobalLogPath(homeDir),
     });
 
     expect(result.manifest.globalLogPath).toBeUndefined();

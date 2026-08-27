@@ -12,7 +12,6 @@ import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'v
 
 import {
   createKimiHarness,
-  createKimiHarnessV2,
   type Event,
   type KimiError,
   type SkillActivatedEvent,
@@ -20,7 +19,7 @@ import {
 } from '#/index';
 import type { SDKRpcClientBase } from '#/rpc';
 
-import { normalizeWorkDir } from '../../agent-core/src/session/store';
+import { resolve as resolvePosix } from 'pathe';
 import {
   makeTempDir,
   removeTempDirs,
@@ -120,7 +119,7 @@ describe('Session skills', () => {
       '',
       'Check the requested file for security issues.',
     ]);
-    const harness = createKimiHarnessV2({ homeDir, identity: TEST_IDENTITY });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       const session = await harness.createSession({ id: 'ses_sdk_multi_skill', workDir });
@@ -267,7 +266,9 @@ describe('Session skills', () => {
       expect(state['isCustomTitle']).toBe(false);
       expect(state['lastPrompt']).toBe('/review src/app.ts');
 
-      const skillDir = normalizeWorkDir(await realpath(join(workDir, '.kimi-code', 'skills', 'review')));
+      const skillDir = resolvePosix(
+        await realpath(join(workDir, '.kimi-code', 'skills', 'review')),
+      );
       await expect(
         waitForAgentWireEvent(
           homeDir,

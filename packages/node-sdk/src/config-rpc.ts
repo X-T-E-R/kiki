@@ -1,12 +1,8 @@
-import {
-  createRPC,
-  ErrorCodes,
-  KimiError,
-  parseConfigString,
-  resolveConfigPath,
-  type RPCMethods,
-} from '@moonshot-ai/agent-core';
 import { z } from 'zod';
+
+import { parseConfigString, resolveConfigPath } from '#/config';
+import { ErrorCodes, KimiError } from '#/errors';
+import { createRPC, type RPCMethods } from '#/protocol';
 
 export type KimiConfigValidationPathSegment = string | number;
 

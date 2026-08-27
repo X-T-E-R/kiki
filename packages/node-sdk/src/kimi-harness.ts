@@ -1,12 +1,9 @@
+import type { ExperimentalFeatureState } from '@moonshot-ai/agent-core-v2';
 import type { Kaos } from '@moonshot-ai/kaos';
-import {
-  ErrorCodes,
-  KimiError,
-  ImageLimits,
-  withTelemetryContext,
-  type ExperimentalFeatureState,
-} from '@moonshot-ai/agent-core';
 
+import { ErrorCodes, KimiError } from '#/errors';
+import { ImageLimits } from '#/image-limits';
+import { withTelemetryContext } from '#/protocol/telemetry';
 import { capabilityRpc, Session } from '#/session';
 import type { KimiAuthFacade } from '#/auth';
 import type { SDKRpcClientBase } from '#/rpc';

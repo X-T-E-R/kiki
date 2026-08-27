@@ -14,7 +14,7 @@
  * those sources so a v1-written and a v2-written import reduce to the same
  * history.
  */
-import { ErrorCodes, KimiError } from '@moonshot-ai/agent-core';
+import { ErrorCodes, KimiError } from '#/errors';
 import type { ContextMessage } from '@moonshot-ai/agent-core-v2';
 import { estimateTokensForMessages } from '@moonshot-ai/agent-core-v2/kosong/contract/tokens';
 

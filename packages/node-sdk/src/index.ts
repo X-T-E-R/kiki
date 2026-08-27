@@ -4,11 +4,6 @@ export { Session } from '#/session';
 export { KimiAuthFacade } from '#/auth';
 export { createKimiHarness, SDKRpcClient, type SDKRpcClientOptions } from '#/sdk-rpc-client';
 export {
-  createKimiHarnessV2,
-  SDKRpcClientV2,
-  type SDKRpcClientV2Options,
-} from '#/sdk-rpc-client-v2';
-export {
   createKimiConfigRpc,
   KimiConfigRpcClient,
   type KimiConfigRpc,
@@ -55,29 +50,30 @@ export {
   fromKimiErrorPayload,
   isKimiError,
   toKimiErrorPayload,
-} from '@moonshot-ai/agent-core';
+} from '#/errors';
 
 // Diagnostic logging — public surface only.
-// RootLogger / getRootLogger / LoggingConfig stay inside agent-core.
+// RootLogger / getRootLogger / LoggingConfig stay internal to the SDK.
 export {
   flushDiagnosticLogs,
   flushDiagnosticLogsSync,
   log,
   redact,
   resolveGlobalLogPath,
-  resolveKimiHome,
-} from '@moonshot-ai/agent-core';
-export type { LogContext, LogLevel, LogPayload, Logger } from '@moonshot-ai/agent-core';
+} from '#/logging';
+export type { LogContext, LogLevel, LogPayload, Logger } from '#/logging';
+export { resolveKimiHome } from '@moonshot-ai/agent-core-v2';
 
 // Host-side config helpers — safe config reader + config path resolution, used
 // by hosts (e.g. the CLI's server telemetry bootstrap) that need to inspect
-// config without spinning up a full KimiCore.
-export { effectiveModelAlias, loadRuntimeConfigSafe, resolveConfigPath } from '@moonshot-ai/agent-core';
-export { limitAgentReplayByTurns } from '@moonshot-ai/agent-core';
-export { parseAgentFileText, resolveAgentPath } from '@moonshot-ai/agent-core';
+// config without spinning up a full engine.
+export { effectiveModelAlias, loadRuntimeConfigSafe, resolveConfigPath } from '#/config';
+export { limitAgentReplayByTurns } from '#/wire/replay-turns';
+export { parseAgentFileText } from '@moonshot-ai/agent-core-v2';
+export { resolveAgentPath } from '@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/paths';
 // The synthesized `[models]` alias a `[secondary_model]` recipe with patch
 // fields materializes at runtime — hosts filter it out of model pickers.
-export { SECONDARY_DERIVED_MODEL_ALIAS } from '@moonshot-ai/agent-core';
+export { SECONDARY_DERIVED_MODEL_ALIAS } from '#/config';
 // Reserved key of the v2 engine's subagent model pool: it always binds the
 // caller's own model, so hosts must not offer a user alias named `primary`
 // as the subagent default model.
@@ -85,7 +81,7 @@ export { PRIMARY_SUBAGENT_MODEL_CHOICE } from '@moonshot-ai/agent-core-v2/sessio
 
 // Process-wide HTTP proxy bootstrap — installed once at CLI startup so all
 // outbound fetch honors HTTP_PROXY / HTTPS_PROXY / NO_PROXY.
-export { installGlobalProxyDispatcher } from '@moonshot-ai/agent-core';
+export { installGlobalProxyDispatcher } from '@moonshot-ai/agent-core-v2/_base/utils/proxy';
 
 // Image compression — ingestion sites (e.g. the CLI's clipboard paste, the ACP
 // adapter) shrink oversized images while constructing the content part, before
@@ -106,15 +102,15 @@ export {
   sessionMediaOriginalsDir,
   IMAGE_BYTE_BUDGET,
   MAX_IMAGE_EDGE_PX,
-} from '@moonshot-ai/agent-core';
-export { ImageLimits } from '@moonshot-ai/agent-core';
+} from '@moonshot-ai/agent-core-v2';
+export type { ImageCompressionTelemetry } from '@moonshot-ai/agent-core-v2';
 export type {
   CompressImageOptions,
   CompressImageResult,
   CompressBase64Result,
   ImageCompressionCaptionInput,
-  ImageCompressionTelemetry,
-} from '@moonshot-ai/agent-core';
+} from '@moonshot-ai/agent-core-v2/agent/media/image-compress';
+export { ImageLimits } from '#/image-limits';
 
 // Experimental feature flags — types only. Resolved values come from
 // `KimiHarness.getExperimentalFeatures()` over RPC, not from a re-exported runtime value.
@@ -122,11 +118,10 @@ export type {
   ExperimentalFeatureState,
   ExperimentalFlagMap,
   ExperimentalFlagSource,
-  FlagDefinition,
   FlagDefinitionInput,
   FlagId,
   FlagSurface,
-} from '@moonshot-ai/agent-core';
+} from '@moonshot-ai/agent-core-v2';
 
 // Daemon file references (agent-core-v2) — pure helpers for the internal
 // `kimi-file://` media URLs and the model-facing `<image|video|file>` path

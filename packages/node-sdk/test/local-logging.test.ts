@@ -6,7 +6,7 @@ import * as zlib from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createKimiHarness, log } from '#/index';
-import { __resetRootLoggerForTest, getRootLogger } from '../../agent-core/src/logging/logger';
+import { __resetRootLoggerForTest, getRootLogger } from '#/logging';
 import { TEST_IDENTITY } from './test-identity';
 
 const tempDirs: string[] = [];

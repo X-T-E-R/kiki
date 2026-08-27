@@ -17,7 +17,7 @@ import {
 } from '#/index';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { McpOAuthService } from '../../agent-core/src/mcp/oauth/service';
+import { createFileMcpOAuthService } from './mcp-oauth-store';
 
 import { startMcpAuthStatusServer } from './mcp-auth-status-server';
 import { TEST_IDENTITY } from './test-identity';
@@ -75,7 +75,7 @@ describe('global MCP configuration (persisted user entries)', () => {
       JSON.stringify({ mcpServers: { project: { command: 'project-command' } } }),
       'utf-8',
     );
-    const harness = createKimiHarness({ homeDir });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await expect(harness.listMcpServers()).resolves.toEqual([
@@ -119,7 +119,7 @@ describe('global MCP configuration (persisted user entries)', () => {
     await writeMcpConfig(homeDir, {
       mcpServers: { docs: { command: 'docs-command' } },
     });
-    const harness = createKimiHarness({ homeDir });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await expect(harness.getMcpServer('docs')).resolves.toEqual({
@@ -144,7 +144,7 @@ describe('global MCP configuration (persisted user entries)', () => {
       custom: { keep: true },
       mcpServers: { existing: { command: 'existing-command' } },
     });
-    const harness = createKimiHarness({ homeDir });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await harness.addMcpServer({
@@ -170,7 +170,7 @@ describe('global MCP configuration (persisted user entries)', () => {
     await writeMcpConfig(homeDir, {
       mcpServers: { docs: { command: 'old-command', args: ['old'] } },
     });
-    const harness = createKimiHarness({ homeDir });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await harness.updateMcpServer({
@@ -204,7 +204,7 @@ describe('global MCP configuration (persisted user entries)', () => {
         keep: { command: 'keep-command' },
       },
     });
-    const harness = createKimiHarness({ homeDir });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await harness.removeMcpServer('remove');
@@ -228,7 +228,7 @@ describe('global MCP configuration (persisted user entries)', () => {
     const homeDir = await makeTempDir();
     const malformed = '{ not valid json';
     await writeFile(join(homeDir, 'mcp.json'), malformed, 'utf-8');
-    const harness = createKimiHarness({ homeDir });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await expect(
@@ -248,7 +248,7 @@ describe('global MCP configuration (persisted user entries)', () => {
 describe('standalone MCP check (connection result)', () => {
   it('reports discovered tools when a stdio server connects', async () => {
     const homeDir = await makeTempDir();
-    const harness = createKimiHarness({ homeDir });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await harness.addMcpServer({
@@ -269,7 +269,7 @@ describe('standalone MCP check (connection result)', () => {
 
   it('probes an inline config without persisting it', async () => {
     const homeDir = await makeTempDir();
-    const harness = createKimiHarness({ homeDir });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await expect(
@@ -294,7 +294,7 @@ describe('standalone MCP check (connection result)', () => {
 
   it('returns a failed result when the stdio executable is missing', async () => {
     const homeDir = await makeTempDir();
-    const harness = createKimiHarness({ homeDir });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await harness.addMcpServer({
@@ -395,7 +395,7 @@ describe('MCP OAuth facade (host-controlled browser flow)', () => {
       }),
       'utf-8',
     );
-    const harness = createKimiHarness({ homeDir });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await harness.installPlugin(pluginDir);
@@ -484,7 +484,7 @@ describe('MCP OAuth facade (host-controlled browser flow)', () => {
   it('reports authorization from a real MCP connection instead of token presence alone', async () => {
     const homeDir = await makeTempDir();
     const statusServer = await startMcpAuthStatusServer();
-    const externalOAuth = new McpOAuthService({ kimiHomeDir: homeDir });
+    const externalOAuth = createFileMcpOAuthService(homeDir);
     await externalOAuth
       .getProvider('oauth-authorized', statusServer.oauthUrl)
       .saveTokens({ access_token: statusServer.authToken, token_type: 'Bearer' });
@@ -527,7 +527,7 @@ describe('MCP OAuth facade (host-controlled browser flow)', () => {
         },
       },
     });
-    const harness = createKimiHarness({ homeDir });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await expect(
@@ -558,7 +558,7 @@ describe('MCP OAuth facade (host-controlled browser flow)', () => {
     const homeDir = await makeTempDir();
     const statusServer = await startMcpAuthStatusServer();
     const authorizedUrl = 'https://authorized.example.test/mcp';
-    const externalOAuth = new McpOAuthService({ kimiHomeDir: homeDir });
+    const externalOAuth = createFileMcpOAuthService(homeDir);
     await externalOAuth
       .getProvider('oauth-authorized', authorizedUrl)
       .saveTokens({ access_token: 'test-access-token', token_type: 'Bearer' });
@@ -592,7 +592,7 @@ describe('MCP OAuth facade (host-controlled browser flow)', () => {
         statusServer.oauthUrl,
       ),
     });
-    const harness = createKimiHarness({ homeDir });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await expect(harness.listMcpServerAuthStatuses()).resolves.toEqual([
@@ -615,7 +615,7 @@ describe('MCP OAuth facade (host-controlled browser flow)', () => {
   it('settles a revoked grant as oauth-expired under online verification', async () => {
     const homeDir = await makeTempDir();
     const statusServer = await startMcpAuthStatusServer();
-    const externalOAuth = new McpOAuthService({ kimiHomeDir: homeDir });
+    const externalOAuth = createFileMcpOAuthService(homeDir);
     // Stored but server-rejected: offline this reads as authorized; the
     // verify probe is what catches the dead grant.
     await externalOAuth
@@ -626,7 +626,7 @@ describe('MCP OAuth facade (host-controlled browser flow)', () => {
         'oauth-stale': { transport: 'http', url: statusServer.oauthUrl, auth: 'oauth' },
       },
     });
-    const harness = createKimiHarness({ homeDir });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await expect(harness.listMcpServerAuthStatuses()).resolves.toEqual([
@@ -645,7 +645,7 @@ describe('MCP OAuth facade (host-controlled browser flow)', () => {
     const homeDir = await makeTempDir();
     const expiredUrl = 'https://expired.example.test/mcp';
     const refreshableUrl = 'https://refreshable.example.test/mcp';
-    const externalOAuth = new McpOAuthService({ kimiHomeDir: homeDir });
+    const externalOAuth = createFileMcpOAuthService(homeDir);
     // `expires_in: 0` with the save-time `obtained_at` stamp is already past
     // its absolute expiry by the time the status is computed.
     await externalOAuth.getProvider('expired', expiredUrl).saveTokens({
@@ -665,7 +665,7 @@ describe('MCP OAuth facade (host-controlled browser flow)', () => {
         refreshable: { transport: 'http', url: refreshableUrl, auth: 'oauth' },
       },
     });
-    const harness = createKimiHarness({ homeDir });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       // Offline: the refresh-token-less dead grant needs a re-login, while an
@@ -681,7 +681,7 @@ describe('MCP OAuth facade (host-controlled browser flow)', () => {
 
   it('resets authorization for a configured remote server', async () => {
     const homeDir = await makeTempDir();
-    const harness = createKimiHarness({ homeDir });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await harness.addMcpServer({
@@ -699,7 +699,7 @@ describe('MCP OAuth facade (host-controlled browser flow)', () => {
 
   it('rejects authorization when the configured server uses stdio', async () => {
     const homeDir = await makeTempDir();
-    const harness = createKimiHarness({ homeDir });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
       await harness.addMcpServer({

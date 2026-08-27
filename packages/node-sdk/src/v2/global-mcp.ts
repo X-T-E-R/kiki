@@ -13,12 +13,11 @@
  * `IMcpManagementService`.
  */
 import {
-  ErrorCodes,
-  KimiError,
   McpServerConfigSchema,
   type GlobalMcpServerConfig,
   type McpServerConfig,
-} from '@moonshot-ai/agent-core';
+} from '#/config';
+import { ErrorCodes, KimiError } from '#/errors';
 
 /** Byte-identical port of v1's `mcpConfigWithoutName`. */
 export function mcpConfigWithoutName(server: GlobalMcpServerConfig): McpServerConfig {
