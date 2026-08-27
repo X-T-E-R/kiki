@@ -160,7 +160,7 @@ describe('server-v2 OpenAPI', () => {
       (variants as unknown[]).some((variant) => {
         const properties = asRecord(asRecord(variant)['properties']);
         const values = asRecord(properties['code'])['enum'];
-        return Array.isArray(values) && values.includes(40929);
+        return Array.isArray(values) && values.includes(40940);
       }),
     ).toBe(true);
   });

@@ -384,6 +384,7 @@ class FixtureServer {
     this.fileCounter = 0;
     this.workspaces = []; // mutable registered workspaces (PATCH/DELETE editable)
     this.agentProfiles = []; // expanded named-agent rows; GET /agents merges them
+    this.mcpManaged = []; // mutable /api/v2/mcp/servers catalog
     this.oauthOverride = null; // mutable oauth flow state (POST/DELETE /oauth/login)
     this.wsInbound = [];
     this.wsOutbound = [];
@@ -409,6 +410,7 @@ class FixtureServer {
     this.agentProfiles = structuredClone(data.agentProfiles ?? [
       { name: 'agent', source: 'builtin', description: 'General-purpose built-in agent.', main: true, routes: [] },
     ]);
+    this.mcpManaged = structuredClone(data.mcpManagedServers ?? []);
     for (const session of data.sessions ?? []) {
       const bound = bind(session, session.id);
       this.sessions.set(session.id, new FixtureSession(bound, bind(data.snapshots?.[session.id] ?? {}, session.id)));
@@ -888,16 +890,58 @@ class FixtureServer {
       return this.envelope(res, meta);
     }
 
-    const path = url.pathname.replace(/^\/api\/v1/, '');
+    // v1 and v2 share path shapes (`/mcp/servers` means different things in
+    // each), so the version has to survive the prefix strip.
+    const apiVersion = url.pathname.startsWith('/api/v2/') ? 'v2' : 'v1';
+    const path = url.pathname.replace(/^\/api\/v[12]/, '');
     const body = (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE')
       ? await this.readBody(req)
       : undefined;
     try {
-      this.route(res, path, url.searchParams, body, req.method);
+      if (apiVersion === 'v2') this.routeV2(res, path, url.searchParams, body, req.method);
+      else this.route(res, path, url.searchParams, body, req.method);
     } catch (error) {
       console.error('[fixture] route error', path, error);
       this.envelope(res, null, 50001, String(error));
     }
+  }
+
+  /** `/api/v2/mcp/*` — the unified MCP management plane the settings page writes through. */
+  routeV2(res, path, query, body, method) {
+    if (path === '/mcp/servers' && method === 'GET') {
+      return this.envelope(res, this.managedMcpServers());
+    }
+    if (path === '/mcp/servers' && method === 'POST' && body !== undefined) {
+      const { name, ...config } = body;
+      if (this.mcpManaged.some((entry) => entry.name === name)) {
+        return this.envelope(res, null, 40001, `MCP server "${name}" already exists`);
+      }
+      this.mcpManaged.push({ name, config, source: 'global', origin: '/home/fixture/mcp.json', mutable: true });
+      return this.envelope(res, this.managedMcpServers());
+    }
+    const namedMatch = /^\/mcp\/servers\/([^/:]+)$/.exec(path);
+    if (namedMatch !== null && (method === 'PUT' || method === 'DELETE')) {
+      const name = decodeURIComponent(namedMatch[1]);
+      const index = this.mcpManaged.findIndex((entry) => entry.name === name);
+      if (index === -1) {
+        return this.envelope(res, null, 40408, `MCP server "${name}" was not found`);
+      }
+      if (!this.mcpManaged[index].mutable) {
+        return this.envelope(res, null, 40001, `MCP server "${name}" is read-only`);
+      }
+      if (method === 'DELETE') this.mcpManaged.splice(index, 1);
+      else this.mcpManaged[index] = { ...this.mcpManaged[index], config: body ?? {} };
+      return this.envelope(res, this.managedMcpServers());
+    }
+    if (path === '/mcp/servers::test' && method === 'POST') {
+      const name = body?.name ?? body?.server?.name ?? 'server';
+      return this.envelope(res, { success: true, output: `fixture probe reached ${name}` });
+    }
+    return this.envelope(res, null, 40404, `no fixture v2 route for ${method} ${path}`);
+  }
+
+  managedMcpServers() {
+    return this.mcpManaged.map((entry) => ({ ...entry, config: { ...entry.config } }));
   }
 
   route(res, path, query, body, method) {

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { encodeWorkDirKey } from '#/_base/utils/workdir-slug';
+import { canonicalWorkspaceRoot } from '#/_base/utils/paths';
 import { createServices } from '#/_base/di/test';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import {
@@ -76,7 +77,11 @@ describe('McpRegistryService', () => {
         reg.defineInstance(IHostFileSystem, new HostFileSystem());
         reg.definePartialInstance(IAtomicDocumentStore, {
           get: async <T>(_scope: string, key: string) => {
-            if (!trusted || (trustedKey !== undefined && key !== encodeWorkDirKey(trustedKey))) {
+            const wantedKey =
+              trustedKey === undefined
+                ? undefined
+                : encodeWorkDirKey(canonicalWorkspaceRoot(trustedKey));
+            if (!trusted || (wantedKey !== undefined && key !== wantedKey)) {
               return undefined;
             }
             return {} as T;

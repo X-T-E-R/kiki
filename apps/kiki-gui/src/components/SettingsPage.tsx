@@ -54,9 +54,10 @@ import {
 import type {
   KikiConfigResponse,
   ListNamedAgentProfilesResponse,
-  McpJsonServerConfig,
-  McpJsonServerEntry,
-  McpJsonWriteScope,
+  McpManagedServer,
+  McpManagedServerConfig,
+  McpServerConfig,
+  McpTransport,
   NamedAgentProfile,
 } from '../lib/client';
 import {
@@ -1433,10 +1434,13 @@ function CapabilitiesSection() {
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
   const mcpQuery = useQuery({ queryKey: ['mcp-servers'], queryFn: () => client.listMcpServers(), staleTime: 60_000 });
+  // The v2 management plane addresses project layers by working directory;
+  // the user-level entries resolve with or without one.
+  const mcpCwd =
+    workspacesQuery.data?.items.find((workspace) => workspace.id === workspaceId)?.root ?? '';
   const mcpConfigQuery = useQuery({
-    queryKey: ['mcp-config-servers', workspaceId],
-    queryFn: () => client.listMcpJsonServers(workspaceId),
-    enabled: workspaceId !== '',
+    queryKey: ['mcp-managed-servers', mcpCwd],
+    queryFn: () => client.listManagedMcpServers(mcpCwd === '' ? undefined : mcpCwd),
     staleTime: 60_000,
   });
   const skillsQuery = useQuery({
@@ -1623,12 +1627,12 @@ function CapabilitiesSection() {
             {mcpQuery.isError ? <InlineError error={mcpQuery.error} /> : null}
           </div>
           <McpConfigManager
-            workspaceId={workspaceId}
-            entries={mcpConfigQuery.data?.entries ?? []}
+            cwd={mcpCwd}
+            entries={mcpConfigQuery.data ?? []}
             loading={mcpConfigQuery.isLoading}
             error={mcpConfigQuery.error}
-            onEcho={(echo) => {
-              queryClient.setQueryData(['mcp-config-servers', workspaceId], echo);
+            onEcho={(servers) => {
+              queryClient.setQueryData(['mcp-managed-servers', mcpCwd], servers);
             }}
           />
         </div>
@@ -2572,36 +2576,48 @@ function McpRow({ server }: { server: McpServer }) {
 }
 
 interface McpEditorDraft {
-  readonly original?: McpJsonServerEntry;
+  readonly original?: McpManagedServer;
   readonly name: string;
-  readonly scope: McpJsonWriteScope;
-  readonly transport: 'stdio' | 'http' | 'sse';
+  readonly transport: McpTransport;
   readonly command: string;
   readonly args: string;
   readonly env: string;
   readonly url: string;
 }
 
-function mcpDraft(entry?: McpJsonServerEntry): McpEditorDraft {
+/**
+ * Read-only entries reach us redacted (`envKeys` / `headerKeys` instead of the
+ * values), so secrets can only be carried forward for the writable entries the
+ * editor actually opens.
+ */
+function mcpSecretMap(
+  config: McpManagedServerConfig | undefined,
+  field: 'env' | 'headers',
+): Readonly<Record<string, string>> | undefined {
+  if (config === undefined || !(field in config)) return undefined;
+  const value = (config as unknown as Record<string, unknown>)[field];
+  return value as Readonly<Record<string, string>> | undefined;
+}
+
+function mcpDraft(entry?: McpManagedServer): McpEditorDraft {
   if (entry === undefined) {
-    return { name: '', scope: 'project', transport: 'stdio', command: '', args: '', env: '', url: '' };
+    return { name: '', transport: 'stdio', command: '', args: '', env: '', url: '' };
   }
   const config = entry.config;
   return {
     original: entry,
     name: entry.name,
-    scope: entry.scope,
     transport: config.transport,
     command: config.transport === 'stdio' ? config.command : '',
     args: config.transport === 'stdio' ? (config.args ?? []).join('\n') : '',
     env: config.transport === 'stdio'
-      ? Object.entries(config.env ?? {}).map(([key, value]) => `${key}=${value}`).join('\n')
+      ? Object.entries(mcpSecretMap(config, 'env') ?? {}).map(([key, value]) => `${key}=${value}`).join('\n')
       : '',
     url: config.transport === 'stdio' ? '' : config.url,
   };
 }
 
-function mcpCommonConfig(config: McpJsonServerConfig | undefined) {
+function mcpCommonConfig(config: McpManagedServerConfig | undefined) {
   return {
     enabled: config?.enabled,
     startupTimeoutMs: config?.startupTimeoutMs,
@@ -2624,16 +2640,20 @@ function parseMcpEnv(text: string): Record<string, string> | undefined {
   return entries.length === 0 ? undefined : Object.fromEntries(entries);
 }
 
-export function mcpConfigFromDraft(draft: McpEditorDraft): McpJsonServerConfig {
+export function mcpConfigFromDraft(draft: McpEditorDraft): McpServerConfig {
   const original = draft.original?.config;
   if (draft.transport === 'stdio') {
     const command = draft.command.trim();
     if (command === '') throw new Error('st.mcp.commandRequired');
-    const sameTransport = original?.transport === 'stdio' ? original : undefined;
+    // Fields the editor does not surface are carried forward from the entry
+    // being edited, so a save never silently drops them.
+    const kept = original?.transport === 'stdio'
+      ? { cwd: original.cwd, executor: original.executor, runtime_id: original.runtime_id }
+      : {};
     const args = draft.args.split(/\r?\n/u).map((value) => value.trim()).filter(Boolean);
     return {
       ...mcpCommonConfig(original),
-      ...sameTransport,
+      ...kept,
       transport: 'stdio',
       command,
       args: args.length === 0 ? undefined : args,
@@ -2646,38 +2666,58 @@ export function mcpConfigFromDraft(draft: McpEditorDraft): McpJsonServerConfig {
   } catch {
     throw new Error('st.mcp.urlInvalid');
   }
-  const sameTransport = original?.transport === draft.transport ? original : undefined;
+  const kept = original !== undefined && original.transport === draft.transport
+    ? {
+        auth: original.auth,
+        bearerTokenEnvVar: original.bearerTokenEnvVar,
+        headers: mcpSecretMap(original, 'headers'),
+      }
+    : {};
   return {
     ...mcpCommonConfig(original),
-    ...sameTransport,
+    ...kept,
     transport: draft.transport,
     url,
   };
 }
 
 function McpConfigManager({
-  workspaceId,
+  cwd,
   entries,
   loading,
   error,
   onEcho,
 }: {
-  workspaceId: string;
-  entries: readonly McpJsonServerEntry[];
+  cwd: string;
+  entries: readonly McpManagedServer[];
   loading: boolean;
   error: unknown;
-  onEcho: (echo: { readonly entries: readonly McpJsonServerEntry[] }) => void;
+  onEcho: (servers: readonly McpManagedServer[]) => void;
 }) {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<McpEditorDraft | null>(null);
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
-  const [pendingDelete, setPendingDelete] = useState<McpJsonServerEntry | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<McpManagedServer | null>(null);
+
+  const scope = cwd === '' ? undefined : cwd;
+
+  const draftConfig = (): McpServerConfig | null => {
+    if (draft === null) return null;
+    try {
+      return mcpConfigFromDraft(draft);
+    } catch (error) {
+      const key = error instanceof Error ? error.message as I18nKey : 'st.mcp.urlInvalid';
+      setFeedback({ tone: 'error', text: t(key) });
+      return null;
+    }
+  };
 
   const save = async () => {
-    if (draft === null || workspaceId === '') return;
+    if (draft === null) return;
     const name = draft.name.trim();
     if (name === '') {
       setFeedback({ tone: 'error', text: t('st.mcp.nameRequired') });
@@ -2686,23 +2726,17 @@ function McpConfigManager({
     setSaving(true);
     setFeedback(null);
     try {
-      let config: McpJsonServerConfig;
-      try {
-        config = mcpConfigFromDraft(draft);
-      } catch (error) {
-        const key = error instanceof Error ? error.message as I18nKey : 'st.mcp.urlInvalid';
-        setFeedback({ tone: 'error', text: t(key) });
-        return;
-      }
-      let echoed = await client.upsertMcpJsonServer(name, {
-        workspace_id: workspaceId,
-        scope: draft.scope,
-        config,
-      });
-      onEcho(echoed);
+      const config = draftConfig();
+      if (config === null) return;
       const original = draft.original;
-      if (original !== undefined && (original.name !== name || original.scope !== draft.scope)) {
-        echoed = await client.removeMcpJsonServer(original.name, workspaceId, original.scope);
+      // A rename cannot be expressed as one write: add the new identity first,
+      // then drop the old one so a mid-flight failure never loses the entry.
+      let echoed = original === undefined || original.name !== name
+        ? await client.addManagedMcpServer({ ...config, name }, scope)
+        : await client.updateManagedMcpServer(name, config, scope);
+      onEcho(echoed);
+      if (original !== undefined && original.name !== name) {
+        echoed = await client.removeManagedMcpServer(original.name, scope);
         onEcho(echoed);
       }
       setDraft(null);
@@ -2715,16 +2749,42 @@ function McpConfigManager({
     }
   };
 
+  const test = async () => {
+    if (draft === null) return;
+    const name = draft.name.trim();
+    if (name === '') {
+      setFeedback({ tone: 'error', text: t('st.mcp.nameRequired') });
+      return;
+    }
+    setTesting(true);
+    setFeedback(null);
+    try {
+      const config = draftConfig();
+      if (config === null) return;
+      // Probes the draft as typed — nothing has to be saved first.
+      const result = await client.testManagedMcpServer({ server: { ...config, name }, cwd: scope });
+      setFeedback(
+        result.success
+          ? { tone: 'success', text: t('st.mcp.testOk', { output: result.output }) }
+          : { tone: 'error', text: t('st.mcp.testFailed', { output: result.output }) },
+      );
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setTesting(false);
+    }
+  };
+
   const remove = async () => {
     const entry = pendingDelete;
-    if (entry === null || workspaceId === '') return;
+    if (entry === null) return;
     setSaving(true);
     setFeedback(null);
     setPendingDelete(null);
     try {
-      const echoed = await client.removeMcpJsonServer(entry.name, workspaceId, entry.scope);
+      const echoed = await client.removeManagedMcpServer(entry.name, scope);
       onEcho(echoed);
-      if (draft?.original?.name === entry.name && draft.original.scope === entry.scope) setDraft(null);
+      if (draft?.original?.name === entry.name) setDraft(null);
       setFeedback({ tone: 'success', text: t('st.mcp.deleted') });
       await queryClient.invalidateQueries({ queryKey: ['mcp-servers'] });
     } catch (error) {
@@ -2741,18 +2801,39 @@ function McpConfigManager({
           <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint">{t('st.mcp.configTitle')}</p>
           <Hint>{t('st.mcp.configHint')}</Hint>
         </div>
-        <button type="button" className={SECONDARY_BUTTON} disabled={workspaceId === '' || saving} onClick={() => { setDraft(mcpDraft()); setFeedback(null); }}>{t('st.mcp.add')}</button>
+        <button type="button" className={SECONDARY_BUTTON} disabled={saving} onClick={() => { setDraft(mcpDraft()); setFeedback(null); }}>{t('st.mcp.add')}</button>
       </div>
       <div className="space-y-2">
         {entries.map((entry) => (
-          <div key={`${entry.scope}:${entry.name}`} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-hairline bg-paper px-3 py-2">
+          <div key={`${entry.source}:${entry.name}`} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-hairline bg-paper px-3 py-2">
             <div className="min-w-0">
-              <p className="truncate text-[13px] font-medium text-ink">{entry.name}</p>
-              <p className="truncate font-mono text-[10.5px] text-ink-faint">{entry.scope} · {entry.config.transport}</p>
+              <p className="truncate text-[13px] font-medium text-ink">
+                {entry.name}
+                {entry.mutable ? null : (
+                  <span className="ml-2 rounded border border-hairline px-1.5 py-0.5 text-[10px] font-normal uppercase tracking-wide text-ink-faint">
+                    {t('st.mcp.readOnly')}
+                  </span>
+                )}
+              </p>
+              <p className="truncate font-mono text-[10.5px] text-ink-faint" title={entry.origin}>
+                {entry.plugin?.name ?? entry.origin} · {entry.config.transport}
+              </p>
             </div>
             <div className="flex gap-2">
-              <button type="button" className={SECONDARY_BUTTON} disabled={saving} onClick={() => { setDraft(mcpDraft(entry)); setFeedback(null); }}>{t('st.mcp.edit')}</button>
-              <button type="button" className={SECONDARY_BUTTON} disabled={saving} onClick={() => { setPendingDelete(entry); }}>{t('st.mcp.delete')}</button>
+              <button
+                type="button"
+                className={SECONDARY_BUTTON}
+                disabled={saving || !entry.mutable}
+                title={entry.mutable ? undefined : t('st.mcp.readOnlyHint')}
+                onClick={() => { setDraft(mcpDraft(entry)); setFeedback(null); }}
+              >{t('st.mcp.edit')}</button>
+              <button
+                type="button"
+                className={SECONDARY_BUTTON}
+                disabled={saving || !entry.mutable}
+                title={entry.mutable ? undefined : t('st.mcp.readOnlyHint')}
+                onClick={() => { setPendingDelete(entry); }}
+              >{t('st.mcp.delete')}</button>
             </div>
           </div>
         ))}
@@ -2762,21 +2843,14 @@ function McpConfigManager({
       </div>
       {draft !== null ? (
         <fieldset className="space-y-3 rounded-xl border border-hairline bg-paper p-3" disabled={saving}>
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             <label className="space-y-1 text-[11px] font-medium text-ink-soft">
               {t('st.mcp.name')}
               <input className={INPUT} value={draft.name} onChange={(event) => { setDraft({ ...draft, name: event.target.value }); }} />
             </label>
             <label className="space-y-1 text-[11px] font-medium text-ink-soft">
-              {t('st.mcp.scope')}
-              <select className={INPUT} value={draft.scope} onChange={(event) => { setDraft({ ...draft, scope: event.target.value as McpJsonWriteScope }); }}>
-                <option value="user">{t('st.mcp.scopeUser')}</option>
-                <option value="project">{t('st.mcp.scopeProject')}</option>
-              </select>
-            </label>
-            <label className="space-y-1 text-[11px] font-medium text-ink-soft">
               {t('st.mcp.transport')}
-              <select className={INPUT} value={draft.transport} onChange={(event) => { setDraft({ ...draft, transport: event.target.value as McpEditorDraft['transport'] }); }}>
+              <select className={INPUT} value={draft.transport} onChange={(event) => { setDraft({ ...draft, transport: event.target.value as McpTransport }); }}>
                 <option value="stdio">stdio</option>
                 <option value="http">http</option>
                 <option value="sse">sse</option>
@@ -2808,6 +2882,7 @@ function McpConfigManager({
           )}
           <div className="flex gap-2">
             <button type="button" className={PRIMARY_BUTTON} onClick={() => void save()}>{saving ? t('common.saving') : t('common.save')}</button>
+            <button type="button" className={SECONDARY_BUTTON} disabled={testing} onClick={() => void test()}>{testing ? t('st.mcp.testing') : t('st.mcp.test')}</button>
             <button type="button" className={SECONDARY_BUTTON} onClick={() => { setDraft(null); }}>{t('common.cancel')}</button>
           </div>
         </fieldset>

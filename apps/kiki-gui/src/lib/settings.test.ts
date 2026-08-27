@@ -920,7 +920,6 @@ describe('MCP settings draft projection', () => {
   it('builds a strict stdio config from line-oriented args and env fields', () => {
     expect(mcpConfigFromDraft({
       name: 'local',
-      scope: 'project',
       transport: 'stdio',
       command: ' node ',
       args: '-y\nserver.js',
@@ -942,7 +941,6 @@ describe('MCP settings draft projection', () => {
   it('rejects malformed environment lines before the client write', () => {
     expect(() => mcpConfigFromDraft({
       name: 'local',
-      scope: 'user',
       transport: 'stdio',
       command: 'node',
       args: '',

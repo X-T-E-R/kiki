@@ -142,14 +142,16 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
           'Pass either an MCP server name or an inline server config, not both',
         );
       }
-      const parsed = McpServerConfigSchema.safeParse(server);
+      // The schema is strict and `name` is not a persisted config field.
+      const { name: serverName, ...serverConfig } = server;
+      const parsed = McpServerConfigSchema.safeParse(serverConfig);
       if (!parsed.success) {
         throw new Error2(
           ErrorCodes.CONFIG_INVALID,
-          `Invalid MCP server "${server.name}": ${parsed.error.message}`,
+          `Invalid MCP server "${serverName}": ${parsed.error.message}`,
         );
       }
-      return { name: server.name, ...parsed.data };
+      return { name: serverName, ...parsed.data };
     }
     if (name === undefined) {
       throw new Error2(

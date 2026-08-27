@@ -148,6 +148,25 @@ export default {
       tool_count: 1,
     },
   ],
+  // /api/v2/mcp/servers — one writable user-level entry and one read-only
+  // plugin entry, so the manager's editable/read-only split is exercised.
+  mcpManagedServers: [
+    {
+      name: 'fixture-mcp',
+      config: { transport: 'stdio', command: 'node', args: ['fixture-mcp.js'] },
+      source: 'global',
+      origin: '/home/fixture/mcp.json',
+      mutable: true,
+    },
+    {
+      name: 'fixture-plugin-mcp',
+      config: { transport: 'http', url: 'https://mcp.fixture.example', headerKeys: ['Authorization'] },
+      source: 'plugin',
+      origin: 'fixture-plugin',
+      mutable: false,
+      plugin: { id: 'fixture-plugin', name: 'Fixture Plugin' },
+    },
+  ],
   workspaceSkills: {
     [WSID]: [
       {

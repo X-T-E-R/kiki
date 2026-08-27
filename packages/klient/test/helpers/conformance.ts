@@ -543,7 +543,7 @@ export function defineKlientConformance(
       });
     });
 
-    it('global mcp OAuth failures map to the 40929 wire code on every transport', async () => {
+    it('global mcp OAuth failures map to the 40940 wire code on every transport', async () => {
       const mcp = target.klient.global.mcp;
       await mcp.add({
         server: {
@@ -556,7 +556,7 @@ export function defineKlientConformance(
       try {
         await expect(
           mcp.beginAuth({ locator: { source: 'global', name: 'conf-oauth-failure' } }),
-        ).rejects.toMatchObject({ name: 'RPCError', code: 40929 });
+        ).rejects.toMatchObject({ name: 'RPCError', code: 40940 });
       } finally {
         await mcp.remove({ name: 'conf-oauth-failure' });
       }

@@ -324,7 +324,7 @@ describe('server /api/v2/mcp', () => {
       expect(res.body.data).toBeNull();
     });
 
-    it('maps the engine mcp.oauth_failed rejection to 40929', async () => {
+    it('maps the engine mcp.oauth_failed rejection to 40940', async () => {
       const stub = makeMcpStub();
       stub.service.completeServerAuth = async () => {
         throw new Error2(
@@ -336,7 +336,7 @@ describe('server /api/v2/mcp', () => {
 
       const res = await call('POST', '/api/v2/mcp/auth:complete', { flowId: 'flow-1' });
       expect(res.status).toBe(200);
-      expect(res.body.code).toBe(40929);
+      expect(res.body.code).toBe(40940);
       expect(res.body.data).toBeNull();
     });
 

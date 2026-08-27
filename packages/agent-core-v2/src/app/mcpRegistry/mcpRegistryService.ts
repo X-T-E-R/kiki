@@ -1,6 +1,6 @@
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { canonicalWorkspaceRoot } from '#/_base/utils/paths';
+import { resolvePath } from '#/_base/utils/paths';
 
 import { ErrorCodes, Error2 } from '#/errors';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
@@ -44,7 +44,10 @@ export class McpRegistryService implements IMcpRegistryService {
         });
       }
     } else {
-      const cwd = canonicalWorkspaceRoot(query.cwd);
+      // Absolute but case-preserving: the canonical form is a lookup key, and
+      // folding it here would leak a lowercased drive path into entry origins.
+      // Trust lookups canonicalize on their own.
+      const cwd = resolvePath(process.cwd(), query.cwd);
       if (!(await readWorkspaceTrust(this.docs, cwd))) {
         const userEntries = await this.store.list();
         for (const server of userEntries) {
