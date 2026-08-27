@@ -73,7 +73,6 @@ interface TranscriptContract {
   meta: Record<string, unknown>;
   agents: { agentId: string; type?: string }[];
   pending_interactions: string[];
-  prompts?: unknown[];
   cursor?: { epoch?: string; seq: number };
   coverage: { kind: 'full' | 'tail'; hasMoreOlder: boolean };
 }

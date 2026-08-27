@@ -1,4 +1,5 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+import type { Event } from '#/_base/event';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import type { Page } from '#/persistence/interface/queryStore';
 
@@ -58,6 +59,7 @@ export interface SessionCountQuery {
 export type SessionIndexState = 'uninitialized' | 'preparing' | 'ready' | 'degraded';
 
 export interface SessionIndexStatus {
+  readonly source: 'read-model' | 'authoritative';
   readonly state: SessionIndexState;
   /** Published read-model generation; absent until the first projection. */
   readonly generation?: number;
@@ -77,6 +79,7 @@ export interface ISessionIndex {
    * Single-flight; a no-op when the read-model flag is off.
    */
   prepare(options?: { deadlineMs?: number }): Promise<SessionIndexStatus>;
+  readonly onDidChangeStatus: Event<SessionIndexStatus>;
   status(): SessionIndexStatus;
   get(id: string): Promise<SessionSummary | undefined>;
   /** Recency-ordered keyset page over the persisted session set. */

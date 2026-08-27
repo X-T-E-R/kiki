@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   Error2,
   ErrorCodes,
+  SessionIndexBuildingError,
   IBootstrapService,
   IOAuthService,
   type Event2,
@@ -527,6 +528,21 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(typeof body.data.has_more).toBe('boolean');
   });
 
+  it('maps session index building to the retryable list business code', async () => {
+    const index = (server as RunningServer).core.accessor.get(ISessionIndex);
+    const listRecent = index.listRecent.bind(index);
+    vi.spyOn(index, 'listRecent').mockImplementation(async (options) => {
+      if (options.limit === 101) throw new SessionIndexBuildingError();
+      return listRecent(options);
+    });
+
+    const { status, body } = await getJson<null>('/api/v1/sessions?page_size=100');
+
+    expect(status).toBe(200);
+    expect(body.code).toBe(40939);
+    expect(body.data).toBeNull();
+  });
+
   it('supports exclude_empty when listing sessions', async () => {
     const cwd = home as string;
     const created = await postJson<SessionWire>('/api/v1/sessions', { metadata: { cwd } });
@@ -815,6 +831,12 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(got.body.data.usage).toMatchObject(expected);
     const listed = await getJson<PageWire>('/api/v1/sessions');
     expect(listed.body.data.items.find((item) => item.id === id)?.usage).toMatchObject(expected);
+
+    const metadata = session.accessor.get(ISessionMetadata);
+    expect(metadata.usage()?.wireComplete).toBeUndefined();
+    const archived = await postJson<{ archived: boolean }>(`/api/v1/sessions/${id}:archive`);
+    expect(archived.body.code).toBe(0);
+    expect(metadata.usage()?.wireComplete).toBe(true);
   });
 
   it('includes subagent usage while keeping turn_count on the main agent', async () => {
@@ -2009,12 +2031,20 @@ describe('server-v2 /api/v1/sessions (minidb read model)', () => {
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
 
-  it('serves immediate reads while the read model warms after listen', { timeout: 20_000 }, async () => {
+  it('warms the read model after listen before serving root reads', { timeout: 20_000 }, async () => {
     const initialStatus = await getJson<{ state: string; generation?: number }>(
       '/api/v1/debug/sessionIndex/status',
     );
     expect(initialStatus.body.code).toBe(0);
     expect(['uninitialized', 'preparing', 'ready']).toContain(initialStatus.body.data.state);
+
+    await vi.waitFor(
+      async () => {
+        const status = await getJson<{ state: string }>('/api/v1/debug/sessionIndex/status');
+        expect(status.body.data.state).toBe('ready');
+      },
+      { timeout: 10_000 },
+    );
 
     const created = await postJson<SessionWire>('/api/v1/sessions', {
       metadata: { cwd: home as string },
@@ -2222,6 +2252,7 @@ describe('server-v2 /api/v1/sessions (minidb read model)', () => {
     const running = server as RunningServer;
     const manager = running.core.accessor.get(ISessionManager);
     const index = running.core.accessor.get(ISessionIndex);
+    await index.prepare();
     const created = await postJson<SessionWire>('/api/v1/sessions', {
       metadata: { cwd: home as string },
     });
@@ -2321,7 +2352,14 @@ describe('server-v2 /api/v1/sessions (minidb read model)', () => {
     expect(listed.body.data.items.map((item) => item.id)).toEqual([source.body.data.id]);
   });
 
-  it('serves session routes from the authoritative store when the read model cannot open', async () => {
+  it('keeps point reads authoritative when the read model cannot open', async () => {
+    await (server as RunningServer).core.accessor.get(ISessionIndex).prepare();
+    const created = await postJson<SessionWire>('/api/v1/sessions', {
+      metadata: { cwd: home as string },
+    });
+    expect(created.body.code).toBe(0);
+    const id = created.body.data.id;
+
     await (server as RunningServer).close();
     server = undefined;
     await rm(join(home as string, 'cache', MINIDB_QUERY_STORE_SUBDIR), { recursive: true, force: true });
@@ -2343,14 +2381,12 @@ describe('server-v2 /api/v1/sessions (minidb read model)', () => {
     expect(status.body.data.state).toBe('degraded');
     expect(status.body.data.degradedCount).toBeGreaterThan(0);
 
-    const created = await postJson<SessionWire>('/api/v1/sessions', {
-      metadata: { cwd: home as string },
-    });
-    expect(created.body.code).toBe(0);
-    const id = created.body.data.id;
-    const listed = await getJson<PageWire>('/api/v1/sessions');
-    expect(listed.body.data.items.some((s) => s.id === id)).toBe(true);
+    const listed = await getJson<null>('/api/v1/sessions');
+    expect(listed.body.code).toBe(40939);
+    const workspaces = await getJson<null>('/api/v1/workspaces');
+    expect(workspaces.body.code).toBe(40939);
     const fetched = await getJson<{ id: string }>(`/api/v1/sessions/${id}`);
+    expect(fetched.body.code).toBe(0);
     expect(fetched.body.data.id).toBe(id);
   });
 });

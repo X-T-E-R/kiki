@@ -8,7 +8,10 @@ import { ILogService } from '#/_base/log/log';
 import { ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
-import { SessionMetadata } from '#/session/sessionMetadata/sessionMetadataService';
+import {
+  drainSessionMetadataWrites,
+  SessionMetadata,
+} from '#/session/sessionMetadata/sessionMetadataService';
 import { ISessionStateService } from '#/session/state/sessionState';
 import { SessionStateService } from '#/session/state/sessionStateService';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
@@ -74,6 +77,30 @@ describe('SessionMetadata', () => {
       custom: {},
     });
     expect((await meta.read()).createdAt).toBeGreaterThan(0);
+  });
+
+  it('keeps the first live usage record incomplete without a known baseline', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.ready;
+    meta.recordUsage('example-model', {
+      inputOther: 3,
+      output: 2,
+      inputCacheRead: 1,
+      inputCacheCreation: 0,
+    });
+    await drainSessionMetadataWrites();
+
+    expect((await meta.read()).usage).toEqual({
+      total: { inputOther: 3, output: 2, inputCacheRead: 1, inputCacheCreation: 0 },
+      byModel: {
+        'example-model': { inputOther: 3, output: 2, inputCacheRead: 1, inputCacheCreation: 0 },
+      },
+      wireComplete: undefined,
+    });
+    const persisted = await ix
+      .get(IAtomicDocumentStore)
+      .get<{ usage?: { wireComplete?: boolean } }>(META_SCOPE, 'state.json');
+    expect(persisted?.usage?.wireComplete).toBeUndefined();
   });
 
   it('update merges fields and bumps updatedAt', async () => {
@@ -226,7 +253,7 @@ describe('SessionMetadata', () => {
     expect((await createFreshMetadata(ix).read()).usage).toEqual(usage);
   });
 
-  it('keeps persisted usage when one agent wire is corrupted during migration', async () => {
+  it('loads persisted incomplete usage without replaying agent wires', async () => {
     const usage = {
       total: { inputOther: 20, output: 10, inputCacheRead: 4, inputCacheCreation: 2 },
       byModel: {
@@ -267,9 +294,11 @@ describe('SessionMetadata', () => {
       AGENT_WIRE_RECORD_KEY,
       new TextEncoder().encode('{broken\n'),
     );
+    const readSpy = vi.spyOn(log, 'read');
 
     const meta = ix.get(ISessionMetadata);
     expect((await meta.read()).usage).toEqual(usage);
+    expect(readSpy).not.toHaveBeenCalled();
     const persisted = await store.get<Record<string, unknown>>(META_SCOPE, 'state.json');
     expect(persisted?.['usage']).toEqual(usage);
   });

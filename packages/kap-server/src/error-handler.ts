@@ -27,6 +27,12 @@ export function installErrorHandler(app: ErrorHandlerHost): void {
       reply.status(200).send(errEnvelope(ErrorCode.SESSION_LOCKED, err.message, requestId, err.stack));
       return;
     }
+    if (isError2(err) && err.code === ErrorCodes.SESSION_INDEX_BUILDING) {
+      reply
+        .status(200)
+        .send(errEnvelope(ErrorCode.SESSION_INDEX_BUILDING, err.message, requestId, err.stack));
+      return;
+    }
     req.log.error({ err, request_id: requestId }, 'unhandled error');
     reply.status(200).send(
       errEnvelope(

@@ -62,6 +62,7 @@ import {
   type SessionGroup,
   type SessionListData,
 } from './lib/sessionList';
+import { isSessionIndexBuildingError } from './lib/client';
 import { useLayoutPreferences, writeLayoutPreferences } from './lib/layoutPrefs';
 import { readLastSessionId, writeDesktopPrefs } from './lib/settings';
 import { pushToast } from './lib/toasts';
@@ -70,6 +71,10 @@ import { startVisiblePoll } from './lib/visiblePoll';
 import { resolveWindowTitle, type WindowRoute } from './lib/windowTitle';
 import { useI18n } from './i18n';
 import { useConnection } from './state/connection';
+
+export function retryRootReadModelQuery(_failureCount: number, error: Error): boolean {
+  return isSessionIndexBuildingError(error);
+}
 
 function RootRedirect() {
   const lastSessionId = useMemo(() => readLastSessionId(), []);
@@ -182,6 +187,7 @@ export function App() {
     getNextPageParam: (lastPage) =>
       lastPage.has_more ? lastPage.items.at(-1)?.id : undefined,
     initialPageParam: undefined as string | undefined,
+    retry: retryRootReadModelQuery,
   });
   // Poll only the first page (where every change lands). Interval-refetching
   // an infinite query refetches ALL loaded pages on every tick; older pages
@@ -208,6 +214,7 @@ export function App() {
     queryKey: ['workspaces'],
     queryFn: () => client.listWorkspaces(),
     staleTime: 30_000,
+    retry: retryRootReadModelQuery,
   });
   const workspaceOptions = useMemo<readonly Workspace[]>(
     () => workspacesQuery.data?.items ?? [],

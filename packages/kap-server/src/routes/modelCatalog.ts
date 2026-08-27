@@ -107,6 +107,7 @@ const catalogIdParamSchema = z.object({
 
 async function loadCatalog(core: Scope): Promise<IModelCatalog> {
   await core.accessor.get(IConfigService).ready;
+  await core.accessor.get(IKosongConfigService).ready;
   return core.accessor.get(IModelCatalog);
 }
 

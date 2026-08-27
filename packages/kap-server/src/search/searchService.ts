@@ -14,6 +14,7 @@ import {
   registerScopedService,
   sessionDirOf,
   workspacePersistenceScope,
+  type IDisposable,
   type SessionSummary,
 } from '@moonshot-ai/agent-core-v2';
 import { normalizeLiteral, tokenize } from '@moonshot-ai/minidb';
@@ -301,6 +302,8 @@ export class GlobalSearchService implements IGlobalSearchService {
   private liveSource: LiveTranscriptSource | null = null;
   /** One queued follow-up pass behind the in-flight one (backpressure). */
   private syncQueued = false;
+  private syncSkippedForReadiness = false;
+  private sessionIndexStatusWaiter: IDisposable | null = null;
   /** Trailing-pass timer behind the debounce window. */
   private syncTimer: ReturnType<typeof setTimeout> | null = null;
   /** Last background sync/reindex/worker failure — surfaced as degraded. */
@@ -318,11 +321,11 @@ export class GlobalSearchService implements IGlobalSearchService {
     this.backend = this.flags.enabled(SEARCH_WORKER_FLAG_ID)
       ? new SearchWorkerHost({ dir: indexDir, log: this.log })
       : new InlineSearchBackend({ indexDir, log: this.log });
-    this.requestSync();
   }
 
   setLiveTranscriptSource(source: LiveTranscriptSource): void {
     this.liveSource = source;
+    this.requestSync();
   }
 
   private get indexDir(): string {
@@ -345,6 +348,7 @@ export class GlobalSearchService implements IGlobalSearchService {
 
   dispose(): void {
     this.disposed = true;
+    this.clearSessionIndexStatusWaiter();
     if (this.syncTimer !== null) {
       clearTimeout(this.syncTimer);
       this.syncTimer = null;
@@ -368,23 +372,48 @@ export class GlobalSearchService implements IGlobalSearchService {
     }
     const wait = this.syncDebounceMs - (Date.now() - this.lastSyncStartedAt);
     if (wait > 0) {
-      if (this.syncTimer === null) {
-        this.syncTimer = setTimeout(() => {
-          this.syncTimer = null;
-          this.requestSync();
-        }, wait);
-        this.syncTimer.unref?.();
-      }
+      this.scheduleSync(wait);
       return;
     }
     this.startSyncPass();
   }
 
+  private scheduleSync(wait: number): void {
+    if (this.syncTimer !== null || this.disposed || this.reindexing) return;
+    this.syncTimer = setTimeout(() => {
+      this.syncTimer = null;
+      this.requestSync();
+    }, wait);
+    this.syncTimer.unref?.();
+  }
+
+  private clearSessionIndexStatusWaiter(): void {
+    const waiter = this.sessionIndexStatusWaiter;
+    this.sessionIndexStatusWaiter = null;
+    waiter?.dispose();
+  }
+
+  private sessionIndexUsable(status: ReturnType<ISessionIndex['status']>): boolean {
+    return status.source === 'authoritative' || status.state === 'ready';
+  }
+
+  private waitForSessionIndexReady(): void {
+    if (this.sessionIndexStatusWaiter !== null || this.disposed) return;
+    const handleStatus = (status: ReturnType<ISessionIndex['status']>): void => {
+      if (!this.sessionIndexUsable(status) || this.disposed) return;
+      this.clearSessionIndexStatusWaiter();
+      this.requestSync();
+    };
+    this.sessionIndexStatusWaiter = this.sessionIndex.onDidChangeStatus(handleStatus);
+    handleStatus(this.sessionIndex.status());
+  }
+
   private startSyncPass(): void {
     this.syncQueued = false;
+    this.syncSkippedForReadiness = false;
     void this.ensureSyncStarted().then(
       () => {
-        this.lastRefreshError = null;
+        if (!this.syncSkippedForReadiness) this.lastRefreshError = null;
         if (this.syncQueued) {
           this.syncQueued = false;
           this.requestSync();
@@ -410,6 +439,14 @@ export class GlobalSearchService implements IGlobalSearchService {
 
   private async runSync(): Promise<void> {
     if (this.disposed || this.reindexing) return;
+    const indexStatus = await this.sessionIndex.prepare();
+    if (this.disposed || this.reindexing) return;
+    if (!this.sessionIndexUsable(indexStatus)) {
+      this.syncSkippedForReadiness = true;
+      this.waitForSessionIndexReady();
+      return;
+    }
+    this.clearSessionIndexStatusWaiter();
     const sessions = await this.listAllSessions();
     if (this.disposed) return;
     if (sessions.length === 0 && !(await pathExists(this.indexDir))) {

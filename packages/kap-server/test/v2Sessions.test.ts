@@ -14,6 +14,7 @@ import {
   type Event2,
   type SessionSummary,
 } from '@moonshot-ai/agent-core-v2';
+import { Event } from '@moonshot-ai/agent-core-v2/_base/event';
 import {
   type FsGitStatusResponse,
   type FsPullRequest,
@@ -107,8 +108,9 @@ const SUMMARIES: SessionSummary[] = [
 function stubSessionIndex(summaries: SessionSummary[]): ISessionIndex {
   return {
     _serviceBrand: undefined,
-    prepare: async () => ({ state: 'ready', generation: 1, degradedCount: 0 }),
-    status: () => ({ state: 'ready', generation: 1, degradedCount: 0 }),
+    prepare: async () => ({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 }),
+    onDidChangeStatus: Event.None as ISessionIndex['onDidChangeStatus'],
+    status: () => ({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 }),
     listRecent: async (query) => {
       let items = summaries;
       if (query.workspaceIds !== undefined) {

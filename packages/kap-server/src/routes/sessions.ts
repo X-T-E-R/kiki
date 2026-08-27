@@ -305,6 +305,7 @@ export function registerSessionsRoutes(
       errors: {
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
         [ErrorCode.WORKSPACE_NOT_FOUND]: {},
+        [ErrorCode.SESSION_INDEX_BUILDING]: {},
       },
       description: 'List sessions',
       tags: ['sessions'],
@@ -859,6 +860,7 @@ export function registerSessionsRoutes(
       errors: {
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
         [ErrorCode.SESSION_NOT_FOUND]: {},
+        [ErrorCode.SESSION_INDEX_BUILDING]: {},
       },
       description: 'List child sessions',
       tags: ['sessions'],
@@ -1404,6 +1406,11 @@ function sendMappedError(
         return;
       case ErrorCodes.STORAGE_LOCKED:
         reply.send(errEnvelope(ErrorCode.SESSION_LOCKED, err.message, requestId, err.stack));
+        return;
+      case ErrorCodes.SESSION_INDEX_BUILDING:
+        reply.send(
+          errEnvelope(ErrorCode.SESSION_INDEX_BUILDING, err.message, requestId, err.stack),
+        );
         return;
       case 'compaction.unable':
         reply.send(errEnvelope(ErrorCode.COMPACTION_UNABLE, err.message, requestId, err.stack));

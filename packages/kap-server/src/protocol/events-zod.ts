@@ -645,6 +645,20 @@ export const pluginChangedEventSchema = z.object({
   type: z.literal('event.plugin.changed'),
 });
 
+export const modelCatalogChangedEventSchema = z.object({
+  type: z.literal('event.model_catalog.changed'),
+  changed: z.array(
+    z.object({
+      provider_id: z.string(),
+      provider_name: z.string(),
+      added: z.number(),
+      removed: z.number(),
+    }),
+  ),
+  unchanged: z.array(z.string()),
+  failed: z.array(z.object({ provider: z.string(), reason: z.string() })),
+});
+
 export const capabilityChangedEventSchema = z.object({
   type: z.literal('event.capability.changed'),
   capability_id: z.string(),
@@ -1027,6 +1041,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   sessionStatusChangedEventSchema,
   diUnitChangedEventSchema,
   pluginChangedEventSchema,
+  modelCatalogChangedEventSchema,
   capabilityChangedEventSchema,
   goalUpdatedEventSchema,
   skillActivatedEventSchema,

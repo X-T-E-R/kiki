@@ -50,6 +50,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import '#/wire/wireService';
 import '#/state/eventDispatcherService';
 import { IAgentTaskService } from '#/agent/task/task';
+import { IAgentUsageService } from '#/agent/usage/usage';
 import { ISessionCronService } from '#/session/cron/sessionCronService';
 import { SessionCronServiceImpl } from '#/session/cron/sessionCronServiceImpl';
 import { ICronTaskPersistence } from '#/app/cron/cronTaskPersistence';
@@ -267,6 +268,17 @@ describe('AgentLifecycleService', () => {
       set: async <T>(scope: string, key: string, value: T): Promise<void> => {
         atomicDocs.set(`${scope}/${key}`, value);
       },
+      update: async <T>(
+        scope: string,
+        key: string,
+        updater: (current: T | undefined) => T | undefined,
+      ): Promise<T | undefined> => {
+        const id = `${scope}/${key}`;
+        const current = atomicDocs.get(id) as T | undefined;
+        const next = updater(current);
+        if (next !== undefined && next !== current) atomicDocs.set(id, next);
+        return next ?? current;
+      },
       delete: async (scope: string, key: string): Promise<void> => {
         atomicDocs.delete(`${scope}/${key}`);
       },
@@ -346,6 +358,10 @@ describe('AgentLifecycleService', () => {
       _serviceBrand: undefined,
       drain: promptDrain,
     } as unknown as IAgentPromptService);
+    ix.stub(IAgentUsageService, {
+      _serviceBrand: undefined,
+      onDidRecord: Event.None,
+    } as unknown as IAgentUsageService);
     ix.stub(ITelemetryService, {
       _serviceBrand: undefined,
       track2: () => {},

@@ -27,6 +27,7 @@ import {
 } from 'react';
 
 import type { MetaResponse } from '@moonshot-ai/protocol';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
@@ -36,6 +37,7 @@ import { useI18n } from '../i18n';
 import { ApiError, KikiClient } from '../lib/client';
 import { detectLocalConnection, isDesktopRuntime } from '../lib/localServer';
 import { KikiSocket, type WsStatus } from '../lib/ws';
+import type { SessionEventFrame } from '../lib/types';
 import {
   clearStoredConfig,
   readDeepLinkConfig,
@@ -76,6 +78,16 @@ function scrubUrl(): void {
       // Connection still succeeds when history mutation is unavailable.
     }
   }
+}
+
+export function handleGlobalConnectionFrame(
+  frame: Pick<SessionEventFrame, 'type'>,
+  queryClient: Pick<QueryClient, 'invalidateQueries'>,
+): boolean {
+  if (frame.type !== 'event.model_catalog.changed') return false;
+  void queryClient.invalidateQueries({ queryKey: ['models'] });
+  void queryClient.invalidateQueries({ queryKey: ['providers'] });
+  return true;
 }
 
 interface ConnectionValue {
@@ -136,6 +148,7 @@ const ConnectionContext = createContext<ConnectionValue | null>(null);
 export function ConnectionProvider({ children }: { children: ReactNode }) {
   const desktopRuntime = isDesktopRuntime();
   const { locale, t } = useI18n();
+  const queryClient = useQueryClient();
   const [selection, setSelection] = useState<ConnectionSelection | null>(() =>
     desktopRuntime
       ? null
@@ -286,6 +299,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         onFrame: (frame, generation) => {
           if (liveSocketRef.current !== instance) return;
           if (generation !== undefined && generation !== instance.connectionGeneration) return;
+          if (handleGlobalConnectionFrame(frame, queryClient)) return;
           for (const controller of controllersRef.current) controller.handleFrame(frame);
         },
         onTranscript: (event, generation) => {
@@ -322,7 +336,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       },
     });
     return instance;
-  }, [client, config, connected]);
+  }, [client, config, connected, queryClient]);
 
   useEffect(() => {
     liveSocketRef.current = socket;

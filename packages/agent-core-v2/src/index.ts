@@ -138,6 +138,7 @@ export type {
 } from '#/kosong/provider/providers/kimi/kimi.contrib';
 
 export * from '#/app/sessionIndex/sessionIndex';
+export * from '#/app/sessionIndex/errors';
 export * from '#/app/sessionIndex/sessionIndexService';
 export * from '#/app/sessionIndex/sessionIndexMirrorService';
 import '#/app/threadCommunication/configSection';

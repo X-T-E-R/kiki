@@ -19,6 +19,7 @@ import {
   listWorkspaceIds,
   mapBounded,
   readSessionSummary,
+  reconcileSessionSummary,
   summaryEquals,
 } from './sessionIndexSource';
 
@@ -79,21 +80,6 @@ export class SessionIndexProjector {
     return this.startScan();
   }
 
-  /**
-   * A fallback read's scan: joins a scan that is still in flight or starts a
-   * fresh one. A settled snapshot is NEVER served to a read — it could
-   * predate a session this process just created, breaking read-your-writes.
-   * Joining an in-flight scan is NOT the same freshness as enumerating here
-   * and now: the scan may have started (and passed a directory) before this
-   * call, so the caller folds the mirror's pending queue into the result —
-   * every pending entry is known to be durable on disk.
-   */
-  sharedScanForRead(): Promise<AuthoritativeScan> {
-    const slot = this.scanSlot;
-    if (slot !== undefined && !slot.settled) return slot.promise;
-    return this.startScan();
-  }
-
   private startScan(): Promise<AuthoritativeScan> {
     const slot: ScanSlot = {
       promise: this.scanAuthoritative(),
@@ -108,20 +94,16 @@ export class SessionIndexProjector {
     return slot.promise;
   }
 
-  /** Scan the authoritative set into a fresh generation and publish it. */
-  async project(generation: number, options?: { fresh?: boolean }): Promise<ProjectionResult> {
+  async scan(options?: { fresh?: boolean }): Promise<AuthoritativeScan> {
     const scan = options?.fresh === true ? this.startScan() : this.sharedScan();
     try {
-      return await this.doProject(generation, scan);
+      return await scan;
     } finally {
       if (this.scanSlot?.promise === scan) this.scanSlot = undefined;
     }
   }
 
-  private async doProject(
-    generation: number,
-    scan: Promise<AuthoritativeScan>,
-  ): Promise<ProjectionResult> {
+  async project(generation: number, scan: AuthoritativeScan): Promise<ProjectionResult> {
     const { queryStore, log } = this.deps;
     const collection = sessionCollection(generation);
     const counters = sessionCountersCollection(generation);
@@ -133,9 +115,8 @@ export class SessionIndexProjector {
       field: `custom.${PARENT_SESSION_ID_KEY}`,
     });
 
-    const { summaries, counts } = await scan;
     await this.batchChunks(
-      summaries.map((summary) => ({
+      scan.summaries.map((summary) => ({
         kind: 'put' as const,
         collection,
         key: summary.id,
@@ -143,11 +124,11 @@ export class SessionIndexProjector {
         columns: { [recencyColumn(generation)]: summary.updatedAt },
       })),
     );
-    await this.writeCounters(counters, counts);
+    await this.writeCounters(counters, scan.counts);
     await queryStore.setCheckpoint(SESSION_INDEX_MANIFEST, { seq: generation });
     log.info('session index generation published', {
       generation,
-      sessions: summaries.length,
+      sessions: scan.summaries.length,
     });
 
     if (generation > 1) {
@@ -163,7 +144,7 @@ export class SessionIndexProjector {
           });
         });
     }
-    return { generation, sessions: summaries.length };
+    return { generation, sessions: scan.summaries.length };
   }
 
   /** Re-scan the authoritative set and repair the published generation. */
@@ -171,7 +152,7 @@ export class SessionIndexProjector {
     const { queryStore, log } = this.deps;
     const collection = sessionCollection(generation);
     const counters = sessionCountersCollection(generation);
-    const { summaries, counts } = await this.scanAuthoritative();
+    const { summaries, counts } = await this.scanAuthoritative(true);
     const authoritativeIds = new Set(summaries.map((s) => s.id));
 
     const storedKeys = await queryStore.listKeys(collection);
@@ -206,14 +187,16 @@ export class SessionIndexProjector {
     return result;
   }
 
-  private async scanAuthoritative(): Promise<AuthoritativeScan> {
+  private async scanAuthoritative(recoverUsage = false): Promise<AuthoritativeScan> {
     const { storage, docs, appendLog, sessionsScope } = this.deps;
     const summaries: SessionSummary[] = [];
     const counts = new Map<string, { active: number; archived: number }>();
     for (const workspaceId of await listWorkspaceIds(storage, sessionsScope)) {
       const sessionIds = await listSessionIds(storage, sessionsScope, workspaceId);
       const found = await mapBounded(sessionIds, SCAN_CONCURRENCY, (sessionId) =>
-        readSessionSummary(docs, appendLog, sessionsScope, workspaceId, sessionId),
+        recoverUsage
+          ? reconcileSessionSummary(docs, appendLog, sessionsScope, workspaceId, sessionId)
+          : readSessionSummary(docs, sessionsScope, workspaceId, sessionId),
       );
       const entry = counts.get(workspaceId) ?? { active: 0, archived: 0 };
       for (const summary of found) {

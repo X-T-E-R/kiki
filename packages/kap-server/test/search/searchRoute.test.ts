@@ -5,6 +5,7 @@ import { join } from 'node:path';
 process.env['KIMI_CODE_EXPERIMENTAL_SEARCH_WORKER'] = '1';
 
 import { ISessionIndex, type SessionSummary } from '@moonshot-ai/agent-core-v2';
+import { Event } from '@moonshot-ai/agent-core-v2/_base/event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type RunningServer, startServer } from '../../src/start';
@@ -49,8 +50,9 @@ const WS = 'ws_route';
 function stubSessionIndex(summaries: SessionSummary[]): ISessionIndex {
   return {
     _serviceBrand: undefined,
-    prepare: async () => ({ state: 'uninitialized', degradedCount: 0 }),
-    status: () => ({ state: 'uninitialized', degradedCount: 0 }),
+    prepare: async () => ({ source: 'authoritative', state: 'uninitialized', degradedCount: 0 }),
+    onDidChangeStatus: Event.None as ISessionIndex['onDidChangeStatus'],
+    status: () => ({ source: 'authoritative', state: 'uninitialized', degradedCount: 0 }),
     listRecent: async () => ({ items: summaries, nextCursor: undefined }),
     get: async () => undefined,
     count: async () => summaries.length,

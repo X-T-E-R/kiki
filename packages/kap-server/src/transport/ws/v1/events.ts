@@ -121,6 +121,22 @@ export interface PluginChangedEvent {
 }
 
 /**
+ * Model catalog mutation after provider discovery / OAuth model refresh.
+ * Global fan-out; clients invalidate cached `/models` and `/providers` reads.
+ */
+export interface ModelCatalogChangedEvent {
+  readonly type: 'event.model_catalog.changed';
+  readonly changed: readonly {
+    readonly provider_id: string;
+    readonly provider_name: string;
+    readonly added: number;
+    readonly removed: number;
+  }[];
+  readonly unchanged: readonly string[];
+  readonly failed: readonly { readonly provider: string; readonly reason: string }[];
+}
+
+/**
  * Capability install progress transition. Global fan-out; clients update the
  * row live and re-read the capability once it settles (`running: false`).
  */
@@ -251,6 +267,7 @@ export type AgentEvent =
   | ConfigChangedEvent
   | ConfigWarningEvent
   | PluginChangedEvent
+  | ModelCatalogChangedEvent
   | CapabilityChangedEvent
   | DiUnitChangedEvent
   | PromptSubmittedEvent

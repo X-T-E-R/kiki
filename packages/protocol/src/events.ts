@@ -240,6 +240,7 @@ export type KimiErrorCode =
   | 'session.fork_active_turn'
   | 'session.undo_unavailable'
   | 'session.cursor_mismatch'
+  | 'session.index_building'
   | 'message.action_unavailable'
   | 'session.export_not_found'
   | 'session.export_missing_version'
@@ -1305,6 +1306,7 @@ export const kimiErrorCodeSchema = z.enum([
   'session.fork_active_turn',
   'session.undo_unavailable',
   'session.cursor_mismatch',
+  'session.index_building',
   'message.action_unavailable',
   'session.export_not_found',
   'session.export_missing_version',
