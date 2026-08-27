@@ -860,6 +860,7 @@ export function registerSessionsRoutes(
       errors: {
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
         [ErrorCode.SESSION_NOT_FOUND]: {},
+        [ErrorCode.SESSION_INDEX_BUILDING]: {},
       },
       description: 'List child sessions',
       tags: ['sessions'],
