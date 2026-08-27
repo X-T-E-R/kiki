@@ -65,7 +65,7 @@ test('append then read back preserves frames and order', async () => {
     assert.equal(frames[1].key.toString(), 'b');
     assert.equal(frames[2].type, TYPE_DEL);
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -88,7 +88,7 @@ test('group commit: many concurrent appends all land in order', async () => {
     assert.equal(frames[0].key.toString(), 'k0');
     assert.equal(frames[N - 1].key.toString(), `k${N - 1}`);
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -102,7 +102,7 @@ test("fsyncPolicy 'always' works", async () => {
     const frames = parseAll(await fs.readFile(file));
     assert.equal(frames[0].key.toString(), 'durable');
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -141,7 +141,7 @@ test('recovery truncates a torn/corrupt tail at the error offset', async () => {
     const after = parseAll(await fs.readFile(file));
     assert.equal(after.length, N);
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -164,7 +164,7 @@ test('seal(): rejects new appends with WAL_SEALED, queued frames stay flushable'
     // after close the legacy "WAL is closed" rejection is preserved
     await assert.rejects(wal.append(encodeFrame({ type: TYPE_SET, key: B('c'), value: B('3') })), /WAL is closed/);
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -200,7 +200,7 @@ test("everysec: idle WAL performs zero background fsyncs; only dirty intervals s
     assert.equal(stats.walFsyncs, 3, 'close() always performs the final sync');
     assert.equal(stats.walFsyncErrors, 0);
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -213,7 +213,7 @@ test('close() performs a final fsync even when there were no writes at all', asy
     await wal.close();
     assert.equal(stats.walFsyncs, 1);
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -252,7 +252,7 @@ test('background sync failure is recorded but neither rejects writes nor clears 
     assert.equal(stats.walFsyncs, 1);
     await wal.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -295,7 +295,7 @@ test('close() waits for an in-flight background sync before closing the fd (revi
     assert.deepEqual(events, ['bg-sync-settled', 'fd-close'], 'the fd closes only after the background sync settled');
     assert.equal(stats.walFsyncs, 2, 'the background sync plus close() final sync');
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -327,7 +327,7 @@ test('queue depth and group-commit counters track the append buffer', async () =
     assert.equal(stats.walQueuedBytes, 0);
     await wal.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -346,7 +346,7 @@ test('appendLoc stamps frames with the id of the flush batch carrying them', asy
     await c.done;
     await wal.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -429,7 +429,7 @@ test('a failed flush poisons the WAL: WAL_POISONED rejections until truncate + r
       'rejected frames never reach the file',
     );
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -451,6 +451,6 @@ test("an fsync failure with fsyncPolicy 'always' poisons the WAL and counts as w
     await wal.close();
     assert.equal((wal as unknown as { fh: unknown }).fh, null, 'the handle is still released');
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

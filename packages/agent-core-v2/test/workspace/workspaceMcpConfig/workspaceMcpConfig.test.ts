@@ -69,8 +69,8 @@ describe('WorkspaceMcpConfigService', () => {
     vi.restoreAllMocks();
     disposables.dispose();
     await Promise.all([
-      rm(cwd, { recursive: true, force: true }),
-      rm(homeDir, { recursive: true, force: true }),
+      rm(cwd, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }),
+      rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }),
     ]);
   });
 
@@ -304,8 +304,8 @@ describe('McpJsonWriterService', () => {
 
   afterEach(async () => {
     await Promise.all([
-      rm(cwd, { recursive: true, force: true }),
-      rm(homeDir, { recursive: true, force: true }),
+      rm(cwd, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }),
+      rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }),
     ]);
   });
 

@@ -275,7 +275,7 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
 
   afterEach(async () => {
     disposables.dispose();
-    await Promise.all(cleanupDirs.map((dir) => rm(dir, { recursive: true, force: true })));
+    await Promise.all(cleanupDirs.map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 })));
   });
 
   async function evaluate(

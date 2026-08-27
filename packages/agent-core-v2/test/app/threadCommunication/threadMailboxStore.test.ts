@@ -225,7 +225,7 @@ describe('runtime thread mailbox', () => {
 
   afterEach(async () => {
     await closeHarnesses(open.splice(0));
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('uses one real cross-process owner and produces no MiniDb LockError', async () => {

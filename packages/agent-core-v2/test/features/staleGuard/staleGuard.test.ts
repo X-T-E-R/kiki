@@ -454,7 +454,7 @@ describe('StaleGuardService', () => {
       });
       expect(allowed).toBeUndefined();
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });
@@ -508,7 +508,7 @@ describe('StaleGuardService in the agent test harness', () => {
       expect(await readFile(file, 'utf8')).toBe('alpha beta');
     } finally {
       await ctx.dispose();
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });

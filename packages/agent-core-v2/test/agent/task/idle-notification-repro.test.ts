@@ -360,7 +360,7 @@ describe('task notification → main agent (real Agent instance)', () => {
         await ctx.expectResumeMatches();
       } finally {
         await ctx.dispose();
-        await rm(sessionDir, { recursive: true, force: true });
+        await rm(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       }
     });
 

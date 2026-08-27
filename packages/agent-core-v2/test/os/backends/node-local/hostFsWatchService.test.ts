@@ -121,7 +121,7 @@ describe('host filesystem change notifications', () => {
   afterEach(async () => {
     handle?.dispose();
     handle = undefined;
-    if (root) await rm(root, { recursive: true, force: true });
+    if (root) await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     root = '';
     resetUnexpectedErrorHandler();
   });

@@ -23,7 +23,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(home, { recursive: true, force: true });
+  rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   if (originalHome === undefined) {
     delete process.env['KIMI_CODE_HOME'];
   } else {

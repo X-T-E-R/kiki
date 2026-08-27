@@ -287,7 +287,7 @@ describe('AgentDateChangeService', () => {
       expect(reminders).toHaveLength(1);
       expect(messageText(reminders[0] as ContextMessage)).toContain('2026-07-30');
     } finally {
-      await rm(homeDir, { recursive: true, force: true });
+      await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

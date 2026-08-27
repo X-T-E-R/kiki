@@ -94,7 +94,7 @@ test('bench --quick emits a JSON report with a stable schema', async () => {
       assert.equal(typeof compact.extra[k], 'number', `compact extra.${k}`);
     }
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 }, 300_000);
 
@@ -175,6 +175,6 @@ test('open-lifecycle bench --quick emits the phase-1 baseline report', async () 
     assert.equal(deferred.extra.state, 'ready');
     assert.ok(deferred.extra.textDeferredBuilds >= 1, 'deferred build committed');
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 }, 300_000);

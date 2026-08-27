@@ -23,7 +23,7 @@ describe('KimiFiles', () => {
   });
 
   afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   describe('exposure on KimiChatProvider', () => {

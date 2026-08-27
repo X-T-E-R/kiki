@@ -66,7 +66,7 @@ describe('GitService', () => {
 
   afterEach(() => {
     disposables.dispose();
-    rmSync(repo, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   function commitAll(message: string): void {
@@ -116,7 +116,7 @@ describe('GitService', () => {
           code: ErrorCodes.FS_GIT_UNAVAILABLE,
         });
       } finally {
-        rmSync(notRepo, { recursive: true, force: true });
+        rmSync(notRepo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       }
     });
   });
@@ -171,7 +171,7 @@ describe('GitService', () => {
       try {
         await expect(service.findWorkTree(plain)).resolves.toBeNull();
       } finally {
-        rmSync(plain, { recursive: true, force: true });
+        rmSync(plain, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       }
     });
 
@@ -187,7 +187,7 @@ describe('GitService', () => {
         expect(result?.dotGitPath).toBe(normalize(join(wt, '.git')));
         expect(result?.controlDirPath).toBe(normalize(control));
       } finally {
-        rmSync(wt, { recursive: true, force: true });
+        rmSync(wt, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       }
     });
 
@@ -200,7 +200,7 @@ describe('GitService', () => {
 
         expect(result?.controlDirPath).toBe(normalize(join(wt, '..', 'gitdir-target')));
       } finally {
-        rmSync(wt, { recursive: true, force: true });
+        rmSync(wt, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       }
     });
 
@@ -213,7 +213,7 @@ describe('GitService', () => {
 
         expect(result?.controlDirPath).toBe(normalize(join(wt, '..', 'target')));
       } finally {
-        rmSync(wt, { recursive: true, force: true });
+        rmSync(wt, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       }
     });
 

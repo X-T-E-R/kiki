@@ -91,7 +91,7 @@ describe('FileSessionIndex (legacy)', () => {
   afterEach(async () => {
     disposeHost?.();
     disposeHost = undefined;
-    await fsp.rm(homeDir, { recursive: true, force: true });
+    await fsp.rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   function build(): ISessionIndex {
@@ -581,7 +581,7 @@ describe('FileSessionIndex (read model)', () => {
     disposeHost = undefined;
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
-    await fsp.rm(homeDir, { recursive: true, force: true });
+    await fsp.rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   function build(

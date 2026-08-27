@@ -10,7 +10,7 @@ const tempRoots: string[] = [];
 
 afterEach(async () => {
   await Promise.all(
-    tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+    tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 })),
   );
 });
 

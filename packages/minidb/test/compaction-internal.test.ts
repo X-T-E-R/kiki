@@ -37,7 +37,7 @@ test('copyFileRange copies an arbitrary byte range verbatim', async () => {
     assert.equal(out.length, 5000);
     assert.ok(out.equals(data.subarray(1000, 6000)));
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -58,7 +58,7 @@ test('copyFileRange copies a range larger than one internal chunk', async () => 
     assert.equal(out.length, data.length);
     assert.ok(out.equals(data));
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -78,7 +78,7 @@ test('copyFileRange stops at EOF when end exceeds the source size', async () => 
     const out = await fs.readFile(dst);
     assert.ok(out.equals(Buffer.from('hello')));
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -95,7 +95,7 @@ test('copyFileRange with start===end creates an empty file in create mode', asyn
     const out = await fs.readFile(dst);
     assert.equal(out.length, 0);
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -112,7 +112,7 @@ test('copyFileRange with start===end in append mode leaves existing content inta
     const out = await fs.readFile(dst);
     assert.ok(out.equals(Buffer.from('existing'))); // unchanged
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -129,7 +129,7 @@ test('copyFileRange in append mode appends the range to existing content', async
     const out = await fs.readFile(dst);
     assert.ok(out.equals(Buffer.from('abc234')));
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -144,7 +144,7 @@ test('fsyncDir syncs an existing directory without throwing', async () => {
   try {
     await expect(fsyncDir(dir)).resolves.toBeUndefined();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 

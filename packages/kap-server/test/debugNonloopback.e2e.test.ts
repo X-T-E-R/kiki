@@ -23,7 +23,7 @@ afterEach(async () => {
     }
   }
   for (const dir of createdDirs.splice(0)) {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
   if (prevPassword === undefined) {
     delete process.env['KIMI_CODE_PASSWORD'];

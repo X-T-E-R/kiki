@@ -38,7 +38,7 @@ function validBundle(): Record<string, string> {
 
 describe('import-store', () => {
   let home: string | null = null;
-  afterEach(async () => { if (home) await rm(home, { recursive: true, force: true }); home = null; });
+  afterEach(async () => { if (home) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); home = null; });
 
   it('imports a valid bundle and lists it with manifest metadata', async () => {
     home = await mkdtemp(join(tmpdir(), 'vis-import-'));

@@ -688,7 +688,7 @@ describe('server-v2 /api/v1/debug RPC', () => {
       );
       expect(activated.body.code).toBe(0);
     } finally {
-      await rm(pluginRoot, { recursive: true, force: true });
+      await rm(pluginRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

@@ -18,7 +18,7 @@ test('a second writer on the same dir is rejected with LockError', async () => {
     await assert.rejects(() => MiniDb.open({ dir, valueCodec: 'string' }), LockError);
   } finally {
     await db1.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -46,7 +46,7 @@ test('readOnly open succeeds alongside a writer and rejects writes', async () =>
     await ro.close();
   } finally {
     await db1.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -59,7 +59,7 @@ test("onLockFail: 'readonly' degrades instead of throwing", async () => {
     await db2.close();
   } finally {
     await db1.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -96,7 +96,7 @@ test('two same-process contenders over a stale corpse: exactly one wins, zero do
       );
     }
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -116,7 +116,7 @@ test('a racing renew() never re-publishes a released lock (100 iterations)', { t
       );
     }
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -133,7 +133,7 @@ test('renew() keeps the owner token, so release() still recognizes the lock', as
     await lock.release();
     assert.equal(await fs.stat(lockPath).then(() => true, () => false), false);
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -154,7 +154,7 @@ test('acquire() on an already-held lock is an idempotent true and does not re-mi
       'release still recognizes and unlinks its own lock',
     );
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -184,7 +184,7 @@ test('a legacy tokenless lock file is respected while alive and taken over when 
     );
     await taker.release();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -223,7 +223,7 @@ test('close() still releases the lock when the WAL close fails; a retry finishes
     assert.equal(reopened.get('a'), '1');
     await reopened.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -272,7 +272,7 @@ test('close() aggregates every cleanup error instead of stopping at the first', 
     await assert.rejects(() => db.set('b', '2'), /MiniDb is closed/);
     await assert.rejects(() => db.compact(), /MiniDb is closed/);
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -309,7 +309,7 @@ test('close() waits out a failing in-flight compaction and still cleans up every
     const reopened = await MiniDb.open({ dir, valueCodec: 'string', fsyncPolicy: 'no' });
     await reopened.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -346,6 +346,6 @@ test('onLockAcquired fires with the held token; read-only fallback opens skip it
     await ro.close();
   } finally {
     await db1.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

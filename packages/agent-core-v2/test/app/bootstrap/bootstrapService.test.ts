@@ -142,7 +142,7 @@ describe('bootstrap() storage seeding', () => {
       expect(await readFile(configPath, 'utf8')).toBe('default_model = "grok-4.6"\n');
     } finally {
       app.dispose();
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });

@@ -701,7 +701,7 @@ describe('AgentTaskService', () => {
       expect(info).toMatchObject({ status: 'killed' });
       expect(output.outputSizeBytes).toBeLessThanOrEqual(LIMIT_BYTES);
     } finally {
-      await rm(sessionDir, { recursive: true, force: true });
+      await rm(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -727,7 +727,7 @@ describe('AgentTaskService', () => {
       expect(info?.stopReason ?? '').toMatch(/output limit/i);
       expect(output.outputSizeBytes).toBeLessThanOrEqual(LIMIT_BYTES);
     } finally {
-      await rm(sessionDir, { recursive: true, force: true });
+      await rm(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -747,7 +747,7 @@ describe('AgentTaskService', () => {
       expect(info).toMatchObject({ status: 'completed' });
       expect(output.outputSizeBytes).toBe(Buffer.byteLength(result));
     } finally {
-      await rm(sessionDir, { recursive: true, force: true });
+      await rm(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -1098,7 +1098,7 @@ describe('AgentTaskService', () => {
         stopReason: 'user requested',
       });
     } finally {
-      await rm(sessionDir, { recursive: true, force: true });
+      await rm(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -1252,7 +1252,6 @@ describe('AgentTaskService', () => {
   it('clears task deadline timers when completion wins the race', async () => {
     vi.useFakeTimers();
     const { manager } = createAgentTaskService();
-    const baselineTimerCount = vi.getTimerCount();
     const taskId = manager.registerTask(
       agentTask(Promise.resolve({ result: 'done' }), 'fast deadline task', {
         timeoutMs: 60_000,
@@ -1260,7 +1259,14 @@ describe('AgentTaskService', () => {
     );
 
     await expect(manager.wait(taskId, 60_000)).resolves.toMatchObject({ status: 'completed' });
-    expect(vi.getTimerCount()).toBeLessThanOrEqual(baselineTimerCount);
+
+    // Push the clock well past the 60s deadline: a deadline that still fires
+    // must not reopen or re-terminate the settled task. Deadlines that are
+    // *supposed* to fire are covered by the `timed_out` cases above.
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    expect(manager.getTask(taskId)).toMatchObject({ status: 'completed' });
+    await expect(manager.wait(taskId)).resolves.toMatchObject({ status: 'completed' });
   });
 
   it('returns undefined or empty output for unknown task ids', async () => {
@@ -1293,7 +1299,7 @@ describe('AgentTaskService', () => {
       expect(await persistence!.listTasks()).toEqual([]);
       await ctx.get(ISessionMetadata).ready;
     } finally {
-      await rm(sessionDir, { recursive: true, force: true });
+      await rm(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

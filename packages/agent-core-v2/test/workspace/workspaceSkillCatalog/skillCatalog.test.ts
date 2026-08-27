@@ -224,7 +224,7 @@ async function withSkillCatalogWorkspace(
   try {
     await run({ workDir, skillRoot: await realpath(skillRoot) });
   } finally {
-    await rm(workDir, { recursive: true, force: true });
+    await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 }
 
@@ -852,7 +852,7 @@ describe('WorkspaceSkillCatalogService', () => {
       expect(catalog.catalog.getPluginSkill('demo', 'demo-skill')).toBeDefined();
     } finally {
       host.dispose();
-      await rm(homeDir, { recursive: true, force: true });
+      await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -945,7 +945,7 @@ describe('WorkspaceSkillCatalogService', () => {
       expect(contribution.skills.map((skill) => skill.description)).toEqual(['fresh']);
     } finally {
       host.dispose();
-      await rm(workDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -989,7 +989,7 @@ describe('WorkspaceSkillCatalogService', () => {
       expect(catalog.catalog.getSkill('watched-skill')?.description).toBe('from watch');
     } finally {
       host.dispose();
-      await rm(workDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   }, 15000);
 
@@ -1033,7 +1033,7 @@ describe('WorkspaceSkillCatalogService', () => {
       expect(ignored?.(watchedRuntimeFile)).toBe(true);
     } finally {
       host.dispose();
-      await rm(workDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -1133,7 +1133,7 @@ describe('WorkspaceSkillCatalogService', () => {
       expect(catalog.catalog.getSkill('dot-skill')?.description).toBe('under dot dir');
     } finally {
       host.dispose();
-      await rm(workDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   }, 15000);
 });

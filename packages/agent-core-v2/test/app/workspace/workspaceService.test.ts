@@ -76,7 +76,7 @@ describe('WorkspaceService (file-backed)', () => {
   afterEach(async () => {
     currentHost?.dispose();
     currentHost = undefined;
-    await fsp.rm(homeDir, { recursive: true, force: true });
+    await fsp.rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   function build(hostFs: IHostFileSystem = new HostFileSystem()): IWorkspaceService {

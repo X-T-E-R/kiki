@@ -33,7 +33,7 @@ test('text AND search is empty when a query term is absent', async () => {
     assert.deepEqual(db.search('bio', 'hello world', { op: 'AND' }).map((r) => r.key), ['a']);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -51,7 +51,7 @@ test('query $regex with a global RegExp matches every document', async () => {
     assert.equal(db.query({ filter: { name: /a/g } }).length, 4);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -71,7 +71,7 @@ test('range index dedupes repeated array elements', async () => {
     assert.deepEqual(db.findRange('byScore', { min: 20, max: 20 }).map((r) => r.key), ['a']);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -89,7 +89,7 @@ test('equality index matches objects regardless of key order', async () => {
     assert.deepEqual(db.findEq('byMeta', { nested: { y: 2, x: 1 } }).map((r) => r.key), ['k2']);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -105,7 +105,7 @@ test('findEq excludes expired keys', async () => {
     assert.deepEqual(db.findEq('byCity', 'Paris'), []);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -119,7 +119,7 @@ test('findRange excludes expired keys', async () => {
     assert.deepEqual(db.findRange('byAge', { min: 0, max: 100 }), []);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -133,7 +133,7 @@ test('search excludes expired keys', async () => {
     assert.deepEqual(db.search('body', 'hello'), []);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -147,6 +147,6 @@ test('compoundRange excludes expired keys', async () => {
     assert.deepEqual(db.compoundRange('byWs', 'W1'), []);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

@@ -33,7 +33,7 @@ describe('GET /api/v1/agents', () => {
 
   afterEach(async () => {
     if (server !== undefined) await server.close();
-    if (home !== undefined) await rm(home, { recursive: true, force: true });
+    if (home !== undefined) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('projects file-backed profiles with source paths and route model pins', async () => {

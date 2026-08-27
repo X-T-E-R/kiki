@@ -68,8 +68,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
   disposables.dispose();
-  await rm(homeDir, { recursive: true, force: true });
-  await rm(workDir, { recursive: true, force: true });
+  await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
 interface CapturedReminder {
@@ -736,7 +736,7 @@ describe('agentsMdReminder probing boundaries', () => {
       expect(text).toContain(leafAgentsMd);
       expect(text).not.toContain(outerAgentsMd);
     } finally {
-      await rm(outside, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -754,7 +754,7 @@ describe('agentsMdReminder probing boundaries', () => {
       expect(text).toContain(normalize(join(workDir, 'link', 'AGENTS.md')));
       expect(text).not.toContain(targetAgentsMd);
     } finally {
-      await rm(target, { recursive: true, force: true });
+      await rm(target, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });

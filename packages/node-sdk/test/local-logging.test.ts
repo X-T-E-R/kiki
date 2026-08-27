@@ -28,7 +28,7 @@ afterEach(async () => {
   await __resetRootLoggerForTest();
   process.env['KIMI_LOG_LEVEL'] = 'off';
   for (const dir of tempDirs.splice(0)) {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 

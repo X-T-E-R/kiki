@@ -117,7 +117,7 @@ afterEach(async () => {
   await bridge.dispose();
   vi.clearAllMocks();
   vi.unstubAllEnvs();
-  await rm(root, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
 describe("Engine startup", () => {

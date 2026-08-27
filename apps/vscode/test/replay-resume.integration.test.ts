@@ -72,7 +72,7 @@ async function createReplayRig(): Promise<ReplayRig> {
       try {
         await provider.close();
       } finally {
-        await rm(rootDir, { recursive: true, force: true });
+        await rm(rootDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       }
     }
   });

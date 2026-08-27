@@ -22,7 +22,7 @@ describe.skipIf(process.platform === 'win32')('e2e: symlink stat parity', () => 
   });
 
   afterEach(async () => {
-    await rm(tempDir, { recursive: true, force: true });
+    await rm(tempDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('follows file symlinks by default and preserves lstat metadata when followSymlinks=false', async () => {

@@ -182,7 +182,7 @@ describe('startServer allowedHosts — env + option merge', () => {
       server = undefined;
     }
     if (home !== undefined) {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       home = undefined;
     }
   });

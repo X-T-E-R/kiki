@@ -498,7 +498,7 @@ async function makeExportedSessionZip(content = 'session zip'): Promise<string> 
 afterEach(async () => {
   resetCapabilitiesCache();
   for (const dir of tempDirs.splice(0)) {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
   if (originalKimiCodeHome === undefined) {
     delete process.env['KIMI_CODE_HOME'];

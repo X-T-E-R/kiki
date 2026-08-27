@@ -96,7 +96,7 @@ describe('/agent', () => {
         main: true,
       });
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -140,7 +140,7 @@ describe('/agent', () => {
       expect(appState.agentProfile).toBe('agent');
       expect(host.showError).not.toHaveBeenCalled();
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });

@@ -32,7 +32,7 @@ test('compound index: re-set with same group+order does not duplicate', async ()
     assert.deepEqual(db.compoundRange('byWs', 'W1'), []);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -46,7 +46,7 @@ test('compound index: becoming invalid removes the entry cleanly', async () => {
     assert.deepEqual(db.compoundRange('byWs', 'W1'), []);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -81,7 +81,7 @@ test('WAL and snapshot tolerate short writes (fragmented writev)', async () => {
     await db2.close();
   } finally {
     proto.writev = orig;
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -168,7 +168,7 @@ test('RESP GET returns correct UTF-8 bulk for non-ASCII values', async () => {
     assert.ok(raw.includes(expected), `expected bulk reply, got ${JSON.stringify(raw.toString('binary'))}`);
   } finally {
     await close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -336,7 +336,7 @@ test('RESP MSET sets all keys', async () => {
     assert.ok(s.includes('$1\r\n3\r\n'));
   } finally {
     await close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -882,7 +882,7 @@ test('a unique-conflicting insert is rejected before any eviction side effect (r
     assert.ok(db.stats.evictions > evictionsBefore, 'a legal write still evicts under pressure');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -939,7 +939,7 @@ test('recovery skips a batch with an unknown sub-op type wholesale (review #9)',
     assert.equal(db.get('after'), 'ok');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -954,7 +954,7 @@ test('recovery skips a batch with trailing bytes wholesale (review #9)', async (
     assert.equal(db.get('after'), 'ok');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 

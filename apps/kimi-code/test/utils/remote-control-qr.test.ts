@@ -70,7 +70,7 @@ describe('generateRemoteControlQr terminal rendering', () => {
       expect(terminal).toBe(renderTerminalQr(url));
       expect(readFileSync(pngPath)).toEqual(await QRCode.toBuffer(url));
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -84,7 +84,7 @@ describe('generateRemoteControlQr terminal rendering', () => {
       expect(terminal).toContain(png.toString('base64'));
       expect(terminal).not.toBe(renderTerminalQr(url));
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -98,7 +98,7 @@ describe('generateRemoteControlQr terminal rendering', () => {
       expect(terminal).toContain(png.toString('base64'));
       expect(terminal).not.toBe(renderTerminalQr(url));
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });

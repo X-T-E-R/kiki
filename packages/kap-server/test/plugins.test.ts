@@ -125,7 +125,7 @@ describe('server-v2 /api/v1 plugins', () => {
       server = undefined;
     }
     for (const dir of createdDirs.splice(0)) {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
     if (home !== undefined) {
       await rm(home, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 } as never);

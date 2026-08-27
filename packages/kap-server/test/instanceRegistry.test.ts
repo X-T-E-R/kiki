@@ -24,7 +24,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(tmpDir, { recursive: true, force: true });
+  rmSync(tmpDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
 interface DiskInstance {
@@ -254,7 +254,7 @@ describe('startServer — instance registry wiring', () => {
       await servers.pop()!.close();
     }
     if (home !== undefined) {
-      rmSync(home, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       home = undefined;
     }
   });

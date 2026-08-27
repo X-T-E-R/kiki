@@ -153,7 +153,7 @@ describe('FileStorageService', () => {
         ),
       ).resolves.toBeUndefined();
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });

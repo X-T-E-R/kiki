@@ -196,7 +196,7 @@ describe('AgentProfileService.bind', () => {
 
   afterEach(async () => {
     await ctx?.dispose();
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   function buildContext(): { ctx: TestAgentContext; profile: IAgentProfileService } {
@@ -610,7 +610,7 @@ describe('AgentProfileService.bind', () => {
 
       expect(svc.getSystemPrompt()).toContain('v2 instructions');
     } finally {
-      await rm(workDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -828,7 +828,7 @@ describe('AgentToolPolicyService tool denylist', () => {
 
   afterEach(async () => {
     await ctx?.dispose();
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   async function bindProfile(name: string): Promise<IAgentToolPolicyService> {
@@ -943,7 +943,7 @@ describe('AgentToolPolicyService global [tools] config', () => {
 
   afterEach(async () => {
     await ctx?.dispose();
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   async function bindWithToolsConfig(
@@ -1006,7 +1006,7 @@ describe('AgentToolPolicyService.setSessionDisabledTools', () => {
 
   afterEach(async () => {
     await ctx?.dispose();
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   async function bind(profile: string): Promise<IAgentToolPolicyService> {
@@ -1217,7 +1217,7 @@ describe('AgentToolPolicyService executor enforcement', () => {
 
   afterEach(async () => {
     await ctx?.dispose();
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it.each([
@@ -1380,7 +1380,7 @@ describe('AgentProfileService tool-pattern warnings', () => {
 
   afterEach(async () => {
     await ctx?.dispose();
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   function toolPatternWarnings(): readonly { code?: string; message?: string }[] {
@@ -1555,8 +1555,8 @@ describe('agentsMdReminder seeding', () => {
 
   afterEach(async () => {
     await ctx?.dispose();
-    await rm(homeDir, { recursive: true, force: true });
-    await rm(workDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   function buildSeededContext(

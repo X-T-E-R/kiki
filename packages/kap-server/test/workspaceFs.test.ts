@@ -59,11 +59,11 @@ describe('server-v2 /api/v1 fs folder picker', () => {
       server = undefined;
     }
     if (home !== undefined) {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       home = undefined;
     }
     if (instancesDir !== undefined) {
-      await rm(instancesDir, { recursive: true, force: true });
+      await rm(instancesDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       instancesDir = undefined;
     }
   });
@@ -203,11 +203,11 @@ describe('server-v2 /api/v1 fs:mkdir', () => {
       server = undefined;
     }
     if (dir !== undefined) {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       dir = undefined;
     }
     if (instancesDir !== undefined) {
-      await rm(instancesDir, { recursive: true, force: true });
+      await rm(instancesDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       instancesDir = undefined;
     }
   });
@@ -305,11 +305,11 @@ describe('server-v2 /api/v1 fs:content', () => {
       server = undefined;
     }
     if (dir !== undefined) {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       dir = undefined;
     }
     if (instancesDir !== undefined) {
-      await rm(instancesDir, { recursive: true, force: true });
+      await rm(instancesDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       instancesDir = undefined;
     }
   });

@@ -90,7 +90,7 @@ describe('PluginUpdateNotifier', () => {
   });
 
   afterEach(async () => {
-    await rm(tempDir, { recursive: true, force: true });
+    await rm(tempDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   function makeNotifier(harness: ReturnType<typeof makeHarness>) {

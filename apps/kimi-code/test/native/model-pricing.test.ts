@@ -25,7 +25,7 @@ function sha256(value: string): string {
 
 afterEach(() => {
   resetModelPricingRuntime();
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
 describe('installKapModelPricing', () => {

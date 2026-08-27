@@ -90,8 +90,8 @@ describe('AgentProfileService.applyProfile', () => {
 
   afterEach(async () => {
     await ctx?.dispose();
-    await rm(homeDir, { recursive: true, force: true });
-    await rm(workDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   function buildContext(
@@ -186,9 +186,9 @@ describe('AgentProfileService.applyProfile', () => {
       expect(prompt).toContain('extra-mapped.txt');
       expect(prompt).not.toContain('extra-local.txt');
     } finally {
-      await rm(mappedDir, { recursive: true, force: true });
-      await rm(localExtra, { recursive: true, force: true });
-      await rm(mappedExtra, { recursive: true, force: true });
+      await rm(mappedDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      await rm(localExtra, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      await rm(mappedExtra, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

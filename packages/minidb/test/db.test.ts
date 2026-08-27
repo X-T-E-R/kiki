@@ -29,7 +29,7 @@ test('set/get persists across reopen (string codec)', async () => {
     assert.equal(db.size, 2);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -47,7 +47,7 @@ test('del persists across reopen', async () => {
     assert.equal(db.get('y'), '2');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -61,7 +61,7 @@ test('json codec round-trips values', async () => {
     assert.deepEqual(db.get('obj'), { a: 1, b: [2, 3] });
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -76,7 +76,7 @@ test('ttl / expire', async () => {
     assert.ok(db.ttl('t') > 50);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -105,7 +105,7 @@ test('recovery truncates a torn WAL tail and keeps valid data', async () => {
     assert.equal(reopened.size, 100);
     await reopened.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -122,7 +122,7 @@ test('maxMemory reject policy blocks writes over budget', async () => {
     assert.ok(db.stats.maxMemoryRejections >= 1);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -142,7 +142,7 @@ test('maxMemory evict-lru evicts old keys to make room', async () => {
     assert.ok(db.stats.evictions >= 1);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -165,9 +165,9 @@ test('backup + restore preserves data, indexes, and text search', async () => {
     assert.deepEqual(restored.search('body', 'hello').map((r) => r.key).sort(), ['a', 'b']);
     await restored.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
-    await fs.rm(backupDir, { recursive: true, force: true });
-    await fs.rm(restoreDir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    await fs.rm(backupDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    await fs.rm(restoreDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -227,9 +227,9 @@ test('backup fences writes at a linearization point: every pre-fence ack is in, 
     assert.equal(restored.get('after'), undefined, 'a post-backup write is not included');
     await restored.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
-    await fs.rm(parent, { recursive: true, force: true });
-    await fs.rm(restoreDir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    await fs.rm(parent, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    await fs.rm(restoreDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -262,8 +262,8 @@ test('backup copy failure leaves no partial backup behind and reopens the write 
     assert.equal(db.get('after'), 'w');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
-    await fs.rm(parent, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    await fs.rm(parent, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -277,7 +277,7 @@ test('readOnly open of a non-existent directory fails with ENOENT and creates no
     );
     assert.equal(await fs.stat(dir).then(() => true, () => false), false, 'no directory was created');
   } finally {
-    await fs.rm(parent, { recursive: true, force: true });
+    await fs.rm(parent, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -299,7 +299,7 @@ test('valueMode disk stores value pointers and reads from WAL', async () => {
     assert.equal(db.get('a'), big);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -320,7 +320,7 @@ test('valueMode disk batch stores value pointers and survives reopen', async () 
     assert.equal(db.get('b'), '2'.repeat(100));
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -343,7 +343,7 @@ test('valueMode disk compaction remaps pointers to the snapshot', async () => {
     assert.equal(db.get('b'), '2'.repeat(1000));
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -366,7 +366,7 @@ test('valueMode disk maxMemory excludes value bulk', async () => {
     await assert.rejects(() => db.set('d', 'w'.repeat(1000)), /maxMemory exceeded/);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -390,7 +390,7 @@ test('valueMode auto selects disk when persisted files exceed maxMemoryBytes', a
     assert.equal(db.get('a'), 'x'.repeat(1000));
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -414,7 +414,7 @@ test('valueMode auto selects memory when persisted files fit maxMemoryBytes', as
     assert.equal(db.get('a'), 'x'.repeat(1000));
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -430,7 +430,7 @@ test('valueMode auto without maxMemoryBytes defaults to memory', async () => {
     assert.equal(db.store.map.get('a')?.ref.kind, 'memory');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -453,7 +453,7 @@ test('openOrRebuild preserves data when only a sidecar definition file is corrup
     assert.equal(db.findEq('byN2', 42).length, 1);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -471,7 +471,7 @@ test('open removes stale compaction temp files', async () => {
     await assert.rejects(fs.stat(path.join(dir, 'db.wal.tmp')), /ENOENT/);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -490,7 +490,7 @@ test('query with skip/limit returns the same rows as slicing the unbounded resul
     assert.deepEqual(db.query({ filter: { n: { $gte: 100 } }, skip: 10, limit: 5 }), scan.slice(10, 15));
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -513,7 +513,7 @@ test('maxMemory evict-lru evicts in least-recently-used order across many victim
     assert.equal(db.get('f'), '1234567890');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -561,7 +561,7 @@ for (const valueMode of ['memory', 'disk'] as const) {
       }
       await db.close();
     } finally {
-      await fs.rm(dir, { recursive: true, force: true });
+      await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 }
@@ -588,6 +588,6 @@ test('async reads stay correct across a compaction rotation (disk mode)', async 
     }
     await ro.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

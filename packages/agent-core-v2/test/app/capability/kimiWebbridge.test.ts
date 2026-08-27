@@ -134,7 +134,7 @@ describe('kimi-webbridge entry', () => {
     root = await mkdtemp(path.join(tmpdir(), 'kimi-webbridge-entry-'));
   });
   afterEach(async () => {
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   function makeCtx(overrides: Partial<CapabilityEntryContext> = {}): CapabilityEntryContext {

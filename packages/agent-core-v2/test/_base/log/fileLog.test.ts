@@ -14,7 +14,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(workDir, { recursive: true, force: true });
+  await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
 async function listLogs(dir: string): Promise<string[]> {

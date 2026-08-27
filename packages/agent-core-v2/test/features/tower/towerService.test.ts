@@ -355,7 +355,7 @@ describe('AgentTowerService', () => {
     });
 
     afterEach(async () => {
-      await rm(repo, { recursive: true, force: true });
+      await rm(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     });
 
     it('allows a worker Write inside its own worktree', async () => {

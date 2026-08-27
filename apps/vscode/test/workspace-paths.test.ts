@@ -173,7 +173,7 @@ afterEach(async () => {
   await Promise.all(bridges.map((bridge) => bridge.dispose()));
   fileManager.dispose();
   vi.clearAllMocks();
-  await Promise.all([root, ...extraRoots].map((directory) => rm(directory, { recursive: true, force: true })));
+  await Promise.all([root, ...extraRoots].map((directory) => rm(directory, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 })));
 });
 
 describe("Webview workspace paths (selected-directory containment)", () => {

@@ -85,7 +85,7 @@ describe('StdioMcpClient', () => {
       expect(realpathSync(text)).toBe(realpathSync(cwd));
     } finally {
       await client.close();
-      await rm(cwd, { recursive: true, force: true });
+      await rm(cwd, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   }, 15000);
 
@@ -109,8 +109,8 @@ describe('StdioMcpClient', () => {
       expect(realpathSync(text)).toBe(realpathSync(configuredCwd));
     } finally {
       await client.close();
-      await rm(defaultCwd, { recursive: true, force: true });
-      await rm(configuredCwd, { recursive: true, force: true });
+      await rm(defaultCwd, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      await rm(configuredCwd, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   }, 15000);
 
@@ -134,7 +134,7 @@ describe('StdioMcpClient', () => {
       expect(realpathSync(text)).toBe(realpathSync(configuredCwd));
     } finally {
       await client.close();
-      await rm(defaultCwd, { recursive: true, force: true });
+      await rm(defaultCwd, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   }, 15000);
 
@@ -157,8 +157,8 @@ describe('StdioMcpClient', () => {
       expect(realpathSync(text)).toBe(realpathSync(outsideCwd));
     } finally {
       await client.close();
-      await rm(defaultCwd, { recursive: true, force: true });
-      await rm(outsideCwd, { recursive: true, force: true });
+      await rm(defaultCwd, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      await rm(outsideCwd, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   }, 15000);
 

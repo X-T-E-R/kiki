@@ -204,7 +204,7 @@ describe('readAppBundleVersion', () => {
     root = await mkdtemp(path.join(tmpdir(), 'kimi-cu-version-'));
   });
   afterEach(async () => {
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('reads CFBundleShortVersionString from Info.plist', async () => {
@@ -231,7 +231,7 @@ describe('kimi-cu entry', () => {
     root = await mkdtemp(path.join(tmpdir(), 'kimi-cu-entry-'));
   });
   afterEach(async () => {
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   async function fakeAppBundle(): Promise<string> {

@@ -43,7 +43,7 @@ async function importBundle(home: string): Promise<string> {
 
 describe('imports + logs routes', () => {
   let home: string | null = null;
-  afterEach(async () => { if (home) await rm(home, { recursive: true, force: true }); home = null; });
+  afterEach(async () => { if (home) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); home = null; });
 
   it('imports a zip and surfaces it in the session list tagged imported', async () => {
     home = await mkdtemp(join(tmpdir(), 'vis-imp-route-'));

@@ -325,7 +325,7 @@ describe('extractMediaAttachments', () => {
         imageUrl: { url: 'data:image/png;base64,AQID' },
       });
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -424,7 +424,7 @@ describe('resolveOriginalCaptions', () => {
         imageUrl: { url: 'data:image/png;base64,AQID' },
       });
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -457,7 +457,7 @@ describe('resolveOriginalCaptions', () => {
       expect(caption.text).toContain('4 B');
       expect(caption.text).toContain(att.original!.path!);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -482,7 +482,7 @@ describe('resolveOriginalCaptions', () => {
         imageUrl: { url: 'kimi-file://file-2' },
       });
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -508,7 +508,7 @@ describe('resolveOriginalCaptions', () => {
       expect(att.original?.path?.startsWith(dir)).toBe(true);
       expect(readdirSync(dir)).toHaveLength(1);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -534,7 +534,7 @@ describe('resolveOriginalCaptions', () => {
       expect(caption.text).toContain(existing);
       expect(readFileSync(existing, 'utf8')).toBe('orig');
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -575,7 +575,7 @@ describe('resolveOriginalCaptions', () => {
       if (retryCaption?.type !== 'text') throw new Error('expected caption text part');
       expect(retryCaption.text).toContain(att.original!.path!);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -603,7 +603,7 @@ describe('resolveOriginalCaptions', () => {
       expect(resolved).toHaveLength(1);
       expect(resolved[0]?.type).toBe('image_url');
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -632,7 +632,7 @@ describe('persistOriginalImageSync', () => {
       expect(existsSync(first!)).toBe(false);
       expect(existsSync(second!)).toBe(true);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });
@@ -682,7 +682,7 @@ describe('rewriteMediaPlaceholders', () => {
       expect(readFileSync(m[1]!, 'utf8')).toBe('video-bytes');
     } finally {
       cleanup();
-      rmSync(srcDir, { recursive: true, force: true });
+      rmSync(srcDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -755,11 +755,15 @@ describe('rewriteMediaPlaceholders', () => {
       expect(readFileSync(m[1]!, 'utf8')).toBe('video-bytes');
     } finally {
       cleanup();
-      rmSync(srcDir, { recursive: true, force: true });
+      rmSync(srcDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
-  it("sanitizes XML boundary chars out of plain-style video cache names", () => {
+  // Windows 文件名禁止 <>"，这个 fixture（clip<1>&.mov）在 win32 上无法创建；
+  // 标签清洗行为由 POSIX 平台的这条断言守。
+  it.skipIf(process.platform === 'win32')(
+    'sanitizes XML boundary chars out of plain-style video cache names',
+    () => {
     const { cleanup } = setupTempCache();
     const srcDir = makeTempDir();
     try {
@@ -777,9 +781,10 @@ describe('rewriteMediaPlaceholders', () => {
       expect(readFileSync(m[1]!, 'utf8')).toBe('video-bytes');
     } finally {
       cleanup();
-      rmSync(srcDir, { recursive: true, force: true });
+      rmSync(srcDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
-  });
+    },
+  );
 });
 
 describe('pendingMediaIngestions', () => {

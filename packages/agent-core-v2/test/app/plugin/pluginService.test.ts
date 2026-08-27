@@ -156,7 +156,7 @@ describe('PluginService (plugin boundary)', () => {
     vi.restoreAllMocks();
     while (createdDirs.length > 0) {
       const dir = createdDirs.pop();
-      if (dir !== undefined) await rm(dir, { recursive: true, force: true });
+      if (dir !== undefined) await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

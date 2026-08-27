@@ -76,7 +76,7 @@ describe('SessionIndexMirror', () => {
     disposeHost = undefined;
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
-    await fsp.rm(homeDir, { recursive: true, force: true });
+    await fsp.rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   async function publishGeneration(): Promise<void> {

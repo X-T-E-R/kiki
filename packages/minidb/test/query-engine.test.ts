@@ -35,7 +35,7 @@ test('comparison operators $eq $ne $gt $gte $lt $lte', async () => {
     );
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -53,7 +53,7 @@ test('$in / $nin membership', async () => {
     assert.deepEqual(db.query({ filter: { city: { $nin: 'Paris' as unknown as string[] } } }).map((r) => r.key), []);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -72,7 +72,7 @@ test('$exists and $type', async () => {
     assert.deepEqual(db.query({ filter: { age: { $type: 'string' } } }).map((r) => r.key), []);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -95,7 +95,7 @@ test('$regex with string, [pattern, flags], RegExp and stateful global RegExp', 
     assert.deepEqual(db.query({ filter: { age: { $regex: '3' } } }).map((r) => r.key), []);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -108,7 +108,7 @@ test('scalar RegExp value resets lastIndex between documents', async () => {
     assert.deepEqual(db.query({ filter: { age: /^3/ } }).map((r) => r.key), []);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -131,7 +131,7 @@ test('logical operators $and $or $nor $not', async () => {
     assert.deepEqual(db.query({ filter: { $not: { city: 'Paris' } } }).map((r) => r.key).sort(), ['b', 'd']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -146,7 +146,7 @@ test('unknown operator and non-array logical args never match', async () => {
     assert.deepEqual(db.query({ filter: { $nor: { city: 'Paris' } as never } }).map((r) => r.key), []);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -173,7 +173,7 @@ test('nested dot + bracket paths in filter and projection', async () => {
     assert.deepEqual(db.query({ project: [] })[0]!.value, (await db.get('p1')));
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -187,6 +187,6 @@ test('sort ascending/descending, skip and limit', async () => {
     assert.equal(db.query().length, 4);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

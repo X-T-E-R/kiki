@@ -28,7 +28,7 @@ test('non-ASCII key: set/get/has works (live, no restart)', async () => {
     assert.equal(db.has('missing-é'), false);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -43,7 +43,7 @@ test('non-ASCII key: del removes it and reports existence', async () => {
     assert.equal(await db.del('café'), false, 'second del reports missing');
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -61,7 +61,7 @@ test('non-ASCII key survives close + reopen (WAL recovery)', async () => {
     assert.equal(db.has('北京'), true);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -85,7 +85,7 @@ test('non-ASCII key survives compaction (snapshot recovery)', async () => {
     assert.equal(db.get('要删除'), undefined, 'tombstone must survive compaction');
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -103,7 +103,7 @@ test('non-ASCII key: scan returns the original key and value', async () => {
     assert.equal(db.get('c-北京'), '3');
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -118,7 +118,7 @@ test('non-ASCII key: prefix scan matches', async () => {
     assert.deepEqual(keys, ['用户:1', '用户:2']);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -134,7 +134,7 @@ test('non-ASCII key: secondary equality index returns key and value', async () =
     assert.deepEqual(r.map((x) => (x.value as { n: number }).n), [1, 2]);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -153,7 +153,7 @@ test('non-ASCII key: secondary index is consistent after recovery', async () => 
     assert.deepEqual(r[0]!.value, { city: 'Paris' });
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -175,7 +175,7 @@ test('non-ASCII key: range index, dt index, compound index, text index', async (
     assert.equal(db.findRange('byAge', { min: 25, max: 35 })[0]!.value?.age, 30);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -190,7 +190,7 @@ test('non-ASCII key: unified query by exact key and by prefix', async () => {
     assert.deepEqual(pref, ['post:上海', 'post:北京']);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -210,7 +210,7 @@ test('non-ASCII key: batch set + del survives recovery', async () => {
     assert.equal(db.get('批2'), 'two');
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 

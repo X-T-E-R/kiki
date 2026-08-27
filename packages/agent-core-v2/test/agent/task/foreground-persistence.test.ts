@@ -127,7 +127,7 @@ describe('AgentTaskService — foreground persistence', () => {
       await ctx.expectResumeMatches();
     } finally {
       await ctx.dispose();
-      rmSync(sessionDir, { recursive: true, force: true });
+      rmSync(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

@@ -157,7 +157,7 @@ describe.skipIf(process.platform === 'win32')('applyLoginShellPathFromNode', () 
   afterEach(async () => {
     restoreEnv('PATH', originalPath);
     restoreEnv('SHELL', originalShell);
-    await rm(tempDir, { recursive: true, force: true });
+    await rm(tempDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('appends login-shell PATH entries missing from process.env.PATH', async () => {

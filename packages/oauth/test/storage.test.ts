@@ -45,7 +45,7 @@ describe('FileTokenStorage', () => {
   });
 
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('returns undefined when no token exists', async () => {
@@ -72,6 +72,7 @@ describe('FileTokenStorage', () => {
     expect(parsed['accessToken']).toBeUndefined();
   });
 
+  // Windows 不建模 POSIX mode（chmod 是 no-op）；权限行为由 POSIX 平台的这条断言守
   it.skipIf(process.platform === 'win32')('writes the credentials file with mode 0600', async () => {
     await storage.save('kimi-code', sampleToken());
     const stat = statSync(join(dir, 'kimi-code.json'));
@@ -134,6 +135,7 @@ describe('FileTokenStorage', () => {
     expect(names).toEqual(['kimi-code']);
   });
 
+  // Windows 不建模 POSIX mode（chmod 是 no-op）；权限行为由 POSIX 平台的这条断言守
   it.skipIf(process.platform === 'win32')('creates the credentials dir with mode 0700 if missing', async () => {
     const freshDir = join(dir, 'nested', 'sub');
     const s = new FileTokenStorage(freshDir);

@@ -856,7 +856,7 @@ describe('GlobTool integration (real ripgrep)', () => {
 
   afterEach(async () => {
     if (tmpDir !== undefined) {
-      await fs.rm(tmpDir, { recursive: true, force: true });
+      await fs.rm(tmpDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       tmpDir = undefined;
     }
   });
@@ -940,7 +940,7 @@ describe('GlobTool integration (real ripgrep)', () => {
 
       expect(result.output).toBe(extFile);
     } finally {
-      await fs.rm(externalDir, { recursive: true, force: true });
+      await fs.rm(externalDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });

@@ -50,7 +50,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(sessionDir, { recursive: true, force: true });
+  await rm(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
 describe('AgentTaskService — loadFromDisk + reconcile', () => {

@@ -60,6 +60,19 @@ function plain(text: string): string {
   return text.replaceAll(/\u001B\[[0-9;]*m/g, '');
 }
 
+/**
+ * A `node -e` status-line fixture that survives both spawn shells.
+ *
+ * The runner shells out via `sh -c` on POSIX and `cmd /d /s /c` on Windows. On
+ * the way to cmd, libuv escapes inner double quotes, which would hand node a
+ * quoted script — a bare string literal that runs nothing — so Windows gets the
+ * unquoted form instead. That keeps every script space-free and confined to
+ * single quotes.
+ */
+function nodeCommand(script: string): string {
+  return process.platform === 'win32' ? `node -e ${script}` : `node -e "${script}"`;
+}
+
 describe('FooterComponent status_line items', () => {
   it('renders only the chosen slots in the given order', () => {
     const state: AppState = {
@@ -136,7 +149,10 @@ describe('FooterComponent status_line items', () => {
 
 describe('runStatusLineCommand', () => {
   it('passes the payload as JSON on stdin and returns the first stdout line', async () => {
-    const line = await runStatusLineCommand('cat', payload);
+    const line = await runStatusLineCommand(
+      nodeCommand(`process.stdin.pipe(process.stdout)`),
+      payload,
+    );
 
     expect(line).not.toBeNull();
     const parsed = JSON.parse(line!);
@@ -146,19 +162,24 @@ describe('runStatusLineCommand', () => {
   });
 
   it('returns null on a nonzero exit', async () => {
-    expect(await runStatusLineCommand('exit 3', payload)).toBeNull();
+    expect(await runStatusLineCommand(nodeCommand(`process.exit(3)`), payload)).toBeNull();
   });
 
   it('returns null on empty output', async () => {
-    expect(await runStatusLineCommand('true', payload)).toBeNull();
+    expect(await runStatusLineCommand(nodeCommand(`0`), payload)).toBeNull();
   });
 
   it('returns null when the command overruns the timeout', async () => {
-    expect(await runStatusLineCommand('sleep 2', payload, 100)).toBeNull();
+    expect(
+      await runStatusLineCommand(nodeCommand(`setTimeout(Object,2000)`), payload, 100),
+    ).toBeNull();
   });
 
   it('trims the line and ignores later lines', async () => {
-    const line = await runStatusLineCommand('printf "first\\nsecond\\n"', payload);
+    const line = await runStatusLineCommand(
+      nodeCommand(`process.stdout.write('first\\nsecond\\n')`),
+      payload,
+    );
 
     expect(line).toBe('first');
   });
@@ -166,7 +187,7 @@ describe('runStatusLineCommand', () => {
   it('caps the captured output instead of accumulating an unending stream', async () => {
     // 200 KB on a single line, then exit: only the capped prefix is kept.
     const line = await runStatusLineCommand(
-      'head -c 200000 /dev/zero | tr "\\0" "a"',
+      nodeCommand(`process.stdout.write('a'.repeat(200000))`),
       payload,
     );
 
@@ -179,7 +200,10 @@ describe('FooterComponent status_line command', () => {
   it('swaps line 1 to the command output once it lands', async () => {
     const state: AppState = {
       ...baseState,
-      statusLine: { items: null, command: 'printf "my-custom-status"' },
+      statusLine: {
+        items: null,
+        command: nodeCommand(`process.stdout.write('my-custom-status')`),
+      },
     };
     const footer = new FooterComponent(state);
 
@@ -194,7 +218,7 @@ describe('FooterComponent status_line command', () => {
   it('keeps the built-in layout when the command fails', async () => {
     const state: AppState = {
       ...baseState,
-      statusLine: { items: null, command: 'exit 1' },
+      statusLine: { items: null, command: nodeCommand(`process.exit(1)`) },
     };
     const footer = new FooterComponent(state);
 
@@ -206,7 +230,10 @@ describe('FooterComponent status_line command', () => {
 
 describe('StatusLineCommandRunner', () => {
   it('caches the last good line and coalesces refreshes in the same interval', async () => {
-    const runner = new StatusLineCommandRunner('printf "x"', () => {});
+    const runner = new StatusLineCommandRunner(
+      nodeCommand(`process.stdout.write('x')`),
+      () => {},
+    );
 
     runner.maybeRefresh(payload);
     runner.maybeRefresh(payload);
@@ -215,7 +242,9 @@ describe('StatusLineCommandRunner', () => {
     expect(runner.current()).toBe('x');
   });
 
-  it('runs a deferred refresh after the throttle interval instead of dropping it', async () => {
+  // POSIX shell 专属行为：这一例靠 `#!/bin/sh` 脚本自增计数器来观察节流补跑，
+  // Windows 没有 sh，改写会换掉被测的观察手段而不是修环境差异。
+  it.skipIf(process.platform === 'win32')('runs a deferred refresh after the throttle interval instead of dropping it', async () => {
     const dir = join(tmpdir(), `sl-trailing-${process.pid}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(dir, { recursive: true });
     try {
@@ -238,21 +267,24 @@ describe('StatusLineCommandRunner', () => {
       expect(readFileSync(counterFile, 'utf-8').trim()).toBe('2');
       runner.dispose();
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
   it('recreates the runner when the command changes', async () => {
     const state: AppState = {
       ...baseState,
-      statusLine: { items: null, command: 'printf "aaa"' },
+      statusLine: { items: null, command: nodeCommand(`process.stdout.write('aaa')`) },
     };
     const footer = new FooterComponent(state);
     footer.render(120); // kicks the first run
     await new Promise((resolve) => setTimeout(resolve, 450));
     expect(plain(footer.render(120)[0]!)).toContain('aaa');
 
-    footer.setState({ ...state, statusLine: { items: null, command: 'printf "bbb"' } });
+    footer.setState({
+      ...state,
+      statusLine: { items: null, command: nodeCommand(`process.stdout.write('bbb')`) },
+    });
     footer.render(120); // kicks the replacement run
     await new Promise((resolve) => setTimeout(resolve, 450));
 

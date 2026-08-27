@@ -17,9 +17,10 @@ describe('FileStorageService — file permissions', () => {
   });
 
   afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
+  // Windows 不建模 POSIX mode（chmod 是 no-op）；权限行为由 POSIX 平台的这条断言守
   it.skipIf(isWin)('creates scope directories with dirMode (0700)', async () => {
     const svc = new FileStorageService(dir, 0o700, 0o600);
     await svc.write('cron/ws', 'abc.json', encoder.encode('{}'));
@@ -28,6 +29,7 @@ describe('FileStorageService — file permissions', () => {
     expect(dirStat.mode & 0o777).toBe(0o700);
   });
 
+  // Windows 不建模 POSIX mode（chmod 是 no-op）；权限行为由 POSIX 平台的这条断言守
   it.skipIf(isWin)('writes documents with fileMode (0600)', async () => {
     const svc = new FileStorageService(dir, 0o700, 0o600);
     await svc.write('cron/ws', 'abc.json', encoder.encode('{"x":1}'));
@@ -36,6 +38,7 @@ describe('FileStorageService — file permissions', () => {
     expect(fileStat.mode & 0o777).toBe(0o600);
   });
 
+  // Windows 不建模 POSIX mode（chmod 是 no-op）；权限行为由 POSIX 平台的这条断言守
   it.skipIf(isWin)('defaults to the process umask when modes are omitted', async () => {
     const svc = new FileStorageService(dir);
     await svc.write('scope', 'k.json', encoder.encode('{}'));
@@ -52,7 +55,7 @@ describe('FileStorageService — error translation', () => {
   });
 
   afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('keeps ENOENT semantics: read returns undefined, list returns []', async () => {
@@ -96,7 +99,7 @@ describe('FileStorageService — exclusive locks', () => {
   });
 
   afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('rejects a second holder with storage.locked and releases ownership', async () => {
@@ -194,7 +197,7 @@ describe('FileStorageService — writeStream', () => {
   });
 
   afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('writes a chunked source and replaces the whole value', async () => {

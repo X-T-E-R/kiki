@@ -24,7 +24,7 @@ describe('discoverAgentFiles', () => {
   });
 
   afterEach(async () => {
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   function fileRoot(path: string, source: AgentFileRoot['source'] = 'project'): AgentFileRoot {
@@ -90,7 +90,7 @@ describe('discoverAgentFiles', () => {
       expect(result.agents[0]?.description).toBe('reviewer agent');
       expect(result.agents[0]?.source).toBe('user');
     } finally {
-      await rm(other, { recursive: true, force: true });
+      await rm(other, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -234,7 +234,7 @@ describe('discoverAgentFiles', () => {
       expect(result.agents.map((a) => a.name)).toEqual(['solo']);
       expect(warnings.some((w) => w.includes(root))).toBe(true);
     } finally {
-      await rm(other, { recursive: true, force: true });
+      await rm(other, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });

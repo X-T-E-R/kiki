@@ -10,7 +10,7 @@ let tmpDir: string | undefined;
 
 afterEach(() => {
   if (tmpDir !== undefined) {
-    rmSync(tmpDir, { recursive: true, force: true });
+    rmSync(tmpDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     tmpDir = undefined;
   }
 });

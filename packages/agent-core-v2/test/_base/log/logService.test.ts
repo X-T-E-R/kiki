@@ -160,7 +160,7 @@ describe('AppLogService (scoped)', () => {
     homeDir = await mkdtemp(join(tmpdir(), 'global-log-'));
   });
   afterEach(async () => {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   function buildHost(cfg = resolveLoggingConfig({ homeDir, env: { KIMI_LOG_LEVEL: 'info' } })) {

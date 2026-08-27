@@ -47,7 +47,7 @@ describe('AgentModelSteeringService', () => {
   afterEach(async () => {
     await ctx?.dispose();
     ctx = undefined;
-    await rm(homeDir, { recursive: true, force: true }).catch(() => undefined);
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }).catch(() => undefined);
   });
 
   it('injects steering on each new turn and skips intra-turn steps', async () => {

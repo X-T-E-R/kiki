@@ -139,7 +139,7 @@ describe('native assets', () => {
       expect(readFileSync(join(repairedRoot ?? '', 'index.js'), 'utf-8')).toContain("value: 'ok'");
       expect(existsSync(join(dir, 'native', 'test', 'test-target'))).toBe(true);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -160,7 +160,7 @@ describe('native assets', () => {
 
       expect(pkg).toEqual({ value: 'ok' });
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -201,7 +201,7 @@ describe('native assets', () => {
         entry: { kind: 'packaged', path: first },
       });
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -236,7 +236,7 @@ describe('native assets', () => {
       ).toMatchObject({ status: 'failed', errorCode: 'Error' });
       expect(getTextBuildWorkerRuntimeState()).toEqual({ configured: false });
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

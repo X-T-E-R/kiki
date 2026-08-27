@@ -24,7 +24,7 @@ test('batch applies multiple ops atomically', async () => {
     assert.equal(db.size, 1);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -41,7 +41,7 @@ test('batch with dt + indexes updates everything', async () => {
     assert.deepEqual(db.dtRange('created', { gte: 100 }).map((r) => r.key).sort(), ['u1', 'u2']);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -61,7 +61,7 @@ test('batch unique violation rejects the whole batch', async () => {
     assert.equal(db.size, 1);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -95,7 +95,7 @@ test('batch is atomic on recovery: a corrupt batch frame skips the whole batch',
     assert.ok(!(x === undefined && y !== undefined), 'batch must not be half-applied (y only)');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -107,6 +107,6 @@ test('empty batch is a no-op', async () => {
     assert.equal(db.size, 0);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

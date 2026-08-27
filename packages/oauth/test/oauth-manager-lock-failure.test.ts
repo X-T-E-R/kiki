@@ -70,7 +70,7 @@ describe('OAuthManager refresh lock failure', () => {
   });
 
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     vi.restoreAllMocks();
   });
 

@@ -188,7 +188,7 @@ describe('server-v2 /api/v1 fs routes', () => {
       expect(body.data.content).toBe('remote');
     } finally {
       await provider.dispose();
-      await rm(remote, { recursive: true, force: true });
+      await rm(remote, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -344,7 +344,7 @@ describe('server-v2 /api/v1 fs routes', () => {
       const downloadBody = (await res.json()) as Envelope<null>;
       expect(downloadBody.code).toBe(ErrorCode.FS_PATH_ESCAPES_SESSION);
     } finally {
-      await rm(outside, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

@@ -89,7 +89,7 @@ test('WAL append rejects a non-buffer frame', async () => {
     await assert.rejects(() => wal.append('x' as unknown as Buffer), /frame must be a Buffer/);
   } finally {
     await wal.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -244,6 +244,6 @@ test('RESP server replies with -ERR when a command throws', async () => {
     sock.end();
   } finally {
     await srv.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

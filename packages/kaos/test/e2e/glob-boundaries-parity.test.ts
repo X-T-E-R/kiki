@@ -17,7 +17,7 @@ describe('e2e: glob parity boundaries', () => {
   });
 
   afterEach(async () => {
-    await rm(tempDir, { recursive: true, force: true });
+    await rm(tempDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('** traverses hidden directories and yields each nested match only once', async () => {

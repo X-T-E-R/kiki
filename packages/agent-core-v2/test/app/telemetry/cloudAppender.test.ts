@@ -78,7 +78,7 @@ describe('CloudAppender', () => {
   });
 
   afterEach(() => {
-    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     if (savedOauthHost === undefined) delete process.env['KIMI_CODE_OAUTH_HOST'];
     else process.env['KIMI_CODE_OAUTH_HOST'] = savedOauthHost;
     if (savedLegacyOauthHost === undefined) delete process.env['KIMI_OAUTH_HOST'];

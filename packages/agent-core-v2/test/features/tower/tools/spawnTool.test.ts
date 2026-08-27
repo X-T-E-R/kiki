@@ -172,7 +172,7 @@ describe('TowerSpawnTool', () => {
 
   afterEach(async () => {
     disposables.dispose();
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   function execute(args: TowerSpawnToolInput): Promise<ExecutableToolResult> {

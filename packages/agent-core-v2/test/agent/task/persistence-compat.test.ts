@@ -28,7 +28,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(sessionDir, { recursive: true, force: true });
+  await rm(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
 async function writeLegacyTask(taskId: string, task: Record<string, unknown>): Promise<void> {

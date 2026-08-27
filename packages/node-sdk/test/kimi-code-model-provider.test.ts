@@ -24,7 +24,7 @@ describe('KimiForCodingProvider OAuth error mapping', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   function resolveAuth() {

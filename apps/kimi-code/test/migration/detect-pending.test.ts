@@ -11,8 +11,8 @@ beforeEach(async () => {
   tgt = await mkdtemp(join(tmpdir(), 'detect-pending-tgt-'));
 });
 afterEach(async () => {
-  await rm(src, { recursive: true, force: true });
-  await rm(tgt, { recursive: true, force: true });
+  await rm(src, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  await rm(tgt, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
 describe('detectPendingMigration', () => {

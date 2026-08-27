@@ -70,7 +70,7 @@ describe('uploadArchive', () => {
         parts: [{ partNumber: 1, etag: '"etag-1"' }],
       });
     } finally {
-      await rm(workRoot, { recursive: true, force: true });
+      await rm(workRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -109,7 +109,7 @@ describe('uploadArchive', () => {
       expect(init.method).toBe('POST');
       expect(await new Response(init.body as ReadableStream).text()).toBe('hello');
     } finally {
-      await rm(workRoot, { recursive: true, force: true });
+      await rm(workRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -163,7 +163,7 @@ describe('uploadArchive', () => {
       expect(api.completeUpload).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
-      await rm(workRoot, { recursive: true, force: true });
+      await rm(workRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -210,7 +210,7 @@ describe('uploadArchive', () => {
       });
     } finally {
       vi.useRealTimers();
-      await rm(workRoot, { recursive: true, force: true });
+      await rm(workRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });
@@ -248,7 +248,7 @@ describe('scanCodebase filtering', () => {
         name: 'AbortError',
       });
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -265,7 +265,7 @@ describe('scanCodebase filtering', () => {
       expect(scan.usedGitIgnore).toBe(false);
       expect(scan.files.map((file) => file.path)).toEqual(['keep.ts']);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -291,7 +291,7 @@ describe('scanCodebase filtering', () => {
       expect(paths).not.toContain('.yarnrc.yml');
       expect(paths).not.toContain('id_rsa');
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -307,7 +307,7 @@ describe('scanCodebase filtering', () => {
       const scan = await scanCodebase(root);
       expect(scan.files.map((file) => file.path)).toEqual(['keep.ts']);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -320,7 +320,7 @@ describe('scanCodebase filtering', () => {
       const scan = await scanCodebase(root, { limits: { maxFileSize: 128 } });
       expect(scan.files.map((file) => file.path)).toEqual(['small.txt']);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -339,7 +339,7 @@ describe('scanCodebase filtering', () => {
       expect(scan.usedGitIgnore).toBe(true);
       expect(scan.files.map((file) => file.path)).toEqual(['keep.ts']);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -354,7 +354,7 @@ describe('scanCodebase filtering', () => {
       expect(scan.files).toHaveLength(2);
       expect(scan.exceedsLimit).toEqual({ reason: 'file-count', limit: 2 });
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -370,7 +370,7 @@ describe('scanCodebase filtering', () => {
       expect(scan.files).toHaveLength(2);
       expect(scan.exceedsLimit).toEqual({ reason: 'total-size', limit: 250 });
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });
@@ -395,7 +395,7 @@ describe('removeStaleFeedbackUploads', () => {
       await expect(stat(staleDir)).rejects.toThrow();
       await expect(stat(freshDir)).resolves.toBeDefined();
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

@@ -2375,7 +2375,7 @@ describe('KimiTUI startup', () => {
       loadSpy.mockRestore();
     } finally {
       process.env = { ...originalEnv };
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -2418,7 +2418,7 @@ describe('KimiTUI startup', () => {
       loadSpy.mockRestore();
     } finally {
       process.env = { ...originalEnv };
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

@@ -128,7 +128,7 @@ describe("CombinedAutocompleteProvider", () => {
 		});
 
 		afterEach(() => {
-			rmSync(rootDir, { recursive: true, force: true });
+			rmSync(rootDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 		});
 
 		test("returns all files and folders for empty @ query", async () => {
@@ -516,7 +516,7 @@ describe("CombinedAutocompleteProvider", () => {
 		});
 
 		afterEach(() => {
-			rmSync(baseDir, { recursive: true, force: true });
+			rmSync(baseDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 		});
 
 		test("preserves ./ prefix when completing paths", async () => {
@@ -562,7 +562,7 @@ describe("CombinedAutocompleteProvider", () => {
 		});
 
 		afterEach(() => {
-			rmSync(baseDir, { recursive: true, force: true });
+			rmSync(baseDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 		});
 
 		test("quotes paths with spaces for direct completion", async () => {

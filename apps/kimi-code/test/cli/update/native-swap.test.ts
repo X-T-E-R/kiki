@@ -186,7 +186,7 @@ describe('maybeRelaunchWithStagedNativeUpdate', () => {
 
   afterEach(async () => {
     vi.unstubAllEnvs();
-    await rm(workDir, { recursive: true, force: true });
+    await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('does nothing when the re-exec guard env is set', async () => {

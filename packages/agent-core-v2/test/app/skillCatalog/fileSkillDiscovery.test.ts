@@ -50,7 +50,7 @@ describe('FileSkillDiscovery', () => {
 
   afterEach(async () => {
     disposables.dispose();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   function discover(roots: readonly SkillRoot[]) {

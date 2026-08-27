@@ -2697,7 +2697,7 @@ describe('ConfigService thinking effort max migration', () => {
   });
 
   afterEach(() => {
-    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   async function createMigratingConfig(toml: string) {

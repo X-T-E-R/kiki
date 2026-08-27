@@ -226,7 +226,13 @@ describe('KikiSocket transport watchdog', () => {
     expect(FakeWebSocket.instances).toHaveLength(2);
     expect(statuses.at(-1)).toBe('open');
     expect(socket.ready).toBe(true);
-    expect(vi.getTimerCount()).toBe(0);
+
+    // Nothing is left armed: a surviving establishment deadline (12s) or
+    // reconnect backoff (<=8s) would fire inside this window and either spawn a
+    // third socket or knock the status off `open`.
+    vi.advanceTimersByTime(120_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(statuses.at(-1)).toBe('open');
     socket.close();
   });
 

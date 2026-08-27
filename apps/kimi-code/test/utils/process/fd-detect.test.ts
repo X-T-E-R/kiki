@@ -22,7 +22,7 @@ let tempHome: string | undefined;
 
 afterEach(() => {
   if (tempHome !== undefined) {
-    rmSync(tempHome, { recursive: true, force: true });
+    rmSync(tempHome, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     tempHome = undefined;
   }
   process.env = { ...originalEnv };

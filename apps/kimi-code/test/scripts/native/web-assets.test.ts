@@ -52,7 +52,7 @@ describe('collectWebAssets', () => {
         'web/test-target/dist-web/index.html': join(appRoot, 'dist-web', 'index.html'),
       });
     } finally {
-      rmSync(appRoot, { recursive: true, force: true });
+      rmSync(appRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -63,7 +63,7 @@ describe('collectWebAssets', () => {
         /Kimi web build output was not found/,
       );
     } finally {
-      rmSync(appRoot, { recursive: true, force: true });
+      rmSync(appRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -83,7 +83,7 @@ describe('collectWebAssets', () => {
         root: 'dist-web',
       });
     } finally {
-      rmSync(appRoot, { recursive: true, force: true });
+      rmSync(appRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });

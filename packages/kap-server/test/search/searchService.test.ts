@@ -278,7 +278,7 @@ describe('GlobalSearchService', () => {
     for (const service of services.splice(0)) service.dispose();
     await drainGlobalSearchDisposals();
     if (home !== undefined) {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       home = undefined;
     }
   });
@@ -2432,7 +2432,7 @@ describe('GlobalSearchService', () => {
         expect(coreOf(a.service).db).toBeNull();
         expect(coreOf(b.service).db).toBeNull();
       } finally {
-        await rm(homeB, { recursive: true, force: true });
+        await rm(homeB, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       }
     });
   });
@@ -2452,7 +2452,7 @@ describe('search worker host (stage 4)', () => {
     for (const host of hosts.splice(0)) await host.dispose().catch(() => {});
     await drainGlobalSearchDisposals();
     if (home !== undefined) {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       home = undefined;
     }
   });
@@ -2919,7 +2919,7 @@ describe('search lifecycle diagnostics (stage 5)', () => {
     for (const host of hosts.splice(0)) await host.dispose().catch(() => {});
     await drainGlobalSearchDisposals();
     if (home !== undefined) {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       home = undefined;
     }
   });
@@ -3187,7 +3187,7 @@ describe('baseline: synthetic corpus', () => {
     for (const service of services.splice(0)) service.dispose();
     await drainGlobalSearchDisposals();
     if (home !== undefined) {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       home = undefined;
     }
   });

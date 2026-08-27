@@ -379,8 +379,8 @@ describe('FullCompaction', () => {
       );
       expect(profile.getActiveToolNames()).toEqual(['Read']);
     } finally {
-      rmSync(homeDir, { recursive: true, force: true });
-      rmSync(workDir, { recursive: true, force: true });
+      rmSync(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      rmSync(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

@@ -14,7 +14,7 @@ describe('cleanupStaleNativeCache', () => {
   });
 
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   function makeHashDir(version: string, target: string, hash: string, mtimeOffset = 0): string {

@@ -437,7 +437,7 @@ describe('OAuthService', () => {
       vi.stubEnv('KIMI_CODE_REGION_MARKER', 'off');
       expect(createService().getRegion()).toBe('mainland-cn');
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -452,8 +452,8 @@ describe('OAuthService', () => {
       providers[OAUTH_PROVIDER] = { type: 'kimi' };
       expect(createService().getRegion()).toBe('global');
     } finally {
-      await rm(bootstrapHome, { recursive: true, force: true });
-      await rm(envHome, { recursive: true, force: true });
+      await rm(bootstrapHome, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      await rm(envHome, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -469,7 +469,7 @@ describe('OAuthService', () => {
       };
       expect(createService().getRegion()).toBe('mainland-cn');
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

@@ -54,7 +54,7 @@ describe('delegation context at bind', () => {
   afterEach(async () => {
     await ctx?.dispose();
     ctx = undefined;
-    await rm(homeDir, { recursive: true, force: true }).catch(() => undefined);
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }).catch(() => undefined);
   });
 
   it('does not inject a prefix when the main agent binds explore', async () => {

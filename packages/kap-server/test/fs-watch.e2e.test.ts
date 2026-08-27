@@ -34,8 +34,8 @@ afterEach(async () => {
   }
   server = undefined;
   vi.unstubAllEnvs();
-  rmSync(tmpDir, { recursive: true, force: true });
-  rmSync(bridgeHome, { recursive: true, force: true });
+  rmSync(tmpDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  rmSync(bridgeHome, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
 async function boot(): Promise<RunningServer> {

@@ -234,7 +234,7 @@ describe('McpConnectionManager', () => {
       expect(realpathSync(text)).toBe(realpathSync(cwd));
     } finally {
       await cm.shutdown();
-      await rm(cwd, { recursive: true, force: true });
+      await rm(cwd, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   }, 15000);
 

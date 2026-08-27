@@ -54,7 +54,7 @@ describe('resolveDelegationSnippet', () => {
   });
 
   afterEach(async () => {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('returns no snippet for main, off, or a disabled slot', async () => {

@@ -48,7 +48,7 @@ test('RESP server: PING / SET / GET', async () => {
     sock.end();
   } finally {
     await srv.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -66,7 +66,7 @@ test('RESP server: MGET / DEL / DBSIZE', async () => {
     sock.end();
   } finally {
     await srv.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -80,6 +80,6 @@ test('RESP server: unknown command returns an error', async () => {
     sock.end();
   } finally {
     await srv.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

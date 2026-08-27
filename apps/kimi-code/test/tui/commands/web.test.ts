@@ -179,7 +179,7 @@ describe('handleRemoteControlCommand', () => {
       expect(host.stop).not.toHaveBeenCalled();
       expect(mocks.startServerForeground).not.toHaveBeenCalled();
     } finally {
-      rmSync(tempRoot, { recursive: true, force: true });
+      rmSync(tempRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -248,7 +248,7 @@ describe('handleRemoteControlCommand', () => {
       expect(close).toHaveBeenCalledOnce();
     } finally {
       writeSpy.mockRestore();
-      rmSync(tempRoot, { recursive: true, force: true });
+      rmSync(tempRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -309,7 +309,7 @@ describe('handleRemoteControlCommand', () => {
       expect(close).toHaveBeenCalledOnce();
     } finally {
       writeSpy.mockRestore();
-      rmSync(tempRoot, { recursive: true, force: true });
+      rmSync(tempRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });

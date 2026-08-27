@@ -39,7 +39,7 @@ afterEach(async () => {
   const mailboxes = runtimeMailboxes.splice(0);
   await Promise.allSettled(mailboxes.map((item) => item.store.close()));
   await Promise.allSettled(mailboxes.map((item) => item.runtime.close()));
-  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
 describe('thread mailbox agent collaboration adapter', () => {

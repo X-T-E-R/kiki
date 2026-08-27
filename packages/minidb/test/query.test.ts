@@ -23,7 +23,7 @@ test('key range + prefix scan', async () => {
     assert.deepEqual(db.prefix('user:').map((r) => r.key), ['user:1', 'user:2', 'user:3']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -47,7 +47,7 @@ test('dt columns: set, range query, persist across reopen', async () => {
     assert.deepEqual(db.dtRange('created', { gt: mar }).map((r) => r.key), ['c']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -77,7 +77,7 @@ test('value filter (Mongo-like) with operators', async () => {
     );
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -100,7 +100,7 @@ test('query composes dt range + value filter + sort + limit + project', async ()
     assert.deepEqual(res[0].value, { age: 35 }); // projected
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -149,7 +149,7 @@ test('dt-ordered limit fast path matches a reference (no ties)', async () => {
     );
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -170,7 +170,7 @@ test('dt-ordered limit fast path orders equal ts by key (tie-break)', async () =
     );
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -193,7 +193,7 @@ test('full-text search: latin + CJK', async () => {
     assert.deepEqual(or, ['b', 'c']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -210,7 +210,7 @@ test('text index persists + rebuilds across reopen', async () => {
     assert.deepEqual(db.search('bio', '北京').map((r) => r.key), ['a']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -231,7 +231,7 @@ test('query composes key prefix + text + filter', async () => {
     assert.deepEqual(res.map((r) => r.key), ['post:1']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -254,6 +254,6 @@ test('query uses value indexes for equality/range filters', async () => {
     assert.ok(db.stats.queryIndexHits >= 3);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

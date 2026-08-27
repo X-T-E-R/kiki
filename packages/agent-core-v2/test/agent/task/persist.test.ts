@@ -60,7 +60,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   disposables.dispose();
-  await rm(sessionDir, { recursive: true, force: true });
+  await rm(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
 describe('AgentTaskPersistence', () => {

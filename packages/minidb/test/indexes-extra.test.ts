@@ -23,7 +23,7 @@ test('dropIndex removes the index and reports status', async () => {
     assert.equal(await db.dropIndex('byCity'), false);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -36,7 +36,7 @@ test('createIndex validates field and duplicate names', async () => {
     await assert.rejects(() => db.createIndex('byCity', { field: 'city' }), /already exists/);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -51,7 +51,7 @@ test('findEq / findRange reject the wrong index type', async () => {
     assert.throws(() => db.findRange('eq', {}), /not a range index/);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -73,7 +73,7 @@ test('findRange supports exclusive bounds, offset and reverse', async () => {
     assert.deepEqual(db.findRange('byAge', { reverse: true, count: 2 }).map((r) => r.field), [50, 40]);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -89,7 +89,7 @@ test('unique range index rejects duplicate numeric values', async () => {
     assert.equal(db.size, 1);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -104,7 +104,7 @@ test('sparse index skips records missing the field', async () => {
     assert.equal(db.size, 2);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -115,7 +115,7 @@ test('secondary indexes require the json codec', async () => {
     await assert.rejects(() => db.createIndex('x', { field: 'n' }), /require valueCodec: "json"/);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -159,7 +159,7 @@ test('unique range index: batch swap, del+reuse, and conflict', async () => {
     assert.equal(db.get('e'), undefined);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -214,7 +214,7 @@ test('100 concurrent createIndex pairs: zero failures; memory == sidecar == reop
     assert.deepEqual(db.listIndexes().map((x) => x.name).sort(), memory);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -241,7 +241,7 @@ test('createIndex persist failure: no phantom in memory or sidecar, original err
     assert.deepEqual(db.findEq('byA', 1).map((r) => r.key), ['k1']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -267,7 +267,7 @@ test('dropIndex persist failure: the live index stays usable and the sidecar is 
     assert.deepEqual(db.listIndexes(), []);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -301,7 +301,7 @@ test('createIndex rebuild failure: no phantom, existing indexes keep serving, un
     assert.deepEqual(db.findEq('byA', 1).map((r) => r.key), ['k1']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -352,7 +352,7 @@ test('mixed create/drop across the three sidecar types: every op lands serialize
     assert.throws(() => db.search('txtOld', 'hello'), /no such text index/);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -390,7 +390,7 @@ test('set/batch/del do not share the sidecar mutation chain (writes flow while a
     assert.deepEqual(db.findEq('byA', 49).map((r) => r.key), ['k49']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -443,7 +443,7 @@ test('a staged unique index constrains writes during its persist window', async 
     assert.deepEqual(db.findEq('byU', 'taken2').map((r) => r.key), ['k2']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -521,6 +521,6 @@ test('toJSON/getter/Proxy docs: get, secondary/compound/text indexes and unique 
     await assert.rejects(db.set('k6', { u: 'u1' }), UniqueViolationError);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

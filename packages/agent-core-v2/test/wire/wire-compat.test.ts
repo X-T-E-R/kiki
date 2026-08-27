@@ -65,7 +65,7 @@ const disposables: DisposableStore[] = [];
 afterEach(async () => {
   for (const store of disposables.splice(0)) store.dispose();
   for (const dir of cleanups.splice(0)) {
-    await rm(dir, { recursive: true, force: true }).catch(() => {});
+    await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }).catch(() => {});
   }
 });
 

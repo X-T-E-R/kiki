@@ -137,7 +137,7 @@ describe('AgentTaskService — readOutput / getOutputSnapshot', () => {
       await ctx.expectResumeMatches();
     } finally {
       await ctx.dispose();
-      rmSync(sessionDir, { recursive: true, force: true });
+      rmSync(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

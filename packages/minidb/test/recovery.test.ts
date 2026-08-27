@@ -53,7 +53,7 @@ test('resync: a single corrupt frame mid-file only loses that frame', async () =
     assert.equal(db.size, 4);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -75,7 +75,7 @@ test('resync: multiple corrupt frames are each skipped', async () => {
     );
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -93,7 +93,7 @@ test('resync: torn tail is still truncated', async () => {
     assert.equal(db.size, 5);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -113,7 +113,7 @@ test('strict mode truncates at the first bad frame', async () => {
     assert.equal(db.size, 2);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -194,7 +194,7 @@ for (const valueMode of ['memory', 'disk'] as const) {
       await reader.close();
       await writer.close();
     } finally {
-      await fs.rm(dir, { recursive: true, force: true });
+      await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 }
@@ -231,7 +231,7 @@ test('catchUpFromWal: a torn tail pauses the catch-up and a later call completes
     await reader.close();
     await writer.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -259,7 +259,7 @@ test('catchUpFromWal: a compaction rotation swaps the WAL inode and the catch-up
     await reopened.close();
     await writer.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -287,7 +287,7 @@ test('catchUpFromWal: concurrent calls are serialized instead of interleaving mi
     await reader.close();
     await writer.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -327,7 +327,7 @@ test('catchUpFromWal: a large tail applies in cooperative slices (event loop sta
     await reader.close();
     await writer.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -406,7 +406,7 @@ test('generation pairing: a rotation-like WAL inode swap at the post-scan forens
     await reader.close();
     await writer.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -443,7 +443,7 @@ test('generation pairing: churn beyond the retry budget throws RECOVERY_GENERATI
     assert.equal(db.get('k49'), 'v49');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -475,7 +475,7 @@ test('generation pairing: append-only WAL growth between the forensic rounds doe
     assert.equal(reader.get('k49'), 'v49');
     await reader.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -510,7 +510,7 @@ test('generation pairing (disk mode): a ValueReader attach to the wrong inode re
     for (let i = 0; i < 50; i++) assert.equal(reader.get(`k${i}`), `v${i}`);
     await reader.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -558,7 +558,7 @@ test('generation pairing (disk mode): a failing ValueReader open() closes the pa
     assert.equal(db.get('k49'), 'v49');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -574,7 +574,7 @@ test('generation pairing: a stable writer costs a read-only open zero retries', 
     await reader.close();
     await writer.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -632,7 +632,7 @@ test('a read-only open racing a compaction rotation always recovers one complete
     await postReader.close();
     await writer.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -678,7 +678,7 @@ test('async scanner: results match the sync scanner on clean and corrupt files',
       assert.equal(asyncRes.eofOffset, syncRes.eofOffset);
     }
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -715,7 +715,7 @@ test('async scanner: frames larger than the read window scan identically (chunke
     assert.equal(asyncRes.eofOffset, syncRes.eofOffset);
     assert.deepEqual(asyncRes.corruptRanges, []);
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -737,7 +737,7 @@ test('async scanner: cancellation aborts the scan with AbortError', async () => 
       fsSync.closeSync(fd);
     }
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -772,7 +772,7 @@ test('async scanner: resync candidate budget bounds fake-magic storms', async ()
     assert.equal(res.corruptRanges[0]![0], head.length);
     assert.equal(res.eofOffset, head.length);
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -834,6 +834,6 @@ test('a generation WAL delta of large batch frames replays every op through the 
       await db.close();
     }
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

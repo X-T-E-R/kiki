@@ -85,7 +85,7 @@ describe.skipIf(process.platform === 'win32')('LocalKaos shell operations', () =
   });
 
   afterEach(async () => {
-    await rm(tmpDir, { recursive: true, force: true });
+    await rm(tmpDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   // NOTE: These tests mirror Python test_local_kaos_sh.py one-for-one.

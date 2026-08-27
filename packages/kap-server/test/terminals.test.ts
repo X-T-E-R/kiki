@@ -221,11 +221,11 @@ describe('server-v2 /api/v1/sessions/{sid}/terminals', () => {
       server = undefined;
     }
     if (home !== undefined) {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       home = undefined;
     }
     if (work !== undefined) {
-      await rm(work, { recursive: true, force: true });
+      await rm(work, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       work = undefined;
     }
   });
@@ -293,8 +293,8 @@ describe('server-v2 /api/v1/sessions/{sid}/terminals', () => {
       expect(listA.items.map((t) => t.id)).toEqual([termA.id]);
       expect(listB.items.map((t) => t.id)).toEqual([termB.id]);
     } finally {
-      await rm(rootA, { recursive: true, force: true });
-      await rm(rootB, { recursive: true, force: true });
+      await rm(rootA, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      await rm(rootB, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

@@ -31,7 +31,7 @@ test('recovery: expired overwrite does not resurrect older value (WAL only)', as
     assert.equal(db.size, 0, 'no live key should remain');
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -55,7 +55,7 @@ test('recovery: expired overwrite does not resurrect a snapshotted value', async
     assert.equal(db.get('k'), undefined, 'expired WAL overwrite must not resurrect the snapshot value');
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -72,7 +72,7 @@ test('expired key is reaped from the dt index when observed via scan', async () 
     assert.deepEqual(db.dtRange('created', { gte: 0, lte: 1000 }), []);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -88,7 +88,7 @@ test('expired key is reaped from a secondary index when observed via scan', asyn
     assert.deepEqual(db.indexes.findEq('byCity', 'Paris'), [], 'secondary index must not retain the expired key');
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -104,7 +104,7 @@ test('set with a fractional ttl does not throw (rounded to integer ms)', async (
     assert.equal(db.get('k'), 'v');
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -118,6 +118,6 @@ test('set with a non-finite ttl is rejected with a clear error and stores nothin
     assert.equal(db.get('b'), undefined);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

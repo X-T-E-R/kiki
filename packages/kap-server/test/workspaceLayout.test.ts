@@ -48,7 +48,7 @@ describe('local/local on-disk layout (byte compatibility)', () => {
       server = undefined;
     }
     await new Promise((resolve) => setTimeout(resolve, 25));
-    await Promise.all(homes.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+    await Promise.all(homes.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 })));
   });
 
   async function postJson<T>(path: string, body: unknown): Promise<Envelope<T>> {

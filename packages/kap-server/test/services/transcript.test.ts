@@ -1884,7 +1884,7 @@ describe('AgentTranscriptLiveAdapter', () => {
       ]);
       service.dropSession('s1');
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -2603,7 +2603,7 @@ describe('bindSessionTranscript', () => {
       });
       service.dropSession('s1');
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -2641,7 +2641,7 @@ describe('bindSessionTranscript', () => {
       });
       service.dropSession('s1');
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -2701,7 +2701,7 @@ describe('bindSessionTranscript', () => {
       });
       service.dropSession('s1');
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -2725,7 +2725,7 @@ describe('bindSessionTranscript', () => {
       });
       service.dropSession('s1');
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -2760,7 +2760,7 @@ describe('bindSessionTranscript', () => {
       expect(agent?.getAttachment('att_1')).toBeUndefined();
       service.dropSession('s1');
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -2820,7 +2820,7 @@ describe('bindSessionTranscript', () => {
       expect(agent?.getAttachment('att_1')).toBeUndefined();
       service.dropSession('s1');
     } finally {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

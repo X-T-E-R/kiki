@@ -81,7 +81,7 @@ describe('wire-reader', () => {
       expect(rawMsg.toolCalls[0]!.function).toEqual({ name: 'Read', arguments: '{"path":"/x"}' });
       expect(rawMsg.toolCalls[0]).not.toHaveProperty('name');
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

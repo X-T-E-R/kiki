@@ -228,7 +228,7 @@ async function withFixture(run: (fixture: Fixture) => Promise<void>): Promise<vo
     ]);
     await run({ homeDir, osHomeDir, workDir, extraDir });
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 }
 

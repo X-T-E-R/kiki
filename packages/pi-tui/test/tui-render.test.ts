@@ -132,7 +132,7 @@ describe("TUI debug logging", () => {
 				tui.stop();
 			});
 		} finally {
-			rmSync(logDir, { recursive: true, force: true });
+			rmSync(logDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 		}
 	});
 });

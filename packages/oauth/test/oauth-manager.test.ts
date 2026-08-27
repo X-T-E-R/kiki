@@ -827,7 +827,7 @@ describe('OAuthManager + FileTokenStorage integration', () => {
   });
 
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('login persists token to disk; ensureFresh reads it back', async () => {

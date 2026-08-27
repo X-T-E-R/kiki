@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -86,9 +86,9 @@ describe('FileMentionProvider', () => {
   });
 
   afterEach(() => {
-    rmSync(workDir, { recursive: true, force: true });
+    rmSync(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     for (const extraDir of extraDirs) {
-      rmSync(extraDir, { recursive: true, force: true });
+      rmSync(extraDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -434,7 +434,9 @@ describe('FileMentionProvider', () => {
 
   it('filesystem fallback does not recurse into symlinked directories', async () => {
     writeFileSync(join(workDir, 'target.txt'), 'target');
-    symlinkSync('.', join(workDir, 'current'), 'dir');
+    // A junction is the one directory link an unprivileged Windows process can
+    // create; it needs an absolute target, and POSIX ignores the type argument.
+    symlinkSync(resolve(workDir), join(workDir, 'current'), 'junction');
     const provider = new FileMentionProvider([], workDir, NO_FD);
 
     const result = await provider.getSuggestions(['@target'], 0, 7, { signal: ctrl() });
@@ -486,7 +488,10 @@ describe('FileMentionProvider', () => {
       writeFileSync(join(workDir, 'normal.txt'), '');
 
       const provider = new FileMentionProvider([], workDir, NO_FD, [], () => 'bash');
-      const text = `cd ${workDir}/`;
+      // Relative completion against workDir: pi-tui does not recognize
+      // drive-letter absolute paths on Windows, and the oracle here is the
+      // bash-mode dotfile filter, not absolute-path parsing.
+      const text = `cd ./`;
       const result = await provider.getSuggestions([text], 0, text.length, {
         signal: ctrl(),
         force: true,
@@ -505,7 +510,7 @@ describe('FileMentionProvider', () => {
       writeFileSync(join(workDir, '.dotfile'), '');
 
       const provider = new FileMentionProvider([], workDir, NO_FD, [], () => 'prompt');
-      const text = `cd ${workDir}/`;
+      const text = `cd ./`;
       const result = await provider.getSuggestions([text], 0, text.length, {
         signal: ctrl(),
         force: true,

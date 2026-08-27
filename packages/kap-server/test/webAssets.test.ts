@@ -26,7 +26,7 @@ describe('web asset cache policy', () => {
 
   afterEach(async () => {
     await app.close();
-    await rm(assetsDir, { recursive: true, force: true });
+    await rm(assetsDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('caches content-hashed assets as immutable', async () => {

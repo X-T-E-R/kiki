@@ -37,7 +37,7 @@ test('WAL.flush() drains frames queued behind an in-flight batch', async () => {
     await pB;
     assert.equal(pending, 0, 'flush() must leave nothing queued');
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -69,7 +69,7 @@ for (const policy of ['always', 'everysec', 'no'] as const) {
       await db2.close();
       assert.deepEqual(lost, [], `lost ${lost.length}/${N} keys: ${lost.slice(0, 5).join(',')}`);
     } finally {
-      await fs.rm(dir, { recursive: true, force: true });
+      await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 }
@@ -87,7 +87,7 @@ test('expired keys are removed from secondary indexes', async () => {
     assert.deepEqual(db.findEq('byCity', 'Paris'), []);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -101,7 +101,7 @@ test('expired keys are removed from the full-text index', async () => {
     assert.deepEqual(db.search('body', 'hello'), []);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -123,7 +123,7 @@ test('batch() rejects intra-batch unique violations', async () => {
     assert.equal(db.get('b'), undefined);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -145,7 +145,7 @@ test('recovery drops expired records (size consistent with scan)', async () => {
     assert.equal(db.get('stable'), 'ok');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -166,6 +166,6 @@ test('concurrent sets cannot both commit the same unique value', async () => {
     assert.ok(committed <= 1, `both committed: ${JSON.stringify(hits)}`);
     assert.ok(hits.length <= 1, `unique violated: ${JSON.stringify(hits)}`);
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

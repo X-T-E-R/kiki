@@ -25,7 +25,7 @@ const originalKimiCodeHome = process.env['KIMI_CODE_HOME'];
 afterEach(async () => {
   setExperimentalFeatures([]);
   for (const dir of tempDirs.splice(0)) {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
   if (originalKimiCodeHome === undefined) {
     delete process.env['KIMI_CODE_HOME'];

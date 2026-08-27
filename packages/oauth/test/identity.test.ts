@@ -23,7 +23,7 @@ function tempHome(): string {
 
 afterEach(() => {
   for (const dir of tmpRoots.splice(0)) {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 

@@ -12,7 +12,7 @@ let tempDirs: string[] = [];
 
 afterEach(() => {
   for (const dir of tempDirs) {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
   tempDirs = [];
   process.env = { ...originalEnv };

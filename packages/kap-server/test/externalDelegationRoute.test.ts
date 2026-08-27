@@ -61,7 +61,7 @@ describe('external delegation REST facade', () => {
 
   afterEach(async () => {
     await server?.close();
-    if (home !== undefined) await rm(home, { recursive: true, force: true });
+    if (home !== undefined) await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     restoreEnv('KIMI_CODE_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP', priorFlag);
     restoreEnv('KIKI_EXTERNAL_PRINCIPAL_ID', priorPrincipal);
     restoreEnv('KIKI_EXTERNAL_SESSION_ID', priorSession);
@@ -137,7 +137,7 @@ describe('external delegation Session bootstrap', () => {
 
   afterEach(async () => {
     await Promise.all(servers.splice(0).map((server) => server.close()));
-    if (root !== undefined) await rm(root, { recursive: true, force: true });
+    if (root !== undefined) await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     restoreEnv('KIMI_CODE_EXPERIMENTAL_EXTERNAL_DELEGATION_MCP', priorFlag);
   });
 

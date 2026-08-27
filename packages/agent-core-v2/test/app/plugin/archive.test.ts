@@ -16,7 +16,7 @@ describe('plugin archive extraction', () => {
   });
 
   afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('extracts a zip and detects a nested plugin root', async () => {

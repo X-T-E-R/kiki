@@ -29,7 +29,7 @@ test('walBytesWritten accumulates the exact frame bytes written', async () => {
     assert.equal(db.stats.walBytesWritten, expected);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -43,7 +43,7 @@ test("walFsyncs counts one fsync per flush under fsyncPolicy 'always'", async ()
     assert.ok(db.stats.walFsyncs >= N, `expected >= ${N} fsyncs, got ${db.stats.walFsyncs}`);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -56,7 +56,7 @@ test("walFsyncs stays low under fsyncPolicy 'no'", async () => {
     assert.equal(db.stats.walFsyncs, 0);
   } finally {
     await db.close(); // close fsyncs once, counted after our assertion above
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -72,7 +72,7 @@ test('snapshotBytesWritten and compactions update on compact', async () => {
     assert.ok(db.stats.snapshotBytesWritten > 0, 'snapshot wrote some bytes');
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -88,7 +88,7 @@ test('batch writes a single frame (lower write amplification than per-key sets)'
     assert.ok(db.stats.walBytesWritten < individual, `batch wrote ${db.stats.walBytesWritten} < ${individual}`);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -117,7 +117,7 @@ test("everysec: idle db performs zero background fsyncs; a dirty window syncs on
     assert.equal(db.stats.walFsyncs, 2, 'the next dirty window fsyncs once more');
   } finally {
     await db.close(); // final close sync runs after our assertions
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -146,7 +146,7 @@ test('everysec background sync failure is observable in stats but does not chang
     assert.equal(db.stats.lastWalFsyncError, boom, 'sticky error survives later successes');
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -169,7 +169,7 @@ test('recovery stats capture scanned bytes, frames and duration at open', async 
     assert.equal(reopened.recoveryInfo.snapshotBytes, 0);
   } finally {
     await reopened.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -193,7 +193,7 @@ test('compaction phase stats break down into snapshot/rotation/postings/total', 
     );
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -226,7 +226,7 @@ test('query stats count candidates, decodes and sorted rows', async () => {
     assert.ok(db.stats.queryCandidates - c1 < 100, 'early exit stops before the full scan');
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -243,7 +243,7 @@ test('index rebuild stats: values decoded once per record, 0 without value-deriv
     assert.equal(db.dtRange('created', { gte: 0 }).length, 20, 'dt index rebuilt from metadata alone');
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 
   // With several value-derived indexes: exactly one decode per live record,
@@ -265,6 +265,6 @@ test('index rebuild stats: values decoded once per record, 0 without value-deriv
     assert.equal(db.compoundRange('byGrpN', 'g').length, 20);
   } finally {
     await db.close();
-    await fs.rm(dir2, { recursive: true, force: true });
+    await fs.rm(dir2, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

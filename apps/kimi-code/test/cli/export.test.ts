@@ -116,7 +116,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllEnvs();
   refreshKimiRegion();
-  rmSync(tmp, { recursive: true, force: true });
+  rmSync(tmp, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   vi.clearAllMocks();
   mocks.harnessGetConfig.mockResolvedValue({
     providers: {},

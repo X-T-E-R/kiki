@@ -117,7 +117,7 @@ describe('home runtime broker', () => {
   afterEach(async () => {
     await Promise.allSettled(runtimes.splice(0).map((runtime) => runtime.close()));
     for (const ix of instantiations.splice(0)) ix.dispose();
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('elects one owner, routes RPC, and re-elects with a higher epoch', async () => {

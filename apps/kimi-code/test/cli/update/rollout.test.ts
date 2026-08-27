@@ -256,7 +256,7 @@ describe('appendRolloutDecisionLog', () => {
   });
 
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('appends one JSON line per decision', async () => {
@@ -298,7 +298,7 @@ describe('resolveUpdateDeviceId', () => {
 
   afterEach(() => {
     process.env = { ...originalEnv };
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('does not create the telemetry device id file when one is missing', () => {

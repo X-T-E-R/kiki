@@ -31,7 +31,7 @@ describe('e2e: process lifecycle', () => {
 
   afterEach(async () => {
     process.chdir(originalCwd);
-    await rm(tempDir, { recursive: true, force: true });
+    await rm(tempDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   describe('stdin → stdout → wait → exitCode', () => {

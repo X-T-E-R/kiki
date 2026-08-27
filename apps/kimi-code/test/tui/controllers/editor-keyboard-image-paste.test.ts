@@ -453,7 +453,7 @@ describe('clipboard video paste upload', () => {
       await writeFile(sourcePath, 'video-bytes');
       await run(sourcePath);
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   }
 

@@ -30,7 +30,7 @@ describe('cognition file paths', () => {
   });
 
   afterEach(async () => {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('resolves a relative path under the Kiki home', () => {

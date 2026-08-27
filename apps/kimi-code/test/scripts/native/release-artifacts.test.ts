@@ -91,7 +91,7 @@ function findEndOfCentralDirectory(zip: Buffer): number {
 
 describe('native release artifacts', () => {
   afterEach(() => {
-    rmSync(resolve(appRoot, 'dist-native/bin', target), { recursive: true, force: true });
+    rmSync(resolve(appRoot, 'dist-native/bin', target), { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     rmSync(resolve(artifactsDir, `kimi-code-${target}.zip`), { force: true });
     rmSync(resolve(artifactsDir, `kimi-code-${target}.zip.sha256`), { force: true });
   });

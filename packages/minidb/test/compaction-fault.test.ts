@@ -233,7 +233,7 @@ test('wal.close() propagates a final-sync failure but still releases the file ha
       ['a', 'b'],
     );
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -283,7 +283,7 @@ test('rotation: a WAL close() failure leaves the db writable and compact() retri
     assert.equal(db.get('post'), 'still-writable');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -330,7 +330,7 @@ test('rotation: a WAL rename failure (new snapshot already in place) leaves the 
     assert.equal(db.get('post'), 'still-writable');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -391,7 +391,7 @@ test('rotation: a new-WAL open() failure after the renames leaves the db writabl
     assert.equal(db.get('post'), 'still-writable');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -440,7 +440,7 @@ test('rotation: the first directory fsync failure aborts the rotation; rollback 
     assert.equal(db.get('post'), 'still-writable');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -486,7 +486,7 @@ test('rotation: the second directory fsync failure aborts after both renames; ro
     assert.equal(db.get('post'), 'still-writable');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -521,7 +521,7 @@ test('a compaction whose onCompacted hook throws counts as a compactError, not a
     assert.equal(db.lastCompactError, null);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -603,6 +603,6 @@ test('a WAL poison during the snapshot phase aborts this compaction; the next co
     assert.equal(db.get('post'), 'ok');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

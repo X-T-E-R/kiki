@@ -455,7 +455,7 @@ describe('SessionEventBroadcaster', () => {
 
   afterEach(async () => {
     await bc.close();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('projects queued and replaced prompt variants into the AsyncAPI session event schema', () => {
@@ -2460,7 +2460,7 @@ describe('SessionEventBroadcaster', () => {
       ).toBe(true);
     } finally {
       await bc2.close();
-      await rm(dir2, { recursive: true, force: true });
+      await rm(dir2, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

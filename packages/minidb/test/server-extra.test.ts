@@ -53,7 +53,7 @@ test('RESP: ECHO and PING with argument', async () => {
     sock.end();
   } finally {
     await srv.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -69,7 +69,7 @@ test('RESP: EXISTS / MSET / MGET / TTL', async () => {
     sock.end();
   } finally {
     await srv.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -88,7 +88,7 @@ test('RESP: SET with EX / PX sets a TTL', async () => {
     sock.end();
   } finally {
     await srv.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -107,7 +107,7 @@ test('RESP: INFO and COMPACT', async () => {
     sock.end();
   } finally {
     await srv.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -119,7 +119,7 @@ test('RESP: QUIT closes the connection', async () => {
     await expect(sendUntilClose(sock, encode('QUIT'))).resolves.toBeUndefined();
   } finally {
     await srv.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -135,7 +135,7 @@ test('RESP: inline (non-array) command path', async () => {
     sock.end();
   } finally {
     await srv.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -175,7 +175,7 @@ test('RESP: a client aborting mid-large-reply does not kill the server', async (
     sock2.end();
   } finally {
     await srv.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -199,7 +199,7 @@ test('RESP: an oversized request gets -ERR and the connection recovers', { timeo
     sock.end();
   } finally {
     await srv.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -217,6 +217,6 @@ test('RESP: one bad command does not starve its pipelined siblings', async () =>
     sock.end();
   } finally {
     await srv.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

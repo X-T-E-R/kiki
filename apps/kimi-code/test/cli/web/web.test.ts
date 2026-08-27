@@ -752,7 +752,7 @@ describe('server web asset directory resolution', () => {
       expect(serverWebAssetsDir({}, dir)).toBe(dir);
       expect(serverWebAssetsDir({ KIMI_CODE_DEV_SERVER: '1' }, dir)).toBe(dir);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -762,7 +762,7 @@ describe('server web asset directory resolution', () => {
     try {
       expect(serverWebAssetsDir({}, dir)).toBe(dir);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -772,7 +772,7 @@ describe('server web asset directory resolution', () => {
     try {
       expect(serverWebAssetsDir({ KIMI_CODE_DEV_SERVER: '1' }, dir)).toBeUndefined();
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });
@@ -969,7 +969,7 @@ describe('readLegacyLock', () => {
     dir = mkdtempSync(join(tmpdir(), 'kimi-legacy-lock-'));
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('parses a lock written by an old build', async () => {
@@ -1013,7 +1013,7 @@ describe('resolveServerToken', () => {
     dir = mkdtempSync(join(tmpdir(), 'kimi-server-token-'));
   });
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('reads the token from <homeDir>/server.token', async () => {
@@ -1112,7 +1112,7 @@ describe('`kimi web rotate-token`', () => {
     } else {
       process.env['KIMI_CODE_HOME'] = prevHome;
     }
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('writes a new token to server.token and prints it', async () => {

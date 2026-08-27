@@ -37,7 +37,7 @@ describe('bootstrap path helpers', () => {
   describe('ensureKimiHome', () => {
     let dir: string | undefined;
     afterEach(() => {
-      if (dir) rmSync(dir, { recursive: true, force: true });
+      if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     });
 
     it('creates the directory with 0700 permissions', () => {

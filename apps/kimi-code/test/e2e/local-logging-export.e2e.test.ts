@@ -43,8 +43,8 @@ afterEach(async () => {
   } else {
     process.env['KIMI_LOG_LEVEL'] = oldLogLevel;
   }
-  await rm(homeDir, { recursive: true, force: true });
-  await rm(workDir, { recursive: true, force: true });
+  await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
 describe.skipIf(!ENABLED)('local logging export e2e', () => {

@@ -48,7 +48,7 @@ describe('loadSystemMdProfile', () => {
   });
 
   afterEach(async () => {
-    await rm(home, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('returns undefined when SYSTEM.md does not exist', async () => {

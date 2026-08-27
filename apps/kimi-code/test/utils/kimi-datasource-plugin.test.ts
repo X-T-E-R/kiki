@@ -43,7 +43,7 @@ describe('kimi-datasource MCP server', () => {
     } finally {
       child?.stdin.end();
       child?.kill();
-      await rm(tempDir, { recursive: true, force: true });
+      await rm(tempDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -129,7 +129,7 @@ describe('kimi-datasource MCP server', () => {
       child?.stdin.end();
       child?.kill();
       await closeServer(server);
-      await rm(tempDir, { recursive: true, force: true });
+      await rm(tempDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -213,7 +213,7 @@ describe('kimi-datasource MCP server', () => {
       child?.stdin.end();
       child?.kill();
       await closeServer(server);
-      await rm(tempDir, { recursive: true, force: true });
+      await rm(tempDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -276,7 +276,7 @@ describe('kimi-datasource MCP server', () => {
       child?.stdin.end();
       child?.kill();
       await closeServer(server);
-      await rm(tempDir, { recursive: true, force: true });
+      await rm(tempDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -343,7 +343,7 @@ describe('kimi-datasource MCP server', () => {
     } finally {
       child?.stdin.end();
       child?.kill();
-      await rm(tempDir, { recursive: true, force: true });
+      await rm(tempDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -400,7 +400,7 @@ describe('kimi-datasource MCP server', () => {
       child?.stdin.end();
       child?.kill();
       await closeServer(server);
-      await rm(tempDir, { recursive: true, force: true });
+      await rm(tempDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });

@@ -47,8 +47,8 @@ describe('PluginManager', () => {
 
   afterEach(async () => {
     vi.unstubAllGlobals();
-    await rm(home, { recursive: true, force: true });
-    await rm(root, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('loads installed plugins and exposes summaries, hooks, and commands', async () => {
@@ -88,7 +88,7 @@ describe('PluginManager', () => {
       expect(record.root).toContain(join(home, 'plugins', 'managed', 'other'));
       expect(manager.get('other')?.manifest?.name).toBe('other');
     } finally {
-      await rm(sourceRoot, { recursive: true, force: true });
+      await rm(sourceRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -113,7 +113,7 @@ describe('PluginManager', () => {
       expect(manager.get('zip-plugin')?.manifest?.name).toBe('zip-plugin');
     } finally {
       await new Promise<void>((resolve, reject) => server.close((err) => (err === undefined ? resolve() : reject(err))));
-      await rm(sourceRoot, { recursive: true, force: true });
+      await rm(sourceRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       await rm(zipPath, { force: true });
     }
   });
@@ -159,7 +159,7 @@ describe('PluginManager', () => {
         .toBe('1111111111111111111111111111111111111111');
       expect(manager.get('github-plugin')?.manifest?.name).toBe('github-plugin');
     } finally {
-      await rm(sourceRoot, { recursive: true, force: true });
+      await rm(sourceRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       await rm(zipPath, { force: true });
     }
   });

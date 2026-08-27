@@ -41,7 +41,7 @@ describe('MiniDbQueryStore', () => {
     disposeHost?.();
     disposeHost = undefined;
     await drainQueryStoreDisposals();
-    await fsp.rm(homeDir, { recursive: true, force: true });
+    await fsp.rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   function build(): IQueryStore {

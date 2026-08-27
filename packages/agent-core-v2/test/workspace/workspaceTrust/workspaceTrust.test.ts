@@ -37,8 +37,8 @@ describe('WorkspaceTrustService', () => {
   afterEach(async () => {
     disposables.dispose();
     await Promise.all([
-      rm(homeDir, { recursive: true, force: true }),
-      rm(cwd, { recursive: true, force: true }),
+      rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }),
+      rm(cwd, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }),
     ]);
   });
 
@@ -123,7 +123,7 @@ describe('WorkspaceTrustService', () => {
 
       expect(second.isTrusted()).toBe(false);
     } finally {
-      await rm(other, { recursive: true, force: true });
+      await rm(other, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

@@ -74,7 +74,7 @@ describe('web assets', () => {
       );
       expect(existsSync(join(dir, 'web', 'test', 'test-target'))).toBe(true);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -103,7 +103,7 @@ describe('web assets', () => {
       expect(repairedDir).toBe(webDir);
       expect(readFileSync(join(repairedDir ?? '', 'index.html'), 'utf-8')).toBe('<html></html>');
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

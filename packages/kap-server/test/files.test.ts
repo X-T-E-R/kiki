@@ -26,7 +26,7 @@ afterEach(async () => {
   } catch {
   }
   server = undefined;
-  rmSync(home, { recursive: true, force: true });
+  rmSync(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
 async function boot(): Promise<RunningServer> {

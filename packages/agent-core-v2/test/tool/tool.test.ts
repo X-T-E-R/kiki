@@ -3254,7 +3254,7 @@ describe('Agent tools', () => {
         await ctx.dispose();
       } finally {
         for (const dir of tempHomeDirs) {
-          rmSync(dir, { recursive: true, force: true });
+          rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
         }
         tempHomeDirs = [];
       }

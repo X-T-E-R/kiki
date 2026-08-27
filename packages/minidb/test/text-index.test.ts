@@ -110,7 +110,7 @@ test('PostingsFile: rebuild + positioned read', async () => {
     assert.deepEqual(pf2.read(dict2.get('only')!), [[7, 1]]);
     pf2.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -129,7 +129,7 @@ test('PostingsFile: corrupt record throws on read', async () => {
     assert.throws(() => pf.read(e), /crc mismatch/);
     pf.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -150,7 +150,7 @@ test('TextIndex: add + search (AND/OR) disk-backed', async () => {
     assert.deepEqual(ti.search('北京 编程').map((h) => h.key), ['b']);
     ti.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -167,7 +167,7 @@ test('TextIndex: overwrite tombstones old postings', async () => {
     assert.equal(ti.N, 1);
     ti.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -182,7 +182,7 @@ test('TextIndex: remove deletes postings', async () => {
     assert.equal(ti.N, 1);
     ti.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -214,7 +214,7 @@ test('TextIndex: build persists to disk + merges delta after build', async () =>
     assert.deepEqual(ti2.search('hello').map((h) => h.key), ['a']);
     ti2.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -250,7 +250,7 @@ test('TextIndex: writes landing mid-build are replayed onto the new base', async
     assert.equal(ti.search('hello', { limit: 10_000 }).length, 2999);
     ti.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -287,7 +287,7 @@ test('MiniDb: text postings written to disk, search survives reopen', async () =
     assert.deepEqual(db.search('bio', '上海').map((r) => r.key), ['a']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -328,7 +328,7 @@ for (const indexGenerations of [false, true]) {
       }
       await db.close();
     } finally {
-      await fs.rm(dir, { recursive: true, force: true });
+      await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 }
@@ -353,7 +353,7 @@ test('MiniDb: compaction skips the postings rebuild when the index is clean [leg
     await db.close();
   } finally {
     TextIndex.prototype.build = orig;
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -379,7 +379,7 @@ test('MiniDb: compaction skips the postings rebuild when the index is clean [gen
     await db.close();
   } finally {
     PostingsFile.rebuild = orig;
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -423,7 +423,7 @@ for (const indexGenerations of [false, true]) {
       await db2.close();
     } finally {
       gate?.restore();
-      await fs.rm(dir, { recursive: true, force: true });
+      await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 }
@@ -518,7 +518,7 @@ test('TextIndex: injected n-gram tokenizer matches symbol substrings', async () 
     assert.deepEqual(ti.search('a'), []);
     ti.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -547,7 +547,7 @@ test('TextIndex: n-gram tokenizer delta add/remove/overwrite', async () => {
     assert.deepEqual(ti.search('c guide').map((h) => h.key), ['b']);
     ti.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -574,7 +574,7 @@ test('TextIndex: queryTokenizer tokenizes searches when given, falls back otherw
     assert.deepEqual(fallback.search('anything').map((h) => h.key), ['a']);
     fallback.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -593,7 +593,7 @@ test('MiniDb: n-gram text index tokenizes queries with the forQuery shape', asyn
     assert.deepEqual(db.search('tri', 'abc', { op: 'OR' }).map((r) => r.key), ['full']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -628,7 +628,7 @@ test('MiniDb: n-gram text index persists tokenizer, survives reopen', async () =
     assert.deepEqual(db.search('tri', 'c++').map((r) => r.key).sort(), ['a', 'c']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -644,7 +644,7 @@ test('MiniDb: createTextIndex rejects an unknown tokenizer', async () => {
     assert.throws(() => db.search('x', 'q'), /no such text index/);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -666,7 +666,7 @@ test('TextIndex: top-K ranks score desc with a stable key tie-break', async () =
     assert.deepEqual(ti.search('common', { limit: 0 }), [], 'limit 0 stays empty');
     ti.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -706,7 +706,7 @@ test('TextIndex: top-K over many candidates matches the full-ranking reference',
     }
     ti.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -762,7 +762,7 @@ test('TextIndex: maxVisits truncates a hot term and reports visits (disk-backed)
     assert.equal(ti.search('x', { limit: 1_000 }).length, 500);
     ti.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -813,7 +813,7 @@ test('TextIndex: AND under a budget yields a subset with complete per-doc scores
     assert.equal(zero.hits.length, 0);
     ti.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -838,7 +838,7 @@ test('MiniDb: searchBounded surfaces values, visits and the truncated flag', asy
     for (const h of bounded.hits) assert.ok(fullKeys.has(h.key));
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -891,7 +891,7 @@ test('MiniDb: concurrent createTextIndex calls are serialized; memory == sidecar
     assert.deepEqual(db.search('title', 'hello').map((r) => r.key), ['a']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -919,7 +919,7 @@ test('MiniDb: createTextIndex persist failure: no phantom, postings removed, ori
     assert.deepEqual(db.search('body', 'hello').map((r) => r.key), ['a']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -944,7 +944,7 @@ test('MiniDb: dropTextIndex persist failure: the index stays searchable and the 
     assert.deepEqual(await textSidecarNames(dir), []);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -994,7 +994,7 @@ test('MiniDb: dropTextIndex persist window: a compaction postings rebuild skips 
     assert.deepEqual(await textSidecarNames(dir), []);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -1084,7 +1084,7 @@ test('TextIndex: an overlong custom-tokenizer term is rejected before any mutati
     assert.deepEqual(ti2.search('hello').map((h) => h.key), ['k']);
     ti2.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -1125,7 +1125,7 @@ test('MiniDb: a throwing tokenizer rejects set with zero side effects; the old d
     assert.deepEqual(db.search('ft', 'hello').map((h) => h.key), ['k1']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -1156,7 +1156,7 @@ test('MiniDb: an overlong tokenizer term rejects set/batch; the postings rebuild
     assert.deepEqual(db.search('ft', 'another').map((h) => h.key), ['good2']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 

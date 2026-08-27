@@ -31,7 +31,7 @@ test('compound index orders sessions within a workspace by updatedAt', async () 
     assert.deepEqual(page.map((r) => r.key), ['c']);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -49,7 +49,7 @@ test('multiple dt columns each get their own compound index', async () => {
     assert.deepEqual(db.compoundRange('byWsCreated', 'W1').map((r) => r.key), ['a', 'c', 'b']);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -66,7 +66,7 @@ test('updating the order key moves the entry', async () => {
     assert.deepEqual(db.compoundRange('byWsUpdated', 'W1').map((r) => r.key), ['b', 'a']);
   } finally {
     await db.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -127,7 +127,7 @@ test('remove() reaps emptied groups: the groups map stays bounded after high-car
     await db.close();
   } finally {
     await db.close().catch(() => {});
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -181,7 +181,7 @@ test('concurrent createCompoundIndex calls are serialized: zero failures; memory
     assert.deepEqual(db.listCompoundIndexes().map((x) => x.name).sort(), memory);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -203,7 +203,7 @@ test('createCompoundIndex persist failure: no phantom in memory or sidecar; retr
     assert.deepEqual(db.compoundRange('byWsUpdated', 'W1').map((r) => r.key), ['a']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -226,6 +226,6 @@ test('dropCompoundIndex persist failure: the live index stays usable and the sid
     assert.deepEqual(db.listCompoundIndexes(), []);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

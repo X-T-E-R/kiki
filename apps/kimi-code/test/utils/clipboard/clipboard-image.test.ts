@@ -60,7 +60,7 @@ describe('readClipboardMedia', () => {
       });
       expect(getImageBinary).not.toHaveBeenCalled();
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -92,7 +92,7 @@ describe('readClipboardMedia', () => {
       });
       expect(getImageBinary).not.toHaveBeenCalled();
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 
@@ -155,7 +155,7 @@ describe('readClipboardMedia', () => {
         }),
       ).rejects.toThrow(ClipboardMediaError);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });

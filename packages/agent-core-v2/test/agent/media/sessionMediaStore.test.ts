@@ -54,7 +54,7 @@ describe('SessionMediaStoreService', () => {
 
   afterEach(async () => {
     disposables.dispose();
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   function input(overrides: Partial<Parameters<ISessionMediaStore['materialize']>[0]> = {}) {

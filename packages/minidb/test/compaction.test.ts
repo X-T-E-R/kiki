@@ -35,7 +35,7 @@ test('manual compact writes a snapshot, shrinks the WAL, and keeps data', async 
     assert.equal(db.get('k499'), 'value-499');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -57,7 +57,7 @@ test('a write issued during compaction is preserved', async () => {
     assert.equal(db.get('during'), 'hello');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -78,7 +78,7 @@ test('auto-compaction triggers when the WAL crosses the threshold', async () => 
     assert.equal(db.size, 200);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -105,7 +105,7 @@ test('open-time compaction runs in the background — open() returns with the fu
     assert.equal(db.size, 200);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -125,7 +125,7 @@ test('del-then-compact drops tombstoned keys from the snapshot', async () => {
     assert.equal(db.get('b'), '2');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -178,7 +178,7 @@ test('concurrent SET/UPDATE/DEL during compaction survive recovery', { timeout: 
     assert.equal(db.size, N - deleted + M);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -200,7 +200,7 @@ test('compaction with no concurrent writes produces an empty WAL tail', async ()
     assert.equal(db.get('k299'), 'v299');
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -236,6 +236,6 @@ test('disk-mode compaction with continuous writes stays consistent for sync and 
     }
     await ro.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

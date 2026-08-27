@@ -137,7 +137,7 @@ describe('stageNativeUpdate', () => {
   });
 
   afterEach(async () => {
-    await rm(workDir, { recursive: true, force: true });
+    await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('downloads, verifies and records the staged metadata', async () => {
@@ -715,7 +715,7 @@ describe('promoteStagedUpdateToManual', () => {
   });
 
   afterEach(async () => {
-    await rm(workDir, { recursive: true, force: true });
+    await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('promotes the adopted record to manual', async () => {
@@ -771,7 +771,7 @@ describe('readStagedNativeUpdate', () => {
   });
 
   afterEach(async () => {
-    await rm(workDir, { recursive: true, force: true });
+    await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('returns null for malformed staged.json content', async () => {

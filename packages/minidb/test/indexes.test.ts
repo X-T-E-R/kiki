@@ -23,7 +23,7 @@ test('equality index findEq', async () => {
     assert.deepEqual(res, ['u1', 'u2']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -37,7 +37,7 @@ test('range index findRange with bounds + limit', async () => {
     assert.deepEqual(ages, [30, 40, 50]);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -53,7 +53,7 @@ test('unique index rejects duplicates', async () => {
     assert.equal(db.size, 1);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -67,7 +67,7 @@ test('index is updated on delete', async () => {
     assert.deepEqual(db.findEq('byCity', 'Paris'), []);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -82,7 +82,7 @@ test('array field is indexed per element', async () => {
     assert.deepEqual(db.findEq('byTag', 'blue').map((r) => r.key).sort(), ['a', 'b']);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -103,6 +103,6 @@ test('index definitions + data rebuild across reopen', async () => {
     ]);
     await db.close();
   } finally {
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

@@ -607,7 +607,7 @@ describe('EditTool', () => {
       const after = await readFile(file);
       expect(Buffer.compare(after, original)).toBe(0);
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });

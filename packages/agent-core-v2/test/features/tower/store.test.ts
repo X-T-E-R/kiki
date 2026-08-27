@@ -47,7 +47,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(repo, { recursive: true, force: true });
+  await rm(repo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
 function rosterEntry(partial: Partial<TowerRosterEntry> & Pick<TowerRosterEntry, 'name' | 'kind'>): TowerRosterEntry {
@@ -777,7 +777,7 @@ describe('teardown', () => {
       expect(report.join('\n')).toContain(`removed .tower/worktrees/${mission.worktree}`);
       await expect(stat(wt)).rejects.toThrow();
     } finally {
-      await rm(subRepo, { recursive: true, force: true });
+      await rm(subRepo, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });

@@ -53,7 +53,7 @@ describe('e2e: exec edge cases', () => {
     // Restore original cwd in case any test accidentally mutated it
     // (though LocalKaos should never touch process.cwd()).
     process.chdir(originalCwd);
-    await rm(tempDir, { recursive: true, force: true });
+    await rm(tempDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   describe('spawning a non-existent command', () => {

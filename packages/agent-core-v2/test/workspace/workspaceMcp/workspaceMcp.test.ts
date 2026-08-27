@@ -65,7 +65,7 @@ describe('WorkspaceMcpService', () => {
     vi.restoreAllMocks();
     await manager?.shutdown();
     disposables.dispose();
-    await rm(cwd, { recursive: true, force: true });
+    await rm(cwd, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   function mcpConfigStub(): IWorkspaceMcpConfigService {

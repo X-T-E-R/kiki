@@ -52,7 +52,7 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
-  await rm(homeDir, { recursive: true, force: true });
+  await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
 describe('KimiHarness.auth', () => {

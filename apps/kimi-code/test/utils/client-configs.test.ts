@@ -231,7 +231,7 @@ describe('getClientConfig disk cache', () => {
   });
 
   afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('serves a fresh disk entry without network and warms the in-process cache', async () => {

@@ -55,7 +55,7 @@ describe('findExistingRg', () => {
     process.env['PATH'] = '';
   });
   afterEach(() => {
-    rmSync(fakeShare, { recursive: true, force: true });
+    rmSync(fakeShare, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     if (savedPath === undefined) {
       delete process.env['PATH'];
     } else {
@@ -161,7 +161,7 @@ describe('verifyArchiveChecksum', () => {
     mkdirSync(fakeDir, { recursive: true });
   });
   afterEach(() => {
-    rmSync(fakeDir, { recursive: true, force: true });
+    rmSync(fakeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('accepts a file whose SHA-256 matches the expected digest', async () => {
@@ -200,7 +200,7 @@ describe('ensureRgPath download branch', () => {
     process.env['PATH'] = '';
   });
   afterEach(() => {
-    rmSync(fakeShare, { recursive: true, force: true });
+    rmSync(fakeShare, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     if (savedFetch === undefined) {
       delete (globalThis as unknown as { fetch?: typeof fetch }).fetch;
     } else {
@@ -444,7 +444,7 @@ describe('ensureRgPath Windows download branch', () => {
     Object.defineProperty(process, 'platform', { value: 'win32' });
   });
   afterEach(() => {
-    rmSync(fakeShare, { recursive: true, force: true });
+    rmSync(fakeShare, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     if (savedFetch === undefined) {
       delete (globalThis as unknown as { fetch?: typeof fetch }).fetch;
     } else {

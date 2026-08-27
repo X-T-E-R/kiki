@@ -27,7 +27,7 @@ describe('LocalKaos', () => {
   });
 
   afterEach(async () => {
-    await rm(tempDir, { recursive: true, force: true });
+    await rm(tempDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   describe('pathClass, gethome, getcwd', () => {
@@ -901,8 +901,8 @@ describe('LocalKaos instance isolation', () => {
       expect(toPosix(outA.toString('utf-8'))).toBe(tmpA);
       expect(toPosix(outB.toString('utf-8'))).toBe(tmpB);
     } finally {
-      await rm(tmpA, { recursive: true, force: true });
-      await rm(tmpB, { recursive: true, force: true });
+      await rm(tmpA, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      await rm(tmpB, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 });
@@ -1000,7 +1000,7 @@ describe('LocalProcess.kill safety', () => {
 
         expect(reaped).toBe(true);
       } finally {
-        await rm(tmp, { recursive: true, force: true });
+        await rm(tmp, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       }
     },
     30_000,
@@ -1061,7 +1061,7 @@ describe('LocalProcess.kill safety', () => {
 
         expect(reaped).toBe(true);
       } finally {
-        await rm(tmp, { recursive: true, force: true });
+        await rm(tmp, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       }
     },
     30_000,

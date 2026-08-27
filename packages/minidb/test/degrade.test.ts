@@ -59,7 +59,7 @@ test('openOrRebuild does NOT delete a live-locked db', async () => {
     assert.ok(await fs.stat(path.join(dir, 'db.wal')));
   } finally {
     await db1.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -82,7 +82,7 @@ test('openOrRebuild with onLockFail readonly must not mutate a live writer: corr
     assert.equal(writer.get('kept'), 'value', 'the live writer is undisturbed');
   } finally {
     await writer.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
 
@@ -116,6 +116,6 @@ test('openOrRebuild with onLockFail readonly + a garbage WAL (strict) degrades t
     assert.equal(typeof lockRaw.token, 'string', 'lock file intact');
   } finally {
     await writer.close();
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

@@ -231,7 +231,7 @@ describe('FileServiceImpl', () => {
       expect((await readAll(got.stream())).toString()).toBe('local bytes');
       expect((await readAll(got.stream({ start: 6, end: 10 }))).toString()).toBe('bytes');
     } finally {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
   });
 

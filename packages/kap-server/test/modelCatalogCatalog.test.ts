@@ -139,7 +139,7 @@ describe('server-v2 /api/v1 catalog browse + import endpoints', () => {
       server = undefined;
     }
     if (home !== undefined) {
-      await rm(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       home = undefined;
     }
     delete process.env['KIMI_CODE_MODEL_CATALOG_REFRESH_ON_START'];

@@ -1150,7 +1150,7 @@ describe('truncation pipeline', () => {
   });
 
   afterEach(async () => {
-    await rm(homeDir, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('spills oversized output to disk and renders a pointer for the model', async () => {

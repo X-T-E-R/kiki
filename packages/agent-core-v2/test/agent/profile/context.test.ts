@@ -30,9 +30,9 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(homeDir, { recursive: true, force: true });
-  await rm(workDir, { recursive: true, force: true });
-  await Promise.all(extraDirs.map((dir) => rm(dir, { recursive: true, force: true })));
+  await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  await rm(workDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  await Promise.all(extraDirs.map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 })));
 });
 
 describe('loadAgentsMd user-level discovery', () => {
@@ -122,7 +122,7 @@ describe('loadAgentsMd brand home (KIMI_CODE_HOME)', () => {
   });
 
   afterEach(async () => {
-    await rm(brandHome, { recursive: true, force: true });
+    await rm(brandHome, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
   it('loads the branded AGENTS.md from the brand home and generic from the real home', async () => {
