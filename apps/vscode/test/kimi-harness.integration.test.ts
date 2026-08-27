@@ -43,7 +43,6 @@ import { chatHandlers } from "../src/handlers/chat.handler";
 import { mcpHandlers } from "../src/handlers/mcp.handler";
 import { parseHostSlashCommand, runHostSlashCommand } from "../src/handlers/slash-command";
 import type { HandlerContext } from "../src/handlers/types";
-import { VSCodeSettings } from "../src/config/vscode-settings";
 import { KimiRuntime } from "../src/runtime/kimi-runtime";
 import type { SessionRuntime } from "../src/runtime/session-runtime";
 
@@ -108,9 +107,6 @@ async function createRuntimeRig(extraAliases: readonly string[] = []): Promise<R
   const runtime = new KimiRuntime({
     version,
     homeDir,
-    // The dual-engine CI matrix reruns this suite with KIMI_CODE_LEGACY_FLAG=1;
-    // the vscode mock above keeps the setting itself at its default.
-    useAgentCoreV1: VSCodeSettings.useAgentCoreV1,
     broadcast: (event: string, data: unknown, webviewId?: string) => {
       broadcasts.push({ event, data, webviewId });
     },

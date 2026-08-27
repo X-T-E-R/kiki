@@ -26,7 +26,7 @@ import {
 import { ToolCallComponent } from '#/tui/components/messages/tool-call';
 import { ReadGroupComponent } from '#/tui/components/messages/read-group';
 import { replayBackgroundProjection } from '#/tui/utils/message-replay';
-import type { TaskNotificationOrigin } from '#/tui/utils/message-replay';
+import type { BackgroundTaskNotificationOrigin } from '#/tui/utils/message-replay';
 
 vi.mock('#/utils/open-url', () => ({ openUrl: vi.fn() }));
 
@@ -80,7 +80,7 @@ function message(
   extra: {
     readonly toolCalls?: readonly ToolCall[];
     readonly toolCallId?: string;
-    readonly origin?: PromptOrigin | TaskNotificationOrigin;
+    readonly origin?: PromptOrigin | BackgroundTaskNotificationOrigin;
     readonly isError?: boolean;
   } = {},
 ): AgentReplayRecord {
@@ -152,9 +152,7 @@ function baseAgentState(
   return {
     type: 'main',
     config: {
-      cwd: '/tmp/proj-a',
       modelAlias: 'k2',
-      provider: undefined,
       modelCapabilities: {
         image_in: false,
         video_in: false,
@@ -163,7 +161,7 @@ function baseAgentState(
         tool_use: true,
         max_context_tokens: 100,
       },
-      thinkingEffort: 'off',
+      thinkingLevel: 'off',
       systemPrompt: '',
     },
     context: { history: [], tokenCount: 0 },
@@ -714,11 +712,11 @@ describe('KimiTUI resume message replay', () => {
       message('user', [{ type: 'text', text: 'run two agents' }]),
       message('assistant', [], {
         toolCalls: [
-          toolCall('call_agent_1', 'Agent', {
+          toolCall('call_agent_1', 'AgentRun', {
             description: 'Review API',
             subagent_type: 'reviewer',
           }),
-          toolCall('call_agent_2', 'Agent', {
+          toolCall('call_agent_2', 'AgentRun', {
             description: 'Review tests',
             subagent_type: 'reviewer',
           }),

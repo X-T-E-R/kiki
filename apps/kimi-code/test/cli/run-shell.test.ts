@@ -42,7 +42,6 @@ const mocks = vi.hoisted(() => {
     harnessGetConfigDiagnostics: vi.fn(async () => ({ warnings: [] as readonly string[] })),
     harnessGetCachedAccessToken: vi.fn(),
     harnessClose: vi.fn(),
-    detectPendingMigration: vi.fn<() => Promise<unknown>>(async () => null),
     harnessTrack: vi.fn(),
     kimiTuiConstructor: vi.fn(),
     tuiStart: vi.fn(),
@@ -150,10 +149,6 @@ vi.mock('../../src/tui/index', () => ({
 
 vi.mock('../../src/tui/theme/detect', () => ({
   detectTerminalTheme: mocks.detectTerminalTheme,
-}));
-
-vi.mock('../../src/migration/index', () => ({
-  detectPendingMigration: mocks.detectPendingMigration,
 }));
 
 vi.mock('node:child_process', () => ({
@@ -947,19 +942,18 @@ describe('runShell', () => {
     }
   });
 
-  it('surfaces an invalid target config as an error for kimi migrate, not silently', async () => {
+  it('surfaces an invalid target config as an error, not silently', async () => {
     mocks.loadTuiConfig.mockResolvedValue({
       theme: 'dark',
       editorCommand: null,
       notifications: { enabled: true, condition: 'unfocused' },
     });
-    mocks.detectPendingMigration.mockResolvedValue({ totalSessions: 1 });
     mocks.harnessGetConfig.mockRejectedValue(
       new Error('Invalid configuration in ~/.kimi-code/config.toml'),
     );
 
-    // A broken config.toml must fail loudly — `kimi migrate` must not swallow
-    // it and proceed, or the user never learns their config is broken.
+    // A broken config.toml must fail loudly — startup must not swallow it and
+    // proceed, or the user never learns their config is broken.
     await expect(
       runShell(
         {
@@ -976,7 +970,6 @@ describe('runShell', () => {
           agentFiles: [],
         },
         '1.2.3-test',
-        { migrateOnly: true },
       ),
     ).rejects.toThrow('Invalid configuration');
     expect(mocks.tuiStart).not.toHaveBeenCalled();

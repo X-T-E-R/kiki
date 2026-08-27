@@ -14,7 +14,6 @@ import type { Command } from 'commander';
 import { parse as parseToml } from 'smol-toml';
 import { z } from 'zod';
 
-import { isKimiV2Enabled } from '#/cli/experimental-v2';
 import { getTuiConfigPath, parseTuiConfig } from '#/tui/config';
 import { getDataDir } from '#/utils/paths';
 
@@ -185,15 +184,10 @@ function resolveDeps(deps: Partial<DoctorDeps> | DoctorDeps | undefined): Resolv
     validateConfigToml:
       deps?.validateConfigToml ??
       (async (text, filePath) => {
-        if (isKimiV2Enabled()) {
-          // Default v2 route (same engine gate as `kimi -p`): validate with
-          // the agent-core-v2 section registry instead of the legacy schema.
-          // Loaded lazily so the v2 module graph stays off the legacy path.
-          const { validateConfigTomlV2 } = await import('../v2/validate-config');
-          return validateConfigTomlV2(text, filePath);
-        }
-        await getConfigRpc().validateConfigToml({ text, filePath });
-        return undefined;
+        // Validate with the agent-core-v2 section registry. Loaded lazily so
+        // the v2 module graph stays off the doctor's cheap paths.
+        const { validateConfigTomlV2 } = await import('../v2/validate-config');
+        return validateConfigTomlV2(text, filePath);
       }),
     kimiHomeDir: deps?.kimiHomeDir ?? getDataDir,
     osHomeDir: deps?.osHomeDir ?? homedir,
@@ -410,9 +404,7 @@ async function checkAgentProfiles(
     ];
   }
   const { core, agentRoots, agentPaths, frontmatter } = modules;
-  // The scan always parses profiles with the v2 grammar; under the legacy
-  // engine the v2-only fields would be silently dropped at runtime.
-  const legacyEngine = !isKimiV2Enabled();
+  const legacyEngine = false;
   const fs = new core.HostFileSystem();
   const discoveryWarnings: string[] = [];
   const warn = (message: string): void => {

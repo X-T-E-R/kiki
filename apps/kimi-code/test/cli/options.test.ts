@@ -101,7 +101,6 @@ describe('CLI options parsing', () => {
         () => {
           throw new Error('main action should not run');
         },
-        () => {},
         (entry, args) => {
           pluginRunnerCalls.push({ entry, args });
         },

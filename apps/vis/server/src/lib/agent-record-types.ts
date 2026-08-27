@@ -8,7 +8,6 @@ export type {
   CompactionBeginData,
   CompactionResult,
   ContextMessage,
-  LoopRecordedEvent,
   PermissionApprovalResultRecord,
   PermissionMode,
   PromptOrigin,
@@ -30,7 +29,24 @@ export type { Message, ContentPart, ToolCall, TokenUsage } from '@moonshot-ai/ko
 // Local bindings for the upstream types referenced by the vis-only DTOs
 // below. The `export type { … }` re-export above forwards the names to
 // consumers but does NOT bring them into this module's scope.
-import type { BackgroundTaskInfo } from '@moonshot-ai/kimi-code-sdk';
+import type { BackgroundTaskInfo, ToolInputDisplay } from '@moonshot-ai/kimi-code-sdk';
+import type { LoopRecordedEvent as UpstreamLoopRecordedEvent } from '@moonshot-ai/agent-core-v2';
+
+/**
+ * The loop-event union vis projects. Same archive tolerance as
+ * {@link AgentRecord}: wires written by the v1 engine carry a tool
+ * description, an input display, and result truncation metadata that v2 no
+ * longer emits, and the viewer still has to render them.
+ */
+export type LoopRecordedEvent = UpstreamLoopRecordedEvent extends infer E
+  ? E extends { readonly type: 'tool.call' }
+    ? E & { readonly description?: string; readonly display?: ToolInputDisplay }
+    : E extends { readonly type: 'tool.result' }
+      ? E & {
+          readonly result: { readonly truncated?: boolean; readonly message?: string };
+        }
+      : E
+  : never;
 import type { AgentRecord as UpstreamAgentRecord } from '@moonshot-ai/kimi-code-sdk/wire';
 
 /**
@@ -41,9 +57,20 @@ import type { AgentRecord as UpstreamAgentRecord } from '@moonshot-ai/kimi-code-
  * check covering tower session wires.
  */
 export type AgentRecord =
-  | UpstreamAgentRecord
+  | WithArchivedFields<UpstreamAgentRecord>
   | { readonly type: 'tower_mode.enter'; readonly time?: number }
   | { readonly type: 'tower_mode.exit'; readonly time?: number };
+
+/**
+ * Fields that only wires written by the v1 engine carry. v2 does not emit
+ * them, but the visualizer's whole job is reading archives, so the record
+ * union keeps them as optional reads rather than dropping the older corpus.
+ */
+type WithArchivedFields<R> = R extends { readonly type: 'context.append_loop_event' }
+  ? Omit<R, 'event'> & { readonly event: LoopRecordedEvent }
+  : R extends { readonly type: 'config.update' }
+    ? R & { readonly cwd?: string; readonly thinkingEffort?: string }
+    : R;
 
 /** Extract one record kind from the (locally widened) union. */
 export type AgentRecordOf<K extends AgentRecord['type']> = Extract<

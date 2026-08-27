@@ -40,8 +40,9 @@ export interface ToolCallNode {
 
 export interface StepNode {
   uuid: string;
-  step: number;
-  turnId: string;
+  /** Absent on v2 wires, which stopped numbering steps on the record. */
+  step?: number;
+  turnId?: string;
   beginLineNo: number;
   beginTime?: number;
   endLineNo?: number;
@@ -361,7 +362,7 @@ export function analyzeWire(entries: readonly WireEntry[]): Analysis {
                 lineNo: entry.lineNo,
                 time: t,
                 turnIndex: current?.index ?? -1,
-                step: ev.step,
+                step: ev.step ?? -1,
                 contextTokens,
               });
             }

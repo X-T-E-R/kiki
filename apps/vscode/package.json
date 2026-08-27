@@ -95,11 +95,6 @@
             "Share when active file changes"
           ],
           "description": "Control when to share the active editor's file and cursor position with Kimi"
-        },
-        "kimi.useAgentCoreV1": {
-          "type": "boolean",
-          "default": false,
-          "description": "Temporary rollback switch: run Kimi on the legacy v1 engine instead of the current one. This setting will be removed in a future version. Requires a window reload to take effect."
         }
       }
     },
@@ -147,10 +142,6 @@
         "command": "kimi.logout",
         "title": "Kimi Code: Logout",
         "icon": "$(sign-out)"
-      },
-      {
-        "command": "kimi.migrateLegacyData",
-        "title": "Kimi Code: Migrate Legacy Data"
       }
     ],
     "keybindings": [
@@ -233,10 +224,6 @@
         {
           "command": "kimi.logout",
           "when": "kimi.isLoggedIn"
-        },
-        {
-          "command": "kimi.migrateLegacyData",
-          "when": "true"
         }
       ],
       "editor/context": [
@@ -291,7 +278,6 @@
     "@fontsource-variable/inter": "5.2.8",
     "@moonshot-ai/kimi-code-oauth": "workspace:^",
     "@moonshot-ai/kimi-code-sdk": "workspace:^",
-    "@moonshot-ai/migration-legacy": "workspace:^",
     "@radix-ui/react-accordion": "^1.2.12",
     "@tabler/icons-react": "^3.36.0",
     "ahooks": "^3.9.6",

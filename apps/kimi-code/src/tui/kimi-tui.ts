@@ -21,7 +21,6 @@ import type {
   TurnStartedEvent,
   WorkspaceTrustInfo,
 } from '@moonshot-ai/kimi-code-sdk';
-import type { MigrationPlan } from '@moonshot-ai/migration-legacy';
 import {
   deleteAllKittyImages,
   type Component,
@@ -34,7 +33,6 @@ import {
 import { resolve } from 'pathe';
 
 import type { CLIOptions } from '#/cli/options';
-import { MigrationScreenComponent, type MigrationScreenResult } from '#/migration/index';
 import { copyTextToClipboard } from '#/utils/clipboard/clipboard-text';
 import { appendInputHistory, loadInputHistory } from '#/utils/history/input-history';
 import { openUrl } from '#/utils/open-url';
@@ -216,9 +214,6 @@ export interface KimiTUIStartupInput {
   readonly version: string;
   readonly workDir: string;
   readonly startupNotice?: string;
-  readonly migrationPlan?: MigrationPlan | null;
-  /** When true, run only the migration screen, then exit (the `kimi migrate` command). */
-  readonly migrateOnly?: boolean;
   /** agent-core-v2 engine; enables the startup workspace-trust prompt. */
   readonly engineV2?: boolean;
 }
@@ -339,8 +334,6 @@ export class KimiTUI {
   private signalCleanupHandlers: Array<() => void> = [];
   private isShuttingDown = false;
   private backgroundRefreshPromise: Promise<void> | undefined;
-  private readonly migrationPlan: MigrationPlan | null;
-  private readonly migrateOnly: boolean;
   /** Whether the harness runs on the agent-core-v2 engine (lazy session creation). */
   readonly engineV2: boolean;
   private startupNotice: string | undefined;
@@ -431,8 +424,6 @@ export class KimiTUI {
       },
     };
     this.options = tuiOptions;
-    this.migrationPlan = startupInput.migrationPlan ?? null;
-    this.migrateOnly = startupInput.migrateOnly ?? false;
     this.engineV2 = startupInput.engineV2 ?? false;
     this.startupNotice = startupInput.startupNotice;
     this.state = createTUIState(tuiOptions);
@@ -605,38 +596,11 @@ export class KimiTUI {
     this.registerSignalHandlers();
     // Outer try rolls back signal listeners on startup failure.
     try {
-      // The workspace trust gate must run before anything else in startup —
-      // including the migration branch: a workspace that needs migration is
-      // not implicitly trusted, and later startup steps spawn child processes.
+      // The workspace trust gate must run before anything else in startup: a
+      // later startup step spawns child processes.
       startupTrace('trustPrompt:begin');
       const trustPromptStartedLoop = await this.maybeRunWorkspaceTrustPrompt();
       startupTrace('trustPrompt:end');
-
-      if (this.migrationPlan !== null) {
-        // Migration needs the event loop running first (pi-tui component).
-        // When the trust prompt already started it, starting it again would
-        // re-run pi-tui's terminal.start() — stacking a second Kitty
-        // keyboard-protocol push and duplicate stdin listeners.
-        if (!trustPromptStartedLoop) this.startEventLoop();
-        try {
-          const migrationResult = await this.runMigrationScreen(this.migrationPlan);
-          if (this.migrateOnly) {
-            const failed = migrationResult.decision === 'now' && migrationResult.migrated === false;
-            this.disposeTerminalTracking();
-            this.state.ui.stop();
-            await this.onExit?.(failed ? 1 : 0);
-            return;
-          }
-          const shouldReplayHistory = await this.initMainTui();
-          this.startBackgroundFdAutocomplete();
-          await this.finishStartup(shouldReplayHistory);
-        } catch (error) {
-          this.disposeTerminalTracking();
-          this.state.ui.stop();
-          throw error;
-        }
-        return;
-      }
 
       startupTrace('initMainTui:begin');
       const shouldReplayHistory = await this.initMainTui();
@@ -3679,35 +3643,6 @@ export class KimiTUI {
   /** /undo cut the context — the next step's cache drop is expected. */
   noteContextCut(): void {
     this.cacheHint.resetCacheBreakBaseline();
-  }
-
-  private async runMigrationScreen(plan: MigrationPlan): Promise<MigrationScreenResult> {
-    const result = await new Promise<MigrationScreenResult>((resolve) => {
-      const screen = new MigrationScreenComponent({
-        plan,
-        sourceHome: plan.sourceHome,
-        targetHome: this.harness.homeDir,
-        skipDecisionStep: this.migrateOnly,
-        requestRender: () => {
-          this.state.ui.requestRender();
-        },
-        onComplete: (r) => {
-          resolve(r);
-        },
-      });
-      this.mountEditorReplacement(screen);
-    });
-    this.restoreEditor();
-    if (result.decision === 'never') {
-      // Persist the skip marker `detectPendingMigration` checks, so "Never ask
-      // again" actually stops the prompt from reappearing every launch.
-      try {
-        writeFileSync(join(this.harness.homeDir, '.skip-migration-from-kimi-cli'), '', 'utf-8');
-      } catch {
-        // Non-blocking: a failed marker write must never crash startup.
-      }
-    }
-    return result;
   }
 
   /**

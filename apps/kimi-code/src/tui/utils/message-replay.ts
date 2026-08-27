@@ -75,7 +75,7 @@ export function appStateFromResumeAgent(agent: ResumedAgentState): Partial<AppSt
   const contextTokens = agent.context.tokenCount;
   const contextUsage = maxContextTokens > 0 ? contextTokens / maxContextTokens : 0;
   return {
-    model: agent.config.modelAlias ?? agent.config.provider?.model ?? '',
+    model: agent.config.modelAlias ?? '',
     contextTokens,
     maxContextTokens,
     contextUsage,
@@ -240,7 +240,8 @@ export function contentPartsToText(content: readonly ContentPart[]): string {
 
 /**
  * agent-core-v2's task domain persists the terminal notification under the
- * 'task' spelling (v1 used 'background_task'); both reach replay verbatim.
+ * 'task' spelling; wires written by the v1 engine spelled it 'background_task'
+ * and still reach replay verbatim, so both are read.
  */
 export interface TaskNotificationOrigin {
   readonly kind: 'task';
@@ -250,7 +251,7 @@ export interface TaskNotificationOrigin {
 }
 
 export type BackgroundTaskNotificationOrigin =
-  | Extract<PromptOrigin, { kind: 'background_task' }>
+  | (Omit<TaskNotificationOrigin, 'kind'> & { readonly kind: 'background_task' })
   | TaskNotificationOrigin;
 
 export function backgroundOrigin(

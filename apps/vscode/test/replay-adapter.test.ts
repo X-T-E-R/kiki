@@ -60,7 +60,6 @@ function resumedAgent(
   return {
     type: options.type ?? "main",
     config: {
-      cwd: "/workspace",
       modelAlias: options.modelAlias ?? "kimi-test",
       modelCapabilities: {
         image_in: true,
@@ -70,7 +69,7 @@ function resumedAgent(
         tool_use: true,
         max_context_tokens: 128_000,
       },
-      thinkingEffort: options.thinkingEffort ?? "off",
+      thinkingLevel: options.thinkingEffort ?? "off",
       systemPrompt: "",
     },
     context: { history: [], tokenCount: options.contextTokenCount ?? 0 },
@@ -536,10 +535,11 @@ describe("replay adapter (renders the public SDK resume state for the Webview)",
     ], { type: "sub" });
     const state: ResumedSessionState = {
       sessionMetadata: {
-        createdAt: "",
-        updatedAt: "",
+        id: "ses-replay",
+        archived: false,
+        createdAt: 0,
+        updatedAt: 0,
         title: "",
-        isCustomTitle: false,
         agents: {
           main: { type: "main", parentAgentId: null },
           "sub-1": { type: "sub", parentAgentId: "main" },

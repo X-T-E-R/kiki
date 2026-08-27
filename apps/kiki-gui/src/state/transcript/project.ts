@@ -1388,7 +1388,6 @@ export function agentTranscriptToBlocks(
         }),
       );
     }
-    const openingText = splitSystemReminders(item.prompt ?? '').text;
     for (const step of item.steps) {
       let lastTextFrameId: string | undefined;
       let lastThinkingFrameId: string | undefined;
@@ -1405,7 +1404,6 @@ export function agentTranscriptToBlocks(
       for (const frame of step.frames) {
         switch (frame.kind) {
           case 'text':
-            if (frame.role === 'user' && openingText !== '' && frame.text === item.prompt) break;
             if (frame.role === 'user') {
               const frameOrigin = originFromFrame(frame);
               const turnOrigin = originFromTurnItem(item);

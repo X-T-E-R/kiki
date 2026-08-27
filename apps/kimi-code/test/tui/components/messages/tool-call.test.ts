@@ -73,7 +73,7 @@ describe('ToolCallComponent', () => {
     it('shows the hint immediately for a running Agent call', () => {
       vi.useFakeTimers();
       const component = new ToolCallComponent(
-        { id: 'call_agent_long', name: 'Agent', args: { description: 'explore' } },
+        { id: 'call_agent_long', name: 'AgentRun', args: { description: 'explore' } },
         undefined,
         stubTui(30),
       );
@@ -976,7 +976,7 @@ describe('ToolCallComponent', () => {
     const component = new ToolCallComponent(
       {
         id: 'call_agent',
-        name: 'Agent',
+        name: 'AgentRun',
         args: { description: 'explore project xxx' },
       },
       undefined,
@@ -1039,7 +1039,7 @@ describe('ToolCallComponent', () => {
     const component = new ToolCallComponent(
       {
         id: 'call_agent_model',
-        name: 'Agent',
+        name: 'AgentRun',
         args: { description: 'explore project' },
       },
       undefined,
@@ -1067,7 +1067,7 @@ describe('ToolCallComponent', () => {
     const component = new ToolCallComponent(
       {
         id: 'call_agent_detach',
-        name: 'Agent',
+        name: 'AgentRun',
         args: { description: 'long task' },
       },
       undefined,
@@ -1111,7 +1111,7 @@ describe('ToolCallComponent', () => {
     const component = new ToolCallComponent(
       {
         id: 'call_agent_tools',
-        name: 'Agent',
+        name: 'AgentRun',
         args: { description: 'inspect tools' },
       },
       undefined,
@@ -1151,7 +1151,7 @@ describe('ToolCallComponent', () => {
     const component = new ToolCallComponent(
       {
         id: 'call_agent_stable_tools',
-        name: 'Agent',
+        name: 'AgentRun',
         args: { description: 'inspect tools' },
       },
       undefined,
@@ -1196,7 +1196,7 @@ describe('ToolCallComponent', () => {
     const component = new ToolCallComponent(
       {
         id: 'call_agent_wrapped_text',
-        name: 'Agent',
+        name: 'AgentRun',
         args: { description: 'inspect wrapping' },
       },
       undefined,
@@ -1225,7 +1225,7 @@ describe('ToolCallComponent', () => {
     const component = new ToolCallComponent(
       {
         id: 'call_agent_scroll',
-        name: 'Agent',
+        name: 'AgentRun',
         args: { description: 'long think' },
       },
       undefined,
@@ -1253,7 +1253,7 @@ describe('ToolCallComponent', () => {
     const component = new ToolCallComponent(
       {
         id: 'call_agent_bash_out',
-        name: 'Agent',
+        name: 'AgentRun',
         args: { description: 'run bash' },
       },
       undefined,
@@ -1293,7 +1293,7 @@ describe('ToolCallComponent', () => {
     const component = new ToolCallComponent(
       {
         id: 'call_agent_mixed',
-        name: 'Agent',
+        name: 'AgentRun',
         args: { description: 'mixed tools' },
       },
       undefined,
@@ -1339,7 +1339,7 @@ describe('ToolCallComponent', () => {
     const component = new ToolCallComponent(
       {
         id: 'call_agent_failed',
-        name: 'Agent',
+        name: 'AgentRun',
         args: { description: 'check failure' },
       },
       undefined,
@@ -1366,7 +1366,7 @@ describe('ToolCallComponent', () => {
     const component = new ToolCallComponent(
       {
         id: 'call_agent_height',
-        name: 'Agent',
+        name: 'AgentRun',
         args: { description: 'height stable' },
       },
       undefined,
@@ -1412,7 +1412,7 @@ describe('ToolCallComponent', () => {
       const component = new ToolCallComponent(
         {
           id: 'call_bg_agent',
-          name: 'Agent',
+          name: 'AgentRun',
           args: {
             description: 'background agent 1',
             run_in_background: true,
@@ -1479,7 +1479,7 @@ describe('ToolCallComponent', () => {
       const component = new ToolCallComponent(
         {
           id: 'call_bg_agent',
-          name: 'Agent',
+          name: 'AgentRun',
           args: { description: 'background agent A', run_in_background: true },
         },
         undefined,
@@ -1529,7 +1529,7 @@ describe('ToolCallComponent', () => {
       const component = new ToolCallComponent(
         {
           id: 'call_bg_agent',
-          name: 'Agent',
+          name: 'AgentRun',
           args: { description: 'background agent 1', run_in_background: true },
         },
         spawnSuccessResult,
@@ -1546,7 +1546,7 @@ describe('ToolCallComponent', () => {
       const component = new ToolCallComponent(
         {
           id: 'call_bg_agent',
-          name: 'Agent',
+          name: 'AgentRun',
           args: { description: 'X', run_in_background: true },
         },
         spawnSuccessResult,
@@ -2075,7 +2075,7 @@ describe('ToolCallComponent', () => {
 
     it('replaces a sub-tool status row when child progress arrives with replace', () => {
       const component = new ToolCallComponent(
-        { id: 'call_agent_wait', name: 'Agent', args: { description: 'child wait' } },
+        { id: 'call_agent_wait', name: 'AgentRun', args: { description: 'child wait' } },
         undefined,
         stubTui(30),
       );

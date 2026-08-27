@@ -4,6 +4,7 @@ import type {
   PromptOrigin,
   ResumedAgentState,
   ResumedSessionState,
+  ToolInputDisplay,
 } from "@moonshot-ai/kimi-code-sdk";
 
 import type {
@@ -17,6 +18,17 @@ import type {
 import type { UIStreamEvent } from "../../shared/types";
 import { toLegacyToolName } from "./event-adapter";
 import { toLegacyDisplay } from "./tool-display";
+
+/**
+ * Tool-input displays were carried on the message itself in wires written by
+ * the v1 engine. v2 keeps them in the tool store, so replayed archives are the
+ * only source left and the field is read structurally.
+ */
+function archivedToolCallDisplays(
+  message: unknown,
+): Record<string, ToolInputDisplay> | undefined {
+  return (message as { toolCallDisplays?: Record<string, ToolInputDisplay> }).toolCallDisplays;
+}
 
 interface SubagentReplayInvocation {
   readonly parentAgentId: string;
@@ -65,7 +77,7 @@ function replayAgentToWebviewEvents(
         type: "StatusUpdate",
         payload: {
           ...(agent.config.modelAlias === undefined ? {} : { model: agent.config.modelAlias }),
-          thinking_effort: agent.config.thinkingEffort,
+          thinking_effort: agent.config.thinkingLevel,
           plan_mode: agent.plan !== null,
         },
       },
@@ -128,7 +140,7 @@ function replayAgentToWebviewEvents(
             events.push(withSession({ type: "ContentPart", payload: part }, sessionId));
           }
           for (const call of message.toolCalls) {
-            const display = message.toolCallDisplays?.[call.id];
+            const display = archivedToolCallDisplays(message)?.[call.id];
             if (display !== undefined) {
               toolDisplays.set(call.id, toLegacyDisplay(display));
             }
@@ -237,7 +249,7 @@ function buildSubagentReplayIndex(state: ResumedSessionState): SubagentReplayInd
       const call = calls.get(message.toolCallId);
       if (call === undefined || (call.name !== "Agent" && call.name !== "AgentSwarm")) continue;
       for (const childAgentId of subagentIdsFromResult(call.name, message.content)) {
-        const metadata = state.sessionMetadata.agents[childAgentId];
+        const metadata = state.sessionMetadata.agents?.[childAgentId];
         if (metadata?.parentAgentId !== parentAgentId || state.agents[childAgentId] === undefined) {
           continue;
         }
@@ -358,7 +370,7 @@ function renderSubagentInvocation(
           }
           for (const call of message.toolCalls) {
             const toolCallId = scopedReplayToolCallId(invocation.childAgentId, call.id);
-            const display = message.toolCallDisplays?.[call.id];
+            const display = archivedToolCallDisplays(message)?.[call.id];
             if (display !== undefined) toolDisplays.set(toolCallId, toLegacyDisplay(display));
             emit({
               type: "ToolCall",

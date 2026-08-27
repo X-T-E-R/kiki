@@ -33,7 +33,7 @@ function createAgent(
   const component = new ToolCallComponent(
     {
       id,
-      name: 'Agent',
+      name: 'AgentRun',
       args: { description },
     },
     undefined,

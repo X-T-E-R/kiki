@@ -26,13 +26,13 @@ import { Events } from "../shared/bridge";
 import { KimiRuntime, type OpenSessionOptions } from "../src/runtime/kimi-runtime";
 
 const sdkFactories = vi.hoisted(() => {
-  const v1Harness = { homeDir: "/tmp/kimi-runtime-v1-home", close: vi.fn(async () => undefined) };
-  const v2Harness = { homeDir: "/tmp/kimi-runtime-v2-home", close: vi.fn(async () => undefined) };
+  const engineHarness = {
+    homeDir: "/tmp/kimi-runtime-home",
+    close: vi.fn(async () => undefined),
+  };
   return {
-    v1Harness,
-    v2Harness,
-    createKimiHarness: vi.fn(() => v1Harness),
-    createKimiHarnessV2: vi.fn(() => v2Harness),
+    engineHarness,
+    createKimiHarness: vi.fn(() => engineHarness),
   };
 });
 
@@ -41,7 +41,6 @@ vi.mock("@moonshot-ai/kimi-code-sdk", async (importOriginal) => {
   return {
     ...original,
     createKimiHarness: sdkFactories.createKimiHarness,
-    createKimiHarnessV2: sdkFactories.createKimiHarnessV2,
   };
 });
 
@@ -266,15 +265,15 @@ function createRuntime(
 }
 
 describe("Kimi runtime (owns shared SDK sessions for Webviews)", () => {
-  it("creates the v2 harness by default and the v1 harness for rollback", async () => {
+  it("creates the SDK harness with the extension's host identity", async () => {
     const defaults = new KimiRuntime({
       version: "0.6.0",
       broadcast: () => undefined,
       captureBaseline: () => undefined,
       log: () => undefined,
     });
-    expect(sdkFactories.createKimiHarnessV2).toHaveBeenCalledOnce();
-    expect(sdkFactories.createKimiHarnessV2).toHaveBeenCalledWith({
+    expect(sdkFactories.createKimiHarness).toHaveBeenCalledOnce();
+    expect(sdkFactories.createKimiHarness).toHaveBeenCalledWith({
       homeDir: undefined,
       identity: {
         productName: "kimi-code-vscode",
@@ -283,20 +282,8 @@ describe("Kimi runtime (owns shared SDK sessions for Webviews)", () => {
       },
       uiMode: "vscode",
     });
-    expect(sdkFactories.createKimiHarness).not.toHaveBeenCalled();
-    expect(defaults.harness).toBe(sdkFactories.v2Harness as unknown as KimiHarness);
+    expect(defaults.harness).toBe(sdkFactories.engineHarness as unknown as KimiHarness);
     await defaults.dispose();
-
-    const rollback = new KimiRuntime({
-      version: "0.6.0",
-      useAgentCoreV1: true,
-      broadcast: () => undefined,
-      captureBaseline: () => undefined,
-      log: () => undefined,
-    });
-    expect(sdkFactories.createKimiHarness).toHaveBeenCalledOnce();
-    expect(rollback.harness).toBe(sdkFactories.v1Harness as unknown as KimiHarness);
-    await rollback.dispose();
   });
 
   it("forwards the requested settings when creating an SDK session", async () => {

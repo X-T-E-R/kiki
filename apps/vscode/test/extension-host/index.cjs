@@ -10,7 +10,6 @@ const EXPECTED_COMMANDS = [
   "kimi.focusInput",
   "kimi.insertMention",
   "kimi.logout",
-  "kimi.migrateLegacyData",
   "kimi.newConversation",
   "kimi.openInSideBar",
   "kimi.openInTab",
