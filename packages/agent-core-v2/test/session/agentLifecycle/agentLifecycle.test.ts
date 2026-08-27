@@ -50,6 +50,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import '#/wire/wireService';
 import '#/state/eventDispatcherService';
 import { IAgentTaskService } from '#/agent/task/task';
+import { IAgentUsageService } from '#/agent/usage/usage';
 import { ISessionCronService } from '#/session/cron/sessionCronService';
 import { SessionCronServiceImpl } from '#/session/cron/sessionCronServiceImpl';
 import { ICronTaskPersistence } from '#/app/cron/cronTaskPersistence';
@@ -357,6 +358,10 @@ describe('AgentLifecycleService', () => {
       _serviceBrand: undefined,
       drain: promptDrain,
     } as unknown as IAgentPromptService);
+    ix.stub(IAgentUsageService, {
+      _serviceBrand: undefined,
+      onDidRecord: Event.None,
+    } as unknown as IAgentUsageService);
     ix.stub(ITelemetryService, {
       _serviceBrand: undefined,
       track2: () => {},
