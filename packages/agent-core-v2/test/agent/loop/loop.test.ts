@@ -1,3 +1,5 @@
+import { getMaxListeners } from 'node:events';
+
 import { type ToolCall } from '#/kosong/contract/message';
 import { emptyUsage } from '#/kosong/contract/usage';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -68,11 +70,13 @@ describe('Agent loop', () => {
     expect(await ctx.untilTurnEnd()).toMatchInlineSnapshot(`
       [wire] tools.set_active_tools      { "names": [], "time": "<time>" }
       [wire] prompt.accepted             { "promptId": "<msg-1>", "time": "<time>" }
+      [emit] prompt.submitted            { "time": "<time>", "agentId": "main", "promptId": "<msg-1>", "userMessageId": "<msg-1>", "status": "running", "content": [ { "type": "text", "text": "Hello" } ], "createdAt": "<time>" }
       [wire] turn.prompt                 { "turnId": 0, "promptId": "<msg-1>", "input": [ { "type": "text", "text": "Hello" } ], "origin": { "kind": "user" }, "time": "<time>" }
       [emit] turn.prompt                 { "time": "<time>", "turnId": 0, "promptId": "<msg-1>", "input": [ { "type": "text", "text": "Hello" } ], "origin": { "kind": "user" } }
       [emit] turn.started                { "time": "<time>", "turnId": 0, "origin": { "kind": "user" }, "prompt": "Hello", "promptId": "<msg-1>" }
       [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "running", "step": 0, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
       [emit] context.spliced             { "time": "<time>", "start": 0, "deleteCount": 0, "messages": [ { "role": "user", "content": [ { "type": "text", "text": "Hello" } ], "toolCalls": [], "origin": { "kind": "user" }, "id": "<msg-1>" } ] }
+      [emit] prompt.started              { "time": "<time>", "agentId": "main", "promptId": "<msg-1>" }
       [wire] context.append_message      { "message": { "role": "user", "content": [ { "type": "text", "text": "Hello" } ], "toolCalls": [], "origin": { "kind": "user" }, "id": "<msg-1>" }, "time": "<time>" }
       [wire] plugin.session_start        { "content": null, "time": "<time>" }
       [emit] turn.step.started           { "time": "<time>", "turnId": 0, "step": 1, "stepId": "<uuid-1>" }
@@ -132,11 +136,13 @@ describe('Agent loop', () => {
     expect(await ctx.untilTurnEnd()).toMatchInlineSnapshot(`
       [wire] tools.set_active_tools      { "names": [], "time": "<time>" }
       [wire] prompt.accepted             { "promptId": "<msg-1>", "time": "<time>" }
+      [emit] prompt.submitted            { "time": "<time>", "agentId": "main", "promptId": "<msg-1>", "userMessageId": "<msg-1>", "status": "running", "content": [ { "type": "text", "text": "Hello" } ], "createdAt": "<time>" }
       [wire] turn.prompt                 { "turnId": 0, "promptId": "<msg-1>", "input": [ { "type": "text", "text": "Hello" } ], "origin": { "kind": "user" }, "time": "<time>" }
       [emit] turn.prompt                 { "time": "<time>", "turnId": 0, "promptId": "<msg-1>", "input": [ { "type": "text", "text": "Hello" } ], "origin": { "kind": "user" } }
       [emit] turn.started                { "time": "<time>", "turnId": 0, "origin": { "kind": "user" }, "prompt": "Hello", "promptId": "<msg-1>" }
       [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "running", "step": 0, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
       [emit] context.spliced             { "time": "<time>", "start": 0, "deleteCount": 0, "messages": [ { "role": "user", "content": [ { "type": "text", "text": "Hello" } ], "toolCalls": [], "origin": { "kind": "user" }, "id": "<msg-1>" } ] }
+      [emit] prompt.started              { "time": "<time>", "agentId": "main", "promptId": "<msg-1>" }
       [wire] context.append_message      { "message": { "role": "user", "content": [ { "type": "text", "text": "Hello" } ], "toolCalls": [], "origin": { "kind": "user" }, "id": "<msg-1>" }, "time": "<time>" }
       [wire] plugin.session_start        { "content": null, "time": "<time>" }
       [emit] turn.step.started           { "time": "<time>", "turnId": 0, "step": 1, "stepId": "<uuid-1>" }
@@ -285,6 +291,37 @@ describe('Agent loop', () => {
     );
   });
 
+  it('records step.end with finishReason error when a step fails', async () => {
+    profile.update({ activeToolNames: [] });
+
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Hello' }] });
+    await ctx.untilTurnEnd();
+
+    const begins = wireLoopEvents(ctx, 'step.begin');
+    const ends = wireLoopEvents(ctx, 'step.end');
+    expect(begins).toHaveLength(1);
+    expect(ends).toEqual([
+      expect.objectContaining({ uuid: begins[0]!['uuid'], finishReason: 'error' }),
+    ]);
+  });
+
+  it('records step.end with finishReason interrupted when the turn is cancelled mid-step', async () => {
+    ctx.mockNextResponse({ type: 'text', text: 'partial answer' }, { type: 'text', text: ' more' });
+    const subscription = ctx.get(IEventBus).subscribe(AssistantDelta, () => {
+      loop.cancel();
+    });
+    const turn = (await loop.enqueue(nextTurnMessage('Hello')).assigned).turn;
+    await expect(turn.result).resolves.toMatchObject({ type: 'cancelled' });
+    subscription.dispose();
+
+    const begins = wireLoopEvents(ctx, 'step.begin');
+    const ends = wireLoopEvents(ctx, 'step.end');
+    expect(begins).toHaveLength(1);
+    expect(ends).toEqual([
+      expect.objectContaining({ uuid: begins[0]!['uuid'], finishReason: 'interrupted' }),
+    ]);
+  });
+
   it('does not run loop error handlers for aborted turns', async () => {
     let called = false;
     loop.registerLoopErrorHandler({
@@ -358,11 +395,13 @@ describe('Agent loop', () => {
     expect(await ctx.untilApproval(true)).toMatchInlineSnapshot(`
       [wire] tools.set_active_tools          { "names": [ "Lookup" ], "time": "<time>" }
       [wire] prompt.accepted                 { "promptId": "<msg-1>", "time": "<time>" }
+      [emit] prompt.submitted                { "time": "<time>", "agentId": "main", "promptId": "<msg-1>", "userMessageId": "<msg-1>", "status": "running", "content": [ { "type": "text", "text": "Look up moon" } ], "createdAt": "<time>" }
       [wire] turn.prompt                     { "turnId": 0, "promptId": "<msg-1>", "input": [ { "type": "text", "text": "Look up moon" } ], "origin": { "kind": "user" }, "time": "<time>" }
       [emit] turn.prompt                     { "time": "<time>", "turnId": 0, "promptId": "<msg-1>", "input": [ { "type": "text", "text": "Look up moon" } ], "origin": { "kind": "user" } }
       [emit] turn.started                    { "time": "<time>", "turnId": 0, "origin": { "kind": "user" }, "prompt": "Look up moon", "promptId": "<msg-1>" }
       [emit] agent.activity.updated          { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "running", "step": 0, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
       [emit] context.spliced                 { "time": "<time>", "start": 0, "deleteCount": 0, "messages": [ { "role": "user", "content": [ { "type": "text", "text": "Look up moon" } ], "toolCalls": [], "origin": { "kind": "user" }, "id": "<msg-1>" } ] }
+      [emit] prompt.started                  { "time": "<time>", "agentId": "main", "promptId": "<msg-1>" }
       [wire] context.append_message          { "message": { "role": "user", "content": [ { "type": "text", "text": "Look up moon" } ], "toolCalls": [], "origin": { "kind": "user" }, "id": "<msg-1>" }, "time": "<time>" }
       [wire] plugin.session_start            { "content": null, "time": "<time>" }
       [emit] turn.step.started               { "time": "<time>", "turnId": 0, "step": 1, "stepId": "<uuid-1>" }
@@ -568,6 +607,22 @@ describe('Agent loop', () => {
         origin: { kind: 'system_trigger', name: 'stop_hook' },
       }),
     );
+  });
+
+  it('raises the abort-listener ceiling on the step signal for parallel tool bursts', async () => {
+    profile.update({ activeToolNames: [] });
+    let observed = 0;
+    loop.hooks.onDidFinishStep.register('test-step-signal-listener-ceiling', async (hookCtx, next) => {
+      observed = getMaxListeners(hookCtx.signal);
+      await next();
+    });
+
+    ctx.mockNextResponse({ type: 'text', text: 'answer' });
+
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'hello' }] });
+    await ctx.untilTurnEnd();
+
+    expect(observed).toBe(64);
   });
 
   it('ends the turn when an afterStep hook sets stopTurn even though the model requested tool calls', async () => {
@@ -1622,6 +1677,20 @@ function nextTurnMessage(text: string): MessageStepRequest {
     },
     { admission: 'newTurn' },
   );
+}
+
+function wireLoopEvents(
+  target: TestAgentContext,
+  eventType: string,
+): Array<Record<string, unknown>> {
+  return target.allEvents
+    .filter(
+      (entry) =>
+        entry.type === '[wire]' &&
+        entry.event === 'context.append_loop_event' &&
+        (entry.args as { event?: { type?: string } }).event?.type === eventType,
+    )
+    .map((entry) => (entry.args as { event: Record<string, unknown> }).event);
 }
 
 function createTimingRequester(): IAgentLLMRequesterService {

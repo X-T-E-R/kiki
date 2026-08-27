@@ -664,6 +664,59 @@ describe('FullCompaction', () => {
     await ctx.expectResumeMatches();
   });
 
+  it('retries any compaction request error indefinitely when KIMI_CODE_INFINITE_RETRY is set', async () => {
+    vi.stubEnv('KIMI_CODE_INFINITE_RETRY', '1');
+    let attempts = 0;
+    const generate: GenerateFn = async () => {
+      attempts += 1;
+      if (attempts === 1) throw new APIStatusError(400, 'endpoint broken', null, 1);
+      if (attempts === 2) throw new APIStatusError(404, 'model not found', null, 1);
+      return textResult('Recovered compacted summary.');
+    };
+    const ctx = testAgent({ generate });
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
+    });
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+    ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+    const compacted = ctx.once('full_compaction.complete');
+    const completed = ctx.once('compaction.completed');
+
+    await ctx.rpc.beginCompaction({});
+    await compacted;
+    await completed;
+
+    expect(attempts).toBe(3);
+    await ctx.expectResumeMatches();
+  });
+
+  it('lets context overflow reach compaction shrink instead of retrying when KIMI_CODE_INFINITE_RETRY is set', async () => {
+    vi.stubEnv('KIMI_CODE_INFINITE_RETRY', '1');
+    let attempts = 0;
+    const generate: GenerateFn = async () => {
+      attempts += 1;
+      if (attempts === 1) throw new APIContextOverflowError(400, 'context length exceeded');
+      return textResult('Recovered compacted summary.');
+    };
+    const ctx = testAgent({ generate });
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
+    });
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+    ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+    const compacted = ctx.once('full_compaction.complete');
+    const completed = ctx.once('compaction.completed');
+
+    await ctx.rpc.beginCompaction({});
+    await compacted;
+    await completed;
+
+    expect(attempts).toBe(2);
+    await ctx.expectResumeMatches();
+  });
+
   it('recovers from an image-format rejection with a media-stripped resend', async () => {
     let attempts = 0;
     let sawMedia = false;
@@ -913,6 +966,37 @@ describe('FullCompaction', () => {
         error_type: 'APIEmptyResponseError',
       }),
     });
+    expect(ctx.compactHistory()).toEqual([
+      { role: 'user', text: 'old user one' },
+      { role: 'assistant', text: 'old assistant one' },
+      { role: 'user', text: 'recent user two' },
+      { role: 'assistant', text: 'recent assistant two' },
+    ]);
+  });
+
+  it('fails fast without shrinking when the provider filters the compaction response', async () => {
+    const inputs: string[][] = [];
+    const generate = realKosongGenerate((_attempt, history) => {
+      inputs.push(inputHistorySnapshot(history));
+      return mockStreamedMessage(
+        [{ type: 'think', think: 'Filtered while reasoning about the summary.' }],
+        null,
+        { finishReason: 'filtered', rawFinishReason: 'content_filter' },
+      );
+    });
+    const ctx = testAgent({ generate });
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
+    });
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+    ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+    const failed = ctx.once('error');
+
+    await ctx.rpc.beginCompaction({});
+    await failed;
+
+    expect(inputs).toHaveLength(1);
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'old user one' },
       { role: 'assistant', text: 'old assistant one' },
@@ -3056,6 +3140,7 @@ function textResult(text: string, traceId: string | null = null): Awaited<Return
 function mockStreamedMessage(
   parts: readonly StreamedMessagePart[],
   traceId: string | null = null,
+  opts?: { finishReason?: StreamedMessage['finishReason']; rawFinishReason?: string | null },
 ): StreamedMessage {
   return {
     get id(): string | null {
@@ -3064,8 +3149,8 @@ function mockStreamedMessage(
     get usage() {
       return null;
     },
-    finishReason: null,
-    rawFinishReason: null,
+    finishReason: opts?.finishReason ?? null,
+    rawFinishReason: opts?.rawFinishReason ?? null,
     traceId,
     async *[Symbol.asyncIterator](): AsyncIterator<StreamedMessagePart> {
       for (const part of parts) {

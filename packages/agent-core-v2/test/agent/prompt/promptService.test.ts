@@ -17,7 +17,9 @@ import {
   PromptAborted,
   PromptQueued,
   PromptReplaced,
+  PromptStarted,
   PromptSteered,
+  PromptSubmitted,
 } from '#/agent/prompt/promptService';
 import {
   IAgentProfileService,
@@ -507,6 +509,32 @@ describe('AgentPromptService', () => {
 
     await prompt.enqueue({ id: 'waiting', message: message('waiting') });
     expect(queued).toEqual([{ promptId: 'waiting', queueLength: 1 }]);
+  });
+
+  it('publishes prompt.submitted for every user prompt and prompt.started on launch', async () => {
+    const { prompt, eventBus } = harness();
+    const submitted: Array<{ promptId: string; userMessageId: string; status: string; content: ContentPart[] }> = [];
+    const started: string[] = [];
+    eventBus.subscribe(PromptSubmitted, (e) => {
+      submitted.push({ promptId: e.promptId, userMessageId: e.userMessageId, status: e.status, content: e.content });
+    });
+    eventBus.subscribe(PromptStarted, (e) => {
+      started.push(e.promptId);
+    });
+
+    const active = await prompt.enqueue({ id: 'active', message: message('active') });
+    expect(submitted).toEqual([
+      { promptId: 'active', userMessageId: 'active', status: 'running', content: [{ type: 'text', text: 'active' }] },
+    ]);
+    await active.launched;
+    expect(started).toEqual(['active']);
+
+    await prompt.enqueue({ id: 'waiting', message: message('waiting') });
+    expect(submitted).toEqual([
+      { promptId: 'active', userMessageId: 'active', status: 'running', content: [{ type: 'text', text: 'active' }] },
+      { promptId: 'waiting', userMessageId: 'waiting', status: 'queued', content: [{ type: 'text', text: 'waiting' }] },
+    ]);
+    expect(started).toEqual(['active']);
   });
 
   it('atomically rejects steer when any id is not pending', async () => {

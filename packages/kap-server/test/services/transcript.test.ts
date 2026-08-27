@@ -1613,6 +1613,14 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(tx.getPrompt('p1')).toMatchObject({ status: 'running', userMessageId: 'm1' });
     expect(tx.getPrompt('p2')).toMatchObject({ status: 'queued' });
 
+    feed(ev({ type: 'prompt.started', promptId: 'p2' }));
+    expect(tx.getPrompt('p2')).toMatchObject({
+      status: 'running',
+      userMessageId: 'm2',
+      content: [{ type: 'text', text: 'second' }],
+      createdAt: '2026-01-01T00:00:01.000Z',
+    });
+
     feed(
       ev({
         type: 'prompt.steered',

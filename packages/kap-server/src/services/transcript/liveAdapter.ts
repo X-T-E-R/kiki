@@ -26,7 +26,9 @@ import type {
   PromptCompleted,
   PromptQueued,
   PromptReplaced,
+  PromptStarted,
   PromptSteered,
+  PromptSubmitted,
 } from '@moonshot-ai/agent-core-v2/agent/prompt/promptService';
 import type {
   ShellCompleted,
@@ -92,6 +94,8 @@ export interface LiveAdapterInteraction {
 type PlanRevisionEvent = { readonly type: 'plan.revision' } & PlanRevision;
 
 type AgentActivityUpdatedEvent = { readonly type: 'agent.activity.updated' } & AgentActivityUpdated;
+type PromptSubmittedEvent = { readonly type: 'prompt.submitted' } & PromptSubmitted;
+type PromptStartedEvent = { readonly type: 'prompt.started' } & PromptStarted;
 type PromptCompletedEvent = { readonly type: 'prompt.completed' } & PromptCompleted;
 type PromptAbortedEvent = { readonly type: 'prompt.aborted' } & PromptAborted;
 type PromptSteeredEvent = { readonly type: 'prompt.steered' } & PromptSteered;
@@ -126,6 +130,8 @@ export type LiveAdapterBusEvent =
   | ({ readonly type: 'goal.updated' } & GoalUpdated)
   | ({ readonly type: 'agent.status.updated' } & AgentStatusUpdated)
   | AgentActivityUpdatedEvent
+  | PromptSubmittedEvent
+  | PromptStartedEvent
   | PromptCompletedEvent
   | PromptAbortedEvent
   | PromptSteeredEvent
@@ -142,23 +148,6 @@ export type LiveAdapterBusEvent =
   | ({ readonly type: 'context.spliced' } & ContextSpliced)
   | ({ readonly type: 'error' } & AgentErrorEvent)
   | ({ readonly type: 'warning' } & WarningIssued);
-
-/**
- * The v1-wire `prompt.submitted` shape (kap-server `protocol/events-zod.ts`).
- * The v2 bus never publishes it (see `agent/prompt/promptService.ts`, which
- * emits only completed / aborted / steered), so it is declared here rather
- * than derived from `DomainEvent`; `map` accepts it so an edge that learns
- * about a submission (REST prompt path, a future engine event) can project it
- * through the same entry point.
- */
-export interface LiveAdapterPromptSubmittedEvent {
-  readonly type: 'prompt.submitted';
-  readonly promptId: string;
-  readonly userMessageId: string;
-  readonly status: 'running' | 'queued' | 'blocked';
-  readonly content?: unknown;
-  readonly createdAt: string;
-}
 
 /**
  * Read access to one step's current frames (the producer store). Used for
@@ -267,7 +256,7 @@ export class AgentTranscriptLiveAdapter {
     private readonly lookups?: LiveAdapterLookups,
   ) {}
 
-  map(event: LiveAdapterBusEvent | LiveAdapterPromptSubmittedEvent): TranscriptOperation[] {
+  map(event: LiveAdapterBusEvent): TranscriptOperation[] {
     switch (event.type) {
       case 'plan.revision':
         return this.onPlanRevision(event);
@@ -321,6 +310,8 @@ export class AgentTranscriptLiveAdapter {
         return this.onAgentActivityUpdated(event);
       case 'prompt.submitted':
         return this.onPromptSubmitted(event);
+      case 'prompt.started':
+        return this.onPromptStarted(event);
       case 'prompt.queued':
         return this.onPromptQueued(event);
       case 'prompt.replaced':
@@ -1354,13 +1345,15 @@ export class AgentTranscriptLiveAdapter {
     return this.markerOp('notice', { level, message, event: eventPayload });
   }
 
-  private onPromptSubmitted(event: LiveAdapterPromptSubmittedEvent): TranscriptOperation[] {
-    const prompt = this.upsertPrompt(event.promptId, () => ({
+  private onPromptSubmitted(event: PromptSubmittedEvent): TranscriptOperation[] {
+    const prompt = this.upsertPrompt(event.promptId, (prev) => ({
       promptId: event.promptId,
-      status: event.status,
+      status: prev !== undefined && isTerminalPromptStatus(prev.status) ? prev.status : event.status,
       userMessageId: event.userMessageId,
-      content: event.content,
-      createdAt: event.createdAt,
+      content: projectPromptContentParts(event.content),
+      createdAt: prev?.createdAt ?? event.createdAt,
+      finishedAt: prev?.finishedAt,
+      steeredAt: prev?.steeredAt,
     }));
     return [{ op: 'prompt.upsert', prompt }];
   }
@@ -1376,6 +1369,19 @@ export class AgentTranscriptLiveAdapter {
       status: 'queued',
       userMessageId: prev?.userMessageId,
       content: projectPromptContentParts(event.content),
+      createdAt: prev?.createdAt ?? nowIso(),
+      finishedAt: prev?.finishedAt,
+      steeredAt: prev?.steeredAt,
+    }));
+    return [{ op: 'prompt.upsert', prompt }];
+  }
+
+  private onPromptStarted(event: PromptStartedEvent): TranscriptOperation[] {
+    const prompt = this.upsertPrompt(event.promptId, (prev) => ({
+      promptId: event.promptId,
+      status: 'running',
+      userMessageId: prev?.userMessageId,
+      content: prev?.content,
       createdAt: prev?.createdAt ?? nowIso(),
       finishedAt: prev?.finishedAt,
       steeredAt: prev?.steeredAt,
@@ -1518,6 +1524,10 @@ export class AgentTranscriptLiveAdapter {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function isTerminalPromptStatus(status: TranscriptPrompt['status']): boolean {
+  return status === 'completed' || status === 'failed' || status === 'aborted' || status === 'blocked';
 }
 
 function epochMsToIso(value: number): string {

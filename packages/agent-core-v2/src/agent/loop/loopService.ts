@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 
 import { createControlledPromise } from '@antfu/utils';
 
@@ -89,6 +90,8 @@ export const loopLastRequestTraceIdKey = defineState<string | undefined>(
   () => undefined as string | undefined,
 );
 export const loopDisposingKey = defineState<boolean>('loop.disposing', () => false);
+
+const MAX_STEP_SIGNAL_LISTENERS = 64;
 
 export class AgentLoopService extends Disposable implements IAgentLoopService {
   declare readonly _serviceBrand: undefined;
@@ -693,6 +696,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         ? runtime.turnSignal
         : AbortSignal.any([runtime.turnSignal, mutableStep.controller.signal]),
     };
+    EventEmitter.setMaxListeners(MAX_STEP_SIGNAL_LISTENERS, step.signal);
     this.materializeBatch(batch);
     return { step };
   }
@@ -831,45 +835,61 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     this.activeRequestTrace = undefined;
     await this.hooks.onWillBeginStep.run({ turnId, step: currentStep, firstStepOfTurn, signal });
     const markStepStarted = this.beginStep(turnId, signal, currentStep, stepUuid, onStarted);
-    const streamParts = this.createStreamPartHandler(
-      turnId,
-      currentStep,
-      stepUuid,
-      markStepStarted,
-    );
-    const request = this.llmRequester.start(
-      { source: { type: 'turn', turnId, step: currentStep } },
-      streamParts.handle,
-      signal,
-    );
-    this.activeRequestTrace = request.trace;
-    let response: AgentLLMRequestFinish;
+    let stepEndAppended = false;
     try {
-      response = await request.result;
+      const streamParts = this.createStreamPartHandler(
+        turnId,
+        currentStep,
+        stepUuid,
+        markStepStarted,
+      );
+      const request = this.llmRequester.start(
+        { source: { type: 'turn', turnId, step: currentStep } },
+        streamParts.handle,
+        signal,
+      );
+      this.activeRequestTrace = request.trace;
+      let response: AgentLLMRequestFinish;
+      try {
+        response = await request.result;
+      } catch (error) {
+        this.appendInterruptedStreamContent(turnId, currentStep, stepUuid, streamParts);
+        throw error;
+      }
+      this.lastRequestTraceId = request.trace.traceId;
+      this.appendResponseContent(turnId, currentStep, stepUuid, response, streamParts);
+      const finishReason = await this.executeStepTools(
+        turnId,
+        signal,
+        currentStep,
+        stepUuid,
+        response,
+        request.trace,
+      );
+      this.finishStep(turnId, signal, currentStep, stepUuid, response, finishReason, markStepStarted);
+      stepEndAppended = true;
+      const hookStopTurn = await this.runAfterStep(
+        turnId,
+        signal,
+        currentStep,
+        firstStepOfTurn,
+        response.usage,
+        finishReason,
+      );
+      return { stopReason: finishReason, hookStopTurn };
     } catch (error) {
-      this.appendInterruptedStreamContent(turnId, currentStep, stepUuid, streamParts, turnSignal);
+      if (!stepEndAppended) {
+        this.context.appendLoopEvent({
+          type: 'step.end',
+          uuid: stepUuid,
+          turnId: String(turnId),
+          step: currentStep,
+          finishReason:
+            isAbortError(error) || signal.aborted || turnSignal.aborted ? 'interrupted' : 'error',
+        });
+      }
       throw error;
     }
-    this.lastRequestTraceId = request.trace.traceId;
-    this.appendResponseContent(turnId, currentStep, stepUuid, response, streamParts);
-    const finishReason = await this.executeStepTools(
-      turnId,
-      signal,
-      currentStep,
-      stepUuid,
-      response,
-      request.trace,
-    );
-    this.finishStep(turnId, signal, currentStep, stepUuid, response, finishReason, markStepStarted);
-    const hookStopTurn = await this.runAfterStep(
-      turnId,
-      signal,
-      currentStep,
-      firstStepOfTurn,
-      response.usage,
-      finishReason,
-    );
-    return { stopReason: finishReason, hookStopTurn };
   }
 
   private beginStep(
@@ -919,9 +939,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     currentStep: number,
     stepUuid: string,
     streamParts: StreamPartCollector,
-    turnSignal: AbortSignal,
   ): void {
-    if (!turnSignal.aborted) return;
     for (const entry of streamParts.drainInterruptedContent()) {
       this.context.appendLoopEvent({
         type: 'content.part',

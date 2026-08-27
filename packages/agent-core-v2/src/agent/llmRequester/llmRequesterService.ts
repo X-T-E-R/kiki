@@ -20,6 +20,7 @@ import { IAgentUsageService } from '#/agent/usage/usage';
 import { IConfigService } from '#/app/config/config';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import {
+  APIContextOverflowError,
   APIRequestTooLargeError,
   APIStatusError,
   classifyApiError,
@@ -110,8 +111,14 @@ import {
   type LlmRequestToolSchema,
 } from './llmRequestOps';
 import { isAbortError } from '#/_base/utils/abort';
+import { parseBooleanEnv } from '#/_base/utils/env';
 import { ErrorCodes, Error2, unwrapErrorCause } from '#/errors';
-import { retryErrorFields } from '#/_base/utils/retry';
+import {
+  readRetryAfterMs,
+  retryBackoffDelay,
+  retryErrorFields,
+  sleepForRetry,
+} from '#/_base/utils/retry';
 
 const EMPTY_TOOL_PARAMETERS: Record<string, unknown> = {
   type: 'object',
@@ -119,6 +126,8 @@ const EMPTY_TOOL_PARAMETERS: Record<string, unknown> = {
 };
 
 const noopOnPart: AgentLLMRequestPartHandler = () => {};
+
+export const KIMI_CODE_INFINITE_RETRY_ENV = 'KIMI_CODE_INFINITE_RETRY';
 
 interface ResolvedLLMRequest {
   readonly requester: ModelRequester;
@@ -474,6 +483,7 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
       };
     };
 
+    let infiniteRetryAttempt = 0;
     for (;;) {
       try {
         return await run(policy);
@@ -485,10 +495,37 @@ export class AgentLLMRequesterService implements IAgentLLMRequesterService {
           signal,
           captureMediaStripPolicy,
         );
-        if (nextPolicy === undefined) throw error;
-        policy = nextPolicy;
+        if (nextPolicy !== undefined) {
+          policy = nextPolicy;
+          continue;
+        }
+        const raw = unwrapErrorCause(error);
+        if (
+          !this.infiniteRetryEnabled ||
+          isAbortError(error) ||
+          signal?.aborted === true ||
+          raw instanceof APIContextOverflowError
+        ) {
+          throw error;
+        }
+        infiniteRetryAttempt += 1;
+        const delayMs =
+          readRetryAfterMs(raw) ??
+          retryBackoffDelay(infiniteRetryAttempt - 1);
+        this.log.warn('llm request failed; retrying indefinitely (KIMI_CODE_INFINITE_RETRY)', {
+          model: request.model.name,
+          ...request.logFields,
+          attempt: infiniteRetryAttempt,
+          delayMs,
+          ...retryErrorFields(error),
+        });
+        await sleepForRetry(delayMs, signal);
       }
     }
+  }
+
+  private get infiniteRetryEnabled(): boolean {
+    return parseBooleanEnv(this.bootstrap.getEnv(KIMI_CODE_INFINITE_RETRY_ENV)) === true;
   }
 
   private nextProjectionPolicyForError(

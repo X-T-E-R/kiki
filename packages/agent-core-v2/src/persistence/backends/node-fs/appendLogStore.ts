@@ -7,9 +7,18 @@ import {
   AppendLogCorruptedError,
   IAppendLogStore,
   type AppendLogOptions,
+  type AppendLogReadOptions,
 } from '#/persistence/interface/appendLogStore';
 
 const textEncoder = new TextEncoder();
+
+const pendingRetirements = new Set<Promise<void>>();
+
+export async function drainAppendLogRetirements(): Promise<void> {
+  while (pendingRetirements.size > 0) {
+    await Promise.all(pendingRetirements);
+  }
+}
 
 interface LogState {
   pending: unknown[];
@@ -40,8 +49,9 @@ export class AppendLogStore implements IAppendLogStore {
     this.scheduleFlush(scope, key, state);
   }
 
-  async *read<R>(scope: string, key: string): AsyncIterable<R> {
+  async *read<R>(scope: string, key: string, options?: AppendLogReadOptions): AsyncIterable<R> {
     await this.flushLog(scope, key);
+    const onTruncate = options?.onTruncate;
     const textDecoder = new TextDecoder();
     let pending = '';
     let lineNumber = 0;
@@ -52,7 +62,14 @@ export class AppendLogStore implements IAppendLogStore {
         const raw = pending.slice(0, newlineIndex);
         pending = pending.slice(newlineIndex + 1);
         lineNumber++;
-        const record = this.parseLine<R>(raw, scope, key, lineNumber, false);
+        let record: R | undefined;
+        try {
+          record = this.parseLine<R>(raw, scope, key, lineNumber, false);
+        } catch (error) {
+          if (onTruncate === undefined) throw error;
+          onTruncate({ lineNumber, reason: 'corrupted', cause: error });
+          return;
+        }
         if (record !== undefined) yield record;
         newlineIndex = pending.indexOf('\n');
       }
@@ -61,7 +78,12 @@ export class AppendLogStore implements IAppendLogStore {
     if (pending.length > 0) {
       lineNumber++;
       const record = this.parseLine<R>(pending, scope, key, lineNumber, true);
-      if (record !== undefined) yield record;
+      if (record !== undefined) {
+        yield record;
+      } else if (onTruncate !== undefined) {
+        const line = pending.endsWith('\r') ? pending.slice(0, -1) : pending;
+        if (line.length > 0) onTruncate({ lineNumber, reason: 'truncated' });
+      }
     }
   }
 
@@ -118,6 +140,10 @@ export class AppendLogStore implements IAppendLogStore {
     await this.flush();
   }
 
+  drainRetirements(): Promise<void> {
+    return drainAppendLogRetirements();
+  }
+
   acquire(scope: string, key: string): IDisposable {
     const state = this.state(scope, key);
     state.refCount++;
@@ -171,7 +197,10 @@ export class AppendLogStore implements IAppendLogStore {
     state.refCount--;
     if (state.refCount > 0) return;
     state.retired = true;
-    state.retirement = this.settleRetiredState(scope, key, state).catch(() => undefined);
+    const retirement = this.settleRetiredState(scope, key, state).catch(() => undefined);
+    state.retirement = retirement;
+    pendingRetirements.add(retirement);
+    void retirement.finally(() => pendingRetirements.delete(retirement));
   }
 
   private async settleRetiredState(scope: string, key: string, state: LogState): Promise<void> {

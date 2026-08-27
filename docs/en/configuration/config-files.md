@@ -295,6 +295,8 @@ Only the legacy `model` tool selector (`"secondary"` / `"primary"`), the profile
 
 A configured `[secondary_model.models]` table is a soft allowlist by default: the legacy `model` preference must use a pool key, but an exact `model_alias` may select another configured model. Set `enforce_pool = true` to make exact aliases obey the pool as well; the caller's `primary` model remains allowed. `enforce_pool` requires a non-empty explicit pool and cannot be combined with `force`. All pool keys and `default_model` must also stay outside `[subagent] deny_models`; comparisons use canonical model identities after alias resolution.
 
+Pool aliases reference the current `[models]` table: if a provider is later deleted or logged out, or its refreshed model list no longer contains an alias, session startup fails with a configuration error naming the broken alias — fix or remove the entry to recover. The `[secondary_model]` section itself is never rewritten automatically.
+
 In the interactive TUI, the [`/secondary_model`](../reference/slash-commands.md) command opens a model picker that writes this section and live-applies it to the current session, so newly spawned subagents bind the new secondary model right away.
 
 A typical soft pool lists the aliases and the selection hints shown to the main agent:

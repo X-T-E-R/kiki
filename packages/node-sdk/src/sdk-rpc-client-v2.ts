@@ -163,12 +163,14 @@ import {
 } from '@moonshot-ai/agent-core-v2/mcpCore/oauth/service';
 import { createMcpOAuthStore } from '@moonshot-ai/agent-core-v2/app/mcpConfig/oauthStore';
 import { canonicalMcpOAuthResource } from '@moonshot-ai/agent-core-v2/mcpCore/oauth/store';
+import { IAppendLogStore } from '@moonshot-ai/agent-core-v2/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '@moonshot-ai/agent-core-v2/persistence/interface/atomicDocumentStore';
 import { loadMcpServers } from '@moonshot-ai/agent-core-v2/workspace/workspaceMcpConfig/internal/config-loader';
 import type { McpServerConfig as WorkspaceMcpServerConfig } from '@moonshot-ai/agent-core-v2/mcpCore/config-schema';
 import {
   bootstrap,
   DEFAULT_AGENT_PROFILE_NAME,
+  drainLogCloses,
   drainQueryStoreDisposals,
   drainSessionIndexMirror,
   ensureKimiHome,
@@ -548,9 +550,12 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     // disposal fires — a host that removes homeDir right after close() must
     // not race an in-flight shard close (ENOTEMPTY on teardown).
     await this.app.accessor.get(ISessionIndexMirror).drain();
+    const appendLogStore = this.app.accessor.get(IAppendLogStore);
     this.app.dispose();
+    await appendLogStore.drainRetirements();
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
+    await drainLogCloses();
   }
 
   /**
@@ -717,30 +722,30 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
 
   /**
    * v1's removal cascades: the provider entry, every model pointing at it,
-   * the default pointers when they dangle, and the `[secondary_model]`
-   * subagent pool entries (the section itself when its default dangles).
-   * The engine's own `kosong.removeProvider` only clears the
-   * default-provider pointer, so the full v1 cascade is computed from the
-   * user-layer values (see `planProviderRemoval`) and persisted as ONE
-   * atomic multi-section replace — the same single-write shape as v1's
-   * `removeKimiProvider`, so a process exit can never leave the file in a
-   * halfway-cascaded state.
+   * and the default pointers when they dangle. The engine's own
+   * `kosong.removeProvider` only clears the default-provider pointer, so the
+   * full v1 cascade is computed from the user-layer values (see
+   * `planProviderRemoval`) and persisted as ONE atomic multi-section
+   * replace — the same single-write shape as v1's `removeKimiProvider`, so a
+   * process exit can never leave the file in a halfway-cascaded state. The
+   * `[secondary_model]` section is left alone on purpose: an entry whose
+   * model no longer resolves fails pool validation on the next session
+   * create, surfacing a named error instead of silently rewriting the
+   * user's configuration.
    */
   override async removeProvider(providerId: string): Promise<KimiConfig> {
     await this.configReady;
-    const [providers, models, defaultModel, defaultProvider, secondaryModel] = await Promise.all([
+    const [providers, models, defaultModel, defaultProvider] = await Promise.all([
       this.klient.global.config.inspect<Record<string, unknown>>('providers'),
       this.klient.global.config.inspect<Record<string, Record<string, unknown>>>('models'),
       this.klient.global.config.inspect<string>('defaultModel'),
       this.klient.global.config.inspect<string>('defaultProvider'),
-      this.klient.global.config.inspect<Record<string, unknown>>('secondaryModel'),
     ]);
     const plan = planProviderRemoval({
       providers: providers.userValue,
       models: models.userValue,
       defaultModel: defaultModel.userValue,
       defaultProvider: defaultProvider.userValue,
-      secondaryModel: secondaryModel.userValue,
       providerId,
     });
     const sections: Record<string, unknown> = {
@@ -752,11 +757,6 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
     }
     if (plan.clearDefaultProvider) {
       sections['defaultProvider'] = undefined;
-    }
-    if (plan.secondaryModel !== undefined) {
-      // `null` clears the whole section; a replacement object folds the
-      // filtered pool into the same atomic write.
-      sections['secondaryModel'] = plan.secondaryModel ?? undefined;
     }
     await this.klient.global.config.replaceSections({ sections });
     return this.getConfig();

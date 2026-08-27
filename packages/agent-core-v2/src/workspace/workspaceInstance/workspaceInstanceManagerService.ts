@@ -328,6 +328,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
           this.appendLogStore,
           this.docs,
           this.storage,
+          this.log,
           input.fs,
           this.cronStore,
           this.event,
