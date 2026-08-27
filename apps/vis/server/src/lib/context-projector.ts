@@ -4,10 +4,10 @@ import {
   buildCompactionElisionText,
   collectCompactableUserMessages,
   isRealUserInput,
-  renderToolResultForModel,
   selectCompactionUserMessages,
   selectRecentUserMessages,
-} from '@moonshot-ai/agent-core';
+} from '@moonshot-ai/agent-core-v2/agent/contextMemory/compactionHandoff';
+import { renderToolResultForModel } from '@moonshot-ai/agent-core-v2/agent/contextMemory/toolResultRender';
 import type {
   ContentPart,
   ContextMessage,
@@ -396,11 +396,19 @@ export function projectContext(
         break;
       }
       case 'config.update': {
-        const upd = rec as AgentConfigUpdateData & { type: 'config.update' };
+        // `cwd` and `thinkingEffort` left the record with the v1 engine
+        // (v2 writes `thinkingLevel` and no cwd), but vis reads archived wires
+        // that still carry them, so both spellings are projected.
+        const upd = rec as AgentConfigUpdateData & {
+          type: 'config.update';
+          cwd?: string;
+          thinkingEffort?: string;
+        };
         if (upd.cwd !== undefined) config.cwd = upd.cwd;
         if (upd.modelAlias !== undefined) config.modelAlias = upd.modelAlias;
         if (upd.profileName !== undefined) config.profileName = upd.profileName;
-        if (upd.thinkingEffort !== undefined) config.thinkingEffort = upd.thinkingEffort;
+        const thinking = upd.thinkingLevel ?? upd.thinkingEffort;
+        if (thinking !== undefined) config.thinkingEffort = thinking;
         if (upd.systemPrompt !== undefined) config.systemPrompt = upd.systemPrompt;
         break;
       }

@@ -1,37 +1,37 @@
 // apps/vis/server/src/lib/agent-record-types.ts
-// Single source of truth: everything below comes from agent-core directly.
+// Single source of truth: the record union and its payload types come from the
+// SDK's wire vocabulary and the v2 engine directly.
 // Do NOT add local interfaces that duplicate upstream shapes.
 
 export type {
-  AgentRecordEvents,
   AgentConfigUpdateData,
   CompactionBeginData,
   CompactionResult,
+  ContextMessage,
+  LoopRecordedEvent,
   PermissionApprovalResultRecord,
   PermissionMode,
-  UsageRecordScope,
-  ToolStoreUpdate,
-  LoopRecordedEvent,
-  ContextMessage,
   PromptOrigin,
-  // Background-task shapes are part of agent-core's public surface, so the
-  // visualizer tracks them directly instead of duplicating the union.
+} from '@moonshot-ai/agent-core-v2';
+export type { UsageRecordScope } from '@moonshot-ai/agent-core-v2/agent/usage/usageOps';
+export type { AgentRecordEvents, ToolStoreUpdate } from '@moonshot-ai/kimi-code-sdk/wire';
+export { WIRE_PROTOCOL_VERSION as AGENT_WIRE_PROTOCOL_VERSION } from '@moonshot-ai/agent-core-v2/wire/migration/migration';
+// Background-task shapes are part of the SDK's public surface, so the
+// visualizer tracks them directly instead of duplicating the union.
+export type {
   BackgroundTaskInfo,
   BackgroundTaskStatus,
   ProcessBackgroundTaskInfo,
   AgentBackgroundTaskInfo,
   QuestionBackgroundTaskInfo,
-} from '@moonshot-ai/agent-core';
-export { AGENT_WIRE_PROTOCOL_VERSION } from '@moonshot-ai/agent-core';
+} from '@moonshot-ai/kimi-code-sdk';
 export type { Message, ContentPart, ToolCall, TokenUsage } from '@moonshot-ai/kosong';
 
 // Local bindings for the upstream types referenced by the vis-only DTOs
 // below. The `export type { … }` re-export above forwards the names to
 // consumers but does NOT bring them into this module's scope.
-import type {
-  AgentRecord as UpstreamAgentRecord,
-  BackgroundTaskInfo,
-} from '@moonshot-ai/agent-core';
+import type { BackgroundTaskInfo } from '@moonshot-ai/kimi-code-sdk';
+import type { AgentRecord as UpstreamAgentRecord } from '@moonshot-ai/kimi-code-sdk/wire';
 
 /**
  * The wire record union vis projects, widened with the v2-engine tower-mode
