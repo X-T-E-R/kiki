@@ -83,7 +83,7 @@ describe('KimiHarness capability facade', () => {
 });
 
 describe('KimiHarness imageLimits', () => {
-  it('exposes the in-process core [image] limits loaded from config.toml', async () => {
+  it('leaves the limits unset, so ingestion falls back to env and defaults', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-harness-'));
     tempDirs.push(homeDir);
     await writeFile(
@@ -98,25 +98,10 @@ read_byte_budget = 65536
 
     const harness = createKimiHarness({ identity: TEST_IDENTITY, homeDir });
     try {
-      // The core was constructed in-process; its owner-scoped [image] limits
-      // must be readable on the harness for prompt-ingestion paths.
-      expect(harness.imageLimits).toBeInstanceOf(ImageLimits);
-      expect(harness.imageLimits?.maxEdgePx()).toBe(1200);
-      expect(harness.imageLimits?.readByteBudget()).toBe(65536);
-    } finally {
-      await harness.close();
-    }
-  });
-
-  it('falls back to built-in defaults when no [image] section is configured', async () => {
-    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-harness-'));
-    tempDirs.push(homeDir);
-
-    const harness = createKimiHarness({ identity: TEST_IDENTITY, homeDir });
-    try {
-      expect(harness.imageLimits).toBeInstanceOf(ImageLimits);
-      expect(harness.imageLimits?.maxEdgePx()).toBe(2000);
-      expect(harness.imageLimits?.readByteBudget()).toBe(256 * 1024);
+      // The engine resolves `[image]` per call rather than handing the host an
+      // owner-scoped limits object, so a `config.toml` section does not produce
+      // one here. Hosts that need limits inject their own (below).
+      expect(harness.imageLimits).toBeUndefined();
     } finally {
       await harness.close();
     }
@@ -139,19 +124,18 @@ read_byte_budget = 65536
   });
 });
 
-describe('KimiHarness v1 file ops', () => {
-  it('rejects file upload and deletion as not implemented on the v1 harness', async () => {
+describe('KimiHarness file ops', () => {
+  it('stores an uploaded file and deletes it again', async () => {
     const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-harness-'));
     tempDirs.push(homeDir);
 
     const harness = createKimiHarness({ identity: TEST_IDENTITY, homeDir });
     try {
-      await expect(
-        harness.uploadFile(new Uint8Array([137, 80, 78, 71]), { name: 'pixel.png' }),
-      ).rejects.toThrow(/does not support file upload/);
-      await expect(harness.deleteFile('f_example')).rejects.toThrow(
-        /does not support file deletion/,
-      );
+      const meta = await harness.uploadFile(new Uint8Array([137, 80, 78, 71]), {
+        name: 'pixel.png',
+      });
+      expect(meta).toMatchObject({ name: 'pixel.png', size: 4 });
+      await expect(harness.deleteFile(meta.id)).resolves.toBeUndefined();
     } finally {
       await harness.close();
     }

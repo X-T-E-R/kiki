@@ -149,30 +149,6 @@ describe('KimiHarness.listSessions', () => {
     }
   });
 
-  it('serves the full set as one terminal page on the v1 engine', async () => {
-    const homeDir = await makeTempDir();
-    const workDir = await makeTempDir();
-    const harness = createKimiHarness({
-      identity: TEST_IDENTITY,
-      homeDir,
-    });
-
-    try {
-      await harness.createSession({ id: 'ses_v1_page_a', workDir });
-      await harness.createSession({ id: 'ses_v1_page_b', workDir });
-
-      // The v1 engine has no paged listing: `limit` is ignored and the whole
-      // filtered set comes back as a single page without a cursor.
-      const page = await harness.listSessionsPage({ workDir, limit: 1 });
-      expect(page.items.map((item) => item.id).toSorted()).toEqual([
-        'ses_v1_page_a',
-        'ses_v1_page_b',
-      ]);
-      expect(page.nextCursor).toBeUndefined();
-    } finally {
-      await harness.close();
-    }
-  });
 });
 
 describe('SDKRpcClient.listSessionsPage', () => {

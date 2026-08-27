@@ -150,23 +150,6 @@ describe('Session skills', () => {
     }
   });
 
-  it('rejects promptWithSkills on the v1 engine', async () => {
-    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-skills-home-');
-    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-skills-work-');
-    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
-
-    try {
-      const session = await harness.createSession({ id: 'ses_sdk_multi_skill_v1', workDir });
-      await expect(
-        session.promptWithSkills('Review this change.', [{ name: 'review' }]),
-      ).rejects.toMatchObject({
-        code: 'not_implemented',
-      });
-    } finally {
-      await harness.close();
-    }
-  });
-
   it('lists session skills without exposing content', async () => {
     const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-skills-home-');
     const workDir = await makeTempDir(tempDirs, 'kimi-sdk-skills-work-');
