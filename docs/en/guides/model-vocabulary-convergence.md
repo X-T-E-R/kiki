@@ -143,5 +143,5 @@ The current behavior is anchored in these repository paths:
 ## Next steps
 
 - [Agents and Sub-Agents](../customization/agents.md#agent-file-format) — current Agent-file fields and subagent binding behavior.
-- [Configuration files](../configuration/config-files.md#secondary-model) — current model registry and secondary-model configuration.
+- [Configuration files](../configuration/config-files.md#subagent) — current model registry and subagent binding configuration.
 - [Kiki runtime boundary](./kiki-runtime.md) — ownership boundaries between inherited and Kiki-specific model-binding behavior.

@@ -133,10 +133,7 @@ kimi
 | `KIMI_CODE_IDENTITY_SLUG` | 协议标识，用于发给第三方 provider 的 `User-Agent` 产品名和 MCP 客户端名，优先级高于 `[identity] slug`。未设置时由名称派生 | 任意非空字符串；会转小写并将连续非字母数字字符折叠为 `-` |
 | `KIMI_CODE_BUILTIN_PRODUCT_SKILLS` | 是否向模型提供介绍 Kimi Code 自身的内置 Skills，优先级高于 `config.toml` 的 `builtin_product_skills`（默认开启） | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
 | `KIMI_CODE_TUI_FULL_SCREEN` | 启用实验性的 fullscreen alternate-screen 界面：可滚动的 transcript 视口、鼠标选择文本、可点击链接、Ctrl-Shift-F 搜索 | `1` 开启；其他值保持常规内联界面 |
-| `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL` | 仅启用符号化的 `model` / `model_preference` 选择器与次主力模型 recipe；稳定的 `model_alias`、profile 的 `thinking_effort` 和工具参数 `effort` 不受影响。master `KIMI_CODE_EXPERIMENTAL_FLAG=1` 也会启用它们 | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
 | `KIMI_CODE_EXPERIMENTAL_TASK_WAIT` | 是否向模型提供 `TaskWait` 工具——它可以在当前轮次内等待后台任务，而不必结束这一轮（默认启用） | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
-| `KIMI_SECONDARY_MODEL` | 次主力模型；优先级高于 `config.toml` 的 [`[secondary_model] model`](./config-files.md#secondary-model)。次主力模型实验功能启用后，新派生的子 Agent（`AgentRun` / `AgentSwarm`）默认绑定该模型，而不再继承主 Agent 的模型 | `[models]` 中已配置条目的别名，如 `kimi-code/kimi-k2.5`；空白值被忽略 |
-| `KIMI_SECONDARY_EFFORT` | 次主力模型的 thinking effort；优先级高于 `config.toml` 的 `[secondary_model] default_effort`，仅在次主力模型及其实验功能均启用时生效 | effort 取值，如 `low`；空白值被忽略 |
 | `KIKI_MCP_CONFIG_PATH` | 供外部编排器注入的 MCP 配置文件路径，由 `kimi web` 启动的服务端只读加载。必须与 `KIKI_MCP_AGENT_PROFILE_HOME`、`KIKI_MCP_CONFIG_READ_ONLY` 同时设置，否则启动直接报错 | 绝对路径 |
 | `KIKI_MCP_AGENT_PROFILE_HOME` | 供外部编排器注入的 agent profile 根目录，与 `KIKI_MCP_CONFIG_PATH` 一起使用；三个 `KIKI_MCP_*` 目录变量必须同时设置 | 绝对路径 |
 | `KIKI_MCP_CONFIG_READ_ONLY` | 注入目录的只读标记；必须为 `1`，服务端不会写回注入的配置或 profile | `1` |
