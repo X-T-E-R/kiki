@@ -85,6 +85,7 @@ import {
   type SettingsSearchEntry,
   type CompatibilitySettings,
   type RequestIdentityLayerDraft,
+  type ThemePreference,
 } from '../lib/settings';
 import { formatTokens } from '../lib/time';
 import {
@@ -481,6 +482,35 @@ function GeneralSection() {
             </select>
           </div>
           <Hint>{t('st.language.hint')}</Hint>
+        </div>
+      </SectionCard>
+
+      <SectionCard id="st-card-appearance" title={t('st.appearance.title')}>
+        <div className="space-y-3">
+          <div>
+            <span id="theme-label" className="mb-1.5 block text-[11px] font-medium text-ink-soft">
+              {t('st.appearance.theme')}
+            </span>
+            <div className="flex flex-wrap items-center gap-2" role="group" aria-labelledby="theme-label">
+              {(['light', 'dark', 'system'] as ThemePreference[]).map((choice) => (
+                <button
+                  key={choice}
+                  type="button"
+                  data-theme-choice={choice}
+                  aria-pressed={settings.theme === choice}
+                  onClick={() => { updateLocal({ theme: choice }); }}
+                  className={`rounded-full border px-3 py-1 text-[11px] font-medium transition-colors ${
+                    settings.theme === choice
+                      ? 'border-accent bg-accent-soft text-accent'
+                      : 'border-hairline text-ink-soft hover:border-hairline-strong'
+                  }`}
+                >
+                  {t(`st.appearance.theme.${choice}`)}
+                </button>
+              ))}
+            </div>
+          </div>
+          <Hint>{t('st.appearance.themeHint')}</Hint>
         </div>
       </SectionCard>
 

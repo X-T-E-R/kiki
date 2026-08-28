@@ -171,13 +171,13 @@ function StatusIcon({ block }: { block: ToolBlock }) {
 
 function CommandIsland({ command, output }: { command: string; output?: ReactNode }) {
   return (
-    <div className="overflow-hidden rounded-lg bg-ink">
-      <div className="border-b border-white/10 px-3 py-1.5 font-mono text-[12.5px] text-[#f3e9d8]">
+    <div className="overflow-hidden rounded-lg bg-shell">
+      <div className="border-b border-white/10 px-3 py-1.5 font-mono text-[12.5px] text-shell-ink-strong">
         <span className="mr-2 text-accent">$</span>
         {command}
       </div>
       {output !== undefined ? (
-        <div className="max-h-72 overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-[#e8dcc4]">
+        <div className="max-h-72 overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-shell-ink">
           {output}
         </div>
       ) : null}

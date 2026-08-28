@@ -40,7 +40,7 @@ export function MediaLightbox({
       onClose={onClose}
       ariaLabel={label}
       overlayId="media-lightbox"
-      overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-ink/85 p-4"
+      overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-shell/85 p-4"
       panelClassName="anim-enter flex max-h-full max-w-full flex-col items-center gap-3 outline-none"
     >
       <div className="flex items-center gap-2">

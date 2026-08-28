@@ -233,7 +233,7 @@ export function ApprovalCard({
                   checked={forSession}
                   disabled={submitting !== null}
                   onChange={(event) => { setForSession(event.target.checked); }}
-                  className="h-3 w-3 accent-[#e8590c]"
+                  className="h-3 w-3 accent-accent"
                 />
                 {t('ia.remember')}
               </label>

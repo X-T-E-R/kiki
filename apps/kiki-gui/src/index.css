@@ -23,6 +23,25 @@
   --color-success: #2f9e44;
   --color-danger: #c92a2a;
 
+  /* Non-utility surfaces that used to be literal hex: the user bubble, the
+   * scrollbar thumbs, and the shadow/scrim ink. Tokenized so the dark dual
+   * below can move them with everything else. */
+  --color-bubble-user: #f3ede1;
+  --color-scrollbar: #d9cfba;
+  --color-scrollbar-hover: #c9bda3;
+  --color-term-scrollbar: #4a4238;
+  --kiki-shadow-ink: 28 25 23;
+
+  /* The always-dark shell: the terminal island, tool-output wells, and modal
+   * scrims. These are deliberately NOT part of the light/dark dual — a scrim
+   * that inverts stops being a scrim, and the terminal reads as an inset well
+   * in both themes. Only the ground moves, to stay darker than the page. */
+  --color-shell: #1c1917;
+  --color-shell-ink: #e8dcc4;
+  --color-shell-ink-strong: #f3e9d8;
+  --color-shell-ink-soft: #8a7f6d;
+  --color-shell-danger: #d9a08a;
+
   /* Streamdown's components are built on shadcn custom properties; map them
    * onto the kiki palette so its internals (code blocks, tables) stay warm. */
   --color-background: #fffdf8;
@@ -43,8 +62,58 @@
   --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', monospace;
 }
 
-:root {
+/* Tailwind's `dark:` variant follows kiki's own attribute rather than the OS
+ * query — `system` is one of three explicit choices, not the only mode. This
+ * is also what drives Streamdown's `dark:` classes onto shiki's github-dark
+ * slot (`--shiki-dark*`), which is why the code plugin loads two themes. */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+:root,
+[data-theme='light'] {
   color-scheme: light;
+}
+
+/* The dark dual. Same palette intent inverted, not a different design: warm
+ * near-black paper, ink that stays slightly warm rather than pure white, and
+ * the accent lifted just enough to survive on a dark ground. */
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --color-paper: #16130f;
+  --color-panel: #1e1a15;
+  --color-hairline: #302a22;
+  --color-hairline-strong: #453d31;
+  --color-ink: #f2ece2;
+  --color-ink-soft: #a89c8c;
+  --color-ink-faint: #8b7f6f;
+  --color-accent: #ff8340;
+  --color-accent-deep: #ff9a63;
+  --color-accent-soft: #3a2415;
+  --color-amber-ink: #e0a63c;
+  --color-amber-card: #2c2114;
+  --color-amber-rule: #7a5a20;
+  --color-success: #5cc46b;
+  --color-danger: #ff6b6b;
+
+  --color-bubble-user: #262019;
+  --color-scrollbar: #453d31;
+  --color-scrollbar-hover: #5a5142;
+  --color-term-scrollbar: #5a5142;
+  /* Stays an inset well: darker than the dark paper, not lighter. */
+  --color-shell: #0e0c09;
+  /* Shadows on a dark ground read as depth only when they are darker than the
+   * surface, so the scrim ink goes to near-black rather than following ink. */
+  --kiki-shadow-ink: 0 0 0;
+
+  --color-background: #1e1a15;
+  --color-foreground: #f2ece2;
+  --color-muted: #16130f;
+  --color-muted-foreground: #a89c8c;
+  --color-border: #302a22;
+  --color-input: #302a22;
+  --color-primary: #ff8340;
+  --color-primary-foreground: #16130f;
+  --color-sidebar: #16130f;
 }
 
 html,
@@ -88,31 +157,31 @@ body {
 }
 .kiki-term .xterm-viewport {
   /* warm scrollbar on the dark island */
-  scrollbar-color: #4a4238 transparent;
+  scrollbar-color: var(--color-term-scrollbar) transparent;
 }
 .kiki-term .xterm .xterm-viewport::-webkit-scrollbar-thumb {
-  background: #4a4238;
+  background: var(--color-term-scrollbar);
 }
 /* The bar cursor reads better with a touch of glow on ink. */
 .kiki-term .xterm .xterm-cursor-layer .xterm-cursor {
-  box-shadow: 0 0 6px rgba(232, 89, 12, 0.45);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--color-accent) 45%, transparent);
 }
 
 /* ---- scrollbars: thin warm neutral ---- */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #d9cfba transparent;
+  scrollbar-color: var(--color-scrollbar) transparent;
 }
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #d9cfba;
+  background: var(--color-scrollbar);
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #c9bda3;
+  background: var(--color-scrollbar-hover);
 }
 
 /* ---- motion ---- */
@@ -307,7 +376,7 @@ body {
   position: fixed;
   inset: 0;
   z-index: 25;
-  background-color: rgba(28, 25, 23, 0.25);
+  background-color: rgb(var(--kiki-shadow-ink) / 0.25);
 }
 
 /* ---- conversation shell (/new + /s/:id layout route) ---- */
@@ -390,7 +459,7 @@ body {
     top: 0;
     z-index: 30;
     max-width: 94vw;
-    box-shadow: -16px 0 48px -24px rgba(28, 25, 23, 0.4);
+    box-shadow: -16px 0 48px -24px rgb(var(--kiki-shadow-ink) / 0.4);
   }
 }
 
@@ -401,7 +470,7 @@ body {
   top: 0;
   z-index: 30;
   max-width: 94vw;
-  box-shadow: -16px 0 48px -24px rgba(28, 25, 23, 0.4);
+  box-shadow: -16px 0 48px -24px rgb(var(--kiki-shadow-ink) / 0.4);
 }
 
 /* CodeMirror fills the tab panel's flex height. */

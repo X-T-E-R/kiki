@@ -215,7 +215,7 @@ const UserMessage = memo(function UserMessage({
           onCancel={() => { setEditing(false); }}
         />
       ) : (
-        <div className="max-w-[85%] rounded-2xl rounded-br-md border border-hairline bg-[#f3ede1] px-3.5 py-2 text-[13.5px] leading-relaxed whitespace-pre-wrap text-ink">
+        <div className="max-w-[85%] rounded-2xl rounded-br-md border border-hairline bg-bubble-user px-3.5 py-2 text-[13.5px] leading-relaxed whitespace-pre-wrap text-ink">
           <div
             ref={contentRef}
             id={contentId}
@@ -517,7 +517,7 @@ const SteerMessage = memo(function SteerMessage({ block }: { block: SteerBlock }
 const ShellMessage = memo(function ShellMessage({ block }: { block: ShellBlock }) {
   const { t } = useI18n();
   return (
-    <div data-shell className="anim-enter overflow-hidden rounded-lg bg-ink">
+    <div data-shell className="anim-enter overflow-hidden rounded-lg bg-shell">
       <div className="flex items-center gap-2 border-b border-white/10 px-3 py-1.5">
         <span className="font-mono text-[11px] font-semibold text-accent">shell</span>
         {!block.done ? <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" /> : null}
@@ -525,7 +525,7 @@ const ShellMessage = memo(function ShellMessage({ block }: { block: ShellBlock }
           <span className="font-mono text-[10.5px] text-danger">{t('transcript.failed')}</span>
         ) : null}
       </div>
-      <pre className="max-h-80 overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-[#e8dcc4]">
+      <pre className="max-h-80 overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-shell-ink">
         {block.output === '' ? '…' : block.output}
       </pre>
     </div>

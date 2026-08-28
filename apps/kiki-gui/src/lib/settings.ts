@@ -12,6 +12,13 @@ import type { KikiConfigPatch, KikiConfigResponse } from './client';
 /** Client-local preferences stored in localStorage (`kiki.settings`). */
 export type SendShortcut = 'enter' | 'cmd-enter';
 
+/** `system` follows the OS; the other two pin the palette regardless. */
+export type ThemePreference = 'light' | 'dark' | 'system';
+
+export function isThemePreference(value: unknown): value is ThemePreference {
+  return value === 'light' || value === 'dark' || value === 'system';
+}
+
 export interface DesktopSettings {
   defaultPermissionMode: 'manual' | 'auto' | 'yolo';
   defaultPlanMode: boolean;
@@ -20,6 +27,7 @@ export interface DesktopSettings {
   defaultModel: string | undefined;
   defaultEffort: string | undefined;
   closeToTray: boolean;
+  theme: ThemePreference;
 }
 
 export type UpdateChannel = 'stable' | 'beta';
@@ -244,6 +252,7 @@ const DEFAULTS: DesktopSettings = {
   defaultModel: undefined,
   defaultEffort: undefined,
   closeToTray: true,
+  theme: 'system',
 };
 
 const DESKTOP_PREFS_DEFAULTS: DesktopNativePrefs = {
@@ -297,6 +306,7 @@ export function readSettings(): DesktopSettings {
       : undefined,
     closeToTray:
       typeof stored.closeToTray === 'boolean' ? stored.closeToTray : DEFAULTS.closeToTray,
+    theme: isThemePreference(stored.theme) ? stored.theme : DEFAULTS.theme,
   };
 }
 
@@ -1194,6 +1204,7 @@ export interface SettingsSearchSpecEntry {
 
 export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'general', cardId: 'st-card-language', titleKey: 'st.language.title', keywordKeys: ['st.language.hint'] },
+  { section: 'general', cardId: 'st-card-appearance', titleKey: 'st.appearance.title', keywordKeys: ['st.appearance.theme', 'st.appearance.theme.dark', 'st.appearance.theme.light', 'st.appearance.theme.system'] },
   { section: 'general', cardId: 'st-card-defaults', titleKey: 'st.defaults.title', keywordKeys: ['st.defaults.permissionMode', 'st.defaults.planMode', 'st.defaults.hint'] },
   { section: 'general', cardId: 'st-card-composer', titleKey: 'st.composer.title', keywordKeys: ['st.composer.sendShortcut', 'st.composer.persistDrafts'] },
   { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.notifications', 'st.desktop.tray', 'st.desktop.quit'] },

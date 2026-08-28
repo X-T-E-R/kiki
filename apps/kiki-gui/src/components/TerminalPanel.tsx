@@ -27,16 +27,30 @@ import {
 import type { WsStatus } from '../lib/ws';
 import type { TerminalManager, TerminalTab } from '../state/terminalManager';
 
-const XTERM_THEME = {
-  background: '#1c1917',
-  foreground: '#e8dcc4',
-  cursor: '#e8590c',
-  cursorAccent: '#1c1917',
-  selectionBackground: 'rgba(232, 89, 12, 0.32)',
-  selectionInactiveBackground: 'rgba(232, 89, 12, 0.16)',
-  brightBlack: '#6b6257',
-  brightWhite: '#f3e9d8',
-};
+/**
+ * xterm.js resolves colors itself and cannot read CSS variables, so the shell
+ * tokens are read out of the computed style at terminal construction. The
+ * terminal is an always-dark island in both themes; only its ground shifts,
+ * and a theme flip is picked up the next time a tab mounts.
+ */
+function xtermTheme(): Record<string, string> {
+  const read = (name: string, fallback: string): string => {
+    if (typeof document === 'undefined') return fallback;
+    const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return value !== '' ? value : fallback;
+  };
+  const shell = read('--color-shell', '#1c1917');
+  return {
+    background: shell,
+    foreground: read('--color-shell-ink', '#e8dcc4'),
+    cursor: read('--color-accent', '#e8590c'),
+    cursorAccent: shell,
+    selectionBackground: 'rgba(232, 89, 12, 0.32)',
+    selectionInactiveBackground: 'rgba(232, 89, 12, 0.16)',
+    brightBlack: read('--color-shell-ink-soft', '#8a7f6d'),
+    brightWhite: read('--color-shell-ink-strong', '#f3e9d8'),
+  };
+}
 
 function copyText(text: string): void {
   if (navigator.clipboard?.writeText !== undefined) {
@@ -85,7 +99,7 @@ function TerminalCanvas({
     const host = hostRef.current;
     if (host === null) return;
     const term = new XTerm({
-      theme: XTERM_THEME,
+      theme: xtermTheme(),
       fontFamily: "'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace",
       fontSize: 12.5,
       lineHeight: 1.45,
@@ -215,7 +229,7 @@ function TabStatusDot({ status }: { status: TerminalTab['status'] }) {
   if (status === 'unavailable') {
     return <span className="h-1.5 w-1.5 rounded-full bg-amber-rule" aria-hidden />;
   }
-  return <span className="h-1.5 w-1.5 rounded-full bg-[#6b6257]" aria-hidden />;
+  return <span className="h-1.5 w-1.5 rounded-full bg-shell-ink-soft" aria-hidden />;
 }
 
 export function TerminalPanel({
@@ -293,7 +307,7 @@ export function TerminalPanel({
     <section
       data-terminal-panel
       aria-label={t('term.panelAria')}
-      className="flex shrink-0 flex-col bg-ink text-[#e8dcc4]"
+      className="flex shrink-0 flex-col bg-shell text-shell-ink"
       style={{ height }}
     >
       {/* resize handle */}
@@ -311,7 +325,7 @@ export function TerminalPanel({
       </div>
 
       <header className="flex h-9 shrink-0 items-center gap-1 border-b border-white/10 pr-2 pl-3">
-        <span className="mr-1 font-mono text-[11px] tracking-wide text-[#8a7f6d] select-none">
+        <span className="mr-1 font-mono text-[11px] tracking-wide text-shell-ink-soft select-none">
           &gt;_
         </span>
         <div role="tablist" aria-label={t('term.tabsAria')} className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
@@ -321,7 +335,7 @@ export function TerminalPanel({
               <div
                 key={tab.id}
                 className={`flex shrink-0 items-center gap-1.5 rounded-md py-0.5 pr-1 pl-2 font-mono text-[11.5px] transition-colors ${
-                  isActive ? 'bg-white/10 text-[#f3e9d8]' : 'text-[#8a7f6d] hover:text-[#e8dcc4]'
+                  isActive ? 'bg-white/10 text-shell-ink-strong' : 'text-shell-ink-soft hover:text-shell-ink'
                 }`}
               >
                 <button
@@ -344,7 +358,7 @@ export function TerminalPanel({
                   className={`rounded px-0.5 text-[10px] transition-colors ${
                     confirmKillId === tab.id
                       ? 'bg-danger/80 font-semibold text-white'
-                      : 'text-[#8a7f6d] hover:bg-white/10 hover:text-[#f3e9d8]'
+                      : 'text-shell-ink-soft hover:bg-white/10 hover:text-shell-ink-strong'
                   }`}
                 >
                   {confirmKillId === tab.id ? t('term.killConfirm') : '✕'}
@@ -364,7 +378,7 @@ export function TerminalPanel({
           title={t('term.new')}
           aria-label={t('term.new')}
           data-terminal-new
-          className="shrink-0 rounded-md border border-white/15 px-2 py-0.5 font-mono text-[11px] text-[#e8dcc4] transition-colors hover:border-accent hover:text-accent"
+          className="shrink-0 rounded-md border border-white/15 px-2 py-0.5 font-mono text-[11px] text-shell-ink transition-colors hover:border-accent hover:text-accent"
         >
           +
         </button>
@@ -373,7 +387,7 @@ export function TerminalPanel({
           onClick={onClose}
           title={t('term.closePanel')}
           aria-label={t('term.closePanel')}
-          className="shrink-0 rounded-md px-1.5 py-0.5 text-[#8a7f6d] transition-colors hover:bg-white/10 hover:text-[#f3e9d8]"
+          className="shrink-0 rounded-md px-1.5 py-0.5 text-shell-ink-soft transition-colors hover:bg-white/10 hover:text-shell-ink-strong"
         >
           ✕
         </button>
@@ -390,14 +404,14 @@ export function TerminalPanel({
         ))}
 
         {!state.loaded ? (
-          <div className="absolute inset-0 flex items-center justify-center font-mono text-[12px] text-[#8a7f6d]">
+          <div className="absolute inset-0 flex items-center justify-center font-mono text-[12px] text-shell-ink-soft">
             {t('term.loading')}
           </div>
         ) : null}
 
         {state.loaded && state.error !== undefined && tabs.length === 0 ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center">
-            <p className="font-mono text-[12px] text-[#d9a08a]">
+            <p className="font-mono text-[12px] text-shell-danger">
               {t(state.errorKey, { detail: state.error })}
             </p>
             <button
@@ -405,7 +419,7 @@ export function TerminalPanel({
               onClick={() =>
                 void (state.errorKey === 'term.loadFailed' ? manager.open() : manager.create())
               }
-              className="rounded-md border border-white/15 px-2.5 py-1 font-mono text-[11px] text-[#e8dcc4] transition-colors hover:border-accent hover:text-accent"
+              className="rounded-md border border-white/15 px-2.5 py-1 font-mono text-[11px] text-shell-ink transition-colors hover:border-accent hover:text-accent"
             >
               {t('common.retry')}
             </button>
@@ -413,14 +427,14 @@ export function TerminalPanel({
         ) : null}
 
         {state.error !== undefined && tabs.length > 0 ? (
-          <div className="absolute right-2 bottom-2 max-w-[70%] rounded bg-black/50 px-2 py-1 font-mono text-[10.5px] text-[#d9a08a]">
+          <div className="absolute right-2 bottom-2 max-w-[70%] rounded bg-black/50 px-2 py-1 font-mono text-[10.5px] text-shell-danger">
             {t(state.errorKey, { detail: state.error })}
           </div>
         ) : null}
 
         {state.loaded && state.error === undefined && tabs.length === 0 ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 px-6 text-center">
-            <p className="max-w-[420px] font-mono text-[12px] leading-relaxed text-[#8a7f6d]">
+            <p className="max-w-[420px] font-mono text-[12px] leading-relaxed text-shell-ink-soft">
               {t('term.empty')}
             </p>
             <button
@@ -435,7 +449,7 @@ export function TerminalPanel({
         ) : null}
 
         {activeTab?.status === 'attaching' ? (
-          <div className="pointer-events-none absolute right-2 bottom-2 rounded bg-black/40 px-2 py-0.5 font-mono text-[10.5px] text-[#e8dcc4]">
+          <div className="pointer-events-none absolute right-2 bottom-2 rounded bg-black/40 px-2 py-0.5 font-mono text-[10.5px] text-shell-ink">
             {t('term.attaching')}
           </div>
         ) : null}
@@ -451,8 +465,8 @@ export function TerminalPanel({
         ) : null}
 
         {activeTab?.status === 'exited' ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 bg-ink/85">
-            <p className="font-mono text-[12px] text-[#8a7f6d]">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 bg-shell/85">
+            <p className="font-mono text-[12px] text-shell-ink-soft">
               {activeTab.exitCode === null
                 ? t('term.exitedNoCode')
                 : t('term.exited', { code: activeTab.exitCode })}
@@ -469,15 +483,15 @@ export function TerminalPanel({
         ) : null}
 
         {activeTab?.status === 'unavailable' ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 bg-ink/85 px-6 text-center">
-            <p className="max-w-[460px] font-mono text-[12px] leading-relaxed text-[#d9a08a]">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 bg-shell/85 px-6 text-center">
+            <p className="max-w-[460px] font-mono text-[12px] leading-relaxed text-shell-danger">
               {t('term.unavailable')}
             </p>
             <button
               type="button"
               onClick={() => { manager.retryAttach(activeTab.id); }}
               data-terminal-retry
-              className="rounded-md border border-white/15 px-2.5 py-1 font-mono text-[11px] text-[#e8dcc4] transition-colors hover:border-accent hover:text-accent"
+              className="rounded-md border border-white/15 px-2.5 py-1 font-mono text-[11px] text-shell-ink transition-colors hover:border-accent hover:text-accent"
             >
               {t('common.retry')}
             </button>
