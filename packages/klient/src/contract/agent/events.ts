@@ -114,6 +114,49 @@ export const toolResultEventSchema = z.object({
   synthetic: z.boolean().optional(),
 });
 
+const promptContentPartSchema = z.unknown();
+
+export const promptSubmittedEventSchema = z.object({
+  type: z.literal('prompt.submitted'),
+  time: z.number().optional(),
+  promptId: z.string(),
+  userMessageId: z.string(),
+  status: z.enum(['running', 'queued', 'blocked']),
+  content: z.array(promptContentPartSchema),
+  createdAt: z.string(),
+});
+
+export const promptQueuedEventSchema = z.object({
+  type: z.literal('prompt.queued'),
+  time: z.number().optional(),
+  promptId: z.string(),
+  content: z.array(promptContentPartSchema),
+  queueLength: z.number().int().nonnegative(),
+});
+
+export const promptStartedEventSchema = z.object({
+  type: z.literal('prompt.started'),
+  time: z.number().optional(),
+  promptId: z.string(),
+});
+
+export const promptReplacedEventSchema = z.object({
+  type: z.literal('prompt.replaced'),
+  time: z.number().optional(),
+  promptId: z.string(),
+  content: z.array(promptContentPartSchema),
+  replacedAt: z.string(),
+});
+
+export const promptSteeredEventSchema = z.object({
+  type: z.literal('prompt.steered'),
+  time: z.number().optional(),
+  activePromptId: z.string(),
+  promptIds: z.array(z.string()),
+  content: z.array(promptContentPartSchema),
+  steeredAt: z.string(),
+});
+
 export const promptCompletedEventSchema = z.object({
   type: z.literal('prompt.completed'),
   time: z.number().optional(),
@@ -216,6 +259,11 @@ export interface AgentEventPayloads {
   'tool.call.delta': z.infer<typeof toolCallDeltaEventSchema>;
   'tool.progress': z.infer<typeof toolProgressEventSchema>;
   'tool.result': z.infer<typeof toolResultEventSchema>;
+  'prompt.submitted': z.infer<typeof promptSubmittedEventSchema>;
+  'prompt.queued': z.infer<typeof promptQueuedEventSchema>;
+  'prompt.started': z.infer<typeof promptStartedEventSchema>;
+  'prompt.replaced': z.infer<typeof promptReplacedEventSchema>;
+  'prompt.steered': z.infer<typeof promptSteeredEventSchema>;
   'prompt.completed': z.infer<typeof promptCompletedEventSchema>;
   'prompt.aborted': z.infer<typeof promptAbortedEventSchema>;
   'compaction.started': z.infer<typeof compactionStartedEventSchema>;
@@ -241,6 +289,11 @@ export const agentEvents = {
   'tool.call.delta': { kind: 'stream', name: 'events', type: 'tool.call.delta', schema: toolCallDeltaEventSchema },
   'tool.progress': { kind: 'stream', name: 'events', type: 'tool.progress', schema: toolProgressEventSchema },
   'tool.result': { kind: 'stream', name: 'events', type: 'tool.result', schema: toolResultEventSchema },
+  'prompt.submitted': { kind: 'stream', name: 'events', type: 'prompt.submitted', schema: promptSubmittedEventSchema },
+  'prompt.queued': { kind: 'stream', name: 'events', type: 'prompt.queued', schema: promptQueuedEventSchema },
+  'prompt.started': { kind: 'stream', name: 'events', type: 'prompt.started', schema: promptStartedEventSchema },
+  'prompt.replaced': { kind: 'stream', name: 'events', type: 'prompt.replaced', schema: promptReplacedEventSchema },
+  'prompt.steered': { kind: 'stream', name: 'events', type: 'prompt.steered', schema: promptSteeredEventSchema },
   'prompt.completed': { kind: 'stream', name: 'events', type: 'prompt.completed', schema: promptCompletedEventSchema },
   'prompt.aborted': { kind: 'stream', name: 'events', type: 'prompt.aborted', schema: promptAbortedEventSchema },
   'compaction.started': {

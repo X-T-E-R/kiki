@@ -12,6 +12,7 @@ import { pluginManifestSchema } from '../src/contract/global/plugins.js';
 import { mcpServerAuthFlowHandleSchema } from '../src/contract/global/mcpManagement.js';
 import { createSessionOptionsSchema } from '../src/contract/session/lifecycle.js';
 import { promptPayloadSchema } from '../src/contract/agent/schemas.js';
+import { agentEvents } from '../src/contract/agent/events.js';
 import {
   providerConfigSchema,
   requestIdentityPolicySchema as providerRequestIdentityPolicySchema,
@@ -100,6 +101,31 @@ describe('prompt contract validation', () => {
 
   it('accepts a non-empty caller-chosen promptId', () => {
     expect(promptPayloadSchema.safeParse({ input: [], promptId: 'submission-1' }).success).toBe(true);
+  });
+});
+
+describe('prompt lifecycle events', () => {
+  it.each([
+    'prompt.submitted',
+    'prompt.queued',
+    'prompt.started',
+    'prompt.replaced',
+    'prompt.steered',
+    'prompt.completed',
+    'prompt.aborted',
+  ] as const)('declares %s on the typed agent event map', (type) => {
+    expect(agentEvents[type]?.type).toBe(type);
+  });
+
+  it('parses prompt.queued instead of dropping the live frame', () => {
+    expect(
+      agentEvents['prompt.queued'].schema.parse({
+        type: 'prompt.queued',
+        promptId: 'prompt_1',
+        content: [{ type: 'text', text: 'later' }],
+        queueLength: 1,
+      }),
+    ).toMatchObject({ type: 'prompt.queued', promptId: 'prompt_1', queueLength: 1 });
   });
 });
 
