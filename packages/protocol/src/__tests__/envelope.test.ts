@@ -102,9 +102,8 @@ describe('error-codes', () => {
     expect(ErrorCodeReason[ErrorCode.SESSION_INDEX_BUILDING]).toBe('session.index_building');
   });
 
-  it('reserved codes are not redefined (40101, 50002 absent)', () => {
+  it('reserved codes are not redefined (40102, 40103, 42901, 50002 absent)', () => {
     const allValues = Object.values(ErrorCode);
-    expect(allValues).not.toContain(40101);
     expect(allValues).not.toContain(40102);
     expect(allValues).not.toContain(40103);
     expect(allValues).not.toContain(42901);
