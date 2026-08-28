@@ -40,6 +40,18 @@ export function togglePinned(current: boolean): boolean {
 }
 
 /**
+ * A session's cwd trimmed to its last two segments — enough to tell two
+ * workspaces apart in a narrow row without wrapping. Shared by the sidebar
+ * rows and the session header's quiet cwd line so they never drift.
+ */
+export function shortCwd(cwd: string): string {
+  const normalized = cwd.replaceAll('\\', '/').replace(/\/+$/, '');
+  const parts = normalized.split('/').filter((part) => part !== '');
+  if (parts.length <= 2) return normalized;
+  return `…/${parts.slice(-2).join('/')}`;
+}
+
+/**
  * Poll merge for the 5s cadence: only page 1 is refetched (every sidebar
  * change lands there); older loaded pages are kept as-is and refresh on
  * demand (load-more) or invalidation. Interval-refetching an infinite query

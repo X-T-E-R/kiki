@@ -29,6 +29,7 @@ import { groupSearchHits, isSearchable, SEARCH_DEBOUNCE_MS } from '../lib/search
 import {
   isPinnedSession,
   pinMetadataPatch,
+  shortCwd,
   togglePinned,
   type SessionGroup,
   type SessionSortOrder,
@@ -1362,11 +1363,4 @@ function RenameDialog({
       </div>
     </Dialog>
   );
-}
-
-function shortCwd(cwd: string): string {
-  const normalized = cwd.replaceAll('\\', '/').replace(/\/+$/, '');
-  const parts = normalized.split('/').filter((part) => part !== '');
-  if (parts.length <= 2) return normalized;
-  return `…/${parts.slice(-2).join('/')}`;
 }

@@ -81,6 +81,7 @@ export function shortcutsGroups(shortcut: SendShortcut): readonly ShortcutGroup[
     {
       titleKey: 'shortcuts.group.terminal',
       rows: [
+        { keys: ['Ctrl', '`'], labelKey: 'shortcuts.termToggle' },
         { keys: ['Ctrl', 'Shift', 'C'], labelKey: 'shortcuts.termCopy' },
         { keys: ['Ctrl', 'Shift', 'V'], labelKey: 'shortcuts.termPaste' },
         { keys: ['Esc'], labelKey: 'shortcuts.termEsc' },

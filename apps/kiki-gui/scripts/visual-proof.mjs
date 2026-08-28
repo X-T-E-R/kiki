@@ -1,4 +1,4 @@
-/**
+﻿/**
  * kiki-gui visual proof — boots the fixture server + the vite dev server,
  * drives the real GUI with playwright chromium through every fixture
  * scenario, and writes screenshots to an ignored disposable directory by
@@ -154,7 +154,6 @@ const STRINGS = {
     swarmTitlePrefix: 'Swarm mode',
     goalActive: 'goal · active',
     objectivePlaceholder: 'Objective (optional)',
-    turns: 'turns',
     noMatches: 'No matches',
     systemReminder: 'System reminder',
     fromSubagentApprover: 'from subagent Approver',
@@ -289,7 +288,6 @@ const STRINGS = {
     swarmTitlePrefix: '集群模式',
     goalActive: '目标 · 进行中',
     objectivePlaceholder: '目标（可选）',
-    turns: '轮',
     noMatches: '没有匹配',
     systemReminder: '系统提醒',
     fromSubagentApprover: '来自子代理 Approver',
@@ -819,7 +817,7 @@ async function scenarioLongTranscript() {
   await selectSession('Fixture: long transcript');
   await page.waitForSelector('text=Turn 64', { timeout: 15_000 });
   await page.waitForTimeout(600);
-  // Jump pill + turns dropdown from the bottom of the log.
+  // Jump pill + floor rail from the bottom of the log.
   await page.mouse.move(720, 450);
   await page.mouse.wheel(0, -6000);
   await page.waitForTimeout(600);
@@ -830,11 +828,6 @@ async function scenarioLongTranscript() {
     await page.waitForTimeout(900);
   }
   await shot('long-transcript-top');
-  // Turn jump dropdown.
-  await page.click(`button:has-text("${S.turns}")`);
-  await page.waitForTimeout(400);
-  await shot('long-transcript-turns');
-  await page.keyboard.press('Escape');
 }
 
 async function scenarioErrorAbort() {
@@ -2170,6 +2163,11 @@ async function scenarioTerminal() {
   const canvas = page.locator('[data-terminal-canvas]:visible');
 
   await selectSession('Fixture: terminal');
+  // The panel's header toggle now lives in the ⋯ menu; open it there once so
+  // the menu item is proven, and close it with the new Ctrl+` binding below.
+  await page.click(`header button[aria-label="${S.sessionActionsAria}"]`);
+  await page.waitForSelector('[data-terminal-toggle]', { timeout: 5000 });
+  await shot('session-actions-menu');
   await page.click('[data-terminal-toggle]');
   await page.waitForSelector('[data-terminal-panel]', { timeout: 10_000 });
   // Empty state → the first terminal is created from it.
@@ -2284,6 +2282,14 @@ async function scenarioTerminal() {
   }
   await page.waitForTimeout(400);
   await shot('terminal-restored');
+
+  // Ctrl+` closes and reopens the panel from the transcript — the binding is
+  // the only keyboard path now that the header toggle is gone.
+  await page.mouse.click(720, 300);
+  await page.keyboard.press('Control+`');
+  await page.waitForSelector('[data-terminal-panel]', { state: 'detached', timeout: 5000 });
+  await page.keyboard.press('Control+`');
+  await page.waitForSelector('[data-terminal-panel]', { timeout: 5000 });
 
   // Overflow the bounded server buffer while the socket is down. The
   // reconnect must reset old xterm/ANSI history and visibly disclose that the

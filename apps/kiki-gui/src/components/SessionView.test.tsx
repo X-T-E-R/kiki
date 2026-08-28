@@ -52,26 +52,20 @@ import {
   shouldClearModeOverride,
   shouldCloseSessionChromeOnEscape,
   shouldHandleApprovalShortcut,
-  TerminalToggle,
+  isTerminalShortcut,
 } from './SessionView';
 
 vi.mock('./TerminalPanel', () => ({ TerminalPanel: () => null }));
 
-function renderTerminalToggle(available: boolean): string {
-  return renderToStaticMarkup(
-    <I18nProvider>
-      <TerminalToggle available={available} open={false} onToggle={() => {}} />
-    </I18nProvider>,
-  );
-}
-
-describe('SessionView terminal capability', () => {
-  it('omits the terminal toggle when the server omits terminal capability', () => {
-    expect(renderTerminalToggle(false)).not.toContain('data-terminal-toggle');
-  });
-
-  it('renders the terminal toggle when the server advertises terminal capability', () => {
-    expect(renderTerminalToggle(true)).toContain('data-terminal-toggle');
+describe('terminal shortcut', () => {
+  it('recognises Ctrl+` and nothing near it', () => {
+    const base = { key: '`', ctrlKey: true, metaKey: false, altKey: false, shiftKey: false };
+    expect(isTerminalShortcut(base)).toBe(true);
+    expect(isTerminalShortcut({ ...base, shiftKey: true })).toBe(false);
+    expect(isTerminalShortcut({ ...base, altKey: true })).toBe(false);
+    expect(isTerminalShortcut({ ...base, metaKey: true })).toBe(false);
+    expect(isTerminalShortcut({ ...base, ctrlKey: false })).toBe(false);
+    expect(isTerminalShortcut({ ...base, key: '~' })).toBe(false);
   });
 });
 
