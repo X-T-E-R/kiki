@@ -25,6 +25,7 @@
     "test": "vitest run",
     "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
     "test:integration": "vitest run .integration.",
+    "test:promote": "vitest run --project=!kap-server && pnpm -C packages/pi-tui test",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "clean": "pnpm -r run clean",
