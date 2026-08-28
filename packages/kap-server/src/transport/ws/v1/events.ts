@@ -205,7 +205,7 @@ export interface ProcessTaskInfo extends TaskInfoBase {
 export interface AgentTaskInfo extends TaskInfoBase {
   readonly kind: 'agent';
   readonly agentId?: string;
-  readonly subagentType?: string;
+  readonly profile?: string;
 }
 
 export interface QuestionTaskInfo extends TaskInfoBase {

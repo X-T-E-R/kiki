@@ -80,7 +80,7 @@ function agentTask(
   description: string,
   options: {
     readonly agentId?: string;
-    readonly subagentType?: string;
+    readonly profile?: string;
     readonly parentToolCallId?: string;
     readonly abortController?: AbortController;
     readonly timeoutMs?: number;
@@ -88,7 +88,7 @@ function agentTask(
 ): SubagentTask {
   const handle: SubagentHandle = {
     agentId: options.agentId ?? 'agent-child',
-    profileName: options.subagentType ?? 'coder',
+    profileName: options.profile ?? 'coder',
     parentToolCallId: options.parentToolCallId,
     completion,
   };
@@ -415,7 +415,7 @@ describe('AgentTaskService', () => {
     const taskId = manager.registerTask(
       agentTask(new Promise(() => {}), 'investigate bug', {
         agentId: 'agent-child',
-        subagentType: 'coder',
+        profile: 'coder',
         parentToolCallId: 'call-parent-1',
       }),
     );
@@ -426,7 +426,7 @@ describe('AgentTaskService', () => {
       kind: 'agent',
       description: 'investigate bug',
       agentId: 'agent-child',
-      subagentType: 'coder',
+      profile: 'coder',
       parentToolCallId: 'call-parent-1',
       status: 'running',
     });

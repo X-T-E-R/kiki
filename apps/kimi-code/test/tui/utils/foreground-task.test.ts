@@ -58,7 +58,7 @@ describe('pickForegroundTask', () => {
       taskId: 'agent-aaaaaaaa',
       kind: 'agent',
       agentId: 'child-1',
-      subagentType: 'coder',
+      profile: 'coder',
     } as Partial<BackgroundTaskInfo>);
     expect(pickForegroundTask([agent])?.taskId).toBe('agent-aaaaaaaa');
   });

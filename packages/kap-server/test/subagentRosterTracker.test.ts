@@ -38,7 +38,7 @@ describe('SubagentRosterTracker', () => {
         label: 'task agent-1',
         status: 'running',
         subagent_phase: 'queued',
-        subagent_type: 'kimi-subagent',
+        profile: 'kimi-subagent',
         parent_agent_id: 'main',
         parent_tool_call_id: 'tc_swarm_1',
         tool_call_count: 0,

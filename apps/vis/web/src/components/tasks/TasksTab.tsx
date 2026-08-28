@@ -125,7 +125,7 @@ function TaskCard({ sessionId, entry }: { sessionId: string; entry: BackgroundTa
                 <Dim>(none)</Dim>
               )}
             </Field>
-            <Field label="subagentType">{task.subagentType ?? <Dim>(none)</Dim>}</Field>
+            <Field label="profile">{task.profile ?? <Dim>(none)</Dim>}</Field>
           </>
         ) : null}
         {task.kind === 'question' ? (

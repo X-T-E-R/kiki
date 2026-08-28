@@ -193,11 +193,11 @@ function enrichSnapshotSubagents(
   return subagents.map((subagent) => {
     const meta = agents?.[subagent.id];
     const userLabel = firstNonEmpty(subagentUserLabel(meta), subagent.label);
-    const spawnedName = firstNonEmpty(subagent.subagent_type, meta?.displayName);
+    const spawnedName = firstNonEmpty(subagent.profile, meta?.displayName);
     return {
       ...subagent,
       description: resolveSubagentDisplayName(userLabel, spawnedName, subagent.id),
-      subagent_type: spawnedName,
+      profile: spawnedName,
       parent_agent_id: firstNonEmpty(subagent.parent_agent_id, subagentParentAgentId(meta)),
       label: userLabel,
       tool_call_count: Math.max(

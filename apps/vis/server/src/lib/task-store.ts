@@ -180,7 +180,30 @@ type DiskPersistedTask = BackgroundTaskInfo | LegacyPersistedTask;
 
 function normalizePersistedTask(task: DiskPersistedTask): BackgroundTaskInfo {
   if (isLegacyPersistedTask(task)) return legacyPersistedTaskToInfo(task);
-  return { ...task, detached: task.detached ?? true };
+  const live = { ...task, detached: task.detached ?? true };
+  if (live.kind !== 'agent') return live;
+  const record = live as Extract<BackgroundTaskInfo, { kind: 'agent' }> & {
+    readonly subagentType?: string;
+  };
+  const profile = record.profile ?? optionalNonEmptyString(record.subagentType);
+  return {
+    taskId: record.taskId,
+    description: record.description,
+    status: record.status,
+    detached: record.detached,
+    startedAt: record.startedAt,
+    endedAt: record.endedAt,
+    stopReason: record.stopReason,
+    terminalNotificationSuppressed: record.terminalNotificationSuppressed,
+    timeoutMs: record.timeoutMs,
+    kind: 'agent',
+    agentId: record.agentId,
+    profile,
+    model: record.model,
+    thinkingEffort: record.thinkingEffort,
+    collaborationTaskName: record.collaborationTaskName,
+    collaborationAgentType: record.collaborationAgentType,
+  };
 }
 
 function legacyPersistedTaskToInfo(task: LegacyPersistedTask): BackgroundTaskInfo {
@@ -200,7 +223,7 @@ function legacyPersistedTaskToInfo(task: LegacyPersistedTask): BackgroundTaskInf
       ...base,
       kind: 'agent',
       agentId: optionalNonEmptyString(task.agent_id),
-      subagentType: optionalNonEmptyString(task.subagent_type),
+      profile: optionalNonEmptyString(task.subagent_type),
     };
   }
   return {

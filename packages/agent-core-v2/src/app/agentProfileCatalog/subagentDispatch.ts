@@ -17,7 +17,7 @@ import {
 import type { SpawnConstraints, SubagentLease } from './subagentLease';
 import {
   subagentAllowlistFor,
-  subagentTypeNotAllowedMessage,
+  profileNotAllowedMessage,
 } from './profile-shared';
 import {
   scopedBinding,
@@ -88,7 +88,7 @@ export function assertSubagentDispatchAllowed(
   if (allowlist === undefined || allowlist.includes(profileName)) return;
   throw new Error2(
     ErrorCodes.AGENT_TYPE_NOT_ALLOWED,
-    subagentTypeNotAllowedMessage(profileName, allowlist),
+    profileNotAllowedMessage(profileName, allowlist),
     { details: { profileName, allowlist } },
   );
 }

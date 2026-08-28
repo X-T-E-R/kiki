@@ -43,7 +43,7 @@ describe('AgentTaskPersistence legacy compatibility', () => {
   it('replays additive named-adapter task metadata', async () => {
     await writeLegacyTask('agent-named001', {
       taskId: 'agent-named001', kind: 'agent', description: 'named task', status: 'completed',
-      detached: true, startedAt: 1, endedAt: 2, agentId: 'agent-1', subagentType: 'coder',
+      detached: true, startedAt: 1, endedAt: 2, agentId: 'agent-1', profile: 'coder',
       collaborationTaskName: 'build_api', collaborationAgentType: 'coder',
     });
     await expect(createAgentTaskPersistence(sessionDir).readTask('agent-named001')).resolves.toMatchObject({
@@ -107,7 +107,7 @@ describe('AgentTaskPersistence legacy compatibility', () => {
       status: 'timed_out',
       stopReason: 'deadline',
       agentId: 'agent-session-id',
-      subagentType: 'reviewer',
+      profile: 'reviewer',
     });
   });
 

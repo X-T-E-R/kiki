@@ -1095,7 +1095,7 @@ describe('ToolCallComponent', () => {
     // The spawn-success ToolResult landing must NOT flip the card to Completed.
     component.setResult({
       tool_call_id: 'call_agent_detach',
-      output: 'agent_id: sub_detach_1\nactual_subagent_type: explore\n',
+      output: 'agent_id: sub_detach_1\nactual_profile: explore\n',
       is_error: false,
     });
     out = strip(component.render(120).join('\n'));
@@ -1402,7 +1402,7 @@ describe('ToolCallComponent', () => {
         'task_id: agent-deadbeef',
         'status: running',
         'agent_id: agent-0',
-        'actual_subagent_type: coder',
+        'actual_profile: coder',
         'automatic_notification: true',
       ].join('\n'),
       is_error: false,

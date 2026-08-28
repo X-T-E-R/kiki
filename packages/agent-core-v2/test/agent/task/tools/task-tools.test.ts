@@ -79,7 +79,7 @@ function agentTaskInfo(
     kind: 'agent',
     description: 'agent task',
     agentId: 'agent-child',
-    subagentType: 'coder',
+    profile: 'coder',
     status: 'completed',
     detached: true,
     startedAt: 1_700_000_000_000,
@@ -493,7 +493,7 @@ describe('TaskOutputTool', () => {
 
     expect(output).toContain('kind: agent');
     expect(output).toContain('agent_id: agent-child');
-    expect(output).toContain('subagent_type: coder');
+    expect(output).toContain('profile: coder');
     expect(output).toContain('[output]\nSUBAGENT-FINAL-SUMMARY');
     expect(output).not.toMatch(/^pid:/m);
     expect(output).not.toMatch(/^command:/m);
