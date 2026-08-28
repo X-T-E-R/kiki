@@ -80,6 +80,11 @@ const STRINGS = {
     configuredProviders: 'Configured providers',
     tools: 'Tools',
     newSessionDefaults: 'New-session defaults',
+    appearanceTitle: 'Appearance',
+    searchQuery: 'theme',
+    themeDark: 'Dark',
+    themeLight: 'Light',
+    switcherSettingsGroup: 'Settings',
     savedTick: '✓ Saved',
     planModeToggle: 'Start new sessions in plan mode',
     permissionModeAuto: 'auto',
@@ -150,12 +155,10 @@ const STRINGS = {
     filesHeader: 'Files — mentioned as @path',
     notActivatable: 'not activatable',
     shortcuts: 'Shortcuts',
-    planPill: 'plan',
     sendAnyway: 'Send anyway',
     swarmTitlePrefix: 'Swarm mode',
     goalActive: 'goal · active',
     objectivePlaceholder: 'Objective (optional)',
-    turns: 'turns',
     noMatches: 'No matches',
     systemReminder: 'System reminder',
     fromSubagentApprover: 'from subagent Approver',
@@ -216,6 +219,11 @@ const STRINGS = {
     configuredProviders: '已配置的提供商',
     tools: '工具',
     newSessionDefaults: '新会话默认值',
+    appearanceTitle: '外观',
+    searchQuery: '主题',
+    themeDark: '暗色',
+    themeLight: '亮色',
+    switcherSettingsGroup: '设置',
     savedTick: '✓ 已保存',
     planModeToggle: '新会话默认开启计划模式',
     permissionModeAuto: '自动',
@@ -286,12 +294,10 @@ const STRINGS = {
     filesHeader: '文件 — 在消息中以 @路径 引用',
     notActivatable: '不可激活',
     shortcuts: '快捷指令',
-    planPill: '计划',
     sendAnyway: '仍要发送',
     swarmTitlePrefix: '集群模式',
     goalActive: '目标 · 进行中',
     objectivePlaceholder: '目标（可选）',
-    turns: '轮',
     noMatches: '没有匹配',
     systemReminder: '系统提醒',
     fromSubagentApprover: '来自子代理 Approver',
@@ -451,6 +457,28 @@ async function sendPrompt(text) {
   await page.fill('textarea', text);
   await page.press('textarea', 'Enter');
   console.log(`[flow] sent: ${text}`);
+}
+
+/** Permission mode, plan, swarm and the goal objective all live behind [mode ▾]. */
+async function openModePanel() {
+  const trigger = page.locator('[data-mode-select] > button');
+  if ((await trigger.getAttribute('aria-expanded')) !== 'true') await trigger.click();
+  await page.waitForSelector('[data-mode-select] [role="option"]', { timeout: 5000 });
+}
+
+async function closeModePanel() {
+  const trigger = page.locator('[data-mode-select] > button');
+  if ((await trigger.getAttribute('aria-expanded')) === 'true') {
+    await page.keyboard.press('Escape');
+  }
+  await page.waitForTimeout(200);
+}
+
+/** The agent profile and effort rows live behind the merged [model ▾] chip. */
+async function openModelChip() {
+  const trigger = page.locator('#composer-model-select');
+  await trigger.waitFor({ timeout: 10_000 });
+  if ((await trigger.getAttribute('aria-expanded')) !== 'true') await trigger.click();
 }
 
 async function approveViaKeyboard() {
@@ -705,10 +733,12 @@ async function scenarioSubagents() {
 async function scenarioGoalSwarm() {
   await selectSession('Fixture: goal + swarm');
   await waitForText('Prepare the release evidence bundle');
-  await page.click(`button[title^="${S.swarmTitlePrefix}"]`);
-  await page.click(`button:has-text("${S.goalActive}")`);
+  // Swarm and the objective are two rows of the same [mode ▾] panel now.
+  await openModePanel();
+  await page.click(`[data-mode-switch="swarm"][title^="${S.swarmTitlePrefix}"]`);
+  await page.click('[data-goal-open]');
   await page.fill(`input[placeholder="${S.objectivePlaceholder}"]`, 'Ship the fixture release');
-  await page.click(`button:has-text("${S.goalActive}")`);
+  await closeModePanel();
   await sendPrompt('Advance the release goal.');
   await waitForText('Swarm mode is on and the goal state is live.');
   const inspected = await control({ action: 'session', session_id: 'session_fixture_goal_swarm' });
@@ -717,7 +747,14 @@ async function scenarioGoalSwarm() {
   if (submission?.swarm_mode !== true || submission?.goal_objective !== 'Ship the fixture release') {
     throw new Error('PromptSubmission did not carry swarm_mode + goal_objective');
   }
-  await page.click(`button:has-text("${S.goalActive}")`);
+  // The live goal keeps a resident trace on the chip band, with its run-state
+  // controls attached — nothing has to be reopened to see or steer it.
+  const goalChip = page.locator('[data-goal-chip]');
+  await goalChip.waitFor({ timeout: 10_000 });
+  const goalChipText = await goalChip.textContent();
+  if (goalChipText === null || !goalChipText.includes(S.goalActive)) {
+    throw new Error(`goal chip must trace the run state, got "${goalChipText}"`);
+  }
   await page.waitForTimeout(400);
   await shot('goal-swarm');
 }
@@ -790,7 +827,7 @@ async function scenarioLongTranscript() {
   await selectSession('Fixture: long transcript');
   await page.waitForSelector('text=Turn 64', { timeout: 15_000 });
   await page.waitForTimeout(600);
-  // Jump pill + turns dropdown from the bottom of the log.
+  // Jump pill + floor rail from the bottom of the log.
   await page.mouse.move(720, 450);
   await page.mouse.wheel(0, -6000);
   await page.waitForTimeout(600);
@@ -801,11 +838,6 @@ async function scenarioLongTranscript() {
     await page.waitForTimeout(900);
   }
   await shot('long-transcript-top');
-  // Turn jump dropdown.
-  await page.click(`button:has-text("${S.turns}")`);
-  await page.waitForTimeout(400);
-  await shot('long-transcript-turns');
-  await page.keyboard.press('Escape');
 }
 
 async function scenarioErrorAbort() {
@@ -943,6 +975,7 @@ async function scenarioHeroShell() {
   // Agent picker: only main profiles are conversation partners — subagent
   // profiles (reviewer) never list, and with every option a main profile the
   // labels carry no ` · main` suffix.
+  await openModelChip();
   await page.waitForSelector('#composer-agent-profile-select', { timeout: 10_000 });
   const profileTrigger = page.locator('#composer-agent-profile-select');
   const profileTriggerText = await profileTrigger.textContent();
@@ -950,7 +983,10 @@ async function scenarioHeroShell() {
     throw new Error(`agent picker trigger must show the plain profile name, got "${profileTriggerText}"`);
   }
   await profileTrigger.click();
-  const profileOptions = await page.locator('[role="listbox"] [role="option"]').allTextContents();
+  // Scoped to the profile panel: the model chip's own list is a listbox too.
+  const profileOptions = await page
+    .locator('#composer-agent-profile-select-list [role="option"]')
+    .allTextContents();
   if (
     profileOptions.length !== 2
     || !profileOptions.some((text) => text.includes('grok-only'))
@@ -959,6 +995,8 @@ async function scenarioHeroShell() {
     throw new Error(`agent picker must list exactly the main profiles, got ${JSON.stringify(profileOptions)}`);
   }
   await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
 
   // The workspace chip opens the shared workspace/cwd fields as a popover.
   await page.click('[data-hero-workspace] > button');
@@ -1162,6 +1200,96 @@ async function scenarioSettings() {
   await page.waitForSelector(`text=${S.tools}`, { timeout: 10_000 });
   await page.waitForTimeout(400);
   await shot('settings-capabilities-runtime');
+}
+
+/**
+ * E4 settings convenience. Search is the shortest path to a setting, so this
+ * walks it end to end: Ctrl+, opens settings with the caret already in the
+ * field, Enter jumps to the card and flashes it, and Ctrl+K reaches the same
+ * cards from a session. The density claim (flat grouped rows put all of
+ * General on one 1280×800 screen) is measured, not eyeballed, and the dark
+ * theme gets its own pass because the new rows lean on hairline tokens.
+ */
+async function scenarioSettingsSearch() {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'domcontentloaded',
+  });
+  await page.waitForSelector(`text=${S.newSession}`, { timeout: 10_000 });
+
+  // Ctrl+, from outside settings: the page opens with focus in the search box.
+  await page.keyboard.press('Control+Comma');
+  await page.waitForURL(/\/settings/, { timeout: 10_000 });
+  await page.waitForSelector('[data-settings-search]', { timeout: 10_000 });
+  await page.waitForFunction(
+    () => document.activeElement?.hasAttribute('data-settings-search') === true,
+    { timeout: 5000 },
+  );
+  await page.waitForTimeout(400);
+  await shot('settings-search-focused');
+
+  // Density: General must not scroll at 1280×800 — that is the whole point of
+  // trading bordered cards for hairline-separated rows.
+  const overflow = await page.evaluate(() => {
+    const pane = document.querySelector('[data-settings-scroll]');
+    return pane === null ? null : pane.scrollHeight - pane.clientHeight;
+  });
+  if (overflow === null) throw new Error('settings scroll pane not found');
+  if (overflow > 0) {
+    throw new Error(`General section still scrolls at 1280×800 (${overflow}px overflow)`);
+  }
+
+  // Type → hit list → Enter lands on the card and flashes it.
+  await page.keyboard.type(S.searchQuery);
+  await page.waitForSelector(`[role="option"]:has-text("${S.appearanceTitle}")`, { timeout: 5000 });
+  await page.waitForTimeout(200);
+  await shot('settings-search-hits');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('#st-card-appearance.settings-card-flash', { timeout: 5000 });
+  await shot('settings-search-landed');
+
+  // Dark theme: the flat rows carry their grouping through the dark tokens too.
+  await page.locator('#st-card-appearance').getByRole('button', { name: S.themeDark, exact: true }).click();
+  await page.waitForFunction(
+    () => document.documentElement.dataset['theme'] === 'dark',
+    { timeout: 5000 },
+  );
+  await page.waitForTimeout(600); // let the flash finish so the shot is steady
+  await shot('settings-search-dark');
+
+  // Narrow viewport keeps the search box above the section select.
+  await page.setViewportSize({ width: 900, height: 800 });
+  await page.waitForTimeout(300);
+  await page.waitForSelector('[data-settings-search]:visible', { timeout: 5000 });
+  await shot('settings-search-narrow');
+  await page.setViewportSize({ width: 1280, height: 800 });
+
+  // Ctrl+K from a session reaches settings cards by name, under the session
+  // and message groups.
+  await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'domcontentloaded',
+  });
+  await page.waitForSelector(`text=${S.newSession}`, { timeout: 10_000 });
+  await page.keyboard.press('Control+k');
+  await page.waitForSelector('#quick-switcher-list', { timeout: 5000 });
+  await page.keyboard.type(S.searchQuery);
+  const switcherList = page.locator('#quick-switcher-list');
+  await switcherList.getByText(S.switcherSettingsGroup, { exact: true }).waitFor({ timeout: 5000 });
+  const settingRow = switcherList.locator('[role="option"]', { hasText: S.appearanceTitle });
+  await settingRow.first().waitFor({ timeout: 5000 });
+  await page.waitForTimeout(200);
+  await shot('settings-search-switcher');
+  await settingRow.first().click();
+  await page.waitForSelector('#st-card-appearance.settings-card-flash', { timeout: 10_000 });
+  await shot('settings-search-switcher-landed');
+
+  // Restore the light palette and the desktop viewport for later scenarios.
+  await page.locator('#st-card-appearance').getByRole('button', { name: S.themeLight, exact: true }).click();
+  await page.waitForFunction(
+    () => document.documentElement.dataset['theme'] === 'light',
+    { timeout: 5000 },
+  );
+  await page.setViewportSize({ width: 1440, height: 900 });
 }
 
 async function scenarioSettingsWrite() {
@@ -1420,10 +1548,29 @@ async function scenarioSettingsAgents() {
   await page.waitForSelector('[data-agent-profile="reviewer"] [role="switch"][aria-checked="true"]', { timeout: 5000 });
   await shot('settings-agents-disabled-reloaded');
 }
+/** Grouping, sorting, scope and archived visibility all live behind the
+ * sidebar's ⋮ view menu now, so every view change opens it first. */
+async function pickViewOption(selector) {
+  if ((await page.locator('[data-view-menu]').count()) === 0) {
+    await page.click('[data-view-menu-toggle]');
+    await page.waitForSelector('[data-view-menu]', { timeout: 5000 });
+  }
+  await page.click(`[data-view-menu] ${selector}`);
+}
+
+/** The panel overlays the list's top rows, so screenshots close it first. */
+async function closeViewMenu() {
+  if ((await page.locator('[data-view-menu]').count()) > 0) {
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('[data-view-menu]', { state: 'detached', timeout: 5000 });
+    await page.waitForTimeout(150);
+  }
+}
+
 async function scenarioSidebarOrganize() {
   // Three sessions across two workspaces; the pinned row floats to a "Pinned"
   // group and the rest bucket by recency.
-  await page.waitForSelector('[data-workspace-filter]', { timeout: 10_000 });
+  await page.waitForSelector('[data-view-menu-toggle]', { timeout: 10_000 });
 
   // Scope every assertion to the sidebar so the /new recent-session chips
   // (which render the same titles in the main panel) never match.
@@ -1492,23 +1639,31 @@ async function scenarioSidebarOrganize() {
     throw new Error(`sidebar double-click did not reset to 264 (got ${resetWidth})`);
   }
 
-  // --- Workspace grouping: bucket headers follow the workspace list order.
-  await page.selectOption('[data-group-by]', 'workspace');
+  // --- Workspace grouping: the pinned row keeps a global leading bucket and
+  // the remaining buckets follow the sidebar's workspace order — pinned
+  // workspaces first, then recency (the fixture's wd_…001 is the pinned one).
+  await pickViewOption('[data-group-by="workspace"]');
+  await closeViewMenu();
   await page.waitForFunction(
-    () => document.querySelectorAll('aside [data-session-group]').length === 2,
+    () => document.querySelectorAll('aside [data-session-group]').length === 3,
     undefined,
     { timeout: 5000 },
   );
   const wsKeys = await groupKeys();
-  if (wsKeys[0] !== 'wd_fixture_000000000000' || wsKeys[1] !== 'wd_fixture_000000000001') {
+  if (
+    wsKeys[0] !== 'pinned'
+    || wsKeys[1] !== 'wd_fixture_000000000001'
+    || wsKeys[2] !== 'wd_fixture_000000000000'
+  ) {
     throw new Error(`unexpected workspace grouping: ${JSON.stringify(wsKeys)}`);
   }
   await shot('sidebar-group-by-workspace');
 
   // --- Sorting: "By name" reorders the unpinned rows within their bucket.
-  await page.selectOption('[data-group-by]', 'time');
+  await pickViewOption('[data-group-by="time"]');
   await page.waitForTimeout(200);
-  await page.selectOption('[data-sort-by]', 'title');
+  await pickViewOption('[data-sort-by="title"]');
+  await closeViewMenu();
   await page.waitForFunction(
     () => {
       const titles = Array.from(document.querySelectorAll('aside [data-session-title]')).map((n) => n.textContent ?? '');
@@ -1522,11 +1677,13 @@ async function scenarioSidebarOrganize() {
   await shot('sidebar-sort-by-name');
 
   // Restore default ordering for later assertions.
-  await page.selectOption('[data-sort-by]', 'updated-desc');
-  await page.selectOption('[data-group-by]', 'time');
+  await pickViewOption('[data-sort-by="updated-desc"]');
+  await pickViewOption('[data-group-by="time"]');
 
-  // Workspace filtering narrows the sidebar to workspace B's row only.
-  await page.selectOption('[data-workspace-filter]', 'wd_fixture_000000000001');
+  // Workspace filtering narrows the sidebar to workspace B's row only, and
+  // leaves a revocable chip on the list's upper edge.
+  await pickViewOption('[data-workspace-filter="wd_fixture_000000000001"]');
+  await closeViewMenu();
   await page.waitForFunction(
     () => {
       const titles = Array.from(document.querySelectorAll('aside [data-session-title]')).map((n) => n.textContent ?? '');
@@ -1535,10 +1692,11 @@ async function scenarioSidebarOrganize() {
     undefined,
     { timeout: 5000 },
   );
+  await page.waitForSelector('[data-sidebar-filter-chip="workspace"]', { timeout: 5000 });
   await shot('sidebar-workspace-filter');
 
-  // Back to all workspaces restores the pinned + grouped view.
-  await page.selectOption('[data-workspace-filter]', '');
+  // The chip's × is the shortest way back to every workspace.
+  await page.click('[data-sidebar-filter-clear="workspace"]');
   await page.waitForFunction(
     () => {
       const titles = Array.from(document.querySelectorAll('aside [data-session-title]')).map((n) => n.textContent ?? '');
@@ -2106,6 +2264,11 @@ async function scenarioTerminal() {
   const canvas = page.locator('[data-terminal-canvas]:visible');
 
   await selectSession('Fixture: terminal');
+  // The panel's header toggle now lives in the ⋯ menu; open it there once so
+  // the menu item is proven, and close it with the new Ctrl+` binding below.
+  await page.click(`header button[aria-label="${S.sessionActionsAria}"]`);
+  await page.waitForSelector('[data-terminal-toggle]', { timeout: 5000 });
+  await shot('session-actions-menu');
   await page.click('[data-terminal-toggle]');
   await page.waitForSelector('[data-terminal-panel]', { timeout: 10_000 });
   // Empty state → the first terminal is created from it.
@@ -2221,6 +2384,14 @@ async function scenarioTerminal() {
   await page.waitForTimeout(400);
   await shot('terminal-restored');
 
+  // Ctrl+` closes and reopens the panel from the transcript — the binding is
+  // the only keyboard path now that the header toggle is gone.
+  await page.mouse.click(720, 300);
+  await page.keyboard.press('Control+`');
+  await page.waitForSelector('[data-terminal-panel]', { state: 'detached', timeout: 5000 });
+  await page.keyboard.press('Control+`');
+  await page.waitForSelector('[data-terminal-panel]', { timeout: 5000 });
+
   // Overflow the bounded server buffer while the socket is down. The
   // reconnect must reset old xterm/ANSI history and visibly disclose that the
   // replay is only a retained suffix.
@@ -2280,17 +2451,19 @@ async function scenarioSlashCommands() {
   if (lastActivation?.name !== 'review' || lastActivation?.args !== '--strict') {
     throw new Error(`skill activation mismatch: ${JSON.stringify(lastActivation)}`);
   }
-  // Client shortcut: /plan toggles the plan pill. Assert the FLIP, not an
-  // absolute state — client settings persisted by earlier scenarios
-  // (settings-write) can start plan mode either way. aria-pressed is the
-  // contractual hook; the accent class is presentation.
-  const planPressed = () =>
-    page.evaluate((pillText) => {
-      const pill = [...document.querySelectorAll('button')].find(
-        (button) => button.textContent?.trim() === pillText,
-      );
-      return pill?.getAttribute('aria-pressed');
-    }, S.planPill);
+  // Client shortcut: /plan toggles the plan switch, which now lives one level
+  // in — behind [mode ▾]. Assert the FLIP, not an absolute state: client
+  // settings persisted by earlier scenarios (settings-write) can start plan
+  // mode either way. aria-pressed is the contractual hook; the accent class
+  // and the trigger's `· plan` segment are presentation.
+  const planPressed = async () => {
+    await openModePanel();
+    const pressed = await page
+      .locator('[data-mode-switch="plan"]')
+      .getAttribute('aria-pressed');
+    await closeModePanel();
+    return pressed;
+  };
   const planBefore = await planPressed();
   await page.fill('textarea', '/pl');
   await page.waitForTimeout(300);
@@ -2834,6 +3007,7 @@ const SCENARIOS = [
   ['draft-flow', scenarioDraftFlow],
   ['hero-shell', scenarioHeroShell],
   ['settings', scenarioSettings],
+  ['settings-search', scenarioSettingsSearch],
   ['settings-write', scenarioSettingsWrite],
   ['settings-invalid', scenarioSettingsInvalid],
   ['settings-browser-editable', scenarioSettingsBrowserEditable],

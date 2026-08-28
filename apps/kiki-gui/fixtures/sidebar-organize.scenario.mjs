@@ -3,7 +3,7 @@
  *
  * Two workspaces, three sessions: a pinned row floats into its own "Pinned"
  * group, the two "fixture" sessions belong to workspace A, and one session
- * belongs to workspace B so the `data-workspace-filter` select can prove
+ * belongs to workspace B so the view menu's workspace rows can prove
  * server-side `workspace_id` filtering in the UI.
  */
 
@@ -42,6 +42,7 @@ export default {
       created_at: iso(120),
       last_opened_at: iso(2),
       session_count: 2,
+      pinned: false,
     },
     {
       id: WS_B,
@@ -50,6 +51,7 @@ export default {
       created_at: iso(120),
       last_opened_at: iso(60),
       session_count: 1,
+      pinned: true,
     },
   ],
   snapshots: {},

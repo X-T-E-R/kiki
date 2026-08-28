@@ -470,6 +470,34 @@ describe('WorkspaceService (file-backed)', () => {
     expect(await restart().get(created.id)).toBeUndefined();
   });
 
+  it('defaults pinned to false and round-trips it through the catalog file', async () => {
+    const created = await build().createOrTouch(homeDir, 'proj');
+    expect(created.pinned).toBe(false);
+    expect(await readWorkspacesJson().then((f) => f.workspaces[created.id]?.pinned)).toBeUndefined();
+
+    const pinned = await build().update(created.id, { pinned: true });
+    expect(pinned?.pinned).toBe(true);
+    expect(pinned?.name).toBe('proj');
+    expect(await readWorkspacesJson().then((f) => f.workspaces[created.id]?.pinned)).toBe(true);
+    expect((await restart().get(created.id))?.pinned).toBe(true);
+
+    // createOrTouch on an already-pinned root must not silently unpin it.
+    expect((await build().createOrTouch(homeDir)).pinned).toBe(true);
+
+    await build().update(created.id, { pinned: false });
+    expect((await restart().get(created.id))?.pinned).toBe(false);
+  });
+
+  it('leaves pinned untouched when the patch only renames', async () => {
+    const registry = build();
+    const created = await registry.createOrTouch(homeDir, 'proj');
+    await registry.update(created.id, { pinned: true });
+
+    const renamed = await registry.update(created.id, { name: 'renamed' });
+    expect(renamed?.name).toBe('renamed');
+    expect(renamed?.pinned).toBe(true);
+  });
+
   it('rejects createOrTouch when the root directory does not exist', async () => {
     const missing = join(homeDir, 'never-created');
     await expect(build().createOrTouch(missing)).rejects.toMatchObject({

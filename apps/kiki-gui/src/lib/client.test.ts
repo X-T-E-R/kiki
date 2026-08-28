@@ -469,6 +469,7 @@ describe('KikiClient workspace lifecycle', () => {
       created_at: '2026-01-01T00:00:00.000Z',
       last_opened_at: '2026-01-01T00:00:00.000Z',
       session_count: 0,
+      pinned: false,
     };
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(String(input));
@@ -481,6 +482,32 @@ describe('KikiClient workspace lifecycle', () => {
       const client = new KikiClient({ baseUrl: 'http://example.test' });
       const result = await client.renameWorkspace('wd_demo_000000000000', 'Renamed');
       expect(result.name).toBe('Renamed');
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it('PATCHes only `pinned` when pinning a workspace', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe('/api/v1/workspaces/wd_demo_000000000000');
+      expect(init?.method).toBe('PATCH');
+      expect(JSON.parse(init?.body as string)).toEqual({ pinned: true });
+      return envelope({
+        id: 'wd_demo_000000000000',
+        root: 'C:/demo',
+        name: 'demo',
+        created_at: '2026-01-01T00:00:00.000Z',
+        last_opened_at: '2026-01-01T00:00:00.000Z',
+        session_count: 0,
+        pinned: true,
+      });
+    }) as typeof fetch;
+    try {
+      const client = new KikiClient({ baseUrl: 'http://example.test' });
+      const result = await client.setWorkspacePinned('wd_demo_000000000000', true);
+      expect(result.pinned).toBe(true);
     } finally {
       globalThis.fetch = original;
     }

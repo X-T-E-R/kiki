@@ -55,6 +55,7 @@ import {
   undoLastTurn,
   type SessionActionContext,
 } from '../lib/sessionActions';
+import { shortCwd } from '../lib/sessionList';
 import {
   readTerminalPanelPrefs,
   writeTerminalPanelPrefs,
@@ -106,6 +107,47 @@ export async function replaceQueuedPrompt(
   await replace(promptId, text);
 }
 
+/** VS Code's terminal binding, and the only keyboard path to the panel now
+ * that its toggle lives in the header's overflow menu. */
+export const TERMINAL_SHORTCUT_LABEL = 'Ctrl+`';
+
+export function isTerminalShortcut(event: {
+  key: string;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+}): boolean {
+  return event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && event.key === '`';
+}
+
+function MoreIcon({ className = '' }: { className?: string }) {
+  return (
+    <svg aria-hidden viewBox="0 0 16 16" fill="currentColor" className={className}>
+      <circle cx="3.2" cy="8" r="1.35" />
+      <circle cx="8" cy="8" r="1.35" />
+      <circle cx="12.8" cy="8" r="1.35" />
+    </svg>
+  );
+}
+
+function PanelIcon({ className = '' }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <rect x="2" y="3" width="12" height="10" rx="1.6" />
+      <path d="M10 3v10" />
+    </svg>
+  );
+}
+
 function useActiveController(sessionId: string | undefined): SessionController | null {
   const { client, socket } = useConnection();
   const registry = useControllerRegistry();
@@ -138,12 +180,10 @@ function Header({
   railOpen,
   terminalAvailable,
   terminalOpen,
-  effectiveModel,
-  modelSource,
   onToggleRail,
   onToggleTerminal,
   onToggleSidebar,
-  onJumpTurn,
+  onRenameSession,
   onSessionAction,
   onRequestBatchResolve,
 }: {
@@ -151,16 +191,15 @@ function Header({
   railOpen: boolean;
   terminalAvailable: boolean;
   terminalOpen: boolean;
-  effectiveModel: string | undefined;
-  modelSource: ModelSource;
   onToggleRail: () => void;
   onToggleTerminal: () => void;
   onToggleSidebar: () => void;
-  onJumpTurn: (blockId: string) => void;
+  onRenameSession: (title: string) => Promise<void>;
   onSessionAction: (action: 'fork' | 'undo' | 'compact' | 'export') => void;
   onRequestBatchResolve: (decision: 'approved' | 'rejected', ids: readonly string[]) => void;
 }) {
   const { t, tp } = useI18n();
+  const [renaming, setRenaming] = useState(false);
   const state = useSyncExternalStore(
     controller?.subscribe ?? noopSubscribe,
     controller?.getState ?? emptyState,
@@ -204,9 +243,14 @@ function Header({
       </button>
       {session !== undefined ? (
         <>
-          <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
-            {session.title !== '' ? session.title : t('sidebar.untitled')}
-          </h1>
+          <SessionTitle
+            title={session.title}
+            cwd={session.metadata.cwd}
+            editing={renaming}
+            onEditingChange={setRenaming}
+            onRename={onRenameSession}
+            onOpenRail={onToggleRail}
+          />
           {approvals > 0 || questions > 0 ? (
             <button
               type="button"
@@ -245,25 +289,17 @@ function Header({
               {t('sv.working')}
             </span>
           ) : null}
-          {effectiveModel !== undefined && effectiveModel !== '' ? (
-            <span
-              className="shrink-0 rounded-full border border-hairline bg-paper px-2 py-0.5 font-mono text-[10.5px] text-ink-soft"
-              title={t('composer.modelTitle', { source: t(`composer.modelSource.${modelSource}`) })}
-            >
-              {effectiveModel}
-            </span>
-          ) : null}
-          <TurnsMenu state={state} onJump={onJumpTurn} />
-          <SessionActionsMenu onAction={onSessionAction} />
+          <SessionActionsMenu
+            terminalAvailable={terminalAvailable}
+            terminalOpen={terminalOpen}
+            onToggleTerminal={onToggleTerminal}
+            onBeginRename={() => { setRenaming(true); }}
+            onAction={onSessionAction}
+          />
         </>
       ) : (
         <span className="flex-1" />
       )}
-      <TerminalToggle
-        available={terminalAvailable}
-        open={terminalOpen}
-        onToggle={onToggleTerminal}
-      />
       <PreviewToggleButton />
       <button
         type="button"
@@ -271,45 +307,116 @@ function Header({
         title={railOpen ? t('sv.hidePanel') : t('sv.showPanel')}
         aria-label={t('sv.togglePanelAria')}
         aria-expanded={railOpen}
-        className={`shrink-0 rounded-lg border px-2 py-1 text-[11px] transition-colors ${
+        data-rail-toggle
+        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors ${
           railOpen
-            ? 'border-accent bg-accent-soft text-accent'
-            : 'border-hairline text-ink-soft hover:border-hairline-strong'
+            ? 'bg-accent-soft text-accent'
+            : 'text-ink-faint hover:bg-paper hover:text-ink'
         }`}
       >
-        {t('sv.panel')}
+        <PanelIcon className="h-[13px] w-[13px]" />
       </button>
     </header>
   );
 }
 
-export function TerminalToggle({
-  available,
-  open,
-  onToggle,
+/**
+ * Session title + cwd. The title renames in place (Enter commits, Esc
+ * reverts, blur commits) through the same profile patch the sidebar's
+ * dialog uses; the cwd beside it is quiet text, not a control — clicking it
+ * opens the rail, which is where the rest of that context lives.
+ */
+export function SessionTitle({
+  title,
+  cwd,
+  editing,
+  onEditingChange,
+  onRename,
+  onOpenRail,
 }: {
-  available: boolean;
-  open: boolean;
-  onToggle: () => void;
+  title: string;
+  cwd: string | undefined;
+  editing: boolean;
+  onEditingChange: (editing: boolean) => void;
+  onRename: (title: string) => Promise<void>;
+  onOpenRail: () => void;
 }) {
   const { t } = useI18n();
-  if (!available) return null;
+  const [draft, setDraft] = useState(title);
+  const inputRef = useRef<HTMLInputElement>(null);
+  // Guards the blur handler: Esc and a committed Enter both blur the input,
+  // and neither should submit a second time.
+  const settledRef = useRef(false);
+
+  useEffect(() => {
+    if (!editing) return;
+    settledRef.current = false;
+    setDraft(title);
+    const input = inputRef.current;
+    if (input === null) return;
+    input.focus();
+    input.select();
+  }, [editing, title]);
+
+  const commit = () => {
+    if (settledRef.current) return;
+    settledRef.current = true;
+    const next = draft.trim();
+    onEditingChange(false);
+    if (next === '' || next === title) return;
+    void onRename(next);
+  };
+
+  const shown = title !== '' ? title : t('sidebar.untitled');
   return (
-    <button
-      type="button"
-      onClick={onToggle}
-      title={open ? t('term.hidePanel') : t('term.showPanel')}
-      aria-label={t('term.toggleAria')}
-      aria-expanded={open}
-      data-terminal-toggle
-      className={`shrink-0 rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors ${
-        open
-          ? 'border-accent bg-accent-soft text-accent'
-          : 'border-hairline text-ink-soft hover:border-hairline-strong'
-      }`}
-    >
-      {t('term.toggle')}
-    </button>
+    <div className="flex min-w-0 flex-1 items-baseline gap-2.5">
+      {editing ? (
+        <input
+          ref={inputRef}
+          data-session-rename-input
+          aria-label={t('sv.renameAria')}
+          value={draft}
+          onChange={(event) => { setDraft(event.target.value); }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              commit();
+            } else if (event.key === 'Escape') {
+              event.preventDefault();
+              event.stopPropagation();
+              settledRef.current = true;
+              onEditingChange(false);
+            }
+          }}
+          onBlur={commit}
+          className="min-w-0 max-w-md flex-1 rounded-md border border-accent bg-paper px-1.5 py-0.5 font-display text-[15px] font-semibold tracking-tight text-ink outline-none"
+        />
+      ) : (
+        <h1 className="min-w-0 max-w-full">
+          <button
+            type="button"
+            data-session-title
+            onClick={() => { onEditingChange(true); }}
+            title={t('sv.renameAria')}
+            aria-label={`${shown} — ${t('sv.renameAria')}`}
+            className="block max-w-full truncate rounded-md px-1 py-0.5 text-left font-display text-[15px] font-semibold tracking-tight text-ink transition-colors hover:bg-paper"
+          >
+            {shown}
+          </button>
+        </h1>
+      )}
+      {cwd !== undefined && cwd !== '' && !editing ? (
+        <button
+          type="button"
+          data-session-cwd
+          onClick={onOpenRail}
+          title={cwd}
+          className="hidden shrink-0 truncate font-mono text-[10.5px] text-ink-faint transition-colors hover:text-ink-soft sm:block"
+        >
+          {shortCwd(cwd)}
+        </button>
+      ) : null}
+    </div>
   );
 }
 
@@ -336,93 +443,24 @@ export function SessionRouteView({
   );
 }
 
-function TurnsMenu({
-  state,
-  onJump,
-}: {
-  state: SessionViewState;
-  onJump: (blockId: string) => void;
-}) {
-  const { t } = useI18n();
-  const [open, setOpen] = useState(false);
-  const turns = useMemo(
-    () =>
-      state.blocks
-        .filter((block): block is UserBlock => block.kind === 'user')
-        .map((block, index) => ({
-          id: block.id,
-          index: index + 1,
-          label: block.text.replaceAll(/\s+/g, ' ').trim().slice(0, 60),
-        })),
-    [state.blocks],
-  );
-
-  useEffect(() => {
-    if (!open) return;
-    const unregister = registerOverlay('turns-menu');
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    const onPointerDown = (event: PointerEvent) => {
-      if (
-        !(event.target instanceof HTMLElement) ||
-        event.target.closest('[data-turns-menu]') === null
-      ) {
-        setOpen(false);
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('pointerdown', onPointerDown, true);
-    return () => {
-      unregister();
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('pointerdown', onPointerDown, true);
-    };
-  }, [open]);
-
-  if (turns.length < 2) return null;
-  return (
-    <div className="relative shrink-0" data-turns-menu>
-      <button
-        type="button"
-        onClick={() => { setOpen((value) => !value); }}
-        title={t('sv.jumpTitle')}
-        className={`rounded-full border px-2 py-0.5 text-[10.5px] font-medium transition-colors ${
-          open
-            ? 'border-accent bg-accent-soft text-accent'
-            : 'border-hairline text-ink-soft hover:border-hairline-strong'
-        }`}
-      >
-        {t('sv.turns', { count: turns.length })}
-      </button>
-      {open ? (
-        <div className="anim-enter absolute right-0 top-7 z-40 max-h-80 w-72 overflow-y-auto rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)]">
-          {turns.map((turn) => (
-            <button
-              key={turn.id}
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                onJump(turn.id);
-              }}
-              className="flex w-full items-baseline gap-2 rounded-md px-2.5 py-1.5 text-left transition-colors hover:bg-paper"
-            >
-              <span className="shrink-0 font-mono text-[10px] text-ink-faint">{turn.index}</span>
-              <span className="min-w-0 truncate text-[12px] text-ink">{turn.label}</span>
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 const noopSubscribe = () => () => {};
 
-/** Header overflow menu: fork / export / compact / undo for the open session. */
-function SessionActionsMenu({
+/**
+ * Header overflow menu. Everything that acts on the open session but is not
+ * a per-message decision lives here: rename, the terminal panel, and the
+ * fork / export / compact / undo quartet.
+ */
+export function SessionActionsMenu({
+  terminalAvailable,
+  terminalOpen,
+  onToggleTerminal,
+  onBeginRename,
   onAction,
 }: {
+  terminalAvailable: boolean;
+  terminalOpen: boolean;
+  onToggleTerminal: () => void;
+  onBeginRename: () => void;
   onAction: (action: 'fork' | 'undo' | 'compact' | 'export') => void;
 }) {
   const { t } = useI18n();
@@ -464,17 +502,45 @@ function SessionActionsMenu({
         onClick={() => { setOpen((value) => !value); }}
         title={t('sv.actionsAria')}
         aria-label={t('sv.actionsAria')}
+        aria-haspopup="menu"
         aria-expanded={open}
-        className={`rounded-full border px-2 py-0.5 text-[10.5px] font-medium transition-colors ${
-          open
-            ? 'border-accent bg-accent-soft text-accent'
-            : 'border-hairline text-ink-soft hover:border-hairline-strong'
+        className={`flex h-7 w-7 items-center justify-center rounded-lg transition-colors ${
+          open ? 'bg-paper text-ink' : 'text-ink-faint hover:bg-paper hover:text-ink'
         }`}
       >
-        {t('sv.actions')}
+        <MoreIcon className="h-[13px] w-[13px]" />
       </button>
       {open ? (
-        <div className="anim-enter absolute right-0 top-7 z-40 w-48 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)]">
+        <div className="anim-enter absolute right-0 top-7 z-40 w-56 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)]">
+          <button
+            type="button"
+            role="menuitem"
+            className={itemClass}
+            data-session-rename
+            onClick={() => {
+              setOpen(false);
+              onBeginRename();
+            }}
+          >
+            {t('menu.rename')}
+          </button>
+          {terminalAvailable ? (
+            <button
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={terminalOpen}
+              data-terminal-toggle
+              className={`${itemClass} flex items-center justify-between gap-3`}
+              onClick={() => {
+                setOpen(false);
+                onToggleTerminal();
+              }}
+            >
+              <span className={terminalOpen ? 'text-accent' : undefined}>{t('term.menuItem')}</span>
+              <span className="font-mono text-[10px] text-ink-faint">{TERMINAL_SHORTCUT_LABEL}</span>
+            </button>
+          ) : null}
+          <div className="my-1 h-px bg-hairline" />
           <button type="button" role="menuitem" className={itemClass} onClick={() => { pick('fork'); }}>
             {t('menu.fork')}
           </button>
@@ -1032,6 +1098,22 @@ export function SessionView({
       return !value;
     });
   }, [sessionId]);
+  // Ctrl+` is the terminal's keyboard path now that its toggle sits in the
+  // header menu. It stays out of an editable target only when that target is
+  // the PTY itself — the composer must not swallow it, or the binding would
+  // be dead exactly where the user is typing.
+  useEffect(() => {
+    if (!terminalAvailable) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!isTerminalShortcut(event)) return;
+      if (isTerminalEscapeTarget(event.target)) return;
+      event.preventDefault();
+      toggleTerminalPanel();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => { window.removeEventListener('keydown', onKeyDown); };
+  }, [terminalAvailable, toggleTerminalPanel]);
+
   const handleTerminalHeightChange = useCallback(
     (height: number, final: boolean) => {
       setTerminalHeight(height);
@@ -1555,6 +1637,23 @@ export function SessionView({
       navigate,
     }),
     [client, queryClient, navigate],
+  );
+
+  // Same bare-title patch the sidebar's rename dialog sends: omitting
+  // `metadata` leaves the stored custom document (pins included) alone.
+  const renameSession = useCallback(
+    async (title: string) => {
+      try {
+        await client.updateSessionProfile(sessionId, { title });
+        actionContext.refreshSessions();
+      } catch (error: unknown) {
+        pushToast({
+          tone: 'error',
+          text: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    [client, sessionId, actionContext],
   );
 
   const runSessionAction = useCallback(
@@ -2134,13 +2233,13 @@ export function SessionView({
                     aria-label={t('sv.togglePanelAria')}
                     aria-expanded={railOpen}
                     data-agent-rail-toggle
-                    className={`shrink-0 rounded-lg border px-2 py-1 text-[11px] transition-colors ${
+                    className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors ${
                       railOpen
-                        ? 'border-accent bg-accent-soft text-accent'
-                        : 'border-hairline text-ink-soft hover:border-hairline-strong'
+                        ? 'bg-accent-soft text-accent'
+                        : 'text-ink-faint hover:bg-paper hover:text-ink'
                     }`}
                   >
-                    {t('sv.panel')}
+                    <PanelIcon className="h-[13px] w-[13px]" />
                   </button>
                 </header>
                 <div className="shrink-0 border-b border-hairline px-4 py-2 text-[11px]">
@@ -2261,16 +2360,10 @@ export function SessionView({
               railOpen={railOpen}
               terminalAvailable={terminalAvailable}
               terminalOpen={terminalOpen}
-              effectiveModel={effectiveModel}
-              modelSource={modelSource}
               onToggleRail={() => { setRailOpen((value) => !value); }}
               onToggleTerminal={toggleTerminalPanel}
               onToggleSidebar={onToggleSidebar}
-              onJumpTurn={(blockId) => {
-                document
-                  .querySelector(`[data-block-id="${blockId}"]`)
-                  ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-              }}
+              onRenameSession={renameSession}
               onSessionAction={runSessionAction}
               onRequestBatchResolve={handleBatchResolve}
             />,

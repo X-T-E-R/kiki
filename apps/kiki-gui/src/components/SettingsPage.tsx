@@ -1,12 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useLocation, useParams } from 'react-router-dom';
 
 import type {
-  McpServer,
   ModelCatalogItem,
   PermissionMode,
-  SkillDescriptor,
 } from '@moonshot-ai/protocol';
 import type {
   ListWorkspacesResponse,
@@ -71,6 +69,8 @@ import {
   requestIdentityLayerDraftFromPolicy,
   requestIdentityPolicyFromDraft,
   searchSettings,
+  SETTINGS_SECTIONS,
+  settingsSectionLabels,
   serverFileSettingsFromConfig,
   serverFileSettingsPatch,
   validateDesktopConfigDraft,
@@ -83,9 +83,14 @@ import {
   type SettingsSearchEntry,
   type CompatibilitySettings,
   type RequestIdentityLayerDraft,
+  type ThemePreference,
 } from '../lib/settings';
 import { formatTokens } from '../lib/time';
-import { filterWorkspaces, sortWorkspacesByRecency } from '../lib/sorting';
+import {
+  filterWorkspaces,
+  sortWorkspacesByPinnedThenRecency,
+  sortWorkspacesByRecency,
+} from '../lib/sorting';
 import { useConnection } from '../state/connection';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Dialog } from './Dialog';
@@ -97,18 +102,9 @@ import { RequestIdentityLayerEditor } from './RequestIdentityLayerEditor';
 import { useRestartRequirement } from './RestartBanner';
 import { RuntimeConfigEditor } from './RuntimeConfigEditor';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
-import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
+import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
 
-const SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
-  { id: 'general', labelKey: 'st.section.general' },
-  { id: 'models', labelKey: 'st.section.models' },
-  { id: 'providers', labelKey: 'st.section.providers' },
-  { id: 'agents', labelKey: 'st.section.agents' },
-  { id: 'capabilities', labelKey: 'st.section.capabilities' },
-  { id: 'workspaces', labelKey: 'st.section.workspaces' },
-  { id: 'connection', labelKey: 'st.section.connection' },
-  { id: 'about', labelKey: 'st.section.about' },
-];
+const SECTIONS = SETTINGS_SECTIONS;
 
 type SectionId = (typeof SECTIONS)[number]['id'];
 
@@ -122,28 +118,37 @@ function SectionCard({
   title,
   children,
   badge,
+  aside,
 }: {
   id?: string;
   title: string;
-  children: React.ReactNode;
+  children?: React.ReactNode;
   badge?: CardBadge;
+  /** Quiet note on the heading row — the browser signpost for desktop-only
+   * groups, so they cost one line instead of a page of disabled controls. */
+  aside?: string;
 }) {
   const { t } = useI18n();
   const flashId = useContext(SettingsFlashContext);
   const badgeClass = badge === 'restart'
     ? 'border-amber-rule/60 bg-amber-card text-amber-ink'
     : 'border-hairline bg-paper text-ink-faint';
+  // Flat grouped rows: a hairline rule and a quiet heading carry the grouping,
+  // so the page scrolls in a fraction of the height bordered cards needed.
   return (
     <section
       id={id}
-      className={`rounded-2xl border border-hairline bg-panel p-5 shadow-[0_2px_4px_rgba(28,25,23,0.03)] ${flashId !== null && flashId === id ? 'settings-card-flash' : ''}`}
+      className={`border-t border-hairline pt-3 first:border-t-0 first:pt-0 ${flashId !== null && flashId === id ? 'settings-card-flash' : ''}`}
     >
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <h2 className="font-display text-[16px] font-semibold text-ink">{title}</h2>
+      <div className={`flex flex-wrap items-baseline gap-x-2 gap-y-0.5 ${children !== undefined && children !== null && children !== false ? 'mb-2' : ''}`}>
+        <h2 className="font-display text-[13px] font-semibold text-ink">{title}</h2>
         {badge !== undefined ? (
           <span className={`rounded-full border px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide ${badgeClass}`}>
             {badge === 'restart' ? t('st.badge.restartRequired') : t('st.badge.desktopOnly')}
           </span>
+        ) : null}
+        {aside !== undefined ? (
+          <span className="text-[11px] text-ink-faint">{aside}</span>
         ) : null}
       </div>
       {children}
@@ -457,7 +462,7 @@ function GeneralSection() {
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-3">
       <SectionCard id="st-card-language" title={t('st.language.title')}>
         <div className="space-y-3">
           <div>
@@ -475,6 +480,35 @@ function GeneralSection() {
             </select>
           </div>
           <Hint>{t('st.language.hint')}</Hint>
+        </div>
+      </SectionCard>
+
+      <SectionCard id="st-card-appearance" title={t('st.appearance.title')}>
+        <div className="space-y-3">
+          <div>
+            <span id="theme-label" className="mb-1.5 block text-[11px] font-medium text-ink-soft">
+              {t('st.appearance.theme')}
+            </span>
+            <div className="flex flex-wrap items-center gap-2" role="group" aria-labelledby="theme-label">
+              {(['light', 'dark', 'system'] as ThemePreference[]).map((choice) => (
+                <button
+                  key={choice}
+                  type="button"
+                  data-theme-choice={choice}
+                  aria-pressed={settings.theme === choice}
+                  onClick={() => { updateLocal({ theme: choice }); }}
+                  className={`rounded-full border px-3 py-1 text-[11px] font-medium transition-colors ${
+                    settings.theme === choice
+                      ? 'border-accent bg-accent-soft text-accent'
+                      : 'border-hairline text-ink-soft hover:border-hairline-strong'
+                  }`}
+                >
+                  {t(`st.appearance.theme.${choice}`)}
+                </button>
+              ))}
+            </div>
+          </div>
+          <Hint>{t('st.appearance.themeHint')}</Hint>
         </div>
       </SectionCard>
 
@@ -536,8 +570,9 @@ function GeneralSection() {
         </div>
       </SectionCard>
 
-      <SectionCard id="st-card-desktop" title={t('st.desktop.title')} badge="desktop">
-        <fieldset disabled={!isDesktop} className="space-y-4">
+      <SectionCard id="st-card-desktop" title={t('st.desktop.title')} badge="desktop" aside={isDesktop ? undefined : t('st.desktop.browserHint')}>
+        {isDesktop ? (
+        <fieldset className="space-y-4">
           <Toggle
             label={t('st.desktop.notifications')}
             checked={desktopPrefs.notifications}
@@ -556,9 +591,9 @@ function GeneralSection() {
             ] as const).map((option) => (
               <label
                 key={option.titleKey}
-                className={`rounded-xl border p-3 ${
+                className={`cursor-pointer rounded-xl border p-3 ${
                   desktopPrefs.closeToTray === option.closeToTray ? 'border-accent bg-accent-soft' : 'border-hairline bg-paper'
-                } ${isDesktop ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
+                }`}
               >
                 <span className="flex items-start gap-2">
                   <input
@@ -582,11 +617,13 @@ function GeneralSection() {
             ))}
           </div>
         </fieldset>
-        {!isDesktop ? <Hint>{t('st.desktop.browserHint')}</Hint> : null}
+        ) : null}
       </SectionCard>
 
-      <SectionCard id="st-card-compatibility-home" title={t('st.compat.title')} badge="desktop">
-        <fieldset disabled={!isDesktop || compatibilityBusy || configImporting || migrating !== null || sessionsBusy !== null} className="space-y-4">
+      <SectionCard id="st-card-compatibility-home" title={t('st.compat.title')} badge="desktop" aside={isDesktop ? undefined : t('st.compat.browserHint')}>
+        {isDesktop ? (
+        <>
+        <fieldset disabled={compatibilityBusy || configImporting || migrating !== null || sessionsBusy !== null} className="space-y-4">
           <div>
             <label htmlFor="compatibility-home-kind" className="mb-1.5 block text-[11px] font-medium text-ink-soft">
               {t('st.compat.home')}
@@ -742,7 +779,8 @@ function GeneralSection() {
           onConfirm={() => void moveSessions()}
           onCancel={() => { setConfirmSessionsMove(false); }}
         />
-        {!isDesktop ? <Hint>{t('st.desktop.browserHint')}</Hint> : null}
+        </>
+        ) : null}
       </SectionCard>
     </div>
   );
@@ -939,7 +977,7 @@ function ModelsSection() {
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <SectionCard id="st-card-models" title={t('st.models.defaultTitle')}>
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-2">
@@ -1082,14 +1120,25 @@ function ModelRow({
 }
 
 function ConnectionSection() {
-  const { config, meta, wsStatus, socket } = useConnection();
+  const { config, meta, wsStatus, socket, disconnect, applyConnection } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const isDesktop = isDesktopRuntime();
   const [restarting, setRestarting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [confirmRestart, setConfirmRestart] = useState(false);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const busySessions = useBusySessionCount();
+  // Inline editing: the page owns the (url, token) pair, so the value is
+  // edited where it is shown instead of behind disconnect → connect screen.
+  const [urlDraft, setUrlDraft] = useState(config.url);
+  const [tokenDraft, setTokenDraft] = useState(config.token);
+  useEffect(() => {
+    setUrlDraft(config.url);
+    setTokenDraft(config.token);
+  }, [config]);
+  const draftsDirty =
+    urlDraft.trim() !== config.url.trim() || tokenDraft.trim() !== config.token.trim();
 
   const restart = async () => {
     setRestarting(true);
@@ -1110,14 +1159,49 @@ function ConnectionSection() {
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <SectionCard id="st-card-conn-server" title={t('st.conn.connectedTitle')}>
-        <div className="space-y-2 text-[12.5px] text-ink-soft">
-          <p>{t('st.conn.urlLabel')}: <span className="font-mono text-ink">{config.url}</span></p>
-          <p>{t('st.conn.version')}: <span className="font-mono text-ink">{meta.server_version}</span></p>
-          <p>{t('st.conn.backend')}: <span className="font-mono text-ink">{meta.backend ?? 'v1'}</span></p>
-          <p>{t('st.conn.wsLabel')}: <span className={wsStatus === 'open' ? 'font-medium text-success' : 'font-medium text-amber-ink'}>{t(`st.conn.ws.${wsStatus}`)}</span></p>
-          <button type="button" onClick={() => { socket?.nudge(); }} className={SECONDARY_BUTTON}>{t('st.conn.reconnect')}</button>
+        <div className="space-y-3">
+          <form
+            className="space-y-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!draftsDirty) return;
+              applyConnection({ url: urlDraft.trim(), token: tokenDraft.trim() });
+            }}
+          >
+            <div>
+              <label htmlFor="st-conn-url" className="mb-1 block text-[11px] font-medium text-ink-soft">{t('connect.serverUrl')}</label>
+              <input
+                id="st-conn-url"
+                className={`${INPUT} font-mono`}
+                value={urlDraft}
+                onChange={(event) => { setUrlDraft(event.target.value); }}
+                spellCheck={false}
+              />
+            </div>
+            <div>
+              <label htmlFor="st-conn-token" className="mb-1 block text-[11px] font-medium text-ink-soft">{t('connect.token')}</label>
+              <input
+                id="st-conn-token"
+                type="password"
+                className={`${INPUT} font-mono`}
+                value={tokenDraft}
+                onChange={(event) => { setTokenDraft(event.target.value); }}
+                spellCheck={false}
+              />
+            </div>
+            <div className="flex items-center gap-3">
+              <button type="submit" className={PRIMARY_BUTTON} disabled={!draftsDirty}>{t('st.conn.apply')}</button>
+              <span className="text-[11px] leading-snug text-ink-faint">{t('st.conn.applyHint')}</span>
+            </div>
+          </form>
+          <div className="space-y-1 border-t border-hairline pt-3 text-[12.5px] text-ink-soft">
+            <p>{t('st.conn.version')}: <span className="font-mono text-ink">{meta.server_version}</span></p>
+            <p>{t('st.conn.backend')}: <span className="font-mono text-ink">{meta.backend ?? 'v1'}</span></p>
+            <p>{t('st.conn.wsLabel')}: <span className={wsStatus === 'open' ? 'font-medium text-success' : 'font-medium text-amber-ink'}>{t(`st.conn.ws.${wsStatus}`)}</span></p>
+            <button type="button" onClick={() => { socket?.nudge(); }} className={SECONDARY_BUTTON}>{t('st.conn.reconnect')}</button>
+          </div>
         </div>
       </SectionCard>
 
@@ -1133,6 +1217,31 @@ function ConnectionSection() {
           <FeedbackLine feedback={feedback} />
         </div>
       </SectionCard>
+
+      <SectionCard id="st-card-conn-disconnect" title={t('st.conn.disconnectTitle')}>
+        <div className="space-y-3">
+          <p className="text-[12.5px] text-ink-soft">{t('st.conn.disconnectBody')}</p>
+          <button
+            type="button"
+            data-conn-disconnect
+            className={DANGER_GHOST_BUTTON}
+            onClick={() => { setConfirmDisconnect(true); }}
+          >
+            {t('sidebar.disconnect')}
+          </button>
+        </div>
+      </SectionCard>
+
+      <ConfirmDialog
+        open={confirmDisconnect}
+        overlayId="confirm-conn-disconnect"
+        title={t('st.conn.disconnectConfirmTitle')}
+        body={t('st.conn.disconnectConfirmBody')}
+        confirmLabel={t('sidebar.disconnect')}
+        tone="danger"
+        onConfirm={() => { setConfirmDisconnect(false); disconnect(); }}
+        onCancel={() => { setConfirmDisconnect(false); }}
+      />
 
       <ConfirmDialog
         open={confirmRestart}
@@ -1261,7 +1370,7 @@ function ProvidersSection() {
     : null;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <SectionCard id="st-card-auth" title={t('st.auth.title')}>
         <div className="space-y-3">
           {authQuery.data !== undefined ? (
@@ -1431,7 +1540,6 @@ function CapabilitiesSection() {
 
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
-  const mcpQuery = useQuery({ queryKey: ['mcp-servers'], queryFn: () => client.listMcpServers(), staleTime: 60_000 });
   // The v2 management plane addresses project layers by working directory;
   // the user-level entries resolve with or without one.
   const mcpCwd =
@@ -1439,12 +1547,6 @@ function CapabilitiesSection() {
   const mcpConfigQuery = useQuery({
     queryKey: ['mcp-managed-servers', mcpCwd],
     queryFn: () => client.listManagedMcpServers(mcpCwd === '' ? undefined : mcpCwd),
-    staleTime: 60_000,
-  });
-  const skillsQuery = useQuery({
-    queryKey: ['workspace-skills', workspaceId],
-    queryFn: () => client.listWorkspaceSkills(workspaceId),
-    enabled: workspaceId !== '',
     staleTime: 60_000,
   });
 
@@ -1552,58 +1654,40 @@ function CapabilitiesSection() {
   };
 
   const groupContent: Record<string, React.ReactNode> = {
+    // Browsing surfaces (the skill catalog, MCP runtime status + restart) live
+    // on /capabilities — settings keeps only the values it owns.
     skills: (
-      <>
-        <SectionCard
-          id="st-card-caps"
-          title={t('st.caps.title')}
-          badge={restart.fields.includes('telemetry') ? 'restart' : undefined}
-        >
-          <div className="space-y-4">
-            <Toggle label={t('st.caps.mergeSkills')} checked={mergeSkills} onChange={setMergeSkills} />
-            <div className="space-y-1.5">
-              <Toggle label={t('st.caps.telemetry')} checked={telemetry} onChange={setTelemetry} />
-              <Hint>{t('st.caps.telemetryHint')}</Hint>
+      <SectionCard
+        id="st-card-caps"
+        title={t('st.caps.title')}
+        badge={restart.fields.includes('telemetry') ? 'restart' : undefined}
+      >
+        <div className="space-y-4">
+          <Toggle label={t('st.caps.mergeSkills')} checked={mergeSkills} onChange={setMergeSkills} />
+          <div className="space-y-1.5">
+            <Toggle label={t('st.caps.telemetry')} checked={telemetry} onChange={setTelemetry} />
+            <Hint>{t('st.caps.telemetryHint')}</Hint>
+          </div>
+          <div>
+            <div className="flex items-center justify-between gap-3">
+              <label htmlFor="settings-extra-skill-dirs" className="text-[11px] font-medium text-ink-soft">{t('st.caps.extraDirs')}</label>
+              {isDesktop ? (
+                <button
+                  type="button"
+                  className={SECONDARY_BUTTON}
+                  disabled={selectingDirs}
+                  onClick={() => void selectExtraDirs()}
+                >
+                  {t('st.caps.selectDirs')}
+                </button>
+              ) : null}
             </div>
-            <div>
-              <div className="flex items-center justify-between gap-3">
-                <label htmlFor="settings-extra-skill-dirs" className="text-[11px] font-medium text-ink-soft">{t('st.caps.extraDirs')}</label>
-                {isDesktop ? (
-                  <button
-                    type="button"
-                    className={SECONDARY_BUTTON}
-                    disabled={selectingDirs}
-                    onClick={() => void selectExtraDirs()}
-                  >
-                    {t('st.caps.selectDirs')}
-                  </button>
-                ) : null}
-              </div>
-              <textarea id="settings-extra-skill-dirs" className={`${INPUT} mt-1 min-h-24 font-mono`} value={extraDirs} onChange={(event) => { setExtraDirs(event.target.value); }} placeholder={t('st.caps.extraDirsPlaceholder')} />
-            </div>
-            <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? t('common.saving') : t('st.caps.save')}</button>
-            <FeedbackLine feedback={feedback} />
+            <textarea id="settings-extra-skill-dirs" className={`${INPUT} mt-1 min-h-24 font-mono`} value={extraDirs} onChange={(event) => { setExtraDirs(event.target.value); }} placeholder={t('st.caps.extraDirsPlaceholder')} />
           </div>
-        </SectionCard>
-
-        <SectionCard id="st-card-skills" title={t('st.skills.title')}>
-          <div className="mb-3 flex items-center gap-2">
-            <span className="text-[11px] font-medium text-ink-soft">{t('st.skills.workspace')}</span>
-            <SearchableSelect
-              id="workspace-skills-select"
-              options={workspaceOptions}
-              value={workspaceId}
-              onChange={setWorkspaceId}
-              ariaLabel={t('st.skills.workspace')}
-            />
-          </div>
-          <div className="space-y-2">
-            {skillsQuery.data?.skills.map((skill) => <SkillRow key={skill.name} skill={skill} />)}
-            {skillsQuery.isLoading ? <Hint>{t('st.skills.loading')}</Hint> : null}
-            {skillsQuery.isError ? <InlineError error={skillsQuery.error} /> : null}
-          </div>
-        </SectionCard>
-      </>
+          <button type="button" className={PRIMARY_BUTTON} disabled={saving} onClick={() => void save()}>{saving ? t('common.saving') : t('st.caps.save')}</button>
+          <FeedbackLine feedback={feedback} />
+        </div>
+      </SectionCard>
     ),
     mcp: (
       <SectionCard id="st-card-mcp" title={t('st.mcp.title')}>
@@ -1617,12 +1701,6 @@ function CapabilitiesSection() {
               onChange={setWorkspaceId}
               ariaLabel={t('st.mcp.workspace')}
             />
-          </div>
-          <div className="space-y-2">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-faint">{t('st.mcp.statusTitle')}</p>
-            {mcpQuery.data?.servers.map((server) => <McpRow key={server.id} server={server} />)}
-            {mcpQuery.isLoading ? <Hint>{t('st.mcp.loading')}</Hint> : null}
-            {mcpQuery.isError ? <InlineError error={mcpQuery.error} /> : null}
           </div>
           <McpConfigManager
             cwd={mcpCwd}
@@ -1651,7 +1729,7 @@ function CapabilitiesSection() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <p className="px-1 text-[11.5px] text-ink-faint">
         {t('st.caps.browseHint')}{' '}
         <Link to="/capabilities" className="font-medium text-accent hover:underline">{t('st.caps.browseLink')}</Link>
@@ -2296,7 +2374,7 @@ function NamedAgentProfilesCard() {
 function AgentsSection() {
   const { t } = useI18n();
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <Hint>{t('st.agents.webHint')}</Hint>
       <NamedAgentProfilesCard />
       <SubagentGovernanceCard />
@@ -2423,34 +2501,6 @@ function DesktopServerFileCard() {
         onCancel={() => { setConfirmRestart(false); }}
       />
     </SectionCard>
-  );
-}
-
-function McpRow({ server }: { server: McpServer }) {
-  const { client } = useConnection();
-  const { t, locale } = useI18n();
-  const [restarting, setRestarting] = useState(false);
-  const [feedback, setFeedback] = useState<Feedback>(null);
-  const restart = async () => {
-    setRestarting(true);
-    setFeedback(null);
-    try {
-      await client.restartMcpServer(server.id);
-      setFeedback({ tone: 'success', text: t('st.mcp.restartRequested') });
-    } catch (error) {
-      setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setRestarting(false);
-    }
-  };
-  return (
-    <div className="rounded-lg border border-hairline bg-paper px-3 py-2">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0"><p className="truncate text-[13px] font-medium text-ink">{server.name}</p><p className="truncate font-mono text-[10.5px] text-ink-faint">{server.transport} · {server.status} · {t('st.mcp.toolsCount', { count: server.tool_count })}</p></div>
-        <button type="button" disabled={restarting} onClick={() => void restart()} className={SECONDARY_BUTTON}>{restarting ? t('st.mcp.restarting') : t('st.mcp.restart')}</button>
-      </div>
-      <FeedbackLine feedback={feedback} />
-    </div>
   );
 }
 
@@ -2781,10 +2831,6 @@ function McpConfigManager({
   );
 }
 
-function SkillRow({ skill }: { skill: SkillDescriptor }) {
-  return <div className="rounded-lg border border-hairline bg-paper px-3 py-2"><p className="text-[13px] font-medium text-ink">{skill.name}</p><p className="text-[11px] text-ink-soft">{skill.description}</p><p className="mt-0.5 font-mono text-[10px] text-ink-faint">{skill.path}</p></div>;
-}
-
 function WorkspacesSection() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
@@ -2795,14 +2841,34 @@ function WorkspacesSection() {
   const [renaming, setRenaming] = useState<Workspace | null>(null);
   const [removing, setRemoving] = useState<Workspace | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [pinBusy, setPinBusy] = useState<string | null>(null);
   const items = useMemo(() => query.data?.items ?? [], [query.data]);
   const visible = useMemo(
-    () => filterWorkspaces(sortWorkspacesByRecency(items), filter),
+    () => filterWorkspaces(sortWorkspacesByPinnedThenRecency(items), filter),
     [items, filter],
   );
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+  };
+
+  const togglePinned = (workspace: Workspace) => {
+    setPinBusy(workspace.id);
+    setFeedback(null);
+    void client
+      .setWorkspacePinned(workspace.id, !workspace.pinned)
+      .then((echoed) => {
+        queryClient.setQueryData(['workspaces'], (current: ListWorkspacesResponse | undefined) =>
+          current === undefined
+            ? current
+            : { items: current.items.map((ws) => (ws.id === echoed.id ? echoed : ws)) },
+        );
+        invalidate();
+      })
+      .catch((error: unknown) => {
+        setFeedback({ tone: 'error', text: errorText(locale, error) });
+      })
+      .finally(() => { setPinBusy(null); });
   };
 
   return (
@@ -2823,6 +2889,26 @@ function WorkspacesSection() {
             <div className="min-w-0"><p className="truncate text-[13px] font-medium text-ink" title={workspace.name}>{workspace.name}</p><p className="truncate font-mono text-[10.5px] text-ink-faint" title={workspace.root}>{workspace.root}</p></div>
             <div className="flex shrink-0 items-center gap-1.5">
               <button type="button" onClick={() => void navigate(`/new?workspace=${encodeURIComponent(workspace.id)}`)} className={SECONDARY_BUTTON}>{t('st.workspaces.newSession')}</button>
+              <button
+                type="button"
+                data-workspace-pin={workspace.id}
+                disabled={pinBusy === workspace.id}
+                aria-pressed={workspace.pinned}
+                onClick={() => { togglePinned(workspace); }}
+                aria-label={
+                  workspace.pinned
+                    ? t('st.workspaces.unpinAria', { name: workspace.name })
+                    : t('st.workspaces.pinAria', { name: workspace.name })
+                }
+                title={workspace.pinned ? t('st.workspaces.unpin') : t('st.workspaces.pin')}
+                className={`rounded-md border px-2 py-1.5 text-[12px] transition-colors disabled:opacity-50 ${
+                  workspace.pinned
+                    ? 'border-accent/40 bg-accent-soft text-accent'
+                    : 'border-hairline bg-paper text-ink-soft hover:border-hairline-strong hover:text-ink'
+                }`}
+              >
+                ⍟
+              </button>
               <button
                 type="button"
                 onClick={() => setRenaming(workspace)}
@@ -3031,46 +3117,65 @@ function AboutSection() {
   );
 }
 
-function SettingsNav({
-  active,
-  onNavigate,
+/**
+ * Settings search field plus its hit list. Both the wide nav column and the
+ * narrow-viewport header mount one, so search is never a desktop-only path.
+ */
+function SettingsSearch({
+  focusToken,
   onSearchHit,
+  className = '',
+  idle,
 }: {
-  active: SectionId;
-  onNavigate: (section: SectionId) => void;
+  /** Changes on every Ctrl+, so a repeat press refocuses; null means no focus. */
+  focusToken: string | null;
   onSearchHit: (entry: SettingsSearchEntry) => void;
+  className?: string;
+  /** Navigation shown while the field is empty; hits replace it while typing. */
+  idle?: React.ReactNode;
 }) {
   const { t } = useI18n();
   const [query, setQuery] = useState('');
-  const sectionLabels = useMemo(
-    () => Object.fromEntries(SECTIONS.map((section) => [section.id, t(section.labelKey)])),
-    [t],
-  );
-  const index = useMemo(() => buildSettingsSearchIndex(sectionLabels, t), [sectionLabels, t]);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const index = useMemo(() => buildSettingsSearchIndex(settingsSectionLabels(t), t), [t]);
   const results = useMemo(() => searchSettings(index, query), [index, query]);
   const searching = query.trim() !== '';
 
+  // Ctrl+, lands here: type, Enter to jump, Esc to leave. Only the visible
+  // instance takes focus — the other one is display:none at this breakpoint.
+  useEffect(() => {
+    if (focusToken === null) return;
+    const input = inputRef.current;
+    if (input === null || input.offsetParent === null) return;
+    input.focus();
+    input.select();
+  }, [focusToken]);
+
   return (
-    <nav className="flex h-full w-full flex-col border-r border-hairline bg-panel p-2 lg:w-[200px]">
-      <div className="mb-2 px-1">
-        <input
-          type="search"
-          aria-label={t('st.search.aria')}
-          placeholder={t('st.search.placeholder')}
-          value={query}
-          onChange={(event) => { setQuery(event.target.value); }}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') {
-              event.stopPropagation();
-              setQuery('');
-              event.currentTarget.blur();
-            }
-          }}
-          className="w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
-        />
-      </div>
+    <div className={className}>
+      <input
+        ref={inputRef}
+        type="search"
+        data-settings-search
+        aria-label={t('st.search.aria')}
+        placeholder={t('st.search.placeholder')}
+        value={query}
+        onChange={(event) => { setQuery(event.target.value); }}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.stopPropagation();
+            setQuery('');
+            event.currentTarget.blur();
+          } else if (event.key === 'Enter' && results.length > 0) {
+            event.preventDefault();
+            onSearchHit(results[0]!);
+            setQuery('');
+          }
+        }}
+        className="w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
+      />
       {searching ? (
-        <div className="space-y-0.5" role="listbox" aria-label={t('st.search.aria')}>
+        <div className="mt-1 space-y-0.5" role="listbox" aria-label={t('st.search.aria')}>
           {results.map((entry) => (
             <button
               key={entry.cardId}
@@ -3078,7 +3183,7 @@ function SettingsNav({
               role="option"
               aria-selected="false"
               onClick={() => { onSearchHit(entry); setQuery(''); }}
-              className="w-full truncate rounded-lg px-3 py-2 text-left text-[12px] text-ink-soft transition-colors hover:bg-paper hover:text-ink"
+              className="w-full truncate rounded-lg px-2 py-1.5 text-left text-[12px] text-ink-soft transition-colors hover:bg-paper hover:text-ink"
             >
               <span className="text-ink-faint">{entry.sectionLabel}</span>
               <span className="mx-1 text-ink-faint">›</span>
@@ -3086,14 +3191,40 @@ function SettingsNav({
             </button>
           ))}
           {results.length === 0 ? (
-            <p className="px-3 py-2 text-[11.5px] text-ink-faint">{t('st.search.empty', { query: query.trim() })}</p>
+            <p className="px-2 py-1.5 text-[11.5px] text-ink-faint">{t('st.search.empty', { query: query.trim() })}</p>
           ) : null}
         </div>
-      ) : (
-        SECTIONS.map((section) => (
-          <button key={section.id} type="button" onClick={() => { onNavigate(section.id); }} className={`rounded-lg px-3 py-2 text-left text-[13px] transition-colors ${active === section.id ? 'bg-accent-soft font-medium text-accent' : 'text-ink-soft hover:bg-paper hover:text-ink'}`}>{t(section.labelKey)}</button>
-        ))
-      )}
+      ) : (idle ?? null)}
+    </div>
+  );
+}
+
+function SettingsNav({
+  active,
+  searchFocusToken,
+  onNavigate,
+  onSearchHit,
+}: {
+  active: SectionId;
+  searchFocusToken: string | null;
+  onNavigate: (section: SectionId) => void;
+  onSearchHit: (entry: SettingsSearchEntry) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <nav className="flex h-full w-full flex-col overflow-y-auto border-r border-hairline bg-panel p-2 lg:w-[200px]">
+      <SettingsSearch
+        focusToken={searchFocusToken}
+        onSearchHit={onSearchHit}
+        className="px-1"
+        idle={
+          <div className="mt-2 flex flex-col">
+            {SECTIONS.map((section) => (
+              <button key={section.id} type="button" onClick={() => { onNavigate(section.id); }} className={`rounded-lg px-2 py-2 text-left text-[13px] transition-colors ${active === section.id ? 'bg-accent-soft font-medium text-accent' : 'text-ink-soft hover:bg-paper hover:text-ink'}`}>{t(section.labelKey)}</button>
+            ))}
+          </div>
+        }
+      />
     </nav>
   );
 }
@@ -3109,6 +3240,21 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const guardedNavigate = useCallback((target: string) => {
     navigate(`/settings/${target}`);
   }, [navigate]);
+
+  // `/settings/<section>#st-card-…` focuses one card, so callers elsewhere in
+  // the app (the /new readiness card) can point at the exact control instead
+  // of dropping the user at the top of a long section.
+  const { hash, state, key } = useLocation();
+  // Ctrl+, arrives with this flag; clicking Settings in the sidebar does not,
+  // so an ordinary visit still leaves focus where the user put it. The location
+  // key changes on every press, so Ctrl+, from inside settings refocuses too.
+  const searchFocusToken =
+    (state as { focusSearch?: boolean } | null)?.focusSearch === true ? key : null;
+  useEffect(() => {
+    const cardId = hash.replace(/^#/, '');
+    if (!cardId.startsWith('st-card-')) return;
+    setFocusCard({ cardId, nonce: Date.now() });
+  }, [hash]);
 
   // Scroll + flash the card a search hit pointed at, then disarm.
   useEffect(() => {
@@ -3142,14 +3288,20 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
         <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">{t('st.title')}</h1>
       </header>
       <main className="flex min-h-0 flex-1">
-        <div className="hidden lg:block"><SettingsNav active={active} onNavigate={guardedNavigate} onSearchHit={onSearchHit} /></div>
+        <div className="hidden lg:block"><SettingsNav active={active} searchFocusToken={searchFocusToken} onNavigate={guardedNavigate} onSearchHit={onSearchHit} /></div>
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="border-b border-hairline bg-panel px-4 py-2 lg:hidden">
-            <select className="w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-[13px] text-ink outline-none focus:border-accent" value={active} onChange={(event) => { guardedNavigate(event.target.value); }}>
-              {SECTIONS.map((candidate) => <option key={candidate.id} value={candidate.id}>{t(candidate.labelKey)}</option>)}
-            </select>
+            <SettingsSearch
+              focusToken={searchFocusToken}
+              onSearchHit={onSearchHit}
+              idle={
+                <select className="mt-2 w-full rounded-md border border-hairline bg-paper px-2 py-1.5 text-[13px] text-ink outline-none focus:border-accent" value={active} onChange={(event) => { guardedNavigate(event.target.value); }}>
+                  {SECTIONS.map((candidate) => <option key={candidate.id} value={candidate.id}>{t(candidate.labelKey)}</option>)}
+                </select>
+              }
+            />
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 lg:px-8"><div className="mx-auto max-w-[760px] space-y-5">{pane}</div></div>
+          <div data-settings-scroll className="min-h-0 flex-1 overflow-y-auto px-4 py-4 lg:px-8"><div className="mx-auto max-w-[760px] space-y-4">{pane}</div></div>
         </div>
       </main>
     </SettingsFlashContext.Provider>

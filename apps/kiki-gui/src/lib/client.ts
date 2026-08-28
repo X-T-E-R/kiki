@@ -1233,6 +1233,15 @@ export class KikiClient {
     );
   }
 
+  /** `PATCH /workspaces/{id}` — pin / unpin (server echos the workspace). */
+  setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<Workspace> {
+    return this.request<Workspace>(
+      'PATCH',
+      `/workspaces/${encodeURIComponent(workspaceId)}`,
+      { body: { pinned } },
+    );
+  }
+
   /** `DELETE /workspaces/{id}` — unregister (does not remove on-disk content). */
   removeWorkspace(workspaceId: string): Promise<{ deleted: true }> {
     return this.request<{ deleted: true }>(

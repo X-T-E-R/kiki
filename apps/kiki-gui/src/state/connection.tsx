@@ -97,6 +97,12 @@ interface ConnectionValue {
   readonly meta: MetaResponse;
   readonly wsStatus: WsStatus;
   readonly disconnect: () => void;
+  /**
+   * Point the app at another (server, token) pair from inside a connected
+   * session — the settings connection editor's path. Persists like a manual
+   * connect; a failed /meta lands on the connect screen with the error.
+   */
+  readonly applyConnection: (next: ConnectionConfig) => void;
 }
 
 export interface ControllerRegistry {
@@ -388,10 +394,19 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  // Settings edits always persist: a connection typed into the settings page
+  // is an explicit choice, the same as one typed into the connect screen.
+  const applyConnection = useCallback(
+    (next: ConnectionConfig) => {
+      connect(next, true);
+    },
+    [connect],
+  );
+
   const value = useMemo<ConnectionValue | null>(() => {
     if (config === null || client === null || socket === null || meta === null) return null;
-    return { config, client, socket, meta, wsStatus, disconnect };
-  }, [config, client, socket, meta, wsStatus, disconnect]);
+    return { config, client, socket, meta, wsStatus, disconnect, applyConnection };
+  }, [config, client, socket, meta, wsStatus, disconnect, applyConnection]);
 
   const connectErrorText =
     connectError === null

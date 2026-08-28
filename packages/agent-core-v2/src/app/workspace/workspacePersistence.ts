@@ -7,6 +7,9 @@ export interface PersistedWorkspaceEntry {
   readonly name: string;
   readonly created_at: string;
   readonly last_opened_at: string;
+  /** Omitted for unpinned entries, so catalogs written by older builds load
+   * unchanged and the file stays free of `false` noise. */
+  readonly pinned?: boolean;
 }
 
 export interface PersistedWorkspaceFile {

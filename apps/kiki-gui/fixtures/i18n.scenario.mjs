@@ -80,6 +80,7 @@ export default {
       created_at: ts(120),
       last_opened_at: ts(2),
       session_count: 1,
+      pinned: false,
     },
   ],
 };

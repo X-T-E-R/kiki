@@ -9,7 +9,7 @@
  * active option, which is also scrolled into view while arrowing.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 
 import { useI18n } from '../i18n';
 import { filterSelectOptions } from '../lib/sorting';
@@ -39,6 +39,10 @@ export function SearchableSelect({
   buttonClassName,
   panelClassName,
   placement = 'below',
+  triggerSuffix,
+  panelHeader,
+  panelFooter,
+  hideFilter = false,
 }: {
   id?: string;
   readonly options: readonly SearchableSelectOption[];
@@ -56,12 +60,24 @@ export function SearchableSelect({
   readonly panelClassName?: string;
   /** 'above' for triggers docked near the viewport bottom (the composer). */
   readonly placement?: 'below' | 'above';
+  /** Rendered after the (truncating) trigger label without truncating itself. */
+  readonly triggerSuffix?: ReactNode;
+  /** Rows above the filter input — related settings that share this trigger. */
+  readonly panelHeader?: ReactNode;
+  /** Rows below the option list — related settings that share this trigger. */
+  readonly panelFooter?: ReactNode;
+  /**
+   * Drops the filter input for option sets short enough to read at a glance;
+   * with no options at all the list goes too, leaving a slot-only panel.
+   */
+  readonly hideFilter?: boolean;
 }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   const selected = options.find((option) => option.value === value);
@@ -119,8 +135,22 @@ export function SearchableSelect({
   const listId = `${id ?? 'searchable-select'}-list`;
 
   return (
-    <div ref={rootRef} className="relative" data-searchable-select>
+    <div
+      ref={rootRef}
+      className="relative"
+      data-searchable-select
+      // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Escape for the open panel, which can hold slot rows outside the filter input
+      onKeyDown={(event) => {
+        if (!open || event.key !== 'Escape') return;
+        event.preventDefault();
+        // Keep the global Escape handler (turn abort) out of a panel dismissal.
+        event.stopPropagation();
+        close();
+        triggerRef.current?.focus();
+      }}
+    >
       <button
+        ref={triggerRef}
         type="button"
         id={id}
         disabled={disabled}
@@ -146,6 +176,7 @@ export function SearchableSelect({
               from the catalog) still displays verbatim instead of the empty text. */}
           {selected?.label ?? (value !== '' ? value : (emptyText ?? t('select.empty')))}
         </span>
+        {triggerSuffix}
         <svg
           width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden
           className={`shrink-0 text-ink-faint transition-transform ${open ? 'rotate-180' : ''}`}
@@ -162,6 +193,8 @@ export function SearchableSelect({
             }`
           }
         >
+          {panelHeader}
+          {hideFilter ? null : (
           <div className="border-b border-hairline px-2.5 py-2">
             <input
               type="text"
@@ -184,6 +217,8 @@ export function SearchableSelect({
               className="w-full bg-transparent text-[12px] text-ink outline-none placeholder:text-ink-faint"
             />
           </div>
+          )}
+          {hideFilter && options.length === 0 ? null : (
           <div
             ref={listRef}
             id={listId}
@@ -238,6 +273,8 @@ export function SearchableSelect({
               })
             )}
           </div>
+          )}
+          {panelFooter}
         </div>
       ) : null}
     </div>

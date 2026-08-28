@@ -40,6 +40,18 @@ export function togglePinned(current: boolean): boolean {
 }
 
 /**
+ * A session's cwd trimmed to its last two segments — enough to tell two
+ * workspaces apart in a narrow row without wrapping. Shared by the sidebar
+ * rows and the session header's quiet cwd line so they never drift.
+ */
+export function shortCwd(cwd: string): string {
+  const normalized = cwd.replaceAll('\\', '/').replace(/\/+$/, '');
+  const parts = normalized.split('/').filter((part) => part !== '');
+  if (parts.length <= 2) return normalized;
+  return `…/${parts.slice(-2).join('/')}`;
+}
+
+/**
  * Poll merge for the 5s cadence: only page 1 is refetched (every sidebar
  * change lands there); older loaded pages are kept as-is and refresh on
  * demand (load-more) or invalidation. Interval-refetching an infinite query
@@ -123,9 +135,10 @@ export function sortSessionItems(
 
 export interface SessionGroup {
   /**
-   * Stable bucket key. Time grouping: `pinned` / `week` / `month` / `older`
-   * (pinned rows all report `pinned`). Workspace grouping: the workspace id,
-   * with `__none` for sessions lacking a resolvable workspace.
+   * Stable bucket key. Time grouping: `pinned` / `today` / `yesterday` /
+   * `week` / `month` / `older` (pinned rows all report `pinned`). Workspace
+   * grouping: the workspace id, with `__none` for sessions lacking a
+   * resolvable workspace.
    */
   readonly key: string;
   /** Human label for the group header (baked in so the renderer stays dumb). */
@@ -133,46 +146,60 @@ export interface SessionGroup {
   readonly items: Session[];
 }
 
-/** `pinned` / `week` / `month` / `older` (pinned rows all report `pinned`). */
-export type TimeGroupKey = 'pinned' | 'week' | 'month' | 'older';
+/**
+ * `pinned` / `today` / `yesterday` / `week` / `month` / `older` (pinned rows
+ * all report `pinned`).
+ */
+export type TimeGroupKey = 'pinned' | 'today' | 'yesterday' | 'week' | 'month' | 'older';
 export type TimeGroup = SessionGroup & { readonly key: TimeGroupKey };
 
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-// 4 weeks (28 days) is the "month" bucket cut-off; earlier than that is
-// "older". The week bucket is [now-6d, now], matching common sidebar idioms.
-const MONTH_WINDOW_MS = 4 * WEEK_MS;
+export type TimeGroupLabels = Partial<Record<TimeGroupKey, string>>;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Local midnight for the given instant — the buckets are calendar days, so
+ * "yesterday" means the previous date rather than "24 to 48 hours ago". */
+function startOfLocalDay(ms: number): number {
+  const date = new Date(ms);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
 
 /**
  * Split a freshly-ordered list into bucketed groups: pinned sessions first,
- * then "past 7 days" + "past 4 weeks" + "older". Invalid timestamps land in
- * `older` rather than crashing the list. `labels` overrides the four group
- * header labels for localization; when omitted, bare keys are used (tests).
+ * then today / yesterday / the past 7 days / the past 30 days / older.
+ * Invalid timestamps land in `older` rather than crashing the list. `labels`
+ * overrides the group header labels for localization; when omitted, bare keys
+ * are used (tests).
  */
 export function groupSessionsByTime(
   sessions: readonly Session[],
   nowMs: number,
-  labels: { pinned?: string; week?: string; month?: string; older?: string } = {},
+  labels: TimeGroupLabels = {},
 ): TimeGroup[] {
-  const buckets: TimeGroup[] = [
-    { key: 'pinned', label: labels.pinned ?? 'pinned', items: [] },
-    { key: 'week', label: labels.week ?? 'week', items: [] },
-    { key: 'month', label: labels.month ?? 'month', items: [] },
-    { key: 'older', label: labels.older ?? 'older', items: [] },
+  const keys: readonly TimeGroupKey[] = ['pinned', 'today', 'yesterday', 'week', 'month', 'older'];
+  const buckets = keys.map<TimeGroup>((key) => ({ key, label: labels[key] ?? key, items: [] }));
+  const [pinnedBucket, today, yesterday, week, month, older] = buckets as [
+    TimeGroup, TimeGroup, TimeGroup, TimeGroup, TimeGroup, TimeGroup,
   ];
+  const todayStart = startOfLocalDay(nowMs);
+  const yesterdayStart = todayStart - DAY_MS;
+  // The week bucket covers the 7 calendar days ending today, so it starts six
+  // days before today and picks up whatever "yesterday" did not claim.
+  const weekStart = todayStart - 6 * DAY_MS;
+  const monthStart = todayStart - 29 * DAY_MS;
   for (const session of sessions) {
     let group: TimeGroup;
     if (isPinnedSession(session)) {
-      group = buckets[0]!;
+      group = pinnedBucket;
     } else {
       const ts = Date.parse(session.updated_at);
-      if (!Number.isFinite(ts)) {
-        group = buckets[3]!;
-      } else {
-        const age = nowMs - ts;
-        if (age < WEEK_MS) group = buckets[1]!;
-        else if (age < MONTH_WINDOW_MS) group = buckets[2]!;
-        else group = buckets[3]!;
-      }
+      if (!Number.isFinite(ts)) group = older;
+      else if (ts >= todayStart) group = today;
+      else if (ts >= yesterdayStart) group = yesterday;
+      else if (ts >= weekStart) group = week;
+      else if (ts >= monthStart) group = month;
+      else group = older;
     }
     group.items.push(session);
   }
@@ -189,14 +216,19 @@ export const WORKSPACE_UNGROUPED_KEY = '__none';
  * group alongside all other orphans. Item order within each bucket is
  * preserved as given (the caller applies `sortSessionItems` first). `label`
  * resolves via `resolveName(workspace)`; `ungroupedLabel` names the orphan
- * bucket.
+ * bucket. `pinnedLabel`, when given, pulls pinned sessions out of their
+ * workspace bucket into one leading global `pinned` group — pinning means
+ * "keep this at the top of my list", which a per-workspace bucket would bury.
  */
 export function groupSessionsByWorkspace(
   sessions: readonly Session[],
   workspaces: readonly Workspace[],
   resolveName: (workspace: Workspace) => string = (workspace) => workspace.name,
   ungroupedLabel = 'ungrouped',
+  pinnedLabel?: string,
 ): SessionGroup[] {
+  const pinned: SessionGroup | undefined =
+    pinnedLabel === undefined ? undefined : { key: 'pinned', label: pinnedLabel, items: [] };
   const order = new Map<string, number>(workspaces.map((workspace, index) => [workspace.id, index]));
   const named = new Map<string, string>();
   for (const workspace of workspaces) named.set(workspace.id, resolveName(workspace));
@@ -213,6 +245,10 @@ export function groupSessionsByWorkspace(
   };
 
   for (const session of sessions) {
+    if (pinned !== undefined && isPinnedSession(session)) {
+      pinned.items.push(session);
+      continue;
+    }
     const workspaceKey = session.workspace_id;
     const index = order.get(workspaceKey);
     if (index !== undefined) ensure(workspaceKey, named.get(workspaceKey) ?? workspaceKey).items.push(session);
@@ -227,5 +263,6 @@ export function groupSessionsByWorkspace(
   const orphan = buckets.get(WORKSPACE_UNGROUPED_KEY);
   if (orphan !== undefined) result.push(orphan);
 
-  return result.filter((group): group is SessionGroup => group !== undefined);
+  const ordered = result.filter((group): group is SessionGroup => group !== undefined);
+  return pinned !== undefined && pinned.items.length > 0 ? [pinned, ...ordered] : ordered;
 }

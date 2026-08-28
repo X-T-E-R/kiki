@@ -375,6 +375,7 @@ class FixtureServer {
     this.config = {};
     this.providers = [];
     this.models = [];
+    this.modelsDeclared = false;
     this.auth = null;
     this.sessions = new Map();
     this.sockets = new Set();
@@ -404,6 +405,10 @@ class FixtureServer {
     });
     this.providers = structuredClone(data.providers ?? []);
     this.models = structuredClone(data.models ?? []);
+    // A scenario that declares `models: []` means an unconfigured server, not
+    // "unset" — without this the /models fallback below makes an empty catalog
+    // unrepresentable (first-run guidance can never be exercised).
+    this.modelsDeclared = Array.isArray(data.models);
     this.auth = structuredClone(data.auth ?? null);
     this.sessions.clear();
     this.workspaces = structuredClone(data.workspaces ?? []);
@@ -1010,7 +1015,7 @@ class FixtureServer {
     }
     if (path === '/models') {
       return this.envelope(res, {
-        items: this.models.length > 0 ? this.models : [
+        items: this.models.length > 0 || this.modelsDeclared ? this.models : [
           { provider: 'fixture', model: 'fixture/kiki-pro', display_name: 'Kiki Pro', max_context_size: 262144, support_efforts: ['low', 'high'], default_effort: 'high' },
           { provider: 'fixture', model: 'fixture/kiki-lite', display_name: 'Kiki Lite', max_context_size: 131072 },
         ],
@@ -1135,7 +1140,7 @@ class FixtureServer {
         this.workspaces.length > 0
           ? this.workspaces
           : this.scenario?.data.workspaces ?? [
-              { id: 'wd_fixture_000000000000', root: 'C:/fixture', name: 'fixture', created_at: now(), last_opened_at: now(), session_count: sessions.length },
+              { id: 'wd_fixture_000000000000', root: 'C:/fixture', name: 'fixture', created_at: now(), last_opened_at: now(), session_count: sessions.length, pinned: false },
             ];
       return this.envelope(res, { items });
     }
@@ -1145,7 +1150,8 @@ class FixtureServer {
       if (target === undefined) {
         return this.envelope(res, null, 40410, 'workspace.not_found');
       }
-      target.name = String(body?.name ?? target.name);
+      if (body?.name !== undefined) target.name = String(body.name);
+      if (body?.pinned !== undefined) target.pinned = body.pinned === true;
       return this.envelope(res, target);
     }
     if (workspaceMatch !== null && method === 'DELETE') {

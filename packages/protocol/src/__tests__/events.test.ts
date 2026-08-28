@@ -295,6 +295,7 @@ describe('events / display re-exports', () => {
       created_at: '2026-06-11T00:00:00.000Z',
       last_opened_at: '2026-06-11T00:00:00.000Z',
       session_count: 1,
+      pinned: false,
     };
 
     const created = eventSchema.parse({

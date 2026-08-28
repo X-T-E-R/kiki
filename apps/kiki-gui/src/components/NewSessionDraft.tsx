@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { PermissionMode, Workspace } from '@moonshot-ai/protocol';
+import type { AuthSummary, PermissionMode, Workspace } from '@moonshot-ai/protocol';
 
 import { resolveSelectedEffort, DEFAULT_AGENT_PROFILE } from './Composer';
 import { composerDefaultsForProfile } from '../lib/agentSettings';
@@ -19,8 +19,9 @@ import { useGuardedNavigate } from './dirtyGuard';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { useI18n } from '../i18n';
 import { buildPromptContent, type ComposerAttachment } from '../lib/attachments';
+import { isDesktopRuntime, selectDirectoryNative } from '../lib/desktop';
 import { readDraft, writeDraft } from '../lib/drafts';
-import { sortWorkspacesByRecency } from '../lib/sorting';
+import { sortWorkspacesByPinnedThenRecency, sortWorkspacesByRecency } from '../lib/sorting';
 import {
   readSettings,
   resolveEffectiveModel,
@@ -42,6 +43,20 @@ const DRAFT_KEY = 'new';
  */
 export function isAbsoluteCwdPath(value: string): boolean {
   return /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(value);
+}
+
+/**
+ * Whether /new should offer first-run provider guidance. True only when both
+ * probes have answered and agree there is nothing to answer with — an
+ * in-flight or failed probe stays silent, because a card that flashes on
+ * every visit costs more than a late one.
+ */
+export function needsProviderSetup(
+  auth: AuthSummary | undefined,
+  models: readonly unknown[] | undefined,
+): boolean {
+  if (auth === undefined || models === undefined) return false;
+  return !auth.ready && models.length === 0;
 }
 
 export function useNewSessionDraft({
@@ -114,6 +129,16 @@ export function useNewSessionDraft({
     staleTime: 60_000,
     retry: false,
   });
+  // First-run readiness: a fresh install has no provider and no model, so the
+  // first send would fail deep in the turn. Shares the settings page's query
+  // keys so the two surfaces never disagree.
+  const authQuery = useQuery({
+    queryKey: ['auth'],
+    queryFn: () => client.getAuth(),
+    staleTime: 10_000,
+    retry: false,
+  });
+  const providerSetupNeeded = needsProviderSetup(authQuery.data, modelsQuery.data?.items);
   // Server default first — the local mirror only fills in when the server
   // has not reported one (matches the session page).
   const inheritedDefault = serverDefaultModel ?? liveSettings.defaultModel;
@@ -237,6 +262,23 @@ export function useNewSessionDraft({
     if (nextId !== '') setCwd('');
   }, []);
 
+  /**
+   * Native folder picker (desktop only). A picked folder lands in the cwd
+   * field rather than creating a workspace up front: the session's own
+   * creation registers it, so cancelling out of /new leaves no debris.
+   */
+  const browseForWorkspace = useCallback(async () => {
+    try {
+      const picked = await selectDirectoryNative();
+      if (picked === null) return;
+      setWorkspaceId('');
+      setCwd(picked);
+      setError(null);
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, []);
+
   const setAgentProfile = useCallback((name: string) => {
     const defaults = composerDefaultsForProfile(agentProfilesQuery.data?.items ?? [], name);
     setAgentProfileState(name);
@@ -260,6 +302,9 @@ export function useNewSessionDraft({
     workspaces,
     workspacesLoading,
     effectiveWorkspace,
+    needsProviderSetup: providerSetupNeeded,
+    canBrowseForWorkspace: isDesktopRuntime(),
+    browseForWorkspace,
     serverDefaultModel,
     inheritedDefault,
     modelSource,
@@ -293,7 +338,7 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
   const cwdInvalid = trimmedCwd !== '' && !isAbsoluteCwdPath(trimmedCwd);
   const workspaceOptions: readonly SearchableSelectOption[] = useMemo(
     () =>
-      sortWorkspacesByRecency(state.workspaces).map((workspace) => ({
+      sortWorkspacesByPinnedThenRecency(state.workspaces).map((workspace) => ({
         value: workspace.id,
         label: workspace.name,
         hint: workspace.root,
@@ -302,38 +347,65 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
     [state.workspaces],
   );
 
+  // First run has nothing in the dropdown, so the row alone reads as broken.
+  // One sentence above it says what a workspace is for.
+  const firstRun = !state.workspacesLoading && state.workspaces.length === 0;
+
   return (
-    <div className="flex flex-wrap items-center gap-3">
-      <label className="text-[11px] font-medium text-ink-soft">{t('new.workspace')}</label>
-      <SearchableSelect
-        id="new-workspace-select"
-        options={workspaceOptions}
-        value={state.workspaceId !== '' ? state.workspaceId : (state.effectiveWorkspace?.id ?? '')}
-        onChange={(nextId) => { state.selectWorkspace(nextId); }}
-        disabled={state.workspacesLoading}
-        emptyText={t('new.noWorkspaces')}
-        ariaLabel={t('new.workspace')}
-        buttonClassName="flex w-64 max-w-full items-center gap-1.5 rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
-      />
-      <span className="text-[11px] text-ink-faint">{t('new.or')}</span>
-      <div className="min-w-0 flex-1">
-        <input
-          type="text"
-          value={state.cwd}
-          onChange={(event) => { state.setCwd(event.target.value); }}
-          onBlur={() => { setCwdBlurred(true); }}
-          aria-label={t('new.cwdAria')}
-          aria-invalid={cwdBlurred && cwdInvalid ? true : undefined}
-          placeholder={t('new.cwdPlaceholder')}
-          className={`min-w-0 flex-1 rounded-md border bg-paper px-2 py-1 font-mono text-[11.5px] text-ink outline-none placeholder:text-ink-faint focus:border-accent ${
-            cwdBlurred && cwdInvalid ? 'border-danger' : 'border-hairline'
-          }`}
+    <div className="flex flex-col gap-2.5">
+      {firstRun ? (
+        <p className="text-[11.5px] leading-relaxed text-ink-soft">{t('new.firstRunHint')}</p>
+      ) : null}
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="text-[11px] font-medium text-ink-soft">{t('new.workspace')}</label>
+        <SearchableSelect
+          id="new-workspace-select"
+          options={workspaceOptions}
+          value={state.workspaceId !== '' ? state.workspaceId : (state.effectiveWorkspace?.id ?? '')}
+          onChange={(nextId) => { state.selectWorkspace(nextId); }}
+          disabled={state.workspacesLoading}
+          emptyText={t('new.noWorkspaces')}
+          ariaLabel={t('new.workspace')}
+          buttonClassName="flex w-64 max-w-full items-center gap-1.5 rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
         />
-        {cwdBlurred && cwdInvalid ? (
-          <p role="alert" className="mt-1 text-[10.5px] text-danger">
-            {t('new.cwdInvalid')}
-          </p>
+        <span className="text-[11px] text-ink-faint">{t('new.or')}</span>
+        {state.canBrowseForWorkspace ? (
+          <button
+            type="button"
+            data-new-browse
+            onClick={() => { void state.browseForWorkspace(); }}
+            className="flex shrink-0 items-center gap-1.5 rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink transition-colors hover:border-hairline-strong hover:text-accent focus-visible:border-accent"
+          >
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden className="shrink-0 text-ink-soft">
+              <path
+                d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.6a1.5 1.5 0 0 1 1.2.6l1 1.33a1.5 1.5 0 0 0 1.2.6h3A1.5 1.5 0 0 1 14 7v4.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-7Z"
+                stroke="currentColor"
+                strokeWidth="1.2"
+                strokeLinejoin="round"
+              />
+            </svg>
+            {t('new.browse')}
+          </button>
         ) : null}
+        <div className="min-w-0 flex-1">
+          <input
+            type="text"
+            value={state.cwd}
+            onChange={(event) => { state.setCwd(event.target.value); }}
+            onBlur={() => { setCwdBlurred(true); }}
+            aria-label={t('new.cwdAria')}
+            aria-invalid={cwdBlurred && cwdInvalid ? true : undefined}
+            placeholder={t('new.cwdPlaceholder')}
+            className={`min-w-0 flex-1 rounded-md border bg-paper px-2 py-1 font-mono text-[11.5px] text-ink outline-none placeholder:text-ink-faint focus:border-accent ${
+              cwdBlurred && cwdInvalid ? 'border-danger' : 'border-hairline'
+            }`}
+          />
+          {cwdBlurred && cwdInvalid ? (
+            <p role="alert" className="mt-1 text-[10.5px] text-danger">
+              {t('new.cwdInvalid')}
+            </p>
+          ) : null}
+        </div>
       </div>
     </div>
   );

@@ -64,6 +64,43 @@ export async function saveBlobNative(blob: Blob, filename: string): Promise<bool
   return true;
 }
 
+/**
+ * Extensions the model accepts inline as images. Tauri's dialog hands back
+ * paths, not `File`s, so the constructed `File` needs its media type spelled
+ * out — without it every pick would fall through to the upload path.
+ */
+const NATIVE_IMAGE_MIMES: Readonly<Record<string, string>> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+};
+
+/**
+ * Pick files through the native desktop dialog and read them into `File`
+ * objects, so the caller can feed them the exact same path a paste or drop
+ * takes. Resolves `null` when the user cancels.
+ */
+export async function selectFilesNative(): Promise<File[] | null> {
+  if (!isTauri()) throw new Error('Native file selection requires the Kiki desktop app.');
+  const [{ open }, { readFile }] = await Promise.all([
+    import('@tauri-apps/plugin-dialog'),
+    import('@tauri-apps/plugin-fs'),
+  ]);
+  const selected = await open({ multiple: true });
+  if (selected === null) return null;
+  const paths = typeof selected === 'string' ? [selected] : selected;
+  return Promise.all(
+    paths.map(async (path) => {
+      const name = path.replaceAll('\\', '/').split('/').at(-1) ?? path;
+      const extension = name.includes('.') ? (name.split('.').at(-1) ?? '').toLowerCase() : '';
+      const bytes = await readFile(path);
+      return new File([bytes], name, { type: NATIVE_IMAGE_MIMES[extension] ?? '' });
+    }),
+  );
+}
+
 /** Select one or more directories through the native desktop dialog. */
 export async function selectDirectoriesNative(): Promise<readonly string[] | null> {
   if (!isTauri()) throw new Error('Native directory selection requires the Kiki desktop app.');
@@ -71,6 +108,18 @@ export async function selectDirectoriesNative(): Promise<readonly string[] | nul
   const selected = await open({ directory: true, multiple: true });
   if (selected === null) return null;
   return typeof selected === 'string' ? [selected] : selected;
+}
+
+/**
+ * Select a single directory through the native desktop dialog. Resolves `null`
+ * when the user cancels.
+ */
+export async function selectDirectoryNative(): Promise<string | null> {
+  if (!isTauri()) throw new Error('Native directory selection requires the Kiki desktop app.');
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const selected = await open({ directory: true, multiple: false });
+  if (selected === null) return null;
+  return typeof selected === 'string' ? selected : (selected[0] ?? null);
 }
 
 export async function isMainWindowVisibleAndFocused(): Promise<boolean> {

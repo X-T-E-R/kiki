@@ -408,7 +408,7 @@ function AttachmentPreviewDialog({
       onClose={onClose}
       ariaLabel={title}
       overlayId="session-attachment-preview"
-      overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-ink/55 p-4"
+      overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-shell/55 p-4"
       panelClassName="anim-enter flex max-h-[92vh] w-full max-w-[min(94vw,1100px)] flex-col overflow-hidden rounded-2xl border border-hairline bg-panel p-4 shadow-[0_20px_60px_-20px_rgba(28,25,23,0.45)]"
     >
       <header className="mb-3 flex shrink-0 items-center gap-3">

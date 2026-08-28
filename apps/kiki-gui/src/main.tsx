@@ -15,7 +15,12 @@ import { App } from './App';
 import { AppErrorBoundary } from './components/AppErrorBoundary';
 import { I18nProvider } from './i18n';
 import { ConnectionProvider } from './state/connection';
+import { startThemeSync } from './lib/theme';
 import './index.css';
+
+// Before the first render: the palette must be right on the first frame, or a
+// dark-theme user gets a paper-white flash on every launch.
+startThemeSync();
 
 const queryClient = new QueryClient({
   defaultOptions: {

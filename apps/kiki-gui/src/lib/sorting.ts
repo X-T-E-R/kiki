@@ -27,6 +27,20 @@ export function sortWorkspacesByRecency(workspaces: readonly Workspace[]): Works
 }
 
 /**
+ * Pinned workspaces first, then the rest, each block ordered by recency. Every
+ * picker that lists workspaces reads this so a pin means the same thing in the
+ * sidebar, the /new draft, and the settings list.
+ */
+export function sortWorkspacesByPinnedThenRecency(
+  workspaces: readonly Workspace[],
+): Workspace[] {
+  return [...workspaces].sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    return compareWorkspacesByRecency(a, b);
+  });
+}
+
+/**
  * Case-insensitive substring filter over name and root — the settings
  * workspace list narrows on either, since the root is what disambiguates
  * same-named checkouts.

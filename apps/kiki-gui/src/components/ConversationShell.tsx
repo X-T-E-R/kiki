@@ -163,8 +163,14 @@ function HeroGlow({ className }: { className?: string }) {
         </filter>
       </defs>
       <g filter={`url(#${glowFilterId})`}>
-        <ellipse cx="525.5" cy="234" rx="425.5" ry="134" fill="#e8590c" fillOpacity="0.08" />
-        <ellipse cx="525.5" cy="254" rx="300" ry="90" fill="#e8b04b" fillOpacity="0.07" />
+        <ellipse
+          cx="525.5" cy="234" rx="425.5" ry="134"
+          fill="var(--color-accent)" fillOpacity="0.08"
+        />
+        <ellipse
+          cx="525.5" cy="254" rx="300" ry="90"
+          fill="var(--color-amber-rule)" fillOpacity="0.07"
+        />
       </g>
     </svg>
   );

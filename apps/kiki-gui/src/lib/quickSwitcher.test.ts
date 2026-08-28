@@ -5,9 +5,12 @@ import type { Session } from '@moonshot-ai/protocol';
 import type { SearchMessageHit } from './client';
 import {
   buildSwitcherItems,
+  settingsCardRoute,
   SWITCHER_HIT_LIMIT,
   SWITCHER_RECENT_LIMIT,
+  SWITCHER_SETTING_LIMIT,
   SWITCHER_TITLE_MATCH_LIMIT,
+  type SwitcherSettingItem,
 } from './quickSwitcher';
 
 function session(id: string, updatedAt: string, overrides: Partial<Session> = {}): Session {
@@ -90,7 +93,13 @@ describe('buildSwitcherItems — with query', () => {
       hits: [hit('renderer', '…the persimmon cache…')],
       untitled: 'Untitled',
     });
-    const ids = items.map((item) => (item.kind === 'action' ? item.actionId : item.sessionId));
+    const ids = items.map((item) =>
+      item.kind === 'action'
+        ? item.actionId
+        : item.kind === 'setting'
+          ? item.cardId
+          : item.sessionId,
+    );
     expect(ids).toEqual(['persimmon-notes', 'cwd-match', 'renderer']);
     expect(items[2]).toMatchObject({ kind: 'hit', snippet: '…the persimmon cache…' });
   });
@@ -154,5 +163,52 @@ describe('buildSwitcherItems — page actions', () => {
       actions: [usageAction],
     });
     expect(items.every((item) => item.kind !== 'action')).toBe(true);
+  });
+});
+
+describe('buildSwitcherItems — settings entries', () => {
+  const setting = (cardId: string): SwitcherSettingItem => ({
+    kind: 'setting',
+    cardId,
+    sectionLabel: 'General',
+    title: cardId,
+    route: settingsCardRoute('general', cardId),
+  });
+
+  it('routes a settings pick at the card hash the settings page flashes', () => {
+    expect(settingsCardRoute('general', 'st-card-appearance'))
+      .toBe('/settings/general#st-card-appearance');
+  });
+
+  it('ranks settings below session and message matches, capped at the limit', () => {
+    const items = buildSwitcherItems({
+      query: 'theme',
+      sessions: [session('theme-notes', '2026-01-02T00:00:00.000Z', { title: 'Theme notes' })],
+      hits: [hit('s1', '…the theme…')],
+      untitled: 'Untitled',
+      settings: Array.from({ length: SWITCHER_SETTING_LIMIT + 2 }, (_, index) =>
+        setting(`st-card-s${index}`),
+      ),
+    });
+    expect(items.map((item) => item.kind)).toEqual([
+      'session',
+      'hit',
+      'setting',
+      'setting',
+      'setting',
+    ]);
+  });
+
+  it('keeps settings out of the empty-query recent list', () => {
+    const items = buildSwitcherItems({
+      query: '',
+      sessions: [session('s1', '2026-01-02T00:00:00.000Z')],
+      hits: [],
+      untitled: 'Untitled',
+      settings: [setting('st-card-appearance')],
+    });
+    // The caller only searches the settings index for a non-empty query, but
+    // the builder must not leak them into the idle recents either way.
+    expect(items.every((item) => item.kind === 'session')).toBe(true);
   });
 });

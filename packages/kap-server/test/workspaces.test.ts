@@ -29,6 +29,7 @@ interface WorkspaceWire {
   created_at: string;
   last_opened_at: string;
   session_count: number;
+  pinned: boolean;
 }
 
 interface ListWire {
@@ -120,6 +121,7 @@ describe('server-v2 /api/v1/workspaces', () => {
     expect(typeof body.data.session_count).toBe('number');
     expect(Number.isNaN(Date.parse(body.data.created_at))).toBe(false);
     expect(Number.isNaN(Date.parse(body.data.last_opened_at))).toBe(false);
+    expect(body.data.pinned).toBe(false);
   });
 
   it('derives the default name from the root when name is omitted', async () => {
@@ -165,6 +167,50 @@ describe('server-v2 /api/v1/workspaces', () => {
     expect(updated.body.code).toBe(0);
     expect(updated.body.data.name).toBe('renamed');
     expect(updated.body.data.id).toBe(id);
+  });
+
+  it('pins and unpins a workspace via PATCH without touching the name', async () => {
+    const root = home as string;
+    const created = await postJson<WorkspaceWire>('/api/v1/workspaces', { root, name: 'proj' });
+    const id = created.body.data.id;
+
+    const pinned = await patchJson<WorkspaceWire>(`/api/v1/workspaces/${id}`, { pinned: true });
+    expect(pinned.body.code).toBe(0);
+    expect(pinned.body.data.pinned).toBe(true);
+    expect(pinned.body.data.name).toBe('proj');
+
+    const listed = await getJson<ListWire>('/api/v1/workspaces');
+    expect(listed.body.data.items.find((w) => w.id === id)?.pinned).toBe(true);
+
+    const unpinned = await patchJson<WorkspaceWire>(`/api/v1/workspaces/${id}`, { pinned: false });
+    expect(unpinned.body.data.pinned).toBe(false);
+  });
+
+  it('rejects a PATCH with neither name nor pinned (40001)', async () => {
+    const root = home as string;
+    const created = await postJson<WorkspaceWire>('/api/v1/workspaces', { root });
+    const { body } = await patchJson<null>(`/api/v1/workspaces/${created.body.data.id}`, {});
+    expect(body.code).toBe(40001);
+  });
+
+  it('persists `pinned` across a server restart', async () => {
+    const root = home as string;
+    const created = await postJson<WorkspaceWire>('/api/v1/workspaces', { root });
+    const id = created.body.data.id;
+    await patchJson<WorkspaceWire>(`/api/v1/workspaces/${id}`, { pinned: true });
+
+    await (server as RunningServer).close();
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+    });
+    base = `http://127.0.0.1:${server.port}`;
+
+    const { body } = await getJson<ListWire>('/api/v1/workspaces');
+    expect(body.data.items.find((w) => w.id === id)?.pinned).toBe(true);
   });
 
   it('returns 40410 when patching an unknown workspace', async () => {

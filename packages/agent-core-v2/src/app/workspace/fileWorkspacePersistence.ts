@@ -45,6 +45,7 @@ export class FileWorkspacePersistence implements IWorkspacePersistence {
         name: entry.name,
         createdAt: parseTime(entry.created_at, now),
         lastOpenedAt: parseTime(entry.last_opened_at, now),
+        pinned: entry.pinned === true,
       });
     }
     const rawDeleted = (file as { deleted_workspace_ids?: unknown }).deleted_workspace_ids;
@@ -62,6 +63,7 @@ export class FileWorkspacePersistence implements IWorkspacePersistence {
         name: ws.name,
         created_at: new Date(ws.createdAt).toISOString(),
         last_opened_at: new Date(ws.lastOpenedAt).toISOString(),
+        ...(ws.pinned ? { pinned: true } : {}),
       };
     }
     const file: PersistedWorkspaceFile = {
@@ -89,6 +91,7 @@ function sanitizeEntry(value: unknown): PersistedWorkspaceEntry | null {
     name: v.name,
     created_at: v.created_at,
     last_opened_at: v.last_opened_at,
+    ...(v.pinned === true ? { pinned: true } : {}),
   };
 }
 

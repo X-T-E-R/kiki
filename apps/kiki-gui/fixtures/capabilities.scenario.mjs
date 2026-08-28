@@ -104,6 +104,7 @@ export default {
       created_at: new Date().toISOString(),
       last_opened_at: new Date().toISOString(),
       session_count: 1,
+      pinned: false,
     },
   ],
 };

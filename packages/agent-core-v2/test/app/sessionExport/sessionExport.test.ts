@@ -918,6 +918,7 @@ function registerSessionExportServices(
       name: id,
       createdAt: 1,
       lastOpenedAt: 2,
+      pinned: false,
     }),
     createOrTouch: async (root) => ({
       id: 'ws_created',
@@ -925,6 +926,7 @@ function registerSessionExportServices(
       name: 'created',
       createdAt: 1,
       lastOpenedAt: 2,
+      pinned: false,
     }),
     update: async () => undefined,
     delete: async () => {},

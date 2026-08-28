@@ -67,8 +67,11 @@ function ensureCode(): void {
   inflight = true;
   import('@streamdown/code')
     .then((mod) => {
-      // github-light first (kiki is light-only); github-dark is the plugin's
-      // required second theme slot and simply never shows.
+      // Shiki dual-theme: github-light supplies the resolved colors and
+      // github-dark rides along as `--shiki-dark*` custom properties.
+      // Streamdown reads those under its own `dark:` classes, and index.css
+      // points Tailwind's `dark` variant at `[data-theme='dark']`, so the dark
+      // slot activates from the same attribute as the rest of the palette.
       // Baseline mismatch: `@streamdown/code` ships shiki 3 while `streamdown`'s
       // CodePlugin type is still keyed to shiki 2. Runtime themes/highlight are
       // unchanged; the assertion is the local type-compat seam.

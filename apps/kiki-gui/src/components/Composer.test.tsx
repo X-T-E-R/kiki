@@ -13,9 +13,12 @@ import { Composer } from './Composer';
 const listModels = vi.fn();
 const listSessionSkills = vi.fn();
 const listNamedAgentProfiles = vi.fn();
+const uploadFile = vi.fn();
 
 vi.mock('../state/connection', () => ({
-  useConnection: () => ({ client: { listModels, listSessionSkills, listNamedAgentProfiles } }),
+  useConnection: () => ({
+    client: { listModels, listSessionSkills, listNamedAgentProfiles, uploadFile },
+  }),
 }));
 
 const containers: HTMLDivElement[] = [];
@@ -31,6 +34,7 @@ beforeAll(() => {
 beforeEach(() => {
   listModels.mockReset().mockResolvedValue({ items: [] });
   listSessionSkills.mockReset().mockResolvedValue({ skills: [] });
+  uploadFile.mockReset().mockResolvedValue({ id: 'file-1' });
   listNamedAgentProfiles.mockReset().mockResolvedValue({
     items: [
       {
@@ -121,13 +125,35 @@ async function settle(): Promise<void> {
   });
 }
 
+/** Click through an element and let the resulting render flush. */
+async function click(element: Element): Promise<void> {
+  await act(async () => {
+    element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+}
+
+/**
+ * The agent-profile picker lives inside the merged model chip's panel, so
+ * reaching it means opening that chip first (and waiting for both catalogs).
+ */
 async function waitForTrigger(container: HTMLDivElement): Promise<HTMLButtonElement> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const trigger = container.querySelector<HTMLButtonElement>('#composer-agent-profile-select');
-    if (trigger !== null) return trigger;
+    const chip = container.querySelector<HTMLButtonElement>('#composer-model-select');
+    if (chip !== null) {
+      if (chip.getAttribute('aria-expanded') !== 'true') await click(chip);
+      const trigger = container.querySelector<HTMLButtonElement>('#composer-agent-profile-select');
+      if (trigger !== null) return trigger;
+    }
     await settle();
   }
   throw new Error('profile select never rendered');
+}
+
+/** Open the mode chip's panel and hand back its trigger. */
+async function openModePanel(container: HTMLDivElement): Promise<HTMLButtonElement> {
+  const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Mode"]')!;
+  await click(trigger);
+  return trigger;
 }
 
 describe('Composer agent profile picker', () => {
@@ -175,6 +201,9 @@ describe('Composer agent profile picker', () => {
   it('stays hidden without a change handler or when the catalog is unavailable', async () => {
     const { container } = await renderComposer({ agentProfile: 'agent' });
     for (let index = 0; index < 5; index += 1) await settle();
+    // With no model catalog and no effort either, the chip degrades to inert
+    // text — there is no panel left to hold a profile row.
+    expect(container.querySelector('#composer-model-select')).toBeNull();
     expect(container.querySelector('#composer-agent-profile-select')).toBeNull();
 
     listNamedAgentProfiles.mockRejectedValue(new Error('404'));
@@ -183,6 +212,7 @@ describe('Composer agent profile picker', () => {
       onChangeAgentProfile: () => {},
     });
     for (let index = 0; index < 5; index += 1) await settle();
+    expect(second.container.querySelector('#composer-model-select')).toBeNull();
     expect(second.container.querySelector('#composer-agent-profile-select')).toBeNull();
   });
 
@@ -221,10 +251,10 @@ describe('Composer agent profile picker', () => {
   });
 });
 
-describe('Composer permission mode dropdown', () => {
+describe('Composer mode dropdown', () => {
   it('shows the current mode on the trigger and opens the option panel', async () => {
     const { container } = await renderComposer({ permissionMode: 'auto' });
-    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Permission mode"]');
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Mode"]');
     expect(trigger).not.toBeNull();
     expect(trigger?.textContent).toContain('auto');
     expect(trigger?.getAttribute('aria-haspopup')).toBe('listbox');
@@ -251,7 +281,7 @@ describe('Composer permission mode dropdown', () => {
   it('reports picks through onChangePermissionMode and closes the panel', async () => {
     const onChangePermissionMode = vi.fn();
     const { container } = await renderComposer({ permissionMode: 'manual', onChangePermissionMode });
-    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Permission mode"]')!;
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Mode"]')!;
     await act(async () => {
       trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
@@ -269,7 +299,7 @@ describe('Composer permission mode dropdown', () => {
   it('closes on Escape without changing the mode', async () => {
     const onChangePermissionMode = vi.fn();
     const { container } = await renderComposer({ permissionMode: 'manual', onChangePermissionMode });
-    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Permission mode"]')!;
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Mode"]')!;
     await act(async () => {
       trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
@@ -285,7 +315,7 @@ describe('Composer permission mode dropdown', () => {
 
   it('closes when a pointerdown lands outside the dropdown', async () => {
     const { container } = await renderComposer({ permissionMode: 'manual' });
-    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Permission mode"]')!;
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Mode"]')!;
     await act(async () => {
       trigger.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
@@ -295,6 +325,211 @@ describe('Composer permission mode dropdown', () => {
       document.body.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
     });
     expect(container.querySelector('[data-mode-select] [role="option"]')).toBeNull();
+  });
+
+  it('spells the active combination on the trigger', async () => {
+    const { container } = await renderComposer({
+      permissionMode: 'manual',
+      planMode: true,
+      swarmMode: true,
+    });
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Mode"]')!;
+    expect(trigger.textContent).toContain('manual · plan · swarm');
+  });
+
+  it('reports plan and swarm from the panel and keeps it open for the next pick', async () => {
+    const onChangePlanMode = vi.fn();
+    const onChangeSwarmMode = vi.fn();
+    const { container } = await renderComposer({ onChangePlanMode, onChangeSwarmMode });
+    await openModePanel(container);
+    const plan = container.querySelector<HTMLButtonElement>('[data-mode-switch="plan"]')!;
+    const swarm = container.querySelector<HTMLButtonElement>('[data-mode-switch="swarm"]')!;
+    expect(plan.getAttribute('aria-pressed')).toBe('false');
+    await click(plan);
+    await click(swarm);
+    expect(onChangePlanMode).toHaveBeenCalledWith(true);
+    expect(onChangeSwarmMode).toHaveBeenCalledWith(true);
+    // Combinations are the point — the panel stays put between toggles.
+    expect(container.querySelector('[data-mode-select] [role="option"]')).not.toBeNull();
+  });
+
+  it('expands the goal objective inside the same panel', async () => {
+    const onChangeGoalObjective = vi.fn();
+    const { container } = await renderComposer({ onChangeGoalObjective });
+    await openModePanel(container);
+    expect(container.querySelector('[data-goal-objective]')).toBeNull();
+    await click(container.querySelector('[data-goal-open]')!);
+    const field = container.querySelector<HTMLInputElement>('[data-goal-objective]')!;
+    expect(document.activeElement).toBe(field);
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(field, 'Ship the batch');
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(onChangeGoalObjective).toHaveBeenCalledWith('Ship the batch');
+  });
+
+  it('leaves no plan, swarm or goal control in the resting toolbar', async () => {
+    listModels.mockResolvedValue({
+      items: [{ provider: 'fixture', model: 'fixture/kiki-pro', display_name: 'Kiki Pro' }],
+    });
+    const { container } = await renderComposer({ planMode: true, swarmMode: true });
+    for (let index = 0; index < 5; index += 1) await settle();
+    const buttons = [...container.querySelectorAll<HTMLElement>('[data-composer-toolbar] button')];
+    // Attach, mode, model, send — and nothing else at rest.
+    expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Attach files',
+      'Mode',
+      'Model',
+      'Send message',
+    ]);
+    expect(buttons[1]?.textContent).toContain('manual · plan · swarm');
+  });
+});
+
+describe('Composer goal run-state chip', () => {
+  it('traces a live goal and drives pause/cancel through onChangeGoalControl', async () => {
+    const onChangeGoalControl = vi.fn();
+    const { container } = await renderComposer({
+      goalStatus: 'active',
+      goalObjective: 'Ship the batch',
+      onChangeGoalControl,
+    });
+    const chip = container.querySelector<HTMLElement>('[data-goal-chip]');
+    expect(chip?.textContent).toContain('goal · active');
+    const pause = container.querySelector<HTMLButtonElement>('[data-goal-chip] button[aria-label="pause"]')!;
+    await click(pause);
+    expect(onChangeGoalControl).toHaveBeenCalledWith('pause');
+    expect(
+      container.querySelector('[data-goal-chip] button[aria-label="cancel"]'),
+    ).not.toBeNull();
+  });
+
+  it('offers resume instead of pause while paused, and nothing once complete', async () => {
+    const paused = await renderComposer({ goalStatus: 'paused' });
+    expect(
+      paused.container.querySelector('[data-goal-chip] button[aria-label="resume"]'),
+    ).not.toBeNull();
+    expect(
+      paused.container.querySelector('[data-goal-chip] button[aria-label="pause"]'),
+    ).toBeNull();
+
+    const complete = await renderComposer({ goalStatus: 'complete' });
+    expect(complete.container.querySelector('[data-goal-chip]')).not.toBeNull();
+    expect(complete.container.querySelectorAll('[data-goal-chip] button')).toHaveLength(0);
+  });
+
+  it('disappears with no goal on the session', async () => {
+    const { container } = await renderComposer();
+    expect(container.querySelector('[data-goal-chip]')).toBeNull();
+  });
+});
+
+describe('Composer model chip', () => {
+  const catalog = {
+    items: [
+      { provider: 'fixture', model: 'fixture/kiki-pro', display_name: 'Kiki Pro' },
+      { provider: 'fixture', model: 'fixture/kiki-air', display_name: 'Kiki Air' },
+    ],
+  };
+
+  it('carries the effort segment outside the truncating model label', async () => {
+    listModels.mockResolvedValue(catalog);
+    const { container } = await renderComposer({
+      model: 'fixture/kiki-pro',
+      efforts: ['low', 'high'],
+      effort: 'high',
+    });
+    for (let index = 0; index < 5; index += 1) await settle();
+    const trigger = container.querySelector<HTMLButtonElement>('#composer-model-select')!;
+    expect(trigger.textContent).toContain('Kiki Pro');
+    expect(trigger.textContent).toContain('· high');
+    const label = trigger.querySelector('span')!;
+    expect(label.className).toContain('truncate');
+    expect(label.textContent).not.toContain('high');
+  });
+
+  it('changes model and effort from the one panel', async () => {
+    listModels.mockResolvedValue(catalog);
+    const onChangeEffort = vi.fn();
+    const onChangeModel = vi.fn();
+    const { container } = await renderComposer({
+      model: 'fixture/kiki-pro',
+      efforts: ['low', 'high'],
+      effort: 'high',
+      onChangeEffort,
+      onChangeModel,
+    });
+    for (let index = 0; index < 5; index += 1) await settle();
+    await click(container.querySelector('#composer-model-select')!);
+    await click(container.querySelector('[data-effort="low"]')!);
+    expect(onChangeEffort).toHaveBeenCalledWith('low');
+    const airRow = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(
+      (row) => row.textContent?.includes('Kiki Air'),
+    )!;
+    await click(airRow);
+    expect(onChangeModel).toHaveBeenCalledWith('fixture/kiki-air');
+  });
+
+  it('keeps the effort row reachable when the catalog is empty', async () => {
+    const onChangeEffort = vi.fn();
+    const { container } = await renderComposer({
+      efforts: ['low', 'high'],
+      effort: 'low',
+      onChangeEffort,
+    });
+    for (let index = 0; index < 5; index += 1) await settle();
+    const trigger = container.querySelector<HTMLButtonElement>('#composer-model-select')!;
+    expect(trigger.textContent).toContain('fixture/kiki-pro');
+    await click(trigger);
+    // No catalog means no filter input and no option list — just the rows.
+    expect(container.querySelector('#composer-model-select-list')).toBeNull();
+    await click(container.querySelector('[data-effort="high"]')!);
+    expect(onChangeEffort).toHaveBeenCalledWith('high');
+  });
+});
+
+describe('Composer attachment button', () => {
+  it('routes the browser file input into the paste/drop attachment path', async () => {
+    const onChangeAttachments = vi.fn();
+    const { container } = await renderComposer({ onChangeAttachments });
+    const button = container.querySelector<HTMLButtonElement>('[data-attach-button]')!;
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    expect(input.multiple).toBe(true);
+    const clicked = vi.spyOn(input, 'click');
+    await click(button);
+    expect(clicked).toHaveBeenCalled();
+
+    const file = new File(['x'], 'note.txt', { type: 'text/plain' });
+    Object.defineProperty(input, 'files', { value: [file], configurable: true });
+    await act(async () => {
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    // An upload stub lands immediately — the same reservation paste makes.
+    expect(onChangeAttachments).toHaveBeenCalled();
+  });
+});
+
+describe('Composer footer hints', () => {
+  it('teaches an empty draft and steps aside once typing starts', async () => {
+    const empty = await renderComposer({ value: '' });
+    expect(empty.container.querySelector('[data-composer-hints]')).not.toBeNull();
+
+    const typed = await renderComposer({ value: 'hello' });
+    expect(typed.container.querySelector('[data-composer-hints]')).toBeNull();
+
+    const working = await renderComposer({ value: '', busy: true });
+    expect(working.container.querySelector('[data-composer-hints]')).toBeNull();
+  });
+
+  it('keeps the meter anchored whether the hints show or not', async () => {
+    const contextUsage = { used: 1000, limit: 10_000 };
+    const empty = await renderComposer({ value: '', contextUsage });
+    const typed = await renderComposer({ value: 'hello', contextUsage });
+    const spacerOf = (container: HTMLDivElement) =>
+      container.querySelector<HTMLElement>('[data-composer-hints]')?.parentElement ??
+      container.querySelector<HTMLElement>('.min-h-4');
+    expect(spacerOf(empty.container)?.className).toBe(spacerOf(typed.container)?.className);
   });
 });
 

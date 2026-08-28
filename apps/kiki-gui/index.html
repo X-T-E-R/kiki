@@ -3,8 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
     <title>kiki</title>
+    <!-- Resolve the theme before first paint; the module bundle re-applies it
+         and then keeps it in sync (src/lib/theme.ts). Without this, a dark
+         user gets a paper-white flash while the bundle loads. -->
+    <script>
+      (function () {
+        try {
+          var stored = JSON.parse(localStorage.getItem('kiki.settings') || '{}');
+          var pref = stored.theme === 'light' || stored.theme === 'dark' ? stored.theme : 'system';
+          var dark =
+            pref === 'dark' ||
+            (pref === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+        } catch (_) {
+          document.documentElement.dataset.theme = 'light';
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -149,6 +149,7 @@ function workspace(id: string, name: string): Workspace {
     created_at: '2026-01-01T00:00:00.000Z',
     last_opened_at: '2026-01-02T00:00:00.000Z',
     session_count: 0,
+    pinned: false,
   };
 }
 
@@ -193,33 +194,96 @@ describe('groupSessionsByWorkspace', () => {
     );
     expect(groups.map((g) => g.key)).toEqual([wa.id]);
   });
+
+  it('pulls pinned rows into one leading global bucket when a pinned label is given', () => {
+    const pinned = session('pinned', '2026-01-03T00:00:00.000Z', {
+      workspace_id: wb.id,
+      metadata: { cwd: 'C:/tmp', [SESSION_PIN_META_KEY]: true },
+    });
+    const groups = groupSessionsByWorkspace(
+      [pinned, session('plain', '2026-01-03T00:00:00.000Z', { workspace_id: wa.id })],
+      [wa, wb],
+      (w) => w.name,
+      'Ungrouped',
+      'Pinned',
+    );
+    expect(groups.map((g) => g.key)).toEqual(['pinned', wa.id]);
+    expect(groups[0]!.items.map((s) => s.id)).toEqual(['pinned']);
+  });
+
+  it('keeps pinned rows inside their workspace bucket without a pinned label', () => {
+    const pinned = session('pinned', '2026-01-03T00:00:00.000Z', {
+      workspace_id: wb.id,
+      metadata: { cwd: 'C:/tmp', [SESSION_PIN_META_KEY]: true },
+    });
+    const groups = groupSessionsByWorkspace([pinned], [wa, wb]);
+    expect(groups.map((g) => g.key)).toEqual([wb.id]);
+  });
 });
 
 describe('groupSessionsByTime', () => {
-  const now = new Date('2026-02-01T00:00:00.000Z').getTime();
-  const iso = (daysAgo: number) => new Date(now - daysAgo * 24 * 60 * 60 * 1000).toISOString();
+  // Local noon so the calendar-day boundaries below land the same way in every
+  // timezone (February carries no DST transition).
+  const now = new Date(2026, 1, 15, 12, 0, 0).getTime();
+  const DAY = 24 * 60 * 60 * 1000;
+  /** `hoursAgo` from local noon, so day offsets stay inside the intended date. */
+  const iso = (hoursAgo: number) => new Date(now - hoursAgo * 60 * 60 * 1000).toISOString();
 
-  it('buckets sessions by age and omits empty buckets', () => {
+  it('buckets sessions into calendar-day groups and omits empty buckets', () => {
     const groups = groupSessionsByTime(
       [
-        session('recent', iso(1)),
-        session('this-week', iso(6)),
-        session('this-month', iso(10)),
-        session('old', iso(60)),
+        session('this-morning', iso(6)),
+        session('yesterday', iso(24)),
+        session('this-week', iso(24 * 5)),
+        session('this-month', iso(24 * 20)),
+        session('old', iso(24 * 60)),
         session('bad-date', 'not-a-date'),
       ],
       now,
     );
+    expect(groups.map((g) => g.key)).toEqual(['today', 'yesterday', 'week', 'month', 'older']);
+    expect(groups[0]!.items.map((s) => s.id)).toEqual(['this-morning']);
+    expect(groups[1]!.items.map((s) => s.id)).toEqual(['yesterday']);
+    expect(groups[2]!.items.map((s) => s.id)).toEqual(['this-week']);
+    expect(groups[3]!.items.map((s) => s.id)).toEqual(['this-month']);
+    expect(groups[4]!.items.map((s) => s.id)).toEqual(['old', 'bad-date']);
+  });
+
+  it('splits on the calendar boundary, not on a rolling 24 hours', () => {
+    // 13 hours back from local noon is 23:00 the previous date.
+    const groups = groupSessionsByTime([session('late-last-night', iso(13))], now);
+    expect(groups.map((g) => g.key)).toEqual(['yesterday']);
+  });
+
+  it('keeps the week bucket at seven calendar days and the month bucket at thirty', () => {
+    const localMidnight = new Date(now);
+    localMidnight.setHours(0, 0, 0, 0);
+    const dayStart = (offset: number) => new Date(localMidnight.getTime() - offset * DAY).toISOString();
+    const groups = groupSessionsByTime(
+      [
+        session('sixth-day', dayStart(6)),
+        session('seventh-day', dayStart(7)),
+        session('day-29', dayStart(29)),
+        session('day-30', dayStart(30)),
+      ],
+      now,
+    );
     expect(groups.map((g) => g.key)).toEqual(['week', 'month', 'older']);
-    expect(groups[0]!.items.map((s) => s.id)).toEqual(['recent', 'this-week']);
-    expect(groups[1]!.items.map((s) => s.id)).toEqual(['this-month']);
-    expect(groups[2]!.items.map((s) => s.id)).toEqual(['old', 'bad-date']);
+    expect(groups[0]!.items.map((s) => s.id)).toEqual(['sixth-day']);
+    expect(groups[1]!.items.map((s) => s.id)).toEqual(['seventh-day', 'day-29']);
+    expect(groups[2]!.items.map((s) => s.id)).toEqual(['day-30']);
   });
 
   it('puts pinned sessions in their own leading group regardless of age', () => {
-    const pinned = session('pinned', iso(90), { metadata: { cwd: 'C:/tmp', [SESSION_PIN_META_KEY]: true } });
-    const groups = groupSessionsByTime([session('recent', iso(1)), pinned], now);
+    const pinned = session('pinned', iso(24 * 90), { metadata: { cwd: 'C:/tmp', [SESSION_PIN_META_KEY]: true } });
+    const groups = groupSessionsByTime([session('recent', iso(2)), pinned], now);
     expect(groups[0]!.key).toBe('pinned');
     expect(groups[0]!.items.map((s) => s.id)).toEqual(['pinned']);
+  });
+
+  it('uses the localized labels when given and bare keys otherwise', () => {
+    const groups = groupSessionsByTime([session('today', iso(1))], now, { today: '今天' });
+    expect(groups[0]!.label).toBe('今天');
+    expect(groupSessionsByTime([session('today', iso(1))], now)[0]!.label).toBe('today');
   });
 });

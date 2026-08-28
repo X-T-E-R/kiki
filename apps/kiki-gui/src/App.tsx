@@ -64,6 +64,7 @@ import {
 } from './lib/sessionList';
 import { isSessionIndexBuildingError } from './lib/client';
 import { useLayoutPreferences, writeLayoutPreferences } from './lib/layoutPrefs';
+import { sortWorkspacesByPinnedThenRecency } from './lib/sorting';
 import { readLastSessionId, writeDesktopPrefs } from './lib/settings';
 import { pushToast } from './lib/toasts';
 import { anyOverlayOpen } from './lib/uiBusy';
@@ -216,8 +217,10 @@ export function App() {
     staleTime: 30_000,
     retry: retryRootReadModelQuery,
   });
+  // Pinned workspaces lead the sidebar scope list, and — because the same
+  // order seeds workspace grouping — their session buckets come first too.
   const workspaceOptions = useMemo<readonly Workspace[]>(
-    () => workspacesQuery.data?.items ?? [],
+    () => sortWorkspacesByPinnedThenRecency(workspacesQuery.data?.items ?? []),
     [workspacesQuery.data],
   );
 
@@ -232,11 +235,14 @@ export function App() {
     const sorted = sortSessionItems(sessions, layoutPrefs.sortBy);
     const nowMs = Date.now();
     if (layoutPrefs.groupBy === 'workspace') {
+      // Pinned rows keep a global leading bucket here too: a per-workspace
+      // bucket would bury the sessions the user asked to keep on top.
       return groupSessionsByWorkspace(
         sorted,
         workspaceOptions,
         (workspace) => workspace.name,
         t('sidebar.groupUngrouped'),
+        t('sidebar.groupPinned'),
       );
     }
     return groupSessionsByTime(
@@ -244,6 +250,8 @@ export function App() {
       nowMs,
       {
         pinned: t('sidebar.groupPinned'),
+        today: t('sidebar.groupToday'),
+        yesterday: t('sidebar.groupYesterday'),
         week: t('sidebar.groupWeek'),
         month: t('sidebar.groupMonth'),
         older: t('sidebar.groupOlder'),
@@ -294,7 +302,9 @@ export function App() {
         setQuickSwitcherOpen((open) => !open);
       } else if (key === ',' && !event.shiftKey && !event.altKey) {
         event.preventDefault();
-        void navigate('/settings');
+        // Land in the search field: Ctrl+, → type → Enter → Esc is the
+        // shortest path to any setting, and shorter than the nav tree.
+        void navigate('/settings', { state: { focusSearch: true } });
       } else if (key === '/' && !event.shiftKey && !event.altKey) {
         event.preventDefault();
         setQuickSwitcherOpen(false);

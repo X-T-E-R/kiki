@@ -108,7 +108,7 @@ export function Dialog({
   return createPortal(
     <div
       className={
-        overlayClassName ?? 'fixed inset-0 z-50 flex items-center justify-center bg-ink/20 p-4'
+        overlayClassName ?? 'fixed inset-0 z-50 flex items-center justify-center bg-shell/20 p-4'
       }
       onPointerDown={(event) => {
         if (event.target === event.currentTarget) onClose();
