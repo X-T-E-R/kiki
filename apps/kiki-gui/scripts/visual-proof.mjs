@@ -2019,7 +2019,7 @@ async function scenarioResyncHold() {
   // Hold every snapshot fetch until released below.
   const held = [];
   let holding = true;
-  await page.route('**/api/v1/sessions/*/snapshot', async (route) => {
+  await page.route('**/api/v1/sessions/*/snapshot**', async (route) => {
     if (!holding) return route.continue();
     await new Promise((resolve) => held.push({ route, resolve }));
   });
@@ -2037,7 +2037,7 @@ async function scenarioResyncHold() {
     await route.continue();
   }
   await page.waitForSelector(`text=${S.resyncing}`, { state: 'detached', timeout: 15_000 });
-  await page.unroute('**/api/v1/sessions/*/snapshot');
+  await page.unroute('**/api/v1/sessions/*/snapshot**');
   await page.waitForTimeout(500);
   const occurrences = await page.evaluate(
     () => document.body.innerText.split('Settled before the hold.').length - 1,
