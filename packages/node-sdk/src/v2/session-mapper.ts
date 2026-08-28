@@ -45,7 +45,10 @@ export function v2SummaryToSessionSummary(
     updatedAt: summary.updatedAt,
     archived: summary.archived,
     metadata: summary.custom as JsonObject | undefined,
-    additionalDirs: facts.additionalDirs,
+    // The engine echoes additional dirs back exactly as the caller passed
+    // them; every other path on a summary is forward-slashed, so normalize
+    // here rather than making hosts branch on the platform.
+    additionalDirs: facts.additionalDirs?.map(normalizeWorkDir),
     lastTurnReason: summary.lastTurnReason,
   };
 }

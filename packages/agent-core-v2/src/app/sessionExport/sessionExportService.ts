@@ -292,18 +292,20 @@ async function openOptionalZipSource(
     return await openZipSource(path, signal);
   } catch (error) {
     signal?.throwIfAborted();
-    if (isMissingPath(error)) return undefined;
+    if (isUnbundlablePath(error)) return undefined;
     throw error;
   }
 }
 
-function isMissingPath(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as NodeJS.ErrnoException).code === 'ENOENT'
-  );
+/**
+ * These sources are bundled when they are there. A path that is absent, or that
+ * holds something other than a regular file, is "not available to bundle" and
+ * degrades to an omitted entry — only a genuine read failure fails the export.
+ */
+function isUnbundlablePath(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return false;
+  const code = (error as { readonly code?: unknown }).code;
+  return code === 'ENOENT' || code === 'EISDIR' || code === ErrorCodes.FS_IS_DIRECTORY;
 }
 
 registerScopedService(

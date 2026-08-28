@@ -461,6 +461,25 @@ export function validateConfig(config: unknown): KimiConfig {
   }
 }
 
+/**
+ * Gate a `setConfig` patch before anything reaches disk. The engine validates
+ * per registered domain and tolerates values its own sections do not model, so
+ * a patch that violates the SDK's config contract (an unknown provider `type`,
+ * a mistyped alias field) would otherwise be persisted and only fail later, at
+ * model resolution. Callers get `config.invalid` and an untouched file.
+ */
+export function validateConfigPatch(patch: unknown): KimiConfigPatch {
+  try {
+    return KimiConfigPatchSchema.parse(patch);
+  } catch (error) {
+    throw new KimiError(
+      ErrorCodes.CONFIG_INVALID,
+      `Invalid configuration patch: ${formatConfigValidationError(error)}`,
+      { cause: error },
+    );
+  }
+}
+
 export function formatConfigValidationError(error: unknown): string {
   const missingModelContextSize = missingModelContextSizeMessage(error);
   if (missingModelContextSize !== undefined) return missingModelContextSize;
