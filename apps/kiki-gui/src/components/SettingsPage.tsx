@@ -99,7 +99,7 @@ import { RequestIdentityLayerEditor } from './RequestIdentityLayerEditor';
 import { useRestartRequirement } from './RestartBanner';
 import { RuntimeConfigEditor } from './RuntimeConfigEditor';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
-import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
+import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
 
 const SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'general', labelKey: 'st.section.general' },
@@ -1084,13 +1084,14 @@ function ModelRow({
 }
 
 function ConnectionSection() {
-  const { config, meta, wsStatus, socket } = useConnection();
+  const { config, meta, wsStatus, socket, disconnect } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const isDesktop = isDesktopRuntime();
   const [restarting, setRestarting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [confirmRestart, setConfirmRestart] = useState(false);
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const busySessions = useBusySessionCount();
 
   const restart = async () => {
@@ -1135,6 +1136,31 @@ function ConnectionSection() {
           <FeedbackLine feedback={feedback} />
         </div>
       </SectionCard>
+
+      <SectionCard id="st-card-conn-disconnect" title={t('st.conn.disconnectTitle')}>
+        <div className="space-y-3">
+          <p className="text-[12.5px] text-ink-soft">{t('st.conn.disconnectBody')}</p>
+          <button
+            type="button"
+            data-conn-disconnect
+            className={DANGER_GHOST_BUTTON}
+            onClick={() => { setConfirmDisconnect(true); }}
+          >
+            {t('sidebar.disconnect')}
+          </button>
+        </div>
+      </SectionCard>
+
+      <ConfirmDialog
+        open={confirmDisconnect}
+        overlayId="confirm-conn-disconnect"
+        title={t('st.conn.disconnectConfirmTitle')}
+        body={t('st.conn.disconnectConfirmBody')}
+        confirmLabel={t('sidebar.disconnect')}
+        tone="danger"
+        onConfirm={() => { setConfirmDisconnect(false); disconnect(); }}
+        onCancel={() => { setConfirmDisconnect(false); }}
+      />
 
       <ConfirmDialog
         open={confirmRestart}

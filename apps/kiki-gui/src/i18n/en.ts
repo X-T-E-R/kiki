@@ -69,7 +69,10 @@ export const en = {
   'sidebar.searchLoadMore': 'Load more results',
   'sidebar.settings': 'Settings',
   'sidebar.disconnect': 'Disconnect',
+  'sidebar.connStatusAria': 'Connection status; open connection settings',
   'sidebar.sessionActionsFor': 'Session actions for {title}',
+  'sidebar.pinSessionFor': 'Pin {title} to the top',
+  'sidebar.unpinSessionFor': 'Unpin {title}',
   'sidebar.workspaceFilterAria': 'Filter sessions by workspace',
   'sidebar.workspaceAll': 'All workspaces',
   'sidebar.resizeAria': 'Drag to resize the sidebar; double-click to reset',
@@ -85,7 +88,6 @@ export const en = {
   'sidebar.groupWeek': 'Past 7 days',
   'sidebar.groupMonth': 'Past 4 weeks',
   'sidebar.groupOlder': 'Older',
-  'sidebar.pinnedAria': 'Pinned to top',
   'sidebar.emptyShowArchived': 'Show archived sessions',
   'sidebar.status.approval': 'Awaiting approval',
   'sidebar.status.question': 'Awaiting answer',
@@ -743,6 +745,8 @@ export const en = {
   // ---- quick switcher page actions ----
   'switcher.pages': 'Pages',
   'switcher.action.usage': 'Open usage dashboard',
+  'switcher.action.capabilities': 'Open capabilities',
+  'switcher.action.settings': 'Open settings',
 
   // ---- settings ----
   'st.title': 'Settings',
@@ -862,6 +866,12 @@ export const en = {
   'st.conn.restarted': 'The desktop server restarted and passed its authenticated health check.',
   'st.conn.browserHint':
     'This action is disabled in the browser build. Open the same settings page in Kiki desktop.',
+  'st.conn.disconnectTitle': 'Disconnect',
+  'st.conn.disconnectBody':
+    'Forget this server and return to the connect screen. Sessions stay on the server; only the stored URL and token are cleared.',
+  'st.conn.disconnectConfirmTitle': 'Disconnect from this server?',
+  'st.conn.disconnectConfirmBody':
+    'Kiki forgets the saved URL and token and goes back to the connect screen. Running turns keep going on the server.',
   'st.auth.title': 'Authentication',
   'st.auth.statusReady': 'Auth service ready',
   'st.auth.statusNotReady': 'Auth service not ready',

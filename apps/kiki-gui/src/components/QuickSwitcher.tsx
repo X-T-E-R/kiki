@@ -50,6 +50,8 @@ export function QuickSwitcher({
 
   const untitled = t('sidebar.untitled');
   const usageActionTitle = t('switcher.action.usage');
+  const capabilitiesActionTitle = t('switcher.action.capabilities');
+  const settingsActionTitle = t('switcher.action.settings');
   const items = useMemo(
     () =>
       buildSwitcherItems({
@@ -57,9 +59,22 @@ export function QuickSwitcher({
         sessions,
         hits: searchActive ? (searchQuery.data?.items ?? []) : [],
         untitled,
-        actions: [{ actionId: 'usage', title: usageActionTitle, route: '/usage' }],
+        actions: [
+          { actionId: 'usage', title: usageActionTitle, route: '/usage' },
+          { actionId: 'capabilities', title: capabilitiesActionTitle, route: '/capabilities' },
+          { actionId: 'settings', title: settingsActionTitle, route: '/settings' },
+        ],
       }),
-    [input, sessions, searchActive, searchQuery.data, untitled, usageActionTitle],
+    [
+      input,
+      sessions,
+      searchActive,
+      searchQuery.data,
+      untitled,
+      usageActionTitle,
+      capabilitiesActionTitle,
+      settingsActionTitle,
+    ],
   );
 
   useEffect(() => {

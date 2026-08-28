@@ -1,6 +1,11 @@
 /**
- * Session sidebar — wordmark header with connection pill, new-session shortcut,
- * global search, settings entry, and the session list (polled every 5s).
+ * Session sidebar — wordmark header, new-session shortcut, global search,
+ * settings entry, and the session list (polled every 5s).
+ *
+ * Entry distribution follows the desktop convention: the wordmark row carries
+ * the browse-only destinations (capabilities, usage) and the footer keeps just
+ * the settings entry plus a connection status dot that deep-links to
+ * settings → connection. Disconnect lives in that settings section.
  *
  * The search box queries `POST /search` (global full-text index); results
  * stand in for the session list while a query is active, and "load more"
@@ -50,6 +55,29 @@ import { Dialog } from './Dialog';
 import { useGuardedNavigate } from './dirtyGuard';
 import { PendingBadge } from './PendingBadge';
 import { Wordmark } from './Wordmark';
+
+/** Wordmark-row icon buttons (capabilities / usage): glyph-only, ink-faint at
+ * rest so the header stays quiet next to the wordmark. */
+const HEADER_ICON_BUTTON =
+  'flex h-6 w-6 items-center justify-center rounded-md text-[12.5px] leading-none text-ink-faint transition-colors hover:bg-paper hover:text-ink';
+
+/** Pin glyph for a pinned session row and the hover pin/unpin toggle. */
+function PinIcon({ className = '' }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M9.6 1.9l4.5 4.5-1.6 1.6-1-.3-3 3 .5 3.4-1.1 1.1-2.6-3.7-3.2 2.4 5-5.7-.3-1 3-3-.3-1z" />
+    </svg>
+  );
+}
 
 function StatusDot({ session }: { session: Session }) {
   const { t } = useI18n();
@@ -150,7 +178,7 @@ export function Sidebar({
   className?: string;
 }) {
   const navigate = useGuardedNavigate();
-  const { client, meta, wsStatus, disconnect } = useConnection();
+  const { client, meta, wsStatus } = useConnection();
   const { t, locale, time } = useI18n();
   const untitled = t('sidebar.untitled');
   const queryClient = useQueryClient();
@@ -339,32 +367,28 @@ export function Sidebar({
       />
       <div className="flex items-center justify-between px-4 pt-4 pb-3">
         <Wordmark />
-        <span
-          className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium ${
-            wsStatus === 'open'
-              ? 'border-success/30 text-success'
-              : wsStatus === 'connecting'
-                ? 'border-amber-rule/40 text-amber-ink'
-                : 'border-danger/30 text-danger'
-          }`}
-          title={t('sidebar.connTitle', {
-            version: meta.server_version,
-            status: t(`sidebar.ws.${wsStatus}`),
-          })}
-        >
-          <span
-            className={`h-1.5 w-1.5 rounded-full ${
-              wsStatus === 'open'
-                ? 'bg-success'
-                : wsStatus === 'connecting'
-                  ? 'bg-amber-rule'
-                  : 'bg-danger'
-            }`}
-          />
-          {wsStatus === 'open'
-            ? `v${meta.server_version}`
-            : t(wsStatus === 'connecting' ? 'sidebar.ws.connecting' : 'sidebar.ws.closed')}
-        </span>
+        <div className="flex items-center gap-0.5">
+          <button
+            type="button"
+            data-nav-capabilities
+            onClick={() => void navigate('/capabilities')}
+            aria-label={t('cap.navAria')}
+            title={t('cap.nav')}
+            className={HEADER_ICON_BUTTON}
+          >
+            <span aria-hidden>✦</span>
+          </button>
+          <button
+            type="button"
+            data-nav-usage
+            onClick={() => void navigate('/usage')}
+            aria-label={t('usage.navAria')}
+            title={t('usage.nav')}
+            className={HEADER_ICON_BUTTON}
+          >
+            <span aria-hidden>$</span>
+          </button>
+        </div>
       </div>
 
       <div className="px-3 pb-2">
@@ -621,48 +645,72 @@ export function Sidebar({
                     <span className="min-w-0 flex-1">
                       <span
                         data-session-title
-                        className={`block truncate text-[12.5px] leading-snug ${
+                        className={`flex items-center gap-1 text-[12.5px] leading-snug ${
                           active ? 'font-semibold text-ink' : 'font-medium text-ink'
                         }`}
                       >
-                        {sessionLabel(session, untitled)}
+                        {pinned ? (
+                          <PinIcon
+                            className="h-[11px] w-[11px] shrink-0 text-accent"
+                          />
+                        ) : null}
+                        <span className="min-w-0 truncate">{sessionLabel(session, untitled)}</span>
                       </span>
                       <span className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-ink-faint">
                         <span className="truncate font-mono">{shortCwd(session.metadata.cwd)}</span>
                         <span className="shrink-0">· {time.relativeTime(session.updated_at)}</span>
-                        {pinned ? (
-                          <span
-                            aria-label={t('sidebar.pinnedAria')}
-                            title={t('sidebar.pinnedAria')}
-                            className="shrink-0 text-[9px] text-accent"
-                          >
-                            ⍟
-                          </span>
-                        ) : null}
                         {archived ? <span className="shrink-0">· {t('sidebar.archived')}</span> : null}
                       </span>
                     </span>
                   </button>
-                  <button
-                    type="button"
-                    aria-label={t('sidebar.sessionActionsFor', { title: sessionLabel(session, untitled) })}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      const rect = event.currentTarget.getBoundingClientRect();
-                      setMenu((current) =>
-                        current?.session.id === session.id
-                          ? null
-                          : { session, x: rect.right + 4, y: rect.top },
-                      );
-                    }}
-                    className={`absolute top-1.5 right-1.5 rounded-md px-1.5 py-0.5 text-[12px] leading-none text-ink-faint transition-opacity hover:bg-panel hover:text-ink focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-accent/30 focus-visible:outline-none ${
+                  {/* Hover/focus row affordances: quick pin toggle, then the
+                    * full action menu. Both stay reachable from the keyboard
+                    * through the row's `focus-within`. */}
+                  <div
+                    className={`absolute top-1.5 right-1.5 flex items-center gap-0.5 transition-opacity ${
                       menu?.session.id === session.id
                         ? 'opacity-100'
-                        : 'opacity-0 group-hover:opacity-100'
+                        : 'opacity-0 group-focus-within:opacity-100 group-hover:opacity-100'
                     }`}
                   >
-                    ⋯
-                  </button>
+                    {archived ? null : (
+                      <button
+                        type="button"
+                        data-session-pin-toggle
+                        aria-label={
+                          pinned
+                            ? t('sidebar.unpinSessionFor', { title: sessionLabel(session, untitled) })
+                            : t('sidebar.pinSessionFor', { title: sessionLabel(session, untitled) })
+                        }
+                        title={pinned ? t('menu.unpin') : t('menu.pin')}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          togglePin(session);
+                        }}
+                        className={`flex h-[18px] w-[18px] items-center justify-center rounded-md transition-colors hover:bg-panel focus-visible:ring-2 focus-visible:ring-accent/30 focus-visible:outline-none ${
+                          pinned ? 'text-accent' : 'text-ink-faint hover:text-ink'
+                        }`}
+                      >
+                        <PinIcon className="h-[11px] w-[11px]" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      aria-label={t('sidebar.sessionActionsFor', { title: sessionLabel(session, untitled) })}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        setMenu((current) =>
+                          current?.session.id === session.id
+                            ? null
+                            : { session, x: rect.right + 4, y: rect.top },
+                        );
+                      }}
+                      className="rounded-md px-1.5 py-0.5 text-[12px] leading-none text-ink-faint transition-colors hover:bg-panel hover:text-ink focus-visible:ring-2 focus-visible:ring-accent/30 focus-visible:outline-none"
+                    >
+                      ⋯
+                    </button>
+                  </div>
                 </div>
               );
             })}
@@ -688,37 +736,35 @@ export function Sidebar({
       </div>
       )}
 
-      <div className="border-t border-hairline px-3 py-2.5 space-y-1">
+      <div className="flex items-center gap-1.5 border-t border-hairline px-3 py-2.5">
         <PendingBadge sessions={sessions} />
         <button
           type="button"
-          onClick={() => void navigate('/usage')}
-          aria-label={t('usage.navAria')}
-          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11.5px] text-ink-soft transition-colors hover:bg-paper hover:text-ink"
-        >
-          <span aria-hidden className="w-[13px] text-center text-[12px]">$</span> {t('usage.nav')}
-        </button>
-        <button
-          type="button"
-          onClick={() => void navigate('/capabilities')}
-          aria-label={t('cap.navAria')}
-          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11.5px] text-ink-soft transition-colors hover:bg-paper hover:text-ink"
-        >
-          <span aria-hidden className="w-[13px] text-center text-[12px]">✦</span> {t('cap.nav')}
-        </button>
-        <button
-          type="button"
           onClick={() => void navigate('/settings')}
-          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11.5px] text-ink-soft transition-colors hover:bg-paper hover:text-ink"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11.5px] text-ink-soft transition-colors hover:bg-paper hover:text-ink"
         >
           <span aria-hidden className="text-[13px]">⚙</span> {t('sidebar.settings')}
         </button>
         <button
           type="button"
-          onClick={disconnect}
-          className="w-full rounded-lg px-2 py-1 text-left text-[11.5px] text-ink-soft transition-colors hover:text-danger"
+          data-connection-status
+          onClick={() => void navigate('/settings/connection')}
+          aria-label={t('sidebar.connStatusAria')}
+          title={t('sidebar.connTitle', {
+            version: meta.server_version,
+            status: t(`sidebar.ws.${wsStatus}`),
+          })}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-paper"
         >
-          {t('sidebar.disconnect')}
+          <span
+            className={`h-2 w-2 rounded-full ${
+              wsStatus === 'open'
+                ? 'bg-success'
+                : wsStatus === 'connecting'
+                  ? 'status-dot-busy bg-amber-rule'
+                  : 'bg-danger'
+            }`}
+          />
         </button>
       </div>
 

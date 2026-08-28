@@ -11,6 +11,7 @@ import type { Session } from '@moonshot-ai/protocol';
 import { I18nProvider } from '../i18n';
 import type { SearchMessageHit, SearchMessagesResponse } from '../lib/client';
 import { SEARCH_DEBOUNCE_MS } from '../lib/search';
+import { SESSION_PIN_META_KEY, type SessionGroup } from '../lib/sessionList';
 import {
   mergeSearchPages,
   searchNextPageParam,
@@ -133,7 +134,9 @@ async function settle(): Promise<void> {
   });
 }
 
-async function mount(): Promise<{ container: HTMLDivElement; root: Root }> {
+async function mount(
+  list: { sessions?: readonly Session[]; sessionGroups?: readonly SessionGroup[] } = {},
+): Promise<{ container: HTMLDivElement; root: Root }> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
@@ -146,8 +149,8 @@ async function mount(): Promise<{ container: HTMLDivElement; root: Root }> {
           <MemoryRouter>
             <Sidebar
               activeSessionId={undefined}
-              sessions={[]}
-              sessionGroups={[]}
+              sessions={list.sessions ?? []}
+              sessionGroups={list.sessionGroups ?? []}
               sessionsQuery={{
                 isLoading: false,
                 isError: false,
@@ -381,6 +384,40 @@ describe('Sidebar global search pagination', () => {
     await waitForText(container, 'alpha three');
 
     expect(container.textContent ?? '').toContain('Results may be incomplete');
+  });
+});
+
+describe('Sidebar entry distribution', () => {
+  it('puts capabilities and usage on the wordmark row', async () => {
+    const { container } = await mount();
+    expect(container.querySelector('[data-nav-capabilities]')).not.toBeNull();
+    expect(container.querySelector('[data-nav-usage]')).not.toBeNull();
+  });
+
+  it('keeps only settings and the connection status dot in the footer', async () => {
+    const { container } = await mount();
+    const status = container.querySelector<HTMLButtonElement>('[data-connection-status]');
+    expect(status).not.toBeNull();
+    expect(status?.getAttribute('title')).toContain('1.0.0');
+    // Disconnect moved to settings → connection.
+    expect(container.textContent ?? '').not.toContain('Disconnect');
+  });
+
+  it('offers a quick pin toggle per row and labels it from the pin state', async () => {
+    const plain = session('plain');
+    const pinned: Session = {
+      ...session('pinned'),
+      metadata: { cwd: 'C:/tmp', [SESSION_PIN_META_KEY]: true },
+    };
+    const groups: SessionGroup[] = [
+      { key: 'pinned', label: 'Pinned', items: [pinned] },
+      { key: 'week', label: 'Past 7 days', items: [plain] },
+    ];
+    const { container } = await mount({ sessions: [pinned, plain], sessionGroups: groups });
+    const toggles = [...container.querySelectorAll<HTMLButtonElement>('[data-session-pin-toggle]')];
+    expect(toggles).toHaveLength(2);
+    expect(toggles[0]?.getAttribute('aria-label')).toBe('Unpin pinned');
+    expect(toggles[1]?.getAttribute('aria-label')).toBe('Pin plain to the top');
   });
 });
 

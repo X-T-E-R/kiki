@@ -67,7 +67,10 @@ export const zh: Record<I18nKey, string> = {
   'sidebar.searchLoadMore': '加载更多结果',
   'sidebar.settings': '设置',
   'sidebar.disconnect': '断开连接',
+  'sidebar.connStatusAria': '连接状态；打开连接设置',
   'sidebar.sessionActionsFor': '会话操作：{title}',
+  'sidebar.pinSessionFor': '置顶「{title}」',
+  'sidebar.unpinSessionFor': '取消置顶「{title}」',
   'sidebar.workspaceFilterAria': '按工作区筛选会话',
   'sidebar.workspaceAll': '全部工作区',
   'sidebar.resizeAria': '拖拽调整侧栏宽度；双击复位',
@@ -83,7 +86,6 @@ export const zh: Record<I18nKey, string> = {
   'sidebar.groupWeek': '近 7 天',
   'sidebar.groupMonth': '近 4 周',
   'sidebar.groupOlder': '更早',
-  'sidebar.pinnedAria': '已置顶',
   'sidebar.emptyShowArchived': '显示已归档会话',
   'sidebar.status.approval': '等待批准',
   'sidebar.status.question': '等待回答',
@@ -733,6 +735,8 @@ export const zh: Record<I18nKey, string> = {
   // ---- quick switcher page actions ----
   'switcher.pages': '页面',
   'switcher.action.usage': '打开用量仪表盘',
+  'switcher.action.capabilities': '打开能力面板',
+  'switcher.action.settings': '打开设置',
 
   // ---- settings ----
   'st.title': '设置',
@@ -842,6 +846,12 @@ export const zh: Record<I18nKey, string> = {
   'st.conn.restarting': '正在重启服务器…',
   'st.conn.restarted': '桌面服务器已重启，并通过认证健康检查。',
   'st.conn.browserHint': '此操作在浏览器版本中不可用。请在 Kiki 桌面版中打开同一设置页。',
+  'st.conn.disconnectTitle': '断开连接',
+  'st.conn.disconnectBody':
+    '忘记这台服务器并回到连接页。会话仍保留在服务器上，只清除本地保存的地址与令牌。',
+  'st.conn.disconnectConfirmTitle': '断开与这台服务器的连接？',
+  'st.conn.disconnectConfirmBody':
+    'Kiki 会清除保存的地址与令牌并回到连接页。服务器上正在进行的回合不会中断。',
   'st.auth.title': '认证',
   'st.auth.statusReady': '认证服务已就绪',
   'st.auth.statusNotReady': '认证服务未就绪',
