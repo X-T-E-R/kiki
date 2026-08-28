@@ -8,7 +8,9 @@ export default defineConfig({
   plugins: [rawTextPlugin()],
   test: {
     name: 'kap-server',
-    include: ['test/**/*.{test,e2e}.ts'],
+    include: ['test/**/*.{test,integration,e2e}.ts'],
     setupFiles: ['test/setup.ts'],
+    testTimeout: 120_000,
+    fileParallelism: false,
   },
 });

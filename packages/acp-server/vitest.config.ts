@@ -48,6 +48,6 @@ export default defineConfig({
   plugins: [rawTextPlugin(), hashImportsPlugin()],
   test: {
     name: 'acp-server',
-    include: ['test/**/*.{test,e2e}.ts'],
+    include: ['test/**/*.{test,integration,e2e}.ts'],
   },
 });

@@ -37,6 +37,8 @@
   "scripts": {
     "build": "tsdown",
     "test": "vitest run",
+    "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
+    "test:integration": "vitest run .integration.",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist"
   }

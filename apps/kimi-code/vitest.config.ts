@@ -15,6 +15,6 @@ export default defineConfig({
     env: {
       KIMI_LOG_LEVEL: 'off',
     },
-    include: ['test/**/*.test.ts', 'test/**/*.test.tsx'],
+    include: ['test/**/*.{test,integration,e2e}.ts', 'test/**/*.{test,integration,e2e}.tsx'],
   },
 });

@@ -35,6 +35,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && pnpm typecheck:examples",
     "typecheck:examples": "tsc -p tsconfig.examples.json --noEmit",
     "test": "vitest run",
+    "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
+    "test:integration": "vitest run .integration.",
     "smoke": "tsx --tsconfig ./tsconfig.examples.json --import ../../build/register-raw-text-loader.mjs examples/smoke.ts",
     "smoke:boundary": "tsx --tsconfig ./tsconfig.examples.json --import ../../build/register-raw-text-loader.mjs examples/model-requester-boundary.ts",
     "smoke:select-tools": "tsx --tsconfig ./tsconfig.examples.json --import ../../build/register-raw-text-loader.mjs examples/kimi-select-tools.ts",

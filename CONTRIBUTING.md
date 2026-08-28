@@ -48,7 +48,10 @@ pnpm install
 Useful scripts:
 
 - `pnpm dev:cli` — run the CLI in dev mode
-- `pnpm test` — run tests (vitest)
+- `pnpm test` — run tests (vitest; L0 + L1; L2 files self-skip unless env-gated)
+- `pnpm test:fast` — L0 only (`*.test.ts`, skips `*.integration.ts` / `*.e2e.ts`)
+- `pnpm test:integration` — L1 files (`*.integration.ts`)
+- `pnpm test:promote` — local promote extra gate: engine/CLI/GUI L0+L1 plus `packages/pi-tui` (`node --test`). kap-server stays out until its import/contention work lands
 - `pnpm typecheck` — TypeScript check (note: builds packages first)
 - `pnpm lint` — oxlint
 - `pnpm lint:fix` — oxlint with auto-fix

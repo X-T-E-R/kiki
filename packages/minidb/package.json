@@ -47,6 +47,8 @@
     "build": "tsdown",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
+    "test:integration": "vitest run .integration.",
     "bench": "node --import tsx bench/bench.ts",
     "bench:cluster": "node --import tsx bench/cluster.ts",
     "bench:open": "node --import tsx bench/open-lifecycle.ts",

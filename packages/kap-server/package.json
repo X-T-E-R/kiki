@@ -30,6 +30,8 @@
     "model-prices:update": "node scripts/update-model-prices.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
+    "test:integration": "vitest run .integration.",
     "clean": "rm -rf dist"
   },
   "dependencies": {

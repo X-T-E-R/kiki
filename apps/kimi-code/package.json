@@ -73,8 +73,10 @@
     "clean": "rm -rf dist",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "pnpm -w run build:packages && vitest run",
+    "test:fast": "pnpm -w run build:packages && vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
+    "test:integration": "pnpm -w run build:packages && vitest run .integration.",
     "e2e": "pnpm -w run build:packages && KIMI_E2E=1 vitest run test/e2e",
-    "e2e:real": "pnpm -w run build:packages && KIMI_E2E_REAL=1 vitest run test/e2e/real-llm-smoke.e2e.test.ts",
+    "e2e:real": "pnpm -w run build:packages && KIMI_E2E_REAL=1 vitest run test/e2e/real-llm-smoke.e2e.ts",
     "postinstall": "node scripts/postinstall.mjs"
   },
   "optionalDependencies": {

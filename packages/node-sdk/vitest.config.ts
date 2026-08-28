@@ -15,7 +15,7 @@ export default defineConfig({
     env: {
       KIMI_LOG_LEVEL: 'off',
     },
-    include: ['test/**/*.test.ts'],
+    include: ['test/**/*.{test,integration,e2e}.ts'],
     // Every harness in this suite boots the v2 engine in-process against a
     // fresh temp home: config hydration, the session-index projection and the
     // workspace store put a single `createKimiHarness` in the seconds range,

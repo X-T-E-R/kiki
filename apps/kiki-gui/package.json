@@ -36,6 +36,8 @@
     "desktop:import-kimi-config": "cargo run --manifest-path src-tauri/Cargo.toml --example import-kimi-config --",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
+    "test:integration": "vitest run .integration.",
     "fixtures": "node scripts/fixture-server.mjs",
     "proof": "node scripts/visual-proof.mjs",
     "proof:update-goldens": "node scripts/visual-proof.mjs --update-goldens",
