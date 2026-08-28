@@ -12,8 +12,18 @@ import { useQuery } from '@tanstack/react-query';
 import type { Session } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../i18n';
-import { buildSwitcherItems, type SwitcherItem } from '../lib/quickSwitcher';
+import {
+  buildSwitcherItems,
+  settingsCardRoute,
+  type SwitcherItem,
+  type SwitcherSettingItem,
+} from '../lib/quickSwitcher';
 import { isSearchable, SEARCH_DEBOUNCE_MS } from '../lib/search';
+import {
+  buildSettingsSearchIndex,
+  searchSettings,
+  settingsSectionLabels,
+} from '../lib/settings';
 import { useConnection } from '../state/connection';
 import { Dialog } from './Dialog';
 import { useGuardedNavigate } from './dirtyGuard';
@@ -52,6 +62,23 @@ export function QuickSwitcher({
   const usageActionTitle = t('switcher.action.usage');
   const capabilitiesActionTitle = t('switcher.action.capabilities');
   const settingsActionTitle = t('switcher.action.settings');
+  // The settings index is the same one the settings page searches, so a name
+  // that works there works here — and lands on the card, not the section.
+  const settingsIndex = useMemo(
+    () => buildSettingsSearchIndex(settingsSectionLabels(t), t),
+    [t],
+  );
+  const settingsMatches: SwitcherSettingItem[] = useMemo(
+    () =>
+      searchSettings(settingsIndex, input).map((entry) => ({
+        kind: 'setting',
+        cardId: entry.cardId,
+        sectionLabel: entry.sectionLabel,
+        title: entry.title,
+        route: settingsCardRoute(entry.section, entry.cardId),
+      })),
+    [settingsIndex, input],
+  );
   const items = useMemo(
     () =>
       buildSwitcherItems({
@@ -64,6 +91,7 @@ export function QuickSwitcher({
           { actionId: 'capabilities', title: capabilitiesActionTitle, route: '/capabilities' },
           { actionId: 'settings', title: settingsActionTitle, route: '/settings' },
         ],
+        settings: settingsMatches,
       }),
     [
       input,
@@ -74,6 +102,7 @@ export function QuickSwitcher({
       usageActionTitle,
       capabilitiesActionTitle,
       settingsActionTitle,
+      settingsMatches,
     ],
   );
 
@@ -91,7 +120,7 @@ export function QuickSwitcher({
   const openItem = (item: SwitcherItem | undefined) => {
     if (item === undefined) return;
     onClose();
-    if (item.kind === 'action') void navigate(item.route);
+    if (item.kind === 'action' || item.kind === 'setting') void navigate(item.route);
     else void navigate(`/s/${item.sessionId}`);
   };
 
@@ -114,6 +143,7 @@ export function QuickSwitcher({
   const firstActionIndex = items.findIndex((item) => item.kind === 'action');
   const firstSessionIndex = items.findIndex((item) => item.kind === 'session');
   const firstHitIndex = items.findIndex((item) => item.kind === 'hit');
+  const firstSettingIndex = items.findIndex((item) => item.kind === 'setting');
 
   return (
     <Dialog
@@ -161,9 +191,15 @@ export function QuickSwitcher({
                     : t('switcher.sessions')
                   : index === firstHitIndex
                     ? t('switcher.matches')
-                    : null;
+                    : index === firstSettingIndex
+                      ? t('switcher.settings')
+                      : null;
             const itemKey =
-              item.kind === 'action' ? `action-${item.actionId}` : `${item.kind}-${item.sessionId}-${index}`;
+              item.kind === 'action'
+                ? `action-${item.actionId}`
+                : item.kind === 'setting'
+                  ? `setting-${item.cardId}`
+                  : `${item.kind}-${item.sessionId}-${index}`;
             return (
               <div key={itemKey}>
                 {headerText !== null ? (
@@ -191,6 +227,16 @@ export function QuickSwitcher({
                       >
                         $
                       </span>
+                      <span className="truncate text-[12.5px] font-medium text-ink">
+                        {item.title}
+                      </span>
+                    </span>
+                  ) : item.kind === 'setting' ? (
+                    <span className="flex min-w-0 items-baseline gap-1.5">
+                      <span className="shrink-0 text-[10.5px] text-ink-faint">
+                        {item.sectionLabel}
+                      </span>
+                      <span aria-hidden className="shrink-0 text-[10.5px] text-ink-faint">›</span>
                       <span className="truncate text-[12.5px] font-medium text-ink">
                         {item.title}
                       </span>

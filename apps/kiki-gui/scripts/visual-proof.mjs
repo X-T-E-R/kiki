@@ -1,4 +1,4 @@
-﻿/**
+/**
  * kiki-gui visual proof — boots the fixture server + the vite dev server,
  * drives the real GUI with playwright chromium through every fixture
  * scenario, and writes screenshots to an ignored disposable directory by
@@ -80,6 +80,11 @@ const STRINGS = {
     configuredProviders: 'Configured providers',
     tools: 'Tools',
     newSessionDefaults: 'New-session defaults',
+    appearanceTitle: 'Appearance',
+    searchQuery: 'theme',
+    themeDark: 'Dark',
+    themeLight: 'Light',
+    switcherSettingsGroup: 'Settings',
     savedTick: '✓ Saved',
     planModeToggle: 'Start new sessions in plan mode',
     permissionModeAuto: 'auto',
@@ -214,6 +219,11 @@ const STRINGS = {
     configuredProviders: '已配置的提供商',
     tools: '工具',
     newSessionDefaults: '新会话默认值',
+    appearanceTitle: '外观',
+    searchQuery: '主题',
+    themeDark: '暗色',
+    themeLight: '亮色',
+    switcherSettingsGroup: '设置',
     savedTick: '✓ 已保存',
     planModeToggle: '新会话默认开启计划模式',
     permissionModeAuto: '自动',
@@ -1192,6 +1202,96 @@ async function scenarioSettings() {
   await shot('settings-capabilities-runtime');
 }
 
+/**
+ * E4 settings convenience. Search is the shortest path to a setting, so this
+ * walks it end to end: Ctrl+, opens settings with the caret already in the
+ * field, Enter jumps to the card and flashes it, and Ctrl+K reaches the same
+ * cards from a session. The density claim (flat grouped rows put all of
+ * General on one 1280×800 screen) is measured, not eyeballed, and the dark
+ * theme gets its own pass because the new rows lean on hairline tokens.
+ */
+async function scenarioSettingsSearch() {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'domcontentloaded',
+  });
+  await page.waitForSelector(`text=${S.newSession}`, { timeout: 10_000 });
+
+  // Ctrl+, from outside settings: the page opens with focus in the search box.
+  await page.keyboard.press('Control+Comma');
+  await page.waitForURL(/\/settings/, { timeout: 10_000 });
+  await page.waitForSelector('[data-settings-search]', { timeout: 10_000 });
+  await page.waitForFunction(
+    () => document.activeElement?.hasAttribute('data-settings-search') === true,
+    { timeout: 5000 },
+  );
+  await page.waitForTimeout(400);
+  await shot('settings-search-focused');
+
+  // Density: General must not scroll at 1280×800 — that is the whole point of
+  // trading bordered cards for hairline-separated rows.
+  const overflow = await page.evaluate(() => {
+    const pane = document.querySelector('[data-settings-scroll]');
+    return pane === null ? null : pane.scrollHeight - pane.clientHeight;
+  });
+  if (overflow === null) throw new Error('settings scroll pane not found');
+  if (overflow > 0) {
+    throw new Error(`General section still scrolls at 1280×800 (${overflow}px overflow)`);
+  }
+
+  // Type → hit list → Enter lands on the card and flashes it.
+  await page.keyboard.type(S.searchQuery);
+  await page.waitForSelector(`[role="option"]:has-text("${S.appearanceTitle}")`, { timeout: 5000 });
+  await page.waitForTimeout(200);
+  await shot('settings-search-hits');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('#st-card-appearance.settings-card-flash', { timeout: 5000 });
+  await shot('settings-search-landed');
+
+  // Dark theme: the flat rows carry their grouping through the dark tokens too.
+  await page.locator('#st-card-appearance').getByRole('button', { name: S.themeDark, exact: true }).click();
+  await page.waitForFunction(
+    () => document.documentElement.dataset['theme'] === 'dark',
+    { timeout: 5000 },
+  );
+  await page.waitForTimeout(600); // let the flash finish so the shot is steady
+  await shot('settings-search-dark');
+
+  // Narrow viewport keeps the search box above the section select.
+  await page.setViewportSize({ width: 900, height: 800 });
+  await page.waitForTimeout(300);
+  await page.waitForSelector('[data-settings-search]:visible', { timeout: 5000 });
+  await shot('settings-search-narrow');
+  await page.setViewportSize({ width: 1280, height: 800 });
+
+  // Ctrl+K from a session reaches settings cards by name, under the session
+  // and message groups.
+  await page.goto(`${WEB_URL}/new?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
+    waitUntil: 'domcontentloaded',
+  });
+  await page.waitForSelector(`text=${S.newSession}`, { timeout: 10_000 });
+  await page.keyboard.press('Control+k');
+  await page.waitForSelector('#quick-switcher-list', { timeout: 5000 });
+  await page.keyboard.type(S.searchQuery);
+  const switcherList = page.locator('#quick-switcher-list');
+  await switcherList.getByText(S.switcherSettingsGroup, { exact: true }).waitFor({ timeout: 5000 });
+  const settingRow = switcherList.locator('[role="option"]', { hasText: S.appearanceTitle });
+  await settingRow.first().waitFor({ timeout: 5000 });
+  await page.waitForTimeout(200);
+  await shot('settings-search-switcher');
+  await settingRow.first().click();
+  await page.waitForSelector('#st-card-appearance.settings-card-flash', { timeout: 10_000 });
+  await shot('settings-search-switcher-landed');
+
+  // Restore the light palette and the desktop viewport for later scenarios.
+  await page.locator('#st-card-appearance').getByRole('button', { name: S.themeLight, exact: true }).click();
+  await page.waitForFunction(
+    () => document.documentElement.dataset['theme'] === 'light',
+    { timeout: 5000 },
+  );
+  await page.setViewportSize({ width: 1440, height: 900 });
+}
+
 async function scenarioSettingsWrite() {
   await page.goto(`${WEB_URL}/settings/general?server=${encodeURIComponent(FIXTURE_URL)}&token=${FIXTURE_TOKEN}`, {
     waitUntil: 'domcontentloaded',
@@ -1540,7 +1640,8 @@ async function scenarioSidebarOrganize() {
   }
 
   // --- Workspace grouping: the pinned row keeps a global leading bucket and
-  // the remaining buckets follow the workspace list order.
+  // the remaining buckets follow the sidebar's workspace order — pinned
+  // workspaces first, then recency (the fixture's wd_…001 is the pinned one).
   await pickViewOption('[data-group-by="workspace"]');
   await closeViewMenu();
   await page.waitForFunction(
@@ -1551,8 +1652,8 @@ async function scenarioSidebarOrganize() {
   const wsKeys = await groupKeys();
   if (
     wsKeys[0] !== 'pinned'
-    || wsKeys[1] !== 'wd_fixture_000000000000'
-    || wsKeys[2] !== 'wd_fixture_000000000001'
+    || wsKeys[1] !== 'wd_fixture_000000000001'
+    || wsKeys[2] !== 'wd_fixture_000000000000'
   ) {
     throw new Error(`unexpected workspace grouping: ${JSON.stringify(wsKeys)}`);
   }
@@ -2906,6 +3007,7 @@ const SCENARIOS = [
   ['draft-flow', scenarioDraftFlow],
   ['hero-shell', scenarioHeroShell],
   ['settings', scenarioSettings],
+  ['settings-search', scenarioSettingsSearch],
   ['settings-write', scenarioSettingsWrite],
   ['settings-invalid', scenarioSettingsInvalid],
   ['settings-browser-editable', scenarioSettingsBrowserEditable],

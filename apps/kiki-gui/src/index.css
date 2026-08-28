@@ -229,18 +229,20 @@ body {
 }
 
 /* Search-result landing: a short accent pulse on the target settings card. */
+/* Settings groups are flat rows, so the search-hit flash washes the group
+   instead of ringing a card that no longer has a border. */
 @keyframes kiki-card-flash {
   0% {
-    border-color: var(--color-accent);
-    box-shadow: 0 0 0 3px var(--color-accent-soft);
+    background-color: var(--color-accent-soft);
   }
   100% {
-    box-shadow: 0 0 0 0 transparent;
+    background-color: transparent;
   }
 }
 
 .settings-card-flash {
   animation: kiki-card-flash 1.8s ease-out;
+  border-radius: 0.75rem;
 }
 
 .status-dot-busy {

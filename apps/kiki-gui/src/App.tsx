@@ -302,7 +302,9 @@ export function App() {
         setQuickSwitcherOpen((open) => !open);
       } else if (key === ',' && !event.shiftKey && !event.altKey) {
         event.preventDefault();
-        void navigate('/settings');
+        // Land in the search field: Ctrl+, → type → Enter → Esc is the
+        // shortest path to any setting, and shorter than the nav tree.
+        void navigate('/settings', { state: { focusSearch: true } });
       } else if (key === '/' && !event.shiftKey && !event.altKey) {
         event.preventDefault();
         setQuickSwitcherOpen(false);

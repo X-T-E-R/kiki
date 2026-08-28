@@ -1138,7 +1138,7 @@ export interface CapabilityGroupSpec {
 }
 
 export const CAPABILITY_GROUPS: readonly CapabilityGroupSpec[] = [
-  { id: 'skills', titleKey: 'st.caps.group.skills', cardIds: ['st-card-caps', 'st-card-skills'], defaultOpen: true },
+  { id: 'skills', titleKey: 'st.caps.group.skills', cardIds: ['st-card-caps'], defaultOpen: true },
   { id: 'mcp', titleKey: 'st.caps.group.mcp', cardIds: ['st-card-mcp'], defaultOpen: true },
   { id: 'runtime', titleKey: 'st.caps.group.runtime', cardIds: ['st-card-runtime', 'st-card-tools'], defaultOpen: false },
   { id: 'experimental', titleKey: 'st.caps.group.experimental', cardIds: ['st-card-experimental'], defaultOpen: false },
@@ -1159,6 +1159,19 @@ export interface SettingsSearchSpecEntry {
   readonly keywordKeys: readonly I18nKey[];
 }
 
+/** Settings section order. Lives here, not in the page, so the quick switcher
+ * can label settings hits without importing the whole settings tree. */
+export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
+  { id: 'general', labelKey: 'st.section.general' },
+  { id: 'models', labelKey: 'st.section.models' },
+  { id: 'providers', labelKey: 'st.section.providers' },
+  { id: 'agents', labelKey: 'st.section.agents' },
+  { id: 'capabilities', labelKey: 'st.section.capabilities' },
+  { id: 'workspaces', labelKey: 'st.section.workspaces' },
+  { id: 'connection', labelKey: 'st.section.connection' },
+  { id: 'about', labelKey: 'st.section.about' },
+];
+
 export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'general', cardId: 'st-card-language', titleKey: 'st.language.title', keywordKeys: ['st.language.hint'] },
   { section: 'general', cardId: 'st-card-appearance', titleKey: 'st.appearance.title', keywordKeys: ['st.appearance.theme', 'st.appearance.theme.dark', 'st.appearance.theme.light', 'st.appearance.theme.system'] },
@@ -1169,7 +1182,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'models', cardId: 'st-card-models', titleKey: 'st.models.defaultTitle', keywordKeys: ['st.models.providerLabel', 'st.models.searchPlaceholder'] },
   { section: 'models', cardId: 'st-card-request-identity', titleKey: 'st.requestIdentity.defaultTitle', keywordKeys: ['st.requestIdentity.defaultLabel', 'st.requestIdentity.defaultHint'] },
   { section: 'models', cardId: 'st-card-thinking', titleKey: 'st.thinking.title', keywordKeys: ['st.thinking.enable', 'st.thinking.hint'] },
-  { section: 'connection', cardId: 'st-card-conn-server', titleKey: 'st.conn.connectedTitle', keywordKeys: ['st.conn.version', 'st.conn.reconnect'] },
+  { section: 'connection', cardId: 'st-card-conn-server', titleKey: 'st.conn.connectedTitle', keywordKeys: ['connect.serverUrl', 'connect.token', 'st.conn.version', 'st.conn.reconnect'] },
   { section: 'connection', cardId: 'st-card-conn-owned', titleKey: 'st.conn.ownedTitle', keywordKeys: ['st.conn.ownedBody', 'st.conn.restart'] },
   { section: 'connection', cardId: 'st-card-conn-disconnect', titleKey: 'st.conn.disconnectTitle', keywordKeys: ['st.conn.disconnectBody', 'sidebar.disconnect'] },
   { section: 'providers', cardId: 'st-card-auth', titleKey: 'st.auth.title', keywordKeys: ['st.auth.signIn', 'st.auth.signOut'] },
@@ -1184,8 +1197,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'agents', cardId: 'st-card-subagent-profiles', titleKey: 'st.subagentProfiles.title', keywordKeys: ['st.namedAgents.readOnlyHint', 'st.namedAgents.modelPin', 'st.namedAgents.route'] },
   { section: 'agents', cardId: 'st-card-sidecar', titleKey: 'st.sidecar.title', keywordKeys: ['st.sidecar.hint', 'st.sidecar.subagentTimeout', 'st.agents.webHint'] },
   { section: 'capabilities', cardId: 'st-card-tools', titleKey: 'st.tools.title', keywordKeys: [] },
-  { section: 'capabilities', cardId: 'st-card-mcp', titleKey: 'st.mcp.title', keywordKeys: ['st.mcp.restart'] },
-  { section: 'capabilities', cardId: 'st-card-skills', titleKey: 'st.skills.title', keywordKeys: ['st.skills.workspace'] },
+  { section: 'capabilities', cardId: 'st-card-mcp', titleKey: 'st.mcp.title', keywordKeys: ['st.mcp.configTitle', 'st.mcp.workspace'] },
   { section: 'workspaces', cardId: 'st-card-workspaces', titleKey: 'st.workspaces.title', keywordKeys: ['st.workspaces.hint'] },
   { section: 'about', cardId: 'st-card-about', titleKey: 'st.about.title', keywordKeys: ['st.about.serverVersion', 'st.about.serverId'] },
 ];
@@ -1196,6 +1208,13 @@ export interface SettingsSearchEntry {
   readonly sectionLabel: string;
   readonly title: string;
   readonly haystack: string;
+}
+
+/** Localized section labels keyed by section id, for the search index. */
+export function settingsSectionLabels(
+  t: (key: I18nKey) => string,
+): Record<string, string> {
+  return Object.fromEntries(SETTINGS_SECTIONS.map((section) => [section.id, t(section.labelKey)]));
 }
 
 export function buildSettingsSearchIndex(

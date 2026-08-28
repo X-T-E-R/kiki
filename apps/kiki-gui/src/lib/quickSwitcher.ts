@@ -35,7 +35,20 @@ export interface SwitcherActionItem {
   route: string;
 }
 
-export type SwitcherItem = SwitcherSessionItem | SwitcherHitItem | SwitcherActionItem;
+/** One settings card, reachable by name without opening the settings tree. */
+export interface SwitcherSettingItem {
+  kind: 'setting';
+  cardId: string;
+  sectionLabel: string;
+  title: string;
+  route: string;
+}
+
+export type SwitcherItem =
+  | SwitcherSessionItem
+  | SwitcherHitItem
+  | SwitcherActionItem
+  | SwitcherSettingItem;
 
 /** Caller-supplied page actions; titles are already localized. */
 export type SwitcherAction = Omit<SwitcherActionItem, 'kind'>;
@@ -43,6 +56,13 @@ export type SwitcherAction = Omit<SwitcherActionItem, 'kind'>;
 export const SWITCHER_RECENT_LIMIT = 10;
 export const SWITCHER_TITLE_MATCH_LIMIT = 5;
 export const SWITCHER_HIT_LIMIT = 8;
+export const SWITCHER_SETTING_LIMIT = 3;
+
+/** `/settings/<section>#st-card-…` — the hash the settings page already
+ * flashes on, so a switcher pick lands on the control, not the section top. */
+export function settingsCardRoute(section: string, cardId: string): string {
+  return `/settings/${section}#${cardId}`;
+}
 
 export function switcherSessionLabel(session: Session, untitled: string): string {
   if (session.title.trim() !== '') return session.title;
@@ -79,6 +99,8 @@ export function buildSwitcherItems(input: {
   hits: readonly SearchMessageHit[];
   untitled: string;
   actions?: readonly SwitcherAction[];
+  /** Settings cards already filtered by the caller's settings search. */
+  settings?: readonly SwitcherSettingItem[];
 }): SwitcherItem[] {
   const ordered = sessionsByRecency(input.sessions);
   const query = input.query.trim().toLowerCase();
@@ -103,5 +125,8 @@ export function buildSwitcherItems(input: {
     role: hit.role,
     time: hit.time,
   }));
-  return [...actions, ...titleMatches, ...hitItems];
+  // Settings sit last: a query that names a session should not be outranked
+  // by a settings card that happens to share a word.
+  const settings = (input.settings ?? []).slice(0, SWITCHER_SETTING_LIMIT);
+  return [...actions, ...titleMatches, ...hitItems, ...settings];
 }
