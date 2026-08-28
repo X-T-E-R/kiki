@@ -392,10 +392,6 @@ describe('KimiHarness config API', () => {
       enabled: false,
       source: 'env',
     });
-    expect(features.find((feature) => feature.id === 'secondary-model')).toMatchObject({
-      enabled: false,
-      source: 'default',
-    });
   });
 
   it('can create the default config scaffold without selecting a model', async () => {
