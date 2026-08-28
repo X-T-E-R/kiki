@@ -59,16 +59,30 @@ function deferred(): { readonly promise: Promise<void>; resolve(): void } {
 }
 
 describe('server-v2 snapshot route enrichment', () => {
-  it('attaches current_prompt_id from the captured prompt state', async () => {
+  it('keeps legacy parity while transcript mode skips history and tool-count work', async () => {
     const sessionId = 'sess_snapshot';
     const promptId = 'msg_snapshot_prompt';
     const workspaceId = 'wd_snapshot_012345abcdef';
     const now = Date.parse('2026-01-01T00:00:00.000Z');
+    const loadParts = vi.fn(async (parts: unknown) => parts);
     const main = {
       accessor: fakeAccessor([
         [IAgentProfileService, { getModel: () => 'provider/session-model' }],
-        [IAgentBlobService, { loadParts: async (parts: unknown) => parts }],
+        [IAgentBlobService, { loadParts }],
       ]),
+    };
+    const approval = {
+      id: 'approval-snapshot',
+      kind: 'approval',
+      state: 'pending',
+      origin: { agentId: 'main', turnId: 7 },
+      payload: {
+        toolCallId: 'tc-approval',
+        toolName: 'Bash',
+        action: 'run',
+        display: { command: 'pwd' },
+      },
+      createdAt: now,
     };
     const session = {
       accessor: fakeAccessor([
@@ -93,7 +107,10 @@ describe('server-v2 snapshot route enrichment', () => {
           },
         ],
         [IAgentLifecycleService, { get: () => main, create: async () => main }],
-        [ISessionInteractionService, { listPending: () => [] }],
+        [
+          ISessionInteractionService,
+          { listPending: (kind: string) => (kind === 'approval' ? [approval] : []) },
+        ],
       ]),
     };
     const handler = {
@@ -131,41 +148,52 @@ describe('server-v2 snapshot route enrichment', () => {
         [ITelemetryService, { withContext: () => ({ track2: () => {} }) }],
       ]),
     };
-    const broadcaster = {
-      getTranscriptToolCallCounts: async () => new Map([['agent-1', 3]]),
-      getSnapshotState: async () => ({
-        seq: 1,
-        epoch: 'ep_snapshot',
-        contextMessages: [],
-        contextMessageTimes: [],
-        currentPromptId: promptId,
-        inFlightTurn: {
-          turn_id: 7,
-          assistant_text: 'Hello',
-          thinking_text: '',
-          running_tools: [],
+    const getTranscriptToolCallCounts = vi.fn(async () => new Map([['agent-1', 3]]));
+    const getSnapshotState = vi.fn(async () => ({
+      seq: 1,
+      epoch: 'ep_snapshot',
+      contextMessages: [
+        {
+          id: 'message-snapshot',
+          role: 'user' as const,
+          content: [{ type: 'text' as const, text: 'captured' }],
+          toolCalls: [],
         },
-        subagents: [
-          {
-            id: 'agent-1',
-            session_id: sessionId,
-            kind: 'subagent',
-            description: 'task agent-1',
-            status: 'running',
-            subagent_phase: 'working',
-            parent_tool_call_id: 'tc_swarm_1',
-            tool_call_count: 3,
-            swarm_index: 0,
-            run_in_background: false,
-            created_at: new Date(now).toISOString(),
-          },
-        ],
-      }),
-    };
+      ],
+      contextMessageTimes: [now],
+      currentPromptId: promptId,
+      inFlightTurn: {
+        turn_id: 7,
+        assistant_text: 'Hello',
+        thinking_text: '',
+        running_tools: [],
+      },
+      status: { contextTokens: 12, maxContextTokens: 128 },
+      subagents: [
+        {
+          id: 'agent-1',
+          session_id: sessionId,
+          kind: 'subagent',
+          description: 'task agent-1',
+          status: 'running',
+          subagent_phase: 'working',
+          parent_tool_call_id: 'tc_swarm_1',
+          tool_call_count: 3,
+          swarm_index: 0,
+          run_in_background: false,
+          created_at: new Date(now).toISOString(),
+        },
+      ],
+    }));
+    const broadcaster = { getSnapshotState, getTranscriptToolCallCounts };
 
     let routeHandler:
       | ((
-          req: { id: string; params: { session_id: string } },
+          req: {
+            id: string;
+            params: { session_id: string };
+            query: { mode?: 'transcript' };
+          },
           reply: { send(payload: unknown): unknown },
         ) => Promise<void> | void)
       | undefined;
@@ -181,26 +209,52 @@ describe('server-v2 snapshot route enrichment', () => {
       },
     );
 
-    let payload: unknown;
-    await routeHandler?.(
-      { id: 'req_snapshot', params: { session_id: sessionId } },
-      {
-        send: (value) => {
-          payload = value;
+    const invoke = async (mode?: 'transcript') => {
+      let payload: unknown;
+      await routeHandler?.(
+        { id: 'req_snapshot', params: { session_id: sessionId }, query: { mode } },
+        {
+          send: (value) => {
+            payload = value;
+          },
         },
-      },
-    );
+      );
+      const body = payload as { code: number; data: unknown };
+      expect(body.code).toBe(0);
+      return sessionSnapshotResponseSchema.parse(body.data);
+    };
 
-    const body = payload as { code: number; data: unknown };
-    expect(body.code).toBe(0);
-    const snap = sessionSnapshotResponseSchema.parse(body.data);
-    expect(snap.in_flight_turn).toMatchObject({
+    const compact = await invoke('transcript');
+    expect(compact.messages).toEqual({ items: [], has_more: false });
+    expect(compact.in_flight_turn).toMatchObject({
       turn_id: 7,
       assistant_text: 'Hello',
       current_prompt_id: promptId,
     });
-    expect(snap.session.agent_config.model).toBe('provider/session-model');
-    expect(snap.subagents).toEqual([
+    expect(compact.session.agent_config.model).toBe('provider/session-model');
+    expect(compact.context_tokens).toBe(12);
+    expect(compact.max_context_tokens).toBe(128);
+    expect(compact.pending_approvals).toEqual([
+      expect.objectContaining({ approval_id: 'approval-snapshot', tool_call_id: 'tc-approval' }),
+    ]);
+    expect(getSnapshotState).toHaveBeenLastCalledWith(sessionId, { captureMessages: false });
+    expect(getTranscriptToolCallCounts).not.toHaveBeenCalled();
+    expect(loadParts).not.toHaveBeenCalled();
+
+    const legacy = await invoke();
+    expect(legacy.messages.items).toHaveLength(1);
+    expect(legacy).toMatchObject({
+      as_of_seq: compact.as_of_seq,
+      epoch: compact.epoch,
+      session: compact.session,
+      in_flight_turn: compact.in_flight_turn,
+      pending_approvals: compact.pending_approvals,
+      pending_questions: compact.pending_questions,
+    });
+    expect(getSnapshotState).toHaveBeenLastCalledWith(sessionId, { captureMessages: true });
+    expect(getTranscriptToolCallCounts).toHaveBeenCalledOnce();
+    expect(loadParts).toHaveBeenCalledOnce();
+    expect(legacy.subagents).toEqual([
       expect.objectContaining({
         id: 'agent-1',
         kind: 'subagent',
@@ -284,6 +338,24 @@ describe('server-v2 GET /api/v1/sessions/:id/snapshot', () => {
     expect(snap.context_breakdown).toBeUndefined();
     expect(snap.pending_approvals).toEqual([]);
     expect(snap.pending_questions).toEqual([]);
+  });
+
+  it('keeps the legacy snapshot readable and skips history work in transcript mode', async () => {
+    const sid = await createSession();
+    const compactRes = await fetch(`${base}/api/v1/sessions/${sid}/snapshot?mode=transcript`, {
+      headers: authHeaders(server as RunningServer),
+    } as never);
+    const compactBody = (await compactRes.json()) as { code: number; data: unknown };
+    expect(compactBody.code).toBe(0);
+    const compact = sessionSnapshotResponseSchema.parse(compactBody.data);
+    expect(compact.messages).toEqual({ items: [], has_more: false });
+    expect(compact.session.id).toBe(sid);
+
+    const legacy = await snapshot(sid);
+    expect(legacy.as_of_seq).toBe(compact.as_of_seq);
+    expect(legacy.epoch).toBe(compact.epoch);
+    expect(legacy.session).toEqual(compact.session);
+    expect(legacy.messages.items).toEqual([]);
   });
 
   it('matches the messages route projection for captured message identity and time', async () => {

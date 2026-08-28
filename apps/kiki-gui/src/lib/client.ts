@@ -695,6 +695,10 @@ export interface AgentTranscriptResponse {
   readonly anchor?: unknown;
 }
 
+export interface SnapshotOptions {
+  readonly transcript?: boolean;
+}
+
 /** Cursor / page options for {@link KikiClient.getAgentTranscript}. */
 export interface GetAgentTranscriptOptions {
   /** Page toward older turns (`before_turn`). Mutually exclusive with `afterTurn`. */
@@ -878,10 +882,11 @@ export class KikiClient {
     );
   }
 
-  snapshot(sessionId: string): Promise<SessionSnapshotResponse> {
+  snapshot(sessionId: string, options?: SnapshotOptions): Promise<SessionSnapshotResponse> {
     return this.request<SessionSnapshotResponse>(
       'GET',
       `/sessions/${encodeURIComponent(sessionId)}/snapshot`,
+      { query: { mode: options?.transcript === true ? 'transcript' : undefined } },
     );
   }
 

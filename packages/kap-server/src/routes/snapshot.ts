@@ -46,12 +46,20 @@ const sessionIdParamSchema = z.object({
   session_id: z.string().min(1),
 });
 
+const snapshotQuerySchema = z.object({
+  mode: z.literal('transcript').optional(),
+});
+
 interface SnapshotRouteHost {
   get(
     path: string,
     options: { preHandler: unknown[]; schema?: Record<string, unknown> } | undefined,
     handler: (
-      req: { id: string; params: { session_id: string } },
+      req: {
+        id: string;
+        params: { session_id: string };
+        query: { mode?: 'transcript' };
+      },
       reply: { send(payload: unknown): unknown },
     ) => Promise<void> | void,
   ): unknown;
@@ -70,6 +78,7 @@ export function registerSnapshotRoutes(app: SnapshotRouteHost, deps: SnapshotRou
       method: 'GET',
       path: '/sessions/{session_id}/snapshot',
       params: sessionIdParamSchema,
+      querystring: snapshotQuerySchema,
       success: { data: sessionSnapshotResponseSchema },
       errors: {
         [ErrorCode.SESSION_NOT_FOUND]: {},
@@ -82,7 +91,7 @@ export function registerSnapshotRoutes(app: SnapshotRouteHost, deps: SnapshotRou
     async (req, reply) => {
       const { session_id } = req.params;
       try {
-        const data = await assembleSnapshot(core, broadcaster, session_id);
+        const data = await assembleSnapshot(core, broadcaster, session_id, req.query.mode);
         reply.send(okEnvelope(data, req.id));
       } catch (err) {
         if (err instanceof SnapshotNotFoundError) {
@@ -100,7 +109,9 @@ async function assembleSnapshot(
   core: Scope,
   broadcaster: SessionEventBroadcaster,
   sessionId: string,
+  mode: 'transcript' | undefined,
 ): Promise<SessionSnapshotResponse> {
+  const compact = mode === 'transcript';
   const handle = await resumeSessionById(core.accessor, sessionId);
   if (handle === undefined) {
     throw new SnapshotNotFoundError(sessionId);
@@ -111,11 +122,8 @@ async function assembleSnapshot(
   const cwd = workspace?.root ?? '';
   const meta = await handle.accessor.get(ISessionMetadata).read();
 
-  // Materializing the main agent restores its persisted ProfileModel before
-  // the snapshot is projected. Unlike the list placeholder, this single-session
-  // surface can therefore carry the authoritative session-bound model.
   const main = await ensureMainAgent(handle);
-  const snapState = await broadcaster.getSnapshotState(sessionId);
+  const snapState = await broadcaster.getSnapshotState(sessionId, { captureMessages: !compact });
   const projected = toWireSession(
     { ...meta, workspaceId },
     cwd,
@@ -125,22 +133,26 @@ async function assembleSnapshot(
   const session =
     model === undefined ? projected : { ...projected, agent_config: { ...projected.agent_config, model } };
   const subagentCandidates = [...snapState.subagents];
-  const toolCallCounts = await broadcaster.getTranscriptToolCallCounts(
-    sessionId,
-    subagentCandidates.map((subagent) => subagent.id),
-  );
+  const toolCallCounts = compact
+    ? new Map<string, number>()
+    : await broadcaster.getTranscriptToolCallCounts(
+        sessionId,
+        subagentCandidates.map((subagent) => subagent.id),
+      );
   const subagents = enrichSnapshotSubagents(subagentCandidates, meta.agents, toolCallCounts);
   const status = snapState.status;
 
-  const all = await loadCapturedMessageHistory(
-    main,
-    sessionId,
-    meta.createdAt,
-    snapState.contextMessages,
-    snapState.contextMessageTimes,
-  );
-  const hasMore = all.length > SNAPSHOT_MESSAGE_PAGE_SIZE;
-  const items = all.slice(-SNAPSHOT_MESSAGE_PAGE_SIZE);
+  const all = compact
+    ? []
+    : await loadCapturedMessageHistory(
+        main,
+        sessionId,
+        meta.createdAt,
+        snapState.contextMessages,
+        snapState.contextMessageTimes,
+      );
+  const hasMore = !compact && all.length > SNAPSHOT_MESSAGE_PAGE_SIZE;
+  const items = compact ? [] : all.slice(-SNAPSHOT_MESSAGE_PAGE_SIZE);
 
   const inFlightTurn = attachCurrentPromptIdToInFlight(
     snapState.inFlightTurn,

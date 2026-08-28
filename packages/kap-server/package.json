@@ -27,6 +27,7 @@
   },
   "scripts": {
     "build": "tsdown",
+    "bench": "vitest run --config vitest.bench.config.ts",
     "model-prices:update": "node scripts/update-model-prices.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",

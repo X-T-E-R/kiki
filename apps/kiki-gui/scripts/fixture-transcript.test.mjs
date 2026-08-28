@@ -133,6 +133,14 @@ test('history_rewritten reseeds the journal user and regenerate turn.started kee
   assert.equal(snapshot.items[0].origin.payload.promptId, 'p-regen');
   const running = snapshot.prompts.find((prompt) => prompt.promptId === 'p-regen');
   assert.equal(running?.userMessageId, 'um-anchor');
+  assert.equal(snapshot.items[0].prompt, 'First fixture question — edited resend.');
+  projector.ingestFrame({
+    type: 'turn.ended',
+    payload: { turnId: 1, reason: 'completed', durationMs: 4200 },
+  });
+  const ended = projector.snapshot('main');
+  assert.equal(ended.items[0].prompt, 'First fixture question — edited resend.');
+  assert.equal(ended.items[0].origin.payload.userMessageId, 'um-anchor');
 });
 
 test('appends a later stream segment onto the same live frame instead of overwriting it', () => {

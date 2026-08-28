@@ -587,9 +587,200 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(kinds).toContain('notice');
     expect(projected.blocks.some((block) => block.id.includes('plan-1'))).toBe(true);
     expect(projected.blocks.some((block) => block.id.includes('swarm-1'))).toBe(true);
-    expect(projected.blocks.some((block) => block.id.includes(`ref-${CHILD_AGENT_ID}`))).toBe(true);
+    expect(projected.blocks.some((block) => block.kind === 'subagent' && block.subagentId === CHILD_AGENT_ID)).toBe(
+      true,
+    );
+    expect(projected.blocks.some((block) => block.id.includes(`ref-${CHILD_AGENT_ID}`))).toBe(false);
     expect(projected.planMode).toBe(true);
     expect(projected.swarmMode).toBe(true);
+  });
+
+  it('does not render a second user bubble for a prompt echo with the same message id', () => {
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', {
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't1',
+          ordinal: 1,
+          state: 'completed',
+          origin: { kind: 'user' },
+          prompt: '注意不能一次并发过多…',
+          message: {
+            messageId: 'msg_01M0KR389HMPV4350ZWVBTZ0YF',
+            role: 'user',
+            revision: 0,
+            provenance: { source: 'engine' },
+          },
+          startedAt: FIXED_AT,
+          steps: [
+            {
+              kind: 'step',
+              stepId: 't1.1',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed',
+              frames: [
+                {
+                  kind: 'text',
+                  frameId: 'echo-1',
+                  role: 'user',
+                  text: '注意不能一次并发过多…',
+                  part: {
+                    partId: 'echo-1',
+                    messageId: 'msg_01M0KR389HMPV4350ZWVBTZ0YF',
+                    revision: 0,
+                    provenance: { source: 'engine' },
+                  },
+                },
+                {
+                  kind: 'text',
+                  frameId: 'asst-1',
+                  role: 'assistant',
+                  text: 'ok',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [],
+      meta: {},
+    });
+    const users = projected.blocks.filter((block) => block.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({
+      text: '注意不能一次并发过多…',
+      userMessageId: 'msg_01M0KR389HMPV4350ZWVBTZ0YF',
+    });
+  });
+
+  it('projects a shell taskref as a shell card instead of a bare task id', () => {
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', {
+      items: [
+        {
+          kind: 'taskref',
+          refId: 'ref-bash-1',
+          taskId: 'bash-xxxxxxxx',
+          at: FIXED_AT,
+        },
+      ],
+      tasks: [
+        {
+          taskId: 'bash-xxxxxxxx',
+          kind: 'shell',
+          state: 'completed',
+          detached: true,
+          description: '$ sleep 2',
+          outputTail: 'done',
+          startedAt: FIXED_AT,
+          endedAt: FIXED_AT_1,
+        },
+      ],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [],
+      meta: {},
+    });
+    expect(projected.blocks).toEqual([
+      expect.objectContaining({
+        kind: 'shell',
+        id: 'shell-bash-xxxxxxxx',
+        commandId: 'bash-xxxxxxxx',
+        output: 'done',
+        done: true,
+        isError: false,
+      }),
+    ]);
+  });
+
+  it('keeps the settled user bubble when a regenerate reset drops the turn prompt', () => {
+    const previous = projectAgentTranscriptView(createViewState('session_test'), 'main', {
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't1',
+          ordinal: 1,
+          state: 'completed',
+          origin: { kind: 'user', payload: { promptId: 'p-edit', userMessageId: 'um-anchor' } },
+          prompt: 'First fixture question — edited resend.',
+          startedAt: FIXED_AT,
+          steps: [
+            {
+              kind: 'step',
+              stepId: 't1.1',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed',
+              frames: [{ kind: 'text', frameId: 'asst-t1', role: 'assistant', text: 'EDITED-REPLY' }],
+            },
+          ],
+        },
+      ],
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [
+        {
+          promptId: 'p-edit',
+          status: 'completed',
+          userMessageId: 'um-anchor',
+          content: [{ type: 'text', text: 'First fixture question — edited resend.' }],
+          createdAt: FIXED_AT,
+        },
+      ],
+      meta: {},
+    });
+    const regenerating = projectAgentTranscriptView(previous, 'main', {
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't1',
+          ordinal: 1,
+          state: 'completed',
+          origin: { kind: 'user', payload: { promptId: 'p-regen', userMessageId: 'um-anchor' } },
+          startedAt: FIXED_AT,
+          endedAt: FIXED_AT_1,
+          steps: [
+            {
+              kind: 'step',
+              stepId: 't1.1',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed',
+              frames: [{ kind: 'text', frameId: 'asst-t1', role: 'assistant', text: 'REGENERATED-REPLY' }],
+            },
+          ],
+        },
+      ],
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [
+        {
+          promptId: 'p-regen',
+          status: 'running',
+          userMessageId: 'um-anchor',
+          content: [{ type: 'text', text: 'First fixture question — edited resend.' }],
+          createdAt: FIXED_AT_1,
+        },
+      ],
+      meta: {},
+    });
+    const users = regenerating.blocks.filter((block) => block.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({
+      id: 'user-um-anchor',
+      text: 'First fixture question — edited resend.',
+      userMessageId: 'um-anchor',
+      promptStatus: undefined,
+    });
   });
 
 

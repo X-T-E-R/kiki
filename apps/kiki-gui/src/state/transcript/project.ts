@@ -1092,6 +1092,21 @@ function stampRunningPromptIdentity(blocks: readonly Block[], prompt: Transcript
   return stampPromptIdentity(blocks, prompt, 'running');
 }
 
+function keepPreviousUser(
+  next: readonly Block[],
+  previousUser: UserBlock | undefined,
+  previous: readonly Block[],
+): Block[] {
+  if (previousUser === undefined) return [...next];
+  if (next.some((block) => block.id === previousUser.id || (block.kind === 'user' && isPromptIdentity(block, previousUser.promptId ?? '', previousUser.userMessageId)))) {
+    return [...next];
+  }
+  const merged = [...next];
+  if (insertAtPreviousPosition(merged, previousUser, previous)) return merged;
+  insertByTimeline(merged, previousUser);
+  return merged;
+}
+
 function isRegeneratingJournalUser(
   existing: Pick<UserBlock, 'userMessageId' | 'promptId' | 'promptStatus'> | undefined,
   prompt: { readonly promptId: string; readonly userMessageId?: string; readonly status: string },
@@ -1157,6 +1172,7 @@ function mergeTranscriptPromptBlocks(
           block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId),
       );
       if (isRegeneratingJournalUser(previousUser, prompt)) {
+        next = keepPreviousUser(next, previousUser, previous);
         next = stampPromptIdentity(next, prompt, undefined);
         continue;
       }
@@ -1346,11 +1362,24 @@ export function agentTranscriptToBlocks(
       continue;
     }
     if (item.kind === 'taskref') {
+      const task = (response.tasks ?? []).find((candidate) => candidate.taskId === item.taskId);
+      if (task === undefined || task.kind === 'subagent') continue;
+      if (task.kind === 'shell') {
+        blocks.push({
+          kind: 'shell',
+          id: `shell-${task.taskId}`,
+          commandId: task.taskId,
+          output: task.outputTail === '' ? (task.description ?? task.taskId) : task.outputTail,
+          done: task.state !== 'running',
+          isError: task.state === 'failed' || task.state === 'timed_out' || task.state === 'killed',
+        });
+        continue;
+      }
       blocks.push({
         kind: 'notice',
         id: `agent-taskref-${item.refId}`,
-        text: item.taskId,
-        tone: 'neutral',
+        text: task.description ?? task.taskId,
+        tone: task.state === 'failed' ? 'danger' : 'neutral',
       });
       continue;
     }
@@ -1364,13 +1393,13 @@ export function agentTranscriptToBlocks(
       }
     }
     const blockStart = blocks.length;
+    const origin = originFromTurnItem(item) ?? { kind: 'task', taskId: response.agent_id };
+    const identity = identityFromTurnOrigin(origin);
+    const turnUserMessageId = turnMessageId(item) ?? identity.userMessageId;
     if (item.prompt !== undefined && item.prompt.trim() !== '') {
-      const origin = originFromTurnItem(item) ?? { kind: 'task', taskId: response.agent_id };
-      const identity = identityFromTurnOrigin(origin);
-      const userMessageId = turnMessageId(item) ?? identity.userMessageId;
       blocks.push(
         ...classifiedTextToBlocks({
-          id: userMessageId ?? `agent-turn-${item.turnId}-prompt`,
+          id: turnUserMessageId ?? `agent-turn-${item.turnId}-prompt`,
           classified: classifyTranscriptText({
             text: item.prompt,
             role: 'user',
@@ -1380,7 +1409,7 @@ export function agentTranscriptToBlocks(
           createdAt: item.startedAt ?? '',
           turnId: item.turnId,
           promptId: identity.promptId,
-          userMessageId,
+          userMessageId: turnUserMessageId,
           media: mediaFromAttachmentIds(
             (item as { attachmentIds?: readonly string[] }).attachmentIds,
             attachmentsById,
@@ -1410,6 +1439,13 @@ export function agentTranscriptToBlocks(
               const taskOrigin = frame.taskId !== undefined ? { kind: 'task', taskId: frame.taskId } : undefined;
               const origin = frameOrigin ?? taskOrigin ?? (isUserVisibleOrigin(turnOrigin) ? turnOrigin : undefined);
               const userMessageId = frameMessageId(frame);
+              if (
+                userMessageId !== undefined &&
+                turnUserMessageId !== undefined &&
+                userMessageId === turnUserMessageId
+              ) {
+                break;
+              }
               blocks.push(
                 ...classifiedTextToBlocks({
                   id: userMessageId ?? `agent-frame-${frame.frameId}`,
