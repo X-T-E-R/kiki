@@ -128,7 +128,8 @@ describe('Session skills', () => {
         events.push(event);
       });
       // Model-less on purpose: the grouped surface (activation events, single
-      // turn) settles before the provider-less turn fails asynchronously.
+      // turn) is what is under test, and the turn then fails on provider
+      // resolution afterwards — which the engine takes seconds to give up on.
       const ended = waitForSDKEvent(session, (event) => event.type === 'turn.ended');
 
       await session.promptWithSkills(
@@ -267,11 +268,11 @@ describe('Session skills', () => {
             text: [
               'User activated the skill "review". Follow the loaded skill instructions.',
               '',
-              `<kimi-skill-loaded name="review" trigger="user-slash" source="project" dir="${skillDir}" args="src/app.ts">`,
+              `<skill-loaded name="review" trigger="user-slash" source="project" dir="${skillDir}" args="src/app.ts">`,
               'Review the requested file.',
               '',
               'ARGUMENTS: src/app.ts',
-              '</kimi-skill-loaded>',
+              '</skill-loaded>',
             ].join('\n'),
           },
         ],

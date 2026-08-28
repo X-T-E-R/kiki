@@ -55,19 +55,6 @@ const DANGLING_DEFAULT_TOML = [
   '',
 ].join('\n');
 
-const POOL_TOML = [
-  DEFAULTED_TOML,
-  '[secondary_model]',
-  'default_model = "k2"',
-  '',
-  '[secondary_model.models]',
-  'k2 = "fast"',
-  'gpt4o = "smart"',
-  '',
-].join('\n');
-
-const POOL_DANGLING_DEFAULT_TOML = POOL_TOML.replace('default_model = "k2"', 'default_model = "gpt4o"');
-
 const MANAGED_TOML = [
   '[providers."managed:kimi-code"]',
   'type = "kimi"',
@@ -601,30 +588,6 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     });
   });
 
-  it('leaves the secondary_model pool untouched when a provider is deleted', async () => {
-    await boot(POOL_TOML);
-    const { status } = await deleteJson<unknown>('/api/v1/providers/openai');
-    expect(status).toBe(204);
-
-    const onDisk = await readConfigToml();
-    expect(onDisk['secondary_model']).toEqual({
-      default_model: 'k2',
-      models: { k2: 'fast', gpt4o: 'smart' },
-    });
-  });
-
-  it('keeps the secondary_model section even when its default dangles after deletion', async () => {
-    await boot(POOL_DANGLING_DEFAULT_TOML);
-    const { status } = await deleteJson<unknown>('/api/v1/providers/openai');
-    expect(status).toBe(204);
-
-    const onDisk = await readConfigToml();
-    expect(onDisk['secondary_model']).toEqual({
-      default_model: 'gpt4o',
-      models: { k2: 'fast', gpt4o: 'smart' },
-    });
-  });
-
   it('round-trips a created provider: delete removes every trace from config.toml', async () => {
     await boot();
     const created = await postJson<unknown>('/api/v1/providers', CREATE_BODY);
@@ -868,46 +831,6 @@ describe('server-v2 /api/v1 provider write endpoints', () => {
     const onDisk = await readConfigToml();
     expect(onDisk['default_provider']).toBe('my-openai');
     expect(onDisk['default_model']).toBe('gpt4o');
-  });
-
-  it('leaves secondary_model pool entries alone on provider rename', async () => {
-    await boot(POOL_TOML);
-    const { status } = await putJson<unknown>('/api/v1/providers/openai', {
-      type: 'openai',
-      new_id: 'my-openai',
-      models: [{ model: 'gpt-4o', max_context_size: 128000 }],
-    });
-    expect(status).toBe(200);
-
-    const onDisk = await readConfigToml();
-    expect(onDisk['secondary_model']).toEqual({
-      default_model: 'k2',
-      models: { k2: 'fast', gpt4o: 'smart' },
-    });
-  });
-
-  it('leaves secondary_model pool entries alone on provider edit', async () => {
-    await boot(POOL_TOML);
-    const { status } = await putJson<unknown>('/api/v1/providers/openai', REPLACE_BODY);
-    expect(status).toBe(200);
-
-    const onDisk = await readConfigToml();
-    expect(onDisk['secondary_model']).toEqual({
-      default_model: 'k2',
-      models: { k2: 'fast', gpt4o: 'smart' },
-    });
-  });
-
-  it('keeps the secondary_model section even when a provider edit orphans its default', async () => {
-    await boot(POOL_DANGLING_DEFAULT_TOML);
-    const { status } = await putJson<unknown>('/api/v1/providers/openai', REPLACE_BODY);
-    expect(status).toBe(200);
-
-    const onDisk = await readConfigToml();
-    expect(onDisk['secondary_model']).toEqual({
-      default_model: 'gpt4o',
-      models: { k2: 'fast', gpt4o: 'smart' },
-    });
   });
 
   it('rejects a rename to an existing provider id with 40921', async () => {

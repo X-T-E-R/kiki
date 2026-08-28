@@ -94,27 +94,6 @@ export const ModelAliasSchema = ModelAliasBaseSchema.extend({
 
 export type ModelAlias = z.infer<typeof ModelAliasSchema>;
 
-/**
- * The secondary-model recipe (`[secondary_model]` on disk): `model` points at
- * a `[models]` entry and every remaining field is a subagent-only patch,
- * materialized into a synthesized derived model entry at runtime (see
- * `config/secondary-model.ts`). `default_effort` doubles as the subagent
- * thinking effort.
- *
- * The section is shared with the v2 engine's subagent model pool, whose keys
- * (`default_model`, `[secondary_model.models]`, `force`) are declared here so
- * the config write path round-trips them; the default engine never consumes
- * them, and `secondaryModelPatch` excludes them from the recipe patch.
- */
-export const SecondaryModelConfigSchema = ModelAliasOverrideSchema.extend({
-  model: z.string().min(1).optional(),
-  defaultModel: z.string().min(1).optional(),
-  models: z.record(z.string(), z.string()).optional(),
-  force: z.boolean().optional(),
-});
-
-export type SecondaryModelConfig = z.infer<typeof SecondaryModelConfigSchema>;
-
 export const ThinkingConfigSchema = z.object({
   enabled: z.boolean().optional(),
   effort: z.string().optional(),
@@ -185,10 +164,6 @@ export const BackgroundConfigSchema = z.object({
 export type BackgroundConfig = z.infer<typeof BackgroundConfigSchema>;
 
 export const SubagentConfigSchema = z.object({
-  /** Exact configured model alias used as the fill-only default for new subagents. */
-  defaultModel: z.string().trim().min(1).optional(),
-  /** Fill-only thinking effort default for new subagents. */
-  defaultEffort: z.string().trim().min(1).optional(),
   /**
    * Per-subagent (`Agent` / `AgentSwarm`, foreground and background) timeout
    * in milliseconds. `0` means no timeout. Defaults to 2 hours when unset.
@@ -202,8 +177,6 @@ export type SubagentConfig = z.infer<typeof SubagentConfigSchema>;
 export const AgentsConfigSchema = z
   .object({
     enabled: z.boolean().optional(),
-    defaultSubagentModel: z.string().trim().min(1).optional(),
-    defaultSubagentReasoningEffort: z.string().trim().min(1).optional(),
   })
   .strict();
 
@@ -383,7 +356,6 @@ export const KimiConfigSchema = z.object({
   background: BackgroundConfigSchema.optional(),
   subagent: SubagentConfigSchema.optional(),
   agents: AgentsConfigSchema.optional(),
-  secondaryModel: SecondaryModelConfigSchema.optional(),
   mcp: McpConfigSchema.optional(),
   image: ImageConfigSchema.optional(),
   modelCatalog: ModelCatalogConfigSchema.optional(),
@@ -402,7 +374,6 @@ const LoopControlPatchSchema = LoopControlSchema.partial();
 const BackgroundConfigPatchSchema = BackgroundConfigSchema.partial();
 const SubagentConfigPatchSchema = SubagentConfigSchema.partial();
 const AgentsConfigPatchSchema = AgentsConfigSchema.partial();
-const SecondaryModelConfigPatchSchema = SecondaryModelConfigSchema.partial();
 const McpConfigPatchSchema = McpConfigSchema.partial();
 const ImageConfigPatchSchema = ImageConfigSchema.partial();
 const ModelCatalogConfigPatchSchema = ModelCatalogConfigSchema.partial();
@@ -434,7 +405,6 @@ export const KimiConfigPatchSchema = z
     background: BackgroundConfigPatchSchema.optional(),
     subagent: SubagentConfigPatchSchema.optional(),
     agents: AgentsConfigPatchSchema.optional(),
-    secondaryModel: SecondaryModelConfigPatchSchema.optional(),
     mcp: McpConfigPatchSchema.optional(),
     image: ImageConfigPatchSchema.optional(),
     modelCatalog: ModelCatalogConfigPatchSchema.optional(),
@@ -458,6 +428,25 @@ export function validateConfig(config: unknown): KimiConfig {
     throw new KimiError(ErrorCodes.CONFIG_INVALID, `Invalid configuration: ${formatConfigValidationError(error)}`, {
       cause: error,
     });
+  }
+}
+
+/**
+ * Gate a `setConfig` patch before anything reaches disk. The engine validates
+ * per registered domain and tolerates values its own sections do not model, so
+ * a patch that violates the SDK's config contract (an unknown provider `type`,
+ * a mistyped alias field) would otherwise be persisted and only fail later, at
+ * model resolution. Callers get `config.invalid` and an untouched file.
+ */
+export function validateConfigPatch(patch: unknown): KimiConfigPatch {
+  try {
+    return KimiConfigPatchSchema.parse(patch);
+  } catch (error) {
+    throw new KimiError(
+      ErrorCodes.CONFIG_INVALID,
+      `Invalid configuration patch: ${formatConfigValidationError(error)}`,
+      { cause: error },
+    );
   }
 }
 

@@ -16,9 +16,10 @@
 import type { ConfigDiagnostics, KimiConfig } from '#/types';
 
 /**
- * Every top-level `KimiConfig` field except `raw` (a v1 write-path
- * implementation detail with no v2 counterpart). Each entry is both the v1
- * field name and the v2 config domain name.
+ * Every top-level `KimiConfig` field except `raw`, which is not a config domain
+ * at all: it carries the document as written (see
+ * {@link resolvedConfigToKimiConfig}). Each entry is both the `KimiConfig` field
+ * name and the v2 config domain name.
  */
 const KIMI_CONFIG_DOMAINS = [
   'providers',
@@ -38,7 +39,6 @@ const KIMI_CONFIG_DOMAINS = [
   'loopControl',
   'background',
   'subagent',
-  'secondaryModel',
   'mcp',
   'image',
   'modelCatalog',
@@ -49,17 +49,27 @@ const KIMI_CONFIG_DOMAINS = [
 /**
  * Pick the v1-shaped fields out of the v2 engine's resolved config
  * (`config.getAll()` — the effective view: file values plus env overlays
- * plus registered section defaults). Domains v2 knows but v1 does not
- * (`cron`, `tools`, `extraAgentDirs`, ...) are dropped,
- * mirroring how v1's schema strips unknown top-level keys.
+ * plus registered section defaults). Domains not in the `KimiConfig` shape
+ * (`cron`, `tools`, ...) are dropped, mirroring how the SDK's own schema strips
+ * unknown top-level keys.
+ *
+ * `raw` is not part of that view: it is the config document as written, keys the
+ * engine's domains never claim included, and the caller supplies it (the SDK
+ * parses the file it and the engine share).
  */
-export function resolvedConfigToKimiConfig(resolved: Record<string, unknown>): KimiConfig {
+export function resolvedConfigToKimiConfig(
+  resolved: Record<string, unknown>,
+  raw?: Record<string, unknown> | undefined,
+): KimiConfig {
   const config: Record<string, unknown> = {};
   for (const domain of KIMI_CONFIG_DOMAINS) {
     const value = resolved[domain];
     if (value !== undefined) {
       config[domain] = value;
     }
+  }
+  if (raw !== undefined) {
+    config['raw'] = raw;
   }
   return config as KimiConfig;
 }
@@ -98,11 +108,6 @@ export interface ProviderRemovalPlan {
  * only clears the default-provider pointer, so the SDK replays the full v1
  * cascade through the config facade. Inputs are the USER-layer values
  * (`inspect().userValue`), matching v1's disk-config write base.
- *
- * The `[secondary_model]` section is deliberately left untouched: it is the
- * user's own configuration, and an entry whose model no longer resolves
- * fails pool validation on the next session create with a message naming
- * the offending alias — a loud error beats a silent rewrite.
  */
 export function planProviderRemoval(input: {
   readonly providers: Record<string, unknown> | undefined;

@@ -21,6 +21,8 @@
 // expand structurally; classes render as their public instance shape. The
 // defining source file heads each group.
 //
+// External ambient types referenced but not expanded (from node_modules): Headers
+//
 // snapshot() returns JSON-safe deep copies of these values: Maps become plain
 // objects (or [key, value] entry arrays when a key is not string/number), Sets
 // become arrays, bigints become strings, functions are dropped, circular
@@ -1372,8 +1374,98 @@ export interface AgentStateSnapshot {
       readonly usedContextTokens?: number;
       readonly maxContextTokens?: number;
       readonly onTraceId?: (traceId: string | null) => void;
+      readonly requestIdentity?: /* RequestIdentityWireOptions — packages/agent-core-v2/src/kosong/contract/provider.ts */ {
+        readonly suppressUserAgent?: boolean;
+        readonly suppressIdentity?: boolean;
+        readonly suppressMessagesMetadataUserId?: boolean;
+        readonly responsesClientMetadata?: Readonly<Record<string, string>>;
+        readonly onResponseHeaders?: (headers: Headers) => void;
+      };
     };
     readonly systemPrompt: string;
+    readonly providerConfig: /* ProviderConfig — packages/agent-core-v2/src/kosong/provider/provider.ts */ {
+      modelSource?: 'static' | 'discover' | 'oauth-catalog';
+      baseUrl?: string;
+      customHeaders?: Record<string, string>;
+      defaultModel?: string;
+      requestIdentity?: /* RequestIdentityPolicy — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ {
+        preset?: 'none' | 'codex_compatible' | 'grok_build_compatible' | 'kimi_code';
+        overrides?: /* RequestIdentityOverrides — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ {
+          lineage?: {
+            format?: 'none' | 'kimi_code' | 'codex' | 'grok_build';
+            sessionScope?: 'none' | 'shared_session' | 'agent_session';
+            threadIdentity?: 'agent' | 'none';
+            parentThread?: 'none' | 'immediate_agent';
+            subagentMarker?: 'none' | 'enabled';
+            turnAncestry?: 'none' | 'spawn_context';
+          };
+          client?: {
+            installationIdentity?: 'none' | 'persistent_local';
+            originator?: {
+              mode: 'none';
+            } | {
+              mode: 'codex_default';
+            } | {
+              mode: 'custom';
+              value: string;
+            };
+            userAgent?: 'none' | 'kimi_code' | 'codex' | 'grok_build' | 'host';
+          };
+          request?: {
+            logicalId?: 'none' | 'turn';
+            turnIndex?: 'none' | 'agent_session';
+          };
+          cache?: {
+            source?: 'none' | 'session';
+            responses?: 'none' | 'prompt_cache_key';
+            messages?: 'none' | 'metadata_user_id';
+          };
+          responsesMetadata?: 'none' | 'codex';
+        };
+      };
+      type?: string;
+      apiKey?: string;
+      oauth?: /* OAuthRef — packages/agent-core-v2/src/kosong/provider/provider.ts */ {
+        storage: 'file' | 'keyring';
+        key: string;
+        oauthHost?: string;
+      };
+      env?: Record<string, string>;
+      source?: Record<string, unknown>;
+    } | undefined;
+    readonly requestIdentity: /* ResolvedRequestIdentityPolicy — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ {
+      lineage: {
+        format: 'none' | 'kimi_code' | 'codex' | 'grok_build';
+        sessionScope: 'none' | 'shared_session' | 'agent_session';
+        threadIdentity: 'agent' | 'none';
+        parentThread: 'none' | 'immediate_agent';
+        subagentMarker: 'none' | 'enabled';
+        turnAncestry: 'none' | 'spawn_context';
+      };
+      client: {
+        installationIdentity: 'none' | 'persistent_local';
+        originator: {
+          mode: 'none';
+        } | {
+          mode: 'codex_default';
+        } | {
+          mode: 'custom';
+          value: string;
+        };
+        userAgent: 'none' | 'kimi_code' | 'codex' | 'grok_build' | 'host';
+      };
+      request: {
+        logicalId: 'none' | 'turn';
+        turnIndex: 'none' | 'agent_session';
+      };
+      cache: {
+        source: 'none' | 'session';
+        responses: 'none' | 'prompt_cache_key';
+        messages: 'none' | 'metadata_user_id';
+      };
+      responsesMetadata: 'none' | 'codex';
+      preset: /* RequestIdentityPreset — packages/agent-core-v2/src/kosong/requestIdentity/requestIdentityPolicy.ts */ 'none' | 'codex_compatible' | 'grok_build_compatible' | 'kimi_code';
+    };
   }>;
   // src/agent/loop/loopService.ts
   'loop.disposing': boolean;
@@ -1487,7 +1579,6 @@ export interface AgentStateSnapshot {
       readonly name: string;
       readonly description?: string;
       readonly whenToUse?: string;
-      readonly modelPreference?: 'primary' | 'secondary';
       readonly modelAlias?: string;
       readonly thinkingEffort?: string;
       readonly allowedModels?: readonly string[];
@@ -1514,7 +1605,6 @@ export interface AgentStateSnapshot {
       readonly name: string;
       readonly description?: string;
       readonly whenToUse?: string;
-      readonly modelPreference?: 'primary' | 'secondary';
       readonly modelAlias?: string;
       readonly thinkingEffort?: string;
       readonly allowedModels?: readonly string[];
@@ -1548,7 +1638,6 @@ export interface AgentStateSnapshot {
       readonly name: string;
       readonly description?: string;
       readonly whenToUse?: string;
-      readonly modelPreference?: 'primary' | 'secondary';
       readonly modelAlias?: string;
       readonly thinkingEffort?: string;
       readonly allowedModels?: readonly string[];
@@ -1575,7 +1664,6 @@ export interface AgentStateSnapshot {
       readonly name: string;
       readonly description?: string;
       readonly whenToUse?: string;
-      readonly modelPreference?: 'primary' | 'secondary';
       readonly modelAlias?: string;
       readonly thinkingEffort?: string;
       readonly allowedModels?: readonly string[];

@@ -61,14 +61,10 @@ export interface ServerConnection {
 
 export interface ServerFileSettings {
   subagent: {
-    defaultModel: string;
-    defaultEffort: string;
     timeoutMs: number;
   };
   agents: {
     enabled: boolean;
-    defaultSubagentModel: string;
-    defaultSubagentReasoningEffort: string;
   };
   builtinProductSkills: boolean;
   modelCatalog: {
@@ -100,18 +96,10 @@ export function serverFileSettingsFromConfig(config: unknown): ServerFileSetting
   const modelCatalog = configObjectOrEmpty(source['model_catalog']);
   return {
     subagent: {
-      defaultModel: typeof subagent['defaultModel'] === 'string' ? subagent['defaultModel'] : '',
-      defaultEffort: typeof subagent['defaultEffort'] === 'string' ? subagent['defaultEffort'] : '',
       timeoutMs: typeof subagent['timeoutMs'] === 'number' ? subagent['timeoutMs'] : 7_200_000,
     },
     agents: {
       enabled: agents['enabled'] !== false,
-      defaultSubagentModel:
-        typeof agents['defaultSubagentModel'] === 'string' ? agents['defaultSubagentModel'] : '',
-      defaultSubagentReasoningEffort:
-        typeof agents['defaultSubagentReasoningEffort'] === 'string'
-          ? agents['defaultSubagentReasoningEffort']
-          : '',
     },
     builtinProductSkills: source['builtin_product_skills'] !== false,
     modelCatalog: {
@@ -129,14 +117,6 @@ export function serverFileSettingsPatch(
   baseline?: ServerFileSettings,
 ): PatchConfigRequest {
   const subagent = {
-    default_model:
-      baseline === undefined || settings.subagent.defaultModel !== baseline.subagent.defaultModel
-        ? settings.subagent.defaultModel
-        : undefined,
-    default_effort:
-      baseline === undefined || settings.subagent.defaultEffort !== baseline.subagent.defaultEffort
-        ? settings.subagent.defaultEffort
-        : undefined,
     timeout_ms:
       baseline === undefined || settings.subagent.timeoutMs !== baseline.subagent.timeoutMs
         ? settings.subagent.timeoutMs
@@ -146,17 +126,6 @@ export function serverFileSettingsPatch(
     enabled:
       baseline === undefined || settings.agents.enabled !== baseline.agents.enabled
         ? settings.agents.enabled
-        : undefined,
-    default_subagent_model:
-      baseline === undefined
-      || settings.agents.defaultSubagentModel !== baseline.agents.defaultSubagentModel
-        ? settings.agents.defaultSubagentModel
-        : undefined,
-    default_subagent_reasoning_effort:
-      baseline === undefined
-      || settings.agents.defaultSubagentReasoningEffort
-        !== baseline.agents.defaultSubagentReasoningEffort
-        ? settings.agents.defaultSubagentReasoningEffort
         : undefined,
   };
   const modelCatalog = {
@@ -812,21 +781,9 @@ export function setToolPolicy(
 }
 
 export function validateDesktopConfigDraft(input: {
-  subagentDefaultModel: string;
-  subagentDefaultEffort: string;
   subagentTimeoutMs: number;
-  defaultSubagentModel: string;
-  defaultSubagentReasoningEffort: string;
   modelCatalogRefreshIntervalMs: number;
 }): ValidationIssue | null {
-  for (const [key, value] of [
-    ['val.spacesSubagentModel', input.subagentDefaultModel],
-    ['val.spacesSubagentEffort', input.subagentDefaultEffort],
-    ['val.spacesCollabModel', input.defaultSubagentModel],
-    ['val.spacesCollabEffort', input.defaultSubagentReasoningEffort],
-  ] as const) {
-    if (value !== value.trim()) return { key };
-  }
   if (!Number.isInteger(input.subagentTimeoutMs) || input.subagentTimeoutMs < 0) {
     return { key: 'val.timeoutWhole' };
   }
@@ -1222,10 +1179,10 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'capabilities', cardId: 'st-card-runtime', titleKey: 'st.runtime.title', keywordKeys: ['st.runtime.cron', 'st.runtime.communication', 'st.runtime.resources', 'st.runtime.task', 'st.runtime.agents'] },
   { section: 'capabilities', cardId: 'st-card-experimental', titleKey: 'st.experimental.title', keywordKeys: ['st.experimental.hint', 'st.experimental.overrideLabel'] },
   { section: 'capabilities', cardId: 'st-card-advanced', titleKey: 'st.advanced.title', keywordKeys: ['st.advanced.hint'] },
-  { section: 'agents', cardId: 'st-card-subagents', titleKey: 'st.subagents.title', keywordKeys: ['st.subagents.pool', 'st.subagents.force', 'st.subagents.enforcePool', 'st.subagents.denyModels'] },
+  { section: 'agents', cardId: 'st-card-subagents', titleKey: 'st.subagents.title', keywordKeys: ['st.subagents.denyModels', 'st.subagents.hint'] },
   { section: 'agents', cardId: 'st-card-main-agents', titleKey: 'st.mainAgents.title', keywordKeys: ['st.namedAgents.readOnlyHint', 'st.namedAgents.modelPin'] },
   { section: 'agents', cardId: 'st-card-subagent-profiles', titleKey: 'st.subagentProfiles.title', keywordKeys: ['st.namedAgents.readOnlyHint', 'st.namedAgents.modelPin', 'st.namedAgents.route'] },
-  { section: 'agents', cardId: 'st-card-sidecar', titleKey: 'st.sidecar.title', keywordKeys: ['st.sidecar.hint', 'st.sidecar.subagentModel', 'st.agents.webHint'] },
+  { section: 'agents', cardId: 'st-card-sidecar', titleKey: 'st.sidecar.title', keywordKeys: ['st.sidecar.hint', 'st.sidecar.subagentTimeout', 'st.agents.webHint'] },
   { section: 'capabilities', cardId: 'st-card-tools', titleKey: 'st.tools.title', keywordKeys: [] },
   { section: 'capabilities', cardId: 'st-card-mcp', titleKey: 'st.mcp.title', keywordKeys: ['st.mcp.restart'] },
   { section: 'capabilities', cardId: 'st-card-skills', titleKey: 'st.skills.title', keywordKeys: ['st.skills.workspace'] },

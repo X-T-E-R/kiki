@@ -23,9 +23,12 @@ import { startMcpAuthStatusServer } from './mcp-auth-status-server';
 import { TEST_IDENTITY } from './test-identity';
 
 const tempDirs: string[] = [];
+// The engine reports config-file provenance through pathe, so an `origin` comes
+// back forward-slashed even on Windows.
+const toPosix = (path: string): string => path.replaceAll('\\', '/');
 const stdioFixture = join(
   import.meta.dirname,
-  '../../agent-core/test/mcp/fixtures/mock-stdio-server.mjs',
+  '../../agent-core-v2/test/mcpCore/fixtures/mock-stdio-server.mjs',
 );
 
 afterEach(async () => {
@@ -84,28 +87,43 @@ describe('global MCP configuration (persisted user entries)', () => {
           transport: 'stdio',
           command: 'global-command',
           source: 'global',
-          origin: join(homeDir, 'mcp.json'),
+          origin: toPosix(join(homeDir, 'mcp.json')),
           mutable: true,
         },
       ]);
-      // With `cwd`, the unified view adds the project layer as read-only
-      // entries tagged with their defining file.
+      // The project layer is behind workspace trust: an untrusted workspace
+      // contributes nothing even when `cwd` points at it (the gated entries
+      // are what `getWorkspaceTrustInfo` reports).
       await expect(harness.listMcpServers({ cwd: projectDir })).resolves.toEqual([
         {
           name: 'global',
           transport: 'stdio',
           command: 'global-command',
           source: 'global',
-          origin: join(homeDir, 'mcp.json'),
+          origin: toPosix(join(homeDir, 'mcp.json')),
+          mutable: true,
+        },
+      ]);
+
+      // Once trusted, `cwd` adds the project layer as read-only entries tagged
+      // with their defining file.
+      await harness.trustWorkspace(projectDir);
+      await expect(harness.listMcpServers({ cwd: projectDir })).resolves.toEqual([
+        {
+          name: 'global',
+          transport: 'stdio',
+          command: 'global-command',
+          source: 'global',
+          origin: toPosix(join(homeDir, 'mcp.json')),
           mutable: true,
         },
         {
           name: 'project',
           transport: 'stdio',
           command: 'project-command',
-          cwd: projectDir,
+          cwd: toPosix(projectDir),
           source: 'global',
-          origin: join(projectDir, '.mcp.json'),
+          origin: toPosix(join(projectDir, '.mcp.json')),
           mutable: false,
         },
       ]);
@@ -127,7 +145,7 @@ describe('global MCP configuration (persisted user entries)', () => {
         transport: 'stdio',
         command: 'docs-command',
         source: 'global',
-        origin: join(homeDir, 'mcp.json'),
+        origin: toPosix(join(homeDir, 'mcp.json')),
         mutable: true,
       });
       await expect(harness.getMcpServer('missing')).rejects.toMatchObject({
@@ -187,7 +205,7 @@ describe('global MCP configuration (persisted user entries)', () => {
           url: 'https://example.test/mcp',
           auth: 'oauth',
           source: 'global',
-          origin: join(homeDir, 'mcp.json'),
+          origin: toPosix(join(homeDir, 'mcp.json')),
           mutable: true,
         },
       ]);
@@ -215,7 +233,7 @@ describe('global MCP configuration (persisted user entries)', () => {
           transport: 'stdio',
           command: 'keep-command',
           source: 'global',
-          origin: join(homeDir, 'mcp.json'),
+          origin: toPosix(join(homeDir, 'mcp.json')),
           mutable: true,
         },
       ]);
@@ -260,7 +278,7 @@ describe('standalone MCP check (connection result)', () => {
 
       await expect(harness.testMcpServer('working')).resolves.toMatchObject({
         success: true,
-        output: expect.stringContaining('Available tools: 3'),
+        output: expect.stringContaining('Available tools: 4'),
       });
     } finally {
       await harness.close();
@@ -281,7 +299,7 @@ describe('standalone MCP check (connection result)', () => {
         }),
       ).resolves.toMatchObject({
         success: true,
-        output: expect.stringContaining('Available tools: 3'),
+        output: expect.stringContaining('Available tools: 4'),
       });
       // The probe needed nothing on disk and wrote nothing.
       await expect(readFile(join(homeDir, 'mcp.json'), 'utf-8')).rejects.toMatchObject({
@@ -329,12 +347,14 @@ describe('session MCP servers (live session adds)', () => {
         command: process.execPath,
         args: [stdioFixture],
       });
+      // No `source` on a session entry: the engine's connection manager does
+      // not track where a running server came from, so the SDK has nothing
+      // honest to tag it with (recorded gap on `addSessionMcpServer`).
       expect(added).toMatchObject({
         name: 'session-server',
         transport: 'stdio',
         status: 'connected',
-        toolCount: 3,
-        source: 'caller',
+        toolCount: 4,
       });
       await expect(readFile(join(homeDir, 'mcp.json'), 'utf-8')).rejects.toMatchObject({
         code: 'ENOENT',
@@ -352,10 +372,10 @@ describe('session MCP servers (live session adds)', () => {
       const narrowed = (await session.listMcpServers()).find(
         (server) => server.name === 'session-server',
       );
-      expect(narrowed).toMatchObject({ status: 'connected', toolCount: 1, source: 'caller' });
+      expect(narrowed).toMatchObject({ status: 'connected', toolCount: 1 });
 
-      // persist: true also writes the user-level file and tags the entry
-      // `global`.
+      // persist: true also writes the user-level file — the file content below
+      // is what proves it, since the entry itself carries no source tag.
       const persisted = await session.addMcpServer(
         {
           name: 'persisted',
@@ -365,7 +385,7 @@ describe('session MCP servers (live session adds)', () => {
         },
         { persist: true },
       );
-      expect(persisted).toMatchObject({ source: 'global', status: 'connected' });
+      expect(persisted).toMatchObject({ name: 'persisted', status: 'connected' });
       await expect(readMcpConfig(homeDir)).resolves.toEqual({
         mcpServers: {
           persisted: { transport: 'stdio', command: process.execPath, args: [stdioFixture] },

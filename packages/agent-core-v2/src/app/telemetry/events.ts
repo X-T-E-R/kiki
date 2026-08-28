@@ -880,7 +880,7 @@ export const telemetryEventDefinitions = {
       agent_id: 'Child agent id',
       parent_agent_id: 'Parent (caller) agent id',
       parent_tool_call_id: "Tool call id of the launching call in the parent agent; '' when not launched from a tool call",
-      model: 'Model alias the subagent binds to (secondary-model choice or inherited caller model); omitted when no binding was resolved',
+      model: 'Model alias the subagent binds to (dispatch-supplied or profile pin)',
     },
   }),
   mcp_connected: defineTelemetryEvent<McpConnectedEvent>({

@@ -165,6 +165,10 @@ export class AppLogService extends BoundLogger implements ILogService {
     return this.sink.flush();
   }
 
+  flushSync(): void {
+    this.sink.flushSync();
+  }
+
   override dispose(): void {
     this.sink.flushSync();
     trackLogClose(this.sink.close());

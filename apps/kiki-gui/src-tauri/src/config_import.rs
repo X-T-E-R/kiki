@@ -8,24 +8,22 @@ use std::{
 
 use toml_edit::{DocumentMut, Item, Table};
 
-pub const IMPORT_CATEGORIES: [&str; 9] = [
+pub const IMPORT_CATEGORIES: [&str; 8] = [
     "providers",
     "models",
     "services",
     "default_model",
     "default_provider",
     "thinking",
-    "secondary_model",
     "disabled_builtin_profiles",
     "disabled_named_profiles",
 ];
 
 const MAP_CATEGORIES: [&str; 3] = ["providers", "models", "services"];
-const REPLACE_CATEGORIES: [&str; 6] = [
+const REPLACE_CATEGORIES: [&str; 5] = [
     "default_model",
     "default_provider",
     "thinking",
-    "secondary_model",
     "disabled_builtin_profiles",
     "disabled_named_profiles",
 ];
@@ -757,9 +755,6 @@ key = "oauth/kimi-code"
 enabled = true
 effort = "high"
 
-[secondary_model]
-default_model = "shared/source-model"
-
 [mcp.secret]
 command = "do-not-import"
 "#,
@@ -816,7 +811,6 @@ enabled = false
                 "default_model",
                 "default_provider",
                 "thinking",
-                "secondary_model",
                 "disabled_builtin_profiles",
                 "disabled_named_profiles",
             ]

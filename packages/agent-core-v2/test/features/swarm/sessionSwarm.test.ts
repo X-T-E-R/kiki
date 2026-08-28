@@ -1183,7 +1183,6 @@ describe('SessionSwarmService metadata compatibility', () => {
         labels: {
           parentAgentId: 'main',
           swarmItem: 'src/a.ts',
-          subagentBindingMode: 'inherit',
         },
       }),
     );
@@ -1263,7 +1262,7 @@ describe('SessionSwarmService metadata compatibility', () => {
     );
   });
 
-  it('rebases an inherited nested swarm spawn to the main agent and freezes it', async () => {
+  it('keeps a nested swarm spawn on the binding its dispatch resolved', async () => {
     agents['agent-parent'] = {
       type: 'sub',
       labels: { parentAgentId: 'main' },
@@ -1275,16 +1274,16 @@ describe('SessionSwarmService metadata compatibility', () => {
         thinkingLevel: 'low',
       }),
     );
-    const inheritedBinding = { model: 'provider/child', thinking: 'low' };
-    Object.defineProperties(inheritedBinding, {
-      modelSource: { value: 'caller', enumerable: false },
-      bindingMode: { value: 'inherit', enumerable: false },
-    });
     const service = ix.get(ISessionSwarmService);
 
     await service.run({
       callerAgentId: 'agent-parent',
-      tasks: [{ ...spawnSessionTask('src/a.ts'), binding: inheritedBinding }],
+      tasks: [
+        {
+          ...spawnSessionTask('src/a.ts'),
+          binding: { model: 'provider/dispatched', thinking: 'low' },
+        },
+      ],
     });
 
     expect(createAgent).toHaveBeenCalledWith(
@@ -1292,16 +1291,33 @@ describe('SessionSwarmService metadata compatibility', () => {
         binding: expect.objectContaining({
           profile: 'coder',
           route: undefined,
-          model: 'kimi-test',
-          thinking: 'medium',
+          model: 'provider/dispatched',
+          thinking: 'low',
         }),
         labels: {
           parentAgentId: 'agent-parent',
           swarmItem: 'src/a.ts',
-          subagentBindingMode: 'fixed',
         },
       }),
     );
+  });
+
+  it('fails closed when a spawn task carries no binding and the profile pins none', async () => {
+    const service = ix.get(ISessionSwarmService);
+    const { binding: _dropped, ...unbound } = spawnSessionTask('src/a.ts');
+
+    await expect(
+      service.run({
+        callerAgentId: 'main',
+        tasks: [unbound as SessionSwarmSpawnTask],
+      }),
+    ).resolves.toMatchObject([
+      {
+        status: 'failed',
+        error: expect.stringContaining('No model is bound for agent profile "coder"'),
+      },
+    ]);
+    expect(createAgent).not.toHaveBeenCalled();
   });
 
   it('inherits the caller runtime binding on spawned children', async () => {
@@ -1423,7 +1439,7 @@ describe('SessionSwarmService metadata compatibility', () => {
     );
   });
 
-  it('refreshes inherited children from the caller before a warm resume', async () => {
+  it('keeps a legacy inherit-labelled child on its recorded model across a warm resume', async () => {
     agents['agent-inherited'] = {
       labels: { parentAgentId: 'main', subagentBindingMode: 'inherit' },
     };
@@ -1443,15 +1459,14 @@ describe('SessionSwarmService metadata compatibility', () => {
     ).resolves.toMatchObject([{ status: 'completed', agentId: 'agent-inherited' }]);
 
     expect(child.accessor.get(IAgentProfileService).data()).toMatchObject({
-      modelAlias: 'kimi-test',
-      thinkingLevel: 'medium',
+      modelAlias: 'stale-model',
+      thinkingLevel: 'low',
     });
     expect(eventBus.publish).toHaveBeenCalledWith(
       expect.objectContaining({
         type: 'subagent.spawned',
         subagentId: 'agent-inherited',
-        model: 'kimi-test',
-        thinkingEffort: 'medium',
+        model: 'stale-model',
       }),
     );
   });
@@ -1492,7 +1507,7 @@ describe('SessionSwarmService metadata compatibility', () => {
     );
   });
 
-  it('points at the [secondary_model.models] config when a spawn task binding is invalid', async () => {
+  it('surfaces the model-catalog failure when a spawn task binding is invalid', async () => {
     const service = ix.get(ISessionSwarmService);
     const spawnTask: SessionSwarmSpawnTask = {
       ...spawnSessionTask('src/a.ts'),
@@ -1508,7 +1523,7 @@ describe('SessionSwarmService metadata compatibility', () => {
     ).resolves.toMatchObject([
       {
         status: 'failed',
-        error: expect.stringContaining('comes from [secondary_model.models]'),
+        error: expect.stringContaining('provider/bad'),
       },
     ]);
     expect(createAgent).not.toHaveBeenCalled();
@@ -1624,6 +1639,7 @@ function spawnSessionTask(swarmItem?: string): SessionSwarmSpawnTask {
     swarmIndex: 1,
     swarmItem,
     runInBackground: false,
+    binding: { model: 'kimi-test', thinking: 'medium' },
   };
 }
 

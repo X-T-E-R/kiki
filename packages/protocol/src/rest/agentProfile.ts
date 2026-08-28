@@ -4,7 +4,6 @@ const modelAliasSchema = z.string().min(1).regex(/^\S+$/, 'model alias must not 
 const optionalProfileStringSchema = z.string().trim().min(1).nullable().optional();
 const profileStringListSchema = z.array(z.string().trim().min(1)).nullable().optional();
 const serviceTierSchema = z.enum(['auto', 'default', 'flex', 'priority']);
-const modelPreferenceSchema = z.enum(['primary', 'secondary']);
 const promptModeSchema = z.enum(['prepend', 'append', 'wrap']);
 const requestParamsSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]));
 
@@ -34,7 +33,6 @@ export const namedAgentSubagentLeaseSchema = z.object({
   diagnostic: z.string().optional(),
   description: z.string().optional(),
   when_to_use: z.string().optional(),
-  model_preference: modelPreferenceSchema.optional(),
   model_alias: z.string().optional(),
   thinking_effort: z.string().optional(),
   allowed_models: z.array(z.string()).optional(),

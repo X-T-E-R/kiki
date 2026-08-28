@@ -11,34 +11,46 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { KIMI_CODE_PLATFORM } from '@moonshot-ai/kimi-code-oauth';
-import type * as KosongModule from '@moonshot-ai/kosong';
+import type { ProtocolAdapterConfig } from '@moonshot-ai/agent-core-v2/kosong/protocol/protocol';
+import { ProtocolAdapterRegistry } from '@moonshot-ai/agent-core-v2/kosong/provider/protocolAdapterRegistry';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createKimiHarness, type Event, type KimiHarness } from '#/index';
 
 import { TEST_IDENTITY } from './test-identity';
 
-const fakeProviderState = vi.hoisted(() => ({
+/**
+ * The model is the only stubbed part of this suite: the engine composes a
+ * `ChatProvider` for the resolved model through
+ * `IProtocolAdapterRegistry.createChatProvider`, so replacing that one method
+ * keeps every other layer real (config, providers, session, loop, wire) while no
+ * turn ever reaches the network.
+ */
+const fakeProviderState = {
   calls: [] as Array<{
     readonly systemPrompt: string;
     readonly history: unknown;
   }>,
-  providerConfigs: [] as unknown[],
+  providerConfigs: [] as ProtocolAdapterConfig[],
   responseText: 'hello from fake provider',
-}));
+};
 
-vi.mock('@moonshot-ai/kosong', async (importOriginal) => {
-  const actual = await importOriginal<typeof KosongModule>();
-  return {
-    ...actual,
-    createProvider: (config: unknown) => {
+const tempDirs: string[] = [];
+
+beforeEach(() => {
+  fakeProviderState.calls.length = 0;
+  fakeProviderState.providerConfigs.length = 0;
+  fakeProviderState.responseText = 'hello from fake provider';
+  vi.spyOn(ProtocolAdapterRegistry.prototype, 'createChatProvider').mockImplementation(
+    (config: ProtocolAdapterConfig) => {
       fakeProviderState.providerConfigs.push(config);
       return {
-        name: 'fake',
-        modelName: 'fake-model',
+        name: config.providerType ?? 'fake',
+        modelName: config.modelName,
         thinkingEffort: null,
         async generate(systemPrompt: string, _tools: unknown, history: unknown) {
           fakeProviderState.calls.push({ systemPrompt, history });
+          const text = fakeProviderState.responseText;
           return {
             id: 'fake-response',
             usage: {
@@ -49,28 +61,19 @@ vi.mock('@moonshot-ai/kosong', async (importOriginal) => {
             },
             finishReason: 'completed',
             rawFinishReason: 'stop',
+            traceId: null,
             async *[Symbol.asyncIterator]() {
-              yield { type: 'text', text: fakeProviderState.responseText };
+              yield { type: 'text', text };
             },
           };
         },
-        withThinking() {
-          return this;
-        },
-      };
+      } as ReturnType<ProtocolAdapterRegistry['createChatProvider']>;
     },
-  };
-});
-
-const tempDirs: string[] = [];
-
-beforeEach(() => {
-  fakeProviderState.calls.length = 0;
-  fakeProviderState.providerConfigs.length = 0;
-  fakeProviderState.responseText = 'hello from fake provider';
+  );
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const dir of tempDirs.splice(0)) {
     await removeTempDir(dir);
   }
@@ -248,8 +251,12 @@ describe('Session.prompt events', () => {
       );
       expect(fakeProviderState.calls[0]?.systemPrompt).toContain('You are Kimi Code CLI');
       expect(fakeProviderState.calls[0]?.systemPrompt).toContain('Available skills');
+      // The engine composes the provider from the protocol adapter config: the
+      // vendor is `providerType`, the wire shape it speaks is `protocol`.
       expect(fakeProviderState.providerConfigs[0]).toMatchObject({
-        type: 'kimi',
+        providerType: 'kimi',
+        protocol: 'openai',
+        modelName: 'fake-model',
         defaultHeaders: expect.objectContaining({
           'X-Msh-Platform': KIMI_CODE_PLATFORM,
           'User-Agent': 'kimi-code-cli/0.0.0-test',
@@ -450,15 +457,22 @@ describe('Session.prompt events', () => {
       const statePath = join(session.summary!.sessionDir, 'state.json');
       const state = JSON.parse(await readFile(statePath, 'utf-8')) as Record<string, unknown>;
       expect(state['lastPrompt']).toBe('main task context');
-      expect(state['agents']).toMatchObject({ main: expect.any(Object) });
-      expect(state['agents']).not.toHaveProperty(agentId);
+      // btw is a real fork of `main` in v2 (`IAgentLifecycleService.fork`), so the
+      // session's agent registry records it like any other subagent instead of
+      // keeping it runtime-only. What must NOT leak is session metadata: the side
+      // question never becomes the session's prompt, title or turn.
+      expect(state['agents']).toMatchObject({
+        main: expect.any(Object),
+        [agentId]: { type: 'sub', forkedFrom: 'main', parentAgentId: 'main' },
+      });
 
       await harness.closeSession(session.id);
       const resumed = await harness.resumeSession({ id: session.id });
       const resumeState = resumed.getResumeState();
       expect(resumeState?.agents).toMatchObject({ main: expect.any(Object) });
-      expect(resumeState?.agents).not.toHaveProperty(agentId);
-      expect(resumeState?.sessionMetadata.agents).not.toHaveProperty(agentId);
+      expect(resumeState?.sessionMetadata.agents).toMatchObject({
+        [agentId]: { type: 'sub', forkedFrom: 'main' },
+      });
     } finally {
       await harness.close();
     }
@@ -732,17 +746,24 @@ async function configureFakeProvider(harness: KimiHarness): Promise<void> {
   });
 }
 
+/**
+ * The budget is a liveness ceiling, not part of any assertion: every caller
+ * awaits an event it requires, so a slow machine must not decide the verdict.
+ * v1's 1s was tuned to its in-process turn; a v2 turn runs a real engine loop and
+ * these cases stack two or three of them behind a fork.
+ */
 function waitForEvent(
   session: {
     onEvent(listener: (event: Event) => void): () => void;
   },
   predicate: (event: Event) => boolean,
+  timeoutMs = 20_000,
 ): Promise<Event> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       unsubscribe();
       reject(new Error('Timed out waiting for session event'));
-    }, 1_000);
+    }, timeoutMs);
     const unsubscribe = session.onEvent((event) => {
       if (!predicate(event)) return;
       clearTimeout(timeout);

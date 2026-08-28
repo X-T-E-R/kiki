@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (31 sections · 2 overlay(s))
+# Index (30 sections · 2 overlay(s))
 #   agents                   src/session/agentCollaboration/configSection.ts
 #   background               src/agent/task/configSection.ts
 #   builtinProductSkills     src/app/skillCatalog/configSection.ts
@@ -31,7 +31,6 @@
 #   permission               src/agent/permissionRules/configSection.ts
 #   providers                src/app/kosongConfig/configSection.ts
 #   requestIdentity          src/app/kosongConfig/configSection.ts
-#   secondaryModel           src/session/subagent/configSection.ts
 #   services                 src/app/auth/configSection.ts
 #   subagent                 src/session/subagent/configSection.ts
 #   task                     src/agent/task/configSection.ts
@@ -51,8 +50,6 @@
 
 [agents]
 enabled = true
-# default_subagent_model: string
-# default_subagent_reasoning_effort: string
 
 # [agents.delegation]
   # sub: string | false
@@ -435,29 +432,6 @@ merge_all_available_skills = true
   # responses_metadata: "codex" | "none"
 
 # ##########################################################################
-# secondaryModel (config.toml: secondary_model)
-#   owner: src/session/subagent/configSection.ts
-#   scope: core
-# ##########################################################################
-
-[secondary_model]
-# default_model: string
-# models: record<string, string>
-# force: boolean
-# enforce_pool: boolean
-# model: string
-# max_context_size: integer
-# max_input_size: integer
-# max_output_size: integer
-# capabilities: string[]
-# display_name: string
-# reasoning_key: string
-# adaptive_thinking: boolean
-# support_efforts: string[]
-# default_effort: string
-# off_effort: string
-
-# ##########################################################################
 # services
 #   owner: src/app/auth/configSection.ts
 #   scope: core
@@ -499,8 +473,6 @@ merge_all_available_skills = true
 # ##########################################################################
 
 [subagent]
-# default_model: string
-# default_effort: string
 timeout_ms = 7200000
 # deny_models: string[]
 

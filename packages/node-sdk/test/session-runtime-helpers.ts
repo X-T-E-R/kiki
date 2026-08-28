@@ -28,13 +28,20 @@ export async function removeTempDirs(tempDirs: string[]): Promise<void> {
   }
 }
 
+/**
+ * The budget is a liveness ceiling, not part of any assertion: a caller waits for
+ * a record it requires, so a slow or loaded machine must not decide the verdict.
+ * v1's 1s was tuned to its in-process write path; a v2 agent materializes and
+ * journals through a real engine.
+ */
 export async function waitForAgentWireEvent(
   homeDir: string,
   sessionId: string,
   eventType: string,
   predicate: (event: AgentWirePayload) => boolean = () => true,
+  timeoutMs = 20_000,
 ): Promise<AgentWirePayload> {
-  const deadline = Date.now() + 1_000;
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const events = await readWireEvents(homeDir, sessionId);
     for (const event of events) {
@@ -51,12 +58,13 @@ export async function waitForAgentWireEvent(
   throw new Error(`Timed out waiting for ${eventType} in ${sessionId}`);
 }
 
+/** Same liveness-ceiling reasoning as {@link waitForAgentWireEvent}. */
 export function waitForSDKEvent(
   session: {
     onEvent(listener: (event: Event) => void): () => void;
   },
   predicate: (event: Event) => boolean,
-  timeoutMs = 1_000,
+  timeoutMs = 20_000,
 ): Promise<Event> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {

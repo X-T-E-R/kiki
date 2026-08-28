@@ -11,8 +11,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { Kaos } from '@moonshot-ai/kaos';
+import { ISessionManager } from '@moonshot-ai/agent-core-v2';
 import { createKimiHarness, KimiHarness } from '#/index';
 import type { KimiError } from '#/index';
+import type { SDKRpcClient } from '#/sdk-rpc-client';
 import type { ResumeSessionInput, ResumedSessionSummary } from '#/types';
 import { SDKRpcClientBase } from '#/rpc';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -428,17 +430,23 @@ describe('KimiHarness.createSession transport link', () => {
       expect(session.workDir).toBe(toPosix(workDir));
       await expect(session.getStatus()).resolves.toMatchObject({ model: 'kimi-test-model' });
       expect(harness.sessions.get(session.id)).toBe(session);
-      const configEvent = await waitForAgentWireEvent(
+      // The main agent is materialized lazily and records the model it was
+      // created with in its durable `profile.bind` (v1 wrote a `config.update`
+      // for the same fact), so touch an agent-scoped read first instead of
+      // expecting a wire journal for a session nobody has used yet.
+      await session.getContext();
+      const bindEvent = await waitForAgentWireEvent(
         homeDir,
         session.id,
-        'config.update',
+        'profile.bind',
         (event) => event['modelAlias'] === 'kimi-test-model',
       );
-      expect(configEvent).toMatchObject({
-        type: 'config.update',
+      expect(bindEvent).toMatchObject({
+        type: 'profile.bind',
         modelAlias: 'kimi-test-model',
       });
-      expect(configEvent).not.toHaveProperty('provider');
+      // The alias is recorded, never the resolved provider behind it.
+      expect(bindEvent).not.toHaveProperty('provider');
 
       const summaries = await harness.listSessions({ workDir });
       const summary = summaries.find((item) => item.id === session.id);
@@ -492,17 +500,20 @@ effort = "medium"
       expect(session.id).toBe('ses_alias_model');
       await expect(session.getStatus()).resolves.toMatchObject({ model: 'alias-model' });
       expect(harness.sessions.get(session.id)).toBe(session);
-      const configEvent = await waitForAgentWireEvent(
+      // Lazy main agent: materialize it before reading its wire journal.
+      await session.getContext();
+      const bindEvent = await waitForAgentWireEvent(
         homeDir,
         session.id,
-        'config.update',
+        'profile.bind',
         (event) => event['modelAlias'] === 'alias-model',
       );
-      expect(configEvent).toMatchObject({
-        type: 'config.update',
+      expect(bindEvent).toMatchObject({
+        type: 'profile.bind',
         modelAlias: 'alias-model',
       });
-      expect(configEvent).not.toHaveProperty('provider');
+      // The alias is recorded, never the resolved provider behind it.
+      expect(bindEvent).not.toHaveProperty('provider');
     } finally {
       await harness.close();
     }
@@ -548,7 +559,7 @@ effort = "medium"
     }
   });
 
-  it('does not persist a session record when MCP config validation fails', async () => {
+  it('creates a session despite a malformed MCP config and fails on the MCP read', async () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     // Project-local mcp.json is intentionally ignored, so plant the malformed
@@ -560,14 +571,18 @@ effort = "medium"
     });
 
     try {
-      await expect(
-        harness.createSession({ id: 'ses_bad_mcp_config', workDir }),
-      ).rejects.toMatchObject({
+      // A broken MCP file no longer blocks the session: the servers are read
+      // lazily, so the session opens and the malformed file surfaces — named, with
+      // `config.invalid` — on the read that actually needs it.
+      const session = await harness.createSession({ id: 'ses_bad_mcp_config', workDir });
+      expect(session.id).toBe('ses_bad_mcp_config');
+      await expect(harness.listSessions({ workDir })).resolves.toHaveLength(1);
+
+      await expect(harness.listMcpServers({ cwd: workDir })).rejects.toMatchObject({
         name: 'KimiError',
         code: 'config.invalid',
+        message: expect.stringContaining('mcp.json'),
       });
-      expect(await harness.listSessions({ workDir })).toEqual([]);
-      expect(existsSync(join(homeDir, 'session_index.jsonl'))).toBe(false);
     } finally {
       await harness.close();
     }
@@ -941,11 +956,22 @@ effort = "medium"
   });
 });
 
+/**
+ * The engine's live session scopes, so closing through the SDK is checked against
+ * the runtime it drives and not only against the harness's own map. v2 keeps them
+ * in the app-scope `ISessionManager` (v1 had a `core.sessions` map).
+ */
 function coreSessionIds(harness: KimiHarness): readonly string[] {
-  const core = (
-    harness as unknown as {
-      readonly rpc: { readonly core: { readonly sessions: ReadonlyMap<string, unknown> } };
-    }
-  ).rpc.core;
-  return Array.from(core.sessions.keys()).toSorted();
+  const rpc = (harness as unknown as { readonly rpc: SDKRpcClient }).rpc;
+  try {
+    return rpc.engineAccessor
+      .get(ISessionManager)
+      .list()
+      .map((handle) => handle.id)
+      .toSorted();
+  } catch {
+    // `harness.close()` disposes the engine's app scope, and a disposed scope
+    // refuses service resolution — which is itself "no session is live".
+    return [];
+  }
 }

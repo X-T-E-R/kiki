@@ -40,6 +40,12 @@ export interface ILogService extends ILogger {
   readonly level: LogLevel;
   setLevel(level: LogLevel): void;
   flush(): Promise<void>;
+  /**
+   * Append whatever is still queued with `appendFileSync`, for callers that
+   * are about to `process.exit()` on the same tick and would otherwise drop
+   * the async queue. Optional: writers without a sync path omit it.
+   */
+  flushSync?(): void;
 }
 
 export const ILogService: ServiceIdentifier<ILogService> =

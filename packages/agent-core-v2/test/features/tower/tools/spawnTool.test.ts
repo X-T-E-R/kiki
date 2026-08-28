@@ -23,16 +23,11 @@ import { TowerSpawnTool } from '#/features/tower/tools/spawn/spawnTool';
 import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
 import { EventBusService } from '#/app/event/eventBusService';
-import { IFlagService } from '#/app/flag/flag';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import {
-  DEFAULT_SUBAGENT_TIMEOUT_MS,
-  SECONDARY_MODEL_SECTION,
-} from '#/session/subagent/configSection';
-import { SECONDARY_MODEL_FLAG_ID } from '#/session/subagent/flag';
+import { DEFAULT_SUBAGENT_TIMEOUT_MS } from '#/session/subagent/configSection';
 import {
   ISessionSubagentService,
   type AgentRunHandle,
@@ -73,8 +68,6 @@ describe('TowerSpawnTool', () => {
   let runAgent: Mock<ISessionSubagentService['run']>;
   let registerTask: Mock<IAgentTaskService['registerTask']>;
   let completion: Deferred<{ readonly summary: string }>;
-  let secondaryFlagOn: boolean;
-  let secondaryModel: { readonly model: string } | undefined;
   let createdSetMode: Mock<(mode: PermissionMode) => void>;
 
   async function git(cwd: string, ...args: string[]): Promise<void> {
@@ -97,8 +90,6 @@ describe('TowerSpawnTool', () => {
     gate = { ok: true };
     release = vi.fn();
     completion = deferred();
-    secondaryFlagOn = false;
-    secondaryModel = undefined;
     createdSetMode = vi.fn();
     createAgent = vi.fn(
       async () =>
@@ -157,12 +148,8 @@ describe('TowerSpawnTool', () => {
       data: () => ({ profileName: 'agent', modelAlias: 'kimi-code', thinkingLevel: 'off' }),
     } as unknown as IAgentProfileService);
     ix.stub(IConfigService, {
-      get: ((domain: string) =>
-        domain === SECONDARY_MODEL_SECTION ? secondaryModel : undefined) as IConfigService['get'],
+      get: (() => undefined) as IConfigService['get'],
     });
-    ix.stub(IFlagService, {
-      enabled: (id: string) => id === SECONDARY_MODEL_FLAG_ID && secondaryFlagOn,
-    } as unknown as IFlagService);
     ix.stub(IModelCatalog, { get: () => ({}) } as unknown as IModelCatalog);
     ix.stub(IModelService, {
       resolveId: (id: string) => (id === 'fast' ? 'cheap/fast' : id),
@@ -188,6 +175,7 @@ describe('TowerSpawnTool', () => {
     name: 'agent-build',
     kind: 'worker',
     mission_id: 'M1',
+    model_alias: 'kimi-code',
   };
 
   it('refuses when tower mode is not active', async () => {
@@ -239,10 +227,16 @@ describe('TowerSpawnTool', () => {
     expect(result.output).toContain('status: running');
     expect(result.output).toContain(`worktree: ${worktreeAbs}`);
 
-    expect(createAgent).toHaveBeenCalledWith({
-      binding: { profile: 'tower-worker', model: 'kimi-code', thinking: 'off' },
-      labels: { parentAgentId: 'main' },
-    });
+    expect(createAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        binding: expect.objectContaining({
+          profile: 'tower-worker',
+          model: 'kimi-code',
+          thinking: undefined,
+        }),
+        labels: { parentAgentId: 'main' },
+      }),
+    );
     expect(runAgent).toHaveBeenCalledWith(
       'agent-7',
       { kind: 'prompt', prompt: expect.stringContaining(worktreeAbs) },
@@ -282,47 +276,58 @@ describe('TowerSpawnTool', () => {
     expect(createdSetMode).toHaveBeenCalledWith('auto');
   });
 
-  it('canonicalizes the configured secondary model before reporting and creation', async () => {
-    secondaryFlagOn = true;
-    secondaryModel = { model: 'fast' };
-
-    const result = await execute(WORKER_ARGS);
+  it('canonicalizes the dispatched model alias before reporting and creation', async () => {
+    const result = await execute({ ...WORKER_ARGS, model_alias: 'fast' });
 
     expect(result.isError).toBeUndefined();
     expect(result.output).toContain('model: cheap/fast');
-    expect(createAgent).toHaveBeenCalledWith({
-      binding: { profile: 'tower-worker', model: 'cheap/fast', thinking: undefined },
-      labels: { parentAgentId: 'main' },
-    });
+    expect(createAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        binding: expect.objectContaining({
+          profile: 'tower-worker',
+          model: 'cheap/fast',
+          thinking: undefined,
+        }),
+        labels: { parentAgentId: 'main' },
+      }),
+    );
     const activityLog = await readFile(join(repo, '.tower/comms/log/activity.log'), 'utf8');
     expect(activityLog).toMatch(/spawn .*model=cheap\/fast/);
   });
 
-  it('inherits the tower model when the secondary-model experiment is off', async () => {
-    const result = await execute(WORKER_ARGS);
+  it('fails closed without touching tower state when no model is bound', async () => {
+    const { model_alias: _dropped, ...unbound } = WORKER_ARGS;
 
-    expect(result.isError).toBeUndefined();
-    expect(result.output).toContain('model: kimi-code');
-    const activityLog = await readFile(join(repo, '.tower/comms/log/activity.log'), 'utf8');
-    expect(activityLog).toMatch(/spawn .*model=kimi-code/);
+    const result = await execute(unbound as TowerSpawnToolInput);
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain('No model is bound for agent profile "tower-worker"');
+    expect(createAgent).not.toHaveBeenCalled();
+    const state = await store.load();
+    expect(state.roster.agents).toHaveLength(0);
+    expect(state.missions.find((m) => m.id === 'M1')?.status).toBe('planned');
   });
 
-  it('binds reviewers to the tower model even when the secondary model is configured', async () => {
-    secondaryFlagOn = true;
-    secondaryModel = { model: 'cheap/fast' };
-
+  it('binds reviewers to the dispatched model', async () => {
     const result = await execute({
       name: 'reviewer-a',
       kind: 'reviewer',
       review_target: 'feat/build-gemm',
+      model_alias: 'kimi-code',
     });
 
     expect(result.isError).toBeUndefined();
     expect(result.output).toContain('model: kimi-code');
-    expect(createAgent).toHaveBeenCalledWith({
-      binding: { profile: 'tower-worker', model: 'kimi-code', thinking: 'off' },
-      labels: { parentAgentId: 'main' },
-    });
+    expect(createAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        binding: expect.objectContaining({
+          profile: 'tower-worker',
+          model: 'kimi-code',
+          thinking: undefined,
+        }),
+        labels: { parentAgentId: 'main' },
+      }),
+    );
   });
 
   it('registers a reviewer without a worktree', async () => {
@@ -330,6 +335,7 @@ describe('TowerSpawnTool', () => {
       name: 'reviewer-a',
       kind: 'reviewer',
       review_target: 'feat/build-gemm',
+      model_alias: 'kimi-code',
     });
 
     expect(result.isError).toBeUndefined();

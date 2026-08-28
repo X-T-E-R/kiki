@@ -1,5 +1,4 @@
 import type {
-  AgentModelPreference,
   AgentModelProfile,
   AgentModelProfilePromptMode,
 } from './agentProfileCatalog';
@@ -18,7 +17,6 @@ interface SubagentLeaseOverlay {
   readonly name: string;
   readonly description?: string;
   readonly whenToUse?: string;
-  readonly modelPreference?: AgentModelPreference;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
   readonly allowedModels?: readonly string[];
@@ -225,13 +223,8 @@ function parseLeaseMapping(
     );
   }
   const source = parseSourcePath(item['source'], `${prefix}.source`, filePath);
-  const modelPreference = parseModelPreference(item['model_preference'], `${prefix}.model_preference`, filePath);
+  rejectModelPreference(item['model_preference'], `${prefix}.model_preference`, filePath);
   const modelAlias = optionalString(item['model_alias'], `${prefix}.model_alias`, filePath);
-  if (modelPreference !== undefined && modelAlias !== undefined) {
-    throw new SubagentLeaseParseError(
-      `Frontmatter fields "${prefix}.model_preference" and "${prefix}.model_alias" in ${filePath} are mutually exclusive`,
-    );
-  }
   const promptMode = parsePromptMode(item['prompt_mode'], `${prefix}.prompt_mode`, filePath);
   const prompt = optionalString(item['prompt'], `${prefix}.prompt`, filePath);
   if (promptMode !== undefined && prompt === undefined) {
@@ -271,7 +264,6 @@ function parseLeaseMapping(
     ...(source === undefined ? {} : { source }),
     ...(description === undefined ? {} : { description }),
     ...(whenToUse === undefined ? {} : { whenToUse }),
-    ...(modelPreference === undefined ? {} : { modelPreference }),
     ...(modelAlias === undefined ? {} : { modelAlias }),
     ...(thinkingEffort === undefined ? {} : { thinkingEffort }),
     ...(allowedModels === undefined ? {} : { allowedModels }),
@@ -428,15 +420,15 @@ function parseModelProfiles(
   return out;
 }
 
-function parseModelPreference(
-  value: unknown,
-  field: string,
-  filePath: string,
-): AgentModelPreference | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (value === 'primary' || value === 'secondary') return value;
+/**
+ * `model_preference` used to select the caller's model ("primary") or the
+ * secondary pool. Both are gone: a subagent model comes from a pin or the
+ * dispatch, so an old field is reported instead of quietly ignored.
+ */
+function rejectModelPreference(value: unknown, field: string, filePath: string): void {
+  if (value === undefined || value === null) return;
   throw new SubagentLeaseParseError(
-    `Frontmatter field "${field}" in ${filePath} must be "primary" or "secondary"`,
+    `Frontmatter field "${field}" in ${filePath} has been removed: subagents no longer inherit the caller's model. Set "model_alias" to an exact [models] alias instead.`,
   );
 }
 

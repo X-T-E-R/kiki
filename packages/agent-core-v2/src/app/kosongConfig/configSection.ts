@@ -260,11 +260,7 @@ export const ModelRecordSchema = ModelBaseSchema.extend({
   requestIdentity: RequestIdentityPolicySchema.optional(),
 }).passthrough();
 
-export const ModelsSectionSchema = z
-  .record(z.string(), ModelRecordSchema)
-  .refine((models) => models['__secondary__'] === undefined, {
-    message: '[models.__secondary__] is reserved for the internal secondary-model overlay',
-  });
+export const ModelsSectionSchema = z.record(z.string(), ModelRecordSchema);
 
 type _AssertModelOverride = AssertExact<
   Equal<z.infer<typeof ModelOverrideSchema>, ModelOverride>

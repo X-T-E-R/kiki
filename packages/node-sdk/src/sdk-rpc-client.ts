@@ -129,13 +129,15 @@
  *   `toolCall` keeps the base class's "not supported" answer, which the
  *   interaction bridge already relies on.
  */
+import { existsSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { AgentContextData, ExperimentalFeatureState } from '@moonshot-ai/agent-core-v2';
 
-import { ensureConfigFile, HookDefSchema } from '#/config';
+import { ensureConfigFile, HookDefSchema, readConfigFile, validateConfigPatch } from '#/config';
 import { ErrorCodes, isKimiErrorCode, KimiError, type KimiErrorCode } from '#/errors';
+import { getRootLogger, type DiagnosticLogHost } from '#/logging';
 import type { BeginGlobalMcpServerAuthResult } from '#/protocol';
 import { noopTelemetryClient } from '#/protocol/telemetry';
 import { limitAgentReplayByTurns } from '#/wire/replay-turns';
@@ -144,6 +146,7 @@ import { McpConnectionManager } from '@moonshot-ai/agent-core-v2/mcpCore/connect
 import { loadMcpServers } from '@moonshot-ai/agent-core-v2/app/mcpConfig/configLoader';
 import { IAppendLogStore } from '@moonshot-ai/agent-core-v2/persistence/interface/appendLogStore';
 import { SessionIndexErrors } from '@moonshot-ai/agent-core-v2/app/sessionIndex/errors';
+import { AgentStatusUpdated } from '@moonshot-ai/agent-core-v2/agent/usage/usageEvents';
 import type { McpServerConfig as WorkspaceMcpServerConfig } from '@moonshot-ai/agent-core-v2/mcpCore/config-schema';
 import {
   bootstrap,
@@ -174,9 +177,11 @@ import {
   IAgentToolRegistryService,
   IBootstrapService,
   IConfigService,
+  IEventBus,
   IEventService,
   IHostEnvironment,
   IHostFileSystem,
+  ILogService,
   IMcpManagementService,
   IMcpOAuthService,
   IModelService,
@@ -227,7 +232,7 @@ import {
   type ServicesAccessor,
   type SessionSummary as V2SessionSummary,
 } from '@moonshot-ai/agent-core-v2';
-import type { AgentHandle, Klient } from '@moonshot-ai/klient';
+import { RPCError, type AgentHandle, type Klient } from '@moonshot-ai/klient';
 import { createKlient } from '@moonshot-ai/klient/memory';
 import { assertKimiHostIdentity, createKimiDefaultHeaders } from '@moonshot-ai/kimi-code-oauth';
 
@@ -347,6 +352,18 @@ export interface SDKRpcClientOptions {
  */
 const MAX_TIMER_DELAY_MS = 0x7fffffff;
 
+/**
+ * Stand-in for the engine's non-optional `clientIdentity` when the SDK host
+ * declined to name itself. It names the SDK, never a guessed product: an
+ * unnamed host still gets null client attribution on telemetry and no
+ * `X-Msh-*` on its managed auth calls.
+ */
+const ANONYMOUS_SDK_HOST_IDENTITY: KimiHostIdentity = {
+  productName: 'kimi-code-sdk',
+  version: '0',
+  platform: 'kimi_code_sdk',
+};
+
 export class SDKRpcClient extends SDKRpcClientBase {
   readonly homeDir: string;
   readonly configPath: string;
@@ -416,6 +433,17 @@ export class SDKRpcClient extends SDKRpcClientBase {
   private readonly sessionAccessQueues = new Map<string, Promise<void>>();
   /** App-scope subscriptions (global event forwarding, lifecycle tracking), disposed in {@link close}. */
   private readonly appSubscriptions: IDisposable[] = [];
+  /**
+   * The engine's logging seam behind the SDK's `log` facade. v1 routed
+   * `log.*` through a core-owned root logger; the v2 engine owns both files
+   * itself (`AppLogService` → `<homeDir>/logs/kimi-code.log`,
+   * `SessionLogService` → `<sessionDir>/logs/kimi-code.log`), so the facade
+   * resolves the matching `ILogService` per entry instead of opening sinks of
+   * its own. Registered in the constructor, dropped in {@link close}; the
+   * newest client wins for untagged entries, which is what makes a second
+   * harness log into its own home directory.
+   */
+  private readonly logHost: DiagnosticLogHost;
 
   constructor(options: SDKRpcClientOptions = {}) {
     super();
@@ -435,17 +463,24 @@ export class SDKRpcClient extends SDKRpcClientBase {
       onRefresh: options.onOAuthRefresh,
     });
 
-    const identity = assertKimiHostIdentity(this.identity);
     const { app } = bootstrap(
       {
         homeDir: this.homeDir,
         configPath: this.configPath,
-        clientIdentity: identity,
+        // The engine's bootstrap needs a client identity; the SDK's surface
+        // keeps one optional. A host that does not name itself is presented as
+        // the SDK rather than as an invented product, and keeps its unnamed
+        // consequences: no client attribution on telemetry, and no identity
+        // headers at all on outbound requests.
+        clientIdentity: this.identity ?? ANONYMOUS_SDK_HOST_IDENTITY,
         args: {
           // Host identity headers for the engine's outbound requests (model,
           // WebSearch, registry refresh). Without them the managed vendors go
           // out with the SDK's default User-Agent and no X-Msh-* at all.
-          requestHeaders: createKimiDefaultHeaders({ homeDir: this.homeDir, ...identity }),
+          requestHeaders:
+            this.identity === undefined
+              ? undefined
+              : createKimiDefaultHeaders({ homeDir: this.homeDir, ...this.identity }),
           // `--skills-dir` (v1 parity): explicit skill dirs replace default
           // user / project discovery for every session this client hosts.
           skillDirs: options.skillDirs,
@@ -454,6 +489,17 @@ export class SDKRpcClient extends SDKRpcClientBase {
       [...logSeed(resolveLoggingConfig({ homeDir: this.homeDir, env: process.env }))],
     );
     this.app = app;
+    this.logHost = {
+      globalLog: () => app.accessor.get(ILogService),
+      sessionLog: (sessionId) =>
+        app.accessor.get(ISessionManager).get(sessionId)?.accessor.get(ILogService),
+      liveSessionLogs: () =>
+        app.accessor
+          .get(ISessionManager)
+          .list()
+          .map((session) => session.accessor.get(ILogService)),
+    };
+    getRootLogger().bind(this.logHost);
     this.klient = createKlient({ scope: app });
     this.configReady = app.accessor.get(IConfigService).ready;
     this.installEngineTelemetry(options.telemetry);
@@ -524,6 +570,9 @@ export class SDKRpcClient extends SDKRpcClientBase {
     // idempotent, so the ledger's own teardown turns into a no-op.
     await this.app.accessor.get(IMcpOAuthService).shutdown();
     const appendLogStore = this.app.accessor.get(IAppendLogStore);
+    // Past this point the accessor throws, so the facade must stop resolving
+    // this client's log services. Disposal itself flushes them synchronously.
+    getRootLogger().unbind(this.logHost);
     this.app.dispose();
     await appendLogStore.drainRetirements();
     await drainSessionIndexMirror();
@@ -544,7 +593,7 @@ export class SDKRpcClient extends SDKRpcClientBase {
   private installEngineTelemetry(client: TelemetryClient | undefined): void {
     if (client === undefined) return;
     const telemetry = this.app.accessor.get(ITelemetryService);
-    telemetry.setAppender(client);
+    telemetry.setAppender(withoutEngineSessionStarted(client));
     void this.configReady.then(() => {
       telemetry.setEnabled(this.engineAccessor.get(IConfigService).get('telemetry') !== false);
     });
@@ -604,9 +653,13 @@ export class SDKRpcClient extends SDKRpcClientBase {
    * anyway.
    */
   override async listWorkspaceSkills(workDir: string): Promise<readonly SkillSummary[]> {
-    const handler = await this.engineAccessor
-      .get(IWorkspaceInstanceManager)
-      .getOrCreate({ root: normalizeRequiredWorkDir('listWorkspaceSkills', workDir) });
+    const root = normalizeRequiredWorkDir('listWorkspaceSkills', workDir);
+    // Materializing a workspace handler merges the workspace registry from the
+    // session index, so this read sits behind the same building gate the
+    // session calls do.
+    const handler = await this.retryWhileSessionIndexBuilding(() =>
+      this.engineAccessor.get(IWorkspaceInstanceManager).getOrCreate({ root }),
+    );
     const catalog = handler.program.skills;
     await catalog.ready;
     return catalog.catalog.listSkills().map(summarizeSkill);
@@ -623,9 +676,9 @@ export class SDKRpcClient extends SDKRpcClientBase {
    * empty list rather than failing the caller.
    */
   override async getWorkspaceTrustInfo(workDir: string): Promise<WorkspaceTrustInfo> {
-    const handler = await this.engineAccessor
-      .get(IWorkspaceInstanceManager)
-      .getOrCreate({ root: workDir });
+    const handler = await this.retryWhileSessionIndexBuilding(() =>
+      this.engineAccessor.get(IWorkspaceInstanceManager).getOrCreate({ root: workDir }),
+    );
     const trusted = await handler.program.trust.get();
     if (trusted) return { trusted: true, gatedMcpServers: [] };
     try {
@@ -651,9 +704,9 @@ export class SDKRpcClient extends SDKRpcClientBase {
    * servers connect live, no restart needed.
    */
   override async trustWorkspace(workDir: string): Promise<void> {
-    const handler = await this.engineAccessor
-      .get(IWorkspaceInstanceManager)
-      .getOrCreate({ root: workDir });
+    const handler = await this.retryWhileSessionIndexBuilding(() =>
+      this.engineAccessor.get(IWorkspaceInstanceManager).getOrCreate({ root: workDir }),
+    );
     await handler.program.trust.trust();
   }
 
@@ -669,7 +722,23 @@ export class SDKRpcClient extends SDKRpcClientBase {
     if (options?.reload) {
       await this.klient.global.config.reload();
     }
-    return resolvedConfigToKimiConfig(await this.klient.global.config.getAll());
+    return resolvedConfigToKimiConfig(await this.klient.global.config.getAll(), this.readRawConfig());
+  }
+
+  /**
+   * `KimiConfig.raw` is the config document as written, including the keys no
+   * engine domain claims (`theme`, `show_thinking_stream`, ... — the fields a
+   * TUI owns). The engine's `getAll()` is the per-domain effective view and has
+   * no raw-document accessor, so the SDK reads the same file through its own
+   * parser. A file that fails to parse simply has no raw view: `getConfig` still
+   * returns the engine's salvaged effective config rather than throwing.
+   */
+  private readRawConfig(): Record<string, unknown> | undefined {
+    try {
+      return readConfigFile(this.configPath).raw;
+    } catch {
+      return undefined;
+    }
   }
 
   override async getConfigDiagnostics(): Promise<ConfigDiagnostics> {
@@ -686,6 +755,10 @@ export class SDKRpcClient extends SDKRpcClientBase {
    */
   override async setConfig(patch: KimiConfigPatch): Promise<KimiConfig> {
     await this.configReady;
+    // The engine validates each domain against its own section schema, which
+    // does not model every constraint the SDK's config contract states; gate the
+    // whole patch first so an invalid one is rejected before any write.
+    validateConfigPatch(patch);
     for (const [domain, domainPatch] of Object.entries(patch)) {
       if (domainPatch === undefined) continue;
       await this.klient.global.config.set({ domain, patch: domainPatch });
@@ -700,11 +773,7 @@ export class SDKRpcClient extends SDKRpcClientBase {
    * full v1 cascade is computed from the user-layer values (see
    * `planProviderRemoval`) and persisted as ONE atomic multi-section
    * replace — the same single-write shape as v1's `removeKimiProvider`, so a
-   * process exit can never leave the file in a halfway-cascaded state. The
-   * `[secondary_model]` section is left alone on purpose: an entry whose
-   * model no longer resolves fails pool validation on the next session
-   * create, surfacing a named error instead of silently rewriting the
-   * user's configuration.
+   * process exit can never leave the file in a halfway-cascaded state.
    */
   override async removeProvider(providerId: string): Promise<KimiConfig> {
     await this.configReady;
@@ -998,7 +1067,9 @@ export class SDKRpcClient extends SDKRpcClientBase {
       updatedAt: meta.updatedAt,
       archived: meta.archived,
       metadata: meta.custom as JsonObject | undefined,
-      additionalDirs: workspace.additionalDirs,
+      // The engine echoes additional dirs back exactly as the caller passed
+      // them; every other path on a summary is forward-slashed.
+      additionalDirs: workspace.additionalDirs.map(normalizeWorkDir),
       lastTurnReason: liveOutcome,
     };
   }
@@ -1124,6 +1195,22 @@ export class SDKRpcClient extends SDKRpcClientBase {
     const match = workspaces.find((workspace) => normalizeWorkDir(workspace.root) === workDir);
     if (match === undefined) return [encodeWorkDirKey(workDir)];
     return this.engineAccessor.get(IWorkspaceAliases).resolveAliasIds(match.id);
+  }
+
+  /**
+   * The engine throws `Error2`; the SDK's public error contract is `KimiError`
+   * (what `isKimiError` branches on, and what a host's `catch` narrows on).
+   * Every boundary that hands an engine failure straight back to a caller
+   * restates it — see {@link restateEngineError}. Wrap OUTSIDE
+   * {@link retryWhileSessionIndexBuilding}, which still needs to recognize the
+   * engine's own class.
+   */
+  private async engineCall<T>(call: () => Promise<T> | T): Promise<T> {
+    try {
+      return await call();
+    } catch (error) {
+      throw restateEngineError(error);
+    }
   }
 
   /**
@@ -1377,7 +1464,9 @@ export class SDKRpcClient extends SDKRpcClientBase {
    * identical results.
    */
   override async forkSession(input: ForkSessionInput): Promise<SessionSummary> {
-    return this.retryWhileSessionIndexBuilding(() => this.forkSessionUnguarded(input));
+    return this.engineCall(() =>
+      this.retryWhileSessionIndexBuilding(() => this.forkSessionUnguarded(input)),
+    );
   }
 
   private async forkSessionUnguarded(input: ForkSessionInput): Promise<SessionSummary> {
@@ -1469,11 +1558,37 @@ export class SDKRpcClient extends SDKRpcClientBase {
       });
       if (handle === undefined) throw SDKRpcClient.sessionNotFound(input.id);
       this.wireSession(handle);
+      if (input.agentProfile !== undefined) {
+        await this.assertMainProfileBinding(handle, input.agentProfile);
+      }
       return this.resumedSessionSummary(handle, {
         includeSubagents: input.includeSubagents,
         replayTurnLimit: input.replayTurnLimit,
       });
     });
+  }
+
+  /**
+   * A session's main agent keeps the profile it was created with: the profile
+   * decides the system prompt, tool policy and delegation surface the recorded
+   * conversation was produced under, so resuming it as another profile would
+   * reinterpret history. The engine has no equivalent guard for profiles (only
+   * for routes, `ROUTE_SWITCH_FORBIDDEN`), so the SDK enforces the switch ban
+   * its resume contract states. A resume that requests a profile for a session
+   * with no binding is not a switch and is left alone.
+   */
+  private async assertMainProfileBinding(
+    handle: ISessionScopeHandle,
+    requested: string,
+  ): Promise<void> {
+    const agent = await ensureMainAgent(handle);
+    const bound = agent.accessor.get(IAgentProfileService).data().profileName;
+    if (bound === undefined || bound === requested) return;
+    throw new KimiError(
+      ErrorCodes.REQUEST_INVALID,
+      `agent is already bound to profile "${bound}"; cannot switch to "${requested}" in this session`,
+      { details: { sessionId: handle.id, boundProfile: bound, requestedProfile: requested } },
+    );
   }
 
   /**
@@ -1599,7 +1714,9 @@ export class SDKRpcClient extends SDKRpcClientBase {
    * directories out differently by design.
    */
   override async exportSession(input: ExportSessionInput): Promise<ExportSessionResult> {
-    return this.retryWhileSessionIndexBuilding(() => this.exportSessionUnguarded(input));
+    return this.engineCall(() =>
+      this.retryWhileSessionIndexBuilding(() => this.exportSessionUnguarded(input)),
+    );
   }
 
   private async exportSessionUnguarded(input: ExportSessionInput): Promise<ExportSessionResult> {
@@ -1667,6 +1784,19 @@ export class SDKRpcClient extends SDKRpcClientBase {
     run: () => Promise<T>,
   ): Promise<T> {
     if (agentFiles === undefined) return run();
+    // The engine loads these paths deep inside profile binding, where a missing
+    // one surfaces as a bare `realpath failed: path does not exist` with no path
+    // in it. The SDK took the paths from the caller, so it names the one it could
+    // not load.
+    for (const file of agentFiles) {
+      if (!existsSync(file)) {
+        throw new KimiError(
+          ErrorCodes.AGENT_NOT_FOUND,
+          `Agent file not found: ${normalizeWorkDir(file)}`,
+          { details: { agentFile: file } },
+        );
+      }
+    }
     const args = this.engineAccessor.get(IBootstrapService).args as {
       agentFiles?: readonly string[];
     };
@@ -1893,10 +2023,12 @@ export class SDKRpcClient extends SDKRpcClientBase {
    */
   override async compact(input: SessionIdRpcInput & CompactOptions): Promise<void> {
     const agent = await this.agentScope(input.sessionId);
-    agent.accessor.get(IAgentFullCompactionService).begin({
-      source: 'manual',
-      instruction: input.instruction,
-    });
+    await this.engineCall(() =>
+      agent.accessor.get(IAgentFullCompactionService).begin({
+        source: 'manual',
+        instruction: input.instruction,
+      }),
+    );
   }
 
   /**
@@ -1972,6 +2104,11 @@ export class SDKRpcClient extends SDKRpcClientBase {
       capability.max_input_tokens ?? capability.max_context_tokens,
     );
     agent.accessor.get(IAgentContextMemoryService).append(message);
+    // The reported context size just changed, and v2's context memory has no
+    // status channel of its own — the composed import publishes the update the
+    // way v1's did, and the session wiring fills in the fresh context/usage
+    // snapshot on the way out.
+    agent.accessor.get(IEventBus).publish(new AgentStatusUpdated({}));
   }
 
   /**
@@ -1985,11 +2122,16 @@ export class SDKRpcClient extends SDKRpcClientBase {
    * where v2 queues it FIFO.
    */
   override async prompt(input: SessionPromptRpcInput): Promise<void> {
-    const agent = await this.agentFacade(input.sessionId);
-    await agent.prompt({
-      input: input.input,
-      disabledTools: input.disabledTools,
-      promptId: input.promptId,
+    // Resolving the agent facade materializes the main agent, which is where a
+    // model that cannot be resolved surfaces — so the restatement has to cover
+    // it, not just the launch.
+    await this.engineCall(async () => {
+      const agent = await this.agentFacade(input.sessionId);
+      await agent.prompt({
+        input: input.input,
+        disabledTools: input.disabledTools,
+        promptId: input.promptId,
+      });
     });
   }
 
@@ -2001,10 +2143,12 @@ export class SDKRpcClient extends SDKRpcClientBase {
    * The launch result is dropped like `prompt` (v1's RPC shape returns void).
    */
   override async promptWithSkills(input: SessionPromptWithSkillsRpcInput): Promise<void> {
-    const agent = await this.agentFacade(input.sessionId);
-    await agent.promptWithSkills({
-      input: input.input,
-      skills: input.skills,
+    await this.engineCall(async () => {
+      const agent = await this.agentFacade(input.sessionId);
+      await agent.promptWithSkills({
+        input: input.input,
+        skills: input.skills,
+      });
     });
   }
 
@@ -2015,8 +2159,10 @@ export class SDKRpcClient extends SDKRpcClientBase {
    * title/lastPrompt are updated like a prompt's.
    */
   override async steer(input: SessionPromptRpcInput): Promise<void> {
-    const agent = await this.agentFacade(input.sessionId);
-    await agent.steer({ input: input.input });
+    await this.engineCall(async () => {
+      const agent = await this.agentFacade(input.sessionId);
+      await agent.steer({ input: input.input });
+    });
   }
 
   /**
@@ -2421,20 +2567,10 @@ export class SDKRpcClient extends SDKRpcClientBase {
   // exists for either group).
   // -----------------------------------------------------------------------
 
-  /**
-   * The engine's management plane throws `Error2`; the SDK's public error
-   * contract is `KimiError` (what `isKimiError` branches on, and what the v1
-   * client throws for the same failures). Restate so both engines surface
-   * the identical class — see `restateMcpManagementError`.
-   */
   private async mcpManagement<T>(
     call: (management: IMcpManagementService) => Promise<T>,
   ): Promise<T> {
-    try {
-      return await call(this.engineAccessor.get(IMcpManagementService));
-    } catch (error) {
-      throw restateMcpManagementError(error);
-    }
+    return this.engineCall(() => call(this.engineAccessor.get(IMcpManagementService)));
   }
 
   override async listGlobalMcpServers(
@@ -2743,27 +2879,58 @@ function normalizeRequiredWorkDir(operation: string, workDir: string): string {
 }
 
 function isSessionIndexBuilding(error: unknown): boolean {
-  return isError2(error) && error.code === SessionIndexErrors.codes.SESSION_INDEX_BUILDING;
+  const building: string = SessionIndexErrors.codes.SESSION_INDEX_BUILDING;
+  if (isError2(error)) return error.code === building;
+  // Reads that go through the klient facade get the same refusal restated as an
+  // `RPCError`, which keeps the engine's code in `reason`. Without this the guard
+  // only covered the calls made straight against engine services.
+  return error instanceof RPCError && error.reason === building;
 }
 
 /**
  * Restate an engine `Error2` in the SDK's public error shape (`KimiError`,
- * what `isKimiError` branches on) so the delegated management plane throws
- * the same class the v1 client throws for the same failure. Non-Error2
- * failures (DI resolution bugs, aborts) pass through untouched.
+ * what `isKimiError` branches on) so a delegated engine call fails with the
+ * class the SDK's public contract promises. Non-Error2 failures (DI resolution
+ * bugs, aborts) pass through untouched.
  *
  * An engine code this build's registry does not declare (a newer engine than
  * the pinned SDK) restates as `internal` — stamping the unknown code would
  * mint a `KimiError` that `toKimiErrorPayload` cannot serialize (its
  * `KIMI_ERROR_INFO` lookup throws on undeclared codes).
  */
-function restateMcpManagementError(error: unknown): unknown {
+function restateEngineError(error: unknown): unknown {
   if (!isError2(error)) return error;
   const code: KimiErrorCode = isKimiErrorCode(error.code) ? error.code : ErrorCodes.INTERNAL;
   return new KimiError(code, error.message, {
     details: error.details as Record<string, unknown> | undefined,
     cause: error.cause,
   });
+}
+
+/**
+ * `session_started` belongs to the harness on the SDK route: its event is the one
+ * carrying client attribution, ui mode and the host's process-level properties.
+ * The engine tracks its own two-field `session_started` for every session scope
+ * it activates, so forwarding that one as well would double count every session
+ * start and hand the host a second event with a different payload under the same
+ * name. Every other engine event passes through untouched.
+ */
+function withoutEngineSessionStarted(client: TelemetryClient): TelemetryClient {
+  const filtered: TelemetryClient = {
+    track: (event, properties) => {
+      if (event === 'session_started') return;
+      client.track(event, properties);
+    },
+  };
+  if (client.withContext !== undefined) {
+    filtered.withContext = (patch) => withoutEngineSessionStarted(client.withContext!(patch));
+  }
+  if (client.setContext !== undefined) {
+    filtered.setContext = (patch) => {
+      client.setContext!(patch);
+    };
+  }
+  return filtered;
 }
 
 /**

@@ -218,13 +218,6 @@ export interface KikiForkSessionRequest {
   readonly expected_cursor?: SessionCursor;
 }
 
-export interface SecondaryModelSettings {
-  readonly defaultModel?: string;
-  readonly models?: Record<string, string>;
-  readonly force?: boolean;
-  readonly enforcePool?: boolean;
-}
-
 export interface RuntimeConfigProjection {
   readonly cron?: {
     readonly debug: boolean;
@@ -261,7 +254,6 @@ export type KikiConfigResponse = Omit<ConfigResponse, 'subagent'> & RuntimeConfi
   readonly subagent?: NonNullable<ConfigResponse['subagent']> & {
     readonly denyModels?: string[];
   };
-  readonly secondary_model?: SecondaryModelSettings;
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -361,12 +353,6 @@ export type KikiConfigPatch = Omit<
   readonly request_identity?: RequestIdentityPolicyWire | null;
   readonly subagent?: NonNullable<PatchConfigRequest['subagent']> & {
     readonly deny_models?: string[];
-  };
-  readonly secondary_model?: {
-    readonly default_model?: string;
-    readonly models?: Record<string, string>;
-    readonly force?: boolean;
-    readonly enforce_pool?: boolean;
   };
   readonly replace_domains?: readonly string[];
 };

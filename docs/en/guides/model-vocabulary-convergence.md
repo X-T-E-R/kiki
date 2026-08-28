@@ -12,8 +12,8 @@ Kiki currently exposes related model-selection concepts through different field 
 This page is a design roadmap, not a deprecation notice. Existing configuration, Agent files, tool calls, and persisted subagent bindings keep their current behavior until a separately reviewed implementation changes them.
 :::
 
-::: danger Out of date
-Written while both engines existed. `packages/agent-core` (v1) has since been deleted, so every row and source path below that describes the v1 vocabulary is history, not current behavior. The convergence target itself still stands; this page is scheduled for a rebaseline.
+::: danger Superseded
+Written while both engines existed, and before the selection vocabulary was deleted rather than converged. `packages/agent-core` (v1) has since been deleted, and so have the `model` tool parameter, `model_preference`, and `[secondary_model]`. A subagent now binds only from an explicit `model_alias` — passed with the dispatch or pinned on the profile — and fails closed with `model.not_configured` when neither supplies one. Read this page as history; for the current contract see [Agents and subagents](../customization/agents.md) and the [`[subagent]` configuration reference](../configuration/config-files.md#subagent).
 :::
 
 ## Separate the concepts first
@@ -143,5 +143,5 @@ The current behavior is anchored in these repository paths:
 ## Next steps
 
 - [Agents and Sub-Agents](../customization/agents.md#agent-file-format) — current Agent-file fields and subagent binding behavior.
-- [Configuration files](../configuration/config-files.md#secondary-model) — current model registry and secondary-model configuration.
+- [Configuration files](../configuration/config-files.md#subagent) — current model registry and subagent binding configuration.
 - [Kiki runtime boundary](./kiki-runtime.md) — ownership boundaries between inherited and Kiki-specific model-binding behavior.

@@ -6,12 +6,11 @@ import * as zlib from 'node:zlib';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { createKimiHarness, KimiError } from '#/index';
 import {
-  createKimiHarness,
-  KimiError,
-  type SessionSummary,
-} from '#/index';
-import { exportSessionDirectory } from '@moonshot-ai/agent-core-v2/app/sessionExport/sessionExportService';
+  exportSessionDirectory,
+  type ExportSessionDirectorySummary,
+} from '@moonshot-ai/agent-core-v2/app/sessionExport/sessionExportService';
 import { WIRE_PROTOCOL_VERSION } from '@moonshot-ai/agent-core-v2/wire/migration/migration';
 
 import { resolveGlobalLogPath } from '#/logging';
@@ -80,18 +79,22 @@ function readZipEntries(buf: Buffer): Map<string, Buffer> {
   return entries;
 }
 
+/**
+ * `exportSessionDirectory` is the engine's own entry point, so it takes the
+ * engine's export summary — `workspaceDir`, not the SDK `SessionSummary`'s
+ * `workDir` (the two are structurally compatible enough that passing the SDK
+ * shape typechecks and silently drops the workspace from the manifest).
+ */
 function makeSummary(input: {
   readonly id: string;
   readonly sessionDir: string;
   readonly workDir: string;
   readonly title?: string | undefined;
-}): SessionSummary {
+}): ExportSessionDirectorySummary {
   return {
     id: input.id,
     sessionDir: input.sessionDir,
-    workDir: input.workDir,
-    createdAt: 1,
-    updatedAt: 2,
+    workspaceDir: input.workDir,
     title: input.title,
   };
 }
@@ -282,15 +285,18 @@ describe('exportSessionDirectory', () => {
     const sessionDir = join(tmp, 'sessions', sid);
     await mkdir(sessionDir, { recursive: true });
 
+    // Called straight on the engine function, so this is the engine's own error
+    // class. `KimiError` is what the SDK boundary restates it to — see
+    // `KimiHarness.exportSession` below.
     await expect(
       exportSessionDirectory({
         request: { sessionId: sid, version: '1.0.0-test' },
         summary: makeSummary({ id: sid, sessionDir, workDir: tmp }),
       }),
     ).rejects.toMatchObject({
-      name: 'KimiError',
+      name: 'Error2',
       code: 'session.export_not_found',
-    } satisfies Partial<KimiError>);
+    });
   });
 });
 

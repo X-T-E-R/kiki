@@ -1,4 +1,4 @@
-﻿import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -15,7 +15,6 @@ let dir: string;
 
 beforeEach(async () => {
   vi.stubEnv('KIMI_CODE_EXPERIMENTAL_FLAG', '');
-  vi.stubEnv('KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL', '');
   dir = join(tmpdir(), `kimi-doctor-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   await mkdir(dir, { recursive: true });
 });
@@ -535,7 +534,7 @@ subagents:
     expect(err).toContain('subagents references unknown agent profiles: missing-agent.');
   });
 
-  it('warns when model_preference is disabled by the experimental flag', async () => {
+  it('fails when a profile still declares the removed model_preference field', async () => {
     await writeValidConfig();
     const agentPath = await writeAgentFile(
       'reviewer.md',
@@ -549,13 +548,10 @@ model_preference: secondary
 
     const code = await handleDoctor(deps, {});
 
-    expect(code).toBe(0);
-    expect(stderr.join('')).toBe('');
-    const out = stdout.join('');
-    expect(out).toContain(`WARN agents       ${agentPath}`);
-    expect(out).toContain(
-      'model_preference is ignored while the secondary-model experimental feature is disabled.',
-    );
+    expect(code).toBe(1);
+    const err = stderr.join('');
+    expect(err).toContain(`ERROR agents       ${agentPath}`);
+    expect(err).toContain('model_preference');
   });
 
   it('degrades to a warning when the agent profile modules cannot load', async () => {

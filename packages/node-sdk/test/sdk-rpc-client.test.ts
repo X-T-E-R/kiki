@@ -10,7 +10,7 @@
  */
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import {
   FileTokenStorage,
@@ -886,53 +886,6 @@ key = "${titleOAuthRef.key}"
     }
   });
 
-  it('leaves the secondary_model pool untouched on removeProvider', async () => {
-    const { harness } = await makeHarness();
-    try {
-      await harness.setConfig({
-        providers: {
-          a: { type: 'openai', baseUrl: 'https://a.example.test/v1', apiKey: 'sk-a' },
-          b: { type: 'openai', baseUrl: 'https://b.example.test/v1', apiKey: 'sk-b' },
-        },
-        models: {
-          'a/m1': { provider: 'a', model: 'm1', maxContextSize: 100 },
-          'b/m1': { provider: 'b', model: 'm1', maxContextSize: 100 },
-        },
-        secondaryModel: {
-          defaultModel: 'a/m1',
-          models: { 'a/m1': 'fast', 'b/m1': 'smart' },
-        },
-      });
-
-      // Pool entries naming a removed model alias are kept as written; an
-      // unresolvable entry fails pool validation on the next session create.
-      const kept = await harness.removeProvider('b');
-      expect(kept.secondaryModel).toEqual({
-        defaultModel: 'a/m1',
-        models: { 'a/m1': 'fast', 'b/m1': 'smart' },
-      });
-
-      // Even a dangling default leaves the whole section in place on disk.
-      // (`setConfig` merges per domain, so the pool table is still the one
-      // written above; the default now points at the provider being removed.)
-      await harness.setConfig({
-        secondaryModel: { defaultModel: 'a/m1' },
-      });
-      const cleared = await harness.removeProvider('a');
-      expect(cleared.secondaryModel).toEqual({
-        defaultModel: 'a/m1',
-        models: { 'a/m1': 'fast', 'b/m1': 'smart' },
-      });
-      const reread = await harness.getConfig({ reload: true });
-      expect(reread.secondaryModel).toEqual({
-        defaultModel: 'a/m1',
-        models: { 'a/m1': 'fast', 'b/m1': 'smart' },
-      });
-    } finally {
-      await harness.close();
-    }
-  });
-
   it('replaces config sections atomically and clears undefined sections', async () => {
     const { harness } = await makeHarness();
     try {
@@ -948,32 +901,6 @@ key = "${titleOAuthRef.key}"
       // Sections absent from the write stay untouched.
       expect(next.providers['a']).toBeDefined();
       expect(next.models?.['a/m1']).toBeDefined();
-    } finally {
-      await harness.close();
-    }
-  });
-
-  it('round-trips the secondaryModel pool field to the [secondary_model] config section', async () => {
-    const { harness, homeDir } = await makeHarness();
-    try {
-      await harness.setConfig({
-        secondaryModel: {
-          defaultModel: 'provider/fast',
-          models: { 'provider/fast': 'fast and cheap' },
-        },
-      });
-
-      const toml = await readFile(join(homeDir, 'config.toml'), 'utf-8');
-      expect(toml).toContain('[secondary_model]');
-      expect(toml).toContain('default_model');
-      expect(toml).toContain('[secondary_model.models]');
-      expect(toml).not.toContain('[subagent.models]');
-
-      const reread = await harness.getConfig({ reload: true });
-      expect(reread.secondaryModel).toEqual({
-        defaultModel: 'provider/fast',
-        models: { 'provider/fast': 'fast and cheap' },
-      });
     } finally {
       await harness.close();
     }
@@ -1071,7 +998,15 @@ describe('SDKRpcClient workspace trust', () => {
       expect(info.gatedMcpServers).toEqual([
         { name: 'http-server', transport: 'http', url: 'https://example.test/mcp' },
         { name: 'nested-server', transport: 'stdio', command: 'nested-cmd' },
-        { name: 'root-server', transport: 'stdio', command: 'root-cmd', args: ['--safe'], cwd: '/tmp/root' },
+        {
+          name: 'root-server',
+          transport: 'stdio',
+          command: 'root-cmd',
+          args: ['--safe'],
+          // The engine's config loader hands back a host-absolute cwd, which on
+          // Windows means the declared root-relative path gains a drive letter.
+          cwd: resolve('/tmp/root').replaceAll('\\', '/'),
+        },
       ]);
       const serialized = JSON.stringify(info);
       expect(serialized).not.toContain('hidden');
@@ -1372,71 +1307,6 @@ describe('removeProviderFromConfig', () => {
     expect(Object.keys(next.models ?? {})).toEqual(['a/m1']);
     expect(next.defaultModel).toBe('a/m1');
     expect(next.defaultProvider).toBe('a');
-  });
-
-  it('leaves secondary_model pool entries alone when their model alias was removed', () => {
-    const config = {
-      providers: { a: { type: 'openai' }, b: { type: 'openai' } },
-      models: {
-        'a/m1': { provider: 'a', model: 'm1', maxContextSize: 100 },
-        'b/m1': { provider: 'b', model: 'm1', maxContextSize: 100 },
-      },
-      secondaryModel: {
-        defaultModel: 'a/m1',
-        models: { 'a/m1': 'fast', 'b/m1': 'smart' },
-      },
-    } as unknown as KimiConfig;
-
-    const next = removeProviderFromConfig(config, 'b');
-
-    expect(next.secondaryModel).toEqual({
-      defaultModel: 'a/m1',
-      models: { 'a/m1': 'fast', 'b/m1': 'smart' },
-    });
-  });
-
-  it('keeps the secondary_model section even when its default model dangles', () => {
-    const config = {
-      providers: { a: { type: 'openai' }, b: { type: 'openai' } },
-      models: {
-        'a/m1': { provider: 'a', model: 'm1', maxContextSize: 100 },
-        'b/m1': { provider: 'b', model: 'm1', maxContextSize: 100 },
-      },
-      secondaryModel: {
-        defaultModel: 'b/m1',
-        models: { 'a/m1': 'fast', 'b/m1': 'smart' },
-      },
-    } as unknown as KimiConfig;
-
-    expect(removeProviderFromConfig(config, 'b').secondaryModel).toEqual({
-      defaultModel: 'b/m1',
-      models: { 'a/m1': 'fast', 'b/m1': 'smart' },
-    });
-
-    // The legacy recipe's `model` key is left alone the same way.
-    const legacy = {
-      ...config,
-      secondaryModel: { model: 'b/m1', default_effort: 'low' },
-    } as unknown as KimiConfig;
-    expect(removeProviderFromConfig(legacy, 'b').secondaryModel).toEqual({
-      model: 'b/m1',
-      default_effort: 'low',
-    });
-  });
-
-  it('leaves the secondary_model section untouched when nothing dangles', () => {
-    const config = {
-      providers: { a: { type: 'openai' }, b: { type: 'openai' } },
-      models: {
-        'a/m1': { provider: 'a', model: 'm1', maxContextSize: 100 },
-        'b/m1': { provider: 'b', model: 'm1', maxContextSize: 100 },
-      },
-      secondaryModel: { defaultModel: 'a/m1' },
-    } as unknown as KimiConfig;
-
-    const next = removeProviderFromConfig(config, 'b');
-
-    expect(next.secondaryModel).toEqual({ defaultModel: 'a/m1' });
   });
 });
 
