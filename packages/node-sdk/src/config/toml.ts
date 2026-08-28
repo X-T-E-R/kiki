@@ -4,7 +4,6 @@ import { dirname } from 'pathe';
 
 import { ErrorCodes, KimiError } from '../errors';
 import { applyEnvModelConfig, stripEnvModelConfig } from './env-model';
-import { applySecondaryModelConfig, stripSecondaryModelConfig } from './secondary-model';
 import {
   KimiConfigSchema,
   formatConfigValidationError,
@@ -21,7 +20,6 @@ import {
   type OAuthRef,
   type PermissionConfig,
   type ProviderConfig,
-  type SecondaryModelConfig,
   type ServicesConfig,
   type SubagentConfig,
   type ThinkingConfig,
@@ -106,7 +104,7 @@ export function loadRuntimeConfig(
   filePath: string,
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): KimiConfig {
-  return applySecondaryModelConfig(applyEnvModelConfig(readConfigFile(filePath), env), env);
+  return applyEnvModelConfig(readConfigFile(filePath), env);
 }
 
 export interface RuntimeConfigLoadResult {
@@ -201,8 +199,6 @@ export function loadRuntimeConfigSafe(
       `Ignoring KIMI_MODEL_* environment overrides: ${describeUnknownError(error)}`,
     );
   }
-  // Never throws: the secondary overlay only copies already-validated entries.
-  config = applySecondaryModelConfig(config, env);
 
   return { config, fileWarnings, envWarnings, fileError };
 }
@@ -324,8 +320,6 @@ export function transformTomlData(data: Record<string, unknown>): Record<string,
     } else if (targetKey === 'experimental' && isPlainObject(value)) {
       result[targetKey] = cloneRecord(value);
     } else if ((targetKey === 'subagent' || targetKey === 'agents') && isPlainObject(value)) {
-      result[targetKey] = transformPlainObject(value);
-    } else if (targetKey === 'secondaryModel' && isPlainObject(value)) {
       result[targetKey] = transformPlainObject(value);
     } else if (targetKey === 'mcp' && isPlainObject(value)) {
       result[targetKey] = transformPlainObject(value);
@@ -464,11 +458,10 @@ function transformLoopControlData(data: Record<string, unknown>): Record<string,
 /* ------------------------------------------------------------------ */
 
 export async function writeConfigFile(filePath: string, config: KimiConfig): Promise<void> {
-  // Final guard: never persist the env-synthesized model/provider or the
-  // secondary-model runtime view to disk, even if a caller passes back the
-  // runtime config as a patch (see stripEnvModelConfig /
-  // stripSecondaryModelConfig / the getConfig -> setConfig round-trip).
-  const validated = validateConfig(stripSecondaryModelConfig(stripEnvModelConfig(config)));
+  // Final guard: never persist the env-synthesized model/provider to disk,
+  // even if a caller passes back the runtime config as a patch (see
+  // stripEnvModelConfig / the getConfig -> setConfig round-trip).
+  const validated = validateConfig(stripEnvModelConfig(config));
   await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
   await atomicWrite(filePath, `${stringifyToml(configToTomlData(validated))}\n`);
 }
@@ -508,7 +501,6 @@ export function configToTomlData(config: KimiConfig): Record<string, unknown> {
   setSection(out, 'background', config.background, backgroundToToml);
   setSection(out, 'subagent', config.subagent, subagentToToml);
   setSection(out, 'agents', config.agents, plainSectionToToml);
-  setSection(out, 'secondary_model', config.secondaryModel, secondaryModelToToml);
   setSection(out, 'mcp', config.mcp, mcpToToml);
   setSection(out, 'image', config.image, imageToToml);
   setSection(out, 'experimental', config.experimental, experimentalToToml);
@@ -707,21 +699,6 @@ function plainSectionToToml<T extends object>(
   const out = cloneRecord(rawSection);
   for (const [key, value] of Object.entries(section)) {
     setDefined(out, camelToSnake(key), value);
-  }
-  return out;
-}
-
-function secondaryModelToToml(
-  secondaryModel: SecondaryModelConfig,
-  rawSecondaryModel: unknown,
-): Record<string, unknown> {
-  const out = cloneRecord(rawSecondaryModel);
-  for (const [key, value] of Object.entries(secondaryModel)) {
-    if (key === 'capabilities' && Array.isArray(value)) {
-      out[camelToSnake(key)] = [...value];
-    } else {
-      setDefined(out, camelToSnake(key), value);
-    }
   }
   return out;
 }

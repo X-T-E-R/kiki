@@ -11,15 +11,11 @@ export const providerConfigResponseSchema = z.object({
 export type ProviderConfigResponse = z.infer<typeof providerConfigResponseSchema>;
 
 export const subagentConfigResponseSchema = z.object({
-  defaultModel: z.string().optional(),
-  defaultEffort: z.string().optional(),
   timeoutMs: z.number().optional(),
 });
 
 export const agentsConfigResponseSchema = z.object({
   enabled: z.boolean().optional(),
-  defaultSubagentModel: z.string().optional(),
-  defaultSubagentReasoningEffort: z.string().optional(),
 });
 
 export const modelCatalogConfigResponseSchema = z.object({
@@ -76,14 +72,10 @@ export const patchConfigRequestSchema = z.object({
   loop_control: z.unknown().optional(),
   background: z.unknown().optional(),
   subagent: z.object({
-    default_model: z.string().optional(),
-    default_effort: z.string().optional(),
     timeout_ms: z.number().optional(),
   }).optional(),
   agents: z.object({
     enabled: z.boolean().optional(),
-    default_subagent_model: z.string().optional(),
-    default_subagent_reasoning_effort: z.string().optional(),
   }).optional(),
   builtin_product_skills: z.boolean().optional(),
   model_catalog: z.object({

@@ -1,6 +1,7 @@
 import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
 import { isProviderRateLimitError } from '#/kosong/contract/errors';
 import { type TokenUsage } from '#/kosong/contract/usage';
+import type { SubagentModelSource } from '#/session/subagent/configSection';
 import * as retry from 'retry';
 
 import { isUserCancellation } from '#/_base/utils/abort';
@@ -33,7 +34,7 @@ export interface AgentSpawnAttemptOptions extends AgentRunAttemptOptions {
   readonly binding?: {
     readonly model: string;
     readonly thinking?: string;
-    readonly modelSource?: 'tool' | 'profile' | 'default' | 'secondary' | 'caller';
+    readonly modelSource?: SubagentModelSource;
   };
 }
 

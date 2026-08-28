@@ -514,7 +514,6 @@ describe('agent profile loaders + session catalog', () => {
           '---',
           'name: reviewer',
           'description: Old description',
-          'model_preference: secondary',
           'tools: [Read, Bash]',
           'custom_field: keep-me',
           '---',
@@ -526,12 +525,7 @@ describe('agent profile loaders + session catalog', () => {
       const routePath = await writeAgent(
         join(root, '.routes', 'reviewer'),
         'fast.md',
-        routeMd(
-          'reviewer.fast',
-          'reviewer',
-          'KEEP ROUTE BODY',
-          'model_preference: primary\n',
-        ),
+        routeMd('reviewer.fast', 'reviewer', 'KEEP ROUTE BODY'),
       );
       const writes: string[] = [];
       await withStack(

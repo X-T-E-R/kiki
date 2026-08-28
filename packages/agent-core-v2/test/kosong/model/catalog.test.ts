@@ -36,7 +36,6 @@ import { IHostRequestHeaders } from '#/kosong/model/hostRequestHeaders';
 import { IModelService, type ModelRecord, type ModelsSection } from '#/kosong/model/model';
 import '#/kosong/model/modelService';
 import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
-import { assertValidSubagentModelPool } from '#/session/subagent/configSection';
 
 import { HostRequestHeadersAdapter } from '#/app/kosongConfig/hostRequestHeadersAdapter';
 
@@ -441,7 +440,7 @@ describe('Model assembly (pure data)', () => {
     }
   });
 
-  it('resolves bare default and secondary-model references to the canonical model id', async () => {
+  it('resolves a bare default model reference to the canonical model id', async () => {
     const canonicalId = 'axon-message/deepseek-v4-flash';
     const { host, catalog, models } = createHost({
       providers: {
@@ -460,16 +459,6 @@ describe('Model assembly (pure data)', () => {
       const model = catalog.get(models.getDefaultModel()!);
       expect(model.id).toBe(canonicalId);
       expect(catalog.get(canonicalId)).toBe(model);
-      expect(() => {
-        assertValidSubagentModelPool(
-          {
-            defaultModel: 'deepseek-v4-flash',
-            models: { 'deepseek-v4-flash': 'fast' },
-          },
-          catalog,
-          models,
-        );
-      }).not.toThrow();
 
       await expect(catalog.setDefaultModel('deepseek-v4-flash')).resolves.toMatchObject({
         default_model: canonicalId,

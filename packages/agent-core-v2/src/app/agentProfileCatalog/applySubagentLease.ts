@@ -36,11 +36,7 @@ export function aliasIdentity(models: IModelService | undefined): AliasIdentity 
 
 export function leaseHasBindingPin(lease: SubagentLease | undefined): boolean {
   if (lease === undefined) return false;
-  return (
-    lease.modelAlias !== undefined ||
-    lease.thinkingEffort !== undefined ||
-    lease.modelPreference !== undefined
-  );
+  return lease.modelAlias !== undefined || lease.thinkingEffort !== undefined;
 }
 
 export function applyLease(
@@ -67,8 +63,6 @@ export function applyLease(
         ? undefined
         : lease.serviceTier;
   const requestParams = mergeRequestParams(profile.requestParams, lease.requestParams);
-  const leaseSetsAlias = lease.modelAlias !== undefined;
-  const leaseSetsPreference = lease.modelPreference !== undefined;
   return normalizeAgentProfile({
     ...profile,
     description: lease.description ?? profile.description,
@@ -77,16 +71,7 @@ export function applyLease(
     toolAllowPolicies,
     disallowedTools,
     subagents,
-    modelPreference: leaseSetsPreference
-      ? lease.modelPreference
-      : leaseSetsAlias
-        ? undefined
-        : profile.modelPreference,
-    modelAlias: leaseSetsAlias
-      ? lease.modelAlias
-      : leaseSetsPreference
-        ? undefined
-        : profile.modelAlias,
+    modelAlias: lease.modelAlias ?? profile.modelAlias,
     thinkingEffort: lease.thinkingEffort ?? profile.thinkingEffort,
     allowedModels: intersectAllowlists(profile.allowedModels, lease.allowedModels, resolveId),
     denyModels: unionLists(profile.denyModels, lease.denyModels, resolveId),
@@ -149,7 +134,6 @@ export function fillLeasePins<
   T extends {
     modelAlias?: string;
     thinkingEffort?: string;
-    modelPreference?: string;
   },
 >(
   tool: T,
@@ -157,18 +141,15 @@ export function fillLeasePins<
   route?: { readonly lockedModelAlias?: string; readonly lockedThinkingEffort?: string },
 ): T {
   if (lease === undefined) return tool;
-  const toolHasModel = tool.modelAlias !== undefined || tool.modelPreference !== undefined;
-  let modelAlias = tool.modelAlias;
-  let modelPreference = tool.modelPreference;
-  if (!toolHasModel && route?.lockedModelAlias === undefined) {
-    modelAlias = lease.modelAlias;
-    modelPreference = lease.modelPreference;
-  }
+  const modelAlias =
+    tool.modelAlias === undefined && route?.lockedModelAlias === undefined
+      ? lease.modelAlias
+      : tool.modelAlias;
   const thinkingEffort =
     route?.lockedThinkingEffort !== undefined
       ? tool.thinkingEffort
       : (tool.thinkingEffort ?? lease.thinkingEffort);
-  return { ...tool, modelAlias, modelPreference, thinkingEffort };
+  return { ...tool, modelAlias, thinkingEffort };
 }
 
 export function routePermittedByProfile(

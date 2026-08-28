@@ -25,6 +25,14 @@ export const TowerSpawnToolInputSchema = z
       .string()
       .optional()
       .describe('Extra tower instructions appended to the generated briefing'),
+    model_alias: z
+      .string()
+      .trim()
+      .min(1)
+      .optional()
+      .describe(
+        'Exact configured [models] alias for the spawned agent. Required unless the tower-worker lease pins one; a spawned agent never runs on your model.',
+      ),
   })
   .strict()
   .superRefine((value, ctx) => {

@@ -746,17 +746,24 @@ async function configureFakeProvider(harness: KimiHarness): Promise<void> {
   });
 }
 
+/**
+ * The budget is a liveness ceiling, not part of any assertion: every caller
+ * awaits an event it requires, so a slow machine must not decide the verdict.
+ * v1's 1s was tuned to its in-process turn; a v2 turn runs a real engine loop and
+ * these cases stack two or three of them behind a fork.
+ */
 function waitForEvent(
   session: {
     onEvent(listener: (event: Event) => void): () => void;
   },
   predicate: (event: Event) => boolean,
+  timeoutMs = 20_000,
 ): Promise<Event> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       unsubscribe();
       reject(new Error('Timed out waiting for session event'));
-    }, 1_000);
+    }, timeoutMs);
     const unsubscribe = session.onEvent((event) => {
       if (!predicate(event)) return;
       clearTimeout(timeout);

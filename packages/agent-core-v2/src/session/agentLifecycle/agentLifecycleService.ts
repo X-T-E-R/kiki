@@ -62,42 +62,6 @@ import { resolveMainModelCandidate } from '#/agent/profile/mainModelCandidate';
 
 let nextAgentId = 0;
 
-export const SUBAGENT_BINDING_MODE_LABEL = 'subagentBindingMode';
-export type PersistedSubagentBindingMode = 'inherit' | 'fixed';
-
-export function withSubagentBindingMode(
-  labels: Readonly<Record<string, string>>,
-  mode: PersistedSubagentBindingMode,
-): Readonly<Record<string, string>> {
-  return { ...labels, [SUBAGENT_BINDING_MODE_LABEL]: mode };
-}
-
-export function persistedSubagentBindingMode(
-  meta: AgentMeta | undefined,
-): PersistedSubagentBindingMode {
-  return meta?.labels?.[SUBAGENT_BINDING_MODE_LABEL] === 'inherit' ? 'inherit' : 'fixed';
-}
-
-export async function refreshInheritedSubagentBinding(
-  caller: IAgentScopeHandle,
-  target: IAgentScopeHandle,
-  meta: AgentMeta | undefined,
-): Promise<void> {
-  if (persistedSubagentBindingMode(meta) !== 'inherit') return;
-  const callerData = caller.accessor.get(IAgentProfileService).data();
-  if (callerData.modelAlias === undefined) {
-    throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'Caller agent has no model bound', {
-      details: { agentId: caller.id },
-    });
-  }
-  const targetProfile = target.accessor.get(IAgentProfileService);
-  if (targetProfile.data().modelAlias !== callerData.modelAlias) {
-    await targetProfile.setModel(callerData.modelAlias);
-  }
-  if (targetProfile.data().thinkingLevel !== callerData.thinkingLevel) {
-    targetProfile.setThinking(callerData.thinkingLevel);
-  }
-}
 export class AgentLifecycleService extends Disposable implements IAgentLifecycleService {
   declare readonly _serviceBrand: undefined;
   private readonly handles = new Map<string, IAgentScopeHandle>();

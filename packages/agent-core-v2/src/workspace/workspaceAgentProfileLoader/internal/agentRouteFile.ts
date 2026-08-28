@@ -7,7 +7,6 @@
 
 import { FrontmatterError, parseFrontmatter } from '#/_base/text/frontmatter';
 import type {
-  AgentModelPreference,
   AgentProfileRouteDefinition,
   AgentProfileRoutePromptMode,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
@@ -103,19 +102,13 @@ export function parseAgentRouteFileText(
   const rawSubagents = parseStringList(parsed.data['subagents'], 'subagents', options.path);
   const subagents =
     rawSubagents?.length === 1 && rawSubagents[0] === '*' ? undefined : rawSubagents;
-  const modelPreference = parseModelPreference(parsed.data['model_preference'], options.path);
+  rejectModelPreference(parsed.data['model_preference'], options.path);
   const modelAlias = optionalString(parsed.data['model_alias'], 'model_alias', options.path);
   const thinkingEffort = optionalString(
     parsed.data['thinking_effort'],
     'thinking_effort',
     options.path,
   );
-  if (modelPreference !== undefined && modelAlias !== undefined) {
-    throw invalid(
-      options.path,
-      'Frontmatter fields "model_preference" and "model_alias" are mutually exclusive',
-    );
-  }
   const serviceTier = parseServiceTier(parsed.data['service_tier'], options.path);
   let requestParams = parseRequestParams(parsed.data['request_params'], options.path);
   if (
@@ -142,13 +135,11 @@ export function parseAgentRouteFileText(
     tools,
     disallowedTools,
     subagents,
-    modelPreference,
     modelAlias,
     thinkingEffort,
     serviceTier,
     requestParams,
     overriddenFields: [
-      'model_preference',
       'model_alias',
       'thinking_effort',
       'service_tier',
@@ -201,10 +192,12 @@ function parsePromptMode(value: unknown, path: string): AgentProfileRoutePromptM
   throw invalid(path, 'Frontmatter field "prompt_mode" must be inherit, prepend, append, or wrap');
 }
 
-function parseModelPreference(value: unknown, path: string): AgentModelPreference | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (value === 'primary' || value === 'secondary') return value;
-  throw invalid(path, 'Frontmatter field "model_preference" must be "primary" or "secondary"');
+function rejectModelPreference(value: unknown, path: string): void {
+  if (value === undefined || value === null) return;
+  throw invalid(
+    path,
+    'Frontmatter field "model_preference" has been removed: subagents no longer inherit the caller\'s model. Set "model_alias" to an exact [models] alias instead.',
+  );
 }
 
 function parseServiceTier(value: unknown, path: string): ServiceTier | null | undefined {

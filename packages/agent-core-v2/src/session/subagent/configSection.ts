@@ -1,17 +1,18 @@
 /**
- * `subagent` domain — subagent config schemas and binding resolution.
+ * `subagent` domain — subagent config schema and binding resolution.
  *
- * Owns the subagent timeout and the declarative secondary-model pool, resolves
- * pool choices together with the fork's exact model/thinking extensions, and
- * records whether a spawn binding should inherit the caller on resume or stay
- * fixed. Self-registered at module load via `registerConfigSection`.
+ * Owns the subagent timeout and resolves the model a spawn binds. A subagent
+ * model has exactly two legitimate sources: a pin on the agent profile (or the
+ * route/lease that stands in for it) and an explicit `model_alias` at dispatch
+ * time. Nothing derives a subagent model from the caller, so a spawn with
+ * neither source fails closed instead of silently following the main agent.
+ * Self-registered at module load via `registerConfigSection`.
  */
 
 import { z } from 'zod';
 
 import { Error2, ErrorCodes, isError2 } from '#/errors';
 import { isPlainObject } from '#/app/config/toml';
-import type { IFlagService } from '#/app/flag/flag';
 import {
   type EnvBindings,
   envBindings,
@@ -19,11 +20,8 @@ import {
   type IConfigService,
 } from '#/app/config/config';
 import { registerConfigSection } from '#/app/config/configSectionContributions';
-import type { IModelCatalog } from '#/kosong/model/catalog';
 import type { IModelService } from '#/kosong/model/model';
-import { AGENTS_SECTION, type AgentsConfig } from '#/session/agentCollaboration/configSection';
 
-import { SECONDARY_MODEL_FLAG_ID } from './flag';
 import {
   assertRoleSpawnConstraints,
   resolveRoleThinkingDefault,
@@ -33,36 +31,13 @@ import {
 export type { SubagentRoleModelConstraints } from './modelConstraints';
 
 export const SUBAGENT_SECTION = 'subagent';
-export const SECONDARY_MODEL_SECTION = 'secondaryModel';
 
 export const SubagentConfigSchema = z.object({
-  defaultModel: z.string().optional(),
-  defaultEffort: z.string().optional(),
   timeoutMs: z.number().int().min(0).optional(),
   denyModels: z.array(z.string()).optional(),
 });
 
 export type SubagentConfig = z.infer<typeof SubagentConfigSchema>;
-
-export const SecondaryModelConfigSchema = z.object({
-  defaultModel: z.string().min(1).optional(),
-  models: z.record(z.string(), z.string()).optional(),
-  force: z.boolean().optional(),
-  enforcePool: z.boolean().optional(),
-  model: z.string().min(1).optional(),
-  maxContextSize: z.number().int().min(1).optional(),
-  maxInputSize: z.number().int().min(1).optional(),
-  maxOutputSize: z.number().int().min(1).optional(),
-  capabilities: z.array(z.string()).optional(),
-  displayName: z.string().optional(),
-  reasoningKey: z.string().optional(),
-  adaptiveThinking: z.boolean().optional(),
-  supportEfforts: z.array(z.string()).optional(),
-  defaultEffort: z.string().optional(),
-  offEffort: z.string().optional(),
-});
-
-export type SecondaryModelConfig = z.infer<typeof SecondaryModelConfigSchema>;
 
 export const DEFAULT_SUBAGENT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 export const SUBAGENT_TIMEOUT_ENV = 'KIMI_SUBAGENT_TIMEOUT_MS';
@@ -87,8 +62,6 @@ registerConfigSection(SUBAGENT_SECTION, SubagentConfigSchema, {
   stripEnv: stripSubagentEnv,
 });
 
-registerConfigSection(SECONDARY_MODEL_SECTION, SecondaryModelConfigSchema);
-
 export function resolveSubagentTimeoutMs(config: IConfigService): number {
   return (
     config.get<SubagentConfig | undefined>(SUBAGENT_SECTION)?.timeoutMs ??
@@ -96,27 +69,18 @@ export function resolveSubagentTimeoutMs(config: IConfigService): number {
   );
 }
 
-export const PRIMARY_SUBAGENT_MODEL_CHOICE = 'primary';
-
-export interface SubagentModelPool {
-  readonly defaultModel?: string;
-  readonly models: Record<string, string>;
-}
-
 export interface SubagentBindingRequest {
   readonly modelAlias?: string;
-  readonly modelPreference?: string;
   readonly thinkingEffort?: string;
 }
 
-export interface SubagentBindingOwner {
-  readonly modelAlias: string;
-  readonly thinkingLevel: string;
-  readonly inheritByDefault?: boolean;
+/** Names the dispatch target so an unbound spawn can say what to pin. */
+export interface SubagentBindingTarget {
+  readonly profileName?: string;
+  readonly routeId?: string;
 }
 
-export type SubagentModelSource = 'tool' | 'profile' | 'default' | 'secondary' | 'caller';
-export type SubagentBindingMode = 'inherit' | 'fixed';
+export type SubagentModelSource = 'tool' | 'profile';
 
 export interface SubagentModelBinding {
   readonly model: string;
@@ -126,22 +90,12 @@ export interface SubagentModelBinding {
 
 interface SubagentBindingMetadata {
   readonly source: SubagentModelSource;
-  readonly mode: SubagentBindingMode;
-  readonly offPool?: boolean;
 }
 
 const bindingMetadata = new WeakMap<SubagentModelBinding, SubagentBindingMetadata>();
 
 export function subagentModelSource(binding: SubagentModelBinding): SubagentModelSource {
-  return bindingMetadata.get(binding)?.source ?? 'caller';
-}
-
-export function subagentBindingMode(binding: SubagentModelBinding): SubagentBindingMode {
-  return bindingMetadata.get(binding)?.mode ?? 'fixed';
-}
-
-export function subagentBindingOffPool(binding: SubagentModelBinding): boolean {
-  return bindingMetadata.get(binding)?.offPool ?? false;
+  return bindingMetadata.get(binding)?.source ?? 'profile';
 }
 
 function recordBindingMetadata(
@@ -168,134 +122,8 @@ export function canonicalizeSubagentBinding(
       thinking: binding.thinking,
       displayModel: binding.displayModel,
     },
-    {
-      source: subagentModelSource(binding),
-      mode: subagentBindingMode(binding),
-      offPool: subagentBindingOffPool(binding),
-    },
+    { source: subagentModelSource(binding) },
   );
-}
-
-export function resolveSubagentModelPool(config: IConfigService): SubagentModelPool | undefined {
-  const section = config.get<SecondaryModelConfig | undefined>(SECONDARY_MODEL_SECTION);
-  if (section?.models !== undefined) {
-    return { defaultModel: section.defaultModel, models: section.models };
-  }
-  if (section?.defaultModel !== undefined) {
-    return { defaultModel: section.defaultModel, models: { [section.defaultModel]: '' } };
-  }
-  if (section?.model !== undefined) {
-    return { defaultModel: section.model, models: { [section.model]: '' } };
-  }
-  return undefined;
-}
-
-export const SECONDARY_MODEL_FORCE_REQUIRES_DEFAULT_MESSAGE =
-  '[secondary_model].default_model is required when [secondary_model].force is set';
-
-export const SECONDARY_MODEL_FORCE_EXCLUDES_MODELS_MESSAGE =
-  '[secondary_model].force cannot be combined with [secondary_model.models]: the pool table only exists to offer the main agent a choice, and force removes that choice';
-
-export const SECONDARY_MODEL_ENFORCE_POOL_REQUIRES_MODELS_MESSAGE =
-  '[secondary_model].enforce_pool requires a non-empty [secondary_model.models] pool';
-
-export const SECONDARY_MODEL_ENFORCE_POOL_EXCLUDES_FORCE_MESSAGE =
-  '[secondary_model].enforce_pool cannot be combined with [secondary_model].force';
-
-export function isSubagentModelForced(config: IConfigService): boolean {
-  return config.get<SecondaryModelConfig | undefined>(SECONDARY_MODEL_SECTION)?.force === true;
-}
-
-export function exposesSubagentModelChoice(config: IConfigService, flags: IFlagService): boolean {
-  if (!flags.enabled(SECONDARY_MODEL_FLAG_ID)) return false;
-  if (isSubagentModelForced(config)) return false;
-  return resolveSubagentModelPool(config) !== undefined;
-}
-
-export const SECONDARY_MODEL_DEFAULT_MODEL_REQUIRED_MESSAGE =
-  '[secondary_model].default_model is required when [secondary_model.models] is configured';
-
-export const SECONDARY_MODEL_PRIMARY_MODEL_RESERVED_MESSAGE = `[secondary_model.models] key "${PRIMARY_SUBAGENT_MODEL_CHOICE}" is reserved: it always binds the caller's own model. Rename the pool entry.`;
-
-export function assertValidSubagentModelPool(
-  pool: SubagentModelPool,
-  modelCatalog: IModelCatalog,
-  models: IModelService,
-): void {
-  if (Object.hasOwn(pool.models, PRIMARY_SUBAGENT_MODEL_CHOICE)) {
-    throw new Error2(ErrorCodes.CONFIG_INVALID, SECONDARY_MODEL_PRIMARY_MODEL_RESERVED_MESSAGE, {
-      details: {
-        section: SECONDARY_MODEL_SECTION,
-        field: 'models',
-        model: PRIMARY_SUBAGENT_MODEL_CHOICE,
-      },
-    });
-  }
-  const aliases = Object.keys(pool.models);
-  if (pool.defaultModel === undefined) {
-    throw new Error2(ErrorCodes.CONFIG_INVALID, SECONDARY_MODEL_DEFAULT_MODEL_REQUIRED_MESSAGE, {
-      details: { section: SECONDARY_MODEL_SECTION, field: 'defaultModel' },
-    });
-  }
-  if (!Object.hasOwn(pool.models, pool.defaultModel)) {
-    throw new Error2(
-      ErrorCodes.CONFIG_INVALID,
-      `[secondary_model].default_model "${pool.defaultModel}" is not a [secondary_model.models] key. Available models: ${aliases.join(', ')}.`,
-      { details: { model: pool.defaultModel, availableModels: aliases } },
-    );
-  }
-  for (const alias of aliases) {
-    try {
-      modelCatalog.get(resolveModelIdentity(alias, models));
-    } catch (error) {
-      throw new Error2(
-        ErrorCodes.CONFIG_INVALID,
-        `[secondary_model.models] entry "${alias}" could not be resolved: ${error instanceof Error ? error.message : String(error)}`,
-        { cause: error, details: { model: alias } },
-      );
-    }
-  }
-}
-
-export function assertValidSubagentModelConfig(
-  config: IConfigService,
-  flags: IFlagService,
-  modelCatalog: IModelCatalog,
-  models: IModelService,
-): void {
-  if (!flags.enabled(SECONDARY_MODEL_FLAG_ID)) return;
-  const section = config.get<SecondaryModelConfig | undefined>(SECONDARY_MODEL_SECTION);
-  if (section?.enforcePool === true && section.force === true) {
-    throw new Error2(
-      ErrorCodes.CONFIG_INVALID,
-      SECONDARY_MODEL_ENFORCE_POOL_EXCLUDES_FORCE_MESSAGE,
-      { details: { section: SECONDARY_MODEL_SECTION, field: 'enforcePool' } },
-    );
-  }
-  if (section?.force === true) {
-    if (section.models !== undefined) {
-      throw new Error2(ErrorCodes.CONFIG_INVALID, SECONDARY_MODEL_FORCE_EXCLUDES_MODELS_MESSAGE, {
-        details: { section: SECONDARY_MODEL_SECTION, field: 'force' },
-      });
-    }
-    if (section.defaultModel === undefined && section.model === undefined) {
-      throw new Error2(ErrorCodes.CONFIG_INVALID, SECONDARY_MODEL_FORCE_REQUIRES_DEFAULT_MESSAGE, {
-        details: { section: SECONDARY_MODEL_SECTION, field: 'defaultModel' },
-      });
-    }
-  }
-  if (section?.enforcePool === true && Object.keys(section.models ?? {}).length === 0) {
-    throw new Error2(
-      ErrorCodes.CONFIG_INVALID,
-      SECONDARY_MODEL_ENFORCE_POOL_REQUIRES_MODELS_MESSAGE,
-      { details: { section: SECONDARY_MODEL_SECTION, field: 'enforcePool' } },
-    );
-  }
-  const pool = resolveSubagentModelPool(config);
-  if (pool !== undefined) {
-    assertValidSubagentModelPool(pool, modelCatalog, models);
-    assertPoolDoesNotUseDeniedModels(config, pool, models);
-  }
 }
 
 function resolveModelIdentity(model: string, models?: IModelService): string {
@@ -348,343 +176,50 @@ export function assertBoundModelAllowed(
   assertRoleModelConstraints(config, model, constraints, models, thinking);
 }
 
-function assertPoolDoesNotUseDeniedModels(
-  config: IConfigService,
-  pool: SubagentModelPool,
-  models: IModelService,
-): void {
-  const denied = deniedModelIdentities(config, models);
-  const configured = new Set(
-    [...Object.keys(pool.models), pool.defaultModel].filter((model) => model !== undefined),
-  );
-  const matches = [...configured]
-    .map((model) => resolveModelIdentity(model, models))
-    .filter((model) => denied.has(model));
-  const deniedMatches = [...new Set(matches)];
-  if (deniedMatches.length === 0) return;
-  throw new Error2(
-    ErrorCodes.CONFIG_INVALID,
-    `Subagent model config includes models denied by [subagent].deny_models: ${deniedMatches.join(', ')}.`,
-    { details: { deniedModels: deniedMatches } },
-  );
+export const SUBAGENT_MODEL_UNBOUND_HINT =
+  'Pin model_alias on the agent profile (or its route or the caller lease), or pass model_alias with the dispatch. Subagents never take the caller\'s model.';
+
+export function subagentModelUnboundMessage(target?: SubagentBindingTarget): string {
+  const named =
+    target?.routeId !== undefined
+      ? `route "${target.routeId}"`
+      : target?.profileName !== undefined
+        ? `agent profile "${target.profileName}"`
+        : 'this subagent';
+  return `No model is bound for ${named}. ${SUBAGENT_MODEL_UNBOUND_HINT}`;
 }
 
-function poolAllowsModel(
-  pool: SubagentModelPool,
-  model: string,
-  ownModel: string,
-  models?: IModelService,
-): boolean {
-  const canonicalModel = resolveModelIdentity(model, models);
-  if (canonicalModel === resolveModelIdentity(ownModel, models)) return true;
-  return Object.keys(pool.models).some(
-    (alias) => resolveModelIdentity(alias, models) === canonicalModel,
-  );
-}
-
-function assertModelAllowedByEnforcedPool(
-  pool: SubagentModelPool,
-  model: string,
-  ownModel: string,
-  models?: IModelService,
-): void {
-  if (poolAllowsModel(pool, model, ownModel, models)) return;
-  const availableModels = [...Object.keys(pool.models), PRIMARY_SUBAGENT_MODEL_CHOICE];
-  throw new Error2(
-    ErrorCodes.CONFIG_INVALID,
-    `Invalid model "${model}". Available models: ${availableModels.join(', ')}.`,
-    { details: { model, availableModels } },
-  );
-}
-
+/**
+ * Resolve the model a spawn binds from the only two permitted sources: the
+ * dispatch request and the effective agent profile. Throws when neither
+ * supplies a model alias.
+ */
 export function resolveSubagentBinding(
   config: IConfigService,
-  flags: IFlagService,
-  own: SubagentBindingOwner,
-  requested?: string | SubagentBindingRequest,
+  requested: SubagentBindingRequest = {},
   profileRequest: SubagentBindingRequest = {},
   models?: IModelService,
   roleConstraints?: SubagentRoleModelConstraints,
+  target?: SubagentBindingTarget,
 ): SubagentModelBinding {
-  const tool = normalizeRequest(requested);
-  const profile = normalizeRequest(profileRequest);
-  assertValidRequest(tool, 'tool input');
-  assertValidRequest(profile, 'agent profile');
-
-  const enabled = flags.enabled(SECONDARY_MODEL_FLAG_ID);
-  const section = config.get<SecondaryModelConfig | undefined>(SECONDARY_MODEL_SECTION);
-  const pool = enabled ? resolveSubagentModelPool(config) : undefined;
-  const selected = selectModelRequest(tool, profile);
-  const explicitThinking = normalized(tool.thinkingEffort) ?? normalized(profile.thinkingEffort);
-  const thinkingFor = (model: string, fallback?: string): string | undefined =>
-    explicitThinking ?? resolveRoleThinkingDefault(roleConstraints, model, models) ?? fallback;
-  const assertBound = (model: string, fallback?: string): void => {
-    assertBoundModelAllowed(config, model, roleConstraints, models, thinkingFor(model, fallback));
-  };
-
-  if (enabled && section?.force === true) {
-    if (section.enforcePool === true) {
-      throw new Error2(
-        ErrorCodes.CONFIG_INVALID,
-        SECONDARY_MODEL_ENFORCE_POOL_EXCLUDES_FORCE_MESSAGE,
-        { details: { section: SECONDARY_MODEL_SECTION, field: 'enforcePool' } },
-      );
-    }
-    if (section.models !== undefined) {
-      throw new Error2(ErrorCodes.CONFIG_INVALID, SECONDARY_MODEL_FORCE_EXCLUDES_MODELS_MESSAGE, {
-        details: { section: SECONDARY_MODEL_SECTION, field: 'force' },
-      });
-    }
-    const forcedModel = section.defaultModel ?? section.model;
-    if (forcedModel === undefined) {
-      throw new Error2(ErrorCodes.CONFIG_INVALID, SECONDARY_MODEL_FORCE_REQUIRES_DEFAULT_MESSAGE, {
-        details: { section: SECONDARY_MODEL_SECTION, field: 'defaultModel' },
-      });
-    }
-    if (selected !== undefined) {
-      const choice = selected.modelAlias ?? selected.modelPreference;
-      throw new Error2(
-        ErrorCodes.CONFIG_INVALID,
-        `Invalid model "${choice}": [secondary_model].force is set, so every subagent binds "${forcedModel}" (omit the model parameter).`,
-        { details: { model: choice } },
-      );
-    }
-    assertBound(forcedModel);
-    return recordBindingMetadata(
-      { model: forcedModel, thinking: thinkingFor(forcedModel), displayModel: forcedModel },
-      { source: 'secondary', mode: 'fixed' },
-    );
-  }
-
-  const selectedModel =
-    selected?.modelAlias ??
-    (selected?.modelPreference === PRIMARY_SUBAGENT_MODEL_CHOICE
-      ? own.modelAlias
-      : selected?.modelPreference === 'secondary' && selected.source === 'profile'
-        ? pool?.defaultModel
-        : selected?.modelPreference);
-  if (selectedModel !== undefined) assertBound(selectedModel);
-
-  if (enabled && section?.enforcePool === true) {
-    if (pool === undefined || Object.keys(section.models ?? {}).length === 0) {
-      throw new Error2(
-        ErrorCodes.CONFIG_INVALID,
-        SECONDARY_MODEL_ENFORCE_POOL_REQUIRES_MODELS_MESSAGE,
-        { details: { section: SECONDARY_MODEL_SECTION, field: 'enforcePool' } },
-      );
-    }
-    if (selected?.modelAlias !== undefined) {
-      assertModelAllowedByEnforcedPool(pool, selected.modelAlias, own.modelAlias, models);
-    }
-  }
-
-  if (selected?.modelAlias !== undefined) {
-    const model = selected.modelAlias;
-    const offPool =
-      pool !== undefined &&
-      section?.enforcePool !== true &&
-      !poolAllowsModel(pool, model, own.modelAlias, models);
-    return recordBindingMetadata(
-      { model, thinking: thinkingFor(model), displayModel: model },
-      { source: selected.source, mode: 'fixed', offPool },
-    );
-  }
-
-  if (selected?.modelPreference === PRIMARY_SUBAGENT_MODEL_CHOICE) {
-    return recordBindingMetadata(
-      {
-        model: own.modelAlias,
-        thinking: thinkingFor(own.modelAlias, own.thinkingLevel),
-        displayModel: own.modelAlias,
-      },
-      { source: selected.source, mode: 'fixed' },
-    );
-  }
-
-  if (selected?.modelPreference === 'secondary' && selected.source === 'profile') {
-    const choice = pool?.defaultModel;
-    if (choice === undefined) {
-      throw new Error2(
-        ErrorCodes.CONFIG_INVALID,
-        'The profile requests the secondary model, but no [secondary_model] default is configured.',
-        { details: { model: 'secondary' } },
-      );
-    }
-    return recordBindingMetadata(
-      { model: choice, thinking: thinkingFor(choice), displayModel: choice },
-      { source: 'profile', mode: 'fixed' },
-    );
-  }
-
-  if (pool === undefined) {
-    if (selected?.modelPreference !== undefined) {
-      throw new Error2(
-        ErrorCodes.CONFIG_INVALID,
-        `Invalid model "${selected.modelPreference}": no [secondary_model.models] pool is configured, so subagents inherit the caller's model (pass "primary" or omit the model parameter).`,
-        { details: { model: selected.modelPreference } },
-      );
-    }
-    const mode: SubagentBindingMode =
-      explicitThinking === undefined && own.inheritByDefault !== false ? 'inherit' : 'fixed';
-    assertRoleModelConstraints(
-      config,
-      own.modelAlias,
-      roleConstraints,
-      models,
-      thinkingFor(own.modelAlias, own.thinkingLevel),
-    );
-    return recordBindingMetadata(
-      {
-        model: own.modelAlias,
-        thinking: thinkingFor(own.modelAlias, own.thinkingLevel),
-        displayModel: own.modelAlias,
-      },
-      { source: 'caller', mode },
-    );
-  }
-
-  if (Object.hasOwn(pool.models, PRIMARY_SUBAGENT_MODEL_CHOICE)) {
-    throw new Error2(ErrorCodes.CONFIG_INVALID, SECONDARY_MODEL_PRIMARY_MODEL_RESERVED_MESSAGE, {
+  const toolModel = normalized(requested.modelAlias);
+  const profileModel = normalized(profileRequest.modelAlias);
+  const model = toolModel ?? profileModel;
+  if (model === undefined) {
+    throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, subagentModelUnboundMessage(target), {
       details: {
-        section: SECONDARY_MODEL_SECTION,
-        field: 'models',
-        model: PRIMARY_SUBAGENT_MODEL_CHOICE,
+        profile: target?.profileName,
+        route: target?.routeId,
       },
     });
   }
-  const choice = selected?.modelPreference ?? pool.defaultModel;
-  if (choice === undefined) {
-    throw new Error2(ErrorCodes.CONFIG_INVALID, SECONDARY_MODEL_DEFAULT_MODEL_REQUIRED_MESSAGE, {
-      details: { section: SECONDARY_MODEL_SECTION, field: 'defaultModel' },
-    });
-  }
-  if (!Object.hasOwn(pool.models, choice)) {
-    const available = [...Object.keys(pool.models), PRIMARY_SUBAGENT_MODEL_CHOICE];
-    throw new Error2(
-      ErrorCodes.CONFIG_INVALID,
-      `Invalid model "${choice}". Available models: ${available.join(', ')}.`,
-      { details: { model: choice, availableModels: available } },
-    );
-  }
-  assertRoleModelConstraints(config, choice, roleConstraints, models, thinkingFor(choice));
-  return recordBindingMetadata(
-    { model: choice, thinking: thinkingFor(choice), displayModel: choice },
-    { source: 'secondary', mode: 'fixed' },
-  );
-}
-
-export function resolveAgentCollaborationBinding(
-  config: IConfigService,
-  flags: IFlagService,
-  own: SubagentBindingOwner,
-  request: Pick<SubagentBindingRequest, 'modelAlias' | 'thinkingEffort'>,
-  profile: SubagentBindingRequest,
-  models?: IModelService,
-  roleConstraints?: SubagentRoleModelConstraints,
-): SubagentModelBinding {
-  const agents = config.get<AgentsConfig | undefined>(AGENTS_SECTION);
-  const requestModel = normalized(request.modelAlias);
-  const profileModel = normalized(profile.modelAlias);
-  const exactModel = requestModel ?? profileModel;
-  const enabled = flags.enabled(SECONDARY_MODEL_FLAG_ID);
-  const section = config.get<SecondaryModelConfig | undefined>(SECONDARY_MODEL_SECTION);
-  const pool = enabled ? resolveSubagentModelPool(config) : undefined;
-  if (enabled && section?.enforcePool === true) {
-    if (pool === undefined || Object.keys(section.models ?? {}).length === 0) {
-      throw new Error2(
-        ErrorCodes.CONFIG_INVALID,
-        SECONDARY_MODEL_ENFORCE_POOL_REQUIRES_MODELS_MESSAGE,
-        { details: { section: SECONDARY_MODEL_SECTION, field: 'enforcePool' } },
-      );
-    }
-    if (exactModel !== undefined) {
-      assertModelAllowedByEnforcedPool(pool, exactModel, own.modelAlias, models);
-    }
-  }
-  const profilePreference = normalized(profile.modelPreference);
-  const preferredModel =
-    profilePreference === PRIMARY_SUBAGENT_MODEL_CHOICE
-      ? own.modelAlias
-      : profilePreference === 'secondary'
-        ? pool?.defaultModel
-        : undefined;
-  if (profilePreference === 'secondary' && preferredModel === undefined) {
-    throw new Error2(
-      ErrorCodes.CONFIG_INVALID,
-      'The profile requests the secondary model, but no [secondary_model] default is configured.',
-      { details: { model: 'secondary' } },
-    );
-  }
-  const configuredDefault = normalized(agents?.defaultSubagentModel);
-  const poolDefault = pool?.defaultModel;
-  const model = exactModel ?? preferredModel ?? configuredDefault ?? poolDefault ?? own.modelAlias;
-  const source: SubagentModelSource =
-    requestModel !== undefined
-      ? 'tool'
-      : profileModel !== undefined || preferredModel !== undefined
-        ? 'profile'
-        : configuredDefault !== undefined
-          ? 'default'
-          : poolDefault !== undefined
-            ? 'secondary'
-            : 'caller';
+  const source: SubagentModelSource = toolModel !== undefined ? 'tool' : 'profile';
   const thinking =
-    normalized(request.thinkingEffort) ??
-    normalized(profile.thinkingEffort) ??
-    resolveRoleThinkingDefault(roleConstraints, model, models) ??
-    normalized(agents?.defaultSubagentReasoningEffort) ??
-    (source !== 'secondary' && model === own.modelAlias ? own.thinkingLevel : undefined);
+    normalized(requested.thinkingEffort) ??
+    normalized(profileRequest.thinkingEffort) ??
+    resolveRoleThinkingDefault(roleConstraints, model, models);
   assertBoundModelAllowed(config, model, roleConstraints, models, thinking);
-  const mode: SubagentBindingMode =
-    source === 'caller' &&
-    own.inheritByDefault !== false &&
-    normalized(request.thinkingEffort) === undefined &&
-    normalized(profile.thinkingEffort) === undefined &&
-    normalized(agents?.defaultSubagentReasoningEffort) === undefined
-      ? 'inherit'
-      : 'fixed';
-  const offPool =
-    exactModel !== undefined &&
-    pool !== undefined &&
-    section?.enforcePool !== true &&
-    !poolAllowsModel(pool, exactModel, own.modelAlias, models);
-  return recordBindingMetadata(
-    { model, thinking, displayModel: model },
-    { source, mode, offPool },
-  );
-}
-
-function normalizeRequest(
-  request: string | SubagentBindingRequest | undefined,
-): SubagentBindingRequest {
-  return typeof request === 'string' ? { modelPreference: request } : (request ?? {});
-}
-
-function assertValidRequest(request: SubagentBindingRequest, source: string): void {
-  if (normalized(request.modelAlias) !== undefined && normalized(request.modelPreference) !== undefined) {
-    throw new Error2(ErrorCodes.CONFIG_INVALID, `${source} cannot set both model and model_alias`);
-  }
-}
-
-function selectModelRequest(
-  tool: SubagentBindingRequest,
-  profile: SubagentBindingRequest,
-): (SubagentBindingRequest & { readonly source: 'tool' | 'profile' }) | undefined {
-  if (normalized(tool.modelAlias) !== undefined || normalized(tool.modelPreference) !== undefined) {
-    return {
-      modelAlias: normalized(tool.modelAlias),
-      modelPreference: normalized(tool.modelPreference),
-      source: 'tool',
-    };
-  }
-  if (normalized(profile.modelAlias) !== undefined || normalized(profile.modelPreference) !== undefined) {
-    return {
-      modelAlias: normalized(profile.modelAlias),
-      modelPreference: normalized(profile.modelPreference),
-      source: 'profile',
-    };
-  }
-  return undefined;
+  return recordBindingMetadata({ model, thinking, displayModel: model }, { source });
 }
 
 function normalized(value: string | undefined): string | undefined {
@@ -692,61 +227,23 @@ function normalized(value: string | undefined): string | undefined {
   return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
 }
 
-export function subagentDisplayModel(
-  _config: IConfigService,
-  boundAlias: string,
-): string {
-  return boundAlias;
-}
-
-export function buildSubagentModelDescriptions(
-  config: IConfigService,
-  flags: IFlagService,
-  models: IModelService,
-  callerModelAlias: string | undefined,
-): string | undefined {
+export function buildSubagentModelDescriptions(models: IModelService): string | undefined {
+  const aliases = Object.keys(models.list());
   const lines: string[] = [];
-  if (exposesSubagentModelChoice(config, flags)) {
-    const pool = resolveSubagentModelPool(config)!;
-    lines.push('Available models (pass via model):');
-    const defaultModel = pool.defaultModel;
-    const markersFor = (alias: string): string => {
-      const markers: string[] = [];
-      if (alias === defaultModel) markers.push('[default]');
-      if (alias === callerModelAlias) markers.push('[main model]');
-      return markers.length === 0 ? '' : ` ${markers.join(' ')}`;
-    };
-    if (defaultModel !== undefined && Object.hasOwn(pool.models, defaultModel)) {
-      lines.push(
-        formatPoolLine(`${defaultModel}${markersFor(defaultModel)}`, pool.models[defaultModel]!),
-      );
-    }
-    for (const [alias, description] of Object.entries(pool.models)) {
-      if (alias === defaultModel) continue;
-      lines.push(formatPoolLine(`${alias}${markersFor(alias)}`, description));
-    }
-    const callerInPool =
-      callerModelAlias !== undefined && Object.hasOwn(pool.models, callerModelAlias);
+  if (aliases.length > 0) {
     lines.push(
-      `- ${PRIMARY_SUBAGENT_MODEL_CHOICE}${callerInPool ? ` (${callerModelAlias})` : ''}: freeze the main model and its current thinking level for this subagent`,
+      `Configured model aliases (pass an exact value via model_alias): ${aliases.join(', ')}`,
     );
   }
-  const aliases = Object.keys(models.list());
-  if (aliases.length > 0) {
-    lines.push(`Configured model aliases (pass an exact value via model_alias): ${aliases.join(', ')}`);
-  }
-  lines.push('Pass effort to override the thinking effort for a new subagent.');
+  lines.push(
+    'A subagent runs on the model its profile pins, or the model_alias you pass here — never on your own model. Pass effort to override the thinking effort.',
+  );
   return lines.join('\n');
-}
-
-function formatPoolLine(label: string, description: string): string {
-  return description === '' ? `- ${label}` : `- ${label}: ${description}`;
 }
 
 export type SubagentBindingSchemaUsage = 'agent' | 'swarm';
 
-const legacyModelSchemaConstraints = new WeakSet<object>();
-const BINDING_FIELD_NAMES = ['route', 'model', 'model_alias', 'thinking_effort'] as const;
+const BINDING_FIELD_NAMES = ['route', 'model_alias', 'thinking_effort'] as const;
 
 export function addSubagentBindingSchemaConstraints(
   parameters: Record<string, unknown>,
@@ -759,14 +256,10 @@ export function addSubagentBindingSchemaConstraints(
     if (isPlainObject(property)) property['pattern'] = '\\S';
   }
 
-  const legacyConstraint = { not: { required: ['model', 'model_alias'] } };
-  legacyModelSchemaConstraints.add(legacyConstraint);
-  const constraints: Record<string, unknown>[] = [
-    legacyConstraint,
-    usage === 'agent' ? agentResumeBindingConstraint() : swarmResumeBindingConstraint(),
-  ];
+  const constraint =
+    usage === 'agent' ? agentResumeBindingConstraint() : swarmResumeBindingConstraint();
   const current = parameters['allOf'];
-  parameters['allOf'] = [...(Array.isArray(current) ? current : []), ...constraints];
+  parameters['allOf'] = [...(Array.isArray(current) ? current : []), constraint];
 }
 
 function agentResumeBindingConstraint(): Record<string, unknown> {
@@ -816,64 +309,11 @@ export function normalizeSubagentBindingValue(
   return normalizedValue;
 }
 
-export function stripSubagentModelParameter(
-  parameters: Record<string, unknown>,
-): Record<string, unknown> {
-  const properties = parameters['properties'];
-  if (!isPlainObject(properties) || !('model' in properties)) return parameters;
-  const nextProperties = { ...properties };
-  delete nextProperties['model'];
-  const next: Record<string, unknown> = { ...parameters, properties: nextProperties };
-  const allOf = parameters['allOf'];
-  if (Array.isArray(allOf)) {
-    const retained = allOf.filter(
-      (constraint) =>
-        typeof constraint !== 'object' ||
-        constraint === null ||
-        !legacyModelSchemaConstraints.has(constraint),
-    );
-    if (retained.length > 0) next['allOf'] = retained;
-    else delete next['allOf'];
-  }
-  const required = parameters['required'];
-  if (Array.isArray(required) && required.some((entry) => entry === 'model')) {
-    next['required'] = required.filter((entry) => entry !== 'model');
-  }
-  return next;
-}
-
 export function isMissingSubagentModelAlias(error: unknown, alias: string): boolean {
   return (
     isError2(error) &&
     error.code === ErrorCodes.CONFIG_INVALID &&
     error.details?.['model'] === alias
-  );
-}
-
-export function wrapSubagentModelError(
-  error: unknown,
-  boundModel: string,
-  callerModelAlias: string | undefined,
-  source: SubagentModelSource = 'secondary',
-): unknown {
-  if (boundModel === callerModelAlias) return error;
-  if (source !== 'secondary') return error;
-  if (!isError2(error) || error.code !== ErrorCodes.CONFIG_INVALID) return error;
-  if (error.details?.['model'] !== boundModel) return error;
-  return new Error2(
-    error.code,
-    `${error.message} (subagent model "${boundModel}" comes from [secondary_model.models] — check that it names a valid [models] entry)`,
-    {
-      cause: error,
-      name: error.name,
-      details: {
-        ...error.details,
-        subagentModel: boundModel,
-        subagentModelConfig: {
-          section: 'secondary_model.models',
-        },
-      },
-    },
   );
 }
 

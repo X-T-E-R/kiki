@@ -256,7 +256,7 @@ display_name = "Kimi for Coding (custom)"
 
 锚定是按请求替换，而不是改写已存储的提示词。被锚定的一轮里，前 `anchor_steps` 次请求会把 `anchor` 正文当作完整系统提示词发给模型；从下一步起直到会话结束，模型收到的是含 overlay 在内的常规提示词。适合用在这种场景：冗长的 profile 提示词挤掉了你希望模型在规划当下看到的调节内容，而完整提示词只在它开始工具调用之后才重要。调用方显式传入的系统提示词永远不会被替换。
 
-模型认知绑定在别名上，而不是主 Agent 上，因此通过 `model_alias` 或从调用方继承而绑到同一别名的子 Agent，都会拿到同一套 overlay、steering 和 anchor。v1 在次主力模型实验功能开启时，也可以用 [`[subagent] default_model`](#subagent) 选到那个别名。会话中途切换别名会为新绑定的模型重新渲染 overlay。
+模型认知绑定在别名上，而不是主 Agent 上，因此绑到同一别名的子 Agent（无论该别名来自 profile pin 还是派发参数）都会拿到同一套 overlay、steering 和 anchor。会话中途切换别名会为新绑定的模型重新渲染 overlay。
 
 下面的例子给一个 DeepSeek V4 模型做调节：它默认习惯逐步叙述执行过程，而不是先规划。短 `anchor` 是一层精简 persona，在模型规划时顶替 profile 提示词；再配上要求先规划再行动的 `steering`：
 
@@ -283,69 +283,16 @@ Router: classify this task (build or fix) now, then adopt the matching style —
 
 把那段措辞当作起点，而不是一项设置。哪种表述真能改变模型的推理，是在这一个模型上测出来的；另一个模型——或另一份 profile 提示词——可能需要不同的正文，也可能完全不需要。机制本身并不解读这些文件。
 
-## `secondary_model`
+## 子 Agent 的模型绑定
 
-次主力模型是主模型之外的第二个模型配置——通常是一个更便宜的模型，供不需要主模型能力的功能绑定使用。它仍是子 Agent 派生的旧版后备 recipe。
+子 Agent 的模型只有两个来源：派发时传入的 `model_alias`（`AgentRun` /
+`AgentSwarm` / `TowerSpawn`），或所选 profile、route、caller lease 上的 pin。
+没有第三个来源——子 Agent 不会跑在调用方的模型上，也没有可回退的配置默认值。
+既没有传 `model_alias`、所选 profile 又没有 pin 的派发会以 `model.not_configured`
+失败，子 Agent 不会被创建。
 
-Agent profile、`AgentRun` 与 `AgentSwarm` 上的精确 `model_alias` 绑定已是稳定能力，不需要实验功能。Agent 文件里的 `thinking_effort` 同样稳定；v2 对应的工具参数是 `effort`。v2 新子 Agent 的模型优先级为：工具 `model_alias` → profile 的 [`model_alias`](../customization/agents.md#agent-文件格式) → 直接调用方模型。v1 在次主力模型实验功能开启时，仍会在 profile 之后填 `[subagent] default_model`。名为 `primary` 或 `secondary` 的精确 alias 仍按字面值处理。
-
-v2 上 thinking effort 独立解析，优先级为：工具 `effort` → profile `thinking_effort` → 仅当完整继承调用方绑定时使用调用方 effort。v1 在该实验功能开启时，仍会在 profile 之后填 `[subagent] default_effort`。具体模型 alias 未指定 effort 时，会继续使用现有全局 `[thinking]` 与所选模型默认值，不会沿用过期的调用方 effort。
-
-只有旧版 `model` 工具选择器（`"secondary"` / `"primary"`）、profile 的 `model_preference` 字段和本节次主力 recipe 需要启用 `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`，或使用 master `KIMI_CODE_EXPERIMENTAL_FLAG=1`。实验功能启用时，本节 recipe 插在调用方继承之前；只有模型由该 recipe 提供时，才使用本节的 `default_effort`。旧版 `model` 参数与 `model_alias` 互斥。实验功能关闭时，profile 中的 `model_preference` 会被忽略并告警，显式传入 `model` 工具参数则会被拒绝并返回清晰错误。内部 alias `__secondary__` 为保留值，不能直接配置或选择。恢复或重试的子 Agent 不会重新解析当前 profile 或默认值，其已持久化绑定保持不变。
-
-已配置的 `[secondary_model.models]` 默认是软白名单：旧版 `model` preference 必须使用池 key，但精确 `model_alias` 仍可选择其他已配置模型。设置 `enforce_pool = true` 后，精确 alias 也必须服从模型池，同时继续允许调用方的 `primary` 模型。`enforce_pool` 要求显式配置非空模型池，且不能与 `force` 同设。所有池 key 与 `default_model` 也必须避开 `[subagent] deny_models`；比较前会先解析 alias，以规范模型身份为准。
-
-池别名引用的是 `[models]` 表的当前内容：如果之后删除供应商、登出账号，或其刷新后的模型列表不再包含某个别名，会话启动时会报出指明失效别名的配置错误，修正或移除对应条目即可恢复。系统不会自动改写 `[secondary_model]` 节。
-
-在交互式 TUI 中，可以使用 [`/secondary_model`](../reference/slash-commands.md) 命令打开模型选择器来设置该配置：选择后会写入本小节配置，并在当前会话立即生效——之后派生的子 Agent 会直接绑定新的次主力模型。
-
-典型的软模型池会列出模型 alias，以及 main agent 选择时看到的说明：
-
-```toml
-[secondary_model]
-default_model = "kimi-code/kimi-for-coding-highspeed"
-
-[secondary_model.models]
-"kimi-code/k3" = "难题选它。擅长复杂推理、算法设计、深度调试、数学和系统性难题。"
-"kimi-code/kimi-for-coding-highspeed" = "速度快但单价较高。适合日常重构、代码解释、小改动、总结等看重响应速度的任务。"
-"kimi-code/kimi-for-coding" = "均衡的编码主力。适合大多数功能开发和代码修改任务。"
-```
-
-| 字段 | 类型 | 默认值 | 说明 |
-| --- | --- | --- | --- |
-| `default_model` | `string` | — | `[secondary_model.models]` 中的默认 key。未显式配置模型池时，它会形成兼容用的单条目软白名单 |
-| `models` | `table` | — | 向 main agent 展示的模型 key 与描述表，供旧版 `model` selector 使用。`primary` 是保留 key |
-| `force` | `boolean` | `false` | 把所有 subagent 钉死到 `default_model`（或旧版 `model`），并拒绝显式模型选择。不能与 `models` 或 `enforce_pool` 同设 |
-| `enforce_pool` | `boolean` | `false` | 把显式 `models` 池变成精确 `model_alias` 选择的硬白名单；`primary` 始终允许 |
-| `model` | `string` | — | 旧版 [`[models]`](#models) 条目 alias，如 `kimi-code/kimi-k2.5`（不限 kimi 模型，可用任意供应商） |
-| `default_effort` | `string` | — | 子 Agent 绑定次主力模型时使用的 thinking effort。未设置时按"全局 `[thinking]` 配置 → 模型默认 effort"的链路解析，不再继承主 Agent 的 effort。与主模型的 thinking effort 语义一致：严格校验 effort 的模型（如 kimi 模型）在不支持该取值时回退到模型默认 effort，其他供应商的模型按原样发送给后端 |
-| 其他字段 | — | — | 接受 [`[models."<alias>".overrides]`](#models) 的全部字段（`max_context_size`、`max_output_size`、`support_efforts` 等），作为仅对子 Agent 生效的模型补丁 |
-
-`model` 之外的字段构成补丁：存在补丁字段时，运行时会在内存中合成一个派生模型条目（被指向条目的拷贝，补丁并入其 overrides 且补丁优先），子 Agent 实际绑定该派生条目；没有补丁字段时，子 Agent 直接绑定 `model` 指向的条目。派生条目只存在于内存中（不写回 `config.toml`），也不会出现在模型选择列表里。
-
-模型池中的不同条目可以携带不同的默认 Thinking 档位：为同一底层模型注册一个独立变体，只覆盖它的 `default_effort`，再把两个 alias 都列进模型池。变体不会继承原条目的字段，因此必须完整复制 `capabilities`、`support_efforts` 等模型元数据；`default_effort` 也必须是 `support_efforts` 中声明的值：
-
-```toml
-# "kimi-code/k3" 由 /login 提供（默认 high 档）；这里为同一模型注册一个 max 档位变体。
-[models.k3-max]
-provider = "managed:kimi-code"
-model = "k3"
-max_context_size = 1048576
-capabilities = [ "thinking", "always_thinking", "image_in", "video_in", "tool_use" ]
-support_efforts = [ "low", "high", "max" ]
-
-[models.k3-max.overrides]
-default_effort = "max"
-
-[secondary_model]
-default_model = "kimi-code/k3"
-
-[secondary_model.models]
-"kimi-code/k3" = "默认 high 档位。适合大多数实现、分析和多轮交互任务。"
-k3-max = "同一模型的 max Thinking 档位。适合最难的子任务。"
-```
-
-全局 `[thinking].effort` 对 main agent 与 subagent 仍有更高优先级；只有全局 effort 未设置时，变体的默认档位才生效。
+thinking effort 同样按"工具 `effort` → profile `thinking_effort`"解析，但允许留空：
+留空时使用全局 [`[thinking]`](#thinking) 配置与所绑定模型自身的默认档位。
 
 ## `thinking`
 
@@ -415,12 +362,10 @@ k3-max = "同一模型的 max Thinking 档位。适合最难的子任务。"
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `default_model` | `string` | — | 在 v1 上，次主力模型实验功能开启时，作为新 `Agent` / `AgentSwarm` 子 Agent 的 fill-only 精确 `[models]` alias，优先级低于工具与 profile 绑定。在 v2 上这个键会被接受，目前不被 `AgentRun` / `AgentSwarm` 读取 |
-| `default_effort` | `string` | — | 在 v1 上，次主力模型实验功能开启时，作为 fill-only thinking effort，优先级低于工具与 profile effort。在 v2 上这个键会被接受，目前不被 `AgentRun` / `AgentSwarm` 读取 |
-| `deny_models` | `string[]` | — | alias 解析后应用于显式 subagent 模型选择的黑名单。模型池 key 与 `default_model` 不能解析到被禁止的模型身份 |
+| `deny_models` | `string[]` | — | alias 解析后应用于所有 subagent 模型绑定的黑名单，无论该 alias 来自派发参数还是 profile pin |
 | `timeout_ms` | `integer` | `7200000`（2 小时） | 单个 subagent（`AgentRun` / `AgentSwarm`）允许运行的最长时间（毫秒）。超时后 subagent 以 `timed_out` 收尾。`0` 表示无超时——subagent 一直运行到自行结束或被模型手动停止。该值是后台任务管理器对每个 subagent 任务的 per-task timeout，因此对前台与后台 subagent 同时生效。在 print 模式（`kimi -p`）下未显式设置时默认为 `0`。注意：超过 `2147483647`（约 24.8 天）的值会被运行时钳到约 24.8 天 |
 
-`timeout_ms` 可被环境变量 `KIMI_SUBAGENT_TIMEOUT_MS` 覆盖，优先级高于配置文件。`default_model`、`default_effort` 与 `deny_models` 没有对应的环境变量。
+`timeout_ms` 可被环境变量 `KIMI_SUBAGENT_TIMEOUT_MS` 覆盖，优先级高于配置文件。`deny_models` 没有对应的环境变量。
 
 ## `agents`
 
@@ -429,8 +374,6 @@ k3-max = "同一模型的 max Thinking 档位。适合最难的子任务。"
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `enabled` | `boolean` | `true` | 在 v1 上，设为 `false` 会在 `agent-collaboration` 实验功能开启时仍拿掉那 5 个适配器工具。在 v2 上这个键会被接受，目前不控制任何行为 |
-| `default_subagent_model` | `string` | — | v1 具名 Agent 派生路径使用：当派生请求和所选 profile 都未指定模型时使用的精确 `[models]` alias |
-| `default_subagent_reasoning_effort` | `string` | — | v1 具名 Agent 派生路径使用：当派生请求和所选 profile 都未指定 effort 时使用的非空 reasoning effort |
 
 `[agents.delegation]` 是嵌套表。字符串是相对于 Kiki 主目录的路径；`false` 跳过该说明。省略某个槽位则沿用内置正文。
 

@@ -43,7 +43,6 @@
 
 | 功能 | 启用方式 | 额外边界 |
 | --- | --- | --- |
-| 子 Agent 模型选择器与次主力配方 | `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` | 只门控符号化的 `model` / `model_preference` 选择器和 `[secondary_model]` 配方；显式 `model_alias`、profile 的 `thinking_effort`、工具参数 `effort` 绑定是稳定能力，始终可用。只应用于新派生的子 Agent。恢复或重试的子 Agent 保持已持久化的绑定。 |
 | 所有已注册的实验功能 | `KIMI_CODE_EXPERIMENTAL_FLAG=1` | 这是宽范围的总开关，不是运行时或产品选择器。 |
 
 [Agent 与子 Agent](../customization/agents.md)说明绑定优先级、生命周期和子 Agent 工具；[配置文件](../configuration/config-files.md#subagent)说明 `[subagent]` 的超时与黑名单。
@@ -93,7 +92,7 @@ GUI package 在 `apps/kiki-gui/ATTRIBUTION.md` 中记录了改造自 codeg、Aio
 
 Kimi OAuth 则有意共享。所选 Kimi Home 可以是 Kimi Code 默认 Home，也可以是自定义绝对路径；Kiki 的登录、退出登录和刷新会直接使用 `<Kimi Home>/credentials/kimi-code.json`、`<Kimi Home>/device_id` 和 `<Kimi Home>/oauth/`。因此这些操作会影响同一份 Kimi Code 登录状态；Kiki 不会把 OAuth 凭据复制到 `KIKI_HOME`。
 
-Settings 卡片提供可重复执行的单向模型配置导入，来源是所选 Kimi Home。导入范围只包括 `providers`、`models`、`services`、`default_model`、`default_provider`、`thinking` 和 `secondary_model`。前三个 map 类别按 key 合并：同名 alias 由来源覆盖，Kiki 独有 alias 保留；其余类别只在来源存在时替换 Kiki 值。OAuth 凭据文件不会被复制；导入的提供商与服务配置可以继续引用所选 Kimi Home 中已经共享的凭据。所有其他 Kiki 配置节以及未被覆盖条目上的注释保持不变，重复导入同一内容会返回 noop。桌面操作只停止并重启 Kiki 自有后端。使用 headless 维护入口前应先停止该后端，然后在 `apps/kiki-gui` 中运行：
+Settings 卡片提供可重复执行的单向模型配置导入，来源是所选 Kimi Home。导入范围只包括 `providers`、`models`、`services`、`default_model`、`default_provider` 和 `thinking`。前三个 map 类别按 key 合并：同名 alias 由来源覆盖，Kiki 独有 alias 保留；其余类别只在来源存在时替换 Kiki 值。OAuth 凭据文件不会被复制；导入的提供商与服务配置可以继续引用所选 Kimi Home 中已经共享的凭据。所有其他 Kiki 配置节以及未被覆盖条目上的注释保持不变，重复导入同一内容会返回 noop。桌面操作只停止并重启 Kiki 自有后端。使用 headless 维护入口前应先停止该后端，然后在 `apps/kiki-gui` 中运行：
 
 ```sh
 pnpm desktop:import-kimi-config

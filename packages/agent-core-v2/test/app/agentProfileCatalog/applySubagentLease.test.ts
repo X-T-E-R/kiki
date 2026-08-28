@@ -107,13 +107,12 @@ describe('applyLease', () => {
     expect(applied.subagents).toBeUndefined();
   });
 
-  it('clears a child pin when the lease sets the other pin field', () => {
-    const applied = applyLease(child({ modelPreference: 'secondary', modelAlias: undefined }), {
+  it('overrides a child model pin with the lease pin', () => {
+    const applied = applyLease(child({ modelAlias: 'gpt-5.6-sol' }), {
       name: 'explore',
       modelAlias: 'grok-4.6',
     });
     expect(applied.modelAlias).toBe('grok-4.6');
-    expect(applied.modelPreference).toBeUndefined();
   });
 
   it('wraps slot 4 around the already composed role body', () => {
@@ -140,7 +139,6 @@ describe('leaseHasBindingPin', () => {
     expect(leaseHasBindingPin({ name: 'explore', whenToUse: 'scope unknown trees' })).toBe(false);
     expect(leaseHasBindingPin({ name: 'explore', modelAlias: 'grok-4.6' })).toBe(true);
     expect(leaseHasBindingPin({ name: 'explore', thinkingEffort: 'high' })).toBe(true);
-    expect(leaseHasBindingPin({ name: 'explore', modelPreference: 'secondary' })).toBe(true);
   });
 });
 
@@ -153,19 +151,16 @@ describe('fillLeasePins', () => {
     };
     expect(fillLeasePins({}, lease)).toEqual({
       modelAlias: 'grok-4.6',
-      modelPreference: undefined,
       thinkingEffort: 'high',
     });
     expect(fillLeasePins({ modelAlias: 'k3-256k' }, lease)).toEqual({
       modelAlias: 'k3-256k',
-      modelPreference: undefined,
       thinkingEffort: 'high',
     });
     expect(
       fillLeasePins({}, lease, { lockedModelAlias: 'deepseek-v4-pro' }),
     ).toEqual({
       modelAlias: undefined,
-      modelPreference: undefined,
       thinkingEffort: 'high',
     });
   });

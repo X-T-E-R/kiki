@@ -38,9 +38,8 @@ function render(target: AgentProfile, available: readonly string[]): string {
     [target],
     [],
     () => true,
-    true,
     undefined,
-    (alias) => allowed.has(alias),
+    (alias: string) => allowed.has(alias),
   );
 }
 
@@ -123,7 +122,6 @@ describe('buildProfileDescriptions recommended models: advisory lines, catalog f
       [profile()],
       [],
       () => true,
-      true,
       undefined,
       () => true,
       false,

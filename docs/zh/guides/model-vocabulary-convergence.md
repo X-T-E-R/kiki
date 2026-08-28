@@ -12,8 +12,8 @@ Kiki 当前在旧版 `agent-core` 引擎、`agent-core-v2` 委派契约和 Agent
 本文是设计路线，不是弃用通知。在另行评审的实现真正修改行为前，现有配置、Agent 文件、工具调用和已持久化的子 Agent 绑定都保持当前语义。
 :::
 
-::: danger 内容已过期
-本文写于双引擎并存时期。`packages/agent-core`（v1）此后已被删除，因此下文所有描述 v1 词汇的条目与源码路径都属于历史，而非当前行为。收敛目标本身仍然成立；本文已排入重基线队列。
+::: danger 已被取代
+本文写于双引擎并存时期，也写在"选择词汇被删除而非收敛"之前。`packages/agent-core`（v1）此后已被删除，工具参数 `model`、`model_preference` 与 `[secondary_model]` 也一并删除。现在 subagent 只能由显式 `model_alias`（派发传入或 profile pin）绑定模型，两者都没有时以 `model.not_configured` fail closed。本文按历史读；当前契约见 [Agent 与子 Agent](../customization/agents.md) 和 [`[subagent]` 配置参考](../configuration/config-files.md#subagent)。
 :::
 
 ## 先区分概念
@@ -143,5 +143,5 @@ v1 可在合适时共享测试或 fixture，但它是兼容消费者，不再成
 ## 下一步
 
 - [Agent 与 subagent](../customization/agents.md#agent-文件格式) — 当前 Agent 文件字段与子 Agent 绑定行为。
-- [配置文件](../configuration/config-files.md#secondary-model) — 当前模型注册表与次主力模型配置。
+- [配置文件](../configuration/config-files.md#subagent) — 当前模型注册表与 subagent 绑定配置。
 - [Kiki 运行时边界](./kiki-runtime.md) — 继承行为与 Kiki 模型绑定改造之间的责任边界。

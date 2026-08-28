@@ -50,19 +50,13 @@ export const AgentSwarmToolInputSchema = z
       .describe(
         'Map of existing subagent agent_id to the prompt used to resume that subagent. These resumed subagents are launched before new item-based subagents.',
       ),
-    model: z
-      .string()
-      .optional()
-      .describe(
-        'Which model to run the item-spawned subagents on: one of the aliases listed under "Available models" in this tool description, or "primary" for the main model you are running on (for hard, quality-sensitive tasks). When omitted, the configured default model is used. Resumed subagents always keep their own model.',
-      ),
     model_alias: z
       .string()
       .trim()
       .min(1)
       .optional()
       .describe(
-        'Exact configured [models] alias for every new item-spawned subagent. Literal "primary" and "secondary" values stay exact.',
+        'Exact configured [models] alias for every new item-spawned subagent. Required unless the chosen profile or route pins one; a subagent never runs on the caller\'s model. Resumed subagents always keep their own model.',
       ),
     effort: z
       .string()
@@ -73,20 +67,14 @@ export const AgentSwarmToolInputSchema = z
   })
   .strict()
   .superRefine((args, ctx) => {
-    if (args.model !== undefined && args.model_alias !== undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'model and model_alias are mutually exclusive',
-      });
-    }
     if (
       (args.items?.length ?? 0) === 0 &&
       Object.keys(args.resume_agent_ids ?? {}).length > 0 &&
-      (args.route !== undefined || args.model !== undefined || args.model_alias !== undefined || args.effort !== undefined)
+      (args.route !== undefined || args.model_alias !== undefined || args.effort !== undefined)
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'Cannot set route, model, model_alias, or effort for a resume-only swarm',
+        message: 'Cannot set route, model_alias, or effort for a resume-only swarm',
       });
     }
   });

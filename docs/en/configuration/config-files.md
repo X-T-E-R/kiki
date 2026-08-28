@@ -256,7 +256,7 @@ The three fields differ in how far they sit from the model's next token. `overla
 
 Anchoring is a per-request substitution, not a rewrite of the stored prompt. For the first `anchor_steps` requests of an anchored turn the model receives the `anchor` text as its entire system prompt; from the next step onward it receives the normal prompt, overlay included, for the rest of the session. Reach for it when a long profile prompt crowds out the conditioning you want at the moment the model plans, and the full prompt only matters once it starts calling tools. A system prompt passed explicitly by a caller is never replaced.
 
-Cognition binds to the alias rather than to the main agent, so a subagent that binds the same alias — through `model_alias` or inheritance from its caller — gets the same overlay, steering, and anchor. On v1, [`[subagent] default_model`](#subagent) can also select that alias when the secondary-model experiment is on. Switching aliases mid-session re-renders the overlay for the newly bound model.
+Cognition binds to the alias rather than to the main agent, so a subagent that binds the same alias — through its own `model_alias`, whether pinned or dispatched — gets the same overlay, steering, and anchor. Switching aliases mid-session re-renders the overlay for the newly bound model.
 
 The example below conditions a DeepSeek V4 model whose default habit is to narrate execution step by step instead of planning first. It pairs a short `anchor` — a thin persona that stands in for the profile prompt while the model plans — with `steering` that asks for a plan before action:
 
@@ -283,70 +283,19 @@ With both files in place, the model plans before acting during the first three s
 
 Treat that wording as a starting point rather than a setting. Which phrasing actually shifts a model's reasoning was measured on this one model, and another model — or another profile prompt — may need different text, or none at all. The mechanism itself does not interpret the files.
 
-## `secondary_model`
+## Subagent model binding
 
-The secondary model is a second model configuration alongside the main model — typically a cheaper one, for features that do not need the main model's capability. It remains the legacy fallback recipe for subagent spawning.
+A subagent's model comes from exactly two places: the `model_alias` passed
+with the dispatch (`AgentRun` / `AgentSwarm` / `TowerSpawn`), or the pin on
+the profile, route, or caller lease that the dispatch selects. Nothing else
+supplies one — a subagent never runs on its caller's model, and there is no
+configured default to fall back on. A dispatch that names no model and
+selects no pinned profile fails with `model.not_configured` and the child is
+never created.
 
-Exact `model_alias` bindings on agent profiles, `AgentRun`, and `AgentSwarm` are stable and do not require an experiment. Profile-file `thinking_effort` is likewise stable; the matching v2 tool parameter is `effort`. On v2, model precedence for a new subagent is tool `model_alias` → profile [`model_alias`](../customization/agents.md#agent-file-format) → the immediate caller's model. On v1, `[subagent] default_model` still fills after the profile when the secondary-model experiment is on. An exact alias named `primary` or `secondary` remains literal.
-
-Thinking effort on v2 resolves independently: tool `effort` → profile `thinking_effort` → caller effort when the complete caller binding is inherited. On v1, `[subagent] default_effort` fills after the profile when that experiment is on. A concrete model alias without an effort uses the existing global `[thinking]` and selected-model defaults instead of carrying a stale caller effort.
-
-Only the legacy `model` tool selector (`"secondary"` / `"primary"`), the profile `model_preference` field, and this secondary recipe require `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` or the master `KIMI_CODE_EXPERIMENTAL_FLAG=1`. With the experiment enabled, this recipe is inserted before caller inheritance; its `default_effort` is used only when the recipe supplied the model. The legacy `model` parameter and `model_alias` are mutually exclusive. With the experiment disabled, profile `model_preference` is ignored with a warning and an explicit `model` tool parameter is rejected with a clear error. The internal alias `__secondary__` is reserved and cannot be configured or selected directly. Resumed and retried subagents never re-resolve the current profile or defaults; their persisted binding is immutable.
-
-A configured `[secondary_model.models]` table is a soft allowlist by default: the legacy `model` preference must use a pool key, but an exact `model_alias` may select another configured model. Set `enforce_pool = true` to make exact aliases obey the pool as well; the caller's `primary` model remains allowed. `enforce_pool` requires a non-empty explicit pool and cannot be combined with `force`. All pool keys and `default_model` must also stay outside `[subagent] deny_models`; comparisons use canonical model identities after alias resolution.
-
-Pool aliases reference the current `[models]` table: if a provider is later deleted or logged out, or its refreshed model list no longer contains an alias, session startup fails with a configuration error naming the broken alias — fix or remove the entry to recover. The `[secondary_model]` section itself is never rewritten automatically.
-
-In the interactive TUI, the [`/secondary_model`](../reference/slash-commands.md) command opens a model picker that writes this section and live-applies it to the current session, so newly spawned subagents bind the new secondary model right away.
-
-A typical soft pool lists the aliases and the selection hints shown to the main agent:
-
-```toml
-[secondary_model]
-default_model = "kimi-code/kimi-for-coding-highspeed"
-
-[secondary_model.models]
-"kimi-code/k3" = "Pick this for hard problems. Strong at complex reasoning, algorithm design, deep debugging, math, and systematic challenges."
-"kimi-code/kimi-for-coding-highspeed" = "Fast but priced higher. Good for latency-sensitive tasks: daily refactoring, code explanation, small edits, and summaries."
-"kimi-code/kimi-for-coding" = "A balanced coding workhorse. Good for most feature development and code-change tasks."
-```
-
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| `default_model` | `string` | — | Default key from `[secondary_model.models]`. Without an explicit pool, it forms a legacy single-entry soft pool |
-| `models` | `table` | — | Model-key-to-description pool shown to the main agent for the legacy `model` selector. The key `primary` is reserved |
-| `force` | `boolean` | `false` | Pin every subagent to `default_model` (or legacy `model`) and reject explicit model choices. Cannot be combined with `models` or `enforce_pool` |
-| `enforce_pool` | `boolean` | `false` | Turn the explicit `models` pool into a hard allowlist for exact `model_alias` selections; `primary` remains allowed |
-| `model` | `string` | — | Legacy alias of a configured [`[models]`](#models) entry, e.g. `kimi-code/kimi-k2.5` (any provider, not limited to Kimi models) |
-| `default_effort` | `string` | — | Thinking effort applied when subagents bind to the secondary model. Unset, the effort resolves naturally (global `[thinking]` config → the bound model's default effort) instead of inheriting the main agent's effort. Follows the main model's thinking-effort semantics: models with strict effort validation (e.g. Kimi models) fall back to their default effort for unsupported values; other providers receive the value as-is |
-| Other fields | — | — | Accepts every field of [`[models."<alias>".overrides]`](#models) (`max_context_size`, `max_output_size`, `support_efforts`, …) as a model patch applied only to subagents |
-
-Every field besides `model` forms a patch: when at least one patch field is set, the runtime synthesizes a derived model entry in memory (a copy of the pointed entry with the patch merged into its overrides, patch winning conflicts) and subagents bind that derived entry; with no patch fields, subagents bind the pointed entry directly. The derived entry lives only in memory (never written back to `config.toml`) and is hidden from model-selection lists.
-
-Different pool entries can carry different default thinking levels by registering a standalone model variant, overriding its `default_effort`, and listing both aliases. The variant does not inherit fields from the original entry, so copy `capabilities`, `support_efforts`, and the other model metadata in full; `default_effort` must be one of the declared `support_efforts` values:
-
-```toml
-# "kimi-code/k3" is provisioned by /login (default: high); this registers
-# a max-effort variant of the same model.
-[models.k3-max]
-provider = "managed:kimi-code"
-model = "k3"
-max_context_size = 1048576
-capabilities = [ "thinking", "always_thinking", "image_in", "video_in", "tool_use" ]
-support_efforts = [ "low", "high", "max" ]
-
-[models.k3-max.overrides]
-default_effort = "max"
-
-[secondary_model]
-default_model = "kimi-code/k3"
-
-[secondary_model.models]
-"kimi-code/k3" = "Default high effort. Good for most implementation, analysis, and multi-turn interaction tasks."
-k3-max = "The same model at max thinking effort. Good for the hardest subtasks."
-```
-
-A global `[thinking].effort` still takes priority for both the main agent and subagents; the variant's default applies only when the global effort is unset.
+Thinking effort resolves the same way, but it is allowed to stay unset: tool
+`effort` → profile `thinking_effort` → the bound model's own default under
+the global [`[thinking]`](#thinking) config.
 
 ## `thinking`
 
@@ -416,12 +365,10 @@ In print mode (`kimi -p "<prompt>"`), Kimi Code stays alive after the main agent
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `default_model` | `string` | — | On v1, fill-only exact `[models]` alias for new `Agent` / `AgentSwarm` children after tool and profile bindings, when the secondary-model experiment is on. On v2 this key is accepted and currently unused by `AgentRun` / `AgentSwarm` |
-| `default_effort` | `string` | — | On v1, fill-only thinking effort after tool and profile effort, when the secondary-model experiment is on. On v2 this key is accepted and currently unused by `AgentRun` / `AgentSwarm` |
-| `deny_models` | `string[]` | — | Denylist applied to explicit subagent model choices after alias resolution. Pool keys and `default_model` may not resolve to a denied identity |
+| `deny_models` | `string[]` | — | Denylist applied to every subagent model binding after alias resolution, whether the alias came from the dispatch or from a profile pin |
 | `timeout_ms` | `integer` | `7200000` (2 hours) | Maximum wall-clock time (milliseconds) a single subagent (`AgentRun` / `AgentSwarm`) is allowed to run before it is settled as `timed_out`. `0` means no timeout — the subagent runs until it finishes or the model stops it. This is the background-task manager's per-task timeout for each subagent task, so it applies to both foreground and background subagents. In print mode (`kimi -p`) the default is `0` unless explicitly set. Note: any value above `2147483647` (about 24.8 days) is clamped to roughly 24.8 days by the runtime |
 
-`timeout_ms` can be overridden by the `KIMI_SUBAGENT_TIMEOUT_MS` environment variable, which takes higher priority than `config.toml`. There are no environment variables for `default_model`, `default_effort`, or `deny_models`.
+`timeout_ms` can be overridden by the `KIMI_SUBAGENT_TIMEOUT_MS` environment variable, which takes higher priority than `config.toml`. There is no environment variable for `deny_models`.
 
 ## `agents`
 
@@ -430,8 +377,6 @@ This strict section is still parsed. Unknown keys are reported as configuration 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `enabled` | `boolean` | `true` | On v1, `false` removes the five-tool adapter even when the `agent-collaboration` experiment is on. On v2 this key is accepted and currently controls nothing |
-| `default_subagent_model` | `string` | — | Exact configured `[models]` alias used by the v1 named-agent spawn path when a spawn and its selected profile do not choose a model |
-| `default_subagent_reasoning_effort` | `string` | — | Nonblank reasoning effort used by the v1 named-agent spawn path when a spawn and its selected profile do not choose one |
 
 `[agents.delegation]` is a nested table. A string is a path relative to the Kiki home directory; `false` skips that notice. Omit a slot to keep the built-in text.
 

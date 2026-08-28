@@ -425,7 +425,6 @@ function toNamedAgentSubagentLease(
     diagnostic: scopedBindingDiagnostic(binding, status),
     description: lease.description,
     when_to_use: lease.whenToUse,
-    model_preference: lease.modelPreference,
     model_alias: lease.modelAlias,
     thinking_effort: lease.thinkingEffort,
     allowed_models: lease.allowedModels === undefined ? undefined : [...lease.allowedModels],

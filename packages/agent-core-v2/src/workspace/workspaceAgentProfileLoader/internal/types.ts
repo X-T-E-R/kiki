@@ -8,7 +8,6 @@
  */
 
 import type {
-  AgentModelPreference,
   AgentProfileRouteDefinition,
   AgentModelProfile,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
@@ -40,7 +39,6 @@ export interface AgentFileDefinition {
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
   readonly spawnConstraints?: SpawnConstraints;
-  readonly modelPreference?: AgentModelPreference;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
   readonly allowedModels?: readonly string[];

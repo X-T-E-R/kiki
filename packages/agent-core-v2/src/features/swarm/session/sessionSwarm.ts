@@ -1,5 +1,6 @@
 import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
 import type { TokenUsage } from '#/kosong/contract/usage';
+import type { SubagentModelSource } from '#/session/subagent/configSection';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 
@@ -26,7 +27,7 @@ export type SessionSwarmSpawnTask<T = unknown> = SessionSwarmTaskBase<T> & {
   readonly binding?: {
     readonly model: string;
     readonly thinking?: string;
-    readonly modelSource?: 'tool' | 'profile' | 'default' | 'secondary' | 'caller';
+    readonly modelSource?: SubagentModelSource;
   };
 };
 

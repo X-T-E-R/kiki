@@ -130,15 +130,10 @@ function mockSwarmMode() {
   return { _serviceBrand: undefined, isActive: false, enter: vi.fn(), exit: vi.fn() };
 }
 
-function stubConfig(section?: {
-  timeoutMs?: number;
-  defaultModel?: string;
-  models?: Record<string, string>;
-}): IConfigService {
+function stubConfig(section?: { timeoutMs?: number }): IConfigService {
   return {
     _serviceBrand: undefined,
     get: (name: string) => {
-      if (name === 'secondaryModel') return section;
       if (name === 'subagent' && section?.timeoutMs !== undefined) {
         return { timeoutMs: section.timeoutMs };
       }
@@ -201,6 +196,14 @@ function stubModels(resolved: Readonly<Record<string, string>> = {}): IModelServ
     _serviceBrand: undefined,
     resolveId: (id: string) => resolved[id] ?? id,
     list: () => ({}),
+  } as unknown as IModelService;
+}
+
+function stubModelsWithList(aliases: Readonly<Record<string, string>>): IModelService {
+  return {
+    _serviceBrand: undefined,
+    resolveId: (id: string) => aliases[id] ?? id,
+    list: () => aliases,
   } as unknown as IModelService;
 }
 
@@ -597,12 +600,13 @@ describe('AgentSwarmTool', () => {
       ]),
     });
     const swarmMode = mockSwarmMode();
-    const tool = createAgentSwarmTool(host.swarmService, makeAgentScopeContext({ agentId: host.callerAgentId, agentScope: '' }), swarmMode, stubConfig({ defaultModel: 'provider/fast', models: { 'provider/fast': 'fast and cheap' } }), stubFlag(true), stubSwarmCatalog(), stubCallerProfile());
+    const tool = createAgentSwarmTool(host.swarmService, makeAgentScopeContext({ agentId: host.callerAgentId, agentScope: '' }), swarmMode, stubConfig(), stubFlag(true), stubSwarmCatalog(), stubCallerProfile());
     const input = {
       description: 'Review files',
       prompt_template: 'Review {{item}}',
       items: ['src/a.ts', 'src/b.ts'],
       profile: 'explore',
+      model_alias: 'main-model',
     };
 
     expect(AgentSwarmToolInputSchema.safeParse(input).success).toBe(true);
@@ -747,6 +751,7 @@ describe('AgentSwarmTool', () => {
         prompt_template: 'Review {{item}}',
         items: ['src/a.ts', 'src/b.ts'],
         profile: 'coder',
+        model_alias: 'main-model',
       }),
     );
 
@@ -840,6 +845,7 @@ describe('AgentSwarmTool', () => {
       profile: 'explore',
       prompt_template: 'Review {{item}}',
       items: ['src/new.ts'],
+      model_alias: 'main-model',
       resume_agent_ids: {
         'agent-old-1': 'Continue previous review A',
         'agent-old-2': 'Continue previous review B',
@@ -1029,6 +1035,7 @@ describe('AgentSwarmTool', () => {
         description: 'Review files',
         prompt_template: 'Review {{item}}',
         items: ['src/a.ts', 'src/b.ts'],
+        model_alias: 'main-model',
       }),
     );
 
@@ -1055,6 +1062,7 @@ describe('AgentSwarmTool', () => {
         description: 'Review files',
         prompt_template: 'Review {{item}}',
         items: ['src/a.ts', 'src/b.ts'],
+        model_alias: 'main-model',
       }),
     );
 
@@ -1068,34 +1076,13 @@ describe('AgentSwarmTool', () => {
     );
   });
 
-  it('marks an omitted pool-less binding as inherited', async () => {
-    const host = mockSwarmHost();
-    const tool = createAgentSwarmTool(host.swarmService, makeAgentScopeContext({ agentId: host.callerAgentId, agentScope: '' }), mockSwarmMode(), stubConfig(), stubFlag(true), stubSwarmCatalog(), stubCallerProfile({ modelAlias: 'main-model', thinkingLevel: 'high' }));
-
-    await executeTool(
-      tool,
-      context({
-        description: 'Review files',
-        prompt_template: 'Review {{item}}',
-        items: ['src/a.ts', 'src/b.ts'],
-      }),
-    );
-
-    const [{ tasks }] = vi.mocked(host.swarmService.run).mock.calls[0] as [{
-      tasks: Array<{ binding?: { model: string; thinking?: string; bindingMode?: string } }>;
-    }];
-    expect(tasks[0]?.binding).toMatchObject({ model: 'main-model', thinking: 'high' });
-    expect(tasks[0]?.binding?.bindingMode).toBe('inherit');
-    expect(tasks[1]?.binding?.bindingMode).toBe('inherit');
-  });
-
-  it('resolves a bare pool default through ModelService before scheduling spawn tasks', async () => {
+  it('binds spawn tasks to the dispatched model_alias, canonicalized through ModelService', async () => {
     const host = mockSwarmHost();
     const tool = new AgentSwarmTool(
       host.swarmService,
       makeAgentScopeContext({ agentId: host.callerAgentId, agentScope: '' }),
       mockSwarmMode(),
-      stubConfig({ defaultModel: 'fast', models: { fast: 'fast and cheap' } }),
+      stubConfig(),
       stubFlag(true),
       stubSwarmCatalog(),
       stubCallerProfile({ modelAlias: 'main-model', thinkingLevel: 'high' }),
@@ -1108,6 +1095,7 @@ describe('AgentSwarmTool', () => {
         description: 'Review files',
         prompt_template: 'Review {{item}}',
         items: ['src/a.ts', 'src/b.ts'],
+        model_alias: 'fast',
       }),
     );
 
@@ -1119,56 +1107,43 @@ describe('AgentSwarmTool', () => {
         ],
       }),
     );
-    const [{ tasks }] = vi.mocked(host.swarmService.run).mock.calls[0] as [{
-      tasks: Array<{ binding?: { bindingMode?: string } }>;
-    }];
-    expect(tasks[0]?.binding?.bindingMode).toBe('fixed');
-    expect(tasks[1]?.binding?.bindingMode).toBe('fixed');
   });
 
-  it('lets the tool call opt back into the primary model', async () => {
+  it('fails closed instead of following the caller model when nothing binds one', async () => {
     const host = mockSwarmHost();
-    const tool = createAgentSwarmTool(host.swarmService, makeAgentScopeContext({ agentId: host.callerAgentId, agentScope: '' }), mockSwarmMode(), stubConfig({ defaultModel: 'provider/fast', models: { 'provider/fast': 'fast and cheap' } }), stubFlag(true), stubSwarmCatalog(), stubCallerProfile({ modelAlias: 'main-model', thinkingLevel: 'high' }));
+    const tool = createAgentSwarmTool(host.swarmService, makeAgentScopeContext({ agentId: host.callerAgentId, agentScope: '' }), mockSwarmMode(), stubConfig(), stubFlag(true), stubSwarmCatalog(), stubCallerProfile({ modelAlias: 'main-model', thinkingLevel: 'high' }));
 
-    await executeTool(
+    const result = await executeTool(
       tool,
       context({
         description: 'Review files',
         prompt_template: 'Review {{item}}',
         items: ['src/a.ts', 'src/b.ts'],
-        model: 'primary',
       }),
     );
 
-    expect(host.swarmService.run).toHaveBeenCalledWith(
-      expect.objectContaining({
-        tasks: [
-          expect.objectContaining({ binding: { model: 'main-model', thinking: 'high' } }),
-          expect.objectContaining({ binding: { model: 'main-model', thinking: 'high' } }),
-        ],
-      }),
-    );
-    const [{ tasks }] = vi.mocked(host.swarmService.run).mock.calls[0] as [{
-      tasks: Array<{ binding?: { bindingMode?: string } }>;
-    }];
-    expect(tasks[0]?.binding?.bindingMode).toBe('fixed');
-    expect(tasks[1]?.binding?.bindingMode).toBe('fixed');
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain('No model is bound for agent profile "coder"');
+    expect(host.swarmService.run).not.toHaveBeenCalled();
   });
 
-  it('advertises the configured pool in the description only when configured', async () => {
+  it('lists the configured model aliases in the description', async () => {
     const host = mockSwarmHost();
-    const configured = createAgentSwarmTool(host.swarmService, makeAgentScopeContext({ agentId: host.callerAgentId, agentScope: '' }), mockSwarmMode(), stubConfig({ defaultModel: 'provider/fast', models: { 'provider/fast': 'fast and cheap', 'main-model': 'the main model' } }), stubFlag(true), stubSwarmCatalog(), stubCallerProfile({ modelAlias: 'main-model' }));
-
-    expect(configured.description).toContain('Available models');
-    expect(configured.description).toContain('- provider/fast [default]: fast and cheap');
-    expect(configured.description).toContain('- main-model [main model]: the main model');
-expect(configured.description).toContain(
-      '- primary (main-model): freeze the main model and its current thinking level for this subagent',
+    const tool = new AgentSwarmTool(
+      host.swarmService,
+      makeAgentScopeContext({ agentId: host.callerAgentId, agentScope: '' }),
+      mockSwarmMode(),
+      stubConfig(),
+      stubFlag(true),
+      stubSwarmCatalog(),
+      stubCallerProfile({ modelAlias: 'main-model' }),
+      stubModelsWithList({ 'provider/fast': 'provider/fast' }),
     );
 
-    const unconfigured = createAgentSwarmTool(host.swarmService, makeAgentScopeContext({ agentId: host.callerAgentId, agentScope: '' }), mockSwarmMode(), stubConfig(), stubFlag(true), stubSwarmCatalog(), stubCallerProfile({ modelAlias: 'main-model' }));
-
-    expect(unconfigured.description).not.toContain('Available models');
+    expect(tool.description).toContain(
+      'Configured model aliases (pass an exact value via model_alias): provider/fast',
+    );
+    expect(tool.description).toContain('never on your own model');
   });
 
   it('omits resume hint when incomplete subagents have no agent ids', async () => {
@@ -1194,6 +1169,7 @@ expect(configured.description).toContain(
         description: 'Review files',
         prompt_template: 'Review {{item}}',
         items: ['src/a.ts', 'src/b.ts'],
+        model_alias: 'main-model',
       }),
     );
 
@@ -1241,6 +1217,7 @@ expect(configured.description).toContain(
         description: 'Review files',
         prompt_template: 'Review {{item}}',
         items: ['src/a.ts', 'src/b.ts', 'src/c.ts'],
+        model_alias: 'main-model',
       }),
     );
 

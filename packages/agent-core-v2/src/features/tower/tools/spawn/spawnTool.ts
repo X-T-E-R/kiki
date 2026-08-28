@@ -22,7 +22,6 @@ import {
 import { IAgentTowerService, TOWER_WORKER_PROFILE } from '#/features/tower/tower';
 import { ITowerRateLimitService } from '#/features/tower/towerRateLimit';
 import { IConfigService } from '#/app/config/config';
-import { IFlagService } from '#/app/flag/flag';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { toInputJsonSchema } from '#/tool/input-schema';
@@ -38,7 +37,6 @@ import {
   canonicalizeSubagentBinding,
   DEFAULT_SUBAGENT_TIMEOUT_MS,
   resolveSubagentBinding,
-  wrapSubagentModelError,
 } from '#/session/subagent/configSection';
 import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
@@ -68,7 +66,6 @@ export class TowerSpawnTool implements ITowerSpawnTool {
     @IAgentTaskService private readonly tasks: IAgentTaskService,
     @IAgentProfileService private readonly profile: IAgentProfileService,
     @IConfigService private readonly config: IConfigService,
-    @IFlagService private readonly flags: IFlagService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IModelService private readonly models: IModelService,
   ) {
@@ -107,6 +104,27 @@ export class TowerSpawnTool implements ITowerSpawnTool {
           output:
             `tower agent "${args.name}" is already registered (agent_id: ${existing.agentId}, kind: ${existing.kind}) — ` +
             `resume it instead of spawning a duplicate: AgentRun(resume="${existing.agentId}", prompt="...")`,
+          isError: true,
+        };
+      }
+
+      let binding: SubagentBinding;
+      try {
+        const lease = callerLeaseTable(this.profile.data(), {}).leases[TOWER_WORKER_PROFILE];
+        binding = canonicalizeSubagentBinding(
+          resolveSubagentBinding(
+            this.config,
+            { modelAlias: args.model_alias },
+            { modelAlias: lease?.modelAlias, thinkingEffort: lease?.thinkingEffort },
+            this.models,
+            undefined,
+            { profileName: TOWER_WORKER_PROFILE },
+          ),
+          this.models,
+        );
+      } catch (error) {
+        return {
+          output: error instanceof Error ? error.message : String(error),
           isError: true,
         };
       }
@@ -154,21 +172,6 @@ export class TowerSpawnTool implements ITowerSpawnTool {
       let slotHeld = true;
       try {
         const controller = new AbortController();
-        const own = this.profile.data();
-        const binding =
-          own.modelAlias === undefined
-            ? undefined
-            : canonicalizeSubagentBinding(
-                resolveSubagentBinding(
-                  this.config,
-                  this.flags,
-                  { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
-                  args.kind === 'reviewer' ? 'primary' : undefined,
-                  {},
-                  this.models,
-                ),
-                this.models,
-              );
         let handle: SubagentHandle;
         try {
           handle = await this.launch(prompt, description, toolCallId, controller, binding);
@@ -229,7 +232,7 @@ export class TowerSpawnTool implements ITowerSpawnTool {
             agent: handle.agentId,
             mission: mission?.id,
             target: reviewTarget,
-            model: binding?.model,
+            model: binding.model,
           },
           mission !== undefined
             ? join(MISSIONS_DIR, missionFileName(mission.id, mission.slug))
@@ -243,7 +246,7 @@ export class TowerSpawnTool implements ITowerSpawnTool {
             `agent_id: ${handle.agentId}`,
             `task_id: ${taskId}`,
             'status: running',
-            ...(binding !== undefined ? [`model: ${binding.model}`] : []),
+            `model: ${binding.model}`,
             ...(mission !== undefined
               ? [
                   `mission: ${mission.id} — ${mission.title}`,
@@ -272,33 +275,26 @@ export class TowerSpawnTool implements ITowerSpawnTool {
     description: string,
     toolCallId: string,
     controller: AbortController,
-    binding: SubagentBinding | undefined,
+    binding: SubagentBinding,
   ): Promise<SubagentHandle> {
     const requester = this.lifecycle.get(this.callerAgentId);
     if (requester === undefined) {
       throw new Error(`Caller agent "${this.callerAgentId}" does not exist`);
     }
 
-    let created: IAgentScopeHandle;
-    try {
-      if (binding !== undefined) this.modelCatalog.get(binding.model);
-      const table = callerLeaseTable(this.profile.data(), {});
-      created = await this.lifecycle.create({
-        binding: {
-          profile: TOWER_WORKER_PROFILE,
-          model: binding?.model,
-          thinking: binding?.thinking,
-          lease: table.leases[TOWER_WORKER_PROFILE],
-          spawnPolicy: table.spawnPolicy,
-        },
-        labels: subagentLabels(this.callerAgentId),
-        userLabel: description,
-      });
-    } catch (error) {
-      throw binding === undefined
-        ? error
-        : wrapSubagentModelError(error, binding.model, this.profile.data().modelAlias);
-    }
+    this.modelCatalog.get(binding.model);
+    const table = callerLeaseTable(this.profile.data(), {});
+    const created: IAgentScopeHandle = await this.lifecycle.create({
+      binding: {
+        profile: TOWER_WORKER_PROFILE,
+        model: binding.model,
+        thinking: binding.thinking,
+        lease: table.leases[TOWER_WORKER_PROFILE],
+        spawnPolicy: table.spawnPolicy,
+      },
+      labels: subagentLabels(this.callerAgentId),
+      userLabel: description,
+    });
     created.accessor.get(IAgentPermissionModeService).setMode('auto');
     const agentId = created.id;
 

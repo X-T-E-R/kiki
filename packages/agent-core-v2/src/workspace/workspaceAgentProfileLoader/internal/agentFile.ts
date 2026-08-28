@@ -130,7 +130,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
   }
   const subagents = parsedSubagents.subagents;
   const subagentLeases = parsedSubagents.subagentLeases;
-  const modelPreference = parseModelPreference(frontmatter['model_preference'], options.path);
+  rejectModelPreference(frontmatter['model_preference'], options.path);
   const modelAlias = optionalNonEmptyStringField(
     frontmatter['model_alias'],
     'model_alias',
@@ -172,12 +172,6 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     delete withoutServiceTier['service_tier'];
     requestParams = withoutServiceTier;
   }
-  if (modelPreference !== undefined && modelAlias !== undefined) {
-    throw new AgentFileParseError(
-      `Frontmatter fields "model_preference" and "model_alias" in ${options.path} are mutually exclusive`,
-    );
-  }
-
   const prompt = parsed.body.trim();
   if (prompt.length === 0) {
     throw new AgentFileParseError(`Missing prompt body in ${options.path}`);
@@ -197,7 +191,6 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     subagents,
     subagentLeases,
     spawnConstraints,
-    modelPreference,
     modelAlias,
     thinkingEffort,
     allowedModels,
@@ -349,14 +342,10 @@ function validateModelProfilePrompt(
   }
 }
 
-function parseModelPreference(
-  value: unknown,
-  filePath: string,
-): AgentFileDefinition['modelPreference'] {
-  if (value === undefined || value === null) return undefined;
-  if (value === 'primary' || value === 'secondary') return value;
+function rejectModelPreference(value: unknown, filePath: string): void {
+  if (value === undefined || value === null) return;
   throw new AgentFileParseError(
-    `Frontmatter field "model_preference" in ${filePath} must be "primary" or "secondary"`,
+    `Frontmatter field "model_preference" in ${filePath} has been removed: subagents no longer inherit the caller's model. Set "model_alias" to an exact [models] alias instead.`,
   );
 }
 
@@ -418,7 +407,7 @@ function warnIncoherentModelConstraints(
   if (modelAlias === undefined) {
     if (hasAllowlist) {
       warn(
-        `Frontmatter field "allowed_models" in ${filePath} is set without "model_alias"; a dispatch that does not name a model inherits the caller's model, which the allowlist will reject`,
+        `Frontmatter field "allowed_models" in ${filePath} is set without "model_alias"; a dispatch that does not name a model fails closed instead of falling back to a default`,
       );
     }
     return;

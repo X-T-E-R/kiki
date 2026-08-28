@@ -43,7 +43,6 @@ The model-selector feature below remains experimental and off by default.
 
 | Feature | Enable with | Additional boundary |
 | --- | --- | --- |
-| Subagent model selector and secondary recipe | `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` | Gates only the symbolic `model`/`model_preference` selectors and the `[secondary_model]` recipe; explicit `model_alias` / profile `thinking_effort` / tool `effort` binding is stable and always available. Applies to new subagent spawns. Resumed or retried subagents retain their persisted binding. |
 | All registered experiments | `KIMI_CODE_EXPERIMENTAL_FLAG=1` | This is a broad master gate, not a runtime or product selector. |
 
 [Agents and subagents](../customization/agents.md) documents the binding precedence, lifecycle, and child-agent tools. [Configuration files](../configuration/config-files.md#subagent) documents the `[subagent]` timeout and denylist.
@@ -93,7 +92,7 @@ The desktop app keeps Kiki-owned data under `KIKI_HOME` (by default `~/.kiki`). 
 
 Kimi OAuth is intentionally shared. The selected Kimi Home may be the default Kimi Code Home or a custom absolute path, and Kiki login, logout, and refresh directly use `<Kimi Home>/credentials/kimi-code.json`, `<Kimi Home>/device_id`, and `<Kimi Home>/oauth/`. Those actions therefore affect the same Kimi Code login; Kiki never copies OAuth credentials into `KIKI_HOME`.
 
-The Settings card provides a repeatable one-way model-configuration import from the selected Kimi Home. It imports only `providers`, `models`, `services`, `default_model`, `default_provider`, `thinking`, and `secondary_model`. The three map categories merge by key: source entries replace matching aliases while Kiki-only aliases remain. The other categories replace the Kiki value only when they exist in the source. OAuth credential files are never copied; imported provider and service entries may retain references to the credentials already shared from the selected Kimi Home. All other Kiki config sections and comments attached to untouched entries remain unchanged, and repeating the same import is a no-op. The desktop action stops and restarts only Kiki's owned backend. For headless maintenance, stop that backend first, then run from `apps/kiki-gui`:
+The Settings card provides a repeatable one-way model-configuration import from the selected Kimi Home. It imports only `providers`, `models`, `services`, `default_model`, `default_provider`, and `thinking`. The three map categories merge by key: source entries replace matching aliases while Kiki-only aliases remain. The other categories replace the Kiki value only when they exist in the source. OAuth credential files are never copied; imported provider and service entries may retain references to the credentials already shared from the selected Kimi Home. All other Kiki config sections and comments attached to untouched entries remain unchanged, and repeating the same import is a no-op. The desktop action stops and restarts only Kiki's owned backend. For headless maintenance, stop that backend first, then run from `apps/kiki-gui`:
 
 ```sh
 pnpm desktop:import-kimi-config

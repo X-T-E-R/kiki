@@ -352,10 +352,10 @@ describe('KimiHarness config API', () => {
     const features = await harness.getExperimentalFeatures();
 
     // The registry order is the engine's; the SDK must forward the whole
-    // catalog, not a filtered subset.
+    // catalog, not a filtered subset. (secondary-model left the registry with
+    // the model-inheritance removal.)
     expect(features.map((feature) => feature.id)).toEqual([
       'agent-profile-routes',
-      'secondary-model',
       'auto_session_title',
       'remote-control',
       'task_wait',

@@ -129,9 +129,8 @@ describe('Session skills', () => {
       });
       // Model-less on purpose: the grouped surface (activation events, single
       // turn) is what is under test, and the turn then fails on provider
-      // resolution — which the engine takes several seconds to give up on, hence
-      // the explicit budget rather than the short default.
-      const ended = waitForSDKEvent(session, (event) => event.type === 'turn.ended', 20_000);
+      // resolution afterwards — which the engine takes seconds to give up on.
+      const ended = waitForSDKEvent(session, (event) => event.type === 'turn.ended');
 
       await session.promptWithSkills(
         'Review this change.',

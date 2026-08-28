@@ -131,8 +131,7 @@ disallowedTools:
 | `override` | 否 | 是否允许覆盖同名内置 Agent，默认 `false`。`--agent-file` 属于显式启动意图，无需设置此字段 |
 | `main` | 否 | 策展标记。为 `true` 时该 profile 可作为 main agent 候选，默认不出现在 `AgentRun` 工具的角色列表里。这不是授权门：`--agent`、`--agent-file`、MCP 和 SDK 仍可按名绑定目录中的任意 profile |
 | `delegation_notice` | 否 | `auto`（默认）在该 profile 作为 subagent 或独立宿主 Agent 运行时注入按位置区分的委派说明；`off` 关闭。main agent 绑定从不注入 |
-| `model_preference` | 否 | 仅在次主力模型实验功能启用时可用的旧版符号选择器：`primary` 继承调用方的模型绑定，`secondary` 选择 [`[secondary_model] model`](../configuration/config-files.md#secondary-model)。与 `model_alias` 互斥 |
-| `model_alias` | 否 | `[models]` 中区分大小写的精确 alias。名为 `primary` 或 `secondary` 的 alias 仍按字面值处理，与符号字段 `model_preference` 不同 |
+| `model_alias` | 否 | `[models]` 中区分大小写的精确 alias。它就是该 profile 的模型 pin：派发未指定模型时绑定它；没有它的 profile 只能由显式 `model_alias` 的派发使用 |
 | `thinking_effort` | 否 | 该 profile 作为新子 Agent 启动时请求的 thinking effort，与模型选择器独立解析 |
 | `allowed_models` | 否 | 该 role 允许绑定的模型 alias 白名单。写法与 `tools` 相同（YAML 列表或逗号分隔字符串）。字段存在且非空时，绑定结果必须是其中一员。比较走规范模型身份，因此裸 alias 与带 provider 前缀的名字可以互相匹配。这份名单只能**收紧**机器已经允许的集合，不能重新放行 `[subagent].deny_models` 或本文件 `deny_models` 禁止的模型。只写一项就是把该 role 钉死到那个 alias 的做法，不必再为“只改模型”单独建 route sidecar。省略字段或写成空列表表示不再额外限制 |
 | `deny_models` | 否 | 该 role 禁止绑定的模型 alias 名单，写法与 `allowed_models` 相同。自动派发会被拒绝；人类显式选择放行并给一次性提示。机器级 `[subagent].deny_models` 仍拒绝所有路径，包括人类 |
@@ -173,7 +172,7 @@ deny_models:
 allowed_models: [fast-model]
 ```
 
-写白名单时要同时写上你想钉死的 `model_alias`。只声明 `allowed_models` 而不写 `model_alias` 的 profile 仍会加载并给出告警，但派发时若没有指定模型，就会继承调用方的模型，随后被白名单拒绝。
+写白名单时要同时写上你想钉死的 `model_alias`。只声明 `allowed_models` 而不写 `model_alias` 的 profile 仍会加载并给出告警，但派发时若没有指定模型会直接 fail closed，而不是退到某个还要由白名单再判一次的默认模型。
 
 内置工具与用户工具按名称精确匹配（区分大小写）；以 `mcp__` 开头的条目按 glob 匹配 MCP 工具。有三种写法永远匹配不到任何工具，在 profile 生效时会给出警告：`mcp__` 模式之外使用通配符（`disallowedTools` 里单独的 `*` 什么也禁不掉）；不是完整 `mcp__<服务器>__<工具>` 形式的 `mcp__` 字面量（`mcp__github` 匹配不到任何工具 —— 匹配整个服务器要用 `mcp__github__*`）；以及任何已注册或内置工具都没有的名字（通常是笔误，如把 `Read` 写成 `read`）。
 
@@ -207,7 +206,7 @@ request_params:
 重点检查交互回归、无障碍与视觉一致性。
 ```
 
-必填字段为 `id`、`profile`、`description` 和 `prompt_mode`。可选字段为 `whenToUse`、`model_preference`、`model_alias`、`thinking_effort`、`service_tier`、`request_params`、`tools`、`disallowedTools`、`subagents`。与普通 Agent 文件不同，route Frontmatter 使用严格解析。未知字段、非法类型、路径 / ID / profile 不匹配、同一来源内重复 ID、互斥的模型选择器只会让该 sidecar 被跳过并产生带 code 的诊断；基础 profile 和其他 route 仍会加载。`recommended_models`、`model_profiles`、`allowed_models`、`deny_models` 等仅属于 Agent 文件的字段在这里属于未知字段，会导致该 sidecar 被跳过。Route 可以钉死 `model_alias`，但该钉死值仍要接受基础 profile 的 `allowed_models` / `deny_models` 检查。
+必填字段为 `id`、`profile`、`description` 和 `prompt_mode`。可选字段为 `whenToUse`、`model_alias`、`thinking_effort`、`service_tier`、`request_params`、`tools`、`disallowedTools`、`subagents`。与普通 Agent 文件不同，route Frontmatter 使用严格解析。未知字段、非法类型、路径 / ID / profile 不匹配、同一来源内重复 ID、互斥的模型选择器只会让该 sidecar 被跳过并产生带 code 的诊断；基础 profile 和其他 route 仍会加载。`recommended_models`、`model_profiles`、`allowed_models`、`deny_models` 等仅属于 Agent 文件的字段在这里属于未知字段，会导致该 sidecar 被跳过。Route 可以钉死 `model_alias`，但该钉死值仍要接受基础 profile 的 `allowed_models` / `deny_models` 检查。
 
 `prompt_mode` 始终保留基础提示词：`inherit` 要求正文为空；`prepend` 与 `append` 要求正文非空且不能包含 `${parent_prompt}` / `${base_prompt}`；`wrap` 要求正文必须且只能包含一次 `${parent_prompt}` 或 `${base_prompt}`。不提供无保护的 replace 模式。
 
@@ -219,11 +218,11 @@ Route 若声明 `tools`、`disallowedTools` 或 `subagents`，该字段整体替
 
 恢复时不会重新选择或切换 route。Journal 会保存规范基础 role、route ID、渲染后的提示词、分层工具策略、denylist、子 Agent 限制、模型 / effort 锁、service tier 与请求参数。因此，即使后来关闭 flag，或 sidecar 被修改、删除、写坏，已有 routed Agent 仍从快照恢复；这些变化只影响新派发。旧 journal 继续兼容。混合 `AgentSwarm` 调用只把 `route` 应用于基于 item 的新 Agent，resume 条目保留原快照。
 
-`model_alias` 已是稳定的 profile 字段和 `AgentRun` / `AgentSwarm` 工具参数。Agent 文件里的 `thinking_effort` 同样稳定；v2 对应的工具参数是 `effort`。两者都不需要启用 `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL`。v2 新派生子 Agent 的模型与 effort 分别按以下顺序解析：工具参数 → profile 字段 → 调用方绑定。`[subagent]` 的 `default_model` / `default_effort` 仍可写在配置里，但 `AgentRun` / `AgentSwarm` 目前不会读。v1 只在次主力模型实验功能开启时，才在 profile 之后填这两项默认值。普通（非 route）profile 指定的 `model_alias` 不存在于 `[models]` 时，CLI 会告警并回退到调用方的模型与 effort；通过工具参数显式传入未知 alias 时则会报错。
+新派生子 Agent 的模型只有两个来源：工具参数 `model_alias`，或生效 profile / route / caller lease 上的 `model_alias` pin；两者都在时以派发参数为准。两者都没有时派发以 `model.not_configured` 失败，子 Agent 不会被创建——子 Agent 不会跑在调用方的模型上，也没有可回退的配置默认值。effort 独立解析且允许留空：工具 `effort` → profile `thinking_effort` → 所绑定模型自身的默认档位。未知 alias 无论来自派发参数还是 profile pin 都会报错。
 
-只有旧版工具参数 `model`（`primary` / `secondary`）、profile 字段 `model_preference` 和次主力 recipe 仍受次主力模型实验功能控制。启用后，次主力 recipe 会插在 profile 与调用方绑定之间。关闭时，profile 中的 `model_preference` 会被忽略并告警；显式传入 `model` 工具参数则会返回清晰错误。恢复或重试的子 Agent 保持已持久化的模型与 effort；`AgentRun` 用 `resume` 继续时传入绑定字段会被拒绝。`AgentSwarm` 混合调用只把这些字段应用到基于 item 的新派生项。
+恢复或重试的子 Agent 保持已持久化的模型与 effort；`AgentRun` 用 `resume` 继续时传入绑定字段会被拒绝。`AgentSwarm` 混合调用只把这些字段应用到基于 item 的新派生项。
 
-subagent 模型治理会先解析 `[models]` alias，再按规范模型身份比较。机器级 `[subagent] deny_models` 在所有派发入口拒绝名单内的模型。role 文件可以用 `allowed_models` 与 `deny_models` 再收紧这个集合；它们不能放宽机器已经禁止的模型，只含一项的 `allowed_models` 就是该 role 的硬钉死。`[secondary_model] enforce_pool = true` 把已配置池变成硬白名单，同时始终保留 `primary`；默认软白名单模式则继续允许精确的池外 `model_alias` 作为逃生通道。`[secondary_model] force = true` 仍是最强的整机单模型钉死策略，会把所有派生绑定到同一模型，且不能与 `enforce_pool` 同设。字段与校验规则见[配置参考](../configuration/config-files.md#secondary-model)。
+subagent 模型治理会先解析 `[models]` alias，再按规范模型身份比较。机器级 `[subagent] deny_models` 在所有派发入口拒绝名单内的模型。role 文件可以用 `allowed_models` 与 `deny_models` 再收紧这个集合；它们不能放宽机器已经禁止的模型，只含一项的 `allowed_models` 就是该 role 的硬钉死。字段与校验规则见[配置参考](../configuration/config-files.md#subagent)。
 
 目录中发现的非法文件会被跳过并告警，不影响其他文件。通过 `--agent-file` 显式传入的文件必须合法 —— 否则 CLI 会报错并退出。
 
