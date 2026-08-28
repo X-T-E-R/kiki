@@ -375,6 +375,7 @@ class FixtureServer {
     this.config = {};
     this.providers = [];
     this.models = [];
+    this.modelsDeclared = false;
     this.auth = null;
     this.sessions = new Map();
     this.sockets = new Set();
@@ -404,6 +405,10 @@ class FixtureServer {
     });
     this.providers = structuredClone(data.providers ?? []);
     this.models = structuredClone(data.models ?? []);
+    // A scenario that declares `models: []` means an unconfigured server, not
+    // "unset" — without this the /models fallback below makes an empty catalog
+    // unrepresentable (first-run guidance can never be exercised).
+    this.modelsDeclared = Array.isArray(data.models);
     this.auth = structuredClone(data.auth ?? null);
     this.sessions.clear();
     this.workspaces = structuredClone(data.workspaces ?? []);
@@ -1010,7 +1015,7 @@ class FixtureServer {
     }
     if (path === '/models') {
       return this.envelope(res, {
-        items: this.models.length > 0 ? this.models : [
+        items: this.models.length > 0 || this.modelsDeclared ? this.models : [
           { provider: 'fixture', model: 'fixture/kiki-pro', display_name: 'Kiki Pro', max_context_size: 262144, support_efforts: ['low', 'high'], default_effort: 'high' },
           { provider: 'fixture', model: 'fixture/kiki-lite', display_name: 'Kiki Lite', max_context_size: 131072 },
         ],

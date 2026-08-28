@@ -80,6 +80,44 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
   );
 }
 
+/**
+ * First-run readiness card: shown only when the server reports no provider
+ * and no model, i.e. the next send is guaranteed to fail. Both actions deep
+ * link into the providers section so the fix happens where it lives.
+ */
+function ProviderSetupCard() {
+  const { t } = useI18n();
+  const navigate = useNavigate();
+
+  return (
+    <div
+      data-provider-setup
+      className="mx-auto mt-5 w-full max-w-[var(--kiki-chat-content-width,760px)] rounded-xl border border-accent/30 bg-accent-soft/40 px-4 py-3 text-left"
+    >
+      <p className="font-display text-[13.5px] font-semibold tracking-tight text-ink">
+        {t('new.setupTitle')}
+      </p>
+      <p className="mt-1 text-[12px] leading-relaxed text-ink-soft">{t('new.setupBody')}</p>
+      <div className="mt-2.5 flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => { void navigate('/settings/providers#st-card-auth'); }}
+          className="rounded-md border border-accent bg-accent px-2.5 py-1 text-[12px] font-medium text-paper transition-opacity hover:opacity-90"
+        >
+          {t('new.setupSignIn')}
+        </button>
+        <button
+          type="button"
+          onClick={() => { void navigate('/settings/providers#st-card-providers-add'); }}
+          className="rounded-md border border-hairline-strong bg-panel px-2.5 py-1 text-[12px] text-ink transition-colors hover:border-accent hover:text-accent"
+        >
+          {t('new.setupApiKey')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => void }) {
   const { client } = useConnection();
   const { t } = useI18n();
@@ -256,34 +294,37 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
           )
         : null}
 
-      {recentSessions.length > 0 && slots.heroFooter !== null
+      {(state.needsProviderSetup || recentSessions.length > 0) && slots.heroFooter !== null
         ? createPortal(
             <div className="px-6 pt-4">
-              <div className="mx-auto max-w-[var(--kiki-chat-content-width,760px)]">
-                <p className="mb-2 text-center text-[11px] font-medium text-ink-soft">
-                  {t('new.recent')}
-                </p>
-                <div className="flex flex-wrap justify-center gap-2">
-                  {recentSessions.map((session) => (
+              {state.needsProviderSetup ? <ProviderSetupCard /> : null}
+              {recentSessions.length > 0 ? (
+                <div className="mx-auto mt-4 max-w-[var(--kiki-chat-content-width,760px)]">
+                  <p className="mb-2 text-center text-[11px] font-medium text-ink-soft">
+                    {t('new.recent')}
+                  </p>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {recentSessions.map((session) => (
+                      <button
+                        key={session.id}
+                        type="button"
+                        onClick={() => void navigate(`/s/${session.id}`)}
+                        className="max-w-[200px] truncate rounded-full border border-hairline bg-panel px-3 py-1 text-[11.5px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+                      >
+                        {session.title !== '' ? session.title : session.last_prompt ?? session.id}
+                      </button>
+                    ))}
                     <button
-                      key={session.id}
                       type="button"
-                      onClick={() => void navigate(`/s/${session.id}`)}
-                      className="max-w-[200px] truncate rounded-full border border-hairline bg-panel px-3 py-1 text-[11.5px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+                      data-recent-more
+                      onClick={() => { void navigate('/settings/workspaces'); }}
+                      className="rounded-full border border-dashed border-hairline-strong px-3 py-1 text-[11.5px] text-ink-faint transition-colors hover:border-accent hover:text-accent"
                     >
-                      {session.title !== '' ? session.title : session.last_prompt ?? session.id}
+                      {t('new.recentMore')}
                     </button>
-                  ))}
-                  <button
-                    type="button"
-                    data-recent-more
-                    onClick={() => { void navigate('/settings/workspaces'); }}
-                    className="rounded-full border border-dashed border-hairline-strong px-3 py-1 text-[11.5px] text-ink-faint transition-colors hover:border-accent hover:text-accent"
-                  >
-                    {t('new.recentMore')}
-                  </button>
+                  </div>
                 </div>
-              </div>
+              ) : null}
             </div>,
             slots.heroFooter,
           )

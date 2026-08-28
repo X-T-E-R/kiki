@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useLocation, useParams } from 'react-router-dom';
 
 import type {
   McpServer,
@@ -3300,6 +3300,16 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const guardedNavigate = useCallback((target: string) => {
     navigate(`/settings/${target}`);
   }, [navigate]);
+
+  // `/settings/<section>#st-card-…` focuses one card, so callers elsewhere in
+  // the app (the /new readiness card) can point at the exact control instead
+  // of dropping the user at the top of a long section.
+  const { hash } = useLocation();
+  useEffect(() => {
+    const cardId = hash.replace(/^#/, '');
+    if (!cardId.startsWith('st-card-')) return;
+    setFocusCard({ cardId, nonce: Date.now() });
+  }, [hash]);
 
   // Scroll + flash the card a search hit pointed at, then disarm.
   useEffect(() => {

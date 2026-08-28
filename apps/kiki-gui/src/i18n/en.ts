@@ -613,11 +613,17 @@ export const en = {
   'new.tagline': 'Pick where kiki works, then ask anything.',
   'new.workspace': 'Workspace',
   'new.or': 'or',
-  'new.noWorkspaces': '(no workspaces)',
+  'new.noWorkspaces': 'No workspaces yet',
   'new.recent': 'Recent sessions',
   'new.creating': 'Creating the session…',
   'new.recentMore': 'View all sessions →',
   'new.noTargetHint': 'Pick a workspace above — or enter an absolute project path — to enable sending.',
+  'new.browse': 'Browse folder…',
+  'new.firstRunHint': 'Pick the folder you want kiki to work in — usually a project root. It becomes a workspace you can come back to.',
+  'new.setupTitle': 'Connect a model first',
+  'new.setupBody': 'No provider is configured yet, so kiki has no model to answer with. Sign in with Kimi, or add your own API key.',
+  'new.setupSignIn': 'Sign in with Kimi',
+  'new.setupApiKey': 'Add an API key',
 
   // ---- hero (/new conversation shell) ----
   'hero.chooseWorkspace': 'Choose workspace',

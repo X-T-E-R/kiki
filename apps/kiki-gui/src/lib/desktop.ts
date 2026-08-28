@@ -73,6 +73,18 @@ export async function selectDirectoriesNative(): Promise<readonly string[] | nul
   return typeof selected === 'string' ? [selected] : selected;
 }
 
+/**
+ * Select a single directory through the native desktop dialog. Resolves `null`
+ * when the user cancels.
+ */
+export async function selectDirectoryNative(): Promise<string | null> {
+  if (!isTauri()) throw new Error('Native directory selection requires the Kiki desktop app.');
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const selected = await open({ directory: true, multiple: false });
+  if (selected === null) return null;
+  return typeof selected === 'string' ? selected : (selected[0] ?? null);
+}
+
 export async function isMainWindowVisibleAndFocused(): Promise<boolean> {
   if (!isTauri()) return true;
   try {

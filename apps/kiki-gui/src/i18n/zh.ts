@@ -604,11 +604,17 @@ export const zh: Record<I18nKey, string> = {
   'new.tagline': '选好 kiki 的工作位置，然后尽管问。',
   'new.workspace': '工作区',
   'new.or': '或',
-  'new.noWorkspaces': '（无工作区）',
+  'new.noWorkspaces': '还没有工作区',
   'new.recent': '最近的会话',
   'new.creating': '正在创建会话…',
   'new.recentMore': '查看全部会话 →',
   'new.noTargetHint': '先在上方选择工作区，或填写项目的绝对路径，然后才能发送。',
+  'new.browse': '浏览文件夹…',
+  'new.firstRunHint': '选一个文件夹作为 kiki 的工作区，通常是项目根目录。选过之后它会留在列表里，随时可以回来。',
+  'new.setupTitle': '先连接一个模型',
+  'new.setupBody': '还没有配置任何 provider，kiki 没有可用来回答的模型。可以登录 Kimi，也可以填自己的 API key。',
+  'new.setupSignIn': '登录 Kimi',
+  'new.setupApiKey': '配置 API key',
 
   // ---- hero (/new conversation shell) ----
   'hero.chooseWorkspace': '选择工作区',
