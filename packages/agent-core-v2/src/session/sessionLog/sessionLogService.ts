@@ -55,6 +55,10 @@ export class SessionLogService extends BoundLogger implements ILogService {
     return this.sink.flush();
   }
 
+  flushSync(): void {
+    this.sink.flushSync();
+  }
+
   close(): Promise<void> {
     return this.sink.close();
   }
