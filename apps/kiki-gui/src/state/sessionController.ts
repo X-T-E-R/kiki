@@ -261,7 +261,7 @@ export class SessionController {
   /** Initial sync: snapshot shell → subscribe_v2 with per-agent grades. */
   async open(): Promise<void> {
     try {
-      const snapshot = await this.client.snapshot(this.sessionId);
+      const snapshot = await this.client.snapshot(this.sessionId, { transcript: true });
       if (this.closed) return;
       this.setState(applyTranscriptShell(this.sessionId, snapshot, this.state));
       this.transcriptGrades = DEFAULT_TRANSCRIPT_GRADES;
@@ -309,7 +309,14 @@ export class SessionController {
   handleTranscript(event: TranscriptEvent): void {
     if (this.closed || event.session_id !== this.sessionId) return;
     if (event.type === 'transcript.reset') {
+      this.rewriteHoldUntilReset = false;
       this.applyTranscriptReset(event.agent_id, event.snapshot, event.coverage, event.cursor);
+      return;
+    }
+    if (this.rewriteHoldUntilReset) {
+      const ops = event.ops.filter((op) => op.op !== 'items.remove');
+      if (ops.length === 0) return;
+      this.applyTranscriptOps(event.agent_id, ops, event.cursor);
       return;
     }
     this.applyTranscriptOps(event.agent_id, event.ops, event.cursor);
@@ -378,6 +385,11 @@ export class SessionController {
   /** Rewrite resyncs requested while another resync was in flight — the
    * in-flight snapshot may predate the rewrite, so it re-runs afterwards. */
   private rewriteResyncQueued = false;
+  /**
+   * Truncate ops from a rewrite can race the following reset. Hold them so a
+   * regenerate cannot wipe the settled user bubble before the new baseline.
+   */
+  private rewriteHoldUntilReset = false;
 
   async resync(options: { rewrite?: boolean } = {}): Promise<void> {
     if (this.closed) return;
@@ -387,11 +399,12 @@ export class SessionController {
     }
     this.resyncInFlight = true;
     this.rewriteResyncQueued = false;
+    if (options.rewrite === true) this.rewriteHoldUntilReset = true;
     this.clearResyncTimer();
     this.setState(setResyncing(this.state, true));
     let runAgain = false;
     try {
-      const snapshot = await this.client.snapshot(this.sessionId);
+      const snapshot = await this.client.snapshot(this.sessionId, { transcript: true });
       if (this.closed) return;
       for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
       this.pendingTranscriptBatches.clear();

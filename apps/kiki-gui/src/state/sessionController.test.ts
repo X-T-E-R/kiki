@@ -707,6 +707,7 @@ describe('SessionController transcript authority', () => {
 
   it('does not adopt snapshot messages or in-flight text on open', async () => {
     const { controller, client, socket } = await openTranscriptController();
+    expect(client.snapshot).toHaveBeenCalledWith('session_test', { transcript: true });
     expect(client.listMessages).not.toHaveBeenCalled();
     expect(socket.subscribe).toHaveBeenCalledWith(
       'session_test',
@@ -1723,8 +1724,8 @@ describe('SessionController transcript authority', () => {
     controller.close();
   });
 
-  it('loses edit/fork if items.remove lands before the regenerate reset', async () => {
-    const { controller, flushAll } = await openTranscriptController();
+  it('holds items.remove during a rewrite resync so the regenerate reset can keep the user bubble', async () => {
+    const { controller, client, flushAll } = await openTranscriptController();
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.reset',
       agent_id: 'main',
@@ -1764,6 +1765,11 @@ describe('SessionController transcript authority', () => {
       promptStatus: undefined,
     });
 
+    const held = deferred<SessionSnapshotResponse>();
+    client.snapshot.mockReturnValueOnce(held.promise);
+    void controller.resync({ rewrite: true });
+    await waitFor(() => controller.getState().resyncing);
+
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.ops',
       agent_id: 'main',
@@ -1771,7 +1777,10 @@ describe('SessionController transcript authority', () => {
       ops: [{ op: 'items.remove', ids: ['t1'] }],
     }));
     flushAll();
-    expect(controller.getState().blocks.find((block) => block.kind === 'user')).toBeUndefined();
+    expect(controller.getState().blocks.find((block) => block.kind === 'user')).toMatchObject({
+      userMessageId: 'um-anchor',
+      promptStatus: undefined,
+    });
 
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.reset',
@@ -1808,9 +1817,12 @@ describe('SessionController transcript authority', () => {
     }));
     flushAll();
     expect(controller.getState().blocks.find((block) => block.kind === 'user')).toMatchObject({
+      id: 'user-um-anchor',
       userMessageId: 'um-anchor',
-      promptStatus: 'running',
+      promptStatus: undefined,
     });
+    held.resolve(snapshot({ as_of_seq: 12 }));
+    await waitFor(() => !controller.getState().resyncing && !controller.getState().resyncFailed);
     controller.close();
   });
 
