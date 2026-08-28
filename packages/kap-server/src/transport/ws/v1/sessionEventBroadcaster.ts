@@ -355,6 +355,12 @@ export class SessionEventBroadcaster {
     for (const descriptor of store.agents()) {
       const grade = gradeFor(spec, descriptor.agentId);
       if (grade === 'off') continue;
+      if (
+        Object.hasOwn(spec, descriptor.agentId) &&
+        store.getAgent(descriptor.agentId) === undefined
+      ) {
+        return true;
+      }
       if (needsResetOnTransition(gradeFor(prev?.transcriptGrades, descriptor.agentId), grade)) {
         return true;
       }
@@ -435,16 +441,10 @@ export class SessionEventBroadcaster {
       ) {
         return;
       }
-      const backfill = new Set(
-        Object.keys(seed.spec).filter(
-          (agentId) => agentId !== '*' && gradeFor(seed.spec, agentId) !== 'off',
-        ),
-      );
-      for (const descriptor of seed.store.agents()) {
-        if (gradeFor(seed.spec, descriptor.agentId) !== 'off') backfill.add(descriptor.agentId);
-      }
       await Promise.all(
-        [...backfill].map((agentId) => service.ensureAgentHistory(state.sessionId, agentId)),
+        [...admittedForHistory(seed)].map((agentId) =>
+          service.ensureAgentHistory(state.sessionId, agentId),
+        ),
       );
       if (
         !this.isTranscriptGeneration(state, target, seed.generation) ||
@@ -593,7 +593,12 @@ export class SessionEventBroadcaster {
     if (service === undefined) return;
     const stream: TranscriptStream = {
       store,
-      knownAgents: new Set(store.agents().map((d) => d.agentId)),
+      knownAgents: new Set(
+        store
+          .agents()
+          .map((d) => d.agentId)
+          .filter((agentId) => store.getAgent(agentId) !== undefined),
+      ),
     };
     state.transcriptStream = stream;
 
@@ -621,9 +626,9 @@ export class SessionEventBroadcaster {
       store.onRosterChange((agents) => {
         for (const descriptor of agents) {
           if (stream.knownAgents.has(descriptor.agentId)) continue;
-          stream.knownAgents.add(descriptor.agentId);
           const transcript = store.getAgent(descriptor.agentId);
           if (transcript === undefined) continue;
+          stream.knownAgents.add(descriptor.agentId);
           const cursor = service.getTranscriptCursor(state.sessionId, descriptor.agentId);
           for (const [target, sub] of state.targets) {
             if (!state.transcriptSeeded.has(target)) continue;
@@ -841,7 +846,10 @@ export class SessionEventBroadcaster {
     );
   }
 
-  async getSnapshotState(sessionId: string): Promise<SessionSnapshotState> {
+  async getSnapshotState(
+    sessionId: string,
+    options: { captureMessages?: boolean } = {},
+  ): Promise<SessionSnapshotState> {
     const state = await this.ensureState(sessionId);
     if (state === undefined) {
       const cold = await this.readColdWatermark(sessionId);
@@ -862,8 +870,9 @@ export class SessionEventBroadcaster {
             subagents: [],
           };
     }
+    const captureMessages = options.captureMessages !== false;
     const barrier = state.queue.then(() => {
-      const contextMessages = [...state.contextMessages];
+      const contextMessages = captureMessages ? [...state.contextMessages] : [];
       const mainAgent = state.mainAgent;
       return {
         seq: state.journal.seq,
@@ -883,7 +892,7 @@ export class SessionEventBroadcaster {
       });
     const { mainAgent, contextMessages, ...base } = await barrier;
     const history =
-      mainAgent === undefined
+      !captureMessages || mainAgent === undefined
         ? { messages: contextMessages, times: contextMessages.map(() => undefined) }
         : await captureContextMessageHistory(this.opts.core, mainAgent, contextMessages);
     return {
@@ -1554,6 +1563,21 @@ export class SessionEventBroadcaster {
       for (const target of state.targets.keys()) yield target;
     }
   }
+}
+
+function admittedForHistory(seed: PendingTranscriptSeed): Set<string> {
+  const admitted = new Set<string>();
+  for (const agentId of Object.keys(seed.spec)) {
+    if (agentId !== '*' && gradeFor(seed.spec, agentId) !== 'off') admitted.add(agentId);
+  }
+  const wildcardCursor = seed.transcriptSince?.['*'] !== undefined;
+  for (const descriptor of seed.store.agents()) {
+    const { agentId } = descriptor;
+    if (admitted.has(agentId) || gradeFor(seed.spec, agentId) === 'off') continue;
+    const claimed = wildcardCursor || seed.transcriptSince?.[agentId] !== undefined;
+    if (claimed || seed.store.getAgent(agentId) !== undefined) admitted.add(agentId);
+  }
+  return admitted;
 }
 
 function readContextMessages(agent: IAgentScopeHandle): readonly ContextMessage[] {

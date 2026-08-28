@@ -2785,11 +2785,19 @@ describe('SessionEventBroadcaster', () => {
       expect(resets).toHaveLength(2);
     });
 
-    it('backfills wildcard-admitted roster agents before seeding their baseline', async () => {
+    it('does not fold wildcard-only roster agents on cold subscribe', async () => {
       const lc = new FakeLifecycle();
       lc.addAgent('main');
       sessions.set('s1', lc);
-      bc = makeBroadcasterWithTranscript({ 'sub-1': { type: 'sub' } });
+      const core = makeCore(sessions, eventBus, { 'sub-1': { type: 'sub' } });
+      const service = new TranscriptService({ homeDir: dir, core });
+      const backfillSpy = vi.spyOn(service, 'ensureAgentHistory');
+      bc = new SessionEventBroadcaster({
+        eventsDir: dir,
+        core,
+        maxBufferSize: 3,
+        transcriptService: service,
+      });
 
       const view = collectingTarget();
       await bc.subscribe('s1', view.target, undefined, { '*': 'delta' });
@@ -2797,7 +2805,32 @@ describe('SessionEventBroadcaster', () => {
         .filter((e) => e.type === 'transcript.reset')
         .map((e) => (e.payload as { agent_id: string }).agent_id)
         .sort();
+      expect(ids).toEqual(['main']);
+      expect(backfillSpy.mock.calls.map((call) => call[1])).toEqual(['main']);
+    });
+
+    it('folds a roster agent the client named explicitly even under a wildcard default', async () => {
+      const lc = new FakeLifecycle();
+      lc.addAgent('main');
+      sessions.set('s1', lc);
+      const core = makeCore(sessions, eventBus, { 'sub-1': { type: 'sub' } });
+      const service = new TranscriptService({ homeDir: dir, core });
+      const backfillSpy = vi.spyOn(service, 'ensureAgentHistory');
+      bc = new SessionEventBroadcaster({
+        eventsDir: dir,
+        core,
+        maxBufferSize: 3,
+        transcriptService: service,
+      });
+
+      const view = collectingTarget();
+      await bc.subscribe('s1', view.target, undefined, { '*': 'turn', main: 'delta', 'sub-1': 'delta' });
+      const ids = transcriptEnvelopes(view.envelopes)
+        .filter((e) => e.type === 'transcript.reset')
+        .map((e) => (e.payload as { agent_id: string }).agent_id)
+        .sort();
       expect(ids).toEqual(['main', 'sub-1']);
+      expect(backfillSpy.mock.calls.map((call) => call[1]).sort()).toEqual(['main', 'sub-1']);
     });
 
     it('sends no resets when the target downgrades while the seed is in flight', async () => {
