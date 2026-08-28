@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { deflateSync } from 'node:zlib';
@@ -167,6 +167,15 @@ async function expectSessionMedia(
   return path;
 }
 
+let configTomlSeq = 0;
+
+async function writeConfigToml(dir: string, content: string): Promise<void> {
+  configTomlSeq += 1;
+  const tmpPath = join(dir, `config.toml.${process.pid}.${configTomlSeq}.tmp`);
+  await writeFile(tmpPath, content, 'utf-8');
+  await rename(tmpPath, join(dir, 'config.toml'));
+}
+
 describe('server-v2 /api/v1 prompts', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
@@ -174,7 +183,7 @@ describe('server-v2 /api/v1 prompts', () => {
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-prompts-'));
-    await writeFile(join(home, 'config.toml'), PROMPT_TOML, 'utf-8');
+    await writeConfigToml(home, PROMPT_TOML);
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
   });
