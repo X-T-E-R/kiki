@@ -31,13 +31,9 @@ import {
   addSubagentBindingSchemaConstraints,
   buildSubagentModelDescriptions,
   canonicalizeSubagentBinding,
-  exposesSubagentModelChoice,
   normalizeSubagentBindingValue,
   resolveSubagentBinding,
   resolveSubagentTimeoutMs,
-  stripSubagentModelParameter,
-  subagentBindingMode,
-  subagentModelSource,
 } from '#/session/subagent/configSection';
 import { assertProfileRouteBinding } from '#/session/subagent/profileRouteBinding';
 import { roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
@@ -59,7 +55,6 @@ const DEFAULT_SUBAGENT_TYPE = 'coder';
 const AGENT_SWARM_PARAMETERS = toInputJsonSchema(AgentSwarmToolInputSchema, (schema) => {
   addSubagentBindingSchemaConstraints(schema, 'swarm');
 });
-const AGENT_SWARM_PARAMETERS_NO_MODEL = stripSubagentModelParameter(AGENT_SWARM_PARAMETERS);
 
 interface AgentSwarmSpawnSpec {
   readonly kind: 'spawn';
@@ -91,11 +86,7 @@ export class AgentSwarmTool implements IAgentSwarmTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'AgentSwarm' as const;
 
-  get parameters(): Record<string, unknown> {
-    return exposesSubagentModelChoice(this.config, this.flags)
-      ? AGENT_SWARM_PARAMETERS
-      : AGENT_SWARM_PARAMETERS_NO_MODEL;
-  }
+  readonly parameters: Record<string, unknown> = AGENT_SWARM_PARAMETERS;
 
   private readonly callerAgentId: string;
   private catalogReady = false;
@@ -120,12 +111,7 @@ export class AgentSwarmTool implements IAgentSwarmTool {
   }
 
   get description(): string {
-    const modelLines = buildSubagentModelDescriptions(
-      this.config,
-      this.flags,
-      this.models,
-      this.profile.data().modelAlias,
-    );
+    const modelLines = buildSubagentModelDescriptions(this.models);
     let description = modelLines === undefined
       ? AGENT_SWARM_DESCRIPTION
       : `${AGENT_SWARM_DESCRIPTION}\n\n${modelLines}`;
@@ -146,7 +132,6 @@ export class AgentSwarmTool implements IAgentSwarmTool {
       targets.profiles,
       [],
       () => true,
-      true,
       undefined,
       (alias) => this.isModelAliasAvailable(alias),
       false,
@@ -231,6 +216,12 @@ export class AgentSwarmTool implements IAgentSwarmTool {
     }
   }
 
+  private buildSpecs(args: AgentSwarmToolInput): Promise<readonly AgentSwarmSpec[]> {
+    return createAgentSwarmSpecs(args, (agentId) =>
+      this.swarmService.getSwarmItem({ callerAgentId: this.callerAgentId, agentId }),
+    );
+  }
+
   private async runSwarm(
     args: AgentSwarmToolInput,
     signal: AbortSignal,
@@ -242,11 +233,11 @@ export class AgentSwarmTool implements IAgentSwarmTool {
     if (
       (args.items?.length ?? 0) === 0 &&
       Object.keys(args.resume_agent_ids ?? {}).length > 0 &&
-      (args.route !== undefined || args.model !== undefined || modelAlias !== undefined || thinkingEffort !== undefined)
+      (args.route !== undefined || modelAlias !== undefined || thinkingEffort !== undefined)
     ) {
       throw new Error2(
         ErrorCodes.VALIDATION_FAILED,
-        'Cannot set route, model, model_alias, or effort for a resume-only swarm.',
+        'Cannot set route, model_alias, or effort for a resume-only swarm.',
       );
     }
     const requestedProfileName =
@@ -256,6 +247,7 @@ export class AgentSwarmTool implements IAgentSwarmTool {
     let routeId: string | undefined;
     let catalogSnapshot: AgentProfileCatalogSnapshot | undefined;
     let binding: { model: string; thinking?: string } | undefined;
+    let specs: readonly AgentSwarmSpec[] | undefined;
     if ((args.items?.length ?? 0) > 0) {
       await this.catalog.ready;
       const own = this.profile.data();
@@ -278,62 +270,45 @@ export class AgentSwarmTool implements IAgentSwarmTool {
         {
           modelAlias,
           thinkingEffort,
-          modelPreference: args.model,
         },
         target.lease,
         selection.route,
       );
-      const filledSymbolic =
-        filled.modelPreference === 'primary' || filled.modelPreference === 'secondary'
-          ? filled.modelPreference
-          : undefined;
       assertProfileRouteBinding(
         selection.route,
         {
-          modelAlias:
-            filled.modelAlias ?? (filledSymbolic === undefined ? filled.modelPreference : undefined),
+          modelAlias: filled.modelAlias,
           thinkingEffort: filled.thinkingEffort,
-          modelPreference: filledSymbolic,
         },
         this.models,
       );
-      if (own.modelAlias !== undefined) {
-        const resolved = canonicalizeSubagentBinding(
-          resolveSubagentBinding(
-            this.config,
-            this.flags,
-            { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
-            {
-              modelPreference: filled.modelPreference,
-              modelAlias: filled.modelAlias,
-              thinkingEffort: filled.thinkingEffort,
-            },
-            {
-              modelPreference: targetProfile.modelPreference,
-              modelAlias: targetProfile.modelAlias,
-              thinkingEffort: targetProfile.thinkingEffort,
-            },
-            this.models,
-            roleConstraintsFromProfile(
-              targetProfile,
-              spawnConstraintOrigin(target.lease, target.spawnPolicy),
-            ),
-          ),
+      specs = await this.buildSpecs(args);
+      const resolved = canonicalizeSubagentBinding(
+        resolveSubagentBinding(
+          this.config,
+          {
+            modelAlias: filled.modelAlias,
+            thinkingEffort: filled.thinkingEffort,
+          },
+          {
+            modelAlias: selection.route?.lockedModelAlias ?? targetProfile.modelAlias,
+            thinkingEffort:
+              selection.route?.lockedThinkingEffort ?? targetProfile.thinkingEffort,
+          },
           this.models,
-        );
-        const modelSource = subagentModelSource(resolved);
-        binding = { model: resolved.model, thinking: resolved.thinking };
-        Object.defineProperties(binding, {
-          modelSource: { value: modelSource, enumerable: false },
-          bindingMode: { value: subagentBindingMode(resolved), enumerable: false },
-        });
-      }
+          roleConstraintsFromProfile(
+            targetProfile,
+            spawnConstraintOrigin(target.lease, target.spawnPolicy),
+          ),
+          { profileName: targetProfile.name, routeId: selection.route?.id },
+        ),
+        this.models,
+      );
+      binding = { model: resolved.model, thinking: resolved.thinking };
     }
     const timeoutMs = resolveSubagentTimeoutMs(this.config);
-    const specs = await createAgentSwarmSpecs(args, (agentId) =>
-      this.swarmService.getSwarmItem({ callerAgentId: this.callerAgentId, agentId }),
-    );
-    const tasks: SessionSwarmTask<AgentSwarmSpec>[] = specs.map((spec) => {
+    const resolvedSpecs = specs ?? (await this.buildSpecs(args));
+    const tasks: SessionSwarmTask<AgentSwarmSpec>[] = resolvedSpecs.map((spec) => {
       const descriptionName = spec.kind === 'resume' ? 'resume' : routeId ?? profileName;
       const common = {
         data: spec,

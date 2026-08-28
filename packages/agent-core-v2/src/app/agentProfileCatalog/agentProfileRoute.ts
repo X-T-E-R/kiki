@@ -55,9 +55,7 @@ export function resolveAgentProfileRoute(
         : toolAllowPolicies,
     disallowedTools,
     subagents,
-    modelPreference:
-      route.modelPreference ?? (route.modelAlias === undefined ? base.modelPreference : undefined),
-    modelAlias: route.modelAlias ?? (route.modelPreference === undefined ? base.modelAlias : undefined),
+    modelAlias: route.modelAlias ?? base.modelAlias,
     thinkingEffort: route.thinkingEffort ?? base.thinkingEffort,
     serviceTier,
     requestParams,
@@ -88,7 +86,6 @@ export function resolveAgentProfileRoute(
     profile: route.profile,
     description: route.description,
     whenToUse: route.whenToUse,
-    modelPreference: effective.modelPreference,
     modelAlias: effective.modelAlias,
     thinkingEffort: effective.thinkingEffort,
     overriddenFields: route.overriddenFields,

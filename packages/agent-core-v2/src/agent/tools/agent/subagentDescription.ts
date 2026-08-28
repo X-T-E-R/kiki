@@ -17,7 +17,6 @@ export function buildRouteDescriptions(
     .map((route) => {
       const details = [route.description, route.whenToUse].filter(Boolean).join(' ');
       const bindings = [
-        route.modelPreference === undefined ? undefined : `model=${route.modelPreference}`,
         route.modelAlias === undefined ? undefined : `model_alias=${route.modelAlias}`,
         route.thinkingEffort === undefined
           ? undefined
@@ -42,7 +41,6 @@ export function buildProfileDescriptions(
     name: string,
     source: ToolReference['source'],
   ) => boolean,
-  showModelPreference: boolean,
   externallyUnavailableTools: ReadonlySet<string> | undefined,
   isModelAliasAvailable: (alias: string) => boolean,
   showTools = true,
@@ -55,9 +53,6 @@ export function buildProfileDescriptions(
       const header =
         details.length === 0 ? `- ${profile.name}` : `- ${profile.name}: ${details.join(' ')}`;
       const bindingLines: string[] = [];
-      if (showModelPreference && profile.modelPreference !== undefined) {
-        bindingLines.push(`  Model preference: ${profile.modelPreference}`);
-      }
       if (profile.modelAlias !== undefined) {
         bindingLines.push(`  Model alias: ${profile.modelAlias}`);
       }

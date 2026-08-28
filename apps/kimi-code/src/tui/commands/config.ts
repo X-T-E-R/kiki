@@ -1,7 +1,5 @@
 import {
   effectiveModelAlias,
-  PRIMARY_SUBAGENT_MODEL_CHOICE,
-  SECONDARY_DERIVED_MODEL_ALIAS,
   type ExperimentalFeatureState,
   type ModelAlias,
   type PermissionMode,
@@ -266,37 +264,6 @@ export async function handleModelCommand(host: SlashCommandHost, args: string): 
   showModelPicker(host, alias);
 }
 
-export async function handleSecondaryModelCommand(host: SlashCommandHost, args: string): Promise<void> {
-  const alias = args.trim();
-  await refreshModelsForPicker(host);
-  const models = pickerModelsForHost(host);
-  // The pool reserves `primary` as the symbolic "caller's own model" choice —
-  // a user alias with that name can never be the subagent default.
-  delete models[PRIMARY_SUBAGENT_MODEL_CHOICE];
-  if (alias === PRIMARY_SUBAGENT_MODEL_CHOICE) {
-    host.showError(
-      `"${PRIMARY_SUBAGENT_MODEL_CHOICE}" is reserved by the subagent model pool (it always binds the caller's own model) — rename the [models] alias to use it here.`,
-    );
-    return;
-  }
-  if (Object.keys(models).length === 0) {
-    host.showNotice(
-      'No models configured',
-      'Run /login to sign in to Kimi, or /provider to add another provider from a model catalog.',
-    );
-    return;
-  }
-  if (alias.length > 0 && models[alias] === undefined) {
-    host.showError(`Unknown model alias: ${alias}`);
-    return;
-  }
-  const secondary = (await host.harness.getConfig()).secondaryModel;
-  // The v2 engine honors a lone legacy `model` key as the fallback pool
-  // default — reflect it as the picker's current value.
-  const current = secondary?.defaultModel ?? secondary?.model ?? '';
-  showSecondaryModelPicker(host, models, current, alias.length > 0 ? alias : undefined);
-}
-
 export async function handleEffortCommand(host: SlashCommandHost, args: string): Promise<void> {
   const alias = host.state.appState.model;
   const model = host.state.appState.availableModels[alias];
@@ -437,17 +404,14 @@ async function applyEditorChoice(host: SlashCommandHost, value: string): Promise
   );
 }
 
-/**
- * The models a picker may offer: the user's configured aliases with
- * host-effective provider resolution applied, minus the synthesized
- * `__secondary__` derived entry — a runtime artifact of the v1 engine's
- * `[secondary_model]` recipe that must never be selectable as a model.
- */
+/** The models a picker may offer: the user's configured aliases with
+ * host-effective provider resolution applied. */
 function pickerModelsForHost(host: SlashCommandHost): Record<string, ModelAlias> {
   return Object.fromEntries(
-    Object.entries(host.state.appState.availableModels)
-      .filter(([alias]) => alias !== SECONDARY_DERIVED_MODEL_ALIAS)
-      .map(([alias, model]) => [alias, effectiveModelForHost(host, model)]),
+    Object.entries(host.state.appState.availableModels).map(([alias, model]) => [
+      alias,
+      effectiveModelForHost(host, model),
+    ]),
   );
 }
 
@@ -614,68 +578,6 @@ async function persistModelSelection(
     thinking: patch,
   });
   return true;
-}
-
-// ---------------------------------------------------------------------------
-// Secondary model (`/secondary-model`) — persists `[secondary_model] default_model`
-// ---------------------------------------------------------------------------
-
-function showSecondaryModelPicker(
-  host: SlashCommandHost,
-  models: Record<string, ModelAlias>,
-  currentValue: string,
-  selectedValue?: string,
-): void {
-  host.mountEditorReplacement(
-    new TabbedModelSelectorComponent({
-      models,
-      currentValue,
-      selectedValue,
-      currentThinkingEffort: 'off',
-      // Subagent pool bindings carry no explicit thinking level, so the picker
-      // hides the Thinking footer instead of offering a no-op choice.
-      thinkingControl: false,
-      title: ' Select a secondary model (subagents)',
-      onSelect: ({ alias }) => {
-        host.restoreEditor();
-        void performSecondaryModelSave(host, alias);
-      },
-      onCancel: () => {
-        host.restoreEditor();
-      },
-    }),
-  );
-}
-
-/**
- * Persists `[secondary_model] default_model`. When a
- * `[secondary_model.models]` pool exists and does not list the alias yet, the
- * alias is added with an empty description — the engine requires the default
- * to be a pool key. Without a pool the default alone forms an implicit
- * single-entry pool, so nothing else is written. No live-apply step: the
- * engine resolves the pool per spawn, so the next subagent dispatch picks the
- * new value up on its own.
- */
-async function performSecondaryModelSave(host: SlashCommandHost, alias: string): Promise<void> {
-  const displayName = modelDisplayName(alias, host.state.appState.availableModels[alias]);
-  try {
-    const config = await host.harness.getConfig({ reload: true });
-    const existing = config.secondaryModel?.models;
-    const patch: { defaultModel: string; models?: Record<string, string> } = {
-      defaultModel: alias,
-    };
-    if (existing !== undefined) {
-      patch.models = { ...existing, [alias]: existing[alias] ?? '' };
-    }
-    await host.harness.setConfig({ secondaryModel: patch });
-  } catch (error) {
-    host.showError(`Failed to save secondary model: ${formatErrorMessage(error)}`);
-    return;
-  }
-  host.showStatus(
-    `Secondary model set to ${displayName}. Newly spawned subagents will use it by default.`,
-    'success',
-  );
 }
 
 function showThemePicker(host: SlashCommandHost): void {

@@ -55,7 +55,7 @@ export const SubagentToolInputSchema = z.preprocess(
       .string()
       .optional()
       .describe(
-        'Name or agent ID of an existing direct child to continue instead of creating a new one. When set, do not also pass name, profile, route, model, model_alias, or effort; the continued agent keeps its persisted binding.',
+        'Name or agent ID of an existing direct child to continue instead of creating a new one. When set, do not also pass name, profile, route, model_alias, or effort; the continued agent keeps its persisted binding.',
       ),
     background: z
       .boolean()
@@ -63,19 +63,13 @@ export const SubagentToolInputSchema = z.preprocess(
       .describe(
         'If true, return immediately without waiting for completion. Prefer false unless the task can run independently and there is a clear benefit to not waiting.',
       ),
-    model: z
-      .string()
-      .optional()
-      .describe(
-        'Which model to run the new subagent on: one of the pool aliases listed under "Available models", or "primary" to freeze the caller model and thinking binding at spawn time. When omitted, the configured pool default is used; without an enabled pool the child inherits the caller binding. Rejected together with resume.',
-      ),
     model_alias: z
       .string()
       .trim()
       .min(1)
       .optional()
       .describe(
-        'Exact configured [models] alias for the new subagent. Literal "primary" and "secondary" values stay exact.',
+        'Exact configured [models] alias for the new subagent. Required unless the chosen profile or route pins one; a subagent never runs on the caller\'s model.',
       ),
     effort: z
       .string()
@@ -84,19 +78,13 @@ export const SubagentToolInputSchema = z.preprocess(
       .optional()
       .describe('Thinking effort for the new subagent.'),
   }).superRefine((args, ctx) => {
-    if (args.model !== undefined && args.model_alias !== undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'model and model_alias are mutually exclusive',
-      });
-    }
     if (
       args.resume?.trim() &&
-      (args.route !== undefined || args.model !== undefined || args.model_alias !== undefined || args.effort !== undefined)
+      (args.route !== undefined || args.model_alias !== undefined || args.effort !== undefined)
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'Cannot set route, model, model_alias, or effort when continuing an existing agent',
+        message: 'Cannot set route, model_alias, or effort when continuing an existing agent',
       });
     }
     if (args.resume?.trim() && args.name !== undefined) {

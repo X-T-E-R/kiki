@@ -181,19 +181,11 @@ describe('settings persistence and validation', () => {
     expect(validateServerDefaults('root')?.key).toBe('val.permissionMode');
     expect(validateServerDefaults('auto')).toBeNull();
     expect(validateDesktopConfigDraft({
-      subagentDefaultModel: ' example/chat',
-      subagentDefaultEffort: 'high',
       subagentTimeoutMs: 60_000,
-      defaultSubagentModel: '',
-      defaultSubagentReasoningEffort: '',
       modelCatalogRefreshIntervalMs: 0,
-    })?.key).toBe('val.spacesSubagentModel');
+    })).toBeNull();
     expect(validateDesktopConfigDraft({
-      subagentDefaultModel: 'example/chat',
-      subagentDefaultEffort: 'high',
       subagentTimeoutMs: 86_400_001,
-      defaultSubagentModel: '',
-      defaultSubagentReasoningEffort: '',
       modelCatalogRefreshIntervalMs: 0,
     })?.key).toBe('val.timeoutMax');
     expect(validateProviderDraft(providerDraft({ baseUrl: 'file:///secret' }))?.key).toBe('val.baseUrlHttp');
@@ -214,27 +206,15 @@ describe('settings persistence and validation', () => {
   it('maps server-file settings to and from the kap-server config API shape', () => {
     const settings = serverFileSettingsFromConfig({
       providers: {},
-      subagent: { defaultModel: 'example/worker', defaultEffort: 'high', timeoutMs: 60_000 },
-      agents: {
-        enabled: false,
-        defaultSubagentModel: 'example/collaborator',
-        defaultSubagentReasoningEffort: 'medium',
-      },
+      subagent: { timeoutMs: 60_000 },
+      agents: { enabled: false },
       builtin_product_skills: false,
       model_catalog: { refreshIntervalMs: 300_000, refreshOnStart: true },
     });
 
     expect(serverFileSettingsPatch(settings)).toEqual({
-      subagent: {
-        default_model: 'example/worker',
-        default_effort: 'high',
-        timeout_ms: 60_000,
-      },
-      agents: {
-        enabled: false,
-        default_subagent_model: 'example/collaborator',
-        default_subagent_reasoning_effort: 'medium',
-      },
+      subagent: { timeout_ms: 60_000 },
+      agents: { enabled: false },
       builtin_product_skills: false,
       model_catalog: { refresh_interval_ms: 300_000, refresh_on_start: true },
     });
@@ -282,7 +262,7 @@ describe('settings persistence and validation', () => {
       toolsDisabled: [],
     });
     expect(serverFileSettingsFromConfig('not-a-config')).toMatchObject({
-      subagent: { defaultModel: '', defaultEffort: '', timeoutMs: 7_200_000 },
+      subagent: { timeoutMs: 7_200_000 },
       agents: { enabled: true },
     });
 
@@ -326,11 +306,7 @@ describe('settings persistence and validation', () => {
 
     expect(serverFileSettingsPatch(first, baseline)).toEqual({
       subagent: undefined,
-      agents: {
-        enabled: false,
-        default_subagent_model: undefined,
-        default_subagent_reasoning_effort: undefined,
-      },
+      agents: { enabled: false },
       builtin_product_skills: undefined,
       model_catalog: undefined,
     });
@@ -718,7 +694,7 @@ describe('settings search index', () => {
     expect(searchSettings(index, 'language')[0]?.cardId).toBe('st-card-language');
     expect(searchSettings(index, 'Models').some((hit) => hit.section === 'models')).toBe(true);
     expect(searchSettings(index, 'experimental feature').some((hit) => hit.cardId === 'st-card-experimental')).toBe(true);
-    expect(searchSettings(index, 'hard allowlist').some((hit) => hit.cardId === 'st-card-subagents')).toBe(true);
+    expect(searchSettings(index, 'denied subagent models').some((hit) => hit.cardId === 'st-card-subagents')).toBe(true);
     expect(searchSettings(index, 'pinned model alias').some((hit) => hit.cardId === 'st-card-subagent-profiles')).toBe(true);
     expect(searchSettings(index, 'Main agents').some((hit) => hit.cardId === 'st-card-main-agents')).toBe(true);
     expect(searchSettings(index, 'Import model configuration').some((hit) => hit.cardId === 'st-card-compatibility-home')).toBe(true);

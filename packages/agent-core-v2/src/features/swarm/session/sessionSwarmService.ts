@@ -17,13 +17,7 @@ import { Event2 } from '#/app/event/event2';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
 import { resolveSubagentTarget } from '#/app/agentProfileCatalog/subagentDispatch';
-import { leaseHasBindingPin } from '#/app/agentProfileCatalog/applySubagentLease';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
-import {
-  refreshInheritedSubagentBinding,
-  withSubagentBindingMode,
-  type PersistedSubagentBindingMode,
-} from '#/session/agentLifecycle/agentLifecycleService';
 import {
   delegatorRef,
   isSubagentMeta,
@@ -35,8 +29,7 @@ import {
 } from '#/session/agentLifecycle/subagentMetadata';
 import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
-import { wrapSubagentModelError } from '#/session/subagent/configSection';
-import { resolveNestedSubagentDefaultContext } from '#/session/subagent/bindingContext';
+import { subagentModelUnboundMessage } from '#/session/subagent/configSection';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentRuntimeBindingService } from '#/agent/runtimeBinding/runtimeBinding';
@@ -163,62 +156,27 @@ export class SessionSwarmService implements ISessionSwarmService {
     const selection = target.selection;
     const profile = target.effectiveProfile;
     const callerRuntime = caller.accessor.get(IAgentRuntimeBindingService).current;
-    if (callerData.modelAlias === undefined) {
-      throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'Caller agent has no model bound', {
-        details: { agentId: callerAgentId },
-      });
+    const pinnedModel =
+      selection.route?.lockedModelAlias ?? target.lease?.modelAlias ?? profile.modelAlias;
+    const suppliedBinding = options.binding;
+    if (suppliedBinding === undefined && pinnedModel === undefined) {
+      throw new Error2(
+        ErrorCodes.MODEL_NOT_CONFIGURED,
+        subagentModelUnboundMessage({
+          profileName: profile.name,
+          routeId: selection.route?.id,
+        }),
+        { details: { profile: profile.name, route: selection.route?.id } },
+      );
     }
-    const suppliedBinding = options.binding as
-      | (NonNullable<AgentSpawnAttemptOptions['binding']> & {
-          readonly bindingMode?: PersistedSubagentBindingMode;
-        })
-      | undefined;
-    const profilePinned =
-      selection.route?.lockedModelAlias !== undefined ||
-      selection.route?.lockedThinkingEffort !== undefined ||
-      profile.modelAlias !== undefined ||
-      profile.thinkingEffort !== undefined ||
-      profile.modelPreference !== undefined;
-    let binding = suppliedBinding ?? {
-      model:
-        selection.route?.lockedModelAlias ??
-        target.lease?.modelAlias ??
-        profile.modelAlias ??
-        callerData.modelAlias,
+    const resolvedModel = suppliedBinding?.model ?? pinnedModel!;
+    const binding = {
+      model: this.models.resolveId(resolvedModel) ?? resolvedModel,
       thinking:
+        suppliedBinding?.thinking ??
         selection.route?.lockedThinkingEffort ??
         target.lease?.thinkingEffort ??
-        profile.thinkingEffort ??
-        callerData.thinkingLevel,
-      modelSource:
-        selection.route?.lockedModelAlias !== undefined ||
-        target.lease?.modelAlias !== undefined ||
-        profile.modelAlias !== undefined
-          ? ('profile' as const)
-          : ('caller' as const),
-      bindingMode:
-        profilePinned || leaseHasBindingPin(target.lease)
-          ? ('fixed' as const)
-          : ('inherit' as const),
-    };
-    if (binding.modelSource === 'caller') {
-      const nestedDefault = resolveNestedSubagentDefaultContext(
-        this.lifecycle,
-        await this.agentMeta(callerAgentId),
-      );
-      if (nestedDefault !== undefined) {
-        binding = {
-          model: nestedDefault.modelAlias,
-          thinking:
-            binding.bindingMode === 'inherit' ? nestedDefault.thinkingLevel : binding.thinking,
-          modelSource: 'caller',
-          bindingMode: 'fixed',
-        };
-      }
-    }
-    binding = {
-      ...binding,
-      model: this.models.resolveId(binding.model) ?? binding.model,
+        profile.thinkingEffort,
     };
     assertProfileRouteBinding(
       selection.route,
@@ -229,44 +187,31 @@ export class SessionSwarmService implements ISessionSwarmService {
       this.models,
     );
     assertProfileRouteModelAvailable(selection.route, this.modelCatalog, this.models);
-    const modelSource = binding.modelSource ?? 'secondary';
-    try {
-      this.modelCatalog.get(binding.model);
-    } catch (error) {
-      throw wrapSubagentModelError(error, binding.model, callerData.modelAlias, modelSource);
-    }
-    let child: IAgentScopeHandle;
-    try {
-      const callerMeta = (await this.metadata.read()).agents?.[callerAgentId];
-      const identityLabels =
-        options.parentTurnId === undefined
-          ? {}
-          : requestIdentitySpawnLabels(callerAgentId, options.parentTurnId, callerMeta);
-      child = await this.lifecycle.create({
-        binding: {
-          profile: selection.baseProfile.name,
-          route: selection.route?.id,
-          resolvedProfile: selection.baseProfile,
-          resolvedRoute: selection.route,
-          model: binding.model,
-          thinking: binding.thinking,
-          lease: target.lease,
-          spawnPolicy: target.spawnPolicy,
-        },
-        labels: withSubagentBindingMode(
-          {
-            ...subagentLabels(callerAgentId, { swarmItem: options.swarmItem }),
-            ...identityLabels,
-          },
-          binding.bindingMode ?? 'fixed',
-        ),
-        delegator: { kind: 'agent', agentId: callerAgentId },
-        userLabel: options.swarmItem ?? options.description,
-        runtimeId: callerRuntime.runtimeId,
-      });
-    } catch (error) {
-      throw wrapSubagentModelError(error, binding.model, callerData.modelAlias, modelSource);
-    }
+    this.modelCatalog.get(binding.model);
+    const callerMeta = (await this.metadata.read()).agents?.[callerAgentId];
+    const identityLabels =
+      options.parentTurnId === undefined
+        ? {}
+        : requestIdentitySpawnLabels(callerAgentId, options.parentTurnId, callerMeta);
+    const child: IAgentScopeHandle = await this.lifecycle.create({
+      binding: {
+        profile: selection.baseProfile.name,
+        route: selection.route?.id,
+        resolvedProfile: selection.baseProfile,
+        resolvedRoute: selection.route,
+        model: binding.model,
+        thinking: binding.thinking,
+        lease: target.lease,
+        spawnPolicy: target.spawnPolicy,
+      },
+      labels: {
+        ...subagentLabels(callerAgentId, { swarmItem: options.swarmItem }),
+        ...identityLabels,
+      },
+      delegator: { kind: 'agent', agentId: callerAgentId },
+      userLabel: options.swarmItem ?? options.description,
+      runtimeId: callerRuntime.runtimeId,
+    });
     child.accessor
       .get(IAgentPermissionModeService)
       .setMode(caller.accessor.get(IAgentPermissionModeService).mode);
@@ -319,9 +264,6 @@ export class SessionSwarmService implements ISessionSwarmService {
         delegator: delegatorRef(meta),
       }));
     this.requireIdleSubagent(agentId, child);
-    if (!retryTurn) {
-      await refreshInheritedSubagentBinding(caller, child, meta);
-    }
     const childProfile = child.accessor.get(IAgentProfileService).data();
     const profileName = childProfile.routeId ?? childProfile.profileName ?? RESUMED_PROFILE_FALLBACK;
     if (!retryTurn) {

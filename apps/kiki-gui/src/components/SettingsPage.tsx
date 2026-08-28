@@ -44,12 +44,10 @@ import {
   subagentGovernancePatch,
   summarizeNamedAgentLease,
   summarizeNamedAgentModelProfile,
-  validateSubagentGovernance,
   workspaceChipDisplay,
   type NamedAgentLeaseDetailLabel,
   type NamedAgentOverrideRelation,
   type SubagentGovernanceDraft,
-  type SubagentGovernanceIssue,
 } from '../lib/agentSettings';
 import type {
   KikiConfigResponse,
@@ -654,7 +652,7 @@ function GeneralSection() {
             <dl className="grid gap-1 text-[11px] text-ink-soft">
               <div><dt className="inline font-medium text-ink">{t('st.compat.configImportSource')}: </dt><dd className="inline break-all font-mono">{kimiHomePaths?.sourceConfigPath ?? ''}</dd></div>
               <div><dt className="inline font-medium text-ink">{t('st.compat.configImportTarget')}: </dt><dd className="inline break-all font-mono">{kimiHomePaths?.configPath ?? ''}</dd></div>
-              <div><dt className="inline font-medium text-ink">{t('st.compat.configImportCategories')}: </dt><dd className="inline font-mono">providers, models, services, default_model, default_provider, thinking, secondary_model</dd></div>
+              <div><dt className="inline font-medium text-ink">{t('st.compat.configImportCategories')}: </dt><dd className="inline font-mono">providers, models, services, default_model, default_provider, thinking</dd></div>
             </dl>
             <button
               type="button"
@@ -1680,7 +1678,6 @@ function CapabilitiesSection() {
 const LEASE_DETAIL_LABEL_KEYS: Record<NamedAgentLeaseDetailLabel, I18nKey> = {
   description: 'st.namedAgents.description',
   whenToUse: 'st.namedAgents.whenToUse',
-  modelPreference: 'st.namedAgents.modelPreference',
   serviceTier: 'st.namedAgents.serviceTier',
   delegationNotice: 'st.namedAgents.delegationNotice',
   promptMode: 'st.namedAgents.promptMode',
@@ -1696,23 +1693,7 @@ const LEASE_DETAIL_LABEL_KEYS: Record<NamedAgentLeaseDetailLabel, I18nKey> = {
   leaseSource: 'st.namedAgents.leaseSource',
 };
 
-const SUBAGENT_ISSUE_KEYS: Record<SubagentGovernanceIssue, I18nKey> = {
-  duplicate_model: 'st.subagents.issueDuplicate',
-  reserved_primary: 'st.subagents.issueReserved',
-  default_required: 'st.subagents.issueDefaultRequired',
-  default_not_in_pool: 'st.subagents.issueDefaultNotInPool',
-  force_pool_conflict: 'st.subagents.issueForcePool',
-  enforce_requires_pool: 'st.subagents.issueEnforceNeedsPool',
-  enforce_force_conflict: 'st.subagents.issueEnforceForce',
-};
-
-const EMPTY_SUBAGENT_GOVERNANCE: SubagentGovernanceDraft = {
-  models: [],
-  defaultModel: '',
-  force: false,
-  enforcePool: false,
-  denyModels: '',
-};
+const EMPTY_SUBAGENT_GOVERNANCE: SubagentGovernanceDraft = { denyModels: '' };
 
 function SubagentGovernanceCard() {
   const { client } = useConnection();
@@ -1728,11 +1709,6 @@ function SubagentGovernanceCard() {
   }, [configQuery.data]);
 
   const save = async () => {
-    const issue = validateSubagentGovernance(draft);
-    if (issue !== null) {
-      setFeedback({ tone: 'error', text: t(SUBAGENT_ISSUE_KEYS[issue]) });
-      return;
-    }
     setSaving(true);
     setFeedback(null);
     try {
@@ -1752,86 +1728,6 @@ function SubagentGovernanceCard() {
       <div className="space-y-4">
         <Hint>{t('st.subagents.hint')}</Hint>
         <fieldset disabled={configQuery.isLoading || saving} className="space-y-4 disabled:opacity-60">
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-[11px] font-medium text-ink-soft">{t('st.subagents.pool')}</span>
-              <button
-                type="button"
-                className={SECONDARY_BUTTON}
-                onClick={() => { setDraft((current) => ({ ...current, models: [...current.models, { id: '', description: '' }] })); }}
-              >
-                {t('st.subagents.addModel')}
-              </button>
-            </div>
-            {draft.models.map((model, index) => (
-              <div key={`${index}:${model.id}`} className="grid gap-2 rounded-lg border border-hairline bg-paper p-2 sm:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)_auto]">
-                <button
-                  type="button"
-                  className={`h-8 w-8 rounded-md border text-sm ${draft.defaultModel === model.id && model.id !== '' ? 'border-accent bg-accent-soft text-accent' : 'border-hairline text-ink-faint'}`}
-                  aria-label={t('st.subagents.setDefault', { model: model.id || String(index + 1) })}
-                  title={t('st.subagents.default')}
-                  onClick={() => { if (model.id.trim() !== '') setDraft((current) => ({ ...current, defaultModel: model.id.trim() })); }}
-                >
-                  ★
-                </button>
-                <input
-                  className={INPUT}
-                  value={model.id}
-                  aria-label={t('st.subagents.modelId', { n: index + 1 })}
-                  placeholder="provider/model"
-                  onChange={(event) => {
-                    const id = event.target.value;
-                    setDraft((current) => ({
-                      ...current,
-                      models: current.models.map((entry, candidate) => candidate === index ? { ...entry, id } : entry),
-                    }));
-                  }}
-                />
-                <input
-                  className={INPUT}
-                  value={model.description}
-                  aria-label={t('st.subagents.modelDescription', { n: index + 1 })}
-                  placeholder={t('st.subagents.descriptionPlaceholder')}
-                  onChange={(event) => {
-                    const description = event.target.value;
-                    setDraft((current) => ({
-                      ...current,
-                      models: current.models.map((entry, candidate) => candidate === index ? { ...entry, description } : entry),
-                    }));
-                  }}
-                />
-                <button
-                  type="button"
-                  className={SECONDARY_BUTTON}
-                  aria-label={t('st.subagents.removeModel', { model: model.id || String(index + 1) })}
-                  onClick={() => {
-                    setDraft((current) => ({
-                      ...current,
-                      defaultModel: current.defaultModel === model.id ? '' : current.defaultModel,
-                      models: current.models.filter((_, candidate) => candidate !== index),
-                    }));
-                  }}
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-            {draft.models.length === 0 ? <Hint>{t('st.subagents.poolEmpty')}</Hint> : null}
-          </div>
-          <label className="block text-[11px] font-medium text-ink-soft">{t('st.subagents.default')}
-            <input
-              className={`${INPUT} mt-1`}
-              value={draft.defaultModel}
-              placeholder="provider/model"
-              onChange={(event) => { setDraft((current) => ({ ...current, defaultModel: event.target.value })); }}
-            />
-          </label>
-          <div className="space-y-2">
-            <Toggle label={t('st.subagents.force')} checked={draft.force} onChange={(force) => { setDraft((current) => ({ ...current, force })); }} />
-            <Hint>{t('st.subagents.forceHint')}</Hint>
-            <Toggle label={t('st.subagents.enforcePool')} checked={draft.enforcePool} onChange={(enforcePool) => { setDraft((current) => ({ ...current, enforcePool })); }} />
-            <Hint>{t('st.subagents.enforcePoolHint')}</Hint>
-          </div>
           <label className="block text-[11px] font-medium text-ink-soft">{t('st.subagents.denyModels')}
             <textarea
               className={`${INPUT} mt-1 min-h-24 font-mono`}
@@ -1848,7 +1744,6 @@ function SubagentGovernanceCard() {
     </SectionCard>
   );
 }
-
 export function parseNamedAgentTools(value: string): readonly string[] | null {
   const tools = value
     .split(/[\n,]/u)
@@ -2439,11 +2334,7 @@ function DesktopServerFileCard() {
 
   const save = async () => {
     const validation = validateDesktopConfigDraft({
-      subagentDefaultModel: config.subagent.defaultModel,
-      subagentDefaultEffort: config.subagent.defaultEffort,
       subagentTimeoutMs: config.subagent.timeoutMs,
-      defaultSubagentModel: config.agents.defaultSubagentModel,
-      defaultSubagentReasoningEffort: config.agents.defaultSubagentReasoningEffort,
       modelCatalogRefreshIntervalMs: config.modelCatalog.refreshIntervalMs,
     });
     if (validation !== null) {
@@ -2487,24 +2378,12 @@ function DesktopServerFileCard() {
       <div className="space-y-4">
         <fieldset disabled={configQuery.isLoading || saving} data-testid="desktop-config-fields" className="space-y-4 disabled:opacity-60">
           <div className="grid gap-3 sm:grid-cols-2">
-            <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.subagentModel')}
-              <input className={`${INPUT} mt-1`} value={config.subagent.defaultModel} onChange={(event) => { setConfig({ ...config, subagent: { ...config.subagent, defaultModel: event.target.value } }); }} placeholder="provider/model" />
-            </label>
-            <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.subagentEffort')}
-              <input className={`${INPUT} mt-1`} value={config.subagent.defaultEffort} onChange={(event) => { setConfig({ ...config, subagent: { ...config.subagent, defaultEffort: event.target.value } }); }} placeholder="high" />
-            </label>
             <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.subagentTimeout')}
               <MsUnitInput
                 value={config.subagent.timeoutMs}
                 onChange={(timeoutMs) => { setConfig({ ...config, subagent: { ...config.subagent, timeoutMs } }); }}
                 ariaLabel={t('st.sidecar.subagentTimeout')}
               />
-            </label>
-            <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.collabModel')}
-              <input className={`${INPUT} mt-1`} value={config.agents.defaultSubagentModel} onChange={(event) => { setConfig({ ...config, agents: { ...config.agents, defaultSubagentModel: event.target.value } }); }} placeholder="provider/model" />
-            </label>
-            <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.collabEffort')}
-              <input className={`${INPUT} mt-1`} value={config.agents.defaultSubagentReasoningEffort} onChange={(event) => { setConfig({ ...config, agents: { ...config.agents, defaultSubagentReasoningEffort: event.target.value } }); }} placeholder="medium" />
             </label>
             <label className="text-[11px] font-medium text-ink-soft">{t('st.sidecar.catalogInterval')}
               <MsUnitInput

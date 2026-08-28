@@ -672,7 +672,6 @@ export interface SessionAPI extends AgentAPIWithId {
 type SessionAPIWithId = WithSessionId<SessionAPI>;
 
 export interface CoreAPI extends SessionAPIWithId {
-  applyPersistedSecondaryModel: (payload: EmptyPayload & { readonly sessionId: string }) => void;
   getCoreInfo: (payload: EmptyPayload) => CoreInfo;
   getExperimentalFeatures: (payload: EmptyPayload) => readonly ExperimentalFeatureState[];
   getKimiConfig: (payload: GetKimiConfigPayload) => KimiConfig;

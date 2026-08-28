@@ -1,66 +1,16 @@
 import type { KikiConfigPatch, KikiConfigResponse, NamedAgentModelProfile, NamedAgentProfile, NamedAgentSubagentLease } from './client';
 import { configObjectOrEmpty, normalizeConfigStringList } from './settings';
 
-export interface SecondaryModelDraftEntry {
-  readonly id: string;
-  readonly description: string;
-}
-
 export interface SubagentGovernanceDraft {
-  readonly models: SecondaryModelDraftEntry[];
-  readonly defaultModel: string;
-  readonly force: boolean;
-  readonly enforcePool: boolean;
   readonly denyModels: string;
 }
 
-export type SubagentGovernanceIssue =
-  | 'duplicate_model'
-  | 'reserved_primary'
-  | 'default_required'
-  | 'default_not_in_pool'
-  | 'force_pool_conflict'
-  | 'enforce_requires_pool'
-  | 'enforce_force_conflict';
-
 export function subagentGovernanceFromConfig(config: unknown): SubagentGovernanceDraft {
-  const source = configObjectOrEmpty(config);
-  const secondaryModel = configObjectOrEmpty(source['secondary_model']);
-  const models = configObjectOrEmpty(secondaryModel['models']);
-  const subagent = configObjectOrEmpty(source['subagent']);
-  return {
-    models: Object.entries(models)
-      .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
-      .map(([id, description]) => ({ id, description })),
-    defaultModel:
-      typeof secondaryModel['defaultModel'] === 'string' ? secondaryModel['defaultModel'] : '',
-    force: secondaryModel['force'] === true,
-    enforcePool: secondaryModel['enforcePool'] === true,
-    denyModels: normalizeConfigStringList(subagent['denyModels']).join('\n'),
-  };
-}
-
-export function validateSubagentGovernance(
-  draft: SubagentGovernanceDraft,
-): SubagentGovernanceIssue | null {
-  const ids = draft.models.map((model) => model.id.trim()).filter(Boolean);
-  if (new Set(ids).size !== ids.length) return 'duplicate_model';
-  if (ids.includes('primary')) return 'reserved_primary';
-  const defaultModel = draft.defaultModel.trim();
-  if ((ids.length > 0 || draft.force) && defaultModel === '') return 'default_required';
-  if (ids.length > 0 && !ids.includes(defaultModel)) return 'default_not_in_pool';
-  if (draft.force && ids.length > 0) return 'force_pool_conflict';
-  if (draft.enforcePool && ids.length === 0) return 'enforce_requires_pool';
-  if (draft.enforcePool && draft.force) return 'enforce_force_conflict';
-  return null;
+  const subagent = configObjectOrEmpty(configObjectOrEmpty(config)['subagent']);
+  return { denyModels: normalizeConfigStringList(subagent['denyModels']).join('\n') };
 }
 
 export function subagentGovernancePatch(draft: SubagentGovernanceDraft): KikiConfigPatch {
-  const models = Object.fromEntries(
-    draft.models
-      .map((model) => [model.id.trim(), model.description.trim()] as const)
-      .filter(([id]) => id !== ''),
-  );
   return {
     subagent: {
       deny_models: draft.denyModels
@@ -68,16 +18,8 @@ export function subagentGovernancePatch(draft: SubagentGovernanceDraft): KikiCon
         .map((model) => model.trim())
         .filter(Boolean),
     },
-    secondary_model: {
-      default_model: draft.defaultModel.trim() || undefined,
-      models: Object.keys(models).length > 0 ? models : undefined,
-      force: draft.force,
-      enforce_pool: draft.enforcePool,
-    },
-    replace_domains: ['secondary_model'],
   };
 }
-
 export interface ExperimentalFlagRow {
   readonly id: string;
   readonly effective: boolean;
@@ -253,7 +195,6 @@ export function namedAgentNewSessionBlocked(
 export type NamedAgentLeaseDetailLabel =
   | 'description'
   | 'whenToUse'
-  | 'modelPreference'
   | 'serviceTier'
   | 'delegationNotice'
   | 'promptMode'
@@ -319,7 +260,6 @@ export function summarizeNamedAgentLease(lease: NamedAgentSubagentLease): NamedA
   if (scoped && nonEmpty(lease.source)) details.push({ label: 'leaseSource', value: lease.source });
   if (nonEmpty(lease.description)) details.push({ label: 'description', value: lease.description });
   if (nonEmpty(lease.when_to_use)) details.push({ label: 'whenToUse', value: lease.when_to_use });
-  if (lease.model_preference !== undefined) details.push({ label: 'modelPreference', value: lease.model_preference });
   if (lease.service_tier !== undefined && lease.service_tier !== null) {
     details.push({ label: 'serviceTier', value: lease.service_tier });
   }

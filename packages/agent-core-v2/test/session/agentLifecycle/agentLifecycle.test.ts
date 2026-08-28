@@ -33,11 +33,7 @@ import { IHostClock } from '#/os/interface/hostClock';
 import { ISessionStateService } from '#/session/state/sessionState';
 import { SessionStateService } from '#/session/state/sessionStateService';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
-import {
-  AgentLifecycleService,
-  refreshInheritedSubagentBinding,
-  withSubagentBindingMode,
-} from '#/session/agentLifecycle/agentLifecycleService';
+import { AgentLifecycleService } from '#/session/agentLifecycle/agentLifecycleService';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionInstructionsProvider } from '#/session/sessionInstructions/instructionsProvider';
@@ -1105,69 +1101,3 @@ describe('AgentLifecycleService', () => {
 });
 
 
-describe('subagent resume binding mode', () => {
-  function profileHandle(
-    id: string,
-    initial: { modelAlias: string; thinkingLevel: string },
-  ): {
-    handle: IAgentScopeHandle;
-    setModel: ReturnType<typeof vi.fn>;
-    setThinking: ReturnType<typeof vi.fn>;
-  } {
-    const data = {
-      modelAlias: initial.modelAlias,
-      thinkingLevel: initial.thinkingLevel,
-      modelCapabilities: {},
-      systemPrompt: '',
-    };
-    const setModel = vi.fn(async (model: string) => {
-      data.modelAlias = model;
-      return { model };
-    });
-    const setThinking = vi.fn((thinking: string) => {
-      data.thinkingLevel = thinking;
-    });
-    const profile = {
-      _serviceBrand: undefined,
-      data: () => data,
-      setModel,
-      setThinking,
-    } as unknown as IAgentProfileService;
-    return {
-      handle: {
-        id,
-        accessor: { get: () => profile },
-      } as unknown as IAgentScopeHandle,
-      setModel,
-      setThinking,
-    };
-  }
-
-  it('refreshes inherited children and leaves fixed children frozen', async () => {
-    const caller = profileHandle('main', { modelAlias: 'provider/new', thinkingLevel: 'high' });
-    const inherited = profileHandle('agent-inherit', {
-      modelAlias: 'provider/old',
-      thinkingLevel: 'low',
-    });
-    const fixed = profileHandle('agent-fixed', {
-      modelAlias: 'provider/old',
-      thinkingLevel: 'low',
-    });
-
-    await refreshInheritedSubagentBinding(caller.handle, inherited.handle, {
-      homedir: '',
-      type: 'sub',
-      labels: withSubagentBindingMode({ parentAgentId: 'main' }, 'inherit'),
-    });
-    await refreshInheritedSubagentBinding(caller.handle, fixed.handle, {
-      homedir: '',
-      type: 'sub',
-      labels: withSubagentBindingMode({ parentAgentId: 'main' }, 'fixed'),
-    });
-
-    expect(inherited.setModel).toHaveBeenCalledWith('provider/new');
-    expect(inherited.setThinking).toHaveBeenCalledWith('high');
-    expect(fixed.setModel).not.toHaveBeenCalled();
-    expect(fixed.setThinking).not.toHaveBeenCalled();
-  });
-});

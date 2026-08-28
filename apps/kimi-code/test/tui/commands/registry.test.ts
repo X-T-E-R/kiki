@@ -168,7 +168,6 @@ describe('built-in slash command registry', () => {
         'plan',
         'reload',
         'reload-tui',
-        'secondary-model',
         'sessions',
         'settings',
         'status',
@@ -192,11 +191,8 @@ describe('built-in slash command registry', () => {
     expect(resolveSlashCommandAvailability(reloadTui!, '')).toBe('always');
   });
 
-  it('gates secondary-model behind the secondary-model experiment, always available', () => {
-    const command = findBuiltInSlashCommand('secondary-model');
-    expect(command).toBeDefined();
-    expect((command as KimiSlashCommand).experimentalFlag).toBe('secondary-model');
-    expect(resolveSlashCommandAvailability(command!, '')).toBe('always');
+  it('no longer registers secondary-model now that subagents bind an exact model', () => {
+    expect(findBuiltInSlashCommand('secondary-model')).toBeUndefined();
   });
 
   it('gates remote-control behind the remote-control experiment, always available', () => {

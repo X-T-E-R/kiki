@@ -74,7 +74,6 @@ export interface DoctorOptions {
 interface DoctorConfigContext {
   models: Readonly<Record<string, ModelRecord>>;
   extraAgentDirs: readonly string[];
-  secondaryModelEnabled: boolean;
 }
 
 interface CheckSpec {
@@ -293,7 +292,6 @@ const KNOWN_AGENT_FRONTMATTER_KEYS = new Set([
   'disallowedTools',
   'subagents',
   'spawn_constraints',
-  'model_preference',
   'model_alias',
   'thinking_effort',
   'allowed_models',
@@ -320,7 +318,6 @@ interface ParsedAgentFile {
   readonly name: string;
   readonly override: boolean;
   readonly subagents?: readonly string[];
-  readonly modelPreference?: 'primary' | 'secondary';
   readonly modelAlias?: string;
   readonly unknownKeys: readonly string[];
   readonly legacyIgnoredKeys: readonly string[];
@@ -331,7 +328,6 @@ function createDoctorConfigContext(deps: ResolvedDoctorDeps): DoctorConfigContex
   return {
     models: {},
     extraAgentDirs: [],
-    secondaryModelEnabled: resolveSecondaryModelFlag(deps, undefined),
   };
 }
 
@@ -354,24 +350,6 @@ function updateDoctorConfigContext(
   context.extraAgentDirs = Array.isArray(extraAgentDirs)
     ? extraAgentDirs.filter((entry): entry is string => typeof entry === 'string')
     : [];
-
-  const experimental = data['experimental'];
-  const secondaryModelConfig = isRecord(experimental)
-    ? experimental['secondary-model']
-    : undefined;
-  context.secondaryModelEnabled = resolveSecondaryModelFlag(
-    deps,
-    typeof secondaryModelConfig === 'boolean' ? secondaryModelConfig : undefined,
-  );
-}
-
-function resolveSecondaryModelFlag(
-  deps: ResolvedDoctorDeps,
-  configValue: boolean | undefined,
-): boolean {
-  if (parseBooleanEnv(deps.getEnv('KIMI_CODE_EXPERIMENTAL_FLAG')) === true) return true;
-  const envValue = parseBooleanEnv(deps.getEnv('KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL'));
-  return envValue ?? configValue ?? false;
 }
 
 function parseBooleanEnv(value: string | undefined): boolean | undefined {
@@ -490,7 +468,6 @@ async function checkAgentProfiles(
             name: agent.name,
             override: agent.override,
             subagents: agent.subagents,
-            modelPreference: agent.modelPreference,
             modelAlias: agent.modelAlias,
             unknownKeys,
             legacyIgnoredKeys,
@@ -553,11 +530,6 @@ async function checkAgentProfiles(
     if (builtinNames.has(file.name) && !file.override) {
       warnings.push(
         `Agent profile "${file.name}" conflicts with a builtin profile; set override: true to replace it.`,
-      );
-    }
-    if (file.modelPreference !== undefined && !context.secondaryModelEnabled) {
-      warnings.push(
-        'model_preference is ignored while the secondary-model experimental feature is disabled.',
       );
     }
 

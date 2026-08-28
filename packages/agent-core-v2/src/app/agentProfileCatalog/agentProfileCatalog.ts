@@ -5,8 +5,6 @@ import type { SpawnConstraints, SubagentLease } from './subagentLease';
 
 export const DEFAULT_AGENT_PROFILE_NAME = 'agent';
 
-export type AgentModelPreference = 'primary' | 'secondary';
-
 export type AgentModelProfilePromptMode = 'prepend' | 'append' | 'wrap';
 
 export interface AgentModelProfile {
@@ -77,7 +75,6 @@ export interface AgentProfile {
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
   readonly spawnConstraints?: SpawnConstraints;
-  readonly modelPreference?: AgentModelPreference;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
   readonly allowedModels?: readonly string[];
@@ -105,7 +102,6 @@ export interface AgentProfileRouteDefinition {
   readonly tools?: readonly string[];
   readonly disallowedTools?: readonly string[];
   readonly subagents?: readonly string[];
-  readonly modelPreference?: AgentModelPreference;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
   readonly serviceTier?: ServiceTier | null;
@@ -119,7 +115,6 @@ export interface AgentProfileRouteCatalogEntry {
   readonly profile: string;
   readonly description: string;
   readonly whenToUse?: string;
-  readonly modelPreference?: AgentModelPreference;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
   readonly overriddenFields: readonly string[];

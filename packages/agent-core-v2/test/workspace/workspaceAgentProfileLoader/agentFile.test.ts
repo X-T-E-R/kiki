@@ -48,7 +48,6 @@ describe('parseAgentFileText', () => {
     const def = parse('---\nname: solo\ndescription: d\n---\n\nbody\n');
 
     expect(def.override).toBe(false);
-    expect(def.modelPreference).toBeUndefined();
     expect(def.serviceTier).toBeUndefined();
     expect(def.requestParams).toBeUndefined();
     expect(def.modelProfiles).toBeUndefined();
@@ -80,14 +79,6 @@ describe('parseAgentFileText', () => {
     ).toThrow(/"delegation_notice"/);
   });
 
-  it('parses a symbolic model preference', () => {
-    const def = parse(
-      '---\nname: solo\ndescription: d\nmodel_preference: primary\n---\n\nbody\n',
-    );
-
-    expect(def.modelPreference).toBe('primary');
-  });
-
   it('parses exact model, effort, and service tier fields without consuming generic model', () => {
     const def = parse(
       '---\nname: solo\ndescription: d\nmodel: foreign\nmodel_alias: fast-model\nthinking_effort: low\nservice_tier: priority\n---\n\nbody\n',
@@ -98,11 +89,6 @@ describe('parseAgentFileText', () => {
       serviceTier: 'priority',
     });
     expect(def).not.toHaveProperty('model');
-    expect(() =>
-      parse(
-        '---\nname: solo\ndescription: d\nmodel_preference: primary\nmodel_alias: fast-model\n---\n\nbody\n',
-      ),
-    ).toThrow(/mutually exclusive/);
   });
 
   it('parses recommended_models as advisory entries without consuming model_alias', () => {
@@ -367,12 +353,10 @@ body
     ]);
   });
 
-  it('rejects an unsupported model preference', () => {
+  it('rejects the removed model_preference field outright', () => {
     expect(() =>
-      parse(
-        '---\nname: solo\ndescription: d\nmodel_preference: provider/model\n---\n\nbody\n',
-      ),
-    ).toThrow(/"model_preference"/);
+      parse('---\nname: solo\ndescription: d\nmodel_preference: primary\n---\n\nbody\n'),
+    ).toThrow(/"model_preference".+has been removed/);
   });
 
   it('rejects missing frontmatter', () => {
@@ -882,12 +866,6 @@ describe('agentProfileFromFile', () => {
     const profile = agentProfileFromFile({ ...base, subagents: ['explore'] }, basePrompt);
 
     expect(profile.subagents).toEqual(['explore']);
-  });
-
-  it('passes the model preference through', () => {
-    const profile = agentProfileFromFile({ ...base, modelPreference: 'secondary' }, basePrompt);
-
-    expect(profile.modelPreference).toBe('secondary');
   });
 
   it('passes exact model, effort, service tier, and request params through', () => {

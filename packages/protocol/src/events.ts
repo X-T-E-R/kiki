@@ -877,9 +877,9 @@ export interface SubagentSpawnedEvent {
   readonly description?: string;
   readonly swarmIndex?: number;
   readonly runInBackground: boolean;
-  /** Model alias the child is bound to, display-normalized (the derived
-   *  `__secondary__` entry resolves to its base alias). Optional so older
-   *  producers/consumers stay wire-compatible. */
+  /** Model alias the child is bound to: the profile pin or the dispatch's
+   *  explicit choice. Optional so older producers/consumers stay
+   *  wire-compatible. */
   readonly model?: string;
   /** The child's effective thinking effort at spawn (same vocabulary as
    *  `agent.status.updated`). Optional for cross-version tolerance. */

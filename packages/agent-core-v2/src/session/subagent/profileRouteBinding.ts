@@ -15,16 +15,14 @@ export function assertProfileRouteBinding(
   input: {
     readonly modelAlias?: string;
     readonly thinkingEffort?: string;
-    readonly modelPreference?: 'primary' | 'secondary';
   },
   models: IModelService,
 ): void {
   if (route === undefined) return;
   if (
     route.lockedModelAlias !== undefined &&
-    (input.modelPreference !== undefined ||
-      (input.modelAlias !== undefined &&
-        resolveModelId(models, input.modelAlias) !== resolveModelId(models, route.lockedModelAlias)))
+    input.modelAlias !== undefined &&
+    resolveModelId(models, input.modelAlias) !== resolveModelId(models, route.lockedModelAlias)
   ) {
     throw new Error2(
       ErrorCodes.ROUTE_BINDING_CONFLICT,

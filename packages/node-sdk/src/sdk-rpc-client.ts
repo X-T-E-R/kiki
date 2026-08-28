@@ -700,11 +700,7 @@ export class SDKRpcClient extends SDKRpcClientBase {
    * full v1 cascade is computed from the user-layer values (see
    * `planProviderRemoval`) and persisted as ONE atomic multi-section
    * replace — the same single-write shape as v1's `removeKimiProvider`, so a
-   * process exit can never leave the file in a halfway-cascaded state. The
-   * `[secondary_model]` section is left alone on purpose: an entry whose
-   * model no longer resolves fails pool validation on the next session
-   * create, surfacing a named error instead of silently rewriting the
-   * user's configuration.
+   * process exit can never leave the file in a halfway-cascaded state.
    */
   override async removeProvider(providerId: string): Promise<KimiConfig> {
     await this.configReady;

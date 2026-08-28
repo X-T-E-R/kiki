@@ -9,20 +9,15 @@ import { resolveAgentProfileRoute } from '#/app/agentProfileCatalog/agentProfile
 import { Error2, ErrorCodes, isError2 } from '#/errors';
 import { IModelService } from '#/kosong/model/model';
 import {
-  resolveAgentCollaborationBinding,
   resolveSubagentBinding,
+  SUBAGENT_MODEL_UNBOUND_HINT,
   SUBAGENT_SECTION,
-  type SubagentBindingOwner,
   type SubagentBindingRequest,
   type SubagentRoleModelConstraints,
 } from '#/session/subagent/configSection';
 import { parseAgentRouteFileText } from '#/workspace/workspaceAgentProfileLoader/internal/agentRouteFile';
 
-import { stubFlag } from '../../app/flag/stubs';
 import { StubConfigService } from '../../kosong/stubs';
-
-const own: SubagentBindingOwner = { modelAlias: 'provider/main', thinkingLevel: 'medium' };
-const flags = stubFlag(false);
 
 function models(aliases: Record<string, string> = {}): IModelService {
   return {
@@ -60,34 +55,15 @@ const catalog = models({
 });
 
 function bindSubagent(
-  requested: string | SubagentBindingRequest | undefined,
+  requested: SubagentBindingRequest | undefined,
   constraints: SubagentRoleModelConstraints | undefined,
   profileRequest: SubagentBindingRequest = {},
   denyModels?: readonly string[],
 ) {
   return resolveSubagentBinding(
     config(denyModels),
-    flags,
-    own,
-    requested,
+    requested ?? {},
     profileRequest,
-    catalog,
-    constraints,
-  );
-}
-
-function bindCollaboration(
-  request: Pick<SubagentBindingRequest, 'modelAlias' | 'thinkingEffort'>,
-  constraints: SubagentRoleModelConstraints | undefined,
-  profile: SubagentBindingRequest = {},
-  denyModels?: readonly string[],
-) {
-  return resolveAgentCollaborationBinding(
-    config(denyModels),
-    flags,
-    own,
-    request,
-    profile,
     catalog,
     constraints,
   );
@@ -115,6 +91,31 @@ function routePin(modelAlias: string): AgentProfileRouteDefinition {
     path: '/agents/.routes/reviewer/ui-k3.md',
   };
 }
+
+describe('a subagent model comes only from a profile pin or the dispatch', () => {
+  it('fails closed with MODEL_NOT_CONFIGURED when neither source supplies a model', () => {
+    let thrown: unknown;
+    try {
+      resolveSubagentBinding(config(), {}, {}, catalog, undefined, { profileName: 'reviewer' });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(isError2(thrown)).toBe(true);
+    expect((thrown as Error2).code).toBe(ErrorCodes.MODEL_NOT_CONFIGURED);
+    expect((thrown as Error2).message).toContain('No model is bound for agent profile "reviewer"');
+    expect((thrown as Error2).message).toContain(SUBAGENT_MODEL_UNBOUND_HINT);
+    expect((thrown as Error2).details?.['profile']).toBe('reviewer');
+  });
+
+  it('reports which source the bound model came from', () => {
+    expect(bindSubagent({ modelAlias: 'fast-model' }, undefined)).toMatchObject({
+      model: 'fast-model',
+    });
+    expect(bindSubagent(undefined, undefined, { modelAlias: 'provider/fast' })).toMatchObject({
+      model: 'provider/fast',
+    });
+  });
+});
 
 describe('role model constraints at bind time: role allowed_models / deny_models only narrow, machine [subagent].deny_models stays authoritative', () => {
   it('rejects any other dispatch-time model_alias when allowed_models has a single pin', () => {
@@ -161,21 +162,6 @@ describe('role model constraints at bind time: role allowed_models / deny_models
     );
     expect(error.message).toContain('[subagent].deny_models');
     expect(error.details?.['deniedModels']).toEqual(['provider/blocked']);
-  });
-
-  it('enforces the same constraints in both binding entry points', () => {
-    const pin: SubagentRoleModelConstraints = { allowedModels: ['fast-model'] };
-    const deny: SubagentRoleModelConstraints = { denyModels: ['heavy-model'] };
-
-    expect(bindCollaboration({ modelAlias: 'fast-model' }, pin)).toMatchObject({
-      model: 'fast-model',
-    });
-    expect(configError(() => bindCollaboration({ modelAlias: 'k3-review' }, pin)).message).toContain(
-      'allowed_models',
-    );
-    expect(configError(() => bindCollaboration({ modelAlias: 'heavy-model' }, deny)).message).toContain(
-      'this agent\'s deny_models',
-    );
   });
 
   it('matches a bare allowlist/denylist entry against a qualified dispatch alias', () => {
@@ -255,10 +241,5 @@ describe('role model constraints at bind time: role allowed_models / deny_models
     );
     expect(error.message).toContain('allowed_efforts');
     expect(error.message).toContain('max');
-    expect(
-      configError(() =>
-        bindCollaboration({ modelAlias: 'fast-model', thinkingEffort: 'high' }, constraints),
-      ).message,
-    ).toContain('allowed_efforts');
   });
 });

@@ -71,13 +71,6 @@ export { effectiveModelAlias, loadRuntimeConfigSafe, resolveConfigPath } from '#
 export { limitAgentReplayByTurns } from '#/wire/replay-turns';
 export { parseAgentFileText } from '@moonshot-ai/agent-core-v2';
 export { resolveAgentPath } from '@moonshot-ai/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/paths';
-// The synthesized `[models]` alias a `[secondary_model]` recipe with patch
-// fields materializes at runtime — hosts filter it out of model pickers.
-export { SECONDARY_DERIVED_MODEL_ALIAS } from '#/config';
-// Reserved key of the v2 engine's subagent model pool: it always binds the
-// caller's own model, so hosts must not offer a user alias named `primary`
-// as the subagent default model.
-export { PRIMARY_SUBAGENT_MODEL_CHOICE } from '@moonshot-ai/agent-core-v2/session/subagent/configSection';
 
 // Process-wide HTTP proxy bootstrap — installed once at CLI startup so all
 // outbound fetch honors HTTP_PROXY / HTTPS_PROXY / NO_PROXY.

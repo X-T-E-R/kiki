@@ -46,7 +46,6 @@ import {
 } from '#/app/agentProfileCatalog/applySubagentLease';
 import { ILogService } from '#/_base/log/log';
 import { IConfigService } from '#/app/config/config';
-import { IFlagService } from '#/app/flag/flag';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
@@ -59,10 +58,6 @@ import {
   directChildAgents,
   findDirectChild,
 } from '#/session/agentCollaboration/directChildren';
-import {
-  refreshInheritedSubagentBinding,
-  withSubagentBindingMode,
-} from '#/session/agentLifecycle/agentLifecycleService';
 import {
   delegatorRef,
   isSubagentMeta,
@@ -84,22 +79,15 @@ import {
   addSubagentBindingSchemaConstraints,
   buildSubagentModelDescriptions,
   canonicalizeSubagentBinding,
-  exposesSubagentModelChoice,
   formatSubagentTimeoutDescription,
   normalizeSubagentBindingValue,
   resolveSubagentBinding,
-  subagentBindingMode,
-  subagentDisplayModel,
-  subagentModelSource,
   resolveSubagentTimeoutMs,
-  stripSubagentModelParameter,
-  wrapSubagentModelError,
 } from '#/session/subagent/configSection';
 import {
   assertProfileRouteBinding,
   assertProfileRouteModelAvailable,
 } from '#/session/subagent/profileRouteBinding';
-import { resolveNestedSubagentDefaultContext } from '#/session/subagent/bindingContext';
 import {
   BACKGROUND_AGENT_UNAVAILABLE,
   DEFAULT_PROFILE_NAME,
@@ -124,18 +112,13 @@ import AGENT_DESCRIPTION_BASE from './agent.md?raw';
 const SUBAGENT_TOOL_PARAMETERS = toInputJsonSchema(SubagentToolInputSchema, (schema) => {
   addSubagentBindingSchemaConstraints(schema, 'agent');
 });
-const SUBAGENT_TOOL_PARAMETERS_NO_MODEL = stripSubagentModelParameter(SUBAGENT_TOOL_PARAMETERS);
 export { buildProfileDescriptions } from './subagentDescription';
 
 export class SubagentTool implements ISubagentTool {
   declare readonly _serviceBrand: undefined;
   readonly name: string = 'AgentRun';
 
-  get parameters(): Record<string, unknown> {
-    return exposesSubagentModelChoice(this.config, this.flags)
-      ? SUBAGENT_TOOL_PARAMETERS
-      : SUBAGENT_TOOL_PARAMETERS_NO_MODEL;
-  }
+  readonly parameters: Record<string, unknown> = SUBAGENT_TOOL_PARAMETERS;
 
   private readonly callerAgentId: string;
   private readonly canRunInBackground: () => boolean;
@@ -159,7 +142,6 @@ export class SubagentTool implements ISubagentTool {
     @ILogService private readonly log: ILogService,
     @IAgentPermissionModeService private readonly permissionMode: IAgentPermissionModeService,
     @IConfigService private readonly config: IConfigService,
-    @IFlagService private readonly flags: IFlagService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IModelService private readonly models: IModelService,
     @IAgentCollaborationRegistry private readonly nameRegistry: IAgentCollaborationRegistry,
@@ -198,9 +180,8 @@ export class SubagentTool implements ISubagentTool {
       this.knownToolReferences(),
       (profile, name, source) =>
         this.toolPolicy.isToolActiveForProfile(profile, name, source),
-      true,
       undefined,
-      (alias) => this.isRecommendedModelAliasAvailable(alias),
+      (alias: string) => this.isRecommendedModelAliasAvailable(alias),
     );
     if (typeLines) {
       description += `\n\nAvailable agent profiles (pass via profile):\n${typeLines}`;
@@ -209,12 +190,7 @@ export class SubagentTool implements ISubagentTool {
     if (routeLines) {
       description += `\n\nAvailable agent routes (pass via route):\n${routeLines}`;
     }
-    const modelLines = buildSubagentModelDescriptions(
-      this.config,
-      this.flags,
-      this.models,
-      this.profile.data().modelAlias,
-    );
+    const modelLines = buildSubagentModelDescriptions(this.models);
     if (modelLines !== undefined) {
       description += `\n\n${modelLines}`;
     }
@@ -298,10 +274,10 @@ export class SubagentTool implements ISubagentTool {
     if (
       resumeAgentId !== undefined &&
       resumeAgentId.length > 0 &&
-      (args.model !== undefined || args.model_alias !== undefined || args.effort !== undefined)
+      (args.model_alias !== undefined || args.effort !== undefined)
     ) {
       return {
-        output: 'Cannot set model, model_alias, or effort when continuing an existing agent.',
+        output: 'Cannot set model_alias or effort when continuing an existing agent.',
         isError: true,
       };
     }
@@ -393,15 +369,11 @@ export class SubagentTool implements ISubagentTool {
           details: { agentId: resumeAgentId },
         });
       }
-      const persisted = await this.ensureOwnedIdleSubagent(resumeAgentId, target);
-      await refreshInheritedSubagentBinding(requester, target, persisted);
+      await this.ensureOwnedIdleSubagent(resumeAgentId, target);
       agentId = target.id;
       const resumed = target.accessor.get(IAgentProfileService).data();
       profileName = resumed.routeId ?? resumed.profileName ?? RESUMED_LABEL;
-      displayModel =
-        resumed.modelAlias === undefined
-          ? undefined
-          : subagentDisplayModel(this.config, resumed.modelAlias);
+      displayModel = resumed.modelAlias;
     } else {
       const requestedProfileName = args.profile?.length
         ? args.profile
@@ -423,80 +395,45 @@ export class SubagentTool implements ISubagentTool {
       const selection = target.selection;
       const baseProfileName = selection.baseProfile.name;
       const profile = target.effectiveProfile;
-      if (own.modelAlias === undefined) {
-        throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'Caller agent has no model bound', {
-          details: { agentId: this.callerAgentId },
-        });
-      }
       const filled = fillLeasePins(
         {
           modelAlias,
           thinkingEffort,
-          modelPreference: args.model,
         },
         target.lease,
         selection.route,
       );
-      const filledSymbolic =
-        filled.modelPreference === 'primary' || filled.modelPreference === 'secondary'
-          ? filled.modelPreference
-          : undefined;
       assertProfileRouteBinding(
         selection.route,
         {
-          modelAlias:
-            filled.modelAlias ?? (filledSymbolic === undefined ? filled.modelPreference : undefined),
+          modelAlias: filled.modelAlias,
           thinkingEffort: filled.thinkingEffort,
-          modelPreference: filledSymbolic,
         },
         this.models,
       );
       assertProfileRouteModelAvailable(selection.route, this.modelCatalog, this.models);
-      const toolBindingRequest = {
-        modelPreference: filled.modelPreference,
-        modelAlias: filled.modelAlias,
-        thinkingEffort: filled.thinkingEffort,
-      };
-      const profileBindingRequest = {
-        modelPreference: profile.modelPreference,
-        modelAlias: profile.modelAlias,
-        thinkingEffort: profile.thinkingEffort,
-      };
       const roleConstraints = roleConstraintsFromProfile(
         profile,
         spawnConstraintOrigin(target.lease, target.spawnPolicy),
       );
-      let binding = resolveSubagentBinding(
-        this.config,
-        this.flags,
-        { modelAlias: own.modelAlias, thinkingLevel: own.thinkingLevel },
-        toolBindingRequest,
-        profileBindingRequest,
+      const binding = canonicalizeSubagentBinding(
+        resolveSubagentBinding(
+          this.config,
+          {
+            modelAlias: filled.modelAlias,
+            thinkingEffort: filled.thinkingEffort,
+          },
+          {
+            modelAlias: selection.route?.lockedModelAlias ?? profile.modelAlias,
+            thinkingEffort: selection.route?.lockedThinkingEffort ?? profile.thinkingEffort,
+          },
+          this.models,
+          roleConstraints,
+          { profileName: profile.name, routeId: selection.route?.id },
+        ),
         this.models,
-        roleConstraints,
       );
-      if (subagentModelSource(binding) === 'caller') {
-        const callerMeta = (await this.sessionMetadata.read()).agents?.[this.callerAgentId];
-        const nestedDefault = resolveNestedSubagentDefaultContext(this.lifecycle, callerMeta);
-        if (nestedDefault !== undefined) {
-          binding = resolveSubagentBinding(
-            this.config,
-            this.flags,
-            nestedDefault,
-            toolBindingRequest,
-            profileBindingRequest,
-            this.models,
-            roleConstraints,
-          );
-        }
-      }
-      binding = canonicalizeSubagentBinding(binding, this.models);
-      const bindingSource = subagentModelSource(binding);
-      try {
-        this.modelCatalog.get(binding.model);
-      } catch (error) {
-        throw wrapSubagentModelError(error, binding.model, own.modelAlias, bindingSource);
-      }
+      this.modelCatalog.get(binding.model);
       const requestedName = args.name?.trim();
       const nameOwner = { kind: 'agent' as const, agentId: this.callerAgentId };
       if (requestedName !== undefined && !(await this.nameRegistry.reserve(requestedName, nameOwner))) {
@@ -520,26 +457,23 @@ export class SubagentTool implements ISubagentTool {
             lease: target.lease,
             spawnPolicy: target.spawnPolicy,
           },
-          labels: withSubagentBindingMode(
-            {
-              ...subagentLabels(this.callerAgentId),
-              ...requestIdentitySpawnLabels(this.callerAgentId, parentTurnId, callerMeta),
-              ...(requestedName === undefined
-                ? {}
-                : {
-                    [COLLABORATION_TASK_NAME_LABEL]: requestedName,
-                    [COLLABORATION_AGENT_TYPE_LABEL]: baseProfileName,
-                  }),
-            },
-            subagentBindingMode(binding),
-          ),
+          labels: {
+            ...subagentLabels(this.callerAgentId),
+            ...requestIdentitySpawnLabels(this.callerAgentId, parentTurnId, callerMeta),
+            ...(requestedName === undefined
+              ? {}
+              : {
+                  [COLLABORATION_TASK_NAME_LABEL]: requestedName,
+                  [COLLABORATION_AGENT_TYPE_LABEL]: baseProfileName,
+                }),
+          },
           delegator: { kind: 'agent', agentId: this.callerAgentId },
           userLabel: args.description,
           runtimeId: runtime.identity.runtimeId,
         });
       } catch (error) {
         if (requestedName !== undefined) this.nameRegistry.release(requestedName, nameOwner);
-        throw wrapSubagentModelError(error, binding.model, own.modelAlias, bindingSource);
+        throw error;
       }
       if (requestedName !== undefined) this.nameRegistry.commit(requestedName, nameOwner);
       created.accessor.get(IAgentPermissionModeService).setMode(this.permissionMode.mode);
