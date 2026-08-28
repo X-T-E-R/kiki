@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -320,39 +320,82 @@ describe('KimiHarness config API', () => {
     const homeDir = await makeTempDir();
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
-    await expect(harness.getConfig()).resolves.toEqual({ providers: {} });
+    // With no file to read there is no `raw` document, and the effective view is
+    // exactly the engine's registered section defaults — every domain present,
+    // none of them carrying a user value.
+    await expect(harness.getConfig()).resolves.toEqual({
+      providers: {},
+      models: {},
+      thinking: {},
+      defaultPlanMode: false,
+      services: {},
+      mergeAllAvailableSkills: true,
+      extraSkillDirs: [],
+      loopControl: {},
+      background: {},
+      subagent: { timeoutMs: 7_200_000 },
+      mcp: {},
+      image: {},
+    });
   });
 
   it('returns experimental feature metadata through the harness', async () => {
+    // The master switch off, so every flag reports its own resolution.
     vi.stubEnv('KIMI_CODE_EXPERIMENTAL_FLAG', '0');
+    // A flag turned on against its default, and one turned off against a
+    // default-on flag: both must report `env` as the deciding source.
+    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TOOL_SELECT', '1');
+    vi.stubEnv('KIMI_CODE_EXPERIMENTAL_TASK_WAIT', '0');
     const homeDir = await makeTempDir();
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     const features = await harness.getExperimentalFeatures();
-    expect(features).toEqual([
-      {
-        id: 'tool-select',
-        title: 'Tool select (progressive tool disclosure)',
-        description:
-          'Keep MCP tool schemas out of the immutable top-level tools[]; the model loads them on demand via the select_tools tool. Only takes effect on models whose capability catalog declares dynamically loaded tools.',
-        surface: 'core',
-        env: 'KIMI_CODE_EXPERIMENTAL_TOOL_SELECT',
-        defaultEnabled: false,
-        enabled: false,
-        source: 'default',
-      },
-      {
-        id: 'secondary-model',
-        title: 'Secondary model for subagents',
-        description:
-          'Let newly spawned subagents use a separately configured secondary model by default, with an explicit primary-model override for quality-sensitive tasks.',
-        surface: 'core',
-        env: 'KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL',
-        defaultEnabled: false,
-        enabled: false,
-        source: 'default',
-      },
+
+    // The registry order is the engine's; the SDK must forward the whole
+    // catalog, not a filtered subset.
+    expect(features.map((feature) => feature.id)).toEqual([
+      'agent-profile-routes',
+      'secondary-model',
+      'auto_session_title',
+      'remote-control',
+      'task_wait',
+      'tool-select',
+      'persistence_minidb_readmodel',
+      'external_delegation_mcp',
     ]);
+    // Every entry carries the full metadata a client needs to render a toggle.
+    for (const feature of features) {
+      expect(feature).toMatchObject({
+        id: expect.any(String),
+        title: expect.any(String),
+        description: expect.any(String),
+        surface: expect.stringMatching(/^(core|cli|both)$/),
+        env: expect.stringMatching(/^KIMI_CODE_EXPERIMENTAL_[A-Z0-9_]+$/),
+        defaultEnabled: expect.any(Boolean),
+        enabled: expect.any(Boolean),
+        source: expect.stringMatching(/^(default|config|env|master-env)$/),
+      });
+    }
+    expect(features.find((feature) => feature.id === 'tool-select')).toEqual({
+      id: 'tool-select',
+      title: 'Tool select (progressive tool disclosure)',
+      description:
+        'Keep MCP tool schemas out of the immutable top-level tools[]; the model loads them on demand via the select_tools tool. Only takes effect on models whose capability catalog declares dynamically loaded tools.',
+      surface: 'core',
+      env: 'KIMI_CODE_EXPERIMENTAL_TOOL_SELECT',
+      defaultEnabled: false,
+      enabled: true,
+      source: 'env',
+    });
+    expect(features.find((feature) => feature.id === 'task_wait')).toMatchObject({
+      defaultEnabled: true,
+      enabled: false,
+      source: 'env',
+    });
+    expect(features.find((feature) => feature.id === 'secondary-model')).toMatchObject({
+      enabled: false,
+      source: 'default',
+    });
   });
 
   it('can create the default config scaffold without selecting a model', async () => {
@@ -376,6 +419,7 @@ describe('KimiHarness config API', () => {
   it('reloads an active session without closing the SDK session wrapper', async () => {
     const homeDir = await makeTempDir();
     const workDir = join(homeDir, 'work');
+    await mkdir(workDir, { recursive: true });
     const configPath = join(homeDir, 'config.toml');
     await writeFile(configPath, COMPLETE_TOML, 'utf-8');
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
@@ -398,6 +442,7 @@ describe('KimiHarness config API', () => {
   it('forwards forcePluginSessionStartReminder to the active session reload', async () => {
     const homeDir = await makeTempDir();
     const workDir = join(homeDir, 'work');
+    await mkdir(workDir, { recursive: true });
     const configPath = join(homeDir, 'config.toml');
     await writeFile(configPath, COMPLETE_TOML, 'utf-8');
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });

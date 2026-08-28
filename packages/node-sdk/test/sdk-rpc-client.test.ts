@@ -10,7 +10,7 @@
  */
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import {
   FileTokenStorage,
@@ -1071,7 +1071,15 @@ describe('SDKRpcClient workspace trust', () => {
       expect(info.gatedMcpServers).toEqual([
         { name: 'http-server', transport: 'http', url: 'https://example.test/mcp' },
         { name: 'nested-server', transport: 'stdio', command: 'nested-cmd' },
-        { name: 'root-server', transport: 'stdio', command: 'root-cmd', args: ['--safe'], cwd: '/tmp/root' },
+        {
+          name: 'root-server',
+          transport: 'stdio',
+          command: 'root-cmd',
+          args: ['--safe'],
+          // The engine's config loader hands back a host-absolute cwd, which on
+          // Windows means the declared root-relative path gains a drive letter.
+          cwd: resolve('/tmp/root').replaceAll('\\', '/'),
+        },
       ]);
       const serialized = JSON.stringify(info);
       expect(serialized).not.toContain('hidden');

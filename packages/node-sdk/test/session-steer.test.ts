@@ -52,7 +52,11 @@ afterEach(async () => {
 });
 
 describe('Session.steer', () => {
-  it('sends turn.steer to the core session runtime', async () => {
+  // `turn.steer` is recorded only when there is a running turn to steer into.
+  // An idle steer degrades to launching the input as a fresh turn, so the wire
+  // record it leaves is a `turn.prompt` — the assertion still pins that the
+  // steered input reached the session runtime intact.
+  it('sends an idle steer to the core session runtime as a fresh turn', async () => {
     const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-steer-home-');
     const workDir = await makeTempDir(tempDirs, 'kimi-sdk-steer-work-');
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
@@ -63,11 +67,11 @@ describe('Session.steer', () => {
       await session.steer('also do this');
 
       await expect(
-        waitForAgentWireEvent(homeDir, session.id, 'turn.steer', (event) =>
+        waitForAgentWireEvent(homeDir, session.id, 'turn.prompt', (event) =>
           Array.isArray(event['input']),
         ),
       ).resolves.toMatchObject({
-        type: 'turn.steer',
+        type: 'turn.prompt',
         input: [{ type: 'text', text: 'also do this' }],
       });
     } finally {

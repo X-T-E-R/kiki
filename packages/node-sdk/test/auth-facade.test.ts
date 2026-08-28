@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -624,14 +624,32 @@ model = "kimi-for-coding"
       ),
     );
 
-    // A broken config must not prevent startup: the invalid model alias is
-    // dropped, the rest of the config survives, and a warning is reported.
+    // A broken config must not prevent startup: the rest of the config
+    // survives and sessions still open. Where the breakage is *reported* moved
+    // in v2 — the config layer keeps the alias and stays silent, and the model
+    // catalog refuses it when a turn tries to resolve it, so the failure
+    // arrives at the point of use instead of as a load-time warning.
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
-    const config = await harness.getConfig();
-    expect(config.models?.['kimi-code/kimi-for-coding']).toBeUndefined();
-    expect(config.providers[KIMI_CODE_PROVIDER_NAME]).toBeDefined();
-    const { warnings } = await harness.getConfigDiagnostics();
-    expect(warnings.some((w) => w.includes('models.kimi-code/kimi-for-coding'))).toBe(true);
+    try {
+      const config = await harness.getConfig();
+      expect(config.providers[KIMI_CODE_PROVIDER_NAME]).toBeDefined();
+      expect(config.models?.['kimi-code/kimi-for-coding']).toMatchObject({
+        provider: 'managed:kimi-code',
+        model: 'kimi-for-coding',
+      });
+      await expect(harness.getConfigDiagnostics()).resolves.toMatchObject({ warnings: [] });
+
+      const workDir = join(homeDir, 'degraded-work');
+      await mkdir(workDir, { recursive: true });
+      const session = await harness.createSession({ workDir });
+      await expect(session.prompt('hello')).rejects.toMatchObject({
+        name: 'KimiError',
+        code: ErrorCodes.CONFIG_INVALID,
+        message: expect.stringContaining('max_context_size'),
+      } satisfies Partial<KimiError>);
+    } finally {
+      await harness.close();
+    }
   });
 
   it('removes managed Kimi config on logout', async () => {
