@@ -136,6 +136,7 @@ import type { AgentContextData, ExperimentalFeatureState } from '@moonshot-ai/ag
 
 import { ensureConfigFile, HookDefSchema } from '#/config';
 import { ErrorCodes, isKimiErrorCode, KimiError, type KimiErrorCode } from '#/errors';
+import { getRootLogger, type DiagnosticLogHost } from '#/logging';
 import type { BeginGlobalMcpServerAuthResult } from '#/protocol';
 import { noopTelemetryClient } from '#/protocol/telemetry';
 import { limitAgentReplayByTurns } from '#/wire/replay-turns';
@@ -177,6 +178,7 @@ import {
   IEventService,
   IHostEnvironment,
   IHostFileSystem,
+  ILogService,
   IMcpManagementService,
   IMcpOAuthService,
   IModelService,
@@ -416,6 +418,17 @@ export class SDKRpcClient extends SDKRpcClientBase {
   private readonly sessionAccessQueues = new Map<string, Promise<void>>();
   /** App-scope subscriptions (global event forwarding, lifecycle tracking), disposed in {@link close}. */
   private readonly appSubscriptions: IDisposable[] = [];
+  /**
+   * The engine's logging seam behind the SDK's `log` facade. v1 routed
+   * `log.*` through a core-owned root logger; the v2 engine owns both files
+   * itself (`AppLogService` → `<homeDir>/logs/kimi-code.log`,
+   * `SessionLogService` → `<sessionDir>/logs/kimi-code.log`), so the facade
+   * resolves the matching `ILogService` per entry instead of opening sinks of
+   * its own. Registered in the constructor, dropped in {@link close}; the
+   * newest client wins for untagged entries, which is what makes a second
+   * harness log into its own home directory.
+   */
+  private readonly logHost: DiagnosticLogHost;
 
   constructor(options: SDKRpcClientOptions = {}) {
     super();
@@ -454,6 +467,17 @@ export class SDKRpcClient extends SDKRpcClientBase {
       [...logSeed(resolveLoggingConfig({ homeDir: this.homeDir, env: process.env }))],
     );
     this.app = app;
+    this.logHost = {
+      globalLog: () => app.accessor.get(ILogService),
+      sessionLog: (sessionId) =>
+        app.accessor.get(ISessionManager).get(sessionId)?.accessor.get(ILogService),
+      liveSessionLogs: () =>
+        app.accessor
+          .get(ISessionManager)
+          .list()
+          .map((session) => session.accessor.get(ILogService)),
+    };
+    getRootLogger().bind(this.logHost);
     this.klient = createKlient({ scope: app });
     this.configReady = app.accessor.get(IConfigService).ready;
     this.installEngineTelemetry(options.telemetry);
@@ -524,6 +548,9 @@ export class SDKRpcClient extends SDKRpcClientBase {
     // idempotent, so the ledger's own teardown turns into a no-op.
     await this.app.accessor.get(IMcpOAuthService).shutdown();
     const appendLogStore = this.app.accessor.get(IAppendLogStore);
+    // Past this point the accessor throws, so the facade must stop resolving
+    // this client's log services. Disposal itself flushes them synchronously.
+    getRootLogger().unbind(this.logHost);
     this.app.dispose();
     await appendLogStore.drainRetirements();
     await drainSessionIndexMirror();

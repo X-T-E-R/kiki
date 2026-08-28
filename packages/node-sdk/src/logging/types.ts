@@ -1,3 +1,5 @@
+import type { ILogService } from '@moonshot-ai/agent-core-v2';
+
 export type LogLevel = 'off' | 'error' | 'warn' | 'info' | 'debug';
 
 export type LogContext = Record<string, unknown>;
@@ -34,58 +36,40 @@ export interface Logger {
   createChild(ctx: LogContext): Logger;
 }
 
-export interface LogEntry {
-  readonly t: number;
-  readonly level: Exclude<LogLevel, 'off'>;
-  readonly msg: string;
-  readonly ctx?: LogContext | undefined;
-  readonly error?: { readonly message: string; readonly stack?: string } | undefined;
-  readonly sessionId?: string | undefined;
-  readonly sessionLogId?: string | undefined;
-}
-
-export interface LoggingConfig {
-  readonly level: LogLevel;
-  readonly globalLogPath: string;
-  readonly globalMaxBytes: number;
-  readonly globalFiles: number;
-  readonly sessionMaxBytes: number;
-  readonly sessionFiles: number;
-}
-
-export interface SessionLogHandle {
-  readonly logger: Logger;
-  flush(): Promise<void>;
-  close(): Promise<void>;
-}
-
-export interface SessionAttachInput {
-  readonly sessionId: string;
-  readonly sessionDir: string;
+/**
+ * The engine-side logging seam the SDK's `log` writes through.
+ *
+ * The v2 engine owns both diagnostic log files: the app scope's `ILogService`
+ * appends to `<homeDir>/logs/kimi-code.log`, and every live session scope has
+ * its own `ILogService` appending to `<sessionDir>/logs/kimi-code.log` with
+ * the session's `sessionId` bound and omitted from the rendered line. A host
+ * that runs the engine in-process (`SDKRpcClient`) registers one of these, so
+ * SDK-level diagnostics land in the same files, with the same format, level
+ * and rotation, as the entries the engine writes for itself.
+ */
+export interface DiagnosticLogHost {
+  /** App-scope logger; undefined once the host's scope is gone. */
+  globalLog(): ILogService | undefined;
+  /** The named session's own logger while that session is live in this host. */
+  sessionLog(sessionId: string): ILogService | undefined;
+  /** Every live session logger, for a whole-host flush. */
+  liveSessionLogs(): readonly ILogService[];
 }
 
 export interface RootLogger {
-  configure(config: LoggingConfig): Promise<void>;
-  attachSession(input: SessionAttachInput): SessionLogHandle;
-  /** False if any sink could not flush its pending batch. */
+  /**
+   * Register an engine host. Untagged entries go to the most recently bound
+   * host's global log, so a process that constructs a second harness starts
+   * logging into the second home directory.
+   */
+  bind(host: DiagnosticLogHost): void;
+  unbind(host: DiagnosticLogHost): void;
+  isBound(): boolean;
+  /** False if a log service rejected its flush. */
   flush(): Promise<boolean>;
-  /** False if the global sink could not flush; true when there is no global sink. */
+  /** False if a bound host's global log rejected its flush. */
   flushGlobal(): Promise<boolean>;
-  /** False if the session sink could not flush; true when there is no active sink. */
+  /** False if the session's log rejected its flush; true when it is not live. */
   flushSession(sessionId: string): Promise<boolean>;
   flushSync(): void;
-  isConfigured(): boolean;
-  getConfig(): LoggingConfig | undefined;
-}
-
-export const LOG_LEVEL_RANK: Record<LogLevel, number> = {
-  off: 0,
-  error: 1,
-  warn: 2,
-  info: 3,
-  debug: 4,
-};
-
-export function levelEnabled(threshold: LogLevel, level: Exclude<LogLevel, 'off'>): boolean {
-  return LOG_LEVEL_RANK[threshold] >= LOG_LEVEL_RANK[level];
 }

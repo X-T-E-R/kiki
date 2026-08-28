@@ -3,21 +3,6 @@ import * as nodeFs from 'node:fs';
 import { open, rename, unlink } from 'node:fs/promises';
 
 /**
- * fsync a directory so a freshly-created or renamed file's directory entry is
- * durable. Windows: noop — `open(dir, 'r')` throws EISDIR, and NTFS commits the
- * dirent transaction inside the file fsync anyway.
- */
-export async function syncDir(dirPath: string): Promise<void> {
-  if (process.platform === 'win32') return;
-  const dirFh = await open(dirPath, 'r');
-  try {
-    await dirFh.sync();
-  } finally {
-    await dirFh.close();
-  }
-}
-
-/**
  * fsync a file descriptor through the module namespace (`nodeFs.fsync`)
  * rather than `FileHandle.sync()`, so a test can intercept the call for
  * fault injection.
