@@ -575,6 +575,7 @@ export class TranscriptProjector {
       }
       case 'turn.ended': {
         const turnId = turnIdOf(payload);
+        const existing = findTurn(agent.snapshot, turnId);
         const state =
           payload.reason === 'cancelled' ? 'cancelled' : payload.reason === 'failed' ? 'failed' : 'completed';
         projected = {
@@ -585,9 +586,13 @@ export class TranscriptProjector {
               turn: {
                 kind: 'turn',
                 turnId,
-                ordinal: Number.parseInt(String(payload.turnId ?? 1), 10) || 1,
+                ordinal: existing?.ordinal ?? (Number.parseInt(String(payload.turnId ?? 1), 10) || 1),
                 state,
-                origin: originOf(payload, agent.live.promptId, agent.live.userMessageId),
+                origin: existing?.origin ?? originOf(payload, agent.live.promptId, agent.live.userMessageId),
+                message: existing?.message,
+                prompt: existing?.prompt,
+                attachmentIds: existing?.attachmentIds,
+                startedAt: existing?.startedAt,
                 endedAt: at,
                 durationMs: payload.durationMs,
                 usage: payload.usage,

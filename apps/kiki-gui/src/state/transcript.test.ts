@@ -698,6 +698,91 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     ]);
   });
 
+  it('keeps the settled user bubble when a regenerate reset drops the turn prompt', () => {
+    const previous = projectAgentTranscriptView(createViewState('session_test'), 'main', {
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't1',
+          ordinal: 1,
+          state: 'completed',
+          origin: { kind: 'user', payload: { promptId: 'p-edit', userMessageId: 'um-anchor' } },
+          prompt: 'First fixture question — edited resend.',
+          startedAt: FIXED_AT,
+          steps: [
+            {
+              kind: 'step',
+              stepId: 't1.1',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed',
+              frames: [{ kind: 'text', frameId: 'asst-t1', role: 'assistant', text: 'EDITED-REPLY' }],
+            },
+          ],
+        },
+      ],
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [
+        {
+          promptId: 'p-edit',
+          status: 'completed',
+          userMessageId: 'um-anchor',
+          content: [{ type: 'text', text: 'First fixture question — edited resend.' }],
+          createdAt: FIXED_AT,
+        },
+      ],
+      meta: {},
+    });
+    const regenerating = projectAgentTranscriptView(previous, 'main', {
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't1',
+          ordinal: 1,
+          state: 'completed',
+          origin: { kind: 'user', payload: { promptId: 'p-regen', userMessageId: 'um-anchor' } },
+          startedAt: FIXED_AT,
+          endedAt: FIXED_AT_1,
+          steps: [
+            {
+              kind: 'step',
+              stepId: 't1.1',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed',
+              frames: [{ kind: 'text', frameId: 'asst-t1', role: 'assistant', text: 'REGENERATED-REPLY' }],
+            },
+          ],
+        },
+      ],
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [
+        {
+          promptId: 'p-regen',
+          status: 'running',
+          userMessageId: 'um-anchor',
+          content: [{ type: 'text', text: 'First fixture question — edited resend.' }],
+          createdAt: FIXED_AT_1,
+        },
+      ],
+      meta: {},
+    });
+    const users = regenerating.blocks.filter((block) => block.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({
+      id: 'user-um-anchor',
+      text: 'First fixture question — edited resend.',
+      userMessageId: 'um-anchor',
+      promptStatus: undefined,
+    });
+  });
+
 
   it('preserves unchanged block identities across streaming projections', () => {
     const snapshot = (tail: string): AgentTranscriptSnapshot => ({

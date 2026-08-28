@@ -1092,6 +1092,21 @@ function stampRunningPromptIdentity(blocks: readonly Block[], prompt: Transcript
   return stampPromptIdentity(blocks, prompt, 'running');
 }
 
+function keepPreviousUser(
+  next: readonly Block[],
+  previousUser: UserBlock | undefined,
+  previous: readonly Block[],
+): Block[] {
+  if (previousUser === undefined) return [...next];
+  if (next.some((block) => block.id === previousUser.id || (block.kind === 'user' && isPromptIdentity(block, previousUser.promptId ?? '', previousUser.userMessageId)))) {
+    return [...next];
+  }
+  const merged = [...next];
+  if (insertAtPreviousPosition(merged, previousUser, previous)) return merged;
+  insertByTimeline(merged, previousUser);
+  return merged;
+}
+
 function isRegeneratingJournalUser(
   existing: Pick<UserBlock, 'userMessageId' | 'promptId' | 'promptStatus'> | undefined,
   prompt: { readonly promptId: string; readonly userMessageId?: string; readonly status: string },
@@ -1157,6 +1172,7 @@ function mergeTranscriptPromptBlocks(
           block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId),
       );
       if (isRegeneratingJournalUser(previousUser, prompt)) {
+        next = keepPreviousUser(next, previousUser, previous);
         next = stampPromptIdentity(next, prompt, undefined);
         continue;
       }
