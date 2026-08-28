@@ -31,6 +31,7 @@ import {
 import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
 import { toWireApproval } from './approvals';
 import { toWireQuestion } from './questions';
+import { readAgentRuntimeControls } from './sessionAgentConfig';
 import { resolveSessionFacts, toWireSession } from './sessions';
 
 const SNAPSHOT_MESSAGE_PAGE_SIZE = 100;
@@ -111,9 +112,6 @@ async function assembleSnapshot(
   const cwd = workspace?.root ?? '';
   const meta = await handle.accessor.get(ISessionMetadata).read();
 
-  // Materializing the main agent restores its persisted ProfileModel before
-  // the snapshot is projected. Unlike the list placeholder, this single-session
-  // surface can therefore carry the authoritative session-bound model.
   const main = await ensureMainAgent(handle);
   const snapState = await broadcaster.getSnapshotState(sessionId);
   const projected = toWireSession(
@@ -122,8 +120,14 @@ async function assembleSnapshot(
     resolveSessionFacts(core, sessionId),
   );
   const model = readBoundModel(main);
-  const session =
-    model === undefined ? projected : { ...projected, agent_config: { ...projected.agent_config, model } };
+  const session = {
+    ...projected,
+    agent_config: {
+      ...projected.agent_config,
+      ...(model === undefined ? {} : { model }),
+      ...(await readAgentRuntimeControls(main)),
+    },
+  };
   const subagentCandidates = [...snapState.subagents];
   const toolCallCounts = await broadcaster.getTranscriptToolCallCounts(
     sessionId,
@@ -177,7 +181,6 @@ function readBoundModel(main: IAgentScopeHandle): string | undefined {
   try {
     return main.accessor.get(IAgentProfileService).getModel();
   } catch {
-    // Model recovery is best-effort for partially materialized legacy agents.
     return undefined;
   }
 }

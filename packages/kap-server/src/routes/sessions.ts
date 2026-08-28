@@ -85,7 +85,7 @@ import {
 import { ensureMainAgent } from '../transport/mainAgent';
 import type { SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
 import { parseActionSuffix } from './action-suffix';
-import { applySessionAgentConfig } from './sessionAgentConfig';
+import { applyAgentRuntimeControls, applySessionAgentConfig } from './sessionAgentConfig';
 import { updateSessionProfile } from './sessionProfile';
 
 interface SessionRouteHost {
@@ -274,6 +274,13 @@ export function registerSessionsRoutes(
         });
         if (typeof body.title === 'string') {
           await handle.accessor.get(ISessionMetadata).setTitle(body.title);
+        }
+        if (
+          body.agent_config?.permission_mode !== undefined
+          || body.agent_config?.plan_mode !== undefined
+          || body.agent_config?.swarm_mode !== undefined
+        ) {
+          await applyAgentRuntimeControls(await ensureMainAgent(handle), body.agent_config);
         }
         const meta = await handle.accessor.get(ISessionMetadata).read();
         const session = toWireSession(

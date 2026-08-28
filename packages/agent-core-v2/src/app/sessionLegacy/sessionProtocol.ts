@@ -27,12 +27,22 @@ export const sessionMetadataSchema = z
   .catchall(z.unknown());
 export type SessionMetadata = z.infer<typeof sessionMetadataSchema>;
 
+/** Mirrors `sessionAgentConfigSchema` in `@moonshot-ai/protocol`; the pair is
+ *  pinned together by a drift test in kap-server. */
 export const sessionAgentConfigSchema = z.object({
   model: z.string(),
   profile: z.string().min(1).optional(),
-  system_prompt: z.string().optional(),
-  tools: z.array(z.string()).optional(),
-  mcp_servers: z.array(z.string()).optional(),
+  permission_mode: promptPermissionModeSchema.optional(),
+  plan_mode: z.boolean().optional(),
+  swarm_mode: z.boolean().optional(),
+});
+export type SessionAgentConfig = z.infer<typeof sessionAgentConfigSchema>;
+
+/** Strict: a key the server does not apply is a validation error, not a
+ *  silent drop. See the protocol package for the rationale. */
+export const sessionAgentConfigPartialSchema = z.strictObject({
+  model: z.string().optional(),
+  profile: z.string().min(1).optional(),
   thinking: promptThinkingSchema.optional(),
   permission_mode: promptPermissionModeSchema.optional(),
   plan_mode: z.boolean().optional(),
@@ -40,10 +50,14 @@ export const sessionAgentConfigSchema = z.object({
   goal_objective: z.string().optional(),
   goal_control: z.enum(['pause', 'resume', 'cancel']).optional(),
 });
-export type SessionAgentConfig = z.infer<typeof sessionAgentConfigSchema>;
-
-export const sessionAgentConfigPartialSchema = sessionAgentConfigSchema.partial();
 export type SessionAgentConfigPartial = z.infer<typeof sessionAgentConfigPartialSchema>;
+
+/** Create carries no goal controls: a new session has no goal to act on. */
+export const sessionAgentConfigCreateSchema = sessionAgentConfigPartialSchema.omit({
+  goal_objective: true,
+  goal_control: true,
+});
+export type SessionAgentConfigCreate = z.infer<typeof sessionAgentConfigCreateSchema>;
 
 export const permissionRuleMatcherSchema = z.object({
   kind: z.enum(['command_prefix', 'path_glob', 'exact_input', 'always']),

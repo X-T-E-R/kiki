@@ -90,13 +90,61 @@ describe('createSessionRequestSchema', () => {
     ).toBe(false);
   });
 
-  it('rejects extra unknown agent_config keys via partial schema (zod is permissive but the partial holds known keys)', () => {
-    const parsed = createSessionRequestSchema.parse({
+  it('rejects an unknown agent_config key instead of dropping it', () => {
+    const result = createSessionRequestSchema.safeParse({
       metadata: { cwd: '/tmp/foo' },
       agent_config: { model: 'm', unknown_key: 'x' } as unknown as { model: string },
     });
-    expect(parsed.agent_config?.model).toBe('m');
-    expect((parsed.agent_config as Record<string, unknown>)['unknown_key']).toBeUndefined();
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]).toMatchObject({
+      code: 'unrecognized_keys',
+      path: ['agent_config'],
+      keys: ['unknown_key'],
+    });
+  });
+
+  it.each(['system_prompt', 'tools', 'mcp_servers'])(
+    'rejects %s, which the server never applied',
+    (key) => {
+      const result = createSessionRequestSchema.safeParse({
+        metadata: { cwd: '/tmp/foo' },
+        agent_config: { model: 'm', [key]: 'x' } as unknown as { model: string },
+      });
+      expect(result.success).toBe(false);
+    },
+  );
+
+  it.each(['goal_objective', 'goal_control'])(
+    'rejects %s at create, where there is no goal to act on',
+    (key) => {
+      const result = createSessionRequestSchema.safeParse({
+        metadata: { cwd: '/tmp/foo' },
+        agent_config: { [key]: 'pause' } as unknown as { model: string },
+      });
+      expect(result.success).toBe(false);
+    },
+  );
+
+  it('accepts the modes create does apply', () => {
+    const parsed = createSessionRequestSchema.parse({
+      metadata: { cwd: '/tmp/foo' },
+      agent_config: {
+        model: 'm',
+        profile: 'reviewer',
+        thinking: 'high',
+        permission_mode: 'yolo',
+        plan_mode: true,
+        swarm_mode: false,
+      },
+    });
+    expect(parsed.agent_config).toEqual({
+      model: 'm',
+      profile: 'reviewer',
+      thinking: 'high',
+      permission_mode: 'yolo',
+      plan_mode: true,
+      swarm_mode: false,
+    });
   });
 });
 
@@ -236,6 +284,26 @@ describe('updateSessionProfileRequestSchema', () => {
       plan_mode: false,
     });
   });
+
+  it('accepts the goal controls, which only an existing session can act on', () => {
+    expect(
+      updateSessionProfileRequestSchema.parse({ agent_config: { goal_control: 'cancel' } }),
+    ).toEqual({ agent_config: { goal_control: 'cancel' } });
+  });
+
+  it.each(['system_prompt', 'tools', 'mcp_servers', 'unknown_key'])(
+    'rejects %s instead of dropping it',
+    (key) => {
+      const result = updateSessionProfileRequestSchema.safeParse({
+        agent_config: { [key]: 'x' },
+      });
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]).toMatchObject({
+        code: 'unrecognized_keys',
+        keys: [key],
+      });
+    },
+  );
 });
 
 describe('updateSessionRequestSchema (legacy alias)', () => {
