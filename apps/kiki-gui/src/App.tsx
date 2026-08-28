@@ -235,11 +235,14 @@ export function App() {
     const sorted = sortSessionItems(sessions, layoutPrefs.sortBy);
     const nowMs = Date.now();
     if (layoutPrefs.groupBy === 'workspace') {
+      // Pinned rows keep a global leading bucket here too: a per-workspace
+      // bucket would bury the sessions the user asked to keep on top.
       return groupSessionsByWorkspace(
         sorted,
         workspaceOptions,
         (workspace) => workspace.name,
         t('sidebar.groupUngrouped'),
+        t('sidebar.groupPinned'),
       );
     }
     return groupSessionsByTime(
@@ -247,6 +250,8 @@ export function App() {
       nowMs,
       {
         pinned: t('sidebar.groupPinned'),
+        today: t('sidebar.groupToday'),
+        yesterday: t('sidebar.groupYesterday'),
         week: t('sidebar.groupWeek'),
         month: t('sidebar.groupMonth'),
         older: t('sidebar.groupOlder'),

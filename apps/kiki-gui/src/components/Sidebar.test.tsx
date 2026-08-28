@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 
-import { act } from 'react';
+import { act, type ComponentProps } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Session } from '@moonshot-ai/protocol';
+import type { Session, Workspace } from '@moonshot-ai/protocol';
 
 import { I18nProvider } from '../i18n';
 import type { SearchMessageHit, SearchMessagesResponse } from '../lib/client';
@@ -19,11 +19,12 @@ import {
 } from './Sidebar';
 
 const searchMessages = vi.fn();
+const setWorkspacePinned = vi.fn(async () => {});
 
 vi.mock('../state/connection', () => ({
   useOptionalControllerRegistry: () => null,
   useConnection: () => ({
-    client: { searchMessages },
+    client: { searchMessages, setWorkspacePinned },
     meta: {
       server_version: '1.0.0',
       capabilities: {
@@ -117,6 +118,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   searchMessages.mockReset();
+  setWorkspacePinned.mockClear();
 });
 
 afterEach(() => {
@@ -134,8 +136,10 @@ async function settle(): Promise<void> {
   });
 }
 
+type SidebarProps = ComponentProps<typeof Sidebar>;
+
 async function mount(
-  list: { sessions?: readonly Session[]; sessionGroups?: readonly SessionGroup[] } = {},
+  overrides: Partial<SidebarProps> = {},
 ): Promise<{ container: HTMLDivElement; root: Root }> {
   const container = document.createElement('div');
   document.body.append(container);
@@ -149,8 +153,8 @@ async function mount(
           <MemoryRouter>
             <Sidebar
               activeSessionId={undefined}
-              sessions={list.sessions ?? []}
-              sessionGroups={list.sessionGroups ?? []}
+              sessions={[]}
+              sessionGroups={[]}
               sessionsQuery={{
                 isLoading: false,
                 isError: false,
@@ -169,6 +173,7 @@ async function mount(
               onGroupBy={() => {}}
               sortBy="updated-desc"
               onSortBy={() => {}}
+              {...overrides}
             />
           </MemoryRouter>
         </I18nProvider>
@@ -176,6 +181,31 @@ async function mount(
     );
   });
   return { container, root };
+}
+
+function workspace(id: string, name: string, pinned = false): Workspace {
+  return {
+    id,
+    root: `C:/${name}`,
+    name,
+    created_at: '2026-01-01T00:00:00.000Z',
+    last_opened_at: '2026-01-02T00:00:00.000Z',
+    session_count: 1,
+    pinned,
+  };
+}
+
+/** The view menu lives behind the ⋮ trigger; every test that inspects an
+ * option has to open it first. */
+async function openViewMenu(container: HTMLDivElement): Promise<HTMLElement> {
+  const toggle = container.querySelector<HTMLButtonElement>('[data-view-menu-toggle]');
+  if (toggle === null) throw new Error('view menu trigger not rendered');
+  await act(async () => {
+    toggle.click();
+  });
+  const menu = container.querySelector<HTMLElement>('[data-view-menu]');
+  if (menu === null) throw new Error('view menu did not open');
+  return menu;
 }
 
 async function typeQuery(container: HTMLDivElement, text: string): Promise<void> {
@@ -418,6 +448,175 @@ describe('Sidebar entry distribution', () => {
     expect(toggles).toHaveLength(2);
     expect(toggles[0]?.getAttribute('aria-label')).toBe('Unpin pinned');
     expect(toggles[1]?.getAttribute('aria-label')).toBe('Pin plain to the top');
+  });
+});
+
+describe('Sidebar view menu', () => {
+  const wsA = workspace('wd_a_000000000000', 'workshop', true);
+  const wsB = workspace('wd_b_000000000000', 'another-ws');
+  const listed = (): { sessions: Session[]; sessionGroups: SessionGroup[] } => {
+    const one = session('one');
+    return {
+      sessions: [one],
+      sessionGroups: [{ key: 'today', label: 'Today', items: [one] }],
+    };
+  };
+
+  it('leaves no select element anywhere in the sidebar', async () => {
+    const { container } = await mount({ ...listed(), workspaceOptions: [wsA, wsB] });
+    expect(container.querySelectorAll('select')).toHaveLength(0);
+    await openViewMenu(container);
+    expect(container.querySelectorAll('select')).toHaveLength(0);
+  });
+
+  it('keeps the default chrome down to seven controls with the view options collapsed', async () => {
+    const { container } = await mount({ ...listed(), workspaceOptions: [wsA, wsB] });
+    // Chrome only: the session rows and their hover affordances live in the
+    // scroller, which this filter drops.
+    const chrome = [...container.querySelectorAll<HTMLElement>('button, input, select, textarea')].filter(
+      (element) => element.closest('[data-session-list]') === null,
+    );
+    expect(chrome).toHaveLength(7);
+    expect(container.querySelector('[data-nav-capabilities]')).not.toBeNull();
+    expect(container.querySelector('[data-nav-usage]')).not.toBeNull();
+    expect(container.querySelector('[data-search-box]')).not.toBeNull();
+    expect(container.querySelector('[data-view-menu-toggle]')).not.toBeNull();
+    expect(container.querySelector('[data-connection-status]')).not.toBeNull();
+    // Grouping, sorting and scope are no longer resident.
+    expect(container.querySelector('[data-group-by]')).toBeNull();
+    expect(container.querySelector('[data-sort-by]')).toBeNull();
+    expect(container.querySelector('[data-workspace-filter]')).toBeNull();
+  });
+
+  it('drops the list-bottom archived toggle in favour of the menu entry', async () => {
+    const { container } = await mount(listed());
+    expect(container.querySelector('[data-session-list]')?.textContent ?? '').not.toContain('Show archived');
+    const menu = await openViewMenu(container);
+    expect(menu.querySelector('[data-show-archived]')).not.toBeNull();
+  });
+
+  it('reports the current selection and writes grouping, sorting and archived through', async () => {
+    const onGroupBy = vi.fn();
+    const onSortBy = vi.fn();
+    const onToggleArchived = vi.fn();
+    const { container } = await mount({
+      ...listed(),
+      groupBy: 'time',
+      sortBy: 'updated-desc',
+      onGroupBy,
+      onSortBy,
+      onToggleArchived,
+    });
+    const menu = await openViewMenu(container);
+    expect(menu.querySelector('[data-group-by="time"]')?.getAttribute('aria-checked')).toBe('true');
+    expect(menu.querySelector('[data-sort-by="updated-desc"]')?.getAttribute('aria-checked')).toBe('true');
+    expect(menu.querySelector('[data-show-archived]')?.getAttribute('aria-checked')).toBe('false');
+
+    await act(async () => {
+      menu.querySelector<HTMLButtonElement>('[data-group-by="workspace"]')?.click();
+      menu.querySelector<HTMLButtonElement>('[data-sort-by="title"]')?.click();
+      menu.querySelector<HTMLButtonElement>('[data-show-archived]')?.click();
+    });
+    expect(onGroupBy).toHaveBeenCalledWith('workspace');
+    expect(onSortBy).toHaveBeenCalledWith('title');
+    expect(onToggleArchived).toHaveBeenCalledTimes(1);
+    // View preferences do not dismiss the panel; the list rearranges behind it.
+    expect(container.querySelector('[data-view-menu]')).not.toBeNull();
+  });
+
+  it('scopes the list to one workspace and back to all from the same section', async () => {
+    const onWorkspaceFilter = vi.fn();
+    const { container } = await mount({
+      ...listed(),
+      workspaceOptions: [wsA, wsB],
+      workspaceFilter: wsA.id,
+      onWorkspaceFilter,
+    });
+    const menu = await openViewMenu(container);
+    expect(menu.querySelector(`[data-workspace-filter="${wsA.id}"]`)?.getAttribute('aria-checked')).toBe('true');
+    expect(menu.querySelector('[data-workspace-filter=""]')?.getAttribute('aria-checked')).toBe('false');
+    await act(async () => {
+      menu.querySelector<HTMLButtonElement>(`[data-workspace-filter="${wsB.id}"]`)?.click();
+    });
+    expect(onWorkspaceFilter).toHaveBeenCalledWith(wsB.id);
+    await act(async () => {
+      menu.querySelector<HTMLButtonElement>('[data-workspace-filter=""]')?.click();
+    });
+    expect(onWorkspaceFilter).toHaveBeenLastCalledWith(undefined);
+    expect(menu.querySelector('[data-manage-workspaces]')).not.toBeNull();
+  });
+
+  it('carries the per-row workspace pin toggle into the menu', async () => {
+    const { container } = await mount({ ...listed(), workspaceOptions: [wsA, wsB] });
+    const menu = await openViewMenu(container);
+    const pins = [...menu.querySelectorAll<HTMLButtonElement>('[data-workspace-pin-toggle]')];
+    expect(pins).toHaveLength(2);
+    expect(pins[0]?.getAttribute('aria-label')).toBe('Unpin the workspace workshop');
+    expect(pins[1]?.getAttribute('aria-label')).toBe('Pin the workspace another-ws to the top');
+    await act(async () => {
+      pins[1]?.click();
+    });
+    expect(setWorkspacePinned).toHaveBeenCalledWith(wsB.id, true);
+  });
+
+  it('hides the workspace section when the server reports none', async () => {
+    const { container } = await mount({ ...listed(), workspaceOptions: [] });
+    const menu = await openViewMenu(container);
+    expect(menu.querySelector('[data-workspace-filter]')).toBeNull();
+    expect(menu.querySelector('[data-group-by="time"]')).not.toBeNull();
+  });
+});
+
+describe('Sidebar filter chips', () => {
+  const wsA = workspace('wd_a_000000000000', 'workshop', true);
+  const listed = (): { sessions: Session[]; sessionGroups: SessionGroup[] } => {
+    const one = session('one');
+    return { sessions: [one], sessionGroups: [{ key: 'today', label: 'Today', items: [one] }] };
+  };
+
+  it('renders nothing while both filters sit at their defaults', async () => {
+    const { container } = await mount({ ...listed(), workspaceOptions: [wsA] });
+    expect(container.querySelector('[data-sidebar-filters]')).toBeNull();
+  });
+
+  it('traces an active workspace scope and resets it from the chip', async () => {
+    const onWorkspaceFilter = vi.fn();
+    const { container } = await mount({
+      ...listed(),
+      workspaceOptions: [wsA],
+      workspaceFilter: wsA.id,
+      onWorkspaceFilter,
+    });
+    const chip = container.querySelector<HTMLElement>('[data-sidebar-filter-chip="workspace"]');
+    expect(chip?.textContent).toContain('workshop');
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-sidebar-filter-clear="workspace"]')?.click();
+    });
+    expect(onWorkspaceFilter).toHaveBeenCalledWith(undefined);
+  });
+
+  it('traces archived visibility and reopens the menu from the chip body', async () => {
+    const onToggleArchived = vi.fn();
+    const { container } = await mount({ ...listed(), showArchived: true, onToggleArchived });
+    const chip = container.querySelector<HTMLElement>('[data-sidebar-filter-chip="archived"]');
+    expect(chip?.textContent).toContain('Including archived');
+    await act(async () => {
+      chip?.querySelector<HTMLButtonElement>('button')?.click();
+    });
+    expect(container.querySelector('[data-view-menu]')).not.toBeNull();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-sidebar-filter-clear="archived"]')?.click();
+    });
+    expect(onToggleArchived).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps exactly one archived entry on the empty state', async () => {
+    const { container } = await mount({ sessions: [], sessionGroups: [] });
+    const entries = [...container.querySelectorAll('button')].filter((element) =>
+      (element.textContent ?? '').includes('archived'),
+    );
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.closest('[data-sidebar-empty]')).not.toBeNull();
   });
 });
 

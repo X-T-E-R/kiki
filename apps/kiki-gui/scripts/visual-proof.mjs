@@ -1420,10 +1420,29 @@ async function scenarioSettingsAgents() {
   await page.waitForSelector('[data-agent-profile="reviewer"] [role="switch"][aria-checked="true"]', { timeout: 5000 });
   await shot('settings-agents-disabled-reloaded');
 }
+/** Grouping, sorting, scope and archived visibility all live behind the
+ * sidebar's ⋮ view menu now, so every view change opens it first. */
+async function pickViewOption(selector) {
+  if ((await page.locator('[data-view-menu]').count()) === 0) {
+    await page.click('[data-view-menu-toggle]');
+    await page.waitForSelector('[data-view-menu]', { timeout: 5000 });
+  }
+  await page.click(`[data-view-menu] ${selector}`);
+}
+
+/** The panel overlays the list's top rows, so screenshots close it first. */
+async function closeViewMenu() {
+  if ((await page.locator('[data-view-menu]').count()) > 0) {
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('[data-view-menu]', { state: 'detached', timeout: 5000 });
+    await page.waitForTimeout(150);
+  }
+}
+
 async function scenarioSidebarOrganize() {
   // Three sessions across two workspaces; the pinned row floats to a "Pinned"
   // group and the rest bucket by recency.
-  await page.waitForSelector('[data-workspace-filter]', { timeout: 10_000 });
+  await page.waitForSelector('[data-view-menu-toggle]', { timeout: 10_000 });
 
   // Scope every assertion to the sidebar so the /new recent-session chips
   // (which render the same titles in the main panel) never match.
@@ -1492,23 +1511,30 @@ async function scenarioSidebarOrganize() {
     throw new Error(`sidebar double-click did not reset to 264 (got ${resetWidth})`);
   }
 
-  // --- Workspace grouping: bucket headers follow the workspace list order.
-  await page.selectOption('[data-group-by]', 'workspace');
+  // --- Workspace grouping: the pinned row keeps a global leading bucket and
+  // the remaining buckets follow the workspace list order.
+  await pickViewOption('[data-group-by="workspace"]');
+  await closeViewMenu();
   await page.waitForFunction(
-    () => document.querySelectorAll('aside [data-session-group]').length === 2,
+    () => document.querySelectorAll('aside [data-session-group]').length === 3,
     undefined,
     { timeout: 5000 },
   );
   const wsKeys = await groupKeys();
-  if (wsKeys[0] !== 'wd_fixture_000000000000' || wsKeys[1] !== 'wd_fixture_000000000001') {
+  if (
+    wsKeys[0] !== 'pinned'
+    || wsKeys[1] !== 'wd_fixture_000000000000'
+    || wsKeys[2] !== 'wd_fixture_000000000001'
+  ) {
     throw new Error(`unexpected workspace grouping: ${JSON.stringify(wsKeys)}`);
   }
   await shot('sidebar-group-by-workspace');
 
   // --- Sorting: "By name" reorders the unpinned rows within their bucket.
-  await page.selectOption('[data-group-by]', 'time');
+  await pickViewOption('[data-group-by="time"]');
   await page.waitForTimeout(200);
-  await page.selectOption('[data-sort-by]', 'title');
+  await pickViewOption('[data-sort-by="title"]');
+  await closeViewMenu();
   await page.waitForFunction(
     () => {
       const titles = Array.from(document.querySelectorAll('aside [data-session-title]')).map((n) => n.textContent ?? '');
@@ -1522,11 +1548,13 @@ async function scenarioSidebarOrganize() {
   await shot('sidebar-sort-by-name');
 
   // Restore default ordering for later assertions.
-  await page.selectOption('[data-sort-by]', 'updated-desc');
-  await page.selectOption('[data-group-by]', 'time');
+  await pickViewOption('[data-sort-by="updated-desc"]');
+  await pickViewOption('[data-group-by="time"]');
 
-  // Workspace filtering narrows the sidebar to workspace B's row only.
-  await page.selectOption('[data-workspace-filter]', 'wd_fixture_000000000001');
+  // Workspace filtering narrows the sidebar to workspace B's row only, and
+  // leaves a revocable chip on the list's upper edge.
+  await pickViewOption('[data-workspace-filter="wd_fixture_000000000001"]');
+  await closeViewMenu();
   await page.waitForFunction(
     () => {
       const titles = Array.from(document.querySelectorAll('aside [data-session-title]')).map((n) => n.textContent ?? '');
@@ -1535,10 +1563,11 @@ async function scenarioSidebarOrganize() {
     undefined,
     { timeout: 5000 },
   );
+  await page.waitForSelector('[data-sidebar-filter-chip="workspace"]', { timeout: 5000 });
   await shot('sidebar-workspace-filter');
 
-  // Back to all workspaces restores the pinned + grouped view.
-  await page.selectOption('[data-workspace-filter]', '');
+  // The chip's × is the shortest way back to every workspace.
+  await page.click('[data-sidebar-filter-clear="workspace"]');
   await page.waitForFunction(
     () => {
       const titles = Array.from(document.querySelectorAll('aside [data-session-title]')).map((n) => n.textContent ?? '');
