@@ -392,7 +392,7 @@ export interface ProcessTaskInfo extends TaskInfoBase {
 export interface AgentTaskInfo extends TaskInfoBase {
   readonly kind: 'agent';
   readonly agentId?: string;
-  readonly subagentType?: string;
+  readonly profile?: string;
   /** Display-normalized bound model alias (populated by the v2 engine). */
   readonly model?: string;
   /** The subagent's effective thinking effort at spawn (v2 engine). */
@@ -984,6 +984,12 @@ export interface PromptQueuedEvent {
   readonly queueLength: number;
 }
 
+/** A queued prompt left the queue and became the agent's active turn. */
+export interface PromptStartedEvent {
+  readonly type: 'prompt.started';
+  readonly promptId: string;
+}
+
 export interface PromptReplacedEvent {
   readonly type: 'prompt.replaced';
   readonly promptId: string;
@@ -1087,6 +1093,7 @@ export type AgentEvent =
   | CronFiredEvent
   | PromptSubmittedEvent
   | PromptQueuedEvent
+  | PromptStartedEvent
   | PromptReplacedEvent
   | PromptCompletedEvent
   | PromptAbortedEvent
@@ -1463,7 +1470,7 @@ export const processTaskInfoSchema = taskInfoBaseSchema.extend({
 export const agentTaskInfoSchema = taskInfoBaseSchema.extend({
   kind: z.literal('agent'),
   agentId: z.string().optional(),
-  subagentType: z.string().optional(),
+  profile: z.string().optional(),
   model: z.string().optional(),
   thinkingEffort: z.string().optional(),
 }) satisfies z.ZodType<AgentTaskInfo>;
@@ -1954,6 +1961,11 @@ export const promptQueuedEventSchema = z.object({
   queueLength: z.number().int().nonnegative(),
 }) satisfies z.ZodType<PromptQueuedEvent>;
 
+export const promptStartedEventSchema = z.object({
+  type: z.literal('prompt.started'),
+  promptId: z.string(),
+}) satisfies z.ZodType<PromptStartedEvent>;
+
 export const promptReplacedEventSchema = z.object({
   type: z.literal('prompt.replaced'),
   promptId: z.string(),
@@ -2020,6 +2032,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   workspaceDeletedEventSchema,
   sessionWorkChangedEventSchema,
   sessionStatusChangedEventSchema,
+  configChangedEventSchema,
   modelCatalogChangedEventSchema,
   pluginChangedEventSchema,
   capabilityChangedEventSchema,
@@ -2060,6 +2073,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   cronFiredEventSchema,
   promptSubmittedEventSchema,
   promptQueuedEventSchema,
+  promptStartedEventSchema,
   promptReplacedEventSchema,
   promptCompletedEventSchema,
   promptAbortedEventSchema,

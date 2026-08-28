@@ -31,6 +31,7 @@ import {
 import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
 import { toWireApproval } from './approvals';
 import { toWireQuestion } from './questions';
+import { readAgentRuntimeControls } from './sessionAgentConfig';
 import { resolveSessionFacts, toWireSession } from './sessions';
 
 const SNAPSHOT_MESSAGE_PAGE_SIZE = 100;
@@ -130,8 +131,14 @@ async function assembleSnapshot(
     resolveSessionFacts(core, sessionId),
   );
   const model = readBoundModel(main);
-  const session =
-    model === undefined ? projected : { ...projected, agent_config: { ...projected.agent_config, model } };
+  const session = {
+    ...projected,
+    agent_config: {
+      ...projected.agent_config,
+      ...(model === undefined ? {} : { model }),
+      ...(await readAgentRuntimeControls(main)),
+    },
+  };
   const subagentCandidates = [...snapState.subagents];
   const toolCallCounts = compact
     ? new Map<string, number>()
@@ -189,7 +196,6 @@ function readBoundModel(main: IAgentScopeHandle): string | undefined {
   try {
     return main.accessor.get(IAgentProfileService).getModel();
   } catch {
-    // Model recovery is best-effort for partially materialized legacy agents.
     return undefined;
   }
 }
@@ -202,11 +208,11 @@ function enrichSnapshotSubagents(
   return subagents.map((subagent) => {
     const meta = agents?.[subagent.id];
     const userLabel = firstNonEmpty(subagentUserLabel(meta), subagent.label);
-    const spawnedName = firstNonEmpty(subagent.subagent_type, meta?.displayName);
+    const spawnedName = firstNonEmpty(subagent.profile, meta?.displayName);
     return {
       ...subagent,
       description: resolveSubagentDisplayName(userLabel, spawnedName, subagent.id),
-      subagent_type: spawnedName,
+      profile: spawnedName,
       parent_agent_id: firstNonEmpty(subagent.parent_agent_id, subagentParentAgentId(meta)),
       label: userLabel,
       tool_call_count: Math.max(

@@ -209,6 +209,40 @@ describe('events / display re-exports', () => {
     expect(replaced.type).toBe('prompt.replaced');
   });
 
+  it('validates prompt.started events', () => {
+    const started = eventSchema.parse({
+      type: 'prompt.started',
+      agentId: 'main',
+      sessionId: 'sess_1',
+      promptId: 'prompt_1',
+    });
+
+    expect(started.type).toBe('prompt.started');
+    expect((started as { promptId: string }).promptId).toBe('prompt_1');
+  });
+
+  it('rejects a prompt.started event without a promptId', () => {
+    const result = eventSchema.safeParse({
+      type: 'prompt.started',
+      agentId: 'main',
+      sessionId: 'sess_1',
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('parses every event type the union declares, including config.changed', () => {
+    const declared = new Set(
+      agentEventSchema.options.map(
+        (option) => (option.shape.type as { value: string }).value,
+      ),
+    );
+
+    expect(declared.has('prompt.started')).toBe(true);
+    expect(declared.has('prompt.queued')).toBe(true);
+    expect(declared.has('event.config.changed')).toBe(true);
+  });
+
   it('accepts legacy and timestamped agent.disposed lifecycle events', () => {
     const legacy = eventSchema.parse({
       type: 'agent.disposed',

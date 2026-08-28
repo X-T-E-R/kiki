@@ -235,7 +235,7 @@ describe('AgentGroupComponent', () => {
     a.markBackgrounded();
     a.setResult({
       tool_call_id: 'call_agent_1',
-      output: 'agent_id: sub_call_agent_1\nactual_subagent_type: explore\n',
+      output: 'agent_id: sub_call_agent_1\nactual_profile: explore\n',
       is_error: false,
     });
 

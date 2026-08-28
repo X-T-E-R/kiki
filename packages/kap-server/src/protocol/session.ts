@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { isoDateTimeSchema } from '@moonshot-ai/agent-core-v2/_base/utils/isoDateTime';
 import {
   permissionRuleSchema,
-  sessionAgentConfigPartialSchema,
+  sessionAgentConfigCreateSchema,
   sessionAgentConfigSchema,
   sessionMetadataSchema,
 } from '@moonshot-ai/agent-core-v2/app/sessionLegacy/sessionProtocol';
@@ -71,7 +71,7 @@ export type Session = z.infer<typeof sessionSchema>;
 export const sessionCreateSchema = z.object({
   title: z.string().min(1).optional(),
   metadata: sessionMetadataSchema.optional(),
-  agent_config: sessionAgentConfigPartialSchema.optional(),
+  agent_config: sessionAgentConfigCreateSchema.optional(),
   workspace_id: workspaceIdSchema.optional(),
 });
 

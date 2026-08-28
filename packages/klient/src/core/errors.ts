@@ -17,13 +17,29 @@ export class RPCError extends Error {
   }
 }
 
+/**
+ * Engine error code → wire number, mirroring what kap-server's REST mappers
+ * send for the same `Error2`. Anything absent collapses to 50001, which is why
+ * a locked session or a missing session read as "internal error" over IPC while
+ * REST named them: the two client surfaces of one product must agree.
+ */
 const ENGINE_ERROR_CODES: Readonly<Record<string, number>> = {
   [ErrorCodes.REQUEST_INVALID]: 40001,
   // MCP management plane: mirror the `/api/v2/mcp` wire codes so memory and
   // ipc surface the same numbers as REST.
   [ErrorCodes.CONFIG_INVALID]: 40001,
+  [ErrorCodes.SESSION_NOT_FOUND]: 40401,
+  [ErrorCodes.AGENT_NOT_FOUND]: 40401,
+  [ErrorCodes.PROMPT_NOT_FOUND]: 40402,
   [ErrorCodes.MCP_SERVER_NOT_FOUND]: 40408,
+  [ErrorCodes.WORKSPACE_NOT_FOUND]: 40410,
+  [ErrorCodes.TERMINAL_NOT_FOUND]: 40414,
+  [ErrorCodes.SKILL_NOT_FOUND]: 40415,
   [ErrorCodes.MCP_OAUTH_FAILED]: 40940,
+  [ErrorCodes.SESSION_BUSY]: 40901,
+  [ErrorCodes.COMPACTION_UNABLE]: 40910,
+  [ErrorCodes.STORAGE_LOCKED]: 40933,
+  [ErrorCodes.SESSION_INDEX_BUILDING]: 40939,
   [ErrorCodes.THREAD_NOT_FOUND]: 40421,
   [ErrorCodes.THREAD_ARCHIVED]: 40927,
   [ErrorCodes.THREAD_DISABLED]: 40928,

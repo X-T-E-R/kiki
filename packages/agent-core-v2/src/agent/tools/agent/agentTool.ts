@@ -599,7 +599,7 @@ export class SubagentTool implements ISubagentTool {
           toolCallId,
           runInBackground,
           operation: isResume ? 'resume' : 'spawn',
-          subagentType: requestedRoute ?? requestedProfileName ?? DEFAULT_PROFILE_NAME,
+          profile: requestedRoute ?? requestedProfileName ?? DEFAULT_PROFILE_NAME,
           resumeAgentId: isResume ? resumeAgentId : undefined,
           error,
         });
@@ -627,7 +627,7 @@ export class SubagentTool implements ISubagentTool {
         this.log?.warn('background agent task registration failed', {
           toolCallId,
           agentId: handle.agentId,
-          subagentType: handle.profileName,
+          profile: handle.profileName,
           error,
         });
         const message = error instanceof Error ? error.message : String(error);
@@ -711,7 +711,7 @@ function formatBackgroundAgentResult(
     `task_id: ${taskId}`,
     'status: running',
     `agent_id: ${handle.agentId}`,
-    `actual_subagent_type: ${handle.profileName}`,
+    `actual_profile: ${handle.profileName}`,
     'automatic_notification: true',
     '',
     `description: ${description}`,
@@ -726,7 +726,7 @@ function formatBackgroundAgentResult(
 function formatForegroundAgentSuccess(handle: SubagentHandle, result: string): string {
   return [
     `agent_id: ${handle.agentId}`,
-    `actual_subagent_type: ${handle.profileName}`,
+    `actual_profile: ${handle.profileName}`,
     'status: completed',
     '',
     '[summary]',
@@ -741,7 +741,7 @@ function formatForegroundAgentFailure(
 ): string {
   const lines = [
     `agent_id: ${handle.agentId}`,
-    `actual_subagent_type: ${handle.profileName}`,
+    `actual_profile: ${handle.profileName}`,
     'status: failed',
     '',
     `subagent error: ${message}`,

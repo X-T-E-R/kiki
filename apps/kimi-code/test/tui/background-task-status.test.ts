@@ -20,7 +20,7 @@ function task(overrides: Partial<BackgroundTaskInfo> = {}): BackgroundTaskInfo {
       ...base,
       kind: 'agent',
       agentId: 'agent-child',
-      subagentType: 'coder',
+      profile: 'coder',
       ...overrides,
     } as BackgroundTaskInfo;
   }

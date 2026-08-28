@@ -864,6 +864,18 @@ describe('AgentToolPolicyService tool denylist', () => {
     ).rejects.toThrow(/Available profiles: .*agent/);
   });
 
+  it('rejects a renamed tool denylist instead of silently restoring AgentRun', async () => {
+    registerAgentProfile({
+      name: 'deny-stale-agent',
+      disallowedTools: ['Agent'],
+      systemPrompt: () => 'deny stale Agent',
+    });
+    ctx = createTestAgent(hostEnvironmentServices(homeDir));
+    await expect(
+      ctx.get(IAgentProfileService).bind({ profile: 'deny-stale-agent', model: MOCK_MODEL }),
+    ).rejects.toThrow(/disallowedTools does not match any registered or built-in tool/);
+  });
+
   it('persists the denylist in the bind records', async () => {
     const persistence = new InMemoryWireRecordPersistence();
     ctx = createTestAgent({ persistence }, hostEnvironmentServices(homeDir));
@@ -1241,13 +1253,13 @@ describe('AgentToolPolicyService executor enforcement', () => {
     },
   ])('blocks a direct builtin call through $name', async ({ options, profile, disable }) => {
     ctx = createTestAgent(options, hostEnvironmentServices(homeDir));
+    const probe = new PolicyProbeTool('PolicyProbe');
+    ctx.get(IAgentToolRegistryService).register(probe);
     const profileService = ctx.get(IAgentProfileService);
     await profileService.bind({ profile, model: MOCK_MODEL });
     if (disable !== undefined) {
       await ctx.get(IAgentToolPolicyService).setSessionDisabledTools(disable);
     }
-    const probe = new PolicyProbeTool('PolicyProbe');
-    ctx.get(IAgentToolRegistryService).register(probe);
 
     const result = await executeDirectToolCall(ctx, 'PolicyProbe');
 
@@ -1401,28 +1413,12 @@ describe('AgentProfileService tool-pattern warnings', () => {
     systemPrompt: () => 'tool pattern warning test',
   });
 
-  it('warns about profile entries that can never activate anything', async () => {
+  it('rejects profile entries that can never activate anything', async () => {
     ctx = createTestAgent(hostEnvironmentServices(homeDir));
-    await ctx.get(IAgentProfileService).applyProfile(fileProfile);
-
-    const messages = toolPatternWarnings().map((warning) => warning.message ?? '');
-    expect(
-      messages.some((m) => m.includes('"Bashh"') && m.includes('profile "bad-patterns"')),
-    ).toBe(true);
-    expect(messages.some((m) => m.includes('"mcp__github"') && m.includes('mcp__github__*'))).toBe(
-      true,
+    await expect(ctx.get(IAgentProfileService).applyProfile(fileProfile)).rejects.toThrow(
+      /"Bashh".*does not match any registered or built-in tool[\s\S]*"mcp__github"[\s\S]*mcp__github__\*[\s\S]*"\*"[\s\S]*disallowedTools/,
     );
-    expect(messages.some((m) => m.includes('"*"') && m.includes('disallowedTools'))).toBe(true);
-  });
-
-  it('warns once per pattern across repeated applications of the same profile', async () => {
-    ctx = createTestAgent(hostEnvironmentServices(homeDir));
-    const svc = ctx.get(IAgentProfileService);
-    await svc.applyProfile(fileProfile);
-    await svc.applyProfile(fileProfile);
-
-    const messages = toolPatternWarnings().map((warning) => warning.message ?? '');
-    expect(messages.filter((m) => m.includes('"Bashh"'))).toHaveLength(1);
+    expect(toolPatternWarnings()).toEqual([]);
   });
 
   it('warns about global [tools] config entries that can never activate anything', async () => {
@@ -1448,7 +1444,7 @@ describe('AgentProfileService tool-pattern warnings', () => {
     expect(toolPatternWarnings()).toEqual([]);
   });
 
-  it('bind also publishes the warnings', async () => {
+  it('bind also rejects inert profile tool patterns', async () => {
     registerAgentProfile({
       name: 'bind-bad-patterns',
       tools: ['mcp__github'],
@@ -1456,16 +1452,13 @@ describe('AgentProfileService tool-pattern warnings', () => {
       systemPrompt: () => 'bind warning test',
     });
     ctx = createTestAgent(hostEnvironmentServices(homeDir));
-    await ctx.get(IAgentProfileService).bind({ profile: 'bind-bad-patterns', model: MOCK_MODEL });
-
-    const messages = toolPatternWarnings().map((warning) => warning.message ?? '');
-    expect(messages.some((m) => m.includes('"mcp__github"') && m.includes('mcp__github__*'))).toBe(
-      true,
-    );
-    expect(messages.some((m) => m.includes('"*"') && m.includes('disallowedTools'))).toBe(true);
+    await expect(
+      ctx.get(IAgentProfileService).bind({ profile: 'bind-bad-patterns', model: MOCK_MODEL }),
+    ).rejects.toThrow(/"mcp__github"[\s\S]*mcp__github__\*[\s\S]*"\*"[\s\S]*disallowedTools/);
+    expect(toolPatternWarnings()).toEqual([]);
   });
 
-  it('warns about inert patterns in every routed allow-policy layer', async () => {
+  it('rejects inert patterns in every routed allow-policy layer', async () => {
     ctx = createTestAgent(hostEnvironmentServices(homeDir));
     const catalog = routedCatalog();
     const selection = catalog.resolveSelection({ route: 'reviewer.ui-k3' });
@@ -1474,25 +1467,9 @@ describe('AgentProfileService tool-pattern warnings', () => {
       toolAllowPolicies: [['Read', 'mcp__github'], ['Read', 'Bash*']],
     });
 
-    await ctx.get(IAgentProfileService).applyProfile(effective);
-
-    const messages = toolPatternWarnings().map((warning) => warning.message ?? '');
-    expect(
-      messages.some(
-        (message) =>
-          message.includes('profile route "reviewer.ui-k3"') &&
-          message.includes('tools policy layer 1') &&
-          message.includes('"mcp__github"'),
-      ),
-    ).toBe(true);
-    expect(
-      messages.some(
-        (message) =>
-          message.includes('profile route "reviewer.ui-k3"') &&
-          message.includes('tools policy layer 2') &&
-          message.includes('"Bash*"'),
-      ),
-    ).toBe(true);
+    await expect(ctx.get(IAgentProfileService).applyProfile(effective)).rejects.toThrow(
+      /"mcp__github"[\s\S]*profile route "reviewer.ui-k3"[\s\S]*tools policy layer 1[\s\S]*"Bash\*"[\s\S]*tools policy layer 2/,
+    );
   });
 
 });

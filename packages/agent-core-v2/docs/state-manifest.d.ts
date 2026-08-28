@@ -1725,7 +1725,7 @@ export interface AgentStateSnapshot {
   'task': /* TaskModelState — packages/agent-core-v2/src/agent/task/taskOps.ts */ Map<string, /* AgentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ /* SubagentTaskInfo — packages/agent-core-v2/src/agent/tools/agent/subagent-task.ts */ {
     readonly kind: 'agent';
     readonly agentId?: string;
-    readonly subagentType?: string;
+    readonly profile?: string;
     readonly parentToolCallId?: string;
     readonly model?: string;
     readonly thinkingEffort?: string;
@@ -1774,7 +1774,7 @@ export interface AgentStateSnapshot {
   'task.ghosts': Map<string, /* AgentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ /* SubagentTaskInfo — packages/agent-core-v2/src/agent/tools/agent/subagent-task.ts */ {
     readonly kind: 'agent';
     readonly agentId?: string;
-    readonly subagentType?: string;
+    readonly profile?: string;
     readonly parentToolCallId?: string;
     readonly model?: string;
     readonly thinkingEffort?: string;

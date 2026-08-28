@@ -288,8 +288,8 @@ function toWireTask(
   if (info.kind === 'agent' && info.agentId !== undefined) {
     base.agent_id = info.agentId;
   }
-  if (info.kind === 'agent' && info.subagentType !== undefined) {
-    base.subagent_type = info.subagentType;
+  if (info.kind === 'agent' && info.profile !== undefined) {
+    base.profile = info.profile;
   }
   if (info.kind === 'agent' && info.parentToolCallId !== undefined) {
     base.parent_tool_call_id = info.parentToolCallId;

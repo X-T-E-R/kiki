@@ -530,6 +530,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       );
     }
 
+    this.assertProfileToolPatterns(profile);
     this.activeProfile = profile;
     this.activeProfileDefinitionId = selection.baseProfile.definitionId;
     this.activeToolNamesOverlay = undefined;
@@ -565,7 +566,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.seedAgentsMdReminder(context);
 
     this.publishAgentsMdWarning();
-    this.publishToolPatternWarnings(profile);
+    this.publishToolPatternWarnings();
   }
 
   async setModel(alias: string): Promise<ProfileSetModelResult> {
@@ -690,6 +691,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   async applyProfile(profile: ResolvedAgentProfile, options?: ApplyProfileOptions): Promise<void> {
+    this.assertProfileToolPatterns(profile);
     const context = await this.buildSystemPromptContext(profile, options);
     this.activeProfile = profile;
     this.activeProfileDefinitionId = profile.definitionId;
@@ -709,7 +711,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.seedAgentsMdReminder(context);
     this.cacheAgentsMdWarning(context);
     this.publishAgentsMdWarning();
-    this.publishToolPatternWarnings(profile);
+    this.publishToolPatternWarnings();
   }
 
   async refreshSystemPrompt(): Promise<void> {
@@ -1222,48 +1224,76 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     );
   }
 
-  private publishToolPatternWarnings(profile?: ResolvedAgentProfile): void {
+  private knownToolNames(): Set<string> {
     const known = new Set<string>();
     for (const contribution of getAgentToolContributions()) known.add(contribution.options.name);
     for (const ref of this.toolRegistry.listReferences()) known.add(ref.name);
     for (const builtin of this.builtinProfiles.list()) {
-      for (const name of literalToolNames([
-        ...(builtin.tools ?? []),
-        ...(builtin.disallowedTools ?? []),
-      ])) {
+      for (const name of literalToolNames(builtin.tools ?? [])) {
         known.add(name);
       }
     }
+    return known;
+  }
+
+  private profileToolPatternChecks(profile: ResolvedAgentProfile): {
+    context: string;
+    field: string;
+    patterns: readonly string[] | undefined;
+  }[] {
     const checks: {
       context: string;
       field: string;
       patterns: readonly string[] | undefined;
-    }[] = [];
-    if (profile !== undefined) {
-      checks.push(
-        { context: `profile "${profile.name}"`, field: 'tools', patterns: profile.tools },
-        {
-          context: `profile "${profile.name}"`,
-          field: 'disallowedTools',
-          patterns: profile.disallowedTools,
-        },
-      );
-      for (const [index, patterns] of (profile.toolAllowPolicies ?? []).entries()) {
-        checks.push({
-          context:
-            profile.routeId === undefined
-              ? `profile "${profile.name}"`
-              : `profile route "${profile.routeId}"`,
-          field: `tools policy layer ${String(index + 1)}`,
-          patterns,
-        });
+    }[] = [
+      { context: `profile "${profile.name}"`, field: 'tools', patterns: profile.tools },
+      {
+        context: `profile "${profile.name}"`,
+        field: 'disallowedTools',
+        patterns: profile.disallowedTools,
+      },
+    ];
+    for (const [index, patterns] of (profile.toolAllowPolicies ?? []).entries()) {
+      checks.push({
+        context:
+          profile.routeId === undefined
+            ? `profile "${profile.name}"`
+            : `profile route "${profile.routeId}"`,
+        field: `tools policy layer ${String(index + 1)}`,
+        patterns,
+      });
+    }
+    return checks;
+  }
+
+  private assertProfileToolPatterns(profile: ResolvedAgentProfile): void {
+    const known = this.knownToolNames();
+    const issues: string[] = [];
+    for (const { context, field, patterns } of this.profileToolPatternChecks(profile)) {
+      if (patterns === undefined) continue;
+      for (const issue of findInactiveToolPatterns(patterns, (name) => known.has(name))) {
+        issues.push(describeInactiveToolPattern(context, field, issue));
       }
     }
+    if (issues.length === 0) return;
+    throw new ProfileError(
+      ProfileErrors.codes.TOOL_PATTERN_INACTIVE,
+      issues.join(' '),
+      { profile: profile.name, issues },
+    );
+  }
+
+  private publishToolPatternWarnings(): void {
+    const known = this.knownToolNames();
     const global = this.config.get<ToolsConfig>(TOOLS_SECTION);
-    checks.push(
+    const checks: {
+      context: string;
+      field: string;
+      patterns: readonly string[] | undefined;
+    }[] = [
       { context: 'the global [tools] config', field: 'enabled', patterns: global?.enabled },
       { context: 'the global [tools] config', field: 'disabled', patterns: global?.disabled },
-    );
+    ];
     for (const { context, field, patterns } of checks) {
       if (patterns === undefined) continue;
       for (const issue of findInactiveToolPatterns(patterns, (name) => known.has(name))) {

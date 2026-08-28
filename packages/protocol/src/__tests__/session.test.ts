@@ -3,6 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   emptySessionUsage,
   permissionRuleSchema,
+  sessionAgentConfigCreateSchema,
+  sessionAgentConfigPartialSchema,
+  sessionAgentConfigSchema,
   sessionCreateSchema,
   sessionForkSchema,
   sessionSchema,
@@ -168,6 +171,35 @@ describe('sessionCreateSchema', () => {
 
   it('rejects metadata without cwd', () => {
     expect(sessionCreateSchema.safeParse({ metadata: {} }).success).toBe(false);
+  });
+});
+
+describe('agent_config read and write shapes', () => {
+  const WRITE_ONLY = ['thinking', 'goal_objective', 'goal_control'];
+  const NEVER_APPLIED = ['system_prompt', 'tools', 'mcp_servers'];
+
+  it('echoes only the fields the server projects', () => {
+    expect(Object.keys(sessionAgentConfigSchema.shape).sort()).toEqual([
+      'model',
+      'permission_mode',
+      'plan_mode',
+      'profile',
+      'swarm_mode',
+    ]);
+  });
+
+  it.each(WRITE_ONLY)('keeps the write-only control %s out of the read shape', (key) => {
+    expect(sessionAgentConfigSchema.shape).not.toHaveProperty(key);
+  });
+
+  it.each(NEVER_APPLIED)('no longer accepts %s on either write path', (key) => {
+    expect(sessionAgentConfigPartialSchema.safeParse({ [key]: 'x' }).success).toBe(false);
+    expect(sessionAgentConfigCreateSchema.safeParse({ [key]: 'x' }).success).toBe(false);
+  });
+
+  it('accepts the goal controls on update but not on create', () => {
+    expect(sessionAgentConfigPartialSchema.safeParse({ goal_control: 'pause' }).success).toBe(true);
+    expect(sessionAgentConfigCreateSchema.safeParse({ goal_control: 'pause' }).success).toBe(false);
   });
 });
 

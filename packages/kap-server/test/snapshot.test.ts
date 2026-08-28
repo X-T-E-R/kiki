@@ -11,7 +11,10 @@ import {
   IAppendLogStore,
   IEventBus,
   IAgentLifecycleService,
+  IAgentPermissionModeService,
+  IAgentPlanService,
   IAgentProfileService,
+  IAgentSwarmService,
   IAgentUsageService,
   ISessionInteractionService,
   ISessionContext,
@@ -68,6 +71,9 @@ describe('server-v2 snapshot route enrichment', () => {
     const main = {
       accessor: fakeAccessor([
         [IAgentProfileService, { getModel: () => 'provider/session-model' }],
+        [IAgentPermissionModeService, { mode: 'yolo' }],
+        [IAgentPlanService, { status: async () => ({ id: 'plan', content: '', path: '' }) }],
+        [IAgentSwarmService, { isActive: true }],
         [IAgentBlobService, { loadParts }],
       ]),
     };
@@ -231,7 +237,12 @@ describe('server-v2 snapshot route enrichment', () => {
       assistant_text: 'Hello',
       current_prompt_id: promptId,
     });
-    expect(compact.session.agent_config.model).toBe('provider/session-model');
+    expect(compact.session.agent_config).toMatchObject({
+      model: 'provider/session-model',
+      permission_mode: 'yolo',
+      plan_mode: true,
+      swarm_mode: true,
+    });
     expect(compact.context_tokens).toBe(12);
     expect(compact.max_context_tokens).toBe(128);
     expect(compact.pending_approvals).toEqual([

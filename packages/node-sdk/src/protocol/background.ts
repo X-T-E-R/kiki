@@ -43,7 +43,7 @@ export interface AgentBackgroundTaskInfo extends BackgroundTaskInfoBase {
   /** Subagent identifier accepted by a resume. */
   readonly agentId?: string;
   /** Subagent profile name. */
-  readonly subagentType?: string;
+  readonly profile?: string;
   /** Display-normalized bound model alias. */
   readonly model?: string;
   /** The subagent's effective thinking effort at spawn. */

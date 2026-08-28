@@ -132,8 +132,8 @@ export class SubagentRosterTracker {
               ? 'queued'
               : (existing?.subagent_phase ?? 'queued')
             : existing!.subagent_phase,
-          subagent_type:
-            event.subagentName === '' ? existing?.subagent_type : event.subagentName,
+          profile:
+            event.subagentName === '' ? existing?.profile : event.subagentName,
           label: event.userLabel ?? existing?.label,
           parent_agent_id: event.parentAgentId ?? existing?.parent_agent_id,
           parent_tool_call_id:
@@ -402,7 +402,7 @@ export class SubagentRosterTracker {
         description: existing?.description ?? info.description,
         status: projection.status,
         subagent_phase: projection.phase,
-        subagent_type: info.subagentType ?? existing?.subagent_type,
+        profile: info.profile ?? existing?.profile,
         parent_agent_id: parentAgentId,
         parent_tool_call_id: info.parentToolCallId ?? existing?.parent_tool_call_id,
         tool_call_count: restarted ? 0 : (existing?.tool_call_count ?? 0),
@@ -469,7 +469,7 @@ export class SubagentRosterTracker {
       description: existing?.description ?? info.description,
       status: 'running',
       subagent_phase: keepsSuspended ? 'suspended' : 'working',
-      subagent_type: info.subagentType ?? existing?.subagent_type,
+      profile: info.profile ?? existing?.profile,
       parent_agent_id: parentAgentId,
       parent_tool_call_id: info.parentToolCallId ?? existing?.parent_tool_call_id,
       tool_call_count: restarted ? 0 : (existing?.tool_call_count ?? 0),

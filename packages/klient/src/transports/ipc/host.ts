@@ -8,6 +8,8 @@
 import { createServer, type Server, type Socket } from 'node:net';
 import { unlink } from 'node:fs/promises';
 
+import { ErrorCode } from '@moonshot-ai/protocol';
+
 import type { EventSourceRef, IDisposable, ScopeRef } from '../../core/channel.js';
 import { RPCError } from '../../core/errors.js';
 import { createMemoryDispatcher, type ScopeLike } from '../memory/dispatcher.js';
@@ -18,8 +20,8 @@ import {
   type IpcFrame,
 } from './codec.js';
 
-const REQUEST_INVALID = 40001;
-const UNAUTHORIZED = 40100;
+const REQUEST_INVALID = ErrorCode.VALIDATION_FAILED;
+const UNAUTHORIZED = ErrorCode.AUTH_INVALID_TOKEN;
 
 export interface ServeKlientIpcOptions {
   /** A bootstrapped engine app scope (same value `createKlient({ scope })` takes). */

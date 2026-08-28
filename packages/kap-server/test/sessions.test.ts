@@ -424,25 +424,57 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(updatedStatus.body.data).toMatchObject({ model: 'stub', thinking_level: 'low' });
   });
 
-  it('accepts schema-valid create agent_config fields without an extra route gate', async () => {
+  it('applies the create agent_config modes instead of dropping them', async () => {
     const created = await postJson<SessionWire>('/api/v1/sessions', {
       metadata: { cwd: home as string },
-      agent_config: {
-        system_prompt: 'custom prompt',
-        tools: ['Read'],
-        mcp_servers: ['example'],
-        permission_mode: 'yolo',
-        plan_mode: true,
-        swarm_mode: true,
-        goal_objective: 'ship it',
-        goal_control: 'pause',
-      },
+      agent_config: { permission_mode: 'yolo', plan_mode: true, swarm_mode: true },
+    });
+    expect(created.body.code, JSON.stringify(created.body)).toBe(0);
+
+    const status = await getJson<{
+      permission: string;
+      plan_mode: boolean;
+      swarm_mode: boolean;
+    }>(`/api/v1/sessions/${created.body.data.id}/status`);
+    expect(status.body.data).toMatchObject({
+      permission: 'yolo',
+      plan_mode: true,
+      swarm_mode: true,
     });
 
-    expect(created.body.code, JSON.stringify(created.body)).toBe(0);
-    expect(created.body.details).toBeUndefined();
-    expect(created.body.data.agent_config).toEqual({ model: '' });
+    const snapshot = await getJson<{ session: SessionWire }>(
+      `/api/v1/sessions/${created.body.data.id}/snapshot`,
+    );
+    expect(snapshot.body.data.session.agent_config).toMatchObject({
+      permission_mode: 'yolo',
+      plan_mode: true,
+      swarm_mode: true,
+    });
   });
+
+  it.each([
+    ['system_prompt', 'custom prompt'],
+    ['tools', ['Read']],
+    ['mcp_servers', ['example']],
+    ['not_a_field', 'x'],
+  ])('rejects the never-applied create agent_config key %s', async (key, value) => {
+    const created = await postJson<null>('/api/v1/sessions', {
+      metadata: { cwd: home as string },
+      agent_config: { [key]: value },
+    });
+    expect(created.body.code, JSON.stringify(created.body)).toBe(40001);
+  });
+
+  it.each(['goal_objective', 'goal_control'])(
+    'rejects %s at create, where no goal exists yet',
+    async (key) => {
+      const created = await postJson<null>('/api/v1/sessions', {
+        metadata: { cwd: home as string },
+        agent_config: { [key]: 'pause' },
+      });
+      expect(created.body.code, JSON.stringify(created.body)).toBe(40001);
+    },
+  );
 
   it('lets lifecycle creation reject an unknown profile without announcing a session', async () => {
     const manager = (server as RunningServer).core.accessor.get(ISessionManager);
@@ -1690,12 +1722,7 @@ describe('server-v2 /api/v1/sessions', () => {
       {
         title: 'updated',
         metadata: { accepted: true },
-        agent_config: {
-          profile: 'agent',
-          system_prompt: 'custom prompt',
-          tools: ['Read'],
-          mcp_servers: ['example'],
-        },
+        agent_config: { profile: 'agent' },
         permission_rules: [
           {
             id: 'rule-1',
@@ -1713,6 +1740,85 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(updated.body.data.title).toBe('updated');
     expect(updated.body.data.metadata['accepted']).toBe(true);
     expect(updated.body.data.permission_rules).toEqual([]);
+  });
+
+  it.each(['system_prompt', 'tools', 'mcp_servers', 'not_a_field'])(
+    'rejects the never-applied profile-update agent_config key %s',
+    async (key) => {
+      const created = await postJson<SessionWire>('/api/v1/sessions', {
+        metadata: { cwd: home as string },
+      });
+      const updated = await postJson<null>(
+        `/api/v1/sessions/${created.body.data.id}/profile`,
+        { agent_config: { [key]: 'x' } },
+      );
+      expect(updated.body.code, JSON.stringify(updated.body)).toBe(40001);
+    },
+  );
+
+  it('rebinds the main agent when agent_config.profile changes', async () => {
+    await (server as RunningServer).close();
+    server = undefined;
+    await writeFile(
+      join(home as string, 'config.toml'),
+      [
+        'default_model = "stub"',
+        '',
+        '[providers.stub]',
+        'type = "openai"',
+        'base_url = "http://127.0.0.1:9999"',
+        'api_key = "stub"',
+        '',
+        '[models.stub]',
+        'provider = "stub"',
+        'model = "stub"',
+        'max_context_size = 1000',
+        'capabilities = ["thinking"]',
+        'support_efforts = ["low", "medium", "high"]',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home as string,
+      logLevel: 'silent',
+      debugEndpoints: true,
+    });
+    base = `http://127.0.0.1:${server.port}`;
+
+    const created = await postJson<SessionWire>('/api/v1/sessions', {
+      metadata: { cwd: home as string },
+      agent_config: { profile: 'agent' },
+    });
+    expect(created.body.code, JSON.stringify(created.body)).toBe(0);
+    expect(created.body.data.agent_config.profile).toBe('agent');
+
+    const updated = await postJson<SessionWire>(
+      `/api/v1/sessions/${created.body.data.id}/profile`,
+      { agent_config: { profile: 'explore' } },
+    );
+    expect(updated.body.code, JSON.stringify(updated.body)).toBe(0);
+
+    const snapshot = await getJson<{ session: SessionWire }>(
+      `/api/v1/sessions/${created.body.data.id}/snapshot`,
+    );
+    expect(snapshot.body.code, JSON.stringify(snapshot.body)).toBe(0);
+    expect(snapshot.body.data.session.agent_config.profile).toBe('explore');
+  });
+
+  it('reports an unknown agent_config.profile instead of ignoring the field', async () => {
+    const created = await postJson<SessionWire>('/api/v1/sessions', {
+      metadata: { cwd: home as string },
+    });
+    const updated = await postJson<null>(
+      `/api/v1/sessions/${created.body.data.id}/profile`,
+      { agent_config: { profile: 'no-such-profile' } },
+    );
+    expect(updated.body.code).not.toBe(0);
+    expect(updated.body.msg).toContain('Unknown agent profile');
   });
 
   it('applies agent_config.permission_mode via profile idempotently', async () => {

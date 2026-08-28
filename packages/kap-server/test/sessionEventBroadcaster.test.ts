@@ -1392,7 +1392,7 @@ describe('SessionEventBroadcaster', () => {
       taskId: 'agent-task-1',
       kind: 'agent',
       agentId: 'agent-bg',
-      subagentType: 'explore',
+      profile: 'explore',
       parentToolCallId: 'call-agent-1',
       description: 'Inspect the repository',
       status: 'running',

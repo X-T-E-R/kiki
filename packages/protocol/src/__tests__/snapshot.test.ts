@@ -146,7 +146,7 @@ describe('rest/snapshot — session snapshot', () => {
           created_at: TS,
           started_at: TS,
           subagent_phase: 'working',
-          subagent_type: 'explore',
+          profile: 'explore',
           parent_tool_call_id: 'call_1',
           swarm_index: 0,
           run_in_background: false,

@@ -32,7 +32,7 @@ describe('task-store', () => {
     });
     await writeTask(sessionDir, 'agent-bbbbbbbb.json', {
       taskId: 'agent-bbbbbbbb', kind: 'agent', description: 'explore repo',
-      agentId: 'agent-1', subagentType: 'Explore', status: 'running',
+      agentId: 'agent-1', profile: 'Explore', status: 'running',
       detached: true, startedAt: 3000, endedAt: null,
     });
     await writeTask(sessionDir, 'question-cccccccc.json', {
@@ -76,7 +76,7 @@ describe('task-store', () => {
     const agent = tasks.find((t) => t.taskId === 'agent-eeeeeeee')!;
     expect(agent.kind).toBe('agent');
     expect(agent.status).toBe('running'); // awaiting_approval → running
-    expect(agent).toMatchObject({ agentId: 'agent-2', subagentType: 'general' });
+    expect(agent).toMatchObject({ agentId: 'agent-2', profile: 'general' });
   });
 
   it('skips bad filenames, corrupt json, and unrecognized records', async () => {
@@ -109,7 +109,7 @@ describe('task-store', () => {
     expect(tasks.map((t) => t.taskId).toSorted()).toEqual(['agent-bbbbbbbb', 'bash-aaaaaaaa']);
     const bad = tasks.find((t) => t.taskId === 'agent-bbbbbbbb')!;
     expect(bad.stopReason).toBeUndefined();
-    expect(bad.kind === 'agent' ? bad.subagentType : 'n/a').toBeUndefined();
+    expect(bad.kind === 'agent' ? bad.profile : 'n/a').toBeUndefined();
   });
 
   it('returns [] when there is no tasks directory', async () => {

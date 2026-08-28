@@ -52,12 +52,32 @@ export const permissionRuleSchema = z.object({
 
 export type PermissionRule = z.infer<typeof permissionRuleSchema>;
 
+/**
+ * The main agent's live binding, echoed on session reads. Every field here is
+ * one the server actually projects: `model`/`profile` on any read, and the
+ * three mode flags on the single-session snapshot, which materializes the main
+ * agent. List placeholders carry only `model`/`profile`, so the flags stay
+ * optional. Write-only controls (thinking, goals) belong to the patch schemas.
+ */
 export const sessionAgentConfigSchema = z.object({
   model: z.string(),
   profile: z.string().min(1).optional(),
-  system_prompt: z.string().optional(),
-  tools: z.array(z.string()).optional(),
-  mcp_servers: z.array(z.string()).optional(),
+  permission_mode: promptPermissionModeSchema.optional(),
+  plan_mode: z.boolean().optional(),
+  swarm_mode: z.boolean().optional(),
+});
+
+export type SessionAgentConfig = z.infer<typeof sessionAgentConfigSchema>;
+
+/**
+ * Accepted on `POST /sessions/{id}/profile`. Strict on purpose: every key here
+ * is applied by the server, and anything else — a typo, or a field an older
+ * build accepted and dropped (`system_prompt`, `tools`, `mcp_servers`) — is a
+ * validation error rather than a silent no-op.
+ */
+export const sessionAgentConfigPartialSchema = z.strictObject({
+  model: z.string().optional(),
+  profile: z.string().min(1).optional(),
   thinking: promptThinkingSchema.optional(),
   permission_mode: promptPermissionModeSchema.optional(),
   plan_mode: z.boolean().optional(),
@@ -65,11 +85,18 @@ export const sessionAgentConfigSchema = z.object({
   goal_objective: z.string().optional(),
   goal_control: z.enum(['pause', 'resume', 'cancel']).optional(),
 });
-
-export type SessionAgentConfig = z.infer<typeof sessionAgentConfigSchema>;
-
-export const sessionAgentConfigPartialSchema = sessionAgentConfigSchema.partial();
 export type SessionAgentConfigPartial = z.infer<typeof sessionAgentConfigPartialSchema>;
+
+/**
+ * Accepted on `POST /sessions`. The goal controls are absent: a session being
+ * created has no goal to resume or cancel, and creating one is a distinct
+ * operation with its own route.
+ */
+export const sessionAgentConfigCreateSchema = sessionAgentConfigPartialSchema.omit({
+  goal_objective: true,
+  goal_control: true,
+});
+export type SessionAgentConfigCreate = z.infer<typeof sessionAgentConfigCreateSchema>;
 
 export const sessionMetadataSchema = z
   .object({
@@ -125,7 +152,7 @@ export type Session = z.infer<typeof sessionSchema>;
 export const sessionCreateSchema = z.object({
   title: z.string().min(1).optional(),
   metadata: sessionMetadataSchema.optional(),
-  agent_config: sessionAgentConfigPartialSchema.optional(),
+  agent_config: sessionAgentConfigCreateSchema.optional(),
   workspace_id: workspaceIdSchema.optional(),
 });
 

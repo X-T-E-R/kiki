@@ -437,7 +437,7 @@ export const processTaskInfoSchema = taskInfoBaseSchema.extend({
 export const agentTaskInfoSchema = taskInfoBaseSchema.extend({
   kind: z.literal('agent'),
   agentId: z.string().optional(),
-  subagentType: z.string().optional(),
+  profile: z.string().optional(),
   model: z.string().optional(),
   thinkingEffort: z.string().optional(),
 });
@@ -972,6 +972,11 @@ export const promptQueuedEventSchema = z.object({
   queueLength: z.number().int().nonnegative(),
 });
 
+export const promptStartedEventSchema = z.object({
+  type: z.literal('prompt.started'),
+  promptId: z.string(),
+});
+
 export const promptReplacedEventSchema = z.object({
   type: z.literal('prompt.replaced'),
   promptId: z.string(),
@@ -1039,6 +1044,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   workspaceDeletedEventSchema,
   sessionWorkChangedEventSchema,
   sessionStatusChangedEventSchema,
+  configChangedEventSchema,
   diUnitChangedEventSchema,
   pluginChangedEventSchema,
   modelCatalogChangedEventSchema,
@@ -1080,6 +1086,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   cronFiredEventSchema,
   promptSubmittedEventSchema,
   promptQueuedEventSchema,
+  promptStartedEventSchema,
   promptReplacedEventSchema,
   promptCompletedEventSchema,
   promptAbortedEventSchema,

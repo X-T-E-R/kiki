@@ -87,14 +87,14 @@ function agentTask(
   description: string,
   options: {
     readonly agentId?: string;
-    readonly subagentType?: string;
+    readonly profile?: string;
     readonly abortController?: AbortController;
     readonly timeoutMs?: number;
   } = {},
 ): SubagentTask {
   const handle: SubagentHandle = {
     agentId: options.agentId ?? 'agent-child',
-    profileName: options.subagentType ?? 'coder',
+    profileName: options.profile ?? 'coder',
     completion,
   };
   const task = new SubagentTask(
@@ -139,7 +139,7 @@ function persistedAgent(
     endedAt: 1_700_000_010,
     status: 'completed',
     agentId: 'agent-session-id',
-    subagentType: 'coder',
+    profile: 'coder',
     ...overrides,
   };
 }

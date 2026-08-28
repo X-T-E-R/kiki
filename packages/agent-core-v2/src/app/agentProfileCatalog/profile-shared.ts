@@ -33,12 +33,12 @@ export function subagentAllowlistFor(
   return configured?.includes('*') === true ? undefined : configured;
 }
 
-export function subagentTypeNotAllowedMessage(
+export function profileNotAllowedMessage(
   name: string,
   allowlist: readonly string[],
 ): string {
   const allowed = allowlist.length === 0 ? 'none' : allowlist.join(', ');
-  return `Subagent type "${name}" is not allowed for this agent. Allowed subagent types: ${allowed}.`;
+  return `Profile "${name}" is not allowed for this agent. Allowed profiles: ${allowed}.`;
 }
 
 const WINDOWS_NOTES =

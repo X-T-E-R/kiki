@@ -1,9 +1,52 @@
+import {
+  PromptAborted,
+  PromptCompleted,
+  PromptQueued,
+  PromptReplaced,
+  PromptStarted,
+  PromptSteered,
+  PromptSubmitted,
+} from '@moonshot-ai/agent-core-v2/agent/prompt/promptService';
 import { describe, expect, it } from 'vitest';
 
 import {
+  agentEventSchema,
   assistantDeltaEventSchema,
   thinkingDeltaEventSchema,
 } from '../src/protocol/events-zod';
+
+/**
+ * Every prompt event the engine dispatches reaches the session WS untouched,
+ * so a type missing from the parse union is a frame no spec-compliant client
+ * can read.
+ */
+const ENGINE_PROMPT_EVENTS = [
+  PromptQueued,
+  PromptStarted,
+  PromptSubmitted,
+  PromptReplaced,
+  PromptSteered,
+  PromptCompleted,
+  PromptAborted,
+];
+
+describe('events-zod prompt lifecycle coverage', () => {
+  it('declares every prompt event type the engine emits', () => {
+    const declared = new Set(
+      agentEventSchema.options.map((option) => (option.shape.type as { value: string }).value),
+    );
+
+    expect(
+      ENGINE_PROMPT_EVENTS.map((event) => event.type).filter((type) => !declared.has(type)),
+    ).toEqual([]);
+  });
+
+  it('parses a prompt.started frame', () => {
+    expect(
+      agentEventSchema.parse({ type: 'prompt.started', promptId: 'prompt_1' }),
+    ).toEqual({ type: 'prompt.started', promptId: 'prompt_1' });
+  });
+});
 
 describe('events-zod stream identity', () => {
   it('preserves legacy and step-owned assistant and thinking deltas', () => {

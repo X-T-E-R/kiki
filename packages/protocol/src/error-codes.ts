@@ -17,6 +17,15 @@ export const ErrorCode = {
   VALIDATION_FAILED: 40001,
   /** JSON 解析失败、字段类型错 */
   REQUEST_MALFORMED: 40002,
+  /** provider 的凭据由 OAuth 管理，拒绝手工写 api_key */
+  PROVIDER_OAUTH_MANAGED: 40003,
+  /** 导入的 model catalog 文档不合法 */
+  CATALOG_IMPORT_INVALID: 40004,
+  /** 导入的 registry 文档不合法 */
+  REGISTRY_IMPORT_INVALID: 40005,
+
+  /** 客户端握手携带的 daemon 令牌缺失或不匹配（klient IPC hello） */
+  AUTH_INVALID_TOKEN: 40101,
 
   /** daemon 没有任何 provider 配置 */
   AUTH_PROVISIONING_REQUIRED: 40110,
@@ -59,8 +68,18 @@ export const ErrorCode = {
   SKILL_NOT_FOUND: 40415,
   /** tool_call_id 不存在，或该调用没有对应的 plan（非 ExitPlanMode） */
   TOOL_CALL_NOT_FOUND: 40416,
+  /** model catalog 条目不存在 */
+  CATALOG_ENTRY_NOT_FOUND: 40417,
+  /** capability_id 不存在 */
+  CAPABILITY_NOT_FOUND: 40418,
+  /** plugin_id 不存在 */
+  PLUGIN_NOT_FOUND: 40419,
+  /** runtime_id 不存在 */
+  RUNTIME_NOT_FOUND: 40420,
   /** peer thread reference does not resolve to an existing session */
   THREAD_NOT_FOUND: 40421,
+  /** named agent profile does not exist in the requested editable scope */
+  AGENT_PROFILE_NOT_FOUND: 40422,
 
   /** session 有正在进行的 prompt，拒绝新请求 */
   SESSION_BUSY: 40901,
@@ -103,6 +122,18 @@ export const ErrorCode = {
   FS_ALREADY_EXISTS: 40919,
   /** goal 只允许主 agent 使用 */
   GOAL_UNSUPPORTED_AGENT: 40920,
+  /** provider_id 已存在 */
+  PROVIDER_ALREADY_EXISTS: 40921,
+  /** page_token 与当前查询不匹配 */
+  PAGE_TOKEN_MISMATCH: 40922,
+  /** 标题生成当前不可用（无可用模型 / 已在进行） */
+  SESSION_TITLE_UNAVAILABLE: 40923,
+  /** 同一 capability 的安装已在进行 */
+  CAPABILITY_INSTALL_IN_PROGRESS: 40924,
+  /** capability 在当前平台不受支持 */
+  CAPABILITY_UNSUPPORTED: 40925,
+  /** 目标 runtime 当前不可用 */
+  RUNTIME_UNAVAILABLE: 40926,
   /** target thread is archived */
   THREAD_ARCHIVED: 40927,
   /** peer-thread communication is disabled for the workspace */
@@ -115,13 +146,22 @@ export const ErrorCode = {
   THREAD_CURSOR_INVALID: 40931,
   /** an idempotency key was reused with a different payload */
   THREAD_IDEMPOTENCY_CONFLICT: 40932,
+  /** session is active in another process sharing the same home */
+  SESSION_LOCKED: 40933,
+  /** named agent profile is backed by a non-editable source */
+  AGENT_PROFILE_READ_ONLY: 40934,
+  /** MCP server is loaded from a plugin or project-root file */
+  MCP_SERVER_READ_ONLY: 40935,
   /** target message cannot be used for the requested action */
   MESSAGE_ACTION_UNAVAILABLE: 40936,
   /** expected session event cursor no longer matches the current watermark */
   SESSION_CURSOR_MISMATCH: 40937,
   /** prompt_id 已在该 agent 的历史中使用 */
   PROMPT_ID_CONFLICT: 40938,
+  /** session index 仍在构建，列表/搜索暂不可用 */
   SESSION_INDEX_BUILDING: 40939,
+  /** MCP OAuth flow failed, expired, or was cancelled */
+  MCP_OAUTH_FAILED: 40940,
 
   /** approval 60s 超时 */
   APPROVAL_EXPIRED: 41001,
@@ -150,6 +190,8 @@ export const ErrorCode = {
   INTERNAL_ERROR: 50001,
   /** 写入 session 持久化失败 */
   PERSISTENCE_FAILURE: 50003,
+  /** model catalog 后端不可用 */
+  CATALOG_UNAVAILABLE: 50004,
   /** a durably accepted peer message could not be delivered */
   THREAD_DELIVERY_FAILED: 50005,
 
@@ -164,7 +206,6 @@ export const ErrorCode = {
 
 /**
  * Reserved (intentionally unallocated; do NOT reuse for new variants):
- *   - 40101 auth.invalid_token        (daemon's own token; future)
  *   - 40102 auth.missing_token        (daemon's own token; future)
  *   - 40103 auth.forbidden_origin     (daemon's own token; future)
  *   - 42901 rate.limited
@@ -178,7 +219,11 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
 
   [ErrorCode.VALIDATION_FAILED]: 'validation.failed',
   [ErrorCode.REQUEST_MALFORMED]: 'request.malformed',
+  [ErrorCode.PROVIDER_OAUTH_MANAGED]: 'provider.oauth_managed',
+  [ErrorCode.CATALOG_IMPORT_INVALID]: 'catalog.import_invalid',
+  [ErrorCode.REGISTRY_IMPORT_INVALID]: 'registry.import_invalid',
 
+  [ErrorCode.AUTH_INVALID_TOKEN]: 'auth.invalid_token',
   [ErrorCode.AUTH_PROVISIONING_REQUIRED]: 'auth.provisioning_required',
   [ErrorCode.AUTH_TOKEN_MISSING]: 'auth.token_missing',
   [ErrorCode.AUTH_TOKEN_UNAUTHORIZED]: 'auth.token_unauthorized',
@@ -200,7 +245,12 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.TERMINAL_NOT_FOUND]: 'terminal.not_found',
   [ErrorCode.SKILL_NOT_FOUND]: 'skill.not_found',
   [ErrorCode.TOOL_CALL_NOT_FOUND]: 'tool_call.not_found',
+  [ErrorCode.CATALOG_ENTRY_NOT_FOUND]: 'catalog.entry_not_found',
+  [ErrorCode.CAPABILITY_NOT_FOUND]: 'capability.not_found',
+  [ErrorCode.PLUGIN_NOT_FOUND]: 'plugin.not_found',
+  [ErrorCode.RUNTIME_NOT_FOUND]: 'runtime.not_found',
   [ErrorCode.THREAD_NOT_FOUND]: 'thread.not_found',
+  [ErrorCode.AGENT_PROFILE_NOT_FOUND]: 'agent_profile.not_found',
 
   [ErrorCode.SESSION_BUSY]: 'session.busy',
   [ErrorCode.APPROVAL_ALREADY_RESOLVED]: 'approval.already_resolved',
@@ -223,16 +273,26 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.GOAL_OBJECTIVE_TOO_LONG]: 'goal.objective_too_long',
   [ErrorCode.FS_ALREADY_EXISTS]: 'fs.already_exists',
   [ErrorCode.GOAL_UNSUPPORTED_AGENT]: 'goal.unsupported_agent',
+  [ErrorCode.PROVIDER_ALREADY_EXISTS]: 'provider.already_exists',
+  [ErrorCode.PAGE_TOKEN_MISMATCH]: 'page_token.mismatch',
+  [ErrorCode.SESSION_TITLE_UNAVAILABLE]: 'session.title_unavailable',
+  [ErrorCode.CAPABILITY_INSTALL_IN_PROGRESS]: 'capability.install_in_progress',
+  [ErrorCode.CAPABILITY_UNSUPPORTED]: 'capability.unsupported',
+  [ErrorCode.RUNTIME_UNAVAILABLE]: 'runtime.unavailable',
   [ErrorCode.THREAD_ARCHIVED]: 'thread.archived',
   [ErrorCode.THREAD_DISABLED]: 'thread.disabled',
   [ErrorCode.THREAD_CROSS_HOST]: 'thread.cross_host',
   [ErrorCode.THREAD_SELF_SEND]: 'thread.self_send',
   [ErrorCode.THREAD_CURSOR_INVALID]: 'thread.cursor_invalid',
   [ErrorCode.THREAD_IDEMPOTENCY_CONFLICT]: 'thread.idempotency_conflict',
+  [ErrorCode.SESSION_LOCKED]: 'session.locked',
+  [ErrorCode.AGENT_PROFILE_READ_ONLY]: 'agent_profile.read_only',
+  [ErrorCode.MCP_SERVER_READ_ONLY]: 'mcp.server_read_only',
   [ErrorCode.MESSAGE_ACTION_UNAVAILABLE]: 'message.action_unavailable',
   [ErrorCode.SESSION_CURSOR_MISMATCH]: 'session.cursor_mismatch',
   [ErrorCode.PROMPT_ID_CONFLICT]: 'prompt.id_conflict',
   [ErrorCode.SESSION_INDEX_BUILDING]: 'session.index_building',
+  [ErrorCode.MCP_OAUTH_FAILED]: 'mcp.oauth_failed',
 
   [ErrorCode.APPROVAL_EXPIRED]: 'approval.expired',
   [ErrorCode.QUESTION_EXPIRED]: 'question.expired',
@@ -249,6 +309,7 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
 
   [ErrorCode.INTERNAL_ERROR]: 'internal.error',
   [ErrorCode.PERSISTENCE_FAILURE]: 'persistence.failure',
+  [ErrorCode.CATALOG_UNAVAILABLE]: 'catalog.unavailable',
   [ErrorCode.THREAD_DELIVERY_FAILED]: 'thread.delivery_failed',
 
   [ErrorCode.TOOL_EXECUTION_FAILED]: 'tool.execution_failed',

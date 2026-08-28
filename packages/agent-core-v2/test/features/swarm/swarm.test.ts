@@ -756,7 +756,7 @@ describe('AgentSwarmTool', () => {
     );
 
     expect(result.isError).toBe(true);
-    expect(result.output).toContain('Subagent type "coder" is not allowed for this agent');
+    expect(result.output).toContain('Profile "coder" is not allowed for this agent');
     expect(host.swarmService.run).not.toHaveBeenCalled();
   });
 

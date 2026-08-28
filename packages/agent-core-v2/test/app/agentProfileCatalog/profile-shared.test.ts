@@ -16,7 +16,7 @@ import {
   renderPromptTemplateResult,
   renderSystemPromptResult,
   subagentAllowlistFor,
-  subagentTypeNotAllowedMessage,
+  profileNotAllowedMessage,
   systemPromptVars,
 } from '#/app/agentProfileCatalog/profile-shared';
 
@@ -38,8 +38,8 @@ describe('subagent allowlists', () => {
     });
 
     expect(allowlist).toEqual([]);
-    expect(subagentTypeNotAllowedMessage('coder', allowlist ?? ['unexpected'])).toBe(
-      'Subagent type "coder" is not allowed for this agent. Allowed subagent types: none.',
+    expect(profileNotAllowedMessage('coder', allowlist ?? ['unexpected'])).toBe(
+      'Profile "coder" is not allowed for this agent. Allowed profiles: none.',
     );
   });
 

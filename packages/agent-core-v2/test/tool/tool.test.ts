@@ -987,7 +987,7 @@ describe('AgentRun tool execution contract', () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.output).toContain('Subagent type "coder" is not allowed for this agent');
+    expect(result.output).toContain('Profile "coder" is not allowed for this agent');
     expect(result.output).toContain('explore');
     expect(lifecycle.create).not.toHaveBeenCalled();
   });
@@ -1035,7 +1035,7 @@ describe('AgentRun tool execution contract', () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.output).toContain('Subagent type "coder" is not allowed for this agent');
+    expect(result.output).toContain('Profile "coder" is not allowed for this agent');
     expect(result.output).toContain('explore');
     expect(lifecycle.create).not.toHaveBeenCalled();
   });
@@ -1083,7 +1083,7 @@ describe('AgentRun tool execution contract', () => {
         binding: expect.objectContaining({ profile: 'explore' }),
       }),
     );
-    expect(result.output).toContain('actual_subagent_type: explore');
+    expect(result.output).toContain('actual_profile: explore');
   });
 
   it('declares no resource accesses so concurrent AgentRun calls can run in parallel', async () => {
@@ -1159,7 +1159,7 @@ describe('AgentRun tool execution contract', () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(result.output).toContain('agent_id: agent-child');
-    expect(result.output).toContain('actual_subagent_type: explore');
+    expect(result.output).toContain('actual_profile: explore');
     expect(result.output).toContain('child result');
   });
 
@@ -1408,7 +1408,7 @@ describe('AgentRun tool execution contract', () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(result.output).toContain('agent_id: agent-existing');
-    expect(result.output).toContain('actual_subagent_type: explore');
+    expect(result.output).toContain('actual_profile: explore');
     expect(result.output).toContain('resumed result');
   });
 
@@ -1932,7 +1932,7 @@ describe('AgentRun tool execution contract', () => {
       payload: expect.objectContaining({
         toolCallId: 'call_agent',
         agentId: 'agent-second',
-        subagentType: 'coder',
+        profile: 'coder',
         error: expect.any(Error),
       }),
     });
@@ -1961,7 +1961,7 @@ describe('AgentRun tool execution contract', () => {
         toolCallId: 'call_agent',
         runInBackground: false,
         operation: 'spawn',
-        subagentType: 'coder',
+        profile: 'coder',
         error,
       }),
     });
@@ -2158,7 +2158,7 @@ describe('AgentRun tool execution contract', () => {
 
     expect(result).toMatchObject({ isError: true });
     expect(result.output).toContain('agent_id: agent-child');
-    expect(result.output).toContain('actual_subagent_type: coder');
+    expect(result.output).toContain('actual_profile: coder');
     expect(result.output).toContain('status: failed');
     expect(result.output).toContain('subagent error: Agent timed out after 2 hours.');
     expect(result.output).toContain('resume_hint:');
