@@ -246,6 +246,8 @@
     "build:webview": "vite build --config webview-ui/vite.config.ts",
     "build:extension": "tsdown --config tsdown.config.ts",
     "test": "vitest run --config vitest.config.ts",
+    "test:fast": "vitest run --config vitest.config.ts --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
+    "test:integration": "vitest run --config vitest.config.ts .integration.",
     "test:extension-host": "node scripts/extension-host-smoke.mjs",
     "package:platform": "node scripts/vsix-package.mjs",
     "package:verify": "node scripts/vsix-verify.mjs",

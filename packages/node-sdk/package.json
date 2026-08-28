@@ -58,6 +58,8 @@
     "build": "tsdown && pnpm run build:dts",
     "build:dts": "node scripts/build-dts.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
+    "test:integration": "vitest run .integration.",
     "clean": "rm -rf dist .tmp-api-extractor"
   },
   "dependencies": {
