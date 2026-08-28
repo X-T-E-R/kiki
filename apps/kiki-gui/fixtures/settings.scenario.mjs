@@ -193,6 +193,7 @@ export default {
       created_at: ts(120),
       last_opened_at: ts(2),
       session_count: 1,
+      pinned: false,
     },
     {
       id: 'wd_fixture_000000000001',
@@ -201,6 +202,7 @@ export default {
       created_at: ts(120),
       last_opened_at: ts(60),
       session_count: 0,
+      pinned: true,
     },
     {
       id: 'wd_fixture_000000000002',
@@ -209,6 +211,7 @@ export default {
       created_at: ts(120),
       last_opened_at: ts(90),
       session_count: 0,
+      pinned: false,
     },
   ],
   // Expanded rows; GET /agents merges the three `reviewer` rows (same

@@ -42,6 +42,7 @@ export default {
       created_at: iso(120),
       last_opened_at: iso(2),
       session_count: 2,
+      pinned: false,
     },
     {
       id: WS_B,
@@ -50,6 +51,7 @@ export default {
       created_at: iso(120),
       last_opened_at: iso(60),
       session_count: 1,
+      pinned: true,
     },
   ],
   snapshots: {},

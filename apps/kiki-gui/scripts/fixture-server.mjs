@@ -1135,7 +1135,7 @@ class FixtureServer {
         this.workspaces.length > 0
           ? this.workspaces
           : this.scenario?.data.workspaces ?? [
-              { id: 'wd_fixture_000000000000', root: 'C:/fixture', name: 'fixture', created_at: now(), last_opened_at: now(), session_count: sessions.length },
+              { id: 'wd_fixture_000000000000', root: 'C:/fixture', name: 'fixture', created_at: now(), last_opened_at: now(), session_count: sessions.length, pinned: false },
             ];
       return this.envelope(res, { items });
     }
@@ -1145,7 +1145,8 @@ class FixtureServer {
       if (target === undefined) {
         return this.envelope(res, null, 40410, 'workspace.not_found');
       }
-      target.name = String(body?.name ?? target.name);
+      if (body?.name !== undefined) target.name = String(body.name);
+      if (body?.pinned !== undefined) target.pinned = body.pinned === true;
       return this.envelope(res, target);
     }
     if (workspaceMatch !== null && method === 'DELETE') {

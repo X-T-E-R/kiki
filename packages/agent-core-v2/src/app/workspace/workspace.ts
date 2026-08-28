@@ -6,10 +6,14 @@ export interface Workspace {
   readonly name: string;
   readonly createdAt: number;
   readonly lastOpenedAt: number;
+  /** User-set "keep this at the top of the list" flag; lives with the data
+   * directory so it survives restarts and is shared by every client. */
+  readonly pinned: boolean;
 }
 
 export interface WorkspaceUpdate {
   readonly name?: string;
+  readonly pinned?: boolean;
 }
 
 export interface IWorkspaceService {

@@ -17,6 +17,7 @@ export const workspaceSchema = z.object({
   created_at: isoDateTimeSchema,
   last_opened_at: isoDateTimeSchema,
   session_count: z.number().int().nonnegative(),
+  pinned: z.boolean(),
 });
 
 export type Workspace = z.infer<typeof workspaceSchema>;
@@ -28,8 +29,15 @@ export const workspaceCreateSchema = z.object({
 
 export type WorkspaceCreate = z.infer<typeof workspaceCreateSchema>;
 
-export const workspaceUpdateSchema = z.object({
-  name: z.string().min(1).max(100),
-});
+/** Both fields are optional so a client can rename, pin, or do both in one
+ * PATCH; an entirely empty body is rejected rather than treated as a no-op. */
+export const workspaceUpdateSchema = z
+  .object({
+    name: z.string().min(1).max(100).optional(),
+    pinned: z.boolean().optional(),
+  })
+  .refine((patch) => patch.name !== undefined || patch.pinned !== undefined, {
+    message: 'provide at least one of name or pinned',
+  });
 
 export type WorkspaceUpdate = z.infer<typeof workspaceUpdateSchema>;

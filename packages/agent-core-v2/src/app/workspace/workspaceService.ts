@@ -92,6 +92,7 @@ export class WorkspaceService implements IWorkspaceService {
               name: name ?? basename(root),
               createdAt: now,
               lastOpenedAt: now,
+              pinned: false,
             };
       byId.set(ws.id, ws);
       deletedIds.delete(ws.id);
@@ -109,6 +110,7 @@ export class WorkspaceService implements IWorkspaceService {
       const updated: Workspace = {
         ...existing,
         ...(patch.name !== undefined ? { name: patch.name } : {}),
+        ...(patch.pinned !== undefined ? { pinned: patch.pinned } : {}),
       };
       await this.store.save({
         workspaces: catalog.workspaces.map((ws) => (ws.id === id ? updated : ws)),
@@ -189,6 +191,7 @@ export class WorkspaceService implements IWorkspaceService {
         name: basename(workDir),
         createdAt: now,
         lastOpenedAt: now,
+        pinned: false,
       });
       changed = true;
     }
@@ -211,6 +214,7 @@ export class WorkspaceService implements IWorkspaceService {
         name: basename(entry.workDir),
         createdAt: now,
         lastOpenedAt: now,
+        pinned: false,
       });
     }
     return result;
@@ -252,6 +256,7 @@ export class WorkspaceService implements IWorkspaceService {
           name: basename(root),
           createdAt: now,
           lastOpenedAt: now,
+          pinned: false,
         });
         changed = true;
       }

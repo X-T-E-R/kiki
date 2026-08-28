@@ -87,7 +87,11 @@ import {
   type RequestIdentityLayerDraft,
 } from '../lib/settings';
 import { formatTokens } from '../lib/time';
-import { filterWorkspaces, sortWorkspacesByRecency } from '../lib/sorting';
+import {
+  filterWorkspaces,
+  sortWorkspacesByPinnedThenRecency,
+  sortWorkspacesByRecency,
+} from '../lib/sorting';
 import { useConnection } from '../state/connection';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Dialog } from './Dialog';
@@ -2942,14 +2946,34 @@ function WorkspacesSection() {
   const [renaming, setRenaming] = useState<Workspace | null>(null);
   const [removing, setRemoving] = useState<Workspace | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  const [pinBusy, setPinBusy] = useState<string | null>(null);
   const items = useMemo(() => query.data?.items ?? [], [query.data]);
   const visible = useMemo(
-    () => filterWorkspaces(sortWorkspacesByRecency(items), filter),
+    () => filterWorkspaces(sortWorkspacesByPinnedThenRecency(items), filter),
     [items, filter],
   );
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+  };
+
+  const togglePinned = (workspace: Workspace) => {
+    setPinBusy(workspace.id);
+    setFeedback(null);
+    void client
+      .setWorkspacePinned(workspace.id, !workspace.pinned)
+      .then((echoed) => {
+        queryClient.setQueryData(['workspaces'], (current: ListWorkspacesResponse | undefined) =>
+          current === undefined
+            ? current
+            : { items: current.items.map((ws) => (ws.id === echoed.id ? echoed : ws)) },
+        );
+        invalidate();
+      })
+      .catch((error: unknown) => {
+        setFeedback({ tone: 'error', text: errorText(locale, error) });
+      })
+      .finally(() => { setPinBusy(null); });
   };
 
   return (
@@ -2970,6 +2994,26 @@ function WorkspacesSection() {
             <div className="min-w-0"><p className="truncate text-[13px] font-medium text-ink" title={workspace.name}>{workspace.name}</p><p className="truncate font-mono text-[10.5px] text-ink-faint" title={workspace.root}>{workspace.root}</p></div>
             <div className="flex shrink-0 items-center gap-1.5">
               <button type="button" onClick={() => void navigate(`/new?workspace=${encodeURIComponent(workspace.id)}`)} className={SECONDARY_BUTTON}>{t('st.workspaces.newSession')}</button>
+              <button
+                type="button"
+                data-workspace-pin={workspace.id}
+                disabled={pinBusy === workspace.id}
+                aria-pressed={workspace.pinned}
+                onClick={() => { togglePinned(workspace); }}
+                aria-label={
+                  workspace.pinned
+                    ? t('st.workspaces.unpinAria', { name: workspace.name })
+                    : t('st.workspaces.pinAria', { name: workspace.name })
+                }
+                title={workspace.pinned ? t('st.workspaces.unpin') : t('st.workspaces.pin')}
+                className={`rounded-md border px-2 py-1.5 text-[12px] transition-colors disabled:opacity-50 ${
+                  workspace.pinned
+                    ? 'border-accent/40 bg-accent-soft text-accent'
+                    : 'border-hairline bg-paper text-ink-soft hover:border-hairline-strong hover:text-ink'
+                }`}
+              >
+                ⍟
+              </button>
               <button
                 type="button"
                 onClick={() => setRenaming(workspace)}

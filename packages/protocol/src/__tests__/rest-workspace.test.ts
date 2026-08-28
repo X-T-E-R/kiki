@@ -16,6 +16,7 @@ const sampleWorkspace: Workspace = {
   created_at: '2026-06-08T09:00:00.000Z',
   last_opened_at: '2026-06-08T09:30:00.000Z',
   session_count: 3,
+  pinned: false,
 };
 
 describe('workspaceIdSchema', () => {
@@ -99,8 +100,24 @@ describe('updateWorkspaceRequestSchema (PATCH /api/v1/workspaces/{id})', () => {
     });
   });
 
-  it('rejects empty body (name is required for the patch)', () => {
+  it('accepts a pinned patch on its own', () => {
+    expect(updateWorkspaceRequestSchema.parse({ pinned: true })).toEqual({ pinned: true });
+    expect(updateWorkspaceRequestSchema.parse({ pinned: false })).toEqual({ pinned: false });
+  });
+
+  it('accepts both fields together', () => {
+    expect(updateWorkspaceRequestSchema.parse({ name: 'Renamed', pinned: true })).toEqual({
+      name: 'Renamed',
+      pinned: true,
+    });
+  });
+
+  it('rejects empty body (at least one field is required)', () => {
     expect(updateWorkspaceRequestSchema.safeParse({} as unknown).success).toBe(false);
+  });
+
+  it('rejects a non-boolean pinned', () => {
+    expect(updateWorkspaceRequestSchema.safeParse({ pinned: 'yes' }).success).toBe(false);
   });
 });
 

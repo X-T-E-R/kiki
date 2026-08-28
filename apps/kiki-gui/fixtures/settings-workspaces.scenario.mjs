@@ -19,6 +19,7 @@ export default {
       created_at: ts(120),
       last_opened_at: ts(2),
       session_count: 1,
+      pinned: false,
     },
     {
       id: WS_B,
@@ -27,6 +28,7 @@ export default {
       created_at: ts(120),
       last_opened_at: ts(60),
       session_count: 0,
+      pinned: true,
     },
   ],
 };

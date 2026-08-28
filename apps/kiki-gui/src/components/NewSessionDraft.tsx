@@ -20,7 +20,7 @@ import { SearchableSelect, type SearchableSelectOption } from './SearchableSelec
 import { useI18n } from '../i18n';
 import { buildPromptContent, type ComposerAttachment } from '../lib/attachments';
 import { readDraft, writeDraft } from '../lib/drafts';
-import { sortWorkspacesByRecency } from '../lib/sorting';
+import { sortWorkspacesByPinnedThenRecency, sortWorkspacesByRecency } from '../lib/sorting';
 import {
   readSettings,
   resolveEffectiveModel,
@@ -293,7 +293,7 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
   const cwdInvalid = trimmedCwd !== '' && !isAbsoluteCwdPath(trimmedCwd);
   const workspaceOptions: readonly SearchableSelectOption[] = useMemo(
     () =>
-      sortWorkspacesByRecency(state.workspaces).map((workspace) => ({
+      sortWorkspacesByPinnedThenRecency(state.workspaces).map((workspace) => ({
         value: workspace.id,
         label: workspace.name,
         hint: workspace.root,

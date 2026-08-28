@@ -7,6 +7,7 @@ import {
   filterSelectOptions,
   filterWorkspaces,
   sortTasks,
+  sortWorkspacesByPinnedThenRecency,
   sortWorkspacesByRecency,
 } from './sorting';
 
@@ -17,6 +18,7 @@ function makeWorkspace(overrides: Partial<Workspace> & { id: string }): Workspac
     created_at: '2026-01-01T00:00:00.000Z',
     last_opened_at: '2026-01-01T00:00:00.000Z',
     session_count: 0,
+    pinned: false,
     ...overrides,
   };
 }
@@ -74,6 +76,34 @@ describe('compareWorkspacesByRecency / sortWorkspacesByRecency', () => {
     expect(compareWorkspacesByRecency(a, b)).toBeLessThan(0);
     expect(compareWorkspacesByRecency(b, a)).toBeGreaterThan(0);
     expect(compareWorkspacesByRecency(a, a)).toBe(0);
+  });
+});
+
+describe('sortWorkspacesByPinnedThenRecency', () => {
+  it('floats pinned workspaces above every unpinned one', () => {
+    const sorted = sortWorkspacesByPinnedThenRecency([
+      makeWorkspace({ id: 'newest', last_opened_at: '2026-03-01T00:00:00.000Z' }),
+      makeWorkspace({ id: 'pinned-old', last_opened_at: '2025-01-01T00:00:00.000Z', pinned: true }),
+      makeWorkspace({ id: 'mid', last_opened_at: '2026-02-01T00:00:00.000Z' }),
+    ]);
+    expect(sorted.map((w) => w.id)).toEqual(['pinned-old', 'newest', 'mid']);
+  });
+
+  it('orders the pinned block by recency too', () => {
+    const sorted = sortWorkspacesByPinnedThenRecency([
+      makeWorkspace({ id: 'pin-old', last_opened_at: '2026-01-01T00:00:00.000Z', pinned: true }),
+      makeWorkspace({ id: 'pin-new', last_opened_at: '2026-02-01T00:00:00.000Z', pinned: true }),
+    ]);
+    expect(sorted.map((w) => w.id)).toEqual(['pin-new', 'pin-old']);
+  });
+
+  it('does not mutate the input', () => {
+    const input = [
+      makeWorkspace({ id: 'plain' }),
+      makeWorkspace({ id: 'pinned', pinned: true }),
+    ];
+    sortWorkspacesByPinnedThenRecency(input);
+    expect(input.map((w) => w.id)).toEqual(['plain', 'pinned']);
   });
 });
 

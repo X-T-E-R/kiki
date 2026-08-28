@@ -142,14 +142,14 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope): 
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
         [ErrorCode.WORKSPACE_NOT_FOUND]: {},
       },
-      description: 'Rename a workspace (display name only)',
+      description: 'Update a workspace (display name and/or pinned flag)',
       tags: ['workspaces'],
     },
     async (req, reply) => {
       const { workspace_id } = req.params;
       const ws = await core.accessor
         .get(IWorkspaceService)
-        .update(workspace_id, { name: req.body.name });
+        .update(workspace_id, { name: req.body.name, pinned: req.body.pinned });
       if (ws === undefined) {
         reply.send(
           errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, `workspace ${workspace_id} does not exist`, req.id),
@@ -305,6 +305,7 @@ async function toWireWorkspace(core: Scope, ws: Workspace): Promise<WorkspaceWir
     created_at: new Date(ws.createdAt).toISOString(),
     last_opened_at: new Date(ws.lastOpenedAt).toISOString(),
     session_count: sessionCount,
+    pinned: ws.pinned,
   };
 }
 

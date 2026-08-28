@@ -64,6 +64,7 @@ import {
 } from './lib/sessionList';
 import { isSessionIndexBuildingError } from './lib/client';
 import { useLayoutPreferences, writeLayoutPreferences } from './lib/layoutPrefs';
+import { sortWorkspacesByPinnedThenRecency } from './lib/sorting';
 import { readLastSessionId, writeDesktopPrefs } from './lib/settings';
 import { pushToast } from './lib/toasts';
 import { anyOverlayOpen } from './lib/uiBusy';
@@ -216,8 +217,10 @@ export function App() {
     staleTime: 30_000,
     retry: retryRootReadModelQuery,
   });
+  // Pinned workspaces lead the sidebar scope list, and — because the same
+  // order seeds workspace grouping — their session buckets come first too.
   const workspaceOptions = useMemo<readonly Workspace[]>(
-    () => workspacesQuery.data?.items ?? [],
+    () => sortWorkspacesByPinnedThenRecency(workspacesQuery.data?.items ?? []),
     [workspacesQuery.data],
   );
 

@@ -187,6 +187,7 @@ export function Sidebar({
   const [confirmUndo, setConfirmUndo] = useState<Session | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [workspacePinBusy, setWorkspacePinBusy] = useState(false);
 
   const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -273,6 +274,24 @@ export function Sidebar({
       (page) => page.incomplete !== undefined,
     ) === true;
   const searchIndexNotice = searchBuildingPage !== undefined || searchIncomplete;
+
+  // Workspace pin: the scope select can't host a per-row control, so the pin
+  // acts on whatever workspace is currently scoped. It writes the server-side
+  // `pinned` field, so the order it produces is shared by every client.
+  const scopedWorkspace = workspaceOptions.find(
+    (workspace) => workspace.id === workspaceFilter,
+  );
+  const toggleWorkspacePin = (workspace: Workspace) => {
+    setWorkspacePinBusy(true);
+    setActionError(null);
+    void client
+      .setWorkspacePinned(workspace.id, !workspace.pinned)
+      .then(() => queryClient.invalidateQueries({ queryKey: ['workspaces'] }))
+      .catch((error: unknown) => {
+        setActionError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => { setWorkspacePinBusy(false); });
+  };
 
   const togglePin = (session: Session) => {
     setMenu(null);
@@ -453,20 +472,48 @@ export function Sidebar({
           </select>
         </div>
         {workspaceOptions.length > 0 ? (
-          <select
-            data-workspace-filter
-            value={workspaceFilter ?? ''}
-            onChange={(event) => { onWorkspaceFilter(event.target.value === '' ? undefined : event.target.value); }}
-            aria-label={t('sidebar.workspaceFilterAria')}
-            className="mt-2 w-full rounded-lg border border-hairline bg-paper px-2.5 py-1.5 text-[12px] text-ink outline-none focus:border-accent"
-          >
-            <option value="">{t('sidebar.workspaceAll')}</option>
-            {workspaceOptions.map((workspace) => (
-              <option key={workspace.id} value={workspace.id}>
-                {workspace.name}
-              </option>
-            ))}
-          </select>
+          <div className="mt-2 flex items-center gap-1.5">
+            <select
+              data-workspace-filter
+              value={workspaceFilter ?? ''}
+              onChange={(event) => { onWorkspaceFilter(event.target.value === '' ? undefined : event.target.value); }}
+              aria-label={t('sidebar.workspaceFilterAria')}
+              className="min-w-0 flex-1 rounded-lg border border-hairline bg-paper px-2.5 py-1.5 text-[12px] text-ink outline-none focus:border-accent"
+            >
+              <option value="">{t('sidebar.workspaceAll')}</option>
+              {workspaceOptions.map((workspace) => (
+                <option key={workspace.id} value={workspace.id}>
+                  {workspace.pinned ? `⍟ ${workspace.name}` : workspace.name}
+                </option>
+              ))}
+            </select>
+            {scopedWorkspace !== undefined ? (
+              <button
+                type="button"
+                data-workspace-pin-toggle
+                disabled={workspacePinBusy}
+                aria-pressed={scopedWorkspace.pinned}
+                aria-label={
+                  scopedWorkspace.pinned
+                    ? t('sidebar.unpinWorkspaceFor', { name: scopedWorkspace.name })
+                    : t('sidebar.pinWorkspaceFor', { name: scopedWorkspace.name })
+                }
+                title={
+                  scopedWorkspace.pinned
+                    ? t('sidebar.unpinWorkspace')
+                    : t('sidebar.pinWorkspace')
+                }
+                onClick={() => { toggleWorkspacePin(scopedWorkspace); }}
+                className={`flex h-[27px] w-[27px] shrink-0 items-center justify-center rounded-lg border transition-colors disabled:opacity-50 ${
+                  scopedWorkspace.pinned
+                    ? 'border-accent/40 bg-accent-soft text-accent'
+                    : 'border-hairline bg-paper text-ink-faint hover:border-hairline-strong hover:text-ink'
+                }`}
+              >
+                <PinIcon className="h-[12px] w-[12px]" />
+              </button>
+            ) : null}
+          </div>
         ) : null}
       </div>
 
