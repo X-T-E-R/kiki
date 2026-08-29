@@ -143,25 +143,28 @@ async function click(element: Element): Promise<void> {
 }
 
 /**
- * The agent-profile picker lives inside the merged model chip's panel, so
- * reaching it means opening that chip first (and waiting for both catalogs).
+ * The agent-profile picker is a standalone toolbar control — reaching it just
+ * means waiting for the profile catalog to land.
  */
 async function waitForTrigger(container: HTMLDivElement): Promise<HTMLButtonElement> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const chip = container.querySelector<HTMLButtonElement>('#composer-model-select');
-    if (chip !== null) {
-      if (chip.getAttribute('aria-expanded') !== 'true') await click(chip);
-      const trigger = container.querySelector<HTMLButtonElement>('#composer-agent-profile-select');
-      if (trigger !== null) return trigger;
-    }
+    const trigger = container.querySelector<HTMLButtonElement>('#composer-agent-profile-select');
+    if (trigger !== null) return trigger;
     await settle();
   }
   throw new Error('profile select never rendered');
 }
 
-/** Open the mode chip's panel and hand back its trigger. */
+/** Open the permission mode chip's panel and hand back its trigger. */
 async function openModePanel(container: HTMLDivElement): Promise<HTMLButtonElement> {
   const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Mode"]')!;
+  await click(trigger);
+  return trigger;
+}
+
+/** Open the plan chip's panel and hand back its trigger. */
+async function openPlanPanel(container: HTMLDivElement): Promise<HTMLButtonElement> {
+  const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Plan"]')!;
   await click(trigger);
   return trigger;
 }
@@ -211,8 +214,8 @@ describe('Composer agent profile picker', () => {
   it('stays hidden without a change handler or when the catalog is unavailable', async () => {
     const { container } = await renderComposer({ agentProfile: 'agent' });
     for (let index = 0; index < 5; index += 1) await settle();
-    // With no model catalog and no effort either, the chip degrades to inert
-    // text — there is no panel left to hold a profile row.
+    // No handler hides the standalone profile control; with no model catalog
+    // and no effort either, the model chip degrades to inert text.
     expect(container.querySelector('#composer-model-select')).toBeNull();
     expect(container.querySelector('#composer-agent-profile-select')).toBeNull();
 
@@ -337,36 +340,51 @@ describe('Composer mode dropdown', () => {
     expect(container.querySelector('[data-mode-select] [role="option"]')).toBeNull();
   });
 
-  it('spells the active combination on the trigger', async () => {
+  it('keeps plan and swarm state off the permission trigger', async () => {
     const { container } = await renderComposer({
       permissionMode: 'manual',
       planMode: true,
       swarmMode: true,
     });
     const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Mode"]')!;
-    expect(trigger.textContent).toContain('manual · plan · swarm');
+    expect(trigger.textContent).toContain('manual');
+    expect(trigger.textContent).not.toContain('plan');
+    expect(trigger.textContent).not.toContain('swarm');
   });
 
-  it('reports plan and swarm from the panel and keeps it open for the next pick', async () => {
+  it('spells the active plan/swarm combination on the plan trigger', async () => {
+    const { container } = await renderComposer({ planMode: true, swarmMode: true });
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Plan"]')!;
+    expect(trigger.textContent).toContain('plan · swarm');
+
+    const resting = await renderComposer();
+    const restingTrigger = resting.container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Plan"]',
+    )!;
+    expect(restingTrigger.textContent).toContain('plan');
+    expect(restingTrigger.textContent).not.toContain('swarm');
+  });
+
+  it('reports plan and swarm from the plan panel and keeps it open for the next pick', async () => {
     const onChangePlanMode = vi.fn();
     const onChangeSwarmMode = vi.fn();
     const { container } = await renderComposer({ onChangePlanMode, onChangeSwarmMode });
-    await openModePanel(container);
-    const plan = container.querySelector<HTMLButtonElement>('[data-mode-switch="plan"]')!;
-    const swarm = container.querySelector<HTMLButtonElement>('[data-mode-switch="swarm"]')!;
+    await openPlanPanel(container);
+    const plan = container.querySelector<HTMLButtonElement>('[data-plan-select] [data-mode-switch="plan"]')!;
+    const swarm = container.querySelector<HTMLButtonElement>('[data-plan-select] [data-mode-switch="swarm"]')!;
     expect(plan.getAttribute('aria-pressed')).toBe('false');
     await click(plan);
     await click(swarm);
     expect(onChangePlanMode).toHaveBeenCalledWith(true);
     expect(onChangeSwarmMode).toHaveBeenCalledWith(true);
     // Combinations are the point — the panel stays put between toggles.
-    expect(container.querySelector('[data-mode-select] [role="option"]')).not.toBeNull();
+    expect(container.querySelector('[data-plan-select] [data-mode-switch]')).not.toBeNull();
   });
 
-  it('expands the goal objective inside the same panel', async () => {
+  it('expands the goal objective inside the plan panel', async () => {
     const onChangeGoalObjective = vi.fn();
     const { container } = await renderComposer({ onChangeGoalObjective });
-    await openModePanel(container);
+    await openPlanPanel(container);
     expect(container.querySelector('[data-goal-objective]')).toBeNull();
     await click(container.querySelector('[data-goal-open]')!);
     const field = container.querySelector<HTMLInputElement>('[data-goal-objective]')!;
@@ -379,21 +397,24 @@ describe('Composer mode dropdown', () => {
     expect(onChangeGoalObjective).toHaveBeenCalledWith('Ship the batch');
   });
 
-  it('leaves no plan, swarm or goal control in the resting toolbar', async () => {
+  it('rests on one trigger per control, each carrying its own state', async () => {
     listModels.mockResolvedValue({
       items: [{ provider: 'fixture', model: 'fixture/kiki-pro', display_name: 'Kiki Pro' }],
     });
     const { container } = await renderComposer({ planMode: true, swarmMode: true });
     for (let index = 0; index < 5; index += 1) await settle();
     const buttons = [...container.querySelectorAll<HTMLElement>('[data-composer-toolbar] button')];
-    // Attach, mode, model, send — and nothing else at rest.
+    // Attach, mode, plan, model, send — and nothing else at rest (no agent
+    // handler was passed, so the profile control stays hidden).
     expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual([
       'Attach files',
       'Mode',
+      'Plan',
       'Model',
       'Send message',
     ]);
-    expect(buttons[1]?.textContent).toContain('manual · plan · swarm');
+    expect(buttons[1]?.textContent).toContain('manual');
+    expect(buttons[2]?.textContent).toContain('plan · swarm');
   });
 });
 

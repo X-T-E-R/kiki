@@ -9,6 +9,24 @@ export default {
     [SID]: {
       messages: [],
       has_more: false,
+      // The GUI reads goal state from the transcript meta now (Slice B), not
+      // from the REST snapshot — seed both so the resting session shows it.
+      agent_transcripts: {
+        main: {
+          agent_id: 'main',
+          has_more: false,
+          items: [],
+          meta: {
+            goal: {
+              objective: 'Prepare the release evidence bundle',
+              status: 'active',
+              completionCriterion: 'All checks and screenshots are archived',
+              budgetUsed: 6800,
+              budgetLimit: 20000,
+            },
+          },
+        },
+      },
       goal: {
         goalId: 'goal-fixture-release',
         objective: 'Prepare the release evidence bundle',

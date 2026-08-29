@@ -459,7 +459,7 @@ async function sendPrompt(text) {
   console.log(`[flow] sent: ${text}`);
 }
 
-/** Permission mode, plan, swarm and the goal objective all live behind [mode ▾]. */
+/** The three permission modes live behind [mode ▾]. */
 async function openModePanel() {
   const trigger = page.locator('[data-mode-select] > button');
   if ((await trigger.getAttribute('aria-expanded')) !== 'true') await trigger.click();
@@ -474,11 +474,19 @@ async function closeModePanel() {
   await page.waitForTimeout(200);
 }
 
-/** The agent profile and effort rows live behind the merged [model ▾] chip. */
-async function openModelChip() {
-  const trigger = page.locator('#composer-model-select');
-  await trigger.waitFor({ timeout: 10_000 });
+/** Plan, swarm and the goal objective live behind their own [plan ▾]. */
+async function openPlanPanel() {
+  const trigger = page.locator('[data-plan-select] > button');
   if ((await trigger.getAttribute('aria-expanded')) !== 'true') await trigger.click();
+  await page.waitForSelector('[data-plan-select] [data-mode-switch="plan"]', { timeout: 5000 });
+}
+
+async function closePlanPanel() {
+  const trigger = page.locator('[data-plan-select] > button');
+  if ((await trigger.getAttribute('aria-expanded')) === 'true') {
+    await page.keyboard.press('Escape');
+  }
+  await page.waitForTimeout(200);
 }
 
 async function approveViaKeyboard() {
@@ -733,12 +741,12 @@ async function scenarioSubagents() {
 async function scenarioGoalSwarm() {
   await selectSession('Fixture: goal + swarm');
   await waitForText('Prepare the release evidence bundle');
-  // Swarm and the objective are two rows of the same [mode ▾] panel now.
-  await openModePanel();
+  // Swarm and the objective are two rows of the [plan ▾] panel now.
+  await openPlanPanel();
   await page.click(`[data-mode-switch="swarm"][title^="${S.swarmTitlePrefix}"]`);
   await page.click('[data-goal-open]');
   await page.fill(`input[placeholder="${S.objectivePlaceholder}"]`, 'Ship the fixture release');
-  await closeModePanel();
+  await closePlanPanel();
   await sendPrompt('Advance the release goal.');
   await waitForText('Swarm mode is on and the goal state is live.');
   const inspected = await control({ action: 'session', session_id: 'session_fixture_goal_swarm' });
@@ -972,10 +980,9 @@ async function scenarioHeroShell() {
   await page.waitForTimeout(600);
   await shot('hero-desktop');
 
-  // Agent picker: only main profiles are conversation partners — subagent
-  // profiles (reviewer) never list, and with every option a main profile the
-  // labels carry no ` · main` suffix.
-  await openModelChip();
+  // Agent picker: a standalone toolbar control again. Only main profiles are
+  // conversation partners — subagent profiles (reviewer) never list, and with
+  // every option a main profile the labels carry no ` · main` suffix.
   await page.waitForSelector('#composer-agent-profile-select', { timeout: 10_000 });
   const profileTrigger = page.locator('#composer-agent-profile-select');
   const profileTriggerText = await profileTrigger.textContent();
@@ -983,7 +990,6 @@ async function scenarioHeroShell() {
     throw new Error(`agent picker trigger must show the plain profile name, got "${profileTriggerText}"`);
   }
   await profileTrigger.click();
-  // Scoped to the profile panel: the model chip's own list is a listbox too.
   const profileOptions = await page
     .locator('#composer-agent-profile-select-list [role="option"]')
     .allTextContents();
@@ -994,7 +1000,6 @@ async function scenarioHeroShell() {
   ) {
     throw new Error(`agent picker must list exactly the main profiles, got ${JSON.stringify(profileOptions)}`);
   }
-  await page.keyboard.press('Escape');
   await page.keyboard.press('Escape');
   await page.waitForTimeout(200);
 
@@ -2452,16 +2457,16 @@ async function scenarioSlashCommands() {
     throw new Error(`skill activation mismatch: ${JSON.stringify(lastActivation)}`);
   }
   // Client shortcut: /plan toggles the plan switch, which now lives one level
-  // in — behind [mode ▾]. Assert the FLIP, not an absolute state: client
-  // settings persisted by earlier scenarios (settings-write) can start plan
-  // mode either way. aria-pressed is the contractual hook; the accent class
-  // and the trigger's `· plan` segment are presentation.
+  // in — behind its own [plan ▾]. Assert the FLIP, not an absolute state:
+  // client settings persisted by earlier scenarios (settings-write) can start
+  // plan mode either way. aria-pressed is the contractual hook; the accent
+  // class and the trigger's `· plan` segment are presentation.
   const planPressed = async () => {
-    await openModePanel();
+    await openPlanPanel();
     const pressed = await page
       .locator('[data-mode-switch="plan"]')
       .getAttribute('aria-pressed');
-    await closeModePanel();
+    await closePlanPanel();
     return pressed;
   };
   const planBefore = await planPressed();

@@ -1,8 +1,9 @@
 /**
  * Composer — floating rounded-2xl card: chips above a full-width multiline
- * input (send shortcut from settings), a bottom toolbar with the permission
- * mode dropdown, plan/swarm/goal toggles, model selector fed from the server
- * catalog, and a round accent send button; busy state swaps in Abort.
+ * input (send shortcut from settings), a bottom toolbar with one control per
+ * concern (attach, permission-mode dropdown, plan/swarm/goal dropdown, agent
+ * profile picker, model+effort selector fed from the server catalog), and a
+ * round accent send button; busy state swaps in Abort.
  *
  * Batch B additions:
  *   - `/` opens a slash menu of REAL entries: skills from the session's
@@ -299,9 +300,12 @@ export function Composer({
     attachmentBaselineRef.current = next;
     onChangeAttachments(next);
   };
-  // The mode panel owns permission/plan/swarm/goal; `goalOpen` expands the
-  // objective field inside it (the `/goal` shortcut opens both at once).
+  // Two independent dropdowns share the run-shape settings: the permission
+  // panel owns the approval mode; the plan panel owns plan/swarm/goal.
+  // `goalOpen` expands the objective field inside the plan panel (the `/goal`
+  // shortcut opens both at once).
   const [modeOpen, setModeOpen] = useState(false);
+  const [planOpen, setPlanOpen] = useState(false);
   const [goalOpen, setGoalOpen] = useState(false);
   const [menu, setMenu] = useState<ComposerMenu | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -459,7 +463,7 @@ export function Composer({
         onChangePlanMode(!planMode);
         break;
       case 'goal':
-        setModeOpen(true);
+        setPlanOpen(true);
         setGoalOpen(true);
         break;
       case 'new':
@@ -1150,14 +1154,15 @@ export function Composer({
             />
           </div>
 
-          {/* Bottom toolbar: exactly three option-class controls on the left
-              (attach, mode, model) and the send cluster on the right, sized to
-              stay on one line — the input above is the surface's subject. */}
+          {/* Bottom toolbar: one control per concern on the left — attach,
+              permission mode, plan/swarm/goal, agent profile, model+effort —
+              on one line while the width allows, wrapping below it; the send
+              cluster pins right. The input above is the surface's subject. */}
           <div
             data-composer-toolbar
-            className="mt-1.5 flex items-center gap-x-1.5 rounded-b-2xl border-t border-hairline bg-paper/60 px-2.5 py-2"
+            className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1.5 rounded-b-2xl border-t border-hairline bg-paper/60 px-2.5 py-2"
           >
-            <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -1187,6 +1192,10 @@ export function Composer({
                 onOpenChange={setModeOpen}
                 value={permissionMode}
                 onChange={onChangePermissionMode}
+              />
+              <PlanSelect
+                open={planOpen}
+                onOpenChange={setPlanOpen}
                 planMode={planMode}
                 onChangePlanMode={onChangePlanMode}
                 swarmMode={swarmMode}
@@ -1196,25 +1205,43 @@ export function Composer({
                 goalOpen={goalOpen}
                 onGoalOpenChange={setGoalOpen}
               />
-              <ModelChip
-                modelOptions={modelOptions}
-                hasCatalog={models.length > 0}
-                model={model}
-                effectiveModel={effectiveModel}
-                modelSource={modelSource}
-                onChangeModel={onChangeModel}
-                agentProfileOptions={
-                  onChangeAgentProfile !== undefined && agentProfilesQuery.data !== undefined
-                    ? agentProfileOptions
-                    : undefined
-                }
-                agentProfile={agentProfile}
-                agentProfilePending={agentProfilePending}
-                onChangeAgentProfile={onChangeAgentProfile}
-                efforts={efforts}
-                effort={effort}
-                onChangeEffort={onChangeEffort}
-              />
+              {onChangeAgentProfile !== undefined && agentProfilesQuery.data !== undefined ? (
+                <div className="min-w-0">
+                  <SearchableSelect
+                    id="composer-agent-profile-select"
+                    options={agentProfileOptions}
+                    value={agentProfile ?? DEFAULT_AGENT_PROFILE}
+                    onChange={onChangeAgentProfile}
+                    title={
+                      agentProfilePending
+                        ? t('composer.agentProfilePendingTitle')
+                        : t('composer.agentProfileTitle')
+                    }
+                    ariaLabel={t('composer.agentProfileAria')}
+                    emptyText={t('composer.noAgentProfiles')}
+                    placement="above"
+                    panelClassName="anim-enter absolute z-40 bottom-full left-0 mb-1 w-72 max-w-[calc(100vw-48px)] overflow-hidden rounded-xl border border-hairline bg-panel shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
+                    buttonClassName={`flex max-w-44 items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[11px] outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/30 ${
+                      agentProfilePending
+                        ? 'border-accent bg-accent-soft text-accent'
+                        : 'border-hairline bg-panel text-ink-soft hover:border-hairline-strong'
+                    }`}
+                  />
+                </div>
+              ) : null}
+              <div className="min-w-0">
+                <ModelChip
+                  modelOptions={modelOptions}
+                  hasCatalog={models.length > 0}
+                  model={model}
+                  effectiveModel={effectiveModel}
+                  modelSource={modelSource}
+                  onChangeModel={onChangeModel}
+                  efforts={efforts}
+                  effort={effort}
+                  onChangeEffort={onChangeEffort}
+                />
+              </div>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
               {busy && onAbort !== undefined ? (
@@ -1433,65 +1460,36 @@ function MentionMenuBody({
 }
 
 /**
- * ModeSelect — every setting that shapes HOW the next prompt runs, behind one
- * trigger: the three approval modes, the plan and swarm switches, and the goal
- * objective. The trigger spells out the active combination (`manual · plan`),
- * so the toolbar carries the state without carrying the controls.
- *
- * Open state is owned by the parent because `/goal` has to open this panel
- * with the objective field already expanded.
+ * ModeSelect — the approval policy for the next prompt, behind one trigger:
+ * the three permission modes, nothing else. The trigger names the current
+ * mode, so the toolbar carries the state without carrying the panel.
  *
  * Keyboard/overlay contract: the trigger carries aria-haspopup/aria-expanded;
  * opening moves focus to the current mode, ↑/↓ cycles the panel rows,
  * Enter/Space picks natively, Escape closes and refocuses the trigger, and a
  * pointerdown anywhere outside dismisses. While open the panel registers as
  * an overlay so the global Escape handler never aborts the turn out from
- * under it. Picking a permission mode closes; toggling a switch does not —
- * switches come in combinations.
+ * under it. Picking a mode closes the panel.
  */
 function ModeSelect({
   open,
   onOpenChange,
   value,
   onChange,
-  planMode,
-  onChangePlanMode,
-  swarmMode,
-  onChangeSwarmMode,
-  goalObjective,
-  onChangeGoalObjective,
-  goalOpen,
-  onGoalOpenChange,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   value: PermissionMode;
   onChange: (mode: PermissionMode) => void;
-  planMode: boolean;
-  onChangePlanMode: (on: boolean) => void;
-  swarmMode: boolean;
-  onChangeSwarmMode: (on: boolean) => void;
-  goalObjective: string;
-  onChangeGoalObjective: (objective: string) => void;
-  goalOpen: boolean;
-  onGoalOpenChange: (open: boolean) => void;
 }) {
   const { t } = useI18n();
   const setOpen = onOpenChange;
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const current = MODES.find((mode) => mode.id === value) ?? MODES[0]!;
-  const label = [
-    t(current.labelKey),
-    ...(planMode ? [t('composer.plan')] : []),
-    ...(swarmMode ? [t('composer.swarm')] : []),
-  ].join(t('composer.modeSegmentSeparator'));
 
   const close = (refocus = false) => {
     setOpen(false);
-    // An abandoned empty objective field collapses; a filled one stays open so
-    // reopening the panel shows what will ride the next prompt.
-    if (goalObjective === '') onGoalOpenChange(false);
     if (refocus) triggerRef.current?.focus();
   };
 
@@ -1510,18 +1508,13 @@ function ModeSelect({
     };
   }, [open]);
 
-  // Opening moves focus to the current mode's row so arrowing starts there —
-  // unless `/goal` asked for the objective field, which is the point of that
-  // shortcut.
+  // Opening moves focus to the current mode's row so arrowing starts there.
   useEffect(() => {
     if (!open) return;
-    const root = rootRef.current;
-    if (root === null) return;
-    const goalField = goalOpen
-      ? root.querySelector<HTMLElement>('[data-goal-objective]')
-      : null;
-    (goalField ?? root.querySelector<HTMLElement>('[role="option"][aria-selected="true"]'))?.focus();
-  }, [open, goalOpen]);
+    rootRef.current
+      ?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')
+      ?.focus();
+  }, [open]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!open) return;
@@ -1532,8 +1525,6 @@ function ModeSelect({
       return;
     }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      // The objective field owns its own arrow keys (caret movement).
-      if ((event.target as HTMLElement).tagName === 'INPUT') return;
       event.preventDefault();
       const rows = [...(rootRef.current?.querySelectorAll<HTMLElement>('[data-mode-row]') ?? [])];
       if (rows.length === 0) return;
@@ -1560,7 +1551,7 @@ function ModeSelect({
             : 'border-accent/70 bg-accent-soft/60 text-accent hover:border-accent'
         }`}
       >
-        <span className="min-w-0 truncate">{label}</span>
+        <span className="min-w-0 truncate">{t(current.labelKey)}</span>
         <svg
           width="9" height="9" viewBox="0 0 12 12" fill="none" aria-hidden
           className={`shrink-0 opacity-70 transition-transform ${open ? 'rotate-180' : ''}`}
@@ -1606,78 +1597,6 @@ function ModeSelect({
               );
             })}
           </div>
-          <div className="mt-1 border-t border-hairline pt-1">
-            {(
-              [
-                ['plan', planMode, onChangePlanMode, 'composer.plan', 'composer.planHint'],
-                ['swarm', swarmMode, onChangeSwarmMode, 'composer.swarm', 'composer.swarmHint'],
-              ] as const
-            ).map(([id, on, onToggle, labelKey, hintKey]) => (
-              <button
-                key={id}
-                type="button"
-                data-mode-row
-                data-mode-switch={id}
-                aria-pressed={on}
-                title={t(hintKey)}
-                onClick={() => { onToggle(!on); }}
-                className="flex w-full items-start gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors outline-none hover:bg-paper focus-visible:ring-2 focus-visible:ring-accent/40"
-              >
-                <span
-                  aria-hidden
-                  className={`mt-px shrink-0 text-[11px] leading-4 ${on ? 'text-accent' : 'text-ink-faint'}`}
-                >
-                  {on ? '☑' : '☐'}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className={`block text-[12px] font-medium ${on ? 'text-accent' : 'text-ink'}`}>
-                    {t(labelKey)}
-                  </span>
-                  <span className="mt-0.5 block text-[10.5px] leading-snug text-ink-faint">
-                    {t(hintKey)}
-                  </span>
-                </span>
-              </button>
-            ))}
-            {goalOpen ? (
-              <div className="px-2.5 pt-1 pb-0.5">
-                <label
-                  htmlFor="composer-goal-objective"
-                  className="text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase"
-                >
-                  {t('composer.goalObjective')}
-                </label>
-                <input
-                  id="composer-goal-objective"
-                  data-goal-objective
-                  value={goalObjective}
-                  onChange={(event) => { onChangeGoalObjective(event.target.value); }}
-                  placeholder={t('composer.goalObjectivePlaceholder')}
-                  className="mt-1 w-full rounded-lg border border-hairline bg-paper px-2.5 py-1.5 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
-                />
-                <p className="mt-1.5 text-[10.5px] leading-relaxed text-ink-faint">
-                  {t('composer.goalNoteBefore')}
-                  <span className="font-mono">goal_objective</span>
-                  {t('composer.goalNoteAfter')}
-                </p>
-              </div>
-            ) : (
-              <button
-                type="button"
-                data-mode-row
-                data-goal-open
-                aria-expanded={false}
-                onClick={() => { onGoalOpenChange(true); }}
-                className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px] font-medium transition-colors outline-none hover:bg-paper focus-visible:ring-2 focus-visible:ring-accent/40 ${
-                  goalObjective === '' ? 'text-ink' : 'text-accent'
-                }`}
-              >
-                <span className="min-w-0 flex-1 truncate">
-                  {goalObjective === '' ? t('composer.goalOpen') : goalObjective}
-                </span>
-              </button>
-            )}
-          </div>
         </div>
       ) : null}
     </div>
@@ -1685,14 +1604,219 @@ function ModeSelect({
 }
 
 /**
- * ModelChip — one trigger for everything that decides WHO answers: the agent
- * profile, the model, and the thinking effort. The trigger reads
- * `{model} · {effort}`, with the effort segment outside the truncation so the
- * two facts never squeeze each other out.
+ * PlanSelect — the run-shape settings for the next prompt, behind their own
+ * trigger next to the approval mode: the plan and swarm switches and the goal
+ * objective. The trigger spells the active combination (`plan · swarm`); with
+ * nothing active it rests on the plain `plan` label in the neutral style, and
+ * a filled objective or a live goal tints it accent.
+ *
+ * Open state is owned by the parent because `/goal` has to open this panel
+ * with the objective field already expanded. Same keyboard/overlay contract
+ * as ModeSelect, except that toggling a switch keeps the panel open —
+ * switches come in combinations.
+ */
+function PlanSelect({
+  open,
+  onOpenChange,
+  planMode,
+  onChangePlanMode,
+  swarmMode,
+  onChangeSwarmMode,
+  goalObjective,
+  onChangeGoalObjective,
+  goalOpen,
+  onGoalOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  planMode: boolean;
+  onChangePlanMode: (on: boolean) => void;
+  swarmMode: boolean;
+  onChangeSwarmMode: (on: boolean) => void;
+  goalObjective: string;
+  onChangeGoalObjective: (objective: string) => void;
+  goalOpen: boolean;
+  onGoalOpenChange: (open: boolean) => void;
+}) {
+  const { t } = useI18n();
+  const setOpen = onOpenChange;
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const segments = [
+    ...(planMode ? [t('composer.plan')] : []),
+    ...(swarmMode ? [t('composer.swarm')] : []),
+  ];
+  const label =
+    segments.length > 0 ? segments.join(t('composer.modeSegmentSeparator')) : t('composer.plan');
+  const active = planMode || swarmMode || goalObjective !== '';
+
+  const close = (refocus = false) => {
+    setOpen(false);
+    // An abandoned empty objective field collapses; a filled one stays open so
+    // reopening the panel shows what will ride the next prompt.
+    if (goalObjective === '') onGoalOpenChange(false);
+    if (refocus) triggerRef.current?.focus();
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const release = registerOverlay('composer-plan');
+    const onPointerDown = (event: PointerEvent) => {
+      if (rootRef.current !== null && !rootRef.current.contains(event.target as Node)) {
+        close();
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => {
+      release();
+      document.removeEventListener('pointerdown', onPointerDown);
+    };
+  }, [open]);
+
+  // Opening moves focus to the plan row — unless `/goal` asked for the
+  // objective field, which is the point of that shortcut.
+  useEffect(() => {
+    if (!open) return;
+    const root = rootRef.current;
+    if (root === null) return;
+    const goalField = goalOpen
+      ? root.querySelector<HTMLElement>('[data-goal-objective]')
+      : null;
+    (goalField ?? root.querySelector<HTMLElement>('[data-mode-row]'))?.focus();
+  }, [open, goalOpen]);
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!open) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      close(true);
+      return;
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      // The objective field owns its own arrow keys (caret movement).
+      if ((event.target as HTMLElement).tagName === 'INPUT') return;
+      event.preventDefault();
+      const rows = [...(rootRef.current?.querySelectorAll<HTMLElement>('[data-mode-row]') ?? [])];
+      if (rows.length === 0) return;
+      const index = rows.findIndex((row) => row === document.activeElement);
+      const delta = event.key === 'ArrowDown' ? 1 : -1;
+      rows[(index + delta + rows.length) % rows.length]?.focus();
+    }
+  };
+
+  return (
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Escape/arrow handling for the open panel
+    <div ref={rootRef} className="relative" data-plan-select onKeyDown={onKeyDown}>
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={t('composer.planAria')}
+        title={t('composer.planHint')}
+        onClick={() => { setOpen(!open); }}
+        className={`flex max-w-56 shrink-0 items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
+          open || active
+            ? 'border-accent bg-accent-soft text-accent'
+            : 'border-hairline bg-panel text-ink-soft hover:border-hairline-strong'
+        }`}
+      >
+        <span className="min-w-0 truncate">{label}</span>
+        <svg
+          width="9" height="9" viewBox="0 0 12 12" fill="none" aria-hidden
+          className={`shrink-0 opacity-70 transition-transform ${open ? 'rotate-180' : ''}`}
+        >
+          <path d="m3 4.5 3 3 3-3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {open ? (
+        <div className="anim-enter absolute bottom-full left-0 z-30 mb-1.5 w-64 max-w-[calc(100vw-48px)] rounded-xl border border-hairline bg-panel p-1.5 shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]">
+          {(
+            [
+              ['plan', planMode, onChangePlanMode, 'composer.plan', 'composer.planHint'],
+              ['swarm', swarmMode, onChangeSwarmMode, 'composer.swarm', 'composer.swarmHint'],
+            ] as const
+          ).map(([id, on, onToggle, labelKey, hintKey]) => (
+            <button
+              key={id}
+              type="button"
+              data-mode-row
+              data-mode-switch={id}
+              aria-pressed={on}
+              title={t(hintKey)}
+              onClick={() => { onToggle(!on); }}
+              className="flex w-full items-start gap-2 rounded-lg px-2.5 py-1.5 text-left transition-colors outline-none hover:bg-paper focus-visible:ring-2 focus-visible:ring-accent/40"
+            >
+              <span
+                aria-hidden
+                className={`mt-px shrink-0 text-[11px] leading-4 ${on ? 'text-accent' : 'text-ink-faint'}`}
+              >
+                {on ? '☑' : '☐'}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className={`block text-[12px] font-medium ${on ? 'text-accent' : 'text-ink'}`}>
+                  {t(labelKey)}
+                </span>
+                <span className="mt-0.5 block text-[10.5px] leading-snug text-ink-faint">
+                  {t(hintKey)}
+                </span>
+              </span>
+            </button>
+          ))}
+          {goalOpen ? (
+            <div className="mt-1 border-t border-hairline px-2.5 pt-1 pb-0.5">
+              <label
+                htmlFor="composer-goal-objective"
+                className="text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase"
+              >
+                {t('composer.goalObjective')}
+              </label>
+              <input
+                id="composer-goal-objective"
+                data-goal-objective
+                value={goalObjective}
+                onChange={(event) => { onChangeGoalObjective(event.target.value); }}
+                placeholder={t('composer.goalObjectivePlaceholder')}
+                className="mt-1 w-full rounded-lg border border-hairline bg-paper px-2.5 py-1.5 text-[12px] text-ink outline-none placeholder:text-ink-faint focus:border-accent"
+              />
+              <p className="mt-1.5 text-[10.5px] leading-relaxed text-ink-faint">
+                {t('composer.goalNoteBefore')}
+                <span className="font-mono">goal_objective</span>
+                {t('composer.goalNoteAfter')}
+              </p>
+            </div>
+          ) : (
+            <button
+              type="button"
+              data-mode-row
+              data-goal-open
+              aria-expanded={false}
+              onClick={() => { onGoalOpenChange(true); }}
+              className={`mt-1 flex w-full items-center gap-2 rounded-lg border-t border-hairline px-2.5 py-1.5 text-left text-[12px] font-medium transition-colors outline-none hover:bg-paper focus-visible:ring-2 focus-visible:ring-accent/40 ${
+                goalObjective === '' ? 'text-ink' : 'text-accent'
+              }`}
+            >
+              <span className="min-w-0 flex-1 truncate">
+                {goalObjective === '' ? t('composer.goalOpen') : goalObjective}
+              </span>
+            </button>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * ModelChip — one trigger for the model and its thinking effort. The trigger
+ * reads `{model} · {effort}`, with the effort segment outside the truncation
+ * so the two facts never squeeze each other out. The agent profile is a
+ * separate toolbar control, not part of this panel.
  *
  * With an empty catalog the trigger degrades to the read-only effective model
- * (nothing to pick) while the panel still carries the profile and effort rows;
- * with none of the three available it is inert text.
+ * (nothing to pick) while the panel still carries the effort row; with neither
+ * available it is inert text.
  */
 function ModelChip({
   modelOptions,
@@ -1701,10 +1825,6 @@ function ModelChip({
   effectiveModel,
   modelSource,
   onChangeModel,
-  agentProfileOptions,
-  agentProfile,
-  agentProfilePending,
-  onChangeAgentProfile,
   efforts,
   effort,
   onChangeEffort,
@@ -1716,21 +1836,15 @@ function ModelChip({
   readonly effectiveModel: string | undefined;
   readonly modelSource: ComposerModelSource;
   readonly onChangeModel: (model: string | undefined) => void;
-  /** Undefined hides the profile row (no handler, or catalog unavailable). */
-  readonly agentProfileOptions: readonly SearchableSelectOption[] | undefined;
-  readonly agentProfile: string | undefined;
-  readonly agentProfilePending: boolean;
-  readonly onChangeAgentProfile: ((name: string) => void) | undefined;
   readonly efforts: readonly string[] | undefined;
   readonly effort: string | undefined;
   readonly onChangeEffort: (effort: string) => void;
 }) {
   const { t } = useI18n();
-  const showProfile = agentProfileOptions !== undefined && onChangeAgentProfile !== undefined;
   const showEffort = efforts !== undefined && efforts.length > 0 && effort !== undefined;
   const title = t('composer.modelTitle', { source: t(`composer.modelSource.${modelSource}`) });
 
-  if (!hasCatalog && !showProfile && !showEffort) {
+  if (!hasCatalog && !showEffort) {
     return (
       <span
         className="max-w-56 truncate rounded-full border border-hairline bg-panel px-2 py-0.5 font-mono text-[11px] text-ink-soft"
@@ -1758,37 +1872,6 @@ function ModelChip({
       triggerSuffix={
         showEffort ? (
           <span className="shrink-0 text-ink-faint"> · {effort}</span>
-        ) : null
-      }
-      panelHeader={
-        showProfile ? (
-          <div className="flex items-center gap-2 border-b border-hairline px-2.5 py-2">
-            <span className="shrink-0 text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase">
-              {t('composer.agentProfileHeading')}
-            </span>
-            <div className="ml-auto min-w-0">
-              <SearchableSelect
-                id="composer-agent-profile-select"
-                options={agentProfileOptions}
-                value={agentProfile ?? DEFAULT_AGENT_PROFILE}
-                onChange={onChangeAgentProfile}
-                title={
-                  agentProfilePending
-                    ? t('composer.agentProfilePendingTitle')
-                    : t('composer.agentProfileTitle')
-                }
-                ariaLabel={t('composer.agentProfileAria')}
-                emptyText={t('composer.noAgentProfiles')}
-                placement="above"
-                panelClassName="anim-enter absolute z-50 bottom-full right-0 mb-1 w-60 max-w-[calc(100vw-48px)] overflow-hidden rounded-xl border border-hairline bg-panel shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
-                buttonClassName={`flex max-w-40 items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[11px] outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-accent/30 ${
-                  agentProfilePending
-                    ? 'border-accent bg-accent-soft text-accent'
-                    : 'border-hairline bg-paper text-ink-soft hover:border-hairline-strong'
-                }`}
-              />
-            </div>
-          </div>
         ) : null
       }
       panelFooter={

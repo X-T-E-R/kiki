@@ -521,6 +521,34 @@ describe('live and event chrome', () => {
     expect(trigger?.getAttribute('aria-expanded')).toBe('true');
     expect(container.textContent).toContain('Long implementation notes');
   });
+
+  it('keeps shell cards collapsed by default and expands them on click', async () => {
+    const container = await renderTranscript([
+      {
+        kind: 'shell',
+        id: 'shell-1',
+        commandId: 'bash-1',
+        output: 'first line\nSuite is green — 42 passed.',
+        done: true,
+        isError: undefined,
+      },
+    ]);
+    const shell = container.querySelector('[data-shell]');
+    const trigger = shell?.querySelector('button');
+
+    expect(shell).not.toBeNull();
+    expect(trigger?.getAttribute('aria-expanded')).toBe('false');
+    // Collapsed: no log body, but the header still carries a tail preview.
+    expect(shell?.querySelector('pre')).toBeNull();
+    expect(shell?.textContent).toContain('Suite is green — 42 passed.');
+    expect(shell?.textContent).not.toContain('first line');
+
+    await act(async () => {
+      flushSync(() => { click(trigger!); });
+    });
+    expect(trigger?.getAttribute('aria-expanded')).toBe('true');
+    expect(shell?.querySelector('pre')?.textContent).toContain('first line');
+  });
 });
 
 describe('message row actions', () => {

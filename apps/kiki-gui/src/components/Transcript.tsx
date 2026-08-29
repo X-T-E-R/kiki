@@ -516,18 +516,45 @@ const SteerMessage = memo(function SteerMessage({ block }: { block: SteerBlock }
 
 const ShellMessage = memo(function ShellMessage({ block }: { block: ShellBlock }) {
   const { t } = useI18n();
+  // Collapsed by default — running and finished alike (the full log was
+  // eating the timeline). The header keeps the status (busy dot / failure),
+  // and while collapsed the latest output line rides it as a muted preview so
+  // a live command still shows motion without the body.
+  const [open, setOpen] = useState(false);
+  const preview = latestLineOf(block.output);
   return (
     <div data-shell className="anim-enter overflow-hidden rounded-lg bg-shell">
-      <div className="flex items-center gap-2 border-b border-white/10 px-3 py-1.5">
-        <span className="font-mono text-[11px] font-semibold text-accent">shell</span>
-        {!block.done ? <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" /> : null}
-        {block.done && block.isError === true ? (
-          <span className="font-mono text-[10.5px] text-danger">{t('transcript.failed')}</span>
+      <button
+        type="button"
+        onClick={() => { setOpen((value) => !value); }}
+        aria-expanded={open}
+        aria-label={open ? t('transcript.showLess') : t('transcript.showMore')}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left"
+      >
+        <span
+          aria-hidden
+          className={`inline-block shrink-0 text-[9px] text-shell-ink-soft transition-transform duration-150 ${open ? 'rotate-90' : ''}`}
+        >
+          ▶
+        </span>
+        <span className="shrink-0 font-mono text-[11px] font-semibold text-accent">shell</span>
+        {!block.done ? (
+          <span className="status-dot-busy h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
         ) : null}
-      </div>
-      <pre className="max-h-80 overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-shell-ink">
-        {block.output === '' ? '…' : block.output}
-      </pre>
+        {block.done && block.isError === true ? (
+          <span className="shrink-0 font-mono text-[10.5px] text-danger">{t('transcript.failed')}</span>
+        ) : null}
+        {!open && preview !== '' ? (
+          <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-shell-ink-soft">
+            {preview}
+          </span>
+        ) : null}
+      </button>
+      {open ? (
+        <pre className="max-h-80 overflow-auto border-t border-white/10 px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-shell-ink">
+          {block.output === '' ? '…' : block.output}
+        </pre>
+      ) : null}
     </div>
   );
 });
