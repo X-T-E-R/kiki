@@ -136,6 +136,7 @@ export interface ShellBlock {
   readonly output: string;
   readonly done: boolean;
   readonly isError: boolean | undefined;
+  readonly startedAt?: number;
   readonly turnId?: string;
 }
 

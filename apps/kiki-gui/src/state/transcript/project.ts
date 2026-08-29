@@ -583,6 +583,7 @@ function blockTimelineMs(block: Block): number | undefined {
     case 'question':
       return timestampMs(block.request.created_at);
     case 'shell':
+      return block.startedAt !== undefined && block.startedAt > 0 ? block.startedAt : undefined;
     case 'notice':
       return undefined;
   }
@@ -676,36 +677,54 @@ function subagentBlocksFromSnapshot(
   parentAgentId: string,
 ): SubagentBlock[] {
   const tasks = response.tasks ?? [];
+  const taskById = new Map(tasks.map((task) => [task.taskId, task]));
+  const taskByAgent = new Map(
+    tasks.flatMap((task) =>
+      task.kind === 'subagent' && task.agentId !== undefined && task.agentId !== ''
+        ? [[task.agentId, task] as const]
+        : [],
+    ),
+  );
   const byAgent = new Map<string, SubagentBlock>();
-  for (const task of tasks) {
-    if (task.kind !== 'subagent' || task.agentId === undefined || task.agentId === '') continue;
-    byAgent.set(task.agentId, {
-      kind: 'subagent',
-      id: `subagent-${task.agentId}`,
-      subagentId: task.agentId,
-      parentAgentId,
-      parentToolCallId: undefined,
-      name: task.description ?? task.agentId,
-      description: task.description,
-      model: undefined,
-      thinkingEffort: undefined,
-      status: mapTaskState(task.state),
-      summary: task.resultSummary ?? (task.outputTail === '' ? undefined : task.outputTail),
-      error: task.error,
-      usage: task.usage,
-      startedAt: task.startedAt ?? '',
-      endedAt: task.endedAt,
-      toolCallCount: 0,
-      transcript: [],
-    });
-  }
+  let previousTurnId: string | undefined;
   for (const item of response.items) {
+    if (item.kind === 'taskref') {
+      const task = taskById.get(item.taskId);
+      if (task?.kind !== 'subagent' || task.agentId === undefined || task.agentId === '') continue;
+      const existing = byAgent.get(task.agentId);
+      const startedAt = item.at ?? task.startedAt ?? existing?.startedAt ?? '';
+      byAgent.set(task.agentId, {
+        kind: 'subagent',
+        id: `subagent-${task.agentId}`,
+        subagentId: task.agentId,
+        parentAgentId,
+        parentToolCallId: existing?.parentToolCallId,
+        parentTurnId:
+          existing?.parentTurnId ?? (timestampMs(startedAt) === undefined ? previousTurnId : undefined),
+        name: existing?.name ?? task.description ?? task.agentId,
+        description: existing?.description ?? task.description,
+        instruction: existing?.instruction,
+        model: existing?.model,
+        thinkingEffort: existing?.thinkingEffort,
+        status: mapTaskState(task.state),
+        summary: task.resultSummary ?? (task.outputTail === '' ? existing?.summary : task.outputTail),
+        error: task.error ?? existing?.error,
+        usage: task.usage ?? existing?.usage,
+        startedAt,
+        endedAt: task.endedAt ?? existing?.endedAt,
+        toolCallCount: existing?.toolCallCount ?? 0,
+        transcript: [],
+      });
+      continue;
+    }
     if (item.kind !== 'turn') continue;
+    previousTurnId = item.turnId;
     for (const step of item.steps) {
       for (const frame of step.frames) {
         if (frame.kind !== 'tool' || frame.agentRefs === undefined) continue;
         for (const ref of frame.agentRefs) {
           const existing = byAgent.get(ref.agentId);
+          const task = taskByAgent.get(ref.agentId);
           const instruction = spawnInstructionFromToolArgs(frame.input, ref.agentId);
           byAgent.set(ref.agentId, {
             kind: 'subagent',
@@ -714,17 +733,30 @@ function subagentBlocksFromSnapshot(
             parentAgentId,
             parentToolCallId: frame.toolCallId,
             parentTurnId: item.turnId,
-            name: spawnNameFromToolArgs(frame.input, ref.agentId) ?? existing?.name ?? ref.agentId,
-            description: existing?.description ?? instruction,
+            name:
+              spawnNameFromToolArgs(frame.input, ref.agentId) ??
+              existing?.name ??
+              task?.description ??
+              ref.agentId,
+            description: existing?.description ?? task?.description ?? instruction,
             instruction: instruction ?? existing?.instruction,
             model: existing?.model,
             thinkingEffort: existing?.thinkingEffort,
-            status: existing?.status ?? (frame.state === 'running' ? 'running' : 'unknown'),
-            summary: existing?.summary,
-            error: existing?.error,
-            usage: existing?.usage,
-            startedAt: existing?.startedAt || step.startedAt || item.startedAt || '',
-            endedAt: existing?.endedAt,
+            status:
+              existing?.status ??
+              (task === undefined
+                ? frame.state === 'running'
+                  ? 'running'
+                  : 'unknown'
+                : mapTaskState(task.state)),
+            summary:
+              existing?.summary ??
+              task?.resultSummary ??
+              (task?.outputTail === '' ? undefined : task?.outputTail),
+            error: existing?.error ?? task?.error,
+            usage: existing?.usage ?? task?.usage,
+            startedAt: existing?.startedAt || task?.startedAt || step.startedAt || item.startedAt || '',
+            endedAt: existing?.endedAt ?? task?.endedAt,
             toolCallCount: existing?.toolCallCount ?? 0,
             transcript: [],
           });
@@ -757,12 +789,13 @@ function nearestParentTurn(
     }
   }
   const startedAt = blockTimelineMs(subagent);
+  if (startedAt === undefined) return undefined;
   let nearest: { turnId: string; at: number } | undefined;
   for (const candidate of blocks) {
     const turnId = blockTurnId(candidate);
     if (turnId === undefined) continue;
     const at = blockTimelineMs(candidate);
-    if (at === undefined || (startedAt !== undefined && at > startedAt)) continue;
+    if (at === undefined || at > startedAt) continue;
     if (nearest === undefined || at >= nearest.at) nearest = { turnId, at };
   }
   return nearest?.turnId;
@@ -789,7 +822,11 @@ function insertSubagentByTimeline(blocks: Block[], block: SubagentBlock): void {
   insertByTimeline(blocks, block);
 }
 
-function insertSubagentBlocks(source: readonly Block[], subagents: readonly SubagentBlock[]): Block[] {
+function insertSubagentBlocks(
+  source: readonly Block[],
+  subagents: readonly SubagentBlock[],
+  previous: readonly Block[],
+): Block[] {
   if (subagents.length === 0) return source.filter((block) => block.kind !== 'subagent');
   const sorted = [...subagents].sort(compareSubagentTimeline);
   const byParentTool = new Map<string, SubagentBlock[]>();
@@ -832,10 +869,9 @@ function insertSubagentBlocks(source: readonly Block[], subagents: readonly Suba
   for (const subagent of sorted) {
     if (inserted.has(subagent.subagentId)) continue;
     const parentTurnId = nearestParentTurn(blocks, subagent);
-    insertSubagentByTimeline(
-      blocks,
-      parentTurnId === undefined ? subagent : { ...subagent, parentTurnId },
-    );
+    const placed = parentTurnId === undefined ? subagent : { ...subagent, parentTurnId };
+    if (parentTurnId === undefined && insertAtPreviousPosition(blocks, placed, previous)) continue;
+    insertSubagentByTimeline(blocks, placed);
   }
   return blocks;
 }
@@ -864,8 +900,12 @@ function interactionPlacement(
       ? (interaction.request as Record<string, unknown>)
       : undefined;
   const anchorKind = anchor === undefined ? undefined : recordString(anchor, 'kind');
+  const directToolCallId =
+    interaction.toolCallId === undefined || interaction.toolCallId === ''
+      ? undefined
+      : interaction.toolCallId;
   const toolCallId =
-    interaction.toolCallId ??
+    directToolCallId ??
     (anchorKind === 'tool_call' && anchor !== undefined ? recordString(anchor, 'toolCallId', 'tool_call_id') : undefined) ??
     (request === undefined ? undefined : recordString(request, 'toolCallId', 'tool_call_id')) ??
     block.request.tool_call_id;
@@ -1334,6 +1374,17 @@ function turnHasAttachments(item: {
   return false;
 }
 
+function turnHasTaskBackedFrame(item: {
+  readonly steps: readonly { readonly frames: readonly object[] }[];
+}): boolean {
+  return item.steps.some((step) =>
+    step.frames.some((frame) => {
+      const candidate = frame as { readonly kind?: unknown; readonly taskId?: unknown };
+      return candidate.kind === 'tool' && typeof candidate.taskId === 'string' && candidate.taskId !== '';
+    }),
+  );
+}
+
 function cacheTerminalTurnBlocks(
   item: object,
   agentId: string,
@@ -1352,9 +1403,23 @@ export function agentTranscriptToBlocks(
   previous: readonly Block[] = [],
 ): Block[] {
   const blocks: Block[] = [];
+  const deferredTaskBlocks: Block[] = [];
   const subagentPromptAsUser = response.agent_id !== MAIN_AGENT_ID;
   const phase = response.meta?.agent?.phase;
   const prompts = response.prompts ?? [];
+  const tasks = response.tasks ?? [];
+  const taskById = new Map(tasks.map((task) => [task.taskId, task]));
+  const shellFrameTaskIds = new Set<string>();
+  for (const item of response.items) {
+    if (item.kind !== 'turn') continue;
+    for (const step of item.steps) {
+      for (const frame of step.frames) {
+        if (frame.kind !== 'tool') continue;
+        const taskId = (frame as typeof frame & { readonly taskId?: string }).taskId;
+        if (taskId !== undefined && taskById.get(taskId)?.kind === 'shell') shellFrameTaskIds.add(taskId);
+      }
+    }
+  }
   const attachments = response.attachments ?? [];
   const attachmentsById =
     attachments.length === 0
@@ -1367,16 +1432,22 @@ export function agentTranscriptToBlocks(
       continue;
     }
     if (item.kind === 'taskref') {
-      const task = (response.tasks ?? []).find((candidate) => candidate.taskId === item.taskId);
+      const task = taskById.get(item.taskId);
       if (task === undefined || task.kind === 'subagent') continue;
       if (task.kind === 'shell') {
-        blocks.push({
+        if (shellFrameTaskIds.has(task.taskId)) continue;
+        deferredTaskBlocks.push({
           kind: 'shell',
           id: `shell-${task.taskId}`,
           commandId: task.taskId,
           output: task.outputTail === '' ? (task.description ?? task.taskId) : task.outputTail,
           done: task.state !== 'running',
-          isError: task.state === 'failed' || task.state === 'timed_out' || task.state === 'killed',
+          isError:
+            task.state === 'failed' ||
+            task.state === 'timed_out' ||
+            task.state === 'killed' ||
+            task.state === 'lost',
+          startedAt: timestampMs(item.at ?? task.startedAt),
         });
         continue;
       }
@@ -1390,7 +1461,8 @@ export function agentTranscriptToBlocks(
     }
     if (item.kind !== 'turn') continue;
     const terminal = isTerminalTurn(item);
-    if (terminal) {
+    const cacheableTerminal = terminal && !turnHasAttachments(item) && !turnHasTaskBackedFrame(item);
+    if (cacheableTerminal) {
       const cached = terminalTurnProjectionCache.get(item)?.get(response.agent_id);
       if (cached !== undefined) {
         blocks.push(...cached);
@@ -1505,25 +1577,49 @@ export function agentTranscriptToBlocks(
             const startedAt = new Date(step.startedAt ?? item.startedAt ?? '').getTime();
             const endedAt = new Date(step.endedAt ?? item.endedAt ?? '').getTime();
             const toolFrame = frame as typeof frame & { view?: string; taskId?: string };
-            const isShell = toolFrame.name === 'Bash' || toolFrame.view === 'shell' || toolFrame.taskId !== undefined && toolFrame.name.toLowerCase().includes('shell');
-            if (isShell && (frame.output !== undefined || frame.inputText !== undefined || typeof frame.input === 'object')) {
+            const task = toolFrame.taskId === undefined ? undefined : taskById.get(toolFrame.taskId);
+            const shellTask = task?.kind === 'shell' ? task : undefined;
+            const isShell =
+              toolFrame.name === 'Bash' ||
+              toolFrame.view === 'shell' ||
+              (toolFrame.taskId !== undefined && toolFrame.name.toLowerCase().includes('shell'));
+            if (
+              isShell &&
+              (shellTask !== undefined ||
+                frame.output !== undefined ||
+                frame.inputText !== undefined ||
+                typeof frame.input === 'object')
+            ) {
               const command =
                 typeof (frame.input as { command?: unknown } | undefined)?.command === 'string'
                   ? `$ ${(frame.input as { command: string }).command}`
                   : frame.inputText ?? '';
-              const output =
+              const frameOutput =
                 typeof frame.output === 'string'
                   ? frame.output
                   : typeof frame.output === 'object' && frame.output !== null && 'stdout' in (frame.output as object)
                     ? String((frame.output as { stdout?: unknown }).stdout ?? '')
                     : frame.error ?? command;
+              const output =
+                shellTask?.outputTail === '' || shellTask?.outputTail === undefined
+                  ? frameOutput
+                  : shellTask.outputTail;
               blocks.push({
                 kind: 'shell',
                 id: `shell-${frame.toolCallId}`,
                 commandId: frame.toolCallId,
                 output: output === '' ? command : output,
-                done: frame.state !== 'running',
-                isError: frame.state === 'error',
+                done: shellTask === undefined ? frame.state !== 'running' : shellTask.state !== 'running',
+                isError:
+                  shellTask === undefined
+                    ? frame.state === 'error'
+                    : shellTask.state === 'failed' ||
+                      shellTask.state === 'timed_out' ||
+                      shellTask.state === 'killed' ||
+                      shellTask.state === 'lost',
+                startedAt:
+                  timestampMs(shellTask?.startedAt) ??
+                  (Number.isNaN(startedAt) ? undefined : startedAt),
                 turnId: item.turnId,
               });
               break;
@@ -1542,7 +1638,9 @@ export function agentTranscriptToBlocks(
               isError: frame.state === 'error',
               startedAt: Number.isNaN(startedAt) ? 0 : startedAt,
               durationMs:
-                Number.isNaN(startedAt) || Number.isNaN(endedAt) ? item.durationMs : Math.max(0, endedAt - startedAt),
+                Number.isNaN(startedAt) || Number.isNaN(endedAt)
+                  ? item.durationMs
+                  : Math.max(0, endedAt - startedAt),
               progressText: frame.progress?.text,
               agentRefs: frame.agentRefs,
               turnId: item.turnId,
@@ -1560,14 +1658,24 @@ export function agentTranscriptToBlocks(
         }
       }
     }
-    if (terminal && !turnHasAttachments(item)) {
+    if (cacheableTerminal) {
       cacheTerminalTurnBlocks(item, response.agent_id, blocks.slice(blockStart));
     }
   }
-  const withPrompts = mergeTranscriptPromptBlocks(blocks, prompts, previous);
+  const withTaskBlocks = [...mergeTranscriptPromptBlocks(blocks, prompts, previous)];
+  for (const block of deferredTaskBlocks) {
+    if (
+      blockTimelineMs(block) === undefined &&
+      insertAtPreviousPosition(withTaskBlocks, block, previous)
+    ) {
+      continue;
+    }
+    insertByTimeline(withTaskBlocks, block);
+  }
   const withSubagents = insertSubagentBlocks(
-    withPrompts,
+    withTaskBlocks,
     subagentBlocksFromSnapshot(response, response.agent_id),
+    previous,
   );
   return insertInteractionBlocks(
     withSubagents,
@@ -1836,7 +1944,7 @@ export function applyTranscriptShell(
     version: base.version + 1,
     session: snapshot.session,
     cursor: sessionCursorFromSnapshot(snapshot, previous),
-    busy: snapshot.session.busy,
+    busy: snapshot.session.main_turn_active ?? (snapshot.in_flight_turn !== null),
     model: snapshot.session.agent_config.model !== '' ? snapshot.session.agent_config.model : base.model,
     profile: snapshot.session.agent_config.profile ?? base.profile,
     permissionMode: snapshot.session.agent_config.permission_mode ?? base.permissionMode,

@@ -214,6 +214,50 @@ describe('transcript authority projection', () => {
     expect(next.cursor).toEqual({ seq: 20, epoch: 'e1' });
   });
 
+  it('does not treat background-only session work as an active main turn on attach', () => {
+    const state = applyTranscriptShell('session_test', {
+      as_of_seq: 4,
+      epoch: 'e1',
+      session: { ...session, busy: true, main_turn_active: false },
+      messages: { items: [], has_more: false },
+      in_flight_turn: null,
+      pending_approvals: [],
+      pending_questions: [],
+    });
+
+    expect(state.session?.busy).toBe(true);
+    expect(state.busy).toBe(false);
+  });
+
+  it('uses the in-flight main turn as the old-server attach fallback', () => {
+    const idle = applyTranscriptShell('session_test', {
+      as_of_seq: 4,
+      epoch: 'e1',
+      session: { ...session, busy: true },
+      messages: { items: [], has_more: false },
+      in_flight_turn: null,
+      pending_approvals: [],
+      pending_questions: [],
+    });
+    const active = applyTranscriptShell('session_test', {
+      as_of_seq: 4,
+      epoch: 'e1',
+      session: { ...session, busy: true },
+      messages: { items: [], has_more: false },
+      in_flight_turn: {
+        turn_id: 1,
+        assistant_text: '',
+        thinking_text: '',
+        running_tools: [],
+      } as SessionSnapshotResponse['in_flight_turn'],
+      pending_approvals: [],
+      pending_questions: [],
+    });
+
+    expect(idle.busy).toBe(false);
+    expect(active.busy).toBe(true);
+  });
+
   it('prepends older pages by entity id and stays idempotent', () => {
     const current = {
       items: [
@@ -374,6 +418,64 @@ describe('transcript projection cache', () => {
     expect(first[0]).toMatchObject({ kind: 'user', media: [{ url: 'https://example.com/one.png' }] });
     expect(second[0]).toMatchObject({ kind: 'user', media: [{ url: 'https://example.com/two.png' }] });
     expect(second[0]).not.toBe(first[0]);
+  });
+
+  it('reprojects a settled task-backed shell when the global task entity changes', () => {
+    const item: AgentTranscriptSnapshot['items'][number] = {
+      kind: 'turn',
+      turnId: 't-task-cache',
+      ordinal: 1,
+      state: 'completed',
+      origin: { kind: 'user' },
+      prompt: 'run it',
+      startedAt: FIXED_AT,
+      steps: [
+        {
+          kind: 'step',
+          stepId: 't-task-cache.1',
+          turnId: 't-task-cache',
+          ordinal: 1,
+          state: 'completed',
+          startedAt: FIXED_AT_1,
+          frames: [
+            {
+              kind: 'tool',
+              frameId: 'f-task-cache',
+              toolCallId: 'command-task-cache',
+              taskId: 'task-cache',
+              name: 'Bash',
+              state: 'done',
+              input: { command: 'pwd' },
+            },
+          ],
+        },
+      ],
+    };
+    const task = {
+      taskId: 'task-cache',
+      kind: 'shell' as const,
+      detached: false,
+      startedAt: FIXED_AT_1,
+    };
+    const first = agentTranscriptToBlocks({
+      agent_id: 'main',
+      items: [item],
+      tasks: [{ ...task, state: 'running', outputTail: 'partial' }],
+    });
+    const second = agentTranscriptToBlocks({
+      agent_id: 'main',
+      items: [item],
+      tasks: [{ ...task, state: 'completed', outputTail: 'complete' }],
+    });
+
+    expect(first.find((block) => block.kind === 'shell')).toMatchObject({
+      output: 'partial',
+      done: false,
+    });
+    expect(second.find((block) => block.kind === 'shell')).toMatchObject({
+      output: 'complete',
+      done: true,
+    });
   });
 });
 
@@ -972,7 +1074,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(queuedIndex).toBe(nextAssistantIndex - 1);
   });
 
-  it('places an unanchored subagent by timestamp before a later turn', () => {
+  it('uses a late taskref timestamp to place a subagent before a later turn', () => {
     const projected = projectAgentTranscriptView(
       createViewState('session_test'),
       'main',
@@ -1010,6 +1112,12 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
             endedAt: '2026-01-01T00:00:12.000Z',
             steps: [],
           },
+          {
+            kind: 'taskref',
+            refId: 'ref-orphan',
+            taskId: 'task-orphan',
+            at: '2026-01-01T00:00:05.000Z',
+          },
         ],
         tasks: [
           {
@@ -1020,7 +1128,6 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
             agentId: 'agent-orphan',
             description: 'between turns',
             outputTail: 'done',
-            startedAt: '2026-01-01T00:00:05.000Z',
             endedAt: '2026-01-01T00:00:06.000Z',
           },
         ],
@@ -1032,6 +1139,201 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     );
     expect(subagentIndex).toBeGreaterThanOrEqual(0);
     expect(subagentIndex).toBeLessThan(secondTurnIndex);
+  });
+
+  it('does not append page-global subagent tasks whose taskref and parent frame are outside the page', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't2',
+            ordinal: 2,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'visible page',
+            startedAt: FIXED_AT_2,
+            steps: [],
+          },
+        ],
+        tasks: [
+          {
+            taskId: 'task-outside-page',
+            kind: 'subagent',
+            state: 'completed',
+            detached: false,
+            agentId: 'agent-outside-page',
+            description: 'belongs to an older page',
+            outputTail: 'done',
+            startedAt: FIXED_AT,
+          },
+        ],
+      }),
+    );
+
+    expect(projected.blocks.some((block) => block.id === 'subagent-agent-outside-page')).toBe(false);
+  });
+
+  it('places a late shell taskref by its reading-flow timestamp', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't1',
+            ordinal: 1,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'first',
+            startedAt: '2026-01-01T00:00:00.000Z',
+            steps: [],
+          },
+          {
+            kind: 'turn',
+            turnId: 't2',
+            ordinal: 2,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'second',
+            startedAt: '2026-01-01T00:00:10.000Z',
+            steps: [],
+          },
+          {
+            kind: 'taskref',
+            refId: 'ref-shell-late',
+            taskId: 'task-shell-late',
+            at: '2026-01-01T00:00:05.000Z',
+          },
+        ],
+        tasks: [
+          {
+            taskId: 'task-shell-late',
+            kind: 'shell',
+            state: 'completed',
+            detached: true,
+            description: '$ sleep 2',
+            outputTail: 'done',
+          },
+        ],
+      }),
+    );
+    const shellIndex = projected.blocks.findIndex((block) => block.id === 'shell-task-shell-late');
+    const secondTurnIndex = projected.blocks.findIndex(
+      (block) => block.kind === 'user' && block.turnId === 't2',
+    );
+    expect(shellIndex).toBeGreaterThanOrEqual(0);
+    expect(shellIndex).toBeLessThan(secondTurnIndex);
+  });
+
+  it('merges a task-backed shell into its command frame and anchors interactions by command id', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't1',
+            ordinal: 1,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'run it',
+            startedAt: FIXED_AT,
+            steps: [
+              {
+                kind: 'step',
+                stepId: 't1.1',
+                turnId: 't1',
+                ordinal: 1,
+                state: 'completed',
+                startedAt: FIXED_AT_1,
+                frames: [
+                  {
+                    kind: 'tool',
+                    frameId: 'frame-shell-command',
+                    toolCallId: 'command-1',
+                    taskId: 'task-shell-command',
+                    name: 'Bash',
+                    state: 'done',
+                    input: { command: 'pwd' },
+                    output: 'stale frame output',
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            kind: 'taskref',
+            refId: 'ref-shell-command',
+            taskId: 'task-shell-command',
+            at: FIXED_AT_1,
+          },
+        ],
+        tasks: [
+          {
+            taskId: 'task-shell-command',
+            kind: 'shell',
+            state: 'completed',
+            detached: false,
+            outputTail: 'canonical task output',
+            startedAt: FIXED_AT_1,
+          },
+        ],
+        interactions: [
+          {
+            interactionId: 'approval-shell-command',
+            interactionKind: 'approval',
+            toolCallId: 'command-1',
+            state: 'pending',
+            request: {
+              toolCallId: 'command-1',
+              toolName: 'Bash',
+              action: 'Run pwd',
+              createdAt: FIXED_AT_1,
+            },
+          },
+        ],
+      }),
+    );
+    const shells = projected.blocks.filter((block) => block.kind === 'shell');
+    expect(shells).toEqual([
+      expect.objectContaining({
+        id: 'shell-command-1',
+        commandId: 'command-1',
+        output: 'canonical task output',
+      }),
+    ]);
+    const shellIndex = projected.blocks.findIndex((block) => block.id === 'shell-command-1');
+    expect(projected.blocks[shellIndex + 1]?.id).toBe('approval-approval-shell-command');
+  });
+
+  it('falls back from an empty interaction tool id to its command anchor', () => {
+    const source = capabilityMatrixSnapshot();
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', {
+      ...source,
+      interactions: [
+        {
+          interactionId: 'approval-empty-tool-id',
+          interactionKind: 'approval',
+          toolCallId: '',
+          anchor: { kind: 'tool_call', toolCallId: 'bash-1' },
+          state: 'pending',
+          request: {
+            toolName: 'Bash',
+            action: 'Run ls',
+            createdAt: FIXED_AT_1,
+          },
+        },
+      ],
+    });
+    const shellIndex = projected.blocks.findIndex(
+      (block) => block.kind === 'shell' && block.commandId === 'bash-1',
+    );
+    expect(projected.blocks[shellIndex + 1]?.id).toBe('approval-approval-empty-tool-id');
   });
 
   it('derives busy state from canonical running structures when phase metadata is missing', () => {
