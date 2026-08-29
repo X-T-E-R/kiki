@@ -795,8 +795,12 @@ export class SessionController {
     },
   ): void {
     const snapshot = this.composeAgentSnapshot(agentId);
-    const previous =
+    const previousBase =
       agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
+    const previous =
+      previousBase.snapshotSubagents === this.state.snapshotSubagents
+        ? previousBase
+        : { ...previousBase, snapshotSubagents: this.state.snapshotSubagents };
     const next = projectAgentTranscriptView(previous, agentId, snapshot, {
       retainPendingPrompts: options?.retainPendingPrompts,
     });
@@ -832,7 +836,7 @@ export class SessionController {
     for (const [agentId] of this.agentTranscripts) {
       snapshots.set(agentId, this.composeAgentSnapshot(agentId));
     }
-    this.publishedForest = sessionAgentForestFromAgentSnapshots(snapshots);
+    this.publishedForest = sessionAgentForestFromAgentSnapshots(snapshots, this.state.snapshotSubagents);
     this.forestPublishCount += 1;
   }
 

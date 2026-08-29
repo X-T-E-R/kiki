@@ -1,4 +1,4 @@
-import type { Task } from '@moonshot-ai/protocol';
+import type { SnapshotSubagent, Task } from '@moonshot-ai/protocol';
 import type { AgentState, AgentTranscriptSnapshot } from '@moonshot-ai/transcript';
 
 import type { AgentTranscriptAgent, AgentTranscriptResponse, AgentTranscriptTask } from '../../lib/client';
@@ -10,7 +10,7 @@ import {
   type AgentRosterDescriptor,
   type AgentTaskItem,
 } from '../agentTree';
-import { agentBusyFromMeta } from './project';
+import { agentBusyFromMeta, snapshotSubagentAgentId } from './project';
 import { subagentBlocksFromState } from './selectors';
 import type { SessionViewState, SubagentBlock } from './types';
 
@@ -147,15 +147,139 @@ export function liveSourcesFromSubagentBlocks(blocks: readonly SubagentBlock[]):
   }));
 }
 
+export function rosterFromSnapshotSubagents(
+  subagents: readonly SnapshotSubagent[] | undefined,
+): readonly AgentRosterDescriptor[] {
+  if (subagents === undefined) return [];
+  return subagents.flatMap((subagent) => {
+    const agentId = snapshotSubagentAgentId(subagent);
+    if (agentId === '') return [];
+    const label = presentSnapshotText(subagent.label);
+    const name =
+      label ??
+      presentSnapshotText(subagent.description) ??
+      presentSnapshotText(subagent.profile) ??
+      agentId;
+    return [
+      {
+        agentId,
+        parentAgentId: presentSnapshotText(subagent.parent_agent_id),
+        parentToolCallId: presentSnapshotText(subagent.parent_tool_call_id),
+        name,
+        label,
+        model: presentSnapshotText(subagent.model),
+        thinkingEffort: presentSnapshotText(subagent.thinking_effort),
+        status: subagent.subagent_phase === 'suspended' ? 'suspended' : subagent.status,
+        toolCallCount: subagent.tool_call_count,
+        startedAt: subagent.started_at ?? subagent.created_at,
+        endedAt: subagent.completed_at,
+        summary: presentSnapshotText(subagent.output_preview),
+      } satisfies AgentRosterDescriptor,
+    ];
+  });
+}
+
+function presentSnapshotText(value: string | undefined): string | undefined {
+  return value !== undefined && value !== '' ? value : undefined;
+}
+
+export function overlayLiveSourcesWithSnapshotSubagents(
+  live: readonly AgentLiveSource[],
+  snapshotSubagents: readonly SnapshotSubagent[] | undefined,
+): readonly AgentLiveSource[] {
+  if (snapshotSubagents === undefined || snapshotSubagents.length === 0) return live;
+  const rosterById = new Map(
+    rosterFromSnapshotSubagents(snapshotSubagents).map((entry) => [entry.agentId, entry] as const),
+  );
+  if (rosterById.size === 0) return live;
+  return live.map((source) => {
+    const snapshot = rosterById.get(source.subagentId);
+    if (snapshot === undefined) return source;
+    const snapshotCount = snapshot.toolCallCount;
+    return {
+      ...source,
+      parentAgentId: source.parentAgentId ?? snapshot.parentAgentId,
+      parentToolCallId: source.parentToolCallId ?? snapshot.parentToolCallId,
+      name: source.name !== source.subagentId ? source.name : snapshot.name ?? source.name,
+      label: source.label ?? snapshot.label,
+      model: source.model ?? snapshot.model,
+      thinkingEffort: source.thinkingEffort ?? snapshot.thinkingEffort,
+      status: source.status === 'unknown' ? snapshot.status ?? source.status : source.status,
+      summary: source.summary ?? snapshot.summary,
+      error: source.error ?? snapshot.error,
+      startedAt: presentSnapshotText(source.startedAt) ?? snapshot.startedAt,
+      endedAt: source.endedAt ?? snapshot.endedAt,
+      toolCallCount:
+        snapshotCount === undefined
+          ? source.toolCallCount
+          : Math.max(source.toolCallCount ?? 0, snapshotCount),
+    };
+  });
+}
+
+function overlayForestDisplayFields(
+  forest: AgentForest,
+  live: readonly AgentLiveSource[],
+): AgentForest {
+  if (live.length === 0) return forest;
+  const liveById = new Map(live.map((entry) => [entry.subagentId, entry]));
+  let changed = false;
+  const byId: Record<string, (typeof forest.byId)[string]> = { ...forest.byId };
+  for (const [agentId, node] of Object.entries(byId)) {
+    const source = liveById.get(agentId);
+    if (source === undefined) continue;
+    const nextToolCallCount =
+      source.toolCallCount === undefined
+        ? node.toolCallCount
+        : Math.max(node.toolCallCount, source.toolCallCount);
+    const nextName = node.name !== node.agentId ? node.name : source.name;
+    const nextLabel =
+      node.label !== node.name && node.label !== node.agentId
+        ? node.label
+        : source.label ?? (source.name !== source.subagentId ? source.name : node.label);
+    const next = {
+      ...node,
+      name: nextName,
+      label: nextLabel,
+      model: node.model ?? source.model,
+      thinkingEffort: node.thinkingEffort ?? source.thinkingEffort,
+      toolCallCount: nextToolCallCount,
+      startedAt: presentSnapshotText(node.startedAt) ?? source.startedAt,
+      endedAt: node.endedAt ?? source.endedAt,
+      summary: node.summary ?? source.summary,
+      error: node.error ?? source.error,
+    };
+    if (
+      next.model !== node.model ||
+      next.thinkingEffort !== node.thinkingEffort ||
+      next.toolCallCount !== node.toolCallCount ||
+      next.label !== node.label ||
+      next.name !== node.name ||
+      next.startedAt !== node.startedAt ||
+      next.endedAt !== node.endedAt ||
+      next.summary !== node.summary ||
+      next.error !== node.error
+    ) {
+      byId[agentId] = next;
+      changed = true;
+    }
+  }
+  if (!changed) return forest;
+  return { byId, roots: forest.roots.map((root) => byId[root.agentId] ?? root) };
+}
+
 export function sessionAgentForest(
   state: SessionViewState,
   roster?: readonly AgentRosterDescriptor[],
   extraTasks?: readonly AgentTaskItem[],
 ): AgentForest {
-  return buildAgentForest(
+  const live = overlayLiveSourcesWithSnapshotSubagents(
     liveSourcesFromSubagentBlocks(subagentBlocksFromState(state)),
-    roster,
-    [...taskItemsFromSessionTasks(state.tasks), ...(extraTasks ?? [])],
+    state.snapshotSubagents,
+  );
+  return overlayForestDisplayFields(
+    buildAgentForest(live, roster, [...taskItemsFromSessionTasks(state.tasks), ...(extraTasks ?? [])]),
+    live,
   );
 }
 
@@ -263,8 +387,12 @@ export function liveSourcesFromAgentSnapshots(
 
 export function sessionAgentForestFromAgentSnapshots(
   snapshots: ReadonlyMap<string, AgentState | AgentTranscriptSnapshot>,
+  snapshotSubagents?: readonly SnapshotSubagent[],
 ): AgentForest {
-  const live = liveSourcesFromAgentSnapshots(snapshots);
+  const live = overlayLiveSourcesWithSnapshotSubagents(
+    liveSourcesFromAgentSnapshots(snapshots),
+    snapshotSubagents,
+  );
   const tasks: AgentTaskItem[] = [];
   const roster: AgentRosterDescriptor[] = [];
   for (const [agentId, snapshot] of snapshots) {
@@ -295,5 +423,5 @@ export function sessionAgentForestFromAgentSnapshots(
     const taskList = Array.isArray(snapshot.tasks) ? snapshot.tasks : [...snapshot.tasks.values()];
     tasks.push(...taskItemsFromTranscriptTasks(taskList));
   }
-  return buildAgentForest(live, roster, tasks);
+  return overlayForestDisplayFields(buildAgentForest(live, roster, tasks), live);
 }

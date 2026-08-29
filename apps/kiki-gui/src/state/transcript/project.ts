@@ -8,6 +8,7 @@ import type {
   QuestionRequest,
   SessionPendingInteraction,
   SessionSnapshotResponse,
+  SnapshotSubagent,
   Task,
   TokenUsage,
   ToolInputDisplay,
@@ -554,9 +555,63 @@ function spawnInstructionFromToolArgs(args: unknown, agentId: string): string | 
 function mapTaskState(state: string): SubagentBlock['status'] {
   if (state === 'running') return 'running';
   if (state === 'failed' || state === 'lost' || state === 'timed_out') return 'failed';
-  if (state === 'killed') return 'cancelled';
+  if (state === 'killed' || state === 'cancelled') return 'cancelled';
   if (state === 'completed') return 'completed';
+  if (state === 'suspended') return 'suspended';
   return 'unknown';
+}
+
+function presentText(value: string | undefined): string | undefined {
+  return value !== undefined && value !== '' ? value : undefined;
+}
+
+export function snapshotSubagentAgentId(subagent: SnapshotSubagent): string {
+  return presentText(subagent.agent_id) ?? subagent.id;
+}
+
+function mapSnapshotSubagentStatus(subagent: SnapshotSubagent): SubagentBlock['status'] {
+  if (subagent.subagent_phase === 'suspended') return 'suspended';
+  return mapTaskState(subagent.status);
+}
+
+function overlaySubagentBlock(block: SubagentBlock, snapshot: SnapshotSubagent): SubagentBlock {
+  const snapshotCount = snapshot.tool_call_count;
+  const snapshotName =
+    presentText(snapshot.label) ?? presentText(snapshot.description) ?? presentText(snapshot.profile);
+  return {
+    ...block,
+    label: block.label ?? presentText(snapshot.label),
+    name: block.name !== block.subagentId ? block.name : snapshotName ?? block.name,
+    model: block.model ?? presentText(snapshot.model),
+    thinkingEffort: block.thinkingEffort ?? presentText(snapshot.thinking_effort),
+    status: block.status === 'unknown' ? mapSnapshotSubagentStatus(snapshot) : block.status,
+    description: block.description ?? presentText(snapshot.description),
+    parentToolCallId: block.parentToolCallId ?? presentText(snapshot.parent_tool_call_id),
+    parentAgentId: block.parentAgentId ?? presentText(snapshot.parent_agent_id),
+    startedAt: block.startedAt !== '' ? block.startedAt : snapshot.started_at ?? snapshot.created_at ?? block.startedAt,
+    endedAt: block.endedAt ?? snapshot.completed_at,
+    summary: block.summary ?? presentText(snapshot.output_preview),
+    toolCallCount:
+      snapshotCount === undefined ? block.toolCallCount : Math.max(block.toolCallCount, snapshotCount),
+  };
+}
+
+export function overlaySnapshotSubagentFields(
+  blocks: readonly Block[],
+  snapshotSubagents: readonly SnapshotSubagent[] | undefined,
+): Block[] {
+  if (snapshotSubagents === undefined || snapshotSubagents.length === 0) return blocks as Block[];
+  const byId = new Map<string, SnapshotSubagent>();
+  for (const subagent of snapshotSubagents) {
+    const id = snapshotSubagentAgentId(subagent);
+    if (id !== '') byId.set(id, subagent);
+  }
+  if (byId.size === 0) return [...blocks];
+  return blocks.map((block) => {
+    if (block.kind !== 'subagent') return block;
+    const snapshot = byId.get(block.subagentId);
+    return snapshot === undefined ? block : overlaySubagentBlock(block, snapshot);
+  });
 }
 
 function timestampMs(value: string | undefined): number | undefined {
@@ -1888,7 +1943,8 @@ export function projectAgentTranscriptView(
     options.retainPendingPrompts === false
       ? projected
       : retainPendingPromptBlocks(previous.blocks, projected);
-  const stableBlocks = stabilizeProjectedBlocks(previous.blocks, blocks);
+  const withSnapshotFields = overlaySnapshotSubagentFields(blocks, previous.snapshotSubagents);
+  const stableBlocks = stabilizeProjectedBlocks(previous.blocks, withSnapshotFields);
   let firstTurn: Extract<TranscriptItem, { kind: 'turn' }> | undefined;
   let lastTurn: Extract<TranscriptItem, { kind: 'turn' }> | undefined;
   for (const item of snapshot.items) {
@@ -1983,6 +2039,7 @@ export function applyTranscriptShell(
     swarmMode: snapshot.session.agent_config.swarm_mode ?? base.swarmMode,
     contextTokens: snapshot.context_tokens ?? base.contextTokens,
     maxContextTokens: snapshot.max_context_tokens ?? base.maxContextTokens,
+    snapshotSubagents: snapshot.subagents ?? base.snapshotSubagents,
     loaded: true,
     loadError: undefined,
     resyncFailed: false,

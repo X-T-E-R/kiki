@@ -7,6 +7,7 @@ import type {
   QuestionRequest,
   Session,
   SessionPendingInteraction,
+  SnapshotSubagent,
   Task,
   TokenUsage,
   ToolInputDisplay,
@@ -277,6 +278,12 @@ export interface SessionViewState {
   readonly usage: UsageStatus | undefined;
   readonly todos: readonly TodoItem[];
   readonly tasks: readonly Task[];
+  /**
+   * Compact REST snapshot roster (`snapshot.subagents`). Display fallback for
+   * inline cards / Agent Tree when the child transcript is not folded on cold
+   * open. Never used to invent cards that are not on the current page.
+   */
+  readonly snapshotSubagents: readonly SnapshotSubagent[];
   readonly resyncing: boolean;
   readonly resyncFailed: boolean;
   readonly resyncAttempt: number;
@@ -318,6 +325,7 @@ export function createViewState(sessionId: string): SessionViewState {
     usage: undefined,
     todos: [],
     tasks: [],
+    snapshotSubagents: [],
     resyncing: false,
     resyncFailed: false,
     resyncAttempt: 0,

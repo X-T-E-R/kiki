@@ -691,11 +691,11 @@ const SubagentCard = memo(function SubagentCard({
   const body = (
     <SubagentCardBody
       name={block.name}
-      model={block.model}
+      model={block.model ?? node?.model}
       status={status}
-      toolCallCount={block.toolCallCount}
+      toolCallCount={Math.max(block.toolCallCount, node?.toolCallCount ?? 0)}
       childCount={childCount}
-      thinkingEffort={block.thinkingEffort}
+      thinkingEffort={block.thinkingEffort ?? node?.thinkingEffort}
       description={block.description}
       error={block.error}
       elapsed={elapsed}

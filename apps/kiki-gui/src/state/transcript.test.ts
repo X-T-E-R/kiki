@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { AgentTranscript, type AgentTranscriptSnapshot, type TranscriptOperation } from '@moonshot-ai/transcript';
-import type { Message, Session, SessionSnapshotResponse } from '@moonshot-ai/protocol';
+import type { Message, Session, SessionSnapshotResponse, SnapshotSubagent } from '@moonshot-ai/protocol';
 
 import {
   CHILD_AGENT_ID,
@@ -29,11 +29,15 @@ import {
   floorPreview,
   latestFinalAssistantBlockId,
   liveSourcesFromAgentSnapshots,
+  overlayLiveSourcesWithSnapshotSubagents,
+  overlaySnapshotSubagentFields,
   prependOlderTranscriptSnapshot,
   projectAgentTranscriptView,
   resolveActiveFloorId,
+  sessionAgentForestFromAgentSnapshots,
   splitSystemReminders,
   type AssistantBlock,
+  type SubagentBlock,
   type UserBlock,
 } from './transcript';
 
@@ -60,6 +64,19 @@ const session: Session = {
   message_count: 0,
   last_seq: 0,
 };
+
+function compactSnapshotSubagent(
+  overrides: Partial<SnapshotSubagent> & Pick<SnapshotSubagent, 'id'>,
+): SnapshotSubagent {
+  return {
+    session_id: 'session_test',
+    kind: 'subagent',
+    description: 'Inspect the protocol',
+    status: 'completed',
+    created_at: FIXED_AT,
+    ...overrides,
+  };
+}
 
 describe('classifyTranscriptText', () => {
   it('splits system reminders and classifies user, skill, and shell lanes', () => {
@@ -258,6 +275,38 @@ describe('transcript authority projection', () => {
     expect(active.busy).toBe(true);
   });
 
+  it('keeps compact snapshot.subagents on the transcript shell', () => {
+    const state = applyTranscriptShell('session_test', {
+      as_of_seq: 4,
+      epoch: 'e1',
+      session,
+      messages: { items: [], has_more: false },
+      in_flight_turn: null,
+      pending_approvals: [],
+      pending_questions: [],
+      subagents: [
+        compactSnapshotSubagent({
+          id: CHILD_AGENT_ID,
+          agent_id: CHILD_AGENT_ID,
+          model: 'provider/kimi-for-coding',
+          thinking_effort: 'high',
+          tool_call_count: 7,
+          label: 'research',
+          profile: 'researcher',
+        }),
+      ],
+    });
+    expect(state.blocks).toEqual([]);
+    expect(state.snapshotSubagents).toEqual([
+      expect.objectContaining({
+        id: CHILD_AGENT_ID,
+        model: 'provider/kimi-for-coding',
+        thinking_effort: 'high',
+        tool_call_count: 7,
+      }),
+    ]);
+  });
+
   it('prepends older pages by entity id and stays idempotent', () => {
     const current = {
       items: [
@@ -347,6 +396,59 @@ describe('transcript authority projection', () => {
         parentAgentId: 'main',
         parentToolCallId: 'tc-agent',
         status: 'running',
+      }),
+    ]);
+    const forest = sessionAgentForestFromAgentSnapshots(snapshots, [
+      compactSnapshotSubagent({
+        id: 'child-1',
+        agent_id: 'child-1',
+        model: 'provider/kimi-for-coding',
+        thinking_effort: 'high',
+        tool_call_count: 7,
+        label: 'research',
+      }),
+      compactSnapshotSubagent({
+        id: 'ghost-child',
+        agent_id: 'ghost-child',
+        model: 'provider/should-not-appear',
+        tool_call_count: 9,
+      }),
+    ]);
+    expect(forest.byId['child-1']).toMatchObject({
+      model: 'provider/kimi-for-coding',
+      thinkingEffort: 'high',
+      toolCallCount: 7,
+      label: 'research',
+    });
+    expect(forest.byId['ghost-child']).toBeUndefined();
+  });
+
+  it('overlays snapshot.subagents onto live sources without inventing missing counts', () => {
+    const overlaid = overlayLiveSourcesWithSnapshotSubagents(
+      [
+        {
+          subagentId: 'child-1',
+          parentAgentId: 'main',
+          name: 'child-1',
+          status: 'completed',
+          toolCallCount: 0,
+        },
+      ],
+      [
+        compactSnapshotSubagent({
+          id: 'child-1',
+          description: 'Inspect the protocol',
+          profile: 'researcher',
+        }),
+      ],
+    );
+    expect(overlaid).toEqual([
+      expect.objectContaining({
+        subagentId: 'child-1',
+        model: undefined,
+        thinkingEffort: undefined,
+        toolCallCount: 0,
+        name: 'Inspect the protocol',
       }),
     ]);
   });
@@ -710,6 +812,93 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       subagentId: CHILD_AGENT_ID,
       description: 'Inspect the protocol',
       parentToolCallId: TOOL_CALL_ID,
+    });
+  });
+
+  it('fills inline subagent cards from compact snapshot.subagents when live fields are missing', () => {
+    const shell = applyTranscriptShell('session_test', {
+      as_of_seq: 4,
+      epoch: 'e1',
+      session,
+      messages: { items: [], has_more: false },
+      in_flight_turn: null,
+      pending_approvals: [],
+      pending_questions: [],
+      subagents: [
+        compactSnapshotSubagent({
+          id: CHILD_AGENT_ID,
+          agent_id: CHILD_AGENT_ID,
+          model: 'provider/kimi-for-coding',
+          thinking_effort: 'high',
+          tool_call_count: 7,
+          label: 'research',
+          profile: 'researcher',
+          parent_agent_id: 'main',
+          parent_tool_call_id: TOOL_CALL_ID,
+        }),
+      ],
+    });
+    const withSpawn = applyOpsToSnapshot(userTurnSnapshot({ streaming: true, assistantText: 'delegating' }), spawnChildOps());
+    const projected = projectAgentTranscriptView(shell, 'main', withSpawn);
+    expect(projected.blocks.find((block) => block.kind === 'subagent' && block.subagentId === CHILD_AGENT_ID)).toMatchObject({
+      kind: 'subagent',
+      subagentId: CHILD_AGENT_ID,
+      model: 'provider/kimi-for-coding',
+      thinkingEffort: 'high',
+      toolCallCount: 7,
+      label: 'research',
+    });
+  });
+
+  it('does not invent model or tool counts when compact snapshot.subagents omit them', () => {
+    const withSpawn = applyOpsToSnapshot(userTurnSnapshot({ streaming: true, assistantText: 'delegating' }), spawnChildOps());
+    const previous = { ...createViewState('session_test'), snapshotSubagents: [compactSnapshotSubagent({ id: CHILD_AGENT_ID })] };
+    const projected = projectAgentTranscriptView(previous, 'main', withSpawn);
+    const card = projected.blocks.find(
+      (block): block is SubagentBlock => block.kind === 'subagent' && block.subagentId === CHILD_AGENT_ID,
+    );
+    expect(card?.model).toBeUndefined();
+    expect(card?.thinkingEffort).toBeUndefined();
+    expect(card?.toolCallCount).toBe(0);
+  });
+
+  it('prefers live card fields over compact snapshot.subagents', () => {
+    const live: SubagentBlock = {
+      kind: 'subagent',
+      id: `subagent-${CHILD_AGENT_ID}`,
+      subagentId: CHILD_AGENT_ID,
+      parentAgentId: 'main',
+      parentToolCallId: TOOL_CALL_ID,
+      name: 'live-name',
+      model: 'provider/live-model',
+      thinkingEffort: 'low',
+      status: 'running',
+      description: 'live description',
+      summary: undefined,
+      error: undefined,
+      startedAt: FIXED_AT,
+      endedAt: undefined,
+      toolCallCount: 3,
+      transcript: [],
+    };
+    const overlaid = overlaySnapshotSubagentFields(
+      [live],
+      [
+        compactSnapshotSubagent({
+          id: CHILD_AGENT_ID,
+          model: 'provider/snapshot-model',
+          thinking_effort: 'high',
+          tool_call_count: 1,
+          label: 'snapshot-label',
+        }),
+      ],
+    );
+    expect(overlaid[0]).toMatchObject({
+      name: 'live-name',
+      model: 'provider/live-model',
+      thinkingEffort: 'low',
+      toolCallCount: 3,
+      label: 'snapshot-label',
     });
   });
 
@@ -1219,6 +1408,39 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       }),
     );
 
+    expect(projected.blocks.some((block) => block.id === 'subagent-agent-outside-page')).toBe(false);
+  });
+
+  it('does not invent page-global cards from snapshot.subagents alone', () => {
+    const previous = {
+      ...createViewState('session_test'),
+      snapshotSubagents: [
+        compactSnapshotSubagent({
+          id: 'agent-outside-page',
+          agent_id: 'agent-outside-page',
+          model: 'provider/kimi-for-coding',
+          tool_call_count: 4,
+        }),
+      ],
+    };
+    const projected = projectAgentTranscriptView(
+      previous,
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't2',
+            ordinal: 2,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'visible page',
+            startedAt: FIXED_AT_2,
+            steps: [],
+          },
+        ],
+      }),
+    );
     expect(projected.blocks.some((block) => block.id === 'subagent-agent-outside-page')).toBe(false);
   });
 

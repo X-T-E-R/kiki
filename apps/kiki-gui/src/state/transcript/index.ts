@@ -48,8 +48,10 @@ export {
   assistantMessageIdFromBlock,
   assistantMessageIdFromBlockId,
   latestFinalAssistantBlockId,
+  overlaySnapshotSubagentFields,
   prependOlderTranscriptSnapshot,
   projectAgentTranscriptView,
+  snapshotSubagentAgentId,
   type AgentTranscriptProjectionSource,
 } from './project';
 export {
@@ -83,6 +85,8 @@ export {
   agentStatusFromMeta,
   liveSourcesFromAgentSnapshots,
   liveSourcesFromSubagentBlocks,
+  overlayLiveSourcesWithSnapshotSubagents,
+  rosterFromSnapshotSubagents,
   rosterFromTranscriptAgents,
   rosterFromTranscriptResponse,
   sessionAgentForest,
