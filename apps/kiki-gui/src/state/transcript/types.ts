@@ -72,17 +72,6 @@ export interface SkillBlock {
   readonly turnId?: string;
 }
 
-export interface SteerBlock {
-  readonly kind: 'steer';
-  readonly id: string;
-  readonly text: string;
-  readonly media?: readonly MediaRef[];
-  readonly createdAt: string;
-  readonly promptId?: string;
-  readonly userMessageId?: string;
-  readonly activePromptId?: string;
-}
-
 export interface AssistantBlock {
   readonly kind: 'assistant';
   readonly id: string;
@@ -207,7 +196,6 @@ export type Block =
   | SystemReminderBlock
   | SystemBlock
   | SkillBlock
-  | SteerBlock
   | AssistantBlock
   | ThinkingBlock
   | ToolBlock

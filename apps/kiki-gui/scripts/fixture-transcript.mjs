@@ -80,18 +80,37 @@ function stepIdOf(turnId, step) {
   return `${turnId}.${ordinal}`;
 }
 
+const CLOSED_TURN_ORIGIN_KINDS = new Set(['user', 'cron', 'task', 'hook', 'compaction', 'side', 'other']);
+
 function originOf(payload, promptId, userMessageId) {
   const origin = payload.origin ?? { kind: 'user' };
-  if (origin.kind !== 'user') return origin;
-  // Never fall back to promptId: regenerate issues a new prompt against the
-  // existing journal user message, and those two ids are not interchangeable.
-  const resolvedUserMessageId = payload.userMessageId ?? payload.user_message_id ?? userMessageId;
-  const nextPayload = {
-    ...(origin.payload !== undefined && typeof origin.payload === 'object' ? origin.payload : {}),
-    ...(promptId !== undefined ? { promptId } : {}),
-    ...(resolvedUserMessageId !== undefined ? { userMessageId: resolvedUserMessageId } : {}),
-  };
-  return { ...origin, payload: nextPayload };
+  const kind = origin.kind;
+  if (kind === 'user' || kind === undefined) {
+    // Never fall back to promptId: regenerate issues a new prompt against the
+    // existing journal user message, and those two ids are not interchangeable.
+    const resolvedUserMessageId = payload.userMessageId ?? payload.user_message_id ?? userMessageId;
+    const nextPayload = {
+      ...(origin.payload !== undefined && typeof origin.payload === 'object' ? origin.payload : {}),
+      ...(promptId !== undefined ? { promptId } : {}),
+      ...(resolvedUserMessageId !== undefined ? { userMessageId: resolvedUserMessageId } : {}),
+    };
+    return { kind: 'user', payload: nextPayload };
+  }
+  if (CLOSED_TURN_ORIGIN_KINDS.has(kind)) {
+    if (kind === 'task' && (typeof origin.taskId !== 'string' || origin.taskId === '')) {
+      return { kind: 'other', payload: origin };
+    }
+    return origin;
+  }
+  if (kind === 'cron_job' || kind === 'cron_missed') return { kind: 'cron', payload: origin };
+  if (kind === 'compaction_summary') return { kind: 'compaction', payload: origin };
+  if (kind === 'hook_result') return { kind: 'hook', payload: origin };
+  if (kind === 'task' || kind === 'background_task') {
+    const taskId = origin.taskId;
+    if (typeof taskId === 'string' && taskId !== '') return { kind: 'task', taskId, payload: origin };
+    return { kind: 'other', payload: origin };
+  }
+  return { kind: 'other', payload: origin };
 }
 
 function findTurn(snapshot, turnId) {
@@ -1145,13 +1164,11 @@ export function seedMessages(projector, messages, options = {}) {
         turnId,
         ordinal,
         state: 'completed',
-        origin: {
-          kind: 'user',
-          payload: {
-            promptId: message.prompt_id ?? message.id,
-            userMessageId: message.id,
-          },
-        },
+        origin: originOf(
+          { origin: message.metadata?.origin },
+          message.prompt_id ?? message.id,
+          message.id,
+        ),
         prompt,
         startedAt: message.created_at,
         endedAt: message.created_at,

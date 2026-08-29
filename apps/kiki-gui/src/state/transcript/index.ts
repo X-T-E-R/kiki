@@ -14,7 +14,6 @@ export {
   type ShellBlock,
   type SkillBlock,
   type SpawnInstruction,
-  type SteerBlock,
   type SubagentBlock,
   type SystemBlock,
   type SystemReminderBlock,

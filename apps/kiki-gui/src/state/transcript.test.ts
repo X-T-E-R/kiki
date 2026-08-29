@@ -91,6 +91,34 @@ describe('classifyTranscriptText', () => {
         origin: { kind: 'skill_activation', skillName: 'review', trigger: 'user-slash' },
       }).lane,
     ).toBe('skill');
+    expect(
+      classifyTranscriptText({
+        text: '<cron-fire job="nightly">Run the nightly report.</cron-fire>',
+        role: 'user',
+        origin: { kind: 'cron_job' },
+      }),
+    ).toMatchObject({ lane: 'system', systemVariant: 'cron_job' });
+    expect(
+      classifyTranscriptText({
+        text: 'Earlier context summarized',
+        role: 'user',
+        origin: { kind: 'compaction_summary' },
+      }),
+    ).toMatchObject({ lane: 'system', systemVariant: 'compaction_summary' });
+    expect(
+      classifyTranscriptText({
+        text: 'SKILL.md body',
+        role: 'user',
+        origin: { kind: 'skill_activation', skillName: 'review', trigger: 'auto' },
+      }).lane,
+    ).toBe('system');
+    expect(
+      classifyTranscriptText({
+        text: 'Continue toward the goal',
+        role: 'user',
+        origin: { kind: 'system_trigger', name: 'goal_continuation' },
+      }),
+    ).toMatchObject({ lane: 'system', systemVariant: 'system_trigger' });
   });
 });
 
@@ -912,7 +940,6 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(projected.blocks.find((block) => block.kind === 'user')?.media).toEqual([
       expect.objectContaining({ name: 'diagram.png' }),
     ]);
-    expect(kinds).toContain('steer');
     expect(kinds).toContain('shell');
     expect(
       projected.blocks.some((block) => block.kind === 'tool' && block.toolCallId === 'bash-1'),
@@ -1279,7 +1306,6 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     const approvalIndex = projected.blocks.findIndex((block) => block.id === 'approval-apr-bash');
     expect(shellIndex).toBeGreaterThanOrEqual(0);
     expect(approvalIndex).toBe(shellIndex + 1);
-    expect(approvalIndex).toBeLessThan(projected.blocks.length - 1);
   });
 
   it('keeps an optimistic queued prompt at its previous timeline position during reconciliation', () => {
@@ -1842,7 +1868,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     });
   });
 
-  it('drops a steered prompt from the queue and paints a steer block', () => {
+  it('drops a steered prompt from the queue and keeps it as a settled user bubble', () => {
     const previous = projectAgentTranscriptView(
       createViewState('session_test'),
       'main',
@@ -1878,11 +1904,158 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     ]);
     const projected = projectAgentTranscriptView(withQueued, 'main', steered);
     expect(projected.queuedPromptIds).toEqual([]);
-    expect(projected.blocks.some((block) => block.kind === 'user' && block.promptId === 'p-queued')).toBe(false);
-    expect(projected.blocks.find((block) => block.kind === 'steer')).toMatchObject({
-      promptId: 'p-queued',
+    expect(projected.blocks.find((block) => block.kind === 'user' && block.promptId === 'p-queued')).toMatchObject({
       text: 'B: steer me in.',
+      promptStatus: undefined,
     });
+  });
+
+  it('does not rewrite the original user bubble when the active prompt is steered', () => {
+    const previous = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      userTurnSnapshot({ streaming: true }),
+    );
+    const steered = applyOpsToSnapshot(userTurnSnapshot({ streaming: true }), [
+      {
+        op: 'prompt.upsert',
+        prompt: {
+          promptId: PROMPT_ID,
+          status: 'running',
+          userMessageId: USER_MESSAGE_ID,
+          content: [{ type: 'text', text: 'canonical user prompt\nB: steer me in.' }],
+          createdAt: FIXED_AT,
+          steeredAt: '2026-01-01T00:00:04.000Z',
+        },
+      },
+    ]);
+    const projected = projectAgentTranscriptView(previous, 'main', steered);
+    expect(projected.blocks.filter((block) => block.kind === 'user')).toHaveLength(1);
+    expect(projected.blocks.find((block) => block.kind === 'user')).toMatchObject({
+      text: 'canonical user prompt',
+      userMessageId: USER_MESSAGE_ID,
+    });
+  });
+
+  it('collapses a queued bubble onto the canonical steer user frame', () => {
+    const previous = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      userTurnSnapshot({ streaming: true }),
+    );
+    const queued = applyOpsToSnapshot(userTurnSnapshot({ streaming: true }), [
+      {
+        op: 'prompt.upsert',
+        prompt: {
+          promptId: 'p-queued',
+          status: 'queued',
+          userMessageId: 'um-queued',
+          content: [{ type: 'text', text: 'B: steer me in.' }],
+          createdAt: '2026-01-01T00:00:03.000Z',
+        },
+      },
+    ]);
+    const withQueued = projectAgentTranscriptView(previous, 'main', queued);
+    const withSteerFrame = applyOpsToSnapshot(queued, [
+      {
+        op: 'prompt.upsert',
+        prompt: {
+          promptId: 'p-queued',
+          status: 'completed',
+          userMessageId: 'um-queued',
+          content: [{ type: 'text', text: 'B: steer me in.' }],
+          createdAt: '2026-01-01T00:00:03.000Z',
+          finishedAt: '2026-01-01T00:00:04.000Z',
+          steeredAt: '2026-01-01T00:00:04.000Z',
+        },
+      },
+      {
+        op: 'frame.upsert',
+        turnId: 't1',
+        stepId: 't1.1',
+        frame: {
+          kind: 'text',
+          frameId: 'p-queued',
+          role: 'user',
+          text: 'B: steer me in.',
+          origin: { kind: 'user' },
+          part: {
+            partId: 'p-queued',
+            messageId: 'p-queued',
+            revision: 0,
+            provenance: { source: 'engine' },
+          },
+        },
+      },
+    ]);
+    const projected = projectAgentTranscriptView(withQueued, 'main', withSteerFrame);
+    const users = projected.blocks.filter((block) => block.kind === 'user' && block.text === 'B: steer me in.');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({ promptStatus: undefined });
+  });
+
+  it('projects injection-origin user messages onto the system lane', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't1',
+            ordinal: 1,
+            state: 'completed',
+            origin: { kind: 'user', payload: { promptId: 'p-typed', userMessageId: 'um-typed' } },
+            prompt: 'Keep an eye on the nightly job.',
+            startedAt: FIXED_AT,
+            steps: [{ kind: 'step', stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'completed', frames: [] }],
+          },
+          {
+            kind: 'turn',
+            turnId: 't2',
+            ordinal: 2,
+            state: 'completed',
+            origin: { kind: 'cron', payload: { kind: 'cron_job', jobId: 'nightly' } },
+            prompt: '<cron-fire job="nightly">Run the nightly report.</cron-fire>',
+            startedAt: FIXED_AT_1,
+            steps: [{ kind: 'step', stepId: 't2.1', turnId: 't2', ordinal: 1, state: 'completed', frames: [] }],
+          },
+          {
+            kind: 'turn',
+            turnId: 't3',
+            ordinal: 3,
+            state: 'completed',
+            origin: { kind: 'compaction', payload: { kind: 'compaction_summary' } },
+            prompt: 'Earlier context summarized: the user asked about the nightly job schedule.',
+            startedAt: FIXED_AT_1,
+            steps: [{ kind: 'step', stepId: 't3.1', turnId: 't3', ordinal: 1, state: 'completed', frames: [] }],
+          },
+          {
+            kind: 'turn',
+            turnId: 't4',
+            ordinal: 4,
+            state: 'completed',
+            origin: { kind: 'other', payload: { kind: 'skill_activation', skillName: 'review', trigger: 'auto' } },
+            prompt: 'SKILL.md body: review the diff for regressions before merging.',
+            startedAt: FIXED_AT_1,
+            steps: [{ kind: 'step', stepId: 't4.1', turnId: 't4', ordinal: 1, state: 'completed', frames: [] }],
+          },
+          {
+            kind: 'turn',
+            turnId: 't5',
+            ordinal: 5,
+            state: 'completed',
+            origin: { kind: 'other', payload: { kind: 'system_trigger', name: 'goal_continuation' } },
+            prompt: 'Continue toward the goal: finish the migration checklist.',
+            startedAt: FIXED_AT_1,
+            steps: [{ kind: 'step', stepId: 't5.1', turnId: 't5', ordinal: 1, state: 'completed', frames: [] }],
+          },
+        ],
+      }),
+    );
+    expect(projected.blocks.filter((block) => block.kind === 'user')).toHaveLength(1);
+    expect(projected.blocks.find((block) => block.kind === 'user')?.text).toBe('Keep an eye on the nightly job.');
+    expect(projected.blocks.filter((block) => block.kind === 'system')).toHaveLength(4);
   });
 });
 

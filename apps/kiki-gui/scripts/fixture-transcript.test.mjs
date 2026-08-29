@@ -77,6 +77,63 @@ test('seeds journaled messages with stable user identities', () => {
   assert.equal(snapshot.items[0].steps[0].frames[0].part.messageId, 'am-1');
 });
 
+test('seedMessages keeps metadata.origin instead of forcing kind user', () => {
+  const projector = new TranscriptProjector('session_fixture_injection_lanes');
+  seedMessages(projector, [
+    {
+      id: 'um-typed',
+      role: 'user',
+      content: [{ type: 'text', text: 'Keep an eye on the nightly job.' }],
+      created_at: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      id: 'am-watch',
+      role: 'assistant',
+      content: [{ type: 'text', text: 'Watching it.' }],
+      created_at: '2026-01-01T00:00:01.000Z',
+    },
+    {
+      id: 'um-cron',
+      role: 'user',
+      content: [{ type: 'text', text: '<cron-fire job="nightly">Run the nightly report.</cron-fire>' }],
+      created_at: '2026-01-01T00:00:02.000Z',
+      metadata: { origin: { kind: 'cron_job', jobId: 'nightly' } },
+    },
+    {
+      id: 'um-summary',
+      role: 'user',
+      content: [{ type: 'text', text: 'Earlier context summarized' }],
+      created_at: '2026-01-01T00:00:03.000Z',
+      metadata: { origin: { kind: 'compaction_summary' } },
+    },
+    {
+      id: 'um-skill',
+      role: 'user',
+      content: [{ type: 'text', text: 'SKILL.md body' }],
+      created_at: '2026-01-01T00:00:04.000Z',
+      metadata: { origin: { kind: 'skill_activation', skillName: 'review', trigger: 'auto' } },
+    },
+    {
+      id: 'um-goal',
+      role: 'user',
+      content: [{ type: 'text', text: 'Continue toward the goal' }],
+      created_at: '2026-01-01T00:00:05.000Z',
+      metadata: { origin: { kind: 'system_trigger', name: 'goal_continuation' } },
+    },
+  ]);
+  const origins = projector.snapshot('main').items.map((item) => item.origin);
+  assert.equal(origins[0].kind, 'user');
+  assert.equal(origins[0].payload.userMessageId, 'um-typed');
+  assert.equal(origins[1].kind, 'cron');
+  assert.equal(origins[1].payload.kind, 'cron_job');
+  assert.equal(origins[2].kind, 'compaction');
+  assert.equal(origins[2].payload.kind, 'compaction_summary');
+  assert.equal(origins[3].kind, 'other');
+  assert.equal(origins[3].payload.kind, 'skill_activation');
+  assert.equal(origins[4].kind, 'other');
+  assert.equal(origins[4].payload.kind, 'system_trigger');
+});
+
 test('regenerate turn origin keeps the journal userMessageId instead of the new promptId', () => {
   const projector = new TranscriptProjector('session_fixture_rewrite');
   projector.ingestFrame({

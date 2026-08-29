@@ -9,7 +9,7 @@ import type { KikiSocket } from '../lib/ws';
 import type { TranscriptEvent } from '@moonshot-ai/transcript';
 
 import { assertSessionWritable, RESYNC_PAUSED_ERROR, SessionController } from './sessionController';
-import type { SteerBlock, SubagentBlock, ToolBlock, UserBlock } from './transcript';
+import type { SubagentBlock, ToolBlock, UserBlock } from './transcript';
 
 function asTranscriptEvent(event: Record<string, unknown>): TranscriptEvent {
   const sessionId = typeof event['session_id'] === 'string' ? event['session_id'] : 'session_test';

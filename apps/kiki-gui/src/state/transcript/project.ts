@@ -53,7 +53,6 @@ import {
   type SessionViewState,
   type ShellBlock,
   type SkillBlock,
-  type SteerBlock,
   type SubagentBlock,
   type SystemBlock,
   type SystemReminderBlock,
@@ -193,7 +192,8 @@ function classifiedTextToBlocks(input: {
 }
 
 function originFromTurnItem(item: unknown): PromptOriginLike | undefined {
-  return originFromRecord(item);
+  if (typeof item !== 'object' || item === null) return undefined;
+  return unwrapOrigin((item as { origin?: PromptOriginLike }).origin);
 }
 
 function originFromFrame(frame: unknown): PromptOriginLike | undefined {
@@ -623,7 +623,6 @@ function timestampMs(value: string | undefined): number | undefined {
 function blockTimelineMs(block: Block): number | undefined {
   switch (block.kind) {
     case 'user':
-    case 'steer':
     case 'assistant':
     case 'thinking':
     case 'system':
@@ -673,7 +672,6 @@ function blockTurnId(block: Block): string | undefined {
       return normalizeTurnId(block.request.turn_id);
     case 'question':
       return normalizeTurnId(block.request.turn_id);
-    case 'steer':
     case 'notice':
       return undefined;
   }
@@ -1050,10 +1048,12 @@ function insertInteractionBlocks(
 }
 
 function isPromptIdentity(block: Block, promptId: string, userMessageId?: string): boolean {
-  if (block.kind === 'user' || block.kind === 'steer') {
-    return block.promptId === promptId || (userMessageId !== undefined && block.userMessageId === userMessageId);
-  }
-  return false;
+  if (block.kind !== 'user') return false;
+  return (
+    block.promptId === promptId ||
+    block.userMessageId === promptId ||
+    (userMessageId !== undefined && block.userMessageId === userMessageId)
+  );
 }
 
 function sameMedia(
@@ -1086,9 +1086,6 @@ function upsertPromptItemBlocks(
   const text = projection.text;
   const media = mediaOverride ?? projection.media;
   const nextMedia = media.length === 0 ? undefined : media;
-  if (blocks.some((block) => block.kind === 'steer' && isPromptIdentity(block, item.prompt_id, item.user_message_id))) {
-    return blocks;
-  }
   const stableIndex = blocks.findIndex(
     (block): block is UserBlock =>
       block.kind === 'user' &&
@@ -1148,12 +1145,7 @@ function stampPromptIdentity(
   promptStatus: PromptStatus | undefined,
 ): Block[] {
   const next = [...blocks];
-  const matchIndex = next.findIndex(
-    (block) =>
-      (block.kind === 'user' || block.kind === 'steer') &&
-      (block.promptId === prompt.promptId ||
-        (prompt.userMessageId !== undefined && block.userMessageId === prompt.userMessageId)),
-  );
+  const matchIndex = next.findIndex((block) => isPromptIdentity(block, prompt.promptId, prompt.userMessageId));
   if (matchIndex >= 0) {
     const existing = next[matchIndex]!;
     if (existing.kind !== 'user') return next;
@@ -1208,6 +1200,31 @@ function keepPreviousUser(
   return merged;
 }
 
+function settleCompletedPrompts(blocks: readonly Block[], prompts: readonly TranscriptPrompt[]): Block[] {
+  let next = [...blocks];
+  for (const prompt of prompts) {
+    if (prompt.status === 'completed') next = settleCompletedPrompt(next, prompt);
+  }
+  return next;
+}
+
+function settleCompletedPrompt(blocks: readonly Block[], prompt: TranscriptPrompt): Block[] {
+  let next = stampPromptIdentity(blocks, prompt, undefined);
+  const matches = next.filter(
+    (block): block is UserBlock =>
+      block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId),
+  );
+  if (matches.length > 1) {
+    const keep = matches.find((block) => block.turnId !== undefined) ?? matches[0]!;
+    next = next.filter((block) => block.kind !== 'user' || !isPromptIdentity(block, prompt.promptId, prompt.userMessageId) || block.id === keep.id);
+  }
+  return next.map((block) =>
+    block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId)
+      ? { ...block, promptStatus: undefined }
+      : block,
+  );
+}
+
 function isRegeneratingJournalUser(
   existing: Pick<UserBlock, 'userMessageId' | 'promptId' | 'promptStatus'> | undefined,
   prompt: { readonly promptId: string; readonly userMessageId?: string; readonly status: string },
@@ -1228,12 +1245,8 @@ function mergeTranscriptPromptBlocks(
 ): Block[] {
   let next = blocks;
   for (const prompt of prompts) {
-    if (prompt.status === 'completed' && prompt.steeredAt === undefined) {
-      next = stampPromptIdentity(next, prompt, undefined).map((block) =>
-        block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId)
-          ? { ...block, promptStatus: undefined }
-          : block,
-      );
+    if (prompt.status === 'completed') {
+      next = settleCompletedPrompt(next, prompt);
       continue;
     }
     if (prompt.status === 'aborted' || prompt.status === 'failed') {
@@ -1257,12 +1270,7 @@ function mergeTranscriptPromptBlocks(
       }
       continue;
     }
-    if (
-      prompt.status !== 'queued' &&
-      prompt.status !== 'blocked' &&
-      prompt.status !== 'running' &&
-      prompt.steeredAt === undefined
-    ) {
+    if (prompt.status !== 'queued' && prompt.status !== 'blocked' && prompt.status !== 'running') {
       continue;
     }
     const parts = promptContentParts(prompt.content);
@@ -1278,26 +1286,10 @@ function mergeTranscriptPromptBlocks(
         continue;
       }
       next = stampRunningPromptIdentity(next, prompt);
-      if (parts.length === 0 && prompt.steeredAt === undefined) continue;
+      if (parts.length === 0) continue;
     }
+    if (prompt.steeredAt !== undefined) continue;
     if (parts.length === 0 && prompt.userMessageId === undefined) continue;
-    if (prompt.steeredAt !== undefined) {
-      const steer: SteerBlock = {
-        kind: 'steer',
-        id: `steer-${prompt.promptId}`,
-        text: projection.text,
-        media: projection.media.length > 0 ? projection.media : undefined,
-        createdAt: prompt.steeredAt || prompt.createdAt,
-        promptId: prompt.promptId,
-        userMessageId: prompt.userMessageId,
-        activePromptId: prompt.promptId,
-      };
-      if (!next.some((block) => block.kind === 'steer' && block.promptId === prompt.promptId)) {
-        next = [...next.filter((block) => !(block.kind === 'user' && isPromptIdentity(block, prompt.promptId, prompt.userMessageId))), steer];
-      }
-      continue;
-    }
-    if (prompt.status !== 'queued' && prompt.status !== 'blocked' && prompt.status !== 'running') continue;
     const item: PromptItem = {
       prompt_id: prompt.promptId,
       user_message_id: prompt.userMessageId ?? prompt.promptId,
@@ -1313,7 +1305,7 @@ function mergeTranscriptPromptBlocks(
 export function retainPendingPromptBlocks(previous: readonly Block[], next: Block[]): Block[] {
   const known = new Set<string>();
   for (const block of next) {
-    if (block.kind !== 'user' && block.kind !== 'steer') continue;
+    if (block.kind !== 'user') continue;
     if (block.promptId !== undefined) known.add(`p:${block.promptId}`);
     if (block.userMessageId !== undefined) known.add(`u:${block.userMessageId}`);
   }
@@ -1324,12 +1316,6 @@ export function retainPendingPromptBlocks(previous: readonly Block[], next: Bloc
   );
   const extras: Block[] = [];
   for (const block of previous) {
-    if (block.kind === 'steer') {
-      if (block.promptId !== undefined && known.has(`p:${block.promptId}`)) continue;
-      if (block.userMessageId !== undefined && known.has(`u:${block.userMessageId}`)) continue;
-      if (block.promptId !== undefined || block.userMessageId !== undefined) extras.push(block);
-      continue;
-    }
     if (block.kind !== 'user') continue;
     const abortedPromptId = block.promptId;
     const aborted = abortedPromptId !== undefined && abortedPromptIds.has(abortedPromptId);
@@ -1939,10 +1925,12 @@ export function projectAgentTranscriptView(
 ): SessionViewState {
   const source = agentStateToProjectionSource(agentId, snapshot);
   const projected = agentTranscriptToBlocks(source, previous.blocks);
-  const blocks =
+  const retained =
     options.retainPendingPrompts === false
       ? projected
       : retainPendingPromptBlocks(previous.blocks, projected);
+  const prompts = Array.isArray(snapshot.prompts) ? snapshot.prompts : [...snapshot.prompts.values()];
+  const blocks = settleCompletedPrompts(retained, prompts);
   const withSnapshotFields = overlaySnapshotSubagentFields(blocks, previous.snapshotSubagents);
   const stableBlocks = stabilizeProjectedBlocks(previous.blocks, withSnapshotFields);
   let firstTurn: Extract<TranscriptItem, { kind: 'turn' }> | undefined;
@@ -1953,7 +1941,6 @@ export function projectAgentTranscriptView(
     lastTurn = item;
   }
   const meta = snapshot.meta.agent;
-  const prompts = Array.isArray(snapshot.prompts) ? snapshot.prompts : [...snapshot.prompts.values()];
   const queuedPromptIds: string[] = [];
   let running: TranscriptPrompt | undefined;
   for (const prompt of prompts) {

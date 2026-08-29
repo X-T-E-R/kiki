@@ -44,7 +44,6 @@ import type {
   SessionViewState,
   ShellBlock,
   SkillBlock,
-  SteerBlock,
   SubagentBlock,
   SystemBlock,
   SystemReminderBlock,
@@ -497,24 +496,6 @@ const SkillMessage = memo(function SkillMessage({ block }: { block: SkillBlock }
   );
 });
 
-const SteerMessage = memo(function SteerMessage({ block }: { block: SteerBlock }) {
-  const { t, time } = useI18n();
-  return (
-    <div data-steer className="anim-enter flex flex-col items-start" title={time.absoluteTime(block.createdAt)}>
-      <span className="mb-1 flex items-baseline gap-1.5 pl-1">
-        <span className="rounded-full border border-accent/30 bg-accent-soft px-1.5 py-px text-[10px] font-semibold tracking-wide text-accent uppercase">
-          {t('transcript.steerChip')}
-        </span>
-        <span className="text-xs text-ink-faint">{time.relativeTime(block.createdAt)}</span>
-      </span>
-      <div className="max-w-[85%] rounded-2xl rounded-bl-md border border-accent/20 bg-accent-soft/40 px-3.5 py-2 text-[13.5px] leading-relaxed whitespace-pre-wrap text-ink">
-        {block.text}
-      </div>
-      {block.media !== undefined ? <MediaPartList media={block.media} /> : null}
-    </div>
-  );
-});
-
 const ShellMessage = memo(function ShellMessage({ block }: { block: ShellBlock }) {
   const { t } = useI18n();
   // Collapsed by default — running and finished alike (the full log was
@@ -935,8 +916,6 @@ const BlockView = memo(function BlockView({
       return <SystemMessage block={block} />;
     case 'skill':
       return <SkillMessage block={block} />;
-    case 'steer':
-      return <SteerMessage block={block} />;
     case 'assistant':
       return (
         <AssistantMessage

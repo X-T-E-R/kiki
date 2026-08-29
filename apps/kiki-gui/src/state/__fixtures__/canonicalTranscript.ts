@@ -368,14 +368,6 @@ export function capabilityMatrixSnapshot(): AgentTranscriptSnapshot {
         createdAt: FIXED_AT,
         finishedAt: FIXED_AT_2,
       },
-      {
-        promptId: 'p-steer',
-        status: 'running',
-        userMessageId: 'um-steer',
-        content: [{ type: 'text', text: 'steer this turn' }],
-        createdAt: FIXED_AT_1,
-        steeredAt: FIXED_AT_1,
-      },
     ],
     meta: {
       modes: { plan: { version: 2, reviewPath: 'agents/main/plan/p1/v2.md' }, swarm: { trigger: 'release' } },

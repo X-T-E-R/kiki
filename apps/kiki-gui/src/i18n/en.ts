@@ -341,7 +341,6 @@ export const en = {
   'transcript.system.generic': 'System',
   'transcript.skill.skill': 'Skill · {name}',
   'transcript.skill.plugin': 'Plugin · {name}',
-  'transcript.steerChip': 'Steered in',
   'transcript.marker.compaction': 'Context compacted',
   'transcript.marker.hook': 'Hook result',
   'transcript.marker.skill': 'Skill',

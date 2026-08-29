@@ -336,7 +336,6 @@ export const zh: Record<I18nKey, string> = {
   'transcript.system.generic': '系统',
   'transcript.skill.skill': '技能 · {name}',
   'transcript.skill.plugin': '插件 · {name}',
-  'transcript.steerChip': '已注入本轮',
   'transcript.marker.compaction': '上下文已压缩',
   'transcript.marker.hook': '钩子结果',
   'transcript.marker.skill': '技能',
