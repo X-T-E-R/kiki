@@ -7,7 +7,7 @@ import {
 } from '#/kosong/contract/errors';
 import { emptyUsage } from '#/kosong/contract/usage';
 import { IEventBus } from '#/app/event/eventBus';
-import { retryBackoffDelays } from '#/_base/utils/retry';
+import { MAX_RETRY_AFTER_MS, readRetryAfterMs, retryBackoffDelays } from '#/_base/utils/retry';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { ContinuationStepRequest } from '#/agent/loop/stepRequest';
 import { TurnStarted } from '#/agent/loop/turnEvents';
@@ -206,6 +206,37 @@ describe('stepRetry plugin', () => {
     ]);
   });
 
+  it('clamps an excessive provider retry-after to the 60s cap', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        if (calls === 1) throw new APIProviderRateLimitError('origin overloaded', null, 120_000);
+        return {
+          id: 'clamped-retry-after-response',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'recovered' }],
+            toolCalls: [],
+          },
+          usage: emptyUsage(),
+          finishReason: 'completed',
+          rawFinishReason: 'stop',
+        };
+      }),
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('completed');
+    expect(rpcEvents('turn.step.retrying')).toEqual([
+      expect.objectContaining({
+        args: expect.objectContaining({ delayMs: MAX_RETRY_AFTER_MS }),
+      }),
+    ]);
+  });
+
   it('does not retry a non-retryable error', async () => {
     vi.useFakeTimers();
     let calls = 0;
@@ -389,5 +420,17 @@ describe('retryBackoffDelays', () => {
     expect(delays[6]).toBeLessThanOrEqual(40_000);
     expect(delays[8]).toBeGreaterThanOrEqual(32_000);
     expect(delays[8]).toBeLessThanOrEqual(40_000);
+  });
+});
+
+describe('readRetryAfterMs', () => {
+  it('passes small provider retry-after values through unchanged', () => {
+    expect(readRetryAfterMs({ retryAfterMs: 1_500 })).toBe(1_500);
+  });
+
+  it('clamps values beyond the cap and ignores non-positive ones', () => {
+    expect(readRetryAfterMs({ retryAfterMs: 120_000 })).toBe(MAX_RETRY_AFTER_MS);
+    expect(readRetryAfterMs({ retryAfterMs: 0 })).toBeNull();
+    expect(readRetryAfterMs(undefined)).toBeNull();
   });
 });

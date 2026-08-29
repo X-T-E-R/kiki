@@ -59,6 +59,7 @@ import {
   type SystemVariant,
   type TodoItem,
   type ToolBlock,
+  type TurnRetryInfo,
   type TurnTailInfo,
   type UserBlock,
 } from './types';
@@ -1353,6 +1354,35 @@ function turnTailFromItem(item: {
   };
 }
 
+function turnRetryFromItem(
+  item:
+    | {
+        readonly state?: string;
+        readonly steps: readonly {
+          readonly state?: string;
+          readonly retry?: {
+            readonly failedAttempt: number;
+            readonly maxAttempts: number;
+            readonly delayMs: number;
+            readonly errorName?: string;
+            readonly statusCode?: number;
+          };
+        }[];
+      }
+    | undefined,
+): TurnRetryInfo | undefined {
+  if (item === undefined || item.state !== 'running') return undefined;
+  const step = item.steps.at(-1);
+  if (step?.state !== 'running' || step.retry === undefined) return undefined;
+  return {
+    failedAttempt: step.retry.failedAttempt,
+    maxAttempts: step.retry.maxAttempts,
+    delayMs: step.retry.delayMs,
+    errorName: step.retry.errorName,
+    statusCode: step.retry.statusCode,
+  };
+}
+
 const terminalTurnProjectionCache = new WeakMap<object, Map<string, readonly Block[]>>();
 
 function isTerminalTurn(item: object): boolean {
@@ -1914,6 +1944,7 @@ export function projectAgentTranscriptView(
     hasMoreHistory: snapshot.hasMoreOlder === true,
     oldestMessageId: firstTurn?.turnId,
     turnTail: turnTail ?? previous.turnTail,
+    turnRetry: turnRetryFromItem(lastTurn),
   };
 }
 

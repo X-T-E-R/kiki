@@ -530,6 +530,52 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(assistant!.id.startsWith('assistant-live-')).toBe(false);
   });
 
+  it('surfaces a provider retry on the live step as turnRetry and clears it once the retry lifts', () => {
+    const retryingSnapshot = emptySnapshot({
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't1',
+          ordinal: 1,
+          state: 'running',
+          origin: { kind: 'user', payload: { promptId: PROMPT_ID, userMessageId: USER_MESSAGE_ID } },
+          prompt: 'retry me',
+          startedAt: FIXED_AT,
+          steps: [
+            {
+              kind: 'step',
+              stepId: 't1.1',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'running',
+              frames: [],
+              retry: {
+                failedAttempt: 3,
+                nextAttempt: 4,
+                maxAttempts: 10,
+                delayMs: 60_000,
+                errorName: 'APIStatusError',
+                errorMessage: '504 gateway timeout',
+                statusCode: 504,
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const retrying = projectAgentTranscriptView(createViewState('session_test'), 'main', retryingSnapshot);
+    expect(retrying.turnRetry).toEqual({
+      failedAttempt: 3,
+      maxAttempts: 10,
+      delayMs: 60_000,
+      errorName: 'APIStatusError',
+      statusCode: 504,
+    });
+
+    const recovered = projectAgentTranscriptView(retrying, 'main', userTurnSnapshot({ streaming: true }));
+    expect(recovered.turnRetry).toBeUndefined();
+  });
+
   it('keeps a live frame streaming when the v1 compatibility phase has an empty step id', () => {
     const base = userTurnSnapshot({ streaming: true });
     const projected = projectAgentTranscriptView(

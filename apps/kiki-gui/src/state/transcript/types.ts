@@ -235,6 +235,20 @@ export interface TurnTailInfo {
   readonly tokensPerSecond: number | undefined;
 }
 
+/**
+ * A provider retry in flight on the live turn's running step. Present only
+ * while the engine is backing off between attempts; cleared by the step's
+ * next upsert (progress or terminal), so the status line can name the wait
+ * instead of showing minutes of unexplained silence.
+ */
+export interface TurnRetryInfo {
+  readonly failedAttempt: number;
+  readonly maxAttempts: number;
+  readonly delayMs: number;
+  readonly errorName?: string;
+  readonly statusCode?: number;
+}
+
 export interface SessionViewState {
   readonly version: number;
   readonly sessionId: string;
@@ -245,6 +259,7 @@ export interface SessionViewState {
   readonly turnStartedAt: number | undefined;
   readonly turnFirstTokenAt: number | undefined;
   readonly turnTail: TurnTailInfo | undefined;
+  readonly turnRetry: TurnRetryInfo | undefined;
   readonly pendingInteraction: SessionPendingInteraction;
   readonly activePromptId: string | undefined;
   readonly queuedPromptIds: readonly string[];
@@ -285,6 +300,7 @@ export function createViewState(sessionId: string): SessionViewState {
     turnStartedAt: undefined,
     turnFirstTokenAt: undefined,
     turnTail: undefined,
+    turnRetry: undefined,
     pendingInteraction: 'none',
     activePromptId: undefined,
     queuedPromptIds: [],

@@ -368,6 +368,7 @@ export const zh: Record<I18nKey, string> = {
   'transcript.toolCalls.other': '{count} 次工具调用',
   'transcript.thinkingSuffix': '思考强度 {effort}',
   'transcript.turnWorking': '正在工作',
+  'transcript.turnRetrying': '模型请求失败（{cause}）· 第 {attempt}/{max} 次重试，等待 {delay}',
   'transcript.stopped': '已停止',
   'transcript.stoppedAria': '已停止',
   'transcript.ranFor': '用时 {duration}',

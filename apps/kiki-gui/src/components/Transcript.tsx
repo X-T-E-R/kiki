@@ -50,6 +50,7 @@ import type {
   SystemReminderBlock,
   ThinkingBlock,
   ToolBlock,
+  TurnRetryInfo,
   TurnTailInfo,
   UserBlock,
 } from '../state/transcript';
@@ -1352,7 +1353,13 @@ const TURN_CLOCK_AFTER_MS = 15_000;
  * run ≥15s. Anchored to the live `turn.started` frame; a mid-turn reload
  * (snapshot attach) falls back to mount time.
  */
-const TurnStatusLine = memo(function TurnStatusLine({ startedAt }: { startedAt: number | undefined }) {
+const TurnStatusLine = memo(function TurnStatusLine({
+  startedAt,
+  retry,
+}: {
+  startedAt: number | undefined;
+  retry?: TurnRetryInfo;
+}) {
   const { t, time } = useI18n();
   const [mountedAt] = useState(() => Date.now());
   const anchor = startedAt ?? mountedAt;
@@ -1363,15 +1370,26 @@ const TurnStatusLine = memo(function TurnStatusLine({ startedAt }: { startedAt: 
     const timer = setInterval(tick, 1000);
     return () => { clearInterval(timer); };
   }, [anchor]);
+  // A provider retry names the wait: cause + attempt counter + backoff delay,
+  // in warn tone, so a failing relay reads as such instead of a stuck tool.
+  const retryText =
+    retry === undefined
+      ? undefined
+      : t('transcript.turnRetrying', {
+          cause: retry.statusCode !== undefined ? String(retry.statusCode) : (retry.errorName ?? '?'),
+          attempt: String(retry.failedAttempt),
+          max: String(retry.maxAttempts),
+          delay: time.formatDuration(retry.delayMs),
+        });
   return (
     <div
       role="status"
       aria-live="polite"
       data-turn-status
-      className="anim-enter flex items-center gap-2 pl-1 text-[11.5px] font-medium text-ink-faint"
+      className={`anim-enter flex items-center gap-2 pl-1 text-[11.5px] font-medium ${retryText === undefined ? 'text-ink-faint' : 'text-amber-ink'}`}
     >
-      <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
-      <span>{t('transcript.turnWorking')}</span>
+      <span className={`status-dot-busy h-1.5 w-1.5 rounded-full ${retryText === undefined ? 'bg-accent' : 'bg-amber-ink'}`} />
+      <span>{retryText ?? t('transcript.turnWorking')}</span>
       {elapsedMs >= TURN_CLOCK_AFTER_MS ? (
         <span aria-hidden className="font-mono text-[10.5px] tabular-nums text-ink-faint/80">
           {time.formatDuration(elapsedMs)}
@@ -1554,7 +1572,7 @@ export function Transcript({
             onOpenAgent={onOpenAgent}
           />
         ))}
-        {showTurnStatus ? <TurnStatusLine startedAt={state.turnStartedAt} /> : null}
+        {showTurnStatus ? <TurnStatusLine startedAt={state.turnStartedAt} retry={state.turnRetry} /> : null}
         {!state.busy && state.turnTail !== undefined ? <TurnTailLine tail={state.turnTail} /> : null}
       </StickToBottom.Content>
       <FloorNavRail blocks={blocks} />

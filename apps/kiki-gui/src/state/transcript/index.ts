@@ -24,6 +24,7 @@ export {
   type ToolAgentRef,
   type ToolBlock,
   type ToolStatus,
+  type TurnRetryInfo,
   type TurnTailInfo,
   type UserBlock,
 } from './types';
