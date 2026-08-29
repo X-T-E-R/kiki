@@ -494,6 +494,63 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(sessions.body.data.items).toEqual([]);
   });
 
+  it('maps inactive profile tool patterns on create to request invalid', async () => {
+    await (server as RunningServer).close();
+    server = undefined;
+    await writeFile(
+      join(home as string, 'config.toml'),
+      [
+        'default_model = "stub"',
+        '',
+        '[providers.stub]',
+        'type = "openai"',
+        'base_url = "http://127.0.0.1:9999"',
+        'api_key = "stub"',
+        '',
+        '[models.stub]',
+        'provider = "stub"',
+        'model = "stub"',
+        'max_context_size = 1000',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const agentsDir = join(home as string, 'agents');
+    await mkdir(agentsDir, { recursive: true });
+    await writeFile(
+      join(agentsDir, 'inactive-tools.md'),
+      [
+        '---',
+        'name: inactive-tools',
+        'description: Profile with an inactive denylist',
+        'disallowedTools: [DefinitelyMissingTool]',
+        '---',
+        '',
+        'Reject an unavailable tool.',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home as string,
+      logLevel: 'silent',
+      debugEndpoints: true,
+    });
+    base = `http://127.0.0.1:${server.port}`;
+
+    const created = await postJson<null>('/api/v1/sessions', {
+      metadata: { cwd: home as string },
+      agent_config: { profile: 'inactive-tools' },
+    });
+
+    expect(created.body.code).toBe(40001);
+    expect(created.body.msg).toContain('DefinitelyMissingTool');
+    expect(created.body.msg).toContain('disallowedTools');
+  });
+
   it('rejects create without cwd or workspace_id (40001)', async () => {
     const { body } = await postJson<null>('/api/v1/sessions', { title: 'no cwd' });
     expect(body.code).toBe(40001);

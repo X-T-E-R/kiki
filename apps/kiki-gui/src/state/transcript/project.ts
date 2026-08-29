@@ -524,7 +524,12 @@ function promptContentParts(content: unknown): MessageContentPart[] {
 function spawnNameFromToolArgs(args: unknown, agentId: string): string | undefined {
   if (typeof args !== 'object' || args === null) return undefined;
   const record = args as Record<string, unknown>;
-  const named = record['profile'] ?? record['subagentType'] ?? record['name'] ?? record['subagentName'];
+  const named =
+    record['profile']
+    ?? record['subagent_type']
+    ?? record['subagentType']
+    ?? record['name']
+    ?? record['subagentName'];
   if (typeof named === 'string' && named.trim() !== '') return named.trim();
   void agentId;
   return undefined;

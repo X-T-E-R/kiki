@@ -5,6 +5,7 @@ import { join, normalize } from 'pathe';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Event } from '#/_base/event';
+import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { InstantiationService } from '#/_base/di/instantiationService';
 import { ServiceCollection } from '#/_base/di/serviceCollection';
 import { ConfigTarget, IConfigService } from '#/app/config/config';
@@ -27,6 +28,7 @@ import { isToolActive } from '#/agent/toolPolicy/evaluate';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { SELECT_TOOLS_TOOL_NAME } from '#/agent/toolSelect/toolSelect';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { IAtomicDocumentStore, type IAtomicDocumentStore as AtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
@@ -1411,6 +1413,37 @@ describe('AgentProfileService tool-pattern warnings', () => {
     tools: ['Bashh', 'mcp__github'],
     disallowedTools: ['*'],
     systemPrompt: () => 'tool pattern warning test',
+  });
+
+  it('bind accepts a tool that the child will inherit from a parent agent', async () => {
+    const inheritedTool = {
+      name: 'ParentLookup',
+      description: 'Look up a parent-owned value.',
+      parameters: { type: 'object', properties: {} },
+    };
+    const parent = {
+      id: 'parent',
+      accessor: {
+        get: () => ({
+          _serviceBrand: undefined,
+          list: () => [inheritedTool],
+        }),
+      },
+    } as unknown as IAgentScopeHandle;
+    registerAgentProfile({
+      name: 'inherits-parent-user-tool',
+      tools: [inheritedTool.name],
+      systemPrompt: () => 'inherit parent user tool',
+    });
+    ctx = createTestAgent(hostEnvironmentServices(homeDir));
+    vi.spyOn(ctx.get(IAgentLifecycleService), 'list').mockReturnValue([parent]);
+
+    await expect(
+      ctx.get(IAgentProfileService).bind({
+        profile: 'inherits-parent-user-tool',
+        model: MOCK_MODEL,
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it('rejects profile entries that can never activate anything', async () => {

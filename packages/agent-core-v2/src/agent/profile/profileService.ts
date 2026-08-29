@@ -1,3 +1,4 @@
+import { type CollectionView } from '#/_base/di/collection';
 import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -112,7 +113,12 @@ import { IAgentProfileService, ProfileError, ProfileErrors } from './profile';
 import { TOOLS_SECTION, type ToolsConfig } from '#/agent/toolPolicy/configSection';
 import { isToolActiveComposed, findInactiveToolPatterns, literalToolNames, type InactiveToolPattern } from '#/agent/toolPolicy/evaluate';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
-import { getAgentToolContributions } from '#/agent/toolRegistry/toolContribution';
+import {
+  AgentToolContribution,
+  getAgentToolContributions,
+} from '#/agent/toolRegistry/toolContribution';
+import { IAgentUserToolService } from '#/agent/userTool/userTool';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import {
   profileActiveToolsKey,
   ConfigUpdate,
@@ -213,6 +219,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @ISessionToolPolicy private readonly sessionToolPolicy: ISessionToolPolicy,
     @ISessionToolPolicyGate private readonly toolPolicyGate: ISessionToolPolicyGate,
     @IAgentToolRegistryService private readonly toolRegistry: IAgentToolRegistryService,
+    @AgentToolContribution private readonly toolContributions: CollectionView<AgentToolContribution>,
+    @IAgentLifecycleService private readonly agentLifecycle: IAgentLifecycleService,
     @IBuiltinAgentProfileLoader private readonly builtinProfiles: IBuiltinAgentProfileLoader,
     @IAgentStateService private readonly states: IAgentStateService,
     @IPluginService private readonly plugins: IPluginService,
@@ -1227,7 +1235,14 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private knownToolNames(): Set<string> {
     const known = new Set<string>();
     for (const contribution of getAgentToolContributions()) known.add(contribution.options.name);
+    for (const contribution of this.toolContributions.items) known.add(contribution.options.name);
     for (const ref of this.toolRegistry.listReferences()) known.add(ref.name);
+    for (const agent of this.agentLifecycle.list()) {
+      if (agent.id === this.agentScope.agentId) continue;
+      for (const registration of agent.accessor.get(IAgentUserToolService).list()) {
+        known.add(registration.name);
+      }
+    }
     for (const builtin of this.builtinProfiles.list()) {
       for (const name of literalToolNames(builtin.tools ?? [])) {
         known.add(name);

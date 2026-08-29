@@ -6,7 +6,7 @@ import { ErrorCode, ErrorCodeReason } from '../error-codes';
  * Numbers documented in the source header as intentionally unallocated. A code
  * that appears here AND in the table is a silent reuse of a reserved slot.
  */
-const RESERVED = [40102, 40103, 42901, 50002];
+const RESERVED = [40102, 40103, 50002];
 
 describe('ErrorCode table', () => {
   it('gives every code a reason string', () => {
@@ -32,14 +32,15 @@ describe('ErrorCode table', () => {
     expect(RESERVED.filter((code) => allocated.has(code as ErrorCode))).toEqual([]);
   });
 
-  it('names the conflict codes the daemon actually sends', () => {
-    // Each of these reached clients as a bare number before it had a name:
-    // session locking, read-only profile/MCP sources, and the catalog range.
+  it('names codes the daemon actually sends', () => {
+    // Each of these reached clients as a bare number before it had a name.
+    expect(ErrorCode.RATE_LIMITED).toBe(42901);
     expect(ErrorCode.SESSION_LOCKED).toBe(40933);
     expect(ErrorCode.AGENT_PROFILE_READ_ONLY).toBe(40934);
     expect(ErrorCode.MCP_SERVER_READ_ONLY).toBe(40935);
     expect(ErrorCode.MCP_OAUTH_FAILED).toBe(40940);
     expect(ErrorCode.CATALOG_UNAVAILABLE).toBe(50004);
+    expect(ErrorCodeReason[ErrorCode.RATE_LIMITED]).toBe('rate.limited');
     expect(ErrorCodeReason[ErrorCode.SESSION_LOCKED]).toBe('session.locked');
   });
 });

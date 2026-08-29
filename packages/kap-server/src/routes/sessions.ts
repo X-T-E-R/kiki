@@ -24,6 +24,7 @@ import {
   ISessionManager,
   IWorkspaceService,
   MAIN_AGENT_ID,
+  ProfileError,
   getLiveSessionById,
   programForSession,
   resumeSessionById,
@@ -1394,6 +1395,10 @@ function sendMappedError(
 ): void {
   const requestId = req.id;
   const log = requestLog(req);
+  if (err instanceof ProfileError) {
+    reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack));
+    return;
+  }
   if (isError2(err)) {
     switch (err.code) {
       case 'session.not_found':

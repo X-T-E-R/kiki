@@ -181,6 +181,8 @@ export const ErrorCode = {
   /** fs.grep 执行 >30s */
   FS_GREP_TIMEOUT: 41305,
 
+  /** 请求频率超过服务端限制 */
+  RATE_LIMITED: 42901,
   /** WS 单连接 watch_paths > 100 */
   FS_WATCH_LIMIT_EXCEEDED: 42902,
   /** peer-thread list, read, wait, or message bound exceeded */
@@ -208,7 +210,6 @@ export const ErrorCode = {
  * Reserved (intentionally unallocated; do NOT reuse for new variants):
  *   - 40102 auth.missing_token        (daemon's own token; future)
  *   - 40103 auth.forbidden_origin     (daemon's own token; future)
- *   - 42901 rate.limited
  *   - 50002 protocol.version_mismatch
  */
 
@@ -304,6 +305,7 @@ export const ErrorCodeReason: Readonly<Record<ErrorCode, string>> = {
   [ErrorCode.FS_PATH_ESCAPES_SESSION]: 'fs.path_escapes_session',
   [ErrorCode.FS_GREP_TIMEOUT]: 'fs.grep_timeout',
 
+  [ErrorCode.RATE_LIMITED]: 'rate.limited',
   [ErrorCode.FS_WATCH_LIMIT_EXCEEDED]: 'fs.watch_limit_exceeded',
   [ErrorCode.THREAD_LIMIT_EXCEEDED]: 'thread.limit_exceeded',
 

@@ -193,15 +193,22 @@ export function liveSourcesFromAgentSnapshots(
           if (frame.kind !== 'tool' || frame.agentRefs === undefined) continue;
           for (const ref of frame.agentRefs) {
             const existing = byId.get(ref.agentId);
-            const input = frame.input as { profile?: unknown; subagentType?: unknown; description?: unknown } | undefined;
+            const input = frame.input as {
+              profile?: unknown;
+              subagent_type?: unknown;
+              subagentType?: unknown;
+              description?: unknown;
+            } | undefined;
             const named =
               typeof input?.profile === 'string' && input.profile !== ''
                 ? input.profile
-                : typeof input?.subagentType === 'string' && input.subagentType !== ''
-                ? input.subagentType
-                : typeof input?.description === 'string' && input.description !== ''
-                  ? input.description
-                  : undefined;
+                : typeof input?.subagent_type === 'string' && input.subagent_type !== ''
+                  ? input.subagent_type
+                  : typeof input?.subagentType === 'string' && input.subagentType !== ''
+                    ? input.subagentType
+                    : typeof input?.description === 'string' && input.description !== ''
+                      ? input.description
+                      : undefined;
             byId.set(ref.agentId, {
               subagentId: ref.agentId,
               parentAgentId,
