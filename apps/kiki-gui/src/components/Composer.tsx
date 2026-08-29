@@ -7,9 +7,9 @@
  *
  * Batch B additions:
  *   - `/` opens a slash menu of REAL entries: skills from the session's
- *     `GET /skills` catalog (submitted via the `:activate` route) plus
- *     client shortcuts that map to shipped actions. Unknown `/text` goes out
- *     as a plain prompt — nothing invented.
+ *     `GET /skills` catalog, or on /new the workspace `GET /skills` catalog,
+ *     plus client shortcuts that map to shipped actions. Unknown `/text`
+ *     goes out as a plain prompt — nothing invented.
  *   - `@` opens a workspace file picker fed by `fs:search`; picks become
  *     reference chips that ride the prompt text as `@path` tokens.
  *   - Pasted/dropped images become preview chips and send as real base64
@@ -147,6 +147,7 @@ export function Composer({
   sessionUsage,
   busyPlaceholder,
   sessionId,
+  workspaceId,
   fsSearch,
   mentionScopeKey,
   attachments,
@@ -220,6 +221,11 @@ export function Composer({
   busyPlaceholder?: string;
   /** Session scope for the skills catalog + session-scoped shortcuts. */
   sessionId?: string;
+  /**
+   * Registered workspace id for the /new draft's skill catalog
+   * (`GET /workspaces/{id}/skills`). Ignored when `sessionId` is set.
+   */
+  workspaceId?: string;
   /**
    * File-picker feed for `@` mentions (session `fs:search` on /s, workspace
    * `fs:search` on /new). Omit to disable the picker.
@@ -377,15 +383,23 @@ export function Composer({
     setSlashConfirm(null);
   }, [sessionId]);
 
-  // Skill catalog for the slash menu — session-scoped on the wire (the
-  // catalog depends on the session cwd); /new gets client shortcuts only.
+  // Skill catalog for the slash menu. Live sessions use GET /sessions/{id}/skills;
+  // the /new draft uses GET /workspaces/{id}/skills so the menu fills before a
+  // session exists. Session-only shortcuts (/fork, /undo, /compact) stay gated
+  // on sessionId — listing skills does not imply those actions are available.
   const skillsQuery = useQuery({
-    queryKey: ['skills', sessionId],
-    queryFn: () => client.listSessionSkills(sessionId!),
-    enabled: sessionId !== undefined,
+    queryKey: sessionId !== undefined
+      ? ['skills', 'session', sessionId]
+      : ['skills', 'workspace', workspaceId],
+    queryFn: () =>
+      sessionId !== undefined
+        ? client.listSessionSkills(sessionId)
+        : client.listWorkspaceSkills(workspaceId!),
+    enabled: sessionId !== undefined || workspaceId !== undefined,
     staleTime: 60_000,
   });
   const skills = skillsQuery.data?.skills ?? [];
+  const skillCatalogReady = sessionId !== undefined || workspaceId !== undefined;
 
   const slashItems = useMemo(
     () => buildSlashItems(skills, { hasSession: sessionId !== undefined }),
@@ -1097,7 +1111,7 @@ export function Composer({
                     items={filteredSlashItems}
                     activeIndex={activeIndex}
                     skillsFailed={skillsQuery.isError}
-                    hasSession={sessionId !== undefined}
+                    hasSession={skillCatalogReady}
                     onAccept={acceptSlashItem}
                   />
                 ) : (
@@ -1291,7 +1305,7 @@ export function Composer({
             {text.trim() === '' && !busy ? (
               <p data-composer-hints className="text-center text-[10.5px] text-ink-faint">
                 {t(sendShortcut === 'cmd-enter' ? 'composer.footerBaseCmdEnter' : 'composer.footerBase')}
-                {t(sessionId !== undefined ? 'composer.footerSkills' : 'composer.footerShortcuts')}
+                {t(skillCatalogReady ? 'composer.footerSkills' : 'composer.footerShortcuts')}
                 {fsSearch !== undefined ? t('composer.footerFiles') : ''}
               </p>
             ) : null}

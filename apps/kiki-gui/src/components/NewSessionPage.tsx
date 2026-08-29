@@ -197,6 +197,7 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
           efforts={state.supportedEfforts}
           effort={state.effectiveEffort}
           busyPlaceholder={t('new.creating')}
+          workspaceId={cwd === '' ? state.effectiveWorkspace?.id : undefined}
           fsSearch={fsSearch}
           attachments={state.attachments}
           onChangeAttachments={state.setAttachments}
@@ -231,6 +232,8 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
       state.goalObjective,
       state.supportedEfforts,
       state.effectiveEffort,
+      cwd,
+      state.effectiveWorkspace,
       fsSearch,
       state.attachments,
       state.setAttachments,

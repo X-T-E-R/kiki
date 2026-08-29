@@ -2,8 +2,9 @@
  * Slash-command model for the composer.
  *
  * Two entry kinds, both honest about what backs them:
- *   - `skill` — a real entry from `GET /sessions/{id}/skills`; submitting one
- *     calls `POST …/skills/{name}:activate` (never an invented text command).
+ *   - `skill` — a real catalog entry (`GET /sessions/{id}/skills` on a live
+ *     session, `GET /workspaces/{id}/skills` on /new); submitting one calls
+ *     `POST …/skills/{name}:activate` once a session exists.
  *   - `action` — a client-side shortcut that maps to a real GUI action
  *     (toggle plan mode, open the goal popover, fork/undo/compact, /new).
  *

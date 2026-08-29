@@ -16,12 +16,19 @@ const { selectFilesNative, desktopRuntime } = vi.hoisted(() => ({
 }));
 const listModels = vi.fn();
 const listSessionSkills = vi.fn();
+const listWorkspaceSkills = vi.fn();
 const listNamedAgentProfiles = vi.fn();
 const uploadFile = vi.fn();
 
 vi.mock('../state/connection', () => ({
   useConnection: () => ({
-    client: { listModels, listSessionSkills, listNamedAgentProfiles, uploadFile },
+    client: {
+      listModels,
+      listSessionSkills,
+      listWorkspaceSkills,
+      listNamedAgentProfiles,
+      uploadFile,
+    },
   }),
 }));
 vi.mock('../lib/desktop', () => ({
@@ -42,6 +49,7 @@ beforeAll(() => {
 beforeEach(() => {
   listModels.mockReset().mockResolvedValue({ items: [] });
   listSessionSkills.mockReset().mockResolvedValue({ skills: [] });
+  listWorkspaceSkills.mockReset().mockResolvedValue({ skills: [] });
   uploadFile.mockReset().mockResolvedValue({ id: 'file-1' });
   selectFilesNative.mockReset();
   desktopRuntime.value = false;
@@ -643,5 +651,68 @@ describe('Composer sendDisabled', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
     expect(onSend).toHaveBeenCalledWith('hello', []);
+  });
+});
+
+const workspaceSkill = {
+  name: 'review',
+  description: 'Review the current diff for risks',
+  path: '/skills/review/SKILL.md',
+  source: 'project' as const,
+};
+
+async function openSlashMenu(container: HTMLDivElement): Promise<void> {
+  const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await act(async () => {
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    textarea.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await settle();
+}
+
+describe('Composer slash skill catalog', () => {
+  it('loads workspace skills on /new without creating a session', async () => {
+    listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
+    const { container } = await renderComposer({
+      value: '/',
+      workspaceId: 'wd_fixture_0123456789ab',
+    });
+    for (let index = 0; index < 8; index += 1) await settle();
+
+    expect(listWorkspaceSkills).toHaveBeenCalledWith('wd_fixture_0123456789ab');
+    expect(listSessionSkills).not.toHaveBeenCalled();
+
+    await openSlashMenu(container);
+    const menu = container.querySelector('[data-composer-menu]');
+    expect(menu?.textContent).toContain('/review');
+    expect(menu?.textContent).toContain('/plan');
+    expect(menu?.textContent).not.toContain('/fork');
+
+    const empty = await renderComposer({ workspaceId: 'wd_fixture_0123456789ab' });
+    expect(empty.container.querySelector('[data-composer-hints]')?.textContent).toContain('/ for skills');
+  });
+
+  it('keeps the live session catalog on /s/:id even when a workspace id is also set', async () => {
+    listSessionSkills.mockResolvedValue({ skills: [workspaceSkill] });
+    const { container } = await renderComposer({
+      value: '/',
+      sessionId: 'session_live',
+      workspaceId: 'wd_fixture_0123456789ab',
+    });
+    for (let index = 0; index < 8; index += 1) await settle();
+
+    expect(listSessionSkills).toHaveBeenCalledWith('session_live');
+    expect(listWorkspaceSkills).not.toHaveBeenCalled();
+
+    await openSlashMenu(container);
+    expect(container.querySelector('[data-composer-menu]')?.textContent).toContain('/fork');
+  });
+
+  it('does not fetch skills without a session or workspace', async () => {
+    const { container } = await renderComposer();
+    for (let index = 0; index < 5; index += 1) await settle();
+    expect(listSessionSkills).not.toHaveBeenCalled();
+    expect(listWorkspaceSkills).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-composer-hints]')?.textContent).toContain('/ for shortcuts');
   });
 });
