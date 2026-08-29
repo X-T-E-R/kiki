@@ -14,10 +14,12 @@ export const workspaceSchema = z.object({
   name: z.string(),
   createdAt: z.number(),
   lastOpenedAt: z.number(),
+  pinned: z.boolean(),
 });
 
 export const workspaceUpdateSchema = z.object({
   name: z.string().optional(),
+  pinned: z.boolean().optional(),
 });
 
 export const workspacesContract = {

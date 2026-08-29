@@ -69,15 +69,26 @@ export function defineKlientConformance(
       const workspaces = target.klient.global.workspaces;
       const created = await workspaces.createOrTouch({ root: process.cwd(), name: 'conformance' });
       expect(created.id.length).toBeGreaterThan(0);
+      expect(created.pinned).toBe(false);
 
       const fetched = await workspaces.get(created.id);
       expect(fetched?.name).toBe('conformance');
+      expect(fetched?.pinned).toBe(false);
 
-      const updated = await workspaces.update({ id: created.id, patch: { name: 'conformance-2' } });
-      expect(updated?.name).toBe('conformance-2');
+      const pinned = await workspaces.update({
+        id: created.id,
+        patch: { name: 'conformance-2', pinned: true },
+      });
+      expect(pinned?.name).toBe('conformance-2');
+      expect(pinned?.pinned).toBe(true);
+      expect((await workspaces.get(created.id))?.pinned).toBe(true);
 
       const list = await workspaces.list();
-      expect(list.some((w) => w.id === created.id)).toBe(true);
+      expect(list.find((w) => w.id === created.id)?.pinned).toBe(true);
+
+      const unpinned = await workspaces.update({ id: created.id, patch: { pinned: false } });
+      expect(unpinned?.pinned).toBe(false);
+      expect((await workspaces.get(created.id))?.pinned).toBe(false);
 
       await workspaces.delete(created.id);
       expect(await workspaces.get(created.id)).toBeUndefined();

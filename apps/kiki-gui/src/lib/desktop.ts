@@ -77,14 +77,21 @@ const NATIVE_IMAGE_MIMES: Readonly<Record<string, string>> = {
   webp: 'image/webp',
 };
 
+export interface NativeSelectedFile {
+  readonly name: string;
+  readonly size: number;
+  readonly type: string;
+  read(): Promise<File>;
+}
+
 /**
- * Pick files through the native desktop dialog and read them into `File`
- * objects, so the caller can feed them the exact same path a paste or drop
- * takes. Resolves `null` when the user cancels.
+ * Pick files through the native desktop dialog and stat them without reading
+ * their contents. The caller validates the metadata first, then invokes
+ * `read()` only for accepted files. Resolves `null` when the user cancels.
  */
-export async function selectFilesNative(): Promise<File[] | null> {
+export async function selectFilesNative(): Promise<NativeSelectedFile[] | null> {
   if (!isTauri()) throw new Error('Native file selection requires the Kiki desktop app.');
-  const [{ open }, { readFile }] = await Promise.all([
+  const [{ open }, { readFile, stat }] = await Promise.all([
     import('@tauri-apps/plugin-dialog'),
     import('@tauri-apps/plugin-fs'),
   ]);
@@ -95,8 +102,17 @@ export async function selectFilesNative(): Promise<File[] | null> {
     paths.map(async (path) => {
       const name = path.replaceAll('\\', '/').split('/').at(-1) ?? path;
       const extension = name.includes('.') ? (name.split('.').at(-1) ?? '').toLowerCase() : '';
-      const bytes = await readFile(path);
-      return new File([bytes], name, { type: NATIVE_IMAGE_MIMES[extension] ?? '' });
+      const type = NATIVE_IMAGE_MIMES[extension] ?? '';
+      const info = await stat(path);
+      return {
+        name,
+        size: info.size,
+        type,
+        async read() {
+          const bytes = await readFile(path);
+          return new File([bytes], name, { type });
+        },
+      };
     }),
   );
 }

@@ -6,12 +6,16 @@ import {
   importNativeKimiConfig,
   migrateNativeCompatibilityCategory,
   onTrayNewSession,
+  selectFilesNative,
   type SessionsMigrationPlan,
 } from './desktop';
 
-const { invoke, listen, tauriRuntime } = vi.hoisted(() => ({
+const { invoke, listen, open, readFile, stat, tauriRuntime } = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
+  open: vi.fn(),
+  readFile: vi.fn(),
+  stat: vi.fn(),
   tauriRuntime: { value: true },
 }));
 
@@ -20,11 +24,16 @@ vi.mock('@tauri-apps/api/core', () => ({
   isTauri: () => tauriRuntime.value,
 }));
 vi.mock('@tauri-apps/api/event', () => ({ listen }));
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open }));
+vi.mock('@tauri-apps/plugin-fs', () => ({ readFile, stat }));
 
 describe('native desktop bridge', () => {
   beforeEach(() => {
     invoke.mockReset();
     listen.mockReset();
+    open.mockReset();
+    readFile.mockReset();
+    stat.mockReset();
     tauriRuntime.value = true;
     vi.unstubAllGlobals();
   });
@@ -145,6 +154,27 @@ describe('native desktop bridge', () => {
     expect(invoke).toHaveBeenCalledWith('migrate_compatibility_category', {
       category: 'userSkills',
     });
+  });
+
+  it('stats native file picks without reading their contents eagerly', async () => {
+    open.mockResolvedValue(['C:/huge.bin', 'C:/small.txt']);
+    stat
+      .mockResolvedValueOnce({ size: 51 * 1024 * 1024 })
+      .mockResolvedValueOnce({ size: 4 });
+    readFile.mockResolvedValue(new Uint8Array([1, 2, 3, 4]));
+
+    const selected = await selectFilesNative();
+
+    expect(stat).toHaveBeenCalledTimes(2);
+    expect(readFile).not.toHaveBeenCalled();
+    expect(selected?.map(({ name, size }) => ({ name, size }))).toEqual([
+      { name: 'huge.bin', size: 51 * 1024 * 1024 },
+      { name: 'small.txt', size: 4 },
+    ]);
+
+    await selected?.[1]?.read();
+    expect(readFile).toHaveBeenCalledOnce();
+    expect(readFile).toHaveBeenCalledWith('C:/small.txt');
   });
 
   it('unregisters a tray listener that resolves after its owner is disposed', async () => {

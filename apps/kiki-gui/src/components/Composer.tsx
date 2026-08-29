@@ -515,7 +515,22 @@ export function Composer({
     node?.focus();
   };
 
-  const addImageFiles = (files: File[]) => {
+  type SelectedAttachmentFile = {
+    readonly name: string;
+    readonly size: number;
+    readonly type: string;
+    read(): Promise<File>;
+  };
+
+  const readyAttachmentFiles = (files: readonly File[]): SelectedAttachmentFile[] =>
+    files.map((file) => ({
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      read: () => Promise.resolve(file),
+    }));
+
+  const addImageFiles = (files: readonly SelectedAttachmentFile[]) => {
     // Reserve stubs against the synchronous baseline before starting reads.
     // A second paste in this same tick therefore sees the first paste's count
     // and byte total even though the controlled prop has not rerendered yet.
@@ -534,7 +549,9 @@ export function Composer({
     // reads replace them by identity through updater writes, so back-to-back
     // pastes cannot drop each other's images the way stale render closures did.
     updateAttachments((current) => [...current, ...stubs]);
-    void Promise.all(accepted.map((file) => fileToImageAttachment(file)))
+    void Promise.all(
+      accepted.map(async (file) => fileToImageAttachment(await file.read())),
+    )
       .then((images) => {
         updateAttachments((current) =>
           current.flatMap((item) => {
@@ -552,7 +569,7 @@ export function Composer({
       });
   };
 
-  const addUploadFiles = (files: File[]) => {
+  const addUploadFiles = (files: readonly SelectedAttachmentFile[]) => {
     // Same synchronous-reservation contract as addImageFiles: stubs land
     // immediately and are replaced by identity once `POST /files` answers.
     const reservation = reserveUploadFiles(files, attachmentBaselineRef.current);
@@ -570,8 +587,9 @@ export function Composer({
     for (const [index, file] of accepted.entries()) {
       const stub = stubs[index];
       if (stub === undefined) continue;
-      client
-        .uploadFile(file)
+      file
+        .read()
+        .then((contents) => client.uploadFile(contents))
         .then((meta) => {
           updateAttachments((current) =>
             current.map((item) => (item === stub ? { ...stub, fileId: meta.id } : item)),
@@ -587,9 +605,9 @@ export function Composer({
   };
 
   /** Drop/paste entry point: whitelisted images stay image parts; everything else uploads. */
-  const addFiles = (files: File[]) => {
-    const images: File[] = [];
-    const uploads: File[] = [];
+  const addFiles = (files: readonly SelectedAttachmentFile[]) => {
+    const images: SelectedAttachmentFile[] = [];
+    const uploads: SelectedAttachmentFile[] = [];
     for (const file of files) {
       if (ACCEPTED_IMAGE_MIMES.includes(file.type)) images.push(file);
       else uploads.push(file);
@@ -787,7 +805,7 @@ export function Composer({
             const files = [...event.dataTransfer.files];
             if (files.length > 0) {
               event.preventDefault();
-              addFiles(files);
+              addFiles(readyAttachmentFiles(files));
             }
           }}
         >
@@ -865,6 +883,10 @@ export function Composer({
           {goalStatus !== undefined ? (
             <div
               data-goal-chip
+              role="group"
+              aria-label={t('composer.goalChipAria', {
+                status: t(`composer.goalStatus.${goalStatus}`),
+              })}
               className="anim-enter mx-3.5 mt-2 flex w-fit items-center gap-1.5 rounded-full border border-accent/50 bg-accent-soft/60 py-0.5 pr-1 pl-2.5 text-[11px] font-medium text-accent"
             >
               <span title={goalObjective === '' ? undefined : goalObjective}>
@@ -1117,7 +1139,7 @@ export function Composer({
                 const files = [...event.clipboardData.files];
                 if (files.length === 0) return;
                 event.preventDefault();
-                addFiles(files);
+                addFiles(readyAttachmentFiles(files));
               }}
               placeholder={
                 busy
@@ -1145,7 +1167,7 @@ export function Composer({
                   const files = [...(event.target.files ?? [])];
                   // Reset so re-picking the same file fires change again.
                   event.target.value = '';
-                  if (files.length > 0) addFiles(files);
+                  if (files.length > 0) addFiles(readyAttachmentFiles(files));
                 }}
               />
               <button

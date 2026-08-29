@@ -10,6 +10,10 @@ import { I18nProvider } from '../i18n';
 import type { NamedAgentProfile } from '../lib/client';
 import { Composer } from './Composer';
 
+const { selectFilesNative, desktopRuntime } = vi.hoisted(() => ({
+  selectFilesNative: vi.fn(),
+  desktopRuntime: { value: false },
+}));
 const listModels = vi.fn();
 const listSessionSkills = vi.fn();
 const listNamedAgentProfiles = vi.fn();
@@ -19,6 +23,10 @@ vi.mock('../state/connection', () => ({
   useConnection: () => ({
     client: { listModels, listSessionSkills, listNamedAgentProfiles, uploadFile },
   }),
+}));
+vi.mock('../lib/desktop', () => ({
+  isDesktopRuntime: () => desktopRuntime.value,
+  selectFilesNative,
 }));
 
 const containers: HTMLDivElement[] = [];
@@ -35,6 +43,8 @@ beforeEach(() => {
   listModels.mockReset().mockResolvedValue({ items: [] });
   listSessionSkills.mockReset().mockResolvedValue({ skills: [] });
   uploadFile.mockReset().mockResolvedValue({ id: 'file-1' });
+  selectFilesNative.mockReset();
+  desktopRuntime.value = false;
   listNamedAgentProfiles.mockReset().mockResolvedValue({
     items: [
       {
@@ -397,6 +407,7 @@ describe('Composer goal run-state chip', () => {
     });
     const chip = container.querySelector<HTMLElement>('[data-goal-chip]');
     expect(chip?.textContent).toContain('goal · active');
+    expect(chip?.getAttribute('aria-label')).toBe('Goal — active');
     const pause = container.querySelector<HTMLButtonElement>('[data-goal-chip] button[aria-label="pause"]')!;
     await click(pause);
     expect(onChangeGoalControl).toHaveBeenCalledWith('pause');
@@ -507,6 +518,46 @@ describe('Composer attachment button', () => {
     });
     // An upload stub lands immediately — the same reservation paste makes.
     expect(onChangeAttachments).toHaveBeenCalled();
+  });
+
+  it('rejects an oversized desktop pick before reading its contents', async () => {
+    desktopRuntime.value = true;
+    const read = vi.fn();
+    selectFilesNative.mockResolvedValue([
+      { name: 'huge.bin', size: 51 * 1024 * 1024, type: '', read },
+    ]);
+    const { container } = await renderComposer();
+
+    await click(container.querySelector('[data-attach-button]')!);
+    await settle();
+
+    expect(read).not.toHaveBeenCalled();
+    expect(uploadFile).not.toHaveBeenCalled();
+    expect(container.textContent).toContain(
+      '"huge.bin" is 51.0 MB — files are capped at 50.0 MB each.',
+    );
+  });
+
+  it('rejects a desktop pick at the attachment count cap before reading it', async () => {
+    desktopRuntime.value = true;
+    const read = vi.fn();
+    selectFilesNative.mockResolvedValue([
+      { name: 'ninth.txt', size: 4, type: 'text/plain', read },
+    ]);
+    const attachments = Array.from({ length: 8 }, (_, index) => ({
+      kind: 'file' as const,
+      path: `file-${index}.txt`,
+      name: `file-${index}.txt`,
+      isDir: false,
+    }));
+    const { container } = await renderComposer({ attachments });
+
+    await click(container.querySelector('[data-attach-button]')!);
+    await settle();
+
+    expect(read).not.toHaveBeenCalled();
+    expect(uploadFile).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('At most 8 attachments per message.');
   });
 });
 

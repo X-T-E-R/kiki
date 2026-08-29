@@ -10,7 +10,13 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { bootstrap, logSeed, resolveLoggingConfig } from '@moonshot-ai/agent-core-v2';
+import {
+  bootstrap,
+  IConfigService,
+  ISessionIndex,
+  logSeed,
+  resolveLoggingConfig,
+} from '@moonshot-ai/agent-core-v2';
 
 /** Shared host identity for klient test engines (bootstrap requires one). */
 export const TEST_CLIENT_IDENTITY = {
@@ -29,5 +35,7 @@ export async function makeEngine(prefix = 'klient-test-engine-'): Promise<TestEn
   const { app } = bootstrap({ homeDir, clientIdentity: TEST_CLIENT_IDENTITY }, [
     ...logSeed(resolveLoggingConfig({ homeDir, env: process.env })),
   ]);
+  await app.accessor.get(IConfigService).ready;
+  await app.accessor.get(ISessionIndex).prepare();
   return { homeDir, app };
 }
