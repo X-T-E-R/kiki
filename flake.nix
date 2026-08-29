@@ -62,6 +62,7 @@
       # pnpmConfigHook (dependencies for that workspace won't be fetched).
       # -------------------------------------------------------------------
       workspacePaths = [
+        ./packages/acp-client
         ./packages/acp-server
         ./packages/agent-core-v2
         ./packages/kap-server
@@ -87,6 +88,7 @@
       ];
 
       workspaceNames = [
+        "@moonshot-ai/acp-client"
         "@moonshot-ai/acp-server"
         "@moonshot-ai/agent-core-v2"
         "@moonshot-ai/kap-server"
