@@ -9,6 +9,7 @@ import { Error2 } from '#/_base/errors/errors';
 import type { ErrorCode } from '#/errors';
 import { ILogService } from '#/_base/log/log';
 import { IFlagService } from '#/app/flag/flag';
+import { IConfigService } from '#/app/config/config';
 import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -44,6 +45,7 @@ const authority: ExternalAuthority = {
 const profile: AgentProfile = {
   name: 'coder',
   description: 'Code owner',
+  modelAlias: 'model',
   systemPrompt: () => 'coder',
   renderSystemPrompt: () => ({ text: 'coder', environment: { cwd: '', date: { disclosed: false } } }),
 };
@@ -101,6 +103,7 @@ describe('SessionExternalDelegationService', () => {
       read: async () => ({ id: 'session_test', createdAt: 0, updatedAt: 0, archived: false, agents: {} }),
     });
     ix.stub(ISessionWorkspaceContext, { _serviceBrand: undefined, workDir: '/workspace', additionalDirs: [] });
+    ix.stub(IConfigService, { get: () => undefined });
     ix.stub(IModelService, { resolveId: (id: string) => id });
     willClose = new Emitter<SessionWillCloseEvent & IWaitUntil>();
     disposables.add(willClose);
@@ -292,6 +295,41 @@ describe('SessionExternalDelegationService', () => {
     expect(createdWith).toHaveLength(1);
   });
 
+  it('fails closed when a named child has no model pin or dispatch model', async () => {
+    const unboundProfile: AgentProfile = {
+      ...profile,
+      name: 'unbound',
+      modelAlias: undefined,
+    };
+    vi.spyOn(handles.get('main')!.accessor.get(IAgentProfileService), 'data').mockReturnValue({
+      modelAlias: 'main-model',
+      modelCapabilities: UNKNOWN_CAPABILITY,
+      profileName: 'agent',
+      thinkingLevel: 'off',
+      systemPrompt: '',
+      subagents: ['unbound'],
+    });
+    ix.stub(ISessionAgentProfileCatalog, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      get: (name: string) => name === unboundProfile.name ? unboundProfile : undefined,
+      getDefault: () => profile,
+      list: () => [unboundProfile],
+    });
+    const service = ix.get(ISessionExternalDelegationService);
+
+    await expect(
+      service.dispatch({
+        authority,
+        target: 'named',
+        taskName: 'unbound',
+        profileName: 'unbound',
+        message: 'inspect',
+      }),
+    ).rejects.toThrow(/No model is bound/);
+    expect(createdWith).toHaveLength(0);
+  });
+
   it('binds a scoped named child from the main profile snapshot', async () => {
     const publicWriter: AgentProfile = {
       name: 'writer',
@@ -305,6 +343,7 @@ describe('SessionExternalDelegationService', () => {
       name: 'writer',
       definitionId: 'private-writer',
       description: 'Private writer',
+      modelAlias: 'model',
       systemPrompt: () => 'PRIVATE',
       renderSystemPrompt: () => ({ text: 'PRIVATE', environment: { cwd: '', date: { disclosed: false } } }),
       promptPrefix: async () => 'PRIVATE PREFIX',
@@ -404,6 +443,7 @@ describe('SessionExternalDelegationService', () => {
       name: 'writer',
       definitionId: 'private-only-writer',
       description: 'Private-only writer',
+      modelAlias: 'model',
       systemPrompt: () => 'PRIVATE ONLY',
       renderSystemPrompt: () => ({ text: 'PRIVATE ONLY', environment: { cwd: '', date: { disclosed: false } } }),
       promptPrefix: async () => 'PRIVATE ONLY PREFIX',
