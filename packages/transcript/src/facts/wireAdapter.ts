@@ -21,6 +21,17 @@ export interface TranscriptWireAdapterLookups {
     | undefined;
 }
 
+interface PendingSteer {
+  readonly promptId: string;
+  readonly text: string;
+  readonly revision: number;
+  readonly provenance: {
+    readonly source: 'legacy-wire' | 'engine';
+    readonly recordOrdinal?: number;
+  };
+  readonly origin: unknown;
+}
+
 export class TranscriptWireAdapter {
   readonly #turns: string[] = [];
   readonly #steps = new Map<string, { stepId: string; ordinal: number }>();
@@ -31,6 +42,8 @@ export class TranscriptWireAdapter {
   readonly #canonicalTurns = new Set<string>();
   readonly #undoAnchors = new Set<string>();
   readonly #turnOwnedItemIds = new Map<string, string[]>();
+  readonly #steeredMessageIds = new Set<string>();
+  readonly #pendingSteers = new Map<string, PendingSteer[]>();
   #goal: GoalMeta | undefined;
   #plan: { readonly reviewPath?: string; readonly version?: number } | undefined;
   #recordOrdinal = 0;
@@ -370,35 +383,50 @@ export class TranscriptWireAdapter {
   private turnSteer(record: TranscriptWireRecord, ordinal: number): TranscriptOperation[] {
     const turnId = turnIdOf(record['turnId'], this.#currentTurnId);
     if (turnId === undefined) return [];
-    const step = this.#steps.get(turnId);
-    if (step === undefined) return [];
+    const explicitPromptId = stringOf(record['promptId']);
+    if (explicitPromptId !== undefined) this.#steeredMessageIds.add(explicitPromptId);
     const input = arrayOf(record['input']);
-    const promptId = stringOf(record['promptId']) ?? `legacy:v1:r${ordinal}:steer`;
     const text = input.map(textOfPart).join('');
     if (text.length === 0) return [];
-    return [
-      {
-        op: 'frame.upsert',
-        turnId,
-        stepId: step.stepId,
-        frame: {
-          kind: 'text',
-          frameId: promptId,
-          part: {
-            partId: promptId,
-            messageId: promptId,
-            revision: numberOf(record['revision']) ?? 0,
-            provenance: {
-              source: stringOf(record['promptId']) === undefined ? 'legacy-wire' : 'engine',
-              recordOrdinal: stringOf(record['promptId']) === undefined ? ordinal : undefined,
-            },
-          },
-          role: 'user',
-          text,
-          origin: record['origin'],
-        },
+    const promptId = explicitPromptId ?? `legacy:v1:r${ordinal}:steer`;
+    const pending = this.#pendingSteers.get(turnId);
+    const steer: PendingSteer = {
+      promptId,
+      text,
+      revision: numberOf(record['revision']) ?? 0,
+      provenance: {
+        source: explicitPromptId === undefined ? 'legacy-wire' : 'engine',
+        recordOrdinal: explicitPromptId === undefined ? ordinal : undefined,
       },
-    ];
+      origin: record['origin'],
+    };
+    if (pending === undefined) this.#pendingSteers.set(turnId, [steer]);
+    else pending.push(steer);
+    return [];
+  }
+
+  private takePendingSteers(turnId: string, stepId: string): TranscriptOperation[] {
+    const pending = this.#pendingSteers.get(turnId);
+    if (pending === undefined || pending.length === 0) return [];
+    this.#pendingSteers.delete(turnId);
+    return pending.map((steer): TranscriptOperation => ({
+      op: 'frame.upsert',
+      turnId,
+      stepId,
+      frame: {
+        kind: 'text',
+        frameId: steer.promptId,
+        part: {
+          partId: steer.promptId,
+          messageId: steer.promptId,
+          revision: steer.revision,
+          provenance: steer.provenance,
+        },
+        role: 'user',
+        text: steer.text,
+        origin: steer.origin,
+      },
+    }));
   }
 
   private legacyMessage(record: TranscriptWireRecord, ordinal: number): TranscriptOperation[] {
@@ -409,6 +437,7 @@ export class TranscriptWireAdapter {
     const content = arrayOf(message['content']);
     if (role === 'user') {
       if (messageId === this.#currentPromptId) return [];
+      if (this.#steeredMessageIds.delete(messageId)) return [];
       const origin = objectOf(message['origin']);
       if (stringOf(origin?.['kind']) === 'injection') return this.legacyInjectedMessage(message, ordinal);
       const turnOrdinal = this.#legacyTurnOrdinal++;
@@ -649,6 +678,7 @@ export class TranscriptWireAdapter {
             startedAt: isoOf(time),
           },
         },
+        ...this.takePendingSteers(turnId, stepId),
       ];
     }
     if (type === 'step.end') return this.stepEnd(event, time);
@@ -922,6 +952,7 @@ export class TranscriptWireAdapter {
       this.#turnOwnedItemIds.delete(turnId);
       this.#steps.delete(turnId);
       this.#stepUsages.delete(turnId);
+      this.#pendingSteers.delete(turnId);
       for (const [toolCallId, tool] of this.#tools) {
         if (tool.turnId === turnId) this.#tools.delete(toolCallId);
       }

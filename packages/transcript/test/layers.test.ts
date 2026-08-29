@@ -938,6 +938,135 @@ describe('TranscriptWireAdapter', () => {
     ]);
   });
 
+  it('pairs turn.steer with the following append_message and anchors the frame on the next step', () => {
+    const coldRecords: TranscriptWireRecord[] = [
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'start' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 2_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          turnId: 0,
+          stepUuid: 'step-1',
+          uuid: 'part-a',
+          part: { type: 'text', text: 'working' },
+        },
+        time: 3_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 4_000,
+      },
+      {
+        type: 'turn.steer',
+        turnId: 0,
+        promptId: 'steer-1',
+        input: [{ type: 'text', text: 'steer this' }],
+        origin: { kind: 'user' },
+        time: 5_000,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          id: 'steer-1',
+          role: 'user',
+          content: [{ type: 'text', text: 'steer this' }],
+          origin: { kind: 'user' },
+        },
+        time: 5_100,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 2, uuid: 'step-2' },
+        time: 6_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'content.part',
+          turnId: 0,
+          stepUuid: 'step-2',
+          uuid: 'part-b',
+          part: { type: 'text', text: 'after steer' },
+        },
+        time: 7_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 0, step: 2, uuid: 'step-2' },
+        time: 8_000,
+      },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 9_000 },
+    ];
+    const liveRecords = coldRecords.filter((record) => record.type !== 'context.append_message');
+    const cold = replay(coldRecords);
+    const live = replay(liveRecords);
+    expect(cold.snapshot()).toEqual(live.snapshot());
+    expect(
+      cold.getItems().filter((item) => item.kind === 'turn').map((item) => item.turnId),
+    ).toEqual(['t0']);
+    const turn = cold.getTurn('t0');
+    expect(turn?.steps.map((step) => step.stepId)).toEqual(['step-1', 'step-2']);
+    expect(turn?.steps[0]?.frames.map((frame) => frame.frameId)).toEqual(['part-a']);
+    expect(turn?.steps[1]?.frames.map((frame) => ({
+      frameId: frame.frameId,
+      kind: frame.kind,
+      role: frame.kind === 'text' ? frame.role : undefined,
+      text: frame.kind === 'text' || frame.kind === 'thinking' ? frame.text : undefined,
+    }))).toEqual([
+      { frameId: 'steer-1', kind: 'text', role: 'user', text: 'steer this' },
+      { frameId: 'part-b', kind: 'text', role: 'assistant', text: 'after steer' },
+    ]);
+  });
+
+  it('drops a steer frame when no later step begins and still suppresses the paired append_message', () => {
+    const transcript = replay([
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'start' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'turn.steer',
+        turnId: 0,
+        promptId: 'steer-1',
+        input: [{ type: 'text', text: 'steer this' }],
+        origin: { kind: 'user' },
+        time: 2_000,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          id: 'steer-1',
+          role: 'user',
+          content: [{ type: 'text', text: 'steer this' }],
+          origin: { kind: 'user' },
+        },
+        time: 2_100,
+      },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 3_000 },
+    ]);
+    expect(
+      transcript.getItems().filter((item) => item.kind === 'turn').map((item) => item.turnId),
+    ).toEqual(['t0']);
+    expect(transcript.getTurn('t0')?.steps).toEqual([]);
+  });
+
   it('updates known turns from turn.ended without materializing unknown turn ids', () => {
     const transcript = replay([
       { type: 'turn.prompt', turnId: 0, input: [{ type: 'text', text: 'run' }], origin: { kind: 'user' } },
