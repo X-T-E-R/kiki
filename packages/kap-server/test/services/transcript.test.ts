@@ -2689,6 +2689,7 @@ describe('bindSessionTranscript', () => {
       bus.emit(ev({ type: 'tool.result', toolCallId: 'call_1', output: 'a.txt' }));
       await service.whenReady('s1');
 
+      expect(service.getMaterializedAgentToolCallCounts('s1', ['main']).get('main')).toBe(1);
       const turn = store?.getAgent('main')?.getTurn('t0');
       expect(turn?.state).toBe('running');
       const text = turn?.steps[0]?.frames.find((f) => f.kind === 'text');

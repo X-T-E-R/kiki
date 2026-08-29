@@ -62,7 +62,7 @@ function deferred(): { readonly promise: Promise<void>; resolve(): void } {
 }
 
 describe('server-v2 snapshot route enrichment', () => {
-  it('keeps legacy parity while transcript mode skips history and tool-count work', async () => {
+  it('keeps legacy parity while transcript mode uses materialized display fields', async () => {
     const sessionId = 'sess_snapshot';
     const promptId = 'msg_snapshot_prompt';
     const workspaceId = 'wd_snapshot_012345abcdef';
@@ -107,6 +107,9 @@ describe('server-v2 snapshot route enrichment', () => {
                   type: 'sub',
                   parentAgentId: 'main',
                   labels: { parentAgentId: 'main', swarmItem: 'Research API limits' },
+                  displayName: 'explore',
+                  model: 'provider/metadata-model',
+                  thinkingEffort: 'high',
                 },
               },
             }),
@@ -155,6 +158,9 @@ describe('server-v2 snapshot route enrichment', () => {
       ]),
     };
     const getTranscriptToolCallCounts = vi.fn(async () => new Map([['agent-1', 3]]));
+    const getMaterializedTranscriptToolCallCounts = vi.fn(
+      () => new Map([['agent-1', 3]]),
+    );
     const getSnapshotState = vi.fn(async () => ({
       seq: 1,
       epoch: 'ep_snapshot',
@@ -184,14 +190,18 @@ describe('server-v2 snapshot route enrichment', () => {
           status: 'running',
           subagent_phase: 'working',
           parent_tool_call_id: 'tc_swarm_1',
-          tool_call_count: 3,
+          tool_call_count: 0,
           swarm_index: 0,
           run_in_background: false,
           created_at: new Date(now).toISOString(),
         },
       ],
     }));
-    const broadcaster = { getSnapshotState, getTranscriptToolCallCounts };
+    const broadcaster = {
+      getSnapshotState,
+      getTranscriptToolCallCounts,
+      getMaterializedTranscriptToolCallCounts,
+    };
 
     let routeHandler:
       | ((
@@ -248,7 +258,21 @@ describe('server-v2 snapshot route enrichment', () => {
     expect(compact.pending_approvals).toEqual([
       expect.objectContaining({ approval_id: 'approval-snapshot', tool_call_id: 'tc-approval' }),
     ]);
+    expect(compact.subagents).toEqual([
+      expect.objectContaining({
+        id: 'agent-1',
+        profile: 'explore',
+        model: 'provider/metadata-model',
+        thinking_effort: 'high',
+        subagent_phase: 'working',
+        label: 'Research API limits',
+        tool_call_count: 3,
+      }),
+    ]);
     expect(getSnapshotState).toHaveBeenLastCalledWith(sessionId, { captureMessages: false });
+    expect(getMaterializedTranscriptToolCallCounts).toHaveBeenCalledWith(sessionId, [
+      'agent-1',
+    ]);
     expect(getTranscriptToolCallCounts).not.toHaveBeenCalled();
     expect(loadParts).not.toHaveBeenCalled();
 
@@ -278,6 +302,8 @@ describe('server-v2 snapshot route enrichment', () => {
         run_in_background: false,
       }),
     ]);
+    expect(legacy.subagents?.[0]?.model).toBeUndefined();
+    expect(legacy.subagents?.[0]?.thinking_effort).toBeUndefined();
   });
 });
 

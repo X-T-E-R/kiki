@@ -53,6 +53,12 @@ interface LiveEntry {
   readonly ready: Promise<void>;
   readonly agentBackfills: Map<string, Promise<void>>;
   readonly opsJournals: Map<string, AgentOpsJournal>;
+  readonly agentToolCallStates: Map<string, MaterializedAgentToolCallState>;
+}
+
+interface MaterializedAgentToolCallState {
+  readonly toolFrameIdsByTurn: Map<string, Set<string>>;
+  toolCallCount: number;
 }
 
 interface AgentOpsJournal {
@@ -136,6 +142,7 @@ export class TranscriptService {
       })(),
       agentBackfills: new Map(),
       opsJournals: new Map(),
+      agentToolCallStates: new Map(),
     });
     return store;
   }
@@ -230,6 +237,9 @@ export class TranscriptService {
         createdAt: existing?.createdAt,
       });
     }
+    if (!entry.agentToolCallStates.has(agentId)) {
+      entry.agentToolCallStates.set(agentId, toolCallStateFromSnapshot(transcript.snapshot()));
+    }
     entry.binding.finishReplay(agentId);
   }
 
@@ -319,9 +329,36 @@ export class TranscriptService {
   }
 
   private handleLiveOps(sessionId: string, event: TranscriptChangeEvent): void {
+    const entry = this.live.get(sessionId);
+    if (entry !== undefined) {
+      let state = entry.agentToolCallStates.get(event.agentId);
+      if (state === undefined) {
+        const transcript = entry.store.getAgent(event.agentId);
+        if (transcript !== undefined) {
+          state = toolCallStateFromSnapshot(transcript.snapshot());
+          entry.agentToolCallStates.set(event.agentId, state);
+        }
+      } else {
+        applyToolCallOps(state, event.ops);
+      }
+    }
     this.dispatchOps(sessionId, event);
   }
 
+  getMaterializedAgentToolCallCounts(
+    sessionId: string,
+    agentIds: readonly string[],
+  ): ReadonlyMap<string, number> {
+    const result = new Map<string, number>();
+    const entry = this.live.get(sessionId);
+    if (entry === undefined) return result;
+    for (const agentId of new Set(agentIds)) {
+      const state = entry.agentToolCallStates.get(agentId);
+      if (state === undefined) continue;
+      result.set(agentId, state.toolCallCount);
+    }
+    return result;
+  }
 
   async getAgentToolCallCounts(
     sessionId: string,
@@ -459,6 +496,90 @@ export function countToolCallFrames(items: AgentTranscriptSnapshot['items']): nu
     }
   }
   return count;
+}
+
+function toolCallStateFromSnapshot(
+  snapshot: AgentTranscriptSnapshot,
+): MaterializedAgentToolCallState {
+  const toolCallState: MaterializedAgentToolCallState = {
+    toolFrameIdsByTurn: new Map(),
+    toolCallCount: 0,
+  };
+  for (const item of snapshot.items) {
+    if (item.kind !== 'turn') continue;
+    for (const step of item.steps) {
+      for (const frame of step.frames) {
+        if (frame.kind === 'tool') {
+          addToolFrame(toolCallState, item.turnId, step.stepId, frame.frameId);
+        }
+      }
+    }
+  }
+  return toolCallState;
+}
+
+function applyToolCallOps(
+  toolCallState: MaterializedAgentToolCallState,
+  ops: readonly TranscriptOperation[],
+): void {
+  for (const op of ops) {
+    if (op.op === 'reset') {
+      const replacement = toolCallStateFromSnapshot(op.snapshot);
+      toolCallState.toolFrameIdsByTurn.clear();
+      for (const [turnId, frameIds] of replacement.toolFrameIdsByTurn) {
+        toolCallState.toolFrameIdsByTurn.set(turnId, frameIds);
+      }
+      toolCallState.toolCallCount = replacement.toolCallCount;
+    } else if (op.op === 'frame.upsert') {
+      if (op.frame.kind === 'tool') {
+        addToolFrame(toolCallState, op.turnId, op.stepId, op.frame.frameId);
+      } else {
+        removeToolFrame(toolCallState, op.turnId, op.stepId, op.frame.frameId);
+      }
+    } else if (op.op === 'items.remove') {
+      for (const itemId of op.ids) removeToolTurn(toolCallState, itemId);
+    }
+  }
+}
+
+function addToolFrame(
+  toolCallState: MaterializedAgentToolCallState,
+  turnId: string,
+  stepId: string,
+  frameId: string,
+): void {
+  let frameIds = toolCallState.toolFrameIdsByTurn.get(turnId);
+  if (frameIds === undefined) {
+    frameIds = new Set();
+    toolCallState.toolFrameIdsByTurn.set(turnId, frameIds);
+  }
+  const key = `${stepId}\0${frameId}`;
+  if (frameIds.has(key)) return;
+  frameIds.add(key);
+  toolCallState.toolCallCount += 1;
+}
+
+function removeToolFrame(
+  toolCallState: MaterializedAgentToolCallState,
+  turnId: string,
+  stepId: string,
+  frameId: string,
+): void {
+  const frameIds = toolCallState.toolFrameIdsByTurn.get(turnId);
+  if (frameIds === undefined) return;
+  if (!frameIds.delete(`${stepId}\0${frameId}`)) return;
+  toolCallState.toolCallCount -= 1;
+  if (frameIds.size === 0) toolCallState.toolFrameIdsByTurn.delete(turnId);
+}
+
+function removeToolTurn(
+  toolCallState: MaterializedAgentToolCallState,
+  turnId: string,
+): void {
+  const frameIds = toolCallState.toolFrameIdsByTurn.get(turnId);
+  if (frameIds === undefined) return;
+  toolCallState.toolCallCount -= frameIds.size;
+  toolCallState.toolFrameIdsByTurn.delete(turnId);
 }
 
 /**

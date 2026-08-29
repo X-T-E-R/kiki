@@ -846,6 +846,16 @@ export class SessionEventBroadcaster {
     );
   }
 
+  getMaterializedTranscriptToolCallCounts(
+    sessionId: string,
+    agentIds: readonly string[],
+  ): ReadonlyMap<string, number> {
+    return (
+      this.opts.transcriptService?.getMaterializedAgentToolCallCounts(sessionId, agentIds) ??
+      new Map<string, number>()
+    );
+  }
+
   async getSnapshotState(
     sessionId: string,
     options: { captureMessages?: boolean } = {},

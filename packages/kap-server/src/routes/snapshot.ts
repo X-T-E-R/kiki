@@ -140,13 +140,18 @@ async function assembleSnapshot(
     },
   };
   const subagentCandidates = [...snapState.subagents];
-  const toolCallCounts = compact
-    ? new Map<string, number>()
-    : await broadcaster.getTranscriptToolCallCounts(
-        sessionId,
-        subagentCandidates.map((subagent) => subagent.id),
+  const subagentIds = subagentCandidates.map((subagent) => subagent.id);
+  const subagents = compact
+    ? enrichCompactSnapshotSubagents(
+        subagentCandidates,
+        meta.agents,
+        broadcaster.getMaterializedTranscriptToolCallCounts(sessionId, subagentIds),
+      )
+    : enrichSnapshotSubagents(
+        subagentCandidates,
+        meta.agents,
+        await broadcaster.getTranscriptToolCallCounts(sessionId, subagentIds),
       );
-  const subagents = enrichSnapshotSubagents(subagentCandidates, meta.agents, toolCallCounts);
   const status = snapState.status;
 
   const all = compact
@@ -198,6 +203,21 @@ function readBoundModel(main: IAgentScopeHandle): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function enrichCompactSnapshotSubagents(
+  subagents: readonly SnapshotSubagent[],
+  agents: Readonly<Record<string, AgentMeta>> | undefined,
+  toolCallCounts: ReadonlyMap<string, number>,
+): SnapshotSubagent[] {
+  return enrichSnapshotSubagents(subagents, agents, toolCallCounts).map((subagent) => {
+    const meta = agents?.[subagent.id];
+    return {
+      ...subagent,
+      model: firstNonEmpty(subagent.model, meta?.model),
+      thinking_effort: firstNonEmpty(subagent.thinking_effort, meta?.thinkingEffort),
+    };
+  });
 }
 
 function enrichSnapshotSubagents(
