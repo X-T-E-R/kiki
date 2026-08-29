@@ -103,7 +103,7 @@ describe('SessionExternalDelegationService', () => {
       read: async () => ({ id: 'session_test', createdAt: 0, updatedAt: 0, archived: false, agents: {} }),
     });
     ix.stub(ISessionWorkspaceContext, { _serviceBrand: undefined, workDir: '/workspace', additionalDirs: [] });
-    ix.stub(IConfigService, { get: () => undefined });
+    ix.stub(IConfigService, { get: <T>() => undefined as T });
     ix.stub(IModelService, { resolveId: (id: string) => id });
     willClose = new Emitter<SessionWillCloseEvent & IWaitUntil>();
     disposables.add(willClose);

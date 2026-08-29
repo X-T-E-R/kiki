@@ -8,7 +8,8 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (30 sections · 2 overlay(s))
+# Index (31 sections · 2 overlay(s))
+#   agentExecutors           src/app/agentExecutor/configSection.ts
 #   agents                   src/session/agentCollaboration/configSection.ts
 #   background               src/agent/task/configSection.ts
 #   builtinProductSkills     src/app/skillCatalog/configSection.ts
@@ -41,6 +42,26 @@
 #   workspaceInstance        src/workspace/workspaceInstance/configSection.ts
 #   (overlay) servicesCredentialEnvOverlay  src/app/auth/configSection.ts
 #   (overlay) kimiModelEnvOverlay  src/app/kosongConfig/envOverlay.ts
+
+# ##########################################################################
+# agentExecutors (config.toml: agent_executors)
+#   owner: src/app/agentExecutor/configSection.ts
+#   scope: core
+#   hooks: custom fromToml · custom toToml
+# ##########################################################################
+
+[agent_executors]
+
+# one [agent_executors."<name>"] table per entry:
+# [agent_executors."<name>"]
+  # protocol: string
+  # command: string
+  # args: string[] (default: [])
+  # startup_timeout_ms: integer
+  # shutdown_grace_ms: integer
+  # model_binding: string
+  # model_config_category: string
+  # thought_config_category: string
 
 # ##########################################################################
 # agents

@@ -47,6 +47,8 @@ import {
   registerAgentProfile,
 } from '#/app/agentProfileCatalog/contribution';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
+import { AgentExecutorRegistryService } from '#/app/agentExecutor/agentExecutorRegistryService';
 import { IConfigService } from '#/app/config/config';
 import { IPluginService } from '#/app/plugin/plugin';
 import { PluginAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoaderService';
@@ -65,6 +67,7 @@ import { ExplicitAgentProfileLoaderService } from '#/workspace/workspaceAgentPro
 import { ExtraAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/extraAgentProfileLoaderService';
 import { WorkspaceAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/workspaceAgentProfileLoaderService';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
+import { IWorkspaceTrust } from '#/workspace/workspaceTrust/workspaceTrust';
 import { IUserAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/userAgentProfileLoader';
 import { IPluginAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoader';
 import { IWorkspaceAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader/workspaceAgentProfileLoader';
@@ -139,6 +142,18 @@ function workspaceContextStub(workDir: string): IWorkspaceContext {
     source: 'local',
     meta: { id: 'wd_test', root: workDir, name: 'test', createdAt: 0, lastOpenedAt: 0 },
     persistenceScope: 'sessions/wd_test',
+  };
+}
+
+function workspaceTrustStub(trusted: boolean): IWorkspaceTrust {
+  return {
+    _serviceBrand: undefined,
+    ready: Promise.resolve(),
+    get: async () => trusted,
+    isTrusted: () => trusted,
+    trust: async () => {},
+    untrust: async () => {},
+    onDidChange: Event.None as IWorkspaceTrust['onDidChange'],
   };
 }
 
@@ -318,6 +333,7 @@ interface StackOptions {
   readonly hostFs?: HostFileSystem;
   readonly fsWatch?: IHostFsWatchService;
   readonly routesEnabled?: boolean;
+  readonly workspaceTrusted?: boolean;
   readonly userAgentProfileHomeDir?: string;
   readonly atomicTextWriter?: (path: string, text: string) => Promise<void>;
 }
@@ -350,8 +366,10 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
       [IHostFileSystem, hostFs],
       [IHostFsWatchService, opts?.fsWatch ?? fsWatchStub()],
       [IWorkspaceContext, workspaceContext],
+      [IWorkspaceTrust, workspaceTrustStub(opts?.workspaceTrusted ?? true)],
       [IPluginService, pluginStub(opts?.pluginAgentRoots ?? [], opts?.pluginReloadEmitter)],
       [IFlagService, flags],
+      [IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService)],
       [IAgentProfileRegistry, new SyncDescriptor(AgentProfileRegistryService)],
       [IBuiltinAgentProfileLoader, new SyncDescriptor(BuiltinAgentProfileLoaderService)],
       [IUserAgentProfileLoader, new SyncDescriptor(UserAgentProfileLoaderService)],
@@ -515,7 +533,7 @@ describe('agent profile loaders + session catalog', () => {
           'name: reviewer',
           'description: Old description',
           'tools: [Read, Bash]',
-          'custom_field: keep-me',
+          'whenToUse: keep this field',
           '---',
           '',
           'Keep this prompt body exactly.',
@@ -567,7 +585,7 @@ describe('agent profile loaders + session catalog', () => {
           expect(profileText).toContain('description: "Updated description"\r\n');
           expect(profileText).toContain('model_alias: "provider/profile"\r\n');
           expect(profileText).not.toContain('model_preference:');
-          expect(profileText).toContain('tools: [Read, Bash]\r\ncustom_field: keep-me\r\n');
+          expect(profileText).toContain('tools: [Read, Bash]\r\nwhenToUse: keep this field\r\n');
           expect(profileText.endsWith('\r\nKeep this prompt body exactly.\r\n')).toBe(true);
 
           const routeText = await readFile(routePath, 'utf8');

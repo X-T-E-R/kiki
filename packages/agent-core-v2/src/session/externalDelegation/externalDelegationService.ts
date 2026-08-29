@@ -389,6 +389,9 @@ export class SessionExternalDelegationService
     }
     const selection = target.selection;
     const profile = target.effectiveProfile;
+    if ((profile.executor ?? 'native') !== 'native') {
+      throw invalid('External executors are unsupported for external delegation.');
+    }
     const filled = fillLeasePins(
       { modelAlias, thinkingEffort },
       target.lease,

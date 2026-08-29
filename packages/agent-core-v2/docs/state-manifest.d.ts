@@ -520,6 +520,8 @@ export interface SessionStateSnapshot {
       readonly userLabel?: string;
       readonly model?: string;
       readonly thinkingEffort?: string;
+      readonly executor?: string;
+      readonly executorProtocol?: string;
     }>>;
     readonly custom?: Record<string, unknown>;
     readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
@@ -1554,6 +1556,10 @@ export interface AgentStateSnapshot {
     readonly routeId?: string;
     readonly lockedModelAlias?: string;
     readonly lockedThinkingEffort?: string;
+    readonly executorId?: string;
+    readonly executorProtocol?: string;
+    readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+    readonly executorDescriptorRevision?: string;
     readonly thinkingLevel: string;
     readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
     readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-core-v2/src/kosong/contract/provider.ts */ boolean | string | number>>;

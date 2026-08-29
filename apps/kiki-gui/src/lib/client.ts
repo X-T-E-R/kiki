@@ -378,6 +378,9 @@ export interface NamedAgentProfile {
   readonly main: boolean;
   /** File profile explicitly overriding the same-named built-in profile. */
   readonly override?: boolean;
+  readonly executor?: string;
+  readonly executor_protocol?: string;
+  readonly executor_options?: Readonly<Record<string, string | number | boolean>>;
   readonly pinned_model_alias?: string;
   readonly thinking_effort?: string;
   readonly service_tier?: 'auto' | 'default' | 'flex' | 'priority';

@@ -326,8 +326,10 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       this.onWillCreateEmitter.fire(handle);
       await handle.accessor.get(IEventDispatcher).restore();
       await this.bindBootstrap(handle, opts);
-      await handle.accessor.get(IAgentToolActivationService).activate();
       const profile = handle.accessor.get(IAgentProfileService).data();
+      if ((profile.executorId ?? 'native') === 'native') {
+        await handle.accessor.get(IAgentToolActivationService).activate();
+      }
       await this.sessionMetadata.registerAgent(agentId, {
         homedir: agentHomedir,
         type: resolveDelegationPosition(agentId, opts.delegator),
@@ -346,6 +348,8 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         userLabel: opts.userLabel ?? priorAgentMeta?.userLabel,
         model: profile.modelAlias,
         thinkingEffort: profile.thinkingLevel,
+        executor: profile.executorId,
+        executorProtocol: profile.executorProtocol,
       });
       if (opts.deferCreateEvent === true) this.deferredCreateEvents.add(agentId);
       else this.onDidCreateEmitter.fire(handle);

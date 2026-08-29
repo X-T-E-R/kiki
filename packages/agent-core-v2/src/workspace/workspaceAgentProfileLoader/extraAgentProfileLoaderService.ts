@@ -37,6 +37,7 @@ import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
 import { IFlagService } from '#/app/flag/flag';
 import { AGENT_PROFILE_ROUTES_FLAG_ID } from '#/app/agentProfileCatalog/flag';
+import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 
 import { IExtraAgentProfileLoader } from './extraAgentProfileLoader';
 
@@ -65,6 +66,7 @@ export class ExtraAgentProfileLoaderService
     @IUserAgentProfileLoader private readonly user: IUserAgentProfileLoader,
     @IHostFsWatchService private readonly fsWatch: IHostFsWatchService,
     @IFlagService private readonly flags: IFlagService,
+    @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
     registry?: IAgentProfileRegistry,
   ) {
     super(log, registry);
@@ -106,6 +108,7 @@ export class ExtraAgentProfileLoaderService
       ),
       (context) => this.user.getDefaultProfile().renderSystemPrompt(context),
       (context) => this.user.getBuiltinDefault().renderSystemPrompt(context),
+      { registry: this.executors, allowExternal: true },
     );
   }
 

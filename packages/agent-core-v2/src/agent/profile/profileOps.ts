@@ -15,6 +15,10 @@ const RequestParamsSchema = z.record(
   z.string(),
   z.union([z.string(), z.number(), z.boolean()]),
 );
+const ExecutorOptionsSchema = z.record(
+  z.string(),
+  z.union([z.string(), z.number(), z.boolean()]),
+);
 
 export interface ProfileModelState {
   readonly modelAlias?: string;
@@ -23,6 +27,10 @@ export interface ProfileModelState {
   readonly routeId?: string;
   readonly lockedModelAlias?: string;
   readonly lockedThinkingEffort?: string;
+  readonly executorId?: string;
+  readonly executorProtocol?: string;
+  readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
+  readonly executorDescriptorRevision?: string;
   readonly thinkingLevel: string;
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;
@@ -45,6 +53,10 @@ const profileBindSchema = z.object({
   routeId: z.string().optional(),
   lockedModelAlias: z.string().optional(),
   lockedThinkingEffort: z.string().optional(),
+  executorId: z.string().optional(),
+  executorProtocol: z.string().optional(),
+  executorOptions: ExecutorOptionsSchema.readonly().optional(),
+  executorDescriptorRevision: z.string().optional(),
   thinkingEffort: z.custom<ThinkingEffort>(),
   serviceTier: ServiceTierSchema.optional(),
   requestParams: RequestParamsSchema.readonly().optional(),
@@ -133,6 +145,10 @@ export const profileKey = defineState(
     routeId: e.routeId,
     lockedModelAlias: e.lockedModelAlias,
     lockedThinkingEffort: e.lockedThinkingEffort,
+    executorId: e.executorId,
+    executorProtocol: e.executorProtocol,
+    executorOptions: e.executorOptions,
+    executorDescriptorRevision: e.executorDescriptorRevision,
     thinkingLevel: e.thinkingEffort,
     serviceTier: e.serviceTier,
     requestParams: e.requestParams,

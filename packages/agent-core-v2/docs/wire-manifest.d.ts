@@ -433,6 +433,10 @@ interface ProfileBindPayload {
   routeId?: string;
   lockedModelAlias?: string;
   lockedThinkingEffort?: string;
+  executorId?: string;
+  executorProtocol?: string;
+  executorOptions?: Record<string, string | number | boolean>;
+  executorDescriptorRevision?: string;
   /** ThinkingEffort */
   thinkingEffort: 'off' | 'on' | (string & {});
   serviceTier?: 'auto' | 'default' | 'flex' | 'priority';

@@ -17,6 +17,10 @@ import {
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { BuiltinAgentProfileLoaderService } from '#/app/agentProfileCatalog/builtinAgentProfileLoaderService';
 import { registerAgentProfile } from '#/app/agentProfileCatalog/contribution';
+import {
+  IAgentExecutorRegistry,
+  type AgentExecutorDescriptor,
+} from '#/app/agentExecutor/agentExecutor';
 import type { ToolCall } from '#/kosong/contract/message';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
@@ -178,6 +182,38 @@ function routedCatalog(
   };
 }
 
+function externalExecutorRegistry(): IAgentExecutorRegistry {
+  const descriptor: AgentExecutorDescriptor = {
+    id: 'grok-acp',
+    protocol: 'acp-v1',
+    command: 'grok',
+    args: ['agent', 'stdio'],
+    revision: 'test-revision',
+  };
+  return {
+    _serviceBrand: undefined,
+    get: (id) => id === 'native'
+      ? { id: 'native', protocol: 'native', args: [], revision: 'native' }
+      : id === descriptor.id
+        ? descriptor
+        : undefined,
+    resolve: (id = 'native', options = {}) => {
+      if (id === 'native') {
+        return {
+          descriptor: { id: 'native', protocol: 'native', args: [], revision: 'native' },
+          options: {},
+        };
+      }
+      if (id !== descriptor.id) throw new Error(`Unknown executor ${id}`);
+      return {
+        descriptor,
+        options: options as Readonly<Record<string, string | number | boolean>>,
+      };
+    },
+    provider: () => undefined,
+  };
+}
+
 describe('AgentProfileService.bind', () => {
   let ctx: TestAgentContext;
   let homeDir: string;
@@ -205,6 +241,81 @@ describe('AgentProfileService.bind', () => {
     ctx = createTestAgent(hostEnvironmentServices(homeDir));
     return { ctx, profile: ctx.get(IAgentProfileService) };
   }
+
+  it('binds an external profile without consulting the native model catalog', async () => {
+    const external = normalizeAgentProfile({
+      name: 'grok-worker',
+      executor: 'grok-acp',
+      executorOptions: { mode: 'default' },
+      modelAlias: 'grok-build',
+      systemPrompt: () => 'external worker',
+    });
+    const catalog: ISessionAgentProfileCatalog = {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChange: Event.None as ISessionAgentProfileCatalog['onDidChange'],
+      get: (name) => name === external.name ? external : undefined,
+      getDefault: () => external,
+      list: () => [external],
+      listRoutes: () => [],
+      routeDiagnostics: () => [],
+      resolveSelection: () => ({ profile: external, baseProfile: external, route: undefined }),
+      inspect: () => undefined,
+      load: async () => {},
+      reload: async () => {},
+    };
+    ctx = createTestAgent(
+      appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, catalog),
+      hostEnvironmentServices(homeDir),
+    );
+    const svc = ctx.get(IAgentProfileService);
+
+    await svc.bind({ profile: external.name, delegationPosition: 'sub' });
+
+    expect(svc.data()).toMatchObject({
+      executorId: 'grok-acp',
+      executorProtocol: 'acp-v1',
+      executorOptions: { mode: 'default' },
+      executorDescriptorRevision: 'test-revision',
+      modelAlias: 'grok-build',
+    });
+    expect(() => svc.resolveModelContext()).toThrow(/unsupported for external executor/);
+  });
+
+  it('fails an external profile closed when no model is pinned or dispatched', async () => {
+    const external = normalizeAgentProfile({
+      name: 'grok-worker-unbound',
+      executor: 'grok-acp',
+      systemPrompt: () => 'external worker',
+    });
+    const catalog: ISessionAgentProfileCatalog = {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChange: Event.None as ISessionAgentProfileCatalog['onDidChange'],
+      get: (name) => name === external.name ? external : undefined,
+      getDefault: () => external,
+      list: () => [external],
+      listRoutes: () => [],
+      routeDiagnostics: () => [],
+      resolveSelection: () => ({ profile: external, baseProfile: external, route: undefined }),
+      inspect: () => undefined,
+      load: async () => {},
+      reload: async () => {},
+    };
+    ctx = createTestAgent(
+      appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, catalog),
+      hostEnvironmentServices(homeDir),
+    );
+
+    await expect(
+      ctx.get(IAgentProfileService).bind({
+        profile: external.name,
+        delegationPosition: 'sub',
+      }),
+    ).rejects.toMatchObject({ code: 'model.not_configured' });
+  });
 
   it('binds a profile + model atomically and becomes runnable', async () => {
     const { profile: svc } = buildContext();
