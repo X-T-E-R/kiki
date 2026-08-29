@@ -1396,26 +1396,27 @@ export function agentTranscriptToBlocks(
     const origin = originFromTurnItem(item) ?? { kind: 'task', taskId: response.agent_id };
     const identity = identityFromTurnOrigin(origin);
     const turnUserMessageId = turnMessageId(item) ?? identity.userMessageId;
+    let projectedTurnPrompt = false;
     if (item.prompt !== undefined && item.prompt.trim() !== '') {
-      blocks.push(
-        ...classifiedTextToBlocks({
-          id: turnUserMessageId ?? `agent-turn-${item.turnId}-prompt`,
-          classified: classifyTranscriptText({
-            text: item.prompt,
-            role: 'user',
-            origin,
-            subagentPromptAsUser,
-          }),
-          createdAt: item.startedAt ?? '',
-          turnId: item.turnId,
-          promptId: identity.promptId,
-          userMessageId: turnUserMessageId,
-          media: mediaFromAttachmentIds(
-            (item as { attachmentIds?: readonly string[] }).attachmentIds,
-            attachmentsById,
-          ),
+      const promptBlocks = classifiedTextToBlocks({
+        id: turnUserMessageId ?? `agent-turn-${item.turnId}-prompt`,
+        classified: classifyTranscriptText({
+          text: item.prompt,
+          role: 'user',
+          origin,
+          subagentPromptAsUser,
         }),
-      );
+        createdAt: item.startedAt ?? '',
+        turnId: item.turnId,
+        promptId: identity.promptId,
+        userMessageId: turnUserMessageId,
+        media: mediaFromAttachmentIds(
+          (item as { attachmentIds?: readonly string[] }).attachmentIds,
+          attachmentsById,
+        ),
+      });
+      projectedTurnPrompt = promptBlocks.some((block) => block.kind === 'user');
+      blocks.push(...promptBlocks);
     }
     for (const step of item.steps) {
       let lastTextFrameId: string | undefined;
@@ -1440,6 +1441,7 @@ export function agentTranscriptToBlocks(
               const origin = frameOrigin ?? taskOrigin ?? (isUserVisibleOrigin(turnOrigin) ? turnOrigin : undefined);
               const userMessageId = frameMessageId(frame);
               if (
+                projectedTurnPrompt &&
                 userMessageId !== undefined &&
                 turnUserMessageId !== undefined &&
                 userMessageId === turnUserMessageId

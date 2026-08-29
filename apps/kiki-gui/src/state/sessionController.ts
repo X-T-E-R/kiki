@@ -59,6 +59,7 @@ export function assertSessionWritable(state: Pick<SessionViewState, 'resyncing' 
 }
 
 const RESYNC_BACKOFF_MS = [250, 500, 1000, 2000, 4000];
+const REWRITE_RESET_TIMEOUT_MS = 10_000;
 const HIDDEN_FRAME_FLUSH_INTERVAL_MS = 1000;
 
 export interface PublicationScheduler {
@@ -75,6 +76,13 @@ interface VisibilityDocument {
 interface PendingTranscriptBatch {
   readonly ops: TranscriptOperation[];
   cursor: TranscriptCursor;
+}
+
+interface RewriteHold {
+  readonly token: number;
+  readonly generation: number | undefined;
+  readonly deferredBatches: PendingTranscriptBatch[];
+  timer: ReturnType<typeof setTimeout> | null;
 }
 
 const browserScheduler: PublicationScheduler = {
@@ -113,10 +121,13 @@ export class SessionController {
   private readonly scheduler: PublicationScheduler;
   private readonly usesBrowserScheduler: boolean;
   private readonly visibilityDocument: VisibilityDocument | undefined;
+  private readonly rewriteResetTimeoutMs: number;
   private frameHandle: unknown = null;
   private hiddenFrameTimer: ReturnType<typeof setTimeout> | null = null;
   private resyncInFlight = false;
   private resyncTimer: ReturnType<typeof setTimeout> | null = null;
+  private rewriteHold: RewriteHold | undefined;
+  private rewriteHoldToken = 0;
   private closed = false;
 
   private readonly agentStates = new Map<string, SessionViewState>();
@@ -144,7 +155,7 @@ export class SessionController {
     client: KikiClient,
     socket: KikiSocket,
     sessionId: string,
-    options: { scheduler?: PublicationScheduler } = {},
+    options: { scheduler?: PublicationScheduler; rewriteResetTimeoutMs?: number } = {},
   ) {
     this.client = client;
     this.socket = socket;
@@ -152,6 +163,7 @@ export class SessionController {
     this.scheduler = options.scheduler ?? browserScheduler;
     this.usesBrowserScheduler = options.scheduler === undefined;
     this.visibilityDocument = this.usesBrowserScheduler ? browserVisibilityDocument() : undefined;
+    this.rewriteResetTimeoutMs = options.rewriteResetTimeoutMs ?? REWRITE_RESET_TIMEOUT_MS;
     this.state = createViewState(sessionId);
     this.publishedState = this.state;
     this.emptyAgentState = createViewState(sessionId);
@@ -286,6 +298,7 @@ export class SessionController {
     this.closed = true;
     this.visibilityDocument?.removeEventListener?.('visibilitychange', this.onVisibilityChange);
     this.clearResyncTimer();
+    this.clearRewriteHold();
     this.cancelVisibleFrameFlush();
     this.clearHiddenFrameTimer();
     this.pendingTranscriptBatches.clear();
@@ -306,18 +319,65 @@ export class SessionController {
     }
   }
 
-  handleTranscript(event: TranscriptEvent): void {
+  private beginRewriteHold(): void {
+    if (this.rewriteHold !== undefined) return;
+    const token = (this.rewriteHoldToken += 1);
+    const generation = this.socket.connectionGeneration;
+    const hold: RewriteHold = {
+      token,
+      generation: Number.isInteger(generation) ? generation : undefined,
+      deferredBatches: [],
+      timer: null,
+    };
+    const pendingMain = this.pendingTranscriptBatches.get(MAIN_AGENT_ID);
+    if (pendingMain?.ops.some((op) => op.op === 'items.remove') === true) {
+      this.pendingTranscriptBatches.delete(MAIN_AGENT_ID);
+      hold.deferredBatches.push(pendingMain);
+    }
+    hold.timer = setTimeout(() => this.recoverRewriteHold(token), this.rewriteResetTimeoutMs);
+    this.rewriteHold = hold;
+  }
+
+  private clearRewriteHold(token?: number): void {
+    const hold = this.rewriteHold;
+    if (hold === undefined || (token !== undefined && hold.token !== token)) return;
+    if (hold.timer !== null) clearTimeout(hold.timer);
+    this.rewriteHold = undefined;
+  }
+
+  private recoverRewriteHold(token: number): void {
+    if (this.closed || this.rewriteHold?.token !== token) return;
+    this.clearRewriteHold(token);
+    this.socket.restartGeneration();
+    if (this.resyncInFlight) {
+      this.hardResyncQueued = true;
+      return;
+    }
+    void this.resync();
+  }
+
+  private matchesRewriteGeneration(generation: number | undefined): boolean {
+    const heldGeneration = this.rewriteHold?.generation;
+    return heldGeneration === undefined || generation === heldGeneration;
+  }
+
+  handleTranscript(event: TranscriptEvent, generation?: number): void {
     if (this.closed || event.session_id !== this.sessionId) return;
+    const hold = this.rewriteHold;
     if (event.type === 'transcript.reset') {
-      this.rewriteHoldUntilReset = false;
+      if (hold !== undefined && event.agent_id === MAIN_AGENT_ID) {
+        if (!this.matchesRewriteGeneration(generation)) return;
+        this.clearRewriteHold(hold.token);
+      }
       this.applyTranscriptReset(event.agent_id, event.snapshot, event.coverage, event.cursor);
       return;
     }
-    if (this.rewriteHoldUntilReset) {
-      const ops = event.ops.filter((op) => op.op !== 'items.remove');
-      if (ops.length === 0) return;
-      this.applyTranscriptOps(event.agent_id, ops, event.cursor);
-      return;
+    if (hold !== undefined && event.agent_id === MAIN_AGENT_ID) {
+      if (!this.matchesRewriteGeneration(generation)) return;
+      if (hold.deferredBatches.length > 0 || event.ops.some((op) => op.op === 'items.remove')) {
+        hold.deferredBatches.push({ ops: [...event.ops], cursor: event.cursor });
+        return;
+      }
     }
     this.applyTranscriptOps(event.agent_id, event.ops, event.cursor);
   }
@@ -358,6 +418,17 @@ export class SessionController {
     void this.resync({ rewrite: payload.reason === 'history_rewritten' });
   }
 
+  handleSubscribeRejected(generation?: number): void {
+    if (this.closed) return;
+    const hold = this.rewriteHold;
+    if (hold === undefined) {
+      void this.resync();
+      return;
+    }
+    if (!this.matchesRewriteGeneration(generation)) return;
+    this.recoverRewriteHold(hold.token);
+  }
+
   /** Volatile deltas are never journaled or replayed, so a turn that was
    * live when the socket dropped has holes the durable replay cannot fill.
    * Remember the drop; the next post-reconnect subscribe ack resyncs. */
@@ -385,24 +456,21 @@ export class SessionController {
   /** Rewrite resyncs requested while another resync was in flight — the
    * in-flight snapshot may predate the rewrite, so it re-runs afterwards. */
   private rewriteResyncQueued = false;
-  /**
-   * Truncate ops from a rewrite can race the following reset. Hold them so a
-   * regenerate cannot wipe the settled user bubble before the new baseline.
-   */
-  private rewriteHoldUntilReset = false;
+  private hardResyncQueued = false;
 
   async resync(options: { rewrite?: boolean } = {}): Promise<void> {
     if (this.closed) return;
+    const rewrite = options.rewrite === true;
+    if (rewrite) this.beginRewriteHold();
+    const rewriteHoldToken = rewrite ? this.rewriteHold?.token : undefined;
     if (this.resyncInFlight) {
-      if (options.rewrite === true) this.rewriteResyncQueued = true;
+      if (rewrite) this.rewriteResyncQueued = true;
       return;
     }
     this.resyncInFlight = true;
-    this.rewriteResyncQueued = false;
-    if (options.rewrite === true) this.rewriteHoldUntilReset = true;
+    if (rewrite) this.rewriteResyncQueued = false;
     this.clearResyncTimer();
     this.setState(setResyncing(this.state, true));
-    let runAgain = false;
     try {
       const snapshot = await this.client.snapshot(this.sessionId, { transcript: true });
       if (this.closed) return;
@@ -428,6 +496,7 @@ export class SessionController {
         this.transcriptGrades,
       );
     } catch {
+      if (rewriteHoldToken !== undefined) this.clearRewriteHold(rewriteHoldToken);
       if (!this.closed) {
         const attempt = this.state.resyncAttempt + 1;
         this.setState(setResyncFailed(setResyncing(this.state, false), true, attempt));
@@ -435,8 +504,15 @@ export class SessionController {
       }
     } finally {
       this.resyncInFlight = false;
-      if (this.rewriteResyncQueued && !this.closed) runAgain = true;
-      if (runAgain && !this.closed) queueMicrotask(() => void this.resync());
+      if (this.closed) return;
+      if (this.hardResyncQueued) {
+        this.hardResyncQueued = false;
+        this.rewriteResyncQueued = false;
+        queueMicrotask(() => void this.resync());
+      } else if (this.rewriteResyncQueued) {
+        this.rewriteResyncQueued = false;
+        queueMicrotask(() => void this.resync({ rewrite: true }));
+      }
     }
   }
 

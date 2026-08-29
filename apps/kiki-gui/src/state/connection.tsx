@@ -312,7 +312,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
           if (liveSocketRef.current !== instance) return;
           if (generation !== undefined && generation !== instance.connectionGeneration) return;
           for (const controller of controllersRef.current) {
-            if (controller.sessionId === event.session_id) controller.handleTranscript(event);
+            if (controller.sessionId === event.session_id) controller.handleTranscript(event, generation);
           }
         },
         onResyncRequired: (payload, generation) => {
@@ -326,8 +326,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
           if (liveSocketRef.current !== instance) return;
           if (generation !== undefined && generation !== instance.connectionGeneration) return;
           for (const controller of controllersRef.current) {
-            if (!accepted.includes(controller.sessionId)) continue;
-            if (reconnected) controller.handleReconnectAck();
             const offered = cursors?.[controller.sessionId];
             const localEpoch = controller.getState().cursor.epoch;
             const epochChanged =
@@ -335,8 +333,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
               localEpoch !== undefined &&
               offered.epoch !== localEpoch;
             if (resyncRequired.includes(controller.sessionId) || epochChanged) {
-              void controller.resync();
+              controller.handleSubscribeRejected(generation);
+              continue;
             }
+            if (!accepted.includes(controller.sessionId)) continue;
+            if (reconnected) controller.handleReconnectAck();
           }
         },
       },

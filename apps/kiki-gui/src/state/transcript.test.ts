@@ -658,6 +658,62 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     });
   });
 
+  it('keeps a user frame as the only body when the legacy turn prompt is missing', () => {
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', {
+      items: [
+        {
+          kind: 'turn',
+          turnId: 't-legacy',
+          ordinal: 1,
+          state: 'completed',
+          origin: { kind: 'user' },
+          message: {
+            messageId: 'msg-legacy-user',
+            role: 'user',
+            revision: 0,
+            provenance: { source: 'engine' },
+          },
+          startedAt: FIXED_AT,
+          steps: [
+            {
+              kind: 'step',
+              stepId: 't-legacy.1',
+              turnId: 't-legacy',
+              ordinal: 1,
+              state: 'completed',
+              frames: [
+                {
+                  kind: 'text',
+                  frameId: 'legacy-user-frame',
+                  role: 'user',
+                  text: 'Only the legacy user frame has this body.',
+                  part: {
+                    partId: 'legacy-user-frame',
+                    messageId: 'msg-legacy-user',
+                    revision: 0,
+                    provenance: { source: 'engine' },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [],
+      meta: {},
+    });
+    expect(projected.blocks.filter((block) => block.kind === 'user')).toEqual([
+      expect.objectContaining({
+        text: 'Only the legacy user frame has this body.',
+        userMessageId: 'msg-legacy-user',
+      }),
+    ]);
+  });
+
   it('projects a shell taskref as a shell card instead of a bare task id', () => {
     const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', {
       items: [

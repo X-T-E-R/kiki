@@ -655,7 +655,7 @@ describe('SessionController message closure', () => {
 });
 
 describe('SessionController transcript authority', () => {
-  async function openTranscriptController() {
+  async function openTranscriptController(options: { rewriteResetTimeoutMs?: number } = {}) {
     const client = {
       snapshot: vi.fn(async () => snapshot()),
       listPrompts: vi.fn(async () => ({ active: null, queued: [] })),
@@ -699,7 +699,7 @@ describe('SessionController transcript authority', () => {
       client as unknown as KikiClient,
       socket as unknown as KikiSocket,
       'session_test',
-      { scheduler },
+      { scheduler, rewriteResetTimeoutMs: options.rewriteResetTimeoutMs },
     );
     await controller.open();
     return { controller, client, socket, flushAll };
@@ -1823,6 +1823,245 @@ describe('SessionController transcript authority', () => {
     });
     held.resolve(snapshot({ as_of_seq: 12 }));
     await waitFor(() => !controller.getState().resyncing && !controller.getState().resyncFailed);
+    controller.close();
+  });
+
+  it('enters rewrite hold while a normal resync is in flight and reruns the queued rewrite', async () => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      seq: 1,
+      snapshot: {
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't-overlap',
+            ordinal: 1,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'Keep me until the queued rewrite baseline arrives.',
+            steps: [],
+          },
+        ],
+        tasks: [],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        meta: {},
+      },
+    }));
+
+    const ordinary = deferred<SessionSnapshotResponse>();
+    const rewrite = deferred<SessionSnapshotResponse>();
+    client.snapshot.mockReturnValueOnce(ordinary.promise).mockReturnValueOnce(rewrite.promise);
+    void controller.resync();
+    await waitFor(() => controller.getState().resyncing);
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.ops',
+      agent_id: 'main',
+      seq: 2,
+      ops: [{ op: 'items.remove', ids: ['t-overlap'] }],
+    }));
+    void controller.resync({ rewrite: true });
+    flushAll();
+    expect(controller.getState().blocks.find((block) => block.kind === 'user')).toMatchObject({
+      text: 'Keep me until the queued rewrite baseline arrives.',
+    });
+
+    ordinary.resolve(snapshot({ as_of_seq: 11 }));
+    await waitFor(() => client.snapshot.mock.calls.length === 3);
+    expect(controller.getState().resyncing).toBe(true);
+    rewrite.resolve(snapshot({ as_of_seq: 12 }));
+    await waitFor(() => !controller.getState().resyncing && !controller.getState().resyncFailed);
+    expect(client.snapshot).toHaveBeenCalledTimes(3);
+
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      seq: 3,
+      snapshot: {
+        items: [],
+        tasks: [],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        meta: {},
+      },
+    }));
+    expect(controller.getState().blocks).toEqual([]);
+    controller.close();
+  });
+
+  it('only releases a rewrite hold for a main reset from the held socket generation', async () => {
+    const { controller, client, socket, flushAll } = await openTranscriptController();
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      seq: 1,
+      snapshot: {
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't-generation',
+            ordinal: 1,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'Generation-bound user body.',
+            steps: [],
+          },
+        ],
+        tasks: [],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        meta: {},
+      },
+    }));
+    Object.assign(socket, { connectionGeneration: 7 });
+    void controller.resync({ rewrite: true });
+    await waitFor(() => client.snapshot.mock.calls.length === 2);
+    await waitFor(() => !controller.getState().resyncing);
+
+    const emptySnapshot = {
+      items: [],
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [],
+      meta: {},
+    };
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.reset',
+      agent_id: 'child-1',
+      seq: 1,
+      snapshot: emptySnapshot,
+    }), 7);
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      seq: 2,
+      snapshot: emptySnapshot,
+    }), 6);
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.ops',
+      agent_id: 'main',
+      seq: 3,
+      ops: [{ op: 'items.remove', ids: ['t-generation'] }],
+    }), 7);
+    flushAll();
+    expect(controller.getState().blocks.find((block) => block.kind === 'user')).toMatchObject({
+      text: 'Generation-bound user body.',
+    });
+
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      seq: 4,
+      snapshot: emptySnapshot,
+    }), 7);
+    expect(controller.getState().blocks).toEqual([]);
+    controller.close();
+  });
+
+  it('falls back to a hard resync when the rewrite snapshot succeeds without a main reset', async () => {
+    const { controller, client, socket, flushAll } = await openTranscriptController({
+      rewriteResetTimeoutMs: 20,
+    });
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      seq: 1,
+      snapshot: {
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't-timeout',
+            ordinal: 1,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'Release me through hard recovery.',
+            steps: [],
+          },
+        ],
+        tasks: [],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        meta: {},
+      },
+    }));
+
+    void controller.resync({ rewrite: true });
+    await waitFor(() => client.snapshot.mock.calls.length >= 3);
+    await waitFor(() => socket.restartGeneration.mock.calls.length === 1);
+    await waitFor(() => !controller.getState().resyncing && !controller.getState().resyncFailed);
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.ops',
+      agent_id: 'main',
+      seq: 2,
+      ops: [{ op: 'items.remove', ids: ['t-timeout'] }],
+    }));
+    flushAll();
+    expect(controller.getState().blocks.find((block) => block.kind === 'user')).toBeUndefined();
+    controller.close();
+  });
+
+  it('hard resyncs when the rewrite subscription is rejected', async () => {
+    const { controller, client, socket } = await openTranscriptController();
+    Object.assign(socket, { connectionGeneration: 9 });
+    void controller.resync({ rewrite: true });
+    await waitFor(() => client.snapshot.mock.calls.length === 2);
+    await waitFor(() => !controller.getState().resyncing);
+    controller.handleSubscribeRejected(9);
+    await waitFor(() => socket.restartGeneration.mock.calls.length === 1);
+    await waitFor(() => client.snapshot.mock.calls.length === 3);
+    await waitFor(() => !controller.getState().resyncing && !controller.getState().resyncFailed);
+    controller.close();
+  });
+
+  it('releases deferred removals when the rewrite snapshot seed fails', async () => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      seq: 1,
+      snapshot: {
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't-seed-failure',
+            ordinal: 1,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'Seed failure body.',
+            steps: [],
+          },
+        ],
+        tasks: [],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        meta: {},
+      },
+    }));
+    client.snapshot.mockRejectedValueOnce(new Error('snapshot seed failed'));
+    void controller.resync({ rewrite: true });
+    await waitFor(() => controller.getState().resyncFailed);
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.ops',
+      agent_id: 'main',
+      seq: 2,
+      ops: [{ op: 'items.remove', ids: ['t-seed-failure'] }],
+    }));
+    flushAll();
+    expect(controller.getState().blocks.find((block) => block.kind === 'user')).toBeUndefined();
     controller.close();
   });
 
