@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   APIConnectionError,
+  APIProviderOverloadedError,
   APIProviderRateLimitError,
   APIStatusError,
 } from '#/kosong/contract/errors';
@@ -206,13 +207,13 @@ describe('stepRetry plugin', () => {
     ]);
   });
 
-  it('clamps an excessive provider retry-after to the 60s cap', async () => {
+  it('clamps an excessive relay retry-after to the 60s cap', async () => {
     vi.useFakeTimers();
     let calls = 0;
     ctx = createTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
-        if (calls === 1) throw new APIProviderRateLimitError('origin overloaded', null, 120_000);
+        if (calls === 1) throw new APIProviderOverloadedError(503, 'relay overloaded', null, 120_000);
         return {
           id: 'clamped-retry-after-response',
           message: {
@@ -432,5 +433,11 @@ describe('readRetryAfterMs', () => {
     expect(readRetryAfterMs({ retryAfterMs: 120_000 })).toBe(MAX_RETRY_AFTER_MS);
     expect(readRetryAfterMs({ retryAfterMs: 0 })).toBeNull();
     expect(readRetryAfterMs(undefined)).toBeNull();
+  });
+
+  it('honors a real 429 retry-after verbatim instead of clamping', () => {
+    expect(readRetryAfterMs({ retryAfterMs: 600_000, statusCode: 429 })).toBe(600_000);
+    expect(readRetryAfterMs({ retryAfterMs: 120_000, statusCode: 502 })).toBe(MAX_RETRY_AFTER_MS);
+    expect(readRetryAfterMs({ retryAfterMs: 120_000, details: { statusCode: 429 } })).toBe(120_000);
   });
 });

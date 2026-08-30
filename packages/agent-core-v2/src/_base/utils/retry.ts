@@ -10,7 +10,9 @@ const JITTER_FACTOR = 0.25;
  * Cap on a provider-supplied retry-after. Overloaded relays advertise
  * 60–120s waits they recover from in seconds; honoring them verbatim
  * turns one flaky step into minutes of dead air, so probe again sooner
- * and let the attempt budget bound the total wait instead.
+ * and let the attempt budget bound the total wait instead. A real 429
+ * keeps the provider's value untouched: its Retry-After is a hard
+ * rate-limit directive, not a relay hint.
  */
 export const MAX_RETRY_AFTER_MS = 60_000;
 
@@ -37,7 +39,8 @@ export function retryBackoffDelays(maxAttempts: number): number[] {
 export function readRetryAfterMs(error: unknown): number | null {
   if (typeof error !== 'object' || error === null) return null;
   const value = (error as { retryAfterMs?: unknown }).retryAfterMs;
-  return typeof value === 'number' && value > 0 ? Math.min(value, MAX_RETRY_AFTER_MS) : null;
+  if (typeof value !== 'number' || value <= 0) return null;
+  return maybeStatusCode(error) === 429 ? value : Math.min(value, MAX_RETRY_AFTER_MS);
 }
 
 export async function sleepForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
