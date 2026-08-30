@@ -21,6 +21,7 @@ import {
   type ConversationPhase,
   type ConversationSeat,
 } from './ConversationShell';
+import type { DraftSkillHandoff } from './NewSessionDraft';
 import { QueueStrip } from './QueueStrip';
 import { RightRail } from './RightRail';
 import { SelectionQuoteButton } from './SelectionQuoteButton';
@@ -618,6 +619,79 @@ export function resolveSessionSeatPhase(input: {
   return !input.loaded && !input.hasInitialPrompt ? 'settling' : 'active';
 }
 
+interface SessionCreateHandoff {
+  readonly initialPrompt?: string;
+  readonly initialAttachments?: readonly ComposerAttachment[];
+  readonly initialSkill?: DraftSkillHandoff;
+  readonly model?: string;
+  readonly thinking?: string;
+  readonly permissionMode?: PermissionMode;
+  readonly planMode?: boolean;
+  readonly swarmMode?: boolean;
+  readonly goalObjective?: string;
+}
+
+export type SessionCreateSubmission =
+  | {
+      readonly kind: 'prompt';
+      readonly text: string;
+      readonly attachments: readonly ComposerAttachment[];
+    }
+  | {
+      readonly kind: 'skill';
+      readonly name: string;
+      readonly args: string;
+      readonly attachments: readonly ComposerAttachment[];
+    };
+
+function isDraftSkillHandoff(value: unknown): value is DraftSkillHandoff {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as { name?: unknown; args?: unknown; attachments?: unknown };
+  return (
+    typeof candidate.name === 'string' &&
+    candidate.name !== '' &&
+    typeof candidate.args === 'string' &&
+    Array.isArray(candidate.attachments)
+  );
+}
+
+/** Parse the one-shot /new → /s/:id navigation state. */
+export function parseSessionCreateHandoff(state: unknown): SessionCreateHandoff {
+  if (typeof state !== 'object' || state === null) return {};
+  const raw = state as SessionCreateHandoff;
+  return {
+    initialPrompt: typeof raw.initialPrompt === 'string' ? raw.initialPrompt : undefined,
+    initialAttachments: Array.isArray(raw.initialAttachments) ? raw.initialAttachments : undefined,
+    initialSkill: isDraftSkillHandoff(raw.initialSkill) ? raw.initialSkill : undefined,
+    model: raw.model,
+    thinking: raw.thinking,
+    permissionMode: raw.permissionMode,
+    planMode: raw.planMode,
+    swarmMode: raw.swarmMode,
+    goalObjective: raw.goalObjective,
+  };
+}
+
+/** Resolve the one action consumed after the new session snapshot lands. */
+export function resolveSessionCreateSubmission(
+  handoff: SessionCreateHandoff,
+): SessionCreateSubmission | undefined {
+  if (handoff.initialSkill !== undefined) {
+    return {
+      kind: 'skill',
+      name: handoff.initialSkill.name,
+      args: handoff.initialSkill.args,
+      attachments: handoff.initialSkill.attachments,
+    };
+  }
+  if (handoff.initialPrompt === undefined) return undefined;
+  return {
+    kind: 'prompt',
+    text: handoff.initialPrompt,
+    attachments: handoff.initialAttachments ?? [],
+  };
+}
+
 export function resolveControlledFlag(
   override: boolean | undefined,
   storeValue: boolean,
@@ -950,20 +1024,10 @@ export function SessionView({
   sessionIdRef.current = sessionId;
   // Throttle for the ambiguous y/n hint (epoch ms of the last toast).
   const lastAmbiguityToastRef = useRef(0);
-  const initialPromptRef = useRef(
-    (location.state as { initialPrompt?: string } | null)?.initialPrompt,
-  );
-  const initialOptionsRef = useRef(
-    (location.state as {
-      model?: string;
-      thinking?: string;
-      permissionMode?: PermissionMode;
-      planMode?: boolean;
-      swarmMode?: boolean;
-      goalObjective?: string;
-      initialAttachments?: ComposerAttachment[];
-    } | null) ?? {},
-  );
+  const createHandoff = parseSessionCreateHandoff(location.state);
+  const initialPromptRef = useRef(createHandoff.initialPrompt);
+  const initialSkillRef = useRef(createHandoff.initialSkill);
+  const initialOptionsRef = useRef(createHandoff);
   const liveSettings = useSyncExternalStore(
     subscribeSettings,
     settingsSnapshot,
@@ -1018,7 +1082,11 @@ export function SessionView({
   const [confirmClearQueue, setConfirmClearQueue] = useState(false);
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>(
-    () => initialOptionsRef.current.initialAttachments ?? restoredComposer.attachments ?? [],
+    () =>
+      initialOptionsRef.current.initialSkill?.attachments ??
+      initialOptionsRef.current.initialAttachments ??
+      restoredComposer.attachments ??
+      [],
   );
   // Transcript text quoted into the composer via the floating selection
   // button. The route keys this component by session id, so the quote resets
@@ -1877,32 +1945,44 @@ export function SessionView({
   const queuedItems = useMemo(() => queuedPromptPreviews(state), [state]);
   const handleRetryLoad = useCallback(() => void controller?.retryOpen(), [controller]);
 
-  // Submit the prompt that was drafted on /new, now that the live controller is
-  // subscribed and will receive the stream.
+  // Submit the prompt or skill that was drafted on /new, now that the live
+  // controller is subscribed and will receive the stream.
   useEffect(() => {
     if (
       controller === null ||
       actions === null ||
       !state.loaded ||
       state.resyncing ||
-      state.resyncFailed ||
-      initialPromptRef.current === undefined
+      state.resyncFailed
     ) {
       return;
     }
-    const text = initialPromptRef.current;
-    const initialAttachments = initialOptionsRef.current.initialAttachments ?? [];
+    const submission = resolveSessionCreateSubmission({
+      ...initialOptionsRef.current,
+      initialPrompt: initialPromptRef.current,
+      initialSkill: initialSkillRef.current,
+    });
+    if (submission === undefined) return;
+    initialSkillRef.current = undefined;
     initialPromptRef.current = undefined;
     initialOptionsRef.current = {};
     // Fire-and-forget: strip the one-shot nav state from history so a refresh
-    // doesn't resend the drafted prompt.
+    // doesn't resend the drafted prompt or re-activate the skill.
     void navigate(location.pathname, { replace: true });
+    if (submission.kind === 'skill') {
+      const recovery = `/${submission.name}${submission.args === '' ? '' : ` ${submission.args}`}`;
+      writeDraft(sessionId, recovery);
+      setDraft(recovery);
+      setAttachments(submission.attachments);
+      actions.activateSkill(submission.name, submission.args, submission.attachments);
+      return;
+    }
     // Seed the session draft first: if this send fails, the text stays
     // recoverable in the composer (and in localStorage across reloads).
-    writeDraft(sessionId, text);
-    setDraft(text);
-    setAttachments(initialAttachments);
-    actions.send(text, initialAttachments);
+    writeDraft(sessionId, submission.text);
+    setDraft(submission.text);
+    setAttachments(submission.attachments);
+    actions.send(submission.text, submission.attachments);
   }, [controller, actions, state.loaded, state.resyncing, state.resyncFailed, location.pathname, navigate, sessionId]);
 
   // Desktop approval notification: if the window is hidden or blurred, nudge
@@ -1974,12 +2054,13 @@ export function SessionView({
   const seat = useMemo<ConversationSeat>(() => ({
     phase:
       selectedAgentId === undefined
-        ? // initialPromptRef is a mount-time constant until the auto-send
-          // consumes it post-load — safe to read here, and `state.loaded`
-          // covers the reactive edge.
+        ? // initialPromptRef / initialSkillRef are mount-time constants until
+          // the auto-send consumes them post-load — safe to read here, and
+          // `state.loaded` covers the reactive edge.
           resolveSessionSeatPhase({
             loaded: state.loaded,
-            hasInitialPrompt: initialPromptRef.current !== undefined,
+            hasInitialPrompt:
+              initialPromptRef.current !== undefined || initialSkillRef.current !== undefined,
           })
         : 'active',
     composer:

@@ -715,4 +715,39 @@ describe('Composer slash skill catalog', () => {
     expect(listWorkspaceSkills).not.toHaveBeenCalled();
     expect(container.querySelector('[data-composer-hints]')?.textContent).toContain('/ for shortcuts');
   });
+
+  it('activates a workspace skill through onActivateSkill instead of sending prompt text', async () => {
+    listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
+    const onActivateSkill = vi.fn();
+    const onSend = vi.fn();
+    const { container } = await renderComposer({
+      value: '/review --fix',
+      workspaceId: 'wd_fixture_0123456789ab',
+      onActivateSkill,
+      onSend,
+    });
+    for (let index = 0; index < 8; index += 1) await settle();
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(onActivateSkill).toHaveBeenCalledWith('review', '--fix', []);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('sends a slash skill as prompt text when onActivateSkill is omitted', async () => {
+    listWorkspaceSkills.mockResolvedValue({ skills: [workspaceSkill] });
+    const onSend = vi.fn();
+    const { container } = await renderComposer({
+      value: '/review --fix',
+      workspaceId: 'wd_fixture_0123456789ab',
+      onSend,
+    });
+    for (let index = 0; index < 8; index += 1) await settle();
+    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(onSend).toHaveBeenCalledWith('/review --fix', []);
+  });
 });

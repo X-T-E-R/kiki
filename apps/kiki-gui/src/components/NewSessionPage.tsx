@@ -210,6 +210,7 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
           onChangeGoalControl={() => {}}
           onChangeEffort={state.setEffortOverride}
           onSend={state.send}
+          onActivateSkill={state.activateSkill}
           />
         </ContextBreakdownProvider>
       ),
@@ -245,6 +246,7 @@ export function NewSessionPage({ onToggleSidebar }: { onToggleSidebar: () => voi
       state.setGoalObjective,
       state.setEffortOverride,
       state.send,
+      state.activateSkill,
       t,
     ],
   );

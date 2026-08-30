@@ -2,7 +2,9 @@
  * NewSessionDraft — the workspace/cwd picker state behind the /new full-page
  * draft, the only new-session surface. The hook owns draft persistence
  * (`lib/drafts.ts` key "new"), model/permission state, and the
- * create-then-navigate send path.
+ * create-then-navigate send path. A slash skill on /new rides the same
+ * navigation as a first prompt (`initialSkill`); SessionView activates it
+ * after the live controller subscribes.
  *
  * The /new page does not render the Composer here: it registers this state
  * into the conversation shell's composer seat (see NewSessionPage), so the
@@ -34,6 +36,13 @@ import {
 import { useConnection } from '../state/connection';
 
 const DRAFT_KEY = 'new';
+
+/** One-shot skill activation carried across the /new → /s/:id navigation. */
+export interface DraftSkillHandoff {
+  readonly name: string;
+  readonly args: string;
+  readonly attachments: readonly ComposerAttachment[];
+}
 
 /**
  * Basic absolute-path check for the free-text cwd field, across platforms:
@@ -206,10 +215,13 @@ export function useNewSessionDraft({
     goalObjective,
   };
 
-  const send = useCallback((text: string, composerAttachments: readonly ComposerAttachment[]) => {
+  const createThenNavigate = useCallback((handoff: {
+    initialPrompt?: string;
+    initialAttachments?: readonly ComposerAttachment[];
+    initialSkill?: DraftSkillHandoff;
+  }) => {
     const context = sendContextRef.current;
     if (context.busy) return;
-    if (buildPromptContent(text, composerAttachments) === null) return;
     const trimmedCwd = context.cwd.trim();
     // A free-text cwd must be an absolute path — a relative one would be
     // resolved against the server's own cwd and silently land elsewhere.
@@ -239,8 +251,9 @@ export function useNewSessionDraft({
         // navigation is fire-and-forget here (the catch below covers createSession).
         void navigate(`/s/${session.id}`, {
           state: {
-            initialPrompt: text.trim(),
-            initialAttachments: composerAttachments,
+            initialPrompt: handoff.initialPrompt,
+            initialAttachments: handoff.initialAttachments,
+            initialSkill: handoff.initialSkill,
             model: context.modelOverride,
             thinking: context.effectiveEffort,
             permissionMode: context.permissionMode,
@@ -256,6 +269,24 @@ export function useNewSessionDraft({
         setError(error instanceof Error ? error.message : String(error));
       });
   }, [client, navigate, t]);
+
+  const send = useCallback((text: string, composerAttachments: readonly ComposerAttachment[]) => {
+    if (buildPromptContent(text, composerAttachments) === null) return;
+    createThenNavigate({
+      initialPrompt: text.trim(),
+      initialAttachments: composerAttachments,
+    });
+  }, [createThenNavigate]);
+
+  const activateSkill = useCallback((
+    name: string,
+    args: string,
+    composerAttachments: readonly ComposerAttachment[],
+  ) => {
+    createThenNavigate({
+      initialSkill: { name, args, attachments: composerAttachments },
+    });
+  }, [createThenNavigate]);
 
   const selectWorkspace = useCallback((nextId: string) => {
     setWorkspaceId(nextId);
@@ -322,6 +353,7 @@ export function useNewSessionDraft({
     setAgentProfile,
     setEffortOverride,
     send,
+    activateSkill,
   };
 }
 

@@ -46,7 +46,9 @@ import {
   resolveControlledValue,
   resolveProfileSwitchSubmission,
   sessionHasStartedConversation,
+  parseSessionCreateHandoff,
   replaceQueuedPrompt,
+  resolveSessionCreateSubmission,
   resolveSessionSeatPhase,
   SessionRouteView,
   shouldClearModeOverride,
@@ -288,6 +290,63 @@ describe('conversation shell phase (session side)', () => {
     // The session is known blank-about-to-run: no hidden-seat settle beat.
     expect(resolveSessionSeatPhase({ loaded: false, hasInitialPrompt: true })).toBe('active');
     expect(resolveSessionSeatPhase({ loaded: true, hasInitialPrompt: true })).toBe('active');
+  });
+});
+
+describe('parseSessionCreateHandoff', () => {
+  it('reads a skill activation from the /new navigation state', () => {
+    const attachments = [{ kind: 'file' as const, path: 'note.md', name: 'note.md', isDir: false }];
+    expect(
+      parseSessionCreateHandoff({
+        initialSkill: { name: 'review', args: '--fix', attachments },
+        permissionMode: 'auto',
+      }),
+    ).toEqual({
+      initialPrompt: undefined,
+      initialAttachments: undefined,
+      initialSkill: { name: 'review', args: '--fix', attachments },
+      model: undefined,
+      thinking: undefined,
+      permissionMode: 'auto',
+      planMode: undefined,
+      swarmMode: undefined,
+      goalObjective: undefined,
+    });
+  });
+
+  it('ignores a malformed skill payload and empty location state', () => {
+    expect(parseSessionCreateHandoff({ initialSkill: { name: 'review' } }).initialSkill).toBeUndefined();
+    expect(parseSessionCreateHandoff(null)).toEqual({});
+  });
+
+  it('keeps a first-prompt handoff without inventing a skill', () => {
+    const parsed = parseSessionCreateHandoff({
+      initialPrompt: 'hello',
+      initialAttachments: [],
+    });
+    expect(parsed.initialPrompt).toBe('hello');
+    expect(parsed.initialAttachments).toEqual([]);
+    expect(parsed.initialSkill).toBeUndefined();
+  });
+
+  it('resolves a skill as the single post-snapshot action with its attachments', () => {
+    const attachments = [{ kind: 'file' as const, path: 'note.md', name: 'note.md', isDir: false }];
+    expect(
+      resolveSessionCreateSubmission({
+        initialPrompt: 'must not also send',
+        initialAttachments: [],
+        initialSkill: { name: 'review', args: '--fix', attachments },
+      }),
+    ).toEqual({ kind: 'skill', name: 'review', args: '--fix', attachments });
+  });
+
+  it('resolves the legacy first prompt and defaults its attachments', () => {
+    expect(resolveSessionCreateSubmission({ initialPrompt: 'hello' })).toEqual({
+      kind: 'prompt',
+      text: 'hello',
+      attachments: [],
+    });
+    expect(resolveSessionCreateSubmission({})).toBeUndefined();
   });
 });
 
@@ -1098,7 +1157,7 @@ describe('canonical SessionView product gates', () => {
     expect(html).toContain('data-row-action="regenerate"');
     expect(html).toContain('data-turn-tail');
     expect(html.includes('from subagent') || html.includes('子代理')).toBe(true);
-    expect(html).toContain('data-steer');
+    expect(html).not.toContain('data-steer');
     expect(html).toContain('data-shell');
   });
 });
