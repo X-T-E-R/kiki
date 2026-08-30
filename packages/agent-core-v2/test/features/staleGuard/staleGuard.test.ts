@@ -209,6 +209,16 @@ describe('StaleGuardService', () => {
     ]);
   });
 
+  it('does not dispatch another durable record when the mtime is unchanged', async () => {
+    activeFs = stubFs({ mtimeMs: 111 });
+
+    await runDidExecute(hooks, { name: 'Read', accesses: ToolAccesses.readFile('/tmp/a.txt') });
+    await runDidExecute(hooks, { name: 'Read', accesses: ToolAccesses.readFile('/tmp/a.txt') });
+
+    expect(freshness.recordedMtimeMs('/tmp/a.txt')).toBe(111);
+    expect(records).toHaveLength(1);
+  });
+
   it('does not record when the read failed', async () => {
     activeFs = stubFs({ mtimeMs: 111 });
 

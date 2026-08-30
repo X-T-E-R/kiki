@@ -8,16 +8,11 @@ import { IBashParserService } from '#/app/bashParser/bashParser';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import type { AgentsMdReminderShownEvent } from '#/app/telemetry/events';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
-import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { normalizeUserPath } from '#/tool/path-access';
 import {
   AGENTS_MD_PLAIN_NAMES,
-  agentsMdCandidatePaths,
-  dirsRootToLeaf,
-  findAgentsMdInDir,
-  findProjectRoot,
   extractAgentsMdPathsFromSystemPrompt,
   loadAgentsMdDetailed,
 } from '#/agent/profile/context';
@@ -29,6 +24,7 @@ import type { ToolDidExecuteContext } from '#/agent/toolExecutor/toolHooks';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import { IAgentAgentsMdReminderService } from './agentsMdReminder';
+import { IAgentsMdDiscoveryService } from './agentsMdDiscoveryService';
 import { extractBashTargetDirs } from './bashTargets';
 
 const AGENTS_MD_BASENAMES: ReadonlySet<string> = new Set<string>(AGENTS_MD_PLAIN_NAMES);
@@ -60,11 +56,12 @@ export class AgentAgentsMdReminderService
     @IAgentStateService private readonly states: IAgentStateService,
     @ISessionContext private readonly sessionContext: ISessionContext,
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
+    @IAgentsMdDiscoveryService private readonly discovery: IAgentsMdDiscoveryService,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IBashParserService private readonly bashParser: IBashParserService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
-      @IAgentStateService private readonly agentState: IAgentStateService,
+    @IAgentStateService private readonly agentState: IAgentStateService,
   ) {
     super();
     this.states.contributeState(agentsMdReminderKnownKey);
@@ -123,6 +120,7 @@ export class AgentAgentsMdReminderService
     if (ctx.outcome !== 'executed') return;
     const discovered: string[] = [];
     try {
+      this.invalidateWrittenInstruction(ctx);
       await this.ensureSeeded();
       const { dirs, selfKnown } = this.targetDirs(ctx);
       const selfKnownSet = new Set(selfKnown);
@@ -234,43 +232,68 @@ export class AgentAgentsMdReminderService
     return { dirs: [...new Set(dirs)], selfKnown: [...new Set(selfKnown)] };
   }
 
-  private async probeDir(dir: string): Promise<string[]> {
-    const lease = this.runtime.acquire(['fs']);
+  private invalidateWrittenInstruction(ctx: ToolDidExecuteContext): void {
+    if (
+      ctx.result.isError === true ||
+      (ctx.toolCall.name !== 'Edit' && ctx.toolCall.name !== 'Write')
+    ) {
+      return;
+    }
+    const lease = this.runtime.acquire();
     try {
-      const fs = lease.runtime.fs!;
-      const anchor = await this.nearestExistingDir(fs, dir);
-      if (anchor === undefined) return [];
-      const deps = { fs };
-      const projectRoot = await findProjectRoot(deps, anchor);
-      const chain = dirsRootToLeaf(anchor, projectRoot);
-      const found: string[] = [];
-      for (const chainDir of chain) {
-        const candidates = agentsMdCandidatePaths(chainDir);
-        if (candidates.every((candidate) => this.known.has(normalize(candidate)))) continue;
-        for (const path of await findAgentsMdInDir(deps, chainDir)) {
-          found.push(normalize(path));
+      const pathClass = lease.runtime.environment.pathClass;
+      for (const access of ctx.accesses ?? []) {
+        if (
+          access.kind !== 'file' ||
+          (access.operation !== 'write' && access.operation !== 'readwrite')
+        ) {
+          continue;
         }
+        const directory = instructionProbeDirectory(access.path, pathClass);
+        if (directory !== undefined) this.discovery.invalidate(lease.runtime, directory);
       }
-      return found;
     } finally {
       lease.dispose();
     }
   }
 
-  private async nearestExistingDir(fs: IHostFileSystem, path: string): Promise<string | undefined> {
-    let current = path;
-    for (;;) {
-      const stat = await fs.stat(current).catch(() => undefined);
-      if (stat?.isDirectory === true) return current;
-      const parent = dirname(current);
-      if (parent === current) return undefined;
-      current = parent;
+  private async probeDir(dir: string): Promise<string[]> {
+    const lease = this.runtime.acquire(['fs']);
+    try {
+      return [...(await this.discovery.discover(lease, dir))];
+    } finally {
+      lease.dispose();
     }
   }
 }
 
 function hostPath(path: string, pathClass: 'posix' | 'win32'): string {
   return normalize(normalizeUserPath(path, pathClass));
+}
+
+function instructionProbeDirectory(
+  path: string,
+  pathClass: 'posix' | 'win32',
+): string | undefined {
+  const normalized = normalize(path);
+  const name = basename(normalized);
+  const comparableName = pathClass === 'win32' ? name.toLowerCase() : name;
+  if (
+    !AGENTS_MD_PLAIN_NAMES.some((candidate) =>
+      pathClass === 'win32'
+        ? candidate.toLowerCase() === comparableName
+        : candidate === comparableName,
+    )
+  ) {
+    return undefined;
+  }
+  const parent = dirname(normalized);
+  const parentName = basename(parent);
+  const isDotKimi =
+    pathClass === 'win32'
+      ? parentName.toLowerCase() === '.kimi-code'
+      : parentName === '.kimi-code';
+  return isDotKimi ? dirname(parent) : parent;
 }
 
 function stringArg(args: unknown, key: string): string | undefined {

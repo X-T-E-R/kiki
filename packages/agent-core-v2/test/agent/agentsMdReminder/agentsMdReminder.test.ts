@@ -4,6 +4,7 @@ import { join, normalize, basename, dirname } from 'pathe';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { Emitter } from '#/_base/event';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
 import { IBashParserService } from '#/app/bashParser/bashParser';
@@ -13,7 +14,11 @@ import type { ToolCall } from '#/kosong/contract/message';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem, type HostFileStat } from '#/os/interface/hostFileSystem';
-import type { RuntimeLease } from '#/runtime/runtime';
+import type {
+  HostFsChange,
+  IHostFsWatchService,
+} from '#/os/interface/hostFsWatch';
+import type { Runtime, RuntimeLease } from '#/runtime/runtime';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import {
@@ -48,6 +53,10 @@ import { OrderedHookSlot } from '#/hooks';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import type { ToolDidExecuteContext } from '#/agent/toolExecutor/toolHooks';
 import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
+import {
+  AgentsMdDiscoveryService,
+  IAgentsMdDiscoveryService,
+} from '#/agent/agentsMdReminder/agentsMdDiscoveryService';
 import { AgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminderService';
 import { extractBashTargetDirs } from '#/agent/agentsMdReminder/bashTargets';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
@@ -93,6 +102,9 @@ function createHarness(
     readonly telemetry?: ITelemetryService;
     readonly cwd?: string;
     readonly hostFs?: IHostFileSystem;
+    readonly hostWatch?: IHostFsWatchService;
+    readonly runtime?: Runtime;
+    readonly discovery?: IAgentsMdDiscoveryService;
     readonly pathClass?: 'posix' | 'win32';
     readonly restoredProfile?: {
       readonly systemPrompt: string;
@@ -159,40 +171,22 @@ function createHarness(
         scope: (sub?: string): string =>
           sub ? `sessions/workspace-1/session-1/${sub}` : 'sessions/workspace-1/session-1',
       } satisfies ISessionContext);
-      const hostFs = options.hostFs ?? new HostFileSystem();
-      const hostEnvironment = {
+      const hostFs = options.hostFs ?? options.runtime?.fs ?? new HostFileSystem();
+      const hostEnvironment = (options.runtime?.environment ?? {
         _serviceBrand: undefined,
         homeDir,
         pathClass: options.pathClass ?? 'posix',
-      } as unknown as IHostEnvironment;
+      }) as IHostEnvironment;
+      const runtime = options.runtime ?? testRuntime(hostFs, hostEnvironment, options.hostWatch);
       reg.defineInstance(IHostFileSystem, hostFs);
       reg.defineInstance(IHostEnvironment, hostEnvironment);
       reg.defineInstance(IAgentRuntimeService, {
         _serviceBrand: undefined,
         onDidChange: () => ({ dispose: () => {} }),
         isAvailable: () => true,
-        inspect() { return this.acquire().runtime; },
+        inspect: () => runtime,
         acquire: (): RuntimeLease => ({
-          runtime: {
-            identity: { workspaceId: 'workspace-1', runtimeId: 'local', generation: 'test' },
-            capabilities: new Set(['fs', 'watch', 'process', 'terminal']),
-            environment: hostEnvironment,
-            path: {
-              separator: options.pathClass === 'win32' ? '\\' : '/',
-              delimiter: options.pathClass === 'win32' ? ';' : ':',
-              isAbsolute: (path: string) => path.startsWith('/') || /^[A-Za-z]:[\\\\]/.test(path),
-              join,
-              relative: (from: string, to: string) => normalize(to).replace(`${normalize(from)}/`, ''),
-              resolve: (...paths: readonly string[]) => normalize(join(...paths)),
-              basename: (path: string) => basename(path),
-              dirname: (path: string) => dirname(path),
-            },
-            workspace: { mapRoots: (roots) => roots },
-            fs: hostFs,
-            status: 'ready',
-            onDidChangeStatus: () => ({ dispose: () => {} }),
-            dispose: () => {},
-          },
+          runtime,
           track: (resource) => resource,
           dispose: () => {},
         }),
@@ -206,6 +200,11 @@ function createHarness(
         reg.defineInstance(IAgentLoopService, stubLoopWithHooks());
         reg.define(IAgentToolDedupeService, AgentToolDedupeService);
       }
+      if (options.discovery === undefined) {
+        reg.define(IAgentsMdDiscoveryService, AgentsMdDiscoveryService);
+      } else {
+        reg.defineInstance(IAgentsMdDiscoveryService, options.discovery);
+      }
       reg.define(IAgentAgentsMdReminderService, AgentAgentsMdReminderService);
     },
     strict: true,
@@ -213,6 +212,34 @@ function createHarness(
   const reminder = ix.get(IAgentAgentsMdReminderService);
   const dispatcher = ix.get(IEventDispatcher);
   return { ix, events, reminder, dispatcher, telemetryEvents, reminders };
+}
+
+function testRuntime(
+  hostFs: IHostFileSystem,
+  environment: IHostEnvironment,
+  watch?: IHostFsWatchService,
+): Runtime {
+  return {
+    identity: { workspaceId: 'workspace-1', runtimeId: 'local', generation: 'test' },
+    capabilities: new Set(watch === undefined ? ['fs'] : ['fs', 'watch']),
+    environment,
+    path: {
+      separator: environment.pathClass === 'win32' ? '\\' : '/',
+      delimiter: environment.pathClass === 'win32' ? ';' : ':',
+      isAbsolute: (path: string) => path.startsWith('/') || /^[A-Za-z]:[\\\\]/.test(path),
+      join,
+      relative: (from: string, to: string) => normalize(to).replace(`${normalize(from)}/`, ''),
+      resolve: (...paths: readonly string[]) => normalize(join(...paths)),
+      basename: (path: string) => basename(path),
+      dirname: (path: string) => dirname(path),
+    },
+    workspace: { mapRoots: (roots) => roots },
+    fs: hostFs,
+    watch,
+    status: 'ready',
+    onDidChangeStatus: () => ({ dispose: () => {} }),
+    dispose: () => {},
+  } satisfies Runtime;
 }
 
 function didCtx(
@@ -250,8 +277,10 @@ function didCtx(
 function testAccesses(name: string, args: unknown): ToolAccessesType | undefined {
   if (typeof args !== 'object' || args === null) return undefined;
   const path = (args as Record<string, unknown>)['path'];
-  if (name === 'Read' || name === 'Edit' || name === 'Write') {
-    return typeof path === 'string' ? ToolAccesses.readFile(path) : undefined;
+  if (typeof path === 'string') {
+    if (name === 'Read') return ToolAccesses.readFile(path);
+    if (name === 'Edit') return ToolAccesses.readWriteFile(path);
+    if (name === 'Write') return ToolAccesses.writeFile(path);
   }
   if (name === 'Glob' || name === 'Grep') {
     return ToolAccesses.searchTree(typeof path === 'string' ? path : workDir);
@@ -282,6 +311,38 @@ async function writeAgentsMd(dir: string, content = 'instructions'): Promise<str
   const path = join(dir, 'AGENTS.md');
   await writeFile(path, content, 'utf-8');
   return normalize(path);
+}
+
+function watchHarness(): {
+  readonly service: IHostFsWatchService;
+  readonly paths: string[];
+  fire(watchPath: string, change: HostFsChange): void;
+} {
+  const emitters = new Map<string, Emitter<HostFsChange>>();
+  const paths: string[] = [];
+  return {
+    paths,
+    service: {
+      _serviceBrand: undefined,
+      watch: (path, options) => {
+        expect(options?.recursive).toBe(false);
+        const key = normalize(path);
+        paths.push(key);
+        const emitter = new Emitter<HostFsChange>();
+        emitters.set(key, emitter);
+        return {
+          ready: Promise.resolve(),
+          onDidChange: emitter.event,
+          dispose: () => emitter.dispose(),
+        };
+      },
+    },
+    fire: (watchPath, change) => {
+      const emitter = emitters.get(normalize(watchPath));
+      if (emitter === undefined) throw new Error(`path is not watched: ${watchPath}`);
+      emitter.fire(change);
+    },
+  };
 }
 
 describe('agentsMdReminder path-carrying tools', () => {
@@ -759,6 +820,142 @@ describe('agentsMdReminder probing boundaries', () => {
   });
 });
 
+describe('agentsMdReminder discovery cache', () => {
+  it('shares positive discovery facts while keeping reminder history agent-local', async () => {
+    const hostFs = new HostFileSystem();
+    const environment = {
+      _serviceBrand: undefined,
+      homeDir,
+      pathClass: 'posix',
+    } as unknown as IHostEnvironment;
+    const runtime = testRuntime(hostFs, environment);
+    const discovery = new AgentsMdDiscoveryService();
+    const first = createHarness({ hostFs, runtime, discovery });
+    const second = createHarness({ hostFs, runtime, discovery });
+    const subDir = join(workDir, 'packages', 'kap-server');
+    const agentsMd = await writeAgentsMd(subDir);
+    first.reminder.seedInjected([], workDir);
+    second.reminder.seedInjected([], workDir);
+    const readdir = vi.spyOn(hostFs, 'readdir');
+    const stat = vi.spyOn(hostFs, 'stat');
+    const readText = vi.spyOn(hostFs, 'readText');
+
+    await fire(first, didCtx('Read', { path: join(subDir, 'a.ts') }));
+    const afterFirst = [readdir.mock.calls.length, stat.mock.calls.length, readText.mock.calls.length];
+    await fire(second, didCtx('Read', { path: join(subDir, 'b.ts') }));
+
+    expect(afterFirst).toEqual([3, 5, 1]);
+    expect([readdir.mock.calls.length, stat.mock.calls.length, readText.mock.calls.length]).toEqual(
+      afterFirst,
+    );
+    expect(first.reminders).toHaveLength(1);
+    expect(second.reminders).toHaveLength(1);
+    expect(reminderText(second)).toContain(agentsMd);
+  });
+
+  it('negative-caches directories with no instruction files', async () => {
+    const hostFs = new HostFileSystem();
+    const h = createHarness({ hostFs });
+    const subDir = join(workDir, 'packages', 'empty');
+    await mkdir(subDir, { recursive: true });
+    h.reminder.seedInjected([], workDir);
+    const readdir = vi.spyOn(hostFs, 'readdir');
+    const stat = vi.spyOn(hostFs, 'stat');
+    const readText = vi.spyOn(hostFs, 'readText');
+
+    await fire(h, didCtx('Read', { path: join(subDir, 'a.ts') }));
+    const afterFirst = [readdir.mock.calls.length, stat.mock.calls.length, readText.mock.calls.length];
+    await fire(h, didCtx('Read', { path: join(subDir, 'b.ts') }));
+
+    expect([readdir.mock.calls.length, stat.mock.calls.length, readText.mock.calls.length]).toEqual(
+      afterFirst,
+    );
+    expect(h.reminders).toHaveLength(0);
+  });
+
+  it('single-flights concurrent probes of the same directory chain', async () => {
+    const hostFs = new HostFileSystem();
+    const h = createHarness({ hostFs });
+    const subDir = join(workDir, 'packages', 'kap-server');
+    await writeAgentsMd(subDir);
+    h.reminder.seedInjected([], workDir);
+    const readdir = vi.spyOn(hostFs, 'readdir');
+
+    await Promise.all([
+      fire(h, didCtx('Read', { path: join(subDir, 'a.ts') }, { id: 'cache-a' })),
+      fire(h, didCtx('Read', { path: join(subDir, 'b.ts') }, { id: 'cache-b' })),
+    ]);
+
+    expect(readdir).toHaveBeenCalledTimes(3);
+    expect([...new Set(readdir.mock.calls.map(([path]) => normalize(path)))]).toHaveLength(3);
+    expect(h.reminders).toHaveLength(1);
+  });
+
+  it('invalidates a negative cache entry from a directory watcher event', async () => {
+    const watch = watchHarness();
+    const h = createHarness({ hostWatch: watch.service });
+    const subDir = join(workDir, 'packages', 'kap-server');
+    await mkdir(subDir, { recursive: true });
+    h.reminder.seedInjected([], workDir);
+
+    await fire(h, didCtx('Read', { path: join(subDir, 'before.ts') }));
+    const agentsMd = await writeAgentsMd(subDir);
+    watch.fire(subDir, { path: agentsMd, action: 'created', kind: 'file' });
+    await fire(h, didCtx('Read', { path: join(subDir, 'after.ts') }));
+
+    expect(watch.paths).toContain(normalize(subDir));
+    expect(reminderText(h)).toContain(agentsMd);
+  });
+
+  it('explicitly invalidates the outer directory after writing .kimi-code/AGENTS.md', async () => {
+    const hostFs = new HostFileSystem();
+    const environment = {
+      _serviceBrand: undefined,
+      homeDir,
+      pathClass: 'posix',
+    } as unknown as IHostEnvironment;
+    const runtime = testRuntime(hostFs, environment);
+    const discovery = new AgentsMdDiscoveryService();
+    const writer = createHarness({ hostFs, runtime, discovery });
+    const reader = createHarness({ hostFs, runtime, discovery });
+    const subDir = join(workDir, 'packages', 'kap-server');
+    await mkdir(subDir, { recursive: true });
+    writer.reminder.seedInjected([], workDir);
+    reader.reminder.seedInjected([], workDir);
+    const readdir = vi.spyOn(hostFs, 'readdir');
+
+    await fire(writer, didCtx('Read', { path: join(subDir, 'before.ts') }));
+    const beforeWrite = readdir.mock.calls.length;
+    const agentsMd = await writeAgentsMd(join(subDir, '.kimi-code'));
+    await fire(writer, didCtx('Write', { path: agentsMd, content: 'instructions' }));
+    const afterWrite = readdir.mock.calls.length;
+    await fire(reader, didCtx('Read', { path: join(subDir, 'after.ts') }));
+
+    expect(afterWrite).toBeGreaterThan(beforeWrite);
+    expect(readdir).toHaveBeenCalledTimes(afterWrite);
+    expect(writer.reminders).toHaveLength(0);
+    expect(reminderText(reader)).toContain(agentsMd);
+  });
+
+  it('re-probes after the bounded TTL when watch is unavailable', async () => {
+    let now = 0;
+    const discovery = new AgentsMdDiscoveryService(10, () => now);
+    const h = createHarness({ discovery });
+    const subDir = join(workDir, 'packages', 'kap-server');
+    await mkdir(subDir, { recursive: true });
+    h.reminder.seedInjected([], workDir);
+
+    await fire(h, didCtx('Read', { path: join(subDir, 'before.ts') }));
+    const agentsMd = await writeAgentsMd(subDir);
+    await fire(h, didCtx('Read', { path: join(subDir, 'cached.ts') }));
+    expect(h.reminders).toHaveLength(0);
+
+    now = 11;
+    await fire(h, didCtx('Read', { path: join(subDir, 'expired.ts') }));
+    expect(reminderText(h)).toContain(agentsMd);
+  });
+});
+
 describe('agentsMdReminder round-2 hardening', () => {
   it('skips preflight-rejected calls entirely (no probing behind the path policy)', async () => {
     const h = createHarness();
@@ -1127,13 +1324,21 @@ describe('agentsMdReminder Windows Bash paths', () => {
     };
     const stat = vi.fn(async (path: string): Promise<HostFileStat> => {
       if (path === targetDir || path === join(projectRoot, '.git')) return directory;
+      if (path === agentsMdPath) return { isFile: true, isDirectory: false, size: 20 };
+      throw new Error(`missing: ${path}`);
+    });
+    const readdir = vi.fn(async (path: string) => {
+      if (path === targetDir) {
+        return [{ name: 'AGENTS.md', isFile: true, isDirectory: false }];
+      }
+      if (path === projectRoot || path === join(projectRoot, 'packages')) return [];
       throw new Error(`missing: ${path}`);
     });
     const readText = vi.fn(async (path: string): Promise<string> => {
       if (path === agentsMdPath) return 'windows instructions';
       throw new Error(`missing: ${path}`);
     });
-    return { stat, readText } as unknown as IHostFileSystem;
+    return { stat, readdir, readText } as unknown as IHostFileSystem;
   }
 
   it('converts Git Bash drive paths before probing the host filesystem', async () => {

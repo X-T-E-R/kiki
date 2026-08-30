@@ -120,7 +120,7 @@ export class StaleGuardService extends Disposable implements IStaleGuardService 
 
   private async recordCurrentMtime(path: string): Promise<void> {
     const stat = await this.statFile(path);
-    if (stat?.mtimeMs === undefined) return;
+    if (stat?.mtimeMs === undefined || this.recordedMtimeMs(path) === stat.mtimeMs) return;
     await this.dispatcher.dispatch(new StaleGuardRecorded({ path, mtimeMs: stat.mtimeMs }));
   }
 
