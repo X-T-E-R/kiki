@@ -1786,7 +1786,7 @@ describe('SessionController transcript authority', () => {
       type: 'transcript.reset',
       agent_id: 'main',
       has_more_older: false,
-      seq: 3,
+      cursor: { seq: 3, epoch: 'epoch-2' },
       snapshot: {
         items: [
           {
@@ -1880,7 +1880,7 @@ describe('SessionController transcript authority', () => {
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.reset',
       agent_id: 'main',
-      seq: 3,
+      cursor: { seq: 3, epoch: 'epoch-2' },
       snapshot: {
         items: [],
         tasks: [],
@@ -1895,12 +1895,12 @@ describe('SessionController transcript authority', () => {
     controller.close();
   });
 
-  it('only releases a rewrite hold for a main reset from the held socket generation', async () => {
+  it('keeps hold through an unrelated same-generation reset until the rewrite epoch changes', async () => {
     const { controller, client, socket, flushAll } = await openTranscriptController();
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.reset',
       agent_id: 'main',
-      seq: 1,
+      cursor: { seq: 1, epoch: 'epoch-before-rewrite' },
       snapshot: {
         items: [
           {
@@ -1926,6 +1926,25 @@ describe('SessionController transcript authority', () => {
     await waitFor(() => client.snapshot.mock.calls.length === 2);
     await waitFor(() => !controller.getState().resyncing);
 
+    const unrelatedSnapshot = {
+      items: [
+        {
+          kind: 'turn' as const,
+          turnId: 't-generation',
+          ordinal: 1,
+          state: 'completed' as const,
+          origin: { kind: 'user' as const },
+          prompt: 'Unrelated baseline still has the user body.',
+          steps: [],
+        },
+      ],
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [],
+      meta: {},
+    };
     const emptySnapshot = {
       items: [],
       tasks: [],
@@ -1937,20 +1956,14 @@ describe('SessionController transcript authority', () => {
     };
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.reset',
-      agent_id: 'child-1',
-      seq: 1,
-      snapshot: emptySnapshot,
-    }), 7);
-    controller.handleTranscript(asTranscriptEvent({
-      type: 'transcript.reset',
       agent_id: 'main',
-      seq: 2,
-      snapshot: emptySnapshot,
-    }), 6);
+      cursor: { seq: 2, epoch: 'epoch-before-rewrite' },
+      snapshot: unrelatedSnapshot,
+    }), 7);
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.ops',
       agent_id: 'main',
-      seq: 3,
+      cursor: { seq: 3, epoch: 'epoch-before-rewrite' },
       ops: [{ op: 'items.remove', ids: ['t-generation'] }],
     }), 7);
     flushAll();
@@ -1961,9 +1974,77 @@ describe('SessionController transcript authority', () => {
     controller.handleTranscript(asTranscriptEvent({
       type: 'transcript.reset',
       agent_id: 'main',
-      seq: 4,
+      cursor: { seq: 1, epoch: 'epoch-after-rewrite' },
       snapshot: emptySnapshot,
     }), 7);
+    expect(controller.getState().blocks).toEqual([]);
+    controller.close();
+  });
+
+  it('uses the armed rewrite subscription token when transcript epochs are unavailable', async () => {
+    const { controller, client, socket, flushAll } = await openTranscriptController();
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      cursor: { seq: 1 },
+      snapshot: {
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't-token',
+            ordinal: 1,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'Token-bound user body.',
+            steps: [],
+          },
+        ],
+        tasks: [],
+        interactions: [],
+        attachments: [],
+        todos: [],
+        prompts: [],
+        meta: {},
+      },
+    }));
+    Object.assign(socket, { connectionGeneration: 4 });
+    void controller.resync({ rewrite: true });
+    await waitFor(() => client.snapshot.mock.calls.length === 2);
+    await waitFor(() => !controller.getState().resyncing);
+    expect(socket.restartGeneration).toHaveBeenCalledTimes(1);
+
+    const emptySnapshot = {
+      items: [],
+      tasks: [],
+      interactions: [],
+      attachments: [],
+      todos: [],
+      prompts: [],
+      meta: {},
+    };
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      cursor: { seq: 2 },
+      snapshot: emptySnapshot,
+    }), 4);
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.ops',
+      agent_id: 'main',
+      cursor: { seq: 3 },
+      ops: [{ op: 'items.remove', ids: ['t-token'] }],
+    }), 5);
+    flushAll();
+    expect(controller.getState().blocks.find((block) => block.kind === 'user')).toMatchObject({
+      text: 'Token-bound user body.',
+    });
+
+    controller.handleTranscript(asTranscriptEvent({
+      type: 'transcript.reset',
+      agent_id: 'main',
+      cursor: { seq: 1 },
+      snapshot: emptySnapshot,
+    }), 5);
     expect(controller.getState().blocks).toEqual([]);
     controller.close();
   });
@@ -2018,8 +2099,9 @@ describe('SessionController transcript authority', () => {
     void controller.resync({ rewrite: true });
     await waitFor(() => client.snapshot.mock.calls.length === 2);
     await waitFor(() => !controller.getState().resyncing);
-    controller.handleSubscribeRejected(9);
     await waitFor(() => socket.restartGeneration.mock.calls.length === 1);
+    controller.handleSubscribeRejected(10);
+    await waitFor(() => socket.restartGeneration.mock.calls.length === 2);
     await waitFor(() => client.snapshot.mock.calls.length === 3);
     await waitFor(() => !controller.getState().resyncing && !controller.getState().resyncFailed);
     controller.close();

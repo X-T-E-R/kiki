@@ -80,7 +80,9 @@ interface PendingTranscriptBatch {
 
 interface RewriteHold {
   readonly token: number;
-  readonly generation: number | undefined;
+  readonly mainEpoch: string | undefined;
+  generation: number | undefined;
+  subscribeToken: number | undefined;
   readonly deferredBatches: PendingTranscriptBatch[];
   timer: ReturnType<typeof setTimeout> | null;
 }
@@ -323,19 +325,31 @@ export class SessionController {
     if (this.rewriteHold !== undefined) return;
     const token = (this.rewriteHoldToken += 1);
     const generation = this.socket.connectionGeneration;
+    const pendingMain = this.pendingTranscriptBatches.get(MAIN_AGENT_ID);
     const hold: RewriteHold = {
       token,
+      mainEpoch: (pendingMain?.cursor ?? this.transcriptCursors.get(MAIN_AGENT_ID))?.epoch,
       generation: Number.isInteger(generation) ? generation : undefined,
+      subscribeToken: undefined,
       deferredBatches: [],
       timer: null,
     };
-    const pendingMain = this.pendingTranscriptBatches.get(MAIN_AGENT_ID);
     if (pendingMain?.ops.some((op) => op.op === 'items.remove') === true) {
       this.pendingTranscriptBatches.delete(MAIN_AGENT_ID);
       hold.deferredBatches.push(pendingMain);
     }
     hold.timer = setTimeout(() => this.recoverRewriteHold(token), this.rewriteResetTimeoutMs);
     this.rewriteHold = hold;
+  }
+
+  private armRewriteSubscription(token: number): void {
+    const hold = this.rewriteHold;
+    if (hold === undefined || hold.token !== token) return;
+    hold.subscribeToken = token;
+    if (hold.mainEpoch !== undefined) return;
+    const generation = this.socket.connectionGeneration;
+    hold.generation = Number.isInteger(generation) ? generation + 1 : undefined;
+    this.socket.restartGeneration();
   }
 
   private clearRewriteHold(token?: number): void {
@@ -361,12 +375,20 @@ export class SessionController {
     return heldGeneration === undefined || generation === heldGeneration;
   }
 
+  private completesRewriteHold(hold: RewriteHold, cursor: TranscriptCursor): boolean {
+    if (hold.mainEpoch !== undefined) {
+      return cursor.epoch !== undefined && cursor.epoch !== hold.mainEpoch;
+    }
+    return hold.subscribeToken === hold.token;
+  }
+
   handleTranscript(event: TranscriptEvent, generation?: number): void {
     if (this.closed || event.session_id !== this.sessionId) return;
     const hold = this.rewriteHold;
     if (event.type === 'transcript.reset') {
       if (hold !== undefined && event.agent_id === MAIN_AGENT_ID) {
         if (!this.matchesRewriteGeneration(generation)) return;
+        if (!this.completesRewriteHold(hold, event.cursor)) return;
         this.clearRewriteHold(hold.token);
       }
       this.applyTranscriptReset(event.agent_id, event.snapshot, event.coverage, event.cursor);
@@ -495,6 +517,7 @@ export class SessionController {
         { seq: snapshot.as_of_seq, epoch: snapshot.epoch },
         this.transcriptGrades,
       );
+      if (rewriteHoldToken !== undefined) this.armRewriteSubscription(rewriteHoldToken);
     } catch {
       if (rewriteHoldToken !== undefined) this.clearRewriteHold(rewriteHoldToken);
       if (!this.closed) {
