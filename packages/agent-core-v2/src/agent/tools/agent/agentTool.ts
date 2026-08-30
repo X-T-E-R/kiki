@@ -446,6 +446,7 @@ export class SubagentTool implements ISubagentTool {
       let created: IAgentScopeHandle;
       try {
         const callerMeta = (await this.sessionMetadata.read()).agents?.[this.callerAgentId];
+        const requesterUserTools = requester.accessor.get(IAgentUserToolService);
         created = await this.lifecycle.create({
           binding: {
             profile: baseProfileName,
@@ -454,6 +455,7 @@ export class SubagentTool implements ISubagentTool {
             resolvedRoute: selection.route,
             model: binding.model,
             thinking: binding.thinking,
+            inheritedUserToolNames: requesterUserTools.list().map((tool) => tool.name),
             lease: target.lease,
             spawnPolicy: target.spawnPolicy,
           },

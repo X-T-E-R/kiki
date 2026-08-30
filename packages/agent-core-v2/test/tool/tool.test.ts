@@ -1362,6 +1362,11 @@ describe('AgentRun tool execution contract', () => {
       description: 'Use lookup',
     });
 
+    expect(lifecycle.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        binding: expect.objectContaining({ inheritedUserToolNames: [lookupTool.name] }),
+      }),
+    );
     expect(childUserTools.inheritUserTools).toHaveBeenCalledWith(parentUserTools);
   });
 

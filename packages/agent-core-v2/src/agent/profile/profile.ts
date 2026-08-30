@@ -132,6 +132,7 @@ export interface BindAgentInput {
   readonly model?: string;
   readonly thinking?: string;
   readonly strictThinking?: boolean;
+  readonly inheritedUserToolNames?: readonly string[];
   readonly delegationPosition?: 'main' | 'sub' | 'independent';
   readonly lease?: SubagentLease;
   readonly spawnPolicy?: SpawnConstraints;

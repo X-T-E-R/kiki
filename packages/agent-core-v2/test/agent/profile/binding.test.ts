@@ -1415,35 +1415,49 @@ describe('AgentProfileService tool-pattern warnings', () => {
     systemPrompt: () => 'tool pattern warning test',
   });
 
-  it('bind accepts a tool that the child will inherit from a parent agent', async () => {
-    const inheritedTool = {
-      name: 'ParentLookup',
-      description: 'Look up a parent-owned value.',
-      parameters: { type: 'object', properties: {} },
-    };
-    const parent = {
-      id: 'parent',
-      accessor: {
-        get: () => ({
-          _serviceBrand: undefined,
-          list: () => [inheritedTool],
-        }),
-      },
-    } as unknown as IAgentScopeHandle;
+  it('bind accepts a tool that the child will inherit from its delegator', async () => {
+    const inheritedToolName = 'ParentLookup';
     registerAgentProfile({
       name: 'inherits-parent-user-tool',
-      tools: [inheritedTool.name],
+      disallowedTools: [inheritedToolName],
       systemPrompt: () => 'inherit parent user tool',
     });
     ctx = createTestAgent(hostEnvironmentServices(homeDir));
-    vi.spyOn(ctx.get(IAgentLifecycleService), 'list').mockReturnValue([parent]);
 
     await expect(
       ctx.get(IAgentProfileService).bind({
         profile: 'inherits-parent-user-tool',
         model: MOCK_MODEL,
+        inheritedUserToolNames: [inheritedToolName],
       }),
     ).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ['sibling', 'SiblingLookup'],
+    ['unrelated child', 'UnrelatedChildLookup'],
+  ])('rejects a tool registered only on a %s agent', async (kind, toolName) => {
+    const other = {
+      id: kind,
+      accessor: {
+        get: () => ({
+          _serviceBrand: undefined,
+          list: () => [{ name: toolName, description: kind, parameters: {} }],
+        }),
+      },
+    } as unknown as IAgentScopeHandle;
+    const profileName = `does-not-inherit-${toolName}`;
+    registerAgentProfile({
+      name: profileName,
+      disallowedTools: [toolName],
+      systemPrompt: () => kind,
+    });
+    ctx = createTestAgent(hostEnvironmentServices(homeDir));
+    vi.spyOn(ctx.get(IAgentLifecycleService), 'list').mockReturnValue([other]);
+
+    await expect(
+      ctx.get(IAgentProfileService).bind({ profile: profileName, model: MOCK_MODEL }),
+    ).rejects.toThrow(new RegExp(`"${toolName}".*does not match any registered or built-in tool`));
   });
 
   it('rejects profile entries that can never activate anything', async () => {

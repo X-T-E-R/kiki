@@ -117,8 +117,6 @@ import {
   AgentToolContribution,
   getAgentToolContributions,
 } from '#/agent/toolRegistry/toolContribution';
-import { IAgentUserToolService } from '#/agent/userTool/userTool';
-import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import {
   profileActiveToolsKey,
   ConfigUpdate,
@@ -220,7 +218,6 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @ISessionToolPolicyGate private readonly toolPolicyGate: ISessionToolPolicyGate,
     @IAgentToolRegistryService private readonly toolRegistry: IAgentToolRegistryService,
     @AgentToolContribution private readonly toolContributions: CollectionView<AgentToolContribution>,
-    @IAgentLifecycleService private readonly agentLifecycle: IAgentLifecycleService,
     @IBuiltinAgentProfileLoader private readonly builtinProfiles: IBuiltinAgentProfileLoader,
     @IAgentStateService private readonly states: IAgentStateService,
     @IPluginService private readonly plugins: IPluginService,
@@ -538,7 +535,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       );
     }
 
-    this.assertProfileToolPatterns(profile);
+    this.assertProfileToolPatterns(profile, input.inheritedUserToolNames);
     this.activeProfile = profile;
     this.activeProfileDefinitionId = selection.baseProfile.definitionId;
     this.activeToolNamesOverlay = undefined;
@@ -1232,17 +1229,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     );
   }
 
-  private knownToolNames(): Set<string> {
-    const known = new Set<string>();
+  private knownToolNames(additionalNames?: readonly string[]): Set<string> {
+    const known = new Set(additionalNames);
     for (const contribution of getAgentToolContributions()) known.add(contribution.options.name);
     for (const contribution of this.toolContributions.items) known.add(contribution.options.name);
     for (const ref of this.toolRegistry.listReferences()) known.add(ref.name);
-    for (const agent of this.agentLifecycle.list()) {
-      if (agent.id === this.agentScope.agentId) continue;
-      for (const registration of agent.accessor.get(IAgentUserToolService).list()) {
-        known.add(registration.name);
-      }
-    }
     for (const builtin of this.builtinProfiles.list()) {
       for (const name of literalToolNames(builtin.tools ?? [])) {
         known.add(name);
@@ -1281,8 +1272,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return checks;
   }
 
-  private assertProfileToolPatterns(profile: ResolvedAgentProfile): void {
-    const known = this.knownToolNames();
+  private assertProfileToolPatterns(
+    profile: ResolvedAgentProfile,
+    inheritedUserToolNames?: readonly string[],
+  ): void {
+    const known = this.knownToolNames(inheritedUserToolNames);
     const issues: string[] = [];
     for (const { context, field, patterns } of this.profileToolPatternChecks(profile)) {
       if (patterns === undefined) continue;
