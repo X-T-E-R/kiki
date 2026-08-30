@@ -481,3 +481,62 @@ describe('ApprovalPanelComponent', () => {
     ]);
   });
 });
+
+describe('ApprovalPanelComponent external permission options', () => {
+  function makeExternalDialog() {
+    const responses: Array<{
+      response: string;
+      selected_option_id?: string | undefined;
+    }> = [];
+    const dialog = new ApprovalPanelComponent(
+      {
+        data: {
+          id: 'approval_ext',
+          tool_call_id: 'tool_ext',
+          tool_name: 'grok__bash',
+          action: 'run',
+          description: '',
+          display: [{ type: 'brief', text: 'Grok wants to run: pnpm test' }],
+          choices: [
+            { label: 'Allow once', response: 'approved', selected_option_id: 'opt-once' },
+            { label: 'Always allow pnpm', response: 'approved', selected_option_id: 'opt-always' },
+            { label: 'Reject', response: 'rejected', selected_option_id: 'opt-reject' },
+            { label: 'Cancel', response: 'cancelled' },
+          ],
+        },
+      },
+      (response) => responses.push(response),
+    );
+    return { dialog, responses };
+  }
+
+  it('renders the full option list with kind descriptions', () => {
+    const { dialog } = makeExternalDialog();
+    const out = strip(dialog.render(80).join('\n'));
+    expect(out).toContain('Grok wants to run: pnpm test');
+    expect(out).toContain('1. Allow once');
+    expect(out).toContain('2. Always allow pnpm');
+    expect(out).toContain('3. Reject');
+    expect(out).toContain('4. Cancel');
+  });
+
+  it('echoes the exact option id when a numbered option is chosen', () => {
+    const { dialog, responses } = makeExternalDialog();
+    dialog.handleInput('2');
+    expect(responses).toEqual([{ response: 'approved', selected_option_id: 'opt-always' }]);
+  });
+
+  it('arrow-down + enter picks the option under the cursor', () => {
+    const { dialog, responses } = makeExternalDialog();
+    dialog.handleInput('\x1b[B');
+    dialog.handleInput('\x1b[B');
+    dialog.handleInput('\r');
+    expect(responses).toEqual([{ response: 'rejected', selected_option_id: 'opt-reject' }]);
+  });
+
+  it('cancel carries no option id', () => {
+    const { dialog, responses } = makeExternalDialog();
+    dialog.handleInput('4');
+    expect(responses).toEqual([{ response: 'cancelled' }]);
+  });
+});
