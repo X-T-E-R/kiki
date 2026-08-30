@@ -21,9 +21,16 @@ export interface TranscriptWireAdapterLookups {
     | undefined;
 }
 
+interface PendingSteerMedia {
+  readonly kind: 'image' | 'video' | 'audio';
+  readonly source?: AttachmentSource;
+}
+
 interface PendingSteer {
   readonly promptId: string;
+  readonly explicitPromptId?: string;
   readonly text: string;
+  readonly media: readonly PendingSteerMedia[];
   readonly revision: number;
   readonly provenance: {
     readonly source: 'legacy-wire' | 'engine';
@@ -44,6 +51,7 @@ export class TranscriptWireAdapter {
   readonly #turnOwnedItemIds = new Map<string, string[]>();
   readonly #steeredMessageIds = new Set<string>();
   readonly #pendingSteers = new Map<string, PendingSteer[]>();
+  readonly #unpairedSteerCredits = new Map<string, number>();
   #goal: GoalMeta | undefined;
   #plan: { readonly reviewPath?: string; readonly version?: number } | undefined;
   #recordOrdinal = 0;
@@ -383,16 +391,18 @@ export class TranscriptWireAdapter {
   private turnSteer(record: TranscriptWireRecord, ordinal: number): TranscriptOperation[] {
     const turnId = turnIdOf(record['turnId'], this.#currentTurnId);
     if (turnId === undefined) return [];
-    const explicitPromptId = stringOf(record['promptId']);
-    if (explicitPromptId !== undefined) this.#steeredMessageIds.add(explicitPromptId);
     const input = arrayOf(record['input']);
     const text = input.map(textOfPart).join('');
-    if (text.length === 0) return [];
+    const media = mediaPartsOf(input);
+    if (text.length === 0 && media.length === 0) return [];
+    const explicitPromptId = stringOf(record['promptId']);
     const promptId = explicitPromptId ?? `legacy:v1:r${ordinal}:steer`;
     const pending = this.#pendingSteers.get(turnId);
     const steer: PendingSteer = {
       promptId,
+      explicitPromptId,
       text,
+      media,
       revision: numberOf(record['revision']) ?? 0,
       provenance: {
         source: explicitPromptId === undefined ? 'legacy-wire' : 'engine',
@@ -402,6 +412,9 @@ export class TranscriptWireAdapter {
     };
     if (pending === undefined) this.#pendingSteers.set(turnId, [steer]);
     else pending.push(steer);
+    if (explicitPromptId === undefined) {
+      this.#unpairedSteerCredits.set(turnId, (this.#unpairedSteerCredits.get(turnId) ?? 0) + 1);
+    }
     return [];
   }
 
@@ -409,24 +422,63 @@ export class TranscriptWireAdapter {
     const pending = this.#pendingSteers.get(turnId);
     if (pending === undefined || pending.length === 0) return [];
     this.#pendingSteers.delete(turnId);
-    return pending.map((steer): TranscriptOperation => ({
-      op: 'frame.upsert',
-      turnId,
-      stepId,
-      frame: {
-        kind: 'text',
-        frameId: steer.promptId,
-        part: {
-          partId: steer.promptId,
-          messageId: steer.promptId,
-          revision: steer.revision,
-          provenance: steer.provenance,
+    const operations: TranscriptOperation[] = [];
+    for (const steer of pending) {
+      if (steer.explicitPromptId !== undefined) this.#steeredMessageIds.add(steer.explicitPromptId);
+      const attachmentIds: string[] = [];
+      for (const media of steer.media) {
+        const attachmentId = `${steer.promptId}.att${attachmentIds.length + 1}`;
+        attachmentIds.push(attachmentId);
+        operations.push({
+          op: 'attachment.upsert',
+          attachment: {
+            attachmentId,
+            mediaType: `${media.kind}/*`,
+            source: media.source,
+            owner: { kind: 'frame', turnId, stepId, frameId: steer.promptId },
+          },
+        });
+      }
+      operations.push({
+        op: 'frame.upsert',
+        turnId,
+        stepId,
+        frame: {
+          kind: 'text',
+          frameId: steer.promptId,
+          part: {
+            partId: steer.promptId,
+            messageId: steer.promptId,
+            revision: steer.revision,
+            provenance: steer.provenance,
+          },
+          role: 'user',
+          text: steer.text,
+          origin: steer.origin,
+          attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
         },
-        role: 'user',
-        text: steer.text,
-        origin: steer.origin,
-      },
-    }));
+      });
+    }
+    return operations;
+  }
+
+  private consumeSteeredUserMessage(
+    messageId: string,
+    origin: Readonly<Record<string, unknown>> | undefined,
+  ): boolean {
+    if (this.#steeredMessageIds.has(messageId)) return true;
+    const turnId = this.#currentTurnId;
+    const pending = turnId === undefined ? undefined : this.#pendingSteers.get(turnId);
+    if (pending?.some((steer) => steer.explicitPromptId === messageId)) {
+      this.#steeredMessageIds.add(messageId);
+      return true;
+    }
+    if (turnId === undefined || !isVisibleLegacyTurnOrigin(this.agentId, origin)) return false;
+    const credits = this.#unpairedSteerCredits.get(turnId) ?? 0;
+    if (credits === 0) return false;
+    this.#unpairedSteerCredits.set(turnId, credits - 1);
+    this.#steeredMessageIds.add(messageId);
+    return true;
   }
 
   private legacyMessage(record: TranscriptWireRecord, ordinal: number): TranscriptOperation[] {
@@ -437,8 +489,8 @@ export class TranscriptWireAdapter {
     const content = arrayOf(message['content']);
     if (role === 'user') {
       if (messageId === this.#currentPromptId) return [];
-      if (this.#steeredMessageIds.delete(messageId)) return [];
       const origin = objectOf(message['origin']);
+      if (this.consumeSteeredUserMessage(messageId, origin)) return [];
       if (stringOf(origin?.['kind']) === 'injection') return this.legacyInjectedMessage(message, ordinal);
       const turnOrdinal = this.#legacyTurnOrdinal++;
       if (!isVisibleLegacyTurnOrigin(this.agentId, origin)) return [];
@@ -953,6 +1005,7 @@ export class TranscriptWireAdapter {
       this.#steps.delete(turnId);
       this.#stepUsages.delete(turnId);
       this.#pendingSteers.delete(turnId);
+      this.#unpairedSteerCredits.delete(turnId);
       for (const [toolCallId, tool] of this.#tools) {
         if (tool.turnId === turnId) this.#tools.delete(toolCallId);
       }
@@ -1132,6 +1185,15 @@ function mediaOf(value: Readonly<Record<string, unknown>> | undefined):
         ? { kind: 'url', url }
         : { kind: 'session_media', fileId: daemonRef },
   };
+}
+
+function mediaPartsOf(values: readonly unknown[]): PendingSteerMedia[] {
+  const media: PendingSteerMedia[] = [];
+  for (const value of values) {
+    const part = mediaOf(objectOf(value));
+    if (part !== undefined) media.push(part);
+  }
+  return media;
 }
 
 function textOfPart(value: unknown): string {

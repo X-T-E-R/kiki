@@ -1067,6 +1067,195 @@ describe('TranscriptWireAdapter', () => {
     expect(transcript.getTurn('t0')?.steps).toEqual([]);
   });
 
+  it('does not create a ghost turn when the paired append_message is replayed twice', () => {
+    const transcript = replay([
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'start' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 2_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 3_000,
+      },
+      {
+        type: 'turn.steer',
+        turnId: 0,
+        promptId: 'steer-1',
+        input: [{ type: 'text', text: 'steer this' }],
+        origin: { kind: 'user' },
+        time: 4_000,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          id: 'steer-1',
+          role: 'user',
+          content: [{ type: 'text', text: 'steer this' }],
+          origin: { kind: 'user' },
+        },
+        time: 4_100,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          id: 'steer-1',
+          role: 'user',
+          content: [{ type: 'text', text: 'steer this' }],
+          origin: { kind: 'user' },
+        },
+        time: 4_200,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 2, uuid: 'step-2' },
+        time: 5_000,
+      },
+    ]);
+    expect(
+      transcript.getItems().filter((item) => item.kind === 'turn').map((item) => item.turnId),
+    ).toEqual(['t0']);
+    expect(transcript.getTurn('t0')?.steps[1]?.frames[0]).toMatchObject({
+      frameId: 'steer-1',
+      role: 'user',
+      text: 'steer this',
+    });
+  });
+
+  it('pairs a promptId-less steer with the next compatible user append without a ghost turn', () => {
+    const transcript = replay([
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'start' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 2_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 3_000,
+      },
+      {
+        type: 'turn.steer',
+        turnId: 0,
+        input: [{ type: 'text', text: 'legacy steer' }],
+        origin: { kind: 'user' },
+        time: 4_000,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          id: 'steer-legacy',
+          role: 'user',
+          content: [{ type: 'text', text: 'legacy steer' }],
+          origin: { kind: 'user' },
+        },
+        time: 4_100,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          id: 'steer-legacy',
+          role: 'user',
+          content: [{ type: 'text', text: 'legacy steer' }],
+          origin: { kind: 'user' },
+        },
+        time: 4_200,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 2, uuid: 'step-2' },
+        time: 5_000,
+      },
+    ]);
+    expect(
+      transcript.getItems().filter((item) => item.kind === 'turn').map((item) => item.turnId),
+    ).toEqual(['t0']);
+    expect(transcript.getTurn('t0')?.steps[1]?.frames[0]).toMatchObject({
+      role: 'user',
+      text: 'legacy steer',
+    });
+  });
+
+  it('keeps media-only steer text and attachments on the next step', () => {
+    const coldRecords: TranscriptWireRecord[] = [
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        promptId: 'prompt-1',
+        input: [{ type: 'text', text: 'start' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 2_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.end', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 3_000,
+      },
+      {
+        type: 'turn.steer',
+        turnId: 0,
+        promptId: 'steer-1',
+        input: [{ type: 'image_url', imageUrl: { id: 'file-steer' } }],
+        origin: { kind: 'user' },
+        time: 4_000,
+      },
+      {
+        type: 'context.append_message',
+        message: {
+          id: 'steer-1',
+          role: 'user',
+          content: [{ type: 'image_url', imageUrl: { id: 'file-steer' } }],
+          origin: { kind: 'user' },
+        },
+        time: 4_100,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 2, uuid: 'step-2' },
+        time: 5_000,
+      },
+    ];
+    const liveRecords = coldRecords.filter((record) => record.type !== 'context.append_message');
+    const cold = replay(coldRecords);
+    const live = replay(liveRecords);
+    expect(cold.snapshot()).toEqual(live.snapshot());
+    expect(
+      cold.getItems().filter((item) => item.kind === 'turn').map((item) => item.turnId),
+    ).toEqual(['t0']);
+    expect(cold.getTurn('t0')?.steps[1]?.frames[0]).toMatchObject({
+      frameId: 'steer-1',
+      role: 'user',
+      text: '',
+      attachmentIds: ['steer-1.att1'],
+    });
+    expect(cold.getAttachment('steer-1.att1')).toMatchObject({
+      source: { kind: 'session_media', fileId: 'file-steer' },
+      owner: { kind: 'frame', turnId: 't0', stepId: 'step-2', frameId: 'steer-1' },
+    });
+  });
+
   it('updates known turns from turn.ended without materializing unknown turn ids', () => {
     const transcript = replay([
       { type: 'turn.prompt', turnId: 0, input: [{ type: 'text', text: 'run' }], origin: { kind: 'user' } },
