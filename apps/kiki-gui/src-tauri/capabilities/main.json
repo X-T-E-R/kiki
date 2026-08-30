@@ -15,6 +15,8 @@
     "notification:default",
     "dialog:allow-open",
     "dialog:allow-save",
+    "fs:allow-read-file",
+    "fs:allow-stat",
     "fs:allow-write-file"
   ]
 }
