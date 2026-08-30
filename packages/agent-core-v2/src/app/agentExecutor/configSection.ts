@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { isPlainObject } from '#/app/config/toml';
 import { registerConfigSection } from '#/app/config/configSectionContributions';
 
+import { BUILTIN_AGENT_EXECUTORS } from './builtinDescriptors';
+
 export const AGENT_EXECUTORS_SECTION = 'agentExecutors';
 
 export const AgentExecutorConfigSchema = z
@@ -10,11 +12,14 @@ export const AgentExecutorConfigSchema = z
     protocol: z.string().trim().min(1),
     command: z.string().trim().min(1),
     args: z.array(z.string()).default([]),
+    env: z.record(z.string(), z.string()).optional(),
     startupTimeoutMs: z.number().int().positive().optional(),
     shutdownGraceMs: z.number().int().nonnegative().optional(),
     modelBinding: z.string().trim().min(1).optional(),
+    modelArgs: z.array(z.string()).optional(),
     modelConfigCategory: z.string().trim().min(1).optional(),
     thoughtConfigCategory: z.string().trim().min(1).optional(),
+    revision: z.string().trim().min(1).optional(),
   })
   .strict();
 
@@ -30,6 +35,7 @@ const TOML_TO_RUNTIME = {
   startup_timeout_ms: 'startupTimeoutMs',
   shutdown_grace_ms: 'shutdownGraceMs',
   model_binding: 'modelBinding',
+  model_args: 'modelArgs',
   model_config_category: 'modelConfigCategory',
   thought_config_category: 'thoughtConfigCategory',
 } as const;
@@ -38,6 +44,7 @@ const RUNTIME_TO_TOML = {
   startupTimeoutMs: 'startup_timeout_ms',
   shutdownGraceMs: 'shutdown_grace_ms',
   modelBinding: 'model_binding',
+  modelArgs: 'model_args',
   modelConfigCategory: 'model_config_category',
   thoughtConfigCategory: 'thought_config_category',
 } as const;
@@ -83,7 +90,7 @@ export function agentExecutorsToToml(value: unknown): unknown {
 }
 
 registerConfigSection(AGENT_EXECUTORS_SECTION, AgentExecutorsConfigSchema, {
-  defaultValue: {},
+  defaultValue: BUILTIN_AGENT_EXECUTORS,
   fromToml: agentExecutorsFromToml,
   toToml: agentExecutorsToToml,
 });

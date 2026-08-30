@@ -53,6 +53,7 @@
     "gen:config-manifest": "tsx --import ../../build/register-raw-text-loader.mjs scripts/gen-config-manifest.mts",
     "gen:wire-manifest": "tsx --import ../../build/register-raw-text-loader.mjs scripts/gen-wire-manifest.mts",
     "gen:state-manifest": "tsx scripts/gen-state-manifest.mts",
+    "preflight:external-harnesses": "tsx --import ../../build/register-raw-text-loader.mjs scripts/external-harness-preflight.mts",
     "lint:imports": "node scripts/check-import-boundaries.mjs",
     "clean": "rm -rf dist"
   },

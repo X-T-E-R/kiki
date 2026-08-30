@@ -57,11 +57,14 @@
   # protocol: string
   # command: string
   # args: string[] (default: [])
+  # env: record<string, string>
   # startup_timeout_ms: integer
   # shutdown_grace_ms: integer
   # model_binding: string
+  # model_args: string[]
   # model_config_category: string
   # thought_config_category: string
+  # revision: string
 
 # ##########################################################################
 # agents

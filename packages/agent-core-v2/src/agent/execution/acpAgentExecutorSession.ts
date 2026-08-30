@@ -119,7 +119,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         {
           id: context.descriptor.id,
           command: requiredCommand(context),
-          args: context.descriptor.args,
+          args: resolveAcpProcessArgs(context),
+          env: context.descriptor.env === undefined ? undefined : { ...context.descriptor.env },
           startupTimeoutMs: context.descriptor.startupTimeoutMs,
           shutdownGraceMs: context.descriptor.shutdownGraceMs,
           clientName: 'kiki-agent-core-v2',
@@ -422,26 +423,27 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     signal: AbortSignal,
     losses: Set<ExecutorLossCode>,
   ): Promise<AcpOpenSessionResult> {
-    if (
-      this.context.descriptor.modelBinding !== undefined &&
-      this.context.descriptor.modelBinding !== 'session_config'
-    ) {
+    const modelBinding = this.context.descriptor.modelBinding ?? 'session_config';
+    if (modelBinding !== 'session_config' && modelBinding !== 'argv') {
       throw new Error2(
         ErrorCodes.CONFIG_INVALID,
-        `Unsupported ACP model binding "${this.context.descriptor.modelBinding}"`,
+        `Unsupported ACP model binding "${modelBinding}"`,
       );
     }
-    const model = selectConfig(
-      opened.configOptions,
-      this.context.descriptor.modelConfigCategory ?? 'model',
-      this.context.binding.modelAlias,
-      'model',
-    );
-    let configured = await this.#client.configureSession({
-      configOptions: [model.selection],
-      signal,
-    });
-    assertConfigured(configured.configOptions, model.selection, 'model');
+    let configured = opened;
+    if (modelBinding === 'session_config') {
+      const model = selectConfig(
+        opened.configOptions,
+        this.context.descriptor.modelConfigCategory ?? 'model',
+        this.context.binding.modelAlias,
+        'model',
+      );
+      configured = await this.#client.configureSession({
+        configOptions: [model.selection],
+        signal,
+      });
+      assertConfigured(configured.configOptions, model.selection, 'model');
+    }
 
     if (this.context.binding.thinkingLevel !== 'off') {
       const thought = selectConfig(
@@ -544,6 +546,36 @@ function requiredCommand(context: AgentExecutorContext): string {
     );
   }
   return command;
+}
+
+export function resolveAcpProcessArgs(context: AgentExecutorContext): readonly string[] {
+  if (context.descriptor.modelBinding !== 'argv') return context.descriptor.args;
+  const model = context.binding.modelAlias;
+  if (model === undefined || model.length === 0) {
+    throw new Error2(
+      ErrorCodes.MODEL_NOT_CONFIGURED,
+      `External executor "${context.descriptor.id}" requires a pinned argv model`,
+    );
+  }
+  const template = context.descriptor.modelArgs;
+  if (template === undefined || template.length === 0) {
+    throw new Error2(
+      ErrorCodes.CONFIG_INVALID,
+      `External executor "${context.descriptor.id}" has argv model binding without model_args`,
+    );
+  }
+  let replacements = 0;
+  const modelArgs = template.map((value) => value.replaceAll('{model}', () => {
+    replacements += 1;
+    return model;
+  }));
+  if (replacements !== 1) {
+    throw new Error2(
+      ErrorCodes.CONFIG_INVALID,
+      `External executor "${context.descriptor.id}" model_args must contain exactly one {model} placeholder`,
+    );
+  }
+  return [...modelArgs, ...context.descriptor.args];
 }
 
 function isTerminalTurnState(state: NonNullable<Turn['state']>): boolean {

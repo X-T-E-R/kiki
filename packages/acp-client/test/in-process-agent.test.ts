@@ -1,6 +1,7 @@
 import { client, methods } from '@agentclientprotocol/sdk';
 import { describe, expect, it } from 'vitest';
 
+import { sessionConfigOptionsFromResponse } from '../src/client';
 import { createInProcessScriptedAgent } from './fixtures/in-process-scripted-agent';
 
 describe('in-process scripted ACP agent fixture', () => {
@@ -66,6 +67,42 @@ describe('in-process scripted ACP agent fixture', () => {
     expect(history.cancelCount).toBe(1);
     connection.close();
     await connection.closed;
+  });
+
+  it('synthesizes Grok private session config as standard model and thought options', () => {
+    expect(sessionConfigOptionsFromResponse({
+      _meta: {
+        'x.ai/sessionConfig': {
+          options: [
+            { id: 'grok-4.6', category: 'model', label: 'Grok 4.6', selected: true },
+            { id: 'grok-4.5', category: 'model', label: 'Grok 4.5', selected: false },
+            { id: 'high', category: 'mode', label: 'High', selected: true },
+          ],
+        },
+      },
+    })).toEqual([
+      {
+        id: 'model',
+        name: 'Model',
+        category: 'model',
+        type: 'select',
+        currentValue: 'grok-4.6',
+        options: [
+          { value: 'grok-4.6', name: 'Grok 4.6', description: undefined },
+          { value: 'grok-4.5', name: 'Grok 4.5', description: undefined },
+        ],
+        _meta: { 'kiki.transport': 'session/set_model' },
+      },
+      {
+        id: 'reasoning_effort',
+        name: 'Reasoning effort',
+        category: 'thought_level',
+        type: 'select',
+        currentValue: 'high',
+        options: [{ value: 'high', name: 'High', description: undefined }],
+        _meta: { 'kiki.transport': 'session/set_model' },
+      },
+    ]);
   });
 
   it('scripts resume/load method-not-found and unknown-session failures', async () => {

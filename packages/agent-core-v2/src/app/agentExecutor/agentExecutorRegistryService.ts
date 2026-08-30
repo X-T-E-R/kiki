@@ -16,6 +16,7 @@ import {
   type ResolvedAgentExecutor,
   registeredAgentExecutorProviders,
 } from './agentExecutor';
+import { BUILTIN_AGENT_EXECUTORS } from './builtinDescriptors';
 import {
   AGENT_EXECUTORS_SECTION,
   type AgentExecutorConfig,
@@ -48,7 +49,7 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     if (id === 'native') return NATIVE_DESCRIPTOR;
     const entry = this.config.get<AgentExecutorsConfig | undefined>(
       AGENT_EXECUTORS_SECTION,
-    )?.[id];
+    )?.[id] ?? BUILTIN_AGENT_EXECUTORS[id];
     return entry === undefined ? undefined : descriptorFromConfig(id, entry);
   }
 
@@ -100,18 +101,22 @@ function descriptorFromConfig(
     protocol: config.protocol,
     command: config.command,
     args: [...config.args],
+    env: config.env,
     startupTimeoutMs: config.startupTimeoutMs,
     shutdownGraceMs: config.shutdownGraceMs,
     modelBinding: config.modelBinding,
+    modelArgs: config.modelArgs,
     modelConfigCategory: config.modelConfigCategory,
     thoughtConfigCategory: config.thoughtConfigCategory,
-    revision: JSON.stringify([
+    revision: config.revision ?? JSON.stringify([
       config.protocol,
       config.command,
       config.args,
+      config.env,
       config.startupTimeoutMs,
       config.shutdownGraceMs,
       config.modelBinding,
+      config.modelArgs,
       config.modelConfigCategory,
       config.thoughtConfigCategory,
     ]),

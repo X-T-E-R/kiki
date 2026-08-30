@@ -32,6 +32,7 @@ import type {
   AcpOpenSessionOptions,
   AcpOpenSessionResult,
   AcpProcessDescriptor,
+  AcpSessionConfigSelection,
   AcpSessionOpenMode,
   AcpTurnHandle,
   AcpTurnRequest,
@@ -324,25 +325,14 @@ export class AcpProcessClient {
     try {
       let configOptions = [...this.#openResult.configOptions];
       for (const selection of options.configOptions ?? []) {
-        const configRequest: SetSessionConfigOptionRequest =
-          typeof selection.value === 'boolean'
-            ? {
-                sessionId: this.#openResult.sessionId,
-                configId: selection.configId,
-                type: 'boolean',
-                value: selection.value,
-              }
-            : {
-                sessionId: this.#openResult.sessionId,
-                configId: selection.configId,
-                value: selection.value,
-              };
-        const response = await this.#requestDuringStartup(
-          connection.agent.request(methods.agent.session.setConfigOption, configRequest),
+        configOptions = await this.#configureSelection(
+          connection,
+          this.#openResult.sessionId,
+          configOptions,
+          selection,
           deadline,
           options.signal,
         );
-        configOptions = response.configOptions;
       }
       if (options.modeId !== undefined) {
         await this.#requestDuringStartup(
@@ -365,6 +355,65 @@ export class AcpProcessClient {
       }
       throw this.#decorateError(error, AcpClientErrorCode.SessionOpenFailed);
     }
+  }
+
+  async #configureSelection(
+    connection: ClientConnection,
+    sessionId: string,
+    configOptions: readonly SessionConfigOption[],
+    selection: AcpSessionConfigSelection,
+    deadline: number,
+    signal: AbortSignal | undefined,
+  ): Promise<SessionConfigOption[]> {
+    const option = configOptions.find((candidate) => candidate.id === selection.configId);
+    const transport = option?._meta?.['kiki.transport'];
+    if (transport === 'session/set_model') {
+      const modelOption = configOptions.find((candidate) =>
+        candidate.category === 'model' && candidate._meta?.['kiki.transport'] === transport);
+      const modelId = selection.configId === modelOption?.id
+        ? String(selection.value)
+        : typeof modelOption?.currentValue === 'string'
+          ? modelOption.currentValue
+          : undefined;
+      if (modelId === undefined) {
+        throw new AcpProtocolError('Synthetic session/set_model transport has no selected model');
+      }
+      await this.#requestDuringStartup(
+        connection.agent.request('session/set_model', {
+          sessionId,
+          modelId,
+          _meta: option?.category === 'thought_level'
+            ? { reasoningEffort: selection.value }
+            : undefined,
+        }),
+        deadline,
+        signal,
+      );
+      return configOptions.map((candidate) =>
+        candidate.id === selection.configId
+          ? { ...candidate, currentValue: selection.value } as SessionConfigOption
+          : candidate,
+      );
+    }
+    const configRequest: SetSessionConfigOptionRequest =
+      typeof selection.value === 'boolean'
+        ? {
+            sessionId,
+            configId: selection.configId,
+            type: 'boolean',
+            value: selection.value,
+          }
+        : {
+            sessionId,
+            configId: selection.configId,
+            value: selection.value,
+          };
+    const response = await this.#requestDuringStartup(
+      connection.agent.request(methods.agent.session.setConfigOption, configRequest),
+      deadline,
+      signal,
+    );
+    return response.configOptions;
   }
 
   async startTurn(
@@ -718,7 +767,7 @@ export class AcpProcessClient {
         return {
           sessionId: priorSessionId,
           mode: 'resume',
-          configOptions: response.configOptions ?? [],
+          configOptions: sessionConfigOptionsFromResponse(response),
         };
       } catch (error) {
         if (!isFallbackSessionError(error)) throw error;
@@ -739,7 +788,7 @@ export class AcpProcessClient {
         return {
           sessionId: priorSessionId,
           mode: 'load',
-          configOptions: response.configOptions ?? [],
+          configOptions: sessionConfigOptionsFromResponse(response),
         };
       } catch (error) {
         if (!isFallbackSessionError(error)) throw error;
@@ -755,7 +804,7 @@ export class AcpProcessClient {
     return {
       sessionId: response.sessionId,
       mode: 'new',
-      configOptions: response.configOptions ?? [],
+      configOptions: sessionConfigOptionsFromResponse(response),
     };
   }
 
@@ -976,4 +1025,52 @@ export class AcpProcessClient {
     this.#state = state;
     this.#options.onStateChange?.(this.status());
   }
+}
+
+export function sessionConfigOptionsFromResponse(value: unknown): SessionConfigOption[] {
+  const record = objectValue(value);
+  const standard = record?.['configOptions'];
+  if (Array.isArray(standard)) return standard as SessionConfigOption[];
+  const meta = objectValue(record?.['_meta']);
+  const sessionConfig = objectValue(meta?.['x.ai/sessionConfig']);
+  const rawOptions = sessionConfig?.['options'];
+  if (!Array.isArray(rawOptions)) return [];
+  const options: SessionConfigOption[] = [];
+  for (const raw of rawOptions) {
+    const item = objectValue(raw);
+    if (item === undefined) continue;
+    const valueId = item['id'];
+    const category = item['category'];
+    if (typeof valueId !== 'string' || (category !== 'model' && category !== 'mode')) continue;
+    const optionId = category === 'model' ? 'model' : 'reasoning_effort';
+    const existing = options.find((candidate) => candidate.id === optionId);
+    const choice = {
+      value: valueId,
+      name: typeof item['label'] === 'string' ? item['label'] : valueId,
+      description: typeof item['description'] === 'string' ? item['description'] : undefined,
+    };
+    if (existing === undefined) {
+      options.push({
+        id: optionId,
+        name: category === 'model' ? 'Model' : 'Reasoning effort',
+        category: category === 'model' ? 'model' : 'thought_level',
+        type: 'select',
+        currentValue: item['selected'] === true ? valueId : '',
+        options: [choice],
+        _meta: { 'kiki.transport': 'session/set_model' },
+      });
+      continue;
+    }
+    if (existing.type !== 'select') continue;
+    const directOptions = existing.options as Array<typeof choice>;
+    directOptions.push(choice);
+    if (item['selected'] === true) existing.currentValue = valueId;
+  }
+  return options;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }

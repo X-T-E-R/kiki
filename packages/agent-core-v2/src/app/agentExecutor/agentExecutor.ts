@@ -27,9 +27,11 @@ export interface AgentExecutorDescriptor {
   readonly protocol: AgentExecutorProtocol;
   readonly command?: string;
   readonly args: readonly string[];
+  readonly env?: Readonly<Record<string, string>>;
   readonly startupTimeoutMs?: number;
   readonly shutdownGraceMs?: number;
   readonly modelBinding?: string;
+  readonly modelArgs?: readonly string[];
   readonly modelConfigCategory?: string;
   readonly thoughtConfigCategory?: string;
   readonly revision: string;

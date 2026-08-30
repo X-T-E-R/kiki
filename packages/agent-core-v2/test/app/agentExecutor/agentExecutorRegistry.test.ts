@@ -116,28 +116,77 @@ describe('AgentExecutorRegistryService', () => {
   it('parses trusted snake-case descriptors and rejects unknown descriptor keys', () => {
     const parsed = AgentExecutorsConfigSchema.parse(
       agentExecutorsFromToml({
-        grok: {
+        cursor: {
           protocol: 'acp-v1',
-          command: 'grok',
-          args: ['agent', 'stdio'],
+          command: 'cursor-agent',
+          args: ['acp'],
+          env: { CURSOR_CONFIG_DIR: 'C:/cursor' },
           startup_timeout_ms: 70_000,
+          model_binding: 'argv',
+          model_args: ['--model', '{model}'],
+          revision: 'r1',
         },
       }),
     );
 
-    expect(parsed['grok']).toMatchObject({
+    expect(parsed['cursor']).toMatchObject({
       protocol: 'acp-v1',
-      command: 'grok',
-      args: ['agent', 'stdio'],
+      command: 'cursor-agent',
+      args: ['acp'],
+      env: { CURSOR_CONFIG_DIR: 'C:/cursor' },
       startupTimeoutMs: 70_000,
+      modelBinding: 'argv',
+      modelArgs: ['--model', '{model}'],
+      revision: 'r1',
     });
     expect(() => AgentExecutorsConfigSchema.parse({
-      grok: {
+      cursor: {
         protocol: 'acp-v1',
-        command: 'grok',
+        command: 'cursor-agent',
         args: [],
-        env: { SECRET: 'value' },
+        shell: true,
       },
     })).toThrow();
+  });
+
+  it('provides the seven trusted external harness descriptors by default', () => {
+    services.set(IConfigService, configWith({}));
+    services.set(
+      IAgentExecutorRegistry,
+      new SyncDescriptor(AgentExecutorRegistryService),
+    );
+    const registry = services.get(IAgentExecutorRegistry);
+
+    expect([
+      'grok-acp',
+      'codex-acp',
+      'cursor-acp',
+      'claude-acp',
+      'gemini-acp',
+      'kimi-acp',
+      'opencode-acp',
+    ].map((id) => registry.get(id)?.id)).toEqual([
+      'grok-acp',
+      'codex-acp',
+      'cursor-acp',
+      'claude-acp',
+      'gemini-acp',
+      'kimi-acp',
+      'opencode-acp',
+    ]);
+    expect(registry.get('grok-acp')).toMatchObject({
+      args: ['--no-auto-update', 'agent', 'stdio'],
+      startupTimeoutMs: 70_000,
+      revision: '2026-08-30.1',
+    });
+    expect(registry.get('codex-acp')).toMatchObject({
+      env: { DISABLE_MCP_CONFIG_FILTERING: 'true' },
+      startupTimeoutMs: 150_000,
+    });
+    expect(registry.get('cursor-acp')).toMatchObject({
+      args: ['acp'],
+      modelBinding: 'argv',
+      modelArgs: ['--model', '{model}'],
+    });
   });
 });

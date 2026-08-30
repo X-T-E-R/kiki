@@ -13,7 +13,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
-import { AcpAgentExecutorSession, buildHandoff } from '#/agent/execution/acpAgentExecutorSession';
+import {
+  AcpAgentExecutorSession,
+  buildHandoff,
+  resolveAcpProcessArgs,
+} from '#/agent/execution/acpAgentExecutorSession';
 import {
   ExecutorPlanUpdate,
   ExecutorRuntimeUpdate,
@@ -352,6 +356,36 @@ const mappingEvents: NormalizedExecutorEvent[] = [
 ];
 
 describe('ACP external executor', () => {
+  it('places a pinned argv model before the harness subcommand', () => {
+    const context = {
+      agent: {} as AgentExecutorContext['agent'],
+      descriptor: {
+        id: 'cursor-acp',
+        protocol: 'acp-v1',
+        command: 'cursor-agent',
+        args: ['acp'],
+        modelBinding: 'argv',
+        modelArgs: ['--model', '{model}'],
+        revision: 'r1',
+      },
+      binding: {
+        modelAlias: 'cursor-model',
+        thinkingLevel: 'off',
+        systemPrompt: 'prompt',
+      },
+    } satisfies AgentExecutorContext;
+
+    expect(resolveAcpProcessArgs(context)).toEqual([
+      '--model',
+      'cursor-model',
+      'acp',
+    ]);
+    expect(() => resolveAcpProcessArgs({
+      ...context,
+      binding: { ...context.binding, modelAlias: undefined },
+    })).toThrow(/requires a pinned argv model/);
+  });
+
   it('maps normalized events to live and canonical durable records with stable losses', async () => {
     const harness = createHarness({
       events: mappingEvents,
