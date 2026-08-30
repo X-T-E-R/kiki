@@ -380,7 +380,7 @@ export class AcpSession {
    * cancelled, stops forwarding approval / ask-user requests to the client,
    * and detaches the event subscriptions. Idempotent.
    */
-  dispose(): void {
+  async dispose(): Promise<void> {
     this.cancel();
     const driver = this.driver;
     if (driver !== undefined) {
@@ -389,7 +389,7 @@ export class AcpSession {
         driver.resolve({ stopReason: 'cancelled' });
       });
     }
-    this.interactionBridge.dispose();
+    await this.interactionBridge.dispose();
     for (const subscription of this.subscriptions.splice(0)) {
       subscription.dispose();
     }

@@ -172,7 +172,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     };
     const sessionOptions = this.#sessionOptions(options.signal);
     const opened = await this.#client.openSession(sessionOptions);
-    const losses = new Set<ExecutorLossCode>();
+    const losses = new Set<ExecutorLossCode>(['acp_no_step_boundaries']);
     const configured = await this.#configure(opened, options.signal, losses);
     const prior = this.#states.get(externalExecutorKey);
     const priorSessionId = sessionIdFromState(prior.sessionRef);
@@ -205,6 +205,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         protocol: this.context.descriptor.protocol,
         resumeMode,
         profileDelivery: 'first_prompt_preamble',
+        outboundPrompt: remotePrompt,
         initialLosses: [...losses],
       },
     );

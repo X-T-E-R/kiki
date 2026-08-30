@@ -17,6 +17,7 @@ export class SessionApprovalService implements ISessionApprovalService {
   constructor(@ISessionInteractionService private readonly interaction: ISessionInteractionService) {}
 
   request(req: ApprovalRequest): Promise<ApprovalResponse> {
+    if (!this.interaction.hasConsumer()) return Promise.resolve({ decision: 'cancelled' });
     return this.interaction.request<ApprovalRequest, ApprovalResponse>({
       id: requestId(req),
       kind: 'approval',

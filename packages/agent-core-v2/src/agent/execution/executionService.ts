@@ -187,22 +187,20 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
     executorId: string,
   ): AgentExecutorSession {
     const resolved = this.executors.resolve(executorId, binding.executorOptions);
-    if (
-      binding.executorProtocol !== undefined &&
-      binding.executorProtocol !== resolved.descriptor.protocol
-    ) {
+    if (binding.executorProtocol !== resolved.descriptor.protocol) {
       throw new Error2(
         ErrorCodes.CONFIG_INVALID,
-        `Executor protocol for "${executorId}" changed after the agent profile was bound`,
+        binding.executorProtocol === undefined
+          ? `Executor protocol for "${executorId}" is missing from the bound agent profile`
+          : `Executor protocol for "${executorId}" changed after the agent profile was bound`,
       );
     }
-    if (
-      binding.executorDescriptorRevision !== undefined &&
-      binding.executorDescriptorRevision !== resolved.descriptor.revision
-    ) {
+    if (binding.executorDescriptorRevision !== resolved.descriptor.revision) {
       throw new Error2(
         ErrorCodes.CONFIG_INVALID,
-        `Executor descriptor for "${executorId}" changed after the agent profile was bound`,
+        binding.executorDescriptorRevision === undefined
+          ? `Executor descriptor revision for "${executorId}" is missing from the bound agent profile`
+          : `Executor descriptor for "${executorId}" changed after the agent profile was bound`,
       );
     }
     if (resolved.provider === undefined) {

@@ -21,6 +21,7 @@ import {
   IAgentExecutorRegistry,
   type AgentExecutorDescriptor,
 } from '#/app/agentExecutor/agentExecutor';
+import { descriptorRevisionFromConfig } from '#/app/agentExecutor/agentExecutorRegistryService';
 import type { ToolCall } from '#/kosong/contract/message';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
@@ -182,14 +183,15 @@ function routedCatalog(
   };
 }
 
-function externalExecutorRegistry(): IAgentExecutorRegistry {
-  const descriptor: AgentExecutorDescriptor = {
+function externalExecutorRegistry(
+  descriptor: AgentExecutorDescriptor = {
     id: 'grok-acp',
     protocol: 'acp-v1',
     command: 'grok',
     args: ['agent', 'stdio'],
     revision: 'test-revision',
-  };
+  },
+): IAgentExecutorRegistry {
   return {
     _serviceBrand: undefined,
     get: (id) => id === 'native'
@@ -242,7 +244,15 @@ describe('AgentProfileService.bind', () => {
     return { ctx, profile: ctx.get(IAgentProfileService) };
   }
 
-  it('binds an external profile without consulting the native model catalog', async () => {
+  it('binds an external profile without persisting descriptor environment secrets', async () => {
+    const secret = 'sentinel-profile-secret';
+    const descriptorConfig = {
+      protocol: 'acp-v1',
+      command: 'grok',
+      args: ['agent', 'stdio'],
+      env: { HARNESS_TOKEN: secret },
+    };
+    const revision = descriptorRevisionFromConfig(descriptorConfig);
     const external = normalizeAgentProfile({
       name: 'grok-worker',
       executor: 'grok-acp',
@@ -264,22 +274,32 @@ describe('AgentProfileService.bind', () => {
       load: async () => {},
       reload: async () => {},
     };
+    const persistence = new InMemoryWireRecordPersistence();
     ctx = createTestAgent(
-      appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      { persistence },
+      appService(IAgentExecutorRegistry, externalExecutorRegistry({
+        id: 'grok-acp',
+        ...descriptorConfig,
+        revision,
+      })),
       sessionService(ISessionAgentProfileCatalog, catalog),
       hostEnvironmentServices(homeDir),
     );
     const svc = ctx.get(IAgentProfileService);
 
     await svc.bind({ profile: external.name, delegationPosition: 'sub' });
+    await ctx.get(IWireService).flush();
 
     expect(svc.data()).toMatchObject({
       executorId: 'grok-acp',
       executorProtocol: 'acp-v1',
       executorOptions: { mode: 'default' },
-      executorDescriptorRevision: 'test-revision',
+      executorDescriptorRevision: revision,
       modelAlias: 'grok-build',
     });
+    const profileRecords = persistence.records.filter((record) => record.type === 'profile.bind');
+    expect(profileRecords).toHaveLength(1);
+    expect(JSON.stringify(profileRecords)).not.toContain(secret);
     expect(() => svc.resolveModelContext()).toThrow(/unsupported for external executor/);
   });
 

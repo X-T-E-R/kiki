@@ -77,6 +77,30 @@ describe('AgentExecutorRegistryService', () => {
     );
   });
 
+  it('derives a stable one-way revision without exposing descriptor environment values', () => {
+    const secret = 'sentinel-super-secret-token';
+    const first = new AgentExecutorRegistryService(configWith({
+      secure: {
+        protocol: 'acp-v1',
+        command: 'secure-agent',
+        args: ['stdio'],
+        env: { TOKEN: secret, REGION: 'test' },
+      },
+    })).get('secure')!;
+    const reordered = new AgentExecutorRegistryService(configWith({
+      secure: {
+        protocol: 'acp-v1',
+        command: 'secure-agent',
+        args: ['stdio'],
+        env: { REGION: 'test', TOKEN: secret },
+      },
+    })).get('secure')!;
+
+    expect(first.revision).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.revision).toBe(reordered.revision);
+    expect(JSON.stringify({ revision: first.revision })).not.toContain(secret);
+  });
+
   it('delegates closed option validation to the protocol provider', () => {
     provider = registerAgentExecutorProvider({
       id: 'fake-acp',

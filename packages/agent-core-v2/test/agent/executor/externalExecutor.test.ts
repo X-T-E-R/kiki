@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import { AcpAgentExecutorProvider } from '#/agent/execution/acpAgentExecutorProvider';
 import {
   AcpAgentExecutorSession,
   buildHandoff,
@@ -25,6 +26,7 @@ import {
   ExecutorTurnMetadata,
   externalExecutorKey,
 } from '#/agent/execution/externalExecutorOps';
+import { ExternalTurnRecorder } from '#/agent/execution/externalTurnRecorder';
 import { TurnPrompt, turnKey } from '#/agent/loop/turnOps';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -124,6 +126,7 @@ function stateHarness(prior: {
 function createHarness(options: FakeHarnessOptions = {}) {
   const events: Event2[] = [];
   const loopEvents: unknown[] = [];
+  const appendedMessages: ContextMessage[] = [];
   const starts: AcpTurnRequest[] = [];
   const selections: Array<{ configId: string; value: string | boolean }> = [];
   const permissionDecisions: AcpPermissionDecision[] = [];
@@ -153,6 +156,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
   const contextMemory = {
     _serviceBrand: undefined,
     get: () => options.history ?? [],
+    append: (...messages: readonly ContextMessage[]) => appendedMessages.push(...messages),
     appendLoopEvent: (event: unknown) => loopEvents.push(event),
   } as unknown as IAgentContextMemoryService;
   const approval = {
@@ -312,6 +316,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     session,
     events,
     loopEvents,
+    appendedMessages,
     starts,
     selections,
     permissionDecisions,
@@ -356,6 +361,74 @@ const mappingEvents: NormalizedExecutorEvent[] = [
 ];
 
 describe('ACP external executor', () => {
+  it.each([
+    ['unknown key', { typo: true }],
+    ['approval bypass key', { always_approve: true }],
+    ['wrong value type', { mode: { unsafe: true } }],
+  ])('rejects %s in closed executor options', (_name, options) => {
+    expect(() => AcpAgentExecutorProvider.validateOptions(options)).toThrow();
+  });
+
+  it('accepts an empty closed executor options mapping', () => {
+    expect(AcpAgentExecutorProvider.validateOptions({})).toEqual({});
+  });
+
+  it('keeps the generic recorder free of ACP-specific losses and durable wording', async () => {
+    const loopEvents: unknown[] = [];
+    const dispatcher = {
+      _serviceBrand: undefined,
+      dispatch: async () => {},
+    } as unknown as IEventDispatcher;
+    const wire = {
+      _serviceBrand: undefined,
+      flush: async () => {},
+    } as unknown as IWireService;
+    const contextMemory = {
+      _serviceBrand: undefined,
+      get: () => [],
+      append: () => {},
+      appendLoopEvent: (event: unknown) => loopEvents.push(event),
+    } as unknown as IAgentContextMemoryService;
+    const services = new Map<unknown, unknown>([
+      [IEventDispatcher, dispatcher],
+      [IWireService, wire],
+      [IAgentContextMemoryService, contextMemory],
+    ]);
+    const recorder = new ExternalTurnRecorder(
+      {
+        id: 'generic-agent',
+        accessor: { get: (id) => services.get(id) as never },
+      },
+      1,
+      'generic-session',
+      {
+        executorId: 'generic-executor',
+        protocol: 'vendor-v2',
+        resumeMode: 'new',
+        profileDelivery: 'native',
+      },
+    );
+
+    await recorder.begin('work', { kind: 'user' });
+    await recorder.record({
+      type: 'tool.call',
+      toolCallId: 'tool-1',
+      title: 'Generic tool',
+      rawInput: {},
+    });
+    await recorder.record({
+      type: 'tool.update',
+      toolCallId: 'tool-1',
+      status: 'completed',
+      content: [{ type: 'content', content: { type: 'text', text: 'summary' } }],
+    });
+    await recorder.complete('end_turn');
+
+    expect(recorder.losses).not.toContain('acp_no_step_boundaries');
+    expect(JSON.stringify(loopEvents)).not.toContain('ACP');
+    expect(JSON.stringify(loopEvents)).toContain('external executor content');
+  });
+
   it('places a pinned argv model before the harness subcommand', () => {
     const context = {
       agent: {} as AgentExecutorContext['agent'],
@@ -384,6 +457,101 @@ describe('ACP external executor', () => {
       ...context,
       binding: { ...context.binding, modelAlias: undefined },
     })).toThrow(/requires a pinned argv model/);
+  });
+
+  it('suppresses an exact outbound prompt echo from external user frames', async () => {
+    const harness = createHarness({
+      mode: 'live',
+      prior: {
+        executorId: 'example-acp',
+        descriptorRevision: 'r1',
+        sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-2' } },
+        profileDeliveredSessionId: 'remote-2',
+      },
+      events: [{
+        type: 'message.delta',
+        role: 'user',
+        messageId: 'prompt-echo',
+        content: { type: 'text', text: 'work' },
+      }],
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    expect(harness.appendedMessages).toEqual([]);
+  });
+
+  it('persists non-echo external user frames as canonical external-origin messages', async () => {
+    const harness = createHarness({
+      mode: 'live',
+      prior: {
+        executorId: 'example-acp',
+        descriptorRevision: 'r1',
+        sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-2' } },
+        profileDeliveredSessionId: 'remote-2',
+      },
+      events: [{
+        type: 'message.delta',
+        role: 'user',
+        messageId: 'external-user-1',
+        content: { type: 'text', text: 'remote follow-up' },
+      }],
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+
+    expect(harness.appendedMessages).toEqual([expect.objectContaining({
+      role: 'user',
+      id: 'external-user-1',
+      content: [{ type: 'text', text: 'remote follow-up' }],
+      origin: { kind: 'system_trigger', name: 'external-executor:example-acp' },
+    })]);
+  });
+
+  it('preserves unkeyed external user frames with an attribution loss', async () => {
+    const harness = createHarness({
+      mode: 'live',
+      prior: {
+        executorId: 'example-acp',
+        descriptorRevision: 'r1',
+        sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-2' } },
+        profileDeliveredSessionId: 'remote-2',
+      },
+      events: [{
+        type: 'message.delta',
+        role: 'user',
+        content: { type: 'text', text: 'unkeyed remote follow-up' },
+      }],
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+
+    const run = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await run.completion;
+    const metadata = harness.events.find(
+      (event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata,
+    );
+
+    expect(harness.appendedMessages[0]).toMatchObject({
+      role: 'user',
+      content: [{ type: 'text', text: 'unkeyed remote follow-up' }],
+    });
+    expect(metadata?.losses).toEqual(expect.arrayContaining([
+      'message_id_missing',
+      'user_message_attribution_missing',
+    ]));
   });
 
   it('maps normalized events to live and canonical durable records with stable losses', async () => {

@@ -22,6 +22,8 @@
  *   services. The kernel's `respond` no-ops on an id that is no longer
  *   pending, so a late answer after a turn cancellation is safe.
  */
+import { randomUUID } from 'node:crypto';
+
 import type { Event, ToolInputDisplay } from '@moonshot-ai/protocol';
 
 import type {
@@ -102,6 +104,7 @@ interface UserToolInteractionPayload {
 export class SessionEventWiring {
   private readonly disposables: IDisposable[] = [];
   private readonly agentSubscriptions = new Map<string, IDisposable>();
+  private readonly interactionConsumerId = `node-sdk:${randomUUID()}`;
   /** Pending interactions already handed to the sink (the kernel re-fires the full pending set on every change). */
   private readonly bridgedInteractionIds = new Set<string>();
   private disposed = false;
@@ -111,6 +114,7 @@ export class SessionEventWiring {
     private readonly sink: SessionEventSink,
   ) {
     const interactions = session.accessor.get(ISessionInteractionService);
+    interactions.acquireConsumer(this.interactionConsumerId);
     this.disposables.push(
       interactions.onDidChangePending(() => {
         this.bridgeNewPendingInteractions();
@@ -133,6 +137,9 @@ export class SessionEventWiring {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.session.accessor
+      .get(ISessionInteractionService)
+      .releaseConsumer(this.interactionConsumerId);
     for (const disposable of this.disposables) {
       disposable.dispose();
     }

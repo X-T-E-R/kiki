@@ -2060,6 +2060,9 @@ export class AgentTestContext {
         }
         return interaction;
       },
+      acquireConsumer: () => {},
+      releaseConsumer: () => {},
+      hasConsumer: () => true,
       respond: (id, response) => {
         pending.delete(id);
         this.resolvePendingRpc('toolCall', id, response);

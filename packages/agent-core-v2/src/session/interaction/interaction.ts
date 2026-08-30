@@ -37,6 +37,9 @@ export interface ISessionInteractionService {
 
   request<TPayload, TResponse>(req: InteractionRequest<TPayload>): Promise<TResponse>;
   enqueue<TPayload>(req: InteractionRequest<TPayload>): Interaction;
+  acquireConsumer(id: string): void;
+  releaseConsumer(id: string): void;
+  hasConsumer(): boolean;
   respond(id: string, response: unknown): void;
   listPending(kind?: InteractionKind): readonly Interaction[];
   isRecentlyResolved(id: string): boolean;

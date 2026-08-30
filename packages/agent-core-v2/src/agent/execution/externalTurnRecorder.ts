@@ -82,11 +82,17 @@ export interface ExternalTurnRecorderMetadata {
   readonly protocol: string;
   readonly resumeMode: ExecutorResumeMode;
   readonly profileDelivery: ExecutorProfileDelivery;
+  readonly outboundPrompt?: string;
   readonly initialLosses?: readonly ExecutorLossCode[];
 }
 
 interface Segment {
   readonly kind: 'text' | 'think';
+  readonly messageId?: string;
+  text: string;
+}
+
+interface UserSegment {
   readonly messageId?: string;
   text: string;
 }
@@ -111,6 +117,7 @@ export class ExternalTurnRecorder {
   readonly #wire: IWireService;
   readonly #context: IAgentContextMemoryService;
   readonly #segments: Segment[] = [];
+  readonly #userSegments: UserSegment[] = [];
   readonly #tools = new Map<string, RecordedTool>();
   #partOrdinal = 0;
   #ended = false;
@@ -126,7 +133,6 @@ export class ExternalTurnRecorder {
     this.#dispatcher = agent.accessor.get(IEventDispatcher);
     this.#wire = agent.accessor.get(IWireService);
     this.#context = agent.accessor.get(IAgentContextMemoryService);
-    this.losses.add('acp_no_step_boundaries');
     for (const loss of metadata.initialLosses ?? []) this.losses.add(loss);
   }
 
@@ -234,7 +240,10 @@ export class ExternalTurnRecorder {
   async #messageDelta(
     event: Extract<ExternalExecutorEvent, { type: 'message.delta' }>,
   ): Promise<void> {
-    if (event.role === 'user') return;
+    if (event.role === 'user') {
+      this.#userDelta(event);
+      return;
+    }
     if (event.content.type !== 'text') {
       this.losses.add('unknown_update_dropped');
       return;
@@ -271,6 +280,23 @@ export class ExternalTurnRecorder {
         delta: event.content.text,
       }),
     );
+  }
+
+  #userDelta(event: Extract<ExternalExecutorEvent, { type: 'message.delta' }>): void {
+    if (this.metadata.outboundPrompt === undefined) {
+      this.losses.add('user_message_attribution_missing');
+    }
+    if (event.messageId === undefined) {
+      this.losses.add('message_id_missing');
+      this.losses.add('user_message_attribution_missing');
+    }
+    const text = externalContentText(event.content);
+    const current = this.#userSegments.at(-1);
+    if (current !== undefined && current.messageId === event.messageId) {
+      current.text += text;
+      return;
+    }
+    this.#userSegments.push({ messageId: event.messageId, text });
   }
 
   #appendSegment(kind: Segment['kind'], messageId: string | undefined, text: string): void {
@@ -385,7 +411,9 @@ export class ExternalTurnRecorder {
       result: {
         output,
         isError,
-        note: event.rawOutput === undefined ? 'External tool output summarized from ACP content' : undefined,
+        note: event.rawOutput === undefined
+          ? 'External tool output summarized from external executor content'
+          : undefined,
       },
       parentUuid: `${this.stepId}:tool:${event.toolCallId}`,
     });
@@ -471,6 +499,7 @@ export class ExternalTurnRecorder {
       finishReason,
       rawFinishReason: finishReason,
     });
+    this.#appendExternalUserMessages();
     if (reason === 'completed') {
       await this.#dispatcher.dispatch(
         new TurnStepCompleted({
@@ -503,6 +532,44 @@ export class ExternalTurnRecorder {
       }),
     );
     await this.#wire.flush();
+  }
+
+  #appendExternalUserMessages(): void {
+    let promptEchoSuppressed = false;
+    for (const segment of this.#userSegments) {
+      if (
+        !promptEchoSuppressed &&
+        this.metadata.outboundPrompt !== undefined &&
+        segment.text === this.metadata.outboundPrompt
+      ) {
+        promptEchoSuppressed = true;
+        continue;
+      }
+      this.#context.append({
+        role: 'user',
+        content: [{ type: 'text', text: segment.text }],
+        toolCalls: [],
+        id: segment.messageId,
+        providerMessageId: segment.messageId,
+        origin: {
+          kind: 'system_trigger',
+          name: `external-executor:${this.metadata.executorId}`,
+        },
+      });
+    }
+  }
+}
+
+function externalContentText(content: ExternalExecutorContent): string {
+  switch (content.type) {
+    case 'text':
+      return content.text;
+    case 'image':
+      return `[External image: ${content.mimeType}]`;
+    case 'resource_link':
+      return `[External resource: ${content.name ?? content.uri} (${content.uri})]`;
+    case 'opaque':
+      return `[External content: ${content.contentType}]`;
   }
 }
 

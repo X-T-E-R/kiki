@@ -8,10 +8,7 @@ import {
 
 import { AcpAgentExecutorSession } from './acpAgentExecutorSession';
 
-const acpExecutorOptionsSchema = z.record(
-  z.string(),
-  z.union([z.string(), z.number(), z.boolean()]),
-);
+const acpExecutorOptionsSchema = z.object({}).strict();
 
 export const AcpAgentExecutorProvider: AgentExecutorProvider = {
   id: 'acp-process',

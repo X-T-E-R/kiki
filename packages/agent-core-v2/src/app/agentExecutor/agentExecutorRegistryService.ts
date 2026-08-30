@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { LifecycleScope } from '#/app/scopes';
 import { IConfigService } from '#/app/config/config';
 import {
@@ -108,19 +110,27 @@ function descriptorFromConfig(
     modelArgs: config.modelArgs,
     modelConfigCategory: config.modelConfigCategory,
     thoughtConfigCategory: config.thoughtConfigCategory,
-    revision: config.revision ?? JSON.stringify([
-      config.protocol,
-      config.command,
-      config.args,
-      config.env,
-      config.startupTimeoutMs,
-      config.shutdownGraceMs,
-      config.modelBinding,
-      config.modelArgs,
-      config.modelConfigCategory,
-      config.thoughtConfigCategory,
-    ]),
+    revision: config.revision ?? descriptorRevisionFromConfig(config),
   };
+}
+
+export function descriptorRevisionFromConfig(config: AgentExecutorConfig): string {
+  const env = config.env === undefined
+    ? undefined
+    : Object.fromEntries(Object.entries(config.env).toSorted(([left], [right]) => left.localeCompare(right)));
+  const canonical = JSON.stringify({
+    protocol: config.protocol,
+    command: config.command,
+    args: config.args,
+    env,
+    startupTimeoutMs: config.startupTimeoutMs,
+    shutdownGraceMs: config.shutdownGraceMs,
+    modelBinding: config.modelBinding,
+    modelArgs: config.modelArgs,
+    modelConfigCategory: config.modelConfigCategory,
+    thoughtConfigCategory: config.thoughtConfigCategory,
+  });
+  return createHash('sha256').update(canonical).digest('hex');
 }
 
 function scalarOptions(value: unknown, executorId: string): AgentExecutorOptions {

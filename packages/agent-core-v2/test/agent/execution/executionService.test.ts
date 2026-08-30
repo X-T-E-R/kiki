@@ -132,6 +132,55 @@ describe('AgentExecutionService', () => {
     ix.dispose();
   });
 
+  it.each([
+    ['missing protocol', { executorDescriptorRevision: 'r1' }, /protocol.*missing/i],
+    ['missing revision', { executorProtocol: 'acp-v1' }, /revision.*missing/i],
+    [
+      'protocol mismatch',
+      { executorProtocol: 'other', executorDescriptorRevision: 'r1' },
+      /protocol.*changed/i,
+    ],
+    [
+      'revision mismatch',
+      { executorProtocol: 'acp-v1', executorDescriptorRevision: 'r2' },
+      /descriptor.*changed/i,
+    ],
+  ])('fails external execution closed for %s', async (_name, binding, message) => {
+    const ix = new TestInstantiationService();
+    const create = vi.fn<AgentExecutorProvider['create']>();
+    const provider: AgentExecutorProvider = {
+      id: 'fake-provider',
+      protocol: 'acp-v1',
+      validateOptions: () => ({}),
+      create,
+    };
+    const registry: IAgentExecutorRegistry = {
+      _serviceBrand: undefined,
+      get: () => ({ id: 'fake', protocol: 'acp-v1', args: [], revision: 'r1' }),
+      resolve: () => ({
+        descriptor: { id: 'fake', protocol: 'acp-v1', args: [], revision: 'r1' },
+        options: {},
+        provider,
+      }),
+      provider: () => provider,
+    };
+    const service = new AgentExecutionService(
+      ix,
+      scope(),
+      profile({ executorId: 'fake', ...binding }),
+      registry,
+      states(),
+    );
+
+    await expect(service.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    )).rejects.toThrow(message);
+    expect(create).not.toHaveBeenCalled();
+    service.dispose();
+    ix.dispose();
+  });
+
   it('fails external execution closed when its protocol has no provider', async () => {
     const ix = new TestInstantiationService();
     const registry: IAgentExecutorRegistry = {

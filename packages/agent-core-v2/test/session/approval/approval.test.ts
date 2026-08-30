@@ -35,8 +35,32 @@ describe('SessionApprovalService', () => {
     ix.set(ISessionStateService, new SessionStateService());
     ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
     ix.set(ISessionApprovalService, new SyncDescriptor(SessionApprovalService));
+    ix.get(ISessionInteractionService).acquireConsumer('test-consumer');
   });
   afterEach(() => disposables.dispose());
+
+  it('cancels immediately when no approval consumer is present', async () => {
+    const interaction = ix.get(ISessionInteractionService);
+    interaction.releaseConsumer('test-consumer');
+
+    await expect(ix.get(ISessionApprovalService).request(makeRequest('no-consumer'))).resolves.toEqual({
+      decision: 'cancelled',
+    });
+    expect(interaction.listPending()).toEqual([]);
+  });
+
+  it('cancels pending approvals when the last consumer disconnects', async () => {
+    const interaction = ix.get(ISessionInteractionService);
+    interaction.acquireConsumer('backup-consumer');
+    const pending = ix.get(ISessionApprovalService).request(makeRequest('disconnect'));
+
+    interaction.releaseConsumer('test-consumer');
+    expect(interaction.listPending('approval')).toHaveLength(1);
+    interaction.releaseConsumer('backup-consumer');
+
+    await expect(pending).resolves.toEqual({ decision: 'cancelled' });
+    expect(interaction.listPending()).toEqual([]);
+  });
 
   it('request parks until decide resolves it', async () => {
     const svc = ix.get(ISessionApprovalService);

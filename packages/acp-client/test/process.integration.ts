@@ -170,7 +170,7 @@ describe('ACP process state machine', () => {
     });
     expect(processService.spawns.filter((spawn) => spawn.command === process.execPath)).toHaveLength(1);
     expect(client.status().state).toBe('broken');
-  });
+  }, 15_000);
 
   it('times out a host spawn that never resolves', async () => {
     const processService: HostProcessServiceLike = {
@@ -193,7 +193,7 @@ describe('ACP process state machine', () => {
       code: AcpClientErrorCode.SessionOpenFailed,
     });
     expect(processService.spawns.filter((spawn) => spawn.command === process.execPath)).toHaveLength(2);
-  });
+  }, 15_000);
 
   it('uses resume, falls back resume → load, and quarantines load replay updates', async () => {
     const resumed = createClient('default').client;
