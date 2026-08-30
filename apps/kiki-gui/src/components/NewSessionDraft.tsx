@@ -13,7 +13,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { AuthSummary, PermissionMode, Workspace } from '@moonshot-ai/protocol';
+import type { AuthSummary, PermissionMode, SessionCreate, Workspace } from '@moonshot-ai/protocol';
 
 import { resolveSelectedEffort, DEFAULT_AGENT_PROFILE } from './Composer';
 import { composerDefaultsForProfile } from '../lib/agentSettings';
@@ -42,6 +42,30 @@ export interface DraftSkillHandoff {
   readonly name: string;
   readonly args: string;
   readonly attachments: readonly ComposerAttachment[];
+}
+
+/** Build the create-time execution configuration applied before the first handoff runs. */
+export function buildNewSessionCreate(input: {
+  readonly cwd: string;
+  readonly workspaceId?: string;
+  readonly profile: string;
+  readonly model?: string;
+  readonly thinking?: string;
+  readonly permissionMode: PermissionMode;
+  readonly planMode: boolean;
+  readonly swarmMode: boolean;
+}): SessionCreate {
+  const agent_config = {
+    profile: input.profile,
+    model: input.model,
+    thinking: input.thinking,
+    permission_mode: input.permissionMode,
+    plan_mode: input.planMode,
+    swarm_mode: input.swarmMode,
+  };
+  return input.cwd !== ''
+    ? { metadata: { cwd: input.cwd }, agent_config }
+    : { workspace_id: input.workspaceId, agent_config };
 }
 
 /**
@@ -232,16 +256,16 @@ export function useNewSessionDraft({
     setBusy(true);
     setError(null);
 
-    const body =
-      trimmedCwd !== ''
-        ? {
-            metadata: { cwd: trimmedCwd },
-            agent_config: { profile: context.agentProfile },
-          }
-        : {
-            workspace_id: context.effectiveWorkspace?.id,
-            agent_config: { profile: context.agentProfile },
-          };
+    const body = buildNewSessionCreate({
+      cwd: trimmedCwd,
+      workspaceId: context.effectiveWorkspace?.id,
+      profile: context.agentProfile,
+      model: context.modelOverride,
+      thinking: context.effectiveEffort,
+      permissionMode: context.permissionMode,
+      planMode: context.planMode,
+      swarmMode: context.swarmMode,
+    });
 
     client
       .createSession(body)

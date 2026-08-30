@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildAgentProfileOptions, resolveSelectedEffort } from './Composer';
-import { isAbsoluteCwdPath } from './NewSessionDraft';
+import { buildNewSessionCreate, isAbsoluteCwdPath } from './NewSessionDraft';
 import type { NamedAgentProfile } from '../lib/client';
 
 describe('isAbsoluteCwdPath', () => {
@@ -20,6 +20,33 @@ describe('isAbsoluteCwdPath', () => {
     expect(isAbsoluteCwdPath('C:project')).toBe(false);
     expect(isAbsoluteCwdPath('')).toBe(false);
     expect(isAbsoluteCwdPath('  ')).toBe(false);
+  });
+});
+
+describe('buildNewSessionCreate', () => {
+  it('applies every create-supported execution control before a skill handoff can run', () => {
+    expect(
+      buildNewSessionCreate({
+        cwd: '',
+        workspaceId: 'wd_fixture_0123456789ab',
+        profile: 'agent',
+        model: 'provider/model',
+        thinking: 'high',
+        permissionMode: 'yolo',
+        planMode: true,
+        swarmMode: true,
+      }),
+    ).toEqual({
+      workspace_id: 'wd_fixture_0123456789ab',
+      agent_config: {
+        profile: 'agent',
+        model: 'provider/model',
+        thinking: 'high',
+        permission_mode: 'yolo',
+        plan_mode: true,
+        swarm_mode: true,
+      },
+    });
   });
 });
 

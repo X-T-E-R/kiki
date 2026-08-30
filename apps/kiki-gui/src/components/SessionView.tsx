@@ -642,6 +642,7 @@ export type SessionCreateSubmission =
       readonly name: string;
       readonly args: string;
       readonly attachments: readonly ComposerAttachment[];
+      readonly goalObjective?: string;
     };
 
 function isDraftSkillHandoff(value: unknown): value is DraftSkillHandoff {
@@ -682,6 +683,7 @@ export function resolveSessionCreateSubmission(
       name: handoff.initialSkill.name,
       args: handoff.initialSkill.args,
       attachments: handoff.initialSkill.attachments,
+      goalObjective: handoff.goalObjective,
     };
   }
   if (handoff.initialPrompt === undefined) return undefined;
@@ -690,6 +692,30 @@ export function resolveSessionCreateSubmission(
     text: handoff.initialPrompt,
     attachments: handoff.initialAttachments ?? [],
   };
+}
+
+interface ComposerSubmissionSnapshot {
+  readonly draft: string;
+  readonly attachments: readonly ComposerAttachment[];
+}
+
+/** Clear a completed skill submission only if the composer still shows that submission. */
+export async function activateSkillWithConditionalClear(input: {
+  readonly prepare?: () => Promise<unknown>;
+  readonly activate: () => Promise<unknown>;
+  readonly submitted: ComposerSubmissionSnapshot;
+  readonly current: () => ComposerSubmissionSnapshot;
+  readonly clear: () => void;
+}): Promise<void> {
+  await input.prepare?.();
+  await input.activate();
+  const current = input.current();
+  if (
+    current.draft === input.submitted.draft &&
+    current.attachments === input.submitted.attachments
+  ) {
+    input.clear();
+  }
 }
 
 export function resolveControlledFlag(
@@ -1088,6 +1114,10 @@ export function SessionView({
       restoredComposer.attachments ??
       [],
   );
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
   // Transcript text quoted into the composer via the floating selection
   // button. The route keys this component by session id, so the quote resets
   // with the session; send (and the chip's ×) clear it explicitly.
@@ -1225,14 +1255,26 @@ export function SessionView({
   // initializer. The route keys this component by session id, so this runs
   // once per session mount.
   useEffect(() => {
-    setDraft(readDraft(sessionId));
+    const stored = readDraft(sessionId);
+    draftRef.current = stored;
+    setDraft(stored);
   }, [sessionId]);
-  // Stable identity: the shell-seat memo depends on it (a fresh function per
+  // Stable identity: the shell-seat memo depends on these (fresh functions per
   // render would re-publish the composer on every keystroke's render).
   const updateDraft = useCallback((text: string) => {
+    draftRef.current = text;
     setDraft(text);
     writeDraft(sessionId, text);
   }, [sessionId]);
+  const updateAttachments = useCallback((
+    next:
+      | readonly ComposerAttachment[]
+      | ((previous: readonly ComposerAttachment[]) => readonly ComposerAttachment[]),
+  ) => {
+    const updated = typeof next === 'function' ? next(attachmentsRef.current) : next;
+    attachmentsRef.current = updated;
+    setAttachments(updated);
+  }, []);
 
   // Capture the composer chrome that should survive a session switch:
   // attachment chips and pill overrides, memory-only (see lib/drafts.ts).
@@ -1576,6 +1618,7 @@ export function SessionView({
         name: string,
         args: string,
         composerAttachments: readonly ComposerAttachment[],
+        goalObjectiveOverride?: string,
       ) => {
         try {
           assertSessionWritable(controller.getState());
@@ -1587,27 +1630,47 @@ export function SessionView({
           return;
         }
         const activation = buildSkillActivation(args, composerAttachments);
-        void client
-          .activateSkill(sessionId, name, {
-            args: activation.args === '' ? undefined : activation.args,
-            attachments: activation.attachments,
-          })
-          .then(() => {
+        const submitted = {
+          draft: draftRef.current,
+          attachments: composerAttachments,
+        };
+        void activateSkillWithConditionalClear({
+          prepare:
+            goalObjectiveOverride !== undefined && goalObjectiveOverride !== ''
+              ? () =>
+                  client.updateSessionProfile(sessionId, {
+                    agent_config: { goal_objective: goalObjectiveOverride },
+                  })
+              : undefined,
+          activate: () =>
+            client.activateSkill(sessionId, name, {
+              args: activation.args === '' ? undefined : activation.args,
+              attachments: activation.attachments,
+            }),
+          submitted,
+          current: () => ({
+            draft: draftRef.current,
+            attachments: attachmentsRef.current,
+          }),
+          clear: () => {
+            const emptyAttachments: readonly ComposerAttachment[] = [];
+            draftRef.current = '';
+            attachmentsRef.current = emptyAttachments;
             writeDraft(sessionId, '');
             setDraft('');
-            setAttachments([]);
-          })
-          .catch((error: unknown) => {
-            const text =
-              error instanceof ApiError && error.code === API_CODES.SKILL_NOT_FOUND
-                ? t('sv.skillGone', { name })
-                : error instanceof ApiError && error.code === API_CODES.SKILL_NOT_ACTIVATABLE
-                  ? t('sv.skillReference', { name })
-                  : error instanceof Error
-                    ? error.message
-                    : String(error);
-            pushToast({ tone: 'error', text });
-          });
+            setAttachments(emptyAttachments);
+          },
+        }).catch((error: unknown) => {
+          const text =
+            error instanceof ApiError && error.code === API_CODES.SKILL_NOT_FOUND
+              ? t('sv.skillGone', { name })
+              : error instanceof ApiError && error.code === API_CODES.SKILL_NOT_ACTIVATABLE
+                ? t('sv.skillReference', { name })
+                : error instanceof Error
+                  ? error.message
+                  : String(error);
+          pushToast({ tone: 'error', text });
+        });
       },
       abort: () =>
         controller.abortActive().catch((error: unknown) => {
@@ -1971,19 +2034,32 @@ export function SessionView({
     void navigate(location.pathname, { replace: true });
     if (submission.kind === 'skill') {
       const recovery = `/${submission.name}${submission.args === '' ? '' : ` ${submission.args}`}`;
-      writeDraft(sessionId, recovery);
-      setDraft(recovery);
-      setAttachments(submission.attachments);
-      actions.activateSkill(submission.name, submission.args, submission.attachments);
+      updateDraft(recovery);
+      updateAttachments(submission.attachments);
+      actions.activateSkill(
+        submission.name,
+        submission.args,
+        submission.attachments,
+        submission.goalObjective,
+      );
       return;
     }
     // Seed the session draft first: if this send fails, the text stays
     // recoverable in the composer (and in localStorage across reloads).
-    writeDraft(sessionId, submission.text);
-    setDraft(submission.text);
-    setAttachments(submission.attachments);
+    updateDraft(submission.text);
+    updateAttachments(submission.attachments);
     actions.send(submission.text, submission.attachments);
-  }, [controller, actions, state.loaded, state.resyncing, state.resyncFailed, location.pathname, navigate, sessionId]);
+  }, [
+    controller,
+    actions,
+    state.loaded,
+    state.resyncing,
+    state.resyncFailed,
+    location.pathname,
+    navigate,
+    updateDraft,
+    updateAttachments,
+  ]);
 
   // Desktop approval notification: if the window is hidden or blurred, nudge
   // the user once per approval request.
@@ -2095,7 +2171,7 @@ export function SessionView({
             sessionId={sessionId}
             fsSearch={handleFsSearch}
             attachments={attachments}
-            onChangeAttachments={setAttachments}
+            onChangeAttachments={updateAttachments}
             quote={quote}
             onRemoveQuote={handleRemoveQuote}
             annotations={annotations}
@@ -2146,6 +2222,7 @@ export function SessionView({
     sessionId,
     handleFsSearch,
     attachments,
+    updateAttachments,
     quote,
     annotations,
     handleRemoveQuote,

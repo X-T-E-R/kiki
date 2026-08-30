@@ -30,6 +30,7 @@ import { toolErrorSummary } from './ToolCard';
 import { projectUserText } from './Transcript';
 import {
   NOT_FOUND_FALLBACK_MS,
+  activateSkillWithConditionalClear,
   agentDetailPath,
   agentOlderErrorText,
   agentTranscriptPoll,
@@ -336,8 +337,15 @@ describe('parseSessionCreateHandoff', () => {
         initialPrompt: 'must not also send',
         initialAttachments: [],
         initialSkill: { name: 'review', args: '--fix', attachments },
+        goalObjective: 'ship safely',
       }),
-    ).toEqual({ kind: 'skill', name: 'review', args: '--fix', attachments });
+    ).toEqual({
+      kind: 'skill',
+      name: 'review',
+      args: '--fix',
+      attachments,
+      goalObjective: 'ship safely',
+    });
   });
 
   it('resolves the legacy first prompt and defaults its attachments', () => {
@@ -347,6 +355,42 @@ describe('parseSessionCreateHandoff', () => {
       attachments: [],
     });
     expect(resolveSessionCreateSubmission({})).toBeUndefined();
+  });
+});
+
+describe('activateSkillWithConditionalClear', () => {
+  it('applies the handoff goal before activating the skill', async () => {
+    const order: string[] = [];
+    const attachments: readonly [] = [];
+    await activateSkillWithConditionalClear({
+      prepare: async () => { order.push('goal'); },
+      activate: async () => { order.push('skill'); },
+      submitted: { draft: '/review', attachments },
+      current: () => ({ draft: '/review', attachments }),
+      clear: () => { order.push('clear'); },
+    });
+    expect(order).toEqual(['goal', 'skill', 'clear']);
+  });
+
+  it('preserves edits made while a delayed skill activation is pending', async () => {
+    const submittedAttachments: readonly [] = [];
+    let current = { draft: '/review --fix', attachments: submittedAttachments };
+    let resolveActivation!: () => void;
+    const activation = new Promise<void>((resolve) => { resolveActivation = resolve; });
+    const clear = vi.fn();
+    const pending = activateSkillWithConditionalClear({
+      activate: () => activation,
+      submitted: current,
+      current: () => current,
+      clear,
+    });
+
+    current = { draft: 'follow-up typed while busy', attachments: submittedAttachments };
+    resolveActivation();
+    await pending;
+
+    expect(clear).not.toHaveBeenCalled();
+    expect(current.draft).toBe('follow-up typed while busy');
   });
 });
 
