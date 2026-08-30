@@ -30,6 +30,11 @@ import { extractBashTargetDirs } from './bashTargets';
 const AGENTS_MD_BASENAMES: ReadonlySet<string> = new Set<string>(AGENTS_MD_PLAIN_NAMES);
 
 const BASH_PARSE_OPTIONS = { timeoutMs: 20, maxNodes: 10_000 } as const;
+const BASH_SHORT_RETRY_OPTIONS = {
+  timeoutMs: Number.POSITIVE_INFINITY,
+  maxNodes: BASH_PARSE_OPTIONS.maxNodes,
+} as const;
+const BASH_SHORT_RETRY_MAX_CHARS = 512;
 
 export const agentsMdReminderKnownKey = defineState<Set<string>>(
   'agentsMdReminder.known',
@@ -187,7 +192,10 @@ export class AgentAgentsMdReminderService
                   ? normalizedCwdArg
                   : join(base, normalizedCwdArg),
               );
-        const parsed = this.bashParser.parse(command, BASH_PARSE_OPTIONS);
+        let parsed = this.bashParser.parse(command, BASH_PARSE_OPTIONS);
+        if (!parsed.ok && command.length <= BASH_SHORT_RETRY_MAX_CHARS) {
+          parsed = this.bashParser.parse(command, BASH_SHORT_RETRY_OPTIONS);
+        }
         if (!parsed.ok || parsed.hasError) {
           return normalizedCwdArg === undefined
             ? { dirs: [], selfKnown }

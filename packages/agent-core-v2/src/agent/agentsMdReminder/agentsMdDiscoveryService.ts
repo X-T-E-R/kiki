@@ -15,11 +15,11 @@ import type { Runtime, RuntimeLease } from '#/runtime/runtime';
 
 const DISCOVERY_CACHE_TTL_MS = 5_000;
 const DIRECTORY_PROBE_CONCURRENCY = 4;
+const MAX_DIRECTORY_WATCHERS = 64;
 
 interface DirectoryEntry {
   readonly paths: readonly string[];
   readonly expiresAt: number;
-  readonly watched: boolean;
 }
 
 interface ProjectRootEntry {
@@ -30,12 +30,13 @@ interface ProjectRootEntry {
 interface WatchEntry {
   readonly owners: Set<string>;
   readonly ready: Promise<boolean>;
+  readonly resources: DisposableStore;
 }
 
 interface RuntimeCache {
   readonly directories: Map<string, DirectoryEntry>;
   readonly directoryFlights: Map<string, Promise<readonly string[]>>;
-  readonly existingDirectories: Set<string>;
+  readonly existingDirectories: Map<string, number>;
   readonly projectRoots: Map<string, ProjectRootEntry>;
   readonly projectRootFlights: Map<string, Promise<string>>;
   readonly revisions: Map<string, number>;
@@ -60,6 +61,7 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
   constructor(
     private readonly ttlMs = DISCOVERY_CACHE_TTL_MS,
     private readonly now: () => number = Date.now,
+    private readonly maxWatchers = MAX_DIRECTORY_WATCHERS,
   ) {}
 
   async discover(lease: RuntimeLease, targetDir: string): Promise<readonly string[]> {
@@ -89,7 +91,7 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
     cache = {
       directories: new Map(),
       directoryFlights: new Map(),
-      existingDirectories: new Set(),
+      existingDirectories: new Map(),
       projectRoots: new Map(),
       projectRootFlights: new Map(),
       revisions: new Map(),
@@ -107,9 +109,7 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
     const pathClass = lease.runtime.environment.pathClass;
     const key = pathKey(directory, pathClass);
     const cached = cache.directories.get(key);
-    if (cached !== undefined && (cached.watched || cached.expiresAt > this.now())) {
-      return cached.paths;
-    }
+    if (cached !== undefined && cached.expiresAt > this.now()) return cached.paths;
     const currentFlight = cache.directoryFlights.get(key);
     if (currentFlight !== undefined) return currentFlight;
     const flight = this.scanStableDirectory(lease, cache, normalize(directory), key).finally(() => {
@@ -130,11 +130,10 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
       const scanned = await this.scanDirectory(lease, cache, directory, key);
       if ((cache.revisions.get(key) ?? 0) !== revision) continue;
       cache.directories.set(key, {
-        paths: scanned.paths,
+        paths: scanned,
         expiresAt: this.now() + this.ttlMs,
-        watched: scanned.watched,
       });
-      return scanned.paths;
+      return scanned;
     }
   }
 
@@ -143,25 +142,24 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
     cache: RuntimeCache,
     directory: string,
     ownerKey: string,
-  ): Promise<{ readonly paths: readonly string[]; readonly watched: boolean }> {
+  ): Promise<readonly string[]> {
     const runtime = lease.runtime;
     const fs = runtime.fs!;
     const pathClass = runtime.environment.pathClass;
-    const parentWatched = await this.ensureWatcher(lease, cache, directory, ownerKey);
+    await this.ensureWatcher(lease, cache, directory, ownerKey);
     const entries = await readDir(fs, directory);
     if (entries === undefined) {
       cache.existingDirectories.delete(ownerKey);
-      return { paths: [], watched: false };
+      return [];
     }
-    cache.existingDirectories.add(ownerKey);
+    cache.existingDirectories.set(ownerKey, this.now() + this.ttlMs);
     const paths: string[] = [];
-    let watched = parentWatched;
     const dotKimiEntry = namedEntry(entries, '.kimi-code', pathClass);
     if (dotKimiEntry !== undefined && (dotKimiEntry.isDirectory || dotKimiEntry.isSymbolicLink)) {
       const dotKimiDir = dirname(dotKimiAgentsMdPath(directory));
       const isDirectory = dotKimiEntry.isDirectory || (await statDirectory(fs, dotKimiDir));
       if (isDirectory) {
-        watched = (await this.ensureWatcher(lease, cache, dotKimiDir, ownerKey)) && watched;
+        await this.ensureWatcher(lease, cache, dotKimiDir, ownerKey);
         const nestedEntries = await readDir(fs, dotKimiDir);
         if (nestedEntries !== undefined) {
           const candidate = join(dotKimiDir, 'AGENTS.md');
@@ -181,7 +179,7 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
         break;
       }
     }
-    return { paths, watched };
+    return paths;
   }
 
   private async ensureWatcher(
@@ -189,15 +187,19 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
     cache: RuntimeCache,
     watchPath: string,
     ownerKey: string,
-  ): Promise<boolean> {
+  ): Promise<void> {
     const runtime = lease.runtime;
     const watch = runtime.watch;
-    if (watch === undefined) return false;
-    const watchKey = pathKey(watchPath, runtime.environment.pathClass);
+    if (watch === undefined || this.maxWatchers <= 0) return;
+    const pathClass = runtime.environment.pathClass;
+    const watchKey = pathKey(watchPath, pathClass);
     const current = cache.watchers.get(watchKey);
     if (current !== undefined) {
       current.owners.add(ownerKey);
-      return current.ready;
+      cache.watchers.delete(watchKey);
+      cache.watchers.set(watchKey, current);
+      await current.ready;
+      return;
     }
     const owners = new Set([ownerKey]);
     const resources = new DisposableStore();
@@ -206,10 +208,11 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
       const handle = resources.add(watch.watch(watchPath, { recursive: false }));
       resources.add(
         handle.onDidChange((event) => {
+          const changedKey = pathKey(event.path, pathClass);
           for (const owner of owners) {
-            if (affectsDirectory(owner, event.path, runtime.environment.pathClass)) {
-              this.invalidateKey(cache, owner);
-            }
+            if (!affectsDirectory(owner, event.path, pathClass)) continue;
+            if (changedKey === owner) cache.existingDirectories.delete(owner);
+            this.invalidateKey(cache, owner);
           }
         }),
       );
@@ -222,12 +225,21 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
           return false;
         },
       );
-      entry = { owners, ready };
+      entry = { owners, ready, resources };
       cache.watchers.set(watchKey, entry);
-      return ready;
+      this.trimWatchers(cache);
+      await ready;
     } catch {
       resources.dispose();
-      return false;
+    }
+  }
+
+  private trimWatchers(cache: RuntimeCache): void {
+    while (cache.watchers.size > this.maxWatchers) {
+      const oldest = cache.watchers.entries().next();
+      if (oldest.done === true) return;
+      cache.watchers.delete(oldest.value[0]);
+      oldest.value[1].resources.dispose();
     }
   }
 
@@ -263,10 +275,12 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
     let current = normalize(path);
     for (;;) {
       const key = pathKey(current, pathClass);
-      if (cache.existingDirectories.has(key)) return current;
+      const cachedUntil = cache.existingDirectories.get(key);
+      if (cachedUntil !== undefined && cachedUntil > this.now()) return current;
+      cache.existingDirectories.delete(key);
       const stat = await fs.stat(current).catch(() => undefined);
       if (stat?.isDirectory === true) {
-        cache.existingDirectories.add(key);
+        cache.existingDirectories.set(key, this.now() + this.ttlMs);
         return current;
       }
       const parent = dirname(current);

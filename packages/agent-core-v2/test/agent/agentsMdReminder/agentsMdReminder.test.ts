@@ -100,6 +100,7 @@ function createHarness(
     readonly withDedupe?: boolean;
     readonly withRealExecutor?: boolean;
     readonly telemetry?: ITelemetryService;
+    readonly bashParser?: IBashParserService;
     readonly cwd?: string;
     readonly hostFs?: IHostFileSystem;
     readonly hostWatch?: IHostFsWatchService;
@@ -191,7 +192,7 @@ function createHarness(
           dispose: () => {},
         }),
       } satisfies IAgentRuntimeService);
-      reg.defineInstance(IBashParserService, new BashParserService());
+      reg.defineInstance(IBashParserService, options.bashParser ?? new BashParserService());
       reg.defineInstance(
         ITelemetryService,
         options.telemetry ?? recordingTelemetry(telemetryEvents),
@@ -316,12 +317,14 @@ async function writeAgentsMd(dir: string, content = 'instructions'): Promise<str
 function watchHarness(): {
   readonly service: IHostFsWatchService;
   readonly paths: string[];
+  activePaths(): readonly string[];
   fire(watchPath: string, change: HostFsChange): void;
 } {
   const emitters = new Map<string, Emitter<HostFsChange>>();
   const paths: string[] = [];
   return {
     paths,
+    activePaths: () => [...emitters.keys()],
     service: {
       _serviceBrand: undefined,
       watch: (path, options) => {
@@ -333,7 +336,10 @@ function watchHarness(): {
         return {
           ready: Promise.resolve(),
           onDidChange: emitter.event,
-          dispose: () => emitter.dispose(),
+          dispose: () => {
+            if (emitters.get(key) === emitter) emitters.delete(key);
+            emitter.dispose();
+          },
         };
       },
     },
@@ -470,6 +476,26 @@ describe('agentsMdReminder Bash coverage', () => {
     const result = await fire(h, didCtx('Bash', { command: 'cd packages && ls kap-server' }));
 
     expect(outputText(result)).toBe('original result');
+    expect(reminderText(h)).toContain(subAgentsMd);
+  });
+
+  it('retries short commands without a wall-clock limit after a parser timeout', async () => {
+    const realParser = new BashParserService();
+    const timeouts: (number | undefined)[] = [];
+    const bashParser = {
+      _serviceBrand: undefined,
+      parse: (source, options) => {
+        timeouts.push(options?.timeoutMs);
+        if (timeouts.length === 1) return { ok: false, reason: 'aborted' } as const;
+        return realParser.parse(source, options);
+      },
+    } satisfies IBashParserService;
+    const h = createHarness({ bashParser });
+    const subAgentsMd = await writeAgentsMd(join(workDir, 'packages', 'kap-server'));
+
+    await fire(h, didCtx('Bash', { command: 'cd packages && ls kap-server' }));
+
+    expect(timeouts).toEqual([20, Number.POSITIVE_INFINITY]);
     expect(reminderText(h)).toContain(subAgentsMd);
   });
 
@@ -904,6 +930,58 @@ describe('agentsMdReminder discovery cache', () => {
     await fire(h, didCtx('Read', { path: join(subDir, 'after.ts') }));
 
     expect(watch.paths).toContain(normalize(subDir));
+    expect(reminderText(h)).toContain(agentsMd);
+  });
+
+  it('re-probes after TTL when a ready watcher silently misses the change', async () => {
+    let now = 0;
+    const watch = watchHarness();
+    const discovery = new AgentsMdDiscoveryService(10, () => now);
+    const h = createHarness({ discovery, hostWatch: watch.service });
+    const subDir = join(workDir, 'packages', 'kap-server');
+    await mkdir(subDir, { recursive: true });
+    h.reminder.seedInjected([], workDir);
+
+    await fire(h, didCtx('Read', { path: join(subDir, 'before.ts') }));
+    const agentsMd = await writeAgentsMd(subDir);
+    await fire(h, didCtx('Read', { path: join(subDir, 'cached.ts') }));
+    expect(h.reminders).toHaveLength(0);
+
+    now = 11;
+    await fire(h, didCtx('Read', { path: join(subDir, 'expired.ts') }));
+    expect(reminderText(h)).toContain(agentsMd);
+  });
+
+  it('bounds watchers with LRU eviction and leaves evicted directories on TTL fallback', async () => {
+    let now = 0;
+    const watch = watchHarness();
+    const discovery = new AgentsMdDiscoveryService(10, () => now, 2);
+    const h = createHarness({ discovery, hostWatch: watch.service });
+    const directories = [
+      join(workDir, 'first'),
+      join(workDir, 'second'),
+      join(workDir, 'third'),
+    ];
+    for (const directory of directories) await mkdir(directory, { recursive: true });
+    h.reminder.seedInjected([], workDir);
+
+    for (const directory of directories) {
+      await fire(h, didCtx('Read', { path: join(directory, 'before.ts') }));
+    }
+
+    expect(watch.activePaths()).toHaveLength(2);
+    const evictedDir = directories.find(
+      (directory) => !watch.activePaths().includes(normalize(directory)),
+    );
+    expect(evictedDir).toBeDefined();
+
+    const agentsMd = await writeAgentsMd(evictedDir!);
+    await fire(h, didCtx('Read', { path: join(evictedDir!, 'cached.ts') }));
+    expect(h.reminders).toHaveLength(0);
+
+    now = 11;
+    await fire(h, didCtx('Read', { path: join(evictedDir!, 'expired.ts') }));
+    expect(watch.activePaths()).toHaveLength(2);
     expect(reminderText(h)).toContain(agentsMd);
   });
 
