@@ -24,13 +24,18 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (51 record types)
+// Index (56 record types)
 //   config.update                      profile                                                               src/agent/profile/profileOps.ts
 //   context.append_loop_event          contextMemory, turn                                                   src/agent/contextMemory/contextEvents.ts
 //   context.append_message             contextMemory, goalForkNotice, plan, task.notificationDelivery, todo  src/agent/contextMemory/contextEvents.ts
 //   context.apply_compaction           contextMemory, plan, task.notificationDelivery, todo                  src/agent/contextMemory/contextEvents.ts
 //   context.clear                      contextMemory, plan, task.notificationDelivery, todo                  src/agent/contextMemory/contextEvents.ts
 //   context.undo                       contextMemory, plan, task.notificationDelivery, todo                  src/agent/contextMemory/contextEvents.ts
+//   executor.plan.remove               externalExecutor                                                      src/agent/execution/externalExecutorOps.ts
+//   executor.plan.update               externalExecutor                                                      src/agent/execution/externalExecutorOps.ts
+//   executor.runtime.update            externalExecutor                                                      src/agent/execution/externalExecutorOps.ts
+//   executor.session.updated           externalExecutor                                                      src/agent/execution/externalExecutorOps.ts
+//   executor.turn.metadata             externalExecutor                                                      src/agent/execution/externalExecutorOps.ts
 //   forked                             goal, goalForkNotice                                                  src/agent/goal/goalOps.ts
 //   full_compaction.begin              fullCompaction                                                        src/agent/fullCompaction/compactionOps.ts
 //   full_compaction.cancel             fullCompaction                                                        src/agent/fullCompaction/compactionOps.ts
@@ -167,6 +172,71 @@ interface ContextClearPayload {
 interface ContextUndoPayload {
   _name: 'context.undo';
   count: number;
+}
+
+/**
+ * states: externalExecutor
+ * owner: src/agent/execution/externalExecutorOps.ts
+ */
+interface ExecutorPlanRemovePayload {
+  _name: 'executor.plan.remove';
+  turnId: number;
+  planId?: string;
+  unstable: boolean;
+}
+
+/**
+ * states: externalExecutor
+ * owner: src/agent/execution/externalExecutorOps.ts
+ */
+interface ExecutorPlanUpdatePayload {
+  _name: 'executor.plan.update';
+  turnId: number;
+  plan: any;
+  unstable: boolean;
+}
+
+/**
+ * states: externalExecutor
+ * owner: src/agent/execution/externalExecutorOps.ts
+ */
+interface ExecutorRuntimeUpdatePayload {
+  _name: 'executor.runtime.update';
+  turnId: number;
+  kind: 'commands' | 'mode' | 'config' | 'session' | 'usage' | 'unknown';
+  value: any;
+}
+
+/**
+ * states: externalExecutor
+ * owner: src/agent/execution/externalExecutorOps.ts
+ */
+interface ExecutorSessionUpdatedPayload {
+  _name: 'executor.session.updated';
+  executorId: string;
+  descriptorRevision: string;
+  sessionRef: {
+    executorId: string;
+    version: number;
+    ref: Record<string, any>;
+  };
+  sessionEpoch: number;
+  profileDeliveredSessionId?: string;
+}
+
+/**
+ * states: externalExecutor
+ * owner: src/agent/execution/externalExecutorOps.ts
+ */
+interface ExecutorTurnMetadataPayload {
+  _name: 'executor.turn.metadata';
+  turnId: number;
+  executorId: string;
+  protocol: string;
+  resumeMode: 'live' | 'resume' | 'load' | 'new' | 'handoff';
+  profileDelivery: 'native' | 'first_prompt_preamble';
+  fidelity: 'full' | 'degraded';
+  losses: 'acp_no_step_boundaries' | 'profile_as_user_preamble' | 'tool_input_partial' | 'tool_output_summary_only' | 'message_id_missing' | 'usage_context_only' | 'unknown_update_dropped' | 'resume_new_session_handoff' | 'handoff_truncated' | 'unstable_acp_plan' | 'permission_mode_unverified'[];
 }
 
 /**
@@ -776,6 +846,11 @@ interface WirePayloadMap {
   "context.apply_compaction": ContextApplyCompactionPayload;
   "context.clear": ContextClearPayload;
   "context.undo": ContextUndoPayload;
+  "executor.plan.remove": ExecutorPlanRemovePayload;
+  "executor.plan.update": ExecutorPlanUpdatePayload;
+  "executor.runtime.update": ExecutorRuntimeUpdatePayload;
+  "executor.session.updated": ExecutorSessionUpdatedPayload;
+  "executor.turn.metadata": ExecutorTurnMetadataPayload;
   "forked": ForkedPayload;
   "full_compaction.begin": FullCompactionBeginPayload;
   "full_compaction.cancel": FullCompactionCancelPayload;

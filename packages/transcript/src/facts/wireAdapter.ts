@@ -6,7 +6,7 @@ import type { GoalMeta, GoalStatus } from '../model/meta';
 import type { TranscriptTask } from '../model/task';
 import type { TodoItem } from '../model/todo';
 import type { TurnHeader, TranscriptOperation } from '../ops/operation';
-import type { StepUsage, TurnOrigin } from '../model/turn';
+import type { StepUsage, TranscriptTurnExecution, TurnOrigin } from '../model/turn';
 
 export interface TranscriptWireRecord {
   readonly type: string;
@@ -44,6 +44,7 @@ export class TranscriptWireAdapter {
   readonly #turnOwnedItemIds = new Map<string, string[]>();
   readonly #steeredMessageIds = new Set<string>();
   readonly #pendingSteers = new Map<string, PendingSteer[]>();
+  readonly #executions = new Map<string, TranscriptTurnExecution>();
   #goal: GoalMeta | undefined;
   #plan: { readonly reviewPath?: string; readonly version?: number } | undefined;
   #recordOrdinal = 0;
@@ -117,6 +118,40 @@ export class TranscriptWireAdapter {
   }
 
   private supplemental(record: TranscriptWireRecord, ordinal: number): TranscriptOperation[] {
+    if (record.type === 'executor.turn.metadata') {
+      const n = numberOf(record['turnId']);
+      const execution = executionOf(record);
+      if (n === undefined || execution === undefined) return [];
+      const turnId = `t${n}`;
+      this.#executions.set(turnId, execution);
+      const previous = this.lookups?.turn?.(turnId);
+      return previous === undefined
+        ? []
+        : [{ op: 'turn.upsert', turn: { ...previous, execution } }];
+    }
+    if (record.type === 'executor.plan.update') {
+      return [
+        {
+          op: 'todo.upsert',
+          todo: {
+            todoId: 'external-plan',
+            items: externalPlanItems(record['plan']),
+            updatedAt: isoOf(record.time),
+          },
+        },
+      ];
+    }
+    if (record.type === 'executor.plan.remove') {
+      return [
+        {
+          op: 'todo.upsert',
+          todo: { todoId: 'external-plan', items: [], updatedAt: isoOf(record.time) },
+        },
+      ];
+    }
+    if (record.type === 'executor.runtime.update' && record['kind'] === 'unknown') {
+      return [this.marker(record, ordinal, 'executor.degradation')];
+    }
     if (record.type === 'tools.update_store' && record['key'] === 'todo') {
       return [
         {
@@ -877,6 +912,7 @@ export class TranscriptWireAdapter {
           startedAt: previous?.startedAt,
           endedAt: isoOf(record.time),
           usage,
+          execution: this.#executions.get(turnId) ?? previous?.execution,
           durationMs: numberOf(record['durationMs']),
           error: stringOf(objectOf(record['error'])?.['message']),
         },
@@ -974,7 +1010,12 @@ export function transcriptFactsFromWire(
 }
 
 function durableRecord(type: string): boolean {
-  return type === 'turn.prompt' || type === 'turn.ended' || type.startsWith('context.');
+  return (
+    type === 'turn.prompt' ||
+    type === 'turn.ended' ||
+    type.startsWith('context.') ||
+    type.startsWith('executor.')
+  );
 }
 
 function factId(record: TranscriptWireRecord, ordinal: number): string {
@@ -1190,6 +1231,52 @@ function taskStateOf(value: unknown): TranscriptTask['state'] | undefined {
     value === 'lost'
     ? value
     : undefined;
+}
+
+function executionOf(record: TranscriptWireRecord): TranscriptTurnExecution | undefined {
+  const executorId = stringOf(record['executorId']);
+  const protocol = stringOf(record['protocol']);
+  const resumeMode = stringOf(record['resumeMode']);
+  const profileDelivery = stringOf(record['profileDelivery']);
+  const fidelity = stringOf(record['fidelity']);
+  const losses = arrayOf(record['losses']).filter((value): value is string => typeof value === 'string');
+  if (
+    executorId === undefined ||
+    protocol === undefined ||
+    !['live', 'resume', 'load', 'new', 'handoff'].includes(resumeMode ?? '') ||
+    !['native', 'first_prompt_preamble'].includes(profileDelivery ?? '') ||
+    (fidelity !== 'full' && fidelity !== 'degraded')
+  ) {
+    return undefined;
+  }
+  return {
+    executorId,
+    protocol,
+    resumeMode: resumeMode as TranscriptTurnExecution['resumeMode'],
+    profileDelivery: profileDelivery as TranscriptTurnExecution['profileDelivery'],
+    fidelity,
+    losses,
+  };
+}
+
+function externalPlanItems(value: unknown): TodoItem[] {
+  const entries = arrayOf(objectOf(value)?.['entries']);
+  const items: TodoItem[] = [];
+  for (const candidate of entries) {
+    const entry = objectOf(candidate);
+    const title = stringOf(entry?.['content']) ?? stringOf(entry?.['title']);
+    const status = stringOf(entry?.['status']);
+    if (title === undefined) continue;
+    items.push({
+      title,
+      status: status === 'completed' || status === 'done'
+        ? 'done'
+        : status === 'in_progress'
+          ? 'in_progress'
+          : 'pending',
+    });
+  }
+  return items;
 }
 
 function todoItemsOf(value: unknown): TodoItem[] {

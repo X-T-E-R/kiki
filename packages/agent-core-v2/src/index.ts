@@ -522,6 +522,8 @@ export {
   type ApprovalDecision,
   type ApprovalRequest as SessionApprovalRequest,
   type ApprovalResponse as SessionApprovalResponse,
+  type ExternalPermissionDisplay,
+  type ExternalPermissionOption,
 } from '#/session/approval/approval';
 export * from '#/session/question/question';
 export * from '#/session/question/questionService';
@@ -666,6 +668,10 @@ export * from '#/agent/fullCompaction/compactionOps';
 export * from '#/agent/fullCompaction/types';
 export * from '#/agent/execution/execution';
 export * from '#/agent/execution/executionService';
+export * from '#/agent/execution/externalExecutorOps';
+export * from '#/agent/execution/externalTurnRecorder';
+export * from '#/agent/execution/acpAgentExecutorSession';
+export * from '#/agent/execution/acpAgentExecutorProvider';
 export * from '#/agent/execution/nativeAgentExecutorSession';
 export * from '#/agent/llmRequester/llmRequester';
 export * from '#/agent/llmRequester/llmRequesterService';

@@ -7,6 +7,7 @@ import {
 import { linkAbortSignal } from '#/_base/utils/abort';
 import { IAgentProfileService, type ProfileBindingSnapshot } from '#/agent/profile/profile';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { IAgentStateService } from '#/agent/state/agentState';
 import {
   type AgentExecutionStatus,
   type AgentExecutorAgentContext,
@@ -23,6 +24,7 @@ import type {
 } from '#/session/subagent/subagent';
 
 import { IAgentExecutionService } from './execution';
+import { externalExecutorKey } from './externalExecutorOps';
 import { NativeAgentExecutorSession } from './nativeAgentExecutorSession';
 
 interface ActiveRun {
@@ -53,8 +55,10 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
     @IAgentScopeContext scope: IAgentScopeContext,
     @IAgentProfileService private readonly profile: IAgentProfileService,
     @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
+    @IAgentStateService states: IAgentStateService,
   ) {
     super();
+    states.contributeState(externalExecutorKey);
     const accessor: ServicesAccessor = {
       get: (id) => instantiation.invokeFunction((services) => services.get(id)),
     };

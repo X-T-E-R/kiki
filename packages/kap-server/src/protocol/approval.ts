@@ -26,5 +26,6 @@ export const approvalResponseSchema = z.object({
   scope: approvalScopeSchema.optional(),
   feedback: z.string().optional(),
   selected_label: z.string().optional(),
+  selected_option_id: z.string().optional(),
 });
 export type ApprovalResponse = z.infer<typeof approvalResponseSchema>;

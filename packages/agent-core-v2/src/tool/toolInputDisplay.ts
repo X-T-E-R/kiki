@@ -1,3 +1,17 @@
+export interface ExternalPermissionOption {
+  readonly id: string;
+  readonly label: string;
+  readonly kind: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always' | (string & {});
+  readonly changes?: readonly unknown[];
+}
+
+export interface ExternalPermissionDisplay {
+  readonly kind: 'external_permission';
+  readonly summary: string;
+  readonly detail?: unknown;
+  readonly options: readonly ExternalPermissionOption[];
+}
+
 /**
  * `ToolInputDisplay` — structured UI hint describing a tool call's input, so
  * approval panels and tool renderers can present it without re-deriving it
@@ -76,6 +90,7 @@ export type ToolInputDisplay =
       completionCriterion?: string | undefined;
       mode: 'manual' | 'yolo';
     }
+  | ExternalPermissionDisplay
   | {
       kind: 'generic';
       summary: string;

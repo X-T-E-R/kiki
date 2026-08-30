@@ -112,6 +112,37 @@ describe('SessionApprovalService', () => {
     await expect(second).resolves.toEqual({ decision: 'approved' });
   });
 
+  it('round-trips exact external option ids and cancels unknown ids', async () => {
+    const svc = ix.get(ISessionApprovalService);
+    const request = (id: string) => svc.request({
+      id,
+      toolName: 'external',
+      action: 'run',
+      display: {
+        kind: 'external_permission',
+        summary: 'Run external tool',
+        options: [{ id: 'allow-once', label: 'Allow once', kind: 'allow_once' }],
+      },
+    });
+
+    const exact = request('external-exact');
+    svc.decide('external-exact', {
+      decision: 'approved',
+      selectedOptionId: 'allow-once',
+    });
+    await expect(exact).resolves.toEqual({
+      decision: 'approved',
+      selectedOptionId: 'allow-once',
+    });
+
+    const unknown = request('external-unknown');
+    svc.decide('external-unknown', {
+      decision: 'approved',
+      selectedOptionId: 'unknown',
+    });
+    await expect(unknown).resolves.toEqual({ decision: 'cancelled' });
+  });
+
   it('listPending surfaces the minted interaction id so hosts can decide', async () => {
     const svc = ix.get(ISessionApprovalService);
 

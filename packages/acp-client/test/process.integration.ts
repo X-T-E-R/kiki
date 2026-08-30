@@ -139,6 +139,28 @@ describe('ACP process state machine', () => {
     expect(events.some((event) => JSON.stringify(event).includes('PERMISSION='))).toBe(false);
   });
 
+  it('configures an already-open session before prompting', async () => {
+    const { client } = createClient('full-flow');
+    const opened = await client.openSession({ cwd });
+    expect(opened.configOptions.find((option) => option.id === 'model')?.currentValue).toBe('model-a');
+
+    const configured = await client.configureSession({
+      configOptions: [
+        { configId: 'model', value: 'model-b' },
+        { configId: 'thought', value: 'high' },
+      ],
+    });
+    expect(configured.configOptions.find((option) => option.id === 'model')?.currentValue).toBe('model-b');
+    expect(configured.configOptions.find((option) => option.id === 'thought')?.currentValue).toBe('high');
+
+    const handle = await client.startTurn({
+      prompt: 'go',
+      signal: new AbortController().signal,
+      session: { cwd },
+    });
+    await expect(handle.completion).resolves.toMatchObject({ response: { stopReason: 'end_turn' } });
+  });
+
   it('times out initialize within the configured startup deadline', async () => {
     const { client, processService } = createClient('hang-initialize', {
       startupTimeoutMs: 100,

@@ -26,6 +26,15 @@ export interface TranscriptUsage {
   readonly cost?: number;
 }
 
+export interface TranscriptTurnExecution {
+  readonly executorId: string;
+  readonly protocol: string;
+  readonly resumeMode: 'live' | 'resume' | 'load' | 'new' | 'handoff';
+  readonly profileDelivery: 'native' | 'first_prompt_preamble';
+  readonly fidelity: 'full' | 'degraded';
+  readonly losses: readonly string[];
+}
+
 /**
  * Token usage of one LLM step. Same shape as the engine's `TokenUsage` wire
  * payload — the server copies it through opaquely.
@@ -78,6 +87,7 @@ export interface TranscriptTurn {
   readonly startedAt?: string;
   readonly endedAt?: string;
   readonly usage?: TranscriptUsage;
+  readonly execution?: TranscriptTurnExecution;
   /** Wall-clock duration of the turn, set on terminal upserts (`turn.ended`). */
   readonly durationMs?: number;
   /**

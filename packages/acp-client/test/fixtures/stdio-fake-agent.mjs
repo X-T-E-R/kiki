@@ -197,6 +197,8 @@ async function handle(message) {
     return;
   }
   if (message.method === 'session/set_config_option') {
+    const option = configOptions.find((candidate) => candidate.id === message.params.configId);
+    if (option) option.currentValue = message.params.value;
     result(message.id, { configOptions });
     update({ sessionUpdate: 'config_option_update', configOptions });
     return;

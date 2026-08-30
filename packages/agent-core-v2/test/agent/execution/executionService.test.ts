@@ -10,6 +10,7 @@ import { IAgentPromptService } from '#/agent/prompt/prompt';
 import type { IAgentProfileService, ProfileData } from '#/agent/profile/profile';
 import type { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentUsageService } from '#/agent/usage/usage';
+import type { IAgentStateService } from '#/agent/state/agentState';
 import type {
   AgentExecutorProvider,
   AgentExecutorSession,
@@ -36,6 +37,13 @@ function scope(agentId = 'agent-test'): IAgentScopeContext {
     agentId,
     scope: (subKey) => subKey === undefined ? agentId : `${agentId}/${subKey}`,
   };
+}
+
+function states(): IAgentStateService {
+  return {
+    _serviceBrand: undefined,
+    contributeState: () => ({ dispose: () => {} }),
+  } as unknown as IAgentStateService;
 }
 
 describe('AgentExecutionService', () => {
@@ -97,6 +105,7 @@ describe('AgentExecutionService', () => {
         executorDescriptorRevision: 'r1',
       }),
       registry,
+      states(),
     );
     service.hooks.onWillRun.register('test', async (_context, next) => {
       order.push('hook');
@@ -143,6 +152,7 @@ describe('AgentExecutionService', () => {
         executorDescriptorRevision: 'r1',
       }),
       registry,
+      states(),
     );
 
     await expect(service.run(

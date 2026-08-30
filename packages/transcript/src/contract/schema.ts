@@ -78,6 +78,15 @@ export const transcriptUsageSchema = z.object({
   cost: z.number().optional(),
 });
 
+export const transcriptTurnExecutionSchema = z.object({
+  executorId: z.string(),
+  protocol: z.string(),
+  resumeMode: z.enum(['live', 'resume', 'load', 'new', 'handoff']),
+  profileDelivery: z.enum(['native', 'first_prompt_preamble']),
+  fidelity: z.enum(['full', 'degraded']),
+  losses: z.array(z.string()).readonly(),
+});
+
 /** Step token usage — the engine's `TokenUsage` wire shape, verbatim. */
 export const stepUsageSchema = z.object({
   inputOther: z.number(),
@@ -219,6 +228,7 @@ export const transcriptTurnSchema = z.object({
   startedAt: z.string().optional(),
   endedAt: z.string().optional(),
   usage: transcriptUsageSchema.optional(),
+  execution: transcriptTurnExecutionSchema.optional(),
   durationMs: z.number().optional(),
   error: z.string().optional(),
 });

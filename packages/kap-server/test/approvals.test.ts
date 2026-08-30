@@ -142,6 +142,62 @@ describe('server-v2 /api/v1/sessions/{sid}/approvals', () => {
     expect(listed.body.data.items).toHaveLength(0);
   });
 
+  it('round-trips external permission display and exact option ids', async () => {
+    const sid = await createSession();
+    const handle = getLiveSessionById(server!.core.accessor, sid)!;
+    const approval = handle.accessor.get(ISessionApprovalService);
+    const pending = approval.request({
+      id: 'external-approval',
+      toolCallId: 'external:session:tool-1',
+      toolName: 'External tool',
+      action: 'apply changes',
+      display: {
+        kind: 'external_permission',
+        summary: 'Apply external changes',
+        options: [
+          { id: 'allow-once', label: 'Allow once', kind: 'allow_once' },
+          { id: 'reject', label: 'Reject', kind: 'reject_once' },
+        ],
+      },
+    });
+
+    const listed = await getJson<ListWire>(`/api/v1/sessions/${sid}/approvals?status=pending`);
+    expect(listed.body.data.items[0]?.tool_input_display).toMatchObject({
+      kind: 'external_permission',
+      options: [{ id: 'allow-once' }, { id: 'reject' }],
+    });
+    const resolved = await postJson<ResolveWire>(
+      `/api/v1/sessions/${sid}/approvals/external-approval`,
+      { decision: 'approved', selected_option_id: 'allow-once' },
+    );
+    expect(resolved.body.code).toBe(0);
+    await expect(pending).resolves.toMatchObject({
+      decision: 'approved',
+      selectedOptionId: 'allow-once',
+    });
+  });
+
+  it('normalizes unknown external option ids to cancelled', async () => {
+    const sid = await createSession();
+    const handle = getLiveSessionById(server!.core.accessor, sid)!;
+    const pending = handle.accessor.get(ISessionApprovalService).request({
+      id: 'external-unknown',
+      toolName: 'External tool',
+      action: 'run',
+      display: {
+        kind: 'external_permission',
+        summary: 'Run external tool',
+        options: [{ id: 'allow-once', label: 'Allow once', kind: 'allow_once' }],
+      },
+    });
+
+    await postJson<ResolveWire>(`/api/v1/sessions/${sid}/approvals/external-unknown`, {
+      decision: 'approved',
+      selected_option_id: 'unknown',
+    });
+    await expect(pending).resolves.toEqual({ decision: 'cancelled' });
+  });
+
   it('returns 40902 on a duplicate resolve (recently-resolved window)', async () => {
     const sid = await createSession();
     const aid = enqueueApproval(sid, 'tc-3');

@@ -73,6 +73,10 @@ export interface AcpClientStatus {
   readonly sessionId?: string;
 }
 
+export type AcpSessionConfigOption = SessionConfigOption;
+export type AcpPermissionOption = PermissionOption;
+export type AcpPermissionRequest = RequestPermissionRequest;
+
 export interface AcpSessionConfigSelection {
   readonly configId: string;
   readonly value: string | boolean;
@@ -89,6 +93,12 @@ export interface AcpOpenSessionOptions {
   readonly additionalDirectories?: readonly string[];
   readonly mcpServers?: readonly McpServer[];
   readonly sessionRef?: ExecutorSessionRefEnvelope;
+  readonly configOptions?: readonly AcpSessionConfigSelection[];
+  readonly modeId?: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface AcpConfigureSessionOptions {
   readonly configOptions?: readonly AcpSessionConfigSelection[];
   readonly modeId?: string;
   readonly signal?: AbortSignal;

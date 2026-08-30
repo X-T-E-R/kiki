@@ -28,6 +28,7 @@ import type {
   AcpClientOptions,
   AcpClientState,
   AcpClientStatus,
+  AcpConfigureSessionOptions,
   AcpOpenSessionOptions,
   AcpOpenSessionResult,
   AcpProcessDescriptor,
@@ -304,6 +305,65 @@ export class AcpProcessClient {
       throw this.#decorateError(lastError, AcpClientErrorCode.SessionOpenFailed);
     } finally {
       this.#startupInFlight = false;
+    }
+  }
+
+  async configureSession(
+    options: AcpConfigureSessionOptions,
+  ): Promise<AcpOpenSessionResult> {
+    if (this.#state !== 'ready' || this.#connection === undefined || this.#openResult === undefined) {
+      throw new AcpClientError(
+        AcpClientErrorCode.SessionOpenFailed,
+        'ACP session must be ready before it can be configured',
+      );
+    }
+    const connection = this.#connection;
+    const deadline =
+      Date.now() + (this.#descriptor.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS);
+    this.#setState('configuring');
+    try {
+      let configOptions = [...this.#openResult.configOptions];
+      for (const selection of options.configOptions ?? []) {
+        const configRequest: SetSessionConfigOptionRequest =
+          typeof selection.value === 'boolean'
+            ? {
+                sessionId: this.#openResult.sessionId,
+                configId: selection.configId,
+                type: 'boolean',
+                value: selection.value,
+              }
+            : {
+                sessionId: this.#openResult.sessionId,
+                configId: selection.configId,
+                value: selection.value,
+              };
+        const response = await this.#requestDuringStartup(
+          connection.agent.request(methods.agent.session.setConfigOption, configRequest),
+          deadline,
+          options.signal,
+        );
+        configOptions = response.configOptions;
+      }
+      if (options.modeId !== undefined) {
+        await this.#requestDuringStartup(
+          connection.agent.request(methods.agent.session.setMode, {
+            sessionId: this.#openResult.sessionId,
+            modeId: options.modeId,
+          }),
+          deadline,
+          options.signal,
+        );
+      }
+      this.#openResult = { ...this.#openResult, configOptions };
+      this.#setState('ready');
+      return this.#openResult;
+    } catch (error) {
+      if (this.#connection === connection && !connection.signal.aborted) {
+        this.#setState('ready');
+      } else {
+        this.#setState('broken');
+      }
+      throw this.#decorateError(error, AcpClientErrorCode.SessionOpenFailed);
     }
   }
 

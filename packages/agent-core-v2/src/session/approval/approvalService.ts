@@ -37,6 +37,19 @@ export class SessionApprovalService implements ISessionApprovalService {
   }
 
   decide(id: string, response: ApprovalResponse): void {
+    const pending = this.interaction
+      .listPending('approval')
+      .find((entry) => entry.id === id)?.payload as ApprovalRequest | undefined;
+    if (pending?.display.kind === 'external_permission') {
+      const selected = response.selectedOptionId;
+      if (
+        selected === undefined ||
+        !pending.display.options.some((option) => option.id === selected)
+      ) {
+        this.interaction.respond(id, { decision: 'cancelled' } satisfies ApprovalResponse);
+        return;
+      }
+    }
     this.interaction.respond(id, response);
   }
 
