@@ -141,7 +141,7 @@ describe('SessionExternalDelegationService', () => {
         data: () => ({ modelAlias, modelCapabilities: UNKNOWN_CAPABILITY, profileName, profileDefinitionId, thinkingLevel, systemPrompt: '', subagents: ['coder'] }),
       });
       agent.stub(IAgentPermissionModeService, { mode: 'auto', setMode: () => {} });
-      agent.stub(IAgentUserToolService, { inheritUserTools: () => {} });
+      agent.stub(IAgentUserToolService, { list: () => [], inheritUserTools: () => {} });
       const runtime = new FakeRuntime(
         { workspaceId: 'workspace_test', runtimeId: 'local', generation: 'test' },
         { capabilities: ['process'] },
@@ -223,6 +223,48 @@ describe('SessionExternalDelegationService', () => {
     const continued = await service.continue({ authority, dispatchId: first.dispatchId, message: 'continue' });
     expect(continued.continuationOf).toBe(first.dispatchId);
     expect(createdWith).toHaveLength(1);
+  });
+
+  it('binds profiles that reference user tools inherited from the main agent', async () => {
+    const lookupTool = {
+      name: 'ExternalLookup',
+      description: 'Look up an externally delegated value.',
+      parameters: {},
+    };
+    const inheritedProfile: AgentProfile = {
+      ...profile,
+      disallowedTools: [lookupTool.name],
+    };
+    const mainUserTools = handles.get('main')!.accessor.get(IAgentUserToolService);
+    vi.spyOn(mainUserTools, 'list').mockReturnValue([lookupTool]);
+    ix.stub(ISessionAgentProfileCatalog, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      get: (name: string) => name === inheritedProfile.name ? inheritedProfile : undefined,
+      getDefault: () => inheritedProfile,
+      list: () => [inheritedProfile],
+    });
+    const service = ix.get(ISessionExternalDelegationService);
+
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'user_tool_child',
+      profileName: inheritedProfile.name,
+      message: 'look up',
+    });
+
+    expect(dispatch.status).toBe('queued');
+    expect(createdWith[0]).toMatchObject({
+      binding: {
+        resolvedProfile: inheritedProfile,
+        inheritedUserToolNames: [lookupTool.name],
+      },
+    });
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
   });
 
   it('binds an exact model and effort only when creating a named child', async () => {

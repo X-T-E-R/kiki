@@ -193,6 +193,7 @@ export class SessionSwarmService implements ISessionSwarmService {
       options.parentTurnId === undefined
         ? {}
         : requestIdentitySpawnLabels(callerAgentId, options.parentTurnId, callerMeta);
+    const callerUserTools = caller.accessor.get(IAgentUserToolService);
     const child: IAgentScopeHandle = await this.lifecycle.create({
       binding: {
         profile: selection.baseProfile.name,
@@ -201,6 +202,7 @@ export class SessionSwarmService implements ISessionSwarmService {
         resolvedRoute: selection.route,
         model: binding.model,
         thinking: binding.thinking,
+        inheritedUserToolNames: callerUserTools.list().map((tool) => tool.name),
         lease: target.lease,
         spawnPolicy: target.spawnPolicy,
       },
@@ -215,9 +217,7 @@ export class SessionSwarmService implements ISessionSwarmService {
     child.accessor
       .get(IAgentPermissionModeService)
       .setMode(caller.accessor.get(IAgentPermissionModeService).mode);
-    child.accessor
-      .get(IAgentUserToolService)
-      .inheritUserTools(caller.accessor.get(IAgentUserToolService));
+    child.accessor.get(IAgentUserToolService).inheritUserTools(callerUserTools);
     emitAgentRunSpawned(caller, child.id, {
       profileName: selection.route?.id ?? options.profileName,
       parentToolCallId: options.parentToolCallId,

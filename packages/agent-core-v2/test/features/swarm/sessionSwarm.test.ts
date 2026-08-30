@@ -1348,9 +1348,29 @@ describe('SessionSwarmService metadata compatibility', () => {
     );
   });
 
-  it('inherits parent user tools on spawned children', async () => {
-    const parentUserTools = userToolServiceStub();
+  it('binds profiles that reference user tools inherited from the swarm caller', async () => {
+    const lookupTool = {
+      name: 'SwarmLookup',
+      description: 'Look up a swarm value.',
+      parameters: {},
+    };
+    const parentUserTools = {
+      ...userToolServiceStub(),
+      list: () => [lookupTool],
+    };
     const childUserTools = userToolServiceStub();
+    const inheritedProfile = normalizeAgentProfile({
+      name: 'coder',
+      disallowedTools: [lookupTool.name],
+      systemPrompt: () => '',
+    });
+    ix.stub(ISessionAgentProfileCatalog, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      get: (name: string) => name === inheritedProfile.name ? inheritedProfile : undefined,
+      getDefault: () => normalizeAgentProfile({ name: 'agent', tools: [], systemPrompt: () => '' }),
+      list: () => [],
+    });
     handles.set(
       'main',
       agentHandle('main', lifecycle, eventBus, {}, new Map([
@@ -1375,11 +1395,19 @@ describe('SessionSwarmService metadata compatibility', () => {
     });
     const service = ix.get(ISessionSwarmService);
 
-    await service.run({
+    await expect(service.run({
       callerAgentId: 'main',
       tasks: [spawnSessionTask('src/a.ts')],
-    });
+    })).resolves.toMatchObject([{ status: 'completed' }]);
 
+    expect(createAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        binding: expect.objectContaining({
+          resolvedProfile: inheritedProfile,
+          inheritedUserToolNames: [lookupTool.name],
+        }),
+      }),
+    );
     expect(childUserTools.inheritUserTools).toHaveBeenCalledWith(parentUserTools);
   });
 

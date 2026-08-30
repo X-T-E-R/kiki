@@ -388,6 +388,7 @@ export class SessionExternalDelegationService
     const delegator = { kind: 'external' as const, delegationId: doc.delegationId };
     if (!(await this.names.reserve(taskName, delegator))) throw invalid('Named child task_name is already reserved.');
     const runtimeLease = main.accessor.get(IAgentRuntimeService).acquire(['process']);
+    const mainUserTools = main.accessor.get(IAgentUserToolService);
     try {
       const child = await this.agents.create({
         binding: {
@@ -398,6 +399,7 @@ export class SessionExternalDelegationService
           model: filled.modelAlias ?? profile.modelAlias ?? mainData.modelAlias,
           thinking: filled.thinkingEffort ?? profile.thinkingEffort ?? mainData.thinkingLevel,
           strictThinking: filled.thinkingEffort !== undefined || profile.thinkingEffort !== undefined,
+          inheritedUserToolNames: mainUserTools.list().map((tool) => tool.name),
           lease: target.lease,
           spawnPolicy: target.spawnPolicy,
         },
@@ -409,7 +411,7 @@ export class SessionExternalDelegationService
         },
       });
       child.accessor.get(IAgentPermissionModeService).setMode(main.accessor.get(IAgentPermissionModeService).mode);
-      child.accessor.get(IAgentUserToolService).inheritUserTools(main.accessor.get(IAgentUserToolService));
+      child.accessor.get(IAgentUserToolService).inheritUserTools(mainUserTools);
       doc.children[taskName] = { taskName, agentId: child.id, profileName: profile.name, createdAt: Date.now() };
       await this.persist();
       this.names.commit(taskName, delegator);
