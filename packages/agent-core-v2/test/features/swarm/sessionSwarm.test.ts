@@ -10,7 +10,7 @@ import { Event } from '#/_base/event';
 import { userCancellationReason } from '#/_base/utils/abort';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
-import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { IEventBus } from '#/app/event/eventBus';
 import type { Event2 } from '#/app/event/event2';
@@ -1598,10 +1598,10 @@ describe('SessionSwarmService metadata compatibility', () => {
       'agent-existing',
       agentHandle('agent-existing', lifecycle, eventBus, {}, new Map([
         [
-          IAgentLoopService,
+          IAgentExecutionService,
           {
             _serviceBrand: undefined,
-            status: () => ({ state: 'running', activeTurnId: 1, pendingTurnIds: [], hasPendingRequests: true }),
+            status: () => ({ state: 'running', turnId: 1 }),
           },
         ],
       ])),
@@ -1750,11 +1750,11 @@ function agentHandle(
           } as unknown as IAgentRuntimeBindingService;
         }
         if (serviceId === IAgentPermissionModeService) return permissionMode;
-        if (serviceId === IAgentLoopService) {
+        if (serviceId === IAgentExecutionService) {
           return {
             _serviceBrand: undefined,
-            status: () => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false }),
-          } as unknown as IAgentLoopService;
+            status: () => ({ state: 'idle' }),
+          } as unknown as IAgentExecutionService;
         }
         if (serviceId === IAgentUserToolService) return userToolServiceStub();
         if (serviceId === IEventBus) return eventBus;

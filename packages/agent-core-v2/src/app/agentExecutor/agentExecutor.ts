@@ -1,5 +1,8 @@
-import type { IAgentScopeHandle } from '#/_base/di/scope';
-import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
+import {
+  createDecorator,
+  type ServiceIdentifier,
+  type ServicesAccessor,
+} from '#/_base/di/instantiation';
 import type { IDisposable } from '#/_base/di/lifecycle';
 import type { Hooks } from '#/hooks';
 import type { ProfileBindingSnapshot } from '#/agent/profile/profile';
@@ -54,8 +57,13 @@ export interface AgentExecutorSession {
   readonly hooks: Hooks<{ onWillRun: { signal: AbortSignal } }>;
 }
 
+export interface AgentExecutorAgentContext {
+  readonly id: string;
+  readonly accessor: ServicesAccessor;
+}
+
 export interface AgentExecutorContext {
-  readonly agent: IAgentScopeHandle;
+  readonly agent: AgentExecutorAgentContext;
   readonly descriptor: AgentExecutorDescriptor;
   readonly binding: ProfileBindingSnapshot;
 }

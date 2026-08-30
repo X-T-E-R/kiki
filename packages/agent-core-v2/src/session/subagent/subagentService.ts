@@ -10,6 +10,7 @@ import { Emitter } from '#/_base/event';
 import type { AgentProfileSummaryPolicy } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { resolveSnapshotProfileDefinition } from '#/app/agentProfileCatalog/subagentDispatch';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
+import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { createHooks } from '#/hooks';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
@@ -22,7 +23,6 @@ import {
   ISessionSubagentService,
   type RunAgentOptions,
 } from './subagent';
-import { runAgentTurn } from './runAgentTurn';
 
 export class SessionSubagentService extends Service implements ISessionSubagentService {
   declare readonly _serviceBrand: undefined;
@@ -50,7 +50,7 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
         details: { agentId },
       });
     }
-    return runAgentTurn(handle, request, {
+    return handle.accessor.get(IAgentExecutionService).run(request, {
       summaryPolicy: opts.summaryPolicy ?? this.summaryPolicyFor(handle),
       signal: opts.signal,
       onReady: opts.onReady,

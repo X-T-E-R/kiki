@@ -23,7 +23,7 @@ import { IAgentUsageService } from '#/agent/usage/usage';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
-import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentExecutionService } from '#/agent/execution/execution';
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { abortError } from '#/_base/utils/abort';
@@ -33,7 +33,6 @@ import { IAgentRuntimeBindingSeed, IAgentRuntimeBindingService } from '#/agent/r
 import '#/agent/runtimeBinding/runtimeBindingService';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivation';
-import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { interactionKey } from '#/session/interaction/interactionOps';
 import { IWireService } from '#/wire/wire';
@@ -473,19 +472,15 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     this.handles.delete(agentId);
     this.deferredCreateEvents.delete(agentId);
     await handle.accessor.get(IAgentTaskService).stopAllOnExit('Session closed');
-    const loop = handle.accessor.get(IAgentLoopService);
+    const execution = handle.accessor.get(IAgentExecutionService);
     const compaction = handle.accessor.get(IAgentFullCompactionService).compacting;
     const compactionSettled = compaction?.promise.catch(() => undefined) ?? Promise.resolve();
     const reason = abortError('Agent removed');
-    const prompt = handle.accessor.get(IAgentPromptService);
-    for (const turnId of loop.status().pendingTurnIds) {
-      loop.cancel(turnId, reason);
-    }
-    loop.cancel(undefined, reason);
+    execution.cancel(reason);
     if (compaction !== null && !compaction.abortController.signal.aborted) {
       compaction.abortController.abort(reason);
     }
-    await Promise.all([loop.settled(), compactionSettled, prompt.drain(reason)]);
+    await Promise.all([execution.shutdown(reason), compactionSettled]);
     handle.dispose();
     this.onDidDisposeEmitter.fire(agentId);
   }

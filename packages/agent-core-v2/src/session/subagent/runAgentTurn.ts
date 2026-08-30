@@ -2,7 +2,7 @@ import { APIProviderRateLimitError, isProviderRateLimitError } from '#/kosong/co
 import { type TokenUsage } from '#/kosong/contract/usage';
 
 import { linkAbortSignal, userCancellationReason } from '#/_base/utils/abort';
-import type { IAgentScopeHandle } from '#/_base/di/scope';
+import type { AgentExecutorAgentContext } from '#/app/agentExecutor/agentExecutor';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import { Error2, ErrorCodes, toKimiErrorPayload, type KimiErrorPayload } from '#/errors';
@@ -28,7 +28,7 @@ export interface RunAgentTurnOptions {
 }
 
 export async function runAgentTurn(
-  target: IAgentScopeHandle,
+  target: AgentExecutorAgentContext,
   request: AgentRunRequest,
   options: RunAgentTurnOptions,
 ): Promise<AgentRunHandle> {
@@ -40,7 +40,7 @@ export async function runAgentTurn(
           role: 'user',
           content: [{ type: 'text', text: request.prompt }],
           toolCalls: [],
-          origin: AGENT_RUN_PROMPT_ORIGIN,
+          origin: request.origin ?? AGENT_RUN_PROMPT_ORIGIN,
         } })).launched
       : await promptService.retry();
   if (turn === undefined) throw new Error2(ErrorCodes.INTERNAL, 'Agent turn could not be started');
@@ -54,7 +54,7 @@ export async function runAgentTurn(
 }
 
 async function awaitRun(
-  target: IAgentScopeHandle,
+  target: AgentExecutorAgentContext,
   turn: Turn,
   options: RunAgentTurnOptions,
 ): Promise<{ summary: string; usage?: TokenUsage }> {
@@ -109,7 +109,7 @@ async function awaitTurn(
 }
 
 async function distillSummary(
-  target: IAgentScopeHandle,
+  target: AgentExecutorAgentContext,
   controller: AbortController,
   policy: AgentProfileSummaryPolicy | undefined,
   setTurn: (turn: Turn) => void,

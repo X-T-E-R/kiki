@@ -11,7 +11,7 @@ import { linkAbortSignal } from '#/_base/utils/abort';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
-import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { Event2 } from '#/app/event/event2';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
@@ -319,7 +319,7 @@ export class SessionSwarmService implements ISessionSwarmService {
   }
 
   private requireIdleSubagent(agentId: string, child: IAgentScopeHandle): void {
-    if (child.accessor.get(IAgentLoopService).status().state === 'running') {
+    if (child.accessor.get(IAgentExecutionService).status().state !== 'idle') {
       throw new Error2(
         ErrorCodes.AGENT_ALREADY_RUNNING,
         `Agent instance "${agentId}" is already running and cannot run concurrently`,
