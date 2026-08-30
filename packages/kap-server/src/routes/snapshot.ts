@@ -216,6 +216,7 @@ function enrichCompactSnapshotSubagents(
       ...subagent,
       model: firstNonEmpty(subagent.model, meta?.model),
       thinking_effort: firstNonEmpty(subagent.thinking_effort, meta?.thinkingEffort),
+      tool_call_count: toolCallCounts.get(subagent.id) ?? subagent.tool_call_count,
     };
   });
 }

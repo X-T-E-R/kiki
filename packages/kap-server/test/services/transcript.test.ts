@@ -36,7 +36,7 @@ import {
   type TranscriptTask,
   type TranscriptTurn,
 } from '@moonshot-ai/transcript';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { bindSessionTranscript } from '../../src/services/transcript/coreBinding';
 import {
@@ -2704,6 +2704,64 @@ describe('bindSessionTranscript', () => {
     } finally {
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
+  });
+
+  it('tracks tool-call count decreases when history rewrites remove frames and turns', async () => {
+    const agents = new FakeAgents();
+    agents.add('main', { loopStatus: { state: 'running', activeTurnId: 0 } });
+    const service = new TranscriptService({
+      homeDir: '/nonexistent-home',
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents),
+    });
+    const store = service.forSessionLive('s1');
+    await service.whenReady('s1');
+    const bus = agents.get('main')!.bus;
+    bus.emit(ev({ type: 'turn.started', turnId: 0, origin: { kind: 'user' }, prompt: 'hi' }));
+    bus.emit(ev({ type: 'turn.step.started', turnId: 0, step: 1, stepId: 'step-1' }));
+    for (let index = 1; index <= 5; index += 1) {
+      bus.emit(
+        ev({
+          type: 'tool.call.started',
+          turnId: 0,
+          toolCallId: `call_${index}`,
+          name: 'Read',
+          args: { path: `file-${index}.txt` },
+        }),
+      );
+    }
+
+    expect(service.getMaterializedAgentToolCallCounts('s1', ['main']).get('main')).toBe(5);
+    const transcript = store?.getAgent('main');
+    if (transcript === undefined) throw new Error('expected materialized main transcript');
+    const snapshot = transcript.snapshot();
+    const rewritten: AgentTranscriptSnapshot = {
+      ...snapshot,
+      items: snapshot.items.map((item) =>
+        item.kind === 'turn'
+          ? {
+              ...item,
+              steps: item.steps.map((step) => ({
+                ...step,
+                frames: step.frames.filter(
+                  (frame) =>
+                    frame.kind !== 'tool' ||
+                    frame.toolCallId === 'call_1' ||
+                    frame.toolCallId === 'call_2',
+                ),
+              })),
+            }
+          : item,
+      ),
+    };
+    const readColdSnapshot = vi.spyOn(service, 'readColdSnapshot');
+    readColdSnapshot.mockResolvedValueOnce(rewritten);
+    await service.reconcileAfterRewrite('s1');
+    expect(service.getMaterializedAgentToolCallCounts('s1', ['main']).get('main')).toBe(2);
+
+    readColdSnapshot.mockResolvedValueOnce({ ...rewritten, items: [] });
+    await service.reconcileAfterRewrite('s1');
+    expect(service.getMaterializedAgentToolCallCounts('s1', ['main']).get('main')).toBe(0);
+    service.dropSession('s1');
   });
 
   it('re-asserts running when the backfill rebuilds the live turn completed', async () => {

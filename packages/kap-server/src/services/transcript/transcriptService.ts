@@ -474,6 +474,7 @@ export class TranscriptService {
         snapshot,
       },
     ]);
+    entry.agentToolCallStates.set(agentId, toolCallStateFromSnapshot(snapshot));
     entry.opsJournals.set(agentId, { epoch: randomUUID(), nextSeq: 1, batches: [] });
   }
 

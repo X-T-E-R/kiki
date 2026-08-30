@@ -158,9 +158,10 @@ describe('server-v2 snapshot route enrichment', () => {
       ]),
     };
     const getTranscriptToolCallCounts = vi.fn(async () => new Map([['agent-1', 3]]));
-    const getMaterializedTranscriptToolCallCounts = vi.fn(
-      () => new Map([['agent-1', 3]]),
-    );
+    const getMaterializedTranscriptToolCallCounts = vi
+      .fn<() => ReadonlyMap<string, number>>()
+      .mockReturnValueOnce(new Map([['agent-1', 2]]))
+      .mockReturnValue(new Map());
     const getSnapshotState = vi.fn(async () => ({
       seq: 1,
       epoch: 'ep_snapshot',
@@ -190,7 +191,7 @@ describe('server-v2 snapshot route enrichment', () => {
           status: 'running',
           subagent_phase: 'working',
           parent_tool_call_id: 'tc_swarm_1',
-          tool_call_count: 0,
+          tool_call_count: 5,
           swarm_index: 0,
           run_in_background: false,
           created_at: new Date(now).toISOString(),
@@ -266,13 +267,18 @@ describe('server-v2 snapshot route enrichment', () => {
         thinking_effort: 'high',
         subagent_phase: 'working',
         label: 'Research API limits',
-        tool_call_count: 3,
+        tool_call_count: 2,
       }),
     ]);
     expect(getSnapshotState).toHaveBeenLastCalledWith(sessionId, { captureMessages: false });
     expect(getMaterializedTranscriptToolCallCounts).toHaveBeenCalledWith(sessionId, [
       'agent-1',
     ]);
+    expect(getTranscriptToolCallCounts).not.toHaveBeenCalled();
+    expect(loadParts).not.toHaveBeenCalled();
+
+    const unmaterialized = await invoke('transcript');
+    expect(unmaterialized.subagents?.[0]?.tool_call_count).toBe(5);
     expect(getTranscriptToolCallCounts).not.toHaveBeenCalled();
     expect(loadParts).not.toHaveBeenCalled();
 
@@ -297,7 +303,7 @@ describe('server-v2 snapshot route enrichment', () => {
         parent_agent_id: 'main',
         parent_tool_call_id: 'tc_swarm_1',
         label: 'Research API limits',
-        tool_call_count: 3,
+        tool_call_count: 5,
         swarm_index: 0,
         run_in_background: false,
       }),
