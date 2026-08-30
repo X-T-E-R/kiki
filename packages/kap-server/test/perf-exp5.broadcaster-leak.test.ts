@@ -176,6 +176,23 @@ class FakeWorkView {
 class FakeInteractions {
   private readonly pendingChanged = new ListenerSet<unknown>();
   private readonly resolved = new ListenerSet<unknown>();
+  readonly acquiredConsumerIds: string[] = [];
+  readonly releasedConsumerIds: string[] = [];
+  readonly consumerIds = new Set<string>();
+
+  acquireConsumer(id: string): void {
+    this.acquiredConsumerIds.push(id);
+    this.consumerIds.add(id);
+  }
+
+  releaseConsumer(id: string): void {
+    this.releasedConsumerIds.push(id);
+    this.consumerIds.delete(id);
+  }
+
+  hasConsumer(): boolean {
+    return this.consumerIds.size > 0;
+  }
 
   listPending(): never[] {
     return [];
@@ -473,15 +490,23 @@ async function addClosedSessions(
   const closedBuses: FakeAgentBus[] = [];
   for (let offset = 0; offset < count; offset++) {
     const sessionId = `closed-${String(firstIndex + offset)}`;
-    const { main } = harness.host.create(sessionId);
+    const { session, main } = harness.host.create(sessionId);
     closedBuses.push(main.bus);
     expect(await harness.broadcaster.subscribe(sessionId, target)).toBe(true);
+    expect(session.interactions.acquiredConsumerIds).toHaveLength(1);
+    expect(session.interactions.consumerIds).toEqual(
+      new Set(session.interactions.acquiredConsumerIds),
+    );
     for (let n = 0; n < durableEventsPerSession; n++) {
       main.bus.emit(event('turn.started', { turnId: n }));
     }
     await harness.broadcaster.getCursor(sessionId);
     await harness.host.close(sessionId);
     await harness.broadcaster.getCursor(sessionId);
+    expect(session.interactions.releasedConsumerIds).toEqual(
+      session.interactions.acquiredConsumerIds,
+    );
+    expect(session.interactions.consumerIds).toEqual(new Set());
   }
   return closedBuses;
 }
