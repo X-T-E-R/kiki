@@ -1035,10 +1035,15 @@ export class SessionController {
     approvalId: string,
     decision: ApprovalDecision,
     scope?: ApprovalScope,
+    selectedOptionId?: string,
   ): Promise<void> {
     const resolvedAt = new Date().toISOString();
     try {
-      await this.client.resolveApproval(this.sessionId, approvalId, { decision, scope });
+      await this.client.resolveApproval(this.sessionId, approvalId, {
+        decision,
+        scope,
+        selected_option_id: selectedOptionId,
+      });
       this.setState(markApprovalResolved(this.state, approvalId, { decision, resolvedAt }));
     } catch (error) {
       if (error instanceof ApiError && error.code === API_CODES.APPROVAL_ALREADY_RESOLVED) {

@@ -60,6 +60,7 @@ import {
   type SystemVariant,
   type TodoItem,
   type ToolBlock,
+  type TurnExecutionInfo,
   type TurnRetryInfo,
   type TurnTailInfo,
   type UserBlock,
@@ -1003,9 +1004,21 @@ function insertInteractionBlocks(
   previous: readonly Block[],
 ): Block[] {
   const blocks = source.filter((block) => block.kind !== 'approval' && block.kind !== 'question');
+  // Resolution upserts (`interaction.upsert` with a terminal state) replace
+  // the interaction record in the store wholesale and arrive WITHOUT the
+  // request payload — rebuilds would fall back to placeholder tool/action
+  // text. Carry the pending card's request forward when the upsert omits it.
+  const previousById = new Map(previous.map((block) => [block.id, block]));
   const projected = interactions
     .flatMap((interaction): ProjectedInteraction[] => {
-      const block = interactionToBlock(interaction, agentId);
+      let block = interactionToBlock(interaction, agentId);
+      if (
+        (block?.kind === 'approval' || block?.kind === 'question') &&
+        (interaction.request === undefined || interaction.request === null)
+      ) {
+        const prior = previousById.get(block.id);
+        if (prior?.kind === block.kind) block = { ...block, request: prior.request } as typeof block;
+      }
       return block?.kind === 'approval' || block?.kind === 'question'
         ? [interactionPlacement(interaction, block)]
         : [];
@@ -1374,6 +1387,49 @@ export function stabilizeProjectedBlocks(
     return block;
   });
   return allStable ? previous : stable;
+}
+
+/**
+ * Defensive read of the supplemental `executor.turn.metadata` projection
+ * (`TranscriptTurn.execution`). The contract type lands in
+ * `packages/transcript`; until then the field arrives untyped, and a malformed
+ * payload must degrade to "no badge" instead of breaking the projection.
+ * Accepts camelCase (transcript model) and snake_case (REST passthrough).
+ */
+export function turnExecutionFromItem(item: object): TurnExecutionInfo | undefined {
+  const raw = (item as { readonly execution?: unknown }).execution;
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const record = raw as Record<string, unknown>;
+  const executorId = record['executorId'] ?? record['executor_id'];
+  const protocol = record['protocol'];
+  if (typeof executorId !== 'string' || executorId === '') return undefined;
+  if (typeof protocol !== 'string' || protocol === '') return undefined;
+  const resumeMode = record['resumeMode'] ?? record['resume_mode'];
+  const losses = Array.isArray(record['losses'])
+    ? record['losses'].filter((code): code is string => typeof code === 'string')
+    : [];
+  return {
+    executorId,
+    protocol,
+    resumeMode: typeof resumeMode === 'string' ? resumeMode : undefined,
+    fidelity: record['fidelity'] === 'degraded' ? 'degraded' : 'full',
+    losses,
+  };
+}
+
+function sameTurnExecution(
+  left: TurnExecutionInfo | undefined,
+  right: TurnExecutionInfo,
+): boolean {
+  return (
+    left !== undefined &&
+    left.executorId === right.executorId &&
+    left.protocol === right.protocol &&
+    left.resumeMode === right.resumeMode &&
+    left.fidelity === right.fidelity &&
+    left.losses.length === right.losses.length &&
+    left.losses.every((code, index) => code === right.losses[index])
+  );
 }
 
 function turnTailFromItem(item: {
@@ -1947,10 +2003,19 @@ export function projectAgentTranscriptView(
   const stableBlocks = stabilizeProjectedBlocks(previous.blocks, withSnapshotFields);
   let firstTurn: Extract<TranscriptItem, { kind: 'turn' }> | undefined;
   let lastTurn: Extract<TranscriptItem, { kind: 'turn' }> | undefined;
+  // External-executor provenance per turn; entries reuse the previous object
+  // when unchanged so badge props stay referentially stable across publishes.
+  const previousExecutions = previous.turnExecutions;
+  const turnExecutions: Record<string, TurnExecutionInfo> = {};
   for (const item of snapshot.items) {
     if (item.kind !== 'turn') continue;
     firstTurn ??= item;
     lastTurn = item;
+    const execution = turnExecutionFromItem(item);
+    if (execution === undefined) continue;
+    turnExecutions[item.turnId] = sameTurnExecution(previousExecutions[item.turnId], execution)
+      ? previousExecutions[item.turnId]!
+      : execution;
   }
   const meta = snapshot.meta.agent;
   const prompts = Array.isArray(snapshot.prompts) ? snapshot.prompts : [...snapshot.prompts.values()];
@@ -1999,6 +2064,7 @@ export function projectAgentTranscriptView(
     goal: goal === undefined ? null : projectGoalSnapshot(goal),
     hasMoreHistory: snapshot.hasMoreOlder === true,
     oldestMessageId: firstTurn?.turnId,
+    turnExecutions,
     turnTail: turnTail ?? previous.turnTail,
     turnRetry: turnRetryFromItem(lastTurn),
   };

@@ -50,6 +50,7 @@ import type {
   SystemReminderBlock,
   ThinkingBlock,
   ToolBlock,
+  TurnExecutionInfo,
   TurnRetryInfo,
   TurnTailInfo,
   UserBlock,
@@ -893,6 +894,7 @@ const BlockView = memo(function BlockView({
     approvalId: string,
     decision: ApprovalDecision,
     scope?: 'session',
+    selectedOptionId?: string,
   ) => Promise<void>;
   onAnswerQuestion: (questionId: string, answers: Record<string, QuestionAnswer>) => Promise<void>;
   onDismissQuestion: (questionId: string) => Promise<void>;
@@ -968,7 +970,9 @@ const BlockView = memo(function BlockView({
           block={block}
           originAgentName={originAgentName ?? originFallback}
           showShortcutHints={approvalShortcutHints === true}
-          onResolve={(decision, scope) => onResolveApproval(block.request.approval_id, decision, scope)}
+          onResolve={(decision, scope, selectedOptionId) =>
+            onResolveApproval(block.request.approval_id, decision, scope, selectedOptionId)
+          }
         />
       );
     case 'question':
@@ -994,6 +998,12 @@ const BlockView = memo(function BlockView({
 
 function nodeKey(node: DisplayNode): string {
   return node.kind === 'tool-group' ? node.id : node.id;
+}
+
+/** Turn a display node belongs to (tool groups take their first tool's). */
+function displayNodeTurnId(node: DisplayNode): string | undefined {
+  if (node.kind === 'tool-group') return node.tools[0]?.turnId;
+  return 'turnId' in node ? node.turnId : undefined;
 }
 
 /**
@@ -1118,10 +1128,13 @@ type TranscriptRowProps = {
   forest?: AgentForest;
   rowActions?: TranscriptRowActions;
   latestFinalAssistantId?: string;
+  /** External-executor badge shown above the first row of the turn. */
+  executionBadge?: TurnExecutionInfo;
   onResolveApproval: (
     approvalId: string,
     decision: ApprovalDecision,
     scope?: 'session',
+    selectedOptionId?: string,
   ) => Promise<void>;
   onAnswerQuestion: (questionId: string, answers: Record<string, QuestionAnswer>) => Promise<void>;
   onDismissQuestion: (questionId: string) => Promise<void>;
@@ -1158,6 +1171,7 @@ const TranscriptRow = memo(
     forest,
     rowActions,
     latestFinalAssistantId,
+    executionBadge,
     onResolveApproval,
     onAnswerQuestion,
     onDismissQuestion,
@@ -1166,6 +1180,7 @@ const TranscriptRow = memo(
   }: TranscriptRowProps) {
     return (
       <div data-block-id={nodeKey(node)}>
+        {executionBadge !== undefined ? <TurnExecutionBadge execution={executionBadge} /> : null}
         {node.kind === 'tool-group' ? (
           <ToolGroupRow group={node} onOpenAgent={onOpenAgent} />
         ) : node.kind === 'tool' ? (
@@ -1198,6 +1213,7 @@ const TranscriptRow = memo(
     subagentBranchEqual(prev.node, prev.forest, next.forest) &&
     prev.rowActions === next.rowActions &&
     prev.latestFinalAssistantId === next.latestFinalAssistantId &&
+    prev.executionBadge === next.executionBadge &&
     prev.onResolveApproval === next.onResolveApproval &&
     prev.onAnswerQuestion === next.onAnswerQuestion &&
     prev.onDismissQuestion === next.onDismissQuestion &&
@@ -1205,8 +1221,10 @@ const TranscriptRow = memo(
     prev.onOpenAgent === next.onOpenAgent,
 );
 
-type TranscriptPageProps = Omit<TranscriptRowProps, 'node'> & {
+type TranscriptPageProps = Omit<TranscriptRowProps, 'node' | 'executionBadge'> & {
   page: TranscriptPageData;
+  /** nodeKey → external-executor badge for rows that open an executed turn. */
+  executionBadges: ReadonlyMap<string, TurnExecutionInfo>;
 };
 
 /**
@@ -1217,11 +1235,16 @@ type TranscriptPageProps = Omit<TranscriptRowProps, 'node'> & {
  * re-creating and re-comparing N row elements.
  */
 const TranscriptPage = memo(
-  function TranscriptPage({ page, ...rowProps }: TranscriptPageProps) {
+  function TranscriptPage({ page, executionBadges, ...rowProps }: TranscriptPageProps) {
     return (
       <>
         {page.nodes.map((node) => (
-          <TranscriptRow key={nodeKey(node)} node={node} {...rowProps} />
+          <TranscriptRow
+            key={nodeKey(node)}
+            node={node}
+            executionBadge={executionBadges.get(nodeKey(node))}
+            {...rowProps}
+          />
         ))}
       </>
     );
@@ -1236,6 +1259,9 @@ const TranscriptPage = memo(
     prev.approvalShortcutHints === next.approvalShortcutHints &&
     (!prev.page.nodes.some(nodeUsesAgentNames) || prev.agentNames === next.agentNames) &&
     prev.page.nodes.every((node) => subagentBranchEqual(node, prev.forest, next.forest)) &&
+    prev.page.nodes.every(
+      (node) => prev.executionBadges.get(nodeKey(node)) === next.executionBadges.get(nodeKey(node)),
+    ) &&
     prev.rowActions === next.rowActions &&
     prev.latestFinalAssistantId === next.latestFinalAssistantId &&
     prev.onResolveApproval === next.onResolveApproval &&
@@ -1406,6 +1432,60 @@ function formatLatencySeconds(ms: number): string {
 }
 
 /**
+ * External-executor badge opening a turn run by an off-kiki harness (design
+ * §8: `executor.turn.metadata` → `TranscriptTurn.execution`). Shows
+ * `Executor · Protocol`; degraded fidelity adds an amber marker listing the
+ * stable loss codes, with per-code explanations in the tooltip.
+ */
+export const TurnExecutionBadge = memo(function TurnExecutionBadge({
+  execution,
+}: {
+  execution: TurnExecutionInfo;
+}) {
+  const { t } = useI18n();
+  const executor =
+    execution.executorId.charAt(0).toUpperCase() + execution.executorId.slice(1);
+  const protocol = execution.protocol === 'acp-v1' ? 'ACP' : execution.protocol;
+  const degraded = execution.fidelity === 'degraded' || execution.losses.length > 0;
+  const lossTooltip = execution.losses
+    .map((code) => {
+      const key = `transcript.loss.${code}` as I18nKey;
+      const text = t(key);
+      return text === key ? code : `${code} — ${text}`;
+    })
+    .join('\n');
+  return (
+    <div data-turn-execution className="anim-enter flex flex-wrap items-center gap-1.5">
+      <span
+        title={
+          execution.resumeMode === undefined
+            ? undefined
+            : t('transcript.exec.resumeMode', { mode: execution.resumeMode })
+        }
+        className="inline-flex items-center gap-1 rounded-full border border-hairline bg-panel px-2 py-0.5 text-[10.5px] font-medium text-ink-faint"
+      >
+        <span aria-hidden className="text-[9px]">⬈</span>
+        {t('transcript.exec.badge', { executor, protocol })}
+      </span>
+      {degraded ? (
+        <span
+          title={lossTooltip === '' ? undefined : lossTooltip}
+          className="inline-flex items-center gap-1 rounded-full border border-amber-rule/40 bg-amber-card px-2 py-0.5 text-[10.5px] font-medium text-amber-ink"
+        >
+          <span aria-hidden className="text-[9px]">⚠</span>
+          {t('transcript.exec.degraded')}
+          {execution.losses.length > 0 ? (
+            <span className="font-mono text-[9.5px] text-amber-ink/80">
+              {execution.losses.join(' ')}
+            </span>
+          ) : null}
+        </span>
+      ) : null}
+    </div>
+  );
+});
+
+/**
  * End-of-turn readout (deepseek-harness's turn tail, MIT): end clock ·
  * Ran for … · TTFT … · output decode throughput.
  */
@@ -1451,6 +1531,7 @@ export function Transcript({
     approvalId: string,
     decision: ApprovalDecision,
     scope?: 'session',
+    selectedOptionId?: string,
   ) => Promise<void>;
   onAnswerQuestion: (questionId: string, answers: Record<string, QuestionAnswer>) => Promise<void>;
   onDismissQuestion: (questionId: string) => Promise<void>;
@@ -1502,6 +1583,22 @@ export function Transcript({
   // Regenerate/fork anchor: the latest completed turn's final assistant reply.
   // Changes only at turn boundaries, so the page memos survive token deltas.
   const latestFinalAssistantId = useMemo(() => latestFinalAssistantBlockId(blocks), [blocks]);
+  // External-executor badges: first display node of each turn that carries
+  // `execution` provenance. Entry identity is stabilized upstream (the
+  // projection reuses unchanged TurnExecutionInfo objects), so the map — and
+  // thus every row prop — survives unrelated deltas.
+  const executionBadges = useStableMap(() => {
+    const map = new Map<string, TurnExecutionInfo>();
+    const seenTurns = new Set<string>();
+    for (const node of nodes) {
+      const turnId = displayNodeTurnId(node);
+      if (turnId === undefined || seenTurns.has(turnId)) continue;
+      seenTurns.add(turnId);
+      const execution = state.turnExecutions[turnId];
+      if (execution !== undefined) map.set(nodeKey(node), execution);
+    }
+    return map;
+  });
 
   if (loadError !== undefined) {
     return (
@@ -1565,6 +1662,7 @@ export function Transcript({
             forest={stableForest}
             rowActions={rowActions}
             latestFinalAssistantId={latestFinalAssistantId}
+            executionBadges={executionBadges}
             onResolveApproval={onResolveApproval}
             onAnswerQuestion={onAnswerQuestion}
             onDismissQuestion={onDismissQuestion}
