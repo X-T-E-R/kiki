@@ -8,8 +8,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { flushTelemetrySync, initializeTelemetry, shutdownTelemetry, track } from '../src';
-import { isTelemetryDisabledByEnv } from '../src/bootstrap';
-import { TelemetryClient, resetDefaultTelemetryClientForTests } from '../src/client';
+import { isTelemetryDisabledByEnv, shouldEnableTelemetry } from '../src/bootstrap';
+import {
+  TelemetryClient,
+  getDefaultTelemetryClient,
+  resetDefaultTelemetryClientForTests,
+} from '../src/client';
 import { installCrashHandlersForClient, setCrashPhase, uninstallCrashHandlers } from '../src/crash';
 import { EventSink } from '../src/sink';
 import { SystemMetricsCollector } from '../src/systemMetrics';
@@ -817,6 +821,18 @@ describe('AsyncTransport', () => {
 });
 
 describe('telemetry bootstrap', () => {
+  it('requires explicit opt-in and keeps the disable env override', () => {
+    expect(shouldEnableTelemetry({ env: {} })).toBe(false);
+    expect(shouldEnableTelemetry({ enabled: false, env: {} })).toBe(false);
+    expect(shouldEnableTelemetry({ enabled: true, env: {} })).toBe(true);
+    expect(
+      shouldEnableTelemetry({
+        enabled: true,
+        env: { KIMI_DISABLE_TELEMETRY: 'yes' },
+      }),
+    ).toBe(false);
+  });
+
   it('matches the KIMI_DISABLE_TELEMETRY true-value semantics', () => {
     expect(isTelemetryDisabledByEnv({ KIMI_DISABLE_TELEMETRY: '1' })).toBe(true);
     expect(isTelemetryDisabledByEnv({ KIMI_DISABLE_TELEMETRY: 'yes' })).toBe(true);
@@ -824,13 +840,34 @@ describe('telemetry bootstrap', () => {
     expect(isTelemetryDisabledByEnv({ KIMI_DISABLE_TELEMETRY: 'false' })).toBe(false);
   });
 
-  it('disables the singleton without attaching a sink when opted out', async () => {
+  it('does not construct a sink or send cloud requests by default', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    vi.stubGlobal('fetch', fetchImpl);
+    const homeDir = await tempHome();
+
+    track('before_init');
+    initializeTelemetry({
+      homeDir,
+      deviceId: 'dev',
+      appName: 'kimi-code-cli',
+      version: '1.2.3',
+    });
+    track('after_init');
+    await shutdownTelemetry();
+
+    expect(getDefaultTelemetryClient().getSink()).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(() => statSync(join(homeDir, 'telemetry'))).toThrow();
+  });
+
+  it('keeps the disable env override after explicit opt-in', async () => {
     const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
     vi.stubGlobal('fetch', fetchImpl);
     const saved = process.env['KIMI_DISABLE_TELEMETRY'];
     try {
       process.env['KIMI_DISABLE_TELEMETRY'] = 'true';
       initializeTelemetry({
+        enabled: true,
         homeDir: await tempHome(),
         deviceId: 'dev',
         appName: 'kimi-code-cli',
@@ -846,12 +883,13 @@ describe('telemetry bootstrap', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('queues singleton track calls before initialization, then flushes after bootstrap', async () => {
+  it('queues singleton track calls before explicit opt-in, then flushes after bootstrap', async () => {
     const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
     vi.stubGlobal('fetch', fetchImpl);
 
     track('before_init');
     initializeTelemetry({
+      enabled: true,
       homeDir: await tempHome(),
       deviceId: 'dev',
       sessionId: 'ses',
@@ -872,11 +910,12 @@ describe('telemetry bootstrap', () => {
     });
   });
 
-  it('forwards a caller-provided endpoint to the transport', async () => {
+  it('forwards a caller-provided endpoint to the transport after opt-in', async () => {
     const fetchImpl = vi.fn(async (_input: unknown) => new Response('', { status: 200 }));
     vi.stubGlobal('fetch', fetchImpl);
 
     initializeTelemetry({
+      enabled: true,
       homeDir: await tempHome(),
       deviceId: 'dev',
       appName: 'kimi-code-cli',
@@ -890,9 +929,10 @@ describe('telemetry bootstrap', () => {
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://mock.test/events');
   });
 
-  it('flushes the singleton synchronously to disk fallback', async () => {
+  it('flushes the singleton synchronously to disk fallback after opt-in', async () => {
     const homeDir = await tempHome();
     initializeTelemetry({
+      enabled: true,
       homeDir,
       deviceId: 'dev',
       sessionId: 'ses',
@@ -908,10 +948,11 @@ describe('telemetry bootstrap', () => {
     expect(file).toContain('"event":"sync_flush"');
   });
 
-  it('writes system metrics with the singleton session context', async () => {
+  it('writes system metrics with the singleton session context after opt-in', async () => {
     vi.useFakeTimers();
     const homeDir = await tempHome();
     initializeTelemetry({
+      enabled: true,
       homeDir,
       deviceId: 'dev',
       sessionId: 'ses',

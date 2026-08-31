@@ -328,7 +328,7 @@ async function runServerInProcess(
   const version = getVersion();
   // Registers the telemetry provider for `track` / `shutdownTelemetry`; the
   // client itself is not passed into kap-server.
-  initializeServerTelemetry({ version });
+  const telemetry = initializeServerTelemetry({ version });
 
   let running: RoutedServer | undefined;
   let stopping = false;
@@ -401,7 +401,7 @@ async function runServerInProcess(
     // Attach the engine's cloud telemetry appender (still gated by the config
     // `telemetry` toggle). Complements the v1 client registered above, which
     // only covers host-level events.
-    telemetry: true,
+    telemetry: telemetry.cloudEnabled,
     webAssetsDir,
   });
   logger.info('serving the REST/WS API and the bundled web UI');

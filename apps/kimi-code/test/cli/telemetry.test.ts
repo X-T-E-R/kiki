@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@moonshot-ai/kimi-telemetry', () => ({
   initializeTelemetry: mocks.initializeTelemetry,
   setTelemetryContext: vi.fn(),
+  shouldEnableTelemetry: ({ enabled }: { enabled?: boolean }) => enabled === true,
   track: vi.fn(),
   withTelemetryContext: vi.fn(),
 }));
@@ -53,6 +54,33 @@ vi.mock('@moonshot-ai/kimi-code-sdk', async (importOriginal) => {
   };
 });
 
+describe('initializeCliTelemetry', () => {
+  it('passes false when the config toggle is omitted', async () => {
+    mocks.initializeTelemetry.mockClear();
+    const { initializeCliTelemetry } = await import('#/cli/telemetry');
+
+    initializeCliTelemetry({
+      harness: {
+        homeDir: '/home/.kimi-code',
+        auth: { getCachedAccessToken: mocks.getCachedAccessToken },
+        track: vi.fn(),
+      },
+      bootstrap: {
+        homeDir: '/home/.kimi-code',
+        deviceId: 'device-123',
+        firstLaunch: false,
+      },
+      config: {},
+      version: '1.2.3',
+      uiMode: 'shell',
+    } as never);
+
+    expect(mocks.initializeTelemetry).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: false }),
+    );
+  }, 20000);
+});
+
 describe('initializeServerTelemetry', () => {
   beforeEach(() => {
     mocks.initializeTelemetry.mockClear();
@@ -63,7 +91,7 @@ describe('initializeServerTelemetry', () => {
     });
   });
 
-  it('configures the sink with ui_mode="web" and the CLI product identity', async () => {
+  it('configures cloud telemetry after config.toml explicitly opts in', async () => {
     const { initializeServerTelemetry } = await import('#/cli/telemetry');
     const client = initializeServerTelemetry({ version: '1.2.3' });
     expect(mocks.initializeTelemetry).toHaveBeenCalledWith(
@@ -77,43 +105,55 @@ describe('initializeServerTelemetry', () => {
         homeDir: '/home/.kimi-code',
       }),
     );
-    // The returned client wraps the module functions so core + the host share
-    // the same underlying client.
     expect(client).toEqual(
       expect.objectContaining({
         track: expect.any(Function),
         withContext: expect.any(Function),
         setContext: expect.any(Function),
+        cloudEnabled: true,
       }),
     );
-    // The first dynamic import pulls in the whole SDK/oauth chain (~3s idle,
-    // more under full-suite transform contention) — give it headroom past the
-    // 5s default timeout.
   }, 20000);
 
-  it('disables telemetry when config.toml sets telemetry = false', async () => {
+  it('disables cloud telemetry when the config toggle is omitted', async () => {
+    mocks.loadRuntimeConfigSafe.mockReturnValue({
+      config: { defaultModel: 'kimi-k2' },
+      fileError: undefined,
+    });
+    const { initializeServerTelemetry } = await import('#/cli/telemetry');
+    const client = initializeServerTelemetry({ version: '1.2.3' });
+
+    expect(mocks.initializeTelemetry).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: false }),
+    );
+    expect(client.cloudEnabled).toBe(false);
+  });
+
+  it('disables cloud telemetry when config.toml sets telemetry = false', async () => {
     mocks.loadRuntimeConfigSafe.mockReturnValue({
       config: { defaultModel: 'kimi-k2', telemetry: false },
       fileError: undefined,
     });
     const { initializeServerTelemetry } = await import('#/cli/telemetry');
-    initializeServerTelemetry({ version: '1.2.3' });
+    const client = initializeServerTelemetry({ version: '1.2.3' });
 
     expect(mocks.initializeTelemetry).toHaveBeenCalledWith(
       expect.objectContaining({ enabled: false }),
     );
+    expect(client.cloudEnabled).toBe(false);
   });
 
-  it('degrades to enabled with no model when config is unreadable', async () => {
+  it('keeps cloud telemetry disabled when config is unreadable', async () => {
     mocks.loadRuntimeConfigSafe.mockReturnValue({
       config: {},
       fileError: new Error('bad toml'),
     });
     const { initializeServerTelemetry } = await import('#/cli/telemetry');
-    initializeServerTelemetry({ version: '1.2.3' });
+    const client = initializeServerTelemetry({ version: '1.2.3' });
 
     expect(mocks.initializeTelemetry).toHaveBeenCalledWith(
-      expect.objectContaining({ enabled: true, model: undefined }),
+      expect.objectContaining({ enabled: false, model: undefined }),
     );
+    expect(client.cloudEnabled).toBe(false);
   });
 });
