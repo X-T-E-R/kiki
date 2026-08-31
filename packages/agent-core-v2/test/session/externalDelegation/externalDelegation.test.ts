@@ -14,6 +14,7 @@ import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
@@ -23,17 +24,20 @@ import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { IAgentCollaborationRegistry } from '#/session/agentCollaboration/registry';
+import { ISessionDispatchService } from '#/session/dispatch/dispatch';
+import { SessionDispatchService } from '#/session/dispatch/dispatchService';
 import {
   type ExternalAuthority,
   ISessionExternalDelegationService,
 } from '#/session/externalDelegation/externalDelegation';
 import { SessionExternalDelegationService } from '#/session/externalDelegation/externalDelegationService';
-import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IModelService } from '#/kosong/model/model';
+import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import type { SessionWillCloseEvent } from '#/workspace/sessionLifecycle/sessionLifecycle';
 
 const authority: ExternalAuthority = {
@@ -55,6 +59,7 @@ describe('SessionExternalDelegationService', () => {
   let ix: TestInstantiationService;
   let documents: Map<string, unknown>;
   let handles: Map<string, IAgentScopeHandle>;
+  let agentMetas: Record<string, AgentMeta>;
   let completions: Array<{ resolve(value: { summary: string }): void; reject(error: unknown): void }>;
   let nextRunHandleGate: Promise<void> | undefined;
   let runSignals: AbortSignal[];
@@ -69,6 +74,7 @@ describe('SessionExternalDelegationService', () => {
     ix = disposables.add(new TestInstantiationService());
     documents = new Map();
     handles = new Map();
+    agentMetas = { main: { type: 'main', labels: {} } };
     completions = [];
     nextRunHandleGate = undefined;
     runSignals = [];
@@ -100,11 +106,23 @@ describe('SessionExternalDelegationService', () => {
       _serviceBrand: undefined,
       ready: Promise.resolve(),
       onDidChangeMetadata: () => ({ dispose: () => {} }),
-      read: async () => ({ id: 'session_test', createdAt: 0, updatedAt: 0, archived: false, agents: {} }),
+      read: async () => ({
+        id: 'session_test',
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+        agents: agentMetas,
+      }),
+      registerAgent: async (agentId, meta) => {
+        agentMetas[agentId] = meta;
+      },
     });
     ix.stub(ISessionWorkspaceContext, { _serviceBrand: undefined, workDir: '/workspace', additionalDirs: [] });
     ix.stub(IConfigService, { get: <T>() => undefined as T });
     ix.stub(IModelService, { resolveId: (id: string) => id });
+    ix.stub(IModelCatalog, {
+      get: (id: string) => ({ id }) as Model,
+    } as IModelCatalog);
     willClose = new Emitter<SessionWillCloseEvent & IWaitUntil>();
     disposables.add(willClose);
     ix.set(ISessionManager, {
@@ -158,6 +176,7 @@ describe('SessionExternalDelegationService', () => {
       } as unknown as IAgentRuntimeService);
       agent.stub(IAgentContextMemoryService, { get: () => [] });
       agent.stub(IAgentLoopService, { status: () => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false }) });
+      agent.stub(IAgentExecutionService, { status: () => ({ state: 'idle' }) });
       return { id, accessor: agent } as unknown as IAgentScopeHandle;
     };
     handles.set('main', makeHandle('main', 'agent'));
@@ -166,14 +185,21 @@ describe('SessionExternalDelegationService', () => {
       get: (id) => handles.get(id),
       create: async (opts) => {
         createdWith.push(opts);
+        const agentId = opts?.agentId ?? 'external-child';
         const handle = makeHandle(
-          'external-child',
+          agentId,
           opts?.binding?.profile ?? 'coder',
           opts?.binding?.model,
           opts?.binding?.thinking,
           opts?.binding?.resolvedProfile?.definitionId,
         );
         handles.set(handle.id, handle);
+        agentMetas[handle.id] = {
+          type: 'sub',
+          delegator: opts?.delegator,
+          labels: opts?.labels,
+          displayName: opts?.binding?.profile,
+        };
         return handle;
       },
     });
@@ -199,6 +225,7 @@ describe('SessionExternalDelegationService', () => {
       commit: () => {},
       release: () => {},
     });
+    ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     ix.set(ISessionExternalDelegationService, new SyncDescriptor(SessionExternalDelegationService));
   });
 
@@ -475,7 +502,7 @@ describe('SessionExternalDelegationService', () => {
     await vi.waitFor(() => {
       expect(runPrompts).toEqual([
         'PRIVATE PREFIX\n\nwrite',
-        'PRIVATE PREFIX\n\nwrite again',
+        'write again',
       ]);
     });
   });

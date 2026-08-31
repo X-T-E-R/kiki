@@ -11,55 +11,43 @@
 import { ulid } from 'ulid';
 
 import { Disposable } from '#/_base/di/lifecycle';
+import { Emitter } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { Error2, ErrorCodes, isError2, toKimiErrorPayload } from '#/errors';
 import { IFlagService } from '#/app/flag/flag';
-import { IConfigService } from '#/app/config/config';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
-import { labelsFromAgentMeta } from '#/session/agentLifecycle/subagentMetadata';
-import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
-import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { IAgentProfileService } from '#/agent/profile/profile';
-import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
-import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
-import { IAgentLoopService } from '#/agent/loop/loop';
-import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
-import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
-import {
-  listAvailableSubagentTargets,
-  resolveSnapshotProfileDefinition,
-  resolveSubagentTarget,
-  type ResolvedSubagentTarget,
-} from '#/app/agentProfileCatalog/subagentDispatch';
-import {
-  aliasIdentity,
-  applyLease,
-  applySpawnPolicy,
-  fillLeasePins,
-  spawnConstraintOrigin,
-} from '#/app/agentProfileCatalog/applySubagentLease';
+import { listAvailableSubagentTargets } from '#/app/agentProfileCatalog/subagentDispatch';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { ILogService } from '#/_base/log/log';
 import { IModelService } from '#/kosong/model/model';
-import { IAgentCollaborationRegistry } from '#/session/agentCollaboration/registry';
+import { inputTotal, type TokenUsage } from '#/kosong/contract/usage';
 import {
-  canonicalizeSubagentBinding,
-  resolveSubagentBinding,
-} from '#/session/subagent/configSection';
-import { roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
+  ISessionDispatchService,
+  type DispatchChild,
+  type DispatchRun,
+} from '#/session/dispatch/dispatch';
+import { buildProfileCatalogEntries } from '#/session/dispatch/profileCatalogProjection';
+import {
+  KeyReservationRegistry,
+  type ReservationResult,
+} from '#/session/dispatch/reservation';
 
 import { EXTERNAL_DELEGATION_FLAG_ID } from './flag';
 import {
   classifyExternalFailureCode,
   externalFailureDescription,
+  type DispatchUsageView,
+  type DispatchWaitRequest,
+  type DispatchWaitView,
   type ExternalAuthority,
   type ExternalChildView,
   type ExternalContinueRequest,
@@ -85,7 +73,7 @@ interface StoredChild {
   latestDispatchId?: string;
 }
 
-interface StoredDispatch extends Omit<ExternalDispatchView, 'status' | 'startedAt' | 'endedAt'> {
+interface StoredDispatch extends Omit<ExternalDispatchView, 'status' | 'startedAt' | 'endedAt' | 'usage'> {
   agentId: string;
   status: ExternalDispatchStatus;
   startedAt?: number;
@@ -94,6 +82,12 @@ interface StoredDispatch extends Omit<ExternalDispatchView, 'status' | 'startedA
   result?: string;
   error?: string;
   errorCode?: ExternalFailureCategory;
+  usage?: TokenUsage;
+}
+
+interface StoredDispatchKey {
+  fingerprint: string;
+  dispatchId: string;
 }
 
 interface ExternalDelegationDocument {
@@ -108,6 +102,7 @@ interface ExternalDelegationDocument {
   lastCloseReason?: 'exit' | 'archive';
   children: Record<string, StoredChild>;
   dispatches: Record<string, StoredDispatch>;
+  dispatchKeys?: Record<string, StoredDispatchKey>;
   events: ExternalEventView[];
   nextEventSeq: number;
 }
@@ -125,6 +120,8 @@ export class SessionExternalDelegationService
   private readonly scope: string;
   private readonly sessionId: string;
   private readonly controllers = new Map<string, AbortController>();
+  private readonly changed = new Emitter<void>();
+  private readonly dispatchKeys = new KeyReservationRegistry<string>();
   private document: ExternalDelegationDocument | undefined;
   private writeQueue: Promise<void> = Promise.resolve();
   private operationQueue: Promise<void> = Promise.resolve();
@@ -135,19 +132,17 @@ export class SessionExternalDelegationService
     @IAtomicDocumentStore private readonly store: IAtomicDocumentStore,
     @ISessionContext session: ISessionContext,
     @IAgentLifecycleService private readonly agents: IAgentLifecycleService,
-    @ISessionMetadata private readonly metadata: ISessionMetadata,
-    @ISessionSubagentService private readonly runs: ISessionSubagentService,
+    @ISessionDispatchService private readonly dispatchDomain: ISessionDispatchService,
     @ISessionAgentProfileCatalog private readonly profiles: ISessionAgentProfileCatalog,
     @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
     @ILogService private readonly log: ILogService,
-    @IAgentCollaborationRegistry private readonly names: IAgentCollaborationRegistry,
     @ISessionManager lifecycle: ISessionManager,
     @IModelService private readonly models: IModelService,
-    @IConfigService private readonly config: IConfigService,
   ) {
     super();
     this.scope = session.scope('external-delegation');
     this.sessionId = session.sessionId;
+    this._register(this.changed);
     this._register(this.store.acquire(this.scope, STORE_KEY));
     this.ready = this.load();
     if (lifecycle.onWillCloseSession !== undefined) {
@@ -196,18 +191,32 @@ export class SessionExternalDelegationService
       },
       this.models,
     );
-    const dispatchables = available.profiles.map((profile) => ({
-      kind: 'named' as const,
-      profileName: profile.name,
-      description: profile.description,
-    }));
+    const entries = buildProfileCatalogEntries(
+      available.profiles,
+      [],
+      () => true,
+      undefined,
+      () => true,
+      false,
+    );
     return {
       version: 1,
       delegationId: doc.delegationId,
       lifecycle: doc.lifecycle,
-      dispatchables: [{ kind: 'main' }, ...dispatchables],
-      children: Object.values(doc.children).map(childView).toSorted((a, b) => a.taskName.localeCompare(b.taskName)),
-      continuations: Object.values(doc.dispatches).filter((dispatch) => !ACTIVE.has(dispatch.status)).map(dispatchView),
+      dispatchables: [
+        { kind: 'main' },
+        ...entries.map((entry) => ({
+          kind: 'named' as const,
+          profileName: entry.profileName,
+          description: entry.description,
+        })),
+      ],
+      children: Object.values(doc.children)
+        .map(childView)
+        .toSorted((a, b) => a.taskName.localeCompare(b.taskName)),
+      continuations: Object.values(doc.dispatches)
+        .filter((dispatch) => !ACTIVE.has(dispatch.status))
+        .map(dispatchView),
     };
   }
 
@@ -224,17 +233,31 @@ export class SessionExternalDelegationService
       ) {
         throw invalid('Named-child fields are not admitted for target main.');
       }
-      const target =
-        request.target === 'main'
-          ? targetView(this.requireMain(), undefined, undefined)
-          : await this.namedTarget(
+      const key = optionalNonblank(request.dispatchKey, 'dispatch_key');
+      const reservation = this.reserveDispatchKey(
+        doc,
+        key,
+        dispatchFingerprint(request, message),
+      );
+      if (reservation.kind === 'replay') {
+        return dispatchView(this.lookup(doc, reservation.result));
+      }
+      if (reservation.kind === 'conflict') throw invalid('dispatch_key is already in use.');
+      try {
+        return request.target === 'main'
+          ? await this.startExistingDispatch(
               doc,
-              request.taskName,
-              request.profileName,
-              request.modelAlias,
-              request.thinkingEffort,
-            );
-      return this.startDispatch(doc, target, message, undefined);
+              targetView(this.requireMain(), undefined, undefined),
+              message,
+              undefined,
+              key,
+              reservation,
+            )
+          : await this.startNamedDispatch(doc, request, message, key, reservation);
+      } catch (error) {
+        reservation.release();
+        throw error;
+      }
     });
   }
 
@@ -243,12 +266,37 @@ export class SessionExternalDelegationService
       const message = requireNonblank(request.message, 'message');
       const doc = await this.authorize(request.authority);
       const previous = this.lookup(doc, request.dispatchId);
-      if (ACTIVE.has(previous.status)) throw invalid('Cannot continue an active dispatch.');
-      const target =
-        previous.target === 'main'
-          ? targetView(this.requireMain(), undefined, undefined)
-          : await this.existingNamedTarget(doc, previous.taskName!);
-      return this.startDispatch(doc, target, message, previous.dispatchId);
+      const key = optionalNonblank(request.dispatchKey, 'dispatch_key');
+      const reservation = this.reserveDispatchKey(
+        doc,
+        key,
+        continueFingerprint(request, message),
+      );
+      if (reservation.kind === 'replay') {
+        return dispatchView(this.lookup(doc, reservation.result));
+      }
+      if (reservation.kind === 'conflict') throw invalid('dispatch_key is already in use.');
+      if (ACTIVE.has(previous.status)) {
+        reservation.release();
+        throw invalid('Cannot continue an active dispatch.');
+      }
+      try {
+        const target =
+          previous.target === 'main'
+            ? targetView(this.requireMain(), undefined, undefined)
+            : await this.existingNamedTarget(doc, previous.taskName!);
+        return await this.startExistingDispatch(
+          doc,
+          target,
+          message,
+          previous.dispatchId,
+          key,
+          reservation,
+        );
+      } catch (error) {
+        reservation.release();
+        throw error;
+      }
     });
   }
 
@@ -257,14 +305,43 @@ export class SessionExternalDelegationService
     return dispatchView(this.lookup(doc, request.dispatchId));
   }
 
+  async wait(request: DispatchWaitRequest): Promise<DispatchWaitView> {
+    const doc = await this.authorize(request.authority);
+    if (request.dispatchId !== undefined) this.lookup(doc, request.dispatchId);
+    const waited = await this.dispatchDomain.wait(
+      {
+        onDidChange: this.changed.event,
+        read: () => Object.values(doc.dispatches),
+        key: (dispatch) => dispatch.dispatchId,
+        terminal: (dispatch) => !ACTIVE.has(dispatch.status),
+      },
+      {
+        key: request.dispatchId,
+        timeoutMs: boundedTimeout(request.timeoutMs),
+        signal: request.signal,
+      },
+    );
+    return {
+      waitStatus: waited.waitStatus,
+      waitedMs: waited.waitedMs,
+      dispatch: waited.item === undefined ? undefined : dispatchView(waited.item),
+      completedDuringWait: waited.completedDuringWait.map(dispatchView),
+    };
+  }
+
   async result(request: ExternalPageLookup): Promise<ExternalResultPage> {
     const doc = await this.authorize(request.authority);
     const dispatch = this.lookup(doc, request.dispatchId);
-    const text = dispatch.result ?? dispatch.error ?? '';
-    const cursor = boundedCursor(request.cursor, text.length);
-    const limit = boundedLimit(request.limit, 16_384);
-    const end = Math.min(text.length, cursor + limit);
-    return { dispatch: dispatchView(dispatch), text: text.slice(cursor, end), nextCursor: end < text.length ? end : undefined };
+    const page = utf8Page(
+      dispatch.result ?? dispatch.error ?? '',
+      request.cursor,
+      boundedLimit(request.limit, 16_384, 65_536),
+    );
+    return {
+      dispatch: dispatchView(dispatch),
+      text: page.text,
+      nextCursor: page.nextCursor,
+    };
   }
 
   async events(request: ExternalPageLookup): Promise<ExternalEventPage> {
@@ -272,7 +349,9 @@ export class SessionExternalDelegationService
     this.lookup(doc, request.dispatchId);
     const cursor = boundedCursor(request.cursor, Number.MAX_SAFE_INTEGER);
     const limit = boundedLimit(request.limit, 100);
-    const matches = doc.events.filter((event) => event.dispatchId === request.dispatchId && event.seq > cursor);
+    const matches = doc.events.filter(
+      (event) => event.dispatchId === request.dispatchId && event.seq > cursor,
+    );
     const items = matches.slice(0, limit);
     return { items, nextCursor: matches.length > items.length ? items.at(-1)?.seq : undefined };
   }
@@ -280,7 +359,7 @@ export class SessionExternalDelegationService
   async transcript(request: ExternalPageLookup): Promise<ExternalTranscriptPage> {
     const doc = await this.authorize(request.authority);
     const dispatch = this.lookup(doc, request.dispatchId);
-    const handle = await this.materialize(dispatch.agentId, dispatch.taskName);
+    const handle = await this.materializeDispatchAgent(doc, dispatch);
     const all = handle.accessor.get(IAgentContextMemoryService).get();
     const cursor = Math.max(dispatch.transcriptStart, boundedCursor(request.cursor, all.length));
     const limit = boundedLimit(request.limit, 50);
@@ -340,20 +419,24 @@ export class SessionExternalDelegationService
     return doc;
   }
 
-  private async namedTarget(
+  private async startNamedDispatch(
     doc: ExternalDelegationDocument,
-    rawTaskName: string | undefined,
-    rawProfileName: string | undefined,
-    rawModelAlias: string | undefined,
-    rawThinkingEffort: string | undefined,
-  ): Promise<DispatchTarget> {
-    const taskName = rawTaskName?.trim();
-    if (taskName === undefined || !TASK_NAME.test(taskName)) throw invalid('task_name must match [a-z0-9_]+ and must not be root.');
-    const modelAlias = optionalNonblank(rawModelAlias, 'model_alias');
-    const thinkingEffort = optionalNonblank(rawThinkingEffort, 'thinking_effort');
+    request: ExternalDispatchRequest,
+    message: string,
+    dispatchKey: string | undefined,
+    reservation: ActiveDispatchKeyReservation,
+  ): Promise<ExternalDispatchView> {
+    const taskName = request.taskName?.trim();
+    if (taskName === undefined || !TASK_NAME.test(taskName)) {
+      throw invalid('task_name must match [a-z0-9_]+ and must not be root.');
+    }
+    const modelAlias = optionalNonblank(request.modelAlias, 'model_alias');
+    const thinkingEffort = optionalNonblank(request.thinkingEffort, 'thinking_effort');
     const existing = doc.children[taskName];
     if (existing !== undefined) {
-      if (rawProfileName !== undefined && rawProfileName !== existing.profileName) throw invalid('A named child cannot change profile.');
+      if (request.profileName !== undefined && request.profileName !== existing.profileName) {
+        throw invalid('A named child cannot change profile.');
+      }
       const target = await this.existingNamedTarget(doc, taskName);
       if (modelAlias !== undefined && modelAlias !== target.modelAlias) {
         throw invalid('A named child cannot change model_alias.');
@@ -361,207 +444,216 @@ export class SessionExternalDelegationService
       if (thinkingEffort !== undefined && thinkingEffort !== target.thinkingEffort) {
         throw invalid('A named child cannot change thinking_effort.');
       }
-      return target;
-    }
-    const profileName = requireNonblank(rawProfileName, 'profile_name');
-    await this.profiles.ready;
-    const main = this.requireMain();
-    const mainProfile = main.accessor.get(IAgentProfileService);
-    const mainData = mainProfile.data();
-    if (mainData.modelAlias === undefined) throw invalid('Main agent has no configured model.');
-    const snapshot = this.profiles.snapshot?.();
-    let target: ResolvedSubagentTarget;
-    try {
-      target = resolveSubagentTarget(
-        this.profiles,
-        mainData,
-        { profileName, snapshot },
-        this.models,
+      return this.startExistingDispatch(
+        doc,
+        target,
+        message,
+        undefined,
+        dispatchKey,
+        reservation,
       );
+    }
+    const profileName = requireNonblank(request.profileName, 'profile_name');
+    const main = this.requireMain();
+    const runtimeLease = main.accessor.get(IAgentRuntimeService).acquire(['process']);
+    const view = new RuntimeWorkspaceView(runtimeLease.runtime, this.workspace);
+    const controller = new AbortController();
+    const dispatchId = `dispatch_${ulid()}`;
+    try {
+      const run = await this.dispatchDomain.launch({
+        delegator: { kind: 'external', delegationId: doc.delegationId },
+        requesterAgentId: MAIN_AGENT_ID,
+        profileName,
+        snapshot: this.profiles.snapshot?.(),
+        message,
+        name: taskName,
+        modelAlias,
+        thinkingEffort,
+        strictThinking: thinkingEffort === undefined ? undefined : true,
+        runtime: runtimeLease.runtime,
+        workDir: view.workDir,
+        signal: controller.signal,
+        executorPolicy: 'native',
+        labels: {
+          externalDelegationTaskName: taskName,
+          externalDelegationProfile: profileName,
+        },
+        onCreated: async (child) => {
+          doc.children[taskName] = {
+            taskName,
+            agentId: child.agentId,
+            profileName,
+            createdAt: Date.now(),
+          };
+          await this.queueDispatch(
+            doc,
+            dispatchId,
+            targetView(child.agent, taskName, profileName),
+            undefined,
+            dispatchKey,
+            reservation,
+          );
+        },
+      });
+      this.controllers.set(dispatchId, controller);
+      void this.observeDispatch(dispatchId, run, controller);
+      return dispatchView(this.lookup(doc, dispatchId));
     } catch (error) {
       if (isError2(error) && error.code === ErrorCodes.PROFILE_UNKNOWN) {
-        throw invalid('Unknown named-agent profile.');
+        throw invalid(
+          `Unknown named-agent profile. Available agent profiles: ${(await this.availableProfileNames()).join(', ')}`,
+        );
       }
       if (isError2(error) && error.code === ErrorCodes.AGENT_TYPE_NOT_ALLOWED) {
         throw invalid('Named-agent profile is not admitted.');
       }
-      throw error;
-    }
-    const selection = target.selection;
-    const profile = target.effectiveProfile;
-    if ((profile.executor ?? 'native') !== 'native') {
-      throw invalid('External executors are unsupported for external delegation.');
-    }
-    const filled = fillLeasePins(
-      { modelAlias, thinkingEffort },
-      target.lease,
-    );
-    const binding = canonicalizeSubagentBinding(
-      resolveSubagentBinding(
-        this.config,
-        filled,
-        {
-          modelAlias: profile.modelAlias,
-          thinkingEffort: profile.thinkingEffort,
-        },
-        this.models,
-        roleConstraintsFromProfile(
-          profile,
-          spawnConstraintOrigin(target.lease, target.spawnPolicy),
-        ),
-        { profileName: profile.name, routeId: selection.route?.id },
-      ),
-      this.models,
-    );
-    const delegator = { kind: 'external' as const, delegationId: doc.delegationId };
-    if (!(await this.names.reserve(taskName, delegator))) throw invalid('Named child task_name is already reserved.');
-    const runtimeLease = main.accessor.get(IAgentRuntimeService).acquire(['process']);
-    const mainUserTools = main.accessor.get(IAgentUserToolService);
-    try {
-      const child = await this.agents.create({
-        binding: {
-          profile: selection.baseProfile.name,
-          route: selection.route?.id,
-          resolvedProfile: selection.baseProfile,
-          resolvedRoute: selection.route,
-          model: binding.model,
-          thinking: binding.thinking,
-          strictThinking:
-            filled.thinkingEffort !== undefined ||
-            profile.thinkingEffort !== undefined,
-          inheritedUserToolNames: mainUserTools.list().map((tool) => tool.name),
-          lease: target.lease,
-          spawnPolicy: target.spawnPolicy,
-        },
-        runtimeId: runtimeLease.runtime.identity.runtimeId,
-        delegator,
-        labels: {
-          externalDelegationTaskName: taskName,
-          externalDelegationProfile: profile.name,
-        },
-      });
-      child.accessor.get(IAgentPermissionModeService).setMode(main.accessor.get(IAgentPermissionModeService).mode);
-      child.accessor.get(IAgentUserToolService).inheritUserTools(mainUserTools);
-      doc.children[taskName] = { taskName, agentId: child.id, profileName: profile.name, createdAt: Date.now() };
-      await this.persist();
-      this.names.commit(taskName, delegator);
-      return targetView(child, taskName, profile.name, profile);
-    } catch (error) {
-      this.names.release(taskName, delegator);
+      if (
+        isError2(error) &&
+        error.code === ErrorCodes.REQUEST_INVALID &&
+        error.message.includes('Harness executors')
+      ) {
+        throw invalid('External executors are unsupported for external delegation.');
+      }
       throw error;
     } finally {
       runtimeLease.dispose();
     }
   }
 
+  private async availableProfileNames(): Promise<string[]> {
+    await this.profiles.ready;
+    const main = this.requireMain();
+    const available = listAvailableSubagentTargets(
+      this.profiles,
+      main.accessor.get(IAgentProfileService).data(),
+      {
+        profiles: this.profiles.list(),
+        routes: this.profiles.listRoutes?.() ?? [],
+        snapshot: this.profiles.snapshot?.(),
+      },
+      this.models,
+    );
+    return available.profiles.map((profile) => profile.name);
+  }
+
   private async existingNamedTarget(
     doc: ExternalDelegationDocument,
     taskName: string,
   ): Promise<DispatchTarget> {
-    const child = doc.children[taskName];
-    if (child === undefined) throw invalid('Unknown named child.');
-    const agent = await this.materialize(child.agentId, taskName);
-    const profile = this.resolveTargetProfile(agent, child.profileName);
-    if (profile === undefined) throw invalid('Named-agent profile is unavailable.');
-    return targetView(agent, taskName, child.profileName, profile);
-  }
-
-  private resolveTargetProfile(
-    agent: IAgentScopeHandle,
-    fallbackProfileName: string,
-  ): AgentProfile | undefined {
-    const data = agent.accessor.get(IAgentProfileService).data();
-    const profileName = data.profileName ?? fallbackProfileName;
-    const snapshot = this.profiles.snapshot?.();
-    const base =
-      data.profileDefinitionId === undefined
-        ? this.profiles.get(profileName)
-        : snapshot === undefined
-          ? undefined
-          : resolveSnapshotProfileDefinition(snapshot, data.profileDefinitionId, profileName);
-    if (base === undefined) return undefined;
-    const resolveId = aliasIdentity(this.models);
-    return applySpawnPolicy(
-      applyLease(base, data.appliedLease, resolveId),
-      data.spawnPolicy,
-      resolveId,
+    const stored = doc.children[taskName];
+    if (stored === undefined) throw invalid('Unknown named child.');
+    const child = await this.dispatchDomain.resolveOwnedChild(
+      { kind: 'external', delegationId: doc.delegationId },
+      taskName,
     );
+    if (child.agentId !== stored.agentId) {
+      throw invalid('Owned agent metadata does not match the named child.');
+    }
+    return targetView(child.agent, taskName, stored.profileName);
   }
 
-  private async materialize(agentId: string, taskName: string | undefined): Promise<IAgentScopeHandle> {
-    const live = this.agents.get(agentId);
-    if (live !== undefined) return live;
-    const meta = (await this.metadata.read()).agents?.[agentId];
-    if (meta === undefined || meta.delegator?.kind !== 'external') throw invalid('Owned agent metadata is unavailable.');
-    if (taskName !== undefined && meta.labels?.['externalDelegationTaskName'] !== taskName) throw invalid('Owned agent metadata does not match the named child.');
-    return this.agents.create({ agentId, labels: labelsFromAgentMeta(meta), delegator: meta.delegator });
+  private async materializeDispatchAgent(
+    doc: ExternalDelegationDocument,
+    dispatch: StoredDispatch,
+  ): Promise<IAgentScopeHandle> {
+    if (dispatch.target === 'main') return this.requireMain();
+    return (
+      await this.dispatchDomain.resolveOwnedChild(
+        { kind: 'external', delegationId: doc.delegationId },
+        dispatch.taskName!,
+      )
+    ).agent;
   }
 
-  private async startDispatch(
+  private async startExistingDispatch(
     doc: ExternalDelegationDocument,
     target: DispatchTarget,
-    rawMessage: string,
+    message: string,
     continuationOf: string | undefined,
+    dispatchKey: string | undefined,
+    reservation: ActiveDispatchKeyReservation,
   ): Promise<ExternalDispatchView> {
     const active = Object.values(doc.dispatches).find(
       (dispatch) => dispatch.agentId === target.agent.id && ACTIVE.has(dispatch.status),
     );
     if (active !== undefined) throw invalid('The target already has an active dispatch.');
-    const loop = target.agent.accessor.get(IAgentLoopService).status();
-    if (loop.state !== 'idle' || loop.pendingTurnIds.length > 0 || loop.hasPendingRequests) {
-      throw invalid('The target is already running work.');
-    }
-    let message = rawMessage;
-    if (target.profile !== undefined) {
-      const lease = target.agent.accessor.get(IAgentRuntimeService).acquire(['process']);
-      try {
-        const view = new RuntimeWorkspaceView(lease.runtime, this.workspace);
-        message = await applyProfilePromptPrefix(target.profile, rawMessage, {
-          cwd: view.workDir,
-          process: lease.runtime.process!,
-          log: this.log,
-        });
-      } finally {
-        lease.dispose();
-      }
-    }
+    const controller = new AbortController();
     const dispatchId = `dispatch_${ulid()}`;
+    const run = await this.dispatchDomain.runOnExisting(target, message, {
+      signal: controller.signal,
+      lineage: continuationOf,
+      onBeforeRun: async () => {
+        await this.queueDispatch(
+          doc,
+          dispatchId,
+          target,
+          continuationOf,
+          dispatchKey,
+          reservation,
+        );
+      },
+    });
+    this.controllers.set(dispatchId, controller);
+    void this.observeDispatch(dispatchId, run, controller);
+    return dispatchView(this.lookup(doc, dispatchId));
+  }
+
+  private async queueDispatch(
+    doc: ExternalDelegationDocument,
+    dispatchId: string,
+    target: DispatchTarget,
+    continuationOf: string | undefined,
+    dispatchKey: string | undefined,
+    reservation: ActiveDispatchKeyReservation,
+  ): Promise<void> {
     const dispatch: StoredDispatch = {
       dispatchId,
       target: target.taskName === undefined ? 'main' : 'named',
       taskName: target.taskName,
-      profileName: target.profileName,
+      profileName: target.taskName === undefined ? undefined : target.profileName,
+      agentId: target.agent.id,
+      actualProfile: target.profileName,
       modelAlias: target.modelAlias,
       thinkingEffort: target.thinkingEffort,
-      agentId: target.agent.id,
       status: 'queued',
+      nextStep: `wait:${dispatchId}`,
+      continueHint:
+        target.taskName === undefined
+          ? `continue:${dispatchId}`
+          : `dispatch:${target.taskName}`,
       createdAt: Date.now(),
       continuationOf,
       transcriptStart: target.agent.accessor.get(IAgentContextMemoryService).get().length,
     };
     doc.dispatches[dispatchId] = dispatch;
     if (target.taskName !== undefined) doc.children[target.taskName]!.latestDispatchId = dispatchId;
+    const committed = reservation.commit(dispatchId);
+    if (dispatchKey !== undefined) {
+      doc.dispatchKeys ??= {};
+      doc.dispatchKeys[dispatchKey] = {
+        fingerprint: committed.fingerprint,
+        dispatchId: committed.result,
+      };
+    }
     this.appendEvent(doc, dispatchId, 'queued');
     await this.persist();
-    const controller = new AbortController();
-    this.controllers.set(dispatchId, controller);
-    void this.launchDispatch(dispatchId, target.agent.id, message, controller);
-    return dispatchView(dispatch);
   }
 
-  private async launchDispatch(
+  private async observeDispatch(
     dispatchId: string,
-    agentId: string,
-    message: string,
+    dispatchRun: DispatchRun,
     controller: AbortController,
   ): Promise<void> {
     try {
-      const run = await this.runs.run(agentId, { kind: 'prompt', prompt: message }, { signal: controller.signal });
+      const run = await dispatchRun.started;
       const doc = this.document;
       const dispatch = doc?.dispatches[dispatchId];
-      if (doc === undefined || dispatch === undefined || dispatch.status !== 'queued' || controller.signal.aborted) {
-        // Observe the discarded handle so a provider rejection cannot become
-        // an unhandled promise after cancellation won the persisted race.
+      if (
+        doc === undefined ||
+        dispatch === undefined ||
+        dispatch.status !== 'queued' ||
+        controller.signal.aborted
+      ) {
         void run.completion.catch(() => undefined);
         return;
       }
@@ -570,9 +662,11 @@ export class SessionExternalDelegationService
       this.appendEvent(doc, dispatchId, 'started');
       await this.persist();
       void run.completion.then(
-        (result) => this.finish(dispatchId, 'completed', result.summary),
+        (result) => this.finish(dispatchId, 'completed', result.summary, undefined, undefined, result.usage),
         (error) => {
-          if (controller.signal.aborted) return this.finish(dispatchId, 'cancelled', undefined, 'Cancelled');
+          if (controller.signal.aborted) {
+            return this.finish(dispatchId, 'cancelled', undefined, 'Cancelled');
+          }
           return this.failDispatch(dispatchId, error);
         },
       );
@@ -612,6 +706,7 @@ export class SessionExternalDelegationService
     result?: string,
     error?: string,
     errorCode?: ExternalFailureCategory,
+    usage?: TokenUsage,
   ): Promise<void> {
     const doc = this.document;
     const dispatch = doc?.dispatches[dispatchId];
@@ -621,6 +716,7 @@ export class SessionExternalDelegationService
     dispatch.result = result;
     dispatch.error = error === undefined ? undefined : safeFailureText(error);
     dispatch.errorCode = errorCode;
+    dispatch.usage = usage;
     this.controllers.delete(dispatchId);
     this.appendEvent(doc, dispatchId, status, dispatch.error);
     await this.persist();
@@ -654,9 +750,30 @@ export class SessionExternalDelegationService
   private persist(): Promise<void> {
     const doc = this.document;
     if (doc === undefined) return Promise.resolve();
-    const write = this.writeQueue.then(() => this.store.set(this.scope, STORE_KEY, doc));
+    const write = this.writeQueue
+      .then(() => this.store.set(this.scope, STORE_KEY, doc))
+      .then(() => this.changed.fire());
     this.writeQueue = write.catch(() => {});
     return write;
+  }
+
+  private reserveDispatchKey(
+    doc: ExternalDelegationDocument,
+    key: string | undefined,
+    fingerprint: string,
+  ): ReservationResult<string> {
+    if (key === undefined) {
+      return this.dispatchKeys.reserve(`unkeyed:${ulid()}`, fingerprint, undefined, true);
+    }
+    const stored = doc.dispatchKeys?.[key];
+    return this.dispatchKeys.reserve(
+      key,
+      fingerprint,
+      stored === undefined
+        ? undefined
+        : { fingerprint: stored.fingerprint, result: stored.dispatchId },
+      true,
+    );
   }
 
   private lookup(doc: ExternalDelegationDocument, dispatchId: string): StoredDispatch {
@@ -682,8 +799,17 @@ export class SessionExternalDelegationService
   }
 }
 
+type ActiveDispatchKeyReservation = Extract<
+  ReservationResult<string>,
+  { readonly kind: 'reserved' }
+>;
+
 function childView(child: StoredChild): ExternalChildView {
-  return { taskName: child.taskName, profileName: child.profileName, latestDispatchId: child.latestDispatchId };
+  return {
+    taskName: child.taskName,
+    profileName: child.profileName,
+    latestDispatchId: child.latestDispatchId,
+  };
 }
 
 function dispatchView(dispatch: StoredDispatch): ExternalDispatchView {
@@ -692,15 +818,44 @@ function dispatchView(dispatch: StoredDispatch): ExternalDispatchView {
     target: dispatch.target,
     taskName: dispatch.taskName,
     profileName: dispatch.profileName,
+    agentId: dispatch.agentId,
+    actualProfile: dispatch.actualProfile,
     modelAlias: dispatch.modelAlias,
     thinkingEffort: dispatch.thinkingEffort,
     status: dispatch.status,
+    nextStep: dispatch.nextStep,
+    continueHint: dispatch.continueHint,
     createdAt: dispatch.createdAt,
     startedAt: dispatch.startedAt,
     endedAt: dispatch.endedAt,
     continuationOf: dispatch.continuationOf,
+    usage: dispatch.usage === undefined ? undefined : usageView(dispatch.usage),
     errorCode: dispatch.errorCode,
   };
+}
+
+function usageView(usage: TokenUsage): DispatchUsageView {
+  return {
+    input: inputTotal(usage),
+    output: usage.output,
+    cacheRead: usage.inputCacheRead,
+    cacheWrite: usage.inputCacheCreation,
+  };
+}
+
+function dispatchFingerprint(request: ExternalDispatchRequest, message: string): string {
+  return JSON.stringify({
+    target: request.target,
+    taskName: request.taskName?.trim(),
+    profileName: request.profileName?.trim(),
+    modelAlias: request.modelAlias?.trim(),
+    thinkingEffort: request.thinkingEffort?.trim(),
+    message,
+  });
+}
+
+function continueFingerprint(request: ExternalContinueRequest, message: string): string {
+  return JSON.stringify({ dispatchId: request.dispatchId, message });
 }
 
 function safeFailureText(message: string): string {
@@ -728,6 +883,35 @@ function utf8Prefix(value: string, maxBytes: number): string {
   return result;
 }
 
+function utf8Page(
+  value: string,
+  rawCursor: number | undefined,
+  maxBytes: number,
+): { readonly text: string; readonly nextCursor?: number } {
+  const encoder = new TextEncoder();
+  const totalBytes = encoder.encode(value).byteLength;
+  const cursor = boundedCursor(rawCursor, totalBytes);
+  let offset = 0;
+  let pageBytes = 0;
+  let text = '';
+  let started = false;
+  for (const symbol of value) {
+    const size = encoder.encode(symbol).byteLength;
+    if (!started && offset + size <= cursor) {
+      offset += size;
+      continue;
+    }
+    if (!started && offset !== cursor) throw invalid('cursor is invalid.');
+    started = true;
+    if (pageBytes > 0 && pageBytes + size > maxBytes) break;
+    text += symbol;
+    pageBytes += size;
+    offset += size;
+    if (pageBytes >= maxBytes) break;
+  }
+  return { text, nextCursor: offset < totalBytes ? offset : undefined };
+}
+
 function requireNonblank(value: string | undefined, name: string): string {
   const trimmed = value?.trim();
   if (trimmed === undefined || trimmed.length === 0) throw invalid(`${name} must not be blank.`);
@@ -738,28 +922,22 @@ function optionalNonblank(value: string | undefined, name: string): string | und
   return value === undefined ? undefined : requireNonblank(value, name);
 }
 
-interface DispatchTarget {
-  readonly agent: IAgentScopeHandle;
+interface DispatchTarget extends DispatchChild {
   readonly taskName: string | undefined;
-  readonly profileName: string | undefined;
-  readonly profile?: AgentProfile;
-  readonly modelAlias: string;
-  readonly thinkingEffort: string;
 }
 
 function targetView(
   agent: IAgentScopeHandle,
   taskName: string | undefined,
   profileName: string | undefined,
-  profile?: AgentProfile,
 ): DispatchTarget {
   const binding = agent.accessor.get(IAgentProfileService).data();
   if (binding.modelAlias === undefined) throw invalid('Target agent has no configured model.');
   return {
     agent,
+    agentId: agent.id,
     taskName,
-    profileName,
-    profile,
+    profileName: profileName ?? binding.routeId ?? binding.profileName ?? 'agent',
     modelAlias: binding.modelAlias,
     thinkingEffort: binding.thinkingLevel,
   };
@@ -777,10 +955,16 @@ function boundedCursor(value: number | undefined, max: number): number {
   return cursor;
 }
 
-function boundedLimit(value: number | undefined, fallback: number): number {
+function boundedLimit(value: number | undefined, fallback: number, max = fallback): number {
   const limit = value ?? fallback;
-  if (!Number.isInteger(limit) || limit < 1 || limit > fallback) throw invalid('limit is invalid.');
-  return limit;
+  if (!Number.isInteger(limit) || limit < 1) throw invalid('limit is invalid.');
+  return Math.min(limit, max);
+}
+
+function boundedTimeout(value: number | undefined): number {
+  const timeoutMs = value ?? 30_000;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 0) throw invalid('timeout is invalid.');
+  return Math.min(timeoutMs, 600_000);
 }
 
 function contextText(content: unknown): string {

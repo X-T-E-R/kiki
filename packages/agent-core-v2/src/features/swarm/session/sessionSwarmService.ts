@@ -1,42 +1,26 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
 import type { TokenUsage } from '#/kosong/contract/usage';
-import { IModelCatalog } from '#/kosong/model/catalog';
-import { IModelService } from '#/kosong/model/model';
-import {
-  assertProfileRouteBinding,
-  assertProfileRouteModelAvailable,
-} from '#/session/subagent/profileRouteBinding';
 import { Error2, ErrorCodes } from '#/errors';
 import { linkAbortSignal } from '#/_base/utils/abort';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
-import { IAgentProfileService } from '#/agent/profile/profile';
-import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
-import { IAgentExecutionService } from '#/agent/execution/execution';
-import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { Event2 } from '#/app/event/event2';
-import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
-import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
-import { resolveSubagentTarget } from '#/app/agentProfileCatalog/subagentDispatch';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import {
-  delegatorRef,
   isSubagentMeta,
-  labelsFromAgentMeta,
-  requestIdentitySpawnLabels,
-  subagentLabels,
   subagentParentAgentId,
   subagentSwarmItem,
 } from '#/session/agentLifecycle/subagentMetadata';
 import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
-import { ISessionSubagentService } from '#/session/subagent/subagent';
-import { subagentModelUnboundMessage } from '#/session/subagent/configSection';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentRuntimeBindingService } from '#/agent/runtimeBinding/runtimeBinding';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { IRuntimeResolver } from '#/workspace/workspaceInstance/workspaceInstanceManager';
 import { IEventDispatcher } from '#/state/eventDispatcher';
-import { ILogService } from '#/_base/log/log';
+import {
+  ISessionDispatchService,
+  type DispatchRun,
+} from '#/session/dispatch/dispatch';
 
 import { ISwarmConcurrencyRegistry } from '../swarmConcurrencyRegistry';
 import {
@@ -74,14 +58,10 @@ export class SessionSwarmService implements ISessionSwarmService {
 
   constructor(
     @IAgentLifecycleService private readonly lifecycle: IAgentLifecycleService,
-    @ISessionSubagentService private readonly subagents: ISessionSubagentService,
-    @ISessionAgentProfileCatalog private readonly catalog: ISessionAgentProfileCatalog,
+    @ISessionDispatchService private readonly dispatch: ISessionDispatchService,
     @ISessionContext private readonly sessionContext: ISessionContext,
     @ISessionMetadata private readonly metadata: ISessionMetadata,
     @IRuntimeResolver private readonly runtimeResolver: IRuntimeResolver,
-    @ILogService private readonly log: ILogService,
-    @IModelCatalog private readonly modelCatalog: IModelCatalog,
-    @IModelService private readonly models: IModelService,
     @ISwarmConcurrencyRegistry
     private readonly concurrencyRegistry: ISwarmConcurrencyRegistry,
   ) {}
@@ -141,109 +121,42 @@ export class SessionSwarmService implements ISessionSwarmService {
   ): Promise<AgentRunAttemptHandle> {
     options.signal.throwIfAborted();
     const caller = this.requireHandle(callerAgentId, 'Caller agent');
-    await this.catalog.ready;
-    const callerData = caller.accessor.get(IAgentProfileService).data();
-    const target = resolveSubagentTarget(
-      this.catalog,
-      callerData,
-      {
+    const callerRuntime = caller.accessor.get(IAgentRuntimeBindingService).current;
+    const lease = this.runtimeResolver.acquire(callerRuntime, ['process']);
+    let run: DispatchRun;
+    try {
+      const view = new RuntimeWorkspaceView(lease.runtime, { workDir: this.sessionContext.cwd });
+      run = await this.dispatch.launch({
+        delegator: { kind: 'agent', agentId: callerAgentId },
+        requesterAgentId: callerAgentId,
         profileName: options.profileName,
         routeId: options.routeId,
         snapshot: options.catalogSnapshot,
-      },
-      this.models,
-    );
-    const selection = target.selection;
-    const profile = target.effectiveProfile;
-    const callerRuntime = caller.accessor.get(IAgentRuntimeBindingService).current;
-    const pinnedModel =
-      selection.route?.lockedModelAlias ?? target.lease?.modelAlias ?? profile.modelAlias;
-    const suppliedBinding = options.binding;
-    if (suppliedBinding === undefined && pinnedModel === undefined) {
-      throw new Error2(
-        ErrorCodes.MODEL_NOT_CONFIGURED,
-        subagentModelUnboundMessage({
-          profileName: profile.name,
-          routeId: selection.route?.id,
-        }),
-        { details: { profile: profile.name, route: selection.route?.id } },
-      );
+        message: options.prompt,
+        resolvedBinding: options.binding,
+        runtime: lease.runtime,
+        runtimeId: callerRuntime.runtimeId,
+        workDir: view.workDir,
+        signal: options.signal,
+        onReady: options.onReady,
+        userLabel: options.swarmItem ?? options.description,
+        swarmItem: options.swarmItem,
+        parentTurnId: options.parentTurnId,
+      });
+    } finally {
+      lease.dispose();
     }
-    const resolvedModel = suppliedBinding?.model ?? pinnedModel!;
-    const binding = {
-      model: this.models.resolveId(resolvedModel) ?? resolvedModel,
-      thinking:
-        suppliedBinding?.thinking ??
-        selection.route?.lockedThinkingEffort ??
-        target.lease?.thinkingEffort ??
-        profile.thinkingEffort,
-    };
-    assertProfileRouteBinding(
-      selection.route,
-      {
-        modelAlias: binding.model,
-        thinkingEffort: binding.thinking,
-      },
-      this.models,
-    );
-    assertProfileRouteModelAvailable(selection.route, this.modelCatalog, this.models);
-    this.modelCatalog.get(binding.model);
-    const callerMeta = (await this.metadata.read()).agents?.[callerAgentId];
-    const identityLabels =
-      options.parentTurnId === undefined
-        ? {}
-        : requestIdentitySpawnLabels(callerAgentId, options.parentTurnId, callerMeta);
-    const callerUserTools = caller.accessor.get(IAgentUserToolService);
-    const child: IAgentScopeHandle = await this.lifecycle.create({
-      binding: {
-        profile: selection.baseProfile.name,
-        route: selection.route?.id,
-        resolvedProfile: selection.baseProfile,
-        resolvedRoute: selection.route,
-        model: binding.model,
-        thinking: binding.thinking,
-        inheritedUserToolNames: callerUserTools.list().map((tool) => tool.name),
-        lease: target.lease,
-        spawnPolicy: target.spawnPolicy,
-      },
-      labels: {
-        ...subagentLabels(callerAgentId, { swarmItem: options.swarmItem }),
-        ...identityLabels,
-      },
-      delegator: { kind: 'agent', agentId: callerAgentId },
-      userLabel: options.swarmItem ?? options.description,
-      runtimeId: callerRuntime.runtimeId,
-    });
-    child.accessor
-      .get(IAgentPermissionModeService)
-      .setMode(caller.accessor.get(IAgentPermissionModeService).mode);
-    child.accessor.get(IAgentUserToolService).inheritUserTools(callerUserTools);
-    emitAgentRunSpawned(caller, child.id, {
-      profileName: selection.route?.id ?? options.profileName,
+    emitAgentRunSpawned(caller, run.child.agentId, {
+      profileName: run.child.profileName,
       parentToolCallId: options.parentToolCallId,
       parentToolCallUuid: options.parentToolCallUuid,
       description: options.description,
       userLabel: options.swarmItem ?? options.description,
       swarmIndex: options.swarmIndex,
       runInBackground: options.runInBackground,
-      model: binding.model,
+      model: run.child.modelAlias,
     });
-    const lease = this.runtimeResolver.acquire(callerRuntime, ['process']);
-    let promptText: string;
-    try {
-      const view = new RuntimeWorkspaceView(lease.runtime, { workDir: this.sessionContext.cwd });
-      promptText = await applyProfilePromptPrefix(target.effectiveProfile, options.prompt, {
-        cwd: view.workDir,
-        process: lease.runtime.process!,
-        log: this.log,
-      });
-    } finally {
-      lease.dispose();
-    }
-    return this.observe(caller, child.id, selection.route?.id ?? options.profileName, {
-      kind: 'prompt',
-      prompt: promptText,
-    }, options);
+    return this.observe(caller, run, options);
   }
 
   private async resumeAttempt(
@@ -253,58 +166,49 @@ export class SessionSwarmService implements ISessionSwarmService {
     retryTurn: boolean,
   ): Promise<AgentRunAttemptHandle> {
     options.signal.throwIfAborted();
-    const meta = await this.requireOwnedSubagent(callerAgentId, agentId);
     const caller = this.requireHandle(callerAgentId, 'Caller agent');
-    const child =
-      this.lifecycle.get(agentId) ??
-      (await this.lifecycle.create({
-        agentId,
-        forkedFrom: meta.forkedFrom,
-        labels: labelsFromAgentMeta(meta),
-        delegator: delegatorRef(meta),
-      }));
-    this.requireIdleSubagent(agentId, child);
-    const childProfile = child.accessor.get(IAgentProfileService).data();
-    const profileName = childProfile.routeId ?? childProfile.profileName ?? RESUMED_PROFILE_FALLBACK;
+    const child = await this.dispatch.resolveOwnedChild(
+      { kind: 'agent', agentId: callerAgentId },
+      agentId,
+    );
+    const run = await this.dispatch.runOnExisting(
+      child,
+      retryTurn ? { kind: 'retry' } : options.prompt,
+      { signal: options.signal, onReady: options.onReady },
+    );
     if (!retryTurn) {
-      const resumedModel = childProfile.modelAlias;
-      emitAgentRunSpawned(caller, agentId, {
-        profileName,
+      emitAgentRunSpawned(caller, child.agentId, {
+        profileName: child.profileName,
         parentToolCallId: options.parentToolCallId,
         parentToolCallUuid: options.parentToolCallUuid,
         description: options.description,
         swarmIndex: options.swarmIndex,
         runInBackground: options.runInBackground,
-        model: resumedModel,
+        model: child.modelAlias,
       });
     }
-    const request = retryTurn
-      ? ({ kind: 'retry' } as const)
-      : ({ kind: 'prompt', prompt: options.prompt } as const);
-    return this.observe(caller, child.id, profileName, request, options);
+    return this.observe(caller, run, options);
   }
 
   private async observe(
     caller: IAgentScopeHandle,
-    agentId: string,
-    profileName: string,
-    request: { kind: 'prompt'; prompt: string } | { kind: 'retry' },
+    dispatchRun: DispatchRun,
     options: AgentRunAttemptOptions,
   ): Promise<AgentRunAttemptHandle> {
-    const run = await this.subagents.run(agentId, request, {
-      signal: options.signal,
-      onReady: options.onReady,
-    });
+    const run = await dispatchRun.started;
     const mirrored = mirrorAgentRun(caller, run, {
-      profileName,
-      prompt: request.kind === 'prompt' ? request.prompt : undefined,
+      profileName: dispatchRun.child.profileName,
+      prompt:
+        dispatchRun.request.kind === 'prompt'
+          ? dispatchRun.request.prompt
+          : undefined,
       suppressRateLimitFailureEvent: options.suppressRateLimitFailureEvent,
       signal: options.signal,
     });
     return {
-      agentId,
-      profileName,
-      completion: mirrored.then((r) => ({ result: r.summary, usage: r.usage })),
+      agentId: dispatchRun.child.agentId,
+      profileName: dispatchRun.child.profileName,
+      completion: mirrored.then((result) => ({ result: result.summary, usage: result.usage })),
     };
   }
 
@@ -318,34 +222,7 @@ export class SessionSwarmService implements ISessionSwarmService {
     return handle;
   }
 
-  private requireIdleSubagent(agentId: string, child: IAgentScopeHandle): void {
-    if (child.accessor.get(IAgentExecutionService).status().state !== 'idle') {
-      throw new Error2(
-        ErrorCodes.AGENT_ALREADY_RUNNING,
-        `Agent instance "${agentId}" is already running and cannot run concurrently`,
-        { details: { agentId } },
-      );
-    }
-  }
-
-  private async requireOwnedSubagent(callerAgentId: string, agentId: string): Promise<AgentMeta> {
-    const meta = await this.agentMeta(agentId);
-    if (meta === undefined || !isSubagentMeta(meta)) {
-      throw new Error2(ErrorCodes.AGENT_NOT_A_SUBAGENT, `Agent instance "${agentId}" is not a subagent`, {
-        details: { agentId },
-      });
-    }
-    if (subagentParentAgentId(meta) !== callerAgentId) {
-      throw new Error2(
-        ErrorCodes.AGENT_NOT_OWNED,
-        `Agent instance "${agentId}" does not belong to this parent agent`,
-        { details: { agentId, callerAgentId } },
-      );
-    }
-    return meta;
-  }
-
-  private async agentMeta(agentId: string): Promise<AgentMeta | undefined> {
+  private async agentMeta(agentId: string) {
     const meta = await this.metadata.read();
     return meta.agents?.[agentId];
   }

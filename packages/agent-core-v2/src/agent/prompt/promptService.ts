@@ -32,6 +32,7 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { applyPromptMetadataUpdate } from '#/session/sessionMetadata/promptMetadata';
 import { ISessionHistoryMutationService } from '#/session/historyMutation/historyMutation';
+import { KeyReservationRegistry } from '#/session/dispatch/reservation';
 
 import {
   IAgentPromptService,
@@ -205,7 +206,7 @@ export class AgentPromptService implements IAgentPromptService {
   private active: (Record & { turn: Turn }) | undefined;
   private readonly pending: Record[] = [];
   private readonly steered = new Map<string, Record[]>();
-  private readonly reservedPromptIds = new Set<string>();
+  private readonly promptIds = new KeyReservationRegistry<string>();
   private readonly steeringPromptIds = new Set<string>();
   private steering = 0;
   private fullCompactionService: IAgentFullCompactionService | undefined;
@@ -251,25 +252,39 @@ export class AgentPromptService implements IAgentPromptService {
     }
     const accepted = this.states.get(promptAdmissionKey);
     let id = promptId ?? newMessageId();
-    while (accepted.has(id) || this.reservedPromptIds.has(id)) {
+    let reservation = this.promptIds.reserve(
+      id,
+      id,
+      accepted.has(id) ? { fingerprint: id, result: id } : undefined,
+      false,
+    );
+    while (reservation.kind === 'conflict') {
       if (promptId !== undefined) {
         throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${id}' is already in use`);
       }
       id = newMessageId();
+      reservation = this.promptIds.reserve(
+        id,
+        id,
+        accepted.has(id) ? { fingerprint: id, result: id } : undefined,
+        false,
+      );
     }
-    this.reservedPromptIds.add(id);
+    if (reservation.kind !== 'reserved') {
+      throw new Error2(ErrorCodes.PROMPT_ID_CONFLICT, `prompt_id '${id}' is already in use`);
+    }
     let submitted = false;
     return {
       id,
       submit: async (message, execution, deferredDisabledTools) => {
         if (submitted) throw new Error2(ErrorCodes.REQUEST_INVALID, 'prompt reservation already submitted');
         submitted = true;
-        this.reservedPromptIds.delete(id);
+        reservation.commit(id);
         await this.dispatcher.dispatch(new PromptAccepted({ promptId: id }));
         return this.enqueue({ id, message, execution, deferredDisabledTools });
       },
       dispose: () => {
-        this.reservedPromptIds.delete(id);
+        reservation.release();
       },
     };
   }

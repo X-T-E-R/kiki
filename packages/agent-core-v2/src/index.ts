@@ -481,6 +481,7 @@ export * from '#/workspace/workspaceMcp/workspaceMcp';
 export * from '#/workspace/workspaceMcp/workspaceMcpService';
 export * from '#/session/subagent/subagent';
 export * from '#/session/subagent/subagentService';
+export * from '#/session/dispatch/index';
 import '#/app/agentProfileCatalog/flag';
 import '#/session/agentCollaboration/configSection';
 import '#/session/agentCollaboration/threadMailboxAdapter';

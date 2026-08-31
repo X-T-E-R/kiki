@@ -1095,7 +1095,10 @@ describe('AgentRun tool execution contract', () => {
         binding: expect.objectContaining({ profile: 'explore' }),
       }),
     );
-    expect(result.output).toContain('actual_profile: explore');
+    expect(result.output).toEqual({
+      result: 'child result',
+      usage: { input: 0, output: 0 },
+    });
   });
 
   it('declares no resource accesses so concurrent AgentRun calls can run in parallel', async () => {
@@ -1170,9 +1173,10 @@ describe('AgentRun tool execution contract', () => {
       { kind: 'prompt', prompt: expect.stringContaining('Investigate') },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    expect(result.output).toContain('agent_id: agent-child');
-    expect(result.output).toContain('actual_profile: explore');
-    expect(result.output).toContain('child result');
+    expect(result.output).toEqual({
+      result: 'child result',
+      usage: { input: 0, output: 0 },
+    });
   });
 
   it('spawns the subagent on the model_alias passed with the dispatch', async () => {
@@ -1424,9 +1428,10 @@ describe('AgentRun tool execution contract', () => {
       { kind: 'prompt', prompt: 'Continue' },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    expect(result.output).toContain('agent_id: agent-existing');
-    expect(result.output).toContain('actual_profile: explore');
-    expect(result.output).toContain('resumed result');
+    expect(result.output).toEqual({
+      result: 'resumed result',
+      usage: { input: 0, output: 0 },
+    });
   });
 
   it('stamps the requested name on the new subagent', async () => {
@@ -1475,8 +1480,10 @@ describe('AgentRun tool execution contract', () => {
       { kind: 'prompt', prompt: 'Continue' },
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
-    expect(result.output).toContain('agent_id: agent-existing');
-    expect(result.output).toContain('resumed result');
+    expect(result.output).toEqual({
+      result: 'resumed result',
+      usage: { input: 0, output: 0 },
+    });
   });
 
   it('refuses a name already used in this session', async () => {
@@ -1545,7 +1552,7 @@ describe('AgentRun tool execution contract', () => {
 
     expect(result).toMatchObject({
       isError: true,
-      output: 'subagent error: Agent instance "agent-existing" does not belong to this parent agent',
+      output: 'subagent error: Agent instance "agent-existing" does not belong to this delegator',
     });
     expect(lifecycle.run).not.toHaveBeenCalled();
   });
@@ -2173,15 +2180,11 @@ describe('AgentRun tool execution contract', () => {
     await vi.advanceTimersByTimeAsync(DEFAULT_SUBAGENT_TIMEOUT_MS);
     const result = await resultPromise;
 
-    expect(result).toMatchObject({ isError: true });
+    expect(result.isError).not.toBe(true);
     expect(result.output).toContain('agent_id: agent-child');
     expect(result.output).toContain('actual_profile: coder');
-    expect(result.output).toContain('status: failed');
-    expect(result.output).toContain('subagent error: Agent timed out after 2 hours.');
+    expect(result.output).toContain('status: running');
     expect(result.output).toContain('resume_hint:');
-    expect(result.output).toContain('AgentRun(resume="agent-child", prompt="continue")');
-    expect(result.output).toContain('do not set profile');
-    expect(result.output).toContain('retains its prior context');
   });
 
   it('honours the configured subagent timeout over the default', async () => {
@@ -2213,8 +2216,9 @@ describe('AgentRun tool execution contract', () => {
     await vi.advanceTimersByTimeAsync(1000);
     const result = await resultPromise;
 
-    expect(result).toMatchObject({ isError: true });
-    expect(result.output).toContain('subagent error: Agent timed out after 1 second.');
+    expect(result.isError).not.toBe(true);
+    expect(result.output).toContain('status: running');
+    expect(result.output).toContain('agent_id: agent-child');
   });
 });
 

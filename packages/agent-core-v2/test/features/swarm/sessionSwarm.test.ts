@@ -64,6 +64,8 @@ import {
   SwarmConcurrencyRegistry,
 } from '#/features/swarm/swarmConcurrencyRegistryService';
 import { AgentSwarmTool } from '#/features/swarm/tools/agent-swarm/agentSwarmTool';
+import { ISessionDispatchService } from '#/session/dispatch/dispatch';
+import { SessionDispatchService } from '#/session/dispatch/dispatchService';
 
 import { stubLog } from '../../_base/log/stubs';
 import { stubFlag } from '../../app/flag/stubs';
@@ -1084,6 +1086,7 @@ describe('SessionSwarmService metadata compatibility', () => {
       },
     } as IModelCatalog);
     ix.set(ISwarmConcurrencyRegistry, new SwarmConcurrencyRegistry({}));
+    ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     ix.set(ISessionSwarmService, new SyncDescriptor(SessionSwarmService));
   });
 
@@ -1427,7 +1430,7 @@ describe('SessionSwarmService metadata compatibility', () => {
       {
         status: 'failed',
         state: 'not_started',
-        error: 'Agent instance "other-child" does not belong to this parent agent',
+        error: 'Agent instance "other-child" does not belong to this delegator',
       },
     ]);
     expect(runAgent).not.toHaveBeenCalled();

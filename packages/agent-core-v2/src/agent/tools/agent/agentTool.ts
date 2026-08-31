@@ -1,5 +1,5 @@
 import { type CollectionView } from '#/_base/di/collection';
-import type { IAgentScopeHandle } from '#/_base/di/scope';
+import type { Runtime } from '#/runtime/runtime';
 import {
   isAbortError,
   isUserCancellation,
@@ -14,13 +14,11 @@ import {
 } from '#/agent/task/task';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
-import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
-import { IAgentExecutionService } from '#/agent/execution/execution';
-import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import {
   ToolAccesses,
   type ExecutableToolContext,
+  type ExecutableToolOutput,
   type ExecutableToolResult,
   type ToolExecution,
 } from '#/tool/toolContract';
@@ -35,59 +33,27 @@ import type {
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import type { AgentProfileCatalogSnapshot } from '#/app/agentProfileCatalog/scopedAgentProfile';
-import {
-  listAvailableSubagentTargets,
-  resolveSubagentTarget,
-} from '#/app/agentProfileCatalog/subagentDispatch';
-import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
-import {
-  fillLeasePins,
-  spawnConstraintOrigin,
-} from '#/app/agentProfileCatalog/applySubagentLease';
+import { listAvailableSubagentTargets } from '#/app/agentProfileCatalog/subagentDispatch';
 import { ILogService } from '#/_base/log/log';
 import { IConfigService } from '#/app/config/config';
-import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
+import { inputTotal } from '#/kosong/contract/usage';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
-import {
-  COLLABORATION_AGENT_TYPE_LABEL,
-  COLLABORATION_TASK_NAME_LABEL,
-  IAgentCollaborationRegistry,
-} from '#/session/agentCollaboration/registry';
-import {
-  directChildAgents,
-  findDirectChild,
-} from '#/session/agentCollaboration/directChildren';
-import {
-  delegatorRef,
-  isSubagentMeta,
-  labelsFromAgentMeta,
-  requestIdentitySpawnLabels,
-  subagentLabels,
-  subagentParentAgentId,
-} from '#/session/agentLifecycle/subagentMetadata';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
-import type { Runtime } from '#/runtime/runtime';
-import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
-
+import {
+  ISessionDispatchService,
+  type DispatchRun,
+} from '#/session/dispatch/dispatch';
 import { emitAgentRunSpawned, mirrorAgentRun, SubagentStarted } from '#/session/subagent/mirrorAgentRun';
 import { IEventDispatcher } from '#/state/eventDispatcher';
-import { ISessionSubagentService } from '#/session/subagent/subagent';
-import { roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
 import {
   addSubagentBindingSchemaConstraints,
   buildSubagentModelDescriptions,
-  canonicalizeSubagentBinding,
   formatSubagentTimeoutDescription,
   normalizeSubagentBindingValue,
-  resolveSubagentBinding,
   resolveSubagentTimeoutMs,
 } from '#/session/subagent/configSection';
-import {
-  assertProfileRouteBinding,
-  assertProfileRouteModelAvailable,
-} from '#/session/subagent/profileRouteBinding';
 import {
   BACKGROUND_AGENT_UNAVAILABLE,
   DEFAULT_PROFILE_NAME,
@@ -98,6 +64,7 @@ import {
   SubagentToolInputSchema,
   USER_INTERRUPTED_SUBAGENT_MESSAGE,
   type SubagentToolInput,
+  type SubagentToolOutput,
 } from './agent';
 import { SubagentTask, type SubagentHandle } from './subagent-task';
 import {
@@ -129,7 +96,7 @@ export class SubagentTool implements ISubagentTool {
 
   constructor(
     @IAgentLifecycleService private readonly lifecycle: IAgentLifecycleService,
-    @ISessionSubagentService private readonly subagents: ISessionSubagentService,
+    @ISessionDispatchService private readonly dispatch: ISessionDispatchService,
     @ISessionAgentProfileCatalog private readonly catalog: ISessionAgentProfileCatalog,
     @IAgentScopeContext scopeContext: IAgentScopeContext,
     @IAgentTaskService private readonly tasks: IAgentTaskService,
@@ -138,13 +105,9 @@ export class SubagentTool implements ISubagentTool {
     @IAgentToolRegistryService private readonly toolRegistry: IAgentToolRegistryService,
     @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
-    @ISessionMetadata private readonly sessionMetadata: ISessionMetadata,
     @ILogService private readonly log: ILogService,
-    @IAgentPermissionModeService private readonly permissionMode: IAgentPermissionModeService,
     @IConfigService private readonly config: IConfigService,
-    @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IModelService private readonly models: IModelService,
-    @IAgentCollaborationRegistry private readonly nameRegistry: IAgentCollaborationRegistry,
     @AgentToolContribution private readonly contributions: CollectionView<AgentToolContribution>,
   ) {
     this.callerAgentId = scopeContext.agentId;
@@ -318,8 +281,6 @@ export class SubagentTool implements ISubagentTool {
     runtime: Runtime,
     snapshot: AgentProfileCatalogSnapshot | undefined,
   ): Promise<SubagentHandle> {
-    const modelAlias = normalizeSubagentBindingValue(args.model_alias, 'model_alias');
-    const thinkingEffort = normalizeSubagentBindingValue(args.effort, 'effort');
     const requester = this.lifecycle.get(this.callerAgentId);
     if (requester === undefined) {
       throw new Error2(
@@ -328,178 +289,44 @@ export class SubagentTool implements ISubagentTool {
         { details: { agentId: this.callerAgentId } },
       );
     }
-
     const resumeRef = args.resume?.trim();
-    const isResume = resumeRef !== undefined && resumeRef.length > 0;
-
-    let agentId: string;
-    let profileName: string;
-    let displayModel: string | undefined;
-    let promptText = args.prompt;
-    if (isResume) {
-      const resumeAgentId = await this.resolveResumeTarget(resumeRef);
-      let target = this.lifecycle.get(resumeAgentId);
-      if (target === undefined) {
-        const persisted = (await this.sessionMetadata.read()).agents?.[resumeAgentId];
-        if (persisted !== undefined) {
-          if (!isSubagentMeta(persisted)) {
-            throw new Error2(
-              ErrorCodes.AGENT_NOT_A_SUBAGENT,
-              `Agent instance "${resumeAgentId}" is not a subagent`,
-              { details: { agentId: resumeAgentId } },
-            );
-          }
-          if (subagentParentAgentId(persisted) !== this.callerAgentId) {
-            throw new Error2(
-              ErrorCodes.AGENT_NOT_OWNED,
-              `Agent instance "${resumeAgentId}" does not belong to this parent agent`,
-              { details: { agentId: resumeAgentId, callerAgentId: this.callerAgentId } },
-            );
-          }
-          target = await this.lifecycle.create({
-            agentId: resumeAgentId,
-            forkedFrom: persisted.forkedFrom,
-            labels: labelsFromAgentMeta(persisted),
-            delegator: delegatorRef(persisted),
+    const run: DispatchRun =
+      resumeRef !== undefined && resumeRef.length > 0
+        ? await this.dispatch.runOnExisting(
+            await this.dispatch.resolveOwnedChild(
+              { kind: 'agent', agentId: this.callerAgentId },
+              resumeRef,
+            ),
+            args.prompt,
+            { signal: controller.signal },
+          )
+        : await this.dispatch.launch({
+            delegator: { kind: 'agent', agentId: this.callerAgentId },
+            requesterAgentId: this.callerAgentId,
+            requesterProfileData: this.profile.data(),
+            profileName:
+              args.profile?.length
+                ? args.profile
+                : args.route === undefined
+                  ? DEFAULT_PROFILE_NAME
+                  : undefined,
+            routeId: args.route,
+            snapshot,
+            message: args.prompt,
+            name: args.name?.trim(),
+            modelAlias: normalizeSubagentBindingValue(args.model_alias, 'model_alias'),
+            thinkingEffort: normalizeSubagentBindingValue(args.effort, 'effort'),
+            runtime,
+            workDir: this.workspace.workDir,
+            signal: controller.signal,
+            userLabel: args.description,
+            parentTurnId,
           });
-        }
-      }
-      if (target === undefined) {
-        throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `Agent instance "${resumeAgentId}" does not exist`, {
-          details: { agentId: resumeAgentId },
-        });
-      }
-      await this.ensureOwnedIdleSubagent(resumeAgentId, target);
-      agentId = target.id;
-      const resumed = target.accessor.get(IAgentProfileService).data();
-      profileName = resumed.routeId ?? resumed.profileName ?? RESUMED_LABEL;
-      displayModel = resumed.modelAlias;
-    } else {
-      const requestedProfileName = args.profile?.length
-        ? args.profile
-        : args.route === undefined
-          ? DEFAULT_PROFILE_NAME
-          : undefined;
-      await this.catalog.ready;
-      const own = this.profile.data();
-      const target = resolveSubagentTarget(
-        this.catalog,
-        own,
-        {
-          profileName: requestedProfileName,
-          routeId: args.route,
-          snapshot,
-        },
-        this.models,
-      );
-      const selection = target.selection;
-      const baseProfileName = selection.baseProfile.name;
-      const profile = target.effectiveProfile;
-      const filled = fillLeasePins(
-        {
-          modelAlias,
-          thinkingEffort,
-        },
-        target.lease,
-        selection.route,
-      );
-      assertProfileRouteBinding(
-        selection.route,
-        {
-          modelAlias: filled.modelAlias,
-          thinkingEffort: filled.thinkingEffort,
-        },
-        this.models,
-      );
-      assertProfileRouteModelAvailable(selection.route, this.modelCatalog, this.models);
-      const roleConstraints = roleConstraintsFromProfile(
-        profile,
-        spawnConstraintOrigin(target.lease, target.spawnPolicy),
-      );
-      const binding = canonicalizeSubagentBinding(
-        resolveSubagentBinding(
-          this.config,
-          {
-            modelAlias: filled.modelAlias,
-            thinkingEffort: filled.thinkingEffort,
-          },
-          {
-            modelAlias: selection.route?.lockedModelAlias ?? profile.modelAlias,
-            thinkingEffort: selection.route?.lockedThinkingEffort ?? profile.thinkingEffort,
-          },
-          this.models,
-          roleConstraints,
-          { profileName: profile.name, routeId: selection.route?.id },
-        ),
-        this.models,
-      );
-      this.modelCatalog.get(binding.model);
-      const requestedName = args.name?.trim();
-      const nameOwner = { kind: 'agent' as const, agentId: this.callerAgentId };
-      if (requestedName !== undefined && !(await this.nameRegistry.reserve(requestedName, nameOwner))) {
-        throw new Error2(
-          ErrorCodes.AGENT_ALREADY_EXISTS,
-          `Agent name "${requestedName}" is already used in this session. Pick another name, or pass it to resume to continue that agent.`,
-          { details: { name: requestedName } },
-        );
-      }
-      let created: IAgentScopeHandle;
-      try {
-        const callerMeta = (await this.sessionMetadata.read()).agents?.[this.callerAgentId];
-        const requesterUserTools = requester.accessor.get(IAgentUserToolService);
-        created = await this.lifecycle.create({
-          binding: {
-            profile: baseProfileName,
-            route: selection.route?.id,
-            resolvedProfile: selection.baseProfile,
-            resolvedRoute: selection.route,
-            model: binding.model,
-            thinking: binding.thinking,
-            inheritedUserToolNames: requesterUserTools.list().map((tool) => tool.name),
-            lease: target.lease,
-            spawnPolicy: target.spawnPolicy,
-          },
-          labels: {
-            ...subagentLabels(this.callerAgentId),
-            ...requestIdentitySpawnLabels(this.callerAgentId, parentTurnId, callerMeta),
-            ...(requestedName === undefined
-              ? {}
-              : {
-                  [COLLABORATION_TASK_NAME_LABEL]: requestedName,
-                  [COLLABORATION_AGENT_TYPE_LABEL]: baseProfileName,
-                }),
-          },
-          delegator: { kind: 'agent', agentId: this.callerAgentId },
-          userLabel: args.description,
-          runtimeId: runtime.identity.runtimeId,
-        });
-      } catch (error) {
-        if (requestedName !== undefined) this.nameRegistry.release(requestedName, nameOwner);
-        throw error;
-      }
-      if (requestedName !== undefined) this.nameRegistry.commit(requestedName, nameOwner);
-      created.accessor.get(IAgentPermissionModeService).setMode(this.permissionMode.mode);
-      created.accessor
-        .get(IAgentUserToolService)
-        .inheritUserTools(requester.accessor.get(IAgentUserToolService));
-      agentId = created.id;
-      profileName = selection.route?.id ?? profile.name;
-      displayModel = binding.displayModel;
-      promptText = await applyProfilePromptPrefix(profile, args.prompt, {
-        cwd: this.workspace.workDir,
-        process: runtime.process!,
-        log: this.log,
-      });
-    }
-
-    const run = await this.subagents.run(
-      agentId,
-      { kind: 'prompt', prompt: promptText },
-      { signal: controller.signal },
-    );
-    const mirrored = mirrorAgentRun(requester, run, {
-      profileName,
-      prompt: promptText,
+    const started = await run.started;
+    const prompt = run.request.kind === 'prompt' ? run.request.prompt : undefined;
+    const mirrored = mirrorAgentRun(requester, started, {
+      profileName: run.child.profileName,
+      prompt,
       signal: controller.signal,
       deferStarted: true,
       cancel: (reason) => {
@@ -507,53 +334,15 @@ export class SubagentTool implements ISubagentTool {
       },
     });
     return {
-      agentId,
-      profileName,
+      agentId: run.child.agentId,
+      profileName: run.child.profileName,
       parentToolCallId: toolCallId,
-      model: displayModel,
-      thinkingEffort: this.lifecycle
-        .get(agentId)
-        ?.accessor.get(IAgentProfileService)
+      model: run.child.modelAlias,
+      thinkingEffort: run.child.agent
+        .accessor.get(IAgentProfileService)
         .getEffectiveThinkingLevel(),
-      completion: mirrored.then((r) => ({ result: r.summary, usage: r.usage })),
+      completion: mirrored.then((result) => ({ result: result.summary, usage: result.usage })),
     };
-  }
-
-  /**
-   * `resume` accepts either the name given at creation or the generated agent
-   * ID. An unmatched value is passed through unchanged so an ID that exists but
-   * is not ours still reports why it was refused rather than "not found".
-   */
-  private async resolveResumeTarget(ref: string): Promise<string> {
-    const children = directChildAgents((await this.sessionMetadata.read()).agents, this.callerAgentId);
-    return findDirectChild(children, ref)?.agentId ?? ref;
-  }
-
-  private async ensureOwnedIdleSubagent(
-    agentId: string,
-    target: IAgentScopeHandle,
-  ): Promise<AgentMeta> {
-    const meta = (await this.sessionMetadata.read()).agents?.[agentId];
-    if (!isSubagentMeta(meta)) {
-      throw new Error2(ErrorCodes.AGENT_NOT_A_SUBAGENT, `Agent instance "${agentId}" is not a subagent`, {
-        details: { agentId },
-      });
-    }
-    if (subagentParentAgentId(meta) !== this.callerAgentId) {
-      throw new Error2(
-        ErrorCodes.AGENT_NOT_OWNED,
-        `Agent instance "${agentId}" does not belong to this parent agent`,
-        { details: { agentId, callerAgentId: this.callerAgentId } },
-      );
-    }
-    if (target.accessor.get(IAgentExecutionService).status().state !== 'idle') {
-      throw new Error2(
-        ErrorCodes.AGENT_ALREADY_RUNNING,
-        `Agent instance "${agentId}" is already running and cannot run concurrently`,
-        { details: { agentId } },
-      );
-    }
-    return meta!;
   }
 
   private async execution(
@@ -615,12 +404,15 @@ export class SubagentTool implements ISubagentTool {
         const registerOptions: RegisterAgentTaskOptions = {
           detached: runInBackground,
           timeoutMs,
+          detachTimeoutMs: timeoutMs,
+          autoBackgroundOnTimeout: !runInBackground && allowBackground,
           signal: runInBackground ? undefined : signal,
         };
         taskId = this.tasks.registerTask(
           new SubagentTask(handle, runLabel, controller),
           registerOptions,
         );
+        await this.dispatch.recordRun(handle.agentId, taskId);
         signal.removeEventListener('abort', abortBeforeRegister);
       } catch (error) {
         controller.abort();
@@ -664,7 +456,7 @@ export class SubagentTool implements ISubagentTool {
       }
 
       const release = await this.tasks.waitForForegroundRelease(taskId);
-      if (release === 'detached') {
+      if (release === 'detached' || release === 'timeout_detached') {
         return {
           output: formatBackgroundAgentResult(taskId, handle, runLabel, allowBackground),
         };
@@ -683,7 +475,7 @@ export class SubagentTool implements ISubagentTool {
     const info = this.tasks.getTask(taskId);
     if (info?.status === 'completed') {
       return {
-        output: formatForegroundAgentSuccess(handle, await this.tasks.readOutput(taskId)),
+        output: structuredSubagentOutput(await handle.completion) as unknown as ExecutableToolOutput,
       };
     }
     const timedOut = info?.status === 'timed_out';
@@ -725,15 +517,21 @@ function formatBackgroundAgentResult(
   ].join('\n');
 }
 
-function formatForegroundAgentSuccess(handle: SubagentHandle, result: string): string {
-  return [
-    `agent_id: ${handle.agentId}`,
-    `actual_profile: ${handle.profileName}`,
-    'status: completed',
-    '',
-    '[summary]',
-    result,
-  ].join('\n');
+function structuredSubagentOutput(
+  completion: Awaited<SubagentHandle['completion']>,
+): SubagentToolOutput {
+  return {
+    result: completion.result,
+    usage:
+      completion.usage === undefined
+        ? { input: 0, output: 0 }
+        : {
+            input: inputTotal(completion.usage),
+            output: completion.usage.output,
+            cache_read: completion.usage.inputCacheRead,
+            cache_write: completion.usage.inputCacheCreation,
+          },
+  };
 }
 
 function formatForegroundAgentFailure(

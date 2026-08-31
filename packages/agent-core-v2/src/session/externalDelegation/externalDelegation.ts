@@ -97,18 +97,30 @@ export interface ExternalChildView {
   readonly latestDispatchId?: string;
 }
 
+export interface DispatchUsageView {
+  readonly input: number;
+  readonly output: number;
+  readonly cacheRead: number;
+  readonly cacheWrite: number;
+}
+
 export interface ExternalDispatchView {
   readonly dispatchId: string;
   readonly target: 'main' | 'named';
   readonly taskName?: string;
   readonly profileName?: string;
+  readonly agentId?: string;
+  readonly actualProfile?: string;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
   readonly status: ExternalDispatchStatus;
+  readonly nextStep?: string;
+  readonly continueHint?: string;
   readonly createdAt: number;
   readonly startedAt?: number;
   readonly endedAt?: number;
   readonly continuationOf?: string;
+  readonly usage?: DispatchUsageView;
   /**
    * Stable failure category (`ExternalFailureCategory`); the untrusted
    * provider/process message is never exposed — `result()` pages carry only
@@ -132,6 +144,7 @@ export interface ExternalDispatchRequest {
   readonly target: 'main' | 'named';
   readonly taskName?: string;
   readonly profileName?: string;
+  readonly dispatchKey?: string;
   /** Exact model binding for a newly-created named child. */
   readonly modelAlias?: string;
   /** Exact thinking binding for a newly-created named child. */
@@ -142,11 +155,26 @@ export interface ExternalContinueRequest {
   readonly authority: ExternalAuthority;
   readonly dispatchId: string;
   readonly message: string;
+  readonly dispatchKey?: string;
 }
 
 export interface ExternalDispatchLookup {
   readonly authority: ExternalAuthority;
   readonly dispatchId: string;
+}
+
+export interface DispatchWaitRequest {
+  readonly authority: ExternalAuthority;
+  readonly dispatchId?: string;
+  readonly timeoutMs?: number;
+  readonly signal?: AbortSignal;
+}
+
+export interface DispatchWaitView {
+  readonly waitStatus: 'completed' | 'timed_out' | 'no_items';
+  readonly waitedMs: number;
+  readonly dispatch?: ExternalDispatchView;
+  readonly completedDuringWait: readonly ExternalDispatchView[];
 }
 
 export interface ExternalPageLookup extends ExternalDispatchLookup {
@@ -190,6 +218,7 @@ export interface ISessionExternalDelegationService {
   dispatch(request: ExternalDispatchRequest): Promise<ExternalDispatchView>;
   continue(request: ExternalContinueRequest): Promise<ExternalDispatchView>;
   status(request: ExternalDispatchLookup): Promise<ExternalDispatchView>;
+  wait(request: DispatchWaitRequest): Promise<DispatchWaitView>;
   result(request: ExternalPageLookup): Promise<ExternalResultPage>;
   events(request: ExternalPageLookup): Promise<ExternalEventPage>;
   transcript(request: ExternalPageLookup): Promise<ExternalTranscriptPage>;
