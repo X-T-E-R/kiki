@@ -1,0 +1,219 @@
+import {
+  resumeSessionById,
+  type ExternalDispatchView,
+  type ISessionExternalDelegationService as ExternalDelegationService,
+} from '@moonshot-ai/agent-core-v2';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { registerV2ExternalDelegationRoutes } from '../src/routes/v2/externalDelegation';
+
+const mainAgent = vi.hoisted(() => ({ ensure: vi.fn() }));
+
+vi.mock('@moonshot-ai/agent-core-v2', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@moonshot-ai/agent-core-v2')>();
+  return { ...actual, resumeSessionById: vi.fn() };
+});
+
+vi.mock('../src/transport/mainAgent', () => ({ ensureMainAgent: mainAgent.ensure }));
+
+type Handler = (
+  req: {
+    readonly id: string;
+    readonly params: unknown;
+    readonly body?: unknown;
+    readonly headers: Record<string, string | string[] | undefined>;
+  },
+  reply: { send(payload: unknown): unknown },
+) => Promise<void>;
+
+const authorityConfig = {
+  principalId: 'example-principal',
+  sessionId: 'session-operator',
+  token: 'DELEGATION_SECRET',
+};
+
+const dispatchView: ExternalDispatchView = {
+  dispatchId: 'dispatch_replay',
+  target: 'named',
+  taskName: 'probe',
+  profileName: 'explore',
+  agentId: 'agent-1',
+  actualProfile: 'explore',
+  modelAlias: 'grok-4.6',
+  thinkingEffort: 'high',
+  status: 'queued',
+  nextStep: 'wait:dispatch_replay',
+  continueHint: 'dispatch:probe',
+  createdAt: 1,
+  usage: { input: 3, output: 5, cacheRead: 2, cacheWrite: 1 },
+};
+
+describe('external delegation route projection', () => {
+  let handlers: Map<string, Handler>;
+  let service: {
+    [K in keyof ExternalDelegationService]: ReturnType<typeof vi.fn>;
+  };
+
+  beforeEach(() => {
+    handlers = new Map();
+    service = {
+      list: vi.fn(),
+      dispatch: vi.fn(),
+      continue: vi.fn(),
+      status: vi.fn(),
+      wait: vi.fn(),
+      result: vi.fn(),
+      events: vi.fn(),
+      transcript: vi.fn(),
+      cancel: vi.fn(),
+      _serviceBrand: vi.fn(),
+    };
+    vi.mocked(resumeSessionById).mockResolvedValue({
+      accessor: { get: () => service },
+    } as never);
+    mainAgent.ensure.mockResolvedValue(undefined);
+    registerV2ExternalDelegationRoutes(
+      {
+        post: (path, _options, handler) => {
+          handlers.set(path, handler);
+        },
+      },
+      {} as never,
+      authorityConfig,
+    );
+  });
+
+  it('keeps the eight existing commands and adds wait', () => {
+    expect([...handlers.keys()].toSorted()).toEqual([
+      '/sessions/:session_id/external-delegation/cancel',
+      '/sessions/:session_id/external-delegation/continue',
+      '/sessions/:session_id/external-delegation/dispatch',
+      '/sessions/:session_id/external-delegation/events',
+      '/sessions/:session_id/external-delegation/list',
+      '/sessions/:session_id/external-delegation/result',
+      '/sessions/:session_id/external-delegation/status',
+      '/sessions/:session_id/external-delegation/transcript',
+      '/sessions/:session_id/external-delegation/wait',
+    ]);
+  });
+
+  it('returns the domain replay view for repeated dispatch_key requests', async () => {
+    service.dispatch.mockResolvedValue(dispatchView);
+    service.continue.mockResolvedValue(dispatchView);
+
+    const first = await invoke('dispatch', {
+      target: 'named',
+      task_name: 'probe',
+      profile_name: 'explore',
+      dispatch_key: 'stable-dispatch-key',
+      message: 'inspect',
+    });
+    const replay = await invoke('dispatch', {
+      target: 'named',
+      task_name: 'probe',
+      profile_name: 'explore',
+      dispatch_key: 'stable-dispatch-key',
+      message: 'inspect',
+    });
+    await invoke('continue', {
+      dispatch_id: 'dispatch_previous',
+      dispatch_key: 'stable-continue-key',
+      message: 'continue',
+    });
+
+    expect(first.data).toEqual(dispatchView);
+    expect(replay.data).toEqual(dispatchView);
+    expect(service.dispatch).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      dispatchKey: 'stable-dispatch-key',
+    }));
+    expect(service.dispatch).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      dispatchKey: 'stable-dispatch-key',
+    }));
+    expect(service.continue).toHaveBeenCalledWith(expect.objectContaining({
+      dispatchId: 'dispatch_previous',
+      dispatchKey: 'stable-continue-key',
+    }));
+  });
+
+  it('projects targeted timeout and wait-any without treating timeout as an error', async () => {
+    service.wait
+      .mockResolvedValueOnce({
+        waitStatus: 'timed_out',
+        waitedMs: 600_000,
+        dispatch: { ...dispatchView, status: 'running' },
+        completedDuringWait: [],
+      })
+      .mockResolvedValueOnce({
+        waitStatus: 'completed',
+        waitedMs: 2,
+        dispatch: { ...dispatchView, status: 'completed' },
+        completedDuringWait: [{ ...dispatchView, status: 'completed' }],
+      });
+
+    const timedOut = await invoke('wait', { dispatch_id: 'dispatch_replay', timeout_s: 600 });
+    const any = await invoke('wait', { timeout_s: 1 });
+    const invalid = await invoke('wait', { timeout_s: 601 });
+
+    expect(timedOut).toMatchObject({ code: 0, data: { waitStatus: 'timed_out' } });
+    expect(any).toMatchObject({
+      code: 0,
+      data: {
+        waitStatus: 'completed',
+        completedDuringWait: [{ dispatchId: 'dispatch_replay', status: 'completed' }],
+      },
+    });
+    expect(invalid.code).not.toBe(0);
+    expect(service.wait).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      dispatchId: 'dispatch_replay',
+      timeoutMs: 600_000,
+    }));
+    expect(service.wait).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      dispatchId: undefined,
+      timeoutMs: 1_000,
+    }));
+    expect(service.wait).toHaveBeenCalledTimes(2);
+  });
+
+  it('passes receipt and usage fields through status, result, and list views', async () => {
+    service.status.mockResolvedValue(dispatchView);
+    service.result.mockResolvedValue({ dispatch: dispatchView, text: 'done' });
+    service.list.mockResolvedValue({
+      version: 1,
+      delegationId: 'delegation_1',
+      lifecycle: 'active',
+      dispatchables: [{ kind: 'main' }],
+      children: [],
+      continuations: [dispatchView],
+    });
+
+    const status = await invoke('status', { dispatch_id: 'dispatch_replay' });
+    const result = await invoke('result', { dispatch_id: 'dispatch_replay', limit: 100_000 });
+    const list = await invoke('list', {});
+
+    expect(status.data).toMatchObject({
+      actualProfile: 'explore',
+      nextStep: 'wait:dispatch_replay',
+      continueHint: 'dispatch:probe',
+      usage: { input: 3, output: 5, cacheRead: 2, cacheWrite: 1 },
+    });
+    expect(result.data).toMatchObject({ dispatch: { usage: { input: 3, output: 5 } } });
+    expect(list.data).toMatchObject({ continuations: [{ actualProfile: 'explore', usage: { output: 5 } }] });
+    expect(service.result).toHaveBeenCalledWith(expect.objectContaining({ limit: 100_000 }));
+  });
+
+  async function invoke(action: string, body: unknown): Promise<{ code: number; data?: any }> {
+    const handler = handlers.get(`/sessions/:session_id/external-delegation/${action}`);
+    expect(handler).toBeDefined();
+    let payload: unknown;
+    await handler!(
+      {
+        id: `request-${action}`,
+        params: { session_id: 'session-operator' },
+        body,
+        headers: { 'x-kiki-delegation-token': 'DELEGATION_SECRET' },
+      },
+      { send: (value) => { payload = value; } },
+    );
+    return payload as { code: number; data?: any };
+  }
+});

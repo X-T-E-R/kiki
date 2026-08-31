@@ -51,6 +51,7 @@ describe('Kiki external delegation MCP server', () => {
       'kiki_result',
       'kiki_status',
       'kiki_transcript',
+      'kiki_wait',
     ]);
     const called = await client.callTool({ name: 'kiki_list', arguments: {} });
     expect(called.structuredContent).toEqual({
@@ -74,7 +75,7 @@ describe('Kiki external delegation MCP server', () => {
       workspacePath: '/example/original',
     };
     const fetchMock = vi.fn<typeof fetch>(async (url) => {
-      expect(String(url)).toContain('/sessions/session-original/external-delegation/list');
+      expect(fetchUrl(url)).toContain('/sessions/session-original/external-delegation/list');
       return new Response(
         JSON.stringify({ code: 0, msg: 'ok', data: { delegationId: 'delegation_1' } }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -141,10 +142,10 @@ describe('Kiki external delegation MCP server', () => {
     expect(JSON.stringify(called)).not.toContain('DO_NOT_EXPOSE');
   });
 
-  it('forwards the caller max_bytes as the backend result page limit', async () => {
+  it('clamps max_bytes to the domain result page limit', async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
-      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      bodies.push(JSON.parse(fetchBody(init)) as Record<string, unknown>);
       return new Response(
         JSON.stringify({ code: 0, msg: 'ok', data: { text: 'hello', dispatch: { dispatchId: 'dispatch_1' } } }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -165,8 +166,12 @@ describe('Kiki external delegation MCP server', () => {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     close.push(() => client.close(), () => server.close());
 
-    await client.callTool({ name: 'kiki_result', arguments: { dispatch_id: 'dispatch_1', max_bytes: 2048 } });
-    expect(bodies[0]).toMatchObject({ dispatch_id: 'dispatch_1', limit: 2048 });
+    const called = await client.callTool({
+      name: 'kiki_result',
+      arguments: { dispatch_id: 'dispatch_1', max_bytes: 100_000 },
+    });
+    expect(called.isError).not.toBe(true);
+    expect(bodies[0]).toMatchObject({ dispatch_id: 'dispatch_1', limit: 65_536 });
   });
 
   it('forwards exact bindings without progress polling when no token is supplied', async () => {
@@ -175,7 +180,7 @@ describe('Kiki external delegation MCP server', () => {
       const href = typeof url === 'string' ? url : url instanceof URL ? url.href : url.url;
       requests.push({
         action: href.split('/').at(-1)!,
-        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+        body: JSON.parse(fetchBody(init)) as Record<string, unknown>,
       });
       return new Response(
         JSON.stringify({
@@ -186,6 +191,7 @@ describe('Kiki external delegation MCP server', () => {
             target: 'named',
             taskName: 'exact_probe',
             profileName: 'explore',
+            actualProfile: 'explore',
             modelAlias: 'grok-4.6',
             thinkingEffort: 'high',
             status: 'queued',
@@ -217,10 +223,23 @@ describe('Kiki external delegation MCP server', () => {
         profile_name: 'explore',
         model_alias: 'grok-4.6',
         thinking_effort: 'high',
+        dispatch_key: 'dispatch-key-exact',
         message: 'inspect',
       },
     });
     expect(dispatched.isError).not.toBe(true);
+    expect(dispatched.structuredContent).toMatchObject({
+      dispatch_key: 'dispatch-key-exact',
+      receipt: {
+        dispatch_id: 'dispatch_exact',
+        dispatch_key: 'dispatch-key-exact',
+        task_name: 'exact_probe',
+        actual_profile: 'explore',
+        status: 'queued',
+        next_step: expect.stringContaining('kiki_wait'),
+        continue_hint: expect.stringContaining('kiki_dispatch'),
+      },
+    });
     expect(requests[0]).toEqual({
       action: 'dispatch',
       body: {
@@ -229,17 +248,26 @@ describe('Kiki external delegation MCP server', () => {
         profile_name: 'explore',
         model_alias: 'grok-4.6',
         thinking_effort: 'high',
+        dispatch_key: 'dispatch-key-exact',
         message: 'inspect',
       },
     });
 
     await client.callTool({
       name: 'kiki_continue',
-      arguments: { dispatch_id: 'dispatch_exact', message: 'continue' },
+      arguments: {
+        dispatch_id: 'dispatch_exact',
+        dispatch_key: 'continue-key-exact',
+        message: 'continue',
+      },
     });
     expect(requests[1]).toEqual({
       action: 'continue',
-      body: { dispatch_id: 'dispatch_exact', message: 'continue' },
+      body: {
+        dispatch_id: 'dispatch_exact',
+        dispatch_key: 'continue-key-exact',
+        message: 'continue',
+      },
     });
     const rebound = await client.callTool({
       name: 'kiki_continue',
@@ -253,12 +281,133 @@ describe('Kiki external delegation MCP server', () => {
     expect(requests).toHaveLength(2);
   });
 
+  it('generates dispatch keys for dispatch and continue and echoes them in receipts', async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
+      requests.push(JSON.parse(fetchBody(init)) as Record<string, unknown>);
+      return new Response(
+        JSON.stringify({
+          code: 0,
+          msg: 'ok',
+          data: {
+            dispatchId: `dispatch_${requests.length}`,
+            target: 'named',
+            taskName: 'memory_probe',
+            profileName: 'explore',
+            actualProfile: 'explore',
+            status: 'queued',
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    const server = createKikiMcpServer(
+      {
+        endpoint: 'http://127.0.0.1:58627',
+        token: 'TOKEN',
+        delegationToken: 'DELEGATION_SECRET',
+        sessionId: 'session-operator',
+        workspacePath: '/example/workspace',
+      },
+      { fetch: fetchMock },
+    );
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    close.push(() => client.close(), () => server.close());
+
+    const dispatched = await client.callTool({
+      name: 'kiki_dispatch',
+      arguments: {
+        target: 'named',
+        task_name: 'memory_probe',
+        profile_name: 'explore',
+        message: 'inspect',
+      },
+    });
+    const continued = await client.callTool({
+      name: 'kiki_continue',
+      arguments: { dispatch_id: 'dispatch_1', message: 'continue' },
+    });
+    const dispatchKey = requests[0]?.['dispatch_key'];
+    const continueKey = requests[1]?.['dispatch_key'];
+    expect(dispatchKey).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
+    expect(continueKey).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
+    expect(continueKey).not.toBe(dispatchKey);
+    expect(dispatched.structuredContent).toMatchObject({
+      dispatch_key: dispatchKey,
+      receipt: { dispatch_key: dispatchKey, dispatch_id: 'dispatch_1' },
+    });
+    expect(continued.structuredContent).toMatchObject({
+      dispatch_key: continueKey,
+      receipt: { dispatch_key: continueKey, dispatch_id: 'dispatch_2' },
+    });
+  });
+
+  it('mirrors targeted timeout and wait-any responses through kiki_wait', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = JSON.parse(fetchBody(init)) as Record<string, unknown>;
+      bodies.push(body);
+      const data = body['dispatch_id'] === undefined
+        ? {
+            waitStatus: 'completed',
+            waitedMs: 3,
+            dispatch: { dispatchId: 'dispatch_any', status: 'completed' },
+            completedDuringWait: [{ dispatchId: 'dispatch_any', status: 'completed' }],
+          }
+        : {
+            waitStatus: 'timed_out',
+            waitedMs: 0,
+            dispatch: { dispatchId: body['dispatch_id'], status: 'running' },
+            completedDuringWait: [],
+          };
+      return new Response(JSON.stringify({ code: 0, msg: 'ok', data }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const server = createKikiMcpServer(
+      {
+        endpoint: 'http://127.0.0.1:58627',
+        token: 'TOKEN',
+        delegationToken: 'DELEGATION_SECRET',
+        sessionId: 'session-operator',
+        workspacePath: '/example/workspace',
+      },
+      { fetch: fetchMock },
+    );
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    close.push(() => client.close(), () => server.close());
+
+    const timedOut = await client.callTool({
+      name: 'kiki_wait',
+      arguments: { dispatch_id: 'dispatch_running', timeout_s: 0 },
+    });
+    const any = await client.callTool({ name: 'kiki_wait', arguments: { timeout_s: 1 } });
+    expect(bodies).toEqual([
+      { dispatch_id: 'dispatch_running', timeout_s: 0 },
+      { timeout_s: 1 },
+    ]);
+    expect(timedOut.isError).not.toBe(true);
+    expect(timedOut.structuredContent).toMatchObject({
+      waitStatus: 'timed_out',
+      dispatch: { dispatchId: 'dispatch_running', status: 'running' },
+    });
+    expect(any.structuredContent).toMatchObject({
+      waitStatus: 'completed',
+      completedDuringWait: [{ dispatchId: 'dispatch_any', status: 'completed' }],
+    });
+  });
+
   it('streams delegation progress from lifecycle and transcript polling until terminal status', async () => {
     let eventPoll = 0;
     let transcriptPoll = 0;
     const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
-      const action = String(url).split('/').at(-1);
-      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const action = fetchUrl(url).split('/').at(-1);
+      const body = JSON.parse(fetchBody(init)) as Record<string, unknown>;
       let data: unknown;
       if (action === 'dispatch') {
         data = { dispatchId: 'dispatch_progress', target: 'main', status: 'queued', createdAt: 1 };
@@ -362,7 +511,7 @@ describe('Kiki external delegation MCP server', () => {
   it('pages astral and mixed text without splitting Unicode or losing code units', async () => {
     const source = 'A😀你B🧪终';
     const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
-      const body = JSON.parse(String(init?.body)) as { cursor?: number };
+      const body = JSON.parse(fetchBody(init)) as { cursor?: number };
       const cursor = body.cursor ?? 0;
       // Deliberately split after two UTF-16 code units. The first backend
       // response ends with a high surrogate, independently exercising the
@@ -526,7 +675,8 @@ describe('external delegation route exposure', () => {
     process.env['KIKI_EXTERNAL_SESSION_ID'] = 'session-operator';
     process.env['KIKI_EXTERNAL_DELEGATION_TOKEN'] = 'DELEGATION_SECRET';
     const paths: string[] = [];
-    const api = { get: (path: string) => paths.push(path), post: (path: string) => paths.push(path) };
+    const register = (path: string) => paths.push(path);
+    const api = { get: register, post: register, put: register, delete: register };
     const app = { register: async (plugin: (host: unknown) => Promise<void> | void) => plugin(api) };
     const core = {
       accessor: {
@@ -560,3 +710,12 @@ describe('external delegation transcript projection', () => {
     });
   });
 });
+
+function fetchUrl(input: Parameters<typeof fetch>[0]): string {
+  return typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+}
+
+function fetchBody(init: Parameters<typeof fetch>[1]): string {
+  if (typeof init?.body !== 'string') throw new Error('Expected a string request body.');
+  return init.body;
+}

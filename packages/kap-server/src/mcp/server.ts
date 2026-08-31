@@ -8,6 +8,7 @@
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
@@ -35,6 +36,7 @@ const dispatchInput = z
     profile_name: z.string().trim().min(1).optional(),
     model_alias: z.string().trim().min(1).optional(),
     thinking_effort: z.string().trim().min(1).optional(),
+    dispatch_key: z.string().trim().min(1).optional(),
     message: z.string().trim().min(1).max(1_000_000),
   })
   .superRefine((value, ctx) => {
@@ -49,13 +51,34 @@ const dispatchInput = z
     }
   })
   .strict();
-const continueInput = z.object({ dispatch_id: z.string().min(1), message: z.string().trim().min(1).max(1_000_000) }).strict();
+const continueInput = z
+  .object({
+    dispatch_id: z.string().min(1),
+    dispatch_key: z.string().trim().min(1).optional(),
+    message: z.string().trim().min(1).max(1_000_000),
+  })
+  .strict();
 const lookupInput = z.object({ dispatch_id: z.string().min(1) }).strict();
+const waitInput = z
+  .object({
+    dispatch_id: z.string().min(1).optional(),
+    timeout_s: z.number().int().nonnegative().max(600).optional(),
+  })
+  .strict();
 const pageInput = lookupInput.extend({ cursor: z.number().int().nonnegative().optional(), limit: z.number().int().min(1).max(100).optional() }).strict();
-const resultInput = lookupInput.extend({ cursor: z.number().int().nonnegative().optional(), max_bytes: z.number().int().min(4).max(65_536).optional() }).strict();
+const resultInput = lookupInput.extend({ cursor: z.number().int().nonnegative().optional(), max_bytes: z.number().int().min(4).optional() }).strict();
 const emptyInput = z.object({}).strict();
 const dispatchStatus = z.enum(['queued', 'running', 'completed', 'failed', 'cancelled', 'interrupted']);
-const dispatchView = z.object({ dispatchId: z.string().min(1), status: dispatchStatus }).passthrough();
+const dispatchView = z
+  .object({
+    dispatchId: z.string().min(1),
+    target: z.enum(['main', 'named']),
+    taskName: z.string().optional(),
+    actualProfile: z.string().optional(),
+    profileName: z.string().optional(),
+    status: dispatchStatus,
+  })
+  .passthrough();
 const eventPage = z
   .object({
     items: z.array(
@@ -136,13 +159,16 @@ export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServe
     },
     async (input, extra) =>
       toolResult(async () => {
-        const dispatched = await client.call('dispatch', dispatchInput.parse(input));
-        return followDelegationProgress(
+        const parsed = dispatchInput.parse(input);
+        const dispatchKey = parsed.dispatch_key ?? randomUUID();
+        const dispatched = await client.call('dispatch', { ...parsed, dispatch_key: dispatchKey });
+        const observed = await followDelegationProgress(
           client,
           dispatched,
           extra,
           progressPollIntervalMs,
         );
+        return withDispatchReceipt(observed, dispatchKey);
       }),
   );
   server.registerTool(
@@ -150,13 +176,16 @@ export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServe
     { description: 'Continue an owned terminal main or named-child dispatch.', inputSchema: continueInput },
     async (input, extra) =>
       toolResult(async () => {
-        const dispatched = await client.call('continue', continueInput.parse(input));
-        return followDelegationProgress(
+        const parsed = continueInput.parse(input);
+        const dispatchKey = parsed.dispatch_key ?? randomUUID();
+        const dispatched = await client.call('continue', { ...parsed, dispatch_key: dispatchKey });
+        const observed = await followDelegationProgress(
           client,
           dispatched,
           extra,
           progressPollIntervalMs,
         );
+        return withDispatchReceipt(observed, dispatchKey);
       }),
   );
   server.registerTool(
@@ -165,17 +194,21 @@ export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServe
     async (input) => toolResult(() => client.call('status', lookupInput.parse(input))),
   );
   server.registerTool(
+    'kiki_wait',
+    { description: 'Wait for one owned dispatch or the next owned dispatch to finish.', inputSchema: waitInput },
+    async (input) =>
+      toolResult(() => {
+        const parsed = waitInput.parse(input);
+        return client.call('wait', parsed, waitRequestTimeoutMs(parsed.timeout_s));
+      }),
+  );
+  server.registerTool(
     'kiki_result',
     { description: 'Read a UTF-8-bounded result page for an owned dispatch.', inputSchema: resultInput },
     async (input) =>
       toolResult(() => {
         const parsed = resultInput.parse(input);
-        // Forward the caller's byte budget (schema-clamped to [4, 65_536]) as
-        // the backend page limit instead of a fixed 16_384. The backend limit
-        // is in characters, which never under-fills the byte budget (one UTF-8
-        // character is at least one byte); the local byte-bound trim below
-        // still enforces the exact boundary.
-        const maxBytes = parsed.max_bytes ?? 65_536;
+        const maxBytes = Math.min(parsed.max_bytes ?? 65_536, 65_536);
         return client
           .call<Record<string, unknown> & { text?: unknown; nextCursor?: unknown }>('result', {
             dispatch_id: parsed.dispatch_id,
@@ -229,7 +262,7 @@ class ExternalDelegationRestClient {
     private readonly fetchImpl: typeof globalThis.fetch,
   ) {}
 
-  async call<T = unknown>(action: string, body: unknown): Promise<T> {
+  async call<T = unknown>(action: string, body: unknown, timeoutMs = 30_000): Promise<T> {
     let response: Response;
     try {
       response = await this.fetchImpl(
@@ -242,7 +275,7 @@ class ExternalDelegationRestClient {
             'x-kiki-delegation-token': this.config.delegationToken,
           },
           body: JSON.stringify(body),
-          signal: AbortSignal.timeout(30_000),
+          signal: AbortSignal.timeout(timeoutMs),
         },
       );
     } catch {
@@ -373,6 +406,30 @@ function progressMessage(
   return status === 'started'
     ? `Delegation turn started (${toolCalls}).`
     : `Delegation ${status} (${toolCalls}).`;
+}
+
+function withDispatchReceipt(value: unknown, dispatchKey: string): Record<string, unknown> {
+  const dispatch = dispatchView.parse(value);
+  const continueHint = dispatch.target === 'named'
+    ? `Call kiki_dispatch with task_name "${dispatch.taskName}" and a new message to reuse this agent with its memory.`
+    : `Call kiki_continue with dispatch_id "${dispatch.dispatchId}" and a new message to continue this agent with its memory.`;
+  return {
+    ...dispatch,
+    dispatch_key: dispatchKey,
+    receipt: {
+      dispatch_id: dispatch.dispatchId,
+      dispatch_key: dispatchKey,
+      task_name: dispatch.taskName,
+      actual_profile: dispatch.actualProfile,
+      status: dispatch.status,
+      next_step: `Call kiki_wait with dispatch_id "${dispatch.dispatchId}" to block until done, or call kiki_events to poll.`,
+      continue_hint: continueHint,
+    },
+  };
+}
+
+function waitRequestTimeoutMs(timeoutSeconds: number | undefined): number {
+  return (timeoutSeconds ?? 30) * 1_000 + 5_000;
 }
 
 function bindRoot(

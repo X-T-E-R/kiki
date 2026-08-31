@@ -50,6 +50,7 @@ const dispatchSchema = z
     profile_name: z.string().optional(),
     model_alias: z.string().optional(),
     thinking_effort: z.string().optional(),
+    dispatch_key: z.string().trim().min(1).optional(),
     message: z.string().min(1).max(1_000_000),
   })
   .superRefine((value, ctx) => {
@@ -64,8 +65,20 @@ const dispatchSchema = z
     }
   })
   .strict();
-const continueSchema = z.object({ dispatch_id: z.string().min(1), message: z.string().min(1).max(1_000_000) }).strict();
+const continueSchema = z
+  .object({
+    dispatch_id: z.string().min(1),
+    dispatch_key: z.string().trim().min(1).optional(),
+    message: z.string().min(1).max(1_000_000),
+  })
+  .strict();
 const lookupSchema = z.object({ dispatch_id: z.string().min(1) }).strict();
+const waitSchema = z
+  .object({
+    dispatch_id: z.string().min(1).optional(),
+    timeout_s: z.number().int().nonnegative().max(600).optional(),
+  })
+  .strict();
 const pageSchema = lookupSchema.extend({ cursor: z.number().int().nonnegative().optional(), limit: z.number().int().positive().optional() }).strict();
 
 export function registerV2ExternalDelegationRoutes(
@@ -82,14 +95,27 @@ export function registerV2ExternalDelegationRoutes(
       profileName: body.profile_name,
       modelAlias: body.model_alias,
       thinkingEffort: body.thinking_effort,
+      dispatchKey: body.dispatch_key,
       message: body.message,
     }),
   );
   command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/continue', continueSchema, async (service, authority, body) =>
-    service.continue({ authority, dispatchId: body.dispatch_id, message: body.message }),
+    service.continue({
+      authority,
+      dispatchId: body.dispatch_id,
+      dispatchKey: body.dispatch_key,
+      message: body.message,
+    }),
   );
   command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/status', lookupSchema, async (service, authority, body) =>
     service.status({ authority, dispatchId: body.dispatch_id }),
+  );
+  command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/wait', waitSchema, async (service, authority, body) =>
+    service.wait({
+      authority,
+      dispatchId: body.dispatch_id,
+      timeoutMs: body.timeout_s === undefined ? undefined : body.timeout_s * 1_000,
+    }),
   );
   command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/result', pageSchema, async (service, authority, body) =>
     service.result({ authority, dispatchId: body.dispatch_id, cursor: body.cursor, limit: body.limit }),
