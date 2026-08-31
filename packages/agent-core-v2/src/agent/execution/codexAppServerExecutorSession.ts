@@ -560,27 +560,26 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     responder: CodexServerRequestResponder,
     active: PermissionContext,
   ): Promise<void> {
-    const rawQuestions = Array.isArray(request.params['questions']) ? request.params['questions'] : [];
-    const questionIds: string[] = [];
-    const questions = rawQuestions.flatMap((raw) => {
-      if (!isObject(raw) || typeof raw['id'] !== 'string' || typeof raw['question'] !== 'string') return [];
-      questionIds.push(raw['id']);
-      return [{
-        question: raw['question'],
-        header: optionalString(raw['header']),
-        options: Array.isArray(raw['options'])
-          ? raw['options'].flatMap((option) =>
-              isObject(option) && typeof option['label'] === 'string'
-                ? [{ label: option['label'], description: optionalString(option['description']) }]
-                : [])
-          : [],
-        multiSelect: false,
-      }];
-    });
-    if (questions.length !== rawQuestions.length) {
+    const parsed = parseUserInputRequest(request.params);
+    if (parsed === undefined) {
       await responder.respondError(-32602, 'Invalid user input question payload');
       return;
     }
+    if (!parsed.isBlocking) {
+      await responder.respondError(-32601, 'Non-blocking user input is unsupported');
+      return;
+    }
+    if (parsed.questions.some((question) => question.isSecret)) {
+      await responder.respondError(-32601, 'Secret user input is unsupported');
+      return;
+    }
+    const questionIds = parsed.questions.map((question) => question.id);
+    const questions = parsed.questions.map((question) => ({
+      question: question.question,
+      header: question.header,
+      options: question.options,
+      multiSelect: false,
+    }));
     const response = await this.context.agent.accessor.get(ISessionQuestionService).request(
       {
         id: `codex:${String(request.id)}`,
@@ -640,6 +639,62 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       ? selected
       : undefined;
   }
+}
+
+interface ParsedUserInputQuestion {
+  readonly id: string;
+  readonly header: string;
+  readonly question: string;
+  readonly isSecret: boolean;
+  readonly options: readonly { readonly label: string; readonly description: string }[];
+}
+
+function parseUserInputRequest(
+  params: Readonly<Record<string, unknown>>,
+): { readonly isBlocking: boolean; readonly questions: readonly ParsedUserInputQuestion[] } | undefined {
+  if (params['isBlocking'] !== undefined && typeof params['isBlocking'] !== 'boolean') {
+    return undefined;
+  }
+  if (!Array.isArray(params['questions'])) return undefined;
+  const questions: ParsedUserInputQuestion[] = [];
+  for (const raw of params['questions']) {
+    if (
+      !isObject(raw) ||
+      typeof raw['id'] !== 'string' ||
+      typeof raw['header'] !== 'string' ||
+      typeof raw['question'] !== 'string' ||
+      raw['isSecret'] !== undefined && typeof raw['isSecret'] !== 'boolean' ||
+      raw['isOther'] !== undefined && typeof raw['isOther'] !== 'boolean'
+    ) {
+      return undefined;
+    }
+    const rawOptions = raw['options'];
+    if (rawOptions !== null && rawOptions !== undefined && !Array.isArray(rawOptions)) {
+      return undefined;
+    }
+    const options: Array<{ readonly label: string; readonly description: string }> = [];
+    for (const option of rawOptions ?? []) {
+      if (
+        !isObject(option) ||
+        typeof option['label'] !== 'string' ||
+        typeof option['description'] !== 'string'
+      ) {
+        return undefined;
+      }
+      options.push({ label: option['label'], description: option['description'] });
+    }
+    questions.push({
+      id: raw['id'],
+      header: raw['header'],
+      question: raw['question'],
+      isSecret: raw['isSecret'] === true,
+      options,
+    });
+  }
+  return {
+    isBlocking: params['isBlocking'] !== false,
+    questions,
+  };
 }
 
 function questionAnswerValues(response: QuestionResult): QuestionAnswers {

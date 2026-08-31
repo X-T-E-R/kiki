@@ -1,5 +1,5 @@
 import { basename, dirname, join, normalize } from 'pathe';
-import { coerce, compare } from 'semver';
+import { compare, parse, type SemVer } from 'semver';
 
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -98,7 +98,10 @@ async function probeSource(
     };
   }
   const selected = source.kind === 'glob'
-    ? available.toSorted(compareCandidateVersions).at(-1)!
+    ? available.toSorted((left, right) => compareExecutorBinaryCandidates(
+        { command: left.command, output: left.probe.output },
+        { command: right.command, output: right.probe.output },
+      )).at(-1)!
     : available[0]!;
   return {
     id: source.id,
@@ -259,20 +262,108 @@ async function safeReaddir(fs: IHostFileSystem, path: string) {
   }
 }
 
-function compareCandidateVersions(
-  left: { readonly command: string; readonly probe: ProbeResult },
-  right: { readonly command: string; readonly probe: ProbeResult },
+interface BinaryVersionKey {
+  readonly core: readonly number[];
+  readonly prerelease: readonly (string | number)[];
+}
+
+export function compareExecutorBinaryCandidates(
+  left: { readonly command: string; readonly output: string },
+  right: { readonly command: string; readonly output: string },
 ): number {
-  const leftVersion = coerce(firstLine(left.probe.output) ?? versionFromPath(left.command));
-  const rightVersion = coerce(firstLine(right.probe.output) ?? versionFromPath(right.command));
-  if (leftVersion !== null && rightVersion !== null) return compare(leftVersion, rightVersion);
-  if (leftVersion !== null) return 1;
-  if (rightVersion !== null) return -1;
+  const leftProbe = probeSemver(left.output, left.command);
+  const rightProbe = probeSemver(right.output, right.command);
+  if (leftProbe !== null && rightProbe !== null) {
+    const compared = compare(leftProbe, rightProbe);
+    if (compared !== 0) return compared;
+  } else if (leftProbe !== null) {
+    return 1;
+  } else if (rightProbe !== null) {
+    return -1;
+  }
+  const leftPath = pathVersion(left.command);
+  const rightPath = pathVersion(right.command);
+  if (leftPath !== undefined && rightPath !== undefined) {
+    const compared = compareVersionKeys(leftPath, rightPath);
+    if (compared !== 0) return compared;
+  } else if (leftPath !== undefined) {
+    return 1;
+  } else if (rightPath !== undefined) {
+    return -1;
+  }
   return left.command.localeCompare(right.command);
 }
 
-function versionFromPath(path: string): string {
-  return basename(dirname(dirname(dirname(dirname(path)))));
+function probeSemver(output: string, command: string): SemVer | null {
+  const lines = output.split(/\r?\n/);
+  const commandName = stripExecutableExtension(basename(command)).toLowerCase();
+  const preferred = lines.filter((line) => line.toLowerCase().includes(commandName));
+  for (const line of [...preferred, ...lines]) {
+    const version = semverInText(line);
+    if (version !== null) return version;
+  }
+  return null;
+}
+
+function semverInText(value: string): SemVer | null {
+  const match = value.match(/(?:^|[^0-9A-Za-z])v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?=$|[^0-9A-Za-z.-])/);
+  return match?.[1] === undefined ? null : parse(match[1]);
+}
+
+function pathVersion(path: string): BinaryVersionKey | undefined {
+  const packageDirectory = basename(dirname(dirname(dirname(path))));
+  const desktop = packageDirectory.match(/^OpenAI\.Codex_([^_]+)/i)?.[1];
+  const extension = packageDirectory.match(
+    /^openai\.chatgpt-(.+?)(?:-(?:win32|linux|darwin)(?:-|$)|$)/i,
+  )?.[1];
+  return versionKey(desktop ?? extension);
+}
+
+function versionKey(value: string | undefined): BinaryVersionKey | undefined {
+  if (value === undefined) return undefined;
+  const semantic = parse(value);
+  if (semantic !== null) {
+    return {
+      core: [semantic.major, semantic.minor, semantic.patch],
+      prerelease: semantic.prerelease,
+    };
+  }
+  if (!/^\d+(?:\.\d+){2,3}$/.test(value)) return undefined;
+  return { core: value.split('.').map(Number), prerelease: [] };
+}
+
+function compareVersionKeys(left: BinaryVersionKey, right: BinaryVersionKey): number {
+  const core = compareNumberTuples(left.core, right.core);
+  if (core !== 0) return core;
+  if (left.prerelease.length === 0 && right.prerelease.length > 0) return 1;
+  if (right.prerelease.length === 0 && left.prerelease.length > 0) return -1;
+  const size = Math.max(left.prerelease.length, right.prerelease.length);
+  for (let index = 0; index < size; index += 1) {
+    const compared = comparePrereleasePart(left.prerelease[index], right.prerelease[index]);
+    if (compared !== 0) return compared;
+  }
+  return 0;
+}
+
+function comparePrereleasePart(
+  left: string | number | undefined,
+  right: string | number | undefined,
+): number {
+  if (left === undefined) return right === undefined ? 0 : -1;
+  if (right === undefined) return 1;
+  if (typeof left === 'number' && typeof right === 'number') return left - right;
+  if (typeof left === 'number') return -1;
+  if (typeof right === 'number') return 1;
+  return left.localeCompare(right);
+}
+
+function compareNumberTuples(left: readonly number[], right: readonly number[]): number {
+  const size = Math.max(left.length, right.length);
+  for (let index = 0; index < size; index += 1) {
+    const compared = (left[index] ?? 0) - (right[index] ?? 0);
+    if (compared !== 0) return compared;
+  }
+  return 0;
 }
 
 function wildcard(segment: string): RegExp {

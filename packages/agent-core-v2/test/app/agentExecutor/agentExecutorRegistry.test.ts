@@ -12,6 +12,7 @@ import {
   registerAgentExecutorProvider,
 } from '#/app/agentExecutor/agentExecutor';
 import { AgentExecutorRegistryService } from '#/app/agentExecutor/agentExecutorRegistryService';
+import { compareExecutorBinaryCandidates } from '#/app/agentExecutor/binaryDiscovery';
 import {
   AgentExecutorsConfigSchema,
   agentExecutorsFromToml,
@@ -181,6 +182,65 @@ describe('AgentExecutorRegistryService', () => {
         shell: true,
       },
     })).toThrow();
+  });
+
+  it('orders glob candidates by full probe semver and deterministic fallbacks', () => {
+    const sorted = (
+      candidates: readonly { readonly command: string; readonly output: string }[],
+    ) => candidates.toSorted(compareExecutorBinaryCandidates).map((candidate) => candidate.command);
+
+    expect(sorted([
+      { command: 'codex-150', output: 'codex-cli 0.150.0' },
+      { command: 'codex-151', output: 'codex-cli 0.151.0' },
+    ])).toEqual(['codex-150', 'codex-151']);
+    expect(sorted([
+      { command: 'codex-alpha-12', output: 'codex-cli 0.151.0-alpha.12.2' },
+      { command: 'codex-alpha-7', output: 'codex-cli 0.151.0-alpha.7.1' },
+    ])).toEqual(['codex-alpha-7', 'codex-alpha-12']);
+    expect(sorted([
+      {
+        command: 'C:/extensions/openai.chatgpt-0.151.0-alpha.12.2/bin/windows-x86_64/codex.exe',
+        output: 'unparseable',
+      },
+      {
+        command: 'C:/extensions/openai.chatgpt-0.151.0-alpha.7.1/bin/windows-x86_64/codex.exe',
+        output: 'unparseable',
+      },
+    ])).toEqual([
+      'C:/extensions/openai.chatgpt-0.151.0-alpha.7.1/bin/windows-x86_64/codex.exe',
+      'C:/extensions/openai.chatgpt-0.151.0-alpha.12.2/bin/windows-x86_64/codex.exe',
+    ]);
+    expect(sorted([
+      {
+        command: 'C:/Program Files/WindowsApps/OpenAI.Codex_26.825.5331.0_x64__example/app/resources/codex.exe',
+        output: 'unparseable',
+      },
+      {
+        command: 'C:/Program Files/WindowsApps/OpenAI.Codex_26.825.4187.0_x64__example/app/resources/codex.exe',
+        output: 'unparseable',
+      },
+    ])).toEqual([
+      'C:/Program Files/WindowsApps/OpenAI.Codex_26.825.4187.0_x64__example/app/resources/codex.exe',
+      'C:/Program Files/WindowsApps/OpenAI.Codex_26.825.5331.0_x64__example/app/resources/codex.exe',
+    ]);
+    expect(sorted([
+      {
+        command: 'C:/b/codex.exe',
+        output: 'requires Node 99.0.0\ncodex-cli 0.151.0-alpha.7.1',
+      },
+      {
+        command: 'C:/a/codex.exe',
+        output: 'codex-cli 0.151.0-alpha.12.2',
+      },
+    ])).toEqual(['C:/b/codex.exe', 'C:/a/codex.exe']);
+    expect(sorted([
+      { command: 'C:/b/codex.exe', output: 'codex-cli 0.151.0' },
+      { command: 'C:/a/codex.exe', output: 'codex-cli 0.151.0' },
+    ])).toEqual(['C:/a/codex.exe', 'C:/b/codex.exe']);
+    expect(sorted([
+      { command: 'C:/b/codex.exe', output: 'unknown' },
+      { command: 'C:/a/codex.exe', output: 'unknown' },
+    ])).toEqual(['C:/a/codex.exe', 'C:/b/codex.exe']);
   });
 
   it('provides the eight trusted external harness descriptors by default', () => {

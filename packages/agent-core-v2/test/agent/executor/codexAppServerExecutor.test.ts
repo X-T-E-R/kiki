@@ -33,6 +33,12 @@ interface HarnessOptions {
   readonly resumeError?: unknown;
   readonly approvalOptionId?: string;
   readonly history?: readonly ContextMessage[];
+  readonly serverRequest?: {
+    readonly method: string;
+    readonly params: Readonly<Record<string, unknown>>;
+  };
+  readonly turnEvents?: readonly NormalizedExecutorEvent[];
+  readonly questionAnswer?: string;
 }
 
 function asyncEvents(events: readonly NormalizedExecutorEvent[]): AsyncIterable<NormalizedExecutorEvent> {
@@ -48,7 +54,7 @@ function createHarness(options: HarnessOptions = {}) {
   const starts: Readonly<Record<string, unknown>>[] = [];
   const resumes: Readonly<Record<string, unknown>>[] = [];
   const prompts: Readonly<Record<string, unknown>>[] = [];
-  const approvalResults: unknown[] = [];
+  const serverResults: unknown[] = [];
   const stateValues = new Map<unknown, unknown>([
     [turnKey, { nextTurnId: 2, cancelledTurnIds: [] }],
     [externalExecutorKey, options.priorThreadId === undefined ? {} : {
@@ -104,9 +110,11 @@ function createHarness(options: HarnessOptions = {}) {
       selectedOptionId: options.approvalOptionId,
     }),
   } as unknown as ISessionApprovalService;
+  const questionRequest = vi.fn(async () =>
+    options.questionAnswer === undefined ? null : { '0': options.questionAnswer });
   const question = {
     _serviceBrand: undefined,
-    request: async () => null,
+    request: questionRequest,
   } as unknown as ISessionQuestionService;
   const runtimeLease = {
     runtime: {
@@ -203,14 +211,24 @@ function createHarness(options: HarnessOptions = {}) {
             },
           },
           {
-            respond: async (result) => { approvalResults.push(result); },
-            respondError: async (code, message) => { approvalResults.push({ error: { code, message } }); },
+            respond: async (result) => { serverResults.push(result); },
+            respondError: async (code, message) => { serverResults.push({ error: { code, message } }); },
+          },
+          new AbortController().signal,
+        );
+      }
+      if (serverHandler !== undefined && options.serverRequest !== undefined) {
+        await serverHandler(
+          { id: 42, ...options.serverRequest },
+          {
+            respond: async (result) => { serverResults.push(result); },
+            respondError: async (code, message) => { serverResults.push({ error: { code, message } }); },
           },
           new AbortController().signal,
         );
       }
       return {
-        events: asyncEvents([
+        events: asyncEvents(options.turnEvents ?? [
           {
             type: 'message.delta',
             role: 'assistant',
@@ -237,7 +255,17 @@ function createHarness(options: HarnessOptions = {}) {
       return client;
     },
   );
-  return { session, client, events, starts, resumes, prompts, approvalResults, interaction };
+  return {
+    session,
+    client,
+    events,
+    starts,
+    resumes,
+    prompts,
+    serverResults,
+    interaction,
+    questionRequest,
+  };
 }
 
 describe('Codex app-server external executor', () => {
@@ -292,7 +320,128 @@ describe('Codex app-server external executor', () => {
     );
 
     await handle.completion;
-    expect(harness.approvalResults).toEqual([{ decision }]);
+    expect(harness.serverResults).toEqual([{ decision }]);
+    await harness.session.shutdown();
+  });
+
+  it('rejects secret user input without creating a durable question interaction', async () => {
+    const secret = 'TOP_SECRET_SHOULD_NOT_PERSIST';
+    const harness = createHarness({
+      questionAnswer: secret,
+      serverRequest: {
+        method: 'item/tool/requestUserInput',
+        params: {
+          threadId: 'thread-new',
+          turnId: 'turn-1',
+          itemId: 'input-1',
+          isBlocking: true,
+          questions: [{
+            id: 'password',
+            header: 'Credential',
+            question: 'Enter a password',
+            isSecret: true,
+            options: null,
+          }],
+        },
+      },
+    });
+    const handle = await harness.session.run(
+      { kind: 'prompt', prompt: 'authenticate' },
+      { signal: new AbortController().signal },
+    );
+
+    await handle.completion;
+    expect(harness.serverResults).toEqual([{
+      error: { code: -32601, message: 'Secret user input is unsupported' },
+    }]);
+    expect(harness.questionRequest).not.toHaveBeenCalled();
+    expect(JSON.stringify(harness.events)).not.toContain(secret);
+    await harness.session.shutdown();
+  });
+
+  it('rejects non-blocking user input instead of treating it as blocking', async () => {
+    const harness = createHarness({
+      serverRequest: {
+        method: 'item/tool/requestUserInput',
+        params: {
+          threadId: 'thread-new',
+          turnId: 'turn-1',
+          itemId: 'input-1',
+          isBlocking: false,
+          questions: [{
+            id: 'choice',
+            header: 'Choice',
+            question: 'Choose',
+            isSecret: false,
+            options: null,
+          }],
+        },
+      },
+    });
+    const handle = await harness.session.run(
+      { kind: 'prompt', prompt: 'choose' },
+      { signal: new AbortController().signal },
+    );
+
+    await handle.completion;
+    expect(harness.serverResults).toEqual([{
+      error: { code: -32601, message: 'Non-blocking user input is unsupported' },
+    }]);
+    expect(harness.questionRequest).not.toHaveBeenCalled();
+    await harness.session.shutdown();
+  });
+
+  it.each([
+    ['non-boolean isBlocking', { isBlocking: 'false', questions: [] }],
+    ['missing questions', { isBlocking: true }],
+    ['non-boolean isSecret', {
+      isBlocking: true,
+      questions: [{
+        id: 'choice',
+        header: 'Choice',
+        question: 'Choose',
+        isSecret: 'true',
+        options: null,
+      }],
+    }],
+  ])('rejects malformed user input payloads: %s', async (_name, payload) => {
+    const harness = createHarness({
+      serverRequest: {
+        method: 'item/tool/requestUserInput',
+        params: {
+          threadId: 'thread-new',
+          turnId: 'turn-1',
+          itemId: 'input-1',
+          ...payload,
+        },
+      },
+    });
+    const handle = await harness.session.run(
+      { kind: 'prompt', prompt: 'choose' },
+      { signal: new AbortController().signal },
+    );
+
+    await handle.completion;
+    expect(harness.serverResults).toEqual([{
+      error: { code: -32602, message: 'Invalid user input question payload' },
+    }]);
+    expect(harness.questionRequest).not.toHaveBeenCalled();
+    await harness.session.shutdown();
+  });
+
+  it('records unsupported item projection as a fidelity loss', async () => {
+    const harness = createHarness({
+      turnEvents: [{ type: 'unknown', updateType: 'item/completed:webSearch' }],
+    });
+    const handle = await harness.session.run(
+      { kind: 'prompt', prompt: 'search' },
+      { signal: new AbortController().signal },
+    );
+
+    await handle.completion;
+    expect(harness.events.find((event) => event instanceof ExecutorTurnMetadata)).toMatchObject({
+      losses: expect.arrayContaining(['unknown_update_dropped']),
+    });
     await harness.session.shutdown();
   });
 
