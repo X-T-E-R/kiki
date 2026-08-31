@@ -28,15 +28,15 @@ subagent 支持在后台运行：完成后结果自动回到 main agent，无需
 
 默认的 v2 引擎（Kiki 桌面端和 `kimi` CLI/TUI）会给主 `agent` profile 提供四个子 Agent 工具，不需要实验开关：`AgentRun`、`AgentSwarm`、`AgentList` 和 `AgentSend`。内置的 `coder` 与 `explore` profile 没有它们。每个调用方只能列出和发消息给自己直接创建的子 Agent；孙级或别人创建的子 Agent 都不是有效目标。
 
-`AgentRun` 用来启动新的子 Agent，或继续已有的。预计之后还要再找同一个子 Agent 时传入 `name`；名称必须匹配 `^[a-z0-9_]+$`，不能是 `root`，并且在会话内保持唯一。继续时把 `resume` 设成那个名称或它的 agent id——不要同时传 `name`、`profile`、`route`、`model`、`model_alias` 或 `effort`。必填的 `description` 是 3–5 个词的短任务描述，用于界面展示。
+`AgentRun` 用来启动新的子 Agent，或继续已有的。每次调用都必须提供 `prompt` 和用于界面展示、长度为 3–5 个词的短 `description`。新派生还可以设置 `profile`（默认 `coder`）、`route`、`name`、`background`、`model_alias` 和 `effort`。预计之后还要再找同一个子 Agent 时传入 `name`；名称必须匹配 `^[a-z0-9_]+$`，不能是 `root`，并且在会话内保持唯一。继续直属子 Agent 时，把 `resume` 设为它的名称或 agent id，并沿用已持久化的 profile、route、模型和 effort 绑定。
+
+`AgentSwarm` 从包含 `{{item}}` 的 `prompt_template` 与最多 128 个值的 `items` 数组启动基于 item 的子 Agent。它必须提供 `description`；新派生项还可以设置 `profile`（默认 `coder`）、`route`、`model_alias` 和 `effort`。它也可以通过 `resume_agent_ids` 继续直属子 Agent。
 
 `AgentList` 返回这些直属子 Agent，也包括 swarm 成员。默认 `include_finished=false` 列出运行中的，以及没有跟踪任务的；需要已经结束或失败的，再传 `true`。最多返回 50 条，运行中的排在前面。
 
 `AgentSend` 把消息排进邮箱，不会启动或中断 turn。空闲的子 Agent 会保持空闲，到下一步开始时才读这条消息。用 `name` 或 agent id 指定目标。
 
-`AgentSwarm` 名称不变。基于 item 的新派生使用 `profile`（默认 `coder`）和 `effort`；它要求填写 `description`。
-
-由 5 个工具组成的 Codex 风格适配器（`spawn_agent`、`list_agents`、`wait_agent`、`followup_task`、`interrupt_agent`）、flag id `agent-collaboration` 以及 `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION` 都已消失：它们只存在于已删除的 v1 引擎。
+已移除的 v1 Codex 风格协作适配器及其实验开关不适用于 v2 引擎。
 
 ## Peer thread 通信
 

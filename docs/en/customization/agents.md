@@ -28,15 +28,15 @@ Sub-agents support running in the background: results are automatically returned
 
 The default v2 engine (Kiki desktop and `kimi` CLI/TUI) gives the main `agent` profile four child-agent tools with no experiment flag: `AgentRun`, `AgentSwarm`, `AgentList`, and `AgentSend`. Built-in `coder` and `explore` profiles do not receive them. Each caller can list and message only the children it created directly; a grandchild or another caller's child is not a valid target.
 
-`AgentRun` launches a new child or continues an existing one. Pass `name` when you expect to address the same child again; names must match `^[a-z0-9_]+$`, cannot be `root`, and stay unique for the session. Continue a child with `resume` set to that name or its agent id — do not also pass `name`, `profile`, `route`, `model`, `model_alias`, or `effort`. Required `description` is a short task description (3-5 words) for UI display.
+`AgentRun` launches a new child or continues an existing one. Every call requires `prompt` and a short 3–5 word `description` for UI display. New launches can also set `profile` (defaults to `coder`), `route`, `name`, `background`, `model_alias`, and `effort`. Pass `name` when you expect to address the same child again; names must match `^[a-z0-9_]+$`, cannot be `root`, and stay unique for the session. To continue a direct child, set `resume` to its name or agent id and keep its persisted profile, route, model, and effort bindings.
+
+`AgentSwarm` launches item-based children from a `prompt_template` containing `{{item}}` and an `items` array of at most 128 values. It requires `description`; new item-based launches can set `profile` (defaults to `coder`), `route`, `model_alias`, and `effort`. It can also continue direct children through `resume_agent_ids`.
 
 `AgentList` returns those direct children, including swarm members. Default `include_finished=false` lists running children and children with no tracking task; pass `true` when you need children whose latest background task has already finished or failed. At most 50 entries are returned, running first.
 
 `AgentSend` queues a mailbox message without starting or interrupting a turn. An idle child stays idle and reads the message at the beginning of its next step. Address the child by `name` or agent id.
 
-`AgentSwarm` keeps its name. New item-based spawns take `profile` (defaults to `coder`) and `effort`; it requires `description`.
-
-The five-tool Codex-style adapter (`spawn_agent`, `list_agents`, `wait_agent`, `followup_task`, `interrupt_agent`), its flag id `agent-collaboration`, and `KIMI_CODE_EXPERIMENTAL_AGENT_COLLABORATION` are gone: they lived only on the removed v1 engine.
+The removed v1 Codex-style collaboration adapter and its experimental flag do not apply to the v2 engine.
 
 ## Peer-thread communication
 
