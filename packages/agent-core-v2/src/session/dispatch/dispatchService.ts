@@ -124,7 +124,11 @@ export class SessionDispatchService implements ISessionDispatchService {
           resolvedRoute: selection.route,
           model: binding.model,
           thinking: binding.thinking,
-          strictThinking: input.strictThinking,
+          strictThinking:
+            input.strictThinking ??
+            (input.strictThinkingFromProfile === true
+              ? input.thinkingEffort !== undefined || profile.thinkingEffort !== undefined
+              : undefined),
           inheritedUserToolNames: requesterUserTools.list().map((tool) => tool.name),
           lease: target.lease,
           spawnPolicy: target.spawnPolicy,

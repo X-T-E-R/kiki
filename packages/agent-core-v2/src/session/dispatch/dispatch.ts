@@ -26,6 +26,7 @@ export interface DispatchLaunchInput {
   readonly thinkingEffort?: string;
   readonly resolvedBinding?: DispatchResolvedBinding;
   readonly strictThinking?: boolean;
+  readonly strictThinkingFromProfile?: boolean;
   readonly runtime: Runtime;
   readonly runtimeId?: string;
   readonly workDir: string;

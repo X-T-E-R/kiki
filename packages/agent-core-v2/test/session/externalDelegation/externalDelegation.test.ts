@@ -364,6 +364,40 @@ describe('SessionExternalDelegationService', () => {
     expect(createdWith).toHaveLength(1);
   });
 
+  it('keeps profile-pinned thinking strict for a newly created named child', async () => {
+    const pinnedProfile: AgentProfile = {
+      ...profile,
+      thinkingEffort: 'high',
+    };
+    ix.stub(ISessionAgentProfileCatalog, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      get: (name: string) => name === pinnedProfile.name ? pinnedProfile : undefined,
+      getDefault: () => pinnedProfile,
+      list: () => [pinnedProfile],
+    });
+    const service = ix.get(ISessionExternalDelegationService);
+
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'strict_profile',
+      profileName: pinnedProfile.name,
+      message: 'inspect',
+    });
+
+    expect(createdWith[0]).toMatchObject({
+      binding: {
+        thinking: 'high',
+        strictThinking: true,
+      },
+    });
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
+  });
+
   it('fails closed when a named child has no model pin or dispatch model', async () => {
     const unboundProfile: AgentProfile = {
       ...profile,

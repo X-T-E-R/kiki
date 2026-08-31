@@ -469,7 +469,7 @@ export class SessionExternalDelegationService
         name: taskName,
         modelAlias,
         thinkingEffort,
-        strictThinking: thinkingEffort === undefined ? undefined : true,
+        strictThinkingFromProfile: true,
         runtime: runtimeLease.runtime,
         workDir: view.workDir,
         signal: controller.signal,
