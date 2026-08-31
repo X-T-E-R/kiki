@@ -151,8 +151,8 @@ export function buildWebCommand(
     )
     .option(
       '--insecure-no-tls',
-      'Allow a non-loopback bind without a TLS-terminating reverse proxy. Defaults to true; only relevant for non-loopback binds.',
-      true,
+      'Allow a non-loopback bind without a TLS-terminating reverse proxy. Disabled by default; without this flag, non-loopback binds are refused.',
+      false,
     )
     .option(
       '--allow-remote-shutdown',

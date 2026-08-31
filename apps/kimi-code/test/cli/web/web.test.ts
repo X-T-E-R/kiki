@@ -537,7 +537,7 @@ describe('`kimi web` option threading', () => {
     });
   });
 
-  it('defaults the host to 127.0.0.1 and insecureNoTls to true', async () => {
+  it('keeps the default loopback bind available without --insecure-no-tls', async () => {
     const { handleWebCommand } = await import('#/cli/sub/web/run');
     const { runner, calls } = makeRunner();
     const { stdout, stderr } = makeIo();
@@ -549,18 +549,41 @@ describe('`kimi web` option threading', () => {
 
     expect(calls.options).toMatchObject({
       host: '127.0.0.1',
-      insecureNoTls: true,
+      insecureNoTls: false,
       logLevel: 'silent',
     });
   });
 
-  it('maps a bare --host to the default LAN host', async () => {
+  it('refuses a bare --host without --insecure-no-tls', async () => {
+    const { handleWebCommand } = await import('#/cli/sub/web/run');
+    const { stdout, stderr } = makeIo();
+    const dir = mkdtempSync(join(tmpdir(), 'kimi-web-non-loopback-'));
+    const previousHome = process.env['KIMI_CODE_HOME'];
+    process.env['KIMI_CODE_HOME'] = dir;
+
+    try {
+      await expect(
+        handleWebCommand(
+          { port: '0', host: true, open: false },
+          { openUrl: vi.fn(), stdout, stderr },
+        ),
+      ).rejects.toThrow(
+        'Refusing to bind 0.0.0.0 (public) without TLS; terminate TLS at a reverse proxy or pass --insecure-no-tls.',
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env['KIMI_CODE_HOME'];
+      else process.env['KIMI_CODE_HOME'] = previousHome;
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('allows a bare --host with --insecure-no-tls', async () => {
     const { handleWebCommand } = await import('#/cli/sub/web/run');
     const { runner, calls } = makeRunner();
     const { stdout, stderr } = makeIo();
 
     await handleWebCommand(
-      { port: '58627', host: true, open: false },
+      { port: '58627', host: true, insecureNoTls: true, open: false },
       { startServerForeground: runner, openUrl: vi.fn(), stdout, stderr },
     );
 
