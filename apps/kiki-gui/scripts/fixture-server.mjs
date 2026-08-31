@@ -550,7 +550,8 @@ class FixtureServer {
       this.sendFrame(connection, transcriptEnvelope(
         session.record.id,
         session.transcript.opsEvent(agentId, { seq: batch.seq, ops }),
-        batch.seq,
+        session.seq,
+        session.epoch,
       ));
     }
   }
@@ -565,7 +566,8 @@ class FixtureServer {
       this.sendFrame(connection, transcriptEnvelope(
         session.record.id,
         { ...payload, grade, snapshot: redactSnapshotForGrade(grade, payload.snapshot) },
-        payload.cursor.seq,
+        session.seq,
+        session.epoch,
       ));
     }
   }
@@ -583,7 +585,8 @@ class FixtureServer {
         this.sendFrame(connection, transcriptEnvelope(
           session.record.id,
           { ...payload, snapshot: redactSnapshotForGrade(grade, payload.snapshot) },
-          payload.cursor.seq,
+          session.seq,
+          session.epoch,
         ));
         continue;
       }
@@ -593,7 +596,8 @@ class FixtureServer {
         this.sendFrame(connection, transcriptEnvelope(
           session.record.id,
           { ...payload, snapshot: redactSnapshotForGrade(grade, payload.snapshot) },
-          payload.cursor.seq,
+          session.seq,
+          session.epoch,
         ));
         continue;
       }
@@ -603,7 +607,8 @@ class FixtureServer {
         this.sendFrame(connection, transcriptEnvelope(
           session.record.id,
           session.transcript.opsEvent(agentId, { seq: batch.seq, ops }),
-          batch.seq,
+          session.seq,
+          session.epoch,
         ));
       }
     }

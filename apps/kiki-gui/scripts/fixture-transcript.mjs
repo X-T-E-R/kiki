@@ -1116,10 +1116,12 @@ export class TranscriptProjector {
   }
 }
 
-export function transcriptEnvelope(sessionId, payload, seq) {
+export function transcriptEnvelope(sessionId, payload, seq, epoch) {
   return {
     type: payload.type,
     seq,
+    epoch,
+    volatile: true,
     session_id: sessionId,
     timestamp: new Date().toISOString(),
     payload,
