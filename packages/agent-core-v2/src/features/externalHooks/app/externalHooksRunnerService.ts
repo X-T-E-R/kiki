@@ -59,7 +59,11 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
     event: string,
     args: ExternalHooksRunnerTriggerArgs = {},
   ): Promise<HookBlockDecision | undefined> {
-    return blockDecision(event, await this.trigger(event, args));
+    try {
+      return blockDecision(event, await this.triggerInner(event, args));
+    } catch {
+      return { block: true, reason: `Blocked by ${event} hook` };
+    }
   }
 
   fireAndForgetTrigger(

@@ -69,7 +69,7 @@ describe('runHook process runner', () => {
     expect(result.reason).toContain('blocked');
   });
 
-  it('returns allow on non-zero, non-2 exit codes', async () => {
+  it('returns block on non-zero, non-2 exit codes', async () => {
     const result = await runHook(
       hostProcess,
       nodeCommand('process.exit(1);'),
@@ -77,10 +77,11 @@ describe('runHook process runner', () => {
       { timeout: 5 },
     );
 
-    expect(result.action).toBe('allow');
+    expect(result.action).toBe('block');
+    expect(result.exitCode).toBe(1);
   });
 
-  it('returns allow with timedOut=true when the command exceeds the timeout', async () => {
+  it('returns block with timedOut=true when the command exceeds the timeout', async () => {
     const result = await runHook(
       hostProcess,
       nodeCommand('setTimeout(() => {}, 10000);'),
@@ -88,8 +89,20 @@ describe('runHook process runner', () => {
       { timeout: 0.05 },
     );
 
-    expect(result.action).toBe('allow');
+    expect(result.action).toBe('block');
     expect(result.timedOut).toBe(true);
+  });
+
+  it('returns block when structured hook output is invalid JSON', async () => {
+    const result = await runHook(
+      hostProcess,
+      nodeCommand('process.stdout.write("{ invalid json");'),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('block');
+    expect(result.exitCode).toBe(0);
   });
 
   it('parses stdout JSON permissionDecision=deny into a block result with the supplied reason', async () => {

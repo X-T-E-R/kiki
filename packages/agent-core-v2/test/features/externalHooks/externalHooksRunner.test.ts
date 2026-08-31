@@ -72,7 +72,7 @@ describe('ExternalHooksRunnerService', () => {
     ).resolves.toEqual({ block: true, reason: 'Blocked by PreToolUse hook' });
   });
 
-  it('aborts a running hook when the trigger signal aborts', async () => {
+  it('blocks a running hook when the trigger signal aborts', async () => {
     const abortController = new AbortController();
     const runner = makeHookRunner([
       { event: 'PreToolUse', matcher: 'Bash', command: nodeCommand('setTimeout(() => {}, 10000);'), timeout: 5 },
@@ -90,7 +90,7 @@ describe('ExternalHooksRunnerService', () => {
 
     expect(Date.now() - startedAt).toBeLessThan(1000);
     expect(results).toHaveLength(1);
-    expect(results[0]?.action).toBe('allow');
+    expect(results[0]?.action).toBe('block');
     expect(results[0]?.timedOut).toBeUndefined();
   });
 
@@ -226,7 +226,7 @@ describe('ExternalHooksRunnerService', () => {
     expect(results).toHaveLength(0);
   });
 
-  it('fails open when trigger input preparation throws', async () => {
+  it('fails closed when blocking trigger input preparation throws', async () => {
     const inputData = {};
     Object.defineProperty(inputData, 'broken', {
       enumerable: true,
@@ -243,7 +243,7 @@ describe('ExternalHooksRunnerService', () => {
     ).resolves.toEqual([]);
     await expect(
       runner.triggerBlock('PreToolUse', { matcherValue: 'Bash', inputData }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ block: true, reason: 'Blocked by PreToolUse hook' });
   });
 
   it('fails open when fireAndForgetTrigger sees a synchronous trigger error', async () => {
