@@ -39,6 +39,7 @@ interface HarnessOptions {
   };
   readonly turnEvents?: readonly NormalizedExecutorEvent[];
   readonly questionAnswer?: string;
+  readonly questionAnswers?: Readonly<Record<string, string>>;
 }
 
 function asyncEvents(events: readonly NormalizedExecutorEvent[]): AsyncIterable<NormalizedExecutorEvent> {
@@ -111,7 +112,7 @@ function createHarness(options: HarnessOptions = {}) {
     }),
   } as unknown as ISessionApprovalService;
   const questionRequest = vi.fn(async () =>
-    options.questionAnswer === undefined ? null : { '0': options.questionAnswer });
+    options.questionAnswers ?? (options.questionAnswer === undefined ? null : { '0': options.questionAnswer }));
   const question = {
     _serviceBrand: undefined,
     request: questionRequest,
@@ -321,6 +322,69 @@ describe('Codex app-server external executor', () => {
 
     await handle.completion;
     expect(harness.serverResults).toEqual([{ decision }]);
+    await harness.session.shutdown();
+  });
+
+  it.each([
+    ['omitted', undefined],
+    ['true', true],
+  ])('round-trips blocking user input when isBlocking is %s', async (_name, isBlocking) => {
+    const params: Record<string, unknown> = {
+      threadId: 'thread-new',
+      turnId: 'turn-1',
+      itemId: 'input-1',
+      questions: [
+        {
+          id: 'language',
+          header: 'Language',
+          question: 'Choose a language',
+          options: [{ label: 'TypeScript', description: 'Use TypeScript' }],
+        },
+        {
+          id: 'runner',
+          header: 'Runner',
+          question: 'Choose a test runner',
+          options: [{ label: 'Vitest', description: 'Use Vitest' }],
+        },
+      ],
+    };
+    if (isBlocking !== undefined) params['isBlocking'] = isBlocking;
+    const harness = createHarness({
+      questionAnswers: { '0': 'TypeScript', '1': 'Vitest' },
+      serverRequest: { method: 'item/tool/requestUserInput', params },
+    });
+    const handle = await harness.session.run(
+      { kind: 'prompt', prompt: 'configure' },
+      { signal: new AbortController().signal },
+    );
+
+    await handle.completion;
+    expect(harness.questionRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'codex:42',
+        questions: [
+          {
+            question: 'Choose a language',
+            header: 'Language',
+            options: [{ label: 'TypeScript', description: 'Use TypeScript' }],
+            multiSelect: false,
+          },
+          {
+            question: 'Choose a test runner',
+            header: 'Runner',
+            options: [{ label: 'Vitest', description: 'Use Vitest' }],
+            multiSelect: false,
+          },
+        ],
+      }),
+      expect.objectContaining({ agentId: 'codex-agent' }),
+    );
+    expect(harness.serverResults).toEqual([{
+      answers: {
+        language: { answers: ['TypeScript'] },
+        runner: { answers: ['Vitest'] },
+      },
+    }]);
     await harness.session.shutdown();
   });
 
