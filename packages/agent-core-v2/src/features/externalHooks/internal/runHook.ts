@@ -181,7 +181,9 @@ function structuredOutput(stdout: string): StructuredOutputResult {
     return attemptsHookProtocol(text) ? { kind: 'invalid' } : { kind: 'unstructured' };
   }
 
-  if (!isRecord(parsed)) return { kind: 'unstructured' };
+  if (!isRecord(parsed)) {
+    return attemptsHookProtocol(text) ? { kind: 'invalid' } : { kind: 'unstructured' };
+  }
   const output = HookJsonOutputSchema.safeParse(parsed);
   if (!output.success) return { kind: 'invalid' };
 
@@ -201,7 +203,8 @@ function structuredOutput(stdout: string): StructuredOutputResult {
 }
 
 function attemptsHookProtocol(text: string): boolean {
-  return /"(?:message|hookSpecificOutput)"\s*:/.test(text);
+  const objectShaped = text.startsWith('{') || /^\[\s*\{/.test(text);
+  return objectShaped && /(?:\{|,)\s*["']?(?:message|hookSpecificOutput)["']?/.test(text);
 }
 
 function allowResult(input: {

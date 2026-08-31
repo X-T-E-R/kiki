@@ -105,6 +105,18 @@ describe('runHook process runner', () => {
     expect(result.structuredOutput).toBeUndefined();
   });
 
+  it('returns allow for bracket-prefixed logs that mention a protocol field', async () => {
+    const result = await runHook(
+      hostProcess,
+      nodeCommand('process.stdout.write(\'[INFO] response contains "message": metadata\');'),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('allow');
+    expect(result.structuredOutput).toBeUndefined();
+  });
+
   it('returns allow for ordinary plain-text logs', async () => {
     const result = await runHook(
       hostProcess,
@@ -121,6 +133,47 @@ describe('runHook process runner', () => {
     const result = await runHook(
       hostProcess,
       nodeCommand('process.stdout.write(\'{"hookSpecificOutput":\');'),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('block');
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('returns block when a top-level array contains a hook protocol decision', async () => {
+    const output = JSON.stringify([
+      { hookSpecificOutput: { permissionDecision: 'deny' } },
+    ]);
+    const result = await runHook(
+      hostProcess,
+      nodeCommand(`process.stdout.write(${JSON.stringify(output)});`),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('block');
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('returns block for Python dict-style hook protocol output', async () => {
+    const output = "{'hookSpecificOutput': {'permissionDecision': 'deny'}}";
+    const result = await runHook(
+      hostProcess,
+      nodeCommand(`process.stdout.write(${JSON.stringify(output)});`),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('block');
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('returns block when a hook protocol field is missing its colon', async () => {
+    const output = '{"hookSpecificOutput"}';
+    const result = await runHook(
+      hostProcess,
+      nodeCommand(`process.stdout.write(${JSON.stringify(output)});`),
       { tool_name: 'Bash' },
       { timeout: 5 },
     );

@@ -81,7 +81,7 @@ Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上
 | 其他非零值 | 脚本出错 | 阻断类事件停止当前操作（fail-closed）；纯通知类事件继续 |
 | 超时或崩溃 | 脚本异常 | 阻断类事件停止当前操作（fail-closed）；纯通知类事件继续 |
 
-如果标准输出明确尝试使用 JSON hook 协议，JSON 格式错误或不支持的字段和值会阻断阻断类事件。普通文本日志（例如 `[INFO] validation passed`）仍视为非结构化输出，在退出码为 `0` 时不会阻断。
+如果标准输出呈对象或对象数组形态，并包含类似字段名的 `message` 或 `hookSpecificOutput`，CLI 会将其视为尝试返回 JSON hook 响应；此时 JSON 格式错误或不支持的字段和值会阻断阻断类事件。其他标准输出仍视为非结构化输出，在退出码为 `0` 时不会阻断，包括 `[INFO] response contains "message": metadata` 这类日志。
 
 也可以通过标准输出返回一段 JSON 来阻断：
 
