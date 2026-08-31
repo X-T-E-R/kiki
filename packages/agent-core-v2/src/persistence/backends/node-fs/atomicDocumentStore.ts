@@ -43,7 +43,7 @@ class AtomicDocumentStoreBase implements IAtomicDocumentStore {
   private readonly tails = new Map<string, Promise<void>>();
 
   constructor(
-    private readonly storage: IFileSystemStorageService,
+    protected readonly storage: IFileSystemStorageService,
     private readonly codec: DocumentCodec,
   ) {}
 
@@ -126,9 +126,21 @@ export class JsonAtomicDocumentStore extends AtomicDocumentStoreBase {
   }
 }
 
-export class TomlAtomicDocumentStore extends AtomicDocumentStoreBase {
+export class TomlAtomicDocumentStore
+  extends AtomicDocumentStoreBase
+  implements IAtomicTomlDocumentStore
+{
   constructor(@IFileSystemStorageService storage: IFileSystemStorageService) {
     super(storage, tomlDocumentCodec);
+  }
+
+  async getText(scope: string, key: string): Promise<string | undefined> {
+    const bytes = await this.storage.read(scope, key);
+    return bytes === undefined ? undefined : textDecoder.decode(bytes);
+  }
+
+  async setText(scope: string, key: string, text: string): Promise<void> {
+    await this.storage.write(scope, key, textEncoder.encode(text), { atomic: true });
   }
 }
 
