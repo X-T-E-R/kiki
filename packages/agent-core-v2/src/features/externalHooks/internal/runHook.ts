@@ -30,29 +30,20 @@ export function buildHookSpawnOptions(options: {
 const DEFAULT_TIMEOUT_SECONDS = 30;
 const KILL_GRACE_MS = 100;
 const OptionalStringSchema = z.preprocess(
-  (value) => {
-    if (value === undefined || value === null) return undefined;
-    if (typeof value === 'string') return value;
-    if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
-      return String(value);
-    }
-    return undefined;
-  },
-  z.string().optional(),
-);
-const HookSpecificOutputSchema = z.preprocess(
-  (value) => (isRecord(value) ? value : undefined),
+  (value) => (value === null ? undefined : value),
   z
-    .looseObject({
-      message: OptionalStringSchema,
-      permissionDecision: z.unknown().optional(),
-      permissionDecisionReason: z.unknown().optional(),
-    })
+    .union([z.string(), z.number(), z.boolean()])
+    .transform((value) => String(value))
     .optional(),
 );
-const HookJsonOutputSchema = z.looseObject({
+const HookSpecificOutputSchema = z.strictObject({
   message: OptionalStringSchema,
-  hookSpecificOutput: HookSpecificOutputSchema,
+  permissionDecision: z.enum(['allow', 'deny']).optional(),
+  permissionDecisionReason: z.string().optional(),
+});
+const HookJsonOutputSchema = z.strictObject({
+  message: OptionalStringSchema,
+  hookSpecificOutput: HookSpecificOutputSchema.optional(),
 });
 
 export async function runHook(
@@ -187,11 +178,10 @@ function structuredOutput(stdout: string): StructuredOutputResult {
   try {
     parsed = JSON.parse(text) as unknown;
   } catch {
-    return text.startsWith('{') || text.startsWith('[')
-      ? { kind: 'invalid' }
-      : { kind: 'unstructured' };
+    return attemptsHookProtocol(text) ? { kind: 'invalid' } : { kind: 'unstructured' };
   }
 
+  if (!isRecord(parsed)) return { kind: 'unstructured' };
   const output = HookJsonOutputSchema.safeParse(parsed);
   if (!output.success) return { kind: 'invalid' };
 
@@ -206,11 +196,12 @@ function structuredOutput(stdout: string): StructuredOutputResult {
   return {
     ...result,
     action: 'block',
-    reason:
-      typeof hookSpecificOutput.permissionDecisionReason === 'string'
-        ? hookSpecificOutput.permissionDecisionReason
-        : undefined,
+    reason: hookSpecificOutput.permissionDecisionReason,
   };
+}
+
+function attemptsHookProtocol(text: string): boolean {
+  return /"(?:message|hookSpecificOutput)"\s*:/.test(text);
 }
 
 function allowResult(input: {

@@ -226,6 +226,16 @@ describe('ExternalHooksRunnerService', () => {
     expect(results).toHaveLength(0);
   });
 
+  it('fails closed for blocking triggers when the initial hook load fails', async () => {
+    const runner = makeHookRunner([], { loadError: new Error('load failed') });
+
+    await expect(runner.triggerBlock('PreToolUse')).resolves.toEqual({
+      block: true,
+      reason: 'Blocked by PreToolUse hook',
+    });
+    await expect(runner.fireAndForgetTrigger('Notification')).resolves.toEqual([]);
+  });
+
   it('fails closed when blocking trigger input preparation throws', async () => {
     const inputData = {};
     Object.defineProperty(inputData, 'broken', {

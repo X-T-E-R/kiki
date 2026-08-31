@@ -78,8 +78,10 @@ After the script exits, the CLI determines the hook's intent based on the exit c
 | --- | --- | --- |
 | `0` | Normal exit, allow | Continue execution; stdout content (if any) may be appended to context |
 | `2` | Intentional block | Stop the current operation; stderr content (printed via `console.error`) is used as the reason for blocking |
-| Other non-zero | Script error | Default allow (fail-open) |
-| Timeout or crash | Script exception | Default allow (fail-open) |
+| Other non-zero | Script error | Block the current operation for blocking events (fail-closed); notification-only events continue |
+| Timeout or crash | Script exception | Block the current operation for blocking events (fail-closed); notification-only events continue |
+
+If stdout clearly attempts the JSON hook protocol, malformed JSON or unsupported fields and values block a blocking event. Ordinary plain-text logs, including lines such as `[INFO] validation passed`, remain unstructured output and do not block on exit code `0`.
 
 You can also return a JSON object via stdout to block:
 
