@@ -106,10 +106,6 @@ input.on('line', (line) => {
         params: { threadId, turnId, itemId: 'reasoning-1', delta: 'first summary' },
       });
       send({
-        method: 'item/reasoning/summaryTextDelta',
-        params: { threadId, turnId, itemId: 'reasoning-2', delta: 'second summary' },
-      });
-      send({
         method: 'item/completed',
         params: {
           threadId,
