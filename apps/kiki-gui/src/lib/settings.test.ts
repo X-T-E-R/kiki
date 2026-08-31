@@ -709,11 +709,13 @@ describe('settings search index', () => {
   // Search is the shortest path to a setting (Ctrl+, and the quick switcher
   // both run this index), so an unindexed card is unreachable by name. The
   // rendered components are the oracle: read the ids they actually mount,
-  // including the editors SettingsPage delegates whole sections to.
+  // including the editors SettingsPage delegates whole sections to. Section
+  // components live under components/settings/, so the scan recurses.
   it('indexes every card the settings page renders', () => {
     const dir = new URL('../components/', import.meta.url);
     const rendered = new Set(
-      readdirSync(dir)
+      readdirSync(dir, { recursive: true })
+        .map((name) => String(name).replaceAll('\\', '/'))
         .filter((name) => name.endsWith('.tsx') && !name.endsWith('.test.tsx'))
         .flatMap((name) => [
           ...readFileSync(new URL(name, dir), 'utf8')
