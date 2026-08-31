@@ -326,9 +326,13 @@ async function runServerInProcess(
   hooks: StartForegroundHooks,
 ): Promise<never> {
   const version = getVersion();
+  const externalCatalog = externalCatalogSourceFromEnv(process.env);
   // Registers the telemetry provider for `track` / `shutdownTelemetry`; the
   // client itself is not passed into kap-server.
-  const telemetry = initializeServerTelemetry({ version });
+  const telemetry = initializeServerTelemetry({
+    version,
+    configPath: externalCatalog?.configPath,
+  });
 
   let running: RoutedServer | undefined;
   let stopping = false;
@@ -368,7 +372,6 @@ async function runServerInProcess(
       'dev mode: web assets not built; starting the API server without the web UI',
     );
   }
-  const externalCatalog = externalCatalogSourceFromEnv(process.env);
   const desktopInheritance = desktopInheritanceSourceFromEnv(process.env);
   const v2 = await startServer({
     host: options.host,

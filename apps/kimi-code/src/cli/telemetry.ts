@@ -70,6 +70,7 @@ export function initializeCliTelemetry(options: InitializeCliTelemetryOptions): 
 
 export interface InitializeServerTelemetryOptions {
   readonly version: string;
+  readonly configPath?: string;
 }
 
 export interface ServerTelemetryClient extends TelemetryClient {
@@ -89,7 +90,7 @@ export function initializeServerTelemetry(
   options: InitializeServerTelemetryOptions,
 ): ServerTelemetryClient {
   const bootstrap = createCliTelemetryBootstrap();
-  const configPath = resolveConfigPath({ homeDir: bootstrap.homeDir });
+  const configPath = options.configPath ?? resolveConfigPath({ homeDir: bootstrap.homeDir });
   const config = readServerTelemetryConfig(configPath);
   const cloudEnabled = shouldEnableTelemetry({ enabled: config.telemetry === true });
   const auth = new KimiAuthFacade({

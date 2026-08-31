@@ -11,7 +11,9 @@ const mocks = vi.hoisted(() => ({
   resolveKimiHome: vi.fn(() => '/home/.kimi-code'),
   resolveConfigPath: vi.fn(() => '/home/.kimi-code/config.toml'),
   loadRuntimeConfigSafe: vi.fn(
-    (): {
+    (
+      _configPath: string,
+    ): {
       config: { defaultModel?: string; telemetry?: boolean };
       fileError: Error | undefined;
     } => ({
@@ -84,6 +86,8 @@ describe('initializeCliTelemetry', () => {
 describe('initializeServerTelemetry', () => {
   beforeEach(() => {
     mocks.initializeTelemetry.mockClear();
+    mocks.resolveConfigPath.mockClear();
+    mocks.resolveConfigPath.mockReturnValue('/home/.kimi-code/config.toml');
     mocks.loadRuntimeConfigSafe.mockClear();
     mocks.loadRuntimeConfigSafe.mockReturnValue({
       config: { defaultModel: 'kimi-k2', telemetry: true },
@@ -114,6 +118,53 @@ describe('initializeServerTelemetry', () => {
       }),
     );
   }, 20000);
+
+  it('uses an injected telemetry opt-in for both the host sink and engine gate', async () => {
+    const injectedConfigPath = '/injected/config.toml';
+    mocks.loadRuntimeConfigSafe.mockImplementation((configPath) => ({
+      config:
+        configPath === injectedConfigPath
+          ? { defaultModel: 'injected-model', telemetry: true }
+          : { defaultModel: 'home-model' },
+      fileError: undefined,
+    }));
+    const { initializeServerTelemetry } = await import('#/cli/telemetry');
+
+    const client = initializeServerTelemetry({
+      version: '1.2.3',
+      configPath: injectedConfigPath,
+    });
+
+    expect(mocks.resolveConfigPath).not.toHaveBeenCalled();
+    expect(mocks.loadRuntimeConfigSafe).toHaveBeenCalledWith(injectedConfigPath);
+    expect(mocks.initializeTelemetry).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: true, model: 'injected-model' }),
+    );
+    expect(client.cloudEnabled).toBe(true);
+  });
+
+  it('uses the injected config when home and effective telemetry values differ', async () => {
+    const injectedConfigPath = '/injected/config.toml';
+    mocks.loadRuntimeConfigSafe.mockImplementation((configPath) => ({
+      config:
+        configPath === injectedConfigPath
+          ? { defaultModel: 'injected-model', telemetry: false }
+          : { defaultModel: 'home-model', telemetry: true },
+      fileError: undefined,
+    }));
+    const { initializeServerTelemetry } = await import('#/cli/telemetry');
+
+    const client = initializeServerTelemetry({
+      version: '1.2.3',
+      configPath: injectedConfigPath,
+    });
+
+    expect(mocks.loadRuntimeConfigSafe).toHaveBeenCalledWith(injectedConfigPath);
+    expect(mocks.initializeTelemetry).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: false, model: 'injected-model' }),
+    );
+    expect(client.cloudEnabled).toBe(false);
+  });
 
   it('disables cloud telemetry when the config toggle is omitted', async () => {
     mocks.loadRuntimeConfigSafe.mockReturnValue({
