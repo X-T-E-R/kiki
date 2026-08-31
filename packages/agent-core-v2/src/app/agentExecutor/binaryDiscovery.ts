@@ -1,5 +1,5 @@
 import { basename, dirname, join, normalize } from 'pathe';
-import { compare, parse, type SemVer } from 'semver';
+import { parse, type SemVer } from 'semver';
 
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -271,27 +271,24 @@ export function compareExecutorBinaryCandidates(
   left: { readonly command: string; readonly output: string },
   right: { readonly command: string; readonly output: string },
 ): number {
-  const leftProbe = probeSemver(left.output, left.command);
-  const rightProbe = probeSemver(right.output, right.command);
-  if (leftProbe !== null && rightProbe !== null) {
-    const compared = compare(leftProbe, rightProbe);
+  const leftVersion = effectiveVersionKey(left);
+  const rightVersion = effectiveVersionKey(right);
+  if (leftVersion !== undefined && rightVersion !== undefined) {
+    const compared = compareVersionKeys(leftVersion, rightVersion);
     if (compared !== 0) return compared;
-  } else if (leftProbe !== null) {
+  } else if (leftVersion !== undefined) {
     return 1;
-  } else if (rightProbe !== null) {
-    return -1;
-  }
-  const leftPath = pathVersion(left.command);
-  const rightPath = pathVersion(right.command);
-  if (leftPath !== undefined && rightPath !== undefined) {
-    const compared = compareVersionKeys(leftPath, rightPath);
-    if (compared !== 0) return compared;
-  } else if (leftPath !== undefined) {
-    return 1;
-  } else if (rightPath !== undefined) {
+  } else if (rightVersion !== undefined) {
     return -1;
   }
   return left.command.localeCompare(right.command);
+}
+
+function effectiveVersionKey(
+  candidate: { readonly command: string; readonly output: string },
+): BinaryVersionKey | undefined {
+  const probe = probeSemver(candidate.output, candidate.command);
+  return probe === null ? pathVersion(candidate.command) : semanticVersionKey(probe);
 }
 
 function probeSemver(output: string, command: string): SemVer | null {
@@ -322,14 +319,16 @@ function pathVersion(path: string): BinaryVersionKey | undefined {
 function versionKey(value: string | undefined): BinaryVersionKey | undefined {
   if (value === undefined) return undefined;
   const semantic = parse(value);
-  if (semantic !== null) {
-    return {
-      core: [semantic.major, semantic.minor, semantic.patch],
-      prerelease: semantic.prerelease,
-    };
-  }
+  if (semantic !== null) return semanticVersionKey(semantic);
   if (!/^\d+(?:\.\d+){2,3}$/.test(value)) return undefined;
   return { core: value.split('.').map(Number), prerelease: [] };
+}
+
+function semanticVersionKey(version: SemVer): BinaryVersionKey {
+  return {
+    core: [version.major, version.minor, version.patch],
+    prerelease: version.prerelease,
+  };
 }
 
 function compareVersionKeys(left: BinaryVersionKey, right: BinaryVersionKey): number {

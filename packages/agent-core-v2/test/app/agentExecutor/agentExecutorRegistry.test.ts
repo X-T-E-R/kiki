@@ -212,6 +212,19 @@ describe('AgentExecutorRegistryService', () => {
     ]);
     expect(sorted([
       {
+        command: 'C:/extensions/openai.chatgpt-0.150.0/bin/windows-x86_64/codex.exe',
+        output: 'codex-cli 0.150.0',
+      },
+      {
+        command: 'C:/extensions/openai.chatgpt-0.151.0/bin/windows-x86_64/codex.exe',
+        output: 'unparseable',
+      },
+    ])).toEqual([
+      'C:/extensions/openai.chatgpt-0.150.0/bin/windows-x86_64/codex.exe',
+      'C:/extensions/openai.chatgpt-0.151.0/bin/windows-x86_64/codex.exe',
+    ]);
+    expect(sorted([
+      {
         command: 'C:/Program Files/WindowsApps/OpenAI.Codex_26.825.5331.0_x64__example/app/resources/codex.exe',
         output: 'unparseable',
       },
