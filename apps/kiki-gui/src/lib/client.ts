@@ -746,6 +746,7 @@ export class KikiClient {
       /** Envelope codes treated as success (defaults to [0]). */
       okCodes?: readonly number[];
       signal?: AbortSignal;
+      timeout?: boolean;
       apiVersion?: ApiVersion;
     } = {},
   ): Promise<T> {
@@ -762,10 +763,12 @@ export class KikiClient {
     const onAbort = () => { controller.abort(options.signal?.reason); };
     if (options.signal?.aborted === true) onAbort();
     else options.signal?.addEventListener('abort', onAbort, { once: true });
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, this.timeoutMs);
+    const timeout = options.timeout === false
+      ? undefined
+      : setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, this.timeoutMs);
 
     try {
       let response: Response;
@@ -971,7 +974,7 @@ export class KikiClient {
     return this.request<PromptSubmitResult>(
       'POST',
       `/sessions/${encodeURIComponent(sessionId)}/prompts`,
-      { body },
+      { body, timeout: false },
     );
   }
 

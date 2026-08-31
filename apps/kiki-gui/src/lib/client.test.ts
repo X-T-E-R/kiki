@@ -821,6 +821,78 @@ describe('KikiClient message-closure routes', () => {
   });
 });
 
+describe('KikiClient.submitPrompt', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('waits for a slow submission acknowledgement beyond the generic request deadline', async () => {
+    const fetchMock = vi.fn((_url: string | URL, init?: RequestInit) =>
+      new Promise<Response>((resolve, reject) => {
+        const responseTimer = setTimeout(() => {
+          resolve(new Response(JSON.stringify({
+            code: 0,
+            msg: 'success',
+            data: {
+              prompt_id: 'p-slow',
+              user_message_id: 'm-slow',
+              status: 'running',
+              content: [{ type: 'text', text: 'slow prompt' }],
+              created_at: '2026-01-01T00:00:00.000Z',
+            },
+          }), { status: 200, headers: { 'content-type': 'application/json' } }));
+        }, 40);
+        init?.signal?.addEventListener('abort', () => {
+          clearTimeout(responseTimer);
+          reject(new Error('request aborted'));
+        }, { once: true });
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', timeoutMs: 5 });
+
+    await expect(client.submitPrompt('s1', {
+      content: [{ type: 'text', text: 'slow prompt' }],
+    })).resolves.toMatchObject({ prompt_id: 'p-slow', status: 'running' });
+
+    const init = fetchMock.mock.calls[0]?.[1];
+    expect(init?.signal?.aborted).toBe(false);
+  });
+
+  it('still surfaces a connection failure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new Error('connection refused');
+    }));
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', timeoutMs: 5 });
+
+    const failure = await client.submitPrompt('s1', {
+      content: [{ type: 'text', text: 'prompt' }],
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).code).toBe(-1);
+    expect((failure as ApiError).message).toContain('connection refused');
+  });
+
+  it('still surfaces an explicit server rejection', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({
+        code: 40401,
+        msg: 'session.not_found',
+        data: null,
+      }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    ));
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', timeoutMs: 5 });
+
+    const failure = await client.submitPrompt('missing', {
+      content: [{ type: 'text', text: 'prompt' }],
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).code).toBe(40401);
+  });
+});
+
 describe('KikiClient.replacePrompt', () => {
   it('posts replacement content to the queued prompt action', async () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
