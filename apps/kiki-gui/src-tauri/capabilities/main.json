@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Main Kiki desktop window: window management, tray, notifications, shell sidecar, native save dialog, and file writes for session export.",
+  "description": "Main Kiki desktop window: window management, tray, notifications, shell sidecar, native dialogs, and scoped file access.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -15,8 +15,38 @@
     "notification:default",
     "dialog:allow-open",
     "dialog:allow-save",
-    "fs:allow-read-file",
-    "fs:allow-stat",
-    "fs:allow-write-file"
+    {
+      "identifier": "fs:allow-read-file",
+      "allow": [
+        "$APPCONFIG",
+        "$APPCONFIG/**",
+        "$APPDATA",
+        "$APPDATA/**",
+        "$APPLOCALDATA",
+        "$APPLOCALDATA/**"
+      ]
+    },
+    {
+      "identifier": "fs:allow-stat",
+      "allow": [
+        "$APPCONFIG",
+        "$APPCONFIG/**",
+        "$APPDATA",
+        "$APPDATA/**",
+        "$APPLOCALDATA",
+        "$APPLOCALDATA/**"
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [
+        "$APPCONFIG",
+        "$APPCONFIG/**",
+        "$APPDATA",
+        "$APPDATA/**",
+        "$APPLOCALDATA",
+        "$APPLOCALDATA/**"
+      ]
+    }
   ]
 }

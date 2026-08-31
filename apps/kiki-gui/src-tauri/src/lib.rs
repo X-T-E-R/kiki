@@ -696,6 +696,15 @@ fn show_main_window(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn write_host_file_text(path: PathBuf, text: String) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err("Host file path must be absolute".to_string());
+    }
+    fs::write(&path, text)
+        .map_err(|error| format!("Cannot write host file {}: {error}", path.display()))
+}
+
+#[tauri::command]
 fn read_desktop_prefs() -> DesktopPrefs {
     read_desktop_prefs_file()
 }
@@ -2076,6 +2085,7 @@ pub fn run() {
             desktop_connection,
             cancel_desktop_startup,
             show_main_window,
+            write_host_file_text,
             read_desktop_prefs,
             read_kimi_home_paths,
             write_desktop_prefs,
@@ -2940,6 +2950,23 @@ mod tests {
             signal: None,
         });
         assert_eq!(monitor.exit().map(|payload| payload.code), Some(Some(1)));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn host_file_write_requires_an_absolute_path_and_writes_utf8() {
+        let root = env::temp_dir().join(format!(
+            "kiki-host-file-write-test-{}-{}",
+            std::process::id(),
+            unix_epoch_millis().unwrap()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("note.txt");
+
+        write_host_file_text(path.clone(), "hello 世界".to_string()).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hello 世界");
+        assert!(write_host_file_text(PathBuf::from("relative.txt"), "no".to_string()).is_err());
+
         fs::remove_dir_all(root).unwrap();
     }
 }
