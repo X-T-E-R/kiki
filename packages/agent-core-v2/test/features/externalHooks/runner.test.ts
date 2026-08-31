@@ -117,6 +117,21 @@ describe('runHook process runner', () => {
     expect(result.structuredOutput).toBeUndefined();
   });
 
+  it.each([
+    ['INFO', '[INFO] payload {message: validation passed}'],
+    ['DEBUG', '[DEBUG] result {hookSpecificOutput: unavailable}'],
+  ])('returns allow for %s logs containing object-like protocol text', async (_level, output) => {
+    const result = await runHook(
+      hostProcess,
+      nodeCommand(`process.stdout.write(${JSON.stringify(output)});`),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('allow');
+    expect(result.structuredOutput).toBeUndefined();
+  });
+
   it('returns allow for ordinary plain-text logs', async () => {
     const result = await runHook(
       hostProcess,
@@ -173,6 +188,24 @@ describe('runHook process runner', () => {
 
   it('returns block when a hook protocol field is missing its colon', async () => {
     const output = '{"hookSpecificOutput"}';
+    const result = await runHook(
+      hostProcess,
+      nodeCommand(`process.stdout.write(${JSON.stringify(output)});`),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('block');
+    expect(result.exitCode).toBe(0);
+  });
+
+  it.each([
+    [
+      'hookSpecificOutput object value',
+      '{"hookSpecificOutput" {"permissionDecision":"deny"}}',
+    ],
+    ['message string value', '{"message" "text"}'],
+  ])('returns block when a %s is missing its colon', async (_case, output) => {
     const result = await runHook(
       hostProcess,
       nodeCommand(`process.stdout.write(${JSON.stringify(output)});`),

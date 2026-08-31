@@ -209,9 +209,9 @@ function containsHookProtocolField(value: unknown): boolean {
 }
 
 function attemptsHookProtocol(text: string): boolean {
-  const objectShaped = text.startsWith('{') || (text.startsWith('[') && text.includes('{'));
+  const objectShaped = text.startsWith('{') || /^\[\s*(?:\{|\[|["']|-|\d|[tfn])/.test(text);
   if (!objectShaped) return false;
-  return /(?:^|[,{]|\s)(?:(["'])(?:message|hookSpecificOutput)\1\s*(?::|(?=[},\]]))|(?:message|hookSpecificOutput)\s*:)/.test(
+  return /(?:^|[,{]|\s)(?:(["'])(?:message|hookSpecificOutput)\1\s*(?::|(?=[},\]]|[{\["'\d-]|true\b|false\b|null\b))|(?:message|hookSpecificOutput)\s*:)/.test(
     text,
   );
 }
