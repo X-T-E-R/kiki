@@ -951,7 +951,7 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(external.probe.agentIds).toEqual(internal.probe.agentIds);
   });
 
-  it.fails('P2 returns a receipt with the same observable fields as background AgentRun', async () => {
+  it('P2 returns a receipt with the same observable fields as background AgentRun', async () => {
     const internal = createLane(disposables, 'internal');
     const external = createLane(disposables, 'external');
 
@@ -1129,7 +1129,7 @@ describe('AgentRun and dispatch parity golden', () => {
     ]);
   });
 
-  it.fails('P7 exposes completion usage on terminal status and result views', async () => {
+  it('P7 exposes completion usage on terminal status and result views', async () => {
     const internal = createLane(disposables, 'internal');
     const external = createLane(disposables, 'external');
     const pair = await spawnPair(internal, external);
@@ -1172,7 +1172,7 @@ describe('AgentRun and dispatch parity golden', () => {
     });
   });
 
-  it.fails('C-3 returns the declared structured foreground result with usage', async () => {
+  it('C-3 returns the declared structured foreground result with usage', async () => {
     const internal = createLane(disposables, 'internal');
     const pending = internal.runInternal({
       prompt: 'inspect structure',
@@ -1260,7 +1260,7 @@ describe('AgentRun and dispatch parity golden', () => {
     })).rejects.toThrow(/No model is bound/);
   });
 
-  it.fails('P11 reports the available profile catalog when a profile is unknown', async () => {
+  it('P11 reports the available profile catalog when a profile is unknown', async () => {
     const external = createLane(disposables, 'external');
 
     await expect(external.external.dispatch({
