@@ -181,9 +181,8 @@ function structuredOutput(stdout: string): StructuredOutputResult {
     return attemptsHookProtocol(text) ? { kind: 'invalid' } : { kind: 'unstructured' };
   }
 
-  if (!isRecord(parsed)) {
-    return attemptsHookProtocol(text) ? { kind: 'invalid' } : { kind: 'unstructured' };
-  }
+  if (!containsHookProtocolField(parsed)) return { kind: 'unstructured' };
+  if (!isRecord(parsed)) return { kind: 'invalid' };
   const output = HookJsonOutputSchema.safeParse(parsed);
   if (!output.success) return { kind: 'invalid' };
 
@@ -202,9 +201,19 @@ function structuredOutput(stdout: string): StructuredOutputResult {
   };
 }
 
+function containsHookProtocolField(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsHookProtocolField);
+  if (!isRecord(value)) return false;
+  if (Object.hasOwn(value, 'message') || Object.hasOwn(value, 'hookSpecificOutput')) return true;
+  return Object.values(value).some(containsHookProtocolField);
+}
+
 function attemptsHookProtocol(text: string): boolean {
-  const objectShaped = text.startsWith('{') || /^\[\s*\{/.test(text);
-  return objectShaped && /(?:\{|,)\s*["']?(?:message|hookSpecificOutput)["']?/.test(text);
+  const objectShaped = text.startsWith('{') || (text.startsWith('[') && text.includes('{'));
+  if (!objectShaped) return false;
+  return /(?:^|[,{]|\s)(?:(["'])(?:message|hookSpecificOutput)\1\s*(?::|(?=[},\]]))|(?:message|hookSpecificOutput)\s*:)/.test(
+    text,
+  );
 }
 
 function allowResult(input: {

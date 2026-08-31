@@ -81,7 +81,13 @@ After the script exits, the CLI determines the hook's intent based on the exit c
 | Other non-zero | Script error | Block the current operation for blocking events (fail-closed); notification-only events continue |
 | Timeout or crash | Script exception | Block the current operation for blocking events (fail-closed); notification-only events continue |
 
-Object-shaped or array-of-object-shaped stdout that contains `message` or `hookSpecificOutput` as a field-like name is treated as an attempted JSON hook response; malformed JSON or unsupported fields and values then block a blocking event. Other stdout remains unstructured and does not block on exit code `0`, including logs such as `[INFO] response contains "message": metadata`.
+### JSON protocol detection
+
+For exit code `0`, the CLI classifies stdout using these rules:
+
+- **Valid JSON**: The CLI recursively checks objects and arrays. If an object at any depth contains its own `message` or `hookSpecificOutput` key, the output is a protocol attempt and the top-level value must match the strict hook response object. A different top-level shape or invalid protocol field blocks a blocking event. JSON with neither key remains unstructured output and is allowed.
+- **Malformed object text**: Object-shaped or object-array-shaped text is a protocol attempt only when it contains a recognizable exact `message` or `hookSpecificOutput` key. This recognizes common errors such as single-quoted keys and missing separators without treating prefixes such as `messageCount` as protocol keys. A recognized malformed attempt blocks a blocking event.
+- **Residual ambiguous text**: Malformed text without a recognizable exact protocol key cannot be reliably distinguished from ordinary logs, so it remains unstructured output and is allowed. This includes logs such as `[INFO] response contains "message": metadata`.
 
 You can also return a JSON object via stdout to block:
 

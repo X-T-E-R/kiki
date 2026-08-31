@@ -35,7 +35,7 @@ describe('runHook process runner', () => {
     expect(result.structuredOutput).toBe(true);
   });
 
-  it('marks structured stdout JSON without message as empty hook output', async () => {
+  it('distinguishes ordinary JSON from an empty structured hook output', async () => {
     const emptyObject = await runHook(
       hostProcess,
       nodeCommand('process.stdout.write("{}");'),
@@ -44,7 +44,7 @@ describe('runHook process runner', () => {
     );
     expect(emptyObject.action).toBe('allow');
     expect(emptyObject.message).toBeUndefined();
-    expect(emptyObject.structuredOutput).toBe(true);
+    expect(emptyObject.structuredOutput).toBeUndefined();
 
     const emptyHookSpecificOutput = await runHook(
       hostProcess,
@@ -141,10 +141,12 @@ describe('runHook process runner', () => {
     expect(result.exitCode).toBe(0);
   });
 
-  it('returns block when a top-level array contains a hook protocol decision', async () => {
-    const output = JSON.stringify([
-      { hookSpecificOutput: { permissionDecision: 'deny' } },
-    ]);
+  it.each([
+    ['direct array entry', [{ hookSpecificOutput: { permissionDecision: 'deny' } }]],
+    ['after a null entry', [null, { hookSpecificOutput: { permissionDecision: 'deny' } }]],
+    ['inside a nested array', [[{ hookSpecificOutput: { permissionDecision: 'deny' } }]]],
+  ])('returns block when a hook protocol decision appears in a parsed %s', async (_case, value) => {
+    const output = JSON.stringify(value);
     const result = await runHook(
       hostProcess,
       nodeCommand(`process.stdout.write(${JSON.stringify(output)});`),
@@ -182,12 +184,24 @@ describe('runHook process runner', () => {
     expect(result.exitCode).toBe(0);
   });
 
+  it('returns block when a hook protocol field is missing its leading comma', async () => {
+    const output = '{"x": 1 "hookSpecificOutput": {"permissionDecision": "deny"}}';
+    const result = await runHook(
+      hostProcess,
+      nodeCommand(`process.stdout.write(${JSON.stringify(output)});`),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('block');
+    expect(result.exitCode).toBe(0);
+  });
+
   it.each([
     ['non-object hookSpecificOutput', '{"hookSpecificOutput":[]}'],
     ['misspelled permissionDecision', '{"hookSpecificOutput":{"permissionDecision":"denny"}}'],
     ['non-string permissionDecision', '{"hookSpecificOutput":{"permissionDecision":{"deny":true}}}'],
     ['non-scalar message', '{"message":[]}'],
-    ['unexpected top-level field', '{"unexpected":"value"}'],
   ])('returns block for parseable protocol output with %s', async (_case, output) => {
     const result = await runHook(
       hostProcess,
@@ -198,6 +212,23 @@ describe('runHook process runner', () => {
 
     expect(result.action).toBe('block');
     expect(result.exitCode).toBe(0);
+  });
+
+  it.each([
+    ['an unrelated parsed object', '{"unexpected":"value"}'],
+    ['a quoted message prefix', "{'messageCount': 1}"],
+    ['an unquoted message prefix', '{messageboard: "status"}'],
+    ['a hookSpecificOutput prefix', "{'hookSpecificOutputDebug': true}"],
+  ])('returns allow for non-protocol output with %s', async (_case, output) => {
+    const result = await runHook(
+      hostProcess,
+      nodeCommand(`process.stdout.write(${JSON.stringify(output)});`),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('allow');
+    expect(result.structuredOutput).toBeUndefined();
   });
 
   it('parses permissionDecision=allow into a structured allow result', async () => {
