@@ -121,5 +121,10 @@ fn main() {
         "cargo:rustc-env=KIKI_UPDATE_CHANNEL={}",
         env::var("KIKI_UPDATE_CHANNEL").unwrap_or_else(|_| "stable".to_string())
     );
-    tauri_build::build();
+    tauri_build::try_build(
+        tauri_build::Attributes::new().app_manifest(
+            tauri_build::AppManifest::new().commands(&["write_host_file_text"]),
+        ),
+    )
+    .expect("failed to build Tauri application manifest");
 }

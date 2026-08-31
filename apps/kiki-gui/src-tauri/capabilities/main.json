@@ -15,6 +15,7 @@
     "notification:default",
     "dialog:allow-open",
     "dialog:allow-save",
+    "allow-write-host-file-text",
     {
       "identifier": "fs:allow-read-file",
       "allow": [
