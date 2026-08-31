@@ -8,6 +8,16 @@ use std::{
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+include!("src/app_commands.rs");
+
+macro_rules! command_names {
+    ($($command:ident),* $(,)?) => {
+        &[$(stringify!($command)),*]
+    };
+}
+
+const APP_COMMANDS: &[&str] = app_commands!(command_names);
+const MAIN_CAPABILITY_PATH: &str = "capabilities/main.json";
 const SIDECAR_MANIFEST_VERSION: u32 = 1;
 
 #[derive(Deserialize)]
@@ -44,7 +54,35 @@ fn sha256_file(path: &Path) -> String {
     format!("{:x}", hash.finalize())
 }
 
+fn validate_main_capability() {
+    let raw = fs::read_to_string(MAIN_CAPABILITY_PATH)
+        .expect("Cannot read the main Tauri capability");
+    let capability: serde_json::Value =
+        serde_json::from_str(&raw).expect("The main Tauri capability is invalid JSON");
+    let windows = capability["windows"]
+        .as_array()
+        .expect("The main Tauri capability must declare its windows");
+    assert_eq!(windows, &[serde_json::Value::String("main".to_string())]);
+    let permissions = capability["permissions"]
+        .as_array()
+        .expect("The main Tauri capability must declare permissions");
+
+    for command in APP_COMMANDS {
+        let permission = format!("allow-{}", command.replace('_', "-"));
+        assert!(
+            permissions
+                .iter()
+                .any(|entry| entry.as_str() == Some(permission.as_str())),
+            "The main Tauri capability must grant {permission}"
+        );
+    }
+}
+
 fn main() {
+    println!("cargo:rerun-if-changed={MAIN_CAPABILITY_PATH}");
+    println!("cargo:rerun-if-changed=src/app_commands.rs");
+    validate_main_capability();
+
     let target = env::var("TARGET").expect("Cargo did not provide TARGET");
     let extension = if target.contains("windows") {
         ".exe"
@@ -122,9 +160,8 @@ fn main() {
         env::var("KIKI_UPDATE_CHANNEL").unwrap_or_else(|_| "stable".to_string())
     );
     tauri_build::try_build(
-        tauri_build::Attributes::new().app_manifest(
-            tauri_build::AppManifest::new().commands(&["write_host_file_text"]),
-        ),
+        tauri_build::Attributes::new()
+            .app_manifest(tauri_build::AppManifest::new().commands(APP_COMMANDS)),
     )
     .expect("failed to build Tauri application manifest");
 }

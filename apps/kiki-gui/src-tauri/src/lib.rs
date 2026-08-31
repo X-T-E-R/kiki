@@ -9,6 +9,14 @@
  */
 pub mod config_import;
 
+include!("app_commands.rs");
+
+macro_rules! command_handlers {
+    ($($command:ident),* $(,)?) => {
+        tauri::generate_handler![$($command),*]
+    };
+}
+
 use std::{
     collections::VecDeque,
     env, fs,
@@ -2081,23 +2089,7 @@ pub fn run() {
 
     let app = app
         .manage(manager)
-        .invoke_handler(tauri::generate_handler![
-            desktop_connection,
-            cancel_desktop_startup,
-            show_main_window,
-            write_host_file_text,
-            read_desktop_prefs,
-            read_kimi_home_paths,
-            write_desktop_prefs,
-            check_desktop_update,
-            install_desktop_update,
-            prepare_for_update,
-            import_kimi_config,
-            migrate_compatibility_category,
-            dry_run_sessions_migration,
-            execute_sessions_migration,
-            restart_server
-        ])
+        .invoke_handler(app_commands!(command_handlers))
         .on_window_event(move |window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let prefs = read_desktop_prefs_file();
