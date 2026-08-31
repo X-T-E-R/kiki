@@ -15,6 +15,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { Error2, ErrorCodes, isError2, toKimiErrorPayload } from '#/errors';
 import { IFlagService } from '#/app/flag/flag';
+import { IConfigService } from '#/app/config/config';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -41,6 +42,7 @@ import {
   applyLease,
   applySpawnPolicy,
   fillLeasePins,
+  spawnConstraintOrigin,
 } from '#/app/agentProfileCatalog/applySubagentLease';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
@@ -48,6 +50,11 @@ import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { ILogService } from '#/_base/log/log';
 import { IModelService } from '#/kosong/model/model';
 import { IAgentCollaborationRegistry } from '#/session/agentCollaboration/registry';
+import {
+  canonicalizeSubagentBinding,
+  resolveSubagentBinding,
+} from '#/session/subagent/configSection';
+import { roleConstraintsFromProfile } from '#/session/subagent/modelConstraints';
 
 import { EXTERNAL_DELEGATION_FLAG_ID } from './flag';
 import {
@@ -136,6 +143,7 @@ export class SessionExternalDelegationService
     @IAgentCollaborationRegistry private readonly names: IAgentCollaborationRegistry,
     @ISessionManager lifecycle: ISessionManager,
     @IModelService private readonly models: IModelService,
+    @IConfigService private readonly config: IConfigService,
   ) {
     super();
     this.scope = session.scope('external-delegation');
@@ -381,9 +389,29 @@ export class SessionExternalDelegationService
     }
     const selection = target.selection;
     const profile = target.effectiveProfile;
+    if ((profile.executor ?? 'native') !== 'native') {
+      throw invalid('External executors are unsupported for external delegation.');
+    }
     const filled = fillLeasePins(
       { modelAlias, thinkingEffort },
       target.lease,
+    );
+    const binding = canonicalizeSubagentBinding(
+      resolveSubagentBinding(
+        this.config,
+        filled,
+        {
+          modelAlias: profile.modelAlias,
+          thinkingEffort: profile.thinkingEffort,
+        },
+        this.models,
+        roleConstraintsFromProfile(
+          profile,
+          spawnConstraintOrigin(target.lease, target.spawnPolicy),
+        ),
+        { profileName: profile.name, routeId: selection.route?.id },
+      ),
+      this.models,
     );
     const delegator = { kind: 'external' as const, delegationId: doc.delegationId };
     if (!(await this.names.reserve(taskName, delegator))) throw invalid('Named child task_name is already reserved.');
@@ -396,9 +424,11 @@ export class SessionExternalDelegationService
           route: selection.route?.id,
           resolvedProfile: selection.baseProfile,
           resolvedRoute: selection.route,
-          model: filled.modelAlias ?? profile.modelAlias ?? mainData.modelAlias,
-          thinking: filled.thinkingEffort ?? profile.thinkingEffort ?? mainData.thinkingLevel,
-          strictThinking: filled.thinkingEffort !== undefined || profile.thinkingEffort !== undefined,
+          model: binding.model,
+          thinking: binding.thinking,
+          strictThinking:
+            filled.thinkingEffort !== undefined ||
+            profile.thinkingEffort !== undefined,
           inheritedUserToolNames: mainUserTools.list().map((tool) => tool.name),
           lease: target.lease,
           spawnPolicy: target.spawnPolicy,

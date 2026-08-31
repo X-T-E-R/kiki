@@ -24,6 +24,7 @@ import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
 import { IFlagService } from '#/app/flag/flag';
 import { AGENT_PROFILE_ROUTES_FLAG_ID } from '#/app/agentProfileCatalog/flag';
+import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 
 import { discoverAgentFiles } from './internal/agentFileDiscovery';
 import { AgentProfileLoaderBase } from './internal/agentProfileLoader';
@@ -60,6 +61,7 @@ export class UserAgentProfileLoaderService
     @IWorkspaceContext private readonly workspace: IWorkspaceContext,
     @IHostFsWatchService private readonly fsWatch: IHostFsWatchService,
     @IFlagService private readonly flags: IFlagService,
+    @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
     registry?: IAgentProfileRegistry,
   ) {
     super(log, registry);
@@ -103,6 +105,7 @@ export class UserAgentProfileLoaderService
       }),
       (context) => this.defaultProfile.renderSystemPrompt(context),
       (context) => this.builtin.getDefault().renderSystemPrompt(context),
+      { registry: this.executors, allowExternal: true },
     );
     if (systemMd === undefined) return contribution;
     return { ...contribution, profiles: [...contribution.profiles, systemMd] };

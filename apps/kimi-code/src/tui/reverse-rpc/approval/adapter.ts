@@ -17,6 +17,16 @@ const PLAN_REJECT_CHOICES: ApprovalPanelChoice[] = [
 ];
 
 export function adaptApprovalRequest(event: ApprovalRequest): ApprovalPanelData {
+  const external = externalPermissionFromDisplay(event.display);
+  if (external !== undefined) {
+    return {
+      id: event.toolCallId,
+      tool_call_id: event.toolCallId,
+      tool_name: event.toolName,
+      action: event.action,
+      ...adaptExternalPermission(external),
+    };
+  }
   const resolved = resolveDisplay(event.toolName, event.display, event.action);
   return {
     id: event.toolCallId,
@@ -26,6 +36,104 @@ export function adaptApprovalRequest(event: ApprovalRequest): ApprovalPanelData 
     description: resolved.description,
     display: resolved.blocks,
     choices: adaptChoices(event.toolName, event.display),
+  };
+}
+
+/* ── External permission options (ACP harness, design §9) ─────────────── */
+
+/**
+ * The option set is OPEN — kinds beyond allow_once/allow_always/reject_once/
+ * reject_always are legal and must all reach the panel. The exact option id
+ * round-trips via `selected_option_id`; the adapter re-validates it against
+ * the original request, so the UI never has to guess semantics.
+ */
+interface ExternalPermissionOption {
+  readonly id: string;
+  readonly label: string;
+  readonly kind: string;
+  readonly changes?: readonly unknown[];
+}
+
+type ExternalPermissionParse =
+  | { readonly ok: true; readonly summary: string; readonly detail?: unknown; readonly options: readonly ExternalPermissionOption[] }
+  | { readonly ok: false };
+
+/**
+ * Undefined when the payload is some other display kind; `{ok:false}` when it
+ * claims `external_permission` but fails validation — fail closed: the panel
+ * then offers only Cancel.
+ */
+function externalPermissionFromDisplay(display: unknown): ExternalPermissionParse | undefined {
+  if (!isRecord(display) || display['kind'] !== 'external_permission') return undefined;
+  const summary = display['summary'];
+  const rawOptions = display['options'];
+  if (typeof summary !== 'string' || summary === '' || !Array.isArray(rawOptions)) {
+    return { ok: false };
+  }
+  const options: ExternalPermissionOption[] = [];
+  for (const raw of rawOptions) {
+    if (!isRecord(raw)) return { ok: false };
+    const { id, label, kind, changes } = raw;
+    if (typeof id !== 'string' || id === '') return { ok: false };
+    if (typeof label !== 'string' || label === '') return { ok: false };
+    if (typeof kind !== 'string' || kind === '') return { ok: false };
+    if (changes !== undefined && !Array.isArray(changes)) return { ok: false };
+    options.push({ id, label, kind, changes });
+  }
+  if (options.length === 0) return { ok: false };
+  return { ok: true, summary, detail: display['detail'], options };
+}
+
+function boundedJson(value: unknown, limit = 160): string {
+  try {
+    const json = JSON.stringify(value) ?? '';
+    return json.length > limit ? `${json.slice(0, limit)}…` : json;
+  } catch {
+    return String(value);
+  }
+}
+
+function externalOptionDescription(option: ExternalPermissionOption): string {
+  const grants =
+    option.changes !== undefined && option.changes.length > 0
+      ? ` · grants: ${option.changes.map((change) => boundedJson(change)).join(', ')}`
+      : '';
+  return `${option.kind}${grants}`;
+}
+
+function adaptExternalPermission(
+  parsed: ExternalPermissionParse,
+): Pick<ApprovalPanelData, 'description' | 'display' | 'choices'> {
+  const cancel: ApprovalPanelChoice = { label: 'Cancel', response: 'cancelled' };
+  if (!parsed.ok) {
+    return {
+      description: 'Unrecognized external permission request — cancel to stay safe.',
+      display: [],
+      choices: [cancel],
+    };
+  }
+  const display: DisplayBlock[] = [{ type: 'brief', text: parsed.summary }];
+  if (typeof parsed.detail === 'string' && parsed.detail.length > 0) {
+    display.push({ type: 'brief', text: parsed.detail });
+  } else if (parsed.detail !== undefined) {
+    display.push({ type: 'brief', text: boundedJson(parsed.detail, 400) });
+  }
+  return {
+    // adaptDisplay dedupes brief blocks identical to the description; keep
+    // them distinct by leaving description empty.
+    description: '',
+    display,
+    choices: [
+      ...parsed.options.map((option) => ({
+        label: option.label,
+        response: option.kind.toLowerCase().includes('reject')
+          ? ('rejected' as const)
+          : ('approved' as const),
+        selected_option_id: option.id,
+        description: externalOptionDescription(option),
+      })),
+      cancel,
+    ],
   };
 }
 
@@ -153,24 +261,29 @@ function inferFileOp(toolName: string): 'read' | 'write' | 'edit' | 'glob' | 'gr
 }
 
 export function adaptPanelResponse(response: ApprovalPanelResponse): ApprovalResponse {
-  if (response.response === 'approved_for_session') {
-    return {
-      decision: 'approved',
-      scope: 'session',
-      feedback: response.feedback,
-      selectedLabel: response.selected_label,
-    };
-  }
-  return {
-    decision:
-      response.response === 'approved'
-        ? 'approved'
-        : response.response === 'rejected'
-          ? 'rejected'
-          : 'cancelled',
-    feedback: response.feedback,
-    selectedLabel: response.selected_label,
-  };
+  const base: ApprovalResponse =
+    response.response === 'approved_for_session'
+      ? {
+          decision: 'approved',
+          scope: 'session',
+          feedback: response.feedback,
+          selectedLabel: response.selected_label,
+        }
+      : {
+          decision:
+            response.response === 'approved'
+              ? 'approved'
+              : response.response === 'rejected'
+                ? 'rejected'
+                : 'cancelled',
+          feedback: response.feedback,
+          selectedLabel: response.selected_label,
+        };
+  if (response.selected_option_id === undefined) return base;
+  // selectedOptionId joins the engine's ApprovalResponse contract with the
+  // external-harness slice (design §9); pass it through structurally until
+  // the SDK type catches up.
+  return { ...base, selectedOptionId: response.selected_option_id } as ApprovalResponse;
 }
 
 function describeApproval(display: ToolInputDisplay, action: string): string {

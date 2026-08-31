@@ -317,3 +317,94 @@ describe('approval adapter', () => {
     });
   });
 });
+
+describe('external permission options (ACP harness)', () => {
+  const DISPLAY = {
+    kind: 'external_permission',
+    summary: 'Grok wants to run: pnpm test',
+    detail: { cwd: '/repo' },
+    options: [
+      { id: 'opt-once', label: 'Allow once', kind: 'allow_once' },
+      {
+        id: 'opt-always',
+        label: 'Always allow pnpm',
+        kind: 'allow_always',
+        changes: [{ type: 'command_rule', command: 'pnpm test' }],
+      },
+      { id: 'opt-reject', label: 'Reject', kind: 'reject_once' },
+      // Open set: kinds beyond the common four still reach the panel.
+      { id: 'opt-plan', label: 'Accept plan', kind: 'plan_review_accept' },
+    ],
+  };
+
+  function adaptExternal(display: unknown) {
+    return adaptApprovalRequest({
+      toolCallId: 'tc-ext',
+      toolName: 'grok__bash',
+      action: 'run',
+      display: display as never,
+    });
+  }
+
+  it('renders every agent-supplied option with its exact id and kind summary', () => {
+    const adapted = adaptExternal(DISPLAY);
+
+    expect(adapted.display).toEqual([
+      { type: 'brief', text: 'Grok wants to run: pnpm test' },
+      { type: 'brief', text: '{"cwd":"/repo"}' },
+    ]);
+    expect(adapted.choices).toEqual([
+      {
+        label: 'Allow once',
+        response: 'approved',
+        selected_option_id: 'opt-once',
+        description: 'allow_once',
+      },
+      {
+        label: 'Always allow pnpm',
+        response: 'approved',
+        selected_option_id: 'opt-always',
+        description: 'allow_always · grants: {"type":"command_rule","command":"pnpm test"}',
+      },
+      { label: 'Reject', response: 'rejected', selected_option_id: 'opt-reject', description: 'reject_once' },
+      {
+        label: 'Accept plan',
+        response: 'approved',
+        selected_option_id: 'opt-plan',
+        description: 'plan_review_accept',
+      },
+      { label: 'Cancel', response: 'cancelled' },
+    ]);
+  });
+
+  it('fails closed on malformed payloads: cancel only', () => {
+    for (const broken of [
+      { kind: 'external_permission', summary: 'x', options: [] },
+      { kind: 'external_permission', summary: 'x', options: [{ id: 'a', label: 'A' }] },
+      { kind: 'external_permission', summary: 'x' },
+    ]) {
+      const adapted = adaptExternal(broken);
+      expect(adapted.choices).toEqual([{ label: 'Cancel', response: 'cancelled' }]);
+      expect(adapted.description).toContain('cancel');
+    }
+  });
+
+  it('threads selected_option_id into the engine response as selectedOptionId', () => {
+    expect(
+      adaptPanelResponse({ response: 'approved', selected_option_id: 'opt-always' }),
+    ).toEqual({
+      decision: 'approved',
+      feedback: undefined,
+      selectedLabel: undefined,
+      selectedOptionId: 'opt-always',
+    });
+  });
+
+  it('leaves legacy responses untouched when no option id is present', () => {
+    expect(adaptPanelResponse({ response: 'rejected' })).toEqual({
+      decision: 'rejected',
+      feedback: undefined,
+      selectedLabel: undefined,
+    });
+  });
+});

@@ -42,6 +42,8 @@ function makeFakeSession(): FakeSession {
       onError: () => ({ dispose: () => {} }),
     },
     interactions: {
+      acquireConsumer: () => Promise.resolve(),
+      releaseConsumer: () => Promise.resolve(),
       list: () => Promise.resolve(pending),
       respond: (id: string, response: unknown) => {
         responses.push({ id, response });
@@ -113,7 +115,7 @@ describe('AcpInteractionBridge', () => {
     expect(session.responses).toEqual([
       { id: 'approval-1', response: { decision: 'approved', selectedLabel: 'Approve once' } },
     ]);
-    bridge.dispose();
+    await bridge.dispose();
   });
 
   it('maps approve_always to a session-scoped approval', async () => {
@@ -130,7 +132,7 @@ describe('AcpInteractionBridge', () => {
       scope: 'session',
       selectedLabel: 'Approve for this session',
     });
-    bridge.dispose();
+    await bridge.dispose();
   });
 
   it('responds rejected when the client RPC fails', async () => {
@@ -145,7 +147,7 @@ describe('AcpInteractionBridge', () => {
     await flush();
 
     expect(session.responses).toEqual([{ id: 'approval-1', response: { decision: 'rejected' } }]);
-    bridge.dispose();
+    await bridge.dispose();
   });
 
   it('bridges a plan review interaction and preserves the selected plan label', async () => {
@@ -183,7 +185,7 @@ describe('AcpInteractionBridge', () => {
     expect(session.responses).toEqual([
       { id: 'plan-1', response: { decision: 'approved', selectedLabel: 'Safe path' } },
     ]);
-    bridge.dispose();
+    await bridge.dispose();
   });
 
   it('forwards a question request and responds with the answer', async () => {
@@ -210,7 +212,7 @@ describe('AcpInteractionBridge', () => {
       toolCall: { toolCallId: '5:tc_q', title: 'AskUserQuestion' },
     });
     expect(session.responses).toEqual([{ id: 'question-1', response: { 'Pick one': 'A' } }]);
-    bridge.dispose();
+    await bridge.dispose();
   });
 
   it('ignores non-approval/question interactions', async () => {
@@ -229,7 +231,7 @@ describe('AcpInteractionBridge', () => {
 
     expect(calls).toHaveLength(0);
     expect(session.responses).toEqual([]);
-    bridge.dispose();
+    await bridge.dispose();
   });
 
   it('does not double-handle the same pending id across change events', async () => {
@@ -244,7 +246,7 @@ describe('AcpInteractionBridge', () => {
     await flush();
 
     expect(calls).toHaveLength(1);
-    bridge.dispose();
+    await bridge.dispose();
   });
 
   it('settles an approval exactly once when the client answers after cancellation', async () => {
@@ -272,7 +274,7 @@ describe('AcpInteractionBridge', () => {
     expect(session.responses).toEqual([
       { id: 'approval-1', response: { decision: 'approved', selectedLabel: 'Approve once' } },
     ]);
-    bridge.dispose();
+    await bridge.dispose();
   });
 
   const questionInteraction: Interaction = {
@@ -328,7 +330,7 @@ describe('AcpInteractionBridge', () => {
     expect(session.responses).toEqual([
       { id: 'question-el-1', response: { 'Pick one': 'B', 'Pick many': 'X, Z' } },
     ]);
-    bridge.dispose();
+    await bridge.dispose();
   });
 
   it('responds null (dismissed) when the elicitation is declined', async () => {
@@ -342,7 +344,7 @@ describe('AcpInteractionBridge', () => {
     await flush();
 
     expect(session.responses).toEqual([{ id: 'question-el-1', response: null }]);
-    bridge.dispose();
+    await bridge.dispose();
   });
 
   it('falls back to request_permission when elicitation/create fails', async () => {
@@ -363,6 +365,6 @@ describe('AcpInteractionBridge', () => {
       toolCall: { toolCallId: '5:tc_q', title: 'AskUserQuestion' },
     });
     expect(session.responses).toEqual([{ id: 'question-el-1', response: { 'Pick one': 'B' } }]);
-    bridge.dispose();
+    await bridge.dispose();
   });
 });

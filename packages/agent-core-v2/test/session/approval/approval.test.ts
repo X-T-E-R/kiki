@@ -35,8 +35,32 @@ describe('SessionApprovalService', () => {
     ix.set(ISessionStateService, new SessionStateService());
     ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
     ix.set(ISessionApprovalService, new SyncDescriptor(SessionApprovalService));
+    ix.get(ISessionInteractionService).acquireConsumer('test-consumer');
   });
   afterEach(() => disposables.dispose());
+
+  it('cancels immediately when no approval consumer is present', async () => {
+    const interaction = ix.get(ISessionInteractionService);
+    interaction.releaseConsumer('test-consumer');
+
+    await expect(ix.get(ISessionApprovalService).request(makeRequest('no-consumer'))).resolves.toEqual({
+      decision: 'cancelled',
+    });
+    expect(interaction.listPending()).toEqual([]);
+  });
+
+  it('cancels pending approvals when the last consumer disconnects', async () => {
+    const interaction = ix.get(ISessionInteractionService);
+    interaction.acquireConsumer('backup-consumer');
+    const pending = ix.get(ISessionApprovalService).request(makeRequest('disconnect'));
+
+    interaction.releaseConsumer('test-consumer');
+    expect(interaction.listPending('approval')).toHaveLength(1);
+    interaction.releaseConsumer('backup-consumer');
+
+    await expect(pending).resolves.toEqual({ decision: 'cancelled' });
+    expect(interaction.listPending()).toEqual([]);
+  });
 
   it('request parks until decide resolves it', async () => {
     const svc = ix.get(ISessionApprovalService);
@@ -110,6 +134,37 @@ describe('SessionApprovalService', () => {
     expect(secondId).not.toBe(firstId);
     svc.decide(secondId, { decision: 'approved' });
     await expect(second).resolves.toEqual({ decision: 'approved' });
+  });
+
+  it('round-trips exact external option ids and cancels unknown ids', async () => {
+    const svc = ix.get(ISessionApprovalService);
+    const request = (id: string) => svc.request({
+      id,
+      toolName: 'external',
+      action: 'run',
+      display: {
+        kind: 'external_permission',
+        summary: 'Run external tool',
+        options: [{ id: 'allow-once', label: 'Allow once', kind: 'allow_once' }],
+      },
+    });
+
+    const exact = request('external-exact');
+    svc.decide('external-exact', {
+      decision: 'approved',
+      selectedOptionId: 'allow-once',
+    });
+    await expect(exact).resolves.toEqual({
+      decision: 'approved',
+      selectedOptionId: 'allow-once',
+    });
+
+    const unknown = request('external-unknown');
+    svc.decide('external-unknown', {
+      decision: 'approved',
+      selectedOptionId: 'unknown',
+    });
+    await expect(unknown).resolves.toEqual({ decision: 'cancelled' });
   });
 
   it('listPending surfaces the minted interaction id so hosts can decide', async () => {

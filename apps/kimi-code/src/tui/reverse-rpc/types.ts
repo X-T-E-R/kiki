@@ -102,6 +102,12 @@ export interface ApprovalPanelChoice {
   label: string;
   response: 'approved' | 'approved_for_session' | 'rejected' | 'cancelled';
   selected_label?: string | undefined;
+  /**
+   * External-permission round-trip (ACP harness, design §9): the exact option
+   * id the agent offered, echoed back verbatim so the adapter can rebuild
+   * `{ outcome: 'selected', optionId }`.
+   */
+  selected_option_id?: string | undefined;
   requires_feedback?: boolean | undefined;
   // Optional helper text shown dim beneath the label. Omitted/empty renders
   // exactly as a plain label-only choice.

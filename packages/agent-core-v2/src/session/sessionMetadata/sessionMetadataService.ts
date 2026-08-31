@@ -252,6 +252,8 @@ function agentMetaEquals(a: AgentMeta, b: AgentMeta): boolean {
     a.userLabel === b.userLabel &&
     a.model === b.model &&
     a.thinkingEffort === b.thinkingEffort &&
+    a.executor === b.executor &&
+    a.executorProtocol === b.executorProtocol &&
     recordEquals(a.labels, b.labels)
   );
 }

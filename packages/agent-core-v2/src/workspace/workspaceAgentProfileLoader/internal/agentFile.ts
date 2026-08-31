@@ -34,6 +34,32 @@ export interface ParseAgentFileOptions {
 
 const AGENT_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
+const AGENT_FILE_KEYS = new Set([
+  'name',
+  'description',
+  'override',
+  'main',
+  'private',
+  'delegation_notice',
+  'tools',
+  'disallowedTools',
+  'subagents',
+  'spawn_constraints',
+  'executor',
+  'executor_options',
+  'model_alias',
+  'thinking_effort',
+  'allowed_models',
+  'deny_models',
+  'allowed_efforts',
+  'model_profiles',
+  'recommended_models',
+  'service_tier',
+  'request_params',
+  'model_preference',
+  'whenToUse',
+]);
+
 export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDefinition {
   let parsed;
   try {
@@ -56,6 +82,13 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     throw new AgentFileParseError(
       `Frontmatter in ${options.path} must be a mapping at the top level`,
     );
+  }
+  for (const key of Object.keys(frontmatter)) {
+    if (!AGENT_FILE_KEYS.has(key)) {
+      throw new AgentFileParseError(
+        `Unknown frontmatter field "${key}" in ${options.path}; remove or migrate unsupported keys before loading this closed-key profile`,
+      );
+    }
   }
   if (
     options.sourceProfile === true &&
@@ -130,6 +163,25 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
   }
   const subagents = parsedSubagents.subagents;
   const subagentLeases = parsedSubagents.subagentLeases;
+  const executor = optionalNonEmptyStringField(
+    frontmatter['executor'],
+    'executor',
+    options.path,
+  );
+  const executorOptions = parseExecutorOptions(
+    frontmatter['executor_options'],
+    options.path,
+  );
+  if (executorOptions !== undefined && executor === undefined) {
+    throw new AgentFileParseError(
+      `Frontmatter field "executor" in ${options.path} is required when executor_options is set`,
+    );
+  }
+  if (main && executor !== undefined && executor !== 'native') {
+    throw new AgentFileParseError(
+      `External executor "${executor}" is unsupported for main agent profile ${options.path}`,
+    );
+  }
   rejectModelPreference(frontmatter['model_preference'], options.path);
   const modelAlias = optionalNonEmptyStringField(
     frontmatter['model_alias'],
@@ -191,6 +243,8 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     subagents,
     subagentLeases,
     spawnConstraints,
+    executor,
+    executorOptions,
     modelAlias,
     thinkingEffort,
     allowedModels,
@@ -357,6 +411,32 @@ function parseServiceTier(value: unknown, filePath: string): AgentFileDefinition
   throw new AgentFileParseError(
     `Frontmatter field "service_tier" in ${filePath} must be "auto", "default", "flex", or "priority"`,
   );
+}
+
+function parseExecutorOptions(
+  value: unknown,
+  filePath: string,
+): AgentFileDefinition['executorOptions'] {
+  if (value === undefined) return undefined;
+  if (!isPlainRecord(value)) {
+    throw new AgentFileParseError(
+      `Frontmatter field "executor_options" in ${filePath} must be a mapping of scalar string, number, or boolean values`,
+    );
+  }
+  const out: Record<string, string | number | boolean> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (
+      typeof item !== 'string' &&
+      typeof item !== 'number' &&
+      typeof item !== 'boolean'
+    ) {
+      throw new AgentFileParseError(
+        `Frontmatter field "executor_options.${key}" in ${filePath} must be a scalar string, number, or boolean value`,
+      );
+    }
+    out[key] = item;
+  }
+  return out;
 }
 
 function parseRequestParams(

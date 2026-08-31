@@ -217,6 +217,11 @@ import '#/kosong/provider/bases/google-genai/index';
 import '#/kosong/provider/bases/openai/index';
 import '#/kosong/provider/providers/kimi/kimi.contrib';
 import '#/kosong/provider/providers/standard.contrib';
+export * from '#/app/agentExecutor/agentExecutor';
+export * from '#/app/agentExecutor/builtinDescriptors';
+export * from '#/app/agentExecutor/configSection';
+export * from '#/app/agentExecutor/agentExecutorRegistryService';
+export * from '#/app/agentExecutor/preflight';
 export * from '#/app/agentProfileCatalog/agentProfileCatalog';
 export * from '#/app/agentProfileCatalog/agentProfileContribution';
 export * from '#/app/agentProfileCatalog/scopedAgentProfile';
@@ -519,6 +524,8 @@ export {
   type ApprovalDecision,
   type ApprovalRequest as SessionApprovalRequest,
   type ApprovalResponse as SessionApprovalResponse,
+  type ExternalPermissionDisplay,
+  type ExternalPermissionOption,
 } from '#/session/approval/approval';
 export * from '#/session/question/question';
 export * from '#/session/question/questionService';
@@ -661,6 +668,15 @@ export * from '#/agent/fullCompaction/fullCompaction';
 export * from '#/agent/fullCompaction/fullCompactionService';
 export * from '#/agent/fullCompaction/compactionOps';
 export * from '#/agent/fullCompaction/types';
+export * from '#/agent/execution/execution';
+export * from '#/agent/execution/executionService';
+export * from '#/agent/execution/externalExecutorOps';
+export * from '#/agent/execution/externalTurnRecorder';
+export * from '#/agent/execution/acpAgentExecutorSession';
+export * from '#/agent/execution/acpAgentExecutorProvider';
+export * from '#/agent/execution/codexAppServerExecutorSession';
+export * from '#/agent/execution/codexAppServerExecutorProvider';
+export * from '#/agent/execution/nativeAgentExecutorSession';
 export * from '#/agent/llmRequester/llmRequester';
 export * from '#/agent/llmRequester/llmRequesterService';
 export * from '#/agent/llmRequester/llmRequestOps';

@@ -63,6 +63,8 @@ export interface SessionQuestionsFacade {
 export interface SessionInteractionsFacade {
   list(kind?: InteractionKind): Promise<readonly Interaction[]>;
   respond(id: string, response: unknown): Promise<void>;
+  acquireConsumer(id: string): Promise<void>;
+  releaseConsumer(id: string): Promise<void>;
 }
 
 export interface SessionSkillsFacade {
@@ -202,6 +204,10 @@ export function createSessionFacade(call: ScopedCaller, sessionId: string): Sess
         >,
       respond: (id, response) =>
         call(scope, 'sessionInteractionService', 'respond', [id, response]) as Promise<void>,
+      acquireConsumer: (id) =>
+        call(scope, 'sessionInteractionService', 'acquireConsumer', [id]) as Promise<void>,
+      releaseConsumer: (id) =>
+        call(scope, 'sessionInteractionService', 'releaseConsumer', [id]) as Promise<void>,
     },
 
     skills: {

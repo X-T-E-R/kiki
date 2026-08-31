@@ -4,6 +4,7 @@ import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
 import { IFlagService } from '#/app/flag/flag';
 import { AGENT_PROFILE_ROUTES_FLAG_ID } from '#/app/agentProfileCatalog/flag';
+import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 
 import { discoverAgentFiles } from './internal/agentFileDiscovery';
 import { AgentProfileLoaderBase } from './internal/agentProfileLoader';
@@ -32,6 +33,7 @@ export class PluginAgentProfileLoaderService
     @IUserAgentProfileLoader private readonly user: IUserAgentProfileLoader,
     @IWorkspaceContext private readonly workspace: IWorkspaceContext,
     @IFlagService private readonly flags: IFlagService,
+    @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
     registry?: IAgentProfileRegistry,
   ) {
     super(log, registry);
@@ -62,6 +64,11 @@ export class PluginAgentProfileLoaderService
       ),
       (context) => this.user.getDefaultProfile().renderSystemPrompt(context),
       (context) => this.user.getBuiltinDefault().renderSystemPrompt(context),
+      {
+        registry: this.executors,
+        allowExternal: false,
+        reason: 'Plugin profiles cannot select external executors until a plugin trust gate is available',
+      },
     );
   }
 }

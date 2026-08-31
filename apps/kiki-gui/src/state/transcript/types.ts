@@ -225,6 +225,22 @@ export interface TurnTailInfo {
 }
 
 /**
+ * External-executor provenance of one turn, projected from the supplemental
+ * `executor.turn.metadata` wire record onto `TranscriptTurn.execution`
+ * (design: analyses/systems/2026-08-28-kiki-external-harness-engine-design.md
+ * §8). GUI-local structural type — the transcript contract lands in
+ * `packages/transcript` separately; fields are validated at projection time.
+ */
+export interface TurnExecutionInfo {
+  readonly executorId: string;
+  readonly protocol: string;
+  readonly resumeMode: string | undefined;
+  readonly fidelity: 'full' | 'degraded';
+  /** Stable loss codes (e.g. `tool_output_summary_only`); open set. */
+  readonly losses: readonly string[];
+}
+
+/**
  * A provider retry in flight on the live turn's running step. Present only
  * while the engine is backing off between attempts; cleared by the step's
  * next upsert (progress or terminal), so the status line can name the wait
@@ -264,6 +280,8 @@ export interface SessionViewState {
   readonly maxContextTokens: number | undefined;
   readonly contextBreakdown: ContextBreakdown | undefined;
   readonly usage: UsageStatus | undefined;
+  /** turnId → external-executor provenance for turns that ran off-kiki. */
+  readonly turnExecutions: Readonly<Record<string, TurnExecutionInfo>>;
   readonly todos: readonly TodoItem[];
   readonly tasks: readonly Task[];
   /**
@@ -311,6 +329,7 @@ export function createViewState(sessionId: string): SessionViewState {
     maxContextTokens: undefined,
     contextBreakdown: undefined,
     usage: undefined,
+    turnExecutions: {},
     todos: [],
     tasks: [],
     snapshotSubagents: [],

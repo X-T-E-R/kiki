@@ -27,6 +27,98 @@ import { Markdown } from './Markdown';
 
 type ApprovalIntent = 'allow-once' | 'allow-always' | 'reject-once';
 
+/* ── External permission display (ACP harness, design §9) ──────────────── */
+
+/**
+ * GUI-local mirror of the `external_permission` display shape. The option set
+ * is OPEN: agents may emit kinds beyond the four common ones, and every option
+ * the agent offered must be rendered — the exact option id is what round-trips
+ * back in `selected_option_id`.
+ */
+export interface ExternalPermissionOption {
+  readonly id: string;
+  readonly label: string;
+  readonly kind: string;
+  readonly changes?: readonly unknown[];
+}
+
+export interface ExternalPermissionDisplay {
+  readonly kind: 'external_permission';
+  readonly summary: string;
+  readonly detail?: unknown;
+  readonly options: readonly ExternalPermissionOption[];
+}
+
+export type ExternalPermissionParse =
+  | { readonly ok: true; readonly display: ExternalPermissionDisplay }
+  | { readonly ok: false };
+
+/**
+ * Undefined when the payload is some other display kind; `{ok:false}` when it
+ * claims `external_permission` but fails validation — the card must then fail
+ * closed (cancel only), never default-approve.
+ */
+export function externalPermissionFromDisplay(display: unknown): ExternalPermissionParse | undefined {
+  if (typeof display !== 'object' || display === null) return undefined;
+  const record = display as Record<string, unknown>;
+  if (record['kind'] !== 'external_permission') return undefined;
+  const summary = record['summary'];
+  const rawOptions = record['options'];
+  if (typeof summary !== 'string' || summary === '' || !Array.isArray(rawOptions)) {
+    return { ok: false };
+  }
+  const options: ExternalPermissionOption[] = [];
+  for (const raw of rawOptions) {
+    if (typeof raw !== 'object' || raw === null) return { ok: false };
+    const option = raw as Record<string, unknown>;
+    const id = option['id'];
+    const label = option['label'];
+    const kind = option['kind'];
+    if (typeof id !== 'string' || id === '') return { ok: false };
+    if (typeof label !== 'string' || label === '') return { ok: false };
+    if (typeof kind !== 'string' || kind === '') return { ok: false };
+    const changes = option['changes'];
+    if (changes !== undefined && !Array.isArray(changes)) return { ok: false };
+    options.push({ id, label, kind, changes: changes as readonly unknown[] | undefined });
+  }
+  if (options.length === 0) return { ok: false };
+  return {
+    ok: true,
+    display: { kind: 'external_permission', summary, detail: record['detail'], options },
+  };
+}
+
+/** Reject-ish option kinds map to a rejected decision; everything else the
+ * agent offered is an explicit user pick recorded as approved — the adapter
+ * re-validates the exact id against the original request either way. */
+function decisionForExternalKind(kind: string): ApprovalDecision {
+  return kind.toLowerCase().includes('reject') ? 'rejected' : 'approved';
+}
+
+function externalKindLabel(kind: string, t: Translate): string {
+  switch (kind) {
+    case 'allow_once':
+      return t('ia.external.kind.allowOnce');
+    case 'allow_always':
+      return t('ia.external.kind.allowAlways');
+    case 'reject_once':
+      return t('ia.external.kind.rejectOnce');
+    case 'reject_always':
+      return t('ia.external.kind.rejectAlways');
+    default:
+      return kind;
+  }
+}
+
+function boundedJson(value: unknown, limit = 400): string {
+  try {
+    const json = JSON.stringify(value, null, 2) ?? '';
+    return json.length > limit ? `${json.slice(0, limit)}…` : json;
+  } catch {
+    return String(value);
+  }
+}
+
 function intentFor(decision: ApprovalDecision, scope: 'session' | undefined): ApprovalIntent {
   if (decision === 'approved') return scope === 'session' ? 'allow-always' : 'allow-once';
   return 'reject-once';
@@ -103,7 +195,7 @@ export function ApprovalCard({
   showShortcutHints = false,
 }: {
   block: ApprovalBlock;
-  onResolve: (decision: ApprovalDecision, scope?: 'session') => Promise<void>;
+  onResolve: (decision: ApprovalDecision, scope?: 'session', selectedOptionId?: string) => Promise<void>;
   /** Display name of the subagent that issued the request, when not main. */
   originAgentName?: string;
   /** y/n hints show on every pending card (focused or topmost visible wins). */
@@ -112,6 +204,7 @@ export function ApprovalCard({
   const { t, time } = useI18n();
   const [forSession, setForSession] = useState(false);
   const [submitting, setSubmitting] = useState<ApprovalIntent | null>(null);
+  const [submittingOptionId, setSubmittingOptionId] = useState<string | null>(null);
   const [answered, setAnswered] = useState<ApprovalDecision | null>(null);
   const [failed, setFailed] = useState(false);
   const respondingRef = useRef(false);
@@ -123,6 +216,7 @@ export function ApprovalCard({
     epochRef.current += 1;
     respondingRef.current = false;
     setSubmitting(null);
+    setSubmittingOptionId(null);
     setAnswered(null);
     setFailed(false);
   }, [approvalId]);
@@ -164,9 +258,10 @@ export function ApprovalCard({
     );
   }
 
-  const detail = approvalDetail(block, t);
+  const external = externalPermissionFromDisplay(block.request.tool_input_display);
+  const detail = external === undefined ? approvalDetail(block, t) : undefined;
 
-  const submit = (decision: ApprovalDecision) => {
+  const submit = (decision: ApprovalDecision, selectedOptionId?: string) => {
     // In-flight guard: drop double-clicks and clicks during submission.
     if (respondingRef.current || answered !== null) return;
     const scope = forSession ? ('session' as const) : undefined;
@@ -174,8 +269,9 @@ export function ApprovalCard({
     const epoch = epochRef.current;
     respondingRef.current = true;
     setSubmitting(intent);
+    setSubmittingOptionId(selectedOptionId ?? (decision === 'cancelled' ? '__cancel' : null));
     setFailed(false);
-    void onResolve(decision, scope)
+    void onResolve(decision, scope, selectedOptionId)
       .then(() => {
         if (epochRef.current !== epoch) return; // stale response — newer request owns the card
         setAnswered(decision);
@@ -188,6 +284,7 @@ export function ApprovalCard({
         if (epochRef.current !== epoch) return;
         respondingRef.current = false;
         setSubmitting(null);
+        setSubmittingOptionId(null);
       });
   };
 
@@ -200,7 +297,14 @@ export function ApprovalCard({
         <div className="w-1 shrink-0 bg-amber-rule" />
         <div className="min-w-0 flex-1 px-4 py-3">
           <div className="flex items-baseline gap-2">
-            <span className="text-[13px] font-semibold text-amber-ink">{t('ia.approvalNeeded')}</span>
+            <span className="text-[13px] font-semibold text-amber-ink">
+              {external === undefined ? t('ia.approvalNeeded') : t('ia.external.title')}
+            </span>
+            {external !== undefined ? (
+              <span className="rounded-full border border-amber-rule/40 bg-panel px-1.5 py-px text-[10px] font-medium text-amber-ink/80">
+                {t('ia.external.badge')}
+              </span>
+            ) : null}
             {originAgentName !== undefined ? (
               <span className="rounded-full border border-amber-rule/40 bg-panel px-1.5 py-px text-[10px] font-medium text-amber-ink/80">
                 {t('ia.fromSubagent', { name: originAgentName })}
@@ -225,7 +329,21 @@ export function ApprovalCard({
             </div>
           ) : null}
 
+          {external?.ok === true ? (
+            <div className="mt-2">
+              <p className="text-[13px] text-ink">{external.display.summary}</p>
+              {external.display.detail !== undefined ? (
+                <pre className="mt-1.5 max-h-40 overflow-auto rounded-lg border border-amber-rule/30 bg-panel px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap text-ink">
+                  {typeof external.display.detail === 'string'
+                    ? external.display.detail
+                    : boundedJson(external.display.detail)}
+                </pre>
+              ) : null}
+            </div>
+          ) : null}
+
           {answered === null ? (
+            external === undefined ? (
             <>
               <label className="mt-2.5 flex cursor-pointer items-center gap-1.5 text-[11.5px] text-amber-ink/80">
                 <input
@@ -270,20 +388,163 @@ export function ApprovalCard({
                 </p>
               ) : null}
             </>
+            ) : external.ok ? (
+              <>
+                <div
+                  className="mt-3 space-y-1.5"
+                  role="radiogroup"
+                  aria-busy={submittingOptionId !== null}
+                >
+                  {external.display.options.map((option) => (
+                    <ExternalOptionButton
+                      key={option.id}
+                      option={option}
+                      busy={submittingOptionId !== null}
+                      submitting={submittingOptionId === option.id}
+                      onPick={() => { submit(decisionForExternalKind(option.kind), option.id); }}
+                    />
+                  ))}
+                </div>
+                <div className="mt-2.5">
+                  <button
+                    type="button"
+                    disabled={submittingOptionId !== null}
+                    onClick={() => { submit('cancelled'); }}
+                    className="rounded-lg border border-hairline-strong bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:border-danger hover:text-danger disabled:opacity-60"
+                  >
+                    {submittingOptionId === '__cancel' ? t('ia.external.cancelling') : t('ia.external.cancel')}
+                  </button>
+                </div>
+                {failed ? (
+                  <p role="alert" className="mt-2 text-[11.5px] text-danger">
+                    {t('ia.sendFailed')}
+                  </p>
+                ) : null}
+              </>
+            ) : (
+              /* Fail closed: the payload claims external_permission but does not
+                 validate — no option may be picked, cancel stays available. */
+              <>
+                <p role="alert" className="mt-2 text-[12px] text-danger">
+                  {t('ia.external.unknownShape')}
+                </p>
+                <div className="mt-2.5">
+                  <button
+                    type="button"
+                    disabled={submittingOptionId !== null}
+                    onClick={() => { submit('cancelled'); }}
+                    className="rounded-lg border border-hairline-strong bg-panel px-3.5 py-1.5 text-[12.5px] font-medium text-ink transition-colors hover:border-danger hover:text-danger disabled:opacity-60"
+                  >
+                    {submittingOptionId === '__cancel' ? t('ia.external.cancelling') : t('ia.external.cancel')}
+                  </button>
+                </div>
+                {failed ? (
+                  <p role="alert" className="mt-2 text-[11.5px] text-danger">
+                    {t('ia.sendFailed')}
+                  </p>
+                ) : null}
+              </>
+            )
           ) : (
             <p
               role="status"
               className={`mt-3 flex items-center gap-1.5 text-[12px] font-medium ${
-                answered === 'approved' ? 'text-success' : 'text-danger'
+                answered === 'approved'
+                  ? 'text-success'
+                  : answered === 'cancelled'
+                    ? 'text-ink-faint'
+                    : 'text-danger'
               }`}
             >
               <span aria-hidden>{answered === 'approved' ? '✓' : '×'}</span>
-              {answered === 'approved' ? t('ia.resolution.approved') : t('ia.resolution.rejected')}
+              {answered === 'approved'
+                ? t('ia.resolution.approved')
+                : answered === 'cancelled'
+                  ? t('ia.resolution.cancelled')
+                  : t('ia.resolution.rejected')}
               {t('ia.sentToKikiSuffix')}
             </p>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * One external permission option: semantic kind marker + agent-supplied label
+ * + kind chip, with an expandable "what this grants" block for
+ * `_meta.permission.changes[]`. Single click submits the exact option id.
+ */
+function ExternalOptionButton({
+  option,
+  busy,
+  submitting,
+  onPick,
+}: {
+  option: ExternalPermissionOption;
+  busy: boolean;
+  submitting: boolean;
+  onPick: () => void;
+}) {
+  const { t, tp } = useI18n();
+  const [expanded, setExpanded] = useState(false);
+  const lowered = option.kind.toLowerCase();
+  const tone = lowered.startsWith('allow')
+    ? { icon: '✓', marker: 'border-success/50 text-success', chip: 'border-success/40 text-success' }
+    : lowered.startsWith('reject')
+      ? { icon: '×', marker: 'border-danger/50 text-danger', chip: 'border-danger/40 text-danger' }
+      : { icon: '•', marker: 'border-hairline-strong text-ink-faint', chip: 'border-hairline text-ink-faint' };
+  const changes = option.changes ?? [];
+  return (
+    <div
+      className={`rounded-lg border bg-panel transition-colors ${
+        submitting ? 'border-accent' : 'border-hairline hover:border-hairline-strong'
+      }`}
+    >
+      <button
+        type="button"
+        role="radio"
+        aria-checked={submitting}
+        disabled={busy}
+        onClick={onPick}
+        className="flex w-full items-start gap-2 px-2.5 py-1.5 text-left disabled:opacity-60"
+      >
+        <span
+          aria-hidden
+          className={`mt-[3px] flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border text-[9px] ${tone.marker}`}
+        >
+          {tone.icon}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[12.5px] font-medium text-ink">
+            {submitting ? t('ia.sending') : option.label}
+          </span>
+        </span>
+        <span
+          className={`shrink-0 rounded-full border px-1.5 py-px text-[10px] font-medium ${tone.chip}`}
+        >
+          {externalKindLabel(option.kind, t)}
+        </span>
+      </button>
+      {changes.length > 0 ? (
+        <div className="px-2.5 pb-1.5 pl-[26px]">
+          <button
+            type="button"
+            aria-expanded={expanded}
+            onClick={() => { setExpanded((prev) => !prev); }}
+            className="inline-flex items-center gap-1 text-[11px] font-medium text-ink-faint transition-colors hover:text-accent"
+          >
+            {tp('ia.external.changes', changes.length)}
+            <span aria-hidden className="text-[9px]">{expanded ? '▴' : '▾'}</span>
+          </button>
+          {expanded ? (
+            <pre className="mt-1 max-h-40 overflow-auto rounded-lg border border-amber-rule/30 bg-amber-card/50 px-2.5 py-1.5 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-ink-soft">
+              {changes.map((change) => boundedJson(change, 300)).join('\n')}
+            </pre>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -14,6 +14,8 @@
  * settles the parked request via `session.interactions.respond(id, ...)`.
  */
 
+import { randomUUID } from 'node:crypto';
+
 import type {
   Interaction,
   QuestionAnswers,
@@ -44,6 +46,8 @@ export class AcpInteractionBridge {
   /** Ids the bridge has already begun handling — guards against re-entry. */
   private readonly inFlight = new Set<string>();
   private readonly subscription: IDisposable;
+  private readonly consumerId = `acp-server:${randomUUID()}`;
+  private readonly consumerReady: Promise<void>;
   private disposed = false;
 
   constructor(
@@ -58,11 +62,11 @@ export class AcpInteractionBridge {
      */
     private readonly elicitationForm = false,
   ) {
+    this.consumerReady = session.interactions.acquireConsumer(this.consumerId);
     this.subscription = session.events.on('interactions.changed', (pending) => {
       this.onPendingChanged(pending);
-    }); // The event stream only fires on change — sweep anything parked before the
-    // subscription attached (matches the old direct `listPending()` sweep).
-    void this.session.interactions.list().then(
+    });
+    void this.consumerReady.then(() => this.session.interactions.list()).then(
       (pending) => {
         this.onPendingChanged(pending);
       },
@@ -75,11 +79,15 @@ export class AcpInteractionBridge {
     );
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
     this.subscription.dispose();
     this.inFlight.clear();
+    await this.consumerReady.then(
+      () => this.session.interactions.releaseConsumer(this.consumerId),
+      () => undefined,
+    );
   }
 
   private onPendingChanged(pending: readonly Interaction[]): void {

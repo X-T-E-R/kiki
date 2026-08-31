@@ -6,6 +6,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { type IAgentScopeHandle, type ISessionScopeHandle } from '#/_base/di/scope';
 import { TestInstantiationService } from '#/_base/di/test';
 import { Event } from '#/_base/event';
+import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import '#/agent/profile/profileService';
 import { ProfileBind } from '#/agent/profile/profileOps';
@@ -25,6 +26,7 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
+import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
@@ -190,6 +192,8 @@ describe('AgentLifecycleService', () => {
   let loopCancel: ReturnType<typeof vi.fn<IAgentLoopService['cancel']>>;
   let loopSettled: ReturnType<typeof vi.fn<IAgentLoopService['settled']>>;
   let promptDrain: ReturnType<typeof vi.fn<IAgentPromptService['drain']>>;
+  let executionCancel: ReturnType<typeof vi.fn<IAgentExecutionService['cancel']>>;
+  let executionShutdown: ReturnType<typeof vi.fn<IAgentExecutionService['shutdown']>>;
   let beforeExecuteListeners: number;
   let didExecuteHookIds: string[];
 
@@ -354,6 +358,33 @@ describe('AgentLifecycleService', () => {
       _serviceBrand: undefined,
       drain: promptDrain,
     } as unknown as IAgentPromptService);
+    executionCancel = vi.fn<IAgentExecutionService['cancel']>((reason) => {
+      let cancelled = false;
+      for (const turnId of [...loopPendingTurnIds]) {
+        cancelled = loopCancel(turnId, reason) || cancelled;
+      }
+      return loopCancel(undefined, reason) || cancelled;
+    });
+    executionShutdown = vi.fn<IAgentExecutionService['shutdown']>(async (reason) => {
+      await Promise.all([
+        loopSettled(),
+        promptDrain(reason instanceof Error ? reason : new Error(String(reason))),
+      ]);
+    });
+    ix.stub(IAgentExecutionService, {
+      _serviceBrand: undefined,
+      run: async () => { throw new Error('unexpected run'); },
+      status: () => ({
+        state: loopActiveTurnId === undefined && loopPendingTurnIds.length === 0
+          ? 'idle'
+          : 'running',
+        turnId: loopActiveTurnId,
+      }),
+      cancel: executionCancel,
+      settled: loopSettled,
+      shutdown: executionShutdown,
+      hooks: { onWillRun: { register: () => ({ dispose: () => {} }) } },
+    } as unknown as IAgentExecutionService);
     ix.stub(IAgentUsageService, {
       _serviceBrand: undefined,
       onDidRecord: Event.None,
@@ -374,6 +405,15 @@ describe('AgentLifecycleService', () => {
     ix.stub(IHostEnvironment, { _serviceBrand: undefined } as IHostEnvironment);
     ix.stub(IHostFileSystem, { _serviceBrand: undefined } as IHostFileSystem);
     ix.stub(IHostClock, { _serviceBrand: undefined } as IHostClock);
+    ix.stub(IAgentExecutorRegistry, {
+      _serviceBrand: undefined,
+      get: () => ({ id: 'native', protocol: 'native', args: [], revision: 'native' }),
+      resolve: () => ({
+        descriptor: { id: 'native', protocol: 'native', args: [], revision: 'native' },
+        options: {},
+      }),
+      provider: () => undefined,
+    });
     ix.stub(IModelCatalog, { _serviceBrand: undefined } as IModelCatalog);
     ix.stub(IModelService, {
       _serviceBrand: undefined,
@@ -670,12 +710,15 @@ describe('AgentLifecycleService', () => {
       homedir: '/tmp/kimi-agentLifecycle-home/sessions/ws_test/sess_test/agents/child',
       type: 'sub',
       parentAgentId: 'main',
+      delegator: undefined,
       forkedFrom: 'main',
       labels: { swarmItem: 'swarm-item-1' },
       displayName: 'explore',
       userLabel: 'Review usage accounting',
       model: 'provider/child-model',
       thinkingEffort: 'high',
+      executor: 'native',
+      executorProtocol: 'native',
     });
   });
 

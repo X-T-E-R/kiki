@@ -20,7 +20,10 @@ import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { createHooks } from '#/hooks';
 import { IAgentContextMemoryService, type IAgentContextMemoryService as AgentContextMemory } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
-import { IAgentLoopService, type IAgentLoopService as AgentLoop } from '#/agent/loop/loop';
+import {
+  IAgentExecutionService,
+  type IAgentExecutionService as AgentExecution,
+} from '#/agent/execution/execution';
 import { IAgentLifecycleService, type IAgentLifecycleService as AgentLifecycle } from '#/session/agentLifecycle/agentLifecycle';
 import { AgentCollaborationMessagingService } from '#/session/agentCollaboration/messagingService';
 import { AgentMessageMailboxFullError } from '#/session/agentCollaboration/messageMailbox';
@@ -165,7 +168,7 @@ describe('thread mailbox agent collaboration adapter', () => {
 });
 
 describe('agent collaboration safe-boundary delivery', () => {
-  it('does not wake an idle target and delivers FIFO only at its next step boundary', async () => {
+  it('does not wake an idle target and delivers FIFO before its next run', async () => {
     const store = mailboxStore(tempDir());
     const lifecycle = lifecycleHarness([]);
     const service = new AgentCollaborationMessagingService(store, lifecycle.service, sessionContext());
@@ -178,7 +181,7 @@ describe('agent collaboration safe-boundary delivery', () => {
 
     lifecycle.add(target.handle);
     expect(target.messages).toEqual([]);
-    await target.loop.hooks.onWillBeginStep.run({ turnId: 7, step: 1, firstStepOfTurn: true, signal });
+    await target.execution.hooks.onWillRun.run({ signal });
 
     expect(target.messages.map((message) => message.content[0])).toEqual([
       { type: 'text', text: 'Message from agent "root" (main):\n\nfirst' },
@@ -193,7 +196,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     service.dispose();
   });
 
-  it('confirms a pending adapter ack before claiming again at the next safe step', async () => {
+  it('confirms a pending adapter ack before claiming again on the next run', async () => {
     const targetRef = {
       hostId: 'agent-collaboration-v2',
       workspaceId: 'session-1',
@@ -251,21 +254,13 @@ describe('agent collaboration safe-boundary delivery', () => {
     const lifecycle = lifecycleHarness([target.handle]);
     const service = new AgentCollaborationMessagingService(adapter, lifecycle.service, sessionContext());
 
-    await expect(target.loop.hooks.onWillBeginStep.run({
-      turnId: 1,
-      step: 1,
-      firstStepOfTurn: true,
-      signal,
-    })).rejects.toMatchObject({ code: 'runtime.connection_failed' });
+    await expect(target.execution.hooks.onWillRun.run({ signal })).rejects.toMatchObject({
+      code: 'runtime.connection_failed',
+    });
     expect(target.messages).toHaveLength(1);
     expect(target.operations).toEqual(['append', 'flush']);
 
-    await target.loop.hooks.onWillBeginStep.run({
-      turnId: 1,
-      step: 2,
-      firstStepOfTurn: false,
-      signal,
-    });
+    await target.execution.hooks.onWillRun.run({ signal });
     expect(target.messages).toHaveLength(1);
     expect(target.operations).toEqual(['append', 'flush']);
     expect(order).toEqual(['claim', 'ack-committed', 'ack-confirmed', 'claim']);
@@ -386,10 +381,15 @@ function agentHandle(agentId: string) {
     undo: () => { throw new Error('unexpected undo'); },
     applyCompaction: () => { throw new Error('unexpected compaction'); },
   };
-  const loop = {
+  const execution = {
     _serviceBrand: undefined,
-    hooks: createHooks(['onWillBeginStep', 'onDidFinishStep']),
-  } as unknown as AgentLoop;
+    run: async () => { throw new Error('unexpected run'); },
+    status: () => ({ state: 'idle' as const }),
+    cancel: () => false,
+    settled: () => Promise.resolve(),
+    shutdown: () => Promise.resolve(),
+    hooks: createHooks(['onWillRun']),
+  } as AgentExecution;
   const wire = {
     _serviceBrand: undefined,
     flush: async () => { operations.push('flush'); },
@@ -400,7 +400,7 @@ function agentHandle(agentId: string) {
     accessor: {
       get<T>(id: unknown): T {
         if (id === IAgentContextMemoryService) return memory as T;
-        if (id === IAgentLoopService) return loop as T;
+        if (id === IAgentExecutionService) return execution as T;
         if (id === IWireService) return wire as T;
         if (id === IAgentLifecycleService) return undefined as T;
         throw new Error('unexpected agent service');
@@ -408,5 +408,5 @@ function agentHandle(agentId: string) {
     },
     dispose: () => {},
   };
-  return { handle, loop, messages, operations };
+  return { handle, execution, messages, operations };
 }

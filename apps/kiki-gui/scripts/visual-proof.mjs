@@ -71,6 +71,7 @@ const STRINGS = {
     approvalNeeded: 'Approval needed',
     approve: 'Approve',
     approved: 'Approved',
+    externalChanges: 'granted change',
     kikiAsks: 'kiki asks',
     submit: 'Submit',
     settings: 'Settings',
@@ -210,6 +211,7 @@ const STRINGS = {
     approvalNeeded: '需要批准',
     approve: '批准',
     approved: '已批准',
+    externalChanges: '授予',
     kikiAsks: 'kiki 提问',
     submit: '提交',
     settings: '设置',
@@ -874,6 +876,25 @@ async function scenarioApprovalsGallery() {
   await approve.click();
   await page.waitForTimeout(600);
   await shot('approvals-gallery-resolved');
+}
+
+async function scenarioExternalHarness() {
+  await selectSession('Fixture: external harness');
+  // Agent-supplied strings, not localized chrome: the option list and the
+  // turn-header badge anchor on fixture content.
+  await waitForText('Grok wants to run', 10_000);
+  // Turn-header execution badge rides turn.execution (transcriptTurnExecutionSchema).
+  await page.waitForSelector('[data-turn-execution]', { timeout: 10_000 });
+  await page.waitForTimeout(400);
+  await shot('external-harness');
+  // Expand "what this grants" on the allow-always option, then pick it — the
+  // resolve body carries selected_option_id=opt-allow-always.
+  await page.locator(`button:has-text("${S.externalChanges}")`).click();
+  await page.waitForTimeout(300);
+  await shot('external-harness-changes');
+  await page.locator('[role="radio"]:has-text("Always allow pnpm test")').click();
+  await page.waitForTimeout(600);
+  await shot('external-harness-resolved');
 }
 
 async function scenarioReconnect() {
@@ -3002,6 +3023,7 @@ const SCENARIOS = [
   ['turn-polish', scenarioTurnPolish],
   ['error-abort', scenarioErrorAbort],
   ['approvals-gallery', scenarioApprovalsGallery],
+  ['external-harness', scenarioExternalHarness],
   ['reconnect', scenarioReconnect],
   ['reconnect-mid-turn', scenarioReconnectMidTurn],
   ['resync-hold', scenarioResyncHold],

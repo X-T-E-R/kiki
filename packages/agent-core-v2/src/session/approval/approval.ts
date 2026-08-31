@@ -1,6 +1,11 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { ToolInputDisplay } from '#/tool/toolInputDisplay';
 
+export type {
+  ExternalPermissionDisplay,
+  ExternalPermissionOption,
+} from '#/tool/toolInputDisplay';
+
 export interface ApprovalRequest {
   readonly id?: string;
   readonly sessionId?: string;
@@ -19,6 +24,7 @@ export interface ApprovalResponse {
   readonly scope?: 'session';
   readonly feedback?: string;
   readonly selectedLabel?: string;
+  readonly selectedOptionId?: string;
 }
 
 export interface ISessionApprovalService {

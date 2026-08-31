@@ -190,6 +190,15 @@ export class AcpServer {
     return this.sessions.get(sessionId);
   }
 
+  async dispose(): Promise<void> {
+    const sessions = [...this.sessions.entries()];
+    this.sessions.clear();
+    await Promise.all(sessions.map(async ([sessionId, session]) => {
+      await session.dispose();
+      await this.unbindSessionRuntime?.(sessionId);
+    }));
+  }
+
   async initialize(params: InitializeRequest): Promise<InitializeResponse> {
     this.clientCapabilities = params.clientCapabilities;
     this.acpConnection.bindFsCapabilities(params.clientCapabilities?.fs);
@@ -333,8 +342,8 @@ export class AcpServer {
   async closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse | void> {
     const acpSession = this.sessions.get(params.sessionId);
     if (acpSession !== undefined) {
-      acpSession.dispose();
       this.sessions.delete(params.sessionId);
+      await acpSession.dispose();
     }
     await this.klient.session(params.sessionId).close();
     await this.unbindSessionRuntime?.(params.sessionId);
@@ -362,8 +371,8 @@ export class AcpServer {
     }
     const acpSession = this.sessions.get(params.sessionId);
     if (acpSession !== undefined) {
-      acpSession.dispose();
       this.sessions.delete(params.sessionId);
+      await acpSession.dispose();
     }
     await this.unbindSessionRuntime?.(params.sessionId);
     return {};
@@ -541,7 +550,7 @@ export class AcpServer {
       throw RequestError.invalidParams({ sessionId }, `Unknown sessionId: ${sessionId}`);
     }
     const acpSession = await this.wireSession(sessionId);
-    this.sessions.get(sessionId)?.dispose();
+    await this.sessions.get(sessionId)?.dispose();
     this.sessions.set(sessionId, acpSession);
     return acpSession;
   }

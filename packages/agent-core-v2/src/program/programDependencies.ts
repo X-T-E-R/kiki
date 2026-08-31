@@ -4,6 +4,7 @@ import type { ILogService } from '#/_base/log/log';
 import type { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import type { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
 import type { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
+import type { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import type { IConfigService } from '#/app/config/config';
 import type { IFlagService } from '#/app/flag/flag';
@@ -57,6 +58,7 @@ export interface ProgramDependencies {
   readonly plugins: IPluginService;
   readonly sessionManager: LiveRef<ISessionManager>;
   readonly agentProfiles: IAgentProfileRegistry;
+  readonly agentExecutors: IAgentExecutorRegistry;
   readonly builtinAgentProfiles: IBuiltinAgentProfileLoader;
   readonly builtinSkills: IBuiltinSkillSource;
   readonly telemetry: ITelemetryService;

@@ -3,7 +3,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { AgentMessageOrigin, ContextMessage } from '#/agent/contextMemory/types';
-import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IWireService } from '#/wire/wire';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -44,8 +44,8 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
 
   private attach(handle: IAgentScopeHandle): void {
     if (this.subscriptions.has(handle.id)) return;
-    const loop = handle.accessor.get(IAgentLoopService);
-    this.subscriptions.set(handle.id, loop.hooks.onWillBeginStep.register(
+    const execution = handle.accessor.get(IAgentExecutionService);
+    this.subscriptions.set(handle.id, execution.hooks.onWillRun.register(
       DELIVERY_HOOK_ID,
       async (_context, next) => {
         await this.deliver(handle);

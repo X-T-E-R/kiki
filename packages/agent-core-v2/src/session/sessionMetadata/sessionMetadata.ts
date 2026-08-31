@@ -15,6 +15,8 @@ export interface AgentMeta {
   readonly userLabel?: string;
   readonly model?: string;
   readonly thinkingEffort?: string;
+  readonly executor?: string;
+  readonly executorProtocol?: string;
 }
 
 export type DelegatorRef =

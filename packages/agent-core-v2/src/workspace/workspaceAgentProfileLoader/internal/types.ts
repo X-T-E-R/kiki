@@ -39,6 +39,8 @@ export interface AgentFileDefinition {
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
   readonly spawnConstraints?: SpawnConstraints;
+  readonly executor?: string;
+  readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
   readonly allowedModels?: readonly string[];

@@ -378,6 +378,9 @@ export interface NamedAgentProfile {
   readonly main: boolean;
   /** File profile explicitly overriding the same-named built-in profile. */
   readonly override?: boolean;
+  readonly executor?: string;
+  readonly executor_protocol?: string;
+  readonly executor_options?: Readonly<Record<string, string | number | boolean>>;
   readonly pinned_model_alias?: string;
   readonly thinking_effort?: string;
   readonly service_tier?: 'auto' | 'default' | 'flex' | 'priority';
@@ -521,6 +524,12 @@ export interface AgentTranscriptTurn {
   readonly startedAt?: string;
   readonly endedAt?: string;
   readonly durationMs?: number;
+  /**
+   * External-executor turn metadata (`executor.turn.metadata` →
+   * `TranscriptTurn.execution`); opaque passthrough, validated in the
+   * projection (`turnExecutionFromItem`).
+   */
+  readonly execution?: unknown;
   readonly steps: readonly {
     stepId: string;
     startedAt?: string;
@@ -1018,10 +1027,17 @@ export class KikiClient {
     ).then((data) => data.items);
   }
 
+  /**
+   * `selected_option_id` is the external-permission round-trip (design §9):
+   * the exact ACP option id the user picked. Additive on the REST schema —
+   * until kap-server ships it the field rides the body harmlessly (the zod
+   * object strips unknown keys), and once it lands the same body shape is
+   * authoritative.
+   */
   resolveApproval(
     sessionId: string,
     approvalId: string,
-    body: ApprovalResolveRequest,
+    body: ApprovalResolveRequest & { readonly selected_option_id?: string },
   ): Promise<ApprovalResolveResult> {
     return this.request<ApprovalResolveResult>(
       'POST',

@@ -59,8 +59,9 @@ describe('Event public types', () => {
     expectTypeOf<QuestionRequest['questions'][number]['question']>().toEqualTypeOf<string>();
   });
 
-  it('exposes optional session scope on approval responses', () => {
+  it('exposes optional approval response metadata', () => {
     expectTypeOf<ApprovalResponse['scope']>().toEqualTypeOf<'session' | undefined>();
+    expectTypeOf<ApprovalResponse['selectedOptionId']>().toEqualTypeOf<string | undefined>();
   });
 
   it('covers every event in exhaustive switches', () => {
@@ -116,6 +117,7 @@ describe('Event public types', () => {
         case 'background.task.terminated':
         case 'cron.fired':
         case 'prompt.submitted':
+        case 'prompt.started':
         case 'prompt.completed':
         case 'prompt.aborted':
         case 'prompt.steered':

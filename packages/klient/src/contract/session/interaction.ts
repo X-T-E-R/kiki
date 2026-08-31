@@ -34,5 +34,8 @@ export const sessionInteractionContract = {
     output: z.array(interactionSchema),
   },
   respond: { input: z.tuple([z.string(), z.unknown()]), output: noResult },
+  acquireConsumer: { input: z.tuple([z.string()]), output: noResult },
+  releaseConsumer: { input: z.tuple([z.string()]), output: noResult },
+  hasConsumer: { input: z.tuple([]), output: z.boolean() },
   isRecentlyResolved: { input: z.tuple([z.string()]), output: z.boolean() },
 } satisfies ServiceContract;

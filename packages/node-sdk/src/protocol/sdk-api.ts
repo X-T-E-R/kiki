@@ -13,6 +13,7 @@ export interface ApprovalResponse {
   readonly scope?: ApprovalScope | undefined;
   readonly feedback?: string | undefined;
   readonly selectedLabel?: string | undefined;
+  readonly selectedOptionId?: string | undefined;
 }
 
 export interface ApprovalRequest {

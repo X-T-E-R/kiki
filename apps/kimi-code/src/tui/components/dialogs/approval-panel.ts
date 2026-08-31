@@ -30,6 +30,8 @@ export interface ApprovalPanelResponse {
   readonly response: 'approved' | 'approved_for_session' | 'rejected' | 'cancelled';
   readonly feedback?: string | undefined;
   readonly selected_label?: string | undefined;
+  /** Exact external-permission option id picked by the user (ACP options). */
+  readonly selected_option_id?: string | undefined;
 }
 
 function truncateOneLine(text: string, max: number): string {
@@ -244,6 +246,7 @@ export class ApprovalPanelComponent extends Container implements Focusable {
       response: option.response,
       feedback: feedback || undefined,
       selected_label: option.selected_label,
+      selected_option_id: option.selected_option_id,
     });
   }
 

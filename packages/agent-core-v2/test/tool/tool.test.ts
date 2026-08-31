@@ -24,6 +24,7 @@ import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMo
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { ToolAccesses, type ExecutableTool } from '#/tool/toolContract';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentUserToolService, type UserToolRegistration } from '#/agent/userTool/userTool';
 import {
@@ -249,6 +250,17 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
             republishStatus: () => {},
             getEffectiveThinkingLevel: () => 'off',
             isToolActive: () => false,
+          } as never;
+        }
+        if (serviceId === IAgentExecutionService) {
+          return {
+            _serviceBrand: undefined,
+            run: lifecycle.run,
+            status: () => ({ state: 'idle' }),
+            cancel: () => false,
+            settled: () => Promise.resolve(),
+            shutdown: () => Promise.resolve(),
+            hooks: createHooks(['onWillRun']),
           } as never;
         }
         if (serviceId === IAgentLoopService) {
@@ -1552,10 +1564,10 @@ describe('AgentRun tool execution contract', () => {
       'explore',
       new Map([
         [
-          IAgentLoopService,
+          IAgentExecutionService,
           {
             _serviceBrand: undefined,
-            status: () => ({ state: 'running', activeTurnId: 1, pendingTurnIds: [], hasPendingRequests: true }),
+            status: () => ({ state: 'running', turnId: 1 }),
           },
         ],
       ]),

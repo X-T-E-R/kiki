@@ -19,7 +19,6 @@ disallowedTools:
 subagents:
   - explore
   - plan
-unknownField: tolerated
 ---
 
 你是严格的代码审查者。
@@ -61,6 +60,42 @@ describe('parseAgentFileText', () => {
     expect(def.prompt).toBe('body');
     expect(def.main).toBeUndefined();
     expect(def.delegationNotice).toBeUndefined();
+    expect(def.executor).toBeUndefined();
+    expect(def.executorOptions).toBeUndefined();
+  });
+
+  it('parses executor and scalar executor options', () => {
+    const def = parse(`---
+name: solo
+description: d
+executor: grok-acp
+executor_options:
+  mode: default
+  retries: 2
+  enabled: true
+---
+
+body
+`);
+
+    expect(def.executor).toBe('grok-acp');
+    expect(def.executorOptions).toEqual({
+      mode: 'default',
+      retries: 2,
+      enabled: true,
+    });
+  });
+
+  it('rejects executor_options without an executor', () => {
+    expect(() =>
+      parse('---\nname: solo\ndescription: d\nexecutor_options:\n  mode: default\n---\n\nbody\n'),
+    ).toThrow(/"executor".*required/);
+  });
+
+  it('rejects external executors on main profiles', () => {
+    expect(() =>
+      parse('---\nname: solo\ndescription: d\nmain: true\nexecutor: grok-acp\n---\n\nbody\n'),
+    ).toThrow(/unsupported for main/);
   });
 
   it('parses main: true as a curation flag', () => {
@@ -79,16 +114,15 @@ describe('parseAgentFileText', () => {
     ).toThrow(/"delegation_notice"/);
   });
 
-  it('parses exact model, effort, and service tier fields without consuming generic model', () => {
+  it('parses exact model, effort, and service tier fields', () => {
     const def = parse(
-      '---\nname: solo\ndescription: d\nmodel: foreign\nmodel_alias: fast-model\nthinking_effort: low\nservice_tier: priority\n---\n\nbody\n',
+      '---\nname: solo\ndescription: d\nmodel_alias: fast-model\nthinking_effort: low\nservice_tier: priority\n---\n\nbody\n',
     );
     expect(def).toMatchObject({
       modelAlias: 'fast-model',
       thinkingEffort: 'low',
       serviceTier: 'priority',
     });
-    expect(def).not.toHaveProperty('model');
   });
 
   it('parses recommended_models as advisory entries without consuming model_alias', () => {
@@ -410,11 +444,10 @@ body
     );
   });
 
-  it('ignores a foreign mode field (e.g. OpenCode "mode: subagent")', () => {
-    const def = parse('---\nname: solo\ndescription: d\nmode: subagent\n---\n\nbody\n');
-
-    expect(def.name).toBe('solo');
-    expect(def.prompt).toBe('body');
+  it('rejects unknown top-level frontmatter keys', () => {
+    expect(() =>
+      parse('---\nname: solo\ndescription: d\nmode: subagent\n---\n\nbody\n'),
+    ).toThrow(/Unknown frontmatter field "mode"/);
   });
 
   it('rejects a non-boolean override field', () => {

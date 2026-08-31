@@ -1015,3 +1015,81 @@ describe('canonical mount and key stability', () => {
   });
 });
 
+describe('external executor badge', () => {
+  const execution = {
+    executorId: 'grok',
+    protocol: 'acp-v1',
+    resumeMode: 'resume' as const,
+    fidelity: 'degraded' as const,
+    losses: ['acp_no_step_boundaries', 'tool_output_summary_only'],
+  };
+
+  async function renderWithExecutions(
+    blocks: Block[],
+    turnExecutions: SessionViewState['turnExecutions'],
+  ): Promise<HTMLDivElement> {
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <Transcript
+        state={{ ...transcriptState(blocks), turnExecutions }}
+        onLoadOlder={() => Promise.resolve(false)}
+        onResolveApproval={() => noopActions()}
+        onAnswerQuestion={() => noopActions()}
+        onDismissQuestion={() => noopActions()}
+      />,
+    );
+    return container;
+  }
+
+  it('marks the first row of an external turn with executor, protocol and loss codes', async () => {
+    const container = await renderWithExecutions(
+      [
+        userBlock({ id: 'user-t1', text: 'run it', turnId: 't1' }),
+        {
+          kind: 'assistant',
+          id: 'assistant-t1-0',
+          text: 'done',
+          streaming: false,
+          createdAt: '2026-01-01T00:00:01.000Z',
+          turnId: 't1',
+        },
+        userBlock({ id: 'user-t2', text: 'native turn', turnId: 't2' }),
+      ],
+      { t1: execution },
+    );
+
+    const badges = [...container.querySelectorAll('[data-turn-execution]')];
+    expect(badges).toHaveLength(1);
+    const badge = badges[0]!;
+    expect(badge.parentElement?.getAttribute('data-block-id')).toBe('user-t1');
+    expect(badge.textContent).toContain('Grok · ACP');
+    expect(badge.textContent).toContain('degraded');
+    // Stable loss codes render verbatim; explanations ride the tooltip.
+    expect(badge.textContent).toContain('acp_no_step_boundaries');
+    expect(badge.textContent).toContain('tool_output_summary_only');
+    const titles = [...badge.querySelectorAll('[title]')].map(
+      (el) => el.getAttribute('title') ?? '',
+    );
+    expect(titles.some((text) => text.includes('step boundaries'))).toBe(true);
+  });
+
+  it('leaves turns without execution metadata unmarked', async () => {
+    const container = await renderWithExecutions(
+      [userBlock({ id: 'user-t1', text: 'run it', turnId: 't1' })],
+      {},
+    );
+    expect(container.querySelector('[data-turn-execution]')).toBeNull();
+  });
+
+  it('omits the degraded marker for full-fidelity external turns', async () => {
+    const container = await renderWithExecutions(
+      [userBlock({ id: 'user-t1', text: 'run it', turnId: 't1' })],
+      { t1: { ...execution, fidelity: 'full', losses: [] } },
+    );
+    const badge = container.querySelector('[data-turn-execution]');
+    expect(badge?.textContent).toContain('Grok · ACP');
+    expect(badge?.textContent).not.toContain('degraded');
+  });
+});
+

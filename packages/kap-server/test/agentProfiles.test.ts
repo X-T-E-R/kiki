@@ -167,6 +167,8 @@ describe('GET /api/v1/agents', () => {
       workspace_ids: [expect.any(String), expect.any(String)],
       source_file: profilePath.replaceAll('\\', '/'),
       main: true,
+      executor: 'native',
+      executor_protocol: 'native',
       pinned_model_alias: 'provider/pinned',
       thinking_effort: 'high',
       service_tier: 'priority',

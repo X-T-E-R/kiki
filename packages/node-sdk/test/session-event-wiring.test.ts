@@ -68,6 +68,8 @@ function makeSession(agents: FakeAgentHandle[]): ISessionScopeHandle {
     onDidDispose: () => ({ dispose: () => {} }),
   };
   const interactions = {
+    acquireConsumer: () => {},
+    releaseConsumer: () => {},
     onDidChangePending: () => ({ dispose: () => {} }),
     listPending: () => [],
   };

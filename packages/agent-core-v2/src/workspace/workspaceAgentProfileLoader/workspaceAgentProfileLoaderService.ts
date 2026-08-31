@@ -16,6 +16,8 @@ import { IHostFsWatchService } from '#/os/interface/hostFsWatch';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
 import { IFlagService } from '#/app/flag/flag';
 import { AGENT_PROFILE_ROUTES_FLAG_ID } from '#/app/agentProfileCatalog/flag';
+import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
+import { IWorkspaceTrust } from '#/workspace/workspaceTrust/workspaceTrust';
 
 import { IWorkspaceAgentProfileLoader } from './workspaceAgentProfileLoader';
 
@@ -40,6 +42,8 @@ export class WorkspaceAgentProfileLoaderService
     @IUserAgentProfileLoader private readonly user: IUserAgentProfileLoader,
     @IHostFsWatchService private readonly fsWatch: IHostFsWatchService,
     @IFlagService private readonly flags: IFlagService,
+    @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
+    @IWorkspaceTrust private readonly trust: IWorkspaceTrust,
     registry?: IAgentProfileRegistry,
   ) {
     super(log, registry);
@@ -52,7 +56,8 @@ export class WorkspaceAgentProfileLoaderService
   }
 
   protected async load(): Promise<AgentProfileContribution> {
-    await this.watchReady;
+    await Promise.all([this.watchReady, this.trust.ready]);
+    const trusted = this.trust.isTrusted();
     const roots = await projectAgentRoots(this.fs, this.workspace.cwd, (message, error) => {
       this.log.warn(message, error);
     });
@@ -62,6 +67,11 @@ export class WorkspaceAgentProfileLoaderService
       }),
       (context) => this.user.getDefaultProfile().renderSystemPrompt(context),
       (context) => this.user.getBuiltinDefault().renderSystemPrompt(context),
+      {
+        registry: this.executors,
+        allowExternal: trusted,
+        reason: 'External executors require a trusted workspace profile source',
+      },
     );
   }
 
