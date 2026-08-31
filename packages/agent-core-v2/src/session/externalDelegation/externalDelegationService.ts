@@ -889,27 +889,18 @@ function utf8Page(
   maxBytes: number,
 ): { readonly text: string; readonly nextCursor?: number } {
   const encoder = new TextEncoder();
-  const totalBytes = encoder.encode(value).byteLength;
-  const cursor = boundedCursor(rawCursor, totalBytes);
-  let offset = 0;
+  const cursor = boundedCursor(rawCursor, value.length);
   let pageBytes = 0;
   let text = '';
-  let started = false;
-  for (const symbol of value) {
+  for (const symbol of value.slice(cursor)) {
     const size = encoder.encode(symbol).byteLength;
-    if (!started && offset + size <= cursor) {
-      offset += size;
-      continue;
-    }
-    if (!started && offset !== cursor) throw invalid('cursor is invalid.');
-    started = true;
     if (pageBytes > 0 && pageBytes + size > maxBytes) break;
     text += symbol;
     pageBytes += size;
-    offset += size;
     if (pageBytes >= maxBytes) break;
   }
-  return { text, nextCursor: offset < totalBytes ? offset : undefined };
+  const end = cursor + text.length;
+  return { text, nextCursor: end < value.length ? end : undefined };
 }
 
 function requireNonblank(value: string | undefined, name: string): string {

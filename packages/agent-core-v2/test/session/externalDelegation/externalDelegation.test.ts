@@ -787,7 +787,7 @@ describe('SessionExternalDelegationService', () => {
     });
 
     expect(Buffer.byteLength(first.text, 'utf8')).toBe(65_536);
-    expect(first.nextCursor).toBe(65_536);
+    expect(first.nextCursor).toBe(32_768);
     expect(Buffer.byteLength(second.text, 'utf8')).toBe(14_464);
     expect(second.nextCursor).toBeUndefined();
   });
