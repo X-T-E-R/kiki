@@ -9,8 +9,9 @@ import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle'
 import { Error2, ErrorCodes } from '#/errors';
 import { ILogService } from '#/_base/log/log';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
-import { IAgentLoopService } from '#/agent/loop/loop';
 
 import { IRestGateway, IWSGateway } from './gateway';
 
@@ -48,23 +49,30 @@ export class RestGateway implements IRestGateway {
     agentId: string,
     input: string,
   ): Promise<{ readonly turn_id: number } | undefined> {
-    const handle = await this.agent(sessionId, agentId).accessor.get(IAgentPromptService).enqueue({
-      message: {
-        role: 'user',
-        content: [{ type: 'text', text: input }],
-        toolCalls: [],
-        origin: { kind: 'user' },
-      },
+    const execution = this.agent(sessionId, agentId).accessor.get(IAgentExecutionService);
+    const run = await execution.run(
+      { kind: 'prompt', prompt: input, origin: { kind: 'user' } },
+      { signal: new AbortController().signal },
+    );
+    void run.completion.catch((error) => {
+      this.log.debug('Gateway prompt execution failed', { sessionId, agentId, error });
     });
-    const turn = await handle.launched;
-    return turn === undefined ? undefined : { turn_id: turn.id };
+    return { turn_id: run.turn.id };
   }
   async steer(
     sessionId: string,
     agentId: string,
     content: string,
   ): Promise<{ readonly turn_id: number } | undefined> {
-    const service = this.agent(sessionId, agentId).accessor.get(IAgentPromptService);
+    const agent = this.agent(sessionId, agentId);
+    const executorId = agent.accessor.get(IAgentProfileService).data().executorId ?? 'native';
+    if (executorId !== 'native') {
+      throw new Error2(
+        ErrorCodes.CONFIG_INVALID,
+        `Steering is unsupported for external executor "${executorId}"`,
+      );
+    }
+    const service = agent.accessor.get(IAgentPromptService);
     const queued = await service.enqueue({ message: {
       role: 'user',
       content: [{ type: 'text', text: content }],
@@ -76,7 +84,7 @@ export class RestGateway implements IRestGateway {
     return turn === undefined ? undefined : { turn_id: turn.id };
   }
   cancel(sessionId: string, agentId: string, reason?: string): Promise<void> {
-    this.agent(sessionId, agentId).accessor.get(IAgentLoopService).cancel(undefined, reason);
+    this.agent(sessionId, agentId).accessor.get(IAgentExecutionService).cancel(reason);
     return Promise.resolve();
   }
   getStatus(sessionId: string): Promise<unknown> {

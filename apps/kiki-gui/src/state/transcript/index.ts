@@ -23,6 +23,7 @@ export {
   type ToolAgentRef,
   type ToolBlock,
   type ToolStatus,
+  type TurnExecutionInfo,
   type TurnRetryInfo,
   type TurnTailInfo,
   type UserBlock,
@@ -51,6 +52,7 @@ export {
   prependOlderTranscriptSnapshot,
   projectAgentTranscriptView,
   snapshotSubagentAgentId,
+  turnExecutionFromItem,
   type AgentTranscriptProjectionSource,
 } from './project';
 export {

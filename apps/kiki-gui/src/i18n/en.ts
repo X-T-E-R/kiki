@@ -378,6 +378,22 @@ export const en = {
   'transcript.ranFor': 'Ran for {duration}',
   'transcript.ttft': 'TTFT {seconds}s',
   'transcript.tokensPerSecond': '{rate} tok/s',
+  'transcript.exec.badge': '{executor} · {protocol}',
+  'transcript.exec.degraded': 'degraded',
+  'transcript.exec.resumeMode': 'resume mode: {mode}',
+  'transcript.loss.acp_no_step_boundaries':
+    'the external protocol has no step boundaries — the turn shows one synthetic step',
+  'transcript.loss.profile_as_user_preamble':
+    'the kiki profile was delivered as a prompt preamble, not a native system prompt',
+  'transcript.loss.tool_input_partial': 'some tool-call inputs were only partially available',
+  'transcript.loss.tool_output_summary_only': 'some tool outputs are summaries, not full output',
+  'transcript.loss.message_id_missing': 'messages without ids were merged together',
+  'transcript.loss.usage_context_only': 'usage numbers reflect context size, not full token accounting',
+  'transcript.loss.unknown_update_dropped': 'some unrecognized updates were dropped',
+  'transcript.loss.resume_new_session_handoff':
+    'resume fell back to a new session with a handoff summary',
+  'transcript.loss.handoff_truncated': 'the handoff summary was truncated',
+  'transcript.loss.unstable_acp_plan': 'plan updates come from an unstable protocol surface',
 
   // ---- media + file preview ----
   'media.attachment': 'Attachment',
@@ -479,6 +495,18 @@ export const en = {
   'ia.dismissFailedGeneric': 'Could not dismiss — try again.',
   'ia.unanswered.one': '{count} question still unanswered',
   'ia.unanswered.other': '{count} questions still unanswered',
+  'ia.external.title': 'External agent permission',
+  'ia.external.badge': 'External agent',
+  'ia.external.cancel': 'Cancel',
+  'ia.external.cancelling': 'Cancelling…',
+  'ia.external.unknownShape':
+    'This permission request could not be recognized — only cancelling is safe.',
+  'ia.external.kind.allowOnce': 'Allow once',
+  'ia.external.kind.allowAlways': 'Always allow',
+  'ia.external.kind.rejectOnce': 'Reject once',
+  'ia.external.kind.rejectAlways': 'Never allow',
+  'ia.external.changes.one': '{count} granted change',
+  'ia.external.changes.other': '{count} granted changes',
 
   // ---- tool cards ----
   'tc.changes': 'Changes',

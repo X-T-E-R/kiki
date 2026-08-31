@@ -603,6 +603,42 @@ describe('TranscriptWireAdapter', () => {
     });
   });
 
+  it('projects external execution metadata and plans additively', () => {
+    const transcript = replay([
+      ...records.slice(0, -1),
+      {
+        type: 'executor.plan.update',
+        turnId: 0,
+        plan: { entries: [{ content: 'Ship bridge', status: 'in_progress' }] },
+        unstable: false,
+      },
+      {
+        type: 'executor.turn.metadata',
+        turnId: 0,
+        executorId: 'example-acp',
+        protocol: 'acp-v1',
+        resumeMode: 'handoff',
+        profileDelivery: 'first_prompt_preamble',
+        fidelity: 'degraded',
+        losses: ['resume_new_session_handoff'],
+      },
+      records.at(-1)!,
+    ]);
+
+    expect(transcript.getTurn('t0')?.execution).toEqual({
+      executorId: 'example-acp',
+      protocol: 'acp-v1',
+      resumeMode: 'handoff',
+      profileDelivery: 'first_prompt_preamble',
+      fidelity: 'degraded',
+      losses: ['resume_new_session_handoff'],
+    });
+    expect(transcript.getTodo('external-plan')?.items).toEqual([
+      { title: 'Ship bridge', status: 'in_progress' },
+    ]);
+    expect(replay(records).getTurn('t0')?.execution).toBeUndefined();
+  });
+
   it('normalizes bundled skill prompts and gives media and markers stable identities', () => {
     const transcript = replay([
       {

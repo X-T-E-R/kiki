@@ -152,6 +152,8 @@ interface SessionState {
   deferredWork?: SessionActivityState;
   readonly tail: Array<{ seq: number; envelope: EventEnvelope }>;
   readonly targets: Map<BroadcastTarget, TargetSubscription>;
+  readonly interactionConsumers: Map<BroadcastTarget, string>;
+  interactionService?: ISessionInteractionService;
   queue: Promise<void>;
   readonly agentDisposables: Map<string, IDisposable>;
   readonly lifecycleDisposables: IDisposable[];
@@ -165,8 +167,13 @@ interface SessionState {
 export const DEFAULT_MAX_BUFFER_SIZE = 1000;
 const GLOBAL_SESSION_ID = '__global__';
 const TRANSCRIPT_RESET_TAIL_TURNS = 20;
+let nextInteractionConsumerId = 0;
 
 async function disposeSessionState(state: SessionState): Promise<void> {
+  for (const id of state.interactionConsumers.values()) {
+    state.interactionService?.releaseConsumer(id);
+  }
+  state.interactionConsumers.clear();
   for (const d of state.lifecycleDisposables) d.dispose();
   for (const d of state.agentDisposables.values()) d.dispose();
   state.roster.clear(state.sessionId);
@@ -286,6 +293,11 @@ export class SessionEventBroadcaster {
     const state = await this.ensureState(sessionId);
     if (state === undefined) return false;
     const prev = state.targets.get(target);
+    if (prev === undefined && state.interactionService !== undefined) {
+      const consumerId = `kap-ws:${sessionId}:${nextInteractionConsumerId++}`;
+      state.interactionConsumers.set(target, consumerId);
+      state.interactionService.acquireConsumer(consumerId);
+    }
     const generation = this.nextTranscriptGeneration(state, target);
     state.targets.set(target, {
       agentFilter: filter,
@@ -391,6 +403,11 @@ export class SessionEventBroadcaster {
     if (state === undefined) return;
     this.nextTranscriptGeneration(state, target);
     state.targets.delete(target);
+    const consumerId = state.interactionConsumers.get(target);
+    if (consumerId !== undefined) {
+      state.interactionConsumers.delete(target);
+      state.interactionService?.releaseConsumer(consumerId);
+    }
     state.transcriptSeeded.delete(target);
   }
 
@@ -1025,6 +1042,8 @@ export class SessionEventBroadcaster {
       contextMessages: [],
       tail: [],
       targets: new Map(),
+      interactionConsumers: new Map(),
+      interactionService: session.accessor.get(ISessionInteractionService),
       queue: Promise.resolve(),
       agentDisposables: new Map(),
       lifecycleDisposables: [],
@@ -1075,6 +1094,7 @@ export class SessionEventBroadcaster {
       contextMessages: [],
       tail: [],
       targets: new Map(),
+      interactionConsumers: new Map(),
       queue: Promise.resolve(),
       agentDisposables: new Map(),
       lifecycleDisposables: [],

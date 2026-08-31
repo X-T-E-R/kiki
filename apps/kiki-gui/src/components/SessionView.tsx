@@ -1682,7 +1682,8 @@ export function SessionView({
         approvalId: string,
         decision: 'approved' | 'rejected' | 'cancelled',
         scope?: 'session',
-      ) => controller.resolveApproval(approvalId, decision, scope),
+        selectedOptionId?: string,
+      ) => controller.resolveApproval(approvalId, decision, scope, selectedOptionId),
       answerQuestion: (questionId: string, answers: Parameters<SessionController['answerQuestion']>[1]) =>
         controller.answerQuestion(questionId, answers),
       dismissQuestion: (questionId: string) => controller.dismissQuestion(questionId),
@@ -1970,8 +1971,14 @@ export function SessionView({
     return controller.loadOlderMessages(selectedAgentId);
   }, [controller, selectedAgentId]);
   const handleResolveApproval = useCallback(
-    (approvalId: string, decision: 'approved' | 'rejected' | 'cancelled', scope?: 'session') =>
-      controller?.resolveApproval(approvalId, decision, scope) ?? Promise.resolve(),
+    (
+      approvalId: string,
+      decision: 'approved' | 'rejected' | 'cancelled',
+      scope?: 'session',
+      selectedOptionId?: string,
+    ) =>
+      controller?.resolveApproval(approvalId, decision, scope, selectedOptionId) ??
+      Promise.resolve(),
     [controller],
   );
   const handleAnswerQuestion = useCallback(

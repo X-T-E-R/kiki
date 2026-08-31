@@ -53,6 +53,8 @@ import type { AgentContextData } from '#/agent/contextMemory/types';
 import type { CreateGoalInput, GoalSnapshot, GoalToolResult } from '#/agent/goal/types';
 import { IAgentConversationUndoService } from '#/agent/undo/undo';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentExecutionService } from '#/agent/execution/execution';
+import { AgentExecutionService } from '#/agent/execution/executionService';
 import type { RunShellCommandInput, RunShellCommandResult } from '#/agent/shellCommand/shellCommand';
 import type { ProfileSetModelResult } from '#/agent/profile/profile';
 import type { SwarmModeTrigger } from '#/features/swarm/agent/swarm';
@@ -1341,6 +1343,10 @@ export class AgentTestContext {
             reg.defineDescriptor(IAgentBlobService, new SyncDescriptor(AgentBlobServiceImpl));
             reg.defineDescriptor(IAgentProfileService, new SyncDescriptor(AgentProfileService));
             reg.defineDescriptor(
+              IAgentExecutionService,
+              new SyncDescriptor(AgentExecutionService),
+            );
+            reg.defineDescriptor(
               IAgentLLMRequesterService,
               new SyncDescriptor(AgentLLMRequesterService),
             );
@@ -2054,6 +2060,9 @@ export class AgentTestContext {
         }
         return interaction;
       },
+      acquireConsumer: () => {},
+      releaseConsumer: () => {},
+      hasConsumer: () => true,
       respond: (id, response) => {
         pending.delete(id);
         this.resolvePendingRpc('toolCall', id, response);

@@ -26,10 +26,18 @@ import {
   type ThinkingConfig,
 } from '#/kosong/model/thinking';
 import { THINKING_SECTION } from '#/app/kosongConfig/configSection';
-import { DEFAULT_AGENT_PROFILE_NAME, type EnvironmentDisclosureSnapshot } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import {
+  DEFAULT_AGENT_PROFILE_NAME,
+  type EnvironmentDisclosureSnapshot,
+  type ResolvedAgentProfileRoute,
+} from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
 import { ErrorCodes, Error2 } from "#/errors";
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
+import {
+  IAgentExecutorRegistry,
+  type ResolvedAgentExecutor,
+} from '#/app/agentExecutor/agentExecutor';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { AGENTS_SECTION, type AgentsConfig } from '#/session/agentCollaboration/configSection';
@@ -80,6 +88,10 @@ import {
   spawnConstraintOrigin,
 } from '#/app/agentProfileCatalog/applySubagentLease';
 import { resolveSnapshotProfileDefinition } from '#/app/agentProfileCatalog/subagentDispatch';
+import type {
+  SpawnConstraints,
+  SubagentLease,
+} from '#/app/agentProfileCatalog/subagentLease';
 import {
   resolveMainModelCandidate,
   resolveMainThinkingCandidate,
@@ -203,6 +215,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @IConfigService private readonly config: IConfigService,
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IModelService private readonly models: IModelService,
+    @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
     @IProtocolAdapterRegistry private readonly protocolAdapters: IProtocolAdapterRegistry,
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @IHostClock private readonly clock: IHostClock,
@@ -327,6 +340,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         routeId: snapshot.routeId,
         lockedModelAlias: snapshot.lockedModelAlias,
         lockedThinkingEffort: snapshot.lockedThinkingEffort,
+        executorId: snapshot.executorId,
+        executorProtocol: snapshot.executorProtocol,
+        executorOptions: snapshot.executorOptions,
+        executorDescriptorRevision: snapshot.executorDescriptorRevision,
         thinkingEffort: snapshot.thinkingLevel,
         serviceTier: snapshot.serviceTier,
         requestParams:
@@ -392,7 +409,14 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
               return { profile: base, baseProfile: base, route: undefined };
             })()
           : this.catalog.resolveSelection({ profile: input.profile, route: input.route });
-    const resolveId = aliasIdentity(this.models);
+    const executor = await this.executors.resolveExecutable(
+      selection.profile.executor,
+      selection.profile.executorOptions,
+    );
+    const external = executor.descriptor.id !== 'native';
+    const resolveId = external
+      ? (id: string): string => id
+      : aliasIdentity(this.models);
     const leased = applyLease(selection.profile, input.lease, resolveId);
     const profile = applySpawnPolicy(leased, input.spawnPolicy, resolveId);
     const spawnPolicy = intersectSpawnPolicy(
@@ -402,6 +426,17 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     );
     const subagentLeases = selection.profile.subagentLeases;
     this.assertRouteBindable(selection.route?.id);
+    if (external) {
+      await this.bindExternal(
+        input,
+        selection,
+        profile,
+        spawnPolicy,
+        subagentLeases,
+        executor,
+      );
+      return;
+    }
     const routeModelAlias = selection.route?.lockedModelAlias;
     const canonicalRouteModelAlias =
       routeModelAlias === undefined ? undefined : this.resolveModelId(routeModelAlias);
@@ -546,6 +581,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       routeId: selection.route?.id,
       lockedModelAlias: canonicalRouteModelAlias,
       lockedThinkingEffort: selection.route?.lockedThinkingEffort,
+      executorId: 'native',
+      executorProtocol: 'native',
+      executorOptions: undefined,
+      executorDescriptorRevision: 'native',
       thinkingEffort: thinkingLevel,
       serviceTier: profile.serviceTier,
       requestParams:
@@ -570,6 +609,134 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     });
     this.seedAgentsMdReminder(context);
 
+    this.publishAgentsMdWarning();
+    this.publishToolPatternWarnings();
+  }
+
+  private async bindExternal(
+    input: BindAgentInput,
+    selection: {
+      readonly baseProfile: ResolvedAgentProfile;
+      readonly route?: ResolvedAgentProfileRoute;
+    },
+    profile: ResolvedAgentProfile,
+    spawnPolicy: SpawnConstraints | undefined,
+    subagentLeases: Readonly<Record<string, SubagentLease>> | undefined,
+    executor: ResolvedAgentExecutor,
+  ): Promise<void> {
+    this.delegationPosition =
+      input.delegationPosition ??
+      (this.agentScope.agentId === MAIN_AGENT_ID ? 'main' : 'sub');
+    if (this.delegationPosition === 'main') {
+      throw new Error2(
+        ErrorCodes.CONFIG_INVALID,
+        `External executor "${executor.descriptor.id}" is unsupported for the main agent`,
+      );
+    }
+    if (profile.serviceTier !== undefined || profile.requestParams !== undefined) {
+      throw new Error2(
+        ErrorCodes.CONFIG_INVALID,
+        `External executor profile "${selection.baseProfile.name}" cannot declare service_tier or request_params`,
+      );
+    }
+    const routeModelAlias = selection.route?.lockedModelAlias;
+    if (
+      routeModelAlias !== undefined &&
+      input.model !== undefined &&
+      input.model !== routeModelAlias
+    ) {
+      throw new Error2(
+        ErrorCodes.ROUTE_BINDING_CONFLICT,
+        `Agent profile route "${selection.route!.id}" locks model_alias to "${routeModelAlias}"`,
+      );
+    }
+    if (
+      selection.route?.lockedThinkingEffort !== undefined &&
+      input.thinking !== undefined &&
+      input.thinking !== selection.route.lockedThinkingEffort
+    ) {
+      throw new Error2(
+        ErrorCodes.ROUTE_BINDING_CONFLICT,
+        `Agent profile route "${selection.route.id}" locks thinking_effort to "${selection.route.lockedThinkingEffort}"`,
+      );
+    }
+    const requested = resolveMainModelCandidate({
+      inputModel: input.model,
+      routeLockedAlias: routeModelAlias,
+      profileModelAlias: profile.modelAlias,
+    });
+    const alias = requested.alias;
+    if (alias === undefined || alias === '') {
+      throw new ProfileError(
+        ProfileErrors.codes.MODEL_NOT_CONFIGURED,
+        `model is required to bind external executor profile "${selection.baseProfile.name}"`,
+      );
+    }
+    await this.sessionToolPolicy.ready;
+    const context = await this.buildSystemPromptContext(profile);
+    this.assertRouteBindable(selection.route?.id);
+    const assembled = await this.assembleBoundSystemPrompt(profile, context, alias);
+    const matchedModelProfile = resolveModelProfileEntry(
+      profile.modelProfiles,
+      alias,
+      (id) => id,
+    );
+    const currentProfileName = this.profileName;
+    const thinkingLevel = (resolveMainThinkingCandidate({
+      inputThinking: input.thinking,
+      routeLockedThinking: selection.route?.lockedThinkingEffort,
+      modelProfileThinking: matchedModelProfile?.thinkingEffort,
+      profileThinking: profile.thinkingEffort,
+      sessionThinking:
+        currentProfileName === selection.baseProfile.name
+          ? this.thinkingLevel
+          : undefined,
+    }) ?? 'off') as ThinkingEffort;
+    assertBoundModelAllowed(
+      this.config,
+      alias,
+      roleConstraintsFromProfile(
+        profile,
+        spawnConstraintOrigin(input.lease, input.spawnPolicy),
+      ),
+      undefined,
+      thinkingLevel,
+    );
+    this.activeProfile = profile;
+    this.activeProfileDefinitionId = selection.baseProfile.definitionId;
+    this.activeToolNamesOverlay = undefined;
+    await this.dispatcher.dispatch(new ProfileBind({
+      modelAlias: alias,
+      profileName: selection.baseProfile.name,
+      profileDefinitionId: selection.baseProfile.definitionId,
+      routeId: selection.route?.id,
+      lockedModelAlias: routeModelAlias,
+      lockedThinkingEffort: selection.route?.lockedThinkingEffort,
+      executorId: executor.descriptor.id,
+      executorProtocol: executor.descriptor.protocol,
+      executorOptions: { ...executor.options },
+      executorDescriptorRevision: executor.descriptor.revision,
+      thinkingEffort: thinkingLevel,
+      systemPrompt: assembled.text,
+      environmentDisclosure: assembled.environment,
+      agentsMdPaths: context.agentsMdPaths ?? [],
+      activeToolNames: [],
+      toolAllowPolicies: undefined,
+      disallowedTools: [],
+      subagents: profile.subagents,
+      subagentLeases,
+      spawnPolicy,
+      appliedLease: input.lease,
+    }));
+    this.afterConfigDispatch({
+      modelAlias: alias,
+      profileName: profile.name,
+      thinkingLevel,
+      systemPrompt: assembled.text,
+      disallowedTools: [],
+    });
+    this.seedAgentsMdReminder(context);
+    this.cacheAgentsMdWarning(context);
     this.publishAgentsMdWarning();
     this.publishToolPatternWarnings();
   }
@@ -785,7 +952,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       rendered.text,
       profile.modelProfiles,
       alias,
-      (id) => this.models.resolveId(id),
+      (profile.executor ?? 'native') === 'native'
+        ? (id) => this.models.resolveId(id)
+        : (id) => id,
     );
     let snippet: string | undefined;
     try {
@@ -811,7 +980,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     }
     const withDelegation = injectDelegationContext(withModel, snippet);
     return {
-      text: await this.applyCognitionOverlay(withDelegation, alias),
+      text:
+        (profile.executor ?? 'native') === 'native'
+          ? await this.applyCognitionOverlay(withDelegation, alias)
+          : withDelegation,
       environment: rendered.environment,
     };
   }
@@ -862,6 +1034,13 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       routeId: this.routeId,
       lockedModelAlias: this.profileState.lockedModelAlias,
       lockedThinkingEffort: this.profileState.lockedThinkingEffort,
+      executorId: this.profileState.executorId ?? 'native',
+      executorProtocol: this.profileState.executorProtocol ?? 'native',
+      executorOptions:
+        this.profileState.executorOptions === undefined
+          ? undefined
+          : { ...this.profileState.executorOptions },
+      executorDescriptorRevision: this.profileState.executorDescriptorRevision,
       thinkingLevel: this.thinkingLevel,
       systemPrompt: this.systemPrompt,
       agentsMdPaths: this.profileState.agentsMdPaths,
@@ -886,6 +1065,12 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   resolveModelContext(): ProfileModelContext {
+    if ((this.profileState.executorId ?? 'native') !== 'native') {
+      throw new Error2(
+        ErrorCodes.CONFIG_INVALID,
+        `resolveModelContext is unsupported for external executor "${this.profileState.executorId}"`,
+      );
+    }
     const modelAlias = this.model;
     const model = this.modelCatalog.get(modelAlias);
     const loopControl = this.config.get<LoopControl>('loopControl');

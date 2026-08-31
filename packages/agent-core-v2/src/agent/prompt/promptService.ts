@@ -625,6 +625,8 @@ export class AgentPromptService implements IAgentPromptService {
       displayName: binding.routeId ?? binding.profileName,
       model: binding.modelAlias,
       thinkingEffort: binding.thinkingLevel,
+      executor: binding.executorId,
+      executorProtocol: binding.executorProtocol,
     });
   }
 

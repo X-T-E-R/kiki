@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import type { ServiceIdentifier, ServicesAccessor } from '#/_base/di/instantiation';
@@ -7,7 +7,8 @@ import { LifecycleScope } from '#/app/scopes';
 import { type IAgentScopeHandle, type ISessionScopeHandle } from '#/_base/di/scope';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
-import type { ContextMessage } from '#/agent/contextMemory/types';
+import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentProfileService } from '#/agent/profile/profile';
 import { IRestGateway } from '#/app/gateway/gateway';
 import { RestGateway } from '#/app/gateway/gatewayService';
 import { ILogService } from '#/_base/log/log';
@@ -18,12 +19,6 @@ import { IAgentLoopService } from '#/agent/loop/loop';
 import { createHooks } from '#/hooks';
 import { stubLog } from '../../_base/log/stubs';
 import { stubLoopWithHooks, type StubLoop } from '../../agent/loop/stubs';
-
-function textOf(message: ContextMessage): string {
-  return message.content
-    .map((part) => (part.type === 'text' ? part.text : ''))
-    .join('');
-}
 
 function makeAccessor(
   entries: ReadonlyArray<readonly [ServiceIdentifier<unknown>, unknown]>,
@@ -41,18 +36,39 @@ function makeAccessor(
 describe('RestGateway', () => {
   let disposables: DisposableStore;
   let ix: TestInstantiationService;
-  let promptCalls: ContextMessage[];
+  let executionRun: ReturnType<typeof vi.fn<IAgentExecutionService['run']>>;
+  let executorId: string;
   let turnService: StubLoop;
 
   beforeEach(() => {
     disposables = new DisposableStore();
     ix = disposables.add(new TestInstantiationService());
-    promptCalls = [];
+    executorId = 'native';
     turnService = stubLoopWithHooks({ hasActiveTurn: true });
+    executionRun = vi.fn(async () => ({
+      agentId: 'main',
+      turn: {
+        id: 7,
+        signal: new AbortController().signal,
+        ready: Promise.resolve(),
+        result: Promise.resolve({ type: 'completed', steps: 1, truncated: false }),
+        cancel: () => false,
+      },
+      completion: Promise.resolve({ summary: 'done' }),
+    }));
+    const execution: IAgentExecutionService = {
+      _serviceBrand: undefined,
+      run: executionRun,
+      status: () => ({ state: 'running', turnId: 7 }),
+      cancel: (reason) => turnService.cancel(undefined, reason),
+      settled: () => Promise.resolve(),
+      shutdown: () => Promise.resolve(),
+      hooks: createHooks(['onWillRun']) as IAgentExecutionService['hooks'],
+    };
 
     const promptService: IAgentPromptService = {
       _serviceBrand: undefined,
-      enqueue: ({ message }: { message: ContextMessage }) => { promptCalls.push(message); return Promise.resolve({ id: 'p', launched: Promise.resolve(undefined) } as never); },
+      enqueue: () => Promise.resolve({ id: 'p', launched: Promise.resolve(undefined) } as never),
       submit: () => Promise.resolve(undefined),
       submitSteer: () => Promise.resolve(undefined),
       steer: () => Promise.resolve([]),
@@ -70,6 +86,8 @@ describe('RestGateway', () => {
       id: 'main',
       kind: LifecycleScope.Agent,
       accessor: makeAccessor([
+        [IAgentExecutionService, execution],
+        [IAgentProfileService, { data: () => ({ executorId }) }],
         [IAgentPromptService, promptService],
         [IAgentLoopService, turnService],
       ]),
@@ -136,13 +154,23 @@ describe('RestGateway', () => {
   });
   afterEach(() => disposables.dispose());
 
-  it('routes prompt to the agent prompt service', async () => {
+  it('routes prompt through the agent execution service', async () => {
     const gw = ix.get(IRestGateway);
-    await gw.prompt('s1', 'main', 'hello');
+    await expect(gw.prompt('s1', 'main', 'hello')).resolves.toEqual({ turn_id: 7 });
 
-    expect(promptCalls).toHaveLength(1);
-    expect(textOf(promptCalls[0]!)).toBe('hello');
-    expect(promptCalls[0]!.origin).toMatchObject({ kind: 'user' });
+    expect(executionRun).toHaveBeenCalledWith(
+      { kind: 'prompt', prompt: 'hello', origin: { kind: 'user' } },
+      { signal: expect.any(AbortSignal) },
+    );
+  });
+
+  it('rejects steer for an external executor', async () => {
+    executorId = 'grok-acp';
+    const gw = ix.get(IRestGateway);
+
+    await expect(gw.steer('s1', 'main', 'change')).rejects.toThrow(
+      /Steering is unsupported for external executor "grok-acp"/,
+    );
   });
 
   it('aborts the active turn signal on cancel', async () => {

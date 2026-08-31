@@ -18,7 +18,11 @@ describe('Session approval handler', () => {
         toolName: 'Bash',
         action: 'Run command',
       });
-      return { decision: 'approved' as const, selectedLabel: 'Approve once' };
+      return {
+        decision: 'approved' as const,
+        selectedLabel: 'Approve once',
+        selectedOptionId: 'allow_once',
+      };
     });
     session.setApprovalHandler(handler);
 
@@ -32,7 +36,11 @@ describe('Session approval handler', () => {
           action: 'Run command',
         }),
       ),
-    ).resolves.toEqual({ decision: 'approved', selectedLabel: 'Approve once' });
+    ).resolves.toEqual({
+      decision: 'approved',
+      selectedLabel: 'Approve once',
+      selectedOptionId: 'allow_once',
+    });
     expect(handler).toHaveBeenCalledTimes(1);
   });
 

@@ -36,6 +36,7 @@ import {
   resolveActiveFloorId,
   sessionAgentForestFromAgentSnapshots,
   splitSystemReminders,
+  turnExecutionFromItem,
   type AssistantBlock,
   type SubagentBlock,
   type UserBlock,
@@ -759,6 +760,43 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     );
     expect(approvalIndex).toBe(toolIndex + 1);
     expect(subagentIndex).toBe(toolIndex + 2);
+  });
+
+  it('keeps the pending card request when a resolution upsert omits it', () => {
+    const pendingSnapshot = applyOpsToSnapshot(userTurnSnapshot({ streaming: true }), [
+      {
+        op: 'interaction.upsert',
+        interaction: {
+          interactionId: 'apr-resolve',
+          interactionKind: 'approval',
+          toolCallId: TOOL_CALL_ID,
+          state: 'pending',
+          request: { turnId: 1, toolName: 'grok__bash', action: 'Run shell command' },
+        },
+      },
+    ]);
+    const pending = projectAgentTranscriptView(createViewState('session_test'), 'main', pendingSnapshot);
+    // Mirror of the wire: a terminal interaction.upsert carries only the
+    // resolution, not the request (the store replaces the record wholesale).
+    const resolvedSnapshot = applyOpsToSnapshot(pendingSnapshot, [
+      {
+        op: 'interaction.upsert',
+        interaction: {
+          interactionId: 'apr-resolve',
+          interactionKind: 'approval',
+          toolCallId: TOOL_CALL_ID,
+          state: 'approved',
+          response: { decision: 'approved', resolvedAt: FIXED_AT_2 },
+        },
+      },
+    ]);
+    const resolved = projectAgentTranscriptView(pending, 'main', resolvedSnapshot);
+    const block = resolved.blocks.find((candidate) => candidate.id === 'approval-apr-resolve');
+    expect(block).toMatchObject({
+      kind: 'approval',
+      request: { tool_name: 'grok__bash', action: 'Run shell command' },
+      resolution: { decision: 'approved' },
+    });
   });
 
   it('retains an optimistic queued prompt at its previous structural slot', () => {
@@ -2067,3 +2105,81 @@ function applyOpsToSnapshot(
   store.apply([{ op: 'reset', agentId: 'main', snapshot }, ...ops]);
   return store.snapshot();
 }
+
+describe('external executor turn metadata', () => {
+  const execution = {
+    executorId: 'grok',
+    protocol: 'acp-v1',
+    resumeMode: 'resume',
+    fidelity: 'degraded',
+    losses: ['acp_no_step_boundaries', 'tool_output_summary_only'],
+  };
+
+  function snapshotWithExecution(value: unknown): AgentTranscriptSnapshot {
+    const base = userTurnSnapshot();
+    return emptySnapshot({
+      ...base,
+      items: base.items.map((item) =>
+        item.kind === 'turn' ? ({ ...item, execution: value } as typeof item) : item,
+      ),
+    });
+  }
+
+  it('parses the executor.turn.metadata projection defensively', () => {
+    expect(turnExecutionFromItem({ kind: 'turn', execution })).toEqual({
+      executorId: 'grok',
+      protocol: 'acp-v1',
+      resumeMode: 'resume',
+      fidelity: 'degraded',
+      losses: ['acp_no_step_boundaries', 'tool_output_summary_only'],
+    });
+    // snake_case REST passthrough is accepted too.
+    expect(
+      turnExecutionFromItem({
+        execution: { executor_id: 'codex', protocol: 'acp-v1', resume_mode: 'new' },
+      }),
+    ).toMatchObject({ executorId: 'codex', fidelity: 'full', losses: [] });
+    // Malformed payloads degrade to "no badge", never break the projection.
+    expect(turnExecutionFromItem({ execution: { protocol: 'acp-v1' } })).toBeUndefined();
+    expect(turnExecutionFromItem({ execution: 'grok' })).toBeUndefined();
+    expect(turnExecutionFromItem({ execution: null })).toBeUndefined();
+    expect(turnExecutionFromItem({})).toBeUndefined();
+  });
+
+  it('collects turnExecutions keyed by turnId and reuses unchanged entries', () => {
+    const first = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      snapshotWithExecution(execution),
+    );
+    expect(first.turnExecutions['t1']).toEqual({
+      executorId: 'grok',
+      protocol: 'acp-v1',
+      resumeMode: 'resume',
+      fidelity: 'degraded',
+      losses: ['acp_no_step_boundaries', 'tool_output_summary_only'],
+    });
+
+    const second = projectAgentTranscriptView(first, 'main', snapshotWithExecution(execution));
+    expect(second.turnExecutions['t1']).toBe(first.turnExecutions['t1']);
+  });
+
+  it('drops the entry when the turn loses its execution metadata', () => {
+    const first = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      snapshotWithExecution(execution),
+    );
+    const second = projectAgentTranscriptView(first, 'main', userTurnSnapshot());
+    expect(second.turnExecutions['t1']).toBeUndefined();
+  });
+
+  it('ignores malformed execution payloads', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      snapshotWithExecution({ executorId: '', protocol: 'acp-v1' }),
+    );
+    expect(projected.turnExecutions['t1']).toBeUndefined();
+  });
+});

@@ -16,6 +16,7 @@ import { IUserAgentProfileLoader } from '#/workspace/workspaceAgentProfileLoader
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IWorkspaceContext } from '#/workspace/workspaceContext/workspaceContext';
+import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 
 import { IExplicitAgentProfileLoader } from './explicitAgentProfileLoader';
 
@@ -35,6 +36,7 @@ export class ExplicitAgentProfileLoaderService
     @IHostFileSystem private readonly fs: IHostFileSystem,
     @ILogService log: ILogService,
     @IUserAgentProfileLoader private readonly user: IUserAgentProfileLoader,
+    @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
     registry?: IAgentProfileRegistry,
   ) {
     super(log, registry);
@@ -74,6 +76,7 @@ export class ExplicitAgentProfileLoaderService
       },
       (context) => this.user.getDefaultProfile().renderSystemPrompt(context),
       (context) => this.user.getBuiltinDefault().renderSystemPrompt(context),
+      { registry: this.executors, allowExternal: true },
     );
   }
 }

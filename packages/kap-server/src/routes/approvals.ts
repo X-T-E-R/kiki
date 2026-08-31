@@ -2,8 +2,8 @@ import {
   ISessionApprovalService,
   ISessionInteractionService,
   resumeSessionById,
-  type ApprovalRequest,
-  type ApprovalResponse,
+  type SessionApprovalRequest as ApprovalRequest,
+  type SessionApprovalResponse as ApprovalResponse,
   type Interaction,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
@@ -138,6 +138,7 @@ export function registerApprovalsRoutes(app: ApprovalRouteHost, core: Scope): vo
         scope: body.scope,
         feedback: body.feedback,
         selectedLabel: body.selected_label,
+        selectedOptionId: body.selected_option_id,
       };
       handle.accessor.get(ISessionApprovalService).decide(approval_id, response);
       requestLog(req)?.info(

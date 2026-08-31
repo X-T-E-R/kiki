@@ -45,6 +45,7 @@ export const interactionNextIdKey = defineState<number>('interaction.nextId', ()
 export class SessionInteractionService extends Service implements ISessionInteractionService {
   declare readonly _serviceBrand: undefined;
 
+  private readonly consumers = new Set<string>();
   private readonly _onDidChangePending = this._register(new Emitter<InteractionPendingChangedEvent>());
   readonly onDidChangePending: Event<InteractionPendingChangedEvent> = this._onDidChangePending.event;
   private readonly _onDidResolve = this._register(new Emitter<InteractionResolution>());
@@ -101,6 +102,21 @@ export class SessionInteractionService extends Service implements ISessionIntera
 
   enqueue<TPayload>(req: InteractionRequest<TPayload>): Interaction {
     return this.park(req, () => {});
+  }
+
+  acquireConsumer(id: string): void {
+    this.consumers.add(id);
+  }
+
+  releaseConsumer(id: string): void {
+    if (!this.consumers.delete(id) || this.consumers.size > 0) return;
+    for (const interaction of this.listPending('approval')) {
+      this.respond(interaction.id, { decision: 'cancelled' });
+    }
+  }
+
+  hasConsumer(): boolean {
+    return this.consumers.size > 0;
   }
 
   respond(id: string, response: unknown): void {

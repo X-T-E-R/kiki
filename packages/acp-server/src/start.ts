@@ -181,6 +181,7 @@ export async function runAcpServerWithStream(
   const close = async (): Promise<void> => {
     if (closePromise !== undefined) return closePromise;
     closePromise = (async () => {
+      await server.dispose();
       // Detach the klient's event subscriptions first so disposal below cannot
       // deliver into a torn-down scope.
       await klient.close();

@@ -15,6 +15,7 @@ import {
   DISABLED_NAMED_PROFILES_SECTION,
   ErrorCodes,
   IAgentProfileRegistry,
+  IAgentExecutorRegistry,
   IConfigService,
   ISessionAgentProfileCatalog,
   ISessionContext,
@@ -78,6 +79,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     },
     async (req, reply) => {
       const registry = core.accessor.get(IAgentProfileRegistry);
+      const executors = core.accessor.get(IAgentExecutorRegistry);
       const config = core.accessor.get(IConfigService);
       await config.ready;
       const disabledBuiltins = new Set(
@@ -93,6 +95,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
         disabledNamed,
         req.query.expand === true,
         catalogs,
+        executors,
       );
       reply.send(okEnvelope({ items }, req.id));
     },
@@ -221,6 +224,7 @@ function projectNamedAgentProfiles(
   disabledNamed: ReadonlySet<string>,
   expand: boolean,
   catalogs: ReadonlyMap<string, SessionAgentProfileCatalogProjection> = new Map(),
+  executors: IAgentExecutorRegistry,
 ): NamedAgentProfile[] {
   const registrations = entries.toSorted((a, b) =>
     b.priority - a.priority
@@ -238,6 +242,7 @@ function projectNamedAgentProfiles(
             disabledNamed,
             undefined,
             catalogForProfile(registration, profile, catalogs),
+            executors,
           ),
         ))
       .toSorted(compareNamedAgentProfiles);
@@ -284,6 +289,7 @@ function projectNamedAgentProfiles(
         disabledNamed,
         workspaceIds.size === 0 ? undefined : [...workspaceIds].toSorted(),
         catalogForProfile(registration, profile, catalogs),
+        executors,
       ))
     .toSorted(compareNamedAgentProfiles);
 }
@@ -326,7 +332,10 @@ function toNamedAgentProfile(
   disabledNamed: ReadonlySet<string> = new Set(),
   workspaceIds?: readonly string[],
   catalog?: SessionAgentProfileCatalogProjection,
+  executors?: IAgentExecutorRegistry,
 ): NamedAgentProfile {
+  const executorId = profile.executor ?? 'native';
+  const executor = executors?.get(executorId);
   return {
     name: profile.name,
     description: profile.description,
@@ -337,6 +346,12 @@ function toNamedAgentProfile(
     source_file: profile.sourcePath,
     main: profile.main === true,
     override: profile.override === true ? true : undefined,
+    executor: executorId,
+    executor_protocol: executor?.protocol ?? (executorId === 'native' ? 'native' : undefined),
+    executor_options:
+      profile.executorOptions === undefined
+        ? undefined
+        : { ...profile.executorOptions },
     pinned_model_alias: profile.modelAlias,
     thinking_effort: profile.thinkingEffort,
     service_tier: profile.serviceTier,

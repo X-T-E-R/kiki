@@ -53,6 +53,10 @@ export interface SystemPromptContext extends AgentProfileContext {
 export type ResolvedAgentProfile = AgentProfile;
 
 export interface ProfileData extends AgentConfigData {
+  readonly executorId?: string;
+  readonly executorProtocol?: string;
+  readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
+  readonly executorDescriptorRevision?: string;
   readonly agentsMdPaths?: readonly string[];
   readonly activeToolNames?: readonly string[];
   readonly toolAllowPolicies?: readonly (readonly string[])[];
@@ -85,6 +89,10 @@ export interface ProfileBindingSnapshot {
   readonly routeId?: string;
   readonly lockedModelAlias?: string;
   readonly lockedThinkingEffort?: string;
+  readonly executorId?: string;
+  readonly executorProtocol?: string;
+  readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
+  readonly executorDescriptorRevision?: string;
   readonly thinkingLevel: string;
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;

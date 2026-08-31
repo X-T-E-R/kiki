@@ -121,6 +121,8 @@ function displaySummary(display: ToolInputDisplay, t: Translate, tp: TranslatePl
       return display.path !== undefined ? t('tc.planPath', { path: display.path }) : t('tc.plan');
     case 'goal_start':
       return display.objective;
+    case 'external_permission':
+      return display.summary;
     case 'generic':
       return display.summary;
   }

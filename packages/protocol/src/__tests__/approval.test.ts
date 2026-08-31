@@ -85,16 +85,18 @@ describe('approvalResponseSchema (SCHEMAS §6.1)', () => {
     });
   });
 
-  it('accepts full response with scope/feedback/selected_label', () => {
+  it('accepts full response with scope/feedback/selected option', () => {
     const parsed = approvalResponseSchema.parse({
       decision: 'approved',
       scope: 'session',
       feedback: 'looks good',
       selected_label: 'Run command',
+      selected_option_id: 'allow-once',
     });
     expect(parsed.scope).toBe('session');
     expect(parsed.feedback).toBe('looks good');
     expect(parsed.selected_label).toBe('Run command');
+    expect(parsed.selected_option_id).toBe('allow-once');
   });
 
   it('rejects unknown decision value', () => {

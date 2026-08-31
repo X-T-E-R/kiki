@@ -29,7 +29,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (App: 0 keys · Workspace: 6 keys · Session: 18 keys · Agent: 101 keys)
+// Index (App: 0 keys · Workspace: 6 keys · Session: 18 keys · Agent: 102 keys)
 //   App
 //   Workspace
 //     workspaceDirs.ephemeralDirs          src/workspace/workspaceDirs/workspaceDirsService.ts
@@ -71,6 +71,7 @@
 //     contextProjector.lastRepairSignature            src/agent/contextProjector/contextProjectorService.ts
 //     cron                                            src/session/cron/cronOps.ts
 //     dateChange.seed                                 src/features/dateChange/dateChangeService.ts
+//     externalExecutor                                src/agent/execution/externalExecutorOps.ts
 //     externalHooks.stopHookContinuationUsed          src/features/externalHooks/agent/agentExternalHooksService.ts
 //     fullCompaction                                  src/agent/fullCompaction/compactionOps.ts
 //     fullCompaction.activeTurnId                     src/agent/fullCompaction/fullCompactionService.ts
@@ -520,6 +521,8 @@ export interface SessionStateSnapshot {
       readonly userLabel?: string;
       readonly model?: string;
       readonly thinkingEffort?: string;
+      readonly executor?: string;
+      readonly executorProtocol?: string;
     }>>;
     readonly custom?: Record<string, unknown>;
     readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
@@ -1275,6 +1278,19 @@ export interface AgentStateSnapshot {
   })[];
   // src/agent/contextProjector/contextProjectorService.ts
   'contextProjector.lastRepairSignature': string | null;
+  // src/agent/execution/externalExecutorOps.ts
+  // replayable · durable — folds: ExecutorSessionUpdated, ExecutorTurnMetadata, ExecutorPlanUpdate, ExecutorPlanRemove, ExecutorRuntimeUpdate
+  'externalExecutor': /* ExternalExecutorState — packages/agent-core-v2/src/agent/execution/externalExecutorOps.ts */ {
+    readonly executorId?: string;
+    readonly descriptorRevision?: string;
+    readonly sessionRef?: {
+      readonly executorId: string;
+      readonly version: number;
+      readonly ref: Readonly<Record<string, unknown>>;
+    };
+    readonly sessionEpoch?: number;
+    readonly profileDeliveredSessionId?: string;
+  };
   // src/agent/fullCompaction/compactionOps.ts
   // replayable · durable — folds: FullCompactionBegin, FullCompactionCancel, FullCompactionComplete
   'fullCompaction': /* CompactionState — packages/agent-core-v2/src/agent/fullCompaction/compactionOps.ts */ {
@@ -1554,6 +1570,10 @@ export interface AgentStateSnapshot {
     readonly routeId?: string;
     readonly lockedModelAlias?: string;
     readonly lockedThinkingEffort?: string;
+    readonly executorId?: string;
+    readonly executorProtocol?: string;
+    readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
+    readonly executorDescriptorRevision?: string;
     readonly thinkingLevel: string;
     readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
     readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-core-v2/src/kosong/contract/provider.ts */ boolean | string | number>>;

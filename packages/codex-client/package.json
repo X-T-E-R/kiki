@@ -1,0 +1,29 @@
+{
+  "name": "@moonshot-ai/codex-client",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Outbound Codex app-server process and turn client",
+  "license": "MIT",
+  "author": "Moonshot AI",
+  "type": "module",
+  "imports": {
+    "#/*": "./src/*.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:fast": "vitest run --exclude \"**/*.integration.ts\"",
+    "test:integration": "vitest run .integration.",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@moonshot-ai/protocol": "workspace:^"
+  }
+}

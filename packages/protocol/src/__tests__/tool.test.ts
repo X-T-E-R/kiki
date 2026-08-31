@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { ToolInputDisplaySchema } from '../display';
 import {
   mcpServerSchema,
   mcpServerStatusSchema,
@@ -73,6 +74,25 @@ describe('mcpServerStatusSchema', () => {
 describe('mcpServerTransportSchema', () => {
   it.each(['stdio', 'http', 'sse'] as const)('accepts %s', (t) => {
     expect(mcpServerTransportSchema.parse(t)).toBe(t);
+  });
+});
+
+describe('ToolInputDisplaySchema', () => {
+  it('accepts external permission options and change detail', () => {
+    expect(
+      ToolInputDisplaySchema.parse({
+        kind: 'external_permission',
+        summary: 'Apply changes',
+        options: [
+          {
+            id: 'allow-once',
+            label: 'Allow once',
+            kind: 'allow_once',
+            changes: [{ description: 'write file' }],
+          },
+        ],
+      }),
+    ).toMatchObject({ kind: 'external_permission' });
   });
 });
 

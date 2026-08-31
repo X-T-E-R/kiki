@@ -85,6 +85,21 @@ export const ToolInputDisplaySchema = z.discriminatedUnion('kind', [
     mode: z.enum(['manual', 'yolo']),
   }),
   z.object({
+    kind: z.literal('external_permission'),
+    summary: z.string(),
+    detail: z.unknown().optional(),
+    options: z
+      .array(
+        z.object({
+          id: z.string(),
+          label: z.string(),
+          kind: z.string(),
+          changes: z.array(z.unknown()).readonly().optional(),
+        }),
+      )
+      .readonly(),
+  }),
+  z.object({
     kind: z.literal('generic'),
     summary: z.string(),
     detail: z.unknown().optional(),
@@ -159,4 +174,9 @@ export const ToolResultDisplaySchema = z.discriminatedUnion('kind', [
 ]);
 
 export type ToolInputDisplay = z.infer<typeof ToolInputDisplaySchema>;
+export type ExternalPermissionDisplay = Extract<
+  ToolInputDisplay,
+  { kind: 'external_permission' }
+>;
+export type ExternalPermissionOption = ExternalPermissionDisplay['options'][number];
 export type ToolResultDisplay = z.infer<typeof ToolResultDisplaySchema>;

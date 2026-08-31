@@ -5,6 +5,7 @@ import { ILogService } from '#/_base/log/log';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
 import { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
 import { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
+import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { ICronTaskPersistence } from '#/app/cron/cronTaskPersistence';
@@ -88,6 +89,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
     @IProviderService private readonly modelProviders: IProviderService,
     @ref(ISessionManager) private readonly sessionManager: LiveRef<ISessionManager>,
     @IAgentProfileRegistry private readonly agentProfiles: IAgentProfileRegistry,
+    @IAgentExecutorRegistry private readonly agentExecutors: IAgentExecutorRegistry,
     @IBuiltinAgentProfileLoader private readonly builtinAgentProfiles: IBuiltinAgentProfileLoader,
     @IBuiltinSkillSource private readonly builtinSkills: IBuiltinSkillSource,
     @ITelemetryService private readonly telemetry: ITelemetryService,
@@ -326,6 +328,7 @@ export class WorkspaceInstanceManager implements IWorkspaceInstanceManager {
         plugins: this.plugins,
         sessionManager: this.sessionManager,
         agentProfiles: this.agentProfiles,
+        agentExecutors: this.agentExecutors,
         builtinAgentProfiles: this.builtinAgentProfiles,
         builtinSkills: this.builtinSkills,
         telemetry: this.telemetry,
