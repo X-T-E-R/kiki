@@ -732,6 +732,32 @@ describe('SessionExternalDelegationService', () => {
     expect((await service.cancel({ authority, dispatchId: dispatch.dispatchId })).status).toBe('cancelled');
   });
 
+  it('pages results with the admitted byte limit instead of rejecting limits above the default page size', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
+    completions[0]!.resolve({ summary: 'é'.repeat(40_000) });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
+
+    const first = await service.result({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      limit: 65_536,
+    });
+    const second = await service.result({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      cursor: first.nextCursor,
+      limit: 65_536,
+    });
+
+    expect(Buffer.byteLength(first.text, 'utf8')).toBe(65_536);
+    expect(first.nextCursor).toBe(65_536);
+    expect(Buffer.byteLength(second.text, 'utf8')).toBe(14_464);
+    expect(second.nextCursor).toBeUndefined();
+  });
+
   it('does not publish started after cancellation wins a deferred run-handle race', async () => {
     let releaseRunHandle!: () => void;
     nextRunHandleGate = new Promise<void>((resolve) => { releaseRunHandle = resolve; });
