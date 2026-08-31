@@ -464,8 +464,20 @@ export class SessionEventBroadcaster {
         const cursor = service.getTranscriptCursor(state.sessionId, descriptor.agentId);
         const since =
           seed.transcriptSince?.[descriptor.agentId] ?? seed.transcriptSince?.['*'];
+        const needsReset = needsResetOnTransition(
+          gradeFor(seed.prev, descriptor.agentId),
+          grade,
+        );
+        // A cursor only proves the client saw the *grade-filtered* stream up
+        // to that seq. On a same-target grade upgrade (seed.prev present) the
+        // history it received was redacted (e.g. 'turn' strips every
+        // step/frame), so replaying just the newer batches would leave the
+        // detail permanently missing — force the reset instead of trusting
+        // the cursor. A fresh target (reconnect) keeps the cursor fast path:
+        // its cursor was accumulated at these same grades before the drop.
+        const upgradeWithinTarget = seed.prev !== undefined && needsReset;
         const catchup =
-          since === undefined
+          since === undefined || upgradeWithinTarget
             ? undefined
             : service.getOpsSince(state.sessionId, descriptor.agentId, since);
         if (catchup?.complete === true) {
@@ -492,10 +504,7 @@ export class SessionEventBroadcaster {
           }
           continue;
         }
-        if (
-          since === undefined &&
-          !needsResetOnTransition(gradeFor(seed.prev, descriptor.agentId), grade)
-        ) {
+        if (since === undefined && !needsReset) {
           continue;
         }
         if (!this.isTranscriptGeneration(state, target, seed.generation)) return;

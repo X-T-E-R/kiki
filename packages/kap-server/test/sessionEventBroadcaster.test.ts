@@ -3286,6 +3286,48 @@ describe('SessionEventBroadcaster', () => {
       expect(currentCursor.seq).toBeLessThanOrEqual(watermark.seq);
     });
 
+    it('forces a full reset on a grade upgrade even when transcript_since is covered', async () => {
+      const lc = new FakeLifecycle();
+      const main = lc.addAgent('main');
+      sessions.set('s1', lc);
+      bc = makeBroadcasterWithTranscript();
+
+      // Accumulate history on a turn-graded stream: the client's cursor
+      // advances, but every step/frame op was redacted away.
+      const view = collectingTarget();
+      await bc.subscribe('s1', view.target, undefined, { main: 'turn' });
+      main.bus.emit(agentEvent('turn.started', { turnId: 1, origin: { kind: 'user' } }));
+      main.bus.emit(agentEvent('turn.step.started', { turnId: 1, step: 1 }));
+      main.bus.emit(agentEvent('assistant.delta', { turnId: 1, delta: 'redacted detail body' }));
+      main.bus.emit(agentEvent('turn.step.completed', { turnId: 1, step: 1 }));
+      main.bus.emit(agentEvent('turn.ended', { turnId: 1, reason: 'completed' }));
+      const turnGraded = transcriptEnvelopes(view.envelopes);
+      expect(JSON.stringify(turnGraded)).not.toContain('redacted detail body');
+      const cursor = (
+        turnGraded.at(-1)!.payload as { cursor: { epoch?: string; seq: number } }
+      ).cursor;
+
+      // Upgrade the same target to delta with the turn-graded cursor: a
+      // journal replay of newer batches cannot backfill the redacted history,
+      // so the seed must send a reset carrying the full detail.
+      const before = transcriptEnvelopes(view.envelopes).length;
+      await bc.subscribe('s1', view.target, undefined, { main: 'delta' }, {
+        transcriptSince: { main: cursor },
+      });
+      const upgraded = transcriptEnvelopes(view.envelopes).slice(before);
+      const resets = upgraded.filter((e) => e.type === 'transcript.reset');
+      expect(resets).toHaveLength(1);
+      const snapshot = (
+        resets[0]!.payload as {
+          snapshot: { items: Array<{ kind?: string; steps?: unknown[] }> };
+        }
+      ).snapshot;
+      expect(
+        snapshot.items.some((item) => item.kind === 'turn' && (item.steps?.length ?? 0) > 0),
+      ).toBe(true);
+      expect(JSON.stringify(snapshot)).toContain('redacted detail body');
+    });
+
     it('suppresses transcript-projected session_events on graded connections only', async () => {
       const lc = new FakeLifecycle();
       const main = lc.addAgent('main');
