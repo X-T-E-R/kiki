@@ -56,6 +56,10 @@
 # [agent_executors."<name>"]
   # protocol: string
   # command: string
+  # sources: object | object | object | object[]
+  # source: string
+  # version_probe: object
+    # args: string[]
   # args: string[] (default: [])
   # env: record<string, string>
   # startup_timeout_ms: integer

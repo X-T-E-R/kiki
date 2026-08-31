@@ -34,7 +34,11 @@ try {
     for (const result of results) {
       process.stdout.write(`${result.id}: ${result.status}\n`);
       process.stdout.write(`  command: ${result.command}${result.resolvedArgs.length === 0 ? '' : ` ${result.resolvedArgs.join(' ')}`}\n`);
+      if (result.selectedSource !== undefined) process.stdout.write(`  selected source: ${result.selectedSource}\n`);
       if (result.version !== undefined) process.stdout.write(`  version: ${result.version}\n`);
+      for (const source of result.sources ?? []) {
+        process.stdout.write(`  source ${source.id}: ${source.available ? `${source.command ?? ''}${source.version === undefined ? '' : ` (${source.version})`}` : source.diagnostic ?? 'unavailable'}\n`);
+      }
       for (const diagnostic of result.diagnostics) {
         process.stdout.write(`  ${diagnostic.severity}: ${diagnostic.message}\n`);
       }

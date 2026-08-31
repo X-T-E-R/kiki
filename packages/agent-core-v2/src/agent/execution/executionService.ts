@@ -90,7 +90,7 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
     try {
       await this.hooks.onWillRun.run({ signal: controller.signal });
       controller.signal.throwIfAborted();
-      const session = this.resolveSession();
+      const session = await this.resolveSession();
       const handle = await session.run(request, {
         ...options,
         signal: controller.signal,
@@ -156,7 +156,7 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
     super.dispose();
   }
 
-  private resolveSession(): AgentExecutorSession {
+  private async resolveSession(): Promise<AgentExecutorSession> {
     const binding = this.profile.data();
     const executorId = binding.executorId ?? 'native';
     if (this.session !== undefined) {
@@ -172,7 +172,7 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
       if (executorId === 'native') {
         this.session = new NativeAgentExecutorSession(this.agent);
       } else {
-        this.session = this.createExternalSession(binding, executorId);
+        this.session = await this.createExternalSession(binding, executorId);
       }
       this.sessionExecutorId = executorId;
       return this.session;
@@ -182,11 +182,11 @@ export class AgentExecutionService extends Disposable implements IAgentExecution
     }
   }
 
-  private createExternalSession(
+  private async createExternalSession(
     binding: ProfileBindingSnapshot,
     executorId: string,
-  ): AgentExecutorSession {
-    const resolved = this.executors.resolve(executorId, binding.executorOptions);
+  ): Promise<AgentExecutorSession> {
+    const resolved = await this.executors.resolveExecutable(executorId, binding.executorOptions);
     if (binding.executorProtocol !== resolved.descriptor.protocol) {
       throw new Error2(
         ErrorCodes.CONFIG_INVALID,

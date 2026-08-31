@@ -6,6 +6,7 @@ import { defineState } from '#/state/state';
 
 export const EXECUTOR_LOSS_CODES = [
   'acp_no_step_boundaries',
+  'codex_no_step_boundaries',
   'profile_as_user_preamble',
   'tool_input_partial',
   'tool_output_summary_only',

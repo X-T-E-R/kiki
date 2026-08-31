@@ -3,7 +3,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
 import { Event } from '#/_base/event';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { IHostProcessService } from '#/os/interface/hostProcess';
 import {
   IAgentExecutorRegistry,
   registerAgentExecutorProvider,
@@ -14,6 +17,10 @@ import {
   agentExecutorsFromToml,
 } from '#/app/agentExecutor/configSection';
 import type { IDisposable } from '#/_base/di/lifecycle';
+
+const processService = { _serviceBrand: undefined } as unknown as IHostProcessService;
+const fs = { _serviceBrand: undefined } as unknown as IHostFileSystem;
+const bootstrap = { _serviceBrand: undefined } as unknown as IBootstrapService;
 
 function configWith(value: unknown): IConfigService {
   return {
@@ -44,6 +51,9 @@ describe('AgentExecutorRegistryService', () => {
 
   beforeEach(() => {
     services = new TestInstantiationService();
+    services.set(IHostProcessService, processService);
+    services.set(IHostFileSystem, fs);
+    services.set(IBootstrapService, bootstrap);
   });
 
   afterEach(() => {
@@ -86,7 +96,7 @@ describe('AgentExecutorRegistryService', () => {
         args: ['stdio'],
         env: { TOKEN: secret, REGION: 'test' },
       },
-    })).get('secure')!;
+    }), processService, fs, bootstrap).get('secure')!;
     const reordered = new AgentExecutorRegistryService(configWith({
       secure: {
         protocol: 'acp-v1',
@@ -94,7 +104,7 @@ describe('AgentExecutorRegistryService', () => {
         args: ['stdio'],
         env: { REGION: 'test', TOKEN: secret },
       },
-    })).get('secure')!;
+    }), processService, fs, bootstrap).get('secure')!;
 
     expect(first.revision).toMatch(/^[a-f0-9]{64}$/);
     expect(first.revision).toBe(reordered.revision);
@@ -173,7 +183,7 @@ describe('AgentExecutorRegistryService', () => {
     })).toThrow();
   });
 
-  it('provides the seven trusted external harness descriptors by default', () => {
+  it('provides the eight trusted external harness descriptors by default', () => {
     services.set(IConfigService, configWith({}));
     services.set(
       IAgentExecutorRegistry,
@@ -183,6 +193,7 @@ describe('AgentExecutorRegistryService', () => {
 
     expect([
       'grok-acp',
+      'codex-app-server',
       'codex-acp',
       'cursor-acp',
       'claude-acp',
@@ -191,6 +202,7 @@ describe('AgentExecutorRegistryService', () => {
       'opencode-acp',
     ].map((id) => registry.get(id)?.id)).toEqual([
       'grok-acp',
+      'codex-app-server',
       'codex-acp',
       'cursor-acp',
       'claude-acp',

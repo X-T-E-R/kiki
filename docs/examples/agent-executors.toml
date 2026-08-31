@@ -8,6 +8,47 @@ model_binding = "session_config"
 model_config_category = "model"
 revision = "2026-08-30.1"
 
+[agent_executors.codex-app-server]
+protocol = "codex-app-server"
+args = []
+startup_timeout_ms = 150000
+shutdown_grace_ms = 3000
+revision = "2026-08-31.1"
+
+[agent_executors.codex-app-server.version_probe]
+args = ["--version"]
+
+[[agent_executors.codex-app-server.sources]]
+id = "env"
+kind = "env"
+name = "CODEX_PATH"
+
+[[agent_executors.codex-app-server.sources]]
+id = "desktop"
+kind = "glob"
+pattern = "C:/Program Files/WindowsApps/OpenAI.Codex_*/app/resources/codex.exe"
+
+[[agent_executors.codex-app-server.sources]]
+id = "vscode-extension"
+kind = "glob"
+pattern = "~/.vscode/extensions/openai.chatgpt-*/bin/windows-x86_64/codex.exe"
+
+[[agent_executors.codex-app-server.sources]]
+id = "cursor-extension"
+kind = "glob"
+pattern = "~/.cursor/extensions/openai.chatgpt-*/bin/windows-x86_64/codex.exe"
+
+[[agent_executors.codex-app-server.sources]]
+id = "npm-global"
+kind = "explicit-path"
+path = "${APPDATA}/npm/codex.cmd"
+
+[[agent_executors.codex-app-server.sources]]
+id = "path"
+kind = "path-lookup"
+command = "codex"
+required_basename = "codex"
+
 [agent_executors.codex-acp]
 protocol = "acp-v1"
 command = "codex-acp"
@@ -17,16 +58,40 @@ startup_timeout_ms = 150000
 shutdown_grace_ms = 3000
 model_binding = "session_config"
 model_config_category = "model"
-revision = "2026-08-30.1"
+revision = "2026-08-31.1"
 
 [agent_executors.cursor-acp]
 protocol = "acp-v1"
-command = "cursor-agent"
 args = ["acp"]
 shutdown_grace_ms = 3000
 model_binding = "argv"
 model_args = ["--model", "{model}"]
-revision = "2026-08-30.1"
+revision = "2026-08-31.1"
+
+[agent_executors.cursor-acp.version_probe]
+args = ["--version"]
+
+[[agent_executors.cursor-acp.sources]]
+id = "env"
+kind = "env"
+name = "CURSOR_AGENT_PATH"
+
+[[agent_executors.cursor-acp.sources]]
+id = "local-bin"
+kind = "explicit-path"
+path = "~/.local/bin/cursor-agent"
+
+[[agent_executors.cursor-acp.sources]]
+id = "path"
+kind = "path-lookup"
+command = "cursor-agent"
+required_basename = "cursor-agent"
+
+[[agent_executors.cursor-acp.sources]]
+id = "codeg-managed"
+kind = "glob"
+pattern = "~/.codeg/**/cursor-agent"
+max_depth = 8
 
 [agent_executors.claude-acp]
 protocol = "acp-v1"

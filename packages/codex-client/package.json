@@ -1,8 +1,8 @@
 {
-  "name": "@moonshot-ai/acp-client",
+  "name": "@moonshot-ai/codex-client",
   "version": "0.0.1",
   "private": true,
-  "description": "Outbound Agent Client Protocol process and session engine",
+  "description": "Outbound Codex app-server process and turn client",
   "license": "MIT",
   "author": "Moonshot AI",
   "type": "module",
@@ -24,8 +24,6 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^1.3.0",
-    "@moonshot-ai/protocol": "workspace:^",
-    "zod": "catalog:"
+    "@moonshot-ai/protocol": "workspace:^"
   }
 }

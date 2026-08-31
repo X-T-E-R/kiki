@@ -65,6 +65,7 @@
         ./packages/acp-client
         ./packages/acp-server
         ./packages/agent-core-v2
+        ./packages/codex-client
         ./packages/kap-server
         ./packages/kaos
         ./packages/klient
@@ -91,6 +92,7 @@
         "@moonshot-ai/acp-client"
         "@moonshot-ai/acp-server"
         "@moonshot-ai/agent-core-v2"
+        "@moonshot-ai/codex-client"
         "@moonshot-ai/kap-server"
         "@moonshot-ai/kaos"
         "@moonshot-ai/kosong"

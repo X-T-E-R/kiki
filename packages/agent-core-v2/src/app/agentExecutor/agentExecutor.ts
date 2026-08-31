@@ -15,7 +15,37 @@ import type {
 export type AgentExecutorProtocol =
   | 'native'
   | 'acp-v1'
+  | 'codex-app-server'
   | (string & Record<never, never>);
+
+export type AgentExecutorBinarySource =
+  | { readonly id: string; readonly kind: 'explicit-path'; readonly path: string }
+  | { readonly id: string; readonly kind: 'env'; readonly name: string }
+  | {
+      readonly id: string;
+      readonly kind: 'glob';
+      readonly pattern: string;
+      readonly maxDepth?: number;
+    }
+  | {
+      readonly id: string;
+      readonly kind: 'path-lookup';
+      readonly command: string;
+      readonly requiredBasename?: string;
+    };
+
+export interface AgentExecutorVersionProbe {
+  readonly args: readonly string[];
+}
+
+export interface AgentExecutorSourceProbe {
+  readonly id: string;
+  readonly kind: AgentExecutorBinarySource['kind'];
+  readonly available: boolean;
+  readonly command?: string;
+  readonly version?: string;
+  readonly diagnostic?: string;
+}
 
 export type AgentExecutorOptionValue = string | number | boolean;
 export type AgentExecutorOptions = Readonly<
@@ -26,6 +56,12 @@ export interface AgentExecutorDescriptor {
   readonly id: string;
   readonly protocol: AgentExecutorProtocol;
   readonly command?: string;
+  readonly sources?: readonly AgentExecutorBinarySource[];
+  readonly source?: string;
+  readonly selectedSource?: string;
+  readonly sourceProbes?: readonly AgentExecutorSourceProbe[];
+  readonly version?: string;
+  readonly versionProbe?: AgentExecutorVersionProbe;
   readonly args: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
   readonly startupTimeoutMs?: number;
@@ -88,6 +124,8 @@ export interface IAgentExecutorRegistry {
 
   get(id: string): AgentExecutorDescriptor | undefined;
   resolve(id?: string, options?: unknown): ResolvedAgentExecutor;
+  resolveExecutable(id?: string, options?: unknown): Promise<ResolvedAgentExecutor>;
+  discover(id: string): Promise<readonly AgentExecutorSourceProbe[]>;
   provider(protocol: AgentExecutorProtocol): AgentExecutorProvider | undefined;
 }
 

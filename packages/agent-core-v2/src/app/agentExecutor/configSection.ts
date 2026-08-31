@@ -7,10 +7,40 @@ import { BUILTIN_AGENT_EXECUTORS } from './builtinDescriptors';
 
 export const AGENT_EXECUTORS_SECTION = 'agentExecutors';
 
+const sourceId = z.string().trim().min(1);
+
+const AgentExecutorSourceSchema = z.discriminatedUnion('kind', [
+  z.object({
+    id: sourceId,
+    kind: z.literal('explicit-path'),
+    path: z.string().trim().min(1),
+  }).strict(),
+  z.object({
+    id: sourceId,
+    kind: z.literal('env'),
+    name: z.string().trim().min(1),
+  }).strict(),
+  z.object({
+    id: sourceId,
+    kind: z.literal('glob'),
+    pattern: z.string().trim().min(1),
+    maxDepth: z.number().int().positive().optional(),
+  }).strict(),
+  z.object({
+    id: sourceId,
+    kind: z.literal('path-lookup'),
+    command: z.string().trim().min(1),
+    requiredBasename: z.string().trim().min(1).optional(),
+  }).strict(),
+]);
+
 export const AgentExecutorConfigSchema = z
   .object({
     protocol: z.string().trim().min(1),
-    command: z.string().trim().min(1),
+    command: z.string().trim().min(1).optional(),
+    sources: z.array(AgentExecutorSourceSchema).min(1).optional(),
+    source: sourceId.optional(),
+    versionProbe: z.object({ args: z.array(z.string()).min(1) }).strict().optional(),
     args: z.array(z.string()).default([]),
     env: z.record(z.string(), z.string()).optional(),
     startupTimeoutMs: z.number().int().positive().optional(),
@@ -21,7 +51,22 @@ export const AgentExecutorConfigSchema = z
     thoughtConfigCategory: z.string().trim().min(1).optional(),
     revision: z.string().trim().min(1).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.command === undefined && value.sources === undefined) {
+      context.addIssue({ code: 'custom', message: 'command or sources is required' });
+    }
+    if (
+      value.source !== undefined &&
+      !value.sources?.some((source) => source.id === value.source)
+    ) {
+      context.addIssue({ code: 'custom', message: `source "${value.source}" is not declared in sources` });
+    }
+    const ids = value.sources?.map((source) => source.id) ?? [];
+    if (new Set(ids).size !== ids.length) {
+      context.addIssue({ code: 'custom', message: 'source ids must be unique' });
+    }
+  });
 
 export const AgentExecutorsConfigSchema = z.record(
   z.string().trim().min(1),
@@ -38,6 +83,7 @@ const TOML_TO_RUNTIME = {
   model_args: 'modelArgs',
   model_config_category: 'modelConfigCategory',
   thought_config_category: 'thoughtConfigCategory',
+  version_probe: 'versionProbe',
 } as const;
 
 const RUNTIME_TO_TOML = {
@@ -47,6 +93,7 @@ const RUNTIME_TO_TOML = {
   modelArgs: 'model_args',
   modelConfigCategory: 'model_config_category',
   thoughtConfigCategory: 'thought_config_category',
+  versionProbe: 'version_probe',
 } as const;
 
 export function agentExecutorsFromToml(value: unknown): unknown {
@@ -63,6 +110,21 @@ export function agentExecutorsFromToml(value: unknown): unknown {
         descriptor[runtimeKey] = descriptor[tomlKey];
         delete descriptor[tomlKey];
       }
+    }
+    if (Array.isArray(descriptor['sources'])) {
+      descriptor['sources'] = descriptor['sources'].map((source) => {
+        if (!isPlainObject(source)) return source;
+        const mapped: Record<string, unknown> = { ...source };
+        if (Object.hasOwn(mapped, 'max_depth')) {
+          mapped['maxDepth'] = mapped['max_depth'];
+          delete mapped['max_depth'];
+        }
+        if (Object.hasOwn(mapped, 'required_basename')) {
+          mapped['requiredBasename'] = mapped['required_basename'];
+          delete mapped['required_basename'];
+        }
+        return mapped;
+      });
     }
     result[id] = descriptor;
   }
@@ -83,6 +145,21 @@ export function agentExecutorsToToml(value: unknown): unknown {
         descriptor[tomlKey] = descriptor[runtimeKey];
         delete descriptor[runtimeKey];
       }
+    }
+    if (Array.isArray(descriptor['sources'])) {
+      descriptor['sources'] = descriptor['sources'].map((source) => {
+        if (!isPlainObject(source)) return source;
+        const mapped: Record<string, unknown> = { ...source };
+        if (Object.hasOwn(mapped, 'maxDepth')) {
+          mapped['max_depth'] = mapped['maxDepth'];
+          delete mapped['maxDepth'];
+        }
+        if (Object.hasOwn(mapped, 'requiredBasename')) {
+          mapped['required_basename'] = mapped['requiredBasename'];
+          delete mapped['requiredBasename'];
+        }
+        return mapped;
+      });
     }
     result[id] = descriptor;
   }

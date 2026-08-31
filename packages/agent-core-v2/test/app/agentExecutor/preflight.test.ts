@@ -5,6 +5,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IConfigService } from '#/app/config/config';
+import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
+import { AgentExecutorRegistryService } from '#/app/agentExecutor/agentExecutorRegistryService';
 import {
   AgentExecutorPreflightService,
   IAgentExecutorPreflightService,
@@ -67,7 +70,13 @@ function bootstrap(): IBootstrapService {
     cacheDir: 'cache',
     logsDir: 'logs',
     configKey: 'config.toml',
-    getEnv: (name) => name === 'CODEX_HOME' ? 'C:/codex-home' : undefined,
+    getEnv: (name) => ({
+      CODEX_HOME: 'C:/codex-home',
+      CODEX_PATH: 'C:/tools/codex.exe',
+      ALT_CODEX_PATH: 'C:/alt/codex.exe',
+      PATH: 'C:/tools',
+      PATHEXT: '.EXE;.CMD',
+    })[name],
     scope: () => '',
   };
 }
@@ -93,10 +102,17 @@ describe('AgentExecutorPreflightService', () => {
     services.set(IHostProcessService, processService);
     services.set(IHostFileSystem, fsWith([
       'C:/codex-home/auth.json',
+      'C:/tools/codex.exe',
+      'C:/Users/test/.local/bin/cursor-agent',
       'C:/Users/test/.claude',
       'C:/Users/test/.gemini',
     ]));
     services.set(IBootstrapService, bootstrap());
+    services.set(IConfigService, {
+      _serviceBrand: undefined,
+      get: () => undefined,
+    } as unknown as IConfigService);
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
     services.set(
       IAgentExecutorPreflightService,
       new SyncDescriptor(AgentExecutorPreflightService),
@@ -105,11 +121,12 @@ describe('AgentExecutorPreflightService', () => {
 
   afterEach(() => services.dispose());
 
-  it('probes all seven harnesses and selects the Gemini experimental fallback', async () => {
+  it('probes all eight harnesses and selects discovered sources plus the Gemini fallback', async () => {
     processService.outputs.set('grok --version', { output: 'grok 1.0.13' });
     processService.outputs.set('codex-acp --version', { output: 'codex-acp 1.7.0' });
     processService.outputs.set('codex --version', { output: 'codex 0.1.0' });
-    processService.outputs.set('cursor-agent --version', { output: 'cursor 1.0.0' });
+    processService.outputs.set('C:/tools/codex.exe --version', { output: 'codex-cli 0.151.0-alpha.7.1' });
+    processService.outputs.set('C:/Users/test/.local/bin/cursor-agent --version', { output: 'cursor-agent 1.0.0' });
     processService.outputs.set('claude-agent-acp --version', { output: 'claude-agent-acp 0.69.0' });
     processService.outputs.set('gemini --version', { output: '0.55.1' });
     processService.outputs.set('gemini --help', { output: '  --experimental-acp  Start ACP mode' });
@@ -118,7 +135,12 @@ describe('AgentExecutorPreflightService', () => {
 
     const results = await services.get(IAgentExecutorPreflightService).run();
 
-    expect(results).toHaveLength(7);
+    expect(results).toHaveLength(8);
+    expect(results.find((result) => result.id === 'codex-app-server')).toMatchObject({
+      selectedSource: 'env',
+      command: 'C:/tools/codex.exe',
+      version: 'codex-cli 0.151.0-alpha.7.1',
+    });
     expect(results.find((result) => result.id === 'gemini-acp')).toMatchObject({
       status: 'warning',
       resolvedArgs: ['--experimental-acp'],
@@ -135,8 +157,44 @@ describe('AgentExecutorPreflightService', () => {
     ]));
   });
 
+  it('honors an explicit source id even when an earlier source is available', async () => {
+    services.set(IHostFileSystem, fsWith([
+      'C:/tools/codex.exe',
+      'C:/alt/codex.exe',
+    ]));
+    processService.outputs.set('C:/tools/codex.exe --version', { output: 'codex-cli 0.151.0' });
+    processService.outputs.set('C:/alt/codex.exe --version', { output: 'codex-cli 0.150.0' });
+    services.set(IConfigService, {
+      _serviceBrand: undefined,
+      get: () => ({
+        selected: {
+          protocol: 'codex-app-server',
+          sources: [
+            { id: 'preferred', kind: 'env', name: 'CODEX_PATH' },
+            { id: 'forced', kind: 'env', name: 'ALT_CODEX_PATH' },
+          ],
+          source: 'forced',
+          versionProbe: { args: ['--version'] },
+          args: [],
+        },
+      }),
+    } as unknown as IConfigService);
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    services.set(IAgentExecutorPreflightService, new SyncDescriptor(AgentExecutorPreflightService));
+
+    const [result] = await services.get(IAgentExecutorPreflightService).run(['selected']);
+
+    expect(result).toMatchObject({
+      selectedSource: 'forced',
+      command: 'C:/alt/codex.exe',
+      version: 'codex-cli 0.150.0',
+    });
+    expect(result?.sources?.filter((source) => source.available)).toHaveLength(2);
+  });
+
   it('reports unavailable binaries without treating missing auth as success', async () => {
     services.set(IHostFileSystem, fsWith([]));
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
     services.set(
       IAgentExecutorPreflightService,
       new SyncDescriptor(AgentExecutorPreflightService),

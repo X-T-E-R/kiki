@@ -35,6 +35,10 @@ const cases = [
     model: process.env['KIKI_KIMI_ACP_SMOKE_MODEL'] ?? 'kimi-for-coding',
   },
   {
+    id: 'codex-app-server',
+    model: process.env['KIKI_CODEX_APP_SERVER_SMOKE_MODEL'] ?? 'YOUR_EXACT_CODEX_MODEL_ID',
+  },
+  {
     id: 'codex-acp',
     model: process.env['KIKI_CODEX_ACP_SMOKE_MODEL'] ?? 'YOUR_EXACT_CODEX_MODEL_ID',
   },
@@ -65,7 +69,7 @@ describe('external harness real smoke', () => {
 
   for (const smokeCase of cases) {
     const run = enabled.has(smokeCase.id) ? it : it.skip;
-    run(smokeCase.id, { timeout: 180_000 }, async () => {
+    run(smokeCase.id, { timeout: 300_000 }, async () => {
       const context = createTestAgent(
         execEnvServices({ processRunner: new HostProcessService() }),
         appService(IHostEnvironment, {
@@ -82,9 +86,8 @@ describe('external harness real smoke', () => {
         { cwd: process.cwd() },
       );
       contexts.push(context);
-      const descriptor = context.get(IAgentExecutorRegistry).get(smokeCase.id);
-      expect(descriptor).toBeDefined();
-      expect(descriptor?.args.join(' ')).not.toMatch(/always-approve|\byolo\b|bypass/i);
+      const descriptor = (await context.get(IAgentExecutorRegistry).resolveExecutable(smokeCase.id)).descriptor;
+      expect(descriptor.args.join(' ')).not.toMatch(/always-approve|\byolo\b|bypass/i);
       context.get(IAgentProfileService).applyBindingSnapshot({
         modelAlias: smokeCase.model,
         thinkingLevel: 'off',
@@ -96,7 +99,7 @@ describe('external harness real smoke', () => {
       });
 
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(new Error('external harness smoke timed out')), 170_000);
+      const timer = setTimeout(() => controller.abort(new Error('external harness smoke timed out')), 290_000);
       try {
         const handle = await context.get(IAgentExecutionService).run(
           { kind: 'prompt', prompt },
@@ -108,7 +111,7 @@ describe('external harness real smoke', () => {
         const execution = records.find((record) => record.type === 'executor.turn.metadata');
         expect(execution).toMatchObject({
           executorId: smokeCase.id,
-          protocol: 'acp-v1',
+          protocol: descriptor.protocol,
         });
         expect(records.some((record) => record.type === 'turn.ended')).toBe(true);
 

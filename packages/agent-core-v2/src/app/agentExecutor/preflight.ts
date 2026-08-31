@@ -8,6 +8,8 @@ import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService, type IHostProcess } from '#/os/interface/hostProcess';
 
+import { IAgentExecutorRegistry } from './agentExecutor';
+import { selectExecutorSource } from './binaryDiscovery';
 import { BUILTIN_AGENT_EXECUTORS } from './builtinDescriptors';
 
 export type AgentExecutorPreflightStatus = 'ready' | 'warning' | 'unavailable';
@@ -23,6 +25,8 @@ export interface AgentExecutorPreflightResult {
   readonly status: AgentExecutorPreflightStatus;
   readonly command: string;
   readonly version?: string;
+  readonly selectedSource?: string;
+  readonly sources?: readonly import('./agentExecutor').AgentExecutorSourceProbe[];
   readonly resolvedArgs: readonly string[];
   readonly diagnostics: readonly AgentExecutorPreflightDiagnostic[];
 }
@@ -48,6 +52,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     @IHostProcessService private readonly processService: IHostProcessService,
     @IHostFileSystem private readonly fs: IHostFileSystem,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
+    @IAgentExecutorRegistry private readonly registry: IAgentExecutorRegistry,
   ) {}
 
   async run(ids: readonly string[] = Object.keys(BUILTIN_AGENT_EXECUTORS)): Promise<readonly AgentExecutorPreflightResult[]> {
@@ -55,6 +60,8 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
   }
 
   async #runOne(id: string): Promise<AgentExecutorPreflightResult> {
+    const descriptor = this.registry.get(id);
+    if (descriptor?.sources !== undefined) return this.#discovered(id);
     switch (id) {
       case 'grok-acp':
         return this.#grok();
@@ -85,6 +92,43 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     }
   }
 
+  async #discovered(id: string): Promise<AgentExecutorPreflightResult> {
+    const descriptor = this.registry.get(id)!;
+    const sources = await this.registry.discover(id);
+    const selected = selectExecutorSource(descriptor, sources);
+    const diagnostics: AgentExecutorPreflightDiagnostic[] = sources.map((source) =>
+      source.available
+        ? info(`Source ${source.id}: ${source.command ?? ''}${source.version === undefined ? '' : ` (${source.version})`}`)
+        : warning(`Source ${source.id}: ${source.diagnostic ?? 'unavailable'}`));
+    if (descriptor.source !== undefined && selected === undefined) {
+      diagnostics.unshift(error(`Configured source "${descriptor.source}" is unavailable.`));
+    } else if (selected === undefined) {
+      diagnostics.unshift(error('No configured executable source is available.'));
+    } else {
+      diagnostics.unshift(info(`Selected source ${selected.id}: ${selected.command}.`));
+    }
+    if (id === 'codex-app-server') {
+      const codexHome = this.bootstrap.getEnv('CODEX_HOME') ?? join(this.bootstrap.osHomeDir, '.codex');
+      const authPath = join(codexHome, 'auth.json');
+      diagnostics.push(await this.#exists(authPath)
+        ? info(`Codex auth state exists at ${authPath}.`)
+        : warning(`Codex auth state was not found at ${authPath}; run the vendor login flow first.`));
+      diagnostics.push(info('Codex uses app-server --listen stdio:// with on-request approvals and no bypass flag.'));
+    }
+    if (id === 'cursor-acp') {
+      diagnostics.push(info('Only cursor-agent is admitted; the unrelated agent shim is never probed.'));
+    }
+    return resultOf(
+      id,
+      selected?.command ?? '',
+      descriptor.args,
+      selected?.version,
+      diagnostics,
+      selected?.id,
+      sources,
+    );
+  }
+
   async #grok(): Promise<AgentExecutorPreflightResult> {
     const diagnostics = [
       this.bootstrap.getEnv('XAI_API_KEY') === undefined
@@ -98,7 +142,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
   async #codex(): Promise<AgentExecutorPreflightResult> {
     const descriptor = BUILTIN_AGENT_EXECUTORS['codex-acp']!;
     const [adapter, vendor] = await Promise.all([
-      this.#probe(descriptor.command, ['--version']),
+      this.#probe(requiredBuiltinCommand(descriptor), ['--version']),
       this.#probe('codex', ['--version']),
     ]);
     const codexHome = this.bootstrap.getEnv('CODEX_HOME') ?? join(this.bootstrap.osHomeDir, '.codex');
@@ -113,7 +157,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
       ? info(`Codex auth state exists at ${authPath}.`)
       : warning(`Codex auth state was not found at ${authPath}; run the vendor login flow first.`));
     diagnostics.push(info('DISABLE_MCP_CONFIG_FILTERING=true will be injected into codex-acp.'));
-    return resultOf('codex-acp', descriptor.command, descriptor.args, firstLine(adapter.output), diagnostics);
+    return resultOf('codex-acp', requiredBuiltinCommand(descriptor), descriptor.args, firstLine(adapter.output), diagnostics);
   }
 
   async #claude(): Promise<AgentExecutorPreflightResult> {
@@ -129,8 +173,8 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
   async #gemini(): Promise<AgentExecutorPreflightResult> {
     const descriptor = BUILTIN_AGENT_EXECUTORS['gemini-acp']!;
     const [version, help] = await Promise.all([
-      this.#probe(descriptor.command, ['--version']),
-      this.#probe(descriptor.command, ['--help']),
+      this.#probe(requiredBuiltinCommand(descriptor), ['--version']),
+      this.#probe(requiredBuiltinCommand(descriptor), ['--help']),
     ]);
     const diagnostics: AgentExecutorPreflightDiagnostic[] = [];
     if (!version.available) diagnostics.push(error('gemini is not installed or not executable.'));
@@ -148,12 +192,12 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     diagnostics.push(await this.#exists(geminiHome)
       ? info(`Gemini login/config directory exists at ${geminiHome}.`)
       : info('Gemini will reuse its vendor login or API-key environment when present.'));
-    return resultOf('gemini-acp', descriptor.command, resolvedArgs, firstLine(version.output), diagnostics);
+    return resultOf('gemini-acp', requiredBuiltinCommand(descriptor), resolvedArgs, firstLine(version.output), diagnostics);
   }
 
   async #kimi(): Promise<AgentExecutorPreflightResult> {
     const descriptor = BUILTIN_AGENT_EXECUTORS['kimi-acp']!;
-    const probe = await this.#probe(descriptor.command, ['--version']);
+    const probe = await this.#probe(requiredBuiltinCommand(descriptor), ['--version']);
     const diagnostics: AgentExecutorPreflightDiagnostic[] = [];
     if (!probe.available) diagnostics.push(error('kimi is not installed or not executable.'));
     else if (probe.code !== 0) diagnostics.push(warning(`kimi --version exited with code ${probe.code}.`));
@@ -164,7 +208,7 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     } else {
       diagnostics.push(info('Kimi reuses the existing Kimi Code login and configuration.'));
     }
-    return resultOf('kimi-acp', descriptor.command, descriptor.args, version, diagnostics);
+    return resultOf('kimi-acp', requiredBuiltinCommand(descriptor), descriptor.args, version, diagnostics);
   }
 
   async #simpleVersion(
@@ -173,11 +217,11 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
     initial: readonly AgentExecutorPreflightDiagnostic[],
   ): Promise<AgentExecutorPreflightResult> {
     const descriptor = BUILTIN_AGENT_EXECUTORS[id]!;
-    const probe = await this.#probe(descriptor.command, versionArgs);
+    const probe = await this.#probe(requiredBuiltinCommand(descriptor), versionArgs);
     const diagnostics = [...initial];
-    if (!probe.available) diagnostics.unshift(error(`${descriptor.command} is not installed or not executable.`));
-    else if (probe.code !== 0) diagnostics.unshift(warning(`${descriptor.command} ${versionArgs.join(' ')} exited with code ${probe.code}.`));
-    return resultOf(id, descriptor.command, descriptor.args, firstLine(probe.output), diagnostics);
+    if (!probe.available) diagnostics.unshift(error(`${requiredBuiltinCommand(descriptor)} is not installed or not executable.`));
+    else if (probe.code !== 0) diagnostics.unshift(warning(`${requiredBuiltinCommand(descriptor)} ${versionArgs.join(' ')} exited with code ${probe.code}.`));
+    return resultOf(id, requiredBuiltinCommand(descriptor), descriptor.args, firstLine(probe.output), diagnostics);
   }
 
   async #probe(command: string, args: readonly string[]): Promise<CommandProbe> {
@@ -224,19 +268,26 @@ export class AgentExecutorPreflightService implements IAgentExecutorPreflightSer
   }
 }
 
+function requiredBuiltinCommand(descriptor: { readonly command?: string }): string {
+  if (descriptor.command === undefined) throw new Error('Built-in executor has no command');
+  return descriptor.command;
+}
+
 function resultOf(
   id: string,
   command: string,
   resolvedArgs: readonly string[],
   version: string | undefined,
   diagnostics: readonly AgentExecutorPreflightDiagnostic[],
+  selectedSource?: string,
+  sources?: readonly import('./agentExecutor').AgentExecutorSourceProbe[],
 ): AgentExecutorPreflightResult {
   const status = diagnostics.some((diagnostic) => diagnostic.severity === 'error')
     ? 'unavailable'
     : diagnostics.some((diagnostic) => diagnostic.severity === 'warning')
       ? 'warning'
       : 'ready';
-  return { id, status, command, version, resolvedArgs, diagnostics };
+  return { id, status, command, version, selectedSource, sources, resolvedArgs, diagnostics };
 }
 
 function firstLine(value: string): string | undefined {

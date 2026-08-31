@@ -64,6 +64,7 @@
     "@jsquash/webp": "^1.5.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@moonshot-ai/acp-client": "workspace:^",
+    "@moonshot-ai/codex-client": "workspace:^",
     "@moonshot-ai/kimi-code-oauth": "workspace:^",
     "@moonshot-ai/minidb": "workspace:^",
     "@moonshot-ai/protocol": "workspace:^",

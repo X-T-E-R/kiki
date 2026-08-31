@@ -236,7 +236,7 @@ interface ExecutorTurnMetadataPayload {
   resumeMode: 'live' | 'resume' | 'load' | 'new' | 'handoff';
   profileDelivery: 'native' | 'first_prompt_preamble';
   fidelity: 'full' | 'degraded';
-  losses: 'acp_no_step_boundaries' | 'profile_as_user_preamble' | 'tool_input_partial' | 'tool_output_summary_only' | 'message_id_missing' | 'user_message_attribution_missing' | 'usage_context_only' | 'unknown_update_dropped' | 'resume_new_session_handoff' | 'handoff_truncated' | 'unstable_acp_plan' | 'permission_mode_unverified'[];
+  losses: 'acp_no_step_boundaries' | 'codex_no_step_boundaries' | 'profile_as_user_preamble' | 'tool_input_partial' | 'tool_output_summary_only' | 'message_id_missing' | 'user_message_attribution_missing' | 'usage_context_only' | 'unknown_update_dropped' | 'resume_new_session_handoff' | 'handoff_truncated' | 'unstable_acp_plan' | 'permission_mode_unverified'[];
 }
 
 /**

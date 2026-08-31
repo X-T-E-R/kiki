@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 
 import { LifecycleScope } from '#/app/scopes';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { IHostProcessService } from '#/os/interface/hostProcess';
 import {
   registerScopedService,
   ScopeActivation,
@@ -11,6 +14,7 @@ import { Error2, ErrorCodes } from '#/errors';
 import {
   type AgentExecutorDescriptor,
   type AgentExecutorOptions,
+  type AgentExecutorSourceProbe,
   type AgentExecutorOptionValue,
   type AgentExecutorProtocol,
   type AgentExecutorProvider,
@@ -18,6 +22,7 @@ import {
   type ResolvedAgentExecutor,
   registeredAgentExecutorProviders,
 } from './agentExecutor';
+import { discoverExecutorSources, selectExecutorSource } from './binaryDiscovery';
 import { BUILTIN_AGENT_EXECUTORS } from './builtinDescriptors';
 import {
   AGENT_EXECUTORS_SECTION,
@@ -45,7 +50,12 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     ]),
   );
 
-  constructor(@IConfigService private readonly config: IConfigService) {}
+  constructor(
+    @IConfigService private readonly config: IConfigService,
+    @IHostProcessService private readonly processService: IHostProcessService,
+    @IHostFileSystem private readonly fs: IHostFileSystem,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
+  ) {}
 
   get(id: string): AgentExecutorDescriptor | undefined {
     if (id === 'native') return NATIVE_DESCRIPTOR;
@@ -89,6 +99,52 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
     };
   }
 
+  async resolveExecutable(
+    id = 'native',
+    options: unknown = {},
+  ): Promise<ResolvedAgentExecutor> {
+    const resolved = this.resolve(id, options);
+    if (resolved.descriptor.id === 'native' || resolved.descriptor.sources === undefined) {
+      return resolved;
+    }
+    const probes = await this.discover(id);
+    const selected = selectExecutorSource(resolved.descriptor, probes);
+    if (selected?.command === undefined) {
+      const requested = resolved.descriptor.source;
+      throw new Error2(
+        ErrorCodes.CONFIG_INVALID,
+        requested === undefined
+          ? `No executable source is available for agent executor "${id}"`
+          : `Configured source "${requested}" is unavailable for agent executor "${id}"`,
+        { details: { executorId: id, source: requested, probes } },
+      );
+    }
+    return {
+      ...resolved,
+      descriptor: {
+        ...resolved.descriptor,
+        command: selected.command,
+        selectedSource: selected.id,
+        sourceProbes: probes,
+        version: selected.version,
+        revision: resolvedExecutableRevision(resolved.descriptor.revision, selected.command),
+      },
+    };
+  }
+
+  async discover(id: string): Promise<readonly AgentExecutorSourceProbe[]> {
+    const descriptor = this.get(id);
+    if (descriptor === undefined) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, `Unknown agent executor "${id}"`);
+    }
+    return discoverExecutorSources(
+      descriptor,
+      this.processService,
+      this.fs,
+      this.bootstrap,
+    );
+  }
+
   provider(protocol: AgentExecutorProtocol): AgentExecutorProvider | undefined {
     return this.providers.get(protocol);
   }
@@ -102,6 +158,9 @@ function descriptorFromConfig(
     id,
     protocol: config.protocol,
     command: config.command,
+    sources: config.sources,
+    source: config.source,
+    versionProbe: config.versionProbe,
     args: [...config.args],
     env: config.env,
     startupTimeoutMs: config.startupTimeoutMs,
@@ -114,6 +173,12 @@ function descriptorFromConfig(
   };
 }
 
+export function resolvedExecutableRevision(baseRevision: string, command: string): string {
+  return createHash('sha256')
+    .update(JSON.stringify({ baseRevision, command }))
+    .digest('hex');
+}
+
 export function descriptorRevisionFromConfig(config: AgentExecutorConfig): string {
   const env = config.env === undefined
     ? undefined
@@ -121,6 +186,9 @@ export function descriptorRevisionFromConfig(config: AgentExecutorConfig): strin
   const canonical = JSON.stringify({
     protocol: config.protocol,
     command: config.command,
+    sources: config.sources,
+    source: config.source,
+    versionProbe: config.versionProbe,
     args: config.args,
     env,
     startupTimeoutMs: config.startupTimeoutMs,

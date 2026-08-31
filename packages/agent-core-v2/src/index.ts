@@ -674,6 +674,8 @@ export * from '#/agent/execution/externalExecutorOps';
 export * from '#/agent/execution/externalTurnRecorder';
 export * from '#/agent/execution/acpAgentExecutorSession';
 export * from '#/agent/execution/acpAgentExecutorProvider';
+export * from '#/agent/execution/codexAppServerExecutorSession';
+export * from '#/agent/execution/codexAppServerExecutorProvider';
 export * from '#/agent/execution/nativeAgentExecutorSession';
 export * from '#/agent/llmRequester/llmRequester';
 export * from '#/agent/llmRequester/llmRequesterService';

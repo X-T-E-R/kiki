@@ -94,6 +94,8 @@ describe('AgentExecutionService', () => {
         options: {},
         provider,
       }),
+      resolveExecutable: async function () { return this.resolve(); },
+      discover: async () => [],
       provider: () => provider,
     };
     const service = new AgentExecutionService(
@@ -162,6 +164,8 @@ describe('AgentExecutionService', () => {
         options: {},
         provider,
       }),
+      resolveExecutable: async function () { return this.resolve(); },
+      discover: async () => [],
       provider: () => provider,
     };
     const service = new AgentExecutionService(
@@ -190,6 +194,8 @@ describe('AgentExecutionService', () => {
         descriptor: { id: 'missing', protocol: 'acp-v1', args: [], revision: 'r1' },
         options: {},
       }),
+      resolveExecutable: async function () { return this.resolve(); },
+      discover: async () => [],
       provider: () => undefined,
     };
     const service = new AgentExecutionService(

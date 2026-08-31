@@ -412,7 +412,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
               return { profile: base, baseProfile: base, route: undefined };
             })()
           : this.catalog.resolveSelection({ profile: input.profile, route: input.route });
-    const executor = this.executors.resolve(
+    const executor = await this.executors.resolveExecutable(
       selection.profile.executor,
       selection.profile.executorOptions,
     );

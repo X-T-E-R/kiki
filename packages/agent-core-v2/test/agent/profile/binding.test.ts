@@ -212,6 +212,8 @@ function externalExecutorRegistry(
         options: options as Readonly<Record<string, string | number | boolean>>,
       };
     },
+    resolveExecutable: async function (id, options) { return this.resolve(id, options); },
+    discover: async () => [],
     provider: () => undefined,
   };
 }
