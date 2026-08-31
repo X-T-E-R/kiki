@@ -76,7 +76,7 @@ describe('PluginManager', () => {
     ]);
   });
 
-  it('installs a local-path plugin into the managed root', async () => {
+  it('installs a local-path plugin disabled and preserves explicit enablement on reinstall', async () => {
     const sourceRoot = await mkdtemp(join(tmpdir(), 'plugin-install-source-'));
     try {
       await writeFile(join(sourceRoot, 'kimi.plugin.json'), JSON.stringify({ name: 'other' }), 'utf8');
@@ -85,8 +85,13 @@ describe('PluginManager', () => {
       const record = await manager.install(sourceRoot);
 
       expect(record.id).toBe('other');
+      expect(record.enabled).toBe(false);
       expect(record.root).toContain(join(home, 'plugins', 'managed', 'other'));
       expect(manager.get('other')?.manifest?.name).toBe('other');
+
+      await manager.setEnabled('other', true);
+      const reinstalled = await manager.install(sourceRoot);
+      expect(reinstalled.enabled).toBe(true);
     } finally {
       await rm(sourceRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }

@@ -167,6 +167,8 @@ describe('PluginManager consumption plane', () => {
     await manager.load();
     await manager.install(a);
     await manager.install(b);
+    await manager.setEnabled('a', true);
+    await manager.setEnabled('b', true);
     await manager.setEnabled('b', false);
     const managedA = await managedPluginRoot(manager, 'a');
     const managedB = await managedPluginRoot(manager, 'b');
@@ -190,6 +192,8 @@ describe('PluginManager consumption plane', () => {
     await manager.load();
     await manager.install(a);
     await manager.install(b);
+    await manager.setEnabled('a', true);
+    await manager.setEnabled('b', true);
     await manager.setEnabled('b', false);
     const managedA = await managedPluginRoot(manager, 'a');
     const managedB = await managedPluginRoot(manager, 'b');
@@ -433,6 +437,7 @@ describe('PluginManager consumption plane', () => {
     const manager = new PluginManager({ kimiHomeDir: home });
     await manager.load();
     await manager.install(root);
+    await manager.setEnabled('demo', true);
     expect(manager.enabledSessionStarts()).toEqual([{ pluginId: 'demo', skillName: 'demo-skill' }]);
     await manager.setEnabled('demo', false);
     expect(manager.enabledSessionStarts()).toEqual([]);
@@ -446,6 +451,7 @@ describe('PluginManager consumption plane', () => {
     await manager.load();
     await manager.install(withPrompt);
     await manager.install(withoutPrompt);
+    await manager.setEnabled('prompted', true);
     expect(manager.enabledSystemPrompts()).toEqual([
       { pluginId: 'prompted', content: 'Always cite sources.' },
     ]);
@@ -465,6 +471,7 @@ describe('PluginManager consumption plane', () => {
     const manager = new PluginManager({ kimiHomeDir: home });
     await manager.load();
     await manager.install(root);
+    await manager.setEnabled('demo', true);
     const managedRoot = await managedPluginRoot(manager, 'demo');
 
     expect(manager.info('demo')?.mcpServers).toContainEqual(
@@ -523,6 +530,7 @@ describe('PluginManager consumption plane', () => {
     const manager = new PluginManager({ kimiHomeDir: home });
     await manager.load();
     await manager.install(root);
+    await manager.setEnabled('demo', true);
     expect(manager.info('demo')?.mcpServers).toContainEqual(
       expect.objectContaining({ name: 'finance', enabled: false }),
     );
@@ -554,6 +562,8 @@ describe('PluginManager consumption plane', () => {
     await manager.load();
     await manager.install(first);
     await manager.install(second);
+    await manager.setEnabled('a-b', true);
+    await manager.setEnabled('a', true);
     expect(manager.info('a-b')?.mcpServers).toContainEqual(
       expect.objectContaining({ name: 'c', runtimeName: 'plugin-a-b:c' }),
     );
@@ -596,6 +606,7 @@ describe('PluginManager consumption plane', () => {
     await manager.load();
     await manager.install(demo);
     await manager.install(other);
+    await manager.setEnabled('demo', true);
     await manager.setMcpServerEnabled('demo', 'finance', false);
     await manager.setEnabled('other', false);
 
@@ -623,6 +634,7 @@ describe('PluginManager consumption plane', () => {
     const manager = new PluginManager({ kimiHomeDir: home });
     await manager.load();
     await manager.install(root);
+    await manager.setEnabled('demo', true);
     const managedRoot = await managedPluginRoot(manager, 'demo');
 
     const entries = manager.mcpServerEntries();
@@ -714,6 +726,7 @@ describe('PluginManager consumption plane', () => {
     const manager = new PluginManager({ kimiHomeDir: home });
     await manager.load();
     await manager.install(root);
+    await manager.setEnabled('demo', true);
     const installedRoot = await managedPluginRoot(manager, 'demo');
     expect(manager.enabledHooks()).toEqual([
       {
@@ -893,6 +906,7 @@ describe('PluginManager consumption plane', () => {
     const manager = new PluginManager({ kimiHomeDir: home });
     await manager.load();
     await manager.install(root);
+    await manager.setEnabled('demo', true);
     const managedRoot = await managedPluginRoot(manager, 'demo');
 
     const originalElectron = process.versions['electron'];
@@ -926,6 +940,7 @@ describe('PluginManager consumption plane', () => {
     const manager = new PluginManager({ kimiHomeDir: home });
     await manager.load();
     await manager.install(root);
+    await manager.setEnabled('demo', true);
 
     const server = manager.enabledMcpServers()['plugin-demo:data'];
     expect(server).toEqual(
