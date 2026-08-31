@@ -27,6 +27,7 @@ import {
   type CreateAgentOptions,
 } from '#/session/agentLifecycle/agentLifecycle';
 import { labelsFromAgentMeta } from '#/session/agentLifecycle/subagentMetadata';
+import { IAgentCollaborationRegistry } from '#/session/agentCollaboration/registry';
 import { createHooks } from '#/hooks';
 import {
   type AgentTaskHooks,
@@ -1085,6 +1086,11 @@ describe('SessionSwarmService metadata compatibility', () => {
         return { id: alias } as Model;
       },
     } as IModelCatalog);
+    ix.stub(IAgentCollaborationRegistry, {
+      reserve: async () => true,
+      commit: () => {},
+      release: () => {},
+    });
     ix.set(ISwarmConcurrencyRegistry, new SwarmConcurrencyRegistry({}));
     ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     ix.set(ISessionSwarmService, new SyncDescriptor(SessionSwarmService));
