@@ -129,6 +129,17 @@ export class AgentPlanService extends Service implements IAgentPlanService {
       return;
     }
 
+    if (toolName === 'AgentRun' || toolName === 'AgentSwarm' || toolName === 'AgentSend') {
+      event.veto(
+        denyToolExecution(
+          this.toolApproval.formatDenyMessage(
+            `${toolName} is not available in plan mode. Call ExitPlanMode to exit plan mode before dispatching or messaging subagents.`,
+          ),
+        ),
+      );
+      return;
+    }
+
     if (toolName === 'CronCreate' || toolName === 'CronDelete') {
       event.veto(
         denyToolExecution(

@@ -308,6 +308,19 @@ describe('AgentPlanService plan-guard listener', () => {
       expect(permissionRan).toBe(false);
     });
 
+    it.each(['AgentRun', 'AgentSwarm', 'AgentSend'] as const)(
+      'blocks %s while plan mode is active',
+      async (toolName) => {
+        await enterPlan();
+        const decision = await run(hookContext(toolName, { args: {} }));
+
+        expect(decision?.veto?.isError).toBe(true);
+        expect(decision?.veto?.output).toContain(toolName);
+        expect(decision?.veto?.output).toContain('ExitPlanMode');
+        expect(permissionRan).toBe(false);
+      },
+    );
+
     it.each(['CronCreate', 'CronDelete'] as const)(
       'blocks %s while plan mode is active',
       async (toolName) => {
@@ -321,7 +334,7 @@ describe('AgentPlanService plan-guard listener', () => {
       },
     );
 
-    it.each(['Read', 'Grep', 'Bash', 'CronList'] as const)(
+    it.each(['Read', 'Grep', 'Bash', 'CronList', 'AgentList'] as const)(
       'abstains on %s while plan mode is active',
       async (toolName) => {
         await enterPlan();
