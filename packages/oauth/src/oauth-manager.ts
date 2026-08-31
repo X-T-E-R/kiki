@@ -177,10 +177,9 @@ export class OAuthManager {
    * `proper-lockfile.lock(target)` creates `${target}.lock` as the
    * actual lock directory, so the real lockfile on disk ends up at
    * `{configDir}/oauth/{providerName}.lock`. Returns `undefined` when
-   * locking is opted out (no configDir, Windows, env kill switch).
+   * locking is opted out (no configDir or env kill switch).
    */
   private resolveLockTarget(): string | undefined {
-    if (process.platform === 'win32') return undefined;
     if (process.env['KIMI_DISABLE_OAUTH_LOCK'] === '1') return undefined;
     if (this.configDir === undefined) return undefined;
     return `${this.configDir}/oauth/${this.config.name}`;

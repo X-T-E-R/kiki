@@ -63,7 +63,7 @@ export async function spawnInlineWorkers(
   await writeFile(scriptPath, opts.inlineScript, 'utf8');
   const running: RunningWorker[] = [];
   for (let id = 0; id < opts.count; id += 1) {
-    const child = spawn(tsxCli, [scriptPath, String(id)], {
+    const child = spawn(process.execPath, [tsxCli, scriptPath, String(id)], {
       env: {
         ...process.env,
         KIMI_CODE_HOME: opts.shareDir,
