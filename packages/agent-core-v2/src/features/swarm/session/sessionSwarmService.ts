@@ -1,4 +1,6 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
+import { z } from 'zod';
+
 import type { TokenUsage } from '#/kosong/contract/usage';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
@@ -13,7 +15,7 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
-import { Event2 } from '#/app/event/event2';
+import { Event2, registerEvent2Class } from '#/app/event/event2';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { applyProfilePromptPrefix } from '#/app/agentProfileCatalog/promptPrefix';
 import { resolveSubagentTarget } from '#/app/agentProfileCatalog/subagentDispatch';
@@ -59,11 +61,19 @@ export interface SubagentSuspendedPayload {
   readonly reason: string;
 }
 
+const subagentSuspendedSchema: z.ZodType<SubagentSuspendedPayload> = z.object({
+  subagentId: z.string(),
+  reason: z.string(),
+});
+
 export class SubagentSuspended extends Event2<SubagentSuspendedPayload> {
   static override readonly type = 'subagent.suspended';
+  static override readonly durable = true;
   static override readonly observable = true;
+  static override readonly schema = subagentSuspendedSchema;
 }
 export interface SubagentSuspended extends SubagentSuspendedPayload {}
+registerEvent2Class(SubagentSuspended);
 
 const RESUMED_PROFILE_FALLBACK = 'subagent';
 

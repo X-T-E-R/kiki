@@ -6,7 +6,7 @@ import { TestInstantiationService } from '#/_base/di/test';
 import { IEventBus } from '#/app/event/eventBus';
 import { EventBusService } from '#/app/event/eventBusService';
 import type { AgentTaskInfo } from '#/agent/task/task';
-import { taskKey, TaskStarted, TaskTerminated } from '#/agent/task/taskOps';
+import { taskKey, TaskNotified, TaskStarted, TaskTerminated } from '#/agent/task/taskOps';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
@@ -130,6 +130,25 @@ describe('task ops (wire-backed)', () => {
         time: expect.any(Number),
       },
     ]);
+  });
+
+  it('task.notified persists its flat notification payload and remains observable', async () => {
+    const payload = {
+      notificationType: 'completed',
+      title: 'Task finished',
+      body: 'Output is ready',
+      severity: 'info' as const,
+      sourceKind: 'process',
+      sourceId: 'task-1',
+    };
+    const published: TaskNotified[] = [];
+    disposables.add(eventBus.subscribe(TaskNotified, (event) => published.push(event)));
+
+    await dispatcher.dispatch(new TaskNotified(payload, 3_000));
+
+    expect(await readRecords()).toEqual([{ type: 'task.notified', ...payload, time: 3_000 }]);
+    expect(published).toHaveLength(1);
+    expect(Object.assign({}, published[0])).toEqual({ type: 'task.notified', ...payload, time: 3_000 });
   });
 
   it('apply returns a new Map on change (the model is the restore seed)', async () => {
