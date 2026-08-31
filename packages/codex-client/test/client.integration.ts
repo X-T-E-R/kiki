@@ -87,6 +87,28 @@ describe('CodexAppServerClient process integration', () => {
     await expect(thoughtTexts('reasoning-raw')).resolves.toEqual(['raw', 'summary']);
   }, 15_000);
 
+  it('deduplicates completed summaries independently for each reasoning item', async () => {
+    const app = client('reasoning-multiple');
+    await app.connect();
+    const thread = await app.startThread({ model: 'gpt-test' });
+    const handle = await app.startTurn(
+      { threadId: thread.thread.id, input: [] },
+      new AbortController().signal,
+    );
+    const thoughts: Array<{ readonly messageId: string | undefined; readonly text: string }> = [];
+    for await (const event of handle.events) {
+      if (event.type === 'thought.delta' && event.content.type === 'text') {
+        thoughts.push({ messageId: event.messageId, text: event.content.text });
+      }
+    }
+    await expect(handle.completion).resolves.toMatchObject({ status: 'completed' });
+    expect(thoughts).toEqual([
+      { messageId: 'reasoning-1', text: 'first summary' },
+      { messageId: 'reasoning-2', text: 'second summary' },
+    ]);
+    await app.shutdown();
+  }, 15_000);
+
   it('exposes protocol resume errors without classifying transport exits as protocol errors', async () => {
     const protocol = client('resume-protocol-error');
     await protocol.connect();

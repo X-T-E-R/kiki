@@ -100,6 +100,39 @@ input.on('line', (line) => {
     if (mode === 'crash') process.exit(9);
     if (mode === 'hang-turn') return;
     send({ id: message.id, result: { turn: { id: turnId, status: 'inProgress', items: [] } } });
+    if (mode === 'reasoning-multiple') {
+      send({
+        method: 'item/reasoning/summaryTextDelta',
+        params: { threadId, turnId, itemId: 'reasoning-1', delta: 'first summary' },
+      });
+      send({
+        method: 'item/reasoning/summaryTextDelta',
+        params: { threadId, turnId, itemId: 'reasoning-2', delta: 'second summary' },
+      });
+      send({
+        method: 'item/completed',
+        params: {
+          threadId,
+          turnId,
+          item: { id: 'reasoning-1', type: 'reasoning', summary: ['first summary'], content: [] },
+          completedAtMs: 2,
+        },
+      });
+      send({
+        method: 'item/completed',
+        params: {
+          threadId,
+          turnId,
+          item: { id: 'reasoning-2', type: 'reasoning', summary: ['second summary'], content: [] },
+          completedAtMs: 3,
+        },
+      });
+      send({
+        method: 'turn/completed',
+        params: { threadId, turn: { id: turnId, status: 'completed', error: null, items: [] } },
+      });
+      return;
+    }
     if (mode === 'reasoning-stream') {
       send({
         method: 'item/reasoning/summaryTextDelta',
