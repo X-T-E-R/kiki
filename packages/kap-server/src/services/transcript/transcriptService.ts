@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 
 import {
+  IAgentActivityView,
+  IAgentLifecycleService,
   ISessionIndex,
   ISessionMetadata,
   followSessionLifecycles,
@@ -196,6 +198,25 @@ export class TranscriptService {
     }
   }
 
+  private liveActiveTurnId(sessionId: string, agentId: string): string | undefined {
+    const session = getLiveSessionById(this.deps.core.accessor, sessionId);
+    const agent = session?.accessor.get(IAgentLifecycleService).get(agentId);
+    const view: IAgentActivityView | undefined = agent?.accessor.get(IAgentActivityView);
+    const turnId = view?.state().turn?.turnId;
+    return turnId === undefined ? undefined : `t${turnId}`;
+  }
+
+  private liveActiveTurnIds(
+    sessionId: string,
+    agentId: string,
+    initialTurnId: string | undefined,
+  ): string[] {
+    const currentTurnId = this.liveActiveTurnId(sessionId, agentId);
+    if (initialTurnId === undefined) return currentTurnId === undefined ? [] : [currentTurnId];
+    if (currentTurnId === undefined || currentTurnId === initialTurnId) return [initialTurnId];
+    return [initialTurnId, currentTurnId];
+  }
+
   /**
    * Replay one agent's persisted wire records into its transcript. Everything
    * is an idempotent upsert (never `reset`), so live ops arriving while the
@@ -204,9 +225,14 @@ export class TranscriptService {
    * without colliding.
    */
   private async backfillAgent(sessionId: string, store: TranscriptStore, agentId: string): Promise<void> {
+    const initialActiveTurnId = this.liveActiveTurnId(sessionId, agentId);
     let snapshot: AgentTranscriptSnapshot | undefined;
     try {
-      snapshot = await this.readColdSnapshot(sessionId, agentId);
+      snapshot = await this.readColdSnapshot(
+        sessionId,
+        agentId,
+        () => this.liveActiveTurnIds(sessionId, agentId, initialActiveTurnId),
+      );
     } catch (error) {
       this.deps.logger?.warn(
         { sessionId, agentId, err: error instanceof Error ? error.message : error },
@@ -418,6 +444,7 @@ export class TranscriptService {
   async readColdSnapshot(
     sessionId: string,
     agentId: string = MAIN_AGENT_ID,
+    preserveOpenTurnIds?: () => readonly string[],
   ): Promise<AgentTranscriptSnapshot | undefined> {
     const summary = await this.deps.core.accessor.get(ISessionIndex).get(sessionId);
     if (summary === undefined) return undefined;
@@ -456,14 +483,25 @@ export class TranscriptService {
       },
     });
     for (const record of records) reducer.apply(adapter.add(record));
+    const preservedTurns: TranscriptTurn[] = [];
+    for (const turnId of preserveOpenTurnIds?.() ?? []) {
+      const candidate = transcript.getTurn(turnId);
+      if (candidate?.state === 'running') preservedTurns.push(structuredClone(candidate));
+    }
     reducer.apply(adapter.finish());
+    for (const turn of preservedTurns) transcript.apply(snapshotTurnOps(turn));
     return transcript.snapshot();
   }
 
   async reconcileAfterRewrite(sessionId: string, agentId: string = MAIN_AGENT_ID): Promise<void> {
     const entry = this.live.get(sessionId);
     if (entry === undefined) return;
-    const snapshot = await this.readColdSnapshot(sessionId, agentId);
+    const initialActiveTurnId = this.liveActiveTurnId(sessionId, agentId);
+    const snapshot = await this.readColdSnapshot(
+      sessionId,
+      agentId,
+      () => this.liveActiveTurnIds(sessionId, agentId, initialActiveTurnId),
+    );
     if (snapshot === undefined || this.live.get(sessionId) !== entry) return;
     entry.store.ensureAgent(agentId).apply([
       {

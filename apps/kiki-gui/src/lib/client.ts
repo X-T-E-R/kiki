@@ -502,12 +502,14 @@ export type AgentTranscriptFrame =
       frameId: string;
       toolCallId: string;
       name: string;
-      state: 'running' | 'done' | 'error';
+      state: 'running' | 'done' | 'error' | 'interrupted';
       input?: unknown;
       output?: unknown;
       display?: unknown;
       error?: string;
       inputText?: string;
+      startedAt?: string;
+      endedAt?: string;
       progress?: { text?: string };
       /** Agents spawned by this call (AgentRun / AgentSwarm). */
       agentRefs?: readonly { readonly agentId: string; readonly role?: 'child' | 'member' }[];

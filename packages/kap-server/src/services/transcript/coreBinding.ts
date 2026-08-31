@@ -153,6 +153,7 @@ export function bindSessionTranscript(
           return turn === undefined || `t${turn.turnId}` !== turnId ? undefined : turn.step;
         },
         turn: (turnId) => store.getAgent(agentId)?.getTurn(turnId),
+        turnDetails: (turnId) => store.getAgent(agentId)?.getTurn(turnId),
       });
       for (const agent of agents.list()) {
         if (agent.id !== agentId) continue;
@@ -222,9 +223,15 @@ export function bindSessionTranscript(
 
   const processEvent = (agentId: string, event: TranscriptWireRecord): void => {
     if (event.type === 'context.spliced') return;
-    applyFacts(agentId, wireAdapterFor(agentId).add(event));
+    const liveOwned =
+      event.type === 'task.notified' ||
+      event.type === 'subagent.spawned' ||
+      event.type === 'subagent.started' ||
+      event.type === 'subagent.completed' ||
+      event.type === 'subagent.failed' ||
+      event.type === 'subagent.suspended';
+    if (!liveOwned) applyFacts(agentId, wireAdapterFor(agentId).add(event));
     if (
-      event.type === 'turn.ended' ||
       event.type === 'task.started' ||
       event.type === 'task.terminated' ||
       event.type === 'tools.update_store' ||

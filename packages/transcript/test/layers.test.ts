@@ -417,9 +417,11 @@ describe('contract schemas', () => {
         turnId: 't1',
         stepId: 't1.1',
         frame: {
-          kind: 'tool', frameId: 't1.1.c1', toolCallId: 'c1', name: 'Bash', state: 'running',
+          kind: 'tool', frameId: 't1.1.c1', toolCallId: 'c1', name: 'Bash', state: 'interrupted',
           inputText: '{"command":"ls',
           progress: { kind: 'progress', text: 'half', percent: 50, customKind: 'bar', customData: { x: 1 } },
+          startedAt: '2026-08-31T00:00:00.000Z',
+          endedAt: '2026-08-31T00:00:01.000Z',
         },
       },
       {
@@ -600,6 +602,8 @@ describe('TranscriptWireAdapter', () => {
     expect(turn?.steps[0]?.frames.find((frame) => frame.kind === 'tool')).toMatchObject({
       state: 'done',
       output: '/repo',
+      startedAt: new Date(4_000).toISOString(),
+      endedAt: new Date(5_000).toISOString(),
     });
   });
 
@@ -1254,6 +1258,296 @@ describe('TranscriptWireAdapter', () => {
       source: { kind: 'session_media', fileId: 'file-steer' },
       owner: { kind: 'frame', turnId: 't0', stepId: 'step-2', frameId: 'steer-1' },
     });
+  });
+
+  it('closes every running step and tool at turn end and closes an open tail at finish', () => {
+    const ended = replay([
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        input: [{ type: 'text', text: 'run' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 2_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'tool.call',
+          turnId: 0,
+          stepUuid: 'step-1',
+          toolCallId: 'call-1',
+          name: 'Bash',
+          args: { command: 'sleep 1' },
+        },
+        time: 3_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 2, uuid: 'step-2' },
+        time: 3_500,
+      },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 4_000 },
+    ]);
+    const endedTurn = ended.getTurn('t0');
+    expect(endedTurn?.state).toBe('completed');
+    expect(endedTurn?.steps.map((step) => step.state)).toEqual(['interrupted', 'interrupted']);
+    expect(endedTurn?.steps[0]?.frames[0]).toMatchObject({
+      kind: 'tool',
+      state: 'interrupted',
+      startedAt: new Date(3_000).toISOString(),
+      endedAt: new Date(4_000).toISOString(),
+    });
+
+    const unfinished = replay([
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        input: [{ type: 'text', text: 'run' }],
+        origin: { kind: 'user' },
+        time: 10_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 11_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'tool.call',
+          turnId: 0,
+          stepUuid: 'step-1',
+          toolCallId: 'call-1',
+          name: 'Read',
+          args: { path: '/tmp/a' },
+        },
+        time: 12_000,
+      },
+    ]);
+    expect(unfinished.getTurn('t0')).toMatchObject({
+      state: 'cancelled',
+      endedAt: new Date(12_000).toISOString(),
+      steps: [
+        expect.objectContaining({
+          state: 'interrupted',
+          endedAt: new Date(12_000).toISOString(),
+          frames: [
+            expect.objectContaining({
+              state: 'interrupted',
+              startedAt: new Date(12_000).toISOString(),
+              endedAt: new Date(12_000).toISOString(),
+            }),
+          ],
+        }),
+      ],
+    });
+
+    const untimed = replay([
+      { type: 'turn.prompt', turnId: 0, input: [], origin: { kind: 'user' } },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'tool.call',
+          turnId: 0,
+          stepUuid: 'step-1',
+          toolCallId: 'call-1',
+          name: 'Read',
+        },
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'tool.result', toolCallId: 'call-1', result: { output: 'ok' } },
+      },
+      { type: 'turn.ended', turnId: 0, reason: 'completed' },
+    ]);
+    expect(untimed.getTurn('t0')?.steps[0]?.frames[0]).toMatchObject({
+      state: 'done',
+      startedAt: undefined,
+      endedAt: undefined,
+    });
+  });
+
+  it('projects forward-compatible task notifications and subagent lifecycle records', () => {
+    const transcript = replay([
+      {
+        type: 'turn.prompt',
+        turnId: 0,
+        input: [{ type: 'text', text: 'delegate' }],
+        origin: { kind: 'user' },
+        time: 1_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' },
+        time: 2_000,
+      },
+      {
+        type: 'context.append_loop_event',
+        event: {
+          type: 'tool.call',
+          turnId: 0,
+          stepUuid: 'step-1',
+          toolCallId: 'agent-call',
+          name: 'Agent',
+          args: { prompt: 'scan' },
+        },
+        time: 3_000,
+      },
+      {
+        type: 'task.notified',
+        notificationType: 'completed',
+        title: 'Task finished',
+        body: 'Output is ready',
+        severity: 'info',
+        sourceKind: 'process',
+        sourceId: 'shell-1',
+        time: 3_500,
+      },
+      {
+        type: 'task.started',
+        info: {
+          taskId: 'agent-task',
+          kind: 'agent',
+          status: 'running',
+          agentId: 'child-1',
+          startedAt: 4_000,
+        },
+        time: 4_000,
+      },
+      {
+        type: 'subagent.spawned',
+        subagentId: 'child-1',
+        subagentName: 'explore',
+        parentToolCallId: 'agent-call',
+        description: 'scan files',
+        swarmIndex: 0,
+        runInBackground: true,
+        taskId: 'agent-task',
+        time: 4_100,
+      },
+      { type: 'subagent.started', subagentId: 'child-1', time: 4_200 },
+      { type: 'subagent.suspended', subagentId: 'child-1', reason: 'approval', time: 4_300 },
+      {
+        type: 'subagent.completed',
+        subagentId: 'child-1',
+        resultSummary: 'scanned 12 files',
+        usage: { inputOther: 10, output: 5, inputCacheRead: 3, inputCacheCreation: 2 },
+        time: 5_000,
+      },
+      {
+        type: 'subagent.spawned',
+        subagentId: 'child-2',
+        subagentName: 'explore',
+        parentToolCallId: 'agent-call',
+        runInBackground: false,
+        time: 5_100,
+      },
+      { type: 'subagent.failed', subagentId: 'child-2', error: 'boom', time: 5_200 },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 6_000 },
+      {
+        type: 'task.notified',
+        notificationType: 'completed',
+        title: 'Later task',
+        body: 'Handled by a new turn',
+        severity: 'info',
+        sourceKind: 'process',
+        sourceId: 'shell-2',
+        time: 7_000,
+      },
+      {
+        type: 'turn.prompt',
+        turnId: 1,
+        input: [{ type: 'text', text: 'Handled by a new turn' }],
+        origin: { kind: 'background_task', taskId: 'shell-2' },
+        time: 8_000,
+      },
+    ]);
+    const frames = transcript.getTurn('t0')?.steps.flatMap((step) => step.frames) ?? [];
+    expect(frames.filter((frame) => frame.kind === 'text' && frame.role === 'user')).toEqual([
+      expect.objectContaining({
+        text: 'Task finished\nOutput is ready',
+        taskId: 'shell-1',
+        origin: { kind: 'task', taskId: 'shell-1' },
+      }),
+    ]);
+    expect(frames.find((frame) => frame.kind === 'tool')).toMatchObject({
+      agentRefs: [
+        { agentId: 'child-1', role: 'member' },
+        { agentId: 'child-2', role: 'child' },
+      ],
+    });
+    expect(transcript.getTask('agent-task')).toMatchObject({
+      kind: 'subagent',
+      state: 'completed',
+      detached: true,
+      description: 'scan files',
+      agentId: 'child-1',
+      resultSummary: 'scanned 12 files',
+      stateReason: 'approval',
+      usage: { inputOther: 10, output: 5, inputCacheRead: 3, inputCacheCreation: 2 },
+      startedAt: new Date(4_200).toISOString(),
+      endedAt: new Date(5_000).toISOString(),
+    });
+    expect(transcript.getTask('child-2')).toMatchObject({
+      kind: 'subagent',
+      state: 'failed',
+      detached: false,
+      agentId: 'child-2',
+      error: 'boom',
+      startedAt: new Date(5_100).toISOString(),
+      endedAt: new Date(5_200).toISOString(),
+    });
+    expect(transcript.getTurn('t1')?.origin).toMatchObject({ kind: 'task', taskId: 'shell-2' });
+  });
+
+  it('anchors task references after the current turn and leaves context-free references unanchored', () => {
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('main', {
+      turn: (turnId) => transcript.getTurn(turnId),
+    });
+    const contextFree = adapter.add({
+      type: 'task.started',
+      info: { taskId: 'before', kind: 'process', status: 'running', startedAt: 1 },
+      time: 1,
+    });
+    expect(contextFree[0]?.operations[0]).toMatchObject({ op: 'taskref.upsert', beforeTurn: undefined });
+    reducer.apply(contextFree);
+    reducer.apply(
+      adapter.add({
+        type: 'turn.prompt',
+        turnId: 0,
+        input: [{ type: 'text', text: 'run' }],
+        origin: { kind: 'user' },
+        time: 2,
+      }),
+    );
+    const anchored = adapter.add({
+      type: 'task.started',
+      info: { taskId: 'during', kind: 'process', status: 'running', startedAt: 3 },
+      time: 3,
+    });
+    expect(anchored[0]?.operations[0]).toMatchObject({ op: 'taskref.upsert', beforeTurn: 1 });
+    reducer.apply(anchored);
+    reducer.apply(
+      adapter.add({
+        type: 'turn.prompt',
+        turnId: 1,
+        input: [{ type: 'text', text: 'next' }],
+        origin: { kind: 'user' },
+        time: 4,
+      }),
+    );
+    expect(transcript.getItems().map(idLabel)).toEqual(['ref-before', 't0', 'ref-during', 't1']);
   });
 
   it('updates known turns from turn.ended without materializing unknown turn ids', () => {

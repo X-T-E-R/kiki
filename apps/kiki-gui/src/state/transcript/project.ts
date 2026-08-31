@@ -1645,8 +1645,8 @@ export function agentTranscriptToBlocks(
             });
             break;
           case 'tool': {
-            const startedAt = new Date(step.startedAt ?? item.startedAt ?? '').getTime();
-            const endedAt = new Date(step.endedAt ?? item.endedAt ?? '').getTime();
+            const startedAt = new Date(frame.startedAt ?? step.startedAt ?? item.startedAt ?? '').getTime();
+            const endedAt = new Date(frame.endedAt ?? step.endedAt ?? item.endedAt ?? '').getTime();
             const toolFrame = frame as typeof frame & { view?: string; taskId?: string };
             const task = toolFrame.taskId === undefined ? undefined : taskById.get(toolFrame.taskId);
             const shellTask = task?.kind === 'shell' ? task : undefined;
@@ -1704,7 +1704,7 @@ export function agentTranscriptToBlocks(
               args: frame.input,
               display: frame.display as ToolInputDisplay | undefined,
               description: undefined,
-              status: frame.state === 'error' ? 'error' : frame.state,
+              status: frame.state === 'error' ? 'error' : frame.state === 'interrupted' ? 'stopped' : frame.state,
               output: frame.output ?? frame.error,
               isError: frame.state === 'error',
               startedAt: Number.isNaN(startedAt) ? 0 : startedAt,
@@ -1935,11 +1935,15 @@ export function projectAgentTranscriptView(
   const stableBlocks = stabilizeProjectedBlocks(previous.blocks, withSnapshotFields);
   let firstTurn: Extract<TranscriptItem, { kind: 'turn' }> | undefined;
   let lastTurn: Extract<TranscriptItem, { kind: 'turn' }> | undefined;
+  let runningTurn: Extract<TranscriptItem, { kind: 'turn' }> | undefined;
   for (const item of snapshot.items) {
     if (item.kind !== 'turn') continue;
     firstTurn ??= item;
     lastTurn = item;
+    if (item.state === 'running') runningTurn = item;
   }
+  const parsedTurnStartedAt =
+    runningTurn?.startedAt === undefined ? Number.NaN : Date.parse(runningTurn.startedAt);
   const meta = snapshot.meta.agent;
   const queuedPromptIds: string[] = [];
   let running: TranscriptPrompt | undefined;
@@ -1970,6 +1974,7 @@ export function projectAgentTranscriptView(
     loaded: true,
     loadError: undefined,
     busy: agentBusyFromMeta(source) === true,
+    turnStartedAt: Number.isNaN(parsedTurnStartedAt) ? undefined : parsedTurnStartedAt,
     model: meta?.model,
     thinkingEffort: meta?.thinkingEffort,
     contextTokens: meta?.contextTokens,
