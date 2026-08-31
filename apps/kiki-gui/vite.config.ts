@@ -30,6 +30,12 @@ export default defineConfig({
     // Windows, and Chromium then hangs resolving localhost to 127.0.0.1.
     host: '127.0.0.1',
     port: webPort,
+    // `tauri dev` runs this dev server as its beforeDevCommand while cargo
+    // links into src-tauri/target; watching those trees crashes the watcher
+    // (EBUSY on the in-flight exe) and kills the whole desktop launch.
+    watch: {
+      ignored: ['**/src-tauri/target/**', '**/src-tauri/binaries/**', '**/dist/**'],
+    },
     // An explicitly demanded port (the proof sets KIKI_GUI_PORT) must bind or
     // fail loudly — never slide to a neighbouring port while a zombie serves
     // a stale app on the expected one. Plain `pnpm dev` stays lenient.

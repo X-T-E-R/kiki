@@ -48,6 +48,8 @@ export const en = {
 
   // ---- sidebar ----
   'sidebar.newSession': 'New session',
+  'sidebar.navAria': 'Session navigation',
+  'sidebar.listAria': 'Session list',
   'sidebar.searchPlaceholder': 'Search sessions…',
   'sidebar.searchAria': 'Search sessions',
   'sidebar.clearSearch': 'Clear search',

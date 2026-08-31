@@ -24,14 +24,16 @@ import { useI18n } from '../i18n';
 import {
   clampTerminalPanelHeight,
 } from '../lib/terminalPrefs';
+import { onThemeChange } from '../lib/theme';
 import type { WsStatus } from '../lib/ws';
 import type { TerminalManager, TerminalTab } from '../state/terminalManager';
 
 /**
  * xterm.js resolves colors itself and cannot read CSS variables, so the shell
  * tokens are read out of the computed style at terminal construction. The
- * terminal is an always-dark island in both themes; only its ground shifts,
- * and a theme flip is picked up the next time a tab mounts.
+ * terminal is an always-dark island in both themes; only its ground shifts.
+ * Mounted instances follow a theme flip live through `onThemeChange` — a tab
+ * does not need to remount to pick up the new ground.
  */
 function xtermTheme(): Record<string, string> {
   const read = (name: string, fallback: string): string => {
@@ -178,8 +180,15 @@ function TerminalCanvas({
     });
     observer.observe(host);
 
+    // xterm cannot read CSS variables; re-resolve the shell tokens on a theme
+    // flip so a mounted terminal follows the app theme without a remount.
+    const stopThemeFollow = onThemeChange(() => {
+      term.options.theme = xtermTheme();
+    });
+
     return () => {
       observer.disconnect();
+      stopThemeFollow();
       if (resizeTimer !== undefined) clearTimeout(resizeTimer);
       dataSub.dispose();
       unbind();
