@@ -257,4 +257,3 @@ describe('OAuthManager cross-process refresh lock', () => {
   }, 30_000);
 });
 
-
