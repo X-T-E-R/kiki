@@ -22,6 +22,25 @@ function client(mode = 'standard', options: ConstructorParameters<typeof CodexAp
   );
 }
 
+async function thoughtTexts(mode: string): Promise<readonly string[]> {
+  const app = client(mode);
+  await app.connect();
+  const thread = await app.startThread({ model: 'gpt-test' });
+  const handle = await app.startTurn(
+    { threadId: thread.thread.id, input: [] },
+    new AbortController().signal,
+  );
+  const texts: string[] = [];
+  for await (const event of handle.events) {
+    if (event.type === 'thought.delta' && event.content.type === 'text') {
+      texts.push(event.content.text);
+    }
+  }
+  await handle.completion;
+  await app.shutdown();
+  return texts;
+}
+
 describe('CodexAppServerClient process integration', () => {
   it('handshakes, lists models, streams a turn, and retains usage', async () => {
     const frames: string[] = [];
@@ -60,6 +79,12 @@ describe('CodexAppServerClient process integration', () => {
     await expect(handle.completion).resolves.toMatchObject({ status: 'completed' });
     expect(handler).toHaveBeenCalledOnce();
     await app.shutdown();
+  }, 15_000);
+
+  it('uses completed reasoning summaries only when no summary delta was streamed', async () => {
+    await expect(thoughtTexts('reasoning-stream')).resolves.toEqual(['summary', 'raw']);
+    await expect(thoughtTexts('reasoning-completed')).resolves.toEqual(['summary']);
+    await expect(thoughtTexts('reasoning-raw')).resolves.toEqual(['raw', 'summary']);
   }, 15_000);
 
   it('exposes protocol resume errors without classifying transport exits as protocol errors', async () => {

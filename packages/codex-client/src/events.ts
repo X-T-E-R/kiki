@@ -34,8 +34,7 @@ export function mapCodexNotification(
   }
   if (method === 'item/started') {
     const item = record(params['item'], 'item/started.item');
-    const event = toolStarted(item);
-    return { events: event === undefined ? [] : [event] };
+    return { events: startedEvents(item) };
   }
   if (method === 'item/completed') {
     const item = record(params['item'], 'item/completed.item');
@@ -165,11 +164,28 @@ function toolStarted(
   return undefined;
 }
 
+function startedEvents(
+  item: Readonly<Record<string, unknown>>,
+): readonly NormalizedExecutorEvent[] {
+  const itemType = requiredString(item['type'], 'item.type');
+  if (
+    itemType === 'agentMessage' ||
+    itemType === 'reasoning' ||
+    itemType === 'plan' ||
+    itemType === 'userMessage'
+  ) {
+    return [];
+  }
+  const tool = toolStarted(item);
+  return tool === undefined ? [unknownItemEvent('item/started', item)] : [tool];
+}
+
 function completedEvents(
   item: Readonly<Record<string, unknown>>,
 ): readonly NormalizedExecutorEvent[] {
   const type = requiredString(item['type'], 'item.type');
   const id = requiredString(item['id'], 'item.id');
+  if (type === 'userMessage') return [];
   if (type === 'agentMessage') {
     const text = optionalString(item['text']);
     return text === undefined || text.length === 0
@@ -188,7 +204,7 @@ function completedEvents(
     return [{ type: 'plan.update', plan: item, unstable: false }];
   }
   const started = toolStarted(item);
-  if (started === undefined) return [];
+  if (started === undefined) return [unknownItemEvent('item/completed', item)];
   return [{
     type: 'tool.update',
     toolCallId: id,
@@ -198,6 +214,16 @@ function completedEvents(
     rawInput: started.rawInput,
     rawOutput: item['aggregatedOutput'] ?? item['result'] ?? item['error'] ?? item['changes'],
   }];
+}
+
+function unknownItemEvent(
+  boundary: 'item/started' | 'item/completed',
+  item: Readonly<Record<string, unknown>>,
+): NormalizedExecutorEvent {
+  return {
+    type: 'unknown',
+    updateType: `${boundary}:${requiredString(item['type'], 'item.type')}`,
+  };
 }
 
 function terminalStatus(item: Readonly<Record<string, unknown>>): string {

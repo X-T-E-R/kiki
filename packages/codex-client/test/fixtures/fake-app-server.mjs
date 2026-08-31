@@ -100,6 +100,52 @@ input.on('line', (line) => {
     if (mode === 'crash') process.exit(9);
     if (mode === 'hang-turn') return;
     send({ id: message.id, result: { turn: { id: turnId, status: 'inProgress', items: [] } } });
+    if (mode === 'reasoning-stream') {
+      send({
+        method: 'item/reasoning/summaryTextDelta',
+        params: { threadId, turnId, itemId: 'reasoning-1', delta: 'summary' },
+      });
+      send({
+        method: 'item/reasoning/textDelta',
+        params: { threadId, turnId, itemId: 'reasoning-1', delta: 'raw' },
+      });
+      send({
+        method: 'item/completed',
+        params: {
+          threadId,
+          turnId,
+          item: { id: 'reasoning-1', type: 'reasoning', summary: ['summary'], content: ['raw'] },
+          completedAtMs: 2,
+        },
+      });
+      send({
+        method: 'turn/completed',
+        params: { threadId, turn: { id: turnId, status: 'completed', error: null, items: [] } },
+      });
+      return;
+    }
+    if (mode === 'reasoning-completed' || mode === 'reasoning-raw') {
+      if (mode === 'reasoning-raw') {
+        send({
+          method: 'item/reasoning/textDelta',
+          params: { threadId, turnId, itemId: 'reasoning-1', delta: 'raw' },
+        });
+      }
+      send({
+        method: 'item/completed',
+        params: {
+          threadId,
+          turnId,
+          item: { id: 'reasoning-1', type: 'reasoning', summary: ['summary'], content: ['raw'] },
+          completedAtMs: 2,
+        },
+      });
+      send({
+        method: 'turn/completed',
+        params: { threadId, turn: { id: turnId, status: 'completed', error: null, items: [] } },
+      });
+      return;
+    }
     send({
       method: 'item/agentMessage/delta',
       params: { threadId, turnId, itemId: 'message-1', delta: 'hello' },

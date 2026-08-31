@@ -39,6 +39,7 @@ interface ActiveTurn {
   readonly resolve: (value: CodexTurnCompletion) => void;
   readonly reject: (error: unknown) => void;
   readonly seenMessageDeltas: Set<string>;
+  readonly seenReasoningSummaryDeltas: Set<string>;
   usage?: CodexTurnCompletion['usage'];
 }
 
@@ -195,6 +196,7 @@ export class CodexAppServerClient {
       resolve,
       reject,
       seenMessageDeltas: new Set(),
+      seenReasoningSummaryDeltas: new Set(),
     };
     this.#activeTurn = active;
     this.#startingTurnThreadId = undefined;
@@ -436,6 +438,17 @@ export class CodexAppServerClient {
       if (event.type === 'message.delta' && event.messageId !== undefined) {
         if (notification.method === 'item/completed' && active.seenMessageDeltas.has(event.messageId)) continue;
         active.seenMessageDeltas.add(event.messageId);
+      }
+      if (event.type === 'thought.delta' && event.messageId !== undefined) {
+        if (
+          notification.method === 'item/completed' &&
+          active.seenReasoningSummaryDeltas.has(event.messageId)
+        ) {
+          continue;
+        }
+        if (notification.method === 'item/reasoning/summaryTextDelta') {
+          active.seenReasoningSummaryDeltas.add(event.messageId);
+        }
       }
       active.events.push(event);
     }
