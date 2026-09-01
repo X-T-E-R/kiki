@@ -13,6 +13,7 @@ import { IConfigService } from '#/app/config/config';
 import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
@@ -20,24 +21,44 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
+import type { TokenUsage } from '#/kosong/contract/usage';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
-import { IAgentCollaborationRegistry } from '#/session/agentCollaboration/registry';
+import {
+  COLLABORATION_LATEST_TASK_LABEL,
+  COLLABORATION_TASK_NAME_LABEL,
+  IAgentCollaborationRegistry,
+} from '#/session/agentCollaboration/registry';
+import {
+  IAgentCollaborationMessagingService,
+  type AgentMessageAcceptance,
+} from '#/session/agentCollaboration/messageMailbox';
+import { ISessionApprovalService } from '#/session/approval/approval';
+import { SessionApprovalService } from '#/session/approval/approvalService';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
 import {
+  EXTERNAL_INTERACTION_NOT_OWNED_CODE,
   type ExternalAuthority,
   ISessionExternalDelegationService,
 } from '#/session/externalDelegation/externalDelegation';
 import { SessionExternalDelegationService } from '#/session/externalDelegation/externalDelegationService';
+import { ISessionInteractionService } from '#/session/interaction/interaction';
+import { SessionInteractionService } from '#/session/interaction/interactionService';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionQuestionService } from '#/session/question/question';
+import { SessionQuestionService } from '#/session/question/questionService';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
+import { ISessionStateService } from '#/session/state/sessionState';
+import { SessionStateService } from '#/session/state/sessionStateService';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IModelService } from '#/kosong/model/model';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
+import { IWireService } from '#/wire/wire';
+import type { WireRecord } from '#/wire/record';
 import type { SessionWillCloseEvent } from '#/workspace/sessionLifecycle/sessionLifecycle';
 
 const authority: ExternalAuthority = {
@@ -60,14 +81,19 @@ describe('SessionExternalDelegationService', () => {
   let documents: Map<string, unknown>;
   let handles: Map<string, IAgentScopeHandle>;
   let agentMetas: Record<string, AgentMeta>;
-  let completions: Array<{ resolve(value: { summary: string }): void; reject(error: unknown): void }>;
+  let completions: Array<{ resolve(value: { summary: string; usage?: TokenUsage }): void; reject(error: unknown): void }>;
   let nextRunHandleGate: Promise<void> | undefined;
+  let onRunAbort: ((agentId: string) => void) | undefined;
   let runSignals: AbortSignal[];
   let runAgentIds: string[];
   let runPrompts: string[];
   let createdWith: unknown[];
   let willClose: Emitter<SessionWillCloseEvent & IWaitUntil>;
   let logCalls: Array<{ msg: string; payload: unknown }>;
+  let sentMessages: Parameters<IAgentCollaborationMessagingService['send']>[0][];
+  let messagesByKey: Map<string, AgentMessageAcceptance>;
+  let wireRecords: Map<string, WireRecord[]>;
+  let journalYield: (() => Promise<void>) | undefined;
 
   beforeEach(() => {
     disposables = new DisposableStore();
@@ -77,11 +103,16 @@ describe('SessionExternalDelegationService', () => {
     agentMetas = { main: { type: 'main', labels: {} } };
     completions = [];
     nextRunHandleGate = undefined;
+    onRunAbort = undefined;
     runSignals = [];
     runAgentIds = [];
     runPrompts = [];
     createdWith = [];
     logCalls = [];
+    sentMessages = [];
+    messagesByKey = new Map();
+    wireRecords = new Map();
+    journalYield = undefined;
 
     ix.stub(IFlagService, { enabled: () => true });
     ix.stub(IAtomicDocumentStore, {
@@ -157,6 +188,19 @@ describe('SessionExternalDelegationService', () => {
     ): IAgentScopeHandle => {
       const agent = new TestInstantiationService();
       disposables.add(agent);
+      wireRecords.set(id, []);
+      agent.set(IWireService, {
+        _serviceBrand: undefined,
+        seal: async () => {},
+        appendRecord: (record: WireRecord) => { wireRecords.get(id)!.push(record); },
+        readJournal: () => (async function* () {
+          for (const record of wireRecords.get(id)!) {
+            await journalYield?.();
+            yield record;
+          }
+        })(),
+        flush: async () => {},
+      });
       agent.stub(IAgentProfileService, {
         _serviceBrand: undefined,
         data: () => ({ modelAlias, modelCapabilities: UNKNOWN_CAPABILITY, profileName, profileDefinitionId, thinkingLevel, systemPrompt: '', subagents: ['coder'] }),
@@ -212,10 +256,16 @@ describe('SessionExternalDelegationService', () => {
         const gate = nextRunHandleGate;
         nextRunHandleGate = undefined;
         if (gate !== undefined) await gate;
-        let resolve!: (value: { summary: string }) => void;
+        let resolve!: (value: { summary: string; usage?: TokenUsage }) => void;
         let reject!: (error: unknown) => void;
-        const completion = new Promise<{ summary: string }>((res, rej) => { resolve = res; reject = rej; });
+        const completion = new Promise<{ summary: string; usage?: TokenUsage }>((res, rej) => { resolve = res; reject = rej; });
         completions.push({ resolve, reject });
+        const abort = (): void => {
+          onRunAbort?.(agentId);
+          reject(opts.signal.reason);
+        };
+        if (opts.signal.aborted) abort();
+        else opts.signal.addEventListener('abort', abort, { once: true });
         return { agentId, turn: {} as never, completion };
       },
     });
@@ -225,6 +275,42 @@ describe('SessionExternalDelegationService', () => {
       commit: () => {},
       release: () => {},
     });
+    ix.stub(IAgentCollaborationMessagingService, {
+      _serviceBrand: undefined,
+      send: async (input) => {
+        sentMessages.push(input);
+        const prior = messagesByKey.get(input.idempotencyKey);
+        if (prior !== undefined) {
+          return {
+            ...prior,
+            deduplicated: true,
+            payloadConflict: prior.message.content !== input.content,
+          };
+        }
+        const acceptance: AgentMessageAcceptance = {
+          message: {
+            messageId: `message-${String(messagesByKey.size + 1)}`,
+            sessionId: 'session_test',
+            sourceAgentId: input.sourceAgentId,
+            sourceTaskName: input.sourceTaskName,
+            targetAgentId: input.targetAgentId,
+            targetTaskName: input.targetTaskName,
+            content: input.content,
+            acceptedAt: 1,
+            targetSeq: messagesByKey.size + 1,
+          },
+          deduplicated: false,
+          delivery: 'queued',
+          payloadConflict: false,
+        };
+        messagesByKey.set(input.idempotencyKey, acceptance);
+        return acceptance;
+      },
+    });
+    ix.set(ISessionStateService, new SessionStateService());
+    ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
+    ix.set(ISessionApprovalService, new SyncDescriptor(SessionApprovalService));
+    ix.set(ISessionQuestionService, new SyncDescriptor(SessionQuestionService));
     ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     ix.set(ISessionExternalDelegationService, new SyncDescriptor(SessionExternalDelegationService));
   });
@@ -240,7 +326,13 @@ describe('SessionExternalDelegationService', () => {
     expect(createdWith[0]).toMatchObject({
       runtimeId: 'local',
       delegator: { kind: 'external', delegationId: expect.stringMatching(/^delegation_/) },
-      labels: { externalDelegationTaskName: 'reviewer' },
+      labels: { [COLLABORATION_TASK_NAME_LABEL]: 'reviewer' },
+    });
+    expect(createdWith[0]).not.toMatchObject({
+      labels: {
+        externalDelegationTaskName: expect.anything(),
+        externalDelegationProfile: expect.anything(),
+      },
     });
     await expect(service.dispatch({ authority, target: 'named', taskName: 'reviewer', message: 'again' })).rejects.toThrow(/active dispatch/);
 
@@ -253,6 +345,218 @@ describe('SessionExternalDelegationService', () => {
     const continued = await service.continue({ authority, dispatchId: first.dispatchId, message: 'continue' });
     expect(continued.continuationOf).toBe(first.dispatchId);
     expect(createdWith).toHaveLength(1);
+  });
+
+  it('queues idempotent mailbox messages only for an owned named child', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'mailbox_child',
+      profileName: 'coder',
+      message: 'create',
+    });
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
+
+    const first = await service.send({
+      authority,
+      taskName: 'mailbox_child',
+      message: 'review the update',
+      idempotencyKey: 'message-key',
+    });
+    const replay = await service.send({
+      authority,
+      taskName: 'mailbox_child',
+      message: 'review the update',
+      idempotencyKey: 'message-key',
+    });
+
+    expect(first.deduplicated).toBe(false);
+    expect(replay).toMatchObject({
+      message: { messageId: first.message.messageId },
+      deduplicated: true,
+      payloadConflict: false,
+    });
+    expect(sentMessages).toEqual([
+      {
+        sourceAgentId: expect.stringMatching(/^external:delegation_/),
+        sourceTaskName: 'external',
+        targetAgentId: 'external-child',
+        targetTaskName: 'mailbox_child',
+        content: 'review the update',
+        idempotencyKey: 'message-key',
+      },
+      expect.objectContaining({ idempotencyKey: 'message-key' }),
+    ]);
+    await expect(service.send({
+      authority,
+      taskName: 'missing_child',
+      message: 'reject',
+      idempotencyKey: 'missing-key',
+    })).rejects.toThrow(/Unknown named child/);
+    await expect(service.send({
+      authority: { ...authority, principalFingerprint: 'd'.repeat(64) },
+      taskName: 'mailbox_child',
+      message: 'reject',
+      idempotencyKey: 'foreign-key',
+    })).rejects.toThrow(/does not own/);
+  });
+
+  it('registers scoped interaction coverage only while dispatches are active', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const interaction = ix.get(ISessionInteractionService);
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'approval_child',
+      profileName: 'coder',
+      message: 'inspect',
+    });
+
+    expect(interaction.hasConsumer({ agentId: 'external-child' })).toBe(true);
+    expect(interaction.hasConsumer({ agentId: 'main' })).toBe(false);
+
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
+    expect(interaction.hasConsumer({ agentId: 'external-child' })).toBe(false);
+  });
+
+  it('filters owned interactions, responds to approval and question, and preserves GUI coverage', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const interaction = ix.get(ISessionInteractionService);
+    const approvals = ix.get(ISessionApprovalService);
+    const questions = ix.get(ISessionQuestionService);
+    interaction.acquireConsumer('gui');
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'interaction_child',
+      profileName: 'coder',
+      message: 'inspect',
+    });
+    const childApproval = approvals.request({
+      id: 'approval-owned',
+      agentId: 'external-child',
+      turnId: 1,
+      toolName: 'bash',
+      action: 'run',
+      display: { kind: 'command', command: 'pwd' },
+    });
+    const childQuestion = questions.request({
+      id: 'question-owned',
+      turnId: 1,
+      questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }],
+    }, { agentId: 'external-child' });
+    const mainApproval = approvals.request({
+      id: 'approval-main',
+      agentId: 'main',
+      turnId: 1,
+      toolName: 'bash',
+      action: 'run',
+      display: { kind: 'command', command: 'pwd' },
+    });
+
+    expect(await service.interactions({ authority })).toMatchObject({
+      items: [
+        { interactionId: 'approval-owned', kind: 'approval', taskName: 'interaction_child' },
+        { interactionId: 'question-owned', kind: 'question', taskName: 'interaction_child' },
+      ],
+    });
+    await expect(service.respond({
+      authority,
+      interactionId: 'approval-main',
+      kind: 'approval',
+      response: { decision: 'approved' },
+    })).rejects.toMatchObject({
+      code: EXTERNAL_INTERACTION_NOT_OWNED_CODE,
+      details: { failure_code: EXTERNAL_INTERACTION_NOT_OWNED_CODE },
+    });
+    await expect(service.respond({
+      authority,
+      interactionId: 'approval-owned',
+      kind: 'question',
+      response: { decision: 'approved' },
+    })).rejects.toThrow(/kind does not match/);
+    await expect(service.respond({
+      authority,
+      interactionId: 'approval-owned',
+      kind: 'approval',
+      response: { answers: { 'Continue?': 'Yes' } },
+    } as never)).rejects.toThrow(/invalid for an approval/);
+    expect(interaction.listPending('approval').map((entry) => entry.id)).toEqual([
+      'approval-owned',
+      'approval-main',
+    ]);
+    await expect(service.respond({
+      authority,
+      interactionId: 'approval-owned',
+      kind: 'approval',
+      response: { decision: 'approved' },
+    })).resolves.toEqual({ interactionId: 'approval-owned', status: 'resolved' });
+    await expect(service.respond({
+      authority,
+      interactionId: 'question-owned',
+      kind: 'question',
+      response: { decision: 'continue' },
+    })).resolves.toEqual({ interactionId: 'question-owned', status: 'resolved' });
+    await expect(childApproval).resolves.toEqual({ decision: 'approved' });
+    await expect(childQuestion).resolves.toEqual({ decision: 'continue' });
+
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
+    expect(interaction.listPending('approval').map((entry) => entry.id)).toEqual(['approval-main']);
+    interaction.releaseConsumer('gui');
+    await expect(mainApproval).resolves.toEqual({ decision: 'cancelled' });
+  });
+
+  it('projects latest child status and usage from the dispatch ledger', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'status_child',
+      profileName: 'coder',
+      message: 'inspect',
+    });
+
+    expect((await service.list(authority)).children).toContainEqual({
+      taskName: 'status_child',
+      profileName: 'coder',
+      latestDispatchId: dispatch.dispatchId,
+      status: expect.stringMatching(/queued|running/),
+      usage: undefined,
+    });
+    expect(agentMetas['external-child']?.labels?.[COLLABORATION_LATEST_TASK_LABEL]).toBe(
+      dispatch.dispatchId,
+    );
+
+    completions[0]!.resolve({
+      summary: 'done',
+      usage: {
+        inputOther: 11,
+        output: 7,
+        inputCacheRead: 5,
+        inputCacheCreation: 3,
+      },
+    });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
+
+    expect((await service.list(authority)).children).toContainEqual({
+      taskName: 'status_child',
+      profileName: 'coder',
+      latestDispatchId: dispatch.dispatchId,
+      status: 'completed',
+      usage: { input: 19, output: 7, cacheRead: 5, cacheWrite: 3 },
+    });
   });
 
   it('reads transcript and events while a named dispatch is running', async () => {
@@ -275,6 +579,502 @@ describe('SessionExternalDelegationService', () => {
     ).resolves.toEqual({ items: [], nextCursor: undefined });
     const events = await service.events({ authority, dispatchId: dispatch.dispatchId });
     expect(events.items.map((event) => event.type)).toContain('queued');
+  });
+
+  it('uses one durable cursor for live updates, rebuilds, and item watermarks', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
+    const records = wireRecords.get('main')!;
+    records.push(
+      {
+        type: 'turn.prompt',
+        time: 1,
+        turnId: 1,
+        input: [{ type: 'text', text: 'work' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 2,
+        event: { type: 'step.begin', uuid: 's1', turnId: '1', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 3,
+        event: {
+          type: 'content.part',
+          stepUuid: 's1',
+          turnId: '1',
+          step: 1,
+          uuid: 'm1',
+          part: { type: 'text', text: 'hello ' },
+        },
+      },
+    );
+
+    const first = await service.transcript({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'items',
+      limit: 1,
+    });
+    expect(first).toMatchObject({
+      items: [{ kind: 'turn', turnId: 't1', steps: [{ frames: [{ text: 'hello ' }] }] }],
+      cursor: expect.any(Number),
+    });
+    expect(first.cursor).toBeGreaterThan(0);
+
+    records.push(
+      {
+        type: 'context.append_loop_event',
+        time: 4,
+        event: {
+          type: 'content.part',
+          stepUuid: 's1',
+          turnId: '1',
+          step: 1,
+          uuid: 'm1',
+          part: { type: 'text', text: 'world' },
+        },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 5,
+        event: {
+          type: 'tool.call',
+          stepUuid: 's1',
+          turnId: '1',
+          step: 1,
+          toolCallId: 'tool-1',
+          name: 'Read',
+          args: { path: 'a.ts' },
+        },
+      },
+      {
+        type: 'tool.progress',
+        time: 6,
+        turnId: 1,
+        toolCallId: 'tool-1',
+        update: { kind: 'status', text: 'reading' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 7,
+        event: {
+          type: 'step.end',
+          uuid: 's1',
+          turnId: '1',
+          step: 1,
+          usage: { inputOther: 10, output: 4, inputCacheRead: 2, inputCacheCreation: 1 },
+        },
+      },
+    );
+
+    const second = await service.transcript({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'items',
+      cursor: first.cursor,
+      limit: 1,
+    });
+    expect(second).toMatchObject({
+      items: [{
+        kind: 'turn',
+        turnId: 't1',
+        steps: [{
+          frames: [
+            { kind: 'text', text: 'hello world' },
+            { kind: 'tool', toolCallId: 'tool-1', progress: { text: 'reading' } },
+          ],
+        }],
+      }],
+      cursor: expect.any(Number),
+    });
+    expect(second.cursor).toBeGreaterThan(first.cursor);
+    await expect(service.transcript({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'items',
+      cursor: second.cursor,
+      limit: 1,
+    })).resolves.toEqual({ items: [], cursor: second.cursor, nextCursor: undefined });
+
+    const turnEvents = await service.events({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'turn',
+    });
+    expect(turnEvents.items.map((item) => item.event.type)).toEqual([
+      'message.delta',
+      'message.delta',
+      'tool.call',
+      'tool.update',
+      'usage',
+    ]);
+    const repeated = await service.events({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'turn',
+    });
+    expect(repeated.items).toEqual(turnEvents.items);
+  });
+
+  it('isolates concurrent journal rebuild readers', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
+    wireRecords.get('main')!.push(
+      {
+        type: 'turn.prompt',
+        time: 1,
+        turnId: 1,
+        input: [{ type: 'text', text: 'work' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 2,
+        event: { type: 'step.begin', uuid: 's1', turnId: '1', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 3,
+        event: {
+          type: 'content.part',
+          stepUuid: 's1',
+          turnId: '1',
+          step: 1,
+          uuid: 'm1',
+          part: { type: 'text', text: 'answer' },
+        },
+      },
+    );
+    journalYield = async () => { await Promise.resolve(); };
+
+    const [eventsA, itemsA, eventsB, itemsB] = await Promise.all([
+      service.events({ authority, dispatchId: dispatch.dispatchId, detail: 'turn' }),
+      service.transcript({ authority, dispatchId: dispatch.dispatchId, detail: 'items' }),
+      service.events({ authority, dispatchId: dispatch.dispatchId, detail: 'turn' }),
+      service.transcript({ authority, dispatchId: dispatch.dispatchId, detail: 'items' }),
+    ]);
+    expect(eventsA).toEqual(eventsB);
+    expect(itemsA).toEqual(itemsB);
+    expect(eventsA.items.map((item) => item.event.type)).toEqual(['message.delta']);
+    expect(itemsA).toMatchObject({ items: [{ kind: 'turn', turnId: 't1' }] });
+  });
+
+  it('freezes each dispatch slice across later runs and journal rebuilds', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const first = await service.dispatch({ authority, target: 'main', message: 'first' });
+    const records = wireRecords.get('main')!;
+    records.push(
+      {
+        type: 'turn.prompt',
+        time: 1,
+        turnId: 1,
+        input: [{ type: 'text', text: 'first' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 2,
+        event: { type: 'step.begin', uuid: 's1', turnId: '1', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 3,
+        event: {
+          type: 'content.part',
+          stepUuid: 's1',
+          turnId: '1',
+          step: 1,
+          uuid: 'm1',
+          part: { type: 'text', text: 'first result' },
+        },
+      },
+      { type: 'turn.ended', time: 4, turnId: 1, reason: 'completed' },
+    );
+    completions[0]!.resolve({ summary: 'first done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: first.dispatchId })).status).toBe('completed');
+    });
+
+    const second = await service.continue({
+      authority,
+      dispatchId: first.dispatchId,
+      message: 'second',
+    });
+    records.push(
+      {
+        type: 'turn.prompt',
+        time: 5,
+        turnId: 2,
+        input: [{ type: 'text', text: 'second' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 6,
+        event: { type: 'step.begin', uuid: 's2', turnId: '2', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 7,
+        event: {
+          type: 'content.part',
+          stepUuid: 's2',
+          turnId: '2',
+          step: 1,
+          uuid: 'm2',
+          part: { type: 'text', text: 'second result' },
+        },
+      },
+      { type: 'turn.ended', time: 8, turnId: 2, reason: 'completed' },
+    );
+    completions[1]!.resolve({ summary: 'second done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: second.dispatchId })).status).toBe('completed');
+    });
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const page = await service.transcript({
+        authority,
+        dispatchId: first.dispatchId,
+        detail: 'items',
+      });
+      expect(page.items).toMatchObject([{ kind: 'turn', turnId: 't1' }]);
+      expect(page.items).not.toEqual(expect.arrayContaining([expect.objectContaining({ turnId: 't2' })]));
+      const events = await service.events({
+        authority,
+        dispatchId: first.dispatchId,
+        detail: 'turn',
+      });
+      expect(JSON.stringify(events)).not.toContain('second result');
+    }
+  });
+
+  it('migrates transcriptStart to transcript seq while preserving text paging', async () => {
+    const main = handles.get('main')!;
+    const messages: ContextMessage[] = [{
+      role: 'user',
+      content: [{ type: 'text' as const, text: 'before' }],
+      toolCalls: [],
+    }];
+    vi.spyOn(main.accessor.get(IAgentContextMemoryService), 'get').mockImplementation(() => messages as never);
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
+    messages.push({
+      role: 'assistant' as const,
+      content: [{ type: 'text' as const, text: 'after' }],
+      toolCalls: [],
+    });
+
+    await expect(service.transcript({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'text',
+    })).resolves.toEqual({
+      items: [{ index: 1, role: 'assistant', text: 'after' }],
+      nextCursor: undefined,
+    });
+    const stored = documents.get('root') as {
+      dispatches: Record<string, {
+        transcriptStart: number;
+        transcriptCursorVersion: number;
+        legacyTranscriptStart: number;
+      }>;
+    };
+    expect(stored.dispatches[dispatch.dispatchId]).toMatchObject({
+      transcriptStart: 0,
+      transcriptCursorVersion: 2,
+      legacyTranscriptStart: 1,
+    });
+  });
+
+  it('rebuilds items and turn events from the durable agent journal', async () => {
+    wireRecords.set('main', [
+      {
+        type: 'turn.prompt',
+        time: 1,
+        turnId: 3,
+        input: [{ type: 'text', text: 'persisted prompt' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 2,
+        event: { type: 'step.begin', uuid: 's3', turnId: '3', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 3,
+        event: {
+          type: 'content.part',
+          stepUuid: 's3',
+          turnId: '3',
+          step: 1,
+          uuid: 'm3',
+          part: { type: 'text', text: 'persisted answer' },
+        },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 4,
+        event: {
+          type: 'tool.call',
+          stepUuid: 's3',
+          turnId: '3',
+          step: 1,
+          toolCallId: 'persisted-tool',
+          name: 'Read',
+          args: { path: 'persisted.ts' },
+        },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 5,
+        event: {
+          type: 'tool.result',
+          toolCallId: 'persisted-tool',
+          result: { output: 'persisted result' },
+        },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 6,
+        event: { type: 'step.end', uuid: 's3', turnId: '3', step: 1 },
+      },
+      { type: 'turn.ended', time: 7, turnId: 3, reason: 'completed' },
+      {
+        type: 'turn.prompt',
+        time: 8,
+        turnId: 4,
+        input: [{ type: 'text', text: 'later prompt' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 9,
+        event: { type: 'step.begin', uuid: 's4', turnId: '4', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 10,
+        event: {
+          type: 'content.part',
+          stepUuid: 's4',
+          turnId: '4',
+          step: 1,
+          uuid: 'm4',
+          part: { type: 'text', text: 'later answer' },
+        },
+      },
+    ]);
+    documents.set('root', {
+      version: 1,
+      delegationId: 'delegation_durable',
+      principalFingerprint: authority.principalFingerprint,
+      authorityFingerprint: authority.authorityFingerprint,
+      configFingerprint: authority.configFingerprint,
+      lifecycle: 'active',
+      createdAt: 1,
+      children: {},
+      dispatches: {
+        dispatch_durable: {
+          dispatchId: 'dispatch_durable',
+          target: 'main',
+          agentId: 'main',
+          status: 'completed',
+          createdAt: 1,
+          endedAt: 7,
+          transcriptStart: 0,
+          transcriptCursorVersion: 2,
+          legacyTranscriptStart: 0,
+        },
+      },
+      events: [],
+      nextEventSeq: 1,
+    });
+    const service = ix.get(ISessionExternalDelegationService);
+
+    await expect(service.transcript({
+      authority,
+      dispatchId: 'dispatch_durable',
+      detail: 'items',
+    })).resolves.toMatchObject({
+      items: [{
+        kind: 'turn',
+        turnId: 't3',
+        state: 'completed',
+        prompt: 'persisted prompt',
+        steps: [{
+          frames: [
+            { kind: 'text', text: 'persisted answer' },
+            { kind: 'tool', toolCallId: 'persisted-tool', output: 'persisted result' },
+          ],
+        }],
+      }],
+    });
+    expect((await service.transcript({
+      authority,
+      dispatchId: 'dispatch_durable',
+      detail: 'items',
+    })).items.map((item) => item.kind === 'turn' ? item.turnId : item.kind)).toEqual(['t3']);
+    expect((await service.events({
+      authority,
+      dispatchId: 'dispatch_durable',
+      detail: 'turn',
+    })).items.map((item) => item.event.type)).toEqual([
+      'message.delta',
+      'tool.call',
+      'tool.update',
+    ]);
+  });
+
+  it('signals lifecycle ring truncation without reusing event seq', async () => {
+    documents.set('root', {
+      version: 1,
+      delegationId: 'delegation_ring',
+      principalFingerprint: authority.principalFingerprint,
+      authorityFingerprint: authority.authorityFingerprint,
+      configFingerprint: authority.configFingerprint,
+      lifecycle: 'active',
+      createdAt: 1,
+      children: {},
+      dispatches: {
+        dispatch_ring: {
+          dispatchId: 'dispatch_ring',
+          target: 'main',
+          agentId: 'main',
+          status: 'running',
+          createdAt: 1,
+          startedAt: 2,
+          transcriptStart: 0,
+        },
+      },
+      events: Array.from({ length: 5_000 }, (_, index) => ({
+        seq: index + 1,
+        dispatchId: 'dispatch_ring',
+        type: index === 0 ? 'queued' : 'started',
+        at: index + 1,
+      })),
+      nextEventSeq: 5_001,
+    });
+    const service = ix.get(ISessionExternalDelegationService);
+
+    expect((await service.status({ authority, dispatchId: 'dispatch_ring' })).status).toBe('interrupted');
+    const page = await service.events({ authority, dispatchId: 'dispatch_ring', cursor: 0, limit: 1 });
+    expect(page).toMatchObject({
+      items: [{ seq: 2 }],
+      nextCursor: 2,
+      truncated_before_seq: 2,
+    });
+    expect((await service.events({
+      authority,
+      dispatchId: 'dispatch_ring',
+      cursor: 5_000,
+    })).items).toEqual([
+      expect.objectContaining({ seq: 5_001, type: 'interrupted' }),
+    ]);
   });
 
   it('rejects dispatch while the target loop has a queued prompt', async () => {
@@ -850,6 +1650,68 @@ describe('SessionExternalDelegationService', () => {
     const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
     expect((await service.cancel({ authority, dispatchId: dispatch.dispatchId })).status).toBe('cancelled');
     expect((await service.cancel({ authority, dispatchId: dispatch.dispatchId })).status).toBe('cancelled');
+  });
+
+  it('claims cancellation once and seals after aborted execution records settle', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
+    const records = wireRecords.get('main')!;
+    records.push(
+      {
+        type: 'turn.prompt',
+        time: 1,
+        turnId: 1,
+        input: [{ type: 'text', text: 'work' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 2,
+        event: { type: 'step.begin', uuid: 's1', turnId: '1', step: 1 },
+      },
+    );
+    onRunAbort = () => {
+      records.push(
+        {
+          type: 'context.append_loop_event',
+          time: 3,
+          event: {
+            type: 'content.part',
+            stepUuid: 's1',
+            turnId: '1',
+            step: 1,
+            uuid: 'm1',
+            part: { type: 'text', text: 'interrupted partial' },
+          },
+        },
+        { type: 'turn.ended', time: 4, turnId: 1, reason: 'cancelled' },
+      );
+    };
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('running');
+    });
+
+    const [first, second] = await Promise.all([
+      service.cancel({ authority, dispatchId: dispatch.dispatchId }),
+      service.cancel({ authority, dispatchId: dispatch.dispatchId }),
+    ]);
+    expect(first.status).toBe('cancelled');
+    expect(second.status).toBe('cancelled');
+    const lifecycle = await service.events({ authority, dispatchId: dispatch.dispatchId });
+    expect(lifecycle.items.map((event) => event.type)).toEqual(['queued', 'started', 'cancelled']);
+    expect(lifecycle.items.filter((event) => event.type === 'cancelled')).toHaveLength(1);
+    await expect(service.transcript({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'items',
+    })).resolves.toMatchObject({
+      items: [{
+        kind: 'turn',
+        turnId: 't1',
+        state: 'cancelled',
+        steps: [{ frames: [{ kind: 'text', text: 'interrupted partial' }] }],
+      }],
+    });
   });
 
   it('pages results with the admitted byte limit instead of rejecting limits above the default page size', async () => {

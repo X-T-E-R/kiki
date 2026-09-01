@@ -62,6 +62,8 @@ import {
   COLLABORATION_TASK_NAME_LABEL,
   IAgentCollaborationRegistry,
 } from '#/session/agentCollaboration/registry';
+import { ISessionApprovalService } from '#/session/approval/approval';
+import { SessionApprovalService } from '#/session/approval/approvalService';
 import {
   type CreateAgentOptions,
   IAgentLifecycleService,
@@ -76,6 +78,8 @@ import {
   ISessionExternalDelegationService,
 } from '#/session/externalDelegation/externalDelegation';
 import { SessionExternalDelegationService } from '#/session/externalDelegation/externalDelegationService';
+import { ISessionInteractionService } from '#/session/interaction/interaction';
+import { SessionInteractionService } from '#/session/interaction/interactionService';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import {
@@ -89,6 +93,10 @@ import {
   ISessionSubagentService,
   type RunAgentOptions,
 } from '#/session/subagent/subagent';
+import { ISessionQuestionService } from '#/session/question/question';
+import { SessionQuestionService } from '#/session/question/questionService';
+import { ISessionStateService } from '#/session/state/sessionState';
+import { SessionStateService } from '#/session/state/sessionStateService';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import type { ExecutableToolResult } from '#/tool/toolContract';
@@ -154,7 +162,7 @@ const PROBE_DIFFERENCE_WHITELIST = {
       'requestIdentityRootAgent',
       'requestIdentityRootTurn',
     ],
-    externalOnly: ['externalDelegationProfile', 'externalDelegationTaskName'],
+    externalOnly: [],
   },
   acceptedStatus: ['running', 'queued'],
   continuationField: ['resume_hint', 'continue_hint'],
@@ -321,18 +329,12 @@ function normalizedLabels(
   labels: Readonly<Record<string, string>> | undefined,
 ): ProbeTuple {
   const values = { ...labels };
-  const taskName = values[COLLABORATION_TASK_NAME_LABEL];
-  const profileName = values[COLLABORATION_AGENT_TYPE_LABEL];
   if (lane === 'internal') {
     expect(values['parentAgentId']).toBe('main');
     expect(values['requestIdentityParentTurn']).toBe('1');
     expect(values['requestIdentityRootAgent']).toBe('main');
     expect(values['requestIdentityRootTurn']).toBe('1');
     for (const key of PROBE_DIFFERENCE_WHITELIST.labelFields.internalOnly) delete values[key];
-  } else {
-    expect(values['externalDelegationTaskName']).toBe(taskName);
-    expect(values['externalDelegationProfile']).toBe(profileName);
-    for (const key of PROBE_DIFFERENCE_WHITELIST.labelFields.externalOnly) delete values[key];
   }
   return ['labels', ...labelEntries(values)];
 }
@@ -598,6 +600,7 @@ function createLane(
         if (serviceId === IWireService) {
           return {
             _serviceBrand: undefined,
+            readJournal: async function* () {},
             flush: async () => {},
           };
         }
@@ -960,6 +963,10 @@ function createLane(
     AgentToolContribution as unknown as ServiceIdentifier<CollectionView<AgentToolContribution>>,
     { items: [] },
   );
+  ix.set(ISessionStateService, new SessionStateService());
+  ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
+  ix.set(ISessionApprovalService, new SyncDescriptor(SessionApprovalService));
+  ix.set(ISessionQuestionService, new SyncDescriptor(SessionQuestionService));
   ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
   ix.set(ISubagentTool, new SyncDescriptor(SubagentTool));
   ix.set(
@@ -1080,7 +1087,7 @@ describe('AgentRun and dispatch parity golden', () => {
           'requestIdentityRootAgent',
           'requestIdentityRootTurn',
         ],
-        externalOnly: ['externalDelegationProfile', 'externalDelegationTaskName'],
+        externalOnly: [],
       },
       acceptedStatus: ['running', 'queued'],
       continuationField: ['resume_hint', 'continue_hint'],
@@ -1314,7 +1321,7 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(external.subagentRun).toHaveBeenCalledTimes(1);
   });
 
-  it.fails('P6 injects one idempotent external message at the next run boundary', async () => {
+  it('P6 injects one idempotent external message at the next run boundary', async () => {
     const external = createLane(disposables, 'external');
     const first = await external.external.dispatch({
       authority,
@@ -1326,13 +1333,13 @@ describe('AgentRun and dispatch parity golden', () => {
     });
     await completeExternal(external, first.dispatchId, 0);
 
-    const accepted = await external.externalM1.send({
+    const accepted = await external.external.send({
       authority,
       taskName: 'mailbox_child',
       message: 'review the update',
       idempotencyKey: 'message-key-1',
     });
-    const replay = await external.externalM1.send({
+    const replay = await external.external.send({
       authority,
       taskName: 'mailbox_child',
       message: 'review the update',
@@ -1441,7 +1448,7 @@ describe('AgentRun and dispatch parity golden', () => {
     ).toBe('task_1');
   });
 
-  it.fails('P10 projects external child status and latest dispatch from the ledger', async () => {
+  it('P10 projects external child status, latest dispatch, and usage from the ledger', async () => {
     const external = createLane(disposables, 'external');
     const view = await external.external.dispatch({
       authority,
@@ -1451,12 +1458,19 @@ describe('AgentRun and dispatch parity golden', () => {
       modelAlias: 'parity-model',
       message: 'inspect status',
     });
-    const externalList = await external.externalM1.list(authority);
+    await completeExternal(external, view.dispatchId, 0);
+    const externalList = await external.external.list(authority);
     const externalChild = externalList.children.find((child) => child.taskName === 'status_child');
 
     expect(externalChild).toMatchObject({
       latestDispatchId: view.dispatchId,
-      status: expect.stringMatching(/queued|running/),
+      status: 'completed',
+      usage: {
+        input: 19,
+        output: 7,
+        cacheRead: 5,
+        cacheWrite: 3,
+      },
     });
     expect(
       external.metadataAgents['agent_child_1']?.labels?.[COLLABORATION_LATEST_TASK_LABEL],

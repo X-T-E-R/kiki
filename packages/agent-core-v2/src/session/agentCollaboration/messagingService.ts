@@ -91,7 +91,10 @@ function visibleAgentMessage(message: {
   readonly sourceTaskName: string;
   readonly content: string;
 }): string {
-  return `Message from agent "${message.sourceTaskName}" (${message.sourceAgentId}):\n\n${message.content}`;
+  const sender = message.sourceAgentId.startsWith('external:')
+    ? `external agent "${message.sourceTaskName}" (${message.sourceAgentId})`
+    : `agent "${message.sourceTaskName}" (${message.sourceAgentId})`;
+  return `Message from ${sender}:\n\n${message.content}`;
 }
 
 registerScopedService(

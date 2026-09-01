@@ -11,6 +11,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import {
   type Interaction,
+  type InteractionConsumerCoverage,
   type InteractionKind,
   type InteractionOrigin,
   type InteractionPendingChangedEvent,
@@ -31,6 +32,7 @@ interface Pending {
 const RECENTLY_RESOLVED_TTL_MS = 60_000;
 const RECENTLY_RESOLVED_MAX = 256;
 const MAIN_AGENT_ID = 'main';
+const SESSION_CONSUMER_COVERAGE: InteractionConsumerCoverage = { kind: 'session' };
 
 export const interactionPendingKey = defineState<Map<string, Pending>>(
   'interaction.pending',
@@ -45,7 +47,7 @@ export const interactionNextIdKey = defineState<number>('interaction.nextId', ()
 export class SessionInteractionService extends Service implements ISessionInteractionService {
   declare readonly _serviceBrand: undefined;
 
-  private readonly consumers = new Set<string>();
+  private readonly consumers = new Map<string, InteractionConsumerCoverage>();
   private readonly _onDidChangePending = this._register(new Emitter<InteractionPendingChangedEvent>());
   readonly onDidChangePending: Event<InteractionPendingChangedEvent> = this._onDidChangePending.event;
   private readonly _onDidResolve = this._register(new Emitter<InteractionResolution>());
@@ -104,19 +106,26 @@ export class SessionInteractionService extends Service implements ISessionIntera
     return this.park(req, () => {});
   }
 
-  acquireConsumer(id: string): void {
-    this.consumers.add(id);
+  acquireConsumer(id: string, coverage: InteractionConsumerCoverage = SESSION_CONSUMER_COVERAGE): void {
+    this.consumers.set(id, coverage);
   }
 
   releaseConsumer(id: string): void {
-    if (!this.consumers.delete(id) || this.consumers.size > 0) return;
+    if (!this.consumers.delete(id)) return;
     for (const interaction of this.listPending('approval')) {
-      this.respond(interaction.id, { decision: 'cancelled' });
+      if (!this.hasConsumer(interaction.origin)) {
+        this.respond(interaction.id, { decision: 'cancelled' });
+      }
     }
   }
 
-  hasConsumer(): boolean {
-    return this.consumers.size > 0;
+  hasConsumer(origin?: InteractionOrigin): boolean {
+    if (origin === undefined) return this.consumers.size > 0;
+    for (const coverage of this.consumers.values()) {
+      if (coverage.kind === 'session') return true;
+      if (origin.agentId !== undefined && coverage.children().has(origin.agentId)) return true;
+    }
+    return false;
   }
 
   respond(id: string, response: unknown): void {
@@ -130,9 +139,15 @@ export class SessionInteractionService extends Service implements ISessionIntera
     this._onDidResolve.fire({ id, response });
   }
 
-  listPending(kind?: InteractionKind): readonly Interaction[] {
-    const all = [...this.pending.values()].map((p) => p.interaction);
-    return kind === undefined ? all : all.filter((i) => i.kind === kind);
+  listPending(kind?: InteractionKind, origin?: InteractionOrigin): readonly Interaction[] {
+    return [...this.pending.values()]
+      .map((entry) => entry.interaction)
+      .filter((interaction) => kind === undefined || interaction.kind === kind)
+      .filter((interaction) =>
+        origin === undefined ||
+        ((origin.agentId === undefined || interaction.origin.agentId === origin.agentId) &&
+          (origin.turnId === undefined || interaction.origin.turnId === origin.turnId)),
+      );
   }
 
   isRecentlyResolved(id: string): boolean {

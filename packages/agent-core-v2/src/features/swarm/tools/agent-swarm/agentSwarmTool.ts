@@ -9,6 +9,7 @@ import { toInputJsonSchema } from '#/tool/input-schema';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import { IModelService } from '#/kosong/model/model';
+import { inputTotal, type TokenUsage } from '#/kosong/contract/usage';
 import type {
   AgentProfile,
   AgentProfileRouteCatalogEntry,
@@ -79,6 +80,7 @@ interface SwarmRunResult {
   readonly status: 'completed' | 'failed' | 'aborted';
   readonly state?: 'started' | 'not_started';
   readonly result?: string;
+  readonly usage?: TokenUsage;
   readonly error?: string;
 }
 
@@ -454,14 +456,20 @@ function renderSwarmResults(results: readonly SwarmRunResult[]): string {
     const mode = result.spec.kind === 'resume' ? ' mode="resume"' : '';
     const item = result.spec.item === undefined ? '' : ` item="${escapeXmlAttribute(result.spec.item)}"`;
     const state = result.state === undefined ? '' : ` state="${result.state}"`;
+    const usage = renderUsageAttributes(result.usage);
     const body = result.status === 'completed' ? (result.result ?? '') : (result.error ?? 'unknown error');
     lines.push(
-      `<subagent${mode}${agentId}${item}${state} outcome="${result.status}">${body}</subagent>`,
+      `<subagent${mode}${agentId}${item}${state}${usage} outcome="${result.status}">${body}</subagent>`,
     );
   }
 
   lines.push('</agent_swarm_result>');
   return lines.join('\n');
+}
+
+function renderUsageAttributes(usage: TokenUsage | undefined): string {
+  if (usage === undefined) return '';
+  return ` usage_input="${String(inputTotal(usage))}" usage_output="${String(usage.output)}" usage_cache_read="${String(usage.inputCacheRead)}" usage_cache_write="${String(usage.inputCacheCreation)}"`;
 }
 
 function normalizeOptionalString(value: string | undefined): string | undefined {

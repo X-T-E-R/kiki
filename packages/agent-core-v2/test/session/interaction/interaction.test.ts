@@ -119,6 +119,134 @@ describe('SessionInteractionService', () => {
     expect(svc.listPending()).toHaveLength(2);
   });
 
+  it('listPending filters by origin fields', () => {
+    const svc = ix.get(ISessionInteractionService);
+    svc.enqueue({ id: 'a1', kind: 'approval', payload: {}, origin: { agentId: 'child-a', turnId: 1 } });
+    svc.enqueue({ id: 'a2', kind: 'approval', payload: {}, origin: { agentId: 'child-a', turnId: 2 } });
+    svc.enqueue({ id: 'b1', kind: 'approval', payload: {}, origin: { agentId: 'child-b', turnId: 1 } });
+    svc.enqueue({ id: 'q1', kind: 'question', payload: {}, origin: { agentId: 'child-a', turnId: 1 } });
+
+    expect(svc.listPending(undefined, { agentId: 'child-a' }).map((entry) => entry.id)).toEqual([
+      'a1',
+      'a2',
+      'q1',
+    ]);
+    expect(svc.listPending('approval', { turnId: 1 }).map((entry) => entry.id)).toEqual([
+      'a1',
+      'b1',
+    ]);
+    expect(svc.listPending('approval', { agentId: 'child-a', turnId: 2 }).map((entry) => entry.id)).toEqual([
+      'a2',
+    ]);
+  });
+
+  it('defaults consumer coverage to the whole session', async () => {
+    const svc = ix.get(ISessionInteractionService);
+    expect(svc.hasConsumer()).toBe(false);
+    svc.acquireConsumer('gui');
+    expect(svc.hasConsumer()).toBe(true);
+    expect(svc.hasConsumer({})).toBe(true);
+    expect(svc.hasConsumer({ agentId: 'child-a' })).toBe(true);
+
+    const main = svc.request<unknown, { decision: string }>({ id: 'main', kind: 'approval', payload: {} });
+    const child = svc.request<unknown, { decision: string }>({
+      id: 'child',
+      kind: 'approval',
+      payload: {},
+      origin: { agentId: 'child-a' },
+    });
+    svc.releaseConsumer('gui');
+
+    await expect(main).resolves.toEqual({ decision: 'cancelled' });
+    await expect(child).resolves.toEqual({ decision: 'cancelled' });
+    expect(svc.hasConsumer()).toBe(false);
+  });
+
+  it('scoped consumer coverage follows the live children set', () => {
+    const svc = ix.get(ISessionInteractionService);
+    const children = new Set(['child-a']);
+    svc.acquireConsumer('external-root', {
+      kind: 'delegator_children',
+      delegator: { kind: 'external', delegationId: 'root-1' },
+      children: () => children,
+    });
+
+    expect(svc.hasConsumer()).toBe(true);
+    expect(svc.hasConsumer({ agentId: 'child-a' })).toBe(true);
+    expect(svc.hasConsumer({ agentId: 'child-b' })).toBe(false);
+    expect(svc.hasConsumer({})).toBe(false);
+    children.add('child-b');
+    expect(svc.hasConsumer({ agentId: 'child-b' })).toBe(true);
+  });
+
+  it('releasing scoped consumers cancels only approvals without remaining coverage', async () => {
+    const svc = ix.get(ISessionInteractionService);
+    const wideChildren = new Set(['child-a', 'child-b']);
+    const childB = new Set(['child-b']);
+    svc.acquireConsumer('wide', {
+      kind: 'delegator_children',
+      delegator: { kind: 'external', delegationId: 'root-wide' },
+      children: () => wideChildren,
+    });
+    svc.acquireConsumer('child-b', {
+      kind: 'delegator_children',
+      delegator: { kind: 'agent', agentId: 'main' },
+      children: () => childB,
+    });
+    const pendingA = svc.request<unknown, { decision: string }>({
+      id: 'a',
+      kind: 'approval',
+      payload: {},
+      origin: { agentId: 'child-a' },
+    });
+    const pendingB = svc.request<unknown, { decision: string }>({
+      id: 'b',
+      kind: 'approval',
+      payload: {},
+      origin: { agentId: 'child-b' },
+    });
+    const pendingMain = svc.request<unknown, { decision: string }>({
+      id: 'main',
+      kind: 'approval',
+      payload: {},
+    });
+
+    svc.releaseConsumer('wide');
+
+    await expect(pendingA).resolves.toEqual({ decision: 'cancelled' });
+    await expect(pendingMain).resolves.toEqual({ decision: 'cancelled' });
+    expect(svc.listPending('approval').map((entry) => entry.id)).toEqual(['b']);
+
+    svc.releaseConsumer('child-b');
+    await expect(pendingB).resolves.toEqual({ decision: 'cancelled' });
+    expect(svc.listPending()).toEqual([]);
+  });
+
+  it('whole-session coverage prevents scoped release from cancelling pending approvals', async () => {
+    const svc = ix.get(ISessionInteractionService);
+    const children = new Set(['child-a']);
+    svc.acquireConsumer('gui');
+    svc.acquireConsumer('external-root', {
+      kind: 'delegator_children',
+      delegator: { kind: 'external', delegationId: 'root-1' },
+      children: () => children,
+    });
+    const child = svc.request<unknown, { decision: string }>({
+      id: 'child',
+      kind: 'approval',
+      payload: {},
+      origin: { agentId: 'child-a' },
+    });
+    const main = svc.request<unknown, { decision: string }>({ id: 'main', kind: 'approval', payload: {} });
+
+    svc.releaseConsumer('external-root');
+    expect(svc.listPending('approval').map((entry) => entry.id)).toEqual(['child', 'main']);
+
+    svc.releaseConsumer('gui');
+    await expect(child).resolves.toEqual({ decision: 'cancelled' });
+    await expect(main).resolves.toEqual({ decision: 'cancelled' });
+  });
+
   it('onDidChangePending fires on request and on respond', async () => {
     const svc = ix.get(ISessionInteractionService);
     let count = 0;

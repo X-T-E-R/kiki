@@ -196,6 +196,31 @@ describe('agent collaboration safe-boundary delivery', () => {
     service.dispose();
   });
 
+  it('renders an external delegation sender distinctly at the next run boundary', async () => {
+    const store = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    const lifecycle = lifecycleHarness([target.handle]);
+    const service = new AgentCollaborationMessagingService(store, lifecycle.service, sessionContext());
+
+    await service.send({
+      sourceAgentId: 'external:delegation_test',
+      sourceTaskName: 'external',
+      targetAgentId: 'agent-target',
+      targetTaskName: 'target',
+      content: 'review the update',
+      idempotencyKey: 'external-message',
+    });
+    expect(target.messages).toEqual([]);
+
+    await target.execution.hooks.onWillRun.run({ signal });
+
+    expect(target.messages[0]?.content[0]).toEqual({
+      type: 'text',
+      text: 'Message from external agent "external" (external:delegation_test):\n\nreview the update',
+    });
+    service.dispose();
+  });
+
   it('confirms a pending adapter ack before claiming again on the next run', async () => {
     const targetRef = {
       hostId: 'agent-collaboration-v2',

@@ -62,6 +62,30 @@ describe('SessionApprovalService', () => {
     expect(interaction.listPending()).toEqual([]);
   });
 
+  it('fails closed when scoped consumers do not cover the approval origin', async () => {
+    const interaction = ix.get(ISessionInteractionService);
+    const approvals = ix.get(ISessionApprovalService);
+    const children = new Set(['child-a']);
+    interaction.releaseConsumer('test-consumer');
+    interaction.acquireConsumer('external-root', {
+      kind: 'delegator_children',
+      delegator: { kind: 'external', delegationId: 'root-1' },
+      children: () => children,
+    });
+
+    const covered = approvals.request({ ...makeRequest('covered'), agentId: 'child-a' });
+    await expect(
+      approvals.request({ ...makeRequest('other-child'), agentId: 'child-b' }),
+    ).resolves.toEqual({ decision: 'cancelled' });
+    await expect(approvals.request(makeRequest('main'))).resolves.toEqual({
+      decision: 'cancelled',
+    });
+    expect(interaction.listPending('approval').map((entry) => entry.id)).toEqual(['covered']);
+
+    approvals.decide('covered', { decision: 'approved' });
+    await expect(covered).resolves.toEqual({ decision: 'approved' });
+  });
+
   it('request parks until decide resolves it', async () => {
     const svc = ix.get(ISessionApprovalService);
     const req = makeRequest('r1');

@@ -7,7 +7,6 @@ import type { IAgentTaskService } from '#/agent/task/task';
 import type { ISessionMetadata, AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import {
   COLLABORATION_AGENT_TYPE_LABEL,
-  COLLABORATION_LATEST_TASK_LABEL,
   COLLABORATION_TASK_NAME_LABEL,
 } from '#/session/agentCollaboration/registry';
 import { executeTool } from '../../../tools/fixtures/execute-tool';
@@ -18,7 +17,6 @@ function childMeta(options: {
   readonly parent?: string;
   readonly name?: string;
   readonly profile?: string;
-  readonly taskId?: string;
   readonly swarmItem?: string;
 }): AgentMeta {
   const labels: Record<string, string> = {
@@ -26,7 +24,6 @@ function childMeta(options: {
   };
   if (options.name !== undefined) labels[COLLABORATION_TASK_NAME_LABEL] = options.name;
   if (options.profile !== undefined) labels[COLLABORATION_AGENT_TYPE_LABEL] = options.profile;
-  if (options.taskId !== undefined) labels[COLLABORATION_LATEST_TASK_LABEL] = options.taskId;
   if (options.swarmItem !== undefined) labels['swarmItem'] = options.swarmItem;
   return { type: 'sub', labels };
 }
@@ -34,17 +31,28 @@ function childMeta(options: {
 function makeTool(options: {
   readonly callerAgentId?: string;
   readonly agents?: Readonly<Record<string, AgentMeta>>;
-  readonly tasks?: Readonly<Record<string, { readonly status: string }>>;
+  readonly tasks?: readonly {
+    readonly agentId: string;
+    readonly status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost';
+    readonly startedAt?: number;
+  }[];
 }): AgentListTool {
-  const tasks = options.tasks ?? {};
   return new AgentListTool(
     { agentId: options.callerAgentId ?? 'main' } as IAgentScopeContext,
     {
       read: async () => ({ agents: options.agents ?? {} }),
     } as ISessionMetadata,
     {
-      getTask: (taskId: string) => tasks[taskId],
-    } as IAgentTaskService,
+      list: () => (options.tasks ?? []).map((task, index) => ({
+        kind: 'agent',
+        taskId: `task-${String(index + 1)}`,
+        description: '',
+        agentId: task.agentId,
+        status: task.status,
+        startedAt: task.startedAt ?? index,
+        endedAt: task.status === 'running' ? null : index,
+      })),
+    } as unknown as IAgentTaskService,
   );
 }
 
@@ -145,13 +153,13 @@ describe('AgentListTool', () => {
   it('hides finished children until include_finished is true', async () => {
     const tool = makeTool({
       agents: {
-        'agent-done': childMeta({ name: 'done', profile: 'coder', taskId: 'task-done' }),
-        'agent-live': childMeta({ name: 'live', profile: 'coder', taskId: 'task-live' }),
+        'agent-done': childMeta({ name: 'done', profile: 'coder' }),
+        'agent-live': childMeta({ name: 'live', profile: 'coder' }),
       },
-      tasks: {
-        'task-done': { status: 'completed' },
-        'task-live': { status: 'running' },
-      },
+      tasks: [
+        { agentId: 'agent-done', status: 'completed' },
+        { agentId: 'agent-live', status: 'running' },
+      ],
     });
 
     expect(await listAgents(tool)).toEqual({
@@ -182,15 +190,39 @@ describe('AgentListTool', () => {
     });
   });
 
+  it('uses the latest domain run record instead of the collaboration task label', async () => {
+    const base = childMeta({ name: 'worker', profile: 'coder' });
+    const meta: AgentMeta = {
+      ...base,
+      labels: { ...base.labels, collaborationLatestTaskId: 'stale-task' },
+    };
+    const tool = makeTool({
+      agents: { worker: meta },
+      tasks: [
+        { agentId: 'worker', status: 'completed', startedAt: 1 },
+        { agentId: 'worker', status: 'running', startedAt: 2 },
+      ],
+    });
+
+    expect(await listAgents(tool)).toEqual({
+      agents: [
+        {
+          agent_id: 'worker',
+          name: 'worker',
+          profile: 'coder',
+          status: 'running',
+        },
+      ],
+    });
+  });
+
   it('returns running children before idle ones', async () => {
     const tool = makeTool({
       agents: {
         aaa: childMeta({ profile: 'coder' }),
-        zzz: childMeta({ profile: 'coder', taskId: 'task-zzz' }),
+        zzz: childMeta({ profile: 'coder' }),
       },
-      tasks: {
-        'task-zzz': { status: 'running' },
-      },
+      tasks: [{ agentId: 'zzz', status: 'running' }],
     });
 
     expect(await listAgents(tool)).toEqual({

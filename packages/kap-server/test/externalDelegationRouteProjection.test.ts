@@ -1,4 +1,7 @@
 import {
+  EXTERNAL_INTERACTION_NOT_OWNED_CODE,
+  Error2,
+  ErrorCodes,
   resumeSessionById,
   type ExternalDispatchView,
   type ISessionExternalDelegationService as ExternalDelegationService,
@@ -60,6 +63,9 @@ describe('external delegation route projection', () => {
       list: vi.fn(),
       dispatch: vi.fn(),
       continue: vi.fn(),
+      send: vi.fn(),
+      interactions: vi.fn(),
+      respond: vi.fn(),
       status: vi.fn(),
       wait: vi.fn(),
       result: vi.fn(),
@@ -83,14 +89,17 @@ describe('external delegation route projection', () => {
     );
   });
 
-  it('keeps the eight existing commands and adds wait', () => {
+  it('registers the twelve external delegation commands', () => {
     expect([...handlers.keys()].toSorted()).toEqual([
       '/sessions/:session_id/external-delegation/cancel',
       '/sessions/:session_id/external-delegation/continue',
       '/sessions/:session_id/external-delegation/dispatch',
       '/sessions/:session_id/external-delegation/events',
+      '/sessions/:session_id/external-delegation/interactions',
       '/sessions/:session_id/external-delegation/list',
+      '/sessions/:session_id/external-delegation/respond',
       '/sessions/:session_id/external-delegation/result',
+      '/sessions/:session_id/external-delegation/send',
       '/sessions/:session_id/external-delegation/status',
       '/sessions/:session_id/external-delegation/transcript',
       '/sessions/:session_id/external-delegation/wait',
@@ -133,6 +142,115 @@ describe('external delegation route projection', () => {
       dispatchId: 'dispatch_previous',
       dispatchKey: 'stable-continue-key',
     }));
+  });
+
+  it('projects send, interactions, and respond requests onto core operations', async () => {
+    service.send.mockResolvedValue({ message: { messageId: 'message-1' }, delivery: 'queued' });
+    service.interactions.mockResolvedValue({
+      items: [{ interactionId: 'approval-1', kind: 'approval', taskName: 'probe', payload: {}, createdAt: 1 }],
+    });
+    service.respond.mockResolvedValue({ interactionId: 'approval-1', status: 'resolved' });
+
+    const sent = await invoke('send', {
+      task_name: 'probe',
+      message: 'check this',
+      idempotency_key: 'message-key',
+    });
+    const interactions = await invoke('interactions', { cursor: 2 });
+    const responded = await invoke('respond', {
+      interaction_id: 'approval-1',
+      kind: 'approval',
+      response: { decision: 'approved', selected_option_id: 'allow' },
+    });
+
+    expect(sent.code).toBe(0);
+    expect(interactions.data).toMatchObject({ items: [{ interactionId: 'approval-1' }] });
+    expect(responded.data).toEqual({ interactionId: 'approval-1', status: 'resolved' });
+    expect(service.send).toHaveBeenCalledWith(expect.objectContaining({
+      taskName: 'probe',
+      idempotencyKey: 'message-key',
+    }));
+    expect(service.interactions).toHaveBeenCalledWith(expect.objectContaining({ cursor: 2 }));
+    expect(service.respond).toHaveBeenCalledWith(expect.objectContaining({
+      interactionId: 'approval-1',
+      kind: 'approval',
+      response: { decision: 'approved', selectedOptionId: 'allow' },
+    }));
+  });
+
+  it('uses respond kind to disambiguate decision-shaped question answers', async () => {
+    service.respond.mockResolvedValue({ interactionId: 'question-1', status: 'resolved' });
+
+    const question = await invoke('respond', {
+      interaction_id: 'question-1',
+      kind: 'question',
+      response: { decision: 'continue' },
+    });
+    const invalidApproval = await invoke('respond', {
+      interaction_id: 'approval-1',
+      kind: 'approval',
+      response: { answers: { Continue: 'Yes' } },
+    });
+
+    expect(question.code).toBe(0);
+    expect(invalidApproval.code).not.toBe(0);
+    expect(service.respond).toHaveBeenCalledOnce();
+    expect(service.respond).toHaveBeenCalledWith(expect.objectContaining({
+      interactionId: 'question-1',
+      kind: 'question',
+      response: { decision: 'continue' },
+    }));
+  });
+
+  it('validates and forwards event and transcript detail modes', async () => {
+    service.events.mockResolvedValue({ items: [] });
+    service.transcript.mockResolvedValue({ items: [] });
+
+    const events = await invoke('events', {
+      dispatch_id: 'dispatch_replay',
+      detail: 'turn',
+    });
+    const transcript = await invoke('transcript', {
+      dispatch_id: 'dispatch_replay',
+      detail: 'items',
+    });
+    const invalidEvents = await invoke('events', {
+      dispatch_id: 'dispatch_replay',
+      detail: 'tools',
+    });
+    const invalidTranscript = await invoke('transcript', {
+      dispatch_id: 'dispatch_replay',
+      detail: 'frames',
+    });
+
+    expect(events.code).toBe(0);
+    expect(transcript.code).toBe(0);
+    expect(invalidEvents.code).not.toBe(0);
+    expect(invalidTranscript.code).not.toBe(0);
+    expect(service.events).toHaveBeenCalledOnce();
+    expect(service.events).toHaveBeenCalledWith(expect.objectContaining({ detail: 'turn' }));
+    expect(service.transcript).toHaveBeenCalledOnce();
+    expect(service.transcript).toHaveBeenCalledWith(expect.objectContaining({ detail: 'items' }));
+  });
+
+  it('preserves the interaction.not_owned failure classification', async () => {
+    service.respond.mockRejectedValue(new Error2(
+      ErrorCodes.REQUEST_INVALID,
+      'Interaction is not owned by this delegation.',
+      { details: { failure_code: EXTERNAL_INTERACTION_NOT_OWNED_CODE } },
+    ));
+
+    const response = await invoke('respond', {
+      interaction_id: 'approval-foreign',
+      kind: 'approval',
+      response: { decision: 'approved' },
+    });
+
+    expect(response).toMatchObject({
+      code: expect.any(Number),
+      details: { failure_code: EXTERNAL_INTERACTION_NOT_OWNED_CODE },
+    });
+    expect(response.code).not.toBe(0);
   });
 
   it('projects targeted timeout and wait-any without treating timeout as an error', async () => {

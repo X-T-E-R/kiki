@@ -7,7 +7,11 @@
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { ErrorCodes } from '#/errors';
+import type { AgentMessageAcceptance } from '#/session/agentCollaboration/messageMailbox';
+import type { ApprovalResponse } from '#/session/approval/approval';
 import type { DispatchProfileCatalogEntry } from '#/session/dispatch/profileCatalogProjection';
+import type { QuestionResult } from '#/session/question/question';
+import type { NormalizedExecutorEvent } from '@moonshot-ai/protocol';
 
 export type ExternalDispatchStatus =
   | 'queued'
@@ -94,6 +98,8 @@ export interface ExternalChildView {
   readonly taskName: string;
   readonly profileName: string;
   readonly latestDispatchId?: string;
+  readonly status?: ExternalDispatchStatus;
+  readonly usage?: DispatchUsageView;
 }
 
 export interface DispatchUsageView {
@@ -157,6 +163,54 @@ export interface ExternalContinueRequest {
   readonly dispatchKey?: string;
 }
 
+export interface ExternalSendRequest {
+  readonly authority: ExternalAuthority;
+  readonly taskName: string;
+  readonly message: string;
+  readonly idempotencyKey: string;
+}
+
+export const EXTERNAL_INTERACTION_NOT_OWNED_CODE = 'interaction.not_owned';
+
+export interface ExternalInteractionsRequest {
+  readonly authority: ExternalAuthority;
+  readonly cursor?: number;
+}
+
+export interface ExternalInteractionView {
+  readonly interactionId: string;
+  readonly kind: 'approval' | 'question';
+  readonly taskName: string;
+  readonly payload: unknown;
+  readonly createdAt: number;
+}
+
+export interface ExternalInteractionPage {
+  readonly items: readonly ExternalInteractionView[];
+  readonly nextCursor?: number;
+}
+
+export type ExternalInteractionResponse = ApprovalResponse | QuestionResult;
+
+export type ExternalRespondRequest =
+  | {
+      readonly authority: ExternalAuthority;
+      readonly interactionId: string;
+      readonly kind: 'approval';
+      readonly response: ApprovalResponse;
+    }
+  | {
+      readonly authority: ExternalAuthority;
+      readonly interactionId: string;
+      readonly kind: 'question';
+      readonly response: QuestionResult;
+    };
+
+export interface ExternalRespondView {
+  readonly interactionId: string;
+  readonly status: 'resolved';
+}
+
 export interface ExternalDispatchLookup {
   readonly authority: ExternalAuthority;
   readonly dispatchId: string;
@@ -187,6 +241,10 @@ export interface ExternalResultPage {
   readonly nextCursor?: number;
 }
 
+export interface ExternalEventsLookup extends ExternalPageLookup {
+  readonly detail?: 'lifecycle' | 'turn';
+}
+
 export interface ExternalEventView {
   readonly seq: number;
   readonly dispatchId: string;
@@ -195,19 +253,123 @@ export interface ExternalEventView {
   readonly message?: string;
 }
 
+export interface ExternalTurnEventView {
+  readonly seq: number;
+  readonly dispatchId: string;
+  readonly at: number;
+  readonly event: NormalizedExecutorEvent;
+}
+
 export interface ExternalEventPage {
   readonly items: readonly ExternalEventView[];
   readonly nextCursor?: number;
+  readonly truncated_before_seq?: number;
 }
 
-export interface ExternalTranscriptItem {
+export interface ExternalTurnEventPage {
+  readonly items: readonly ExternalTurnEventView[];
+  readonly nextCursor?: number;
+}
+
+export interface ExternalTranscriptLookup extends ExternalPageLookup {
+  readonly detail?: 'text' | 'items';
+}
+
+export interface ExternalTranscriptTextItem {
   readonly index: number;
   readonly role: 'user' | 'assistant' | 'system' | 'tool';
   readonly text: string;
 }
 
+export interface ExternalTranscriptTextFrame {
+  readonly kind: 'text';
+  readonly frameId: string;
+  readonly role: 'assistant' | 'user';
+  readonly text: string;
+}
+
+export interface ExternalTranscriptThinkingFrame {
+  readonly kind: 'thinking';
+  readonly frameId: string;
+  readonly text: string;
+}
+
+export interface ExternalTranscriptToolFrame {
+  readonly kind: 'tool';
+  readonly frameId: string;
+  readonly toolCallId: string;
+  readonly name: string;
+  readonly state: 'running' | 'done' | 'error' | 'interrupted';
+  readonly input?: unknown;
+  readonly output?: unknown;
+  readonly display?: unknown;
+  readonly progress?: unknown;
+  readonly startedAt?: string;
+  readonly endedAt?: string;
+}
+
+export interface ExternalTranscriptStep {
+  readonly kind: 'step';
+  readonly stepId: string;
+  readonly turnId: string;
+  readonly ordinal: number;
+  readonly state: 'running' | 'completed' | 'interrupted' | 'failed';
+  readonly frames: readonly (
+    | ExternalTranscriptTextFrame
+    | ExternalTranscriptThinkingFrame
+    | ExternalTranscriptToolFrame
+  )[];
+  readonly startedAt?: string;
+  readonly endedAt?: string;
+  readonly usage?: {
+    readonly inputOther: number;
+    readonly output: number;
+    readonly inputCacheRead: number;
+    readonly inputCacheCreation: number;
+  };
+}
+
+export interface ExternalTranscriptTurn {
+  readonly kind: 'turn';
+  readonly turnId: string;
+  readonly ordinal: number;
+  readonly state: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  readonly origin: unknown;
+  readonly prompt?: string;
+  readonly steps: readonly ExternalTranscriptStep[];
+  readonly startedAt?: string;
+  readonly endedAt?: string;
+  readonly usage?: unknown;
+}
+
+export interface ExternalTranscriptMarker {
+  readonly kind: 'marker';
+  readonly markerId: string;
+  readonly marker: string;
+  readonly payload?: unknown;
+  readonly at?: string;
+}
+
+export interface ExternalTranscriptTaskRef {
+  readonly kind: 'taskref';
+  readonly refId: string;
+  readonly taskId: string;
+  readonly at?: string;
+}
+
+export type ExternalTranscriptL1Item =
+  | ExternalTranscriptTurn
+  | ExternalTranscriptMarker
+  | ExternalTranscriptTaskRef;
+
 export interface ExternalTranscriptPage {
-  readonly items: readonly ExternalTranscriptItem[];
+  readonly items: readonly ExternalTranscriptTextItem[];
+  readonly nextCursor?: number;
+}
+
+export interface ExternalTranscriptItemsPage {
+  readonly items: readonly ExternalTranscriptL1Item[];
+  readonly cursor: number;
   readonly nextCursor?: number;
 }
 
@@ -216,11 +378,16 @@ export interface ISessionExternalDelegationService {
   list(authority: ExternalAuthority): Promise<ExternalRootView>;
   dispatch(request: ExternalDispatchRequest): Promise<ExternalDispatchView>;
   continue(request: ExternalContinueRequest): Promise<ExternalDispatchView>;
+  send(request: ExternalSendRequest): Promise<AgentMessageAcceptance>;
+  interactions(request: ExternalInteractionsRequest): Promise<ExternalInteractionPage>;
+  respond(request: ExternalRespondRequest): Promise<ExternalRespondView>;
   status(request: ExternalDispatchLookup): Promise<ExternalDispatchView>;
   wait(request: DispatchWaitRequest): Promise<DispatchWaitView>;
   result(request: ExternalPageLookup): Promise<ExternalResultPage>;
-  events(request: ExternalPageLookup): Promise<ExternalEventPage>;
-  transcript(request: ExternalPageLookup): Promise<ExternalTranscriptPage>;
+  events(request: ExternalEventsLookup & { readonly detail: 'turn' }): Promise<ExternalTurnEventPage>;
+  events(request: ExternalEventsLookup): Promise<ExternalEventPage>;
+  transcript(request: ExternalTranscriptLookup & { readonly detail: 'items' }): Promise<ExternalTranscriptItemsPage>;
+  transcript(request: ExternalTranscriptLookup): Promise<ExternalTranscriptPage>;
   cancel(request: ExternalDispatchLookup): Promise<ExternalDispatchView>;
 }
 

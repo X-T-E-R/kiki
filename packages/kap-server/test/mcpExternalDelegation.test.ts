@@ -73,8 +73,11 @@ describe('Kiki external delegation MCP server', () => {
       'kiki_continue',
       'kiki_dispatch',
       'kiki_events',
+      'kiki_interactions',
       'kiki_list',
+      'kiki_respond',
       'kiki_result',
+      'kiki_send',
       'kiki_status',
       'kiki_transcript',
       'kiki_wait',
@@ -415,6 +418,121 @@ describe('Kiki external delegation MCP server', () => {
     });
   });
 
+  it('projects send, interaction response, and detail-mode tools', async () => {
+    const requests: Array<{ action: string; body: Record<string, unknown> }> = [];
+    const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
+      const action = fetchUrl(url).split('/').at(-1)!;
+      const body = JSON.parse(fetchBody(init)) as Record<string, unknown>;
+      requests.push({ action, body });
+      const data = action === 'send'
+        ? { message: { messageId: 'message-1' }, delivery: 'queued' }
+        : action === 'interactions'
+          ? { items: [{ interactionId: 'approval-1', kind: 'approval', taskName: 'probe' }] }
+          : action === 'respond'
+            ? { interactionId: 'approval-1', status: 'resolved' }
+            : { items: [] };
+      return new Response(JSON.stringify({ code: 0, msg: 'ok', data }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const server = createKikiMcpServer(
+      {
+        endpoint: 'http://127.0.0.1:58627',
+        token: 'TOKEN',
+        delegationToken: 'DELEGATION_SECRET',
+        sessionId: 'session-operator',
+        workspacePath: '/example/workspace',
+      },
+      { fetch: fetchMock },
+    );
+    const client = new Client({ name: 'test-client', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    close.push(() => client.close(), () => server.close());
+
+    const sent = await client.callTool({
+      name: 'kiki_send',
+      arguments: { task_name: 'probe', message: 'check this' },
+    });
+    const interactions = await client.callTool({
+      name: 'kiki_interactions',
+      arguments: { cursor: 1 },
+    });
+    const responded = await client.callTool({
+      name: 'kiki_respond',
+      arguments: {
+        interaction_id: 'approval-1',
+        kind: 'approval',
+        response: { decision: 'approved', selected_option_id: 'allow' },
+      },
+    });
+    const questionResponded = await client.callTool({
+      name: 'kiki_respond',
+      arguments: {
+        interaction_id: 'question-1',
+        kind: 'question',
+        response: { decision: 'continue' },
+      },
+    });
+    const invalidApproval = await client.callTool({
+      name: 'kiki_respond',
+      arguments: {
+        interaction_id: 'approval-1',
+        kind: 'approval',
+        response: { answers: { Continue: 'Yes' } },
+      },
+    });
+    await client.callTool({
+      name: 'kiki_events',
+      arguments: { dispatch_id: 'dispatch-1', detail: 'turn' },
+    });
+    await client.callTool({
+      name: 'kiki_transcript',
+      arguments: { dispatch_id: 'dispatch-1', detail: 'items' },
+    });
+    const invalidEvents = await client.callTool({
+      name: 'kiki_events',
+      arguments: { dispatch_id: 'dispatch-1', detail: 'tools' },
+    });
+    const invalidTranscript = await client.callTool({
+      name: 'kiki_transcript',
+      arguments: { dispatch_id: 'dispatch-1', detail: 'frames' },
+    });
+
+    const idempotencyKey = requests[0]?.body['idempotency_key'];
+    expect(idempotencyKey).toEqual(expect.stringMatching(/^[0-9a-f-]{36}$/));
+    expect(sent.structuredContent).toMatchObject({ idempotency_key: idempotencyKey });
+    expect(interactions.structuredContent).toMatchObject({ items: [{ interactionId: 'approval-1' }] });
+    expect(responded.structuredContent).toEqual({ interactionId: 'approval-1', status: 'resolved' });
+    expect(questionResponded.isError).not.toBe(true);
+    expect(invalidApproval.isError).toBe(true);
+    expect(requests).toEqual([
+      { action: 'send', body: { task_name: 'probe', message: 'check this', idempotency_key: idempotencyKey } },
+      { action: 'interactions', body: { cursor: 1 } },
+      {
+        action: 'respond',
+        body: {
+          interaction_id: 'approval-1',
+          kind: 'approval',
+          response: { decision: 'approved', selected_option_id: 'allow' },
+        },
+      },
+      {
+        action: 'respond',
+        body: {
+          interaction_id: 'question-1',
+          kind: 'question',
+          response: { decision: 'continue' },
+        },
+      },
+      { action: 'events', body: { dispatch_id: 'dispatch-1', detail: 'turn' } },
+      { action: 'transcript', body: { dispatch_id: 'dispatch-1', detail: 'items' } },
+    ]);
+    expect(invalidEvents.isError).toBe(true);
+    expect(invalidTranscript.isError).toBe(true);
+  });
+
   it('mirrors targeted timeout and wait-any responses through kiki_wait', async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
@@ -473,9 +591,9 @@ describe('Kiki external delegation MCP server', () => {
     });
   });
 
-  it('streams delegation progress from lifecycle and transcript polling until terminal status', async () => {
+  it('streams turn-detail progress with the current tool until terminal status', async () => {
     let eventPoll = 0;
-    let transcriptPoll = 0;
+    let statusPoll = 0;
     const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
       const action = fetchUrl(url).split('/').at(-1);
       const body = JSON.parse(fetchBody(init)) as Record<string, unknown>;
@@ -484,23 +602,28 @@ describe('Kiki external delegation MCP server', () => {
         data = { dispatchId: 'dispatch_progress', target: 'main', status: 'queued', createdAt: 1 };
       } else if (action === 'events') {
         eventPoll += 1;
-        expect(body).toMatchObject({ dispatch_id: 'dispatch_progress', limit: 100 });
+        expect(body).toMatchObject({
+          dispatch_id: 'dispatch_progress',
+          limit: 100,
+          detail: 'turn',
+        });
         data = eventPoll === 1
           ? {
-              items: [
-                { seq: 1, dispatchId: 'dispatch_progress', type: 'queued', at: 1 },
-                { seq: 2, dispatchId: 'dispatch_progress', type: 'started', at: 2 },
-              ],
+              items: [{
+                seq: 1,
+                dispatchId: 'dispatch_progress',
+                event: { type: 'tool.call', toolCallId: 'tool-1', title: 'Bash' },
+              }],
             }
-          : { items: [{ seq: 3, dispatchId: 'dispatch_progress', type: 'completed', at: 3 }] };
-      } else if (action === 'transcript') {
-        transcriptPoll += 1;
-        expect(body).toMatchObject({ dispatch_id: 'dispatch_progress', limit: 50 });
-        data = transcriptPoll === 1
-          ? { items: [{ index: 0, role: 'assistant', text: 'working' }] }
-          : { items: [{ index: 1, role: 'tool', text: 'done' }] };
+          : { items: [] };
       } else if (action === 'status') {
-        data = { dispatchId: 'dispatch_progress', target: 'main', status: 'completed', createdAt: 1, endedAt: 3 };
+        statusPoll += 1;
+        data = {
+          dispatchId: 'dispatch_progress',
+          target: 'main',
+          status: statusPoll === 1 ? 'running' : 'completed',
+          createdAt: 1,
+        };
       } else {
         throw new Error(`Unexpected action: ${action}`);
       }
@@ -536,17 +659,18 @@ describe('Kiki external delegation MCP server', () => {
       status: 'completed',
     });
     expect(progress).toEqual([
-      { progress: 1, message: 'Delegation turn started (0 tool calls completed).' },
-      { progress: 2, message: 'Delegation running (1 tool call completed).' },
-      { progress: 3, message: 'Delegation completed (1 tool call completed).' },
+      { progress: 1, message: 'Delegation turn started.' },
+      { progress: 2, message: 'Delegation running tool: Bash.' },
+      { progress: 3, message: 'Delegation completed.' },
     ]);
     expect(eventPoll).toBe(2);
-    expect(transcriptPoll).toBe(2);
+    expect(statusPoll).toBe(2);
   });
 
-  it('keeps polling transcript while a progress-token dispatch is active', async () => {
+  it('keeps progress polling active without legacy transcript reads', async () => {
     let eventPoll = 0;
-    let activeTranscriptPolls = 0;
+    let statusPoll = 0;
+    let transcriptPoll = 0;
     const fetchMock = vi.fn<typeof fetch>(async (url) => {
       const action = fetchUrl(url).split('/').at(-1);
       let data: unknown;
@@ -554,16 +678,18 @@ describe('Kiki external delegation MCP server', () => {
         data = { dispatchId: 'dispatch_active', target: 'main', status: 'running', createdAt: 1 };
       } else if (action === 'events') {
         eventPoll += 1;
-        data = eventPoll === 1
-          ? { items: [{ seq: 1, dispatchId: 'dispatch_active', type: 'started', at: 1 }] }
-          : { items: [{ seq: 2, dispatchId: 'dispatch_active', type: 'completed', at: 2 }] };
-      } else if (action === 'transcript') {
-        activeTranscriptPolls += 1;
-        data = activeTranscriptPolls === 1
-          ? { items: [] }
-          : { items: [{ index: 0, role: 'assistant', text: 'done' }] };
+        data = { items: [] };
       } else if (action === 'status') {
-        data = { dispatchId: 'dispatch_active', target: 'main', status: 'completed', createdAt: 1 };
+        statusPoll += 1;
+        data = {
+          dispatchId: 'dispatch_active',
+          target: 'main',
+          status: statusPoll === 1 ? 'running' : 'completed',
+          createdAt: 1,
+        };
+      } else if (action === 'transcript') {
+        transcriptPoll += 1;
+        data = { items: [] };
       } else {
         throw new Error(`Unexpected action: ${action}`);
       }
@@ -598,7 +724,8 @@ describe('Kiki external delegation MCP server', () => {
       dispatchId: 'dispatch_active',
       status: 'completed',
     });
-    expect(activeTranscriptPolls).toBe(2);
+    expect(eventPoll).toBe(2);
+    expect(transcriptPoll).toBe(0);
   });
 
   it('reports invalid tool input as invalid_input instead of an internal error', async () => {

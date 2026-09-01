@@ -10,6 +10,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 
 import {
+  EXTERNAL_INTERACTION_NOT_OWNED_CODE,
   ErrorCodes,
   ISessionExternalDelegationService,
   classifyExternalFailureCode,
@@ -72,6 +73,36 @@ const continueSchema = z
     message: z.string().min(1).max(1_000_000),
   })
   .strict();
+const sendSchema = z.object({
+  task_name: z.string().regex(/^(?!root$)[a-z0-9_]+$/),
+  message: z.string().min(1).max(1_000_000),
+  idempotency_key: z.string().trim().min(1),
+}).strict();
+const interactionsSchema = z.object({ cursor: z.number().int().nonnegative().optional() }).strict();
+const approvalResponseSchema = z.object({
+  decision: z.enum(['approved', 'rejected', 'cancelled']),
+  scope: z.literal('session').optional(),
+  feedback: z.string().optional(),
+  selected_label: z.string().optional(),
+  selected_option_id: z.string().optional(),
+}).strict();
+const questionAnswersSchema = z.record(z.string(), z.union([z.string(), z.literal(true)]));
+const questionResponseSchema = z.object({
+  answers: questionAnswersSchema,
+  method: z.enum(['enter', 'space', 'number_key']).optional(),
+}).strict();
+const respondSchema = z.discriminatedUnion('kind', [
+  z.object({
+    interaction_id: z.string().min(1),
+    kind: z.literal('approval'),
+    response: approvalResponseSchema,
+  }).strict(),
+  z.object({
+    interaction_id: z.string().min(1),
+    kind: z.literal('question'),
+    response: z.union([questionResponseSchema, questionAnswersSchema, z.null()]),
+  }).strict(),
+]);
 const lookupSchema = z.object({ dispatch_id: z.string().min(1) }).strict();
 const waitSchema = z
   .object({
@@ -81,6 +112,8 @@ const waitSchema = z
   .strict();
 const pageSchema = lookupSchema.extend({ cursor: z.number().int().nonnegative().optional(), limit: z.number().int().positive().optional() }).strict();
 const resultPageSchema = lookupSchema.extend({ cursor: z.number().int().nonnegative().optional(), limit: z.number().int().min(4).optional() }).strict();
+const eventsPageSchema = pageSchema.extend({ detail: z.enum(['lifecycle', 'turn']).optional() }).strict();
+const transcriptPageSchema = pageSchema.extend({ detail: z.enum(['text', 'items']).optional() }).strict();
 
 export function registerV2ExternalDelegationRoutes(
   app: ExternalDelegationRouteHost,
@@ -108,6 +141,32 @@ export function registerV2ExternalDelegationRoutes(
       message: body.message,
     }),
   );
+  command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/send', sendSchema, async (service, authority, body) =>
+    service.send({
+      authority,
+      taskName: body.task_name,
+      message: body.message,
+      idempotencyKey: body.idempotency_key,
+    }),
+  );
+  command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/interactions', interactionsSchema, async (service, authority, body) =>
+    service.interactions({ authority, cursor: body.cursor }),
+  );
+  command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/respond', respondSchema, async (service, authority, body) =>
+    body.kind === 'approval'
+      ? service.respond({
+          authority,
+          interactionId: body.interaction_id,
+          kind: 'approval',
+          response: normalizeApprovalResponse(body.response),
+        })
+      : service.respond({
+          authority,
+          interactionId: body.interaction_id,
+          kind: 'question',
+          response: body.response,
+        }),
+  );
   command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/status', lookupSchema, async (service, authority, body) =>
     service.status({ authority, dispatchId: body.dispatch_id }),
   );
@@ -121,15 +180,37 @@ export function registerV2ExternalDelegationRoutes(
   command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/result', resultPageSchema, async (service, authority, body) =>
     service.result({ authority, dispatchId: body.dispatch_id, cursor: body.cursor, limit: body.limit }),
   );
-  command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/events', pageSchema, async (service, authority, body) =>
-    service.events({ authority, dispatchId: body.dispatch_id, cursor: body.cursor, limit: body.limit }),
+  command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/events', eventsPageSchema, async (service, authority, body) =>
+    service.events({
+      authority,
+      dispatchId: body.dispatch_id,
+      cursor: body.cursor,
+      limit: body.limit,
+      detail: body.detail,
+    }),
   );
-  command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/transcript', pageSchema, async (service, authority, body) =>
-    service.transcript({ authority, dispatchId: body.dispatch_id, cursor: body.cursor, limit: body.limit }),
+  command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/transcript', transcriptPageSchema, async (service, authority, body) =>
+    service.transcript({
+      authority,
+      dispatchId: body.dispatch_id,
+      cursor: body.cursor,
+      limit: body.limit,
+      detail: body.detail,
+    }),
   );
   command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/cancel', lookupSchema, async (service, authority, body) =>
     service.cancel({ authority, dispatchId: body.dispatch_id }),
   );
+}
+
+function normalizeApprovalResponse(response: z.infer<typeof approvalResponseSchema>) {
+  return {
+    decision: response.decision,
+    scope: response.scope,
+    feedback: response.feedback,
+    selectedLabel: response.selected_label,
+    selectedOptionId: response.selected_option_id,
+  };
 }
 
 function command<T extends z.ZodTypeAny>(
@@ -215,6 +296,10 @@ interface RedactedFailure {
 function redactedMessage(error: unknown): RedactedFailure {
   if (error instanceof z.ZodError) return { message: 'Invalid external delegation request.' };
   if (isError2(error)) {
+    const failureCode = error.details?.['failure_code'];
+    if (failureCode === EXTERNAL_INTERACTION_NOT_OWNED_CODE) {
+      return { message: error.message, details: { failure_code: failureCode } };
+    }
     if (error.code === ErrorCodes.REQUEST_INVALID) return { message: error.message };
     // Already-classified failures pass their category code and the
     // domain-owned description through — never the raw provider text; only
