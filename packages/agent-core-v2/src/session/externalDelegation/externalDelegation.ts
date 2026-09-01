@@ -8,7 +8,9 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { ErrorCodes } from '#/errors';
 import type { AgentMessageAcceptance } from '#/session/agentCollaboration/messageMailbox';
+import type { ApprovalResponse } from '#/session/approval/approval';
 import type { DispatchProfileCatalogEntry } from '#/session/dispatch/profileCatalogProjection';
+import type { QuestionResult } from '#/session/question/question';
 import type { NormalizedExecutorEvent } from '@moonshot-ai/protocol';
 
 export type ExternalDispatchStatus =
@@ -166,6 +168,39 @@ export interface ExternalSendRequest {
   readonly taskName: string;
   readonly message: string;
   readonly idempotencyKey: string;
+}
+
+export const EXTERNAL_INTERACTION_NOT_OWNED_CODE = 'interaction.not_owned';
+
+export interface ExternalInteractionsRequest {
+  readonly authority: ExternalAuthority;
+  readonly cursor?: number;
+}
+
+export interface ExternalInteractionView {
+  readonly interactionId: string;
+  readonly kind: 'approval' | 'question';
+  readonly taskName: string;
+  readonly payload: unknown;
+  readonly createdAt: number;
+}
+
+export interface ExternalInteractionPage {
+  readonly items: readonly ExternalInteractionView[];
+  readonly nextCursor?: number;
+}
+
+export type ExternalInteractionResponse = ApprovalResponse | QuestionResult;
+
+export interface ExternalRespondRequest {
+  readonly authority: ExternalAuthority;
+  readonly interactionId: string;
+  readonly response: ExternalInteractionResponse;
+}
+
+export interface ExternalRespondView {
+  readonly interactionId: string;
+  readonly status: 'resolved';
 }
 
 export interface ExternalDispatchLookup {
@@ -335,6 +370,8 @@ export interface ISessionExternalDelegationService {
   dispatch(request: ExternalDispatchRequest): Promise<ExternalDispatchView>;
   continue(request: ExternalContinueRequest): Promise<ExternalDispatchView>;
   send(request: ExternalSendRequest): Promise<AgentMessageAcceptance>;
+  interactions(request: ExternalInteractionsRequest): Promise<ExternalInteractionPage>;
+  respond(request: ExternalRespondRequest): Promise<ExternalRespondView>;
   status(request: ExternalDispatchLookup): Promise<ExternalDispatchView>;
   wait(request: DispatchWaitRequest): Promise<DispatchWaitView>;
   result(request: ExternalPageLookup): Promise<ExternalResultPage>;

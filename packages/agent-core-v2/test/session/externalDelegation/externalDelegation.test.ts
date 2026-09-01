@@ -48,6 +48,8 @@ import {
   IAgentCollaborationMessagingService,
   type AgentMessageAcceptance,
 } from '#/session/agentCollaboration/messageMailbox';
+import { ISessionApprovalService } from '#/session/approval/approval';
+import { SessionApprovalService } from '#/session/approval/approvalService';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
 import {
@@ -55,10 +57,16 @@ import {
   ISessionExternalDelegationService,
 } from '#/session/externalDelegation/externalDelegation';
 import { SessionExternalDelegationService } from '#/session/externalDelegation/externalDelegationService';
+import { ISessionInteractionService } from '#/session/interaction/interaction';
+import { SessionInteractionService } from '#/session/interaction/interactionService';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionQuestionService } from '#/session/question/question';
+import { SessionQuestionService } from '#/session/question/questionService';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
+import { ISessionStateService } from '#/session/state/sessionState';
+import { SessionStateService } from '#/session/state/sessionStateService';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IModelService } from '#/kosong/model/model';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
@@ -314,6 +322,10 @@ describe('SessionExternalDelegationService', () => {
         return acceptance;
       },
     });
+    ix.set(ISessionStateService, new SessionStateService());
+    ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
+    ix.set(ISessionApprovalService, new SyncDescriptor(SessionApprovalService));
+    ix.set(ISessionQuestionService, new SyncDescriptor(SessionQuestionService));
     ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     ix.set(ISessionExternalDelegationService, new SyncDescriptor(SessionExternalDelegationService));
   });

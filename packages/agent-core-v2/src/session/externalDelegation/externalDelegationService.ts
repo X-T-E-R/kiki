@@ -41,7 +41,13 @@ import {
   IAgentCollaborationMessagingService,
   type AgentMessageAcceptance,
 } from '#/session/agentCollaboration/messageMailbox';
+import { ISessionApprovalService, type ApprovalResponse } from '#/session/approval/approval';
 import { buildProfileCatalogEntries } from '#/session/dispatch/profileCatalogProjection';
+import {
+  ISessionInteractionService,
+  type Interaction,
+} from '#/session/interaction/interaction';
+import { ISessionQuestionService, type QuestionResult } from '#/session/question/question';
 import {
   KeyReservationRegistry,
   type ReservationResult,
@@ -49,6 +55,7 @@ import {
 
 import { EXTERNAL_DELEGATION_FLAG_ID } from './flag';
 import {
+  EXTERNAL_INTERACTION_NOT_OWNED_CODE,
   classifyExternalFailureCode,
   externalFailureDescription,
   type DispatchUsageView,
@@ -65,7 +72,12 @@ import {
   type ExternalEventsLookup,
   type ExternalEventView,
   type ExternalFailureCategory,
+  type ExternalInteractionPage,
+  type ExternalInteractionsRequest,
+  type ExternalInteractionView,
   type ExternalPageLookup,
+  type ExternalRespondRequest,
+  type ExternalRespondView,
   type ExternalResultPage,
   type ExternalRootView,
   type ExternalSendRequest,
@@ -138,6 +150,8 @@ export class SessionExternalDelegationService
   private readonly changed = new Emitter<void>();
   private readonly dispatchKeys = new KeyReservationRegistry<string>();
   private readonly turnProjections = new Map<string, DispatchTurnProjection>();
+  private readonly interactionConsumerId: string;
+  private interactionConsumerActive = false;
   private document: ExternalDelegationDocument | undefined;
   private writeQueue: Promise<void> = Promise.resolve();
   private operationQueue: Promise<void> = Promise.resolve();
@@ -150,6 +164,9 @@ export class SessionExternalDelegationService
     @IAgentLifecycleService private readonly agents: IAgentLifecycleService,
     @ISessionDispatchService private readonly dispatchDomain: ISessionDispatchService,
     @IAgentCollaborationMessagingService private readonly messaging: IAgentCollaborationMessagingService,
+    @ISessionInteractionService private readonly interaction: ISessionInteractionService,
+    @ISessionApprovalService private readonly approvals: ISessionApprovalService,
+    @ISessionQuestionService private readonly questions: ISessionQuestionService,
     @ISessionAgentProfileCatalog private readonly profiles: ISessionAgentProfileCatalog,
     @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
     @ILogService private readonly log: ILogService,
@@ -159,6 +176,7 @@ export class SessionExternalDelegationService
     super();
     this.scope = session.scope('external-delegation');
     this.sessionId = session.sessionId;
+    this.interactionConsumerId = `external-delegation:${this.sessionId}`;
     this._register(this.changed);
     this._register(this.store.acquire(this.scope, STORE_KEY));
     this.ready = this.load();
@@ -176,6 +194,7 @@ export class SessionExternalDelegationService
         this.controllers.clear();
         for (const projection of this.turnProjections.values()) projection.dispose();
         this.turnProjections.clear();
+        this.releaseInteractionConsumer();
         void this.interruptActive('Session closed');
       },
     });
@@ -331,6 +350,33 @@ export class SessionExternalDelegationService
       content: request.message,
       idempotencyKey,
     });
+  }
+
+  async interactions(request: ExternalInteractionsRequest): Promise<ExternalInteractionPage> {
+    const doc = await this.authorize(request.authority);
+    const children = this.ownedChildrenByAgentId(doc);
+    const pending = this.interaction
+      .listPending()
+      .filter((entry) => entry.kind === 'approval' || entry.kind === 'question')
+      .filter((entry) => entry.origin.agentId !== undefined && children.has(entry.origin.agentId))
+      .toSorted((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+    const cursor = boundedCursor(request.cursor, pending.length);
+    const window = pending.slice(cursor, cursor + 100);
+    const items = window.map((entry) => interactionView(entry, children.get(entry.origin.agentId!)!));
+    const end = cursor + window.length;
+    return { items, nextCursor: end < pending.length ? end : undefined };
+  }
+
+  async respond(request: ExternalRespondRequest): Promise<ExternalRespondView> {
+    const interactionId = requireNonblank(request.interactionId, 'interaction_id');
+    const doc = await this.authorize(request.authority);
+    const interaction = this.requireOwnedInteraction(doc, interactionId);
+    if (interaction.kind === 'approval') {
+      this.approvals.decide(interactionId, request.response as ApprovalResponse);
+    } else {
+      this.questions.answer(interactionId, request.response as QuestionResult);
+    }
+    return { interactionId, status: 'resolved' };
   }
 
   async status(request: ExternalDispatchLookup): Promise<ExternalDispatchView> {
@@ -726,6 +772,7 @@ export class SessionExternalDelegationService
       };
     }
     this.appendEvent(doc, dispatchId, 'queued');
+    this.syncInteractionConsumer(doc);
     await this.persist();
   }
 
@@ -809,6 +856,7 @@ export class SessionExternalDelegationService
     dispatch.usage = usage;
     this.controllers.delete(dispatchId);
     this.appendEvent(doc, dispatchId, status, dispatch.error);
+    this.syncInteractionConsumer(doc);
     await this.persist();
   }
 
@@ -824,6 +872,7 @@ export class SessionExternalDelegationService
       this.appendEvent(doc, dispatch.dispatchId, 'interrupted', dispatch.error);
       changed = true;
     }
+    this.syncInteractionConsumer(doc);
     if (changed) await this.persist();
   }
 
@@ -848,6 +897,50 @@ export class SessionExternalDelegationService
       .then(() => this.changed.fire());
     this.writeQueue = write.catch(() => {});
     return write;
+  }
+
+  private ownedChildrenByAgentId(doc: ExternalDelegationDocument): Map<string, StoredChild> {
+    return new Map(Object.values(doc.children).map((child) => [child.agentId, child]));
+  }
+
+  private requireOwnedInteraction(
+    doc: ExternalDelegationDocument,
+    interactionId: string,
+  ): Interaction {
+    const interaction = this.interaction.listPending().find((entry) => entry.id === interactionId);
+    const agentId = interaction?.origin.agentId;
+    if (
+      interaction === undefined ||
+      (interaction.kind !== 'approval' && interaction.kind !== 'question') ||
+      agentId === undefined ||
+      !this.ownedChildrenByAgentId(doc).has(agentId)
+    ) {
+      throw interactionNotOwned();
+    }
+    return interaction;
+  }
+
+  private syncInteractionConsumer(doc: ExternalDelegationDocument): void {
+    const active = Object.values(doc.dispatches).some((dispatch) => ACTIVE.has(dispatch.status));
+    if (active === this.interactionConsumerActive) return;
+    if (active) {
+      this.interaction.acquireConsumer(this.interactionConsumerId, {
+        kind: 'delegator_children',
+        delegator: { kind: 'external', delegationId: doc.delegationId },
+        children: () => new Set(
+          Object.values(this.document?.children ?? {}).map((child) => child.agentId),
+        ),
+      });
+      this.interactionConsumerActive = true;
+    } else {
+      this.releaseInteractionConsumer();
+    }
+  }
+
+  private releaseInteractionConsumer(): void {
+    if (!this.interactionConsumerActive) return;
+    this.interactionConsumerActive = false;
+    this.interaction.releaseConsumer(this.interactionConsumerId);
   }
 
   private reserveDispatchKey(
@@ -896,6 +989,19 @@ type ActiveDispatchKeyReservation = Extract<
   ReservationResult<string>,
   { readonly kind: 'reserved' }
 >;
+
+function interactionView(
+  interaction: Interaction,
+  child: StoredChild,
+): ExternalInteractionView {
+  return {
+    interactionId: interaction.id,
+    kind: interaction.kind as 'approval' | 'question',
+    taskName: child.taskName,
+    payload: interaction.payload,
+    createdAt: interaction.createdAt,
+  };
+}
 
 function childView(child: StoredChild, doc: ExternalDelegationDocument): ExternalChildView {
   const latest = child.latestDispatchId === undefined ? undefined : doc.dispatches[child.latestDispatchId];
@@ -1089,6 +1195,14 @@ function contextText(content: unknown): string {
     )
     .map((part) => part.text)
     .join('');
+}
+
+function interactionNotOwned(): Error2 {
+  return new Error2(
+    ErrorCodes.REQUEST_INVALID,
+    'Interaction is not owned by this delegation.',
+    { details: { failure_code: EXTERNAL_INTERACTION_NOT_OWNED_CODE } },
+  );
 }
 
 function invalid(message: string): Error2 {
