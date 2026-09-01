@@ -1,6 +1,7 @@
-import type { Event2 } from '#/app/event/event2';
 import type { IEventBus } from '#/app/event/eventBus';
 import type { NormalizedExecutorEvent } from '@moonshot-ai/protocol';
+
+import type { WireRecord } from '#/wire/record';
 
 import type {
   ExternalTranscriptL1Item,
@@ -9,7 +10,7 @@ import type {
   ExternalTurnEventView,
 } from './externalDelegation';
 
-type ProjectedEvent = Event2<any> & Readonly<Record<string, unknown>>;
+type ProjectedEvent = Readonly<{ type: string; time: number } & Record<string, unknown>>;
 
 interface SequencedItem {
   readonly seq: number;
@@ -26,7 +27,7 @@ export class DispatchTurnProjection {
     private readonly dispatchId: string,
     bus: IEventBus,
   ) {
-    this.subscription = bus.subscribe((event) => this.record(event as ProjectedEvent));
+    this.subscription = bus.subscribe((event) => this.record(event as unknown as ProjectedEvent));
   }
 
   get cursor(): number {
@@ -35,6 +36,10 @@ export class DispatchTurnProjection {
 
   dispose(): void {
     this.subscription.dispose();
+  }
+
+  async replay(records: AsyncIterable<WireRecord>): Promise<void> {
+    for await (const record of records) this.replayRecord(record);
   }
 
   eventPage(cursor: number, limit: number): {
@@ -59,6 +64,50 @@ export class DispatchTurnProjection {
       items: page.map((entry) => entry.item),
       nextCursor: matches.length > page.length ? page.at(-1)?.seq : undefined,
     };
+  }
+
+  private replayRecord(record: WireRecord): void {
+    const time = record.time ?? 0;
+    if (record.type === 'turn.prompt') {
+      this.upsertTurn({
+        ...record,
+        type: 'turn.started',
+        time,
+        prompt: contentText(record['input']),
+      });
+      return;
+    }
+    if (record.type === 'context.append_loop_event') {
+      const event = objectValue(record['event']);
+      if (event === undefined) return;
+      const type = readString(event, 'type');
+      const turnId = turnNumber(event);
+      if (type === 'step.begin') {
+        this.upsertStep({ ...event, type: 'turn.step.started', time, turnId });
+      } else if (type === 'step.end') {
+        this.endStep({ ...event, type: 'turn.step.completed', time, turnId, usage: event['usage'] });
+      } else if (type === 'content.part') {
+        const part = objectValue(event['part']);
+        if (part?.['type'] === 'text') {
+          this.appendText({ ...event, type: 'assistant.delta', time, turnId, delta: part['text'] }, 'text');
+        } else if (part?.['type'] === 'think') {
+          this.appendText({ ...event, type: 'thinking.delta', time, turnId, delta: part['think'] }, 'thinking');
+        }
+      } else if (type === 'tool.call') {
+        this.startTool({ ...event, type: 'tool.call.started', time, turnId });
+      } else if (type === 'tool.result') {
+        const result = objectValue(event['result']);
+        this.updateTool({
+          ...event,
+          type: 'tool.result',
+          time,
+          output: result?.['output'],
+          isError: result?.['isError'],
+        }, true);
+      }
+      return;
+    }
+    this.record({ ...record, time });
   }
 
   private record(event: ProjectedEvent): void {
@@ -353,7 +402,17 @@ export class DispatchTurnProjection {
 }
 
 function turnIdOf(event: ProjectedEvent): string {
-  return `t${readNumber(event, 'turnId') ?? 0}`;
+  return `t${turnNumber(event)}`;
+}
+
+function turnNumber(value: object): number {
+  const field = (value as Record<string, unknown>)['turnId'];
+  if (typeof field === 'number') return field;
+  if (typeof field === 'string') {
+    const parsed = Number(field.startsWith('t') ? field.slice(1) : field);
+    if (Number.isInteger(parsed) && parsed >= 0) return parsed;
+  }
+  return 0;
 }
 
 function stepIdOf(event: ProjectedEvent): string {
@@ -380,6 +439,23 @@ function replaceBy<T>(items: readonly T[], item: T, key: (value: T) => string): 
   const index = items.findIndex((candidate) => key(candidate) === id);
   if (index === -1) return [...items, item];
   return items.map((candidate, candidateIndex) => candidateIndex === index ? item : candidate);
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function contentText(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const text = value.flatMap((part) => {
+    const record = objectValue(part);
+    return record?.['type'] === 'text' && typeof record['text'] === 'string'
+      ? [record['text']]
+      : [];
+  }).join('');
+  return text.length > 0 ? text : undefined;
 }
 
 function readString(value: object, key: string): string | undefined {

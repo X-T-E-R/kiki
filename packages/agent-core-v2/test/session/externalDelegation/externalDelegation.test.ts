@@ -62,6 +62,8 @@ import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IModelService } from '#/kosong/model/model';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
+import { IWireService } from '#/wire/wire';
+import type { WireRecord } from '#/wire/record';
 import type { SessionWillCloseEvent } from '#/workspace/sessionLifecycle/sessionLifecycle';
 
 const authority: ExternalAuthority = {
@@ -99,6 +101,7 @@ describe('SessionExternalDelegationService', () => {
   let sentMessages: Parameters<IAgentCollaborationMessagingService['send']>[0][];
   let messagesByKey: Map<string, AgentMessageAcceptance>;
   let agentEvents: Map<string, Emitter<Event2<any>>>;
+  let wireRecords: Map<string, WireRecord[]>;
 
   beforeEach(() => {
     disposables = new DisposableStore();
@@ -116,6 +119,7 @@ describe('SessionExternalDelegationService', () => {
     sentMessages = [];
     messagesByKey = new Map();
     agentEvents = new Map();
+    wireRecords = new Map();
 
     ix.stub(IFlagService, { enabled: () => true });
     ix.stub(IAtomicDocumentStore, {
@@ -200,6 +204,16 @@ describe('SessionExternalDelegationService', () => {
           (typeof args[0] === 'function' ? args[0] : args[1]) as (event: Event2<any>) => void,
         ),
       } as IEventBus);
+      wireRecords.set(id, []);
+      agent.set(IWireService, {
+        _serviceBrand: undefined,
+        seal: async () => {},
+        appendRecord: (record: WireRecord) => { wireRecords.get(id)!.push(record); },
+        readJournal: () => (async function* () {
+          yield* wireRecords.get(id)!;
+        })(),
+        flush: async () => {},
+      });
       agent.stub(IAgentProfileService, {
         _serviceBrand: undefined,
         data: () => ({ modelAlias, modelCapabilities: UNKNOWN_CAPABILITY, profileName, profileDefinitionId, thinkingLevel, systemPrompt: '', subagents: ['coder'] }),
@@ -565,6 +579,117 @@ describe('SessionExternalDelegationService', () => {
       transcriptCursorVersion: 2,
       legacyTranscriptStart: 1,
     });
+  });
+
+  it('rebuilds items and turn events from the durable agent journal', async () => {
+    wireRecords.set('main', [
+      {
+        type: 'turn.prompt',
+        time: 1,
+        turnId: 3,
+        input: [{ type: 'text', text: 'persisted prompt' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 2,
+        event: { type: 'step.begin', uuid: 's3', turnId: '3', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 3,
+        event: {
+          type: 'content.part',
+          stepUuid: 's3',
+          turnId: '3',
+          step: 1,
+          uuid: 'm3',
+          part: { type: 'text', text: 'persisted answer' },
+        },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 4,
+        event: {
+          type: 'tool.call',
+          stepUuid: 's3',
+          turnId: '3',
+          step: 1,
+          toolCallId: 'persisted-tool',
+          name: 'Read',
+          args: { path: 'persisted.ts' },
+        },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 5,
+        event: {
+          type: 'tool.result',
+          toolCallId: 'persisted-tool',
+          result: { output: 'persisted result' },
+        },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 6,
+        event: { type: 'step.end', uuid: 's3', turnId: '3', step: 1 },
+      },
+      { type: 'turn.ended', time: 7, turnId: 3, reason: 'completed' },
+    ]);
+    documents.set('root', {
+      version: 1,
+      delegationId: 'delegation_durable',
+      principalFingerprint: authority.principalFingerprint,
+      authorityFingerprint: authority.authorityFingerprint,
+      configFingerprint: authority.configFingerprint,
+      lifecycle: 'active',
+      createdAt: 1,
+      children: {},
+      dispatches: {
+        dispatch_durable: {
+          dispatchId: 'dispatch_durable',
+          target: 'main',
+          agentId: 'main',
+          status: 'completed',
+          createdAt: 1,
+          endedAt: 7,
+          transcriptStart: 0,
+          transcriptCursorVersion: 2,
+          legacyTranscriptStart: 0,
+        },
+      },
+      events: [],
+      nextEventSeq: 1,
+    });
+    const service = ix.get(ISessionExternalDelegationService);
+
+    await expect(service.transcript({
+      authority,
+      dispatchId: 'dispatch_durable',
+      detail: 'items',
+    })).resolves.toMatchObject({
+      items: [{
+        kind: 'turn',
+        turnId: 't3',
+        state: 'completed',
+        prompt: 'persisted prompt',
+        steps: [{
+          frames: [
+            { kind: 'text', text: 'persisted answer' },
+            { kind: 'tool', toolCallId: 'persisted-tool', output: 'persisted result' },
+          ],
+        }],
+      }],
+    });
+    expect((await service.events({
+      authority,
+      dispatchId: 'dispatch_durable',
+      detail: 'turn',
+    })).items.map((item) => item.event.type)).toEqual([
+      'message.delta',
+      'tool.call',
+      'tool.update',
+    ]);
   });
 
   it('signals lifecycle ring truncation without reusing event seq', async () => {

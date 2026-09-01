@@ -31,6 +31,7 @@ import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { ILogService } from '#/_base/log/log';
 import { IModelService } from '#/kosong/model/model';
 import { inputTotal, type TokenUsage } from '#/kosong/contract/usage';
+import { IWireService } from '#/wire/wire';
 import {
   ISessionDispatchService,
   type DispatchChild,
@@ -380,11 +381,13 @@ export class SessionExternalDelegationService
   events(request: ExternalEventsLookup): Promise<ExternalEventPage>;
   async events(request: ExternalEventsLookup): Promise<ExternalEventPage | ExternalTurnEventPage> {
     const doc = await this.authorize(request.authority);
-    this.lookup(doc, request.dispatchId);
+    const dispatch = this.lookup(doc, request.dispatchId);
     const cursor = boundedCursor(request.cursor, Number.MAX_SAFE_INTEGER);
     const limit = boundedLimit(request.limit, 100);
     if (request.detail === 'turn') {
-      return this.turnProjections.get(request.dispatchId)?.eventPage(cursor, limit) ?? { items: [] };
+      const projection = await this.ensureTurnProjection(doc, dispatch);
+      const floor = dispatch.transcriptCursorVersion === 2 ? dispatch.transcriptStart : 0;
+      return projection.eventPage(Math.max(floor, cursor), limit);
     }
     const matches = doc.events.filter(
       (event) => event.dispatchId === request.dispatchId && event.seq > cursor,
@@ -407,7 +410,9 @@ export class SessionExternalDelegationService
     const limit = boundedLimit(request.limit, 50);
     if (request.detail === 'items') {
       const cursor = boundedCursor(request.cursor, Number.MAX_SAFE_INTEGER);
-      return this.turnProjections.get(request.dispatchId)?.itemPage(cursor, limit) ?? { items: [] };
+      const projection = await this.ensureTurnProjection(doc, dispatch);
+      const floor = dispatch.transcriptCursorVersion === 2 ? dispatch.transcriptStart : 0;
+      return projection.itemPage(Math.max(floor, cursor), limit);
     }
     const handle = await this.materializeDispatchAgent(doc, dispatch);
     const all = handle.accessor.get(IAgentContextMemoryService).get();
@@ -621,6 +626,22 @@ export class SessionExternalDelegationService
     ).agent;
   }
 
+  private async ensureTurnProjection(
+    doc: ExternalDelegationDocument,
+    dispatch: StoredDispatch,
+  ): Promise<DispatchTurnProjection> {
+    const existing = this.turnProjections.get(dispatch.dispatchId);
+    if (existing !== undefined) return existing;
+    const handle = await this.materializeDispatchAgent(doc, dispatch);
+    const projection = new DispatchTurnProjection(
+      dispatch.dispatchId,
+      handle.accessor.get(IEventBus),
+    );
+    await projection.replay(handle.accessor.get(IWireService).readJournal());
+    this.turnProjections.set(dispatch.dispatchId, projection);
+    return projection;
+  }
+
   private async startExistingDispatch(
     doc: ExternalDelegationDocument,
     target: DispatchTarget,
@@ -668,6 +689,7 @@ export class SessionExternalDelegationService
       dispatchId,
       target.agent.accessor.get(IEventBus),
     );
+    await projection.replay(target.agent.accessor.get(IWireService).readJournal());
     this.turnProjections.set(dispatchId, projection);
     const dispatch: StoredDispatch = {
       dispatchId,
