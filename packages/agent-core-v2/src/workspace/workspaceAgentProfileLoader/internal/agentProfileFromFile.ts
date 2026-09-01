@@ -68,16 +68,29 @@ export function agentProfileFromFile(
     modelProfiles: definition.modelProfiles,
     serviceTier: definition.serviceTier,
     requestParams: definition.requestParams,
+    systemPromptMode: definition.systemPromptMode,
     delegationNotice: definition.delegationNotice,
     renderSystemPrompt: (context) =>
       renderPromptTemplateResult(
-        definition.prompt,
+        systemPromptTemplate(definition),
         context,
         { skillActive },
         basePrompt,
         builtinPrompt,
       ),
   });
+}
+
+function systemPromptTemplate(definition: AgentFileDefinition): string {
+  switch (definition.systemPromptMode) {
+    case 'prepend':
+      return `${definition.prompt}\n\n\${base_prompt}`;
+    case 'append':
+      return `\${base_prompt}\n\n${definition.prompt}`;
+    case 'replace':
+    case undefined:
+      return definition.prompt;
+  }
 }
 
 export interface ExecutorProfileValidation {

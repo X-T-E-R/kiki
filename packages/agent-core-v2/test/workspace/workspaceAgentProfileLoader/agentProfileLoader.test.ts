@@ -56,6 +56,7 @@ import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { HostFsWatchService } from '#/os/backends/node-local/hostFsWatchService';
 import { HostFsError, OsFsErrors } from '#/os/interface/hostFsErrors';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { IHostProcessService } from '#/os/interface/hostProcess';
 import {
   IHostFsWatchService,
   type HostFsChange,
@@ -364,6 +365,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
       [IConfigService, config],
       [IBootstrapService, bootstrap],
       [IHostFileSystem, hostFs],
+      [IHostProcessService, { _serviceBrand: undefined }],
       [IHostFsWatchService, opts?.fsWatch ?? fsWatchStub()],
       [IWorkspaceContext, workspaceContext],
       [IWorkspaceTrust, workspaceTrustStub(opts?.workspaceTrusted ?? true)],
@@ -1483,6 +1485,73 @@ describe('agent profile loaders + session catalog', () => {
         expect(prompt).toContain('You are a custom main agent.');
         expect(prompt).toContain('cwd=/work/dir');
         expect(prompt).toContain('unknown=${nope}');
+      });
+    });
+  });
+
+  it('inherits the default system prompt and appends operator instructions from profile frontmatter', async () => {
+    await withFixture(async (fixture) => {
+      await writeFile(
+        join(fixture.homeDir, 'SYSTEM.md'),
+        [
+          '---',
+          'system_prompt_mode: append',
+          '---',
+          '',
+          'OPERATOR cwd=${cwd}',
+          '${plugin_sections}',
+          '${delegation_context}',
+          'unknown=${operator_token}',
+        ].join('\n'),
+      );
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+
+        const profile = stack.catalog.getDefault();
+        const prompt = profile.systemPrompt({
+          cwd: '/work/dir',
+          pluginSections: 'PLUGIN_A',
+        });
+        expect(profile.systemPromptMode).toBe('append');
+        expect(prompt).toMatch(/^BUILTIN PROMPT\n\nOPERATOR cwd=\/work\/dir/);
+        expect(prompt).toContain('# Plugin Instructions');
+        expect(prompt).toContain('PLUGIN_A');
+        expect(prompt).toContain('${delegation_context}');
+        expect(prompt).toContain('unknown=${operator_token}');
+      });
+    });
+  });
+
+  it('inherits the default system prompt and prepends operator instructions from profile frontmatter', async () => {
+    await withFixture(async (fixture) => {
+      await writeFile(
+        join(fixture.homeDir, 'SYSTEM.md'),
+        ['---', 'system_prompt_mode: prepend', '---', '', 'OPERATOR FIRST'].join('\n'),
+      );
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+
+        expect(stack.catalog.getDefault().systemPrompt({})).toBe(
+          'OPERATOR FIRST\n\nBUILTIN PROMPT',
+        );
+      });
+    });
+  });
+
+  it('rejects an invalid system prompt composition mode', async () => {
+    await withFixture(async (fixture) => {
+      await writeFile(
+        join(fixture.homeDir, 'SYSTEM.md'),
+        ['---', 'system_prompt_mode: merge', '---', '', 'OPERATOR'].join('\n'),
+      );
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+
+        expect(stack.catalog.getDefault().systemPrompt({})).toBe('BUILTIN PROMPT');
+        expect(stack.warnings.some((warning) =>
+          warning.includes('system_prompt_mode') &&
+          warning.includes('replace, prepend, or append')
+        )).toBe(true);
       });
     });
   });

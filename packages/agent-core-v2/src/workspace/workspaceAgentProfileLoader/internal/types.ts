@@ -10,6 +10,7 @@
 import type {
   AgentProfileRouteDefinition,
   AgentModelProfile,
+  AgentSystemPromptMode,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import type { SpawnConstraints, SubagentLease, SourceSubagentLease } from '#/app/agentProfileCatalog/subagentLease';
 import type { SkippedAgentFile } from '#/app/agentProfileCatalog/agentProfileContribution';
@@ -49,6 +50,7 @@ export interface AgentFileDefinition {
   readonly modelProfiles?: readonly AgentModelProfile[];
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;
+  readonly systemPromptMode?: AgentSystemPromptMode;
   readonly prompt: string;
   readonly path: string;
   readonly source: AgentFileSource;

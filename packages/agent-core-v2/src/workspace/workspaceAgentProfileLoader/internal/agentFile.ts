@@ -3,6 +3,7 @@ import { dirname } from 'pathe';
 import { CoreErrors } from '#/_base/errors/codes';
 import { Error2 } from '#/_base/errors/errors';
 import { FrontmatterError, parseFrontmatter } from '#/_base/text/frontmatter';
+import { AgentSystemPromptModeSchema } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { openIfEmpty, parseSpawnConstraints, parseSubagentList, SubagentLeaseParseError } from '#/app/agentProfileCatalog/subagentLease';
 
 import type { AgentFileDefinition, AgentFileSource } from './types';
@@ -56,6 +57,7 @@ const AGENT_FILE_KEYS = new Set([
   'recommended_models',
   'service_tier',
   'request_params',
+  'system_prompt_mode',
   'model_preference',
   'whenToUse',
 ]);
@@ -224,9 +226,29 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     delete withoutServiceTier['service_tier'];
     requestParams = withoutServiceTier;
   }
+  const systemPromptModeValue = frontmatter['system_prompt_mode'];
+  const systemPromptMode =
+    systemPromptModeValue === undefined || systemPromptModeValue === null
+      ? undefined
+      : AgentSystemPromptModeSchema.safeParse(systemPromptModeValue);
+  if (systemPromptMode !== undefined && !systemPromptMode.success) {
+    throw new AgentFileParseError(
+      `Frontmatter field "system_prompt_mode" in ${options.path} must be replace, prepend, or append`,
+    );
+  }
   const prompt = parsed.body.trim();
   if (prompt.length === 0) {
     throw new AgentFileParseError(`Missing prompt body in ${options.path}`);
+  }
+  const resolvedSystemPromptMode = systemPromptMode?.data;
+  if (
+    resolvedSystemPromptMode !== undefined &&
+    resolvedSystemPromptMode !== 'replace' &&
+    countParentPromptTokens(prompt) !== 0
+  ) {
+    throw new AgentFileParseError(
+      `Prompt body in ${options.path} with system_prompt_mode "${resolvedSystemPromptMode}" does not allow \${parent_prompt} or \${base_prompt}`,
+    );
   }
 
   return {
@@ -253,6 +275,7 @@ export function parseAgentFileText(options: ParseAgentFileOptions): AgentFileDef
     modelProfiles,
     serviceTier,
     requestParams,
+    systemPromptMode: resolvedSystemPromptMode,
     prompt,
     path: options.path,
     source: options.source,

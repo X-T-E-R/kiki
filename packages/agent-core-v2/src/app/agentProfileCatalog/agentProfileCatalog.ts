@@ -1,9 +1,14 @@
+import { z } from 'zod';
+
 import type { ILogger } from '#/_base/log/log';
 import type { RequestParams, ServiceTier } from '#/kosong/contract/provider';
 import type { IHostProcessService } from '#/os/interface/hostProcess';
 import type { SpawnConstraints, SubagentLease } from './subagentLease';
 
 export const DEFAULT_AGENT_PROFILE_NAME = 'agent';
+
+export const AgentSystemPromptModeSchema = z.enum(['replace', 'prepend', 'append']);
+export type AgentSystemPromptMode = z.infer<typeof AgentSystemPromptModeSchema>;
 
 export type AgentModelProfilePromptMode = 'prepend' | 'append' | 'wrap';
 
@@ -85,6 +90,7 @@ export interface AgentProfile {
   readonly modelProfiles?: readonly AgentModelProfile[];
   readonly serviceTier?: ServiceTier;
   readonly requestParams?: RequestParams;
+  readonly systemPromptMode?: AgentSystemPromptMode;
   readonly systemPrompt: (context: AgentProfileContext) => string;
   readonly renderSystemPrompt: (context: AgentProfileContext) => SystemPromptRenderResult;
   readonly promptPrefix?: (ctx: AgentProfilePromptPrefixContext) => Promise<string>;
