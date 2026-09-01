@@ -63,6 +63,24 @@ outline: 2
 
 ### 新功能
 
+- 实验性的子 Agent 模型配置升级为模型池：现在可以在 `[secondary_model]` 中配置一组带描述的候选模型，由主 Agent 每次派生时按任务挑选。
+
+  启动前设置 `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1`（或实验总开关 `KIMI_CODE_EXPERIMENTAL_FLAG=1`）即可启用。
+
+  推荐用法：
+
+  - 极简用法：在 TUI 中运行 `/secondary-model` 选择，或在 `config.toml` 中写一行 `default_model`，让所有子 Agent 默认跑同一个模型；再加 `force = true` 可彻底固定该选择，主 Agent 无法改选。
+  - 配置命名模型池，并为每个别名写一句适用场景的描述——描述会展示给主 Agent 作为挑选依据：
+
+    ```toml
+    [secondary_model]
+    default_model = "kimi-code/kimi-for-coding-highspeed"
+    [secondary_model.models]
+    "kimi-code/kimi-for-coding-highspeed" = "快速、便宜，适合日常重构、代码解释和小改动。"
+    "kimi-code/k3" = "擅长复杂推理与深度调试，难题选它。"
+    ```
+
+  详见 [子 Agent 模型池文档](https://moonshotai.github.io/kimi-code/zh/configuration/config-files.html#subagent-模型池)。
 - 新增实验性全屏 TUI 模式，设置 `KIMI_CODE_TUI_FULL_SCREEN=1` 环境变量即可启用。
 - TUI 支持渲染 LaTeX 数学公式（`$…$` 与 `$$…$$`），消息中的公式会显示为 Unicode 公式。
 
@@ -149,7 +167,7 @@ outline: 2
 
 ### 重构
 
-- 将 CLI 各界面（交互式 TUI、`kimi -p`、`kimi acp` 等）迁移到 `agent-core-v2` 引擎。
+- CLI 各界面（交互式 TUI、`kimi -p`、`kimi acp` 等）默认运行在 agent-core-v2 引擎上；设置 `KIMI_CODE_LEGACY_FLAG=1` 可回退旧引擎。
 
 ## 0.32.0（2026-08-04）
 
@@ -192,6 +210,7 @@ outline: 2
 ### 新功能
 
 - TUI 支持 Markdown 定义的自定义 Agent。
+- 新增 /secondary_model 斜杠命令，用于配置子 Agent 使用的辅助模型（实验性功能，需先在 /experiments 中开启）。
 - 插件可贡献自定义 Agent，自动发现并可用于子 Agent 委派。
 - 插件可贡献系统提示词，通过 `kimi.plugin.json` 中的 `systemPrompt` 或 `systemPromptPath` 声明。
 
@@ -234,6 +253,7 @@ outline: 2
 
 - 支持在 `config.toml` 与环境变量中配置全局默认的 MCP 服务器超时时间。
 - 新增用于配置网页搜索与网页抓取服务的环境变量，无需 OAuth 登录。
+- 新增实验性的子 Agent 辅助模型绑定，支持按 Agent 设置模型偏好及仅对子 Agent 生效的模型覆盖。
 
 ### 修复
 

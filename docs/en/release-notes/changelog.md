@@ -63,6 +63,24 @@ This page documents the changes in each Kimi Code CLI release.
 
 ### Features
 
+- Upgrade the experimental subagent model setting to a model pool: the `[secondary_model]` section can now hold a set of candidate models with descriptions, and the main agent picks from them per spawn based on the task.
+
+  Set `KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1` (or the master flag `KIMI_CODE_EXPERIMENTAL_FLAG=1`) before starting Kimi to enable it.
+
+  Recommended setups:
+
+  - Minimal: run `/secondary-model` in the TUI, or write a single `default_model` line in `config.toml`, to make every subagent run the same model by default; add `force = true` to pin that choice so the main agent cannot override it.
+  - Declare a named pool with a one-line scenario description for each alias — the descriptions are what the main agent sees when choosing:
+
+    ```toml
+    [secondary_model]
+    default_model = "kimi-code/kimi-for-coding-highspeed"
+    [secondary_model.models]
+    "kimi-code/kimi-for-coding-highspeed" = "Fast and cheap — good for daily refactoring, code explanation, and small edits."
+    "kimi-code/k3" = "Strong at complex reasoning and deep debugging — pick it for hard problems."
+    ```
+
+  See the [subagent model pool docs](https://moonshotai.github.io/kimi-code/en/configuration/config-files.html#subagent-model-pool) for details.
 - Add an experimental fullscreen TUI mode. Set the `KIMI_CODE_TUI_FULL_SCREEN=1` environment variable to enable it.
 - Support rendering LaTeX math formulas (`$…$` / `$$…$$`) in TUI messages as Unicode formulas.
 
@@ -149,7 +167,7 @@ This page documents the changes in each Kimi Code CLI release.
 
 ### Refactors
 
-- Move the CLI surfaces (interactive TUI, `kimi -p`, `kimi acp`, `kimi export`, `kimi provider`) to the `agent-core-v2` engine.
+- Run the CLI surfaces (interactive TUI, `kimi -p`, `kimi acp`, `kimi export`, `kimi provider`) on the agent-core-v2 engine by default. Set `KIMI_CODE_LEGACY_FLAG=1` to fall back to the legacy engine.
 
 ## 0.32.0 (2026-08-04)
 
@@ -191,7 +209,8 @@ This page documents the changes in each Kimi Code CLI release.
 
 ### Features
 
-- Support Markdown-defined custom agents in the TUI.
+- Support Markdown-defined custom agents on agent-core.
+- Add the /secondary_model slash command to configure the secondary model used by subagents (experimental; enable it in /experiments first).
 - Plugins can contribute custom agents, discovered automatically and available for sub-agent delegation.
 - Plugins can contribute system prompt instructions through `systemPrompt` or `systemPromptPath` in `kimi.plugin.json`.
 
@@ -234,6 +253,7 @@ This page documents the changes in each Kimi Code CLI release.
 
 - Add global default MCP server timeouts in `config.toml` and env vars.
 - Add environment variables to configure the web search and web fetch services without OAuth login.
+- Add experimental secondary-model bindings for newly spawned subagents, including per-agent model preferences and subagent-only model overrides.
 
 ### Bug Fixes
 
