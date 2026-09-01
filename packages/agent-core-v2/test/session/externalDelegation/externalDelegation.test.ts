@@ -53,6 +53,7 @@ import { SessionApprovalService } from '#/session/approval/approvalService';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
 import {
+  EXTERNAL_INTERACTION_NOT_OWNED_CODE,
   type ExternalAuthority,
   ISessionExternalDelegationService,
 } from '#/session/externalDelegation/externalDelegation';
@@ -418,6 +419,97 @@ describe('SessionExternalDelegationService', () => {
       message: 'reject',
       idempotencyKey: 'foreign-key',
     })).rejects.toThrow(/does not own/);
+  });
+
+  it('registers scoped interaction coverage only while dispatches are active', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const interaction = ix.get(ISessionInteractionService);
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'approval_child',
+      profileName: 'coder',
+      message: 'inspect',
+    });
+
+    expect(interaction.hasConsumer({ agentId: 'external-child' })).toBe(true);
+    expect(interaction.hasConsumer({ agentId: 'main' })).toBe(false);
+
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
+    expect(interaction.hasConsumer({ agentId: 'external-child' })).toBe(false);
+  });
+
+  it('filters owned interactions, responds to approval and question, and preserves GUI coverage', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const interaction = ix.get(ISessionInteractionService);
+    const approvals = ix.get(ISessionApprovalService);
+    const questions = ix.get(ISessionQuestionService);
+    interaction.acquireConsumer('gui');
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'interaction_child',
+      profileName: 'coder',
+      message: 'inspect',
+    });
+    const childApproval = approvals.request({
+      id: 'approval-owned',
+      agentId: 'external-child',
+      turnId: 1,
+      toolName: 'bash',
+      action: 'run',
+      display: { kind: 'command', command: 'pwd' },
+    });
+    const childQuestion = questions.request({
+      id: 'question-owned',
+      turnId: 1,
+      questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }],
+    }, { agentId: 'external-child' });
+    const mainApproval = approvals.request({
+      id: 'approval-main',
+      agentId: 'main',
+      turnId: 1,
+      toolName: 'bash',
+      action: 'run',
+      display: { kind: 'command', command: 'pwd' },
+    });
+
+    expect(await service.interactions({ authority })).toMatchObject({
+      items: [
+        { interactionId: 'approval-owned', kind: 'approval', taskName: 'interaction_child' },
+        { interactionId: 'question-owned', kind: 'question', taskName: 'interaction_child' },
+      ],
+    });
+    await expect(service.respond({
+      authority,
+      interactionId: 'approval-main',
+      response: { decision: 'approved' },
+    })).rejects.toMatchObject({
+      details: { failure_code: EXTERNAL_INTERACTION_NOT_OWNED_CODE },
+    });
+    await expect(service.respond({
+      authority,
+      interactionId: 'approval-owned',
+      response: { decision: 'approved' },
+    })).resolves.toEqual({ interactionId: 'approval-owned', status: 'resolved' });
+    await expect(service.respond({
+      authority,
+      interactionId: 'question-owned',
+      response: { answers: { 'Continue?': 'Yes' } },
+    })).resolves.toEqual({ interactionId: 'question-owned', status: 'resolved' });
+    await expect(childApproval).resolves.toEqual({ decision: 'approved' });
+    await expect(childQuestion).resolves.toEqual({ answers: { 'Continue?': 'Yes' } });
+
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
+    expect(interaction.listPending('approval').map((entry) => entry.id)).toEqual(['approval-main']);
+    interaction.releaseConsumer('gui');
+    await expect(mainApproval).resolves.toEqual({ decision: 'cancelled' });
   });
 
   it('projects latest child status and usage from the dispatch ledger', async () => {
