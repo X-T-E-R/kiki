@@ -111,7 +111,7 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `thinking` | `table` | — | Default parameters for Thinking mode → [`thinking`](#thinking) |
 | `loop_control` | `table` | — | Agent loop control parameters → [`loop_control`](#loop-control) |
 | `background` | `table` | — | Background task runtime parameters → [`background`](#background) |
-| `agents` | `table` | — | Codex-style collaboration adapter defaults → [`agents`](#agents) |
+| `agents` | `table` | — | Delegation-notice defaults → [`agents`](#agents) |
 | `thread_communication` | `table` | `{ enabled = false }` | Local peer-thread communication → [`thread_communication`](#thread-communication) |
 | `tools` | `table` | — | Global tool switch → [`tools`](#tools) |
 | `image` | `table` | — | Image compression parameters → [`image`](#image) |
@@ -376,7 +376,7 @@ This strict section is still parsed. Unknown keys are reported as configuration 
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `enabled` | `boolean` | `true` | On v1, `false` removes the five-tool adapter even when the `agent-collaboration` experiment is on. On v2 this key is accepted and currently controls nothing |
+| `enabled` | `boolean` | `true` | Accepted for configuration compatibility; currently controls no behavior |
 
 `[agents.delegation]` is a nested table. A string is a path relative to the Kiki home directory; `false` skips that notice. Omit a slot to keep the built-in text.
 
@@ -532,7 +532,7 @@ Alongside `config.toml`, the CLI keeps terminal-UI and client preferences in a c
 | `theme` | `string` | `auto` | Color theme: `auto` (follow the terminal), `dark`, `light`, or the name of a [custom theme](../customization/themes.md) |
 | `render_latex` | `boolean` | `true` | Render LaTeX math expressions (`$…$`, `$$…$$`) in Markdown messages as Unicode text; `false` keeps the raw source |
 | `disable_paste_burst` | `boolean` | `false` | Disable the non-bracketed paste-burst fallback that keeps rapid multi-line pastes from submitting line by line |
-| `cache_expiry_hint` | `boolean` | `true` | Show a dialog when resuming a long-idle session or submitting after a long idle stretch, warning that the context cache has likely expired and offering to compact or start a new session (v2 engine only) |
+| `cache_expiry_hint` | `boolean` | `true` | Show a dialog when resuming a long-idle session or submitting after a long idle stretch, warning that the context cache has likely expired and offering to compact or start a new session |
 | `[editor].command` | `string` | `""` | External editor command for composing long input; empty falls back to `$VISUAL` / `$EDITOR` |
 | `[notifications].enabled` | `boolean` | `true` | Whether desktop notifications are sent |
 | `[notifications].notification_condition` | `string` | `unfocused` | When to notify: `unfocused` (only when the terminal is not focused) or `always` |
