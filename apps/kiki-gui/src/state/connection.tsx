@@ -177,6 +177,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const [wsStatus, setWsStatus] = useState<WsStatus>('closed');
   const controllersRef = useRef(new LiveControllerRegistry());
   const liveSocketRef = useRef<KikiSocket | null>(null);
+  const connectionEpochRef = useRef(0);
 
   // The desktop shell owns its backend. Resolve that connection before
   // considering browser handoffs or persisted remote connections, and keep
@@ -199,6 +200,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
             setConnectError({ kind: 'key', key: 'conn.desktopNoServer' });
             return;
           }
+          connectionEpochRef.current += 1;
           setSelection({
             config: connection.config,
             persist: false,
@@ -207,6 +209,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         },
         (error: unknown) => {
           if (cancelled || generation !== resolveGeneration) return;
+          connectionEpochRef.current += 1;
           setDesktopBoot(null);
           setMeta(null);
           setSelection(null);
@@ -221,8 +224,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     void listen<unknown>(DESKTOP_STAGE_EVENT, (event) => {
       const payload = event.payload;
       if (payload === 'waiting') {
+        connectionEpochRef.current += 1;
         setDesktopFailure(null);
         setConnectError(null);
+        setSelection(null);
         setMeta(null);
         setDesktopBoot((boot) => ({
           stage: 'waiting',
@@ -241,6 +246,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         return;
       }
       resolveGeneration += 1;
+      connectionEpochRef.current += 1;
       setMeta(null);
       setSelection(null);
       setConnectError(null);
@@ -295,10 +301,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (client === null) return;
     let cancelled = false;
+    const connectionEpoch = connectionEpochRef.current;
     setConnectError(null);
     client.meta().then(
       (value) => {
-        if (cancelled) return;
+        if (cancelled || connectionEpoch !== connectionEpochRef.current) return;
         scrubUrl();
         if (selection?.persist === true && config !== null) {
           writeStoredConfig(config);
@@ -306,7 +313,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         setMeta(value);
       },
       (error: unknown) => {
-        if (cancelled) return;
+        if (cancelled || connectionEpoch !== connectionEpochRef.current) return;
         setMeta(null);
         setConnectError({
           kind: 'raw',
@@ -418,6 +425,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, [socket]);
 
   const disconnect = useCallback(() => {
+    connectionEpochRef.current += 1;
     clearStoredConfig();
     setMeta(null);
     setSelection(null);
@@ -427,6 +435,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const connect = useCallback((next: ConnectionConfig, persist = true) => {
+    connectionEpochRef.current += 1;
     setConnectError(null);
     setMeta(null);
     setSelection({

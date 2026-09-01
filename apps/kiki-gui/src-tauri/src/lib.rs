@@ -359,6 +359,24 @@ impl RuntimeRecoveryState {
     }
 }
 
+fn begin_runtime_recovery_transition<T>(
+    backend: &mut Option<T>,
+    recovery: &mut RuntimeRecoveryState,
+    matches: impl FnOnce(&T) -> bool,
+    uptime: impl FnOnce(&T) -> Duration,
+) -> Option<(T, Option<u64>)> {
+    let candidate = backend.as_ref()?;
+    if !matches(candidate) {
+        return None;
+    }
+    let uptime = uptime(candidate);
+    let backend = backend
+        .take()
+        .expect("matched runtime backend must remain in its lifecycle slot");
+    let recovery_generation = recovery.record_exit(uptime);
+    Some((backend, recovery_generation))
+}
+
 #[derive(Default)]
 struct BackendState {
     backend: Option<OwnedBackend>,
@@ -574,27 +592,35 @@ impl BackendManager {
         launched_at_ms: u64,
         exit: &TerminatedPayload,
     ) {
-        let Some(backend) = self.take_backend_if(|candidate| {
-            candidate.pid == pid
-                && candidate.launched_at_ms == launched_at_ms
-                && candidate.connection.is_some()
-        }) else {
+        let transition = {
+            let mut state = self
+                .inner
+                .lock()
+                .expect("backend lifecycle lock must not be poisoned");
+            let BackendState { backend, recovery } = &mut *state;
+            begin_runtime_recovery_transition(
+                backend,
+                recovery,
+                |candidate| {
+                    candidate.pid == pid
+                        && candidate.launched_at_ms == launched_at_ms
+                        && candidate.connection.is_some()
+                },
+                |candidate| {
+                    candidate
+                        .ready_at
+                        .expect("ready backend must record its ready instant")
+                        .elapsed()
+                },
+            )
+        };
+        let Some((backend, recovery_generation)) = transition else {
             return;
         };
-        let uptime = backend
-            .ready_at
-            .expect("ready backend must record its ready instant")
-            .elapsed();
         let failure = backend.monitor.startup_failure(
             backend.pid,
             format!("exited at runtime ({})", describe_exit(exit)),
         );
-        let recovery_generation = self
-            .inner
-            .lock()
-            .expect("backend lifecycle lock must not be poisoned")
-            .recovery
-            .record_exit(uptime);
         let Some(recovery_generation) = recovery_generation else {
             emit_backend_failure(app, failure);
             return;
@@ -3155,6 +3181,51 @@ mod tests {
         recovery.reset();
         assert_eq!(recovery.record_exit(RUNTIME_STABILITY_WINDOW), Some(6));
         assert_eq!(recovery.rapid_exit_count, 1);
+    }
+
+    #[test]
+    fn runtime_exit_transition_and_shutdown_reset_have_deterministic_ordering() {
+        #[derive(Debug, PartialEq, Eq)]
+        struct FakeBackend {
+            pid: u32,
+            launched_at_ms: u64,
+        }
+
+        let mut backend = Some(FakeBackend {
+            pid: 42,
+            launched_at_ms: 100,
+        });
+        let mut recovery = RuntimeRecoveryState::default();
+        let (taken, generation) = begin_runtime_recovery_transition(
+            &mut backend,
+            &mut recovery,
+            |candidate| candidate.pid == 42 && candidate.launched_at_ms == 100,
+            |_| Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(taken.pid, 42);
+        assert!(backend.is_none());
+        let generation = generation.unwrap();
+        recovery.reset();
+        assert!(!recovery.is_current(generation));
+
+        let mut backend = Some(FakeBackend {
+            pid: 43,
+            launched_at_ms: 200,
+        });
+        let mut recovery = RuntimeRecoveryState::default();
+        recovery.reset();
+        let stopped = backend.take();
+        let generation_after_shutdown = recovery.generation;
+        assert!(stopped.is_some());
+        assert!(begin_runtime_recovery_transition(
+            &mut backend,
+            &mut recovery,
+            |_| true,
+            |_| Duration::from_secs(1),
+        )
+        .is_none());
+        assert_eq!(recovery.generation, generation_after_shutdown);
     }
 
     #[test]
