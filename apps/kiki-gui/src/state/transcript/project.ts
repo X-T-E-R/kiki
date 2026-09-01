@@ -795,6 +795,28 @@ function sendTargetFromToolArgs(args: unknown): string | undefined {
   return typeof target === 'string' && target.trim() !== '' ? target.trim() : undefined;
 }
 
+/**
+ * A successful AgentSend result carries the resolved canonical id:
+ * `{ target: { task_name, agent_id } }`. This is the only page-local evidence
+ * when the original spawn turn has been paged out (send frames never get
+ * agentRefs — spawning semantics do not apply to message injection).
+ */
+function agentSendTargetFromOutput(
+  output: unknown,
+): { readonly agentId: string; readonly taskName?: string } | undefined {
+  if (typeof output !== 'object' || output === null) return undefined;
+  const target = (output as Record<string, unknown>)['target'];
+  if (typeof target !== 'object' || target === null) return undefined;
+  const record = target as Record<string, unknown>;
+  const id = record['agent_id'] ?? record['agentId'];
+  if (typeof id !== 'string' || id.trim() === '') return undefined;
+  const taskName = record['task_name'] ?? record['taskName'];
+  return {
+    agentId: id.trim(),
+    taskName: typeof taskName === 'string' && taskName.trim() !== '' ? taskName.trim() : undefined,
+  };
+}
+
 function terminalEventForStatus(
   status: SubagentBlock['status'],
 ): Extract<SubagentEventBlock['event'], 'completed' | 'failed' | 'cancelled'> | undefined {
@@ -828,11 +850,14 @@ function subagentBlocksFromSnapshot(
   // admitted into the accumulated page below.
   const earliestTaskIdByAgent = new Map(
     [...tasksByAgent.entries()].map(([agentId, list]) => {
+      // An unknown clock proves nothing: a run without startedAt must not lose
+      // "first" to a later timed resume. Only a candidate KNOWN to be earlier
+      // than a KNOWN incumbent replaces it; otherwise roster order stands.
       let earliest = list[0]!;
       for (const task of list) {
         const at = timestampMs(task.startedAt);
         const earliestAt = timestampMs(earliest.startedAt);
-        if (at !== undefined && (earliestAt === undefined || at < earliestAt)) earliest = task;
+        if (at !== undefined && earliestAt !== undefined && at < earliestAt) earliest = task;
       }
       return [agentId, earliest.taskId] as const;
     }),
@@ -929,10 +954,24 @@ function subagentBlocksFromSnapshot(
         }
         if (frame.name === 'AgentSend') {
           const target = sendTargetFromToolArgs(frame.input);
+          // Cold-page path: the spawn turn (and thus the name map) may be
+          // paged out, but a successful send result still names the canonical
+          // target id — trust it first and learn the address for later frames.
+          const resolvedOutput =
+            frame.state === 'done' ? agentSendTargetFromOutput(frame.output) : undefined;
+          if (resolvedOutput !== undefined) {
+            if (target !== undefined && target !== resolvedOutput.agentId) {
+              nameToAgentId.set(target, resolvedOutput.agentId);
+            }
+            if (resolvedOutput.taskName !== undefined && resolvedOutput.taskName !== resolvedOutput.agentId) {
+              nameToAgentId.set(resolvedOutput.taskName, resolvedOutput.agentId);
+            }
+          }
           const targetId =
-            target === undefined
+            resolvedOutput?.agentId ??
+            (target === undefined
               ? undefined
-              : resolveKnownAgentId(target, byAgent, tasksByAgentKeySet, nameToAgentId);
+              : resolveKnownAgentId(target, byAgent, tasksByAgentKeySet, nameToAgentId));
           if (targetId !== undefined) {
             rawEvents.push({
               id: `subagent-event-${targetId}-send-${frame.toolCallId}`,

@@ -2178,6 +2178,131 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
         'subagent-event-agent-1-completed-task-agent-1-run-2',
       ]);
     });
+
+    it('resolves a cold-page AgentSend target from the successful result payload', () => {
+      // Spawn turn paged out; the current window only shows the AgentSend
+      // call. Its success output names the canonical target id.
+      const projected = projectAgentTranscriptView(
+        createViewState('session_test'),
+        'main',
+        emptySnapshot({
+          items: [
+            {
+              kind: 'turn',
+              turnId: 't2',
+              ordinal: 2,
+              state: 'completed',
+              origin: { kind: 'user' },
+              prompt: 'nudge the child',
+              startedAt: '2026-01-01T00:00:30.000Z',
+              steps: [
+                {
+                  kind: 'step',
+                  stepId: 't2.1',
+                  turnId: 't2',
+                  ordinal: 1,
+                  state: 'completed',
+                  startedAt: '2026-01-01T00:00:31.000Z',
+                  frames: [
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-send',
+                      toolCallId: 'call-send-1',
+                      name: 'AgentSend',
+                      state: 'done',
+                      input: { target: 'alpha', message: 'ping' },
+                      output: {
+                        message_id: 'msg-1',
+                        status: 'queued',
+                        deduplicated: false,
+                        target: { task_name: 'alpha', agent_id: 'agent-1' },
+                      },
+                      startedAt: '2026-01-01T00:00:31.000Z',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+          tasks: [
+            {
+              taskId: 'task-alpha',
+              kind: 'subagent',
+              state: 'running',
+              detached: false,
+              agentId: 'agent-1',
+              outputTail: '',
+              startedAt: '2026-01-01T00:00:01.000Z',
+            },
+          ],
+        }),
+      );
+      const sent = projected.blocks.find(
+        (block) => block.kind === 'subagent-event' && block.event === 'sent',
+      );
+      expect(sent).toMatchObject({
+        id: 'subagent-event-agent-1-send-call-send-1',
+        subagentId: 'agent-1',
+        at: '2026-01-01T00:00:31.000Z',
+        turnId: 't2',
+      });
+    });
+
+    it('never crowns a timed resume run as the first spawn when the original run has no clock', () => {
+      // Roster order: run-1 first, without startedAt; run-2 timed. The page
+      // only carries run-2's taskref — an unknown clock must not demote run-1,
+      // so no spawned entry may appear for the resume run.
+      const projected = projectAgentTranscriptView(
+        createViewState('session_test'),
+        'main',
+        emptySnapshot({
+          items: [
+            {
+              kind: 'turn',
+              turnId: 't2',
+              ordinal: 2,
+              state: 'completed',
+              origin: { kind: 'user' },
+              prompt: 'resume it',
+              startedAt: '2026-01-01T00:00:29.000Z',
+              steps: [],
+            },
+            {
+              kind: 'taskref',
+              refId: 'ref-run-2',
+              taskId: 'task-agent-1-run-2',
+              at: '2026-01-01T00:00:30.000Z',
+            },
+          ],
+          tasks: [
+            {
+              taskId: 'task-agent-1-run-1',
+              kind: 'subagent',
+              state: 'completed',
+              detached: false,
+              agentId: 'agent-1',
+              outputTail: '',
+              endedAt: '2026-01-01T00:00:20.000Z',
+            },
+            {
+              taskId: 'task-agent-1-run-2',
+              kind: 'subagent',
+              state: 'completed',
+              detached: false,
+              agentId: 'agent-1',
+              outputTail: '',
+              startedAt: '2026-01-01T00:00:30.000Z',
+              endedAt: '2026-01-01T00:00:45.000Z',
+            },
+          ],
+        }),
+      );
+      const events = projected.blocks.filter((block) => block.kind === 'subagent-event');
+      expect(events.some((block) => block.kind === 'subagent-event' && block.event === 'spawned')).toBe(false);
+      expect(events.map((block) => block.id)).toEqual([
+        'subagent-event-agent-1-completed-task-agent-1-run-2',
+      ]);
+    });
   });
 
   it('does not invent page-global cards from snapshot.subagents alone', () => {
