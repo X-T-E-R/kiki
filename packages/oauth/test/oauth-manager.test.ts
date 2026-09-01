@@ -44,6 +44,7 @@ const config: OAuthFlowConfig = {
   oauthHost: 'https://test',
   clientId: 'test',
 };
+const lockless = { disableCrossProcessLock: true } as const;
 
 function makeToken(overrides: Partial<TokenInfo> = {}): TokenInfo {
   return {
@@ -64,10 +65,42 @@ function now(): number {
 
 beforeEach(() => {
   currentNow = 1_000_000_000;
+  vi.stubEnv('KIMI_DISABLE_OAUTH_LOCK', '');
+  vi.spyOn(process, 'emitWarning').mockImplementation(() => {});
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
+});
+
+describe('OAuthManager lock configuration', () => {
+  it('throws when configDir is missing and lockless operation was not explicitly enabled', () => {
+    const storage = new InMemoryStorage();
+
+    expect(() => new OAuthManager({ config, storage, now })).toThrow(/configDir is required/);
+  });
+
+  it('allows an explicit lockless constructor and records a security warning', () => {
+    const storage = new InMemoryStorage();
+
+    expect(() => new OAuthManager({ ...lockless, config, storage, now })).not.toThrow();
+    expect(process.emitWarning).toHaveBeenCalledWith(expect.stringMatching(/locking is disabled/), {
+      code: 'KIMI_OAUTH_LOCK_DISABLED',
+      type: 'SecurityWarning',
+    });
+  });
+
+  it('allows the lockless environment opt-out and records a security warning', () => {
+    vi.stubEnv('KIMI_DISABLE_OAUTH_LOCK', '1');
+    const storage = new InMemoryStorage();
+
+    expect(() => new OAuthManager({ config, storage, now })).not.toThrow();
+    expect(process.emitWarning).toHaveBeenCalledWith(expect.stringMatching(/locking is disabled/), {
+      code: 'KIMI_OAUTH_LOCK_DISABLED',
+      type: 'SecurityWarning',
+    });
+  });
 });
 
 // ── ensureFresh ───────────────────────────────────────────────────────
@@ -78,6 +111,7 @@ describe('OAuthManager.ensureFresh', () => {
     await storage.save('kimi-code', makeToken({ expiresAt: currentNow + 7200 }));
     const refreshImpl = vi.fn();
     const mgr = new OAuthManager({
+      ...lockless,
       config,
       storage,
       now,
@@ -98,7 +132,13 @@ describe('OAuthManager.ensureFresh', () => {
       expiresAt: currentNow + 3600,
     });
     const refreshImpl = vi.fn().mockResolvedValue(refreshed);
-    const mgr = new OAuthManager({ config, storage, now, refreshTokenImpl: refreshImpl });
+    const mgr = new OAuthManager({
+      ...lockless,
+      config,
+      storage,
+      now,
+      refreshTokenImpl: refreshImpl,
+    });
     const access = await mgr.ensureFresh();
     expect(refreshImpl).toHaveBeenCalledWith(config, 'rt-1');
     expect(access).toBe('at-new');
@@ -109,7 +149,13 @@ describe('OAuthManager.ensureFresh', () => {
     const storage = new InMemoryStorage();
     await storage.save('kimi-code', makeToken({ expiresAt: currentNow + 7200 }));
     const refreshImpl = vi.fn().mockResolvedValue(makeToken({ accessToken: 'forced' }));
-    const mgr = new OAuthManager({ config, storage, now, refreshTokenImpl: refreshImpl });
+    const mgr = new OAuthManager({
+      ...lockless,
+      config,
+      storage,
+      now,
+      refreshTokenImpl: refreshImpl,
+    });
     const access = await mgr.ensureFresh({ force: true });
     expect(refreshImpl).toHaveBeenCalled();
     expect(access).toBe('forced');
@@ -133,7 +179,13 @@ describe('OAuthManager.ensureFresh', () => {
         expiresAt: currentNow + 7200,
       }),
     );
-    const mgr = new OAuthManager({ config, storage, now, refreshTokenImpl: refreshImpl });
+    const mgr = new OAuthManager({
+      ...lockless,
+      config,
+      storage,
+      now,
+      refreshTokenImpl: refreshImpl,
+    });
     const access = await mgr.ensureFresh({ force: true });
     expect(refreshImpl).toHaveBeenCalledTimes(1);
     expect(access).toBe('forced-fresh');
@@ -150,7 +202,13 @@ describe('OAuthManager.ensureFresh', () => {
       }),
     );
     const refreshImpl = vi.fn();
-    const mgr = new OAuthManager({ config, storage, now, refreshTokenImpl: refreshImpl });
+    const mgr = new OAuthManager({
+      ...lockless,
+      config,
+      storage,
+      now,
+      refreshTokenImpl: refreshImpl,
+    });
 
     const originalLoad = storage.load.bind(storage);
     let callCount = 0;
@@ -182,7 +240,13 @@ describe('OAuthManager.ensureFresh', () => {
       refreshCount += 1;
       return makeToken({ accessToken: `at-${refreshCount}` });
     });
-    const mgr = new OAuthManager({ config, storage, now, refreshTokenImpl: refreshImpl });
+    const mgr = new OAuthManager({
+      ...lockless,
+      config,
+      storage,
+      now,
+      refreshTokenImpl: refreshImpl,
+    });
     const [a, b, c] = await Promise.all([mgr.ensureFresh(), mgr.ensureFresh(), mgr.ensureFresh()]);
     expect(refreshCount).toBe(1);
     expect(a).toBe(b);
@@ -202,7 +266,13 @@ describe('OAuthManager.ensureFresh', () => {
       refreshCount += 1;
       return makeToken({ accessToken: `forced-${refreshCount}`, refreshToken: 'rt-new' });
     });
-    const mgr = new OAuthManager({ config, storage, now, refreshTokenImpl: refreshImpl });
+    const mgr = new OAuthManager({
+      ...lockless,
+      config,
+      storage,
+      now,
+      refreshTokenImpl: refreshImpl,
+    });
 
     const nonForce = mgr.ensureFresh();
     const forced = mgr.ensureFresh({ force: true });
@@ -226,7 +296,13 @@ describe('OAuthManager.ensureFresh', () => {
       refreshCount += 1;
       return makeToken({ accessToken: `forced-${refreshCount}` });
     });
-    const mgr = new OAuthManager({ config, storage, now, refreshTokenImpl: refreshImpl });
+    const mgr = new OAuthManager({
+      ...lockless,
+      config,
+      storage,
+      now,
+      refreshTokenImpl: refreshImpl,
+    });
 
     const forced = mgr.ensureFresh({ force: true });
     const nonForce = mgr.ensureFresh();
@@ -245,7 +321,13 @@ describe('OAuthManager.ensureFresh', () => {
       refreshCount += 1;
       return makeToken({ accessToken: `forced-${refreshCount}` });
     });
-    const mgr = new OAuthManager({ config, storage, now, refreshTokenImpl: refreshImpl });
+    const mgr = new OAuthManager({
+      ...lockless,
+      config,
+      storage,
+      now,
+      refreshTokenImpl: refreshImpl,
+    });
 
     const [a, b, c] = await Promise.all([
       mgr.ensureFresh({ force: true }),
@@ -271,7 +353,13 @@ describe('OAuthManager.ensureFresh', () => {
       refreshCount += 1;
       return makeToken({ accessToken: `forced-${refreshCount}` });
     });
-    const mgr = new OAuthManager({ config, storage, now, refreshTokenImpl: refreshImpl });
+    const mgr = new OAuthManager({
+      ...lockless,
+      config,
+      storage,
+      now,
+      refreshTokenImpl: refreshImpl,
+    });
 
     const nonForce = mgr.ensureFresh();
     const force1 = mgr.ensureFresh({ force: true });
@@ -300,6 +388,7 @@ describe('OAuthManager.ensureFresh', () => {
       .mockRejectedValueOnce(new Error('network unreachable'))
       .mockResolvedValueOnce(makeToken({ accessToken: 'forced-recovery' }));
     const mgr = new OAuthManager({
+      ...lockless,
       config,
       storage,
       now,
@@ -318,7 +407,7 @@ describe('OAuthManager.ensureFresh', () => {
 
   it('throws when no stored token (caller should drive /login)', async () => {
     const storage = new InMemoryStorage();
-    const mgr = new OAuthManager({ config, storage, now });
+    const mgr = new OAuthManager({ ...lockless, config, storage, now });
     await expect(mgr.ensureFresh()).rejects.toBeInstanceOf(OAuthUnauthorizedError);
     await expect(mgr.ensureFresh()).rejects.toThrow(/no token/i);
   });
@@ -337,7 +426,13 @@ describe('OAuthManager.ensureFresh', () => {
       }),
     );
     const refreshImpl = vi.fn().mockRejectedValue(new OAuthUnauthorizedError('invalid_grant'));
-    const mgr = new OAuthManager({ config, storage, now, refreshTokenImpl: refreshImpl });
+    const mgr = new OAuthManager({
+      ...lockless,
+      config,
+      storage,
+      now,
+      refreshTokenImpl: refreshImpl,
+    });
     await expect(mgr.ensureFresh()).rejects.toBeInstanceOf(OAuthUnauthorizedError);
     const retained = await storage.load('kimi-code');
     expect(retained).toBeDefined();
@@ -375,6 +470,7 @@ describe('OAuthManager.ensureFresh', () => {
       return makeToken({ accessToken: 'should-not-reach' });
     });
     const mgr = new OAuthManager({
+      ...lockless,
       config,
       storage,
       now,
@@ -404,6 +500,7 @@ describe('OAuthManager.ensureFresh', () => {
       .fn()
       .mockRejectedValue(new OAuthUnauthorizedError('refresh_token revoked'));
     const mgr = new OAuthManager({
+      ...lockless,
       config,
       storage,
       now,
@@ -426,6 +523,7 @@ describe('OAuthManager.ensureFresh', () => {
     await storage.save('kimi-code', makeToken({ expiresAt: currentNow + 7200 }));
     const refreshImpl = vi.fn().mockRejectedValue(new Error('ECONNRESET: network unreachable'));
     const mgr = new OAuthManager({
+      ...lockless,
       config,
       storage,
       now,
@@ -449,7 +547,13 @@ describe('OAuthManager.ensureFresh', () => {
       }),
     );
     const refreshImpl = vi.fn(); // should NOT be called — latest is fresh
-    const mgr = new OAuthManager({ config, storage, now, refreshTokenImpl: refreshImpl });
+    const mgr = new OAuthManager({
+      ...lockless,
+      config,
+      storage,
+      now,
+      refreshTokenImpl: refreshImpl,
+    });
 
     // Second load call returns an externally-rotated token that's fresh.
     const originalLoad = storage.load.bind(storage);
@@ -488,6 +592,7 @@ describe('OAuthManager.ensureFresh — rejected refresh token retention', () => 
     );
     const refreshImpl = vi.fn().mockRejectedValue(new OAuthUnauthorizedError('invalid_grant'));
     const mgr = new OAuthManager({
+      ...lockless,
       config,
       storage,
       now,
@@ -538,6 +643,7 @@ describe('OAuthManager.ensureFresh — rejected refresh token retention', () => 
       .fn()
       .mockResolvedValue(makeToken({ accessToken: 'at-should-not-refresh' }));
     const mgr = new OAuthManager({
+      ...lockless,
       config,
       storage,
       now,
@@ -567,6 +673,7 @@ describe('OAuthManager.ensureFresh — rejected refresh token retention', () => 
     );
     const refreshImpl = vi.fn().mockRejectedValue(new OAuthUnauthorizedError('invalid_grant'));
     const mgr = new OAuthManager({
+      ...lockless,
       config,
       storage,
       now,
@@ -608,6 +715,7 @@ describe('OAuthManager.login', () => {
     const pollImpl = vi.fn().mockImplementation(async () => pollResponses.shift()!);
 
     const mgr = new OAuthManager({
+      ...lockless,
       config,
       storage,
       now,
@@ -632,6 +740,7 @@ describe('OAuthManager.login', () => {
     });
 
     const mgr = new OAuthManager({
+      ...lockless,
       config,
       storage,
       now,
@@ -664,6 +773,7 @@ describe('OAuthManager.login', () => {
     });
 
     const mgr = new OAuthManager({
+      ...lockless,
       config,
       storage,
       now,
@@ -684,6 +794,7 @@ describe('OAuthManager.login', () => {
       description: 'user rejected',
     });
     const mgr = new OAuthManager({
+      ...lockless,
       config,
       storage,
       now,
@@ -704,6 +815,7 @@ describe('OAuthManager.login', () => {
     ];
     const pollImpl = vi.fn().mockImplementation(async () => pollResponses.shift()!);
     const mgr = new OAuthManager({
+      ...lockless,
       config,
       storage,
       now,
@@ -728,6 +840,7 @@ describe('OAuthManager.login', () => {
       ac.abort();
     });
     const mgr = new OAuthManager({
+      ...lockless,
       config,
       storage,
       now,
@@ -752,14 +865,14 @@ describe('OAuthManager.logout and hasToken', () => {
   it('logout removes stored token', async () => {
     const storage = new InMemoryStorage();
     await storage.save('kimi-code', makeToken());
-    const mgr = new OAuthManager({ config, storage, now });
+    const mgr = new OAuthManager({ ...lockless, config, storage, now });
     await mgr.logout();
     expect(await storage.load('kimi-code')).toBeUndefined();
   });
 
   it('hasToken returns true when stored, false otherwise', async () => {
     const storage = new InMemoryStorage();
-    const mgr = new OAuthManager({ config, storage, now });
+    const mgr = new OAuthManager({ ...lockless, config, storage, now });
     expect(await mgr.hasToken()).toBe(false);
     await storage.save('kimi-code', makeToken());
     expect(await mgr.hasToken()).toBe(true);
@@ -771,7 +884,7 @@ describe('OAuthManager.logout and hasToken', () => {
       'kimi-code',
       makeToken({ accessToken: '', refreshToken: 'rt-empty-access-token' }),
     );
-    const mgr = new OAuthManager({ config, storage, now });
+    const mgr = new OAuthManager({ ...lockless, config, storage, now });
     expect(await mgr.getCachedAccessToken()).toBeUndefined();
     expect(await mgr.hasToken()).toBe(false);
   });
@@ -795,6 +908,7 @@ describe('OAuthManager.login — slow_down handling', () => {
       return { kind: 'success', token: makeToken() };
     };
     const mgr = new OAuthManager({
+      ...lockless,
       config,
       storage,
       now,
@@ -836,6 +950,7 @@ describe('OAuthManager + FileTokenStorage integration', () => {
     const mgr = new OAuthManager({
       config,
       storage,
+      configDir: dir,
       now,
       requestDeviceImpl: async () => ({
         userCode: 'U',
@@ -859,6 +974,7 @@ describe('OAuthManager + FileTokenStorage integration', () => {
     const mgr2 = new OAuthManager({
       config,
       storage,
+      configDir: dir,
       now,
       refreshTokenImpl: refreshImpl,
     });
@@ -870,7 +986,7 @@ describe('OAuthManager + FileTokenStorage integration', () => {
   it('logout removes token file', async () => {
     const storage = new FileTokenStorage(dir);
     await storage.save('kimi-code', makeToken());
-    const mgr = new OAuthManager({ config, storage, now });
+    const mgr = new OAuthManager({ config, storage, configDir: dir, now });
     expect(await mgr.hasToken()).toBe(true);
     await mgr.logout();
     expect(await mgr.hasToken()).toBe(false);
@@ -893,6 +1009,7 @@ describe('OAuthManager + FileTokenStorage integration', () => {
     const mgr = new OAuthManager({
       config,
       storage,
+      configDir: dir,
       now,
       refreshTokenImpl: refreshImpl,
     });

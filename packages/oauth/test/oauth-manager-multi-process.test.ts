@@ -23,11 +23,14 @@
  * `KIMI_DISABLE_OAUTH_LOCK=1` env-var remains an explicit escape hatch.
  */
 
-import { mkdir, stat } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { OAuthManager } from '../src/oauth-manager';
+import type { TokenStorage } from '../src/storage';
+import type { OAuthFlowConfig, TokenInfo } from '../src/types';
 import { createTempWorkDir, spawnInlineWorkers, type TempDirHandle } from './helpers';
 
 const OAUTH_ENTRY_URL = new URL('../src/index.ts', import.meta.url).href;
@@ -52,24 +55,42 @@ const WORKER_SCRIPT = `
   const tokenPath = join(shareDir, 'token.json');
   const counterPath = join(shareDir, 'refresh-count.txt');
   const readyPath = join(shareDir, 'first-load-ready.txt');
+  const firstLoadReleasePath = join(shareDir, 'release-first-load.txt');
+  const refreshStartedPath = join(shareDir, 'refresh-started.txt');
+  const refreshReleasePath = join(shareDir, 'release-refresh.txt');
   const lockDir = join(shareDir, 'oauth');
   await mkdir(lockDir, { recursive: true });
 
-  async function waitForFirstLoadBarrier() {
-    if (process.env.KIMI_SYNC_FIRST_LOAD !== '1') return;
-    await appendFile(readyPath, '.');
-    const expected = Number(process.env.KIMI_WORKER_COUNT || '1');
+  async function waitForPath(path, label) {
     const deadline = Date.now() + 10_000;
     while (true) {
-      let ready = 0;
       try {
-        ready = (await stat(readyPath)).size;
+        await stat(path);
+        return;
       } catch {}
-      if (ready >= expected) return;
-      if (Date.now() >= deadline) {
-        throw new Error('first-load barrier timed out');
-      }
+      if (Date.now() >= deadline) throw new Error(label + ' timed out');
       await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  async function coordinateFirstLoad() {
+    if (process.env.KIMI_SYNC_FIRST_LOAD === '1') {
+      await appendFile(readyPath, '.');
+      const expected = Number(process.env.KIMI_WORKER_COUNT || '1');
+      const deadline = Date.now() + 10_000;
+      while (true) {
+        let ready = 0;
+        try {
+          ready = (await stat(readyPath)).size;
+        } catch {}
+        if (ready >= expected) break;
+        if (Date.now() >= deadline) throw new Error('first-load barrier timed out');
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    if (process.env.KIMI_PAUSE_AFTER_FIRST_LOAD === '1') {
+      await writeFile(readyPath, 'ready', 'utf8');
+      await waitForPath(firstLoadReleasePath, 'first-load release');
     }
   }
 
@@ -79,7 +100,6 @@ const WORKER_SCRIPT = `
     clientId: 'test',
   };
 
-  /** File-backed TokenStorage keyed on the single provider 'test-provider'. */
   let firstLoad = true;
   const storage = {
     async load(name) {
@@ -87,7 +107,7 @@ const WORKER_SCRIPT = `
         const raw = await readFile(tokenPath, 'utf8');
         if (firstLoad) {
           firstLoad = false;
-          await waitForFirstLoadBarrier();
+          await coordinateFirstLoad();
         }
         const parsed = JSON.parse(raw);
         return parsed[name];
@@ -96,8 +116,6 @@ const WORKER_SCRIPT = `
       }
     },
     async save(name, token) {
-      // Read-modify-write. Good enough for the test oracle; the real
-      // cross-process correctness comes from the lock, not the storage.
       let bag = {};
       try {
         bag = JSON.parse(await readFile(tokenPath, 'utf8'));
@@ -107,14 +125,25 @@ const WORKER_SCRIPT = `
       bag[name] = token;
       await writeFile(tokenPath, JSON.stringify(bag), 'utf8');
     },
-    async remove(name) {},
+    async remove(name) {
+      let bag = {};
+      try {
+        bag = JSON.parse(await readFile(tokenPath, 'utf8'));
+      } catch {
+        bag = {};
+      }
+      delete bag[name];
+      await writeFile(tokenPath, JSON.stringify(bag), 'utf8');
+    },
     async list() { return ['test-provider']; },
   };
 
-  /** refreshImpl increments the oracle file and hands back a rotated token. */
   const refreshImpl = async () => {
-    // One byte per observed refresh; O_APPEND is atomic on POSIX.
     await appendFile(counterPath, '.');
+    if (process.env.KIMI_HOLD_REFRESH === '1') {
+      await writeFile(refreshStartedPath, 'started', 'utf8');
+      await waitForPath(refreshReleasePath, 'refresh release');
+    }
     const nowSec = Math.floor(Date.now() / 1000);
     return {
       accessToken: 'at-refreshed-' + String(nowSec),
@@ -129,53 +158,95 @@ const WORKER_SCRIPT = `
   const manager = new OAuthManager({
     config,
     storage,
+    configDir: shareDir,
     refreshTokenImpl: refreshImpl,
-    // minimal stubs — unused on ensureFresh
     requestDeviceImpl: async () => { throw new Error('unused'); },
     pollDeviceImpl: async () => { throw new Error('unused'); },
     now: () => Math.floor(Date.now() / 1000),
   });
 
-  // Every worker attempts a forced refresh. With a cross-process lock
-  // in place, only one worker's refreshImpl runs; the others read the
-  // rotated storage and return its accessToken without calling
-  // refreshImpl.
   try {
     const token = await manager.ensureFresh({ force: true });
     process.stdout.write('ok:' + token + '\\n');
   } catch (err) {
     process.stdout.write('err:' + (err && err.message ? err.message : String(err)) + '\\n');
   }
-  // Debug trace so the test oracle can diagnose mis-locking.
   if (process.env.DEBUG_OAUTH_WORKER === '1') {
     process.stderr.write('[worker ' + process.env.KIMI_WORKER_ID + '] done\\n');
   }
 `;
 
+const providerConfig: OAuthFlowConfig = {
+  name: 'test-provider',
+  oauthHost: 'https://unused.test',
+  clientId: 'test',
+};
+
+async function readTokenBag(shareDir: string): Promise<Record<string, TokenInfo>> {
+  try {
+    return JSON.parse(await readFile(join(shareDir, 'token.json'), 'utf8')) as Record<
+      string,
+      TokenInfo
+    >;
+  } catch {
+    return {};
+  }
+}
+
+function createSharedStorage(shareDir: string): TokenStorage {
+  return {
+    async load(name) {
+      return (await readTokenBag(shareDir))[name];
+    },
+    async save(name, token) {
+      const bag = await readTokenBag(shareDir);
+      bag[name] = token;
+      await writeFile(join(shareDir, 'token.json'), JSON.stringify(bag), 'utf8');
+    },
+    async remove(name) {
+      const bag = await readTokenBag(shareDir);
+      delete bag[name];
+      await writeFile(join(shareDir, 'token.json'), JSON.stringify(bag), 'utf8');
+    },
+    async list() {
+      return Object.keys(await readTokenBag(shareDir));
+    },
+  };
+}
+
 async function seedInitialToken(shareDir: string): Promise<void> {
-  const tokenPath = join(shareDir, 'token.json');
   const nowSec = Math.floor(Date.now() / 1000);
-  const token = {
+  const token: Record<string, TokenInfo> = {
     'test-provider': {
       accessToken: 'at-initial',
       refreshToken: 'rt-initial',
-      expiresAt: nowSec + 60, // inside refresh threshold → force refresh hits
+      expiresAt: nowSec + 60,
       scope: '',
       tokenType: 'Bearer',
       expiresIn: 3600,
     },
   };
-  const { writeFile } = await import('node:fs/promises');
-  await writeFile(tokenPath, JSON.stringify(token), 'utf8');
+  await writeFile(join(shareDir, 'token.json'), JSON.stringify(token), 'utf8');
 }
 
 async function readRefreshCount(shareDir: string): Promise<number> {
-  const counterPath = join(shareDir, 'refresh-count.txt');
   try {
-    const s = await stat(counterPath);
-    return s.size;
+    return (await stat(join(shareDir, 'refresh-count.txt'))).size;
   } catch {
     return 0;
+  }
+}
+
+async function waitForPath(path: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (true) {
+    try {
+      await stat(path);
+      return;
+    } catch {
+      if (Date.now() >= deadline) throw new Error(`Timed out waiting for ${path}`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
   }
 }
 
@@ -212,10 +283,91 @@ describe('OAuthManager cross-process refresh lock', () => {
       expect(w.stdout.startsWith('ok:')).toBe(true);
     }
 
-    // Refresh count = 1 → exactly one refresh happened across the 5
-    // processes. Without the lock the count equals N (or any value > 1).
+    // Refresh count = 1 → exactly one refresh happened across the workers.
+    // Without the lock the count equals N (or any value > 1).
     const count = await readRefreshCount(dir.path);
     expect(count).toBe(1);
+  }, 45_000);
+
+  it('logout wins before refresh acquires the lock and the stale snapshot stays logged out', async () => {
+    const dir = await createTempWorkDir();
+    tmpHandles.push(dir);
+    await seedInitialToken(dir.path);
+
+    const workersPromise = spawnInlineWorkers({
+      count: 1,
+      inlineScript: WORKER_SCRIPT,
+      tmpDir: dir.path,
+      shareDir: dir.path,
+      timeoutMs: 30_000,
+      env: {
+        KIMI_OAUTH_ENTRY: OAUTH_ENTRY_URL,
+        KIMI_PAUSE_AFTER_FIRST_LOAD: '1',
+      },
+    });
+
+    await waitForPath(join(dir.path, 'first-load-ready.txt'));
+    const storage = createSharedStorage(dir.path);
+    const manager = new OAuthManager({
+      config: providerConfig,
+      storage,
+      configDir: dir.path,
+    });
+    await manager.logout();
+    await writeFile(join(dir.path, 'release-first-load.txt'), 'release', 'utf8');
+
+    const workers = await workersPromise;
+    expect(workers[0]?.exitCode).toBe(0);
+    expect(workers[0]?.stdout).toMatch(/^err:No token .* after acquiring the OAuth lock/);
+    expect(await readRefreshCount(dir.path)).toBe(0);
+    await expect(storage.load('test-provider')).resolves.toBeUndefined();
+  }, 45_000);
+
+  it('logout waits for a refresh holding the provider lock, then removes the refreshed token', async () => {
+    const dir = await createTempWorkDir();
+    tmpHandles.push(dir);
+    await seedInitialToken(dir.path);
+
+    const workersPromise = spawnInlineWorkers({
+      count: 1,
+      inlineScript: WORKER_SCRIPT,
+      tmpDir: dir.path,
+      shareDir: dir.path,
+      timeoutMs: 30_000,
+      env: {
+        KIMI_OAUTH_ENTRY: OAUTH_ENTRY_URL,
+        KIMI_HOLD_REFRESH: '1',
+      },
+    });
+
+    await waitForPath(join(dir.path, 'refresh-started.txt'));
+    const storage = createSharedStorage(dir.path);
+    const manager = new OAuthManager({
+      config: providerConfig,
+      storage,
+      configDir: dir.path,
+    });
+    let logoutSettled = false;
+    const logoutPromise = manager.logout();
+    void logoutPromise.then(
+      () => {
+        logoutSettled = true;
+      },
+      () => {
+        logoutSettled = true;
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(logoutSettled).toBe(false);
+
+    await writeFile(join(dir.path, 'release-refresh.txt'), 'release', 'utf8');
+    const workers = await workersPromise;
+    await logoutPromise;
+
+    expect(workers[0]?.exitCode).toBe(0);
+    expect(workers[0]?.stdout.startsWith('ok:')).toBe(true);
+    expect(await readRefreshCount(dir.path)).toBe(1);
+    await expect(storage.load('test-provider')).resolves.toBeUndefined();
   }, 45_000);
 
   it('stale lock (held by a killed worker) is reclaimed after stale timeout', async () => {

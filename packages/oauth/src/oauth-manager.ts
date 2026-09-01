@@ -3,10 +3,10 @@
  *
  *  - Lazy refresh on `ensureFresh()` — no background loop
  *  - Single-process concurrency: in-memory mutex serialises refreshes
- *  - Multi-process coordination: a cross-process lock serialises refreshes;
- *    lock preparation/acquisition fails closed, then storage is re-read
+ *  - Multi-process coordination: one provider lock serialises token mutations
+ *    and refresh; lock preparation/acquisition fails closed
  *  - `login()`: device code flow with a 15 min local timeout
- *  - `logout()`: delete stored token
+ *  - `logout()`: delete stored token under the provider lock
  *
  * All network / clock / storage operations are injectable for tests.
  */
@@ -69,24 +69,10 @@ export interface OAuthManagerOptions {
     | ((config: OAuthFlowConfig, deviceCode: string) => Promise<DevicePollResult>)
     | undefined;
   readonly deviceHeaders?: (() => OAuthRequestHeaders | undefined) | undefined;
-  /**
-   * Root directory for per-provider lock files; resolves to
-   * `{configDir}/oauth/{providerName}.lock`.
-   *
-   * **Production callers MUST pass this explicitly** (KimiCoreClient /
-   * session-manager wire it through from the resolved config root). A
-   * missing `configDir` disables the cross-process lock entirely, so
-   * silently falling back to an env var in production would mask a
-   * genuine mis-wiring.
-   *
-   * When omitted AND `process.env.NODE_ENV === 'test'`, the manager
-   * falls back to `process.env.KIMI_CODE_HOME` so multi-process test
-   * harnesses don't need to thread the dir through every fixture. In
-   * production the fallback is inert. Locking is skipped only when no
-   * `configDir` is available or `KIMI_DISABLE_OAUTH_LOCK === '1'` is set;
-   * configured lock preparation or acquisition failures fail closed.
-   */
+  /** Root directory for per-provider lock files. */
   readonly configDir?: string | undefined;
+  /** Explicitly allow unsafe lockless operation. */
+  readonly disableCrossProcessLock?: boolean | undefined;
 }
 
 export interface LoginOptions {
@@ -105,7 +91,7 @@ export class OAuthManager {
   private readonly requestImpl: NonNullable<OAuthManagerOptions['requestDeviceImpl']>;
   private readonly pollImpl: NonNullable<OAuthManagerOptions['pollDeviceImpl']>;
   private readonly deviceHeaders: (() => OAuthRequestHeaders | undefined) | undefined;
-  private readonly configDir: string | undefined;
+  private readonly lockTarget: string | undefined;
   private readonly onRefresh: ((outcome: OAuthRefreshOutcome) => void) | undefined;
 
   /**
@@ -146,13 +132,24 @@ export class OAuthManager {
         pollDeviceToken(config, deviceCode, {
           deviceHeaders: this.resolveDeviceHeaders(),
         }));
-    // The `KIMI_CODE_HOME` fallback MUST stay test-only so production
-    // entry points can't silently run without a lock just because the
-    // env happens to be unset. vitest sets `NODE_ENV='test'` by default,
-    // so multi-process test workers still pick up the test home path.
-    const envConfigDir =
-      process.env['NODE_ENV'] === 'test' ? process.env['KIMI_CODE_HOME'] : undefined;
-    this.configDir = options.configDir ?? envConfigDir;
+
+    const lockDisabled =
+      options.disableCrossProcessLock === true ||
+      process.env['KIMI_DISABLE_OAUTH_LOCK'] === '1';
+    if (lockDisabled) {
+      this.lockTarget = undefined;
+      process.emitWarning(
+        `Cross-process token locking is disabled for OAuth provider "${this.config.name}".`,
+        { code: 'KIMI_OAUTH_LOCK_DISABLED', type: 'SecurityWarning' },
+      );
+    } else {
+      if (options.configDir === undefined) {
+        throw new OAuthError(
+          `OAuthManager configDir is required for cross-process token locking for "${this.config.name}".`,
+        );
+      }
+      this.lockTarget = `${options.configDir}/oauth/${this.config.name}`;
+    }
   }
 
   private resolveDeviceHeaders(): OAuthRequestHeaders | undefined {
@@ -173,26 +170,11 @@ export class OAuthManager {
   }
 
   /**
-   * Resolve the sentinel target file `proper-lockfile` locks against.
-   * `proper-lockfile.lock(target)` creates `${target}.lock` as the
-   * actual lock directory, so the real lockfile on disk ends up at
-   * `{configDir}/oauth/{providerName}.lock`. Returns `undefined` when
-   * locking is opted out (no configDir or env kill switch).
+   * Acquire the cross-process lock around a provider token critical section.
+   * Returns a `release` closure; when locking is explicitly disabled returns a no-op.
    */
-  private resolveLockTarget(): string | undefined {
-    if (process.env['KIMI_DISABLE_OAUTH_LOCK'] === '1') return undefined;
-    if (this.configDir === undefined) return undefined;
-    return `${this.configDir}/oauth/${this.config.name}`;
-  }
-
-  /**
-   * Acquire the cross-process lock around the refresh critical section.
-   * Returns a `release` closure; when locking is disabled returns a no-op.
-   * If locking is configured but cannot be acquired, fail closed rather than
-   * refreshing with no lock and racing refresh_token rotation.
-   */
-  private async acquireRefreshLock(): Promise<() => Promise<void>> {
-    const target = this.resolveLockTarget();
+  private async acquireProviderLock(): Promise<() => Promise<void>> {
+    const target = this.lockTarget;
     if (target === undefined) return async () => {};
 
     // proper-lockfile requires the target path to exist. We create
@@ -205,7 +187,7 @@ export class OAuthManager {
       await writeFile(target, '', { flag: 'a' });
     } catch (error) {
       throw new OAuthError(
-        `Unable to prepare OAuth refresh lock for "${this.config.name}": ${
+        `Unable to prepare OAuth lock for "${this.config.name}": ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -226,7 +208,7 @@ export class OAuthManager {
       };
     } catch (error) {
       throw new OAuthError(
-        `Unable to acquire OAuth refresh lock for "${this.config.name}": ${
+        `Unable to acquire OAuth lock for "${this.config.name}": ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -243,7 +225,12 @@ export class OAuthManager {
   }
 
   async logout(): Promise<void> {
-    await this.storage.remove(this.config.name);
+    const release = await this.acquireProviderLock();
+    try {
+      await this.storage.remove(this.config.name);
+    } finally {
+      await release();
+    }
   }
 
   /**
@@ -310,7 +297,7 @@ export class OAuthManager {
     // Post-acquire we re-read storage: if a peer already rotated the
     // token, short-circuit and return theirs instead of burning an
     // extra refresh.
-    const release = await this.acquireRefreshLock();
+    const release = await this.acquireProviderLock();
     try {
       // Post-lock re-read. The semantics:
       //
@@ -329,10 +316,9 @@ export class OAuthManager {
             `Stored token for "${this.config.name}" was rejected; re-login required.`,
           );
         case 'missing':
-          // File disappeared (e.g. logout from another process) while we
-          // waited for the lock; fall back to the snapshot we read pre-lock.
-          activeToken = token;
-          break;
+          throw new OAuthUnauthorizedError(
+            `No token for "${this.config.name}" after acquiring the OAuth lock; re-login required.`,
+          );
         case 'valid': {
           const after = afterLock.token;
           if (!this.shouldRefreshToken(after, force)) {
@@ -425,7 +411,12 @@ export class OAuthManager {
 
         const result = await this.pollImpl(this.config, auth.deviceCode);
         if (result.kind === 'success') {
-          await this.storage.save(this.config.name, result.token);
+          const release = await this.acquireProviderLock();
+          try {
+            await this.storage.save(this.config.name, result.token);
+          } finally {
+            await release();
+          }
           return result.token;
         }
         if (result.kind === 'denied') {
