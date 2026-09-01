@@ -11,7 +11,7 @@ import { type IAgentScopeHandle } from '#/_base/di/scope';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentExecutionService } from '#/agent/execution/execution';
-import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentLoopService, type AgentLoopStatus } from '#/agent/loop/loop';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
@@ -40,7 +40,12 @@ import { ITelemetryService, noopTelemetryService } from '#/app/telemetry/telemet
 import {
   normalizeAgentProfile,
   type AgentProfile,
+  type ResolvedAgentProfileRoute,
 } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import type {
+  SpawnConstraints,
+  SubagentLease,
+} from '#/app/agentProfileCatalog/subagentLease';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
@@ -104,20 +109,53 @@ const usage: TokenUsage = {
   inputCacheCreation: 3,
 };
 
+const parityLease: SubagentLease = {
+  name: 'coder',
+  description: 'Leased parity coder',
+  modelAlias: 'parity-model',
+  thinkingEffort: 'high',
+  allowedModels: ['parity-model'],
+  allowedEfforts: ['high'],
+  tools: ['Read', 'Write'],
+  disallowedTools: ['Bash'],
+};
+
+const paritySpawnPolicy: SpawnConstraints = {
+  allowedModels: ['parity-model'],
+  allowedEfforts: ['high'],
+  disallowedTools: ['Bash'],
+};
+
 const parityProfile = normalizeAgentProfile({
   name: 'coder',
+  definitionId: 'profile-coder',
   description: 'Parity coder',
+  whenToUse: 'Use for parity checks',
   tools: ['Read', 'Write'],
+  toolAllowPolicies: [['Read'], ['Write']],
+  disallowedTools: ['Bash'],
+  subagents: [],
   executor: 'native',
   modelAlias: 'parity-model',
   thinkingEffort: 'high',
+  allowedModels: ['parity-model'],
+  allowedEfforts: ['high'],
+  delegationNotice: 'off',
   systemPrompt: () => 'coder',
 });
 
 const PROBE_DIFFERENCE_WHITELIST = {
   workIdField: ['task_id', 'dispatch_id'],
   delegatorKind: ['agent', 'external'],
-  taskNameLabel: [COLLABORATION_TASK_NAME_LABEL, 'externalDelegationTaskName'],
+  labelFields: {
+    internalOnly: [
+      'parentAgentId',
+      'requestIdentityParentTurn',
+      'requestIdentityRootAgent',
+      'requestIdentityRootTurn',
+    ],
+    externalOnly: ['externalDelegationProfile', 'externalDelegationTaskName'],
+  },
   acceptedStatus: ['running', 'queued'],
   continuationField: ['resume_hint', 'continue_hint'],
 } as const;
@@ -233,11 +271,91 @@ function fieldMap(text: string): Readonly<Record<string, string>> {
   );
 }
 
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (typeof value !== 'object' || value === null) return value;
+  return Object.entries(value)
+    .toSorted(([left], [right]) => left.localeCompare(right))
+    .map(([key, entry]) => [key, stableValue(entry)] as const);
+}
+
+function profileSnapshot(profile: AgentProfile | undefined): ProbeTuple | undefined {
+  if (profile === undefined) return undefined;
+  const {
+    systemPrompt,
+    renderSystemPrompt,
+    promptPrefix: _promptPrefix,
+    ...durable
+  } = profile;
+  return [
+    'resolved-profile',
+    stableValue(durable),
+    systemPrompt({}),
+    stableValue(renderSystemPrompt({})),
+  ];
+}
+
+function routeSnapshot(route: ResolvedAgentProfileRoute | undefined): ProbeTuple | undefined {
+  if (route === undefined) return undefined;
+  const { effectiveProfile, ...durable } = route;
+  return ['resolved-route', stableValue(durable), profileSnapshot(effectiveProfile)];
+}
+
+function executorSnapshot(profile: AgentProfile | undefined): ProbeTuple {
+  const executorId = profile?.executor ?? 'native';
+  return [
+    'executor',
+    executorId,
+    executorId === 'native' ? 'native' : undefined,
+    executorId === 'native' ? undefined : stableValue(profile?.executorOptions),
+    executorId === 'native' ? 'native' : undefined,
+  ];
+}
+
+function labelEntries(labels: Readonly<Record<string, string>> | undefined): ProbeTuple {
+  return Object.entries(labels ?? {}).toSorted(([left], [right]) => left.localeCompare(right));
+}
+
+function normalizedLabels(
+  lane: 'internal' | 'external',
+  labels: Readonly<Record<string, string>> | undefined,
+): ProbeTuple {
+  const values = { ...labels };
+  const taskName = values[COLLABORATION_TASK_NAME_LABEL];
+  const profileName = values[COLLABORATION_AGENT_TYPE_LABEL];
+  if (lane === 'internal') {
+    expect(values['parentAgentId']).toBe('main');
+    expect(values['requestIdentityParentTurn']).toBe('1');
+    expect(values['requestIdentityRootAgent']).toBe('main');
+    expect(values['requestIdentityRootTurn']).toBe('1');
+    for (const key of PROBE_DIFFERENCE_WHITELIST.labelFields.internalOnly) delete values[key];
+  } else {
+    expect(values['externalDelegationTaskName']).toBe(taskName);
+    expect(values['externalDelegationProfile']).toBe(profileName);
+    for (const key of PROBE_DIFFERENCE_WHITELIST.labelFields.externalOnly) delete values[key];
+  }
+  return ['labels', ...labelEntries(values)];
+}
+
+function labelDifferenceKeys(internal: ProbeTuple, external: ProbeTuple): {
+  readonly internalOnly: readonly string[];
+  readonly externalOnly: readonly string[];
+} {
+  const internalKeys = new Set(internal.map((entry) => (entry as readonly [string, string])[0]));
+  const externalKeys = new Set(external.map((entry) => (entry as readonly [string, string])[0]));
+  return {
+    internalOnly: [...internalKeys].filter((key) => !externalKeys.has(key)).toSorted(),
+    externalOnly: [...externalKeys].filter((key) => !internalKeys.has(key)).toSorted(),
+  };
+}
+
 class ParityProbe {
   readonly profileBinds: ProbeTuple[] = [];
   readonly permissions: ProbeTuple[] = [];
   readonly names: ProbeTuple[] = [];
   readonly labels: ProbeTuple[] = [];
+  readonly rawLabels: ProbeTuple[] = [];
+  readonly userToolInheritance: ProbeTuple[] = [];
   readonly runs: ProbeTuple[] = [];
   readonly lifecycle: ProbeTuple[] = [];
   readonly engineUsage: WireUsage[] = [];
@@ -251,11 +369,16 @@ class ParityProbe {
     this.agentIds.push(agentId);
     this.profileBinds.push([
       'profile-bind',
-      binding?.profile,
-      binding?.model,
-      binding?.thinking,
-      [...(profile?.tools ?? [])].toSorted(),
-      profile?.executor ?? 'native',
+      ['profile', binding?.profile],
+      profileSnapshot(profile),
+      ['route', binding?.route],
+      routeSnapshot(binding?.resolvedRoute),
+      ['model', binding?.model],
+      ['thinking', binding?.thinking],
+      ['lease', stableValue(binding?.lease)],
+      ['spawn-policy', stableValue(binding?.spawnPolicy)],
+      executorSnapshot(profile),
+      ['inherited-user-tools', stableValue(binding?.inheritedUserToolNames)],
     ]);
     const expectedDelegator =
       lane === 'internal'
@@ -264,12 +387,8 @@ class ParityProbe {
     if (options.delegator?.kind !== expectedDelegator) {
       throw new Error(`Unexpected ${lane} delegator kind`);
     }
-    const key =
-      lane === 'internal'
-        ? PROBE_DIFFERENCE_WHITELIST.taskNameLabel[0]
-        : PROBE_DIFFERENCE_WHITELIST.taskNameLabel[1];
-    const taskName = options.labels?.[key];
-    if (taskName !== undefined) this.labels.push(['task-name', taskName]);
+    this.rawLabels.push(labelEntries(options.labels));
+    this.labels.push(normalizedLabels(lane, options.labels));
   }
 
   recordName(action: 'reserve' | 'commit' | 'release', taskName: string, owner: DelegatorRef): void {
@@ -342,6 +461,8 @@ interface ParityLane {
   readonly profile: AgentProfile;
   taskRelease?: 'detached' | 'timeout_detached' | 'terminal';
   runInternal(args: SubagentToolInput): Promise<ExecutableToolResult>;
+  setExecutionRunning(agentId: string, running: boolean): void;
+  setLoopStatus(agentId: string, status: AgentLoopStatus): void;
   dropHandle(agentId: string): void;
 }
 
@@ -360,6 +481,8 @@ function createLane(
   const taskRecords = new Map<string, TaskRecord>();
   const stateByAgent = new Map<string, AgentStateService>();
   const profileByAgent = new Map<string, ProfileData>();
+  const executionRunning = new Set<string>();
+  const loopStatusByAgent = new Map<string, AgentLoopStatus>();
   const mailboxQueue: Array<{
     readonly messageId: string;
     readonly sourceAgentId: string;
@@ -417,8 +540,13 @@ function createLane(
           return {
             _serviceBrand: undefined,
             list: () => agentId === 'main' ? userTools : [],
-            inheritUserTools: () => {
-              if (agentId !== 'main') probe.profileBinds.push(['inherited-user-tools', ['SharedTool']]);
+            inheritUserTools: (source: IAgentUserToolService) => {
+              if (agentId !== 'main') {
+                probe.userToolInheritance.push([
+                  'inherited-user-tools',
+                  source.list().map((tool) => tool.name),
+                ]);
+              }
             },
           };
         }
@@ -426,14 +554,20 @@ function createLane(
         if (serviceId === IAgentExecutionService) {
           return {
             _serviceBrand: undefined,
-            status: () => ({ state: 'idle' }),
+            status: () => executionRunning.has(agentId)
+              ? { state: 'running', turnId: 1 }
+              : { state: 'idle' },
             hooks: { onWillRun: { register: () => ({ dispose: () => {} }) } },
           };
         }
         if (serviceId === IAgentLoopService) {
           return {
             _serviceBrand: undefined,
-            status: () => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false }),
+            status: () => loopStatusByAgent.get(agentId) ?? {
+              state: 'idle',
+              pendingTurnIds: [],
+              hasPendingRequests: false,
+            },
           };
         }
         if (serviceId === IAgentContextMemoryService) {
@@ -501,6 +635,8 @@ function createLane(
     thinkingLevel: 'off',
     systemPrompt: '',
     subagents: [profile.name],
+    subagentLeases: profile === parityProfile ? { [profile.name]: parityLease } : undefined,
+    spawnPolicy: profile === parityProfile ? paritySpawnPolicy : undefined,
   });
   metadataAgents['main'] = { type: 'main', labels: {} };
   handles.set('main', handle('main'));
@@ -853,6 +989,13 @@ function createLane(
         signal: new AbortController().signal,
       });
     },
+    setExecutionRunning: (agentId, running) => {
+      if (running) executionRunning.add(agentId);
+      else executionRunning.delete(agentId);
+    },
+    setLoopStatus: (agentId, status) => {
+      loopStatusByAgent.set(agentId, status);
+    },
     dropHandle: (agentId) => {
       handles.delete(agentId);
     },
@@ -930,7 +1073,15 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(PROBE_DIFFERENCE_WHITELIST).toEqual({
       workIdField: ['task_id', 'dispatch_id'],
       delegatorKind: ['agent', 'external'],
-      taskNameLabel: ['collaborationTaskName', 'externalDelegationTaskName'],
+      labelFields: {
+        internalOnly: [
+          'parentAgentId',
+          'requestIdentityParentTurn',
+          'requestIdentityRootAgent',
+          'requestIdentityRootTurn',
+        ],
+        externalOnly: ['externalDelegationProfile', 'externalDelegationTaskName'],
+      },
       acceptedStatus: ['running', 'queued'],
       continuationField: ['resume_hint', 'continue_hint'],
     });
@@ -942,10 +1093,31 @@ describe('AgentRun and dispatch parity golden', () => {
 
     await spawnPair(internal, external);
 
+    expect(internal.probe.profileBinds).toEqual([[
+      'profile-bind',
+      ['profile', 'coder'],
+      profileSnapshot(parityProfile),
+      ['route', undefined],
+      undefined,
+      ['model', 'parity-model'],
+      ['thinking', 'high'],
+      ['lease', stableValue(parityLease)],
+      ['spawn-policy', stableValue(paritySpawnPolicy)],
+      ['executor', 'native', 'native', undefined, 'native'],
+      ['inherited-user-tools', ['SharedTool']],
+    ]]);
     expect(external.probe.profileBinds).toEqual(internal.probe.profileBinds);
     expect(external.probe.permissions).toEqual(internal.probe.permissions);
     expect(external.probe.names).toEqual(internal.probe.names);
     expect(external.probe.labels).toEqual(internal.probe.labels);
+    expect(labelDifferenceKeys(
+      internal.probe.rawLabels[0]!,
+      external.probe.rawLabels[0]!,
+    )).toEqual(PROBE_DIFFERENCE_WHITELIST.labelFields);
+    expect(external.probe.userToolInheritance).toEqual(internal.probe.userToolInheritance);
+    expect(internal.probe.userToolInheritance).toEqual([
+      ['inherited-user-tools', ['SharedTool']],
+    ]);
     expect(external.probe.runs).toEqual(internal.probe.runs);
     expect(external.probe.lifecycle).toEqual(internal.probe.lifecycle);
     expect(external.probe.agentIds).toEqual(internal.probe.agentIds);
@@ -1084,6 +1256,64 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(invalidInternal.isError).toBe(true);
   });
 
+  it('keeps transcript and events readable while a named dispatch is running', async () => {
+    const external = createLane(disposables, 'external');
+    const view = await external.external.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'running_reader',
+      profileName: 'coder',
+      modelAlias: 'parity-model',
+      message: 'keep running',
+    });
+    external.setExecutionRunning('agent_child_1', true);
+    await vi.waitFor(async () => {
+      expect((await external.external.status({ authority, dispatchId: view.dispatchId })).status)
+        .toBe('running');
+    });
+
+    await expect(external.external.transcript({
+      authority,
+      dispatchId: view.dispatchId,
+    })).resolves.toEqual({ items: [], nextCursor: undefined });
+    await expect(external.external.events({
+      authority,
+      dispatchId: view.dispatchId,
+    })).resolves.toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({ dispatchId: view.dispatchId, type: 'queued' }),
+      ]),
+    });
+    expect((await external.external.status({ authority, dispatchId: view.dispatchId })).status)
+      .toBe('running');
+  });
+
+  it('rejects an external named dispatch while a queued KAP prompt occupies the child', async () => {
+    const external = createLane(disposables, 'external');
+    const first = await external.external.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'queued_prompt_child',
+      profileName: 'coder',
+      modelAlias: 'parity-model',
+      message: 'create child',
+    });
+    await completeExternal(external, first.dispatchId, 0);
+    external.setLoopStatus('agent_child_1', {
+      state: 'idle',
+      pendingTurnIds: [2],
+      hasPendingRequests: true,
+    });
+
+    await expect(external.external.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'queued_prompt_child',
+      message: 'must reject',
+    })).rejects.toThrow(/already running/);
+    expect(external.subagentRun).toHaveBeenCalledTimes(1);
+  });
+
   it.fails('P6 injects one idempotent external message at the next run boundary', async () => {
     const external = createLane(disposables, 'external');
     const first = await external.external.dispatch({
@@ -1172,22 +1402,26 @@ describe('AgentRun and dispatch parity golden', () => {
     });
   });
 
-  it('C-3 returns the declared structured foreground result with usage', async () => {
+  it('C-3 preserves the foreground AgentRun text receipt contract', async () => {
     const internal = createLane(disposables, 'internal');
     const pending = internal.runInternal({
-      prompt: 'inspect structure',
-      description: 'Inspect structure',
+      prompt: 'inspect receipt',
+      description: 'Inspect receipt',
       profile: 'coder',
-      name: 'structure_child',
+      name: 'receipt_child',
       model_alias: 'parity-model',
     });
-    await complete(internal, 0, 'structured result');
+    await complete(internal, 0, 'text result');
     const result = await pending;
 
-    expect(result.output).toEqual({
-      result: 'structured result',
-      usage: wireUsage(usage),
-    });
+    expect(outputText(result.output)).toBe([
+      'agent_id: agent_child_1',
+      'actual_profile: coder',
+      'status: completed',
+      '',
+      '[summary]',
+      'text result',
+    ].join('\n'));
   });
 
   it('P10 writes collaborationLatestTaskId for AgentRun', async () => {
