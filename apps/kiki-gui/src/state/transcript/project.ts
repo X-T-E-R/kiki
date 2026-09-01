@@ -742,9 +742,32 @@ type RawSubagentEvent = {
 
 function resumeTargetsFromToolArgs(args: unknown): readonly string[] {
   if (typeof args !== 'object' || args === null) return [];
-  const resumeMap = (args as Record<string, unknown>)['resume_agent_ids'];
-  if (typeof resumeMap !== 'object' || resumeMap === null) return [];
-  return Object.keys(resumeMap as Record<string, unknown>).filter((key) => key !== '');
+  const record = args as Record<string, unknown>;
+  const targets: string[] = [];
+  // Plain AgentRun carries a single `resume` ref; AgentSwarm carries a
+  // `resume_agent_ids` map keyed by agent id.
+  const single = record['resume'];
+  if (typeof single === 'string' && single.trim() !== '') targets.push(single.trim());
+  const resumeMap = record['resume_agent_ids'];
+  if (typeof resumeMap === 'object' && resumeMap !== null) {
+    targets.push(
+      ...Object.keys(resumeMap as Record<string, unknown>).filter((key) => key !== ''),
+    );
+  }
+  return targets;
+}
+
+/** A resume/send ref is an agent id or a stable display name; resolve to the canonical id. */
+function resolveKnownAgentId(
+  raw: string,
+  byAgent: ReadonlyMap<string, SubagentBlock>,
+  agentIdsWithTasks: ReadonlySet<string>,
+): string | undefined {
+  if (byAgent.has(raw) || agentIdsWithTasks.has(raw)) return raw;
+  for (const block of byAgent.values()) {
+    if (block.name === raw) return block.subagentId;
+  }
+  return undefined;
 }
 
 function sendTargetFromToolArgs(args: unknown): string | undefined {
@@ -766,13 +789,20 @@ function subagentBlocksFromSnapshot(
 ): { blocks: SubagentBlock[]; events: SubagentEventBlock[] } {
   const tasks = response.tasks ?? [];
   const taskById = new Map(tasks.map((task) => [task.taskId, task]));
+  // One agent can run several times (resume re-prompts spawn a fresh task each
+  // run): keep the full per-agent task list so lifecycle history is not
+  // flattened into a single task. The card itself still reflects the latest run.
+  const tasksByAgent = new Map<string, NonNullable<typeof response.tasks>[number][]>();
+  for (const task of tasks) {
+    if (task.kind !== 'subagent' || task.agentId === undefined || task.agentId === '') continue;
+    const list = tasksByAgent.get(task.agentId);
+    if (list === undefined) tasksByAgent.set(task.agentId, [task]);
+    else list.push(task);
+  }
   const taskByAgent = new Map(
-    tasks.flatMap((task) =>
-      task.kind === 'subagent' && task.agentId !== undefined && task.agentId !== ''
-        ? [[task.agentId, task] as const]
-        : [],
-    ),
+    [...tasksByAgent.entries()].map(([agentId, list]) => [agentId, list[list.length - 1]!] as const),
   );
+  const tasksByAgentKeySet: ReadonlySet<string> = new Set(tasksByAgent.keys());
   const byAgent = new Map<string, SubagentBlock>();
   const rawEvents: RawSubagentEvent[] = [];
   const spawnMarked = new Set<string>();
@@ -808,7 +838,7 @@ function subagentBlocksFromSnapshot(
       if (!spawnMarked.has(task.agentId)) {
         spawnMarked.add(task.agentId);
         rawEvents.push({
-          id: `subagent-event-${task.agentId}-spawned`,
+          id: `subagent-event-${task.agentId}-spawned-${task.taskId}`,
           subagentId: task.agentId,
           event: 'spawned',
           at: startedAt,
@@ -827,8 +857,11 @@ function subagentBlocksFromSnapshot(
         // AgentSend call injects a message into it. Neither carries agentRefs
         // on the wire, so both are recognized by tool args against the agents
         // this page already knows (spawn taskref / frame refs / task roster).
-        for (const targetId of resumeTargetsFromToolArgs(frame.input)) {
-          if (!byAgent.has(targetId) && !taskByAgent.has(targetId)) continue;
+        const resumedTargets = new Set<string>();
+        for (const raw of resumeTargetsFromToolArgs(frame.input)) {
+          const targetId = resolveKnownAgentId(raw, byAgent, tasksByAgentKeySet);
+          if (targetId === undefined || resumedTargets.has(targetId)) continue;
+          resumedTargets.add(targetId);
           rawEvents.push({
             id: `subagent-event-${targetId}-resume-${frame.toolCallId}`,
             subagentId: targetId,
@@ -842,9 +875,7 @@ function subagentBlocksFromSnapshot(
           const targetId =
             target === undefined
               ? undefined
-              : byAgent.has(target) || taskByAgent.has(target)
-                ? target
-                : [...byAgent.values()].find((block) => block.name === target)?.subagentId;
+              : resolveKnownAgentId(target, byAgent, tasksByAgentKeySet);
           if (targetId !== undefined) {
             rawEvents.push({
               id: `subagent-event-${targetId}-send-${frame.toolCallId}`,
@@ -898,11 +929,31 @@ function subagentBlocksFromSnapshot(
       }
     }
   }
+  // Terminal entries are per run (task), not per agent: a child resumed for a
+  // second run keeps both completions in the timeline instead of collapsing
+  // them into one.
+  const terminalMarked = new Set<string>();
+  for (const [agentId, agentTasks] of tasksByAgent) {
+    for (const task of agentTasks) {
+      const terminal = terminalEventForStatus(mapTaskState(task.state));
+      if (terminal === undefined) continue;
+      terminalMarked.add(agentId);
+      rawEvents.push({
+        id: `subagent-event-${agentId}-${terminal}-${task.taskId}`,
+        subagentId: agentId,
+        event: terminal,
+        at: task.endedAt,
+      });
+    }
+  }
+  // Fallback for agents known only through tool frames (no task on the roster):
+  // still surface their terminal state once.
   for (const block of byAgent.values()) {
+    if (terminalMarked.has(block.subagentId)) continue;
     const terminal = terminalEventForStatus(block.status);
     if (terminal === undefined) continue;
     rawEvents.push({
-      id: `subagent-event-${block.subagentId}-terminal`,
+      id: `subagent-event-${block.subagentId}-${terminal}`,
       subagentId: block.subagentId,
       event: terminal,
       at: block.endedAt,

@@ -268,8 +268,21 @@ beforeAll(() => {
   installElementProperty('scrollTo', {
     value(this: HTMLElement, options: ScrollToOptions | number, y?: number) {
       const requested = typeof options === 'number' ? (y ?? 0) : (options.top ?? this.scrollTop);
-      this.scrollTop = Math.max(0, Math.min(requested, this.scrollHeight - this.clientHeight));
-      this.dispatchEvent(new Event('scroll'));
+      const behavior = typeof options === 'number' ? 'auto' : (options.behavior ?? 'auto');
+      const apply = () => {
+        this.scrollTop = Math.max(0, Math.min(requested, this.scrollHeight - this.clientHeight));
+        this.dispatchEvent(new Event('scroll'));
+      };
+      // Smooth scrolls are progressive in a real browser. Jumping instantly
+      // would put the viewport AT the target before the virtualizer's
+      // reconcile tick, flipping its keepSmooth guard off and letting the
+      // at-end re-pin yank the scroll back — deferring one frame preserves
+      // the production invariant under jsdom.
+      if (behavior === 'smooth' && typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(() => apply());
+        return;
+      }
+      apply();
     },
   });
   vi.stubGlobal('ResizeObserver', TestResizeObserver);

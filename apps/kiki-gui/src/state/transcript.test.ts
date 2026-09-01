@@ -1584,8 +1584,12 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
           ],
         }),
       );
-      const spawned = projected.blocks.find((block) => block.id === 'subagent-event-agent-1-spawned');
-      const terminal = projected.blocks.find((block) => block.id === 'subagent-event-agent-1-terminal');
+      const spawned = projected.blocks.find(
+        (block) => block.id === 'subagent-event-agent-1-spawned-task-agent-1',
+      );
+      const terminal = projected.blocks.find(
+        (block) => block.id === 'subagent-event-agent-1-completed-task-agent-1',
+      );
       expect(spawned).toMatchObject({
         kind: 'subagent-event',
         subagentId: 'agent-1',
@@ -1776,6 +1780,140 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       expect(
         childFiltered.some((block) => block.kind === 'subagent-event' && block.subagentId === 'agent-2'),
       ).toBe(true);
+    });
+
+    it('keeps per-run history across an AgentRun(resume) re-prompt: spawn → completed → resumed → completed', () => {
+      const projected = projectAgentTranscriptView(
+        createViewState('session_test'),
+        'main',
+        emptySnapshot({
+          items: [
+            {
+              kind: 'turn',
+              turnId: 't1',
+              ordinal: 1,
+              state: 'completed',
+              origin: { kind: 'user' },
+              prompt: 'delegate',
+              startedAt: '2026-01-01T00:00:00.000Z',
+              steps: [
+                {
+                  kind: 'step',
+                  stepId: 't1.1',
+                  turnId: 't1',
+                  ordinal: 1,
+                  state: 'completed',
+                  startedAt: '2026-01-01T00:00:01.000Z',
+                  frames: [
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-spawn',
+                      toolCallId: 'call-spawn-1',
+                      name: 'AgentRun',
+                      state: 'done',
+                      input: { profile: 'Researcher', prompt: 'map the surface' },
+                      agentRefs: [{ agentId: 'agent-1', role: 'child' }],
+                      startedAt: '2026-01-01T00:00:01.000Z',
+                    },
+                  ],
+                },
+              ],
+            },
+            {
+              kind: 'taskref',
+              refId: 'ref-run-1',
+              taskId: 'task-agent-1-run-1',
+              at: '2026-01-01T00:00:01.000Z',
+            },
+            {
+              kind: 'turn',
+              turnId: 't2',
+              ordinal: 2,
+              state: 'completed',
+              origin: { kind: 'user' },
+              prompt: 'resume it',
+              startedAt: '2026-01-01T00:00:29.000Z',
+              steps: [
+                {
+                  kind: 'step',
+                  stepId: 't2.1',
+                  turnId: 't2',
+                  ordinal: 1,
+                  state: 'completed',
+                  startedAt: '2026-01-01T00:00:30.000Z',
+                  frames: [
+                    {
+                      kind: 'tool',
+                      frameId: 'frame-resume',
+                      toolCallId: 'call-resume-1',
+                      name: 'AgentRun',
+                      state: 'done',
+                      // Plain AgentRun resume refs the agent by stable name and
+                      // must resolve to the canonical id.
+                      input: { resume: 'Researcher', prompt: 'one more pass' },
+                      startedAt: '2026-01-01T00:00:30.000Z',
+                    },
+                  ],
+                },
+              ],
+            },
+            {
+              kind: 'taskref',
+              refId: 'ref-run-2',
+              taskId: 'task-agent-1-run-2',
+              at: '2026-01-01T00:00:30.000Z',
+            },
+          ],
+          tasks: [
+            {
+              taskId: 'task-agent-1-run-1',
+              kind: 'subagent',
+              state: 'completed',
+              detached: false,
+              agentId: 'agent-1',
+              description: 'map the surface',
+              outputTail: '',
+              startedAt: '2026-01-01T00:00:01.000Z',
+              endedAt: '2026-01-01T00:00:20.000Z',
+              resultSummary: 'First pass done.',
+            },
+            {
+              taskId: 'task-agent-1-run-2',
+              kind: 'subagent',
+              state: 'completed',
+              detached: false,
+              agentId: 'agent-1',
+              description: 'one more pass',
+              outputTail: '',
+              startedAt: '2026-01-01T00:00:30.000Z',
+              endedAt: '2026-01-01T00:00:45.000Z',
+              resultSummary: 'Second pass done.',
+            },
+          ],
+        }),
+      );
+      const events = projected.blocks.filter((block) => block.kind === 'subagent-event');
+      // Exactly four entries: the re-run's taskref must not re-emit a second
+      // "spawned", and each run keeps its own terminal entry.
+      expect(
+        events.map((block) => (block.kind === 'subagent-event' ? block.event : undefined)),
+      ).toEqual(['spawned', 'completed', 'resumed', 'completed']);
+      expect(events.map((block) => block.id)).toEqual([
+        'subagent-event-agent-1-spawned-task-agent-1-run-1',
+        'subagent-event-agent-1-completed-task-agent-1-run-1',
+        'subagent-event-agent-1-resume-call-resume-1',
+        'subagent-event-agent-1-completed-task-agent-1-run-2',
+      ]);
+      // In-place timeline accounting: entries sit at their own event time.
+      expect(events[0]).toMatchObject({ at: '2026-01-01T00:00:01.000Z' });
+      expect(events[1]).toMatchObject({ at: '2026-01-01T00:00:20.000Z' });
+      expect(events[2]).toMatchObject({ at: '2026-01-01T00:00:30.000Z', turnId: 't2' });
+      expect(events[3]).toMatchObject({ at: '2026-01-01T00:00:45.000Z' });
+      const t2Index = projected.blocks.findIndex(
+        (block) => block.kind === 'user' && block.turnId === 't2',
+      );
+      expect(projected.blocks.indexOf(events[1]!)).toBeLessThan(t2Index);
+      expect(projected.blocks.indexOf(events[2]!)).toBeGreaterThan(t2Index);
     });
   });
 
