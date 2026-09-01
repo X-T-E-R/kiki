@@ -25,6 +25,7 @@ import { IEventBus } from '#/app/event/eventBus';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IBlobStore } from '#/persistence/interface/blobStore';
+import { ISessionApprovalService } from '#/session/approval/approval';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
@@ -73,6 +74,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     @IAgentPermissionModeService private readonly modeService: IAgentPermissionModeService,
     @ITelemetryService telemetry: ITelemetryService,
     @IAgentStateService private readonly agentState: IAgentStateService,
+    @ISessionApprovalService approval: ISessionApprovalService,
     @IConfigService config: IConfigService,
   ) {
     super();
@@ -80,7 +82,11 @@ export class AgentPlanService extends Service implements IAgentPlanService {
 
     const planConfig = config.get<PlanConfig | undefined>(PLAN_SECTION) ?? DEFAULT_PLAN_CONFIG;
     this._planGate = planConfig.gate;
-    this.enterReview = new EnterPlanModeReview(this.toolApproval, planConfig.enterApprovalTimeoutMs);
+    this.enterReview = new EnterPlanModeReview(
+      this.toolApproval,
+      approval,
+      planConfig.enterApprovalTimeoutMs,
+    );
     this.exitReview = new ExitPlanModeReview(this, this.toolApproval, telemetry);
 
     this._register(

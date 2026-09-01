@@ -283,6 +283,24 @@ describe('AgentToolApprovalService', () => {
       });
     });
 
+    it('uses a caller-provided approval id for a scoped approval lifecycle', async () => {
+      const request = useBroker(async () => ({ decision: 'approved' }));
+      const svc = make();
+
+      await expect(
+        svc.requestToolApproval(
+          makeContext('EnterPlanMode', {}, { display: { kind: 'plan_enter' } }),
+          ask(),
+          'enter-plan-mode-review-ask',
+          'approval_plan_enter',
+        ),
+      ).resolves.toBeUndefined();
+
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'approval_plan_enter' }),
+      );
+    });
+
     it('publishes approval events around the broker round-trip', async () => {
       const events = subscribeApprovalEvents();
       const request = useBroker(async () => ({

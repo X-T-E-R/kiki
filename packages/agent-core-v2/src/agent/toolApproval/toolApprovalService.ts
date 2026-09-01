@@ -104,6 +104,7 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
     context: ResolvedToolExecutionHookContext,
     result: Extract<PermissionPolicyResult, { kind: 'ask' }>,
     origin: string,
+    approvalId?: string,
   ): Promise<BeforeExecuteDecision | undefined> {
     const name = context.toolCall.name;
     const action = context.execution.description ?? `Approve ${name}`;
@@ -115,7 +116,7 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
         detail: context.args,
       } as ToolInputDisplay);
     const approvalRequest = {
-      id: `approval_${randomUUID()}`,
+      id: approvalId ?? `approval_${randomUUID()}`,
       sessionId: this.session.sessionId,
       agentId: this.scopeContext.agentId,
       turnId: context.turnId,

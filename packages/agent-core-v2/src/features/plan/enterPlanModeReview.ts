@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { createDeadlineAbortSignal } from '#/_base/utils/abort';
 import type {
   ApprovalResponse,
@@ -8,6 +10,7 @@ import type {
   BeforeExecuteDecision,
   ResolvedToolExecutionHookContext,
 } from '#/agent/toolExecutor/toolHooks';
+import type { ISessionApprovalService } from '#/session/approval/approval';
 
 export interface PlanEnterApprovalMetadata {
   readonly planEnterApproved: true;
@@ -16,6 +19,7 @@ export interface PlanEnterApprovalMetadata {
 export class EnterPlanModeReview {
   constructor(
     private readonly toolApproval: IAgentToolApprovalService,
+    private readonly approval: ISessionApprovalService,
     private readonly timeoutMs: number,
   ) {}
 
@@ -23,6 +27,7 @@ export class EnterPlanModeReview {
     context: ResolvedToolExecutionHookContext,
   ): Promise<BeforeExecuteDecision | undefined> {
     if (context.execution.display?.kind !== 'plan_enter') return undefined;
+    const approvalId = `approval_${randomUUID()}`;
     const deadline = createDeadlineAbortSignal(context.signal, this.timeoutMs);
     try {
       return await this.toolApproval.requestToolApproval(
@@ -42,8 +47,12 @@ export class EnterPlanModeReview {
               : undefined,
         },
         'enter-plan-mode-review-ask',
+        approvalId,
       );
     } finally {
+      if (deadline.signal.aborted) {
+        this.approval.decide(approvalId, { decision: 'cancelled' });
+      }
       deadline.clear();
     }
   }

@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
+import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
-import { createServices, type TestInstantiationService } from '#/_base/di/test';
+import { createServices, TestInstantiationService } from '#/_base/di/test';
+import { abortable } from '#/_base/utils/abort';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
@@ -11,6 +13,7 @@ import type {
   PermissionPolicyResolution,
   PermissionPolicyResult,
 } from '#/agent/permissionPolicy/types';
+import { EnterPlanModeReview } from '#/features/plan/enterPlanModeReview';
 import { IAgentPlanService } from '#/features/plan/plan';
 import { AgentPlanService } from '#/features/plan/planService';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -26,7 +29,13 @@ import { IConfigService } from '#/app/config/config';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { ToolCall } from '#/kosong/contract/message';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { ISessionApprovalService } from '#/session/approval/approval';
+import { SessionApprovalService } from '#/session/approval/approvalService';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionInteractionService } from '#/session/interaction/interaction';
+import { SessionInteractionService } from '#/session/interaction/interactionService';
+import { ISessionStateService } from '#/session/state/sessionState';
+import { SessionStateService } from '#/session/state/sessionStateService';
 import { ToolAccesses } from '#/tool/toolContract';
 import type { ToolInputDisplay } from '#/tool/toolInputDisplay';
 
@@ -191,6 +200,9 @@ describe('AgentPlanService plan-guard listener', () => {
         reg.defineInstance(IAgentToolExecutorService, executorEvents.executor);
         reg.defineInstance(IAgentToolApprovalService, toolApproval);
         reg.defineInstance(IAgentPermissionModeService, stubPermissionModeService(() => mode));
+        reg.definePartialInstance(ISessionApprovalService, {
+          decide: () => {},
+        });
         reg.definePartialInstance(IConfigService, {
           get: (() => ({
             gate: 'gated',
@@ -711,5 +723,85 @@ describe('AgentPlanService plan-guard listener', () => {
       expect(decision).toBeUndefined();
       expect(permissionRan).toBe(true);
     });
+  });
+});
+
+describe('EnterPlanModeReview timeout cleanup', () => {
+  let disposables: DisposableStore;
+  let ix: TestInstantiationService;
+
+  beforeEach(() => {
+    disposables = new DisposableStore();
+    ix = disposables.add(new TestInstantiationService());
+    ix.set(ISessionStateService, new SessionStateService());
+    ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
+    ix.set(ISessionApprovalService, new SyncDescriptor(SessionApprovalService));
+    ix.get(ISessionInteractionService).acquireConsumer('test-consumer');
+  });
+
+  afterEach(() => disposables.dispose());
+
+  it('cancels its real pending approval on timeout and ignores a late response', async () => {
+    const approval = ix.get(ISessionApprovalService);
+    const interaction = ix.get(ISessionInteractionService);
+    const toolApproval: IAgentToolApprovalService = {
+      _serviceBrand: undefined,
+      resolvePermissionResolution: async () => {
+        throw new Error('resolvePermissionResolution is not used');
+      },
+      requestToolApproval: async (context, ask, _origin, approvalId) => {
+        const request = approval.request({
+          id: approvalId,
+          turnId: context.turnId,
+          toolCallId: context.toolCall.id,
+          toolName: context.toolCall.name,
+          action: context.execution.description ?? context.toolCall.name,
+          display: context.execution.display ?? planEnterDisplay(),
+        });
+        try {
+          const response = await abortable(request, context.signal);
+          return mapResolution(ask.resolveApproval?.(response));
+        } catch (error) {
+          return mapResolution(ask.resolveError?.(error));
+        }
+      },
+      formatDenyMessage: (message) => message,
+      formatApprovalRejectionMessage: () => '',
+    };
+    const review = new EnterPlanModeReview(toolApproval, approval, 5000);
+    const resolved = vi.fn();
+    const subscription = interaction.onDidResolve(resolved);
+    let planActive = false;
+
+    vi.useFakeTimers();
+    try {
+      const pending = review.requestApproval(
+        hookContext('EnterPlanMode', { display: planEnterDisplay() }),
+      );
+      expect(approval.listPending()).toHaveLength(1);
+      const approvalId = approval.listPending()[0]!.id!;
+
+      await vi.advanceTimersByTimeAsync(5000);
+      const decision = await pending;
+      if (decision?.veto === undefined) planActive = true;
+
+      expect(approval.listPending()).toEqual([]);
+      expect(resolved).toHaveBeenCalledWith({
+        id: approvalId,
+        response: { decision: 'cancelled' },
+      });
+      expect(decision?.veto).toMatchObject({
+        isError: true,
+        output: expect.stringContaining('approval timed out after 5000 ms'),
+      });
+      expect(planActive).toBe(false);
+
+      approval.decide(approvalId, { decision: 'approved' });
+      expect(approval.listPending()).toEqual([]);
+      expect(resolved).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      subscription.dispose();
+    }
   });
 });
