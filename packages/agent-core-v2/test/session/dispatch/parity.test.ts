@@ -62,6 +62,8 @@ import {
   COLLABORATION_TASK_NAME_LABEL,
   IAgentCollaborationRegistry,
 } from '#/session/agentCollaboration/registry';
+import { ISessionApprovalService } from '#/session/approval/approval';
+import { SessionApprovalService } from '#/session/approval/approvalService';
 import {
   type CreateAgentOptions,
   IAgentLifecycleService,
@@ -76,6 +78,8 @@ import {
   ISessionExternalDelegationService,
 } from '#/session/externalDelegation/externalDelegation';
 import { SessionExternalDelegationService } from '#/session/externalDelegation/externalDelegationService';
+import { ISessionInteractionService } from '#/session/interaction/interaction';
+import { SessionInteractionService } from '#/session/interaction/interactionService';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import {
@@ -89,6 +93,10 @@ import {
   ISessionSubagentService,
   type RunAgentOptions,
 } from '#/session/subagent/subagent';
+import { ISessionQuestionService } from '#/session/question/question';
+import { SessionQuestionService } from '#/session/question/questionService';
+import { ISessionStateService } from '#/session/state/sessionState';
+import { SessionStateService } from '#/session/state/sessionStateService';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import type { ExecutableToolResult } from '#/tool/toolContract';
@@ -955,6 +963,10 @@ function createLane(
     AgentToolContribution as unknown as ServiceIdentifier<CollectionView<AgentToolContribution>>,
     { items: [] },
   );
+  ix.set(ISessionStateService, new SessionStateService());
+  ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
+  ix.set(ISessionApprovalService, new SyncDescriptor(SessionApprovalService));
+  ix.set(ISessionQuestionService, new SyncDescriptor(SessionQuestionService));
   ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
   ix.set(ISubagentTool, new SyncDescriptor(SubagentTool));
   ix.set(
