@@ -237,6 +237,9 @@ export const en = {
   'composer.planAria': 'Plan',
   'composer.plan': 'plan',
   'composer.planHint': 'Plan mode — kiki proposes a plan before acting',
+  'composer.planAuto': 'Auto plan mode',
+  'composer.planAutoHint':
+    'On: enter and leave plan mode freely; off: both directions need approval',
   'composer.swarm': 'swarm',
   'composer.swarmHint': 'Swarm mode — allow concurrent subagent work',
   'composer.goal': 'goal',
@@ -459,6 +462,9 @@ export const en = {
 
   // ---- interaction cards ----
   'ia.approvalNeeded': 'Approval needed',
+  'ia.planEnter.title': 'Enter plan mode?',
+  'ia.planEnter.body':
+    'Kiki wants to switch to plan mode to research and propose a plan before acting. If left unanswered, this request is rejected automatically.',
   'ia.fromSubagent': 'from subagent {name}',
   'ia.originUnknown': 'source unknown',
   'ia.originCurrentContext': 'from the current agent context',
@@ -521,6 +527,7 @@ export const en = {
   'tc.exit': 'exit {code}',
   'tc.plan': 'plan',
   'tc.planPath': 'plan — {path}',
+  'tc.planEnter': 'enter plan mode',
   'tc.todoItems.one': '{count} item',
   'tc.todoItems.other': '{count} items',
   'tc.openSpawnedAgent': 'Open {name}',
@@ -832,6 +839,11 @@ export const en = {
   'st.defaults.title': 'New-session defaults',
   'st.defaults.permissionMode': 'Default permission mode',
   'st.defaults.planMode': 'Start new sessions in plan mode',
+  'st.defaults.planGate': 'Require approval to enter or leave plan mode',
+  'st.defaults.planGateTimeout': 'Plan-enter approval timeout (seconds)',
+  'st.defaults.planGateHint':
+    'When approval is required, an unanswered plan-enter request is rejected automatically after this timeout. Minimum 5 seconds.',
+  'st.defaults.planGateTimeoutInvalid': 'Timeout must be at least 5 seconds.',
   'st.defaults.hint': 'Changes save immediately and apply to sessions created afterwards.',
   'st.composer.title': 'Composer',
   'st.composer.sendShortcut': 'Send shortcut',

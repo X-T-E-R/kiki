@@ -47,6 +47,8 @@ export function toolGlyph(block: ToolBlock): string {
         return '⏵';
       case 'plan_review':
         return '✎';
+      case 'plan_enter':
+        return '◷';
       case 'goal_start':
         return '◎';
       case 'generic':
@@ -119,6 +121,8 @@ function displaySummary(display: ToolInputDisplay, t: Translate, tp: TranslatePl
       return display.task_description;
     case 'plan_review':
       return display.path !== undefined ? t('tc.planPath', { path: display.path }) : t('tc.plan');
+    case 'plan_enter':
+      return t('tc.planEnter');
     case 'goal_start':
       return display.objective;
     case 'external_permission':

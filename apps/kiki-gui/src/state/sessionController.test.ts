@@ -369,6 +369,27 @@ describe('SessionController pipeline', () => {
     controller.close();
   });
 
+  it('forwards the plan gate picked in Composer with the next prompt request', async () => {
+    const { controller, client } = await openController();
+    client.submitPrompt.mockResolvedValue({
+      prompt_id: 'p-gate',
+      user_message_id: 'm-gate',
+      status: 'running',
+      content: [{ type: 'text', text: 'gate this' }],
+      created_at: '2026-01-01T00:00:02.000Z',
+    });
+    await controller.sendPrompt({
+      text: 'gate this',
+      permissionMode: 'manual',
+      planGate: 'gated',
+    });
+    expect(client.submitPrompt).toHaveBeenCalledWith(
+      'session_test',
+      expect.objectContaining({ plan_gate: 'gated' }),
+    );
+    controller.close();
+  });
+
   it('refuses sendPrompt during resync without REST or local echo', async () => {
     const { controller, client } = await openController();
     const held = deferred<SessionSnapshotResponse>();
@@ -568,6 +589,7 @@ describe('SessionController message closure', () => {
       model: undefined,
       thinking: undefined,
       permission_mode: undefined,
+      plan_gate: undefined,
       plan_mode: undefined,
       swarm_mode: undefined,
     });
@@ -586,6 +608,7 @@ describe('SessionController message closure', () => {
       model: undefined,
       thinking: undefined,
       permission_mode: undefined,
+      plan_gate: undefined,
       plan_mode: undefined,
       swarm_mode: undefined,
     });
@@ -622,6 +645,7 @@ describe('SessionController message closure', () => {
       model: undefined,
       thinking: undefined,
       permission_mode: undefined,
+      plan_gate: undefined,
       plan_mode: undefined,
       swarm_mode: undefined,
     });

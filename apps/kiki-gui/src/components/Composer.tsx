@@ -24,7 +24,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type DragEv
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
-import type { FsSearchHit, PermissionMode, SessionUsage } from '@moonshot-ai/protocol';
+import type { FsSearchHit, PermissionMode, PromptPlanGate, SessionUsage } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../i18n';
 import { errorText, issueText, type I18nKey } from '../i18n/locale';
@@ -137,6 +137,7 @@ export function Composer({
   agentProfilePending = false,
   permissionMode,
   planMode,
+  planGate,
   swarmMode,
   goalObjective,
   goalStatus,
@@ -163,6 +164,7 @@ export function Composer({
   onChangeAgentProfile,
   onChangePermissionMode,
   onChangePlanMode,
+  onChangePlanGate,
   onChangeSwarmMode,
   onChangeGoalObjective,
   onChangeGoalControl,
@@ -205,6 +207,12 @@ export function Composer({
   permissionMode: PermissionMode;
   /** PromptSubmission.plan_mode — the wire field name (verified). */
   planMode: boolean;
+  /**
+   * Effective plan gate for the next prompt (`plan_gate`). Provided together
+   * with `onChangePlanGate` only where a session-level override exists (/s);
+   * the PlanSelect gate row hides when the pair is absent (/new).
+   */
+  planGate?: PromptPlanGate;
   /** PromptSubmission.swarm_mode — enables concurrent subagent orchestration. */
   swarmMode: boolean;
   goalObjective: string;
@@ -262,6 +270,8 @@ export function Composer({
   onChangeAgentProfile?: (name: string) => void;
   onChangePermissionMode: (mode: PermissionMode) => void;
   onChangePlanMode: (on: boolean) => void;
+  /** Session plan-gate pick; required for the PlanSelect gate row to show. */
+  onChangePlanGate?: (gate: PromptPlanGate) => void;
   onChangeSwarmMode: (on: boolean) => void;
   onChangeGoalObjective: (objective: string) => void;
   onChangeGoalControl: (control: 'pause' | 'resume' | 'cancel' | undefined) => void;
@@ -1212,6 +1222,8 @@ export function Composer({
                 onOpenChange={setPlanOpen}
                 planMode={planMode}
                 onChangePlanMode={onChangePlanMode}
+                planGate={planGate}
+                onChangePlanGate={onChangePlanGate}
                 swarmMode={swarmMode}
                 onChangeSwarmMode={onChangeSwarmMode}
                 goalObjective={goalObjective}
@@ -1619,7 +1631,8 @@ function ModeSelect({
 
 /**
  * PlanSelect — the run-shape settings for the next prompt, behind their own
- * trigger next to the approval mode: the plan and swarm switches and the goal
+ * trigger next to the approval mode: the plan and swarm switches, the plan
+ * gate switch (auto = free in/out, off = approval-gated), and the goal
  * objective. The trigger spells the active combination (`plan · swarm`); with
  * nothing active it rests on the plain `plan` label in the neutral style, and
  * a filled objective or a live goal tints it accent.
@@ -1634,6 +1647,8 @@ function PlanSelect({
   onOpenChange,
   planMode,
   onChangePlanMode,
+  planGate,
+  onChangePlanGate,
   swarmMode,
   onChangeSwarmMode,
   goalObjective,
@@ -1645,6 +1660,9 @@ function PlanSelect({
   onOpenChange: (open: boolean) => void;
   planMode: boolean;
   onChangePlanMode: (on: boolean) => void;
+  /** Effective gate + session override handler; the gate row hides without them. */
+  planGate?: PromptPlanGate;
+  onChangePlanGate?: (gate: PromptPlanGate) => void;
   swarmMode: boolean;
   onChangeSwarmMode: (on: boolean) => void;
   goalObjective: string;
@@ -1749,6 +1767,19 @@ function PlanSelect({
           {(
             [
               ['plan', planMode, onChangePlanMode, 'composer.plan', 'composer.planHint'],
+              // The gate switch sits between the two mode switches: on = free
+              // (plan mode opens/closes without asking), off = gated.
+              ...(planGate !== undefined && onChangePlanGate !== undefined
+                ? [
+                    [
+                      'planGate',
+                      planGate === 'free',
+                      (on: boolean) => { onChangePlanGate(on ? 'free' : 'gated'); },
+                      'composer.planAuto',
+                      'composer.planAutoHint',
+                    ] as const,
+                  ]
+                : []),
               ['swarm', swarmMode, onChangeSwarmMode, 'composer.swarm', 'composer.swarmHint'],
             ] as const
           ).map(([id, on, onToggle, labelKey, hintKey]) => (

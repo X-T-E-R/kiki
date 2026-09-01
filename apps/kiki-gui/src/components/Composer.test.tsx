@@ -389,6 +389,25 @@ describe('Composer mode dropdown', () => {
     expect(container.querySelector('[data-plan-select] [data-mode-switch]')).not.toBeNull();
   });
 
+  it('reports the plan gate from the plan panel; the row hides without a gate handler', async () => {
+    const onChangePlanGate = vi.fn();
+    const { container } = await renderComposer({ planGate: 'free', onChangePlanGate });
+    await openPlanPanel(container);
+    const gate = container.querySelector<HTMLButtonElement>(
+      '[data-plan-select] [data-mode-switch="planGate"]',
+    )!;
+    // free = the "auto plan mode" switch reads on.
+    expect(gate.getAttribute('aria-pressed')).toBe('true');
+    await click(gate);
+    expect(onChangePlanGate).toHaveBeenCalledWith('gated');
+    expect(container.querySelector('[data-plan-select] [data-mode-switch="planGate"]')).not.toBeNull();
+
+    // Without the session-scoped handler pair (e.g. /new) there is no gate row.
+    const bare = await renderComposer();
+    await openPlanPanel(bare.container);
+    expect(bare.container.querySelector('[data-mode-switch="planGate"]')).toBeNull();
+  });
+
   it('expands the goal objective inside the plan panel', async () => {
     const onChangeGoalObjective = vi.fn();
     const { container } = await renderComposer({ onChangeGoalObjective });

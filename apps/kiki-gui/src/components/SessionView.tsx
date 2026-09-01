@@ -9,7 +9,7 @@ import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 
-import type { PermissionMode, Session } from '@moonshot-ai/protocol';
+import type { PermissionMode, PromptPlanGate, Session } from '@moonshot-ai/protocol';
 
 import { AgentBreadcrumb, AgentRelations } from './AgentBreadcrumb';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -737,6 +737,18 @@ export function shouldClearModeOverride<T>(
 }
 
 /**
+ * Effective plan gate for the next prompt: the session pick wins, then the
+ * global `[plan] gate` default, then the engine's built-in 'free'. Unlike the
+ * mode pills there is no store leg — the agent never echoes its gate back.
+ */
+export function resolvePlanGate(
+  override: PromptPlanGate | undefined,
+  configGate: PromptPlanGate | undefined,
+): PromptPlanGate {
+  return override ?? configGate ?? 'free';
+}
+
+/**
  * Send-time resolution for a confirmed profile switch. A switch rides the
  * next prompt as `profile`; model/thinking are withheld so the new profile's
  * own pins apply — unless the user explicitly re-picked them after
@@ -1078,6 +1090,12 @@ export function SessionView({
   const [planOverride, setPlanOverride] = useState(
     restoredComposer.planMode ?? initialOptionsRef.current.planMode,
   );
+  // Plan gate: session-scoped pick restored from composer chrome. Unlike the
+  // mode pills there is no server echo to reconcile against (the wire only
+  // takes `plan_gate` per prompt), so the override simply persists.
+  const [planGateOverride, setPlanGateOverride] = useState<PromptPlanGate | undefined>(
+    restoredComposer.planGate,
+  );
   const [swarmOverride, setSwarmOverride] = useState(
     restoredComposer.swarmMode ?? initialOptionsRef.current.swarmMode,
   );
@@ -1283,6 +1301,7 @@ export function SessionView({
       attachments,
       permissionMode: permissionOverride,
       planMode: planOverride,
+      planGate: planGateOverride,
       swarmMode: swarmOverride,
       goalObjective,
       modelOverride,
@@ -1293,6 +1312,7 @@ export function SessionView({
     attachments,
     permissionOverride,
     planOverride,
+    planGateOverride,
     swarmOverride,
     goalObjective,
     modelOverride,
@@ -1388,6 +1408,11 @@ export function SessionView({
     staleTime: 60_000,
   });
   const serverDefaultModel = configQuery.data?.default_model;
+
+  // Effective plan gate for the next prompt: the session pick wins, then the
+  // global `[plan] gate` default, then the engine's built-in 'free'. The agent
+  // never echoes its gate, so nothing clears the override once set.
+  const planGate = resolvePlanGate(planGateOverride, configQuery.data?.plan?.gate);
 
   const modelsQuery = useQuery({
     queryKey: ['models'],
@@ -1582,6 +1607,7 @@ export function SessionView({
             thinking: profileSwitch.thinking,
             permissionMode,
             planMode,
+            planGate,
             swarmMode,
             goalObjective,
             goalControl,
@@ -1753,6 +1779,7 @@ export function SessionView({
     profileModelTouched,
     permissionMode,
     planMode,
+    planGate,
     swarmMode,
     goalObjective,
     goalControl,
@@ -2163,6 +2190,7 @@ export function SessionView({
             agentProfilePending={profilePending}
             permissionMode={permissionMode}
             planMode={planMode}
+            planGate={planGate}
             swarmMode={swarmMode}
             goalObjective={goalObjective}
             goalStatus={state.goal?.status}
@@ -2190,6 +2218,7 @@ export function SessionView({
             onChangeAgentProfile={handleAgentProfileChange}
             onChangePermissionMode={setPermissionOverride}
             onChangePlanMode={setPlanOverride}
+            onChangePlanGate={setPlanGateOverride}
             onChangeSwarmMode={setSwarmOverride}
             onChangeGoalObjective={setGoalObjective}
             onChangeGoalControl={setGoalControl}
@@ -2219,6 +2248,7 @@ export function SessionView({
     profilePending,
     permissionMode,
     planMode,
+    planGate,
     swarmMode,
     goalObjective,
     goalControl,
