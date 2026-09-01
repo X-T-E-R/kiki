@@ -1,33 +1,18 @@
 # Security Policy
 
-## Supported Versions
+## Supported versions
 
-Currently, Kimi Code only provides security support for the latest released version.
+Kiki provides security support for the latest released version.
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
-We take security seriously. **Please do not open a public issue for security vulnerabilities.**
+Please do not open a public issue for suspected security vulnerabilities. Report them privately through [GitHub Security Advisories](https://github.com/X-T-E-R/kiki/security/advisories/new).
 
-Preferred channel:
-
-- GitHub Security Advisories — https://github.com/MoonshotAI/kimi-code/security/advisories/new
-  (private disclosure, tracked with the codebase)
-
-Alternative channel:
-
-- Email: code@moonshot.ai (please include "[security]" in the subject)
-
-## What to Include
+Include:
 
 - Affected version (output of `kimi --version`)
 - Reproduction steps
 - Impact assessment
 - Any suggested mitigation
 
-## Our Response
-
-We will acknowledge your report and provide an initial assessment as soon as we can.
-
-## Public Disclosure
-
-We will coordinate with you on disclosure timing once a fix is ready.
+We will acknowledge the report, provide an initial assessment as soon as we can, and coordinate disclosure timing once a fix is ready.

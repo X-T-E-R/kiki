@@ -177,6 +177,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const [wsStatus, setWsStatus] = useState<WsStatus>('closed');
   const controllersRef = useRef(new LiveControllerRegistry());
   const liveSocketRef = useRef<KikiSocket | null>(null);
+  const connectionEpochRef = useRef(0);
 
   // The desktop shell owns its backend. Resolve that connection before
   // considering browser handoffs or persisted remote connections, and keep
@@ -184,43 +185,89 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!desktopRuntime) return;
     let cancelled = false;
+    let resolveGeneration = 0;
     desktopCancelledRef.current = false;
     let unlisten: (() => void) | undefined;
 
-    // The shell reports when the sidecar exists and readiness polling began.
-    void listen<string>(DESKTOP_STAGE_EVENT, (event) => {
-      if (event.payload !== 'waiting') return;
-      setDesktopBoot((boot) => (boot === null ? boot : { ...boot, stage: 'waiting' }));
-    }).then((fn) => {
-      if (cancelled) fn();
-      else unlisten = fn;
-    }, () => {
-      // Listening is cosmetic; the boot still proceeds without stage updates.
-    });
+    const resolveDesktopConnection = () => {
+      const generation = ++resolveGeneration;
+      void detectLocalConnection().then(
+        (connection) => {
+          if (cancelled || generation !== resolveGeneration) return;
+          setDesktopBoot(null);
+          setDesktopFailure(null);
+          if (connection === null) {
+            setConnectError({ kind: 'key', key: 'conn.desktopNoServer' });
+            return;
+          }
+          connectionEpochRef.current += 1;
+          setSelection({
+            config: connection.config,
+            persist: false,
+            source: 'desktop',
+          });
+        },
+        (error: unknown) => {
+          if (cancelled || generation !== resolveGeneration) return;
+          connectionEpochRef.current += 1;
+          setDesktopBoot(null);
+          setMeta(null);
+          setSelection(null);
+          if (desktopCancelledRef.current) return;
+          setDesktopFailure(normalizeDesktopFailure(error));
+        },
+      );
+    };
 
-    void detectLocalConnection().then(
-      (connection) => {
-        if (cancelled) return;
-        setDesktopBoot(null);
-        if (connection === null) {
-          setConnectError({ kind: 'key', key: 'conn.desktopNoServer' });
-          return;
+    // Runtime recovery reuses the boot stage event. Each waiting stage resolves
+    // the newly spawned sidecar connection because its random port may change.
+    void listen<unknown>(DESKTOP_STAGE_EVENT, (event) => {
+      const payload = event.payload;
+      if (payload === 'waiting') {
+        connectionEpochRef.current += 1;
+        setDesktopFailure(null);
+        setConnectError(null);
+        setSelection(null);
+        setMeta(null);
+        setDesktopBoot((boot) => ({
+          stage: 'waiting',
+          startedAtMs: boot?.startedAtMs ?? Date.now(),
+        }));
+        resolveDesktopConnection();
+        return;
+      }
+      if (
+        payload === null ||
+        typeof payload !== 'object' ||
+        !('stage' in payload) ||
+        payload.stage !== 'failed' ||
+        !('failure' in payload)
+      ) {
+        return;
+      }
+      resolveGeneration += 1;
+      connectionEpochRef.current += 1;
+      setMeta(null);
+      setSelection(null);
+      setConnectError(null);
+      setDesktopBoot(null);
+      setDesktopFailure(normalizeDesktopFailure(payload.failure));
+    }).then(
+      (fn) => {
+        if (cancelled) fn();
+        else {
+          unlisten = fn;
+          resolveDesktopConnection();
         }
-        setSelection({
-          config: connection.config,
-          persist: false,
-          source: 'desktop',
-        });
       },
-      (error: unknown) => {
-        if (cancelled) return;
-        setDesktopBoot(null);
-        if (desktopCancelledRef.current) return;
-        setDesktopFailure(normalizeDesktopFailure(error));
+      () => {
+        resolveDesktopConnection();
       },
     );
+
     return () => {
       cancelled = true;
+      resolveGeneration += 1;
       unlisten?.();
     };
   }, [desktopRuntime, desktopAttempt]);
@@ -254,10 +301,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (client === null) return;
     let cancelled = false;
+    const connectionEpoch = connectionEpochRef.current;
     setConnectError(null);
     client.meta().then(
       (value) => {
-        if (cancelled) return;
+        if (cancelled || connectionEpoch !== connectionEpochRef.current) return;
         scrubUrl();
         if (selection?.persist === true && config !== null) {
           writeStoredConfig(config);
@@ -265,7 +313,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         setMeta(value);
       },
       (error: unknown) => {
-        if (cancelled) return;
+        if (cancelled || connectionEpoch !== connectionEpochRef.current) return;
         setMeta(null);
         setConnectError({
           kind: 'raw',
@@ -377,6 +425,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, [socket]);
 
   const disconnect = useCallback(() => {
+    connectionEpochRef.current += 1;
     clearStoredConfig();
     setMeta(null);
     setSelection(null);
@@ -386,6 +435,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const connect = useCallback((next: ConnectionConfig, persist = true) => {
+    connectionEpochRef.current += 1;
     setConnectError(null);
     setMeta(null);
     setSelection({
