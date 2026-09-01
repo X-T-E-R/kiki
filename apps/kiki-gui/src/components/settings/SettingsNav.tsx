@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useI18n } from '../../i18n';
 import {
+  SETTINGS_NAV_TREE,
   buildSettingsSearchIndex,
   searchSettings,
   settingsSectionLabels,
@@ -77,6 +78,12 @@ export function SettingsSearch({
               onClick={() => { onSearchHit(entry); setQuery(''); }}
               className="w-full truncate rounded-lg px-2 py-1.5 text-left text-[12px] text-ink-soft transition-colors hover:bg-paper hover:text-ink"
             >
+              {entry.groupLabel !== '' ? (
+                <>
+                  <span className="text-ink-faint">{entry.groupLabel}</span>
+                  <span className="mx-1 text-ink-faint">›</span>
+                </>
+              ) : null}
               <span className="text-ink-faint">{entry.sectionLabel}</span>
               <span className="mx-1 text-ink-faint">›</span>
               <span className="text-ink">{entry.title}</span>
@@ -91,31 +98,82 @@ export function SettingsSearch({
   );
 }
 
+/**
+ * The candidate-A navigation tree: non-clickable group headers with clickable
+ * leaf sections, plus top-level leaves (About & updates) that belong to no
+ * group. Groups with zero leaves (Data & advanced this batch) are part of the
+ * adjudicated topology but skipped here until content lands. Shared by the
+ * desktop rail and the mobile drawer so both breakpoints present the same
+ * hierarchy.
+ */
+export function SettingsNavTree({
+  active,
+  onNavigate,
+  onAfterNavigate,
+}: {
+  /** Null on the unknown-section page: tree stays visible, nothing highlighted. */
+  active: SectionId | null;
+  onNavigate: (section: SectionId) => void;
+  /** Drawer hosts pass a close hook; the desktop rail leaves it unset. */
+  onAfterNavigate?: () => void;
+}) {
+  const { t } = useI18n();
+  const labelFor = (id: string) => SECTIONS.find((section) => section.id === id)?.labelKey;
+  const leafButton = (id: string) => {
+    const labelKey = labelFor(id);
+    if (labelKey === undefined) return null;
+    return (
+      <button
+        key={id}
+        type="button"
+        data-settings-nav-leaf={id}
+        onClick={() => { onNavigate(id as SectionId); onAfterNavigate?.(); }}
+        className={`rounded-lg px-2 py-2 text-left text-[13px] transition-colors ${active === id ? 'bg-accent-soft font-medium text-accent' : 'text-ink-soft hover:bg-paper hover:text-ink'}`}
+      >
+        {t(labelKey)}
+      </button>
+    );
+  };
+  return (
+    <div className="mt-2 flex flex-col gap-3" data-settings-nav-tree>
+      {SETTINGS_NAV_TREE.map((node) => {
+        if (node.kind === 'leaf') {
+          return <div key={`leaf-${node.section}`} data-settings-nav-ungrouped={node.section}>{leafButton(node.section)}</div>;
+        }
+        if (node.sections.length === 0) return null;
+        return (
+          <div key={node.id} data-settings-nav-group={node.id}>
+            <p className="px-2 pb-1 text-[10.5px] font-semibold uppercase tracking-wide text-ink-faint">
+              {t(node.labelKey)}
+            </p>
+            <div className="flex flex-col">
+              {node.sections.map((id) => leafButton(id))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function SettingsNav({
   active,
   searchFocusToken,
   onNavigate,
   onSearchHit,
 }: {
-  active: SectionId;
+  active: SectionId | null;
   searchFocusToken: string | null;
   onNavigate: (section: SectionId) => void;
   onSearchHit: (entry: SettingsSearchEntry) => void;
 }) {
-  const { t } = useI18n();
   return (
-    <nav className="flex h-full w-full flex-col overflow-y-auto border-r border-hairline bg-panel p-2 lg:w-[200px]">
+    <nav className="flex h-full w-full flex-col overflow-y-auto border-r border-hairline bg-panel p-2 lg:w-[232px]">
       <SettingsSearch
         focusToken={searchFocusToken}
         onSearchHit={onSearchHit}
         className="px-1"
-        idle={
-          <div className="mt-2 flex flex-col">
-            {SECTIONS.map((section) => (
-              <button key={section.id} type="button" onClick={() => { onNavigate(section.id); }} className={`rounded-lg px-2 py-2 text-left text-[13px] transition-colors ${active === section.id ? 'bg-accent-soft font-medium text-accent' : 'text-ink-soft hover:bg-paper hover:text-ink'}`}>{t(section.labelKey)}</button>
-            ))}
-          </div>
-        }
+        idle={<SettingsNavTree active={active} onNavigate={onNavigate} />}
       />
     </nav>
   );

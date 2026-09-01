@@ -34,6 +34,7 @@ import {
   resolveEffectiveModel,
   resolveModelSource,
   resolveSessionModelOverride,
+  resolveSettingsRoute,
   restartRequirementSnapshot,
   runtimeConfigDraftFromConfig,
   runtimeConfigPatch,
@@ -42,6 +43,10 @@ import {
   serverFileSettingsPatch,
   SETTINGS_SEARCH_SPEC,
   SETTINGS_SECTIONS,
+  SETTINGS_NAV_TREE,
+  SETTINGS_SECTION_META,
+  settingsGroupForSection,
+  settingsSectionForCard,
   settingsServerSnapshot,
   settingsSnapshot,
   subscribeRestartRequirement,
@@ -758,6 +763,127 @@ describe('capabilities section grouping', () => {
     expect(capabilityGroupForCard('st-card-runtime')?.id).toBe('runtime');
     expect(capabilityGroupForCard('st-card-tools')?.id).toBe('runtime');
     expect(capabilityGroupForCard('st-card-about')).toBeUndefined();
+  });
+});
+
+describe('settings nav groups (redesign batch 1)', () => {
+  it('matches the adjudicated topology: six groups plus an ungrouped About leaf', () => {
+    const groups = SETTINGS_NAV_TREE.filter((node) => node.kind === 'group');
+    const leaves = SETTINGS_NAV_TREE.filter((node) => node.kind === 'leaf');
+    expect(groups.map((group) => group.id))
+      .toEqual(['app', 'ai', 'agents', 'extensions', 'system', 'advanced']);
+    // "Data & advanced" is part of the tree but has no leaves until batches
+    // 2/3 land content; renderers skip empty groups rather than dropping it
+    // from the model.
+    expect(groups.at(-1)?.sections).toEqual([]);
+    // "About & updates" is a clickable leaf outside all groups, not a group.
+    expect(leaves.map((leaf) => leaf.section)).toEqual(['about']);
+    expect(settingsGroupForSection('about')).toBeUndefined();
+  });
+
+  it('places every section exactly once, high-frequency first', () => {
+    const placed = SETTINGS_NAV_TREE.flatMap((node) => node.kind === 'group' ? node.sections : [node.section]);
+    expect([...placed].toSorted()).toEqual(SETTINGS_SECTIONS.map((section) => section.id).toSorted());
+    expect(new Set(placed).size).toBe(placed.length);
+    expect(SETTINGS_NAV_TREE[0]).toMatchObject({ kind: 'group', id: 'app' });
+    expect(SETTINGS_NAV_TREE.at(-1)).toEqual({ kind: 'leaf', section: 'about' });
+    expect(settingsGroupForSection('models')?.id).toBe('ai');
+    expect(settingsGroupForSection('providers')?.id).toBe('ai');
+    expect(settingsGroupForSection('capabilities')?.id).toBe('extensions');
+    expect(settingsGroupForSection('workspaces')?.id).toBe('system');
+    expect(settingsGroupForSection('connection')?.id).toBe('system');
+    expect(settingsGroupForSection('nope')).toBeUndefined();
+  });
+
+  it('declares every scope a page actually writes until the content split lands', () => {
+    for (const section of SETTINGS_SECTIONS) {
+      const meta = SETTINGS_SECTION_META[section.id];
+      expect(meta, section.id).toBeDefined();
+      expect(meta!.scopes.length).toBeGreaterThan(0);
+      for (const scope of meta!.scopes) {
+        expect(['app', 'server', 'workspace']).toContain(scope);
+      }
+    }
+    // General mixes device prefs with server-side session defaults;
+    // Capabilities mixes server config with per-workspace MCP; Agents mixes
+    // server-wide governance with workspace-sourced profiles.
+    expect(SETTINGS_SECTION_META['general']?.scopes).toEqual(['app', 'server']);
+    expect(SETTINGS_SECTION_META['capabilities']?.scopes).toEqual(['server', 'workspace']);
+    expect(SETTINGS_SECTION_META['agents']?.scopes).toEqual(['server', 'workspace']);
+    expect(SETTINGS_SECTION_META['models']?.scopes).toEqual(['server']);
+  });
+});
+
+describe('settings search breadcrumbs and synonyms', () => {
+  const t = (key: I18nKey): string => translate('en', key);
+  const tZh = (key: I18nKey): string => translate('zh', key);
+
+  it('carries the visual group into grouped hits for the group › leaf › card breadcrumb', () => {
+    const index = buildSettingsSearchIndex({ general: 'General' }, t);
+    const models = index.find((entry) => entry.cardId === 'st-card-models');
+    expect(models?.groupLabel).toBe('AI configuration');
+    // About is an ungrouped top-level leaf: its hits have no group crumb.
+    const about = index.find((entry) => entry.cardId === 'st-card-about');
+    expect(about?.groupLabel).toBe('');
+    expect(index.filter((entry) => entry.section !== 'about').every((entry) => entry.groupLabel !== '')).toBe(true);
+    // Group labels are indexed too, so "AI configuration" finds its leaves.
+    expect(searchSettings(index, 'AI configuration').some((hit) => hit.section === 'providers')).toBe(true);
+  });
+
+  it.each([
+    ['能力', 'st-card-caps'],
+    ['供应商', 'st-card-providers'],
+    ['提供商', 'st-card-auth'],
+    ['模型目录', 'st-card-models'],
+    ['Profiles', 'st-card-subagent-profiles'],
+    ['子 Agent', 'st-card-subagents'],
+  ])('matches the legacy/synonym term %s in English', (term, cardId) => {
+    const index = buildSettingsSearchIndex({}, t);
+    expect(searchSettings(index, term).some((hit) => hit.cardId === cardId)).toBe(true);
+  });
+
+  it.each([
+    ['能力', 'st-card-caps'],
+    ['供应商', 'st-card-providers'],
+    ['model catalog', 'st-card-models'],
+  ])('matches the legacy/synonym term %s in Chinese', (term, cardId) => {
+    const index = buildSettingsSearchIndex({}, tZh);
+    expect(searchSettings(index, term).some((hit) => hit.cardId === cardId)).toBe(true);
+  });
+});
+
+describe('settings route resolver', () => {
+  it('lands bare /settings on the default page', () => {
+    expect(resolveSettingsRoute(undefined, '')).toEqual({ status: 'ok', section: 'general', cardId: undefined });
+    expect(resolveSettingsRoute('', '')).toEqual({ status: 'ok', section: 'general', cardId: undefined });
+  });
+
+  it('passes known sections through and keeps a local card hash', () => {
+    expect(resolveSettingsRoute('models', '#st-card-thinking'))
+      .toEqual({ status: 'ok', section: 'models', cardId: 'st-card-thinking' });
+    expect(resolveSettingsRoute('about', ''))
+      .toEqual({ status: 'ok', section: 'about', cardId: undefined });
+  });
+
+  it('follows a card hash whose content moved to another section', () => {
+    // A bookmark written before a content move: section says general, card
+    // says the card now lives under capabilities — the precise half wins.
+    expect(resolveSettingsRoute('general', '#st-card-mcp'))
+      .toEqual({ status: 'ok', section: 'capabilities', cardId: 'st-card-mcp' });
+    expect(resolveSettingsRoute('retired-section', '#st-card-workspaces'))
+      .toEqual({ status: 'ok', section: 'workspaces', cardId: 'st-card-workspaces' });
+  });
+
+  it('flags genuinely unknown sections instead of silently falling back to general', () => {
+    expect(resolveSettingsRoute('nonsense', '')).toEqual({ status: 'unknown', section: 'nonsense', cardId: undefined });
+    expect(resolveSettingsRoute('nonsense', '#st-card-not-real')).toEqual({ status: 'unknown', section: 'nonsense', cardId: 'st-card-not-real' });
+    expect(resolveSettingsRoute('nonsense', '#other-anchor')).toEqual({ status: 'unknown', section: 'nonsense', cardId: undefined });
+  });
+
+  it('knows the canonical owner of every indexed card', () => {
+    expect(settingsSectionForCard('st-card-mcp')).toBe('capabilities');
+    expect(settingsSectionForCard('st-card-language')).toBe('general');
+    expect(settingsSectionForCard('st-card-nowhere')).toBeUndefined();
   });
 });
 
