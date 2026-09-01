@@ -344,7 +344,7 @@ describe('AgentTranscript', () => {
     expect(turn?.error).toBe('boom');
   });
 
-  it('tool frames keep streamed inputText and the newest progress update', () => {
+  it('tool frames keep streamed inputText, progress, timestamps, and interrupted state', () => {
     const tx = new AgentTranscript('main');
     tx.apply(toolFrame('running'));
     const streamed = (frame: Partial<ToolCallFrame> & Pick<ToolCallFrame, 'inputText' | 'state'>): TranscriptOperation => ({
@@ -367,10 +367,23 @@ describe('AgentTranscript', () => {
         progress: { kind: 'progress', percent: 50 },
       }),
     ]);
+    tx.apply([
+      streamed({
+        inputText: '{"path":"/a"}',
+        state: 'interrupted',
+        input: { path: '/a' },
+        progress: { kind: 'progress', percent: 50 },
+        startedAt: '2026-08-31T00:00:00.000Z',
+        endedAt: '2026-08-31T00:00:02.000Z',
+      }),
+    ]);
     const frame = tx.getTurn('t1')?.steps[0]?.frames.find((f) => f.kind === 'tool');
     expect(frame?.kind === 'tool' && frame.input).toEqual({ path: '/a' });
     expect(frame?.kind === 'tool' && frame.inputText).toBe('{"path":"/a"}');
     expect(frame?.kind === 'tool' && frame.progress).toEqual({ kind: 'progress', percent: 50 });
+    expect(frame?.kind === 'tool' && frame.state).toBe('interrupted');
+    expect(frame?.kind === 'tool' && frame.startedAt).toBe('2026-08-31T00:00:00.000Z');
+    expect(frame?.kind === 'tool' && frame.endedAt).toBe('2026-08-31T00:00:02.000Z');
   });
 
   it('task upserts carry resultSummary/error/stateReason/usage', () => {

@@ -30,29 +30,20 @@ export function buildHookSpawnOptions(options: {
 const DEFAULT_TIMEOUT_SECONDS = 30;
 const KILL_GRACE_MS = 100;
 const OptionalStringSchema = z.preprocess(
-  (value) => {
-    if (value === undefined || value === null) return undefined;
-    if (typeof value === 'string') return value;
-    if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
-      return String(value);
-    }
-    return undefined;
-  },
-  z.string().optional(),
-);
-const HookSpecificOutputSchema = z.preprocess(
-  (value) => (isRecord(value) ? value : undefined),
+  (value) => (value === null ? undefined : value),
   z
-    .looseObject({
-      message: OptionalStringSchema,
-      permissionDecision: z.unknown().optional(),
-      permissionDecisionReason: z.unknown().optional(),
-    })
+    .union([z.string(), z.number(), z.boolean()])
+    .transform((value) => String(value))
     .optional(),
 );
-const HookJsonOutputSchema = z.looseObject({
+const HookSpecificOutputSchema = z.strictObject({
   message: OptionalStringSchema,
-  hookSpecificOutput: HookSpecificOutputSchema,
+  permissionDecision: z.enum(['allow', 'deny']).optional(),
+  permissionDecisionReason: z.string().optional(),
+});
+const HookJsonOutputSchema = z.strictObject({
+  message: OptionalStringSchema,
+  hookSpecificOutput: HookSpecificOutputSchema.optional(),
 });
 
 export async function runHook(
@@ -69,7 +60,8 @@ export async function runHook(
       env: options.env,
     });
   } catch (error) {
-    return allowResult({ stderr: errorMessage(error) });
+    const message = errorMessage(error);
+    return blockResult({ message, reason: message, stderr: message });
   }
 
   return new Promise<HookResult>((resolve) => {
@@ -108,18 +100,19 @@ export async function runHook(
       },
       (error) => {
         void proc.dispose();
-        settle(allowResult({ stdout, stderr: stderr + errorMessage(error) }));
+        const message = errorMessage(error);
+        settle(blockResult({ message, reason: message, stdout, stderr: stderr + message }));
       },
     );
 
     const timeout = setTimeout(() => {
       killProcess(proc);
-      settle(allowResult({ stdout, stderr, timedOut: true }));
+      settle(blockResult({ stdout, stderr, timedOut: true }));
     }, timeoutMs);
 
     const onAbort = (): void => {
       killProcess(proc);
-      settle(allowResult({ stdout, stderr }));
+      settle(blockResult({ stdout, stderr }));
     };
 
     options.signal?.addEventListener('abort', onAbort, { once: true });
@@ -138,71 +131,89 @@ function timeoutSeconds(timeout: number): number {
 }
 
 function resultFromExitCode(exitCode: number, stdout: string, stderr: string): HookResult {
-  if (exitCode === 2) {
+  if (exitCode !== 0) {
     const message = stderr.trim();
-    return {
-      action: 'block',
-      message,
-      reason: message,
-      stdout,
-      stderr,
-      exitCode,
-    };
+    return blockResult({ message, reason: message, stdout, stderr, exitCode });
   }
 
-  const structured = exitCode === 0 ? structuredOutput(stdout) : undefined;
-  if (structured?.action === 'block') {
-    return {
-      action: 'block',
+  const structured = structuredOutput(stdout);
+  if (structured.kind === 'invalid') {
+    return blockResult({ stdout, stderr, exitCode });
+  }
+  if (structured.kind === 'structured' && structured.action === 'block') {
+    return blockResult({
       message: structured.message ?? structured.reason,
       reason: structured.reason,
       stdout,
       stderr,
       exitCode,
-      structuredOutput: structured.structuredOutput,
-    };
+      structuredOutput: true,
+    });
   }
 
   return allowResult({
-    message: structured?.message,
+    message: structured.kind === 'structured' ? structured.message : undefined,
     stdout,
     stderr,
     exitCode,
-    structuredOutput: structured?.structuredOutput,
+    structuredOutput: structured.kind === 'structured' ? true : undefined,
   });
 }
 
-function structuredOutput(
-  stdout: string,
-): { action?: 'block'; reason?: string; message?: string; structuredOutput: true } | undefined {
+type StructuredOutputResult =
+  | { readonly kind: 'unstructured' }
+  | { readonly kind: 'invalid' }
+  | {
+      readonly kind: 'structured';
+      readonly action?: 'block';
+      readonly reason?: string;
+      readonly message?: string;
+    };
+
+function structuredOutput(stdout: string): StructuredOutputResult {
   const text = stdout.trim();
-  if (text.length === 0) return undefined;
+  if (text.length === 0) return { kind: 'unstructured' };
 
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(text) as unknown;
-    const output = HookJsonOutputSchema.safeParse(parsed);
-    if (!output.success) return undefined;
-
-    const { message, hookSpecificOutput } = output.data;
-    const result = {
-      message: message ?? hookSpecificOutput?.message,
-      structuredOutput: true as const,
-    };
-    if (hookSpecificOutput?.permissionDecision !== 'deny') {
-      return result;
-    }
-    return {
-      action: 'block',
-      message: result.message,
-      reason:
-        typeof hookSpecificOutput.permissionDecisionReason === 'string'
-          ? hookSpecificOutput.permissionDecisionReason
-          : undefined,
-      structuredOutput: true as const,
-    };
+    parsed = JSON.parse(text) as unknown;
   } catch {
-    return undefined;
+    return attemptsHookProtocol(text) ? { kind: 'invalid' } : { kind: 'unstructured' };
   }
+
+  if (!containsHookProtocolField(parsed)) return { kind: 'unstructured' };
+  if (!isRecord(parsed)) return { kind: 'invalid' };
+  const output = HookJsonOutputSchema.safeParse(parsed);
+  if (!output.success) return { kind: 'invalid' };
+
+  const { message, hookSpecificOutput } = output.data;
+  const result = {
+    kind: 'structured' as const,
+    message: message ?? hookSpecificOutput?.message,
+  };
+  if (hookSpecificOutput?.permissionDecision !== 'deny') {
+    return result;
+  }
+  return {
+    ...result,
+    action: 'block',
+    reason: hookSpecificOutput.permissionDecisionReason,
+  };
+}
+
+function containsHookProtocolField(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsHookProtocolField);
+  if (!isRecord(value)) return false;
+  if (Object.hasOwn(value, 'message') || Object.hasOwn(value, 'hookSpecificOutput')) return true;
+  return Object.values(value).some(containsHookProtocolField);
+}
+
+function attemptsHookProtocol(text: string): boolean {
+  const objectShaped = text.startsWith('{') || /^\[\s*(?:\{|\[|["']|-|\d|[tfn])/.test(text);
+  if (!objectShaped) return false;
+  return /(?:^|[,{]|\s)(?:(["'])(?:message|hookSpecificOutput)\1\s*(?::|(?=[},\]]|[{\["'\d-]|true\b|false\b|null\b))|(?:message|hookSpecificOutput)\s*:)/.test(
+    text,
+  );
 }
 
 function allowResult(input: {
@@ -216,6 +227,27 @@ function allowResult(input: {
   return {
     action: 'allow',
     message: input.message,
+    stdout: input.stdout,
+    stderr: input.stderr,
+    exitCode: input.exitCode,
+    timedOut: input.timedOut,
+    structuredOutput: input.structuredOutput,
+  };
+}
+
+function blockResult(input: {
+  readonly message?: string;
+  readonly reason?: string;
+  readonly stdout?: string;
+  readonly stderr?: string;
+  readonly exitCode?: number;
+  readonly timedOut?: boolean;
+  readonly structuredOutput?: boolean;
+}): HookResult {
+  return {
+    action: 'block',
+    message: input.message,
+    reason: input.reason,
     stdout: input.stdout,
     stderr: input.stderr,
     exitCode: input.exitCode,

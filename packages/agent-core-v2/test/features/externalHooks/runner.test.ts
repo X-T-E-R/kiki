@@ -35,7 +35,7 @@ describe('runHook process runner', () => {
     expect(result.structuredOutput).toBe(true);
   });
 
-  it('marks structured stdout JSON without message as empty hook output', async () => {
+  it('distinguishes ordinary JSON from an empty structured hook output', async () => {
     const emptyObject = await runHook(
       hostProcess,
       nodeCommand('process.stdout.write("{}");'),
@@ -44,7 +44,7 @@ describe('runHook process runner', () => {
     );
     expect(emptyObject.action).toBe('allow');
     expect(emptyObject.message).toBeUndefined();
-    expect(emptyObject.structuredOutput).toBe(true);
+    expect(emptyObject.structuredOutput).toBeUndefined();
 
     const emptyHookSpecificOutput = await runHook(
       hostProcess,
@@ -69,7 +69,7 @@ describe('runHook process runner', () => {
     expect(result.reason).toContain('blocked');
   });
 
-  it('returns allow on non-zero, non-2 exit codes', async () => {
+  it('returns block on non-zero, non-2 exit codes', async () => {
     const result = await runHook(
       hostProcess,
       nodeCommand('process.exit(1);'),
@@ -77,10 +77,11 @@ describe('runHook process runner', () => {
       { timeout: 5 },
     );
 
-    expect(result.action).toBe('allow');
+    expect(result.action).toBe('block');
+    expect(result.exitCode).toBe(1);
   });
 
-  it('returns allow with timedOut=true when the command exceeds the timeout', async () => {
+  it('returns block with timedOut=true when the command exceeds the timeout', async () => {
     const result = await runHook(
       hostProcess,
       nodeCommand('setTimeout(() => {}, 10000);'),
@@ -88,8 +89,193 @@ describe('runHook process runner', () => {
       { timeout: 0.05 },
     );
 
-    expect(result.action).toBe('allow');
+    expect(result.action).toBe('block');
     expect(result.timedOut).toBe(true);
+  });
+
+  it('returns allow for ordinary bracket-prefixed logs', async () => {
+    const result = await runHook(
+      hostProcess,
+      nodeCommand('process.stdout.write("[INFO] validation passed");'),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('allow');
+    expect(result.structuredOutput).toBeUndefined();
+  });
+
+  it('returns allow for bracket-prefixed logs that mention a protocol field', async () => {
+    const result = await runHook(
+      hostProcess,
+      nodeCommand('process.stdout.write(\'[INFO] response contains "message": metadata\');'),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('allow');
+    expect(result.structuredOutput).toBeUndefined();
+  });
+
+  it.each([
+    ['INFO', '[INFO] payload {message: validation passed}'],
+    ['DEBUG', '[DEBUG] result {hookSpecificOutput: unavailable}'],
+  ])('returns allow for %s logs containing object-like protocol text', async (_level, output) => {
+    const result = await runHook(
+      hostProcess,
+      nodeCommand(`process.stdout.write(${JSON.stringify(output)});`),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('allow');
+    expect(result.structuredOutput).toBeUndefined();
+  });
+
+  it('returns allow for ordinary plain-text logs', async () => {
+    const result = await runHook(
+      hostProcess,
+      nodeCommand('process.stdout.write("validation passed");'),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('allow');
+    expect(result.structuredOutput).toBeUndefined();
+  });
+
+  it('returns block when an explicit hook protocol object is malformed JSON', async () => {
+    const result = await runHook(
+      hostProcess,
+      nodeCommand('process.stdout.write(\'{"hookSpecificOutput":\');'),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('block');
+    expect(result.exitCode).toBe(0);
+  });
+
+  it.each([
+    ['direct array entry', [{ hookSpecificOutput: { permissionDecision: 'deny' } }]],
+    ['after a null entry', [null, { hookSpecificOutput: { permissionDecision: 'deny' } }]],
+    ['inside a nested array', [[{ hookSpecificOutput: { permissionDecision: 'deny' } }]]],
+  ])('returns block when a hook protocol decision appears in a parsed %s', async (_case, value) => {
+    const output = JSON.stringify(value);
+    const result = await runHook(
+      hostProcess,
+      nodeCommand(`process.stdout.write(${JSON.stringify(output)});`),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('block');
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('returns block for Python dict-style hook protocol output', async () => {
+    const output = "{'hookSpecificOutput': {'permissionDecision': 'deny'}}";
+    const result = await runHook(
+      hostProcess,
+      nodeCommand(`process.stdout.write(${JSON.stringify(output)});`),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('block');
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('returns block when a hook protocol field is missing its colon', async () => {
+    const output = '{"hookSpecificOutput"}';
+    const result = await runHook(
+      hostProcess,
+      nodeCommand(`process.stdout.write(${JSON.stringify(output)});`),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('block');
+    expect(result.exitCode).toBe(0);
+  });
+
+  it.each([
+    [
+      'hookSpecificOutput object value',
+      '{"hookSpecificOutput" {"permissionDecision":"deny"}}',
+    ],
+    ['message string value', '{"message" "text"}'],
+  ])('returns block when a %s is missing its colon', async (_case, output) => {
+    const result = await runHook(
+      hostProcess,
+      nodeCommand(`process.stdout.write(${JSON.stringify(output)});`),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('block');
+    expect(result.exitCode).toBe(0);
+  });
+
+  it('returns block when a hook protocol field is missing its leading comma', async () => {
+    const output = '{"x": 1 "hookSpecificOutput": {"permissionDecision": "deny"}}';
+    const result = await runHook(
+      hostProcess,
+      nodeCommand(`process.stdout.write(${JSON.stringify(output)});`),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('block');
+    expect(result.exitCode).toBe(0);
+  });
+
+  it.each([
+    ['non-object hookSpecificOutput', '{"hookSpecificOutput":[]}'],
+    ['misspelled permissionDecision', '{"hookSpecificOutput":{"permissionDecision":"denny"}}'],
+    ['non-string permissionDecision', '{"hookSpecificOutput":{"permissionDecision":{"deny":true}}}'],
+    ['non-scalar message', '{"message":[]}'],
+  ])('returns block for parseable protocol output with %s', async (_case, output) => {
+    const result = await runHook(
+      hostProcess,
+      nodeCommand(`process.stdout.write(${JSON.stringify(output)});`),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('block');
+    expect(result.exitCode).toBe(0);
+  });
+
+  it.each([
+    ['an unrelated parsed object', '{"unexpected":"value"}'],
+    ['a quoted message prefix', "{'messageCount': 1}"],
+    ['an unquoted message prefix', '{messageboard: "status"}'],
+    ['a hookSpecificOutput prefix', "{'hookSpecificOutputDebug': true}"],
+  ])('returns allow for non-protocol output with %s', async (_case, output) => {
+    const result = await runHook(
+      hostProcess,
+      nodeCommand(`process.stdout.write(${JSON.stringify(output)});`),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('allow');
+    expect(result.structuredOutput).toBeUndefined();
+  });
+
+  it('parses permissionDecision=allow into a structured allow result', async () => {
+    const result = await runHook(
+      hostProcess,
+      nodeCommand(
+        'process.stdout.write(JSON.stringify({ hookSpecificOutput: { permissionDecision: "allow" } }));',
+      ),
+      { tool_name: 'Bash' },
+      { timeout: 5 },
+    );
+
+    expect(result.action).toBe('allow');
+    expect(result.structuredOutput).toBe(true);
   });
 
   it('parses stdout JSON permissionDecision=deny into a block result with the supplied reason', async () => {

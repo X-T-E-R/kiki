@@ -396,6 +396,7 @@ export function Sidebar({
       className={className ?? 'app-sidebar'}
       style={{ '--kiki-sidebar-width': `${sidebarWidthValue}px` } as React.CSSProperties}
       data-session-sidebar
+      aria-label={t('sidebar.navAria')}
     >
       <div
         data-sidebar-resizer
@@ -522,7 +523,7 @@ export function Sidebar({
       ) : null}
 
       {searchActive ? (
-        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-search-results>
+        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-search-results role="region" aria-label={t('sidebar.searchAria')}>
           {searchResultsQuery.isPending ? (
             <div className="flex items-center justify-center gap-2 px-2 pt-6 text-[12px] text-ink-faint">
               <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
@@ -544,7 +545,7 @@ export function Sidebar({
           ) : (
             <>
               {searchGroups.map((group) => (
-                <div key={group.sessionId} className="mb-2">
+                <div key={group.sessionId} className="mb-2" role="group" aria-label={group.title.trim() !== '' ? group.title : untitled}>
                   <p className="truncate px-2 pt-1 pb-0.5 text-[10px] font-semibold tracking-[0.06em] text-ink-faint uppercase">
                     {group.title.trim() !== '' ? group.title : untitled}
                   </p>
@@ -612,7 +613,7 @@ export function Sidebar({
           )}
         </div>
       ) : (
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-session-list>
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" data-session-list role="region" aria-label={t('sidebar.listAria')}>
         {sessionsQuery.isLoading && sessions.length === 0 ? (
           <div className="flex items-center justify-center gap-2 px-2 pt-6 text-[12px] text-ink-faint">
             <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
@@ -659,7 +660,7 @@ export function Sidebar({
           </p>
         ) : null}
         {sessionGroups.map((group) => (
-          <div key={group.key} className="mb-1">
+          <div key={group.key} className="mb-1" role="group" aria-label={group.label}>
             <p
               data-session-group={group.key}
               className="sticky top-0 z-[1] bg-[var(--color-panel)] px-2 py-1 text-[9.5px] font-semibold tracking-[0.08em] text-ink-faint uppercase"
@@ -682,6 +683,7 @@ export function Sidebar({
                   <button
                     type="button"
                     onClick={() => void navigate(`/s/${session.id}`)}
+                    aria-current={active ? 'page' : undefined}
                     className={`flex w-full items-start gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors ${
                       active
                         ? 'border-hairline bg-accent-soft'

@@ -641,6 +641,7 @@ describe('PluginService (plugin boundary)', () => {
       });
       createdDirs.push(pluginRoot);
       await svc.installPlugin({ source: pluginRoot });
+      await svc.setPluginEnabled({ id: 'demo', enabled: true });
 
       const servers = await svc.enabledMcpServers();
       const managedRoot = path.join(home, 'plugins', 'managed', 'demo');
@@ -683,6 +684,7 @@ describe('PluginService (plugin boundary)', () => {
       });
       createdDirs.push(pluginRoot);
       await svc.installPlugin({ source: pluginRoot });
+      await svc.setPluginEnabled({ id: 'demo', enabled: true });
       await svc.setPluginMcpServerEnabled({ id: 'demo', server: 'finance', enabled: false });
 
       const entries = await svc.mcpServerEntries();
@@ -731,6 +733,7 @@ describe('PluginService (plugin boundary)', () => {
       });
       createdDirs.push(pluginRoot);
       await svc.installPlugin({ source: pluginRoot });
+      await svc.setPluginEnabled({ id: 'ready-demo', enabled: true });
 
       const servers = svc.enabledMcpServers();
       await readyAccessed.promise;
@@ -776,6 +779,7 @@ describe('PluginService (plugin boundary)', () => {
       });
       createdDirs.push(pluginRoot);
       await svc.installPlugin({ source: pluginRoot });
+      await svc.setPluginEnabled({ id: 'demo', enabled: true });
 
       const servers = await svc.enabledMcpServers();
       expect(servers['plugin-demo:finance']).toEqual(
@@ -802,6 +806,7 @@ describe('PluginService (plugin boundary)', () => {
       });
       createdDirs.push(pluginRoot);
       await svc.installPlugin({ source: pluginRoot });
+      await svc.setPluginEnabled({ id: 'demo', enabled: true });
 
       const servers = await svc.enabledMcpServers();
       const env = (servers['plugin-demo:finance'] as { env?: Record<string, string> }).env ?? {};

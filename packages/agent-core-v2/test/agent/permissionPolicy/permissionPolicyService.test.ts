@@ -131,6 +131,26 @@ describe('AgentPermissionPolicyService chain', () => {
     });
   });
 
+  it.each([
+    { decision: 'deny', policyName: 'user-configured-deny', resultKind: 'deny' },
+    { decision: 'ask', policyName: 'user-configured-ask', resultKind: 'ask' },
+    { decision: 'allow', policyName: 'user-configured-allow', resultKind: 'approve' },
+  ] as const)(
+    'applies user-configured $decision rules before auto-mode approval',
+    async ({ decision, policyName, resultKind }) => {
+      mode = 'auto';
+      rules.push({ decision, scope: 'user', pattern: 'Bash' });
+
+      await expect(evaluate({
+        toolName: 'Bash',
+        args: { command: 'printf first', timeout: 60 },
+      })).resolves.toMatchObject({
+        policyName,
+        result: { kind: resultKind },
+      });
+    },
+  );
+
   it('applies deny rules before yolo-mode approval', async () => {
     mode = 'yolo';
     rules.push({
@@ -353,6 +373,21 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
       accesses: ToolAccesses.writeFile(join(workspaceDir, '.env')),
     })).resolves.toMatchObject({
       policyName: 'sensitive-file-access-ask',
+      result: { kind: 'ask' },
+    });
+  });
+
+  it.each([
+    { path: '.env', policyName: 'sensitive-file-access-ask' },
+    { path: '.git/config', policyName: 'git-control-path-access-ask' },
+  ])('asks for $path before auto-mode approval', async ({ path, policyName }) => {
+    mode = 'auto';
+    await expect(evaluate({
+      toolName: 'Write',
+      args: { path, content: 'x' },
+      accesses: ToolAccesses.writeFile(join(workspaceDir, path)),
+    })).resolves.toMatchObject({
+      policyName,
       result: { kind: 'ask' },
     });
   });

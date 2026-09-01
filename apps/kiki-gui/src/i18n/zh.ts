@@ -47,6 +47,8 @@ export const zh: Record<I18nKey, string> = {
 
   // ---- sidebar ----
   'sidebar.newSession': '新会话',
+  'sidebar.navAria': '会话导航',
+  'sidebar.listAria': '会话列表',
   'sidebar.searchPlaceholder': '搜索会话…',
   'sidebar.searchAria': '搜索会话',
   'sidebar.clearSearch': '清除搜索',

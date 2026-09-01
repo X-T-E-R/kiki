@@ -24,7 +24,7 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (56 record types)
+// Index (62 record types)
 //   config.update                      profile                                                               src/agent/profile/profileOps.ts
 //   context.append_loop_event          contextMemory, turn                                                   src/agent/contextMemory/contextEvents.ts
 //   context.append_message             contextMemory, goalForkNotice, plan, task.notificationDelivery, todo  src/agent/contextMemory/contextEvents.ts
@@ -61,8 +61,14 @@
 //   runtime.set_binding                runtimeBinding                                                        src/agent/runtimeBinding/runtimeBindingOps.ts
 //   staleGuard.cleared                 staleGuard                                                            src/features/staleGuard/staleGuardOps.ts
 //   staleGuard.recorded                staleGuard                                                            src/features/staleGuard/staleGuardOps.ts
+//   subagent.completed                 (none)                                                                src/session/subagent/mirrorAgentRun.ts
+//   subagent.failed                    (none)                                                                src/session/subagent/mirrorAgentRun.ts
+//   subagent.spawned                   (none)                                                                src/session/subagent/mirrorAgentRun.ts
+//   subagent.started                   (none)                                                                src/session/subagent/mirrorAgentRun.ts
+//   subagent.suspended                 (none)                                                                src/features/swarm/session/sessionSwarmService.ts
 //   swarm_mode.enter                   swarm                                                                 src/features/swarm/swarmOps.ts
 //   swarm_mode.exit                    contextMemory, swarm                                                  src/features/swarm/swarmOps.ts
+//   task.notified                      (none)                                                                src/agent/task/taskOps.ts
 //   task.started                       task                                                                  src/agent/task/taskOps.ts
 //   task.terminated                    task                                                                  src/agent/task/taskOps.ts
 //   task.waitDelivered                 task.notificationDelivery                                             src/agent/task/taskOps.ts
@@ -573,6 +579,74 @@ interface StaleGuardRecordedPayload {
 }
 
 /**
+ * states: (none)
+ * owner: src/session/subagent/mirrorAgentRun.ts
+ */
+interface SubagentCompletedPayload {
+  _name: 'subagent.completed';
+  subagentId: string;
+  resultSummary: string;
+  /** TokenUsage */
+  usage?: {
+    inputOther: number;
+    output: number;
+    inputCacheRead: number;
+    inputCacheCreation: number;
+  };
+  contextTokens?: number;
+}
+
+/**
+ * states: (none)
+ * owner: src/session/subagent/mirrorAgentRun.ts
+ */
+interface SubagentFailedPayload {
+  _name: 'subagent.failed';
+  subagentId: string;
+  error: string;
+}
+
+/**
+ * states: (none)
+ * owner: src/session/subagent/mirrorAgentRun.ts
+ */
+interface SubagentSpawnedPayload {
+  _name: 'subagent.spawned';
+  subagentId: string;
+  subagentName: string;
+  parentToolCallId: string;
+  parentToolCallUuid?: string;
+  parentAgentId?: string;
+  callerAgentId?: string;
+  description?: string;
+  userLabel?: string;
+  swarmIndex?: number;
+  runInBackground: boolean;
+  model?: string;
+  thinkingEffort?: string;
+  taskId?: string;
+}
+
+/**
+ * states: (none)
+ * owner: src/session/subagent/mirrorAgentRun.ts
+ */
+interface SubagentStartedPayload {
+  _name: 'subagent.started';
+  subagentId: string;
+}
+
+/**
+ * states: (none)
+ * owner: src/features/swarm/session/sessionSwarmService.ts
+ */
+interface SubagentSuspendedPayload {
+  _name: 'subagent.suspended';
+  subagentId: string;
+  reason: string;
+}
+
+/**
  * states: swarm
  * owner: src/features/swarm/swarmOps.ts
  */
@@ -588,6 +662,20 @@ interface SwarmModeEnterPayload {
  */
 interface SwarmModeExitPayload {
   _name: 'swarm_mode.exit';
+}
+
+/**
+ * states: (none)
+ * owner: src/agent/task/taskOps.ts
+ */
+interface TaskNotifiedPayload {
+  _name: 'task.notified';
+  notificationType: string;
+  title: string;
+  body: string;
+  severity: 'info' | 'warning';
+  sourceKind: string;
+  sourceId: string;
 }
 
 /**
@@ -876,8 +964,14 @@ interface WirePayloadMap {
   "runtime.set_binding": RuntimeSetBindingPayload;
   "staleGuard.cleared": StaleGuardClearedPayload;
   "staleGuard.recorded": StaleGuardRecordedPayload;
+  "subagent.completed": SubagentCompletedPayload;
+  "subagent.failed": SubagentFailedPayload;
+  "subagent.spawned": SubagentSpawnedPayload;
+  "subagent.started": SubagentStartedPayload;
+  "subagent.suspended": SubagentSuspendedPayload;
   "swarm_mode.enter": SwarmModeEnterPayload;
   "swarm_mode.exit": SwarmModeExitPayload;
+  "task.notified": TaskNotifiedPayload;
   "task.started": TaskStartedPayload;
   "task.terminated": TaskTerminatedPayload;
   "task.waitDelivered": TaskWaitDeliveredPayload;

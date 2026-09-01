@@ -2358,6 +2358,34 @@ async function scenarioTerminal() {
   await page.locator('[data-terminal-tab]').first().click();
   await waitMirror((text) => text.includes('kiki-term-ok'), 'tab-1 scrollback');
 
+  // Theme hot-swap: xterm cannot read CSS variables, so the panel re-resolves
+  // the shell tokens when <html data-theme> flips and pushes them into the
+  // mounted instance. The DOM renderer paints the ground as an inline style on
+  // .xterm-viewport — that property is the observable.
+  const terminalGround = () =>
+    page.evaluate(() => {
+      const host = document.querySelector('[data-terminal-canvas]:not(.hidden)');
+      const viewport = host?.querySelector('.xterm-viewport');
+      return viewport?.style.backgroundColor ?? null;
+    });
+  const groundBefore = await terminalGround();
+  await page.evaluate(() => { document.documentElement.dataset['theme'] = 'dark'; });
+  let groundAfter = groundBefore;
+  for (let i = 0; i < 40 && groundAfter === groundBefore; i += 1) {
+    await sleep(100);
+    groundAfter = await terminalGround();
+  }
+  console.log(`[check] terminal theme hot-swap: ${groundBefore} → ${groundAfter}`);
+  if (groundBefore === null || groundAfter === null) {
+    throw new Error('terminal viewport ground not readable for the hot-swap proof');
+  }
+  if (groundAfter === groundBefore) {
+    throw new Error('mounted terminal did not follow the app theme flip');
+  }
+  await shot('terminal-theme-dark');
+  await page.evaluate(() => { document.documentElement.dataset['theme'] = 'light'; });
+  await page.waitForTimeout(300);
+
   // Kill tab 2 — the two-step confirm guards it.
   await page.locator('[data-terminal-kill]').nth(1).click();
   await page.waitForSelector(`text=${S.terminalKillConfirm}`, { timeout: 5000 });

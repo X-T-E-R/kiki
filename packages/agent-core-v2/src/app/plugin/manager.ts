@@ -136,7 +136,7 @@ export class PluginManager {
       const record = await recordFrom({
         id,
         root: normalizedRoot,
-        enabled: existing?.enabled ?? true,
+        enabled: existing?.enabled ?? false,
         installedAt: existing?.installedAt ?? now,
         updatedAt: now,
         originalSource,

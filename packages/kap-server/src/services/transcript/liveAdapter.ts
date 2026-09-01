@@ -74,6 +74,7 @@ import {
   type TranscriptPrompt,
   type TranscriptTask,
   type TranscriptTodo,
+  type TranscriptTurn,
   type TranscriptUsage,
   type TurnHeader,
   type TurnOrigin,
@@ -172,6 +173,7 @@ export type LiveAdapterToolFrameLookup = (toolCallId: string) => ToolFrameRecord
 export type LiveAdapterStepOrdinalLookup = (turnId: string) => number | undefined;
 
 export type LiveAdapterTurnLookup = (turnId: string) => TurnHeader | undefined;
+export type LiveAdapterTurnDetailsLookup = (turnId: string) => TranscriptTurn | undefined;
 
 /** Optional producer-store lookups that let the projector adopt seeded state. */
 export interface LiveAdapterLookups {
@@ -179,6 +181,7 @@ export interface LiveAdapterLookups {
   readonly toolFrame?: LiveAdapterToolFrameLookup;
   readonly stepOrdinal?: LiveAdapterStepOrdinalLookup;
   readonly turn?: LiveAdapterTurnLookup;
+  readonly turnDetails?: LiveAdapterTurnDetailsLookup;
 }
 
 interface OpenTextFrame {
@@ -418,9 +421,37 @@ export class AgentTranscriptLiveAdapter {
     const ops: TranscriptOperation[] = [];
     this.flushOpenFrames(ops);
     const turnId = `t${event.turnId}`;
-    if (this.currentStep !== undefined && this.currentStep.state === 'running') {
-      const step: StepHeader = { ...this.currentStep, state: 'interrupted', endedAt: nowIso() };
-      this.currentStep = step;
+    const endedAt = event.time === undefined ? nowIso() : epochMsToIso(event.time);
+    const closedFrames = new Set<string>();
+    const closeFrame = (hit: ToolFrameRecord): void => {
+      const key = `${hit.stepId}\0${hit.frame.frameId}`;
+      if (hit.frame.state !== 'running' || closedFrames.has(key)) return;
+      closedFrames.add(key);
+      const frame: ToolCallFrame = { ...hit.frame, state: 'interrupted', endedAt };
+      this.toolFrames.set(frame.toolCallId, { ...hit, frame });
+      ops.push({ op: 'frame.upsert', turnId: hit.turnId, stepId: hit.stepId, frame });
+    };
+    const closedSteps = new Set<string>();
+    const details = this.lookups?.turnDetails?.(turnId);
+    for (const persistedStep of details?.steps ?? []) {
+      const { frames, ...previous } = persistedStep;
+      for (const frame of frames) {
+        if (frame.kind === 'tool') closeFrame({ turnId, stepId: persistedStep.stepId, frame });
+      }
+      if (persistedStep.state !== 'running') continue;
+      const step: StepHeader = { ...previous, state: 'interrupted', endedAt };
+      closedSteps.add(step.stepId);
+      ops.push({ op: 'step.upsert', turnId, step });
+    }
+    for (const hit of this.toolFrames.values()) {
+      if (hit.turnId === turnId) closeFrame(hit);
+    }
+    if (
+      this.currentStep !== undefined &&
+      this.currentStep.state === 'running' &&
+      !closedSteps.has(this.currentStep.stepId)
+    ) {
+      const step: StepHeader = { ...this.currentStep, state: 'interrupted', endedAt };
       ops.push({ op: 'step.upsert', turnId: step.turnId, step });
     }
     const prev =
@@ -436,17 +467,23 @@ export class AgentTranscriptLiveAdapter {
       prompt: prev?.prompt,
       attachmentIds: prev?.attachmentIds,
       startedAt: prev?.startedAt,
-      endedAt: event.time === undefined ? nowIso() : epochMsToIso(event.time),
+      endedAt,
       durationMs: event.durationMs,
       error: event.error?.message,
       usage: this.takeTurnUsage(turnId),
+      execution: prev?.execution,
     };
     ops.push({ op: 'turn.upsert', turn: this.currentTurn });
     this.currentStep = undefined;
     if (event.reason === 'cancelled' && event.interruptReason === 'user_cancelled') {
-      ops.push(
-        this.markerOp('interruption', { turnId: event.turnId, reason: event.interruptReason }),
-      );
+      const item: TranscriptMarker = {
+        kind: 'marker',
+        markerId: `turn:${event.turnId}:interruption`,
+        marker: 'interruption',
+        payload: { turnId: event.turnId, reason: event.interruptReason },
+        at: endedAt,
+      };
+      ops.push({ op: 'marker.upsert', item });
     }
     return ops;
   }
@@ -845,6 +882,7 @@ export class AgentTranscriptLiveAdapter {
   }
 
   private onToolCallStarted(event: {
+    time?: number;
     turnId: number;
     toolCallId: string;
     name: string;
@@ -873,6 +911,7 @@ export class AgentTranscriptLiveAdapter {
       input,
       inputText: this.toolFrames.get(event.toolCallId)?.frame.inputText,
       display: event.display,
+      startedAt: event.time === undefined ? nowIso() : epochMsToIso(event.time),
       todoId: event.name === TODO_LIST_TOOL_NAME && todoWriteItems(input) !== undefined ? TODO_ENTITY_ID : undefined,
     };
     this.toolFrames.set(event.toolCallId, { turnId, stepId: step.stepId, frame });
@@ -881,6 +920,7 @@ export class AgentTranscriptLiveAdapter {
   }
 
   private onToolResult(event: {
+    time?: number;
     toolCallId: string;
     output: unknown;
     isError?: boolean;
@@ -893,6 +933,7 @@ export class AgentTranscriptLiveAdapter {
       state: isError ? 'error' : 'done',
       output: event.output,
       error: isError && typeof event.output === 'string' ? event.output : undefined,
+      endedAt: event.time === undefined ? nowIso() : epochMsToIso(event.time),
     };
     this.toolFrames.set(event.toolCallId, { ...hit, frame });
     const ops: TranscriptOperation[] = [
@@ -1160,6 +1201,7 @@ export class AgentTranscriptLiveAdapter {
 
   private onSubagentRun(event: {
     type: 'subagent.started' | 'subagent.completed' | 'subagent.failed' | 'subagent.suspended';
+    time?: number;
     subagentId: string;
     resultSummary?: string;
     usage?: StepUsage;
@@ -1172,6 +1214,7 @@ export class AgentTranscriptLiveAdapter {
         : event.type === 'subagent.failed'
           ? 'failed'
           : 'running';
+    const at = event.time === undefined ? nowIso() : epochMsToIso(event.time);
     const taskKey = this.subagentTaskIds.get(event.subagentId) ?? event.subagentId;
     const task = this.upsertTask(taskKey, (prev) => ({
       taskId: taskKey,
@@ -1181,10 +1224,10 @@ export class AgentTranscriptLiveAdapter {
       description: prev?.description,
       agentId: event.subagentId,
       outputTail: prev?.outputTail ?? '',
-      startedAt: prev?.startedAt ?? nowIso(),
+      startedAt: event.type === 'subagent.started' ? at : (prev?.startedAt ?? at),
       endedAt:
         event.type === 'subagent.completed' || event.type === 'subagent.failed'
-          ? nowIso()
+          ? at
           : prev?.endedAt,
       resultSummary: event.resultSummary ?? prev?.resultSummary,
       usage: event.usage ?? prev?.usage,

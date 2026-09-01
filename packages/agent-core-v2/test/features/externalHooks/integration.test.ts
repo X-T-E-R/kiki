@@ -289,6 +289,24 @@ describe('IExternalHooksRunnerService integration', () => {
     expect(dangerous[0]?.reason).toContain('rm -rf');
   });
 
+  it('blocks PreToolUse when the hook times out', async () => {
+    const engine = makeHookRunner([
+      {
+        event: 'PreToolUse',
+        matcher: 'Bash',
+        command: nodeCommand('setTimeout(() => {}, 10000);'),
+        timeout: 0.05,
+      },
+    ]);
+
+    await expect(
+      engine.triggerBlock('PreToolUse', {
+        matcherValue: 'Bash',
+        inputData: { toolName: 'Bash', toolInput: { command: 'printf safe' } },
+      }),
+    ).resolves.toEqual({ block: true, reason: 'Blocked by PreToolUse hook' });
+  });
+
   it('honors a Stop hook returning permissionDecision=deny by producing a block result with reason', async () => {
     const engine = makeHookRunner([
       {

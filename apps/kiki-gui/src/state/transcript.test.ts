@@ -648,6 +648,38 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(user?.id).toBe(`user-${USER_MESSAGE_ID}`);
   });
 
+  it('anchors turn timing only to a running turn with a valid startedAt timestamp', () => {
+    const running = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      userTurnSnapshot({ streaming: true }),
+    );
+    expect(running.turnStartedAt).toBe(Date.parse(FIXED_AT));
+
+    const completed = projectAgentTranscriptView(running, 'main', userTurnSnapshot());
+    expect(completed.turnStartedAt).toBeUndefined();
+
+    const invalid = projectAgentTranscriptView(
+      completed,
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't2',
+            ordinal: 2,
+            state: 'running',
+            origin: { kind: 'user' },
+            startedAt: 'not-an-iso-timestamp',
+            steps: [],
+          },
+        ],
+        meta: { activity: 'turn' },
+      }),
+    );
+    expect(invalid.turnStartedAt).toBeUndefined();
+  });
+
   it('gives regenerate/fork a durable assistant message identity without parsing block ids', () => {
     const projected = projectAgentTranscriptView(
       createViewState('session_test'),

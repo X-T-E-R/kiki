@@ -1,7 +1,7 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
 import { z } from 'zod';
 
-import { Event2 } from '#/app/event/event2';
+import { Event2, registerEvent2Class } from '#/app/event/event2';
 import { defineState } from '#/state/state';
 
 import type { AgentTaskNotificationContext } from './task';
@@ -41,11 +41,23 @@ export class TaskTerminatedNotice extends Event2<TaskTerminatedNoticePayload> {
 }
 export interface TaskTerminatedNotice extends TaskTerminatedNoticePayload {}
 
+const taskNotifiedSchema: z.ZodType<AgentTaskNotificationContext> = z.object({
+  notificationType: z.string(),
+  title: z.string(),
+  body: z.string(),
+  severity: z.enum(['info', 'warning']),
+  sourceKind: z.string(),
+  sourceId: z.string(),
+});
+
 export class TaskNotified extends Event2<AgentTaskNotificationContext> {
   static override readonly type = 'task.notified';
+  static override readonly durable = true;
   static override readonly observable = true;
+  static override readonly schema = taskNotifiedSchema;
 }
 export interface TaskNotified extends AgentTaskNotificationContext {}
+registerEvent2Class(TaskNotified);
 
 const taskWaitDeliveredSchema = z.object({ keys: z.array(z.string()) });
 

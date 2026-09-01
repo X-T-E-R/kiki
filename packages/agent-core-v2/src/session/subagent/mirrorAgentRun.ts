@@ -1,4 +1,6 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
+import { z } from 'zod';
+
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { userCancellationReason } from '#/_base/utils/abort';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
@@ -7,7 +9,7 @@ import { isProviderRateLimitError } from '#/kosong/contract/errors';
 import { type TokenUsage } from '#/kosong/contract/usage';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { SubagentCreatedEvent } from '#/app/telemetry/events';
-import { Event2 } from '#/app/event/event2';
+import { Event2, registerEvent2Class } from '#/app/event/event2';
 import { isAbortError } from '#/_base/utils/abort';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -30,21 +32,47 @@ export interface SubagentSpawnedPayload {
   readonly taskId?: string;
 }
 
+const subagentSpawnedSchema: z.ZodType<SubagentSpawnedPayload> = z.object({
+  subagentId: z.string(),
+  subagentName: z.string(),
+  parentToolCallId: z.string(),
+  parentToolCallUuid: z.string().optional(),
+  parentAgentId: z.string().optional(),
+  callerAgentId: z.string().optional(),
+  description: z.string().optional(),
+  userLabel: z.string().optional(),
+  swarmIndex: z.number().optional(),
+  runInBackground: z.boolean(),
+  model: z.string().optional(),
+  thinkingEffort: z.string().optional(),
+  taskId: z.string().optional(),
+});
+
 export class SubagentSpawned extends Event2<SubagentSpawnedPayload> {
   static override readonly type = 'subagent.spawned';
+  static override readonly durable = true;
   static override readonly observable = true;
+  static override readonly schema = subagentSpawnedSchema;
 }
 export interface SubagentSpawned extends SubagentSpawnedPayload {}
+registerEvent2Class(SubagentSpawned);
 
 export interface SubagentStartedPayload {
   readonly subagentId: string;
 }
 
+const subagentStartedSchema: z.ZodType<SubagentStartedPayload> = z.object({
+  subagentId: z.string(),
+});
+
 export class SubagentStarted extends Event2<SubagentStartedPayload> {
   static override readonly type = 'subagent.started';
+  static override readonly durable = true;
   static override readonly observable = true;
+  static override readonly schema = subagentStartedSchema;
 }
 export interface SubagentStarted extends SubagentStartedPayload {}
+registerEvent2Class(SubagentStarted);
 
 export interface SubagentCompletedPayload {
   readonly subagentId: string;
@@ -53,22 +81,40 @@ export interface SubagentCompletedPayload {
   readonly contextTokens?: number;
 }
 
+const subagentCompletedSchema: z.ZodType<SubagentCompletedPayload> = z.object({
+  subagentId: z.string(),
+  resultSummary: z.string(),
+  usage: z.custom<TokenUsage>().optional(),
+  contextTokens: z.number().optional(),
+});
+
 export class SubagentCompleted extends Event2<SubagentCompletedPayload> {
   static override readonly type = 'subagent.completed';
+  static override readonly durable = true;
   static override readonly observable = true;
+  static override readonly schema = subagentCompletedSchema;
 }
 export interface SubagentCompleted extends SubagentCompletedPayload {}
+registerEvent2Class(SubagentCompleted);
 
 export interface SubagentFailedPayload {
   readonly subagentId: string;
   readonly error: string;
 }
 
+const subagentFailedSchema: z.ZodType<SubagentFailedPayload> = z.object({
+  subagentId: z.string(),
+  error: z.string(),
+});
+
 export class SubagentFailed extends Event2<SubagentFailedPayload> {
   static override readonly type = 'subagent.failed';
+  static override readonly durable = true;
   static override readonly observable = true;
+  static override readonly schema = subagentFailedSchema;
 }
 export interface SubagentFailed extends SubagentFailedPayload {}
+registerEvent2Class(SubagentFailed);
 
 export interface AgentRunSpawnedMeta {
   readonly profileName: string;

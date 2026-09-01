@@ -1,7 +1,10 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { lstat, mkdtemp, rm } from 'node:fs/promises';
+import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createConnection } from 'node:net';
+import { createInterface } from 'node:readline';
+import { fileURLToPath } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -14,12 +17,14 @@ import { createFrameDecoder, encodeCall, encodeHello, encodeTokens } from '#/app
 import { HomeRuntimeError } from '#/app/runtimeHost/errors';
 import {
   RUNTIME_MAX_FRAME_BYTES,
+  type RuntimeHostStatus,
   type RuntimeMethodContext,
 } from '#/app/runtimeHost/messages';
 import {
   bootstrapHomeIdentity,
   endpointPathFor,
   isEndpointLive,
+  readPersistedOwner,
   type CommittedOwnerRecord,
 } from '#/app/runtimeHost/paths';
 import { IHomeRuntimeService } from '#/app/runtimeHost/runtimeHost';
@@ -105,16 +110,94 @@ async function connectRaw(endpoint: string): Promise<ReturnType<typeof createCon
   return socket;
 }
 
+type WorkerEvent =
+  | { readonly type: 'ready'; readonly status: RuntimeHostStatus }
+  | { readonly type: 'status'; readonly status: RuntimeHostStatus }
+  | { readonly type: 'handler-started'; readonly requestId: string }
+  | { readonly type: 'call-result'; readonly id: string; readonly value: unknown }
+  | { readonly type: 'call-error'; readonly id: string; readonly code?: string; readonly causeCode?: string; readonly message: string }
+  | { readonly type: 'closed' };
+
+interface RuntimeWorker {
+  readonly child: ChildProcessWithoutNullStreams;
+  readonly events: WorkerEvent[];
+  readonly stderr: string[];
+}
+
+const runtimeWorkerFixture = fileURLToPath(new URL('./fixtures/runtime-host-worker.mts', import.meta.url));
+
+function spawnRuntimeWorker(homeDir: string): RuntimeWorker {
+  const child = spawn(
+    process.execPath,
+    ['--import', 'tsx', runtimeWorkerFixture, homeDir],
+    { cwd: join(import.meta.dirname, '../../..'), stdio: 'pipe' },
+  );
+  const events: WorkerEvent[] = [];
+  const stderr: string[] = [];
+  const lines = createInterface({ input: child.stdout });
+  lines.on('line', (line) => events.push(JSON.parse(line) as WorkerEvent));
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk: string) => stderr.push(chunk));
+  return { child, events, stderr };
+}
+
+function sendWorkerCommand(worker: RuntimeWorker, command: unknown): void {
+  worker.child.stdin.write(`${JSON.stringify(command)}\n`);
+}
+
+async function waitForWorkerEvent<T extends WorkerEvent>(
+  worker: RuntimeWorker,
+  predicate: (event: WorkerEvent) => event is T,
+  timeoutMs = 8_000,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    const event = worker.events.find(predicate);
+    if (event !== undefined) return event;
+    if (worker.child.exitCode !== null || worker.child.signalCode !== null) {
+      throw new Error(`runtime worker exited before expected event: ${worker.stderr.join('')}`);
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`runtime worker event timed out: ${worker.stderr.join('')}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+async function killRuntimeWorker(worker: RuntimeWorker): Promise<void> {
+  if (worker.child.exitCode !== null || worker.child.signalCode !== null) return;
+  const exited = new Promise<void>((resolve) => worker.child.once('exit', () => resolve()));
+  if (!worker.child.kill('SIGKILL')) throw new Error('failed to kill runtime worker');
+  await Promise.race([
+    exited,
+    new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('runtime worker kill timed out')), 8_000)),
+  ]);
+}
+
+async function closeRuntimeWorker(worker: RuntimeWorker): Promise<void> {
+  if (worker.child.exitCode !== null || worker.child.signalCode !== null) return;
+  const exited = new Promise<void>((resolve) => worker.child.once('exit', () => resolve()));
+  sendWorkerCommand(worker, { type: 'close' });
+  await waitForWorkerEvent(worker, (event): event is Extract<WorkerEvent, { type: 'closed' }> => event.type === 'closed');
+  worker.child.stdin.end();
+  await Promise.race([
+    exited,
+    new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('runtime worker close timed out')), 8_000)),
+  ]);
+}
+
 describe('home runtime broker', () => {
   let homeDir: string;
   const runtimes: IHomeRuntimeService[] = [];
   const instantiations: TestInstantiationService[] = [];
+  const workers: RuntimeWorker[] = [];
 
   beforeEach(async () => {
     homeDir = await mkdtemp(join(tmpdir(), 'runtime-host-'));
   });
 
   afterEach(async () => {
+    await Promise.allSettled(workers.splice(0).map(killRuntimeWorker));
     await Promise.allSettled(runtimes.splice(0).map((runtime) => runtime.close()));
     for (const ix of instantiations.splice(0)) ix.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
@@ -139,6 +222,93 @@ describe('home runtime broker', () => {
     await waitUntil(() => client.status().role === 'owner' && client.status().ready);
     expect(client.status().epoch).toBeGreaterThan(epoch);
   });
+
+  it('replaces a hard-killed owner with a higher epoch despite its stale endpoint record', async () => {
+    const owner = spawnRuntimeWorker(homeDir);
+    workers.push(owner);
+    const original = await waitForWorkerEvent(
+      owner,
+      (event): event is Extract<WorkerEvent, { type: 'ready' }> => event.type === 'ready',
+    );
+    expect(original.status.role).toBe('owner');
+    const identity = await bootstrapHomeIdentity(process.platform, homeDir);
+    const endpoint = endpointPathFor(process.platform, identity.canonicalHomeDir);
+    const committed = await readPersistedOwner(identity.canonicalHomeDir);
+    expect(committed).toMatchObject({ ownerHostId: original.status.hostId, epoch: original.status.epoch });
+
+    await killRuntimeWorker(owner);
+    expect(await readPersistedOwner(identity.canonicalHomeDir)).toEqual(committed);
+    expect(await isEndpointLive(endpoint)).toBe(false);
+    if (process.platform !== 'win32') expect((await lstat(endpoint)).isSocket()).toBe(true);
+
+    const successor = spawnRuntimeWorker(homeDir);
+    workers.push(successor);
+    const recovered = await waitForWorkerEvent(
+      successor,
+      (event): event is Extract<WorkerEvent, { type: 'ready' }> => event.type === 'ready',
+    );
+    expect(recovered.status).toMatchObject({ role: 'owner', ready: true });
+    expect(recovered.status.hostId).not.toBe(original.status.hostId);
+    expect(recovered.status.epoch).toBeGreaterThan(original.status.epoch);
+    expect(await readPersistedOwner(identity.canonicalHomeDir)).toMatchObject({
+      ownerHostId: recovered.status.hostId,
+      epoch: recovered.status.epoch,
+    });
+    await closeRuntimeWorker(successor);
+  }, 30_000);
+
+  it('rejects a half-open call and lets the surviving client take over after owner SIGKILL', async () => {
+    const owner = spawnRuntimeWorker(homeDir);
+    workers.push(owner);
+    const ownerReady = await waitForWorkerEvent(
+      owner,
+      (event): event is Extract<WorkerEvent, { type: 'ready' }> => event.type === 'ready',
+    );
+    expect(ownerReady.status.role).toBe('owner');
+
+    const client = spawnRuntimeWorker(homeDir);
+    workers.push(client);
+    const clientReady = await waitForWorkerEvent(
+      client,
+      (event): event is Extract<WorkerEvent, { type: 'ready' }> => event.type === 'ready',
+    );
+    expect(clientReady.status).toMatchObject({ role: 'client', ready: true, epoch: ownerReady.status.epoch });
+
+    sendWorkerCommand(client, { type: 'call', id: 'blocked-call', method: 'block', payload: null, timeoutMs: 20_000 });
+    await waitForWorkerEvent(
+      owner,
+      (event): event is Extract<WorkerEvent, { type: 'handler-started' }> =>
+        event.type === 'handler-started' && event.requestId === 'blocked-call',
+    );
+    await killRuntimeWorker(owner);
+
+    const failure = await waitForWorkerEvent(
+      client,
+      (event): event is Extract<WorkerEvent, { type: 'call-error' }> =>
+        event.type === 'call-error' && event.id === 'blocked-call',
+    );
+    expect(['runtime.connection_failed', 'runtime.owner_gone']).toContain(failure.code);
+    const takeover = await waitForWorkerEvent(
+      client,
+      (event): event is Extract<WorkerEvent, { type: 'status' }> =>
+        event.type === 'status' && event.status.role === 'owner' && event.status.ready,
+    );
+    expect(takeover.status.epoch).toBeGreaterThan(ownerReady.status.epoch);
+
+    sendWorkerCommand(client, { type: 'call', id: 'after-kill', method: 'echo', payload: { recovered: true } });
+    const result = await waitForWorkerEvent(
+      client,
+      (event): event is Extract<WorkerEvent, { type: 'call-result' }> =>
+        event.type === 'call-result' && event.id === 'after-kill',
+    );
+    expect(result.value).toEqual({ recovered: true });
+    const identity = await bootstrapHomeIdentity(process.platform, homeDir);
+    expect(await readPersistedOwner(identity.canonicalHomeDir)).toMatchObject({
+      ownerHostId: takeover.status.hostId,
+      epoch: takeover.status.epoch,
+    });
+    await closeRuntimeWorker(client);
+  }, 30_000);
 
   it('serves owner calls directly and keeps timed-out request fences until handler settlement', async () => {
     const created = service(homeDir);
