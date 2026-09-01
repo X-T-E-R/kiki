@@ -83,6 +83,7 @@ describe('SessionExternalDelegationService', () => {
   let agentMetas: Record<string, AgentMeta>;
   let completions: Array<{ resolve(value: { summary: string; usage?: TokenUsage }): void; reject(error: unknown): void }>;
   let nextRunHandleGate: Promise<void> | undefined;
+  let onRunAbort: ((agentId: string) => void) | undefined;
   let runSignals: AbortSignal[];
   let runAgentIds: string[];
   let runPrompts: string[];
@@ -92,6 +93,7 @@ describe('SessionExternalDelegationService', () => {
   let sentMessages: Parameters<IAgentCollaborationMessagingService['send']>[0][];
   let messagesByKey: Map<string, AgentMessageAcceptance>;
   let wireRecords: Map<string, WireRecord[]>;
+  let journalYield: (() => Promise<void>) | undefined;
 
   beforeEach(() => {
     disposables = new DisposableStore();
@@ -101,6 +103,7 @@ describe('SessionExternalDelegationService', () => {
     agentMetas = { main: { type: 'main', labels: {} } };
     completions = [];
     nextRunHandleGate = undefined;
+    onRunAbort = undefined;
     runSignals = [];
     runAgentIds = [];
     runPrompts = [];
@@ -109,6 +112,7 @@ describe('SessionExternalDelegationService', () => {
     sentMessages = [];
     messagesByKey = new Map();
     wireRecords = new Map();
+    journalYield = undefined;
 
     ix.stub(IFlagService, { enabled: () => true });
     ix.stub(IAtomicDocumentStore, {
@@ -190,7 +194,10 @@ describe('SessionExternalDelegationService', () => {
         seal: async () => {},
         appendRecord: (record: WireRecord) => { wireRecords.get(id)!.push(record); },
         readJournal: () => (async function* () {
-          yield* wireRecords.get(id)!;
+          for (const record of wireRecords.get(id)!) {
+            await journalYield?.();
+            yield record;
+          }
         })(),
         flush: async () => {},
       });
@@ -253,6 +260,12 @@ describe('SessionExternalDelegationService', () => {
         let reject!: (error: unknown) => void;
         const completion = new Promise<{ summary: string; usage?: TokenUsage }>((res, rej) => { resolve = res; reject = rej; });
         completions.push({ resolve, reject });
+        const abort = (): void => {
+          onRunAbort?.(agentId);
+          reject(opts.signal.reason);
+        };
+        if (opts.signal.aborted) abort();
+        else opts.signal.addEventListener('abort', abort, { once: true });
         return { agentId, turn: {} as never, completion };
       },
     });
@@ -706,6 +719,49 @@ describe('SessionExternalDelegationService', () => {
     expect(repeated.items).toEqual(turnEvents.items);
   });
 
+  it('isolates concurrent journal rebuild readers', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
+    wireRecords.get('main')!.push(
+      {
+        type: 'turn.prompt',
+        time: 1,
+        turnId: 1,
+        input: [{ type: 'text', text: 'work' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 2,
+        event: { type: 'step.begin', uuid: 's1', turnId: '1', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 3,
+        event: {
+          type: 'content.part',
+          stepUuid: 's1',
+          turnId: '1',
+          step: 1,
+          uuid: 'm1',
+          part: { type: 'text', text: 'answer' },
+        },
+      },
+    );
+    journalYield = async () => { await Promise.resolve(); };
+
+    const [eventsA, itemsA, eventsB, itemsB] = await Promise.all([
+      service.events({ authority, dispatchId: dispatch.dispatchId, detail: 'turn' }),
+      service.transcript({ authority, dispatchId: dispatch.dispatchId, detail: 'items' }),
+      service.events({ authority, dispatchId: dispatch.dispatchId, detail: 'turn' }),
+      service.transcript({ authority, dispatchId: dispatch.dispatchId, detail: 'items' }),
+    ]);
+    expect(eventsA).toEqual(eventsB);
+    expect(itemsA).toEqual(itemsB);
+    expect(eventsA.items.map((item) => item.event.type)).toEqual(['message.delta']);
+    expect(itemsA).toMatchObject({ items: [{ kind: 'turn', turnId: 't1' }] });
+  });
+
   it('freezes each dispatch slice across later runs and journal rebuilds', async () => {
     const service = ix.get(ISessionExternalDelegationService);
     const first = await service.dispatch({ authority, target: 'main', message: 'first' });
@@ -888,6 +944,30 @@ describe('SessionExternalDelegationService', () => {
         event: { type: 'step.end', uuid: 's3', turnId: '3', step: 1 },
       },
       { type: 'turn.ended', time: 7, turnId: 3, reason: 'completed' },
+      {
+        type: 'turn.prompt',
+        time: 8,
+        turnId: 4,
+        input: [{ type: 'text', text: 'later prompt' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 9,
+        event: { type: 'step.begin', uuid: 's4', turnId: '4', step: 1 },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 10,
+        event: {
+          type: 'content.part',
+          stepUuid: 's4',
+          turnId: '4',
+          step: 1,
+          uuid: 'm4',
+          part: { type: 'text', text: 'later answer' },
+        },
+      },
     ]);
     documents.set('root', {
       version: 1,
@@ -934,6 +1014,11 @@ describe('SessionExternalDelegationService', () => {
         }],
       }],
     });
+    expect((await service.transcript({
+      authority,
+      dispatchId: 'dispatch_durable',
+      detail: 'items',
+    })).items.map((item) => item.kind === 'turn' ? item.turnId : item.kind)).toEqual(['t3']);
     expect((await service.events({
       authority,
       dispatchId: 'dispatch_durable',
@@ -1565,6 +1650,68 @@ describe('SessionExternalDelegationService', () => {
     const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
     expect((await service.cancel({ authority, dispatchId: dispatch.dispatchId })).status).toBe('cancelled');
     expect((await service.cancel({ authority, dispatchId: dispatch.dispatchId })).status).toBe('cancelled');
+  });
+
+  it('claims cancellation once and seals after aborted execution records settle', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
+    const records = wireRecords.get('main')!;
+    records.push(
+      {
+        type: 'turn.prompt',
+        time: 1,
+        turnId: 1,
+        input: [{ type: 'text', text: 'work' }],
+        origin: { kind: 'user' },
+      },
+      {
+        type: 'context.append_loop_event',
+        time: 2,
+        event: { type: 'step.begin', uuid: 's1', turnId: '1', step: 1 },
+      },
+    );
+    onRunAbort = () => {
+      records.push(
+        {
+          type: 'context.append_loop_event',
+          time: 3,
+          event: {
+            type: 'content.part',
+            stepUuid: 's1',
+            turnId: '1',
+            step: 1,
+            uuid: 'm1',
+            part: { type: 'text', text: 'interrupted partial' },
+          },
+        },
+        { type: 'turn.ended', time: 4, turnId: 1, reason: 'cancelled' },
+      );
+    };
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('running');
+    });
+
+    const [first, second] = await Promise.all([
+      service.cancel({ authority, dispatchId: dispatch.dispatchId }),
+      service.cancel({ authority, dispatchId: dispatch.dispatchId }),
+    ]);
+    expect(first.status).toBe('cancelled');
+    expect(second.status).toBe('cancelled');
+    const lifecycle = await service.events({ authority, dispatchId: dispatch.dispatchId });
+    expect(lifecycle.items.map((event) => event.type)).toEqual(['queued', 'started', 'cancelled']);
+    expect(lifecycle.items.filter((event) => event.type === 'cancelled')).toHaveLength(1);
+    await expect(service.transcript({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      detail: 'items',
+    })).resolves.toMatchObject({
+      items: [{
+        kind: 'turn',
+        turnId: 't1',
+        state: 'cancelled',
+        steps: [{ frames: [{ kind: 'text', text: 'interrupted partial' }] }],
+      }],
+    });
   });
 
   it('pages results with the admitted byte limit instead of rejecting limits above the default page size', async () => {

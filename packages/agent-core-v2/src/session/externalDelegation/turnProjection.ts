@@ -20,16 +20,30 @@ export class AgentTurnProjection {
   private nextSeq = 1;
   private readonly events: ExternalTurnEventView[] = [];
   private readonly items: SequencedItem[] = [];
+  private readonly watermarks: { readonly time: number; readonly cursor: number }[] = [];
 
   get cursor(): number {
     return this.nextSeq - 1;
+  }
+
+  cursorAt(time: number): number {
+    let cursor = 0;
+    for (const watermark of this.watermarks) {
+      if (watermark.time > time) break;
+      cursor = watermark.cursor;
+    }
+    return cursor;
   }
 
   async rebuild(records: AsyncIterable<WireRecord>): Promise<void> {
     this.nextSeq = 1;
     this.events.length = 0;
     this.items.length = 0;
-    for await (const record of records) this.replayRecord(record);
+    this.watermarks.length = 0;
+    for await (const record of records) {
+      this.replayRecord(record);
+      this.watermarks.push({ time: record.time ?? 0, cursor: this.cursor });
+    }
   }
 
   eventPage(
