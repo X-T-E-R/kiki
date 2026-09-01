@@ -270,12 +270,11 @@ interface RedactedFailure {
 function redactedMessage(error: unknown): RedactedFailure {
   if (error instanceof z.ZodError) return { message: 'Invalid external delegation request.' };
   if (isError2(error)) {
-    if (error.code === ErrorCodes.REQUEST_INVALID) {
-      const failureCode = error.details?.['failure_code'];
-      return failureCode === EXTERNAL_INTERACTION_NOT_OWNED_CODE
-        ? { message: error.message, details: { failure_code: failureCode } }
-        : { message: error.message };
+    const failureCode = error.details?.['failure_code'];
+    if (failureCode === EXTERNAL_INTERACTION_NOT_OWNED_CODE) {
+      return { message: error.message, details: { failure_code: failureCode } };
     }
+    if (error.code === ErrorCodes.REQUEST_INVALID) return { message: error.message };
     // Already-classified failures pass their category code and the
     // domain-owned description through — never the raw provider text; only
     // unclassified internal failures stay collapsed.

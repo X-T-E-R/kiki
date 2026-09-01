@@ -15,7 +15,7 @@ import { Emitter } from '#/_base/event';
 import { IEventBus } from '#/app/event/eventBus';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
-import { Error2, ErrorCodes, isError2, toKimiErrorPayload } from '#/errors';
+import { Error2, ErrorCodes, isError2, toKimiErrorPayload, type ErrorCode } from '#/errors';
 import { IFlagService } from '#/app/flag/flag';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -1199,7 +1199,7 @@ function contextText(content: unknown): string {
 
 function interactionNotOwned(): Error2 {
   return new Error2(
-    ErrorCodes.REQUEST_INVALID,
+    EXTERNAL_INTERACTION_NOT_OWNED_CODE as ErrorCode,
     'Interaction is not owned by this delegation.',
     { details: { failure_code: EXTERNAL_INTERACTION_NOT_OWNED_CODE } },
   );

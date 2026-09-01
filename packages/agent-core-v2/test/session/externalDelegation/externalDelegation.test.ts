@@ -488,6 +488,7 @@ describe('SessionExternalDelegationService', () => {
       interactionId: 'approval-main',
       response: { decision: 'approved' },
     })).rejects.toMatchObject({
+      code: EXTERNAL_INTERACTION_NOT_OWNED_CODE,
       details: { failure_code: EXTERNAL_INTERACTION_NOT_OWNED_CODE },
     });
     await expect(service.respond({
