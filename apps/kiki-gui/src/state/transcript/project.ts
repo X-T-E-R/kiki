@@ -589,8 +589,8 @@ function overlaySubagentBlock(block: SubagentBlock, snapshot: SnapshotSubagent):
     description: block.description ?? presentText(snapshot.description),
     parentToolCallId: block.parentToolCallId ?? presentText(snapshot.parent_tool_call_id),
     parentAgentId: block.parentAgentId ?? presentText(snapshot.parent_agent_id),
-    startedAt: block.startedAt !== '' ? block.startedAt : snapshot.started_at ?? snapshot.created_at ?? block.startedAt,
-    endedAt: block.endedAt ?? snapshot.completed_at,
+    startedAt: block.startedAt ?? presentText(snapshot.started_at),
+    endedAt: block.endedAt ?? presentText(snapshot.completed_at),
     summary: block.summary ?? presentText(snapshot.output_preview),
     toolCallCount:
       snapshotCount === undefined ? block.toolCallCount : Math.max(block.toolCallCount, snapshotCount),
@@ -631,7 +631,7 @@ function blockTimelineMs(block: Block): number | undefined {
     case 'skill':
       return timestampMs(block.createdAt);
     case 'tool':
-      return block.startedAt > 0 ? block.startedAt : undefined;
+      return block.startedAt !== undefined && block.startedAt > 0 ? block.startedAt : undefined;
     case 'subagent':
       return timestampMs(block.startedAt);
     case 'approval':
@@ -747,7 +747,7 @@ function subagentBlocksFromSnapshot(
       const task = taskById.get(item.taskId);
       if (task?.kind !== 'subagent' || task.agentId === undefined || task.agentId === '') continue;
       const existing = byAgent.get(task.agentId);
-      const startedAt = item.at ?? task.startedAt ?? existing?.startedAt ?? '';
+      const startedAt = item.at ?? task.startedAt ?? existing?.startedAt;
       byAgent.set(task.agentId, {
         kind: 'subagent',
         id: `subagent-${task.agentId}`,
@@ -810,7 +810,7 @@ function subagentBlocksFromSnapshot(
               (task?.outputTail === '' ? undefined : task?.outputTail),
             error: existing?.error ?? task?.error,
             usage: existing?.usage ?? task?.usage,
-            startedAt: existing?.startedAt || task?.startedAt || step.startedAt || item.startedAt || '',
+            startedAt: existing?.startedAt ?? task?.startedAt ?? frame.startedAt,
             endedAt: existing?.endedAt ?? task?.endedAt,
             toolCallCount: existing?.toolCallCount ?? 0,
             transcript: [],
@@ -1597,7 +1597,7 @@ export function agentTranscriptToBlocks(
       }
     }
     const blockStart = blocks.length;
-    const origin = originFromTurnItem(item) ?? { kind: 'task', taskId: response.agent_id };
+    const origin = originFromTurnItem(item);
     const identity = identityFromTurnOrigin(origin);
     const turnUserMessageId = turnMessageId(item) ?? identity.userMessageId;
     let projectedTurnPrompt = false;
@@ -1701,8 +1701,8 @@ export function agentTranscriptToBlocks(
             });
             break;
           case 'tool': {
-            const startedAt = new Date(frame.startedAt ?? step.startedAt ?? item.startedAt ?? '').getTime();
-            const endedAt = new Date(frame.endedAt ?? step.endedAt ?? item.endedAt ?? '').getTime();
+            const startedAt = timestampMs(frame.startedAt);
+            const endedAt = timestampMs(frame.endedAt);
             const toolFrame = frame as typeof frame & { view?: string; taskId?: string };
             const task = toolFrame.taskId === undefined ? undefined : taskById.get(toolFrame.taskId);
             const shellTask = task?.kind === 'shell' ? task : undefined;
@@ -1744,9 +1744,7 @@ export function agentTranscriptToBlocks(
                       shellTask.state === 'timed_out' ||
                       shellTask.state === 'killed' ||
                       shellTask.state === 'lost',
-                startedAt:
-                  timestampMs(shellTask?.startedAt) ??
-                  (Number.isNaN(startedAt) ? undefined : startedAt),
+                startedAt: timestampMs(shellTask?.startedAt) ?? startedAt,
                 turnId: item.turnId,
               });
               break;
@@ -1763,11 +1761,17 @@ export function agentTranscriptToBlocks(
               status: frame.state === 'error' ? 'error' : frame.state === 'interrupted' ? 'stopped' : frame.state,
               output: frame.output ?? frame.error,
               isError: frame.state === 'error',
-              startedAt: Number.isNaN(startedAt) ? 0 : startedAt,
+              startedAt,
               durationMs:
-                Number.isNaN(startedAt) || Number.isNaN(endedAt)
-                  ? item.durationMs
-                  : Math.max(0, endedAt - startedAt),
+                startedAt !== undefined && endedAt !== undefined
+                  ? Math.max(0, endedAt - startedAt)
+                  : item.durationMs,
+              durationSource:
+                startedAt !== undefined && endedAt !== undefined
+                  ? 'frame'
+                  : item.durationMs === undefined
+                    ? undefined
+                    : 'turn',
               progressText: frame.progress?.text,
               agentRefs: frame.agentRefs,
               turnId: item.turnId,

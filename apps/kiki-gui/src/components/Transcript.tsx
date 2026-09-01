@@ -542,16 +542,34 @@ const ShellMessage = memo(function ShellMessage({ block }: { block: ShellBlock }
   );
 });
 
-function useSubagentElapsed(block: SubagentBlock): number {
+/**
+ * Parse an ISO timeline timestamp that may be absent (undefined / the
+ * legacy '' sentinel) or unparseable; undefined means "unknown", never 0.
+ */
+function parseTimelineMs(value: string | undefined): number | undefined {
+  if (value === undefined || value === '') return undefined;
+  const ms = new Date(value).getTime();
+  return Number.isNaN(ms) ? undefined : ms;
+}
+
+/**
+ * Elapsed time for a subagent card. undefined when either end is genuinely
+ * unknown (the card then shows an explicit "—" instead of a fabricated 0ms);
+ * a running agent with a real start ticks against the live clock.
+ */
+function useSubagentElapsed(block: SubagentBlock): number | undefined {
+  const live = block.endedAt === undefined && block.status === 'running';
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (block.endedAt !== undefined || block.status !== 'running') return;
+    if (!live) return;
     const timer = setInterval(() => { setNow(Date.now()); }, 1000);
     return () => { clearInterval(timer); };
-  }, [block.endedAt, block.status]);
-  const start = new Date(block.startedAt).getTime();
-  const end = block.endedAt === undefined ? now : new Date(block.endedAt).getTime();
-  return Number.isNaN(start) || Number.isNaN(end) ? 0 : Math.max(0, end - start);
+  }, [live]);
+  const start = parseTimelineMs(block.startedAt);
+  if (start === undefined) return undefined;
+  const end = live ? now : parseTimelineMs(block.endedAt);
+  if (end === undefined) return undefined;
+  return Math.max(0, end - start);
 }
 
 function subagentStatusTone(status: AgentTreeNode['status'] | SubagentBlock['status']): string {
@@ -590,7 +608,8 @@ function SubagentCardBody({
   thinkingEffort?: string;
   description?: string;
   error?: string;
-  elapsed: number;
+  /** undefined = start or end unknown — rendered as an explicit "—". */
+  elapsed: number | undefined;
 }) {
   const { t, tp, time } = useI18n();
   const busy = status === 'running' || status === 'background';
@@ -605,8 +624,11 @@ function SubagentCardBody({
             {model}
           </span>
         ) : null}
-        <span className="ml-auto shrink-0 font-mono text-[10px] text-ink-faint">
-          {time.formatDuration(elapsed)}
+        <span
+          className="ml-auto shrink-0 font-mono text-[10px] text-ink-faint"
+          title={elapsed === undefined ? t('transcript.durationUnknown') : undefined}
+        >
+          {elapsed === undefined ? '—' : time.formatDuration(elapsed)}
         </span>
         <span aria-hidden className="text-[10px] text-ink-faint transition-transform group-hover:translate-x-0.5">→</span>
       </div>
@@ -758,7 +780,7 @@ function syntheticChildBlock(node: AgentTreeNode): SubagentBlock {
     status,
     summary: node.summary,
     error: node.error,
-    startedAt: node.startedAt ?? '',
+    startedAt: node.startedAt,
     endedAt: node.endedAt,
     toolCallCount: node.toolCallCount,
     transcript: [],
@@ -1355,8 +1377,10 @@ const TURN_CLOCK_AFTER_MS = 15_000;
  * Turn-level running signal (deepseek-harness's TurnStatus, MIT): a
  * status line for the gaps where no token is streaming (first-token wait,
  * tool execution between steps), with a cumulative clock once the turn has
- * run ≥15s. Anchored to the live `turn.started` frame; a mid-turn reload
- * (snapshot attach) falls back to mount time.
+ * run ≥15s. The clock anchors ONLY to the live `turn.started` frame — when
+ * no real start is known (e.g. a mid-turn reload whose snapshot carries no
+ * running-turn timestamp) the line still names the wait but shows no clock
+ * rather than timing from an arbitrary mount point.
  */
 const TurnStatusLine = memo(function TurnStatusLine({
   startedAt,
@@ -1366,15 +1390,16 @@ const TurnStatusLine = memo(function TurnStatusLine({
   retry?: TurnRetryInfo;
 }) {
   const { t, time } = useI18n();
-  const [mountedAt] = useState(() => Date.now());
-  const anchor = startedAt ?? mountedAt;
-  const [elapsedMs, setElapsedMs] = useState(() => Math.max(0, Date.now() - anchor));
+  const [elapsedMs, setElapsedMs] = useState(() =>
+    startedAt === undefined ? 0 : Math.max(0, Date.now() - startedAt),
+  );
   useEffect(() => {
-    const tick = () => { setElapsedMs(Math.max(0, Date.now() - anchor)); };
+    if (startedAt === undefined) return;
+    const tick = () => { setElapsedMs(Math.max(0, Date.now() - startedAt)); };
     tick();
     const timer = setInterval(tick, 1000);
     return () => { clearInterval(timer); };
-  }, [anchor]);
+  }, [startedAt]);
   // A provider retry names the wait: cause + attempt counter + backoff delay,
   // in warn tone, so a failing relay reads as such instead of a stuck tool.
   const retryText =
@@ -1395,7 +1420,7 @@ const TurnStatusLine = memo(function TurnStatusLine({
     >
       <span className={`status-dot-busy h-1.5 w-1.5 rounded-full ${retryText === undefined ? 'bg-accent' : 'bg-amber-ink'}`} />
       <span>{retryText ?? t('transcript.turnWorking')}</span>
-      {elapsedMs >= TURN_CLOCK_AFTER_MS ? (
+      {startedAt !== undefined && elapsedMs >= TURN_CLOCK_AFTER_MS ? (
         <span aria-hidden className="font-mono text-[10.5px] tabular-nums text-ink-faint/80">
           {time.formatDuration(elapsedMs)}
         </span>

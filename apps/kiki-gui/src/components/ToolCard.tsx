@@ -332,9 +332,16 @@ export const ToolCard = memo(function ToolCard({
             {block.progressText}
           </span>
         ) : null}
-        {block.durationMs !== undefined ? (
+        {block.durationMs !== undefined && block.durationSource === 'frame' ? (
           <span className="shrink-0 font-mono text-[10.5px] text-ink-faint">
             {time.formatDuration(block.durationMs)}
+          </span>
+        ) : block.status !== 'running' ? (
+          <span
+            className="shrink-0 font-mono text-[10.5px] text-ink-faint/60"
+            title={t('transcript.durationUnknown')}
+          >
+            —
           </span>
         ) : null}
         <StatusIcon block={block} />

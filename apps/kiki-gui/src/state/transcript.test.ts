@@ -17,6 +17,8 @@ import {
   userTurnSnapshot,
 } from './__fixtures__/canonicalTranscript';
 
+import type { AgentTranscriptResponse } from '../lib/client';
+
 import {
   appendLocalUserMessage,
   agentTranscriptToBlocks,
@@ -39,6 +41,7 @@ import {
   turnExecutionFromItem,
   type AssistantBlock,
   type SubagentBlock,
+  type ToolBlock,
   type UserBlock,
 } from './transcript';
 
@@ -2126,6 +2129,361 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(projected.blocks.filter((block) => block.kind === 'user')).toHaveLength(1);
     expect(projected.blocks.find((block) => block.kind === 'user')?.text).toBe('Keep an eye on the nightly job.');
     expect(projected.blocks.filter((block) => block.kind === 'system')).toHaveLength(4);
+  });
+
+  it('projects a no-origin turn prompt as a user block, not a fake task system block', () => {
+    // REST replay turns carry no origin field at all; the projection must not
+    // invent { kind: 'task' } for them.
+    const item: AgentTranscriptResponse['items'][number] = {
+      kind: 'turn',
+      turnId: 't-no-origin',
+      prompt: 'a prompt without any origin metadata',
+      startedAt: FIXED_AT,
+      steps: [],
+    };
+    const blocks = agentTranscriptToBlocks({ agent_id: 'main', items: [item] });
+    expect(blocks.find((block) => block.kind === 'user')).toMatchObject({
+      text: 'a prompt without any origin metadata',
+    });
+    expect(blocks.some((block) => block.kind === 'system' && block.variant === 'task')).toBe(false);
+  });
+
+  it('still classifies genuine task notification text without origin as a task system block', () => {
+    const item: AgentTranscriptResponse['items'][number] = {
+      kind: 'turn',
+      turnId: 't-notify',
+      prompt: '<notification task_id="task-9" status="completed">nightly finished</notification>',
+      startedAt: FIXED_AT,
+      steps: [],
+    };
+    const blocks = agentTranscriptToBlocks({ agent_id: 'main', items: [item] });
+    expect(blocks.find((block) => block.kind === 'system')).toMatchObject({
+      variant: 'task',
+      text: 'nightly finished',
+    });
+  });
+});
+
+describe('honest unknown timing', () => {
+  it('leaves a taskref subagent card start time undefined instead of an empty-string sentinel', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't1',
+            ordinal: 1,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'go',
+            startedAt: FIXED_AT,
+            steps: [],
+          },
+          { kind: 'taskref', refId: 'ref-no-clock', taskId: 'task-no-clock' },
+        ],
+        tasks: [
+          {
+            taskId: 'task-no-clock',
+            kind: 'subagent',
+            state: 'completed',
+            detached: false,
+            agentId: 'agent-no-clock-ref',
+            description: 'no clocks anywhere',
+            outputTail: 'done',
+          },
+        ],
+      }),
+    );
+    const card = projected.blocks.find(
+      (block): block is SubagentBlock => block.kind === 'subagent' && block.subagentId === 'agent-no-clock-ref',
+    );
+    expect(card).toBeDefined();
+    expect(card?.startedAt).toBeUndefined();
+  });
+
+  it('leaves inline subagent and tool timing undefined instead of fabricating empty-string / 0ms', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't1',
+            ordinal: 1,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'delegate',
+            durationMs: 1200,
+            steps: [
+              {
+                kind: 'step',
+                stepId: 't1.1',
+                turnId: 't1',
+                ordinal: 1,
+                state: 'completed',
+                frames: [
+                  {
+                    kind: 'tool',
+                    frameId: 'f-agent',
+                    toolCallId: 'call-agent',
+                    name: 'AgentRun',
+                    state: 'done',
+                    agentRefs: [{ agentId: 'agent-no-clock-inline' }],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const tool = projected.blocks.find(
+      (block): block is ToolBlock => block.kind === 'tool' && block.toolCallId === 'call-agent',
+    );
+    expect(tool?.startedAt).toBeUndefined();
+    expect(tool?.durationMs).toBe(1200);
+    expect(tool?.durationSource).toBe('turn');
+    const card = projected.blocks.find(
+      (block): block is SubagentBlock => block.kind === 'subagent' && block.subagentId === 'agent-no-clock-inline',
+    );
+    expect(card).toBeDefined();
+    expect(card?.startedAt).toBeUndefined();
+  });
+
+  it('keeps tool duration sourced from the turn when only the frame start exists', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't1',
+            ordinal: 1,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'half-timed',
+            durationMs: 9000,
+            steps: [
+              {
+                kind: 'step',
+                stepId: 't1.1',
+                turnId: 't1',
+                ordinal: 1,
+                state: 'completed',
+                frames: [
+                  {
+                    kind: 'tool',
+                    frameId: 'f-half',
+                    toolCallId: 'call-half',
+                    name: 'Read',
+                    state: 'done',
+                    startedAt: '2026-01-01T00:00:01.000Z',
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const tool = projected.blocks.find(
+      (block): block is ToolBlock => block.kind === 'tool' && block.toolCallId === 'call-half',
+    );
+    expect(tool?.startedAt).toBe(Date.parse('2026-01-01T00:00:01.000Z'));
+    expect(tool?.durationMs).toBe(9000);
+    expect(tool?.durationSource).toBe('turn');
+  });
+
+  it('prefers the spawning frame startedAt over step/turn boundaries for inline subagents', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't1',
+            ordinal: 1,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'delegate',
+            startedAt: '2026-01-01T00:00:00.000Z',
+            steps: [
+              {
+                kind: 'step',
+                stepId: 't1.1',
+                turnId: 't1',
+                ordinal: 1,
+                state: 'completed',
+                startedAt: '2026-01-01T00:00:10.000Z',
+                frames: [
+                  {
+                    kind: 'tool',
+                    frameId: 'f-agent',
+                    toolCallId: 'call-agent',
+                    name: 'AgentRun',
+                    state: 'done',
+                    startedAt: '2026-01-01T00:00:20.000Z',
+                    agentRefs: [{ agentId: 'agent-frame-clock' }],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const card = projected.blocks.find(
+      (block): block is SubagentBlock => block.kind === 'subagent' && block.subagentId === 'agent-frame-clock',
+    );
+    expect(card?.startedAt).toBe('2026-01-01T00:00:20.000Z');
+  });
+
+  it('leaves inline subagent timing undefined when only step/turn boundaries exist', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't1',
+            ordinal: 1,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'delegate',
+            startedAt: '2026-01-01T00:00:00.000Z',
+            steps: [
+              {
+                kind: 'step',
+                stepId: 't1.1',
+                turnId: 't1',
+                ordinal: 1,
+                state: 'completed',
+                startedAt: '2026-01-01T00:00:10.000Z',
+                frames: [
+                  {
+                    kind: 'tool',
+                    frameId: 'f-agent',
+                    toolCallId: 'call-agent',
+                    name: 'AgentRun',
+                    state: 'done',
+                    agentRefs: [{ agentId: 'agent-step-clock' }],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const card = projected.blocks.find(
+      (block): block is SubagentBlock => block.kind === 'subagent' && block.subagentId === 'agent-step-clock',
+    );
+    expect(card).toBeDefined();
+    expect(card?.startedAt).toBeUndefined();
+  });
+
+  it('does not promote snapshot created_at to the execution start time', () => {
+    const live: SubagentBlock = {
+      kind: 'subagent',
+      id: 'subagent-agent-y',
+      subagentId: 'agent-y',
+      parentAgentId: 'main',
+      parentToolCallId: undefined,
+      name: 'agent-y',
+      description: undefined,
+      model: undefined,
+      thinkingEffort: undefined,
+      status: 'running',
+      summary: undefined,
+      error: undefined,
+      endedAt: undefined,
+      toolCallCount: 0,
+      transcript: [],
+    };
+    const overlaid = overlaySnapshotSubagentFields(
+      [live],
+      [compactSnapshotSubagent({ id: 'agent-y', status: 'running', created_at: '2026-01-01T00:00:05.000Z' })],
+    );
+    const overlaidY = overlaid[0];
+    expect(overlaidY?.kind === 'subagent' ? overlaidY.startedAt : 'not-subagent').toBeUndefined();
+  });
+
+  it('prefers real frame startedAt/endedAt over step and turn fallbacks', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'turn',
+            turnId: 't1',
+            ordinal: 1,
+            state: 'completed',
+            origin: { kind: 'user' },
+            prompt: 'timed',
+            startedAt: FIXED_AT,
+            durationMs: 9999,
+            steps: [
+              {
+                kind: 'step',
+                stepId: 't1.1',
+                turnId: 't1',
+                ordinal: 1,
+                state: 'completed',
+                startedAt: FIXED_AT,
+                frames: [
+                  {
+                    kind: 'tool',
+                    frameId: 'f-timed',
+                    toolCallId: 'call-timed',
+                    name: 'Read',
+                    state: 'done',
+                    startedAt: '2026-01-01T00:00:01.000Z',
+                    endedAt: '2026-01-01T00:00:03.500Z',
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const tool = projected.blocks.find(
+      (block): block is ToolBlock => block.kind === 'tool' && block.toolCallId === 'call-timed',
+    );
+    expect(tool?.startedAt).toBe(Date.parse('2026-01-01T00:00:01.000Z'));
+    expect(tool?.durationMs).toBe(2500);
+  });
+
+  it('keeps start/end unknown when the snapshot overlay has no real timestamps either', () => {
+    const live: SubagentBlock = {
+      kind: 'subagent',
+      id: 'subagent-agent-x',
+      subagentId: 'agent-x',
+      parentAgentId: 'main',
+      parentToolCallId: undefined,
+      name: 'agent-x',
+      description: undefined,
+      model: undefined,
+      thinkingEffort: undefined,
+      status: 'running',
+      summary: undefined,
+      error: undefined,
+      endedAt: undefined,
+      toolCallCount: 0,
+      transcript: [],
+    };
+    const overlaid = overlaySnapshotSubagentFields(
+      [live],
+      [compactSnapshotSubagent({ id: 'agent-x', status: 'running', created_at: '' })],
+    );
+    expect(overlaid[0]).toMatchObject({ startedAt: undefined, endedAt: undefined });
   });
 });
 
