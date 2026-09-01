@@ -80,6 +80,7 @@ const waitSchema = z
   })
   .strict();
 const pageSchema = lookupSchema.extend({ cursor: z.number().int().nonnegative().optional(), limit: z.number().int().positive().optional() }).strict();
+const resultPageSchema = lookupSchema.extend({ cursor: z.number().int().nonnegative().optional(), limit: z.number().int().min(4).optional() }).strict();
 
 export function registerV2ExternalDelegationRoutes(
   app: ExternalDelegationRouteHost,
@@ -117,7 +118,7 @@ export function registerV2ExternalDelegationRoutes(
       timeoutMs: body.timeout_s === undefined ? undefined : body.timeout_s * 1_000,
     }),
   );
-  command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/result', pageSchema, async (service, authority, body) =>
+  command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/result', resultPageSchema, async (service, authority, body) =>
     service.result({ authority, dispatchId: body.dispatch_id, cursor: body.cursor, limit: body.limit }),
   );
   command(app, core, authorityConfig, '/sessions/:session_id/external-delegation/events', pageSchema, async (service, authority, body) =>

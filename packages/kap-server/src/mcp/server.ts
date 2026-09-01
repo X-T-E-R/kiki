@@ -7,7 +7,11 @@
  * projections.
  */
 
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
+import {
+  renderProfileCatalogEntries,
+  type DispatchProfileCatalogEntry,
+} from '@moonshot-ai/agent-core-v2';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -103,6 +107,23 @@ const transcriptPage = z
     ),
   })
   .passthrough();
+const profileCatalogEntry = z.object({
+  profileName: z.string().min(1),
+  description: z.string().optional(),
+  whenToUse: z.string().optional(),
+  modelAlias: z.string().optional(),
+  thinkingEffort: z.string().optional(),
+  allowedModels: z.array(z.string()).optional(),
+  alternativeModels: z.array(z.object({
+    alias: z.string().min(1),
+    when: z.string(),
+    thinkingEffort: z.string().optional(),
+  })),
+  tools: z.string().optional(),
+});
+const delegationRoot = z.object({
+  dispatchables: z.array(z.object({ kind: z.enum(['main', 'named']) }).passthrough()),
+}).passthrough();
 
 /**
  * Stable external failure taxonomy mirrored from
@@ -119,6 +140,12 @@ const EXTERNAL_FAILURE_CATEGORIES = new Set([
   'invalid_input',
   'internal',
 ]);
+const KIKI_LIST_DESCRIPTION = 'List admitted main/named dispatchables and owned continuations.';
+const KIKI_DISPATCH_DESCRIPTION =
+  'Dispatch main-agent work or one stable named child asynchronously. '
+  + 'task_name (named children only) must be lowercase [a-z0-9_] and must not be "root" '
+  + '(uppercase letters, hyphens, and other scripts are rejected). '
+  + 'Exact model_alias and thinking_effort bindings apply only when the named child is first created.';
 
 export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServerOptions = {}): McpServer {
   const pinnedConfig = Object.freeze({ ...config });
@@ -142,19 +169,23 @@ export function createKikiMcpServer(config: KikiMcpConfig, options: KikiMcpServe
     return { ...result(payload), isError: true };
   };
 
-  server.registerTool(
+  let dispatchTool: RegisteredTool;
+  const listTool = server.registerTool(
     'kiki_list',
-    { description: 'List admitted main/named dispatchables and owned continuations.', inputSchema: emptyInput },
-    async () => toolResult(() => client.call('list', {}).then((root) => bindRoot(root, binding))),
+    { description: KIKI_LIST_DESCRIPTION, inputSchema: emptyInput },
+    async () =>
+      toolResult(async () => {
+        const root = await client.call('list', {});
+        const catalog = profileCatalogEntries(root);
+        const rendered = renderProfileCatalogEntries(catalog);
+        updateProfileCatalogDescriptions(listTool, dispatchTool, rendered);
+        return bindRoot(root, binding);
+      }),
   );
-  server.registerTool(
+  dispatchTool = server.registerTool(
     'kiki_dispatch',
     {
-      description:
-        'Dispatch main-agent work or one stable named child asynchronously. '
-        + 'task_name (named children only) must be lowercase [a-z0-9_] and must not be "root" '
-        + '(uppercase letters, hyphens, and other scripts are rejected). '
-        + 'Exact model_alias and thinking_effort bindings apply only when the named child is first created.',
+      description: KIKI_DISPATCH_DESCRIPTION,
       inputSchema: dispatchInput,
     },
     async (input, extra) =>
@@ -430,6 +461,23 @@ function withDispatchReceipt(value: unknown, dispatchKey: string): Record<string
 
 function waitRequestTimeoutMs(timeoutSeconds: number | undefined): number {
   return (timeoutSeconds ?? 30) * 1_000 + 5_000;
+}
+
+function profileCatalogEntries(root: unknown): DispatchProfileCatalogEntry[] {
+  const parsed = delegationRoot.parse(root);
+  return parsed.dispatchables.flatMap((dispatchable) =>
+    dispatchable.kind === 'named' ? [profileCatalogEntry.parse(dispatchable)] : [],
+  );
+}
+
+function updateProfileCatalogDescriptions(
+  listTool: RegisteredTool,
+  dispatchTool: RegisteredTool,
+  rendered: string,
+): void {
+  const catalog = rendered.length === 0 ? '' : `\n\nAvailable agent profiles:\n${rendered}`;
+  listTool.update({ description: `${KIKI_LIST_DESCRIPTION}${catalog}` });
+  dispatchTool.update({ description: `${KIKI_DISPATCH_DESCRIPTION}${catalog}` });
 }
 
 function bindRoot(

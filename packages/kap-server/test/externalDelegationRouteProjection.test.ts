@@ -174,6 +174,20 @@ describe('external delegation route projection', () => {
     expect(service.wait).toHaveBeenCalledTimes(2);
   });
 
+  it('rejects result limits below four bytes and accepts the domain minimum', async () => {
+    service.result.mockResolvedValue({ dispatch: dispatchView, text: 'done' });
+
+    const rejected = await Promise.all([1, 2, 3].map((limit) =>
+      invoke('result', { dispatch_id: 'dispatch_replay', limit }),
+    ));
+    const accepted = await invoke('result', { dispatch_id: 'dispatch_replay', limit: 4 });
+
+    expect(rejected.every((response) => response.code !== 0)).toBe(true);
+    expect(accepted.code).toBe(0);
+    expect(service.result).toHaveBeenCalledOnce();
+    expect(service.result).toHaveBeenCalledWith(expect.objectContaining({ limit: 4 }));
+  });
+
   it('passes receipt and usage fields through status, result, and list views', async () => {
     service.status.mockResolvedValue(dispatchView);
     service.result.mockResolvedValue({ dispatch: dispatchView, text: 'done' });
@@ -181,7 +195,24 @@ describe('external delegation route projection', () => {
       version: 1,
       delegationId: 'delegation_1',
       lifecycle: 'active',
-      dispatchables: [{ kind: 'main' }],
+      dispatchables: [
+        { kind: 'main' },
+        {
+          kind: 'named',
+          profileName: 'explore',
+          description: 'Map code without changing it.',
+          whenToUse: 'Use for bounded evidence gathering.',
+          modelAlias: 'grok-4.6',
+          thinkingEffort: 'max',
+          allowedModels: ['grok-4.6', 'glm-5.3-flash'],
+          alternativeModels: [{
+            alias: 'glm-5.3-flash',
+            when: 'Use for wide scans.',
+            thinkingEffort: 'max',
+          }],
+          tools: 'Read, Grep',
+        },
+      ],
       children: [],
       continuations: [dispatchView],
     });
@@ -197,7 +228,19 @@ describe('external delegation route projection', () => {
       usage: { input: 3, output: 5, cacheRead: 2, cacheWrite: 1 },
     });
     expect(result.data).toMatchObject({ dispatch: { usage: { input: 3, output: 5 } } });
-    expect(list.data).toMatchObject({ continuations: [{ actualProfile: 'explore', usage: { output: 5 } }] });
+    expect(list.data).toMatchObject({
+      dispatchables: [{ kind: 'main' }, {
+        kind: 'named',
+        profileName: 'explore',
+        whenToUse: 'Use for bounded evidence gathering.',
+        modelAlias: 'grok-4.6',
+        thinkingEffort: 'max',
+        allowedModels: ['grok-4.6', 'glm-5.3-flash'],
+        alternativeModels: [{ alias: 'glm-5.3-flash', thinkingEffort: 'max' }],
+        tools: 'Read, Grep',
+      }],
+      continuations: [{ actualProfile: 'explore', usage: { output: 5 } }],
+    });
     expect(service.result).toHaveBeenCalledWith(expect.objectContaining({ limit: 100_000 }));
   });
 
