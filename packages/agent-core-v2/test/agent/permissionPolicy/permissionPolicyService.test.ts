@@ -134,7 +134,6 @@ describe('AgentPermissionPolicyService chain', () => {
   it.each([
     { decision: 'deny', policyName: 'user-configured-deny', resultKind: 'deny' },
     { decision: 'ask', policyName: 'user-configured-ask', resultKind: 'ask' },
-    { decision: 'allow', policyName: 'user-configured-allow', resultKind: 'approve' },
   ] as const)(
     'applies user-configured $decision rules before auto-mode approval',
     async ({ decision, policyName, resultKind }) => {
@@ -150,6 +149,19 @@ describe('AgentPermissionPolicyService chain', () => {
       });
     },
   );
+
+  it('applies auto-mode approval before user allow rules', async () => {
+    mode = 'auto';
+    rules.push({ decision: 'allow', scope: 'user', pattern: 'Bash' });
+
+    await expect(evaluate({
+      toolName: 'Bash',
+      args: { command: 'printf first', timeout: 60 },
+    })).resolves.toMatchObject({
+      policyName: 'auto-mode-approve',
+      result: { kind: 'approve' },
+    });
+  });
 
   it('applies deny rules before yolo-mode approval', async () => {
     mode = 'yolo';
@@ -195,7 +207,7 @@ describe('AgentPermissionPolicyService chain', () => {
     });
   });
 
-  it('reuses approve-for-session before matching ask rules', async () => {
+  it('applies matching ask rules before approve-for-session history', async () => {
     rules.push({
       decision: 'ask',
       scope: 'user',
@@ -207,14 +219,38 @@ describe('AgentPermissionPolicyService chain', () => {
       toolName: 'Bash',
       args: { command: 'printf first', timeout: 60 },
     })).resolves.toMatchObject({
-      policyName: 'session-approval-history',
-      result: {
-        kind: 'approve',
-        reason: {
-          has_rule_args: true,
-          match_strategy: 'matches_rule',
-        },
-      },
+      policyName: 'user-configured-ask',
+      result: { kind: 'ask' },
+    });
+  });
+
+  it.each([
+    { path: '/workspace/.env', policyName: 'sensitive-file-access-ask' },
+    { path: '/workspace/.git/config', policyName: 'git-control-path-access-ask' },
+  ])('applies $policyName before user allow rules', async ({ path, policyName }) => {
+    rules.push({ decision: 'allow', scope: 'user', pattern: 'Write' });
+
+    await expect(evaluate({
+      toolName: 'Write',
+      args: { path, content: 'x' },
+    })).resolves.toMatchObject({
+      policyName,
+      result: { kind: 'ask' },
+    });
+  });
+
+  it.each([
+    { path: '/workspace/.env', policyName: 'sensitive-file-access-ask' },
+    { path: '/workspace/.git/config', policyName: 'git-control-path-access-ask' },
+  ])('applies $policyName before session approval history', async ({ path, policyName }) => {
+    sessionApprovalRulePatterns.push('Write');
+
+    await expect(evaluate({
+      toolName: 'Write',
+      args: { path, content: 'x' },
+    })).resolves.toMatchObject({
+      policyName,
+      result: { kind: 'ask' },
     });
   });
 

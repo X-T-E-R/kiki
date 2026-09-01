@@ -1,8 +1,13 @@
+import { PermissionPolicyAllowlistContribution } from '#/agent/permissionPolicy/permissionPolicy';
 import { Feature } from '#/features/feature';
 import { registerFeature } from '#/features/featureRegistry';
 
 import './configSection';
 import { IAgentPlanService } from './plan';
+import {
+  IPlanFileWriteApprovePolicy,
+  PlanFileWriteApprovePolicy,
+} from './planFileWriteApprovePolicy';
 import { AgentPlanService } from './planService';
 import { IEnterPlanModeTool } from './tools/enter-plan-mode/enter-plan-mode';
 import { EnterPlanModeTool } from './tools/enter-plan-mode/enterPlanModeTool';
@@ -15,6 +20,14 @@ export class PlanFeature extends Feature {
   constructor() {
     super();
     this.contributeAgentService(IAgentPlanService, AgentPlanService);
+    this.contributeAgentService(
+      IPlanFileWriteApprovePolicy,
+      PlanFileWriteApprovePolicy,
+    );
+    this.contribute(
+      PermissionPolicyAllowlistContribution,
+      IPlanFileWriteApprovePolicy,
+    );
     this.contributeTool(IEnterPlanModeTool, EnterPlanModeTool, {
       name: 'EnterPlanMode',
       domain: 'plan',

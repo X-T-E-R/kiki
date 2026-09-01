@@ -256,13 +256,18 @@ describe('AgentToolApprovalService', () => {
   });
 
   describe('requestToolApproval', () => {
-    it('auto-approves when no approval broker is registered', async () => {
+    it('cancels when no approval broker is registered', async () => {
       const events = subscribeApprovalEvents();
       const svc = make();
 
       await expect(
         svc.requestToolApproval(makeContext('Bash', { command: 'printf hi' }), ask(), 'fallback-ask'),
-      ).resolves.toBeUndefined();
+      ).resolves.toEqual({
+        veto: {
+          output: 'Tool "Bash" was not run because the approval request was cancelled.',
+          isError: true,
+        },
+      });
 
       expect(events.requested).not.toHaveBeenCalled();
       expect(events.resolved).not.toHaveBeenCalled();
@@ -270,17 +275,38 @@ describe('AgentToolApprovalService', () => {
       expect(recorded[0]).toMatchObject({
         toolName: 'Bash',
         sessionApprovalRule: undefined,
-        result: { decision: 'approved' },
+        result: { decision: 'cancelled' },
       });
       expect(records).toContainEqual({
         event: 'permission_approval_result',
         properties: expect.objectContaining({
           policy_name: 'fallback-ask',
           tool_name: 'Bash',
-          result: 'approved',
+          result: 'cancelled',
           session_cache_written: false,
         }),
       });
+    });
+
+    it('cancels when approval broker resolution fails', async () => {
+      const svc = make();
+      const invoke = vi.spyOn(ix, 'invokeFunction').mockImplementationOnce(() => {
+        throw new Error('approval broker DI failure');
+      });
+
+      try {
+        await expect(
+          svc.requestToolApproval(makeContext('Bash'), ask(), 'fallback-ask'),
+        ).resolves.toMatchObject({
+          veto: {
+            output: expect.stringContaining('approval request was cancelled'),
+            isError: true,
+          },
+        });
+        expect(recorded[0]?.result).toEqual({ decision: 'cancelled' });
+      } finally {
+        invoke.mockRestore();
+      }
     });
 
     it('uses a caller-provided approval id for a scoped approval lifecycle', async () => {

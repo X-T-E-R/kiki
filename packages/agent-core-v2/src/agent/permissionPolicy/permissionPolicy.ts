@@ -1,9 +1,14 @@
-import { createDecorator } from "#/_base/di/instantiation";
+import { collection, type CollectionView } from '#/_base/di/collection';
+import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type {
-  ResolvedToolExecutionHookContext
+  ResolvedToolExecutionHookContext,
 } from '#/agent/toolExecutor/toolHooks';
-import type { PermissionPolicyResult } from './types';
+import type { PermissionPolicy, PermissionPolicyResult } from './types';
 
+export const PermissionPolicyAllowlistContribution =
+  collection<ServiceIdentifier<PermissionPolicy>>('permission-policy-allowlist');
+
+export type PermissionPolicyAllowlistView = CollectionView<ServiceIdentifier<PermissionPolicy>>;
 
 export interface PermissionPolicyEvaluation {
   readonly policyName: string;

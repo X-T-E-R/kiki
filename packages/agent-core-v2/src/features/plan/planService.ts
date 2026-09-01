@@ -16,10 +16,7 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
 import { denyToolExecution } from '#/agent/toolExecutor/beforeToolExecuteEvent';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
-import type {
-  BeforeToolExecuteEvent,
-  ResolvedToolExecutionHookContext,
-} from '#/agent/toolExecutor/toolHooks';
+import type { BeforeToolExecuteEvent } from '#/agent/toolExecutor/toolHooks';
 import { IAgentTelemetryContextService } from '#/app/telemetry/agentTelemetryContext';
 import { IEventBus } from '#/app/event/eventBus';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
@@ -30,7 +27,6 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import { ContextUndone } from '#/agent/undo/undoService';
-import type { ToolFileAccess } from '#/tool/toolContract';
 import {
   DEFAULT_PLAN_CONFIG,
   PLAN_SECTION,
@@ -44,6 +40,7 @@ import {
   type PlanFilePath,
 } from './plan';
 import { ExitPlanModeReview } from './exitPlanModeReview';
+import { writesOnlyPlanFile } from './planFileWriteApprovePolicy';
 import {
   PlanModeCancel,
   PlanModeEnter,
@@ -143,10 +140,7 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     }
 
     if (toolName === 'Write' || toolName === 'Edit') {
-      if (writesOnlyPlanFile(event, plan.path)) {
-        event.allow();
-        return;
-      }
+      if (writesOnlyPlanFile(event, plan.path)) return;
       event.veto(
         denyToolExecution(this.toolApproval.formatDenyMessage(planModeWriteDeniedMessage(plan.path))),
       );
@@ -309,19 +303,6 @@ function isMissingFileError(error: unknown): boolean {
   if (unwrapped === null || typeof unwrapped !== 'object') return false;
   const code = (unwrapped as { readonly code?: unknown }).code;
   return code === 'ENOENT';
-}
-
-function writesOnlyPlanFile(
-  context: ResolvedToolExecutionHookContext,
-  planFilePath: string,
-): boolean {
-  const writeAccesses = (context.execution.accesses ?? []).filter(
-    (access): access is ToolFileAccess =>
-      access.kind === 'file' &&
-      (access.operation === 'write' || access.operation === 'readwrite'),
-  );
-  if (writeAccesses.length === 0) return false;
-  return writeAccesses.every((access) => access.path === planFilePath);
 }
 
 function planModeWriteDeniedMessage(planFilePath: string | null): string {

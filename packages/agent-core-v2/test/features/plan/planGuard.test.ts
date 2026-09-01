@@ -15,6 +15,7 @@ import type {
 } from '#/agent/permissionPolicy/types';
 import { EnterPlanModeReview } from '#/features/plan/enterPlanModeReview';
 import { IAgentPlanService } from '#/features/plan/plan';
+import { PlanFileWriteApprovePolicy } from '#/features/plan/planFileWriteApprovePolicy';
 import { AgentPlanService } from '#/features/plan/planService';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
@@ -244,7 +245,7 @@ describe('AgentPlanService plan-guard listener', () => {
 
   describe('guard', () => {
     it.each(['Write', 'Edit'] as const)(
-      'lets a %s that only targets the active plan file through without other adjudication',
+      'lets a %s that only targets the active plan file continue through adjudication',
       async (toolName) => {
         await enterPlan();
         const decision = await run(
@@ -255,7 +256,7 @@ describe('AgentPlanService plan-guard listener', () => {
         );
 
         expect(decision).toBeUndefined();
-        expect(permissionRan).toBe(false);
+        expect(permissionRan).toBe(true);
       },
     );
 
@@ -272,7 +273,7 @@ describe('AgentPlanService plan-guard listener', () => {
       );
 
       expect(decision).toBeUndefined();
-      expect(permissionRan).toBe(false);
+      expect(permissionRan).toBe(true);
     });
 
     it.each(['Write', 'Edit'] as const)(
@@ -387,6 +388,28 @@ describe('AgentPlanService plan-guard listener', () => {
     });
   });
 
+  describe('plan file permission allowlist', () => {
+    it.each(['Write', 'Edit'] as const)(
+      'approves %s only when every write access targets the active plan file',
+      async (toolName) => {
+        const svc = await enterPlan();
+        const policy = new PlanFileWriteApprovePolicy(svc);
+
+        await expect(policy.evaluate(hookContext(toolName, {
+          args: { path: PLAN_PATH },
+          accesses: ToolAccesses.writeFile(PLAN_PATH),
+        }))).resolves.toEqual({ kind: 'approve' });
+        await expect(policy.evaluate(hookContext(toolName, {
+          args: { path: PLAN_PATH },
+          accesses: [
+            { kind: 'file', operation: 'write', path: PLAN_PATH },
+            { kind: 'file', operation: 'write', path: '/workspace/src/main.ts' },
+          ],
+        }))).resolves.toBeUndefined();
+      },
+    );
+  });
+
   describe('enter plan mode review', () => {
     it('uses the configured gated default and preserves the approval over later permission passes', async () => {
       const svc = plan();
@@ -400,6 +423,26 @@ describe('AgentPlanService plan-guard listener', () => {
       expect(permissionRan).toBe(true);
       expect(decision?.executionMetadata).toEqual({ planEnterApproved: true });
     });
+
+    it.each([
+      ['missing', undefined],
+      ['malformed', { kind: 'generic', summary: 'Enter plan mode', detail: {} }],
+    ] as const)(
+      'blocks gated enter when the approval display is $0',
+      async (_name, display) => {
+        plan();
+        const decision = await run(
+          hookContext('EnterPlanMode', { display }),
+        );
+
+        expect(requests).toHaveLength(0);
+        expect(decision?.veto).toMatchObject({
+          isError: true,
+          output: expect.stringContaining('approval display'),
+        });
+        expect(permissionRan).toBe(true);
+      },
+    );
 
     it('skips enter approval when the prompt override sets the gate to free', async () => {
       plan().setGate('free');
@@ -691,38 +734,27 @@ describe('AgentPlanService plan-guard listener', () => {
       expect(permissionRan).toBe(true);
     });
 
-    it('skips the review when the plan is empty', async () => {
-      await enterPlan();
-      const decision = await run(
-        hookContext('ExitPlanMode', { display: planReviewDisplay({ plan: '   ' }) }),
-      );
+    it.each([
+      ['empty', planReviewDisplay({ plan: '   ' })],
+      ['wrong kind', { kind: 'generic', summary: 'Presenting plan', detail: {} }],
+      ['malformed', { kind: 'plan_review', plan: 42 } as unknown as ToolInputDisplay],
+      ['missing', undefined],
+    ] as const)(
+      'blocks gated exit when the approval display is %s',
+      async (_name, display) => {
+        await enterPlan();
+        const decision = await run(
+          hookContext('ExitPlanMode', { display }),
+        );
 
-      expect(requests).toHaveLength(0);
-      expect(decision).toBeUndefined();
-      expect(permissionRan).toBe(true);
-    });
-
-    it('skips the review for a non-plan_review display', async () => {
-      await enterPlan();
-      const decision = await run(
-        hookContext('ExitPlanMode', {
-          display: { kind: 'generic', summary: 'Presenting plan', detail: {} },
-        }),
-      );
-
-      expect(requests).toHaveLength(0);
-      expect(decision).toBeUndefined();
-      expect(permissionRan).toBe(true);
-    });
-
-    it('skips the review when the display is missing', async () => {
-      await enterPlan();
-      const decision = await run(hookContext('ExitPlanMode'));
-
-      expect(requests).toHaveLength(0);
-      expect(decision).toBeUndefined();
-      expect(permissionRan).toBe(true);
-    });
+        expect(requests).toHaveLength(0);
+        expect(decision?.veto).toMatchObject({
+          isError: true,
+          output: expect.stringContaining('approval display'),
+        });
+        expect(permissionRan).toBe(true);
+      },
+    );
   });
 });
 
