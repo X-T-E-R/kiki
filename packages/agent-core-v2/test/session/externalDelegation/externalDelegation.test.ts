@@ -331,6 +331,12 @@ describe('SessionExternalDelegationService', () => {
       delegator: { kind: 'external', delegationId: expect.stringMatching(/^delegation_/) },
       labels: { [COLLABORATION_TASK_NAME_LABEL]: 'reviewer' },
     });
+    expect(createdWith[0]).not.toMatchObject({
+      labels: {
+        externalDelegationTaskName: expect.anything(),
+        externalDelegationProfile: expect.anything(),
+      },
+    });
     await expect(service.dispatch({ authority, target: 'named', taskName: 'reviewer', message: 'again' })).rejects.toThrow(/active dispatch/);
 
     completions[0]!.resolve({ summary: 'done' });
