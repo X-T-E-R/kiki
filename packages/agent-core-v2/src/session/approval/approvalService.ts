@@ -17,12 +17,13 @@ export class SessionApprovalService implements ISessionApprovalService {
   constructor(@ISessionInteractionService private readonly interaction: ISessionInteractionService) {}
 
   request(req: ApprovalRequest): Promise<ApprovalResponse> {
-    if (!this.interaction.hasConsumer()) return Promise.resolve({ decision: 'cancelled' });
+    const origin = { agentId: req.agentId, turnId: req.turnId };
+    if (!this.interaction.hasConsumer(origin)) return Promise.resolve({ decision: 'cancelled' });
     return this.interaction.request<ApprovalRequest, ApprovalResponse>({
       id: requestId(req),
       kind: 'approval',
       payload: req,
-      origin: { agentId: req.agentId, turnId: req.turnId },
+      origin,
     });
   }
 
