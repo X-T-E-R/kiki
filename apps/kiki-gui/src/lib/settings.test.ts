@@ -43,7 +43,7 @@ import {
   serverFileSettingsPatch,
   SETTINGS_SEARCH_SPEC,
   SETTINGS_SECTIONS,
-  SETTINGS_NAV_GROUPS,
+  SETTINGS_NAV_TREE,
   SETTINGS_SECTION_META,
   settingsGroupForSection,
   settingsSectionForCard,
@@ -767,12 +767,26 @@ describe('capabilities section grouping', () => {
 });
 
 describe('settings nav groups (redesign batch 1)', () => {
-  it('places every section in exactly one group, high-frequency first', () => {
-    const placed = SETTINGS_NAV_GROUPS.flatMap((group) => group.sections);
+  it('matches the adjudicated topology: six groups plus an ungrouped About leaf', () => {
+    const groups = SETTINGS_NAV_TREE.filter((node) => node.kind === 'group');
+    const leaves = SETTINGS_NAV_TREE.filter((node) => node.kind === 'leaf');
+    expect(groups.map((group) => group.id))
+      .toEqual(['app', 'ai', 'agents', 'extensions', 'system', 'advanced']);
+    // "Data & advanced" is part of the tree but has no leaves until batches
+    // 2/3 land content; renderers skip empty groups rather than dropping it
+    // from the model.
+    expect(groups.at(-1)?.sections).toEqual([]);
+    // "About & updates" is a clickable leaf outside all groups, not a group.
+    expect(leaves.map((leaf) => leaf.section)).toEqual(['about']);
+    expect(settingsGroupForSection('about')).toBeUndefined();
+  });
+
+  it('places every section exactly once, high-frequency first', () => {
+    const placed = SETTINGS_NAV_TREE.flatMap((node) => node.kind === 'group' ? node.sections : [node.section]);
     expect([...placed].toSorted()).toEqual(SETTINGS_SECTIONS.map((section) => section.id).toSorted());
     expect(new Set(placed).size).toBe(placed.length);
-    expect(SETTINGS_NAV_GROUPS[0]?.id).toBe('app');
-    expect(SETTINGS_NAV_GROUPS.at(-1)?.id).toBe('about');
+    expect(SETTINGS_NAV_TREE[0]).toMatchObject({ kind: 'group', id: 'app' });
+    expect(SETTINGS_NAV_TREE.at(-1)).toEqual({ kind: 'leaf', section: 'about' });
     expect(settingsGroupForSection('models')?.id).toBe('ai');
     expect(settingsGroupForSection('providers')?.id).toBe('ai');
     expect(settingsGroupForSection('capabilities')?.id).toBe('extensions');
@@ -781,14 +795,20 @@ describe('settings nav groups (redesign batch 1)', () => {
     expect(settingsGroupForSection('nope')).toBeUndefined();
   });
 
-  it('gives every section a scope and a purpose line', () => {
+  it('declares every scope a page actually writes until the content split lands', () => {
     for (const section of SETTINGS_SECTIONS) {
       const meta = SETTINGS_SECTION_META[section.id];
       expect(meta, section.id).toBeDefined();
-      expect(['app', 'server', 'workspace']).toContain(meta?.scope);
+      expect(meta!.scopes.length).toBeGreaterThan(0);
+      for (const scope of meta!.scopes) {
+        expect(['app', 'server', 'workspace']).toContain(scope);
+      }
     }
-    expect(SETTINGS_SECTION_META['general']?.scope).toBe('app');
-    expect(SETTINGS_SECTION_META['models']?.scope).toBe('server');
+    // General mixes device prefs with server-side session defaults;
+    // Capabilities mixes server config with per-workspace MCP.
+    expect(SETTINGS_SECTION_META['general']?.scopes).toEqual(['app', 'server']);
+    expect(SETTINGS_SECTION_META['capabilities']?.scopes).toEqual(['server', 'workspace']);
+    expect(SETTINGS_SECTION_META['models']?.scopes).toEqual(['server']);
   });
 });
 
@@ -796,11 +816,14 @@ describe('settings search breadcrumbs and synonyms', () => {
   const t = (key: I18nKey): string => translate('en', key);
   const tZh = (key: I18nKey): string => translate('zh', key);
 
-  it('carries the visual group into every hit for the group › leaf › card breadcrumb', () => {
+  it('carries the visual group into grouped hits for the group › leaf › card breadcrumb', () => {
     const index = buildSettingsSearchIndex({ general: 'General' }, t);
     const models = index.find((entry) => entry.cardId === 'st-card-models');
     expect(models?.groupLabel).toBe('AI configuration');
-    expect(index.every((entry) => entry.groupLabel !== '')).toBe(true);
+    // About is an ungrouped top-level leaf: its hits have no group crumb.
+    const about = index.find((entry) => entry.cardId === 'st-card-about');
+    expect(about?.groupLabel).toBe('');
+    expect(index.filter((entry) => entry.section !== 'about').every((entry) => entry.groupLabel !== '')).toBe(true);
     // Group labels are indexed too, so "AI configuration" finds its leaves.
     expect(searchSettings(index, 'AI configuration').some((hit) => hit.section === 'providers')).toBe(true);
   });

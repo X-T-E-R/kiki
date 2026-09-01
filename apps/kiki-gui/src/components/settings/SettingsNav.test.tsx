@@ -63,13 +63,14 @@ async function click(element: Element): Promise<void> {
 const noop = () => {};
 
 describe('SettingsNav grouped tree', () => {
-  it('renders non-clickable group headers above their leaf sections', async () => {
+  it('renders non-clickable group headers, skips the empty group, and keeps About as an ungrouped leaf', async () => {
     const container = await render(
       <SettingsNav active="models" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
     );
     const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
+    // "Data & advanced" has no leaves this batch, so only five groups render.
     expect(groups.map((group) => group.getAttribute('data-settings-nav-group')))
-      .toEqual(['app', 'ai', 'agents', 'extensions', 'system', 'about']);
+      .toEqual(['app', 'ai', 'agents', 'extensions', 'system']);
     for (const group of groups) {
       const header = group.querySelector('p');
       expect(header).not.toBeNull();
@@ -79,6 +80,11 @@ describe('SettingsNav grouped tree', () => {
     expect(aiGroup.querySelector('p')!.textContent).toBe('AI configuration');
     const leaves = [...aiGroup.querySelectorAll('button')].map((button) => button.textContent);
     expect(leaves).toEqual(['Models', 'Providers & auth']);
+    // About & updates sits outside every group as a clickable top-level leaf.
+    const aboutLeaf = container.querySelector('[data-settings-nav-ungrouped="about"]');
+    expect(aboutLeaf).not.toBeNull();
+    expect(aboutLeaf!.closest('[data-settings-nav-group]')).toBeNull();
+    expect(aboutLeaf!.querySelector('button')!.textContent).toBe('About & updates');
   });
 
   it('highlights only the active leaf and navigates on click', async () => {

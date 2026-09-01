@@ -32,19 +32,23 @@ function ScopeHeader({ section }: { section: SectionId }) {
   const meta = SETTINGS_SECTION_META[section];
   if (meta === undefined) return null;
   const labelKey = SECTIONS.find((candidate) => candidate.id === section)?.labelKey;
-  const scopeKey = `st.scope.${meta.scope}` as I18nKey;
   return (
-    <header data-settings-scope-header={meta.scope} className="mb-3 border-b border-hairline pb-3">
+    <header data-settings-scope-header={meta.scopes.join('+')} className="mb-3 border-b border-hairline pb-3">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <h2 className="font-display text-[15px] font-semibold tracking-tight text-ink">
           {labelKey === undefined ? section : t(labelKey)}
         </h2>
-        <span
-          className="rounded-full border border-hairline bg-paper px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-ink-faint"
-          title={t('st.scope.label')}
-        >
-          {t(scopeKey)}
-        </span>
+        {/* Until the batches 2/3 split lands a page can write more than one
+            scope; show every one of them instead of a flattering single badge. */}
+        {meta.scopes.map((scope) => (
+          <span
+            key={scope}
+            className="rounded-full border border-hairline bg-paper px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-ink-faint"
+            title={t('st.scope.label')}
+          >
+            {t(`st.scope.${scope}` as I18nKey)}
+          </span>
+        ))}
       </div>
       <p className="mt-0.5 text-[12px] leading-relaxed text-ink-soft">{t(meta.purposeKey)}</p>
     </header>

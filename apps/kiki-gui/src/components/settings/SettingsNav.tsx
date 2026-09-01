@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useI18n } from '../../i18n';
 import {
-  SETTINGS_NAV_GROUPS,
+  SETTINGS_NAV_TREE,
   buildSettingsSearchIndex,
   searchSettings,
   settingsSectionLabels,
@@ -100,8 +100,11 @@ export function SettingsSearch({
 
 /**
  * The candidate-A navigation tree: non-clickable group headers with clickable
- * leaf sections. Shared by the desktop rail and the mobile drawer so both
- * breakpoints present the same hierarchy.
+ * leaf sections, plus top-level leaves (About & updates) that belong to no
+ * group. Groups with zero leaves (Data & advanced this batch) are part of the
+ * adjudicated topology but skipped here until content lands. Shared by the
+ * desktop rail and the mobile drawer so both breakpoints present the same
+ * hierarchy.
  */
 export function SettingsNavTree({
   active,
@@ -116,31 +119,39 @@ export function SettingsNavTree({
 }) {
   const { t } = useI18n();
   const labelFor = (id: string) => SECTIONS.find((section) => section.id === id)?.labelKey;
+  const leafButton = (id: string) => {
+    const labelKey = labelFor(id);
+    if (labelKey === undefined) return null;
+    return (
+      <button
+        key={id}
+        type="button"
+        data-settings-nav-leaf={id}
+        onClick={() => { onNavigate(id as SectionId); onAfterNavigate?.(); }}
+        className={`rounded-lg px-2 py-2 text-left text-[13px] transition-colors ${active === id ? 'bg-accent-soft font-medium text-accent' : 'text-ink-soft hover:bg-paper hover:text-ink'}`}
+      >
+        {t(labelKey)}
+      </button>
+    );
+  };
   return (
     <div className="mt-2 flex flex-col gap-3" data-settings-nav-tree>
-      {SETTINGS_NAV_GROUPS.map((group) => (
-        <div key={group.id} data-settings-nav-group={group.id}>
-          <p className="px-2 pb-1 text-[10.5px] font-semibold uppercase tracking-wide text-ink-faint">
-            {t(group.labelKey)}
-          </p>
-          <div className="flex flex-col">
-            {group.sections.map((id) => {
-              const labelKey = labelFor(id);
-              if (labelKey === undefined) return null;
-              return (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => { onNavigate(id as SectionId); onAfterNavigate?.(); }}
-                  className={`rounded-lg px-2 py-2 text-left text-[13px] transition-colors ${active === id ? 'bg-accent-soft font-medium text-accent' : 'text-ink-soft hover:bg-paper hover:text-ink'}`}
-                >
-                  {t(labelKey)}
-                </button>
-              );
-            })}
+      {SETTINGS_NAV_TREE.map((node) => {
+        if (node.kind === 'leaf') {
+          return <div key={`leaf-${node.section}`} data-settings-nav-ungrouped={node.section}>{leafButton(node.section)}</div>;
+        }
+        if (node.sections.length === 0) return null;
+        return (
+          <div key={node.id} data-settings-nav-group={node.id}>
+            <p className="px-2 pb-1 text-[10.5px] font-semibold uppercase tracking-wide text-ink-faint">
+              {t(node.labelKey)}
+            </p>
+            <div className="flex flex-col">
+              {node.sections.map((id) => leafButton(id))}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

@@ -1181,48 +1181,70 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
 // ---- grouped navigation (settings redesign batch 1) ----
 
 /**
- * Candidate-A visual grouping for the settings left rail. Group headers are
- * labels only — they never own a page. Content has not moved yet (batches
- * 2/3), so today's eight leaves are parked in the group their content will
- * end up in: models + providers under "AI configuration", capabilities under
- * "Capabilities & extensions", and so on.
+ * Candidate-A navigation model for the settings left rail. Six non-clickable
+ * visual groups (they never own a page), plus top-level leaves that belong to
+ * no group — "About & updates" is one, per the adjudicated tree.
+ *
+ * Content has not moved yet (batches 2/3), so today's eight leaves are parked
+ * in the group their content will end up in: models + providers under "AI
+ * configuration", capabilities under "Capabilities & extensions", and so on.
+ * "Data & advanced" therefore has no leaves this batch — groups with zero
+ * leaves are part of the adjudicated topology but are not rendered (empty
+ * group headers would be noise); they materialize when content lands.
  */
 export interface SettingsNavGroupSpec {
+  readonly kind: 'group';
   readonly id: string;
   readonly labelKey: I18nKey;
   readonly sections: readonly string[];
 }
 
-export const SETTINGS_NAV_GROUPS: readonly SettingsNavGroupSpec[] = [
-  { id: 'app', labelKey: 'st.group.app', sections: ['general'] },
-  { id: 'ai', labelKey: 'st.group.ai', sections: ['models', 'providers'] },
-  { id: 'agents', labelKey: 'st.group.agents', sections: ['agents'] },
-  { id: 'extensions', labelKey: 'st.group.capabilities', sections: ['capabilities'] },
-  { id: 'system', labelKey: 'st.group.system', sections: ['workspaces', 'connection'] },
-  { id: 'about', labelKey: 'st.group.about', sections: ['about'] },
+export interface SettingsNavLeafSpec {
+  readonly kind: 'leaf';
+  readonly section: string;
+}
+
+export type SettingsNavNode = SettingsNavGroupSpec | SettingsNavLeafSpec;
+
+export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
+  { kind: 'group', id: 'app', labelKey: 'st.group.app', sections: ['general'] },
+  { kind: 'group', id: 'ai', labelKey: 'st.group.ai', sections: ['models', 'providers'] },
+  { kind: 'group', id: 'agents', labelKey: 'st.group.agents', sections: ['agents'] },
+  { kind: 'group', id: 'extensions', labelKey: 'st.group.capabilities', sections: ['capabilities'] },
+  { kind: 'group', id: 'system', labelKey: 'st.group.system', sections: ['workspaces', 'connection'] },
+  { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: [] },
+  { kind: 'leaf', section: 'about' },
 ];
 
 export function settingsGroupForSection(sectionId: string): SettingsNavGroupSpec | undefined {
-  return SETTINGS_NAV_GROUPS.find((group) => group.sections.includes(sectionId));
+  return SETTINGS_NAV_TREE.find(
+    (node): node is SettingsNavGroupSpec => node.kind === 'group' && node.sections.includes(sectionId),
+  );
 }
 
-/** Who a section's edits apply to; rendered as the page-header scope badge. */
+/**
+ * Who a section's edits apply to; rendered as page-header scope badges. Until
+ * the batches 2/3 content split lands, today's pages mix scopes — General
+ * holds device prefs AND server-side session defaults, Capabilities holds
+ * server config AND per-workspace MCP — so a page carries every scope it
+ * actually writes, never a flattering single one.
+ */
 export type SettingsScope = 'app' | 'server' | 'workspace';
 
 export interface SettingsSectionMeta {
-  readonly scope: SettingsScope;
+  readonly scopes: readonly SettingsScope[];
   readonly purposeKey: I18nKey;
 }
 
 export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>> = {
-  general: { scope: 'app', purposeKey: 'st.purpose.general' },
-  models: { scope: 'server', purposeKey: 'st.purpose.models' },
-  providers: { scope: 'server', purposeKey: 'st.purpose.providers' },
-  agents: { scope: 'server', purposeKey: 'st.purpose.agents' },
-  capabilities: { scope: 'server', purposeKey: 'st.purpose.capabilities' },
-  workspaces: { scope: 'server', purposeKey: 'st.purpose.workspaces' },
-  connection: { scope: 'app', purposeKey: 'st.purpose.connection' },
-  about: { scope: 'app', purposeKey: 'st.purpose.about' },
+  general: { scopes: ['app', 'server'], purposeKey: 'st.purpose.general' },
+  models: { scopes: ['server'], purposeKey: 'st.purpose.models' },
+  providers: { scopes: ['server'], purposeKey: 'st.purpose.providers' },
+  agents: { scopes: ['server'], purposeKey: 'st.purpose.agents' },
+  capabilities: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.capabilities' },
+  workspaces: { scopes: ['server'], purposeKey: 'st.purpose.workspaces' },
+  connection: { scopes: ['app'], purposeKey: 'st.purpose.connection' },
+  about: { scopes: ['app', 'server'], purposeKey: 'st.purpose.about' },
 };
 
 export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
