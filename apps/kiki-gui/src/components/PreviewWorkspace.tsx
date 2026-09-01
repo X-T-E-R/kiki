@@ -12,6 +12,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 
 import { useI18n } from '../i18n';
+import { mentionToken } from '../lib/attachments';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { isDesktopRuntime, saveBlobNative } from '../lib/desktop';
 import { appendToDraft } from '../lib/drafts';
@@ -70,6 +71,20 @@ export function relativeToCwd(path: string, cwd: string | undefined): string {
     return normPath.slice(prefix.length);
   }
   return path;
+}
+
+/**
+ * Composer `@`-token for a previewed file — delegates whitespace quoting to
+ * the shared mention formatter so spaced paths arrive as `@"…"`, exactly the
+ * shape the TUI's mention autocomplete produces.
+ */
+function mentionTokenFor(path: string, cwd: string | undefined): string {
+  return mentionToken({
+    kind: 'file',
+    path: relativeToCwd(path, cwd),
+    name: basenameOf(path),
+    isDir: false,
+  });
 }
 
 export function PreviewWorkspace({
@@ -136,7 +151,7 @@ export function PreviewWorkspace({
               onMention={
                 sessionId === undefined
                   ? undefined
-                  : () => { appendToDraft(sessionId, `@${relativeToCwd(path, cwd)}`); }
+                  : () => { appendToDraft(sessionId, mentionTokenFor(path, cwd)); }
               }
               onActivate={() => { onActivate(path); }}
               onClose={() => { onClose(path); }}
@@ -389,11 +404,11 @@ function TabContextMenu({
           <button
             type="button"
             role="menuitem"
-            data-menu-item="open-in-editor"
+            data-menu-item="open-default-app"
             className={itemClass}
             onClick={() => { pick(() => { void openHostPath(path).catch(() => {}); }); }}
           >
-            {t('file.openInEditor')}
+            {t('file.openDefaultApp')}
           </button>
         </>
       ) : null}

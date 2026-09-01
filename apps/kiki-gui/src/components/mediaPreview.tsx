@@ -664,8 +664,8 @@ export function FilePathLink({ path, className }: { path: string; className?: st
             run: () => { void revealHostPath(path).catch(() => {}); },
           } as const,
           {
-            key: 'open-in-editor',
-            label: t('file.openInEditor'),
+            key: 'open-default-app',
+            label: t('file.openDefaultApp'),
             run: () => { void openHostPath(path).catch(() => {}); },
           } as const,
         ]

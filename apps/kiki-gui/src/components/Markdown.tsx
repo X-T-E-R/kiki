@@ -117,8 +117,8 @@ function MarkdownAnchor({ href, children }: { href?: string; children?: ReactNod
               run: () => { void revealHostPath(filePath).catch(() => {}); },
             } as const,
             {
-              key: 'open-in-editor',
-              label: t('file.openInEditor'),
+              key: 'open-default-app',
+              label: t('file.openDefaultApp'),
               run: () => { void openHostPath(filePath).catch(() => {}); },
             } as const,
           ]

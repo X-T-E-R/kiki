@@ -1337,11 +1337,11 @@ function SessionMenu({
               <button
                 type="button"
                 role="menuitem"
-                data-menu-item="open-external"
+                data-menu-item="open-default-app"
                 className={itemClass}
                 onClick={() => { openAndClose(openHostPath, cwd); }}
               >
-                {t('menu.openExternal')}
+                {t('menu.openDefaultApp')}
               </button>
             </>
           ) : null}

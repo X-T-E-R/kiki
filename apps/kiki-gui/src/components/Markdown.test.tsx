@@ -95,7 +95,7 @@ describe('Markdown link menus', () => {
     expect(menu.querySelector('[data-menu-item="copy-absolute"]')).not.toBeNull();
     // Browser runtime: the desktop opener pair stays out.
     expect(menu.querySelector('[data-menu-item="show-in-folder"]')).toBeNull();
-    expect(menu.querySelector('[data-menu-item="open-in-editor"]')).toBeNull();
+    expect(menu.querySelector('[data-menu-item="open-default-app"]')).toBeNull();
 
     await act(async () => {
       menu

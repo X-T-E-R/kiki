@@ -122,7 +122,7 @@ export const zh: Record<I18nKey, string> = {
   'menu.copyLink': '复制链接',
   'menu.copyPath': '复制路径',
   'menu.openFolder': '打开所在文件夹',
-  'menu.openExternal': '在外部编辑器打开',
+  'menu.openDefaultApp': '以默认程序打开',
 
   // ---- 链接 / 文件路径小菜单（G-1） ----
   'link.menuAria': '链接操作',
@@ -134,7 +134,7 @@ export const zh: Record<I18nKey, string> = {
   'file.copyRelativePath': '复制相对路径',
   'file.copyAbsolutePath': '复制绝对路径',
   'file.showInFolder': '在文件夹中显示',
-  'file.openInEditor': '在编辑器中打开',
+  'file.openDefaultApp': '以默认程序打开',
 
   // ---- composer right-click menu ----
   'composer.contextMenuAria': '输入操作',

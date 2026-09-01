@@ -723,7 +723,7 @@ describe('Sidebar session menu location & link group', () => {
     const { container } = await mount(listed());
     const menu = await openSessionMenu(container);
     expect(menu.querySelector('[data-menu-item="open-folder"]')).toBeNull();
-    expect(menu.querySelector('[data-menu-item="open-external"]')).toBeNull();
+    expect(menu.querySelector('[data-menu-item="open-default-app"]')).toBeNull();
   });
 
   it('keeps the link entries below the action group and above pin/rename', async () => {

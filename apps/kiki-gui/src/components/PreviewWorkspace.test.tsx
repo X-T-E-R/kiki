@@ -15,7 +15,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
-import { readDraft, resetDraftMemoryForTests } from '../lib/drafts';
+import { clearStoredDrafts, readDraft, resetDraftMemoryForTests } from '../lib/drafts';
 import { MediaPreviewProvider, useMediaPreview } from './mediaPreview';
 import { relativeToCwd } from './PreviewWorkspace';
 
@@ -322,6 +322,9 @@ describe('PreviewWorkspace file ops & 加入对话', () => {
   beforeEach(() => {
     writeText.mockClear();
     resetDraftMemoryForTests();
+    // Drafts persist to localStorage; without clearing it the next readDraft
+    // would rehydrate an earlier test's leftovers.
+    clearStoredDrafts();
     Object.defineProperty(window.navigator, 'clipboard', {
       value: { writeText },
       configurable: true,
@@ -355,7 +358,7 @@ describe('PreviewWorkspace file ops & 加入对话', () => {
     expect(menu.querySelector('[data-menu-item="copy-absolute"]')).not.toBeNull();
     // Browser runtime: no desktop opener entries.
     expect(menu.querySelector('[data-menu-item="show-in-folder"]')).toBeNull();
-    expect(menu.querySelector('[data-menu-item="open-in-editor"]')).toBeNull();
+    expect(menu.querySelector('[data-menu-item="open-default-app"]')).toBeNull();
     await act(async () => {
       menu
         .querySelector<HTMLButtonElement>('[data-menu-item="copy-relative"]')!
@@ -385,6 +388,46 @@ describe('PreviewWorkspace file ops & 加入对话', () => {
     });
     expect(readDraft('s1')).toBe('@docs/design.md @docs/design.md');
     expect(tabs()).toEqual(['/work/docs/design.md']);
+  });
+
+  it('the @ button quotes paths containing whitespace (posix cwd)', async () => {
+    FILES['/work/docs/design spec.md'] = '# Draft\n';
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="/work" sessionId="s1">
+        <OpenButton path="/work/docs/design spec.md" />
+      </MediaPreviewProvider>,
+    );
+    await openFile(probe.container, '/work/docs/design spec.md');
+    const mention = workspace().querySelector('[data-mention-file="/work/docs/design spec.md"]')!;
+    await act(async () => {
+      mention.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(readDraft('s1')).toBe('@"docs/design spec.md"');
+  });
+
+  it('the @ button quotes spaced paths under a Windows cwd', async () => {
+    FILES['C:\\work\\my dir\\a b.txt'] = 'hi\n';
+    const probe = makeRoot();
+    await renderSettled(
+      probe.root,
+      <MediaPreviewProvider cwd="C:\work" sessionId="s1">
+        <OpenButton path={'C:\\work\\my dir\\a b.txt'} />
+      </MediaPreviewProvider>,
+    );
+    // The CSS attribute selector cannot express backslashes; click the sole
+    // open button / mention button directly instead of a path-keyed lookup.
+    await act(async () => {
+      probe.container
+        .querySelector('button')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const mention = workspace().querySelector('[data-mention-file]')!;
+    await act(async () => {
+      mention.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(readDraft('s1')).toBe('@"my dir/a b.txt"');
   });
 
   it('hides the @ button when the workspace has no owning session', async () => {

@@ -124,7 +124,7 @@ export const en = {
   'menu.copyLink': 'Copy link',
   'menu.copyPath': 'Copy path',
   'menu.openFolder': 'Open containing folder',
-  'menu.openExternal': 'Open in external editor',
+  'menu.openDefaultApp': 'Open with default app',
 
   // ---- link / file-path mini menus (G-1) ----
   'link.menuAria': 'Link actions',
@@ -136,7 +136,7 @@ export const en = {
   'file.copyRelativePath': 'Copy relative path',
   'file.copyAbsolutePath': 'Copy absolute path',
   'file.showInFolder': 'Show in folder',
-  'file.openInEditor': 'Open in editor',
+  'file.openDefaultApp': 'Open with default app',
 
   // ---- composer right-click menu ----
   'composer.contextMenuAria': 'Input actions',
