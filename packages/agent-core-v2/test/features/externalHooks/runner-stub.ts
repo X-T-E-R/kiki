@@ -11,6 +11,7 @@ export function makeHookRunner(
   hooks: readonly HookDef[],
   options: {
     cwd?: string;
+    loadError?: Error;
     onTriggered?: (event: string, target: string, count: number) => void;
     onResolved?: (
       event: string,
@@ -24,7 +25,10 @@ export function makeHookRunner(
   return new ExternalHooksRunnerService(
     {
       _serviceBrand: undefined,
-      ready: Promise.resolve(),
+      ready:
+        options.loadError === undefined
+          ? Promise.resolve()
+          : Promise.reject(options.loadError),
       get: (section: string) => (section === HOOKS_SECTION ? hooks : undefined),
     } as unknown as IConfigService,
     {

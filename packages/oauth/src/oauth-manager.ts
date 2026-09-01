@@ -3,8 +3,8 @@
  *
  *  - Lazy refresh on `ensureFresh()` — no background loop
  *  - Single-process concurrency: in-memory mutex serialises refreshes
- *  - Multi-process coordination: before + after storage re-read, so a
- *    concurrent refresh from another CLI process is detected (best-effort)
+ *  - Multi-process coordination: a cross-process lock serialises refreshes;
+ *    lock preparation/acquisition fails closed, then storage is re-read
  *  - `login()`: device code flow with a 15 min local timeout
  *  - `logout()`: delete stored token
  *
@@ -82,9 +82,9 @@ export interface OAuthManagerOptions {
    * When omitted AND `process.env.NODE_ENV === 'test'`, the manager
    * falls back to `process.env.KIMI_CODE_HOME` so multi-process test
    * harnesses don't need to thread the dir through every fixture. In
-   * production the fallback is inert. Windows platforms and
-   * `process.env.KIMI_DISABLE_OAUTH_LOCK === '1'` always skip; the
-   * "re-read storage" fail-safe remains as a best-effort coordinator.
+   * production the fallback is inert. Locking is skipped only when no
+   * `configDir` is available or `KIMI_DISABLE_OAUTH_LOCK === '1'` is set;
+   * configured lock preparation or acquisition failures fail closed.
    */
   readonly configDir?: string | undefined;
 }
@@ -177,10 +177,9 @@ export class OAuthManager {
    * `proper-lockfile.lock(target)` creates `${target}.lock` as the
    * actual lock directory, so the real lockfile on disk ends up at
    * `{configDir}/oauth/{providerName}.lock`. Returns `undefined` when
-   * locking is opted out (no configDir, Windows, env kill switch).
+   * locking is opted out (no configDir or env kill switch).
    */
   private resolveLockTarget(): string | undefined {
-    if (process.platform === 'win32') return undefined;
     if (process.env['KIMI_DISABLE_OAUTH_LOCK'] === '1') return undefined;
     if (this.configDir === undefined) return undefined;
     return `${this.configDir}/oauth/${this.config.name}`;

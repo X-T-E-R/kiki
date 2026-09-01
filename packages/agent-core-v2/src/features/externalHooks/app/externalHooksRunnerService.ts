@@ -18,6 +18,8 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
   declare readonly _serviceBrand: undefined;
 
   private byEvent = new Map<string, HookDef[]>();
+  private hasSuccessfulSnapshot = false;
+  private loadFailure: unknown;
   readonly ready: Promise<void>;
 
   private readonly _onDidReload = this._register(new Emitter<void>());
@@ -59,7 +61,11 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
     event: string,
     args: ExternalHooksRunnerTriggerArgs = {},
   ): Promise<HookBlockDecision | undefined> {
-    return blockDecision(event, await this.trigger(event, args));
+    try {
+      return blockDecision(event, await this.triggerInner(event, args));
+    } catch {
+      return { block: true, reason: `Blocked by ${event} hook` };
+    }
   }
 
   fireAndForgetTrigger(
@@ -82,6 +88,7 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
     args: ExternalHooksRunnerTriggerArgs,
   ): Promise<HookResult[]> {
     await this.ready;
+    if (!this.hasSuccessfulSnapshot) throw this.loadFailure;
     return runMatchedHooks(
       this.hostProcess,
       this.byEvent,
@@ -101,13 +108,17 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
   private async loadSafe(): Promise<void> {
     try {
       await this.load();
-    } catch {}
+    } catch (error) {
+      this.loadFailure = error;
+    }
   }
 
   private async reloadSafe(): Promise<void> {
     try {
       await this.load();
-    } catch {}
+    } catch (error) {
+      this.loadFailure = error;
+    }
   }
 
   private async load(): Promise<void> {
@@ -115,6 +126,8 @@ export class ExternalHooksRunnerService extends Disposable implements IExternalH
     const configured = this.config.get(HOOKS_SECTION) as readonly HookDefConfig[] | undefined;
     const pluginHooks = await this.plugins.enabledHooks();
     this.byEvent = indexHooks([...(configured ?? []), ...pluginHooks]);
+    this.hasSuccessfulSnapshot = true;
+    this.loadFailure = undefined;
     this._onDidReload.fire();
   }
 }

@@ -12,6 +12,7 @@ import type { PromptHarness } from './prompt-session';
 import {
   initializeTelemetry,
   setTelemetryContext,
+  shouldEnableTelemetry,
   track,
   withTelemetryContext,
 } from '@moonshot-ai/kimi-telemetry';
@@ -52,7 +53,7 @@ export function initializeCliTelemetry(options: InitializeCliTelemetryOptions): 
   initializeTelemetry({
     homeDir: options.harness.homeDir,
     deviceId: options.bootstrap.deviceId,
-    enabled: options.config.telemetry !== false,
+    enabled: options.config.telemetry === true,
     appName: CLI_USER_AGENT_PRODUCT,
     version: options.version,
     uiMode: options.uiMode,
@@ -69,30 +70,29 @@ export function initializeCliTelemetry(options: InitializeCliTelemetryOptions): 
 
 export interface InitializeServerTelemetryOptions {
   readonly version: string;
+  readonly configPath?: string;
+}
+
+export interface ServerTelemetryClient extends TelemetryClient {
+  readonly cloudEnabled: boolean;
 }
 
 /**
  * Bootstrap telemetry for the `kimi web` host.
  *
  * Mirrors {@link initializeCliTelemetry}: mints the device id, reads config to
- * honor the `telemetry` toggle and pick up the default model, attaches the
- * sink with `ui_mode = "web"`, and returns a {@link TelemetryClient} the
- * caller hands to `startServer` via `coreProcessOptions.telemetry`. That wires
- * the same real client into `KimiCore`, so agent-core events emitted inside the
- * server process (`mcp_connected`, `session_load_failed`, plan-mode / cron
- * events, …) actually leave the process carrying the enriched context
- * (`app_name` / `version` / `ui_mode` / `model` / platform fields).
- *
- * The returned client wraps the `@moonshot-ai/kimi-telemetry` module
- * functions, so the module-level `track` / `withTelemetryContext` (used to
- * fire the startup event) share the same underlying client + sink.
+ * honor the `telemetry` toggle and pick up the default model, and attaches the
+ * sink with `ui_mode = "web"` when cloud telemetry is explicitly enabled. The
+ * returned client shares the module-level sink, while `cloudEnabled` gates the
+ * kap-server cloud appender for the same host process.
  */
 export function initializeServerTelemetry(
   options: InitializeServerTelemetryOptions,
-): TelemetryClient {
+): ServerTelemetryClient {
   const bootstrap = createCliTelemetryBootstrap();
-  const configPath = resolveConfigPath({ homeDir: bootstrap.homeDir });
+  const configPath = options.configPath ?? resolveConfigPath({ homeDir: bootstrap.homeDir });
   const config = readServerTelemetryConfig(configPath);
+  const cloudEnabled = shouldEnableTelemetry({ enabled: config.telemetry === true });
   const auth = new KimiAuthFacade({
     homeDir: bootstrap.homeDir,
     configPath,
@@ -102,7 +102,7 @@ export function initializeServerTelemetry(
   initializeTelemetry({
     homeDir: bootstrap.homeDir,
     deviceId: bootstrap.deviceId,
-    enabled: config.telemetry !== false,
+    enabled: cloudEnabled,
     appName: CLI_USER_AGENT_PRODUCT,
     version: options.version,
     uiMode: WEB_UI_MODE,
@@ -115,6 +115,7 @@ export function initializeServerTelemetry(
     track,
     withContext: withTelemetryContext,
     setContext: setTelemetryContext,
+    cloudEnabled,
   };
 }
 
@@ -123,8 +124,8 @@ function readServerTelemetryConfig(
 ): Pick<KimiConfig, 'telemetry' | 'defaultModel'> {
   try {
     const { config, fileError } = loadRuntimeConfigSafe(configPath);
-    // A broken config fails the server on its own inside KimiCore; for
-    // telemetry just degrade to "enabled, no model" so we never block startup.
+    // A broken config fails the server on its own inside KimiCore; telemetry
+    // stays disabled here so config errors never trigger cloud traffic.
     if (fileError !== undefined) return {};
     return config;
   } catch {

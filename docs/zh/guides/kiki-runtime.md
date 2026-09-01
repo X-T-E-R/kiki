@@ -19,7 +19,7 @@
 | `agent-core-v2` 中的模型绑定区域 | 改造 | Kiki 扩展了选定的上游 Agent 引擎路径，同时保留原有的会话和任务生命周期。 |
 | 为新派生子 Agent 显式绑定模型 alias 和 thinking effort | Kiki 独有 | 只有符号选择器路径默认关闭，显式绑定本身是稳定能力，始终可用。工具参数用 `model_alias` 和 `effort`；Agent 文件仍用 `thinking_effort`。 |
 | 通过 [`[models."<alias>".cognition]`](../configuration/config-files.md#模型认知) 按模型做提示词调节 | Kiki 独有 | Overlay、steering 和 anchor 提示词文件挂到模型别名上，而不是 Agent profile 上。仓库不为它们附带任何默认正文；每个文件都在运行时从数据根读取，未声明的字段不会注入任何内容。 |
-| 直属子 Agent 工具 `AgentList` 和 `AgentSend` | Kiki 独有 | 始终出现在主 `agent` profile 上。`AgentRun` 是旧 `Agent` 工具现在的名字（`WaitFor` 改名为 `TaskWait`）。 |
+| 直属子 Agent 工具 `AgentRun`、`AgentSwarm`、`AgentList` 和 `AgentSend` | Kiki 独有 | 始终出现在主 `agent` profile 上，用于启动或继续子 Agent、按 item 并行派发、列出直属子 Agent，以及向邮箱排队消息。 |
 | 本地 peer thread 通信 | Kiki 独有 | 主 Agent 可以跨本地工作区列出、读取、发送消息并等待现有会话；REST 和 Klient 只允许外部客户端指定目标，发送结果不带 peer 归属。 |
 | 独立的 `@kiki/gui` package | Kiki 独有 | GUI 是继承服务端和协议表面的下游客户端。部分组件改造自已单独标注来源的其他开源项目，因此这些组件在 Kiki 独有 package 内归类为改造。 |
 

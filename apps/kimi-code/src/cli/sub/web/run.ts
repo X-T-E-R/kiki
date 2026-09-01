@@ -151,8 +151,8 @@ export function buildWebCommand(
     )
     .option(
       '--insecure-no-tls',
-      'Allow a non-loopback bind without a TLS-terminating reverse proxy. Defaults to true; only relevant for non-loopback binds.',
-      true,
+      'Allow a non-loopback bind without a TLS-terminating reverse proxy. Disabled by default; without this flag, non-loopback binds are refused.',
+      false,
     )
     .option(
       '--allow-remote-shutdown',
@@ -326,9 +326,13 @@ async function runServerInProcess(
   hooks: StartForegroundHooks,
 ): Promise<never> {
   const version = getVersion();
+  const externalCatalog = externalCatalogSourceFromEnv(process.env);
   // Registers the telemetry provider for `track` / `shutdownTelemetry`; the
   // client itself is not passed into kap-server.
-  initializeServerTelemetry({ version });
+  const telemetry = initializeServerTelemetry({
+    version,
+    configPath: externalCatalog?.configPath,
+  });
 
   let running: RoutedServer | undefined;
   let stopping = false;
@@ -368,7 +372,6 @@ async function runServerInProcess(
       'dev mode: web assets not built; starting the API server without the web UI',
     );
   }
-  const externalCatalog = externalCatalogSourceFromEnv(process.env);
   const desktopInheritance = desktopInheritanceSourceFromEnv(process.env);
   const v2 = await startServer({
     host: options.host,
@@ -401,7 +404,7 @@ async function runServerInProcess(
     // Attach the engine's cloud telemetry appender (still gated by the config
     // `telemetry` toggle). Complements the v1 client registered above, which
     // only covers host-level events.
-    telemetry: true,
+    telemetry: telemetry.cloudEnabled,
     webAssetsDir,
   });
   logger.info('serving the REST/WS API and the bundled web UI');

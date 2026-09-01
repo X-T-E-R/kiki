@@ -66,6 +66,7 @@ vi.mock('@moonshot-ai/kimi-code-sdk', async (importOriginal) => {
 vi.mock('@moonshot-ai/kimi-telemetry', () => ({
   initializeTelemetry: vi.fn(),
   setCrashPhase: vi.fn(),
+  shouldEnableTelemetry: ({ enabled }: { enabled?: boolean }) => enabled === true,
   shutdownTelemetry: vi.fn(),
   track: vi.fn(),
   setTelemetryContext: vi.fn(),
@@ -120,7 +121,7 @@ function opts(overrides: Record<string, unknown> = {}) {
   } as const;
 }
 
-function makeFakeHarness() {
+function makeFakeHarness(telemetry?: boolean) {
   // Native event listeners registered on the main agent's IEventBus; the turn
   // emits a streaming assistant delta before completing.
   const eventListeners = new Set<(event: Event2<any>) => void>();
@@ -182,7 +183,11 @@ function makeFakeHarness() {
       IConfigService,
       {
         ready: Promise.resolve(),
-        get: vi.fn((section: string) => (section === 'defaultModel' ? 'k2' : undefined)),
+        get: vi.fn((section: string) => {
+          if (section === 'defaultModel') return 'k2';
+          if (section === 'telemetry') return telemetry;
+          return undefined;
+        }),
         // `applyPrintModeConfigDefaults` inspects each section and fills unset
         // keys via the memory layer; an empty section means everything is unset.
         inspect: vi.fn(() => ({ value: {} })),
@@ -260,10 +265,10 @@ describe('runV2Print', () => {
     vi.unstubAllEnvs();
   });
 
-  it('submits a prompt, renders native events, awaits completion, and drains', async () => {
+  it('submits a prompt without creating a cloud appender by default', async () => {
     const stdout = writer();
     const stderr = writer();
-    const { app, agent, agentServices } = makeFakeHarness();
+    const { app, agent, agentServices, appServices } = makeFakeHarness();
 
     mocks.bootstrap.mockReturnValue({ app });
     mocks.ensureMainAgent.mockResolvedValue(agent);
@@ -279,10 +284,29 @@ describe('runV2Print', () => {
         origin: { kind: 'user' },
       },
     });
-    // Version banner is first, then the rendered assistant output.
+    const telemetryService = appServices.get(ITelemetryService) as {
+      setAppender: ReturnType<typeof vi.fn>;
+    };
+    expect(telemetryService.setAppender).not.toHaveBeenCalled();
     expect(stderr.write).toHaveBeenNthCalledWith(1, 'kimi version 1.2.3-test\n');
     expect(stdout.text()).toContain('hello world');
     expect(app.dispose).toHaveBeenCalled();
+  });
+
+  it('creates the cloud appender after config.toml explicitly opts in', async () => {
+    const stdout = writer();
+    const stderr = writer();
+    const { app, agent, appServices } = makeFakeHarness(true);
+
+    mocks.bootstrap.mockReturnValue({ app });
+    mocks.ensureMainAgent.mockResolvedValue(agent);
+
+    await runV2Print(opts() as never, '1.2.3-test', { stdout, stderr });
+
+    const telemetryService = appServices.get(ITelemetryService) as {
+      setAppender: ReturnType<typeof vi.fn>;
+    };
+    expect(telemetryService.setAppender).toHaveBeenCalledTimes(1);
   });
 
   it('passes explicit skill dirs from --skillsDir into bootstrap args', async () => {
