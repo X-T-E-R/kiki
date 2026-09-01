@@ -1157,6 +1157,12 @@ export interface SettingsSearchSpecEntry {
   readonly cardId: string;
   readonly titleKey: I18nKey;
   readonly keywordKeys: readonly I18nKey[];
+  /**
+   * Locale-independent haystack tokens: legacy names and synonyms a user
+   * types from habit ("能力", "供应商", "模型目录", "Profiles" — redesign
+   * §2.1). They match in both locales because they are indexed verbatim.
+   */
+  readonly synonyms?: readonly string[];
 }
 
 /** Settings section order. Lives here, not in the page, so the quick switcher
@@ -1172,6 +1178,53 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'about', labelKey: 'st.section.about' },
 ];
 
+// ---- grouped navigation (settings redesign batch 1) ----
+
+/**
+ * Candidate-A visual grouping for the settings left rail. Group headers are
+ * labels only — they never own a page. Content has not moved yet (batches
+ * 2/3), so today's eight leaves are parked in the group their content will
+ * end up in: models + providers under "AI configuration", capabilities under
+ * "Capabilities & extensions", and so on.
+ */
+export interface SettingsNavGroupSpec {
+  readonly id: string;
+  readonly labelKey: I18nKey;
+  readonly sections: readonly string[];
+}
+
+export const SETTINGS_NAV_GROUPS: readonly SettingsNavGroupSpec[] = [
+  { id: 'app', labelKey: 'st.group.app', sections: ['general'] },
+  { id: 'ai', labelKey: 'st.group.ai', sections: ['models', 'providers'] },
+  { id: 'agents', labelKey: 'st.group.agents', sections: ['agents'] },
+  { id: 'extensions', labelKey: 'st.group.capabilities', sections: ['capabilities'] },
+  { id: 'system', labelKey: 'st.group.system', sections: ['workspaces', 'connection'] },
+  { id: 'about', labelKey: 'st.group.about', sections: ['about'] },
+];
+
+export function settingsGroupForSection(sectionId: string): SettingsNavGroupSpec | undefined {
+  return SETTINGS_NAV_GROUPS.find((group) => group.sections.includes(sectionId));
+}
+
+/** Who a section's edits apply to; rendered as the page-header scope badge. */
+export type SettingsScope = 'app' | 'server' | 'workspace';
+
+export interface SettingsSectionMeta {
+  readonly scope: SettingsScope;
+  readonly purposeKey: I18nKey;
+}
+
+export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>> = {
+  general: { scope: 'app', purposeKey: 'st.purpose.general' },
+  models: { scope: 'server', purposeKey: 'st.purpose.models' },
+  providers: { scope: 'server', purposeKey: 'st.purpose.providers' },
+  agents: { scope: 'server', purposeKey: 'st.purpose.agents' },
+  capabilities: { scope: 'server', purposeKey: 'st.purpose.capabilities' },
+  workspaces: { scope: 'server', purposeKey: 'st.purpose.workspaces' },
+  connection: { scope: 'app', purposeKey: 'st.purpose.connection' },
+  about: { scope: 'app', purposeKey: 'st.purpose.about' },
+};
+
 export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'general', cardId: 'st-card-language', titleKey: 'st.language.title', keywordKeys: ['st.language.hint'] },
   { section: 'general', cardId: 'st-card-appearance', titleKey: 'st.appearance.title', keywordKeys: ['st.appearance.theme', 'st.appearance.theme.dark', 'st.appearance.theme.light', 'st.appearance.theme.system'] },
@@ -1179,25 +1232,25 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'general', cardId: 'st-card-composer', titleKey: 'st.composer.title', keywordKeys: ['st.composer.sendShortcut', 'st.composer.persistDrafts'] },
   { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.notifications', 'st.desktop.tray', 'st.desktop.quit'] },
   { section: 'general', cardId: 'st-card-compatibility-home', titleKey: 'st.compat.title', keywordKeys: ['st.compat.home', 'st.compat.credentialPath', 'st.compat.configImportTitle', 'st.compat.migrateUserSkills'] },
-  { section: 'models', cardId: 'st-card-models', titleKey: 'st.models.defaultTitle', keywordKeys: ['st.models.providerLabel', 'st.models.searchPlaceholder'] },
+  { section: 'models', cardId: 'st-card-models', titleKey: 'st.models.defaultTitle', keywordKeys: ['st.models.providerLabel', 'st.models.searchPlaceholder'], synonyms: ['模型目录', 'model catalog', '模型列表'] },
   { section: 'models', cardId: 'st-card-request-identity', titleKey: 'st.requestIdentity.defaultTitle', keywordKeys: ['st.requestIdentity.defaultLabel', 'st.requestIdentity.defaultHint'] },
   { section: 'models', cardId: 'st-card-thinking', titleKey: 'st.thinking.title', keywordKeys: ['st.thinking.enable', 'st.thinking.hint'] },
   { section: 'connection', cardId: 'st-card-conn-server', titleKey: 'st.conn.connectedTitle', keywordKeys: ['connect.serverUrl', 'connect.token', 'st.conn.version', 'st.conn.reconnect'] },
   { section: 'connection', cardId: 'st-card-conn-owned', titleKey: 'st.conn.ownedTitle', keywordKeys: ['st.conn.ownedBody', 'st.conn.restart'] },
   { section: 'connection', cardId: 'st-card-conn-disconnect', titleKey: 'st.conn.disconnectTitle', keywordKeys: ['st.conn.disconnectBody', 'sidebar.disconnect'] },
-  { section: 'providers', cardId: 'st-card-auth', titleKey: 'st.auth.title', keywordKeys: ['st.auth.signIn', 'st.auth.signOut'] },
-  { section: 'providers', cardId: 'st-card-providers', titleKey: 'st.providers.title', keywordKeys: ['st.providers.empty'] },
-  { section: 'providers', cardId: 'st-card-providers-add', titleKey: 'st.providers.addTitle', keywordKeys: ['st.wizard.chooseTemplate', 'st.fetchModels.button'] },
-  { section: 'capabilities', cardId: 'st-card-caps', titleKey: 'st.caps.title', keywordKeys: ['st.caps.mergeSkills', 'st.caps.telemetry', 'st.caps.extraDirs'] },
+  { section: 'providers', cardId: 'st-card-auth', titleKey: 'st.auth.title', keywordKeys: ['st.auth.signIn', 'st.auth.signOut'], synonyms: ['提供商', '供应商', 'provider', '认证'] },
+  { section: 'providers', cardId: 'st-card-providers', titleKey: 'st.providers.title', keywordKeys: ['st.providers.empty'], synonyms: ['提供商', '供应商', 'provider'] },
+  { section: 'providers', cardId: 'st-card-providers-add', titleKey: 'st.providers.addTitle', keywordKeys: ['st.wizard.chooseTemplate', 'st.fetchModels.button'], synonyms: ['提供商', '供应商', 'provider'] },
+  { section: 'capabilities', cardId: 'st-card-caps', titleKey: 'st.caps.title', keywordKeys: ['st.caps.mergeSkills', 'st.caps.telemetry', 'st.caps.extraDirs'], synonyms: ['能力', 'skills', '技能'] },
   { section: 'capabilities', cardId: 'st-card-runtime', titleKey: 'st.runtime.title', keywordKeys: ['st.runtime.cron', 'st.runtime.communication', 'st.runtime.resources', 'st.runtime.task', 'st.runtime.agents'] },
   { section: 'capabilities', cardId: 'st-card-experimental', titleKey: 'st.experimental.title', keywordKeys: ['st.experimental.hint', 'st.experimental.overrideLabel'] },
   { section: 'capabilities', cardId: 'st-card-advanced', titleKey: 'st.advanced.title', keywordKeys: ['st.advanced.hint'] },
-  { section: 'agents', cardId: 'st-card-subagents', titleKey: 'st.subagents.title', keywordKeys: ['st.subagents.denyModels', 'st.subagents.hint'] },
-  { section: 'agents', cardId: 'st-card-main-agents', titleKey: 'st.mainAgents.title', keywordKeys: ['st.namedAgents.readOnlyHint', 'st.namedAgents.modelPin'] },
-  { section: 'agents', cardId: 'st-card-subagent-profiles', titleKey: 'st.subagentProfiles.title', keywordKeys: ['st.namedAgents.readOnlyHint', 'st.namedAgents.modelPin', 'st.namedAgents.route'] },
+  { section: 'agents', cardId: 'st-card-subagents', titleKey: 'st.subagents.title', keywordKeys: ['st.subagents.denyModels', 'st.subagents.hint'], synonyms: ['子 agent', '子代理'] },
+  { section: 'agents', cardId: 'st-card-main-agents', titleKey: 'st.mainAgents.title', keywordKeys: ['st.namedAgents.readOnlyHint', 'st.namedAgents.modelPin'], synonyms: ['主 agent'] },
+  { section: 'agents', cardId: 'st-card-subagent-profiles', titleKey: 'st.subagentProfiles.title', keywordKeys: ['st.namedAgents.readOnlyHint', 'st.namedAgents.modelPin', 'st.namedAgents.route'], synonyms: ['子 agent', '子代理', 'profiles', 'profile'] },
   { section: 'agents', cardId: 'st-card-sidecar', titleKey: 'st.sidecar.title', keywordKeys: ['st.sidecar.hint', 'st.sidecar.subagentTimeout', 'st.agents.webHint'] },
   { section: 'capabilities', cardId: 'st-card-tools', titleKey: 'st.tools.title', keywordKeys: [] },
-  { section: 'capabilities', cardId: 'st-card-mcp', titleKey: 'st.mcp.title', keywordKeys: ['st.mcp.configTitle', 'st.mcp.workspace'] },
+  { section: 'capabilities', cardId: 'st-card-mcp', titleKey: 'st.mcp.title', keywordKeys: ['st.mcp.configTitle', 'st.mcp.workspace'], synonyms: ['能力', 'mcp 服务器', 'mcp server'] },
   { section: 'workspaces', cardId: 'st-card-workspaces', titleKey: 'st.workspaces.title', keywordKeys: ['st.workspaces.hint'] },
   { section: 'about', cardId: 'st-card-about', titleKey: 'st.about.title', keywordKeys: ['st.about.serverVersion', 'st.about.serverId'] },
 ];
@@ -1205,6 +1258,8 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
 export interface SettingsSearchEntry {
   readonly section: string;
   readonly cardId: string;
+  /** Breadcrumb: visual group › leaf section › card title. */
+  readonly groupLabel: string;
   readonly sectionLabel: string;
   readonly title: string;
   readonly haystack: string;
@@ -1223,12 +1278,16 @@ export function buildSettingsSearchIndex(
 ): SettingsSearchEntry[] {
   return SETTINGS_SEARCH_SPEC.map((entry) => {
     const title = t(entry.titleKey);
+    const group = settingsGroupForSection(entry.section);
+    const groupLabel = group === undefined ? '' : t(group.labelKey);
+    const sectionLabel = sectionLabels[entry.section] ?? entry.section;
     return {
       section: entry.section,
       cardId: entry.cardId,
-      sectionLabel: sectionLabels[entry.section] ?? entry.section,
+      groupLabel,
+      sectionLabel,
       title,
-      haystack: [title, ...entry.keywordKeys.map((key) => t(key))].join('\n').toLowerCase(),
+      haystack: [title, groupLabel, sectionLabel, ...entry.keywordKeys.map((key) => t(key)), ...(entry.synonyms ?? [])].join('\n').toLowerCase(),
     };
   });
 }
@@ -1243,6 +1302,60 @@ export function searchSettings(
     entry.title.toLowerCase().includes(needle)
     || entry.sectionLabel.toLowerCase().includes(needle)
     || entry.haystack.includes(needle));
+}
+
+// ---- legacy / unknown settings route resolution ----
+
+export type SettingsRouteResolution =
+  | { readonly status: 'ok'; readonly section: string; readonly cardId?: string }
+  | { readonly status: 'unknown'; readonly section: string; readonly cardId?: string };
+
+/**
+ * Hidden aliases for renamed sections, so an old bookmark still lands on its
+ * content instead of the "unknown setting" page. Batch 1 renamed no section,
+ * so the map starts empty; batches 2/3 add entries like `general → appearance`
+ * as content moves. Card-level moves need no entry here — the card-aware
+ * fallback in `resolveSettingsRoute` already follows the card.
+ */
+export const LEGACY_SETTINGS_SECTION_ALIASES: Readonly<Record<string, string>> = {};
+
+/** Canonical section owning a card id; the search spec is the one list that knows every card. */
+export function settingsSectionForCard(cardId: string): string | undefined {
+  return SETTINGS_SEARCH_SPEC.find((entry) => entry.cardId === cardId)?.section;
+}
+
+/**
+ * Resolve `/settings/:section` + `#st-card-*` to the canonical target.
+ *
+ * - No section → the default page (general), preserving any card hash.
+ * - Known section (directly or via a legacy alias) → that section; when the
+ *   hash names a card that now lives elsewhere, the card wins, because the
+ *   link predates a content move and the card is the precise half of it.
+ * - Unknown section with a recognizable card → the card's current section.
+ * - Unknown section, no usable card → `unknown`; the page shows "this setting
+ *   does not exist" with a search instead of silently falling back to general.
+ */
+export function resolveSettingsRoute(
+  sectionParam: string | undefined,
+  hash: string,
+): SettingsRouteResolution {
+  const rawCard = hash.replace(/^#/, '');
+  const cardId = rawCard.startsWith('st-card-') ? rawCard : undefined;
+  const cardSection = cardId === undefined ? undefined : settingsSectionForCard(cardId);
+  if (sectionParam === undefined || sectionParam === '') {
+    return { status: 'ok', section: 'general', cardId };
+  }
+  const aliased = LEGACY_SETTINGS_SECTION_ALIASES[sectionParam] ?? sectionParam;
+  if (SETTINGS_SECTIONS.some((candidate) => candidate.id === aliased)) {
+    if (cardSection !== undefined && cardSection !== aliased) {
+      return { status: 'ok', section: cardSection, cardId };
+    }
+    return { status: 'ok', section: aliased, cardId };
+  }
+  if (cardSection !== undefined) {
+    return { status: 'ok', section: cardSection, cardId };
+  }
+  return { status: 'unknown', section: sectionParam, cardId };
 }
 
 // ---- millisecond humanizing (unit-ed inputs) ----
