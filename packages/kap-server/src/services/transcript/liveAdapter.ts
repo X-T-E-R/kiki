@@ -59,6 +59,7 @@ import type {
 } from '@moonshot-ai/agent-core-v2/session/subagent/mirrorAgentRun';
 import {
   projectInteractionEndState,
+  taskNotificationFrameId,
   type AgentRef,
   type AgentUsageMeta,
   type StepHeader,
@@ -182,6 +183,7 @@ export interface LiveAdapterLookups {
   readonly stepOrdinal?: LiveAdapterStepOrdinalLookup;
   readonly turn?: LiveAdapterTurnLookup;
   readonly turnDetails?: LiveAdapterTurnDetailsLookup;
+  readonly task?: (taskId: string) => TranscriptTask | undefined;
 }
 
 interface OpenTextFrame {
@@ -989,7 +991,7 @@ export class AgentTranscriptLiveAdapter {
     if (!midTurn) return [];
     const frame: TextFrame = {
       kind: 'text',
-      frameId: `${step.stepId}.f${++this.frameOrdinal}`,
+      frameId: taskNotificationFrameId(event.sourceId),
       role: 'user',
       text: `${event.title}\n${event.body}`.trim(),
       taskId: event.sourceId,
@@ -1150,12 +1152,13 @@ export class AgentTranscriptLiveAdapter {
     taskId: string,
     build: (prev: TranscriptTask | undefined) => TranscriptTask,
   ): TranscriptTask {
-    const task = build(this.tasks.get(taskId));
+    const task = build(this.tasks.get(taskId) ?? this.lookups?.task?.(taskId));
     this.tasks.set(taskId, task);
     return task;
   }
 
   private onSubagentSpawned(event: {
+    time: number;
     subagentId: string;
     subagentName: string;
     parentToolCallId: string;
@@ -1173,18 +1176,22 @@ export class AgentTranscriptLiveAdapter {
     const task = this.upsertTask(taskKey, (prev) => ({
       taskId: taskKey,
       kind: 'subagent',
-      state: 'running',
-      detached: event.runInBackground,
+      state: prev?.state ?? 'running',
+      detached: prev?.detached ?? event.runInBackground,
       description: event.description ?? prev?.description,
       agentId: event.subagentId,
       outputTail: prev?.outputTail ?? '',
-      startedAt: prev?.startedAt ?? nowIso(),
+      startedAt: prev?.startedAt ?? epochMsToIso(event.time),
       endedAt: prev?.endedAt,
+      resultSummary: prev?.resultSummary,
+      usage: prev?.usage,
+      error: prev?.error,
+      stateReason: prev?.stateReason,
     }));
     const ops: TranscriptOperation[] = [{ op: 'task.upsert', task }];
     const hit =
       this.toolFrames.get(event.parentToolCallId) ?? this.adoptToolFrame(event.parentToolCallId);
-    if (hit !== undefined) {
+    if (hit !== undefined && !hit.frame.agentRefs?.some((ref) => ref.agentId === event.subagentId)) {
       const ref: AgentRef = {
         agentId: event.subagentId,
         role: event.swarmIndex !== undefined ? 'member' : 'child',

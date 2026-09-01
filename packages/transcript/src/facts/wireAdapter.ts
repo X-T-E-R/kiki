@@ -21,6 +21,10 @@ export interface TranscriptWireAdapterLookups {
     | undefined;
 }
 
+export function taskNotificationFrameId(sourceId: string): string {
+  return `task-notified:${sourceId}`;
+}
+
 interface PendingSteerMedia {
   readonly kind: 'image' | 'video' | 'audio';
   readonly source?: AttachmentSource;
@@ -331,7 +335,7 @@ export class TranscriptWireAdapter {
           stepId: step.stepId,
           frame: {
             kind: 'text',
-            frameId: `wire:v2:r${ordinal}:task-notified`,
+            frameId: taskNotificationFrameId(sourceId),
             role: 'user',
             text: `${title}\n${body}`.trim(),
             taskId: sourceId,
@@ -353,18 +357,22 @@ export class TranscriptWireAdapter {
       const task: TranscriptTask = {
         taskId,
         kind: 'subagent',
-        state: 'running',
-        detached,
+        state: previous?.state ?? 'running',
+        detached: previous?.detached ?? detached,
         description: stringOf(record['description']) ?? previous?.description,
         agentId: subagentId,
         outputTail: previous?.outputTail ?? '',
         startedAt: previous?.startedAt ?? isoOf(record.time),
         endedAt: previous?.endedAt,
+        resultSummary: previous?.resultSummary,
+        usage: previous?.usage,
+        error: previous?.error,
+        stateReason: previous?.stateReason,
       };
       this.#tasks.set(taskId, task);
       const operations: TranscriptOperation[] = [{ op: 'task.upsert', task }];
       const hit = this.#tools.get(parentToolCallId) ?? this.lookups?.tool?.(parentToolCallId);
-      if (hit !== undefined) {
+      if (hit !== undefined && !hit.frame.agentRefs?.some((ref) => ref.agentId === subagentId)) {
         const frame: ToolCallFrame = {
           ...hit.frame,
           agentRefs: [

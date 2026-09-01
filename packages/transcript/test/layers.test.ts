@@ -1481,6 +1481,17 @@ describe('TranscriptWireAdapter', () => {
       },
       {
         type: 'subagent.spawned',
+        subagentId: 'child-1',
+        subagentName: 'explore',
+        parentToolCallId: 'agent-call',
+        description: 'scan files',
+        swarmIndex: 0,
+        runInBackground: true,
+        taskId: 'agent-task',
+        time: 4_100,
+      },
+      {
+        type: 'subagent.spawned',
         subagentId: 'child-2',
         subagentName: 'explore',
         parentToolCallId: 'agent-call',
@@ -1510,6 +1521,7 @@ describe('TranscriptWireAdapter', () => {
     const frames = transcript.getTurn('t0')?.steps.flatMap((step) => step.frames) ?? [];
     expect(frames.filter((frame) => frame.kind === 'text' && frame.role === 'user')).toEqual([
       expect.objectContaining({
+        frameId: 'task-notified:shell-1',
         text: 'Task finished\nOutput is ready',
         taskId: 'shell-1',
         origin: { kind: 'task', taskId: 'shell-1' },
