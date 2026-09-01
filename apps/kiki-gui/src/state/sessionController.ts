@@ -77,6 +77,12 @@ interface VisibilityDocument {
 interface PendingTranscriptBatch {
   readonly ops: TranscriptOperation[];
   cursor: TranscriptCursor;
+  /**
+   * Server-side coverage watermark of the merged events: seqs beyond
+   * `cursor.seq` up to here were seen but filtered out of `ops`. The resume
+   * cursor must advance past them or a reconnect re-pulls the filtered tail.
+   */
+  throughSeq: number;
 }
 
 interface RewriteHold {
@@ -398,11 +404,15 @@ export class SessionController {
     if (hold !== undefined && event.agent_id === MAIN_AGENT_ID) {
       if (!this.matchesRewriteGeneration(generation)) return;
       if (hold.deferredBatches.length > 0 || event.ops.some((op) => op.op === 'items.remove')) {
-        hold.deferredBatches.push({ ops: [...event.ops], cursor: event.cursor });
+        hold.deferredBatches.push({
+          ops: [...event.ops],
+          cursor: event.cursor,
+          throughSeq: event.through_seq,
+        });
         return;
       }
     }
-    this.applyTranscriptOps(event.agent_id, event.ops, event.cursor);
+    this.applyTranscriptOps(event.agent_id, event.ops, event.cursor, event.through_seq);
   }
 
   /**
@@ -671,6 +681,7 @@ export class SessionController {
     agentId: string,
     ops: readonly TranscriptOperation[],
     cursor: TranscriptCursor,
+    throughSeq: number,
   ): void {
     const pending = this.pendingTranscriptBatches.get(agentId);
     const last = pending?.cursor ?? this.transcriptCursors.get(agentId);
@@ -679,10 +690,11 @@ export class SessionController {
       return;
     }
     if (pending === undefined) {
-      this.pendingTranscriptBatches.set(agentId, { ops: [...ops], cursor });
+      this.pendingTranscriptBatches.set(agentId, { ops: [...ops], cursor, throughSeq });
     } else {
       pending.ops.push(...ops);
       if (cursor.seq >= pending.cursor.seq) pending.cursor = cursor;
+      if (throughSeq > pending.throughSeq) pending.throughSeq = throughSeq;
     }
     this.scheduleFrameFlush();
   }
@@ -697,6 +709,14 @@ export class SessionController {
     const batch = this.pendingTranscriptBatches.get(agentId);
     if (batch === undefined) return true;
     this.pendingTranscriptBatches.delete(agentId);
+    // Ops apply keyed on `cursor`; the resume watermark folds in `throughSeq`
+    // (same epoch by construction — an epoch change reroutes to resync above)
+    // so a reconnect does not re-pull the filtered tail after the last
+    // visible batch.
+    const resumeCursor: TranscriptCursor =
+      batch.throughSeq > batch.cursor.seq
+        ? { seq: batch.throughSeq, epoch: batch.cursor.epoch }
+        : batch.cursor;
     const store = this.ensureAgentTranscript(agentId);
     const result = store.apply(batch.ops);
     if (result.gap !== undefined) {
@@ -704,15 +724,15 @@ export class SessionController {
       this.catchupReplay.set(agentId, {
         ops: replay === undefined ? batch.ops : [...replay.ops, ...batch.ops],
         cursor:
-          replay === undefined || batch.cursor.seq >= replay.cursor.seq
-            ? batch.cursor
+          replay === undefined || resumeCursor.seq >= replay.cursor.seq
+            ? resumeCursor
             : replay.cursor,
       });
       if (startCatchUp) void this.catchUpAgent(agentId);
       return false;
     }
-    this.transcriptCursors.set(agentId, batch.cursor);
-    this.socket.updateTranscriptSince(this.sessionId, agentId, batch.cursor);
+    this.transcriptCursors.set(agentId, resumeCursor);
+    this.socket.updateTranscriptSince(this.sessionId, agentId, resumeCursor);
     if (result.accepted.length > 0) {
       if (opsAffectForest(result.accepted)) this.forestDirtyAgents.add(agentId);
       this.pendingTranscriptAgents.add(agentId);

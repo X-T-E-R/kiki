@@ -738,6 +738,7 @@ type RawSubagentEvent = {
   readonly event: SubagentEventBlock['event'];
   readonly at: string | undefined;
   readonly turnId?: string;
+  readonly anchorToolCallId?: string;
 };
 
 function resumeTargetsFromToolArgs(args: unknown): readonly string[] {
@@ -958,6 +959,7 @@ function subagentBlocksFromSnapshot(
             event: 'resumed',
             at: frameAt,
             turnId: item.turnId,
+            anchorToolCallId: frame.toolCallId,
           });
         }
         if (frame.name === 'AgentSend') {
@@ -987,6 +989,7 @@ function subagentBlocksFromSnapshot(
               event: 'sent',
               at: frameAt,
               turnId: item.turnId,
+              anchorToolCallId: frame.toolCallId,
             });
           }
         }
@@ -1077,6 +1080,7 @@ function subagentBlocksFromSnapshot(
       status: owner?.status ?? 'unknown',
       at: raw.at,
       turnId: raw.turnId,
+      anchorToolCallId: raw.anchorToolCallId,
     };
   });
   return { blocks: [...byAgent.values()], events };
@@ -1194,15 +1198,41 @@ function insertSubagentBlocks(
 /**
  * Lifecycle compact entries land by their own event timestamp (in-place
  * accounting); a timestamp-less event keeps its previous position when the
- * last publish already placed it, else sinks to the live edge.
+ * last publish already placed it, else sinks to the live edge. sent/resumed
+ * entries carry the tool call that triggered them: while that ToolBlock is on
+ * the page the entry anchors immediately after it — the timeline tiebreak
+ * (`subagent-event-…` < `tool-…`) would otherwise park the effect in front of
+ * its cause and split the surrounding tool run. Only a paged-out anchor falls
+ * back to timeline placement.
  */
 function insertSubagentEventBlocks(
   source: readonly Block[],
   events: readonly SubagentEventBlock[],
   previous: readonly Block[],
 ): Block[] {
-  const blocks = source.filter((block) => block.kind !== 'subagent-event');
+  const blocks: Block[] = source.filter((block) => block.kind !== 'subagent-event');
   for (const event of events) {
+    const anchorId = event.anchorToolCallId;
+    if (anchorId !== undefined) {
+      const toolIndex = blocks.findIndex(
+        (candidate) =>
+          (candidate.kind === 'tool' && candidate.toolCallId === anchorId) ||
+          (candidate.kind === 'shell' && candidate.commandId === anchorId),
+      );
+      if (toolIndex >= 0) {
+        // One tool can derive several entries (e.g. a multi-target resume):
+        // stack them after the anchor in their derivation order.
+        let at = toolIndex + 1;
+        while (
+          blocks[at]?.kind === 'subagent-event' &&
+          (blocks[at] as SubagentEventBlock).anchorToolCallId === anchorId
+        ) {
+          at += 1;
+        }
+        blocks.splice(at, 0, event);
+        continue;
+      }
+    }
     if (blockTimelineMs(event) === undefined && insertAtPreviousPosition(blocks, event, previous)) {
       continue;
     }

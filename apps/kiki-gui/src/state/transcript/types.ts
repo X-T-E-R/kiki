@@ -202,6 +202,13 @@ export interface SubagentEventBlock {
   readonly status: SubagentBlock['status'];
   readonly at: string | undefined;
   readonly turnId?: string;
+  /**
+   * Tool call that triggered this entry (sent/resumed). When the triggering
+   * ToolBlock is on the page, the entry anchors right after it instead of
+   * racing the timeline sort (equal timestamps would otherwise order
+   * `subagent-event-…` before `tool-…`, inverting cause and effect).
+   */
+  readonly anchorToolCallId?: string;
 }
 
 export interface NoticeBlock {
