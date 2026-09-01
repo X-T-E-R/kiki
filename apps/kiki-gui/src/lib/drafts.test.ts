@@ -4,14 +4,19 @@ import type { PermissionMode } from '@moonshot-ai/protocol';
 
 import type { ComposerAttachment } from './attachments';
 import {
+  appendToDraft,
   clearComposerState,
   INPUT_HISTORY_LIMIT,
   pushInputHistory,
   readComposerState,
+  readDraft,
   readInputHistory,
   resetComposerMemoryForTests,
+  resetDraftMemoryForTests,
   resetInputHistoryForTests,
+  subscribeDraftAppends,
   writeComposerState,
+  writeDraft,
 } from './drafts';
 
 function emptyState(patch: Partial<Parameters<typeof writeComposerState>[1]> = {}) {
@@ -64,6 +69,45 @@ describe('per-session composer state (memory-only)', () => {
     clearComposerState('s1');
     expect(readComposerState('s1')).toEqual({});
     expect(readComposerState('s2').permissionMode).toBe('manual');
+  });
+});
+
+describe('appendToDraft', () => {
+  beforeEach(() => {
+    resetDraftMemoryForTests();
+  });
+
+  it('appends to an empty draft verbatim and notifies subscribers', () => {
+    const seen: string[] = [];
+    const unsubscribe = subscribeDraftAppends((sessionId) => { seen.push(sessionId); });
+    appendToDraft('s1', '@src/app.ts');
+    expect(readDraft('s1')).toBe('@src/app.ts');
+    expect(seen).toEqual(['s1']);
+    unsubscribe();
+  });
+
+  it('separates from a non-empty draft with a single space', () => {
+    writeDraft('s1', 'look at this');
+    appendToDraft('s1', '@src/app.ts');
+    expect(readDraft('s1')).toBe('look at this @src/app.ts');
+    appendToDraft('s1', '@src/boot.ts');
+    expect(readDraft('s1')).toBe('look at this @src/app.ts @src/boot.ts');
+  });
+
+  it('does not double-separate after trailing whitespace and ignores empty text', () => {
+    writeDraft('s1', 'trailing ');
+    appendToDraft('s1', '@x.ts');
+    expect(readDraft('s1')).toBe('trailing @x.ts');
+    appendToDraft('s1', '');
+    expect(readDraft('s1')).toBe('trailing @x.ts');
+  });
+
+  it('unsubscribed listeners stop firing', () => {
+    const seen: string[] = [];
+    const unsubscribe = subscribeDraftAppends((sessionId) => { seen.push(sessionId); });
+    unsubscribe();
+    appendToDraft('s1', '@x.ts');
+    expect(seen).toEqual([]);
   });
 });
 

@@ -24,6 +24,9 @@ import type { Session, Workspace } from '@moonshot-ai/protocol';
 
 import { useI18n } from '../i18n';
 import type { SearchMessageHit, SearchMessagesResponse } from '../lib/client';
+import { copyTextToClipboard } from '../lib/clipboard';
+import { isDesktopRuntime } from '../lib/desktop';
+import { openHostPath, revealHostPath } from '../lib/hostFileOps';
 import { clampOverlayPosition } from '../lib/overlayPosition';
 import { groupSearchHits, isSearchable, SEARCH_DEBOUNCE_MS } from '../lib/search';
 import {
@@ -1226,14 +1229,19 @@ function SessionMenu({
     size ?? { width: 176, height: 0 },
     { width: window.innerWidth, height: window.innerHeight },
   );
+  // Latest onClose via ref: the parent passes inline closures and the sidebar
+  // re-renders on its poll interval, so a deps-keyed listener would churn and
+  // could swallow an Escape mid-reattach.
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
     const unregister = registerOverlay('session-menu');
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape') closeRef.current();
     };
     const onPointerDown = (event: PointerEvent) => {
       if (!(event.target instanceof HTMLElement) || event.target.closest('[data-session-menu]') === null) {
-        onClose();
+        closeRef.current();
       }
     };
     window.addEventListener('keydown', onKeyDown);
@@ -1243,7 +1251,23 @@ function SessionMenu({
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('pointerdown', onPointerDown, true);
     };
-  }, [onClose]);
+    // onClose rides the ref; attach once.
+  }, []);
+
+  // 「Location & link」group: the lightweight link is the in-app route (the
+  // protocol-level kiki:// deep link is deliberately out of scope); folder/
+  // editor actions ride the desktop opener commands, so the browser build
+  // degrades to the two copy entries only.
+  const cwd = session.metadata.cwd;
+  const desktop = isDesktopRuntime();
+  const copyAndClose = (text: string) => {
+    onClose();
+    void copyTextToClipboard(text).catch(() => {});
+  };
+  const openAndClose = (run: (path: string) => Promise<void>, path: string) => {
+    onClose();
+    void run(path).catch(() => {});
+  };
 
   const itemClass =
     'w-full rounded-md px-2.5 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper';
@@ -1278,6 +1302,49 @@ function SessionMenu({
           >
             {t('menu.undo')}
           </button>
+          <div className="mx-1 my-1 border-t border-hairline" />
+          <button
+            type="button"
+            role="menuitem"
+            data-menu-item="copy-link"
+            className={itemClass}
+            onClick={() => { copyAndClose(`/s/${session.id}`); }}
+          >
+            {t('menu.copyLink')}
+          </button>
+          {cwd !== '' ? (
+            <button
+              type="button"
+              role="menuitem"
+              data-menu-item="copy-path"
+              className={itemClass}
+              onClick={() => { copyAndClose(cwd); }}
+            >
+              {t('menu.copyPath')}
+            </button>
+          ) : null}
+          {desktop && cwd !== '' ? (
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                data-menu-item="open-folder"
+                className={itemClass}
+                onClick={() => { openAndClose(revealHostPath, cwd); }}
+              >
+                {t('menu.openFolder')}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                data-menu-item="open-external"
+                className={itemClass}
+                onClick={() => { openAndClose(openHostPath, cwd); }}
+              >
+                {t('menu.openExternal')}
+              </button>
+            </>
+          ) : null}
           <div className="mx-1 my-1 border-t border-hairline" />
           <button type="button" role="menuitem" className={itemClass} onClick={onTogglePin}>
             {isPinnedSession(session) ? t('menu.unpin') : t('menu.pin')}

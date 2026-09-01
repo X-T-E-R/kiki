@@ -167,3 +167,32 @@ export function resetInputHistoryForTests(): void {
   historyMemory.clear();
 }
 
+// ---- external draft appends (「加入对话」 and friends) ----
+
+/**
+ * Append a snippet to a session's composer draft from outside the composer
+ * (e.g. the preview workspace's `@` mention button). The composer owner
+ * (SessionView) holds the draft in React state, so the append goes through
+ * `writeDraft` for persistence and then notifies subscribers, who re-read the
+ * stored text — one channel that works whether or not that session's composer
+ * is currently mounted.
+ */
+export function appendToDraft(sessionId: string, text: string): void {
+  if (text === '') return;
+  const current = readDraft(sessionId);
+  const separator = current !== '' && !/[\s]$/.test(current) ? ' ' : '';
+  writeDraft(sessionId, `${current}${separator}${text}`);
+  for (const listener of appendListeners) listener(sessionId);
+}
+
+type DraftAppendListener = (sessionId: string) => void;
+
+const appendListeners = new Set<DraftAppendListener>();
+
+/** Subscribe to `appendToDraft` writes; returns the unsubscribe. */
+export function subscribeDraftAppends(listener: DraftAppendListener): () => void {
+  appendListeners.add(listener);
+  return () => {
+    appendListeners.delete(listener);
+  };
+}

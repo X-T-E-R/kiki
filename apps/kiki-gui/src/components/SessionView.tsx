@@ -36,7 +36,7 @@ import {
 } from '../lib/attachments';
 import { composerDefaultsForProfile } from '../lib/agentSettings';
 import { API_CODES, ApiError, isSessionNotFoundMessage } from '../lib/client';
-import { readComposerState, readDraft, writeComposerState, writeDraft } from '../lib/drafts';
+import { readComposerState, readDraft, subscribeDraftAppends, writeComposerState, writeDraft } from '../lib/drafts';
 import { isMainWindowVisibleAndFocused, showDesktopNotification } from '../lib/desktop';
 import {
   addAnnotation,
@@ -1284,6 +1284,20 @@ export function SessionView({
     setDraft(text);
     writeDraft(sessionId, text);
   }, [sessionId]);
+  // External draft appends (「加入对话」 from the preview workspace): the
+  // draft store owns the text; this mirrors it into the mounted composer and
+  // returns focus so the follow-up can be typed at once.
+  useEffect(
+    () =>
+      subscribeDraftAppends((target) => {
+        if (target !== sessionId) return;
+        const next = readDraft(sessionId);
+        draftRef.current = next;
+        setDraft(next);
+        focusComposer();
+      }),
+    [sessionId, focusComposer],
+  );
   const updateAttachments = useCallback((
     next:
       | readonly ComposerAttachment[]

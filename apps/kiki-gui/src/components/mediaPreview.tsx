@@ -17,6 +17,8 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 import { createPortal } from 'react-dom';
 
 import { useI18n } from '../i18n';
+import { copyTextToClipboard } from '../lib/clipboard';
+import { hostFileOpsSupported, openHostPath, revealHostPath } from '../lib/hostFileOps';
 import { basenameOf, formatBytes, type MediaRef } from '../lib/media';
 import { useOptionalConnection } from '../state/connection';
 import {
@@ -32,6 +34,7 @@ import { useOptionalConversationShell } from './ConversationShell';
 import { useDirtyReporter } from './dirtyGuard';
 import { Dialog } from './Dialog';
 import { MediaLightbox } from './MediaLightbox';
+import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { PreviewCloseConfirm, PreviewWorkspace } from './PreviewWorkspace';
 import {
   MediaPreviewContext,
@@ -199,6 +202,8 @@ export function MediaPreviewProvider({
       onOpenImage={(src, name) => { setImage({ src, name }); }}
       reportDirty={reportDirty}
       overlay={shell?.slots.preview == null}
+      cwd={cwd}
+      sessionId={sessionId}
     />
   ) : null;
 
@@ -639,29 +644,69 @@ export function MediaPartList({
 
 /**
  * Clickable host file path. Without a preview provider (tests, static pages)
- * it degrades to plain text.
+ * it degrades to plain text. Right-click raises the file menu (G-1): preview,
+ * copy path, and the desktop opener pair.
  */
 export function FilePathLink({ path, className }: { path: string; className?: string }) {
+  const { t } = useI18n();
   const preview = useMediaPreview();
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   if (preview === null) return <span className={className}>{path}</span>;
+  const entries: MiniMenuEntry[] = [
+    { key: 'open-preview', label: t('file.openPreview'), run: () => { preview.openFile(path); } },
+    { key: 'copy-path', label: t('file.copyPath'), run: () => { void copyTextToClipboard(path).catch(() => {}); } },
+    ...(hostFileOpsSupported()
+      ? [
+          { separator: true } as const,
+          {
+            key: 'show-in-folder',
+            label: t('file.showInFolder'),
+            run: () => { void revealHostPath(path).catch(() => {}); },
+          } as const,
+          {
+            key: 'open-in-editor',
+            label: t('file.openInEditor'),
+            run: () => { void openHostPath(path).catch(() => {}); },
+          } as const,
+        ]
+      : []),
+  ];
   return (
-    <span
-      role="link"
-      tabIndex={0}
-      title={path}
-      onClick={(event) => {
-        event.stopPropagation();
-        preview.openFile(path);
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Enter') {
+    <>
+      <span
+        role="link"
+        tabIndex={0}
+        title={path}
+        onClick={(event) => {
           event.stopPropagation();
           preview.openFile(path);
-        }
-      }}
-      className={`cursor-pointer underline decoration-dotted underline-offset-2 hover:text-accent ${className ?? ''}`}
-    >
-      {path}
-    </span>
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setMenu({ x: event.clientX, y: event.clientY });
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.stopPropagation();
+            preview.openFile(path);
+          }
+        }}
+        className={`cursor-pointer underline decoration-dotted underline-offset-2 hover:text-accent ${className ?? ''}`}
+      >
+        {path}
+      </span>
+      {menu !== null ? (
+        <MiniContextMenu
+          x={menu.x}
+          y={menu.y}
+          entries={entries}
+          onClose={() => { setMenu(null); }}
+          ariaLabel={t('file.menuAria')}
+          overlayId="file-path-link"
+          dataAttribute="data-file-link-menu"
+        />
+      ) : null}
+    </>
   );
 }

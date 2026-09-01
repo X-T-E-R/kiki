@@ -121,6 +121,22 @@ export const en = {
   'menu.pin': 'Pin to top',
   'menu.unpin': 'Unpin',
   'menu.archive': 'Archive',
+  'menu.copyLink': 'Copy link',
+  'menu.copyPath': 'Copy path',
+  'menu.openFolder': 'Open containing folder',
+  'menu.openExternal': 'Open in external editor',
+
+  // ---- link / file-path mini menus (G-1) ----
+  'link.menuAria': 'Link actions',
+  'link.open': 'Open link',
+  'link.copyLink': 'Copy link',
+  'file.menuAria': 'File actions',
+  'file.openPreview': 'Open preview',
+  'file.copyPath': 'Copy path',
+  'file.copyRelativePath': 'Copy relative path',
+  'file.copyAbsolutePath': 'Copy absolute path',
+  'file.showInFolder': 'Show in folder',
+  'file.openInEditor': 'Open in editor',
 
   // ---- composer right-click menu ----
   'composer.contextMenuAria': 'Input actions',
@@ -422,6 +438,7 @@ export const en = {
   'preview.closeTab': 'Close tab',
   'preview.closeOthers': 'Close other tabs',
   'preview.closeAll': 'Close all tabs',
+  'preview.addToChat': 'Add to chat',
   'preview.rendered': 'Rendered',
   'preview.source': 'Source',
   'preview.save': 'Save',

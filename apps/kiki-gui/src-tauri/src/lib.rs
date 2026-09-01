@@ -973,6 +973,86 @@ fn write_host_file_text(path: PathBuf, text: String) -> Result<(), String> {
         .map_err(|error| format!("Cannot write host file {}: {error}", path.display()))
 }
 
+/// Narrow host-opener pair behind the session/file context menus. Both reject
+/// relative paths and spawn the platform shell without waiting: `explorer`
+/// exits non-zero even on success, so spawn success is the whole contract.
+fn require_absolute_host_path(path: &Path) -> Result<(), String> {
+    if !path.is_absolute() {
+        return Err("Host path must be absolute".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn reveal_host_path(path: PathBuf) -> Result<(), String> {
+    require_absolute_host_path(&path)?;
+    reveal_in_file_manager(&path)
+}
+
+#[tauri::command]
+fn open_host_path(path: PathBuf) -> Result<(), String> {
+    require_absolute_host_path(&path)?;
+    open_with_default_app(&path)
+}
+
+#[cfg(target_os = "windows")]
+fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
+    std::process::Command::new("explorer")
+        .arg(format!("/select,{}", path.display()))
+        .spawn()
+        .map_err(|error| format!("Cannot reveal host path {}: {error}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg("-R")
+        .arg(path)
+        .spawn()
+        .map_err(|error| format!("Cannot reveal host path {}: {error}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn reveal_in_file_manager(path: &Path) -> Result<(), String> {
+    // No portable "select this file" on Linux; open the containing folder.
+    let folder = path.parent().unwrap_or(path);
+    std::process::Command::new("xdg-open")
+        .arg(folder)
+        .spawn()
+        .map_err(|error| format!("Cannot reveal host path {}: {error}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn open_with_default_app(path: &Path) -> Result<(), String> {
+    std::process::Command::new("cmd")
+        .args(["/C", "start", ""])
+        .arg(path)
+        .spawn()
+        .map_err(|error| format!("Cannot open host path {}: {error}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn open_with_default_app(path: &Path) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg(path)
+        .spawn()
+        .map_err(|error| format!("Cannot open host path {}: {error}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_with_default_app(path: &Path) -> Result<(), String> {
+    std::process::Command::new("xdg-open")
+        .arg(path)
+        .spawn()
+        .map_err(|error| format!("Cannot open host path {}: {error}", path.display()))?;
+    Ok(())
+}
+
 #[tauri::command]
 fn read_desktop_prefs() -> DesktopPrefs {
     read_desktop_prefs_file()
@@ -3307,5 +3387,12 @@ mod tests {
         assert!(write_host_file_text(PathBuf::from("relative.txt"), "no".to_string()).is_err());
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn host_path_openers_reject_relative_paths() {
+        assert!(reveal_host_path(PathBuf::from("relative.txt")).is_err());
+        assert!(open_host_path(PathBuf::from("relative.txt")).is_err());
+        assert!(require_absolute_host_path(Path::new("nested/file.md")).is_err());
     }
 }

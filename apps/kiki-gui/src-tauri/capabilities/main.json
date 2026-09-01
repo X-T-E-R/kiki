@@ -19,6 +19,8 @@
     "allow-cancel-desktop-startup",
     "allow-show-main-window",
     "allow-write-host-file-text",
+    "allow-reveal-host-path",
+    "allow-open-host-path",
     "allow-read-desktop-prefs",
     "allow-read-kimi-home-paths",
     "allow-write-desktop-prefs",

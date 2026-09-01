@@ -119,6 +119,22 @@ export const zh: Record<I18nKey, string> = {
   'menu.pin': '置顶',
   'menu.unpin': '取消置顶',
   'menu.archive': '归档',
+  'menu.copyLink': '复制链接',
+  'menu.copyPath': '复制路径',
+  'menu.openFolder': '打开所在文件夹',
+  'menu.openExternal': '在外部编辑器打开',
+
+  // ---- 链接 / 文件路径小菜单（G-1） ----
+  'link.menuAria': '链接操作',
+  'link.open': '打开链接',
+  'link.copyLink': '复制链接',
+  'file.menuAria': '文件操作',
+  'file.openPreview': '打开预览',
+  'file.copyPath': '复制路径',
+  'file.copyRelativePath': '复制相对路径',
+  'file.copyAbsolutePath': '复制绝对路径',
+  'file.showInFolder': '在文件夹中显示',
+  'file.openInEditor': '在编辑器中打开',
 
   // ---- composer right-click menu ----
   'composer.contextMenuAria': '输入操作',
@@ -413,6 +429,7 @@ export const zh: Record<I18nKey, string> = {
   'preview.closeTab': '关闭标签',
   'preview.closeOthers': '关闭其他标签',
   'preview.closeAll': '关闭全部标签',
+  'preview.addToChat': '加入对话',
   'preview.rendered': '渲染',
   'preview.source': '源码',
   'preview.save': '保存',
