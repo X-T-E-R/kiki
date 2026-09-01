@@ -7,6 +7,7 @@
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { ErrorCodes } from '#/errors';
+import type { DispatchProfileCatalogEntry } from '#/session/dispatch/profileCatalogProjection';
 
 export type ExternalDispatchStatus =
   | 'queued'
@@ -85,10 +86,8 @@ export interface ExternalAuthority {
   readonly configFingerprint: string;
 }
 
-export interface ExternalDispatchable {
+export interface ExternalDispatchable extends Partial<DispatchProfileCatalogEntry> {
   readonly kind: 'main' | 'named';
-  readonly profileName?: string;
-  readonly description?: string;
 }
 
 export interface ExternalChildView {

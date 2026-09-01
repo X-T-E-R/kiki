@@ -196,8 +196,7 @@ export class SessionExternalDelegationService
       [],
       () => true,
       undefined,
-      () => true,
-      false,
+      (alias) => this.modelAliasAvailable(alias),
     );
     return {
       version: 1,
@@ -207,8 +206,7 @@ export class SessionExternalDelegationService
         { kind: 'main' },
         ...entries.map((entry) => ({
           kind: 'named' as const,
-          profileName: entry.profileName,
-          description: entry.description,
+          ...entry,
         })),
       ],
       children: Object.values(doc.children)
@@ -534,6 +532,14 @@ export class SessionExternalDelegationService
       this.models,
     );
     return available.profiles.map((profile) => profile.name);
+  }
+
+  private modelAliasAvailable(alias: string): boolean {
+    try {
+      return this.models.resolveId(alias) !== undefined;
+    } catch {
+      return false;
+    }
   }
 
   private async existingNamedTarget(

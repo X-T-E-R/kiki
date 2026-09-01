@@ -543,11 +543,13 @@ describe('SessionExternalDelegationService', () => {
       message: 'write',
     });
 
-    expect(root.dispatchables).toContainEqual({
-      kind: 'named',
-      profileName: 'writer',
-      description: 'Private writer',
-    });
+    expect(root.dispatchables).toContainEqual(
+      expect.objectContaining({
+        kind: 'named',
+        profileName: 'writer',
+        description: 'Private writer',
+      }),
+    );
     expect(createdWith[0]).toMatchObject({
       binding: {
         profile: 'writer',
@@ -662,6 +664,52 @@ describe('SessionExternalDelegationService', () => {
     expect(runAgentIds).toEqual([]);
   });
 
+  it('projects the complete structured profile catalog for dispatch seats', async () => {
+    const richProfile: AgentProfile = {
+      ...profile,
+      description: 'Review implementation',
+      whenToUse: 'Use for focused code review.',
+      thinkingEffort: 'high',
+      allowedModels: ['model', 'alternate-model'],
+      modelProfiles: [
+        {
+          alias: 'alternate-model',
+          when: 'Use for a second opinion.',
+          thinkingEffort: 'medium',
+        },
+      ],
+      tools: ['Read', 'Write'],
+    };
+    ix.stub(ISessionAgentProfileCatalog, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      get: (name: string) => name === richProfile.name ? richProfile : undefined,
+      getDefault: () => richProfile,
+      list: () => [richProfile],
+    });
+    const service = ix.get(ISessionExternalDelegationService);
+
+    const root = await service.list(authority);
+
+    expect(root.dispatchables).toContainEqual({
+      kind: 'named',
+      profileName: 'coder',
+      description: 'Review implementation',
+      whenToUse: 'Use for focused code review.',
+      modelAlias: 'model',
+      thinkingEffort: 'high',
+      allowedModels: ['model', 'alternate-model'],
+      alternativeModels: [
+        {
+          alias: 'alternate-model',
+          when: 'Use for a second opinion.',
+          thinkingEffort: 'medium',
+        },
+      ],
+      tools: 'Read, Write',
+    });
+  });
+
   it('uses the same effective target list and lease as in-process delegation', async () => {
     const mainProfile: AgentProfile = {
       name: 'agent',
@@ -695,12 +743,13 @@ describe('SessionExternalDelegationService', () => {
     const service = ix.get(ISessionExternalDelegationService);
 
     const root = await service.list(authority);
-    expect(root.dispatchables).toEqual([
+    expect(root.dispatchables).toMatchObject([
       { kind: 'main' },
       {
         kind: 'named',
         profileName: 'coder',
         description: 'Leased code owner',
+        modelAlias: 'leased-model',
       },
     ]);
 
@@ -744,7 +793,7 @@ describe('SessionExternalDelegationService', () => {
 
     const root = await service.list(authority);
 
-    expect(root.dispatchables).toEqual([
+    expect(root.dispatchables).toMatchObject([
       { kind: 'main' },
       { kind: 'named', profileName: 'coder', description: 'Code owner' },
     ]);
