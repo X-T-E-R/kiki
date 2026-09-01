@@ -662,6 +662,7 @@ export class SessionController {
       loadingOlder: false,
       olderError: undefined,
       retainPendingPrompts: true,
+      transcriptReset: coverage.kind === 'full',
     });
   }
 
@@ -815,6 +816,7 @@ export class SessionController {
     _store: AgentTranscript,
     options?: Partial<Pick<SessionViewState, 'loadingOlder' | 'fetchedOlder' | 'olderError'>> & {
       readonly retainPendingPrompts?: boolean;
+      readonly transcriptReset?: boolean;
     },
   ): void {
     const snapshot = this.composeAgentSnapshot(agentId);
@@ -832,6 +834,9 @@ export class SessionController {
         ? next
         : {
             ...next,
+            transcriptResetVersion: options.transcriptReset === true
+              ? next.transcriptResetVersion + 1
+              : next.transcriptResetVersion,
             loadingOlder: options.loadingOlder ?? next.loadingOlder,
             fetchedOlder: options.fetchedOlder ?? next.fetchedOlder,
             olderError: options.olderError ?? next.olderError,

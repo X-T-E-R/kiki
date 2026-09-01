@@ -3,18 +3,17 @@
  * whitespace, no assistant bubble (kiki mark + content), ink user cards,
  * collapsible thinking, tool cards, dark shell islands, amber interactions.
  *
- * Scroll runs on use-stick-to-bottom (codeg's message-thread pattern,
- * Apache-2.0): pinned to the bottom while streaming, "Jump to latest" pill
- * when the user scrolls up. Older history loads when scrolled to the top and
- * prepends with the viewport re-anchored (no jump) — the anchor dance
- * follows aionui's MessageList (Apache-2.0). Runs of ≥2 consecutive tool
- * blocks fold into a "Steps · N" group (aionui's MessageToolGroupSummary,
- * Apache-2.0; kiki auto-expands on error only, not while running).
+ * The variable-height block list is windowed with TanStack Virtual. Its
+ * end-anchor is the single owner of append follow, streaming growth, prepend
+ * anchoring, and full-measurement reset restoration. Runs of ≥2 consecutive
+ * tool blocks fold into a "Steps · N" group (aionui's
+ * MessageToolGroupSummary, Apache-2.0; kiki auto-expands on error only, not
+ * while running).
  */
 
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { parseMarkdownIntoBlocks } from 'streamdown';
-import { StickToBottom, useStickToBottomContext } from 'use-stick-to-bottom';
+import { defaultRangeExtractor, useVirtualizer, type Virtualizer } from '@tanstack/react-virtual';
 
 import type { ApprovalDecision, QuestionAnswer } from '@moonshot-ai/protocol';
 
@@ -1067,57 +1066,38 @@ function displayNodesEqual(a: DisplayNode, b: DisplayNode): boolean {
   return false;
 }
 
-/** Rows per memoized page — small enough that a delta re-renders a cheap
- * tail slice, large enough that the page list itself stays short. */
-const TRANSCRIPT_PAGE_TARGET = 64;
+const TRANSCRIPT_ESTIMATED_ROW_HEIGHT = 120;
+const TRANSCRIPT_OVERSCAN = 6;
+const TRANSCRIPT_END_THRESHOLD = 80;
+const EMPTY_TRANSCRIPT_ITEM_KEY = 'transcript-live-status';
 
-type TranscriptPageData = { key: string; nodes: DisplayNode[] };
+type TranscriptVirtualNode = DisplayNode | undefined;
+type TranscriptViewportAnchor = {
+  atEnd: boolean;
+  key: string | undefined;
+  offset: number;
+};
 
-/**
- * Partition display nodes into referentially stable pages, each keyed by its
- * first node's id. Page assignment is incremental: appends grow the tail
- * page up to the target size, prepends (loadOlder) form new front pages
- * without shifting existing boundaries — so a row's parent page (and its
- * local UI state, and its already-played enter animation) survives both
- * streaming deltas and history prepends.
- */
-function useStablePages(nodes: readonly DisplayNode[]): TranscriptPageData[] {
-  const sizesRef = useRef(new Map<string, number>());
-  const sizes = sizesRef.current;
-  const pages: TranscriptPageData[] = [];
-  let index = 0;
-  while (index < nodes.length) {
-    const startId = nodeKey(nodes[index]!);
-    let size = sizes.get(startId);
-    if (size === undefined) {
-      // New page: stop at the next known page start so prepended history
-      // never swallows an existing page's first node.
-      let nextStart = nodes.length;
-      for (let j = index + 1; j < nodes.length; j += 1) {
-        if (sizes.has(nodeKey(nodes[j]!))) {
-          nextStart = j;
-          break;
-        }
-      }
-      size = Math.min(TRANSCRIPT_PAGE_TARGET, nextStart - index);
-      sizes.set(startId, size);
-    } else {
-      if (index + size > nodes.length) size = nodes.length - index;
-      // Absorb following nodes that no known page claims, up to the target —
-      // this is what lets the tail page grow as blocks stream in.
-      while (
-        size < TRANSCRIPT_PAGE_TARGET &&
-        index + size < nodes.length &&
-        !sizes.has(nodeKey(nodes[index + size]!))
-      ) {
-        size += 1;
-      }
-      sizes.set(startId, size);
-    }
-    pages.push({ key: startId, nodes: nodes.slice(index, index + size) });
-    index += size;
-  }
-  return pages;
+type PendingResetRestore = {
+  version: number;
+  anchor: TranscriptViewportAnchor;
+  frame: number | null;
+};
+
+function virtualNodeKey(node: TranscriptVirtualNode): string {
+  return node === undefined ? EMPTY_TRANSCRIPT_ITEM_KEY : nodeKey(node);
+}
+
+function captureTranscriptAnchor(
+  virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>,
+): TranscriptViewportAnchor {
+  const scrollOffset = virtualizer.scrollOffset ?? virtualizer.scrollElement?.scrollTop ?? 0;
+  const item = virtualizer.getVirtualItemForOffset(scrollOffset);
+  return {
+    atEnd: virtualizer.isAtEnd(TRANSCRIPT_END_THRESHOLD),
+    key: typeof item?.key === 'string' ? item.key : undefined,
+    offset: item === undefined ? 0 : scrollOffset - item.start,
+  };
 }
 
 type TranscriptRowProps = {
@@ -1222,68 +1202,18 @@ const TranscriptRow = memo(
     prev.onOpenAgent === next.onOpenAgent,
 );
 
-type TranscriptPageProps = Omit<TranscriptRowProps, 'node' | 'executionBadge'> & {
-  page: TranscriptPageData;
-  /** nodeKey → external-executor badge for rows that open an executed turn. */
-  executionBadges: ReadonlyMap<string, TurnExecutionInfo>;
-};
-
-/**
- * Memoized page of rows (fragment — no DOM wrapper, so the flex column's
- * gap and the flat `[data-block-id]` contract are unchanged). This is the
- * boundary that makes a streaming delta sub-linear: React reconciles ~N/64
- * page elements whose comparator does pointer comparisons, instead of
- * re-creating and re-comparing N row elements.
- */
-const TranscriptPage = memo(
-  function TranscriptPage({ page, executionBadges, ...rowProps }: TranscriptPageProps) {
-    return (
-      <>
-        {page.nodes.map((node) => (
-          <TranscriptRow
-            key={nodeKey(node)}
-            node={node}
-            executionBadge={executionBadges.get(nodeKey(node))}
-            {...rowProps}
-          />
-        ))}
-      </>
-    );
-  },
-  (prev, next) =>
-    prev.page.key === next.page.key &&
-    prev.page.nodes.length === next.page.nodes.length &&
-    prev.page.nodes.every(
-      (node, index) => displayNodesEqual(node, next.page.nodes[index]!),
-    ) &&
-    prev.readOnly === next.readOnly &&
-    prev.approvalShortcutHints === next.approvalShortcutHints &&
-    (!prev.page.nodes.some(nodeUsesAgentNames) || prev.agentNames === next.agentNames) &&
-    prev.page.nodes.every((node) => subagentBranchEqual(node, prev.forest, next.forest)) &&
-    prev.page.nodes.every(
-      (node) => prev.executionBadges.get(nodeKey(node)) === next.executionBadges.get(nodeKey(node)),
-    ) &&
-    prev.rowActions === next.rowActions &&
-    prev.latestFinalAssistantId === next.latestFinalAssistantId &&
-    prev.onResolveApproval === next.onResolveApproval &&
-    prev.onAnswerQuestion === next.onAnswerQuestion &&
-    prev.onDismissQuestion === next.onDismissQuestion &&
-    prev.onCancelQueued === next.onCancelQueued &&
-    prev.onOpenAgent === next.onOpenAgent,
-);
-
-/**
- * Jump-to-bottom pill — shown only when the user has scrolled up (codeg's
- * conditional centered pill driven by useStickToBottomContext).
- */
-function JumpToBottom() {
+/** Jump-to-bottom pill driven by the virtualizer's end state. */
+function JumpToBottom({
+  virtualizer,
+}: {
+  virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>;
+}) {
   const { t } = useI18n();
-  const { isAtBottom, scrollToBottom } = useStickToBottomContext();
-  if (isAtBottom) return null;
+  if (virtualizer.isAtEnd(TRANSCRIPT_END_THRESHOLD)) return null;
   return (
     <button
       type="button"
-      onClick={() => void scrollToBottom()}
+      onClick={() => { virtualizer.scrollToEnd({ behavior: 'smooth' }); }}
       className="anim-enter absolute bottom-4 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline bg-panel/95 px-3 py-1.5 text-[11.5px] font-medium text-ink-soft shadow-[0_4px_16px_-6px_rgba(28,25,23,0.25)] transition-colors hover:border-accent hover:text-accent"
     >
       <span aria-hidden className="text-[10px]">▼</span> {t('transcript.jumpToLatest')}
@@ -1291,18 +1221,13 @@ function JumpToBottom() {
   );
 }
 
-/**
- * Top edge: fires `onLoadOlder` when the user scrolls near the top, then
- * re-anchors the viewport so the prepend doesn't shift the visible content
- * (aionui MessageList's record-height-then-restore dance, done with a
- * double rAF so React has committed the new blocks).
- */
-function TopEdge({ state, onLoadOlder }: {
+/** Top edge loads history; end anchoring owns viewport preservation. */
+function TopEdge({ state, onLoadOlder, scrollRef }: {
   state: SessionViewState;
   onLoadOlder: () => Promise<boolean>;
+  scrollRef: { readonly current: HTMLDivElement | null };
 }) {
   const { t } = useI18n();
-  const { scrollRef } = useStickToBottomContext();
   const inflightRef = useRef(false);
 
   useEffect(() => {
@@ -1319,19 +1244,12 @@ function TopEdge({ state, onLoadOlder }: {
         return;
       }
       inflightRef.current = true;
-      const previousHeight = element.scrollHeight;
-      const previousTop = element.scrollTop;
-      void onLoadOlder().then((applied) => {
+      void onLoadOlder().finally(() => {
         inflightRef.current = false;
-        if (!applied) return;
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            element.scrollTop = element.scrollHeight - previousHeight + previousTop;
-          });
-        });
       });
     };
     element.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
     return () => { element.removeEventListener('scroll', onScroll); };
   }, [scrollRef, state.loadingOlder, state.hasMoreHistory, state.olderError, onLoadOlder]);
 
@@ -1549,9 +1467,8 @@ export function Transcript({
   const { t } = useI18n();
   const { blocks, loaded, loadError } = state;
   const nodes = useMemo(() => groupBlocks(blocks), [blocks]);
-  const pages = useStablePages(nodes);
   // The forest prop is rebuilt per publish upstream; stabilize it by content
-  // so page/row memos survive unrelated deltas (Finding: forest identity).
+  // so row memos survive unrelated deltas (Finding: forest identity).
   const stableForest = useStableForest(forest);
   const childBlocks = useStableMap(() => {
     const map = new Map<string, SubagentBlock>();
@@ -1603,6 +1520,155 @@ export function Transcript({
     }
     return map;
   });
+  const virtualNodes = useMemo<readonly TranscriptVirtualNode[]>(
+    () => nodes.length === 0 ? [undefined] : nodes,
+    [nodes],
+  );
+  const nodeIndexes = useMemo(() => {
+    const map = new Map<string, number>();
+    virtualNodes.forEach((node, index) => { map.set(virtualNodeKey(node), index); });
+    return map;
+  }, [virtualNodes]);
+  const nodeIndexesRef = useRef(nodeIndexes);
+  nodeIndexesRef.current = nodeIndexes;
+  const [editingBlockIds, setEditingBlockIds] = useState<readonly string[]>([]);
+  const pinnedIndexes = useMemo(() => {
+    const indexes = new Set<number>();
+    virtualNodes.forEach((node, index) => {
+      if (
+        (node?.kind === 'approval' && node.resolution === undefined) ||
+        (node?.kind === 'question' && node.outcome === undefined)
+      ) {
+        indexes.add(index);
+      }
+    });
+    for (const blockId of editingBlockIds) {
+      const index = nodeIndexes.get(blockId);
+      if (index !== undefined) indexes.add(index);
+    }
+    return [...indexes].sort((left, right) => left - right);
+  }, [editingBlockIds, nodeIndexes, virtualNodes]);
+  const rangeExtractor = useCallback((range: Parameters<typeof defaultRangeExtractor>[0]) => {
+    if (pinnedIndexes.length === 0) return defaultRangeExtractor(range);
+    const indexes = new Set(defaultRangeExtractor(range));
+    for (const index of pinnedIndexes) indexes.add(index);
+    return [...indexes].sort((left, right) => left - right);
+  }, [pinnedIndexes]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const viewportAnchorRef = useRef<TranscriptViewportAnchor>({
+    atEnd: true,
+    key: undefined,
+    offset: 0,
+  });
+  const initialScrollDoneRef = useRef(false);
+  const initialScrollFrameRef = useRef<number | null>(null);
+  const measuredResetRef = useRef(state.transcriptResetVersion);
+  const pendingResetRestoreRef = useRef<PendingResetRestore | null>(null);
+  const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: virtualNodes.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => TRANSCRIPT_ESTIMATED_ROW_HEIGHT,
+    getItemKey: (index) => virtualNodeKey(virtualNodes[index]),
+    anchorTo: 'end',
+    followOnAppend: true,
+    scrollEndThreshold: TRANSCRIPT_END_THRESHOLD,
+    overscan: TRANSCRIPT_OVERSCAN,
+    rangeExtractor,
+    paddingStart: 24,
+    paddingEnd: 60,
+    gap: 16,
+    initialRect: { width: 760, height: 600 },
+    useAnimationFrameWithResizeObserver: true,
+    useFlushSync: false,
+    directDomUpdates: true,
+    directDomUpdatesMode: 'position',
+    onChange: (instance) => {
+      viewportAnchorRef.current = captureTranscriptAnchor(instance);
+    },
+  });
+
+  useLayoutEffect(() => {
+    if (!loaded || loadError !== undefined) return;
+    const scroll = scrollRef.current;
+    if (scroll === null) return;
+    const updateEditingRows = () => {
+      const blockIds = [...scroll.querySelectorAll<HTMLElement>('[data-edit-editor]')]
+        .map((editor) => editor.closest<HTMLElement>('[data-block-id]')?.dataset['blockId'])
+        .filter((blockId): blockId is string => blockId !== undefined)
+        .sort();
+      setEditingBlockIds((previous) =>
+        previous.length === blockIds.length && previous.every((blockId, index) => blockId === blockIds[index])
+          ? previous
+          : blockIds,
+      );
+    };
+    updateEditingRows();
+    const observer = new MutationObserver(updateEditingRows);
+    observer.observe(scroll, { childList: true, subtree: true });
+    return () => { observer.disconnect(); };
+  }, [loadError, loaded, virtualNodes.length]);
+
+  useLayoutEffect(() => {
+    if (!loaded || loadError !== undefined || scrollRef.current === null) return;
+    if (!initialScrollDoneRef.current) {
+      initialScrollDoneRef.current = true;
+      measuredResetRef.current = state.transcriptResetVersion;
+      virtualizer.scrollToEnd();
+      initialScrollFrameRef.current = requestAnimationFrame(() => {
+        initialScrollFrameRef.current = null;
+        virtualizer.scrollToEnd();
+        viewportAnchorRef.current = { atEnd: true, key: undefined, offset: 0 };
+      });
+      viewportAnchorRef.current = { atEnd: true, key: undefined, offset: 0 };
+      return;
+    }
+    if (measuredResetRef.current !== state.transcriptResetVersion) {
+      measuredResetRef.current = state.transcriptResetVersion;
+      const previousPending = pendingResetRestoreRef.current;
+      if (previousPending?.frame !== null && previousPending?.frame !== undefined) {
+        cancelAnimationFrame(previousPending.frame);
+      }
+      const anchor = previousPending?.anchor ?? viewportAnchorRef.current;
+      virtualizer.measure();
+      for (const element of virtualizer.elementsCache.values()) {
+        virtualizer.measureElement(element);
+      }
+      pendingResetRestoreRef.current = {
+        version: state.transcriptResetVersion,
+        anchor,
+        frame: null,
+      };
+    }
+    const pending = pendingResetRestoreRef.current;
+    if (pending === null || pending.frame !== null) return;
+    pending.frame = requestAnimationFrame(() => {
+      if (pendingResetRestoreRef.current !== pending) return;
+      const { anchor } = pending;
+      if (anchor.atEnd) {
+        virtualizer.scrollToEnd();
+        pendingResetRestoreRef.current = null;
+        return;
+      }
+      const index = anchor.key === undefined ? undefined : nodeIndexesRef.current.get(anchor.key);
+      if (index === undefined) {
+        virtualizer.scrollToEnd();
+        pendingResetRestoreRef.current = null;
+        return;
+      }
+      const offset = virtualizer.getOffsetForIndex(index, 'start')?.[0];
+      if (offset !== undefined) {
+        virtualizer.scrollToOffset(offset + anchor.offset, { align: 'start' });
+      }
+      pendingResetRestoreRef.current = null;
+    });
+  }, [loadError, loaded, state.transcriptResetVersion, virtualNodes.length, virtualizer]);
+
+  useEffect(() => () => {
+    const initialFrame = initialScrollFrameRef.current;
+    if (initialFrame !== null) cancelAnimationFrame(initialFrame);
+    const resetFrame = pendingResetRestoreRef.current?.frame;
+    if (resetFrame !== null && resetFrame !== undefined) cancelAnimationFrame(resetFrame);
+  }, []);
 
   if (loadError !== undefined) {
     return (
@@ -1643,42 +1709,71 @@ export function Transcript({
   }
 
   return (
-    <StickToBottom
-      className="relative min-h-0 flex-1"
-      initial="instant"
-      resize="smooth"
-      role="log"
-    >
-      {/* Bottom clearance is 24px of breathing room + the 36px fade band the
-          shell's active composer seat overlaps (see index.css), so the last
-          block always rests fully above the fade. The column cap rides the
-          shell's shared width axis. */}
-      <StickToBottom.Content className="mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6 pt-6 pb-[60px]">
-        <TopEdge state={state} onLoadOlder={onLoadOlder} />
-        {pages.map((page) => (
-          <TranscriptPage
-            key={page.key}
-            page={page}
-            readOnly={readOnly}
-            approvalShortcutHints={hasUnresolvedApproval}
-            agentNames={agentNames}
-            childBlocks={childBlocks}
-            forest={stableForest}
-            rowActions={rowActions}
-            latestFinalAssistantId={latestFinalAssistantId}
-            executionBadges={executionBadges}
-            onResolveApproval={onResolveApproval}
-            onAnswerQuestion={onAnswerQuestion}
-            onDismissQuestion={onDismissQuestion}
-            onCancelQueued={onCancelQueued}
-            onOpenAgent={onOpenAgent}
-          />
-        ))}
-        {showTurnStatus ? <TurnStatusLine startedAt={state.turnStartedAt} retry={state.turnRetry} /> : null}
-        {!state.busy && state.turnTail !== undefined ? <TurnTailLine tail={state.turnTail} /> : null}
-      </StickToBottom.Content>
-      <FloorNavRail blocks={blocks} />
-      <JumpToBottom />
-      </StickToBottom>
+    <div className="relative min-h-0 flex-1">
+      <div
+        ref={scrollRef}
+        data-transcript-scroll
+        role="log"
+        className="absolute inset-0 overflow-y-auto overflow-x-hidden [overflow-anchor:none]"
+      >
+        {/* Bottom clearance is 24px of breathing room + the 36px fade band the
+            shell's active composer seat overlaps (see index.css). */}
+        <div
+          ref={virtualizer.containerRef}
+          data-transcript-virtual-content
+          className="relative w-full"
+        >
+          {virtualizer.getVirtualItems().map((virtualItem) => {
+            const node = virtualNodes[virtualItem.index];
+            const first = virtualItem.index === 0;
+            const last = virtualItem.index === virtualNodes.length - 1;
+            return (
+              <div
+                key={virtualItem.key}
+                ref={virtualizer.measureElement}
+                data-index={virtualItem.index}
+                data-transcript-virtual-item
+                className="absolute left-0 w-full"
+              >
+                <div className="mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6">
+                  {first ? <TopEdge state={state} onLoadOlder={onLoadOlder} scrollRef={scrollRef} /> : null}
+                  {node === undefined ? null : (
+                    <TranscriptRow
+                      node={node}
+                      readOnly={readOnly}
+                      approvalShortcutHints={hasUnresolvedApproval}
+                      agentNames={agentNames}
+                      childBlocks={childBlocks}
+                      forest={stableForest}
+                      rowActions={rowActions}
+                      latestFinalAssistantId={latestFinalAssistantId}
+                      executionBadge={executionBadges.get(nodeKey(node))}
+                      onResolveApproval={onResolveApproval}
+                      onAnswerQuestion={onAnswerQuestion}
+                      onDismissQuestion={onDismissQuestion}
+                      onCancelQueued={onCancelQueued}
+                      onOpenAgent={onOpenAgent}
+                    />
+                  )}
+                  {last && showTurnStatus ? (
+                    <TurnStatusLine startedAt={state.turnStartedAt} retry={state.turnRetry} />
+                  ) : null}
+                  {last && !state.busy && state.turnTail !== undefined ? (
+                    <TurnTailLine tail={state.turnTail} />
+                  ) : null}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <FloorNavRail
+        blocks={blocks}
+        nodeIndexes={nodeIndexes}
+        scrollRef={scrollRef}
+        virtualizer={virtualizer}
+      />
+      <JumpToBottom virtualizer={virtualizer} />
+    </div>
   );
 }

@@ -276,6 +276,7 @@ export interface TurnRetryInfo {
 
 export interface SessionViewState {
   readonly version: number;
+  readonly transcriptResetVersion: number;
   readonly sessionId: string;
   readonly session: Session | undefined;
   readonly blocks: readonly Block[];
@@ -325,6 +326,7 @@ export interface SessionViewState {
 export function createViewState(sessionId: string): SessionViewState {
   return {
     version: 0,
+    transcriptResetVersion: 0,
     sessionId,
     session: undefined,
     blocks: [],
