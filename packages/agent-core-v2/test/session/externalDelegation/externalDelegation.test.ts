@@ -829,6 +829,44 @@ describe('SessionExternalDelegationService', () => {
     expect(second.nextCursor).toBeUndefined();
   });
 
+  it('keeps UTF-8 pages on scalar boundaries and rejects undersized limits', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({ authority, target: 'main', message: 'work' });
+    completions[0]!.resolve({ summary: '😀e\u0301Z' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
+
+    for (const limit of [1, 2, 3]) {
+      await expect(
+        service.result({ authority, dispatchId: dispatch.dispatchId, limit }),
+      ).rejects.toThrow(/limit is invalid/);
+    }
+    const emoji = await service.result({
+      authority,
+      dispatchId: dispatch.dispatchId,
+      limit: 4,
+    });
+    expect(emoji).toMatchObject({ text: '😀', nextCursor: 2 });
+    expect(Buffer.byteLength(emoji.text, 'utf8')).toBe(4);
+    await expect(
+      service.result({
+        authority,
+        dispatchId: dispatch.dispatchId,
+        cursor: 1,
+        limit: 4,
+      }),
+    ).rejects.toThrow(/cursor is invalid/);
+    await expect(
+      service.result({
+        authority,
+        dispatchId: dispatch.dispatchId,
+        cursor: emoji.nextCursor,
+        limit: 4,
+      }),
+    ).resolves.toMatchObject({ text: 'e\u0301Z', nextCursor: undefined });
+  });
+
   it('does not publish started after cancellation wins a deferred run-handle race', async () => {
     let releaseRunHandle!: () => void;
     nextRunHandleGate = new Promise<void>((resolve) => { releaseRunHandle = resolve; });

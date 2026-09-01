@@ -335,7 +335,7 @@ export class SessionExternalDelegationService
     const page = utf8Page(
       dispatch.result ?? dispatch.error ?? '',
       request.cursor,
-      boundedLimit(request.limit, 16_384, 65_536),
+      boundedLimit(request.limit, 16_384, 65_536, 4),
     );
     return {
       dispatch: dispatchView(dispatch),
@@ -890,7 +890,7 @@ function utf8Page(
   maxBytes: number,
 ): { readonly text: string; readonly nextCursor?: number } {
   const encoder = new TextEncoder();
-  const cursor = boundedCursor(rawCursor, value.length);
+  const cursor = boundedTextCursor(value, rawCursor);
   let pageBytes = 0;
   let text = '';
   for (const symbol of value.slice(cursor)) {
@@ -947,9 +947,35 @@ function boundedCursor(value: number | undefined, max: number): number {
   return cursor;
 }
 
-function boundedLimit(value: number | undefined, fallback: number, max = fallback): number {
+function boundedTextCursor(value: string, rawCursor: number | undefined): number {
+  const cursor = boundedCursor(rawCursor, value.length);
+  if (
+    cursor > 0 &&
+    cursor < value.length &&
+    isHighSurrogate(value.charCodeAt(cursor - 1)) &&
+    isLowSurrogate(value.charCodeAt(cursor))
+  ) {
+    throw invalid('cursor is invalid.');
+  }
+  return cursor;
+}
+
+function isHighSurrogate(value: number): boolean {
+  return value >= 0xd800 && value <= 0xdbff;
+}
+
+function isLowSurrogate(value: number): boolean {
+  return value >= 0xdc00 && value <= 0xdfff;
+}
+
+function boundedLimit(
+  value: number | undefined,
+  fallback: number,
+  max = fallback,
+  min = 1,
+): number {
   const limit = value ?? fallback;
-  if (!Number.isInteger(limit) || limit < 1) throw invalid('limit is invalid.');
+  if (!Number.isInteger(limit) || limit < min) throw invalid('limit is invalid.');
   return Math.min(limit, max);
 }
 
