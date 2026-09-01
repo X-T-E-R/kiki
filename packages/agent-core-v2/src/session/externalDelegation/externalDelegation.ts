@@ -7,6 +7,7 @@
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { ErrorCodes } from '#/errors';
+import type { AgentMessageAcceptance } from '#/session/agentCollaboration/messageMailbox';
 import type { DispatchProfileCatalogEntry } from '#/session/dispatch/profileCatalogProjection';
 
 export type ExternalDispatchStatus =
@@ -94,6 +95,8 @@ export interface ExternalChildView {
   readonly taskName: string;
   readonly profileName: string;
   readonly latestDispatchId?: string;
+  readonly status?: ExternalDispatchStatus;
+  readonly usage?: DispatchUsageView;
 }
 
 export interface DispatchUsageView {
@@ -157,6 +160,13 @@ export interface ExternalContinueRequest {
   readonly dispatchKey?: string;
 }
 
+export interface ExternalSendRequest {
+  readonly authority: ExternalAuthority;
+  readonly taskName: string;
+  readonly message: string;
+  readonly idempotencyKey: string;
+}
+
 export interface ExternalDispatchLookup {
   readonly authority: ExternalAuthority;
   readonly dispatchId: string;
@@ -216,6 +226,7 @@ export interface ISessionExternalDelegationService {
   list(authority: ExternalAuthority): Promise<ExternalRootView>;
   dispatch(request: ExternalDispatchRequest): Promise<ExternalDispatchView>;
   continue(request: ExternalContinueRequest): Promise<ExternalDispatchView>;
+  send(request: ExternalSendRequest): Promise<AgentMessageAcceptance>;
   status(request: ExternalDispatchLookup): Promise<ExternalDispatchView>;
   wait(request: DispatchWaitRequest): Promise<DispatchWaitView>;
   result(request: ExternalPageLookup): Promise<ExternalResultPage>;

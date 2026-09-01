@@ -15,7 +15,6 @@ import {
 
 import {
   COLLABORATION_AGENT_TYPE_LABEL,
-  COLLABORATION_LATEST_TASK_LABEL,
   COLLABORATION_TASK_NAME_LABEL,
 } from './registry';
 
@@ -26,7 +25,6 @@ export interface DirectChildAgent {
   readonly agentId: string;
   readonly name?: string;
   readonly profileName?: string;
-  readonly latestTaskId?: string;
   readonly swarmItem?: string;
   readonly meta: AgentMeta;
 }
@@ -51,7 +49,6 @@ export function directChildAgents(
           agentId,
           name: meta.labels?.[COLLABORATION_TASK_NAME_LABEL],
           profileName: meta.labels?.[COLLABORATION_AGENT_TYPE_LABEL] ?? meta.displayName,
-          latestTaskId: meta.labels?.[COLLABORATION_LATEST_TASK_LABEL],
           swarmItem: subagentSwarmItem(meta),
           meta,
         },

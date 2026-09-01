@@ -20,10 +20,19 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
+import type { TokenUsage } from '#/kosong/contract/usage';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
-import { IAgentCollaborationRegistry } from '#/session/agentCollaboration/registry';
+import {
+  COLLABORATION_LATEST_TASK_LABEL,
+  COLLABORATION_TASK_NAME_LABEL,
+  IAgentCollaborationRegistry,
+} from '#/session/agentCollaboration/registry';
+import {
+  IAgentCollaborationMessagingService,
+  type AgentMessageAcceptance,
+} from '#/session/agentCollaboration/messageMailbox';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
 import {
@@ -60,7 +69,7 @@ describe('SessionExternalDelegationService', () => {
   let documents: Map<string, unknown>;
   let handles: Map<string, IAgentScopeHandle>;
   let agentMetas: Record<string, AgentMeta>;
-  let completions: Array<{ resolve(value: { summary: string }): void; reject(error: unknown): void }>;
+  let completions: Array<{ resolve(value: { summary: string; usage?: TokenUsage }): void; reject(error: unknown): void }>;
   let nextRunHandleGate: Promise<void> | undefined;
   let runSignals: AbortSignal[];
   let runAgentIds: string[];
@@ -68,6 +77,8 @@ describe('SessionExternalDelegationService', () => {
   let createdWith: unknown[];
   let willClose: Emitter<SessionWillCloseEvent & IWaitUntil>;
   let logCalls: Array<{ msg: string; payload: unknown }>;
+  let sentMessages: Parameters<IAgentCollaborationMessagingService['send']>[0][];
+  let messagesByKey: Map<string, AgentMessageAcceptance>;
 
   beforeEach(() => {
     disposables = new DisposableStore();
@@ -82,6 +93,8 @@ describe('SessionExternalDelegationService', () => {
     runPrompts = [];
     createdWith = [];
     logCalls = [];
+    sentMessages = [];
+    messagesByKey = new Map();
 
     ix.stub(IFlagService, { enabled: () => true });
     ix.stub(IAtomicDocumentStore, {
@@ -212,9 +225,9 @@ describe('SessionExternalDelegationService', () => {
         const gate = nextRunHandleGate;
         nextRunHandleGate = undefined;
         if (gate !== undefined) await gate;
-        let resolve!: (value: { summary: string }) => void;
+        let resolve!: (value: { summary: string; usage?: TokenUsage }) => void;
         let reject!: (error: unknown) => void;
-        const completion = new Promise<{ summary: string }>((res, rej) => { resolve = res; reject = rej; });
+        const completion = new Promise<{ summary: string; usage?: TokenUsage }>((res, rej) => { resolve = res; reject = rej; });
         completions.push({ resolve, reject });
         return { agentId, turn: {} as never, completion };
       },
@@ -224,6 +237,38 @@ describe('SessionExternalDelegationService', () => {
       reserve: async () => true,
       commit: () => {},
       release: () => {},
+    });
+    ix.stub(IAgentCollaborationMessagingService, {
+      _serviceBrand: undefined,
+      send: async (input) => {
+        sentMessages.push(input);
+        const prior = messagesByKey.get(input.idempotencyKey);
+        if (prior !== undefined) {
+          return {
+            ...prior,
+            deduplicated: true,
+            payloadConflict: prior.message.content !== input.content,
+          };
+        }
+        const acceptance: AgentMessageAcceptance = {
+          message: {
+            messageId: `message-${String(messagesByKey.size + 1)}`,
+            sessionId: 'session_test',
+            sourceAgentId: input.sourceAgentId,
+            sourceTaskName: input.sourceTaskName,
+            targetAgentId: input.targetAgentId,
+            targetTaskName: input.targetTaskName,
+            content: input.content,
+            acceptedAt: 1,
+            targetSeq: messagesByKey.size + 1,
+          },
+          deduplicated: false,
+          delivery: 'queued',
+          payloadConflict: false,
+        };
+        messagesByKey.set(input.idempotencyKey, acceptance);
+        return acceptance;
+      },
     });
     ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     ix.set(ISessionExternalDelegationService, new SyncDescriptor(SessionExternalDelegationService));
@@ -240,7 +285,7 @@ describe('SessionExternalDelegationService', () => {
     expect(createdWith[0]).toMatchObject({
       runtimeId: 'local',
       delegator: { kind: 'external', delegationId: expect.stringMatching(/^delegation_/) },
-      labels: { externalDelegationTaskName: 'reviewer' },
+      labels: { [COLLABORATION_TASK_NAME_LABEL]: 'reviewer' },
     });
     await expect(service.dispatch({ authority, target: 'named', taskName: 'reviewer', message: 'again' })).rejects.toThrow(/active dispatch/);
 
@@ -253,6 +298,107 @@ describe('SessionExternalDelegationService', () => {
     const continued = await service.continue({ authority, dispatchId: first.dispatchId, message: 'continue' });
     expect(continued.continuationOf).toBe(first.dispatchId);
     expect(createdWith).toHaveLength(1);
+  });
+
+  it('queues idempotent mailbox messages only for an owned named child', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'mailbox_child',
+      profileName: 'coder',
+      message: 'create',
+    });
+    completions[0]!.resolve({ summary: 'done' });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
+
+    const first = await service.send({
+      authority,
+      taskName: 'mailbox_child',
+      message: 'review the update',
+      idempotencyKey: 'message-key',
+    });
+    const replay = await service.send({
+      authority,
+      taskName: 'mailbox_child',
+      message: 'review the update',
+      idempotencyKey: 'message-key',
+    });
+
+    expect(first.deduplicated).toBe(false);
+    expect(replay).toMatchObject({
+      message: { messageId: first.message.messageId },
+      deduplicated: true,
+      payloadConflict: false,
+    });
+    expect(sentMessages).toEqual([
+      {
+        sourceAgentId: expect.stringMatching(/^external:delegation_/),
+        sourceTaskName: 'external',
+        targetAgentId: 'external-child',
+        targetTaskName: 'mailbox_child',
+        content: 'review the update',
+        idempotencyKey: 'message-key',
+      },
+      expect.objectContaining({ idempotencyKey: 'message-key' }),
+    ]);
+    await expect(service.send({
+      authority,
+      taskName: 'missing_child',
+      message: 'reject',
+      idempotencyKey: 'missing-key',
+    })).rejects.toThrow(/Unknown named child/);
+    await expect(service.send({
+      authority: { ...authority, principalFingerprint: 'd'.repeat(64) },
+      taskName: 'mailbox_child',
+      message: 'reject',
+      idempotencyKey: 'foreign-key',
+    })).rejects.toThrow(/does not own/);
+  });
+
+  it('projects latest child status and usage from the dispatch ledger', async () => {
+    const service = ix.get(ISessionExternalDelegationService);
+    const dispatch = await service.dispatch({
+      authority,
+      target: 'named',
+      taskName: 'status_child',
+      profileName: 'coder',
+      message: 'inspect',
+    });
+
+    expect((await service.list(authority)).children).toContainEqual({
+      taskName: 'status_child',
+      profileName: 'coder',
+      latestDispatchId: dispatch.dispatchId,
+      status: expect.stringMatching(/queued|running/),
+      usage: undefined,
+    });
+    expect(agentMetas['external-child']?.labels?.[COLLABORATION_LATEST_TASK_LABEL]).toBe(
+      dispatch.dispatchId,
+    );
+
+    completions[0]!.resolve({
+      summary: 'done',
+      usage: {
+        inputOther: 11,
+        output: 7,
+        inputCacheRead: 5,
+        inputCacheCreation: 3,
+      },
+    });
+    await vi.waitFor(async () => {
+      expect((await service.status({ authority, dispatchId: dispatch.dispatchId })).status).toBe('completed');
+    });
+
+    expect((await service.list(authority)).children).toContainEqual({
+      taskName: 'status_child',
+      profileName: 'coder',
+      latestDispatchId: dispatch.dispatchId,
+      status: 'completed',
+      usage: { input: 19, output: 7, cacheRead: 5, cacheWrite: 3 },
+    });
   });
 
   it('reads transcript and events while a named dispatch is running', async () => {

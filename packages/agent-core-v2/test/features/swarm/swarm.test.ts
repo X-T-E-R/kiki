@@ -577,6 +577,12 @@ describe('AgentSwarmTool', () => {
           agentId: 'agent-explore-1',
           status: 'completed',
           result: 'explore result a',
+          usage: {
+            inputOther: 11,
+            output: 7,
+            inputCacheRead: 5,
+            inputCacheCreation: 3,
+          },
         },
         {
           task: {
@@ -596,6 +602,12 @@ describe('AgentSwarmTool', () => {
           agentId: 'agent-explore-2',
           status: 'completed',
           result: 'explore result b',
+          usage: {
+            inputOther: 2,
+            output: 4,
+            inputCacheRead: 1,
+            inputCacheCreation: 0,
+          },
         },
       ]),
     });
@@ -690,8 +702,8 @@ describe('AgentSwarmTool', () => {
       [
         '<agent_swarm_result>',
         '<summary>completed: 2</summary>',
-        '<subagent agent_id="agent-explore-1" item="src/a.ts" outcome="completed">explore result a</subagent>',
-        '<subagent agent_id="agent-explore-2" item="src/b.ts" outcome="completed">explore result b</subagent>',
+        '<subagent agent_id="agent-explore-1" item="src/a.ts" usage_input="19" usage_output="7" usage_cache_read="5" usage_cache_write="3" outcome="completed">explore result a</subagent>',
+        '<subagent agent_id="agent-explore-2" item="src/b.ts" usage_input="3" usage_output="4" usage_cache_read="1" usage_cache_write="0" outcome="completed">explore result b</subagent>',
         '</agent_swarm_result>',
       ].join('\n'),
     );

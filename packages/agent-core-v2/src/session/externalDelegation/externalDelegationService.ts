@@ -35,6 +35,10 @@ import {
   type DispatchChild,
   type DispatchRun,
 } from '#/session/dispatch/dispatch';
+import {
+  IAgentCollaborationMessagingService,
+  type AgentMessageAcceptance,
+} from '#/session/agentCollaboration/messageMailbox';
 import { buildProfileCatalogEntries } from '#/session/dispatch/profileCatalogProjection';
 import {
   KeyReservationRegistry,
@@ -61,6 +65,7 @@ import {
   type ExternalPageLookup,
   type ExternalResultPage,
   type ExternalRootView,
+  type ExternalSendRequest,
   type ExternalTranscriptPage,
   ISessionExternalDelegationService,
 } from './externalDelegation';
@@ -133,6 +138,7 @@ export class SessionExternalDelegationService
     @ISessionContext session: ISessionContext,
     @IAgentLifecycleService private readonly agents: IAgentLifecycleService,
     @ISessionDispatchService private readonly dispatchDomain: ISessionDispatchService,
+    @IAgentCollaborationMessagingService private readonly messaging: IAgentCollaborationMessagingService,
     @ISessionAgentProfileCatalog private readonly profiles: ISessionAgentProfileCatalog,
     @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
     @ILogService private readonly log: ILogService,
@@ -210,7 +216,7 @@ export class SessionExternalDelegationService
         })),
       ],
       children: Object.values(doc.children)
-        .map(childView)
+        .map((child) => childView(child, doc))
         .toSorted((a, b) => a.taskName.localeCompare(b.taskName)),
       continuations: Object.values(doc.dispatches)
         .filter((dispatch) => !ACTIVE.has(dispatch.status))
@@ -295,6 +301,22 @@ export class SessionExternalDelegationService
         reservation.release();
         throw error;
       }
+    });
+  }
+
+  async send(request: ExternalSendRequest): Promise<AgentMessageAcceptance> {
+    requireNonblank(request.message, 'message');
+    const taskName = requireNonblank(request.taskName, 'task_name');
+    const idempotencyKey = requireNonblank(request.idempotencyKey, 'idempotency_key');
+    const doc = await this.authorize(request.authority);
+    const target = await this.existingNamedTarget(doc, taskName);
+    return this.messaging.send({
+      sourceAgentId: `external:${doc.delegationId}`,
+      sourceTaskName: 'external',
+      targetAgentId: target.agentId,
+      targetTaskName: taskName,
+      content: request.message,
+      idempotencyKey,
     });
   }
 
@@ -472,10 +494,6 @@ export class SessionExternalDelegationService
         workDir: view.workDir,
         signal: controller.signal,
         executorPolicy: 'native',
-        labels: {
-          externalDelegationTaskName: taskName,
-          externalDelegationProfile: profileName,
-        },
         onCreated: async (child) => {
           doc.children[taskName] = {
             taskName,
@@ -633,7 +651,10 @@ export class SessionExternalDelegationService
       transcriptStart: target.agent.accessor.get(IAgentContextMemoryService).get().length,
     };
     doc.dispatches[dispatchId] = dispatch;
-    if (target.taskName !== undefined) doc.children[target.taskName]!.latestDispatchId = dispatchId;
+    if (target.taskName !== undefined) {
+      doc.children[target.taskName]!.latestDispatchId = dispatchId;
+      await this.dispatchDomain.recordRun(target.agentId, dispatchId);
+    }
     const committed = reservation.commit(dispatchId);
     if (dispatchKey !== undefined) {
       doc.dispatchKeys ??= {};
@@ -811,11 +832,14 @@ type ActiveDispatchKeyReservation = Extract<
   { readonly kind: 'reserved' }
 >;
 
-function childView(child: StoredChild): ExternalChildView {
+function childView(child: StoredChild, doc: ExternalDelegationDocument): ExternalChildView {
+  const latest = child.latestDispatchId === undefined ? undefined : doc.dispatches[child.latestDispatchId];
   return {
     taskName: child.taskName,
     profileName: child.profileName,
     latestDispatchId: child.latestDispatchId,
+    status: latest?.status,
+    usage: latest?.usage === undefined ? undefined : usageView(latest.usage),
   };
 }
 

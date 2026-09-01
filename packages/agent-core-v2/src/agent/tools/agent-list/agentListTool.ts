@@ -2,7 +2,11 @@ import { toInputJsonSchema } from '#/tool/input-schema';
 import { ToolAccesses, type ToolExecution } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 
-import { IAgentTaskService, type AgentTaskStatus } from '#/agent/task/task';
+import {
+  IAgentTaskService,
+  type AgentTaskInfo,
+  type AgentTaskStatus,
+} from '#/agent/task/task';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import {
@@ -43,8 +47,9 @@ export class AgentListTool implements IAgentListTool {
       execute: async () => {
         const includeFinished = args.include_finished ?? false;
         const session = await this.metadata.read();
+        const latestRuns = latestAgentRuns(this.tasks.list(false));
         const entries = directChildAgents(session.agents, this.scope.agentId)
-          .map((child) => toEntry(child, this.listStatus(child)))
+          .map((child) => toEntry(child, statusOf(latestRuns.get(child.agentId)?.status)))
           .filter((entry) => includeFinished || !FINISHED_STATUSES.has(entry.status))
           .sort(byRunningFirst);
         const omitted = Math.max(0, entries.length - MAX_AGENT_LIST_ENTRIES);
@@ -56,29 +61,35 @@ export class AgentListTool implements IAgentListTool {
       },
     };
   }
-
-  private listStatus(child: DirectChildAgent): AgentListStatus {
-    if (child.latestTaskId === undefined) return 'untracked';
-    return statusOf(this.tasks.getTask(child.latestTaskId)?.status);
-  }
 }
 
 registerAgentToolService(IAgentListTool, AgentListTool, { name: 'AgentList', domain: 'subagent' });
 
+function latestAgentRuns(tasks: readonly AgentTaskInfo[]): ReadonlyMap<string, AgentTaskInfo> {
+  const latest = new Map<string, AgentTaskInfo>();
+  for (const task of tasks) {
+    if (task.kind !== 'agent' || task.agentId === undefined) continue;
+    const prior = latest.get(task.agentId);
+    if (prior === undefined || task.startedAt > prior.startedAt) latest.set(task.agentId, task);
+  }
+  return latest;
+}
+
 function toEntry(child: DirectChildAgent, status: AgentListStatus): AgentListEntry {
   return {
     agent_id: child.agentId,
-    ...(child.name === undefined ? {} : { name: child.name }),
-    ...(child.profileName === undefined ? {} : { profile: child.profileName }),
+    name: child.name,
+    profile: child.profileName,
     status,
-    ...(child.swarmItem === undefined ? {} : { swarm_item: child.swarmItem }),
+    swarm_item: child.swarmItem,
   };
 }
 
 function statusOf(status: AgentTaskStatus | undefined): AgentListStatus {
+  if (status === undefined) return 'untracked';
   if (status === 'running') return 'running';
   if (status === 'completed') return 'completed';
-  if (status === 'killed' || status === 'timed_out') return 'interrupted';
+  if (status === 'killed' || status === 'timed_out' || status === 'lost') return 'interrupted';
   if (status === 'failed') return 'errored';
   return 'unknown';
 }
