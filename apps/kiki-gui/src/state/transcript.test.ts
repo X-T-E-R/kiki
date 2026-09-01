@@ -2211,12 +2211,12 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
                       name: 'AgentSend',
                       state: 'done',
                       input: { target: 'alpha', message: 'ping' },
-                      output: {
+                      output: JSON.stringify({
                         message_id: 'msg-1',
                         status: 'queued',
                         deduplicated: false,
                         target: { task_name: 'alpha', agent_id: 'agent-1' },
-                      },
+                      }),
                       startedAt: '2026-01-01T00:00:31.000Z',
                     },
                   ],

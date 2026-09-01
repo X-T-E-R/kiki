@@ -804,8 +804,16 @@ function sendTargetFromToolArgs(args: unknown): string | undefined {
 function agentSendTargetFromOutput(
   output: unknown,
 ): { readonly agentId: string; readonly taskName?: string } | undefined {
-  if (typeof output !== 'object' || output === null) return undefined;
-  const target = (output as Record<string, unknown>)['target'];
+  let parsed: unknown = output;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return undefined;
+    }
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined;
+  const target = (parsed as Record<string, unknown>)['target'];
   if (typeof target !== 'object' || target === null) return undefined;
   const record = target as Record<string, unknown>;
   const id = record['agent_id'] ?? record['agentId'];
