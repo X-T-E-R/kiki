@@ -184,43 +184,84 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!desktopRuntime) return;
     let cancelled = false;
+    let resolveGeneration = 0;
     desktopCancelledRef.current = false;
     let unlisten: (() => void) | undefined;
 
-    // The shell reports when the sidecar exists and readiness polling began.
-    void listen<string>(DESKTOP_STAGE_EVENT, (event) => {
-      if (event.payload !== 'waiting') return;
-      setDesktopBoot((boot) => (boot === null ? boot : { ...boot, stage: 'waiting' }));
-    }).then((fn) => {
-      if (cancelled) fn();
-      else unlisten = fn;
-    }, () => {
-      // Listening is cosmetic; the boot still proceeds without stage updates.
-    });
+    const resolveDesktopConnection = () => {
+      const generation = ++resolveGeneration;
+      void detectLocalConnection().then(
+        (connection) => {
+          if (cancelled || generation !== resolveGeneration) return;
+          setDesktopBoot(null);
+          setDesktopFailure(null);
+          if (connection === null) {
+            setConnectError({ kind: 'key', key: 'conn.desktopNoServer' });
+            return;
+          }
+          setSelection({
+            config: connection.config,
+            persist: false,
+            source: 'desktop',
+          });
+        },
+        (error: unknown) => {
+          if (cancelled || generation !== resolveGeneration) return;
+          setDesktopBoot(null);
+          setMeta(null);
+          setSelection(null);
+          if (desktopCancelledRef.current) return;
+          setDesktopFailure(normalizeDesktopFailure(error));
+        },
+      );
+    };
 
-    void detectLocalConnection().then(
-      (connection) => {
-        if (cancelled) return;
-        setDesktopBoot(null);
-        if (connection === null) {
-          setConnectError({ kind: 'key', key: 'conn.desktopNoServer' });
-          return;
+    // Runtime recovery reuses the boot stage event. Each waiting stage resolves
+    // the newly spawned sidecar connection because its random port may change.
+    void listen<unknown>(DESKTOP_STAGE_EVENT, (event) => {
+      const payload = event.payload;
+      if (payload === 'waiting') {
+        setDesktopFailure(null);
+        setConnectError(null);
+        setMeta(null);
+        setDesktopBoot((boot) => ({
+          stage: 'waiting',
+          startedAtMs: boot?.startedAtMs ?? Date.now(),
+        }));
+        resolveDesktopConnection();
+        return;
+      }
+      if (
+        payload === null ||
+        typeof payload !== 'object' ||
+        !('stage' in payload) ||
+        payload.stage !== 'failed' ||
+        !('failure' in payload)
+      ) {
+        return;
+      }
+      resolveGeneration += 1;
+      setMeta(null);
+      setSelection(null);
+      setConnectError(null);
+      setDesktopBoot(null);
+      setDesktopFailure(normalizeDesktopFailure(payload.failure));
+    }).then(
+      (fn) => {
+        if (cancelled) fn();
+        else {
+          unlisten = fn;
+          resolveDesktopConnection();
         }
-        setSelection({
-          config: connection.config,
-          persist: false,
-          source: 'desktop',
-        });
       },
-      (error: unknown) => {
-        if (cancelled) return;
-        setDesktopBoot(null);
-        if (desktopCancelledRef.current) return;
-        setDesktopFailure(normalizeDesktopFailure(error));
+      () => {
+        resolveDesktopConnection();
       },
     );
+
     return () => {
       cancelled = true;
+      resolveGeneration += 1;
       unlisten?.();
     };
   }, [desktopRuntime, desktopAttempt]);

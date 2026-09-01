@@ -45,20 +45,22 @@ use tauri_plugin_updater::UpdaterExt;
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 const STARTUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const RUNTIME_RECOVERY_ATTEMPTS: usize = 3;
+const RUNTIME_RECOVERY_INITIAL_BACKOFF: Duration = Duration::from_millis(500);
+const RUNTIME_STABILITY_WINDOW: Duration = Duration::from_secs(30);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const MAX_HTTP_STATUS_LINE_BYTES: usize = 256;
 const MAX_META_RESPONSE_BYTES: usize = 64 * 1024;
 const EXPECTED_SIDECAR_SERVER_VERSION: &str = env!("KIKI_SIDECAR_SERVER_VERSION");
 const UPDATER_PUBLIC_KEY: Option<&str> = option_env!("KIKI_UPDATER_PUBLIC_KEY");
-const STABLE_UPDATE_ENDPOINT: &str =
-    "https://x-t-e-r.github.io/kiki/updater/stable/latest.json";
+const STABLE_UPDATE_ENDPOINT: &str = "https://x-t-e-r.github.io/kiki/updater/stable/latest.json";
 const BETA_UPDATE_ENDPOINT: &str = "https://x-t-e-r.github.io/kiki/updater/beta/latest.json";
 const TRAY_ID: &str = "main-tray";
 /// Filename (under the kimi home) the desktop backend's stderr is appended to.
 const DESKTOP_BACKEND_LOG_FILE: &str = "desktop-backend.log";
 /// In-memory stderr lines kept for startup-failure diagnostics.
 const STDERR_TAIL_LINES: usize = 100;
-/// Frontend event carrying the boot phase ("waiting" once the sidecar exists).
+/// Frontend event carrying a waiting phase or structured recovery failure.
 const BACKEND_STAGE_EVENT: &str = "kiki://desktop-backend-stage";
 
 #[derive(Clone, Debug, Serialize)]
@@ -86,7 +88,7 @@ struct MetaData {
     server_version: String,
 }
 
-/// Structured startup failure for the frontend's desktop failure card.
+/// Structured backend failure for the frontend's desktop failure card.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DesktopStartupFailure {
@@ -109,6 +111,16 @@ impl From<String> for DesktopStartupFailure {
     fn from(message: String) -> Self {
         Self::plain(message)
     }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DesktopBackendFailureStage {
+    stage: &'static str,
+    failure: DesktopStartupFailure,
+}
+
+fn runtime_recovery_backoff(attempt: usize) -> Duration {
+    RUNTIME_RECOVERY_INITIAL_BACKOFF * 2_u32.pow(attempt as u32)
 }
 
 /// Human phrasing of a sidecar exit status.
@@ -234,30 +246,57 @@ impl BackendMonitor {
 /// stderr is logged (warn+ via `--log-level warn` and runtime errors),
 /// stdout is dropped (the ready line carries the bearer token), and a
 /// Terminated event is recorded so startup waiters fail immediately.
-fn spawn_backend_event_pump(mut events: Receiver<CommandEvent>, monitor: Arc<BackendMonitor>) {
+fn spawn_backend_event_pump(
+    mut events: Receiver<CommandEvent>,
+    monitor: Arc<BackendMonitor>,
+    manager: BackendManager,
+    app: AppHandle,
+    pid: u32,
+    launched_at_ms: u64,
+) {
     tauri::async_runtime::spawn(async move {
-        while let Some(event) = events.recv().await {
-            match event {
-                CommandEvent::Stdout(_) => {}
-                CommandEvent::Stderr(bytes) => {
+        loop {
+            match events.recv().await {
+                Some(CommandEvent::Stdout(_)) => {}
+                Some(CommandEvent::Stderr(bytes)) => {
                     let line = String::from_utf8_lossy(&bytes);
                     monitor.record_stderr_line(line.trim_end_matches(['\n', '\r']));
                 }
-                CommandEvent::Error(message) => {
+                Some(CommandEvent::Error(message)) => {
                     monitor.record_stderr_line(&format!("sidecar error: {message}"));
                 }
-                CommandEvent::Terminated(payload) => monitor.set_exit(payload),
+                Some(CommandEvent::Terminated(payload)) => {
+                    monitor.set_exit(payload);
+                    break;
+                }
                 // CommandEvent is #[non_exhaustive]; future event kinds are
                 // intentionally ignored by this diagnostics pump.
-                _ => {}
+                Some(_) => {}
+                None => {
+                    monitor.ensure_exit();
+                    break;
+                }
             }
         }
-        monitor.ensure_exit();
+        let exit = monitor
+            .exit()
+            .expect("backend event pump must record an exit");
+        manager.handle_backend_exit(&app, pid, launched_at_ms, &exit);
     });
 }
 
-fn emit_backend_stage(app: &AppHandle, stage: &'static str) {
-    let _ = app.emit(BACKEND_STAGE_EVENT, stage);
+fn emit_backend_waiting(app: &AppHandle) {
+    let _ = app.emit(BACKEND_STAGE_EVENT, "waiting");
+}
+
+fn emit_backend_failure(app: &AppHandle, failure: DesktopStartupFailure) {
+    let _ = app.emit(
+        BACKEND_STAGE_EVENT,
+        DesktopBackendFailureStage {
+            stage: "failed",
+            failure,
+        },
+    );
 }
 
 struct OwnedBackend {
@@ -265,6 +304,7 @@ struct OwnedBackend {
     pid: u32,
     launched_at_ms: u64,
     connection: Option<DesktopConnection>,
+    ready_at: Option<Instant>,
     monitor: Arc<BackendMonitor>,
     home: PathBuf,
 }
@@ -278,30 +318,110 @@ struct PendingBackend {
     home: PathBuf,
 }
 
+#[derive(Default)]
+struct RuntimeRecoveryState {
+    rapid_exit_count: usize,
+    blocked: bool,
+    generation: u64,
+}
+
+impl RuntimeRecoveryState {
+    fn record_exit(&mut self, uptime: Duration) -> Option<u64> {
+        self.generation += 1;
+        if uptime >= RUNTIME_STABILITY_WINDOW {
+            self.rapid_exit_count = 0;
+        }
+        self.rapid_exit_count += 1;
+        if self.rapid_exit_count > RUNTIME_RECOVERY_ATTEMPTS {
+            self.blocked = true;
+            None
+        } else {
+            Some(self.generation)
+        }
+    }
+
+    fn is_current(&self, generation: u64) -> bool {
+        !self.blocked && self.generation == generation
+    }
+
+    fn mark_failed(&mut self, generation: u64) -> bool {
+        if self.generation != generation {
+            return false;
+        }
+        self.blocked = true;
+        true
+    }
+
+    fn reset(&mut self) {
+        self.rapid_exit_count = 0;
+        self.blocked = false;
+        self.generation += 1;
+    }
+}
+
+#[derive(Default)]
+struct BackendState {
+    backend: Option<OwnedBackend>,
+    recovery: RuntimeRecoveryState,
+}
+
 #[derive(Clone, Default)]
 struct BackendManager {
-    inner: Arc<Mutex<Option<OwnedBackend>>>,
+    inner: Arc<Mutex<BackendState>>,
 }
 
 impl BackendManager {
     fn has_backend(&self) -> bool {
-        self.inner.lock().is_ok_and(|slot| slot.is_some())
+        self.inner.lock().is_ok_and(|state| state.backend.is_some())
     }
 
     fn connection(&self, app: &AppHandle) -> Result<DesktopConnection, DesktopStartupFailure> {
+        if let Ok(mut state) = self.inner.lock() {
+            if state.recovery.blocked {
+                state.recovery.reset();
+            }
+        }
+        self.connection_impl(app, None)
+    }
+
+    fn connection_for_recovery(
+        &self,
+        app: &AppHandle,
+        recovery_generation: u64,
+    ) -> Result<DesktopConnection, DesktopStartupFailure> {
+        self.connection_impl(app, Some(recovery_generation))
+    }
+
+    fn connection_impl(
+        &self,
+        app: &AppHandle,
+        recovery_generation: Option<u64>,
+    ) -> Result<DesktopConnection, DesktopStartupFailure> {
         // Locked phase — spawn decision and slot writes only. The readiness
         // wait below runs outside the lock so a slow cold start cannot block
         // restart or a concurrent reconnect for up to STARTUP_TIMEOUT.
         let pending = {
-            let mut slot = self.inner.lock().map_err(|_| {
+            let mut state = self.inner.lock().map_err(|_| {
                 DesktopStartupFailure::plain("Kiki backend lifecycle lock was poisoned".to_string())
             })?;
-
-            if let Some(connection) = slot
-                .as_ref()
-                .and_then(|backend| backend.connection.as_ref())
+            if recovery_generation.is_some_and(|generation| !state.recovery.is_current(generation))
             {
-                return Ok(connection.clone());
+                return Err(DesktopStartupFailure::plain(
+                    "Kiki backend runtime recovery was cancelled".to_string(),
+                ));
+            }
+            let slot = &mut state.backend;
+
+            if let Some(backend) = slot.as_ref() {
+                if let Some(connection) = backend.connection.as_ref() {
+                    if let Some(exit) = backend.monitor.exit() {
+                        return Err(backend.monitor.startup_failure(
+                            backend.pid,
+                            format!("exited at runtime ({})", describe_exit(&exit)),
+                        ));
+                    }
+                    return Ok(connection.clone());
+                }
             }
 
             match slot.as_ref() {
@@ -340,18 +460,24 @@ impl BackendManager {
                     })?;
                     let pid = child.pid();
                     let monitor = Arc::new(BackendMonitor::open(&home));
-                    spawn_backend_event_pump(events, monitor.clone());
-                    emit_backend_stage(app, "waiting");
-
-                    let monitor_handle = monitor.clone();
                     *slot = Some(OwnedBackend {
                         child,
                         pid,
                         launched_at_ms,
                         connection: None,
-                        monitor: monitor_handle,
+                        ready_at: None,
+                        monitor: monitor.clone(),
                         home: home.clone(),
                     });
+                    spawn_backend_event_pump(
+                        events,
+                        monitor.clone(),
+                        self.clone(),
+                        app.clone(),
+                        pid,
+                        launched_at_ms,
+                    );
+                    emit_backend_waiting(app);
                     PendingBackend {
                         pid,
                         launched_at_ms,
@@ -388,8 +514,9 @@ impl BackendManager {
                                 ),
                             ));
                         }
-                        self.publish_connection(&pending, &connection);
-                        return Ok(connection);
+                        if let Some(connection) = self.publish_connection(&pending, &connection) {
+                            return Ok(connection);
+                        }
                     }
                 }
             }
@@ -414,19 +541,112 @@ impl BackendManager {
         }
     }
 
-    /// Cache the resolved connection iff the slot still holds this launch.
-    fn publish_connection(&self, pending: &PendingBackend, connection: &DesktopConnection) {
-        let Ok(mut slot) = self.inner.lock() else {
+    /// Publish this launch's connection or return the value a peer published.
+    fn publish_connection(
+        &self,
+        pending: &PendingBackend,
+        connection: &DesktopConnection,
+    ) -> Option<DesktopConnection> {
+        let Ok(mut state) = self.inner.lock() else {
+            return None;
+        };
+        let Some(backend) = state.backend.as_mut() else {
+            return None;
+        };
+        if backend.pid != pending.pid
+            || backend.launched_at_ms != pending.launched_at_ms
+            || backend.monitor.exit().is_some()
+        {
+            return None;
+        }
+        if let Some(connection) = backend.connection.as_ref() {
+            return Some(connection.clone());
+        }
+        backend.connection = Some(connection.clone());
+        backend.ready_at = Some(Instant::now());
+        Some(connection.clone())
+    }
+
+    fn handle_backend_exit(
+        &self,
+        app: &AppHandle,
+        pid: u32,
+        launched_at_ms: u64,
+        exit: &TerminatedPayload,
+    ) {
+        let Some(backend) = self.take_backend_if(|candidate| {
+            candidate.pid == pid
+                && candidate.launched_at_ms == launched_at_ms
+                && candidate.connection.is_some()
+        }) else {
             return;
         };
-        if let Some(backend) = slot.as_mut() {
-            if backend.pid == pending.pid
-                && backend.launched_at_ms == pending.launched_at_ms
-                && backend.connection.is_none()
-            {
-                backend.connection = Some(connection.clone());
+        let uptime = backend
+            .ready_at
+            .expect("ready backend must record its ready instant")
+            .elapsed();
+        let failure = backend.monitor.startup_failure(
+            backend.pid,
+            format!("exited at runtime ({})", describe_exit(exit)),
+        );
+        let recovery_generation = self
+            .inner
+            .lock()
+            .expect("backend lifecycle lock must not be poisoned")
+            .recovery
+            .record_exit(uptime);
+        let Some(recovery_generation) = recovery_generation else {
+            emit_backend_failure(app, failure);
+            return;
+        };
+        self.spawn_runtime_recovery(app.clone(), recovery_generation);
+    }
+
+    fn spawn_runtime_recovery(&self, app: AppHandle, recovery_generation: u64) {
+        let manager = self.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut last_failure = None;
+            for attempt in 0..RUNTIME_RECOVERY_ATTEMPTS {
+                thread::sleep(runtime_recovery_backoff(attempt));
+                if !manager
+                    .inner
+                    .lock()
+                    .expect("backend lifecycle lock must not be poisoned")
+                    .recovery
+                    .is_current(recovery_generation)
+                {
+                    return;
+                }
+                match manager.connection_for_recovery(&app, recovery_generation) {
+                    Ok(_) => return,
+                    Err(failure) => {
+                        if !manager
+                            .inner
+                            .lock()
+                            .expect("backend lifecycle lock must not be poisoned")
+                            .recovery
+                            .is_current(recovery_generation)
+                        {
+                            return;
+                        }
+                        last_failure = Some(failure);
+                    }
+                }
             }
-        }
+            if !manager
+                .inner
+                .lock()
+                .expect("backend lifecycle lock must not be poisoned")
+                .recovery
+                .mark_failed(recovery_generation)
+            {
+                return;
+            }
+            emit_backend_failure(
+                &app,
+                last_failure.expect("runtime recovery must make at least one attempt"),
+            );
+        });
     }
 
     /// Kill the spawned backend iff the slot still holds this exact,
@@ -444,15 +664,27 @@ impl BackendManager {
 
     /// Kill a spawned-but-not-ready backend — the user cancelled the wait.
     fn cancel_startup(&self) {
-        if let Some(backend) = self.take_backend_if(|candidate| candidate.connection.is_none()) {
+        let backend = self.inner.lock().ok().and_then(|mut state| {
+            state.recovery.reset();
+            if state
+                .backend
+                .as_ref()
+                .is_some_and(|candidate| candidate.connection.is_none())
+            {
+                state.backend.take()
+            } else {
+                None
+            }
+        });
+        if let Some(backend) = backend {
             force_stop(backend);
         }
     }
 
     fn take_backend_if(&self, matches: impl Fn(&OwnedBackend) -> bool) -> Option<OwnedBackend> {
-        self.inner.lock().ok().and_then(|mut slot| {
-            if slot.as_ref().is_some_and(matches) {
-                slot.take()
+        self.inner.lock().ok().and_then(|mut state| {
+            if state.backend.as_ref().is_some_and(matches) {
+                state.backend.take()
             } else {
                 None
             }
@@ -460,7 +692,10 @@ impl BackendManager {
     }
 
     fn shutdown(&self) {
-        let backend = self.inner.lock().ok().and_then(|mut slot| slot.take());
+        let backend = self.inner.lock().ok().and_then(|mut state| {
+            state.recovery.reset();
+            state.backend.take()
+        });
         let Some(backend) = backend else {
             return;
         };
@@ -2151,8 +2386,14 @@ mod tests {
         assert!(partial.close_to_tray);
         assert_eq!(partial.locale, None);
         assert_eq!(partial.update_channel, UpdateChannel::Stable);
-        assert_eq!(UpdateChannel::build_default(Some("beta")), UpdateChannel::Beta);
-        assert_eq!(UpdateChannel::build_default(Some("stable")), UpdateChannel::Stable);
+        assert_eq!(
+            UpdateChannel::build_default(Some("beta")),
+            UpdateChannel::Beta
+        );
+        assert_eq!(
+            UpdateChannel::build_default(Some("stable")),
+            UpdateChannel::Stable
+        );
 
         let beta: DesktopPrefs = serde_json::from_str(r#"{"updateChannel":"beta"}"#).unwrap();
         assert_eq!(beta.update_channel, UpdateChannel::Beta);
@@ -2896,6 +3137,41 @@ mod tests {
             }),
             "no exit status reported"
         );
+    }
+
+    #[test]
+    fn runtime_recovery_backoff_and_rapid_exit_limit_are_bounded() {
+        assert_eq!(runtime_recovery_backoff(0), Duration::from_millis(500));
+        assert_eq!(runtime_recovery_backoff(1), Duration::from_secs(1));
+        assert_eq!(runtime_recovery_backoff(2), Duration::from_secs(2));
+
+        let mut recovery = RuntimeRecoveryState::default();
+        assert_eq!(recovery.record_exit(Duration::from_secs(1)), Some(1));
+        assert_eq!(recovery.record_exit(Duration::from_secs(1)), Some(2));
+        assert_eq!(recovery.record_exit(Duration::from_secs(1)), Some(3));
+        assert_eq!(recovery.record_exit(Duration::from_secs(1)), None);
+        assert!(recovery.blocked);
+
+        recovery.reset();
+        assert_eq!(recovery.record_exit(RUNTIME_STABILITY_WINDOW), Some(6));
+        assert_eq!(recovery.rapid_exit_count, 1);
+    }
+
+    #[test]
+    fn runtime_failure_stage_serializes_for_the_frontend() {
+        let stage = DesktopBackendFailureStage {
+            stage: "failed",
+            failure: DesktopStartupFailure {
+                message: "backend exited".to_string(),
+                stderr_tail: vec!["boom".to_string()],
+                log_path: Some("desktop-backend.log".to_string()),
+            },
+        };
+        let value = serde_json::to_value(stage).unwrap();
+        assert_eq!(value["stage"], "failed");
+        assert_eq!(value["failure"]["message"], "backend exited");
+        assert_eq!(value["failure"]["stderrTail"][0], "boom");
+        assert_eq!(value["failure"]["logPath"], "desktop-backend.log");
     }
 
     #[test]
