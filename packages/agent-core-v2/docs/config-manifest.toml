@@ -8,7 +8,7 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (31 sections · 2 overlay(s))
+# Index (32 sections · 2 overlay(s))
 #   agentExecutors           src/app/agentExecutor/configSection.ts
 #   agents                   src/session/agentCollaboration/configSection.ts
 #   background               src/agent/task/configSection.ts
@@ -30,6 +30,7 @@
 #   modelCatalog             src/app/kosongConfig/configSection.ts
 #   models                   src/app/kosongConfig/configSection.ts
 #   permission               src/agent/permissionRules/configSection.ts
+#   plan                     src/features/plan/configSection.ts
 #   providers                src/app/kosongConfig/configSection.ts
 #   requestIdentity          src/app/kosongConfig/configSection.ts
 #   services                 src/app/auth/configSection.ts
@@ -377,6 +378,16 @@ merge_all_available_skills = true
   # scope: "turn-override" | "session-runtime" | "project" | "user" (default: "user")
   # pattern: string
   # reason: string
+
+# ##########################################################################
+# plan
+#   owner: src/features/plan/configSection.ts
+#   scope: core
+# ##########################################################################
+
+[plan]
+gate = "free"
+enter_approval_timeout_ms = 60000
 
 # ##########################################################################
 # providers

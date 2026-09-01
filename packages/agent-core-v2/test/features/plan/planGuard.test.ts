@@ -22,6 +22,7 @@ import type {
   ResolvedToolExecutionHookContext,
 } from '#/agent/toolExecutor/toolHooks';
 import { IAgentTelemetryContextService } from '#/app/telemetry/agentTelemetryContext';
+import { IConfigService } from '#/app/config/config';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { ToolCall } from '#/kosong/contract/message';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -86,6 +87,10 @@ function hookContext(
   };
 }
 
+function planEnterDisplay(): ToolInputDisplay {
+  return { kind: 'plan_enter' };
+}
+
 function planReviewDisplay(
   input: {
     readonly plan?: string;
@@ -111,10 +116,13 @@ function mapResolution(
   resolution: PermissionPolicyResolution | undefined,
 ): BeforeExecuteDecision | undefined {
   if (resolution === undefined) return undefined;
-  if (resolution.kind !== 'result') {
-    throw new Error('the review stub only resolves synthetic results');
+  if (resolution.kind === 'approve') {
+    return { executionMetadata: resolution.executionMetadata };
   }
-  return { veto: resolution.result };
+  if (resolution.kind === 'result') {
+    return { veto: resolution.result };
+  }
+  throw new Error('unexpected approval resolution');
 }
 
 describe('AgentPlanService plan-guard listener', () => {
@@ -126,6 +134,7 @@ describe('AgentPlanService plan-guard listener', () => {
   let records: TelemetryRecord[];
   let requests: ApprovalRequestRecord[];
   let approvalResponse: ApprovalResponse;
+  let requestToolApproval: Mock<IAgentToolApprovalService['requestToolApproval']>;
   let formatDenyMessage: Mock<(message: string) => string>;
   let mode: PermissionMode;
   let files: Map<string, string>;
@@ -135,6 +144,10 @@ describe('AgentPlanService plan-guard listener', () => {
     records = [];
     requests = [];
     approvalResponse = { decision: 'approved' };
+    requestToolApproval = vi.fn(async (_context, ask, origin) => {
+      requests.push({ ask, origin });
+      return mapResolution(ask.resolveApproval?.(approvalResponse));
+    });
     formatDenyMessage = vi.fn((message: string) => message);
     mode = 'manual';
     files = new Map();
@@ -147,10 +160,7 @@ describe('AgentPlanService plan-guard listener', () => {
       resolvePermissionResolution: async () => {
         throw new Error('resolvePermissionResolution is not used by the plan-guard listener');
       },
-      requestToolApproval: async (_context, ask, origin) => {
-        requests.push({ ask, origin });
-        return mapResolution(ask.resolveApproval?.(approvalResponse));
-      },
+      requestToolApproval,
       formatDenyMessage: (message: string) => formatDenyMessage(message),
       formatApprovalRejectionMessage: (toolName, result) =>
         `Tool "${toolName}" was not run (${result.decision}).`,
@@ -181,6 +191,12 @@ describe('AgentPlanService plan-guard listener', () => {
         reg.defineInstance(IAgentToolExecutorService, executorEvents.executor);
         reg.defineInstance(IAgentToolApprovalService, toolApproval);
         reg.defineInstance(IAgentPermissionModeService, stubPermissionModeService(() => mode));
+        reg.definePartialInstance(IConfigService, {
+          get: (() => ({
+            gate: 'gated',
+            enterApprovalTimeoutMs: 5000,
+          })) as IConfigService['get'],
+        });
         reg.defineInstance(ITelemetryService, recordingTelemetry(records));
         reg.defineInstance(IAgentStateService, new AgentStateService());
         reg.define(IAgentPlanService, AgentPlanService);
@@ -359,7 +375,104 @@ describe('AgentPlanService plan-guard listener', () => {
     });
   });
 
+  describe('enter plan mode review', () => {
+    it('uses the configured gated default and preserves the approval over later permission passes', async () => {
+      const svc = plan();
+      const decision = await run(
+        hookContext('EnterPlanMode', { display: planEnterDisplay() }),
+      );
+
+      expect(svc.planGate).toBe('gated');
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.origin).toBe('enter-plan-mode-review-ask');
+      expect(permissionRan).toBe(true);
+      expect(decision?.executionMetadata).toEqual({ planEnterApproved: true });
+    });
+
+    it('skips enter approval when the prompt override sets the gate to free', async () => {
+      plan().setGate('free');
+      const decision = await run(
+        hookContext('EnterPlanMode', { display: planEnterDisplay() }),
+      );
+
+      expect(requests).toHaveLength(0);
+      expect(decision).toBeUndefined();
+      expect(permissionRan).toBe(true);
+    });
+
+    it('skips enter approval in auto permission mode even when gated', async () => {
+      plan();
+      mode = 'auto';
+      const decision = await run(
+        hookContext('EnterPlanMode', { display: planEnterDisplay() }),
+      );
+
+      expect(requests).toHaveLength(0);
+      expect(decision).toBeUndefined();
+      expect(permissionRan).toBe(true);
+    });
+
+    it('returns a model-readable reason when enter approval is rejected', async () => {
+      const svc = plan();
+      approvalResponse = { decision: 'rejected', feedback: 'Use direct edits.' };
+      const decision = await run(
+        hookContext('EnterPlanMode', { display: planEnterDisplay() }),
+      );
+
+      expect(decision?.veto).toMatchObject({
+        isError: true,
+        output: expect.stringContaining('user rejected'),
+      });
+      expect(decision?.veto?.output).toContain('Use direct edits.');
+      expect(await svc.status()).toBeNull();
+    });
+
+    it('automatically rejects enter approval after the configured timeout', async () => {
+      const svc = plan();
+      vi.useFakeTimers();
+      requestToolApproval.mockImplementation(async (context, ask, origin) => {
+        requests.push({ ask, origin });
+        return new Promise((resolve) => {
+          context.signal.addEventListener(
+            'abort',
+            () => resolve(mapResolution(ask.resolveError?.(context.signal.reason))),
+            { once: true },
+          );
+        });
+      });
+
+      try {
+        const pending = run(
+          hookContext('EnterPlanMode', { display: planEnterDisplay() }),
+        );
+        await vi.advanceTimersByTimeAsync(5000);
+        const decision = await pending;
+
+        expect(decision?.veto).toMatchObject({
+          isError: true,
+          output: expect.stringContaining('approval timed out after 5000 ms'),
+        });
+        expect(await svc.status()).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   describe('exit plan mode review', () => {
+    it('skips exit approval when the prompt override sets the gate to free', async () => {
+      const svc = await enterPlan();
+      svc.setGate('free');
+      const decision = await run(
+        hookContext('ExitPlanMode', { display: planReviewDisplay() }),
+      );
+
+      expect(requests).toHaveLength(0);
+      expect(decision).toBeUndefined();
+      expect(permissionRan).toBe(true);
+      expect(await svc.status()).not.toBeNull();
+    });
+
     it('asks through toolApproval under the legacy origin and tracks plan_submitted', async () => {
       await enterPlan();
       const decision = await run(
@@ -506,6 +619,40 @@ describe('AgentPlanService plan-guard listener', () => {
         properties: { outcome: 'dismissed' },
       });
       expect(await svc.status()).not.toBeNull();
+    });
+
+    it('does not auto-resolve exit approval after the enter timeout window', async () => {
+      vi.useFakeTimers();
+      const svc = await enterPlan();
+      let release: (() => void) | undefined;
+      requestToolApproval.mockImplementation(async (_context, ask, origin) => {
+        requests.push({ ask, origin });
+        return new Promise((resolve) => {
+          release = () => resolve(mapResolution(ask.resolveApproval?.(approvalResponse)));
+        });
+      });
+
+      try {
+        const pending = run(
+          hookContext('ExitPlanMode', { display: planReviewDisplay() }),
+        );
+        await vi.advanceTimersByTimeAsync(60_000);
+        let settled = false;
+        void pending.then(() => {
+          settled = true;
+        });
+        await Promise.resolve();
+
+        expect(settled).toBe(false);
+        expect(await svc.status()).not.toBeNull();
+
+        approvalResponse = { decision: 'rejected' };
+        release?.();
+        await pending;
+        expect(await svc.status()).not.toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('skips the review in auto mode', async () => {

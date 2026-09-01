@@ -168,6 +168,10 @@ describe('Plan service', () => {
   }
 
   describe('manual plan entry', () => {
+    it('uses the built-in free plan gate by default', () => {
+      expect(plan.planGate).toBe('free');
+    });
+
     it('keeps permission gating out of the PlanMode state object', () => {
       expect('beforeToolCall' in plan).toBe(false);
     });
@@ -381,6 +385,7 @@ describe('Plan service', () => {
       useFakes(fakes);
       useTools(['ExitPlanMode']);
       await ctx.rpc.setPermission({ mode: 'manual' });
+      plan.setGate('gated');
       await plan.enter('revise-plan', false);
 
       const planPath = await expectActivePlanPath();
@@ -468,6 +473,7 @@ describe('Plan service', () => {
       useFakes(fakes);
       useTools(['ExitPlanMode']);
       await ctx.rpc.setPermission({ mode: 'manual' });
+      plan.setGate('gated');
       await plan.enter('reject-plan', false);
 
       const planPath = await expectActivePlanPath();
@@ -504,6 +510,7 @@ describe('Plan service', () => {
       useFakes(fakes);
       useTools(['ExitPlanMode', 'Bash']);
       await ctx.rpc.setPermission({ mode: 'yolo' });
+      plan.setGate('gated');
       await plan.enter('reject-and-exit-plan', false);
 
       const planPath = await expectActivePlanPath();
@@ -576,6 +583,7 @@ describe('Plan service', () => {
       useFakes(fakes);
       useTools(['ExitPlanMode']);
       await ctx.rpc.setPermission({ mode: 'manual' });
+      plan.setGate('gated');
       await plan.enter('options-plan', false);
 
       const planPath = await expectActivePlanPath();

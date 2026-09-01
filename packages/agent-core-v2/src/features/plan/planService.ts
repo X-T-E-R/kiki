@@ -9,6 +9,7 @@ import { generateHeroSlug } from '#/_base/utils/hero-slug';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IConfigService } from '#/app/config/config';
 import { PlanModeInjection } from '#/features/plan/injection/planModeInjection';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -30,6 +31,13 @@ import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import { ContextUndone } from '#/agent/undo/undoService';
 import type { ToolFileAccess } from '#/tool/toolContract';
 import {
+  DEFAULT_PLAN_CONFIG,
+  PLAN_SECTION,
+  type PlanConfig,
+  type PlanGate,
+} from './configSection';
+import { EnterPlanModeReview } from './enterPlanModeReview';
+import {
   IAgentPlanService,
   type PlanData,
   type PlanFilePath,
@@ -46,7 +54,9 @@ import {
 export class AgentPlanService extends Service implements IAgentPlanService {
   declare readonly _serviceBrand: undefined;
 
-  private readonly review: ExitPlanModeReview;
+  private readonly enterReview: EnterPlanModeReview;
+  private readonly exitReview: ExitPlanModeReview;
+  private _planGate: PlanGate;
 
   constructor(
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
@@ -63,11 +73,15 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     @IAgentPermissionModeService private readonly modeService: IAgentPermissionModeService,
     @ITelemetryService telemetry: ITelemetryService,
     @IAgentStateService private readonly agentState: IAgentStateService,
+    @IConfigService config: IConfigService,
   ) {
     super();
     this.agentState.contributeState(planKey);
 
-    this.review = new ExitPlanModeReview(this, this.toolApproval, telemetry);
+    const planConfig = config.get<PlanConfig | undefined>(PLAN_SECTION) ?? DEFAULT_PLAN_CONFIG;
+    this._planGate = planConfig.gate;
+    this.enterReview = new EnterPlanModeReview(this.toolApproval, planConfig.enterApprovalTimeoutMs);
+    this.exitReview = new ExitPlanModeReview(this, this.toolApproval, telemetry);
 
     this._register(
       this.dispatcher.hooks.onDidRestore.register('plan', async (_ctx, next) => {
@@ -96,9 +110,24 @@ export class AgentPlanService extends Service implements IAgentPlanService {
     const toolName = event.toolCall.name;
     const plan = await this.status();
 
+    if (toolName === 'EnterPlanMode') {
+      if (
+        plan === null &&
+        this._planGate === 'gated' &&
+        this.modeService.mode !== 'auto'
+      ) {
+        event.waitUntil(() => this.enterReview.requestApproval(event));
+      }
+      return;
+    }
+
     if (toolName === 'ExitPlanMode') {
-      if (plan !== null && this.modeService.mode !== 'auto') {
-        event.waitUntil(() => this.review.requestApproval(event));
+      if (
+        plan !== null &&
+        this._planGate === 'gated' &&
+        this.modeService.mode !== 'auto'
+      ) {
+        event.waitUntil(() => this.exitReview.requestApproval(event));
       }
       return;
     }
@@ -150,6 +179,14 @@ export class AgentPlanService extends Service implements IAgentPlanService {
       );
       return;
     }
+  }
+
+  get planGate(): PlanGate {
+    return this._planGate;
+  }
+
+  setGate(gate: PlanGate): void {
+    this._planGate = gate;
   }
 
   private get isActive(): boolean {

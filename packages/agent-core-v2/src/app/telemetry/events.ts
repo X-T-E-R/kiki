@@ -178,7 +178,7 @@ export interface PlanResolvedEvent {
 }
 
 export interface PlanEnterResolvedEvent {
-  outcome: 'auto_approved';
+  outcome: 'approved' | 'auto_approved';
 }
 
 export interface CompactionFinishedEvent {

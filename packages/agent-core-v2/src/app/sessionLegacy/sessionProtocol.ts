@@ -20,6 +20,9 @@ export type PromptThinking = z.infer<typeof promptThinkingSchema>;
 export const promptPermissionModeSchema = z.enum(['manual', 'yolo', 'auto']);
 export type PromptPermissionMode = z.infer<typeof promptPermissionModeSchema>;
 
+export const promptPlanGateSchema = z.enum(['free', 'gated']);
+export type PromptPlanGate = z.infer<typeof promptPlanGateSchema>;
+
 export const sessionMetadataSchema = z
   .object({
     cwd: z.string().min(1),

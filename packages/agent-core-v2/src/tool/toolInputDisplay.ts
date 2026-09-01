@@ -85,6 +85,9 @@ export type ToolInputDisplay =
       options?: readonly { label: string; description: string }[] | undefined;
     }
   | {
+      kind: 'plan_enter';
+    }
+  | {
       kind: 'goal_start';
       objective: string;
       completionCriterion?: string | undefined;
