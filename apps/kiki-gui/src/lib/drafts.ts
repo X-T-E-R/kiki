@@ -1,6 +1,6 @@
 /** Per-session composer drafts: in-memory for this app run, optionally mirrored to `kiki.drafts`. */
 
-import type { PermissionMode } from '@moonshot-ai/protocol';
+import type { PermissionMode, PromptPlanGate } from '@moonshot-ai/protocol';
 
 import type { ComposerAttachment } from './attachments';
 import { readSettings } from './settings';
@@ -96,6 +96,13 @@ export interface ComposerSessionState {
   /** Pill overrides; `undefined` means "no local override" (store/default). */
   permissionMode: PermissionMode | undefined;
   planMode: boolean | undefined;
+  /**
+   * Session-scoped plan-gate pick (`plan_gate` on the next prompt). The agent
+   * never echoes its gate back over the wire, so unlike the mode pills this
+   * override is never cleared by a server value — it rides every prompt of
+   * this session until the user flips the switch again.
+   */
+  planGate: PromptPlanGate | undefined;
   swarmMode: boolean | undefined;
   goalObjective: string | undefined;
   modelOverride: string | undefined;

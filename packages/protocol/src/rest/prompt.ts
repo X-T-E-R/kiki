@@ -43,6 +43,9 @@ export type PromptThinking = z.infer<typeof promptThinkingSchema>;
 export const promptPermissionModeSchema = z.enum(['manual', 'yolo', 'auto']);
 export type PromptPermissionMode = z.infer<typeof promptPermissionModeSchema>;
 
+export const promptPlanGateSchema = z.enum(['free', 'gated']);
+export type PromptPlanGate = z.infer<typeof promptPlanGateSchema>;
+
 export const promptSubmissionSchema = z.object({
   content: z.array(messageContentSchema).min(1),
   metadata: z.record(z.string(), z.unknown()).optional(),
@@ -53,6 +56,7 @@ export const promptSubmissionSchema = z.object({
   model: z.string().min(1).optional(),
   thinking: promptThinkingSchema.optional(),
   permission_mode: promptPermissionModeSchema.optional(),
+  plan_gate: promptPlanGateSchema.optional(),
   plan_mode: z.boolean().optional(),
   swarm_mode: z.boolean().optional(),
   goal_objective: z.string().optional(),
@@ -73,6 +77,7 @@ export const promptExecutionOverridesSchema = promptSubmissionSchema.pick({
   model: true,
   thinking: true,
   permission_mode: true,
+  plan_gate: true,
   plan_mode: true,
   swarm_mode: true,
   disabled_tools: true,

@@ -23,6 +23,18 @@ export const modelCatalogConfigResponseSchema = z.object({
   refreshOnStart: z.boolean().optional(),
 });
 
+export const planConfigResponseSchema = z.object({
+  gate: z.enum(['free', 'gated']),
+  enterApprovalTimeoutMs: z.number().int().min(5000),
+});
+
+export const planConfigRequestSchema = z
+  .object({
+    gate: z.enum(['free', 'gated']).optional(),
+    enter_approval_timeout_ms: z.number().int().min(5000).optional(),
+  })
+  .strict();
+
 export const configResponseSchema = z.object({
   providers: z.record(z.string(), providerConfigResponseSchema).default({}),
   default_provider: z.string().optional(),
@@ -30,6 +42,7 @@ export const configResponseSchema = z.object({
   models: z.record(z.string(), z.unknown()).optional(),
   request_identity: requestIdentityPolicySchema.optional(),
   thinking: z.unknown().optional(),
+  plan: planConfigResponseSchema.optional(),
   plan_mode: z.boolean().optional(),
   yolo: z.boolean().optional(),
   default_permission_mode: z.string().optional(),
@@ -60,6 +73,7 @@ export const patchConfigRequestSchema = z.object({
   models: z.record(z.string(), z.unknown()).optional(),
   request_identity: requestIdentityPolicySchema.nullable().optional(),
   thinking: z.unknown().optional(),
+  plan: planConfigRequestSchema.optional(),
   plan_mode: z.boolean().optional(),
   yolo: z.boolean().optional(),
   default_permission_mode: z.string().optional(),

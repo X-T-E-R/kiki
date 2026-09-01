@@ -48,6 +48,8 @@ export function GeneralSection() {
   const [desktopPrefs, setDesktopPrefs] = useState(readDesktopPrefs);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('manual');
   const [planMode, setPlanMode] = useState(false);
+  const [planGate, setPlanGate] = useState<'free' | 'gated'>('free');
+  const [planGateTimeoutS, setPlanGateTimeoutS] = useState('60');
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [compatibilityFeedback, setCompatibilityFeedback] = useState<Feedback>(null);
@@ -83,6 +85,8 @@ export function GeneralSection() {
     const mode = config.default_permission_mode;
     if (mode === 'manual' || mode === 'auto' || mode === 'yolo') setPermissionMode(mode);
     setPlanMode(config.default_plan_mode === true);
+    setPlanGate(config.plan?.gate === 'gated' ? 'gated' : 'free');
+    setPlanGateTimeoutS(String((config.plan?.enterApprovalTimeoutMs ?? 60_000) / 1000));
   }, []);
 
   useEffect(() => { syncFromConfig(configQuery.data); }, [configQuery.data, syncFromConfig]);
@@ -132,6 +136,50 @@ export function GeneralSection() {
     const next = { ...settings, ...patch };
     setSettings(next);
     writeSettings(patch);
+  };
+
+  // Same optimistic discipline as applyDefaults: local echo first, server
+  // echo confirms, failure reverts to the last server-known config.
+  const applyPlanGate = async (gate: 'free' | 'gated') => {
+    setPlanGate(gate);
+    setSaving(true);
+    setFeedback(null);
+    try {
+      const echoed = await client.patchConfig({ plan: { gate } });
+      queryClient.setQueryData(['config'], echoed);
+      syncFromConfig(echoed);
+      ping();
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+      syncFromConfig(configQuery.data);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Seconds in the field, milliseconds on the wire (`enter_approval_timeout_ms`,
+  // floor 5000). Commits on blur/Enter; an invalid draft reverts to the config.
+  const commitPlanGateTimeout = async () => {
+    const ms = Math.round(Number(planGateTimeoutS) * 1000);
+    if (!Number.isFinite(ms) || ms < 5000) {
+      setFeedback({ tone: 'error', text: t('st.defaults.planGateTimeoutInvalid') });
+      syncFromConfig(configQuery.data);
+      return;
+    }
+    if (configQuery.data?.plan?.enterApprovalTimeoutMs === ms) return;
+    setSaving(true);
+    setFeedback(null);
+    try {
+      const echoed = await client.patchConfig({ plan: { enter_approval_timeout_ms: ms } });
+      queryClient.setQueryData(['config'], echoed);
+      syncFromConfig(echoed);
+      ping();
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+      syncFromConfig(configQuery.data);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const persistCompatibility = async (next: CompatibilitySettings) => {
@@ -348,6 +396,34 @@ export function GeneralSection() {
           <div className="flex items-center gap-3">
             <Toggle label={t('st.defaults.planMode')} checked={planMode} disabled={saving} onChange={(checked) => void applyDefaults(permissionMode, checked)} />
           </div>
+          <div className="flex items-center gap-3">
+            <Toggle
+              label={t('st.defaults.planGate')}
+              checked={planGate === 'gated'}
+              disabled={saving}
+              onChange={(checked) => void applyPlanGate(checked ? 'gated' : 'free')}
+            />
+          </div>
+          <div>
+            <label htmlFor="plan-gate-timeout" className="mb-1.5 block text-[11px] font-medium text-ink-soft">
+              {t('st.defaults.planGateTimeout')}
+            </label>
+            <input
+              id="plan-gate-timeout"
+              type="number"
+              min={5}
+              step={1}
+              disabled={saving}
+              className={SMALL_INPUT}
+              value={planGateTimeoutS}
+              onChange={(event) => { setPlanGateTimeoutS(event.target.value); }}
+              onBlur={() => void commitPlanGateTimeout()}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') event.currentTarget.blur();
+              }}
+            />
+          </div>
+          <Hint>{t('st.defaults.planGateHint')}</Hint>
           <Hint>{t('st.defaults.hint')}</Hint>
           <FeedbackLine feedback={feedback} />
           {configQuery.isError ? <InlineError error={configQuery.error} /> : null}

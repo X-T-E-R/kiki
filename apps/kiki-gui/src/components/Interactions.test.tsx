@@ -246,3 +246,49 @@ describe('ApprovalCard external permission', () => {
     expect(onResolve).toHaveBeenCalledWith('cancelled', undefined, undefined);
   });
 });
+
+describe('ApprovalCard plan_enter', () => {
+  const PLAN_ENTER_BLOCK: ApprovalBlock = {
+    kind: 'approval',
+    id: 'approval-plan-1',
+    request: {
+      approval_id: 'approval-plan-1',
+      session_id: 'session_test',
+      tool_call_id: 'call-plan-1',
+      tool_name: 'EnterPlanMode',
+      action: 'Enter plan mode',
+      tool_input_display: { kind: 'plan_enter' },
+      created_at: '2026-01-01T00:00:00.000Z',
+      expires_at: '2026-01-02T00:00:00.000Z',
+    },
+    resolution: undefined,
+  };
+
+  it('renders the plan-enter title and timeout copy, not a raw JSON detail', async () => {
+    const onResolve = vi.fn(() => Promise.resolve());
+    const container = await renderCard(PLAN_ENTER_BLOCK, onResolve);
+
+    expect(container.textContent).toContain('Enter plan mode?');
+    expect(container.textContent).toContain('rejected automatically');
+    // No JSON dump of the payload, and the ordinary approve/reject row stays.
+    expect(container.textContent).not.toContain('"kind"');
+    expect(container.textContent).toContain('Approve');
+    expect(container.textContent).toContain('Reject');
+  });
+
+  it('approves through the ordinary decision path', async () => {
+    const calls: unknown[][] = [];
+    const container = await renderCard(PLAN_ENTER_BLOCK, (...args: unknown[]) => {
+      calls.push(args);
+      return Promise.resolve();
+    });
+
+    const approve = [...container.querySelectorAll('button')].find(
+      (button) => button.textContent?.startsWith('Approve') === true,
+    );
+    await act(async () => {
+      flushSync(() => { click(approve!); });
+    });
+    expect(calls).toEqual([['approved', undefined, undefined]]);
+  });
+});

@@ -2,6 +2,7 @@ import type { ToolExecution } from '#/tool/toolContract';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IAgentPlanService } from '#/features/plan/plan';
+import { isPlanEnterApprovalMetadata } from '#/features/plan/enterPlanModeReview';
 
 import DESCRIPTION from './enter-plan-mode.md?raw';
 import {
@@ -24,8 +25,9 @@ export class EnterPlanModeTool implements IEnterPlanModeTool {
   resolveExecution(_args: EnterPlanModeInput): ToolExecution {
     return {
       description: 'Requesting to enter plan mode',
+      display: { kind: 'plan_enter' },
       approvalRule: this.name,
-      execute: async () => {
+      execute: async ({ metadata }) => {
         const before = await this.planMode.status();
         if (before !== null) {
           return {
@@ -42,7 +44,7 @@ export class EnterPlanModeTool implements IEnterPlanModeTool {
         }
 
         this.telemetry.track2('plan_enter_resolved', {
-          outcome: 'auto_approved',
+          outcome: isPlanEnterApprovalMetadata(metadata) ? 'approved' : 'auto_approved',
         });
         const after = await this.planMode.status();
         return { output: enteredPlanModeMessage(after?.path ?? null) };

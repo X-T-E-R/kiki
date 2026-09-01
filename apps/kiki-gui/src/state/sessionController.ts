@@ -9,6 +9,7 @@ import type {
   ApprovalScope,
   MessageContent,
   PermissionMode,
+  PromptPlanGate,
   QuestionResponse,
   Session,
 } from '@moonshot-ai/protocol';
@@ -884,6 +885,11 @@ export class SessionController {
     thinking?: string;
     permissionMode: PermissionMode;
     planMode?: boolean;
+    /**
+     * Session plan-gate pick (`plan_gate`): when set, every prompt of this
+     * session pins the agent's gate; omit to keep the agent's current gate.
+     */
+    planGate?: PromptPlanGate;
     swarmMode?: boolean;
     goalObjective?: string;
     goalControl?: 'pause' | 'resume' | 'cancel';
@@ -896,6 +902,7 @@ export class SessionController {
       model: input.model,
       thinking: input.thinking,
       permission_mode: input.permissionMode,
+      plan_gate: input.planGate,
       plan_mode: input.planMode === true ? true : undefined,
       swarm_mode: input.swarmMode === true ? true : undefined,
       goal_objective:
@@ -942,6 +949,7 @@ export class SessionController {
       thinking?: string;
       permissionMode?: PermissionMode;
       planMode?: boolean;
+      planGate?: PromptPlanGate;
       swarmMode?: boolean;
     },
   ): Promise<void> {
@@ -952,6 +960,7 @@ export class SessionController {
       model: input.model,
       thinking: input.thinking,
       permission_mode: input.permissionMode,
+      plan_gate: input.planGate,
       plan_mode: input.planMode === true ? true : undefined,
       swarm_mode: input.swarmMode === true ? true : undefined,
     });
@@ -972,6 +981,7 @@ export class SessionController {
       thinking?: string;
       permissionMode?: PermissionMode;
       planMode?: boolean;
+      planGate?: PromptPlanGate;
       swarmMode?: boolean;
     } = {},
   ): Promise<void> {
@@ -981,6 +991,7 @@ export class SessionController {
       model: input.model,
       thinking: input.thinking,
       permission_mode: input.permissionMode,
+      plan_gate: input.planGate,
       plan_mode: input.planMode === true ? true : undefined,
       swarm_mode: input.swarmMode === true ? true : undefined,
     });

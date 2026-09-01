@@ -45,6 +45,7 @@ import {
   resolveApprovalShortcutTarget,
   resolveControlledFlag,
   resolveControlledValue,
+  resolvePlanGate,
   resolveProfileSwitchSubmission,
   sessionHasStartedConversation,
   parseSessionCreateHandoff,
@@ -415,6 +416,13 @@ describe('store-controlled mode pills', () => {
     expect(shouldClearModeOverride('auto', 'manual')).toBe(false);
     expect(shouldClearModeOverride('auto', undefined)).toBe(false);
     expect(shouldClearModeOverride(undefined, 'auto')).toBe(false);
+  });
+
+  it('resolves the plan gate as session pick, then global default, then free', () => {
+    expect(resolvePlanGate('gated', 'free')).toBe('gated');
+    expect(resolvePlanGate('free', 'gated')).toBe('free');
+    expect(resolvePlanGate(undefined, 'gated')).toBe('gated');
+    expect(resolvePlanGate(undefined, undefined)).toBe('free');
   });
 });
 

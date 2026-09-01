@@ -51,6 +51,7 @@ import type {
   PatchConfigRequest,
   PermissionMode,
   PromptAbortResponse,
+  PromptPlanGate,
   RequestIdentityPolicyWire,
   PromptListResponse,
   PromptReplaceRequest,
@@ -193,6 +194,7 @@ export interface MessageRunOverrides {
   readonly model?: string;
   readonly thinking?: string;
   readonly permission_mode?: PermissionMode;
+  readonly plan_gate?: PromptPlanGate;
   readonly plan_mode?: boolean;
   readonly swarm_mode?: boolean;
 }

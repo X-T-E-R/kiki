@@ -232,6 +232,8 @@ export const zh: Record<I18nKey, string> = {
   'composer.planAria': '计划',
   'composer.plan': '计划',
   'composer.planHint': '计划模式 — kiki 先给出方案再动手',
+  'composer.planAuto': '自动计划模式',
+  'composer.planAutoHint': '开启：自由进出计划模式；关闭：进出都需要审批',
   'composer.swarm': '集群',
   'composer.swarmHint': '集群模式 — 允许子代理并发工作',
   'composer.goal': '目标',
@@ -451,6 +453,9 @@ export const zh: Record<I18nKey, string> = {
 
   // ---- interaction cards ----
   'ia.approvalNeeded': '需要批准',
+  'ia.planEnter.title': '进入计划模式？',
+  'ia.planEnter.body':
+    'Kiki 想先进入计划模式，调研并给出方案后再动手。若超时未答复，该请求会被自动拒绝。',
   'ia.fromSubagent': '来自子代理 {name}',
   'ia.originUnknown': '来源未知',
   'ia.originCurrentContext': '来自当前代理上下文',
@@ -512,6 +517,7 @@ export const zh: Record<I18nKey, string> = {
   'tc.exit': '退出码 {code}',
   'tc.plan': '计划',
   'tc.planPath': '计划 — {path}',
+  'tc.planEnter': '进入计划模式',
   'tc.todoItems.one': '{count} 项',
   'tc.todoItems.other': '{count} 项',
   'tc.openSpawnedAgent': '打开 {name}',
@@ -818,6 +824,10 @@ export const zh: Record<I18nKey, string> = {
   'st.defaults.title': '新会话默认值',
   'st.defaults.permissionMode': '默认权限模式',
   'st.defaults.planMode': '新会话默认开启计划模式',
+  'st.defaults.planGate': '进出计划模式需要审批',
+  'st.defaults.planGateTimeout': '进入计划模式审批超时（秒）',
+  'st.defaults.planGateHint': '开启审批后，进入计划模式的请求在超时内未答复会被自动拒绝。最短 5 秒。',
+  'st.defaults.planGateTimeoutInvalid': '超时时间最短为 5 秒。',
   'st.defaults.hint': '更改立即保存，对之后创建的会话生效。',
   'st.composer.title': '输入框',
   'st.composer.sendShortcut': '发送快捷键',

@@ -139,6 +139,8 @@ function approvalDetail(
   const display = block.request.tool_input_display;
   if (typeof display !== 'object' || display === null) return undefined;
   const kind = (display as { kind?: unknown }).kind;
+  // plan_enter carries no payload fields — the card body renders the copy.
+  if (kind === 'plan_enter') return undefined;
   if (kind === 'command') {
     const command = (display as { command?: string }).command;
     return command !== undefined && command !== ''
@@ -259,6 +261,11 @@ export function ApprovalCard({
   }
 
   const external = externalPermissionFromDisplay(block.request.tool_input_display);
+  const planEnter =
+    external === undefined &&
+    typeof block.request.tool_input_display === 'object' &&
+    block.request.tool_input_display !== null &&
+    (block.request.tool_input_display as { kind?: unknown }).kind === 'plan_enter';
   const detail = external === undefined ? approvalDetail(block, t) : undefined;
 
   const submit = (decision: ApprovalDecision, selectedOptionId?: string) => {
@@ -298,7 +305,11 @@ export function ApprovalCard({
         <div className="min-w-0 flex-1 px-4 py-3">
           <div className="flex items-baseline gap-2">
             <span className="text-[13px] font-semibold text-amber-ink">
-              {external === undefined ? t('ia.approvalNeeded') : t('ia.external.title')}
+              {external === undefined
+                ? planEnter
+                  ? t('ia.planEnter.title')
+                  : t('ia.approvalNeeded')
+                : t('ia.external.title')}
             </span>
             {external !== undefined ? (
               <span className="rounded-full border border-amber-rule/40 bg-panel px-1.5 py-px text-[10px] font-medium text-amber-ink/80">
@@ -318,6 +329,11 @@ export function ApprovalCard({
             <span className="font-mono font-semibold">{block.request.tool_name}</span>
             <span className="text-ink-soft"> · {block.request.action}</span>
           </p>
+          {planEnter ? (
+            <p className="mt-1 text-[12.5px] leading-relaxed text-ink-soft">
+              {t('ia.planEnter.body')}
+            </p>
+          ) : null}
           {detail !== undefined ? (
             <div className="mt-2">
               <p className="mb-0.5 text-[10px] font-semibold tracking-wide text-amber-ink/60 uppercase">

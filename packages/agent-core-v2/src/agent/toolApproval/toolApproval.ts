@@ -22,6 +22,7 @@ export interface IAgentToolApprovalService {
     context: ResolvedToolExecutionHookContext,
     result: Extract<PermissionPolicyResult, { kind: 'ask' }>,
     origin: string,
+    approvalId?: string,
   ): Promise<BeforeExecuteDecision | undefined>;
 
   formatDenyMessage(message: string): string;

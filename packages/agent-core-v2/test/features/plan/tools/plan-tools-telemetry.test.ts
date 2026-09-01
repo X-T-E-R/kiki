@@ -80,6 +80,8 @@ function planService({
 } = {}): IAgentPlanService {
   return {
     _serviceBrand: undefined,
+    planGate: 'gated',
+    setGate: vi.fn(),
     enter: enter ?? vi.fn(async () => {}),
     cancel: vi.fn(),
     clear: vi.fn(async () => {}),
@@ -197,6 +199,31 @@ describe('EnterPlanModeTool telemetry', () => {
     expect(result.isError).toBeFalsy();
     expect(track2).toHaveBeenCalledWith('plan_enter_resolved', {
       outcome: 'auto_approved',
+    });
+  });
+
+  it('tracks approved entry when approval metadata is present', async () => {
+    let active = false;
+    const planMode = planService({
+      status: null,
+      enter: vi.fn(async () => {
+        active = true;
+      }),
+    });
+    vi.mocked(planMode.status).mockImplementation(async () => (active ? ACTIVE_PLAN : null));
+    const { telemetry, track2 } = recordingTelemetry();
+
+    const result = await executeTool(new EnterPlanModeTool(planMode, telemetry), {
+      turnId: 0,
+      toolCallId: 'call_enter_plan_approved',
+      args: {},
+      signal: new AbortController().signal,
+      metadata: { planEnterApproved: true },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(track2).toHaveBeenCalledWith('plan_enter_resolved', {
+      outcome: 'approved',
     });
   });
 });

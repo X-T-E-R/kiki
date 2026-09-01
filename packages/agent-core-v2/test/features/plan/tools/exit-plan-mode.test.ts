@@ -23,6 +23,8 @@ const options = [
 function planService(): IAgentPlanService {
   return {
     _serviceBrand: undefined,
+    planGate: 'gated',
+    setGate: () => {},
     enter: async () => {},
     cancel: () => {},
     clear: async () => {},
@@ -180,6 +182,30 @@ describe('ExitPlanMode option output', () => {
     expect(result.output).not.toContain('## Approved Plan:');
     expect(result.output).toContain('the user has NOT explicitly approved it');
     expect(result.output).toContain('# Plan');
+  });
+
+  it('marks free-gate manual exit as auto-approved without user review', async () => {
+    const telemetry = recordingTelemetry();
+
+    const result = await executeTool(
+      new ExitPlanModeTool(
+        { ...planService(), planGate: 'free' },
+        permissionMode('manual'),
+        telemetry,
+      ),
+      {
+        turnId: 7,
+        toolCallId: 'call_exit_plan_free',
+        args: {},
+        signal,
+      },
+    );
+
+    expect(result.isError).toBeFalsy();
+    expect(result.output).toContain('## Plan (auto-approved, not user-reviewed):');
+    expect(telemetry.track2).toHaveBeenCalledWith('plan_resolved', {
+      outcome: 'auto_approved',
+    });
   });
 
   it('keeps the user-approved output when a rule lets the call through outside auto mode', async () => {

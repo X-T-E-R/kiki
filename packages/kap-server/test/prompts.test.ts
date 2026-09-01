@@ -8,6 +8,7 @@ import {
   IAgentContextMemoryService,
   IAgentLifecycleService,
   IAgentPermissionModeService,
+  IAgentPlanService,
   IAgentProfileService,
   IAgentPromptService,
   IAgentToolPolicyService,
@@ -250,6 +251,21 @@ describe('server-v2 /api/v1 prompts', () => {
     expect(Array.isArray(list.body.data.queued)).toBe(true);
   });
 
+  it('applies an optional plan_gate override before prompt execution', async () => {
+    const id = await createSession(home as string);
+    await createMainAgent(id);
+
+    const submitted = await call<PromptItemWire>('POST', `/api/v1/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'plan with approval' }],
+      plan_gate: 'gated',
+    });
+    expect(submitted.body.code).toBe(0);
+
+    const session = getLiveSessionById(server!.core.accessor, id);
+    const main = session!.accessor.get(IAgentLifecycleService).get('main');
+    expect(main!.accessor.get(IAgentPlanService).planGate).toBe('gated');
+  });
+
   it('steers a queued prompt with model and thinking bindings without rebinding the active turn', async () => {
     const id = await createSession(home as string);
     await createMainAgent(id);
@@ -438,6 +454,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const submitted = await call<null>('POST', `/api/v1/sessions/${id}/prompts`, {
       content: [{ type: 'text', text: 'Review this change.' }],
       permission_mode: 'yolo',
+      plan_gate: 'gated',
       skills: [{ name: 'does-not-exist' }],
     });
     expect(submitted.body.code).toBe(40415);
@@ -445,6 +462,7 @@ describe('server-v2 /api/v1 prompts', () => {
     const session = getLiveSessionById(server!.core.accessor, id);
     const agent = session!.accessor.get(IAgentLifecycleService).get('main');
     expect(agent!.accessor.get(IAgentPermissionModeService).mode).toBe('manual');
+    expect(agent!.accessor.get(IAgentPlanService).planGate).toBe('free');
     const history = agent!.accessor.get(IAgentContextMemoryService).get();
     expect(history.filter((message) => message.origin?.kind === 'user')).toHaveLength(0);
   });

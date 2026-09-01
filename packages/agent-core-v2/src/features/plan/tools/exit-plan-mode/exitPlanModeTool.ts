@@ -85,7 +85,7 @@ export class ExitPlanModeTool implements IExitPlanModeTool {
     const failed = this.exitPlanMode();
     if (failed !== undefined) return failed;
 
-    if (this.permissionMode.mode === 'auto') {
+    if (this.permissionMode.mode === 'auto' || this.planMode.planGate === 'free') {
       this.telemetry.track2('plan_resolved', {
         outcome: 'auto_approved',
       });

@@ -78,6 +78,12 @@ describe('mcpServerTransportSchema', () => {
 });
 
 describe('ToolInputDisplaySchema', () => {
+  it('accepts plan entry approval displays', () => {
+    expect(ToolInputDisplaySchema.parse({ kind: 'plan_enter' })).toEqual({
+      kind: 'plan_enter',
+    });
+  });
+
   it('accepts external permission options and change detail', () => {
     expect(
       ToolInputDisplaySchema.parse({
