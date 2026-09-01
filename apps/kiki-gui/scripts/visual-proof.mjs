@@ -374,54 +374,32 @@ async function waitForServer(url, timeoutMs = 30_000) {
 }
 
 /**
- * Wait until a TCP port answers NO connection. A stale listener (orphaned
- * vite grandchild) must be gone before we spawn our own — otherwise
- * waitForServer can report "web up" against the zombie and strictPort then
- * kills our real dev server, hanging the suite mid-run.
+ * Probe whether a loopback TCP port currently answers a connection.
+ * Never kills anything: an occupied candidate is simply skipped.
  */
-async function waitForPortFree(port, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const taken = await new Promise((resolve) => {
-      const probe = net.createConnection({ port, host: '127.0.0.1' });
-      probe.once('connect', () => {
-        probe.destroy();
-        resolve(true);
-      });
-      probe.once('error', () => resolve(false));
+async function isPortTaken(port) {
+  return new Promise((resolve) => {
+    const probe = net.createConnection({ port, host: '127.0.0.1' });
+    probe.once('connect', () => {
+      probe.destroy();
+      resolve(true);
     });
-    if (!taken) return;
-    if (Date.now() > deadline) throw new Error(`port ${port} is still held by a stale process — kill it and rerun`);
-    await sleep(300);
-  }
+    probe.once('error', () => resolve(false));
+  });
 }
 
 /**
- * Free a TCP port (Windows: netstat → taskkill; no-op elsewhere — the proof
- * runner is a Windows dev tool). Needed because shell-spawned vite children
- * orphan their grandchild (the actual listener) when killed.
+ * Pick a port that is free right now. OS-assigned candidates race with other
+ * processes (ephemeral test servers grab them between probe and bind), so
+ * retry a few candidates and fail loudly rather than killing the listener —
+ * the port may legitimately belong to the host or another agent's server.
  */
-function killPort(port) {
-  if (process.platform !== 'win32') return;
-  try {
-    const out = execSync(`netstat -ano | findstr "127.0.0.1:${port}" & netstat -ano | findstr "[::1]:${port}"`, {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      shell: 'cmd.exe',
-    }).toString();
-    const pids = new Set();
-    for (const line of out.split(/\r?\n/)) {
-      if (!line.includes('LISTENING')) continue;
-      const parts = line.trim().split(/\s+/);
-      const pid = parts[parts.length - 1];
-      if (pid !== undefined && /^\d+$/.test(pid) && pid !== '0') pids.add(pid);
-    }
-    for (const pid of pids) {
-      execSync(`taskkill /PID ${pid} /F /T`, { stdio: 'ignore' });
-      console.log(`[proof] freed port ${port} (pid ${pid})`);
-    }
-  } catch {
-    // findstr exits 1 when nothing matches — the port is free
+async function pickFreePort(requested) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const candidate = attempt === 0 && requested !== 0 ? requested : await freePort();
+    if (!(await isPortTaken(candidate))) return candidate;
   }
+  throw new Error('no free loopback port found after 5 candidates');
 }
 
 // ---------------------------------------------------------------------------
@@ -3099,14 +3077,10 @@ rmSync(SHOTS, { recursive: true, force: true });
 mkdirSync(SHOTS, { recursive: true });
 
 async function main() {
-  if (FIXTURE_PORT === 0) FIXTURE_PORT = await freePort();
-  if (WEB_PORT === 0) WEB_PORT = await freePort();
+  FIXTURE_PORT = await pickFreePort(FIXTURE_PORT);
+  WEB_PORT = await pickFreePort(WEB_PORT);
   FIXTURE_URL = `http://127.0.0.1:${FIXTURE_PORT}`;
   WEB_URL = `http://127.0.0.1:${WEB_PORT}`;
-  killPort(FIXTURE_PORT);
-  killPort(WEB_PORT);
-  await waitForPortFree(FIXTURE_PORT);
-  await waitForPortFree(WEB_PORT);
   const fixture = await startFixtureServer({ port: FIXTURE_PORT, scenario: 'basic-stream' });
 
   // Always spawn our own vite on a dedicated port so a stray dev server can't
@@ -3136,7 +3110,6 @@ async function main() {
       }
     }
     vite.kill();
-    killPort(WEB_PORT);
     await fixture.stop();
   };
   process.on('SIGINT', () => void cleanup().then(() => process.exit(130)));
